@@ -2656,6 +2656,18 @@ const awayTeamData = scoreData?.awayTeamData || null;
 const homeTeamData = scoreData?.homeTeamData || null;
 const ncaabBreakdown = scoreData || null;
 
+// Extract posted total from game object early so modelContext can use it
+const postedTotalRaw = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
+const postedTotal = postedTotalRaw ? parseFloat(postedTotalRaw.point) : null;
+const projTotal = ncaabBreakdown?.projectedTotal ? parseFloat(ncaabBreakdown.projectedTotal) : null;
+const totalDelta = postedTotal && projTotal ? parseFloat((projTotal - postedTotal).toFixed(1)) : null;
+const totalLeanLabel = totalDelta === null ? 'N/A' :
+  totalDelta <= -4 ? `STRONG UNDER (model ${Math.abs(totalDelta)} pts below posted — heavy under lean)` :
+  totalDelta <= -2 ? `UNDER lean (model ${Math.abs(totalDelta)} pts below posted)` :
+  totalDelta >= 4  ? `STRONG OVER (model ${Math.abs(totalDelta)} pts above posted — heavy over lean)` :
+  totalDelta >= 2  ? `OVER lean (model ${totalDelta} pts above posted)` :
+  `NEUTRAL (model within ${Math.abs(totalDelta)} pts of posted — no strong lean)`;
+
 const awayName = game.away_team.split(' ').pop();
 const homeName = game.home_team.split(' ').pop();
 const conf = awayTeamData?.conf || homeTeamData?.conf || '';
@@ -2713,7 +2725,10 @@ SWEAT LOCKER MODEL DATA:
 - Model best bet: ${ncaabBreakdown?.bestBet || 'No strong lean'}
 - Net efficiency edge: ${ncaabBreakdown?.mismatchPts > 0 ? homeName : awayName} +${Math.abs(ncaabBreakdown?.mismatchPts || 0).toFixed(1)} pts
 - Top mismatches: ${ncaabBreakdown?.efgMismatch || 'N/A'}
-- Projected total: ${ncaabBreakdown?.projectedTotal || 'N/A'} ${ncaabBreakdown?.underLean ? '→ UNDER LEAN (elite defenses + slow pace)' : ''}
+- Posted total: ${postedTotal || 'N/A'}
+- Projected total: ${projTotal || 'N/A'} → ${totalLeanLabel}
+- Total delta: ${totalDelta !== null ? (totalDelta > 0 ? '+' : '') + totalDelta + ' pts vs posted' : 'N/A'}
+- Defensive pace context: ${awayTeamData && homeTeamData ? `avg AdjDE ${((awayTeamData.adjDE + homeTeamData.adjDE)/2).toFixed(1)}, avg tempo ${((awayTeamData.tempo + homeTeamData.tempo)/2).toFixed(1)} pos/40` : 'N/A'}
 - Pace: ${awayTeamData && homeTeamData ? `${awayName} ${awayTeamData.tempo?.toFixed(1)} pos/40 (rank #${awayTeamData.tempoRank}) vs ${homeName} ${homeTeamData.tempo?.toFixed(1)} pos/40 (rank #${homeTeamData.tempoRank})` : 'N/A'}
 - SOS gap: ${Math.abs(sosDelta).toFixed(2)} ${Math.abs(sosDelta) > 3 ? '(LARGE — significant schedule strength difference)' : Math.abs(sosDelta) > 1.5 ? '(moderate)' : '(small)'}
 - Luck factor: ${luckAdjustment > 0.5 ? `${awayName} unlucky — true talent better than record` : luckAdjustment < -0.5 ? `${homeName} unlucky — true talent better than record` : 'Neutral'}
@@ -2732,7 +2747,12 @@ ${homeTeamData ? `- ${homeName} four factors: eFG% off ${homeTeamData.eFG_O?.toF
     try {
       const sport = gamesSport || 'NBA';
       const spread = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='spreads')?.outcomes?.[0];
-      const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
+const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
+  totalDelta <= -4 ? `STRONG UNDER (model ${Math.abs(totalDelta)} pts below posted — heavy under lean)` :
+  totalDelta <= -2 ? `UNDER lean (model ${Math.abs(totalDelta)} pts below posted)` :
+  totalDelta >= 4  ? `STRONG OVER (model ${Math.abs(totalDelta)} pts above posted — heavy over lean)` :
+  totalDelta >= 2  ? `OVER lean (model ${totalDelta} pts above posted)` :
+  `NEUTRAL (model within ${Math.abs(totalDelta)} pts of posted — no strong lean)`;
       const prompt = `You are Jerry, a sharp sports analyst for The Sweat Locker app. Confident, direct, no fluff. You have access to deep KenPom efficiency data — use it specifically.
 
 Game: ${game.away_team} @ ${game.home_team}
@@ -2746,7 +2766,8 @@ Rules you must follow:
 - Your take MUST align with the model best bet shown above — never contradict it
 - Reference SPECIFIC numbers from the data — eFG% ranks, efficiency ratings, records
 - If a four factor mismatch is > 150 ranks, call it out explicitly as a dominant edge
-- If projectedTotal shows UNDER LEAN, mention the under as a secondary angle
+- Always comment on the total using the delta — if model is 2+ pts below posted lean Under, if 2+ pts above lean Over, if within 2 pts say the total is fairly priced
+- Lead with the strongest signal — if totalDelta is 4+ pts that IS the headline
 - If conference trend shows title game fav fade, factor that into spread confidence
 - Never mention KenPom by name — call it the "Sweat Locker model"
 - Do NOT mention home court advantage — tournament games are neutral site
