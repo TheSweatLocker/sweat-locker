@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "The Sweat Locker",
+    "slug": "sweatlocker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/splash-logo.png",
+    "splash": {
+      "image": "./assets/images/splash-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#080c10"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sweatlocker.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/splash-logo.png",
+        "backgroundColor": "#080c10"
+      },
+      "package": "com.sweatlocker.app"
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#080c10",
+          "image": "./assets/images/splash-logo.png",
+          "resizeMode": "contain"
+        }
+      ]
+    ],
+    "scheme": "sweatlocker",
+    "newArchEnabled": true
+  }
+}
