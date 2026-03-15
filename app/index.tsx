@@ -2656,19 +2656,75 @@ const awayTeamData = scoreData?.awayTeamData || null;
 const homeTeamData = scoreData?.homeTeamData || null;
 const ncaabBreakdown = scoreData || null;
 
+const awayName = game.away_team.split(' ').pop();
+const homeName = game.home_team.split(' ').pop();
+const conf = awayTeamData?.conf || homeTeamData?.conf || '';
+// Detect NCAA Tournament round from seeds
+const awaySeed = awayTeamData?.seed || 0;
+const homeSeed = homeTeamData?.seed || 0;
+const seedSum = awaySeed + homeSeed;
+const isNCAATourney = awaySeed > 0 && homeSeed > 0;
+
+const detectRound = (seedSum) => {
+  if (seedSum === 17) return 'R64';  // 1v16, 2v15, etc all sum to 17
+  if (seedSum >= 13 && seedSum <= 16) return 'R32'; // typical R32 matchups
+  if (seedSum >= 9 && seedSum <= 12) return 'S16';
+  if (seedSum >= 6 && seedSum <= 9) return 'E8';
+  if (seedSum <= 5) return 'F4';
+  return 'R64'; // default
+};
+
+const NCAA_TRENDS = {
+  R64: { favATS: 0.49, underPct: 0.51, note: 'R64 — chalk covers ~49%, slight over lean early' },
+  R32: { favATS: 0.51, underPct: 0.53, note: 'R32 — tightening up, unders emerging' },
+  S16: { favATS: 0.48, underPct: 0.55, note: 'Sweet 16 — elite defenses dominate, strong under lean' },
+  E8:  { favATS: 0.50, underPct: 0.56, note: 'Elite 8 — grind games, unders hit 56%' },
+  F4:  { favATS: 0.47, underPct: 0.58, note: 'Final Four — fade the favorite ATS, heavy under lean' },
+  NCG: { favATS: 0.45, underPct: 0.60, note: 'Title game — favorites 1-4 ATS recently, unders 60%' },
+};
+
+const CONF_TRENDS = {
+  MAC:  { favATS: 0.51, underPct: 0.54, titleFadeFav: true  },
+  CUSA: { favATS: 0.48, underPct: 0.52, titleFadeFav: true  },
+  A10:  { favATS: 0.54, underPct: 0.51, titleFadeFav: false },
+  B12:  { favATS: 0.52, underPct: 0.56, titleFadeFav: false },
+  SEC:  { favATS: 0.50, underPct: 0.54, titleFadeFav: false },
+  ACC:  { favATS: 0.49, underPct: 0.52, titleFadeFav: true  },
+  B10:  { favATS: 0.51, underPct: 0.55, titleFadeFav: false },
+  BE:   { favATS: 0.50, underPct: 0.53, titleFadeFav: false },
+  MVC:  { favATS: 0.53, underPct: 0.57, titleFadeFav: false },
+  WCC:  { favATS: 0.52, underPct: 0.54, titleFadeFav: false },
+};
+
+const round = isNCAATourney ? detectRound(seedSum) : null;
+const ncaaTrend = round ? NCAA_TRENDS[round] : null;
+const confTrend = CONF_TRENDS[conf] || { favATS: 0.50, underPct: 0.52, titleFadeFav: false };
+const trend = ncaaTrend || confTrend;
+const trendNote = ncaaTrend
+  ? `NCAA Tournament ${round} — ${ncaaTrend.note}`
+  : `${conf} conf tournament — fav ATS ${(confTrend.favATS*100).toFixed(0)}%, under ${(confTrend.underPct*100).toFixed(0)}%${confTrend.titleFadeFav ? ', title game fav fade trend' : ''}`;
+const isTitleGame = false; // wire in later when round detection is added
+
 const modelContext = scoreData?.predictedSpread ? `
 SWEAT LOCKER MODEL DATA:
-- Projected spread: ${predictedSpread > 0 ? game.home_team.split(' ').pop() : game.away_team.split(' ').pop()} by ${Math.abs(predictedSpread).toFixed(1)}
+- Projected spread: ${predictedSpread > 0 ? homeName : awayName} by ${Math.abs(predictedSpread).toFixed(1)}
 - Edge vs posted line: ${spreadEdge > 0 ? '+' : ''}${spreadEdge.toFixed(1)} pts ${Math.abs(spreadEdge) >= 3 ? '⚠️ SIGNIFICANT' : Math.abs(spreadEdge) >= 1.5 ? '(notable)' : '(small)'}
-- Win probability: ${homeWP ? `Home ${(homeWP*100).toFixed(0)}% / Away ${((1-homeWP)*100).toFixed(0)}%` : 'N/A'}
+- Win probability: ${homeWP ? `${homeName} ${(homeWP*100).toFixed(0)}% / ${awayName} ${((1-homeWP)*100).toFixed(0)}%` : 'N/A'}
 - Model best bet: ${ncaabBreakdown?.bestBet || 'No strong lean'}
-- Net efficiency edge: ${ncaabBreakdown?.mismatchPts > 0 ? game.home_team.split(' ').pop() : game.away_team.split(' ').pop()} +${Math.abs(ncaabBreakdown?.mismatchPts || 0).toFixed(1)} pts
+- Net efficiency edge: ${ncaabBreakdown?.mismatchPts > 0 ? homeName : awayName} +${Math.abs(ncaabBreakdown?.mismatchPts || 0).toFixed(1)} pts
 - Top mismatches: ${ncaabBreakdown?.efgMismatch || 'N/A'}
 - Projected total: ${ncaabBreakdown?.projectedTotal || 'N/A'} ${ncaabBreakdown?.underLean ? '→ UNDER LEAN (elite defenses + slow pace)' : ''}
-- SOS gap: ${Math.abs(sosDelta).toFixed(2)} ${Math.abs(sosDelta) > 3 ? '(LARGE)' : Math.abs(sosDelta) > 1.5 ? '(moderate)' : '(small)'}
-- Luck factor: ${luckAdjustment > 0.5 ? 'Away team unlucky — true talent better than record' : luckAdjustment < -0.5 ? 'Home team unlucky — true talent better than record' : 'Neutral'}
-${awayTeamData ? `- ${game.away_team.split(' ').pop()} efficiency: AdjOE ${awayTeamData.adjOE?.toFixed(1)} / AdjDE ${awayTeamData.adjDE?.toFixed(1)}` : ''}
-${homeTeamData ? `- ${game.home_team.split(' ').pop()} efficiency: AdjOE ${homeTeamData.adjOE?.toFixed(1)} / AdjDE ${homeTeamData.adjDE?.toFixed(1)}` : ''}
+- Pace: ${awayTeamData && homeTeamData ? `${awayName} ${awayTeamData.tempo?.toFixed(1)} pos/40 (rank #${awayTeamData.tempoRank}) vs ${homeName} ${homeTeamData.tempo?.toFixed(1)} pos/40 (rank #${homeTeamData.tempoRank})` : 'N/A'}
+- SOS gap: ${Math.abs(sosDelta).toFixed(2)} ${Math.abs(sosDelta) > 3 ? '(LARGE — significant schedule strength difference)' : Math.abs(sosDelta) > 1.5 ? '(moderate)' : '(small)'}
+- Luck factor: ${luckAdjustment > 0.5 ? `${awayName} unlucky — true talent better than record` : luckAdjustment < -0.5 ? `${homeName} unlucky — true talent better than record` : 'Neutral'}
+${awayTeamData ? `- ${awayName} efficiency: AdjOE ${awayTeamData.adjOE?.toFixed(1)} (#${awayTeamData.adjOERank}) / AdjDE ${awayTeamData.adjDE?.toFixed(1)} (#${awayTeamData.adjDERank}) / Record: ${awayTeamData.wins}-${awayTeamData.losses}` : ''}
+${homeTeamData ? `- ${homeName} efficiency: AdjOE ${homeTeamData.adjOE?.toFixed(1)} (#${homeTeamData.adjOERank}) / AdjDE ${homeTeamData.adjDE?.toFixed(1)} (#${homeTeamData.adjDERank}) / Record: ${homeTeamData.wins}-${homeTeamData.losses}` : ''}
+${awayTeamData ? `- ${awayName} four factors: eFG% off ${awayTeamData.eFG_O?.toFixed(1)}% (#${awayTeamData.eFG_O_rank}) / eFG% def ${awayTeamData.eFG_D?.toFixed(1)}% (#${awayTeamData.eFG_D_rank}) / OR% #${awayTeamData.or_O_rank} / TO% forced #${awayTeamData.to_D_rank}` : ''}
+${homeTeamData ? `- ${homeName} four factors: eFG% off ${homeTeamData.eFG_O?.toFixed(1)}% (#${homeTeamData.eFG_O_rank}) / eFG% def ${homeTeamData.eFG_D?.toFixed(1)}% (#${homeTeamData.eFG_D_rank}) / OR% #${homeTeamData.or_O_rank} / TO% forced #${homeTeamData.to_D_rank}` : ''}
+- Tournament context: ${trendNote}
+- Seeds: ${isNCAATourney ? `${awayName} #${awaySeed} vs ${homeName} #${homeSeed} — ${round}` : 'Conference tournament'}
+- Under lean strength: ${(trend.underPct*100).toFixed(0)}% historical under rate this round/conf
+- Fav ATS rate: ${(trend.favATS*100).toFixed(0)}% this round/conf
 ` : '';
 
     setGameNarrative('');
@@ -2677,24 +2733,26 @@ ${homeTeamData ? `- ${game.home_team.split(' ').pop()} efficiency: AdjOE ${homeT
       const sport = gamesSport || 'NBA';
       const spread = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='spreads')?.outcomes?.[0];
       const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
-      const prompt = `You are Jerry, a sharp sports analyst for The Sweat Locker app. Confident, direct, no fluff.
+      const prompt = `You are Jerry, a sharp sports analyst for The Sweat Locker app. Confident, direct, no fluff. You have access to deep KenPom efficiency data — use it specifically.
 
 Game: ${game.away_team} @ ${game.home_team}
 Sport: ${sport}
 Sweat Score: ${score}/100${score>=80?' (PRIME SWEAT 🔒)':score>=65?' (Strong lean)':' (Monitor)'}
 Spread: ${spread?`${spread.name} ${spread.point > 0 ? '+' : ''}${spread.point}`:'N/A'}
+Total: ${total ? total.point : 'N/A'}
 ${modelContext}
 
 Rules you must follow:
 - Your take MUST align with the model best bet shown above — never contradict it
-- If model best bet shows a team, your analysis must favor that team
+- Reference SPECIFIC numbers from the data — eFG% ranks, efficiency ratings, records
+- If a four factor mismatch is > 150 ranks, call it out explicitly as a dominant edge
 - If projectedTotal shows UNDER LEAN, mention the under as a secondary angle
-- Reference the most significant four factor mismatch in your take
+- If conference trend shows title game fav fade, factor that into spread confidence
 - Never mention KenPom by name — call it the "Sweat Locker model"
 - Do NOT mention home court advantage — tournament games are neutral site
 - Base analysis ONLY on data provided — no injuries, news, or outside knowledge
 - Sweat Score 75+ = Prime Sweat tone. 65-74 = strong lean. Below 65 = cautious.
-- 2 sentences maximum. Be sharp and direct.`;
+- 3 sentences maximum. Lead with the biggest efficiency or four factor edge. End with the best bet.`;
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
