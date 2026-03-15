@@ -1373,6 +1373,7 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
     fetchDailyBriefing();
   }, []);
 
+
   useEffect(() => {
     if(betsLoaded && bets.length) autoDetectResults();
 
