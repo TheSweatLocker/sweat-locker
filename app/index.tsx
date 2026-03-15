@@ -1208,7 +1208,7 @@ const stripMascot = (teamName) => {
       'Highlanders','Beacons','Roadrunners','Owls','Flyers','Quakers',
       'Friars','Toreros','Gaels','Pilots','Waves','Sycamores','Leathernecks',
       'Govs','Skyhawks','Golden Eagles','Red Foxes','Peacocks','Purple Eagles','Big Red','Crimson','Catamounts',
-      'Keydets','Hokies','Orange','Big Green','Ephs','Mammoths','Lords','Yeomen',
+      'Keydets','Hokies','Orange','Shockers','Big Green','Ephs','Mammoths','Lords','Yeomen',
       'Mules','Bears','Bison','Lions','Royals','Saints','Pilots','Waves',
       'Matadors','49ers','Roadrunners','Lumberjacks','Jacks','Bucks','Penmen',
       'Penguins','Ospreys','Dolphins','Sharks','Storm','Thunder','Heat',
@@ -1818,6 +1818,7 @@ const fetchKenpomFanmatch = async () => {
       };
     });
     setFanmatchData(mapped);
+console.log('FANMATCH GAMES:', Object.values(mapped).map(g => g.visitor + ' vs ' + g.home));
     // Save to cache with timestamp
     try {
       await AsyncStorage.setItem(FANMATCH_CACHE_KEY, JSON.stringify({data:mapped, timestamp:Date.now()}));
@@ -2088,12 +2089,23 @@ if(r.data && r.data.data) {
 
   let fanmatchGame = null;
   Object.values(fanmatchData||{}).forEach(fg => {
-    const fVisitor = (fg.visitor||'').toLowerCase().trim();
-    const fHome = (fg.home||'').toLowerCase().trim();
-    const visitorMatch = fVisitor === awayStripped || fVisitor.startsWith(awayStripped + ' ') || awayStripped.startsWith(fVisitor + ' ');
-const homeMatch = fHome === homeStripped || fHome.startsWith(homeStripped + ' ') || homeStripped.startsWith(fHome + ' ');
+    const fVisitor = (fg.visitor||'').toLowerCase().trim().replace(/\./g, '');
+    const fHome = (fg.home||'').toLowerCase().trim().replace(/\./g, '');
+    const awayStrippedClean = awayStripped.replace(/\./g, '');
+    const homeStrippedClean = homeStripped.replace(/\./g, '');
+    console.log('FANMATCH COMPARE:', fVisitor, '===', awayStrippedClean, '|', fHome, '===', homeStrippedClean);
+    const visitorMatch = fVisitor === awayStrippedClean || 
+  fVisitor.startsWith(awayStrippedClean + ' ') || 
+  awayStrippedClean.startsWith(fVisitor + ' ') ||
+  awayStrippedClean.startsWith(fVisitor) ||
+  fVisitor.startsWith(awayStrippedClean);
+const homeMatch = fHome === homeStrippedClean || 
+  fHome.startsWith(homeStrippedClean + ' ') || 
+  homeStrippedClean.startsWith(fHome + ' ') ||
+  homeStrippedClean.startsWith(fHome) ||
+  fHome.startsWith(homeStrippedClean);
     if(visitorMatch && homeMatch) fanmatchGame = fg;
-  });
+});
 
   if(fanmatchGame && fanmatchGame.homePred && fanmatchGame.visitorPred) {
     predictedSpread = fanmatchGame.homePred - fanmatchGame.visitorPred;
