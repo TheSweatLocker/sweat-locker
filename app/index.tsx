@@ -2137,8 +2137,13 @@ spreadEdge = postedSpread !== null ? predictedSpread - postedSpread : 0;
   const bothEliteDef = awayTeam.adjDERank <= 50 && homeTeam.adjDERank <= 50;
   const slowerTeamSlow = Math.max(awayTeam.tempoRank, homeTeam.tempoRank) >= 200;
   const underLean = bothEliteDef && slowerTeamSlow;
-  projectedTotal = ((((awayTeam.adjOE + homeTeam.adjOE) / 2) + 
-                     ((awayTeam.adjDE + homeTeam.adjDE) / 2)) / 2 / 100 * projPossessions * 2).toFixed(1);
+  // Use fanmatch predicted scores when available — more accurate than efficiency formula
+  if(fanmatchGame && fanmatchGame.homePred && fanmatchGame.visitorPred) {
+    projectedTotal = (fanmatchGame.homePred + fanmatchGame.visitorPred).toFixed(1);
+  } else {
+    projectedTotal = ((((awayTeam.adjOE + homeTeam.adjOE) / 2) + 
+                       ((awayTeam.adjDE + homeTeam.adjDE) / 2)) / 2 / 100 * projPossessions * 2).toFixed(1);
+  }
 
   // Store top mismatches for Jerry context
   efgMismatch = ffMatchups
@@ -2655,6 +2660,8 @@ const homeWP = scoreData?.homeWP;
 const awayTeamData = scoreData?.awayTeamData || null;
 const homeTeamData = scoreData?.homeTeamData || null;
 const ncaabBreakdown = scoreData || null;
+const modelBestBet = ncaabBreakdown?.bestBet || 
+  (scoreData?.leanSide ? `${scoreData.leanSide}` : null);
 
 // Extract posted total from game object early so modelContext can use it
 const postedTotalRaw = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
@@ -2722,7 +2729,8 @@ SWEAT LOCKER MODEL DATA:
 - Projected spread: ${predictedSpread > 0 ? homeName : awayName} by ${Math.abs(predictedSpread).toFixed(1)}
 - Edge vs posted line: ${spreadEdge > 0 ? '+' : ''}${spreadEdge.toFixed(1)} pts ${Math.abs(spreadEdge) >= 3 ? '⚠️ SIGNIFICANT' : Math.abs(spreadEdge) >= 1.5 ? '(notable)' : '(small)'}
 - Win probability: ${homeWP ? `${homeName} ${(homeWP*100).toFixed(0)}% / ${awayName} ${((1-homeWP)*100).toFixed(0)}%` : 'N/A'}
-- Model best bet: ${ncaabBreakdown?.bestBet || 'No strong lean'}
+- Model best bet: ${modelBestBet || 'No strong lean'}
+- Model lean side: ${scoreData?.leanSide || 'N/A'}
 - Net efficiency edge: ${ncaabBreakdown?.mismatchPts > 0 ? homeName : awayName} +${Math.abs(ncaabBreakdown?.mismatchPts || 0).toFixed(1)} pts
 - Top mismatches: ${ncaabBreakdown?.efgMismatch || 'N/A'}
 - Posted total: ${postedTotal || 'N/A'}
@@ -2746,6 +2754,10 @@ ${homeTeamData ? `- ${homeName} four factors: eFG% off ${homeTeamData.eFG_O?.toF
     setGameNarrativeLoading(true);
     try {
       const sport = gamesSport || 'NBA';
+      const isNBAorNHL = sport === 'NBA' || sport === 'NHL' || sport === 'MLB' || sport === 'NFL';
+const dataQualityNote = isNBAorNHL 
+  ? `NOTE: This is a market-based analysis only — no proprietary efficiency model exists for ${sport} yet. Analysis is based on line movement and book consensus only. Be transparent about this limitation.`
+  : `NOTE: Full KenPom efficiency model active — four factors, tempo, efficiency gaps all available.`;
       const spread = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='spreads')?.outcomes?.[0];
 const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
   totalDelta <= -4 ? `STRONG UNDER (model ${Math.abs(totalDelta)} pts below posted — heavy under lean)` :
@@ -2763,7 +2775,13 @@ Total: ${total ? total.point : 'N/A'}
 ${modelContext}
 
 Rules you must follow:
-- Your take MUST align with the model best bet shown above — never contradict it
+- CRITICAL: The model lean side is "${scoreData?.leanSide || 'N/A'}" — you MUST favor this side
+- NEVER mention the opposing team as the play under any circumstances
+- For NBA/NFL/NHL/MLB: frame your take as "market signals point to..." not "the model says..." — be honest this is book consensus only
+- For NBA/NFL/NHL/MLB: never imply a proprietary edge exists — transparency builds trust
+- If model lean side is "Bucks -7" your take must be about the Bucks covering — period
+- Do not say "back", "like", or favor the other team in any way
+- This rule overrides everything else — wrong side = wrong answer
 - Reference SPECIFIC numbers from the data — eFG% ranks, efficiency ratings, records
 - If a four factor mismatch is > 150 ranks, call it out explicitly as a dominant edge
 - Always comment on the total using the delta — if model is 2+ pts below posted lean Under, if 2+ pts above lean Over, if within 2 pts say the total is fairly priced
