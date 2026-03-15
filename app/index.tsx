@@ -1273,6 +1273,9 @@ const [playersSearch, setPlayersSearch] = useState('');
   const [gameNarrativeLoading, setGameNarrativeLoading] = useState(false);
   const [dailyBriefing, setDailyBriefing] = useState('');
   const [dailyBriefingLoading, setDailyBriefingLoading] = useState(false);
+  const [dailyBestBet, setDailyBestBet] = useState(null);
+const [dailyBestBetLoading, setDailyBestBetLoading] = useState(false);
+const [dailyBestBetError, setDailyBestBetError] = useState('');
   const [gameDetailModal, setGameDetailModal] = useState(false);
   const [pickRecap, setPickRecap] = useState('');
   const [pickRecapVisible, setPickRecapVisible] = useState(false);
@@ -1393,6 +1396,12 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
     setTrackingMode(newMode); saveSettings(newMode, unitSize);
     if (newMode==='dollars') setUnitSizeModal(true);
   };
+
+  useEffect(() => {
+  if(bartData.length) {
+    fetchDailyBestBet();
+  }
+}, [bartData]);
   const saveUnitSize = () => { setUnitSize(tempUnitSize); saveSettings(trackingMode,tempUnitSize); setUnitSizeModal(false); };
   const usd = parseFloat(unitSize)||25;
   const formatBetSize = (units) => trackingMode==='dollars' ? '$'+(parseFloat(units||0)*usd).toFixed(0) : units+'u';
@@ -2655,6 +2664,155 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     }
   };
 
+  const fetchDailyBestBet = async () => {
+ const CACHE_KEY = 'sweatlocker_daily_best_bet';
+try {
+  const cached = await AsyncStorage.getItem(CACHE_KEY);
+    if(cached) {
+      const parsed = JSON.parse(cached);
+      const ageMin = (Date.now() - parsed.timestamp) / 60000;
+      if(ageMin < 180) { setDailyBestBet(parsed.data); return; }
+    }
+  } catch(e) {}
+
+  setDailyBestBetLoading(true);
+  try {
+    // Get today's NCAAB games
+    const now = new Date();
+    // Fetch NCAAB games specifically — don't rely on current gamesData sport
+let ncaabGames = [];
+try {
+  const r = await axios.get('https://api.the-odds-api.com/v4/sports/basketball_ncaab/odds', {
+    params: {
+      apiKey: ODDS_API_KEY,
+      regions: 'us,us2',
+      markets: 'spreads,totals,h2h',
+      oddsFormat: 'american',
+      bookmakers: 'hardrockbet,draftkings,fanduel,betmgm'
+    }
+  });
+  const now2 = new Date();
+  const todayStart = new Date(now2); todayStart.setHours(0,0,0,0);
+  const todayEnd = new Date(now2); todayEnd.setHours(23,59,59,999);
+  ncaabGames = (r.data || [])
+    .filter(g => {
+      const t = new Date(g.commence_time);
+      return t >= todayStart && t <= todayEnd;
+    })
+    .map(g => ({
+      ...g,
+      away_team: stripMascot(g.away_team),
+      home_team: stripMascot(g.home_team),
+    }));
+} catch(e) {
+  console.log('Daily best bet fetch error:', e.message);
+}
+
+if(!ncaabGames.length) {
+  setDailyBestBet({noGames: true});
+  setDailyBestBetLoading(false);
+  return;
+}
+
+const todayGames = ncaabGames;
+
+    if(!todayGames.length) {
+      setDailyBestBet({noGames: true});
+      setDailyBestBetLoading(false);
+      return;
+    }
+
+    // Score every game
+    const scored = todayGames
+      .map(game => {
+        const score = calcGameSweatScore(game, 'NCAAB', fanmatchData);
+        return score ? {game, score} : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score.total - a.score.total);
+
+    if(!scored.length || scored[0].score.total < 68) {
+      setDailyBestBet({noPrime: true, topScore: scored[0]?.score.total || 0});
+      setDailyBestBetLoading(false);
+      return;
+    }
+
+    const top = scored[0];
+    const game = top.game;
+    const scoreData = top.score;
+    const isPrimaryTotal = scoreData.totalIsPrimary;
+    const totalLine = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
+    const spreadLine = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='spreads')?.outcomes?.[0];
+    const hrbBm = game.bookmakers?.find(bm => bm.key==='hardrockbet' || bm.key==='hardrock' || (BOOKMAKER_MAP[bm.key]||bm.key)===HRB);
+    const hrbTotal = hrbBm?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
+    const hrbSpread = hrbBm?.markets?.find(m=>m.key==='spreads')?.outcomes?.[0];
+
+    const primaryBet = isPrimaryTotal
+      ? `${scoreData.totalSignalBet || (scoreData.projectedTotal < scoreData.postedTotal ? 'Under' : 'Over')} ${hrbTotal?.point || totalLine?.point || '?'}`
+      : `${scoreData.leanSide || (hrbSpread ? hrbSpread.name + ' ' + (hrbSpread.point > 0 ? '+' : '') + hrbSpread.point : '?')}`;
+
+    const betType = isPrimaryTotal ? 'Total' : 'Spread';
+    const odds = isPrimaryTotal
+      ? (hrbTotal?.price || totalLine?.price || -110)
+      : (hrbSpread?.price || spreadLine?.price || -110);
+
+    const awayTeamData = scoreData.awayTeamData;
+    const homeTeamData = scoreData.homeTeamData;
+    const projTotal = scoreData.projectedTotal;
+    const postedTotal = hrbTotal?.point || totalLine?.point;
+    const delta = projTotal && postedTotal ? (parseFloat(projTotal) - parseFloat(postedTotal)).toFixed(1) : null;
+
+    const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker. This is your FEATURED PICK OF THE DAY — your highest confidence play.
+
+Game: ${game.away_team} @ ${game.home_team}
+Sweat Score: ${scoreData.total}/100 ${scoreData.total >= 75 ? '🔒 PRIME SWEAT' : '— Strong Lean'}
+Primary bet: ${primaryBet} (${betType})
+Odds: ${odds > 0 ? '+' : ''}${odds}
+${awayTeamData ? `${game.away_team.split(' ').pop()} — AdjOE #${awayTeamData.adjOERank}, AdjDE #${awayTeamData.adjDERank}, eFG% off #${awayTeamData.eFG_O_rank}, eFG% def #${awayTeamData.eFG_D_rank}` : ''}
+${homeTeamData ? `${game.home_team.split(' ').pop()} — AdjOE #${homeTeamData.adjOERank}, AdjDE #${homeTeamData.adjDERank}, eFG% off #${homeTeamData.eFG_O_rank}, eFG% def #${homeTeamData.eFG_D_rank}` : ''}
+${scoreData.efgMismatch ? `Top mismatches: ${scoreData.efgMismatch}` : ''}
+${delta ? `Total delta: model projects ${projTotal} vs posted ${postedTotal} (${delta > 0 ? '+' : ''}${delta} pts)` : ''}
+${scoreData.lineMoveTeam ? `Sharp money: ${scoreData.lineMovePoints} pts toward ${scoreData.lineMoveTeam}` : ''}
+Net efficiency edge: ${Math.abs(scoreData.mismatchPts || 0).toFixed(1)} pts
+
+Write exactly 2 sharp sentences. This is your best bet of the day — be convicted but not reckless. Lead with the biggest data edge. End with the specific bet. Never say "bet" or "must play". Never mention KenPom. Sign off with — Jerry 🔒`;
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 200,
+        messages: [{role: 'user', content: prompt}]
+      })
+    });
+    const data = await response.json();
+    const text = data?.content?.[0]?.text || '';
+
+    const result = {
+      game: `${stripMascot(game.away_team)} vs ${stripMascot(game.home_team)}`,
+      primaryBet,
+      betType,
+      odds,
+      score: scoreData.total,
+      isPrime: scoreData.total >= 75,
+      jerry: text,
+      commenceTime: game.commence_time,
+    };
+
+    setDailyBestBet(result);
+    await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data: result, timestamp: Date.now()}));
+  } catch(e) {
+    console.log('Daily best bet error:', e.message);
+    setDailyBestBetError('Jerry is scouting the board. Check back shortly.');
+  }
+  setDailyBestBetLoading(false);
+};
   const fetchDailyBriefing = async () => {
     try {
       const cached = await AsyncStorage.getItem('sweatlocker_briefing_cache');
@@ -4152,6 +4310,57 @@ setPropJerryLoading(false);
         {activeTab==='home'&&(
           <View>
            <View style={{marginBottom:12}}>
+
+           {/* DAILY BEST BET */}
+{(dailyBestBetLoading || dailyBestBet) && (
+  <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:HRB_COLOR,marginBottom:16,shadowColor:HRB_COLOR,shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
+    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+      <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+        <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,letterSpacing:1}}>🔒 JERRY'S BEST BET</Text>
+        <View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2}}>
+          <Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'800'}}>TODAY</Text>
+        </View>
+      </View>
+      {dailyBestBet?.score && (
+        <View style={{backgroundColor:dailyBestBet.isPrime?'rgba(255,184,0,0.15)':'rgba(0,229,160,0.1)',borderRadius:8,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:dailyBestBet.isPrime?HRB_COLOR:'#00e5a0'}}>
+          <Text style={{color:dailyBestBet.isPrime?HRB_COLOR:'#00e5a0',fontSize:10,fontWeight:'800'}}>{dailyBestBet.score} {dailyBestBet.isPrime?'🔒 PRIME':''}</Text>
+        </View>
+      )}
+    </View>
+
+    {dailyBestBetLoading ? (
+      <View style={{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:8}}>
+        <ActivityIndicator size='small' color={HRB_COLOR}/>
+        <Text style={{color:'#4a6070',fontSize:13}}>Jerry is finding today's best play...</Text>
+      </View>
+    ) : dailyBestBet?.noGames ? (
+      <Text style={{color:'#7a92a8',fontSize:13}}>No NCAAB games on the slate today. Check back tomorrow.</Text>
+    ) : dailyBestBet?.noPrime ? (
+      <Text style={{color:'#7a92a8',fontSize:13}}>No prime plays today — top game scores {dailyBestBet.topScore}/100. Jerry says wait for a better spot.</Text>
+    ) : dailyBestBet?.game ? (
+      <View>
+        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',letterSpacing:0.5,marginBottom:6}}>🏀 NCAAB — {new Date(dailyBestBet.commenceTime).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} ET</Text>
+        <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:15,marginBottom:8}}>{dailyBestBet.game}</Text>
+        <View style={{flexDirection:'row',alignItems:'center',gap:10,marginBottom:12}}>
+          <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:HRB_COLOR,flex:1}}>
+            <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>{dailyBestBet.betType.toUpperCase()}</Text>
+            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16}}>{dailyBestBet.primaryBet}</Text>
+          </View>
+          <View style={{backgroundColor:'#151c24',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:'#1f2d3d',alignItems:'center'}}>
+            <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>ODDS</Text>
+            <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16}}>{dailyBestBet.odds > 0 ? '+' : ''}{dailyBestBet.odds}</Text>
+          </View>
+          <View style={{backgroundColor:'rgba(0,153,255,0.1)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:'rgba(0,153,255,0.3)',alignItems:'center'}}>
+            <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>BOOK</Text>
+            <Text style={{color:'#0099ff',fontWeight:'800',fontSize:11}}>🎸 HRB</Text>
+          </View>
+        </View>
+        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.jerry}"</Text>
+      </View>
+    ) : null}
+  </View>
+)}
+
   {/* Jerry Daily Briefing */}
   <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.2)',marginBottom:16}}>
                 <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,marginBottom:8}}>🎤 JERRY'S MORNING READ</Text>
