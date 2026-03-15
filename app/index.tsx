@@ -1818,7 +1818,7 @@ const fetchKenpomFanmatch = async () => {
       };
     });
     setFanmatchData(mapped);
-console.log('FANMATCH GAMES:', Object.values(mapped).map(g => g.visitor + ' vs ' + g.home));
+//console.log('FANMATCH GAMES:', Object.values(mapped).map(g => g.visitor + ' vs ' + g.home));
     // Save to cache with timestamp
     try {
       await AsyncStorage.setItem(FANMATCH_CACHE_KEY, JSON.stringify({data:mapped, timestamp:Date.now()}));
@@ -2093,7 +2093,6 @@ if(r.data && r.data.data) {
     const fHome = (fg.home||'').toLowerCase().trim().replace(/\./g, '');
     const awayStrippedClean = awayStripped.replace(/\./g, '');
     const homeStrippedClean = homeStripped.replace(/\./g, '');
-    console.log('FANMATCH COMPARE:', fVisitor, '===', awayStrippedClean, '|', fHome, '===', homeStrippedClean);
     const visitorMatch = fVisitor === awayStrippedClean || 
   fVisitor.startsWith(awayStrippedClean + ' ') || 
   awayStrippedClean.startsWith(fVisitor + ' ') ||
@@ -2290,23 +2289,42 @@ modelMismatch = Math.min(85, modelMismatch);
       }
     }
 
-    let total = Math.round(
-      (marketEfficiency * 0.15) +
-      (modelMismatch * 0.30) +
-      (lineTrajectory * 0.20) +
-      (sharpSignal * 0.15) +
-      (situationalEdge * 0.20)
-    );
-    // Cap score for low-major matchups
-    if(sport==='NCAAB' && bartData.length) {
-      const awayT = fuzzyMatchTeam(stripMascot(game.away_team), bartData, 'team');
-      const homeT = fuzzyMatchTeam(stripMascot(game.home_team), bartData, 'team');
-      if(awayT && homeT) {
-        const avgOE = (awayT.adjOE + homeT.adjOE) / 2;
-        if(avgOE < 100) total = Math.min(total, 52);
-        else if(avgOE < 108) total = Math.min(total, 65);
-      }
-    }
+   let total = Math.round(
+  (marketEfficiency * 0.15) +
+  (modelMismatch * 0.30) +
+  (lineTrajectory * 0.20) +
+  (sharpSignal * 0.15) +
+  (situationalEdge * 0.20)
+);
+
+// TOTAL SIGNAL BOOST — when projected vs posted delta is significant
+let totalSignalBet = null;
+let totalBoost = 0;
+if(sport === 'NCAAB' && projectedTotal && postedTotal) {
+  const delta = parseFloat(projectedTotal) - parseFloat(postedTotal);
+  if(Math.abs(delta) >= 6) {
+    totalBoost = 12;
+    totalSignalBet = delta < 0 ? 'Under' : 'Over';
+  } else if(Math.abs(delta) >= 4) {
+    totalBoost = 7;
+    totalSignalBet = delta < 0 ? 'Under' : 'Over';
+  } else if(Math.abs(delta) >= 2) {
+    totalBoost = 3;
+    totalSignalBet = delta < 0 ? 'Under' : 'Over';
+  }
+  total = Math.min(99, total + totalBoost);
+}
+
+// Cap score for low-major matchups
+if(sport==='NCAAB' && bartData.length) {
+  const awayT = fuzzyMatchTeam(stripMascot(game.away_team), bartData, 'team');
+  const homeT = fuzzyMatchTeam(stripMascot(game.home_team), bartData, 'team');
+  if(awayT && homeT) {
+    const avgOE = (awayT.adjOE + homeT.adjOE) / 2;
+    if(avgOE < 100) total = Math.min(total, 52);
+    else if(avgOE < 108) total = Math.min(total, 65);
+  }
+}
 
     // Generate narrative
     const narrative = generateSweatNarrative(game, sport, {
@@ -2323,13 +2341,13 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
   hasFanmatch: !!fanmatchGame,
   homeWP: fanmatchGame?.homeWP || null,
   awayTeamData, homeTeamData,
-  // NEW
   fourFactorBoost,
   efgMismatch,
   projectedTotal,
   mismatchPts,
+  totalSignalBet,
+  totalBoost,
 } : {};
-
     // Best bets
     const hrbLine = getHRBLine(game);
     const bestBook = bookmakers.reduce((best, bm) => {
@@ -2411,10 +2429,11 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         book: spreadBook||HRB,
       } : null,
       totalBet: totalLine ? {
-        pick: (projectedTotal && postedTotal && projectedTotal > postedTotal ? 'Over ' : 'Under ')+totalLine.point,
-        odds: totalLine.price,
-        book: totalBook||HRB,
-      } : null,
+  pick: (totalSignalBet || (projectedTotal && postedTotal && parseFloat(projectedTotal) > parseFloat(postedTotal) ? 'Over' : 'Under')) + ' ' + totalLine.point,
+  odds: totalLine.price,
+  book: totalBook||HRB,
+  isSignal: totalBoost >= 7,
+} : null,
       mlBet: mlLine ? {
         pick: mlLine.name+' ML',
         odds: mlLine.price,
