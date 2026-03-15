@@ -2523,45 +2523,81 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
     return matches.length / Math.max(words1.length, words2.length);
   };
   const fetchParlayAnalysis = async () => {
-    if(parlayLegs.length < 2) return;
-    setParlayAnalysis('');
-    setParlayAnalysisVisible(true);
-    setParlayAnalysisLoading(true);
-    try {
-      const legs = parlayLegs.map((l,i) => `Leg ${i+1}: ${l.pick} (${l.matchup}) at ${l.oddsSign}${l.odds}`).join('\n');
-      const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker sports betting app.
+  if(parlayLegs.length < 2) return;
+  setParlayAnalysis('');
+  setParlayAnalysisVisible(true);
+  setParlayAnalysisLoading(true);
+  try {
+    const legs = parlayLegs.map((l,i) => `Leg ${i+1}: ${l.pick} (${l.matchup}) at ${l.oddsSign}${l.odds}`).join('\n');
+    const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker sports betting app.
 
 Parlay legs:
 ${legs}
 Combined odds: ${parlayAmerican}
 Implied probability: ${parlayProb}%
-Legs: ${parlayLegs.length}
+Total legs: ${parlayLegs.length}
 
-Search the web for current injury reports, recent form, and line movement for each team or player in these parlay legs. Then analyze this parlay in exactly 3 sentences. Sentence 1 — call out the strongest leg and why based on what you found. Sentence 2 — identify the biggest risk leg with a specific reason. Sentence 3 — give a sharp overall verdict on whether the juice is worth the squeeze. Never say "bet" or "must play". Be direct and confident like a seasoned handicapper. Never mention KenPom.`;
+Search the web for current injury reports, recent form, and line movement for each team or player in these legs.
 
-      const response = await fetch('https://api.anthropic.com/v1/messages',{
-        method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'x-api-key':ANTHROPIC_API_KEY,
-          'anthropic-version':'2023-06-01',
-          'anthropic-dangerous-direct-browser-access':'true'
-        },
-        body:JSON.stringify({
-          model:'claude-haiku-4-5-20251001',
-          max_tokens:1000,
-          tools:[{type:'web_search_20250305',name:'web_search'}],
-          messages:[{role:'user',content:prompt}]
-        })
-      });
-      const data = await response.json();
-      const text = data?.content?.filter(b=>b.type==='text').map(b=>b.text).join('') || '';
-      setParlayAnalysis(text);
-    } catch(e) {
-      setParlayAnalysis("Jerry couldn't break this one down right now. Check your legs manually and trust the math.");
+Return ONLY a JSON object — no markdown, no preamble, no explanation outside the JSON. Format:
+{
+  "legs": [
+    {
+      "leg": 1,
+      "pick": "exact pick text",
+      "grade": "A",
+      "gradeColor": "#00e5a0",
+      "confidence": 85,
+      "jerry": "One sharp sentence about this leg — specific reason why it grades this way based on what you found.",
+      "risk": "One specific risk factor for this leg"
     }
-    setParlayAnalysisLoading(false);
-  };
+  ],
+  "overallGrade": "B+",
+  "overallColor": "#FFB800",
+  "verdict": "One sharp Jerry verdict on the full parlay — is the juice worth the squeeze?",
+  "strongestLeg": 1,
+  "weakestLeg": 2
+}
+
+Grade scale:
+A = Strong edge, high confidence, line movement supports, no major injury concerns
+B = Solid play, good value, minor concerns only
+C = Playable but risky, some red flags
+D = Weak leg, significant concerns, consider removing
+F = Avoid — injury, bad line, sharp money against, or no edge
+
+gradeColor values: A=#00e5a0, B=#FFB800, C=#0099ff, D=#ff8c00, F=#ff4d6d
+Never say "bet" or "must play". Be sharp and direct.`;
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2000,
+        tools: [{type: 'web_search_20250305', name: 'web_search'}],
+        messages: [{role: 'user', content: prompt}]
+      })
+    });
+    const data = await response.json();
+    const text = data?.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
+    try {
+      const clean = text.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(clean);
+      setParlayAnalysis(parsed);
+    } catch(e) {
+      setParlayAnalysis({error: text});
+    }
+  } catch(e) {
+    setParlayAnalysis({error: "Jerry couldn't break this one down. Check your legs manually."});
+  }
+  setParlayAnalysisLoading(false);
+};
 
   const fetchPickRecap = async (bet, result) => {
     try {
@@ -3982,23 +4018,74 @@ setPropJerryLoading(false);
       )}
       {toastVisible&&(<View style={styles.toast}><Text style={styles.toastText}>{toastMsg}</Text></View>)}
       {parlayAnalysisVisible&&(
-        <View style={{position:'absolute',bottom:90,left:16,right:16,backgroundColor:'#0d1f2d',borderRadius:16,padding:16,borderWidth:1,borderColor:HRB_COLOR,zIndex:998,shadowColor:'#000',shadowOffset:{width:0,height:4},shadowOpacity:0.4,shadowRadius:8}}>
-          <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>🎤 JERRY'S PARLAY ANALYSIS</Text>
-            <TouchableOpacity onPress={()=>setParlayAnalysisVisible(false)}>
-              <Text style={{color:'#4a6070',fontSize:13}}>✕ Close</Text>
-            </TouchableOpacity>
-          </View>
-          {parlayAnalysisLoading?(
-            <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-              <ActivityIndicator size='small' color={HRB_COLOR}/>
-              <Text style={{color:'#4a6070',fontSize:13}}>Jerry is breaking down your parlay...</Text>
-            </View>
-          ):(
-            <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{parlayAnalysis}"</Text>
-          )}
+  <View style={{position:'absolute',bottom:90,left:16,right:16,backgroundColor:'#0d1f2d',borderRadius:16,borderWidth:1,borderColor:HRB_COLOR,zIndex:998,shadowColor:'#000',shadowOffset:{width:0,height:4},shadowOpacity:0.4,shadowRadius:8,maxHeight:'70%'}}>
+    <ScrollView>
+      <View style={{padding:16}}>
+        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+          <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>🎤 JERRY'S PARLAY GRADER</Text>
+          <TouchableOpacity onPress={()=>setParlayAnalysisVisible(false)}>
+            <Text style={{color:'#4a6070',fontSize:13}}>✕ Close</Text>
+          </TouchableOpacity>
         </View>
-      )}
+        {parlayAnalysisLoading?(
+          <View style={{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:12}}>
+            <ActivityIndicator size='small' color={HRB_COLOR}/>
+            <Text style={{color:'#4a6070',fontSize:13}}>Jerry is grading each leg...</Text>
+          </View>
+        ) : parlayAnalysis?.error ? (
+          <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>{parlayAnalysis.error}</Text>
+        ) : parlayAnalysis?.legs ? (
+          <View>
+            {/* Overall Grade */}
+            <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',backgroundColor:'rgba(255,184,0,0.08)',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
+              <View>
+                <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',letterSpacing:1}}>OVERALL GRADE</Text>
+                <Text style={{color:'#e8f0f8',fontSize:13,lineHeight:18,marginTop:4,fontStyle:'italic'}}>"{parlayAnalysis.verdict}"</Text>
+              </View>
+              <View style={{width:48,height:48,borderRadius:24,borderWidth:2,borderColor:parlayAnalysis.overallColor||HRB_COLOR,alignItems:'center',justifyContent:'center',marginLeft:12}}>
+                <Text style={{color:parlayAnalysis.overallColor||HRB_COLOR,fontSize:18,fontWeight:'800'}}>{parlayAnalysis.overallGrade}</Text>
+              </View>
+            </View>
+            {/* Leg Grades */}
+            {parlayAnalysis.legs.map((leg, i) => (
+              <View key={i} style={{backgroundColor:'#0a1520',borderRadius:12,padding:12,marginBottom:8,borderWidth:1,borderColor:leg.gradeColor+'44',borderLeftWidth:3,borderLeftColor:leg.gradeColor}}>
+                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
+                  <View style={{flex:1,marginRight:8}}>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{leg.pick}</Text>
+                    <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>Leg {leg.leg}</Text>
+                  </View>
+                  <View style={{alignItems:'center'}}>
+                    <View style={{width:36,height:36,borderRadius:18,borderWidth:2,borderColor:leg.gradeColor,alignItems:'center',justifyContent:'center'}}>
+                      <Text style={{color:leg.gradeColor,fontSize:16,fontWeight:'800'}}>{leg.grade}</Text>
+                    </View>
+                    <Text style={{color:'#4a6070',fontSize:9,marginTop:2}}>{leg.confidence}%</Text>
+                  </View>
+                </View>
+                <Text style={{color:'#c8d8e8',fontSize:12,lineHeight:17,fontStyle:'italic',marginBottom:4}}>"{leg.jerry}"</Text>
+                {leg.risk&&(
+                  <View style={{flexDirection:'row',alignItems:'center',gap:4,marginTop:4}}>
+                    <Text style={{color:'#ff4d6d',fontSize:10}}>⚠️</Text>
+                    <Text style={{color:'#ff4d6d',fontSize:11}}>{leg.risk}</Text>
+                  </View>
+                )}
+                {(i === parlayAnalysis.strongestLeg - 1) && (
+                  <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,alignSelf:'flex-start',marginTop:6}}>
+                    <Text style={{color:'#00e5a0',fontSize:10,fontWeight:'700'}}>💪 STRONGEST LEG</Text>
+                  </View>
+                )}
+                {(i === parlayAnalysis.weakestLeg - 1) && (
+                  <View style={{backgroundColor:'rgba(255,77,109,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,alignSelf:'flex-start',marginTop:6}}>
+                    <Text style={{color:'#ff4d6d',fontSize:10,fontWeight:'700'}}>⚠️ WEAKEST LEG</Text>
+                  </View>
+                )}
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
+    </ScrollView>
+  </View>
+)}
       {pickRecapVisible&&(
         <TouchableOpacity
           onPress={()=>setPickRecapVisible(false)}
