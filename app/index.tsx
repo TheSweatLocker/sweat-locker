@@ -1657,83 +1657,115 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
   };
 
   const fetchBartData = async () => {
+  await AsyncStorage.removeItem('sweatlocker_bart_cache'); // TEMP
     const BART_CACHE_KEY = 'sweatlocker_bart_cache';
-    try {
-      const cached = await AsyncStorage.getItem(BART_CACHE_KEY);
-      if(cached) {
-        const parsed = JSON.parse(cached);
-        const ageHours = (Date.now() - parsed.timestamp) / 3600000;
-        if(ageHours < 24) {
-          setBartData(parsed.data);
-          return;
-        }
+  const SUPABASE_KEY = 'kenpom_ratings_ff_2026';
+
+  // 1. Check AsyncStorage first (fastest)
+  try {
+    const cached = await AsyncStorage.getItem(BART_CACHE_KEY);
+    if(cached) {
+      const parsed = JSON.parse(cached);
+      const ageHours = (Date.now() - parsed.timestamp) / 3600000;
+      if(ageHours < 24) {
+        setBartData(parsed.data);
+        return;
       }
-    } catch(e) {}
+    }
+  } catch(e) {}
+
+  // 2. Check Supabase cache (protects KenPom API limit)
+  try {
+    const { data: supabaseCache } = await supabase
+      .from('kenpom_cache')
+      .select('data, fetched_at')
+      .eq('cache_key', SUPABASE_KEY)
+      .single();
+
+    if(supabaseCache) {
+      const ageHours = (Date.now() - new Date(supabaseCache.fetched_at).getTime()) / 3600000;
+      if(ageHours < 20) {
+        const mapped = supabaseCache.data;
+        setBartData(mapped);
+        await AsyncStorage.setItem(BART_CACHE_KEY, JSON.stringify({data: mapped, timestamp: Date.now()}));
+        console.log('BartData loaded from Supabase cache');
+        return;
+      }
+    }
+  } catch(e) { console.log('Supabase cache read error:', e.message); }
+
+  // 3. Fetch fresh from KenPom (last resort)
+  try {
+    const [ratingsResp, fourFactorsResp] = await Promise.all([
+      axios.get('https://kenpom.com/api.php', {
+        params: {endpoint: 'ratings', y: 2026},
+        headers: {Authorization: `Bearer ${KENPOM_KEY}`}
+      }),
+      axios.get('https://kenpom.com/api.php', {
+        params: {endpoint: 'four-factors', y: 2026},
+        headers: {Authorization: `Bearer ${KENPOM_KEY}`}
+      }),
+    ]);
+
+    const ratingsData = Array.isArray(ratingsResp.data) ? ratingsResp.data : [];
+    const ffData = Array.isArray(fourFactorsResp.data) ? fourFactorsResp.data : [];
+    const ffMap = {};
+    ffData.forEach(t => { ffMap[t.TeamName] = t; });
+
+    const mapped = ratingsData.map(t => {
+      const ff = ffMap[t.TeamName] || {};
+      return {
+        team: t.TeamName,
+        adjOE: parseFloat(t.AdjOE) || 109.4,
+        adjDE: parseFloat(t.AdjDE) || 109.4,
+        adjEM: (parseFloat(t.AdjOE) || 0) - (parseFloat(t.AdjDE) || 0),
+        adjOERank: parseInt(t.RankAdjOE) || 0,
+        adjDERank: parseInt(t.RankAdjDE) || 0,
+        tempo: parseFloat(t.AdjTempo) || 68.0,
+        tempoRank: parseInt(t.RankAdjTempo) || 0,
+        eFG_O: parseFloat(ff.eFG_Pct) || 0,
+        eFG_O_rank: parseInt(ff.RankeFG_Pct) || 0,
+        to_O: parseFloat(ff.TO_Pct) || 0,
+        to_O_rank: parseInt(ff.RankTO_Pct) || 0,
+        or_O: parseFloat(ff.OR_Pct) || 0,
+        or_O_rank: parseInt(ff.RankOR_Pct) || 0,
+        ftr_O: parseFloat(ff.FT_Rate) || 0,
+        ftr_O_rank: parseInt(ff.RankFT_Rate) || 0,
+        eFG_D: parseFloat(ff.DeFG_Pct) || 0,
+        eFG_D_rank: parseInt(ff.RankDeFG_Pct) || 0,
+        to_D: parseFloat(ff.DTO_Pct) || 0,
+        to_D_rank: parseInt(ff.RankDTO_Pct) || 0,
+        or_D: parseFloat(ff.DOR_Pct) || 0,
+        or_D_rank: parseInt(ff.RankDOR_Pct) || 0,
+        ftr_D: parseFloat(ff.DFT_Rate) || 0,
+        ftr_D_rank: parseInt(ff.RankDFT_Rate) || 0,
+        wins: parseInt(t.Wins) || 0,
+        losses: parseInt(t.Losses) || 0,
+        conf: t.ConfShort || '',
+        seed: t.Seed || null,
+        luck: parseFloat(t.Luck) || 0,
+        sos: parseFloat(t.SOS) || 0,
+        coach: t.Coach || '',
+      };
+    });
+
+    setBartData(mapped);
+
+    // Save to AsyncStorage
+    await AsyncStorage.setItem(BART_CACHE_KEY, JSON.stringify({data: mapped, timestamp: Date.now()}));
+
+    // Save to Supabase cache
     try {
-  const [ratingsResp, fourFactorsResp] = await Promise.all([
-    axios.get('https://kenpom.com/api.php', {
-      params: {endpoint: 'ratings', y: 2026},
-      headers: {Authorization: `Bearer ${KENPOM_KEY}`}
-    }),
-    axios.get('https://kenpom.com/api.php', {
-      params: {endpoint: 'four-factors', y: 2026},
-      headers: {Authorization: `Bearer ${KENPOM_KEY}`}
-    }),
-  ]);
+      await supabase.from('kenpom_cache').upsert({
+        cache_key: SUPABASE_KEY,
+        data: mapped,
+        fetched_at: new Date().toISOString(),
+      }, { onConflict: 'cache_key' });
+      console.log('BartData saved to Supabase cache');
+    } catch(e) { console.log('Supabase cache write error:', e.message); }
 
-  const ratingsData = Array.isArray(ratingsResp.data) ? ratingsResp.data : [];
-  const ffData = Array.isArray(fourFactorsResp.data) ? fourFactorsResp.data : [];
-
-  // Build a lookup map for four factors by team name
-  const ffMap = {};
-  ffData.forEach(t => { ffMap[t.TeamName] = t; });
-
-  const mapped = ratingsData.map(t => {
-    const ff = ffMap[t.TeamName] || {};
-    return {
-      team: t.TeamName,
-      // Efficiency
-      adjOE: parseFloat(t.AdjOE) || 109.4,
-      adjDE: parseFloat(t.AdjDE) || 109.4,
-      adjEM: (parseFloat(t.AdjOE) || 0) - (parseFloat(t.AdjDE) || 0),
-      adjOERank: parseInt(t.RankAdjOE) || 0,
-      adjDERank: parseInt(t.RankAdjDE) || 0,
-      // Tempo
-      tempo: parseFloat(t.AdjTempo) || 68.0,
-      tempoRank: parseInt(t.RankAdjTempo) || 0,
-      // Four Factors — Offense
-      eFG_O: parseFloat(ff.eFG_Pct) || 0,
-      eFG_O_rank: parseInt(ff.RankeFG_Pct) || 0,
-      to_O: parseFloat(ff.TO_Pct) || 0,
-      to_O_rank: parseInt(ff.RankTO_Pct) || 0,
-      or_O: parseFloat(ff.OR_Pct) || 0,
-      or_O_rank: parseInt(ff.RankOR_Pct) || 0,
-      ftr_O: parseFloat(ff.FT_Rate) || 0,
-      ftr_O_rank: parseInt(ff.RankFT_Rate) || 0,
-      // Four Factors — Defense
-      eFG_D: parseFloat(ff.DeFG_Pct) || 0,
-      eFG_D_rank: parseInt(ff.RankDeFG_Pct) || 0,
-      to_D: parseFloat(ff.DTO_Pct) || 0,
-      to_D_rank: parseInt(ff.RankDTO_Pct) || 0,
-      or_D: parseFloat(ff.DOR_Pct) || 0,
-      or_D_rank: parseInt(ff.RankDOR_Pct) || 0,
-      ftr_D: parseFloat(ff.DFT_Rate) || 0,
-      ftr_D_rank: parseInt(ff.RankDFT_Rate) || 0,
-      // Record / meta
-      wins: parseInt(t.Wins) || 0,
-      losses: parseInt(t.Losses) || 0,
-      conf: t.ConfShort || '',
-      seed: t.Seed || null,
-      luck: parseFloat(t.Luck) || 0,
-      sos: parseFloat(t.SOS) || 0,
-      coach: t.Coach || '',
-    };
-  });
-
-  setBartData(mapped);
-  await AsyncStorage.setItem(BART_CACHE_KEY, JSON.stringify({data: mapped, timestamp: Date.now()}));
-} catch(e) { console.log('BartData fetch error:', e.message); }
-  };
+  } catch(e) { console.log('KenPom fetch error:', e.message); }
+};
 
  const FANMATCH_CACHE_KEY = 'sweatlocker_fanmatch_cache';
  const PROP_JERRY_CACHE_KEY = 'sweatlocker_jerry_cache';
