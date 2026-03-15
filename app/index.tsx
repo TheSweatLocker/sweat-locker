@@ -3674,6 +3674,7 @@ setPropJerryLoading(false);
   setEditingBet(null);
 
   if(resultChanged) {
+    fetchPickRecap(editingBet, editingBet.result);
     const units = parseFloat(editingBet.units) || 1;
     const odds = parseFloat(editingBet.odds) || -110;
     const profitLoss = editingBet.result === 'Win'
@@ -3704,6 +3705,7 @@ setPropJerryLoading(false);
   setBets(prev => prev.map(b => b.id === id ? {...b, result} : b));
 
   if(result !== 'Pending') {
+    fetchPickRecap(bet, result);
     const units = parseFloat(bet.units) || 1;
     const odds = parseFloat(bet.odds) || -110;
     const profitLoss = result === 'Win'
