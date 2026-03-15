@@ -1657,7 +1657,6 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
   };
 
   const fetchBartData = async () => {
-  await AsyncStorage.removeItem('sweatlocker_bart_cache'); // TEMP
     const BART_CACHE_KEY = 'sweatlocker_bart_cache';
   const SUPABASE_KEY = 'kenpom_ratings_ff_2026';
 
@@ -2655,17 +2654,21 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
 const homeWP = scoreData?.homeWP;
 const awayTeamData = scoreData?.awayTeamData || null;
 const homeTeamData = scoreData?.homeTeamData || null;
+const ncaabBreakdown = scoreData || null;
 
 const modelContext = scoreData?.predictedSpread ? `
 SWEAT LOCKER MODEL DATA:
 - Projected spread: ${predictedSpread > 0 ? game.home_team.split(' ').pop() : game.away_team.split(' ').pop()} by ${Math.abs(predictedSpread).toFixed(1)}
 - Edge vs posted line: ${spreadEdge > 0 ? '+' : ''}${spreadEdge.toFixed(1)} pts ${Math.abs(spreadEdge) >= 3 ? '⚠️ SIGNIFICANT' : Math.abs(spreadEdge) >= 1.5 ? '(notable)' : '(small)'}
 - Win probability: ${homeWP ? `Home ${(homeWP*100).toFixed(0)}% / Away ${((1-homeWP)*100).toFixed(0)}%` : 'N/A'}
-- SOS gap: ${Math.abs(sosDelta).toFixed(2)} ${Math.abs(sosDelta) > 3 ? '(LARGE — significant schedule strength difference)' : Math.abs(sosDelta) > 1.5 ? '(moderate)' : '(small)'}
-- Luck factor: ${luckAdjustment > 0.5 ? 'Away team significantly unlucky — true talent better than record' : luckAdjustment < -0.5 ? 'Home team significantly unlucky — true talent better than record' : luckAdjustment > 0 ? 'Slight away team luck edge' : luckAdjustment < 0 ? 'Slight home team luck edge' : 'Neutral'}
-${awayTeamData ? `- ${game.away_team.split(' ').pop()} efficiency: AdjOE ${awayTeamData.adjOE?.toFixed(1)} / AdjDE ${awayTeamData.adjDE?.toFixed(1)} / AdjEM ${awayTeamData.adjEM?.toFixed(1)}` : ''}
-${homeTeamData ? `- ${game.home_team.split(' ').pop()} efficiency: AdjOE ${homeTeamData.adjOE?.toFixed(1)} / AdjDE ${homeTeamData.adjDE?.toFixed(1)} / AdjEM ${homeTeamData.adjEM?.toFixed(1)}` : ''}
-- Data source: ${hasFanmatch ? 'Game-specific model prediction' : 'Season efficiency model'}
+- Model best bet: ${ncaabBreakdown?.bestBet || 'No strong lean'}
+- Net efficiency edge: ${ncaabBreakdown?.mismatchPts > 0 ? game.home_team.split(' ').pop() : game.away_team.split(' ').pop()} +${Math.abs(ncaabBreakdown?.mismatchPts || 0).toFixed(1)} pts
+- Top mismatches: ${ncaabBreakdown?.efgMismatch || 'N/A'}
+- Projected total: ${ncaabBreakdown?.projectedTotal || 'N/A'} ${ncaabBreakdown?.underLean ? '→ UNDER LEAN (elite defenses + slow pace)' : ''}
+- SOS gap: ${Math.abs(sosDelta).toFixed(2)} ${Math.abs(sosDelta) > 3 ? '(LARGE)' : Math.abs(sosDelta) > 1.5 ? '(moderate)' : '(small)'}
+- Luck factor: ${luckAdjustment > 0.5 ? 'Away team unlucky — true talent better than record' : luckAdjustment < -0.5 ? 'Home team unlucky — true talent better than record' : 'Neutral'}
+${awayTeamData ? `- ${game.away_team.split(' ').pop()} efficiency: AdjOE ${awayTeamData.adjOE?.toFixed(1)} / AdjDE ${awayTeamData.adjDE?.toFixed(1)}` : ''}
+${homeTeamData ? `- ${game.home_team.split(' ').pop()} efficiency: AdjOE ${homeTeamData.adjOE?.toFixed(1)} / AdjDE ${homeTeamData.adjDE?.toFixed(1)}` : ''}
 ` : '';
 
     setGameNarrative('');
@@ -2679,17 +2682,18 @@ ${homeTeamData ? `- ${game.home_team.split(' ').pop()} efficiency: AdjOE ${homeT
 Game: ${game.away_team} @ ${game.home_team}
 Sport: ${sport}
 Sweat Score: ${score}/100${score>=80?' (PRIME SWEAT 🔒)':score>=65?' (Strong lean)':' (Monitor)'}
-Spread: ${spread?`${spread.name} ${spread.point > 0 ? '+' : ''}${spread.point} (${spread.point < 0 ? 'FAVORITE' : 'UNDERDOG'})`:'N/A'}
+Spread: ${spread?`${spread.name} ${spread.point > 0 ? '+' : ''}${spread.point}`:'N/A'}
 ${modelContext}
-  Rules you must follow:
-- Reference the EXACT Sweat Score number given above — do not invent or change it
-- Focus ONLY on the spread and Sweat Score — do not lean or analyze the total
+
+Rules you must follow:
+- Your take MUST align with the model best bet shown above — never contradict it
+- If model best bet shows a team, your analysis must favor that team
+- If projectedTotal shows UNDER LEAN, mention the under as a secondary angle
+- Reference the most significant four factor mismatch in your take
+- Never mention KenPom by name — call it the "Sweat Locker model"
+- Do NOT mention home court advantage — tournament games are neutral site
 - Base analysis ONLY on data provided — no injuries, news, or outside knowledge
-- If Sweat Score is 75+ tell users this is Prime Sweat. If 65-74 it's a strong lean. Below 65 be cautious in tone. Never contradict the score tier.
-- When modelContext data is present, reference the most significant factor (spread edge, SOS, luck, or eFG%) in your take
-- Do NOT mention home court advantage — tournament games are at neutral sites
--Never mention KenPom by name - refer to it as the "Sweat Locker efficiency model" or "Sweat Locker game model"
-- When referencing the model, say which team it favors to cover, not raw numbers
+- Sweat Score 75+ = Prime Sweat tone. 65-74 = strong lean. Below 65 = cautious.
 - 2 sentences maximum. Be sharp and direct.`;
 
       const controller = new AbortController();
@@ -3890,9 +3894,9 @@ setPropJerryLoading(false);
 
         {activeTab==='home'&&(
           <View>
-            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-              {/* Jerry Daily Briefing */}
-              <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.2)',marginBottom:16}}>
+           <View style={{marginBottom:12}}>
+  {/* Jerry Daily Briefing */}
+  <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.2)',marginBottom:16}}>
                 <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,marginBottom:8}}>🎤 JERRY'S MORNING READ</Text>
                 {dailyBriefingLoading?(
                   <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
