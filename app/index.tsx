@@ -2253,13 +2253,28 @@ modelMismatch = Math.min(85, modelMismatch);
       return s && s.outcomes && s.outcomes[0] ? s.outcomes[0].point : null;
     }).filter(x => x !== null);
    const lineRange = allSpreads.length > 1 ? Math.max(...allSpreads) - Math.min(...allSpreads) : 0;
-    const gameKey = game.id || (game.away_team+game.home_team);
+   const gameKey = game.id || (game.away_team+game.home_team);
     const histData = historicalOdds[gameKey];
     let lineTrajectory = lineRange >= 2 ? 85 : lineRange >= 1 ? 65 : lineRange >= 0.5 ? 50 : 35;
+    let lineMoveDirection = null;
+    let lineMoveTeam = null;
+    let lineMovePoints = 0;
     if(histData?.openingSpread !== null && histData?.openingSpread !== undefined && allSpreads.length > 0) {
       const currentSpread = allSpreads[0];
       const realMovement = Math.abs(histData.openingSpread - currentSpread);
+      lineMovePoints = parseFloat(realMovement.toFixed(1));
       lineTrajectory = realMovement >= 3 ? 95 : realMovement >= 2 ? 85 : realMovement >= 1 ? 70 : realMovement >= 0.5 ? 55 : 35;
+      // Determine direction — if current spread is smaller (less negative) than opening, home team got sharper
+      if(realMovement >= 0.5) {
+        const openingSpread = histData.openingSpread;
+        if(currentSpread < openingSpread) {
+          lineMoveTeam = stripMascot(game.home_team);
+          lineMoveDirection = 'home';
+        } else {
+          lineMoveTeam = stripMascot(game.away_team);
+          lineMoveDirection = 'away';
+        }
+      }
     }
 
     // 4. SHARP SIGNAL (20%)
@@ -2298,21 +2313,25 @@ modelMismatch = Math.min(85, modelMismatch);
 );
 
 // TOTAL SIGNAL BOOST — when projected vs posted delta is significant
-let totalSignalBet = null;
+let totalBetDirection = null;
 let totalBoost = 0;
+let totalIsPrimary = false;
 if(sport === 'NCAAB' && projectedTotal && postedTotal) {
   const delta = parseFloat(projectedTotal) - parseFloat(postedTotal);
   if(Math.abs(delta) >= 6) {
     totalBoost = 12;
-    totalSignalBet = delta < 0 ? 'Under' : 'Over';
+    totalBetDirection = delta < 0 ? 'Under' : 'Over';
   } else if(Math.abs(delta) >= 4) {
     totalBoost = 7;
-    totalSignalBet = delta < 0 ? 'Under' : 'Over';
+    totalBetDirection = delta < 0 ? 'Under' : 'Over';
   } else if(Math.abs(delta) >= 2) {
     totalBoost = 3;
-    totalSignalBet = delta < 0 ? 'Under' : 'Over';
+    totalBetDirection = delta < 0 ? 'Under' : 'Over';
   }
   total = Math.min(99, total + totalBoost);
+  // Total becomes primary when its boost exceeds the four factor spread signal
+  // AND the delta is significant enough (4+ pts)
+  totalIsPrimary = totalBoost >= 7 && totalBoost >= fourFactorBoost;
 }
 
 // Cap score for low-major matchups
@@ -2345,8 +2364,12 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
   efgMismatch,
   projectedTotal,
   mismatchPts,
-  totalSignalBet,
+  totalSignalBet: totalBetDirection,
   totalBoost,
+  totalIsPrimary,
+  lineMoveDirection,
+  lineMoveTeam,
+  lineMovePoints,
 } : {};
     // Best bets
     const hrbLine = getHRBLine(game);
@@ -2415,8 +2438,10 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
 }
     }
     return {
-      total,
-      leanSide, leanBet,
+  total,
+  leanSide, leanBet,
+  totalIsPrimary,
+  lineMoveDirection, lineMoveTeam, lineMovePoints,
       marketEfficiency: Math.round(marketEfficiency),
       modelMismatch: Math.round(modelMismatch),
       lineTrajectory: Math.round(lineTrajectory),
@@ -2429,10 +2454,11 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         book: spreadBook||HRB,
       } : null,
       totalBet: totalLine ? {
-  pick: (totalSignalBet || (projectedTotal && postedTotal && parseFloat(projectedTotal) > parseFloat(postedTotal) ? 'Over' : 'Under')) + ' ' + totalLine.point,
+  pick: (totalBetDirection || (projectedTotal && postedTotal && parseFloat(projectedTotal) > parseFloat(postedTotal) ? 'Over' : 'Under')) + ' ' + totalLine.point,
   odds: totalLine.price,
   book: totalBook||HRB,
   isSignal: totalBoost >= 7,
+  isPrimary: totalIsPrimary,
 } : null,
       mlBet: mlLine ? {
         pick: mlLine.name+' ML',
@@ -2728,8 +2754,16 @@ const homeWP = scoreData?.homeWP;
 const awayTeamData = scoreData?.awayTeamData || null;
 const homeTeamData = scoreData?.homeTeamData || null;
 const ncaabBreakdown = scoreData || null;
-const modelBestBet = ncaabBreakdown?.bestBet || 
-  (scoreData?.leanSide ? `${scoreData.leanSide}` : null);
+const lineMoveDirection = scoreData?.lineMoveDirection || null;
+const totalIsPrimary = scoreData?.totalIsPrimary || false;
+const totalSignalBet = scoreData?.totalSignalBet || null;
+const totalBoostVal = scoreData?.totalBoost || 0;
+const lineMoveTeam = scoreData?.lineMoveTeam || null;
+const lineMovePoints = scoreData?.lineMovePoints || 0;
+const modelBestBet = totalIsPrimary && totalSignalBet
+  ? `${totalSignalBet} ${postedTotal} (TOTAL IS PRIMARY PLAY — ${totalBoostVal >= 12 ? 'massive' : 'significant'} model edge)`
+  : ncaabBreakdown?.bestBet || 
+    (scoreData?.leanSide ? `${scoreData.leanSide}` : null);
 
 // Extract posted total from game object early so modelContext can use it
 const postedTotalRaw = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
@@ -2816,6 +2850,7 @@ ${homeTeamData ? `- ${homeName} four factors: eFG% off ${homeTeamData.eFG_O?.toF
 - Seeds: ${isNCAATourney ? `${awayName} #${awaySeed} vs ${homeName} #${homeSeed} — ${round}` : 'Conference tournament'}
 - Under lean strength: ${(trend.underPct*100).toFixed(0)}% historical under rate this round/conf
 - Fav ATS rate: ${(trend.favATS*100).toFixed(0)}% this round/conf
+${lineMoveTeam ? `- Sharp line movement: ${lineMovePoints} pts toward ${lineMoveTeam} — ${lineMovePoints >= 2 ? '⚠️ SIGNIFICANT sharp action' : 'notable movement'}` : '- Line movement: No significant movement detected'}
 ` : '';
 
     setGameNarrative('');
@@ -2849,11 +2884,15 @@ Rules you must follow:
 - For NBA/NFL/NHL/MLB: never imply a proprietary edge exists — transparency builds trust
 - If model lean side is "Bucks -7" your take must be about the Bucks covering — period
 - Do not say "back", "like", or favor the other team in any way
+- If sharp line movement is present and significant (2+ pts), factor it into your take — sharp money is the strongest signal
+- If line moved toward a team, that team is getting sharp action — mention it
 - This rule overrides everything else — wrong side = wrong answer
 - Reference SPECIFIC numbers from the data — eFG% ranks, efficiency ratings, records
 - If a four factor mismatch is > 150 ranks, call it out explicitly as a dominant edge
 - Always comment on the total using the delta — if model is 2+ pts below posted lean Under, if 2+ pts above lean Over, if within 2 pts say the total is fairly priced
-- Lead with the strongest signal — if totalDelta is 4+ pts that IS the headline
+- If "Model best bet" contains "TOTAL IS PRIMARY PLAY" — lead with the total, make it the headline, treat it as Prime Sweat on the total
+- If total is primary, mention the spread as secondary only — "spread is secondary here"
+- Lead with the strongest signal — total delta 4+ pts overrides spread as the headline
 - If conference trend shows title game fav fade, factor that into spread confidence
 - Never mention KenPom by name — call it the "Sweat Locker model"
 - Do NOT mention home court advantage — tournament games are neutral site
