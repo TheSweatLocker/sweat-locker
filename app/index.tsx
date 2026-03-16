@@ -78,7 +78,20 @@ const calcEV = (bookOdds, marketProb) => {
   const winProb = marketProb/100;
   return ((winProb*(dec-1)) - (1-winProb)) * 100;
 };
-
+const calcKelly = (odds, evPct, bankrollUnits = 20) => {
+  if(!odds || !evPct || evPct <= 0) return null;
+  const dec = americanToDecimal(odds);
+  if(dec <= 1) return null;
+  const winProb = (evPct / 100) + (1 / dec) - (evPct / 100) * (1 / dec);
+  const kellyFull = ((winProb * (dec - 1)) - (1 - winProb)) / (dec - 1);
+  const kellyQuarter = kellyFull * 0.25;
+  const suggestedUnits = Math.max(0.5, Math.min(3, kellyQuarter * bankrollUnits));
+  return {
+    kellyPct: (kellyFull * 100).toFixed(1),
+    quarterKellyPct: (kellyQuarter * 100).toFixed(1),
+    suggestedUnits: suggestedUnits.toFixed(1),
+  };
+};
 // Generate deterministic matchup data from team names
 const getMatchupData = (game) => {
   if (!game) return null;
@@ -1621,10 +1634,8 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
     if(supabaseCache) {
       const ageMin = (Date.now() - new Date(supabaseCache.fetched_at).getTime()) / 60000;
       if(ageMin < CACHE_MINUTES) {
-        console.log('GAMES: loaded from Supabase cache', CACHE_KEY);
         const mappedGames = supabaseCache.data;
         setGamesData(mappedGames);
-console.log('GAMES: fresh fetch from Odds API', CACHE_KEY, mappedGames.length, 'games');
         await AsyncStorage.setItem(GAMES_CACHE_KEY+'_'+sport+'_'+day, JSON.stringify({data:mappedGames, timestamp:Date.now()}));
         setGamesLoading(false);
         setRefreshing(false);
@@ -6145,8 +6156,9 @@ setPropJerryLoading(false);
       <Modal visible={modalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
-            <View style={styles.modalHandle}/>
-            <Text style={styles.modalTitle}>Log New Pick</Text>
+  <View style={styles.modalHandle}/>
+  <Text style={styles.modalTitle}>Log New Pick</Text>
+  <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             <Text style={styles.fieldLabel}>Matchup</Text>
             <TextInput style={styles.input} placeholder="e.g. Lakers vs Warriors" placeholderTextColor="#4a6070" value={form.matchup} onChangeText={t=>setForm({...form,matchup:t})}/>
             <Text style={styles.fieldLabel}>Your Pick</Text>
@@ -6169,7 +6181,58 @@ setPropJerryLoading(false);
   <TextInput style={[styles.input,{flex:1,marginBottom:0}]} placeholder="110" placeholderTextColor="#4a6070" value={form.odds} onChangeText={t=>setForm({...form,odds:t.replace(/[^0-9]/g,'')})} keyboardType="numeric" returnKeyType="done"/>
 </View>
 </View>
-              <View style={{flex:1}}><Text style={styles.fieldLabel}>Units</Text><TextInput style={styles.input} placeholder="1" placeholderTextColor="#4a6070" value={form.units} onChangeText={t=>setForm({...form,units:t})} keyboardType="numeric" returnKeyType="done"/></View>
+             <View style={{flex:1}}>
+  <Text style={styles.fieldLabel}>Units</Text>
+  <TextInput style={styles.input} placeholder="1" placeholderTextColor="#4a6070" value={form.units} onChangeText={t=>setForm({...form,units:t})} keyboardType="numeric" returnKeyType="done"/>
+  {(()=>{
+   if(!form.odds || form.odds.length < 2) return null;
+const oddsStr = form.oddsSign === '+' ? '+' + (form.odds||'110') : '-' + (form.odds||'110');
+const dec = americanToDecimal(oddsStr);
+if(dec <= 1) return null;
+const impliedPct = (1/dec*100).toFixed(0);
+const oddsNum = parseInt(form.odds||'110');
+const isPlus = form.oddsSign === '+';
+
+// Tiered Kelly-inspired unit suggestion
+let suggestedUnits;
+if(!isPlus) {
+  // Favorites — bet more on big favorites
+  if(oddsNum >= 300) suggestedUnits = '0.5'; // -300+ too much juice
+  else if(oddsNum >= 200) suggestedUnits = '0.8';
+  else if(oddsNum >= 150) suggestedUnits = '1.0';
+  else if(oddsNum >= 110) suggestedUnits = '1.2'; // -110 standard
+  else suggestedUnits = '1.5';
+} else {
+  // Underdogs — scale with value
+  if(oddsNum >= 400) suggestedUnits = '0.5'; // too risky
+  else if(oddsNum >= 300) suggestedUnits = '0.7';
+  else if(oddsNum >= 200) suggestedUnits = '1.0';
+  else if(oddsNum >= 150) suggestedUnits = '1.2';
+  else if(oddsNum >= 110) suggestedUnits = '1.3';
+  else suggestedUnits = '1.5'; // +100 even money
+}
+
+const isMinimum = parseFloat(suggestedUnits) <= 0.5;
+    return(
+      <View>
+        <TouchableOpacity
+          onPress={()=>setForm({...form, units:suggestedUnits})}
+          style={{backgroundColor:'rgba(0,229,160,0.08)',borderRadius:8,padding:8,borderWidth:1,borderColor:'rgba(0,229,160,0.2)',marginTop:-4,marginBottom:4}}
+        >
+          <Text style={{color:'#00e5a0',fontSize:11,fontWeight:'700'}}>⚡ Kelly: {suggestedUnits}u — tap to apply</Text>
+          <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>
+            {isMinimum
+              ? `Implied prob ${impliedPct}% — juice-heavy line, minimum stake advised`
+              : `Implied prob ${impliedPct}% — plus-odds value, Kelly rewards the underdog`}
+          </Text>
+        </TouchableOpacity>
+        <Text style={{color:'#4a6070',fontSize:10,marginBottom:8,paddingHorizontal:4}}>
+          💡 Quarter-Kelly: sharps bet 25% of full Kelly to protect bankroll. Higher odds = more units because you're getting paid more than the risk.
+        </Text>
+      </View>
+    );
+  })()}
+</View>
             </View>
             <Text style={styles.fieldLabel}>Sportsbook</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>
@@ -6179,6 +6242,7 @@ setPropJerryLoading(false);
             <View style={{flexDirection:'row',gap:6,marginBottom:16}}>{RESULTS.map(r=>(<TouchableOpacity key={r} style={[styles.chipBtn,form.result===r&&styles.chipBtnActive]} onPress={()=>setForm({...form,result:r})}><Text style={[styles.chipTxt,form.result===r&&styles.chipTxtActive]}>{r}</Text></TouchableOpacity>))}</View>
             <TouchableOpacity style={styles.btnPrimary} onPress={saveBet}><Text style={styles.btnPrimaryText}>Save Pick ✓</Text></TouchableOpacity>
             <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>setModalVisible(false)}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
+          </ScrollView>
           </View>
         </View>
       </Modal>
