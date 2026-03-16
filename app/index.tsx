@@ -2056,9 +2056,9 @@ if(r.data && r.data.data) {
   };
 
   const getSweatTier = (score) => {
-    if(score >= 74) return {label:'🔥 Prime Sweat', color:'#ff4d6d'};
-    if(score >= 60) return {label:'✅ Solid Lock', color:'#00e5a0'};
-    if(score >= 40) return {label:'👀 Worth a Look', color:'#ffd166'};
+   if(score >= 68) return {label:'🔥 Prime Sweat', color:'#ff4d6d'};
+if(score >= 55) return {label:'✅ Solid Lock', color:'#00e5a0'};
+if(score >= 40) return {label:'👀 Worth a Look', color:'#ffd166'};
     return {label:'❌ Pass', color:'#4a6070'};
   };
 
@@ -2765,7 +2765,7 @@ const todayGames = ncaabGames;
     const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker. This is your FEATURED PICK OF THE DAY — your highest confidence play.
 
 Game: ${game.away_team} @ ${game.home_team}
-Sweat Score: ${scoreData.total}/100 ${scoreData.total >= 75 ? '🔒 PRIME SWEAT' : '— Strong Lean'}
+Sweat ${scoreData.total >= 68 ? '🔒 PRIME SWEAT' : '— Strong Lean'}
 Primary bet: ${primaryBet} (${betType})
 Odds: ${odds > 0 ? '+' : ''}${odds}
 ${awayTeamData ? `${game.away_team.split(' ').pop()} — AdjOE #${awayTeamData.adjOERank}, AdjDE #${awayTeamData.adjDERank}, eFG% off #${awayTeamData.eFG_O_rank}, eFG% def #${awayTeamData.eFG_D_rank}` : ''}
@@ -2800,7 +2800,7 @@ Write exactly 2 sharp sentences. This is your best bet of the day — be convict
       betType,
       odds,
       score: scoreData.total,
-      isPrime: scoreData.total >= 75,
+      isPrime: scoreData.total >= 68,
       jerry: text,
       commenceTime: game.commence_time,
     };
@@ -3030,7 +3030,7 @@ const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcome
 
 Game: ${game.away_team} @ ${game.home_team}
 Sport: ${sport}
-Sweat Score: ${score}/100${score>=80?' (PRIME SWEAT 🔒)':score>=65?' (Strong lean)':' (Monitor)'}
+${score>=68?' (PRIME SWEAT 🔒)':score>=55?' (Strong lean)':' (Monitor)'}
 Spread: ${spread?`${spread.name} ${spread.point > 0 ? '+' : ''}${spread.point}`:'N/A'}
 Total: ${total ? total.point : 'N/A'}
 ${modelContext}
@@ -4141,7 +4141,7 @@ setPropJerryLoading(false);
               <Text style={{fontSize:64,marginBottom:24}}>🔥</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Sweat Score</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Every game graded 0-100</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>We analyze market efficiency, sharp money movement, line variance, and our analytics model to find mispriced lines.{'\n\n'}{'🔒 75+ = Prime Sweat\nOur highest confidence signal.'}</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>We analyze market efficiency, sharp money movement, line variance, and our analytics model to find mispriced lines.{'\n\n'}{'🔒 68+ = Prime Sweat\nOur highest confidence signal.'}</Text>
             </View>
           )}
           {onboardingStep===2&&(
@@ -5718,7 +5718,7 @@ setPropJerryLoading(false);
                 <View style={{gap:12}}>
                   <View style={{borderLeftWidth:3,borderLeftColor:HRB_COLOR,paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🔥 Sweat Score</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Every game graded 0-100 based on market efficiency, sharp money movement, line variance, and our analytics model. 85+ is a Prime Sweat — our highest confidence signal.</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Every game graded 0-100 based on market efficiency, sharp money movement, line variance, and our analytics model. 68+ is a Prime Sweat — our highest confidence signal.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#00e5a0',paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🎤 Prop Jerry</Text>
@@ -5983,11 +5983,11 @@ setPropJerryLoading(false);
       {/* AGE GATE */}
       <Modal visible={ageGateVisible} transparent animationType="fade">
         <View style={{flex:1,backgroundColor:'rgba(0,0,0,0.97)',justifyContent:'center',alignItems:'center',padding:24}}>
-          <Text style={{fontSize:48,marginBottom:16}}>🔞</Text>
+          <Text style={{fontSize:48,marginBottom:16}}>🎰</Text>
           <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:28,textAlign:'center',marginBottom:8}}>You must be 21+</Text>
-          <Text style={{color:'#7a92a8',fontSize:15,textAlign:'center',lineHeight:24,marginBottom:32}}>The Sweat Locker is intended for users 18 years of age or older. By continuing you confirm you meet this requirement.</Text>
+          <Text style={{color:'#7a92a8',fontSize:15,textAlign:'center',lineHeight:24,marginBottom:32}}>The Sweat Locker is intended for users 21 years of age or older. By continuing you confirm you meet this requirement.</Text>
           <TouchableOpacity style={{backgroundColor:HRB_COLOR,borderRadius:14,paddingVertical:16,paddingHorizontal:40,marginBottom:12,width:'100%',alignItems:'center'}} onPress={()=>{setAgeGateVisible(false);setOnboardingVisible(true);}}>
-            <Text style={{color:'#000',fontWeight:'800',fontSize:16}}>I am 18 or older — Continue</Text>
+            <Text style={{color:'#000',fontWeight:'800',fontSize:16}}>I am 21 or older — Continue</Text>
           </TouchableOpacity>
           <TouchableOpacity style={{paddingVertical:12}} onPress={()=>setAgeGateVisible(false)}>
             <Text style={{color:'#4a6070',fontSize:13,textAlign:'center'}}>I am under 21 — Exit</Text>
