@@ -1591,38 +1591,98 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
     setOddsLoading(false);setRefreshing(false);
   };
 
-  const fetchGames = async (sport=gamesSport,day=gamesDay) => {
-    setGamesLoading(true);
-    try {
-      const r=await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds',{
-        params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:'spreads,totals,h2h',oddsFormat:'american',bookmakers:'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,williamhill_us,bet365'}
-      });
-      const now=new Date();
-      const todayStart=new Date(now);todayStart.setHours(0,0,0,0);
-      const todayEnd=new Date(now);todayEnd.setHours(23,59,59,999);
-      const tomorrowStart=new Date(todayEnd);tomorrowStart.setDate(tomorrowStart.getDate()+1);tomorrowStart.setHours(0,0,0,0);
-      const tomorrowEnd=new Date(tomorrowStart);tomorrowEnd.setHours(23,59,59,999);
-      const yesterdayStart=new Date(todayStart);yesterdayStart.setDate(yesterdayStart.getDate()-1);
-      const filtered=r.data.filter(game=>{
-        const t=new Date(game.commence_time);
-        if(day==='today')return t>=todayStart&&t<=todayEnd;
-        if(day==='tomorrow')return t>=tomorrowStart&&t<=tomorrowEnd;
-        if(day==='yesterday')return t>=yesterdayStart&&t<todayStart;
-        return true;
-      });
-      const mappedGames = filtered.map(g => ({
-        ...g,
-        away_team: sport==='NCAAB' ? stripMascot(g.away_team) : g.away_team,
-        home_team: sport==='NCAAB' ? stripMascot(g.home_team) : g.home_team,
-      }));
-      setGamesData(mappedGames);
-      try {
-        await AsyncStorage.setItem(GAMES_CACHE_KEY+'_'+sport+'_'+day, JSON.stringify({data:mappedGames, timestamp:Date.now()}));
-      } catch(e) {}
-    }catch(e){setGamesData([]);}
-    setGamesLoading(false);setRefreshing(false);
+  const fetchGames = async (sport=gamesSport, day=gamesDay) => {
+  setGamesLoading(true);
+  const CACHE_KEY = `odds_games_${sport}_${day}`;
+  const CACHE_MINUTES = 10;
 
-  };
+  // 1. Check AsyncStorage first
+  try {
+    const cached = await AsyncStorage.getItem(GAMES_CACHE_KEY+'_'+sport+'_'+day);
+    if(cached) {
+      const parsed = JSON.parse(cached);
+      const ageMin = (Date.now() - parsed.timestamp) / 60000;
+      if(ageMin < CACHE_MINUTES) {
+        setGamesData(parsed.data);
+        setGamesLoading(false);
+        setRefreshing(false);
+        return;
+      }
+    }
+  } catch(e) {}
+
+  // 2. Check Supabase cache
+  try {
+    const { data: supabaseCache } = await supabase
+      .from('odds_cache')
+      .select('data, fetched_at')
+      .eq('cache_key', CACHE_KEY)
+      .single();
+    if(supabaseCache) {
+      const ageMin = (Date.now() - new Date(supabaseCache.fetched_at).getTime()) / 60000;
+      if(ageMin < CACHE_MINUTES) {
+        console.log('GAMES: loaded from Supabase cache', CACHE_KEY);
+        const mappedGames = supabaseCache.data;
+        setGamesData(mappedGames);
+console.log('GAMES: fresh fetch from Odds API', CACHE_KEY, mappedGames.length, 'games');
+        await AsyncStorage.setItem(GAMES_CACHE_KEY+'_'+sport+'_'+day, JSON.stringify({data:mappedGames, timestamp:Date.now()}));
+        setGamesLoading(false);
+        setRefreshing(false);
+        return;
+      }
+    }
+  } catch(e) {}
+
+  // 3. Fetch fresh from Odds API
+  try {
+    const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
+      params: {
+        apiKey: ODDS_API_KEY,
+        regions: 'us,us2',
+        markets: 'spreads,totals,h2h',
+        oddsFormat: 'american',
+        bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,williamhill_us,bet365'
+      }
+    });
+    const now = new Date();
+    const todayStart = new Date(now); todayStart.setHours(0,0,0,0);
+    const todayEnd = new Date(now); todayEnd.setHours(23,59,59,999);
+    const tomorrowStart = new Date(todayEnd); tomorrowStart.setDate(tomorrowStart.getDate()+1); tomorrowStart.setHours(0,0,0,0);
+    const tomorrowEnd = new Date(tomorrowStart); tomorrowEnd.setHours(23,59,59,999);
+    const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(yesterdayStart.getDate()-1);
+    const filtered = r.data.filter(game => {
+      const t = new Date(game.commence_time);
+      if(day==='today') return t>=todayStart && t<=todayEnd;
+      if(day==='tomorrow') return t>=tomorrowStart && t<=tomorrowEnd;
+      if(day==='yesterday') return t>=yesterdayStart && t<todayStart;
+      return true;
+    });
+    const mappedGames = filtered.map(g => ({
+      ...g,
+      away_team: sport==='NCAAB' ? stripMascot(g.away_team) : g.away_team,
+      home_team: sport==='NCAAB' ? stripMascot(g.home_team) : g.home_team,
+    }));
+
+    setGamesData(mappedGames);
+
+    // Save to AsyncStorage
+    try {
+      await AsyncStorage.setItem(GAMES_CACHE_KEY+'_'+sport+'_'+day, JSON.stringify({data:mappedGames, timestamp:Date.now()}));
+    } catch(e) {}
+
+    // Save to Supabase cache
+    try {
+      await supabase.from('odds_cache').upsert({
+        cache_key: CACHE_KEY,
+        data: mappedGames,
+        fetched_at: new Date().toISOString(),
+      }, {onConflict: 'cache_key'});
+    } catch(e) {}
+
+  } catch(e) { setGamesData([]); }
+  setGamesLoading(false);
+  setRefreshing(false);
+};
 
   const fetchProps = async (sport=propsSport) => {
     if(!PROP_MARKETS[sport]){setPropsData([]);return;}
@@ -1632,7 +1692,7 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
         params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:'h2h',oddsFormat:'american'}
       });
       const allProps=[];
-      for(const game of gamesResp.data.slice(0,3)){
+      for(const game of gamesResp.data.slice(0,8)){
         try{
           const pr=await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/events/'+game.id+'/odds',{
             params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:PROP_MARKETS[sport].join(','),oddsFormat:'american',bookmakers:'hardrock,draftkings,fanduel,betmgm'}
@@ -1654,7 +1714,7 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
           }
         }catch(e){}
       }
-      setPropsData(allProps.slice(0,30));
+      setPropsData(allProps.slice(0,50));
     }catch(e){setPropsData([]);}
     setPropsLoading(false);
   };
@@ -2956,6 +3016,7 @@ const homeWP = scoreData?.homeWP;
 const awayTeamData = scoreData?.awayTeamData || null;
 const homeTeamData = scoreData?.homeTeamData || null;
 const ncaabBreakdown = scoreData || null;
+const sport = gamesSport || 'NBA';
 const lineMoveDirection = scoreData?.lineMoveDirection || null;
 const totalIsPrimary = scoreData?.totalIsPrimary || false;
 const totalSignalBet = scoreData?.totalSignalBet || null;
@@ -3059,7 +3120,6 @@ ${scoreData?.efgMismatch && sport === 'NBA' ? `- Back-to-back: ${scoreData.efgMi
     setGameNarrative('');
     setGameNarrativeLoading(true);
     try {
-      const sport = gamesSport || 'NBA';
       const isNBAorNHL = sport === 'NBA' || sport === 'NHL' || sport === 'MLB' || sport === 'NFL';
 const dataQualityNote = isNBAorNHL 
   ? `NOTE: This is a market-based analysis only — no proprietary efficiency model exists for ${sport} yet. Analysis is based on line movement and book consensus only. Be transparent about this limitation.`
@@ -4482,7 +4542,7 @@ setPropJerryLoading(false);
               </View>
               {roiChartTab==='cumulative'&&(()=>{
                 const data = calcROIData(bets, roiTimeRange, roiUnit, unitSize);
-                console.log('ROI LAST:', data[data.length-1]?.value, '| DATA LENGTH:', data.length);
+                //console.log('ROI LAST:', data[data.length-1]?.value, '| DATA LENGTH:', data.length);
                 if(data.length === 0) return(
                   <View style={{alignItems:'center',paddingVertical:24}}>
                     <Text style={{fontSize:28}}>📊</Text>
