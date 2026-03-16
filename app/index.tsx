@@ -2239,22 +2239,57 @@ modelMismatch = Math.min(85, modelMismatch);
 }
   }
    } else if(sport==='NBA') {
-      const mlOddsAway = bookmakers.map(bm => {
-        const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
-        return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.away_team)?.price : null;
-      }).filter(x => x !== null);
-      const mlOddsHome = bookmakers.map(bm => {
-        const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
-        return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.home_team)?.price : null;
-      }).filter(x => x !== null);
-      const avgAwayML = mlOddsAway.length ? mlOddsAway.reduce((a,b)=>a+b,0)/mlOddsAway.length : 0;
-      const avgHomeML = mlOddsHome.length ? mlOddsHome.reduce((a,b)=>a+b,0)/mlOddsHome.length : 0;
-      const mlGap = Math.abs(avgAwayML - avgHomeML);
-      const spreadGap = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 0;
-      modelMismatch = Math.min(80, Math.round(40 + (mlGap * 0.1) + (spreadGap * 10)));
-    } else {
-      modelMismatch = 45;
-    }
+  const mlOddsAway = bookmakers.map(bm => {
+    const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
+    return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.away_team)?.price : null;
+  }).filter(x => x !== null);
+  const mlOddsHome = bookmakers.map(bm => {
+    const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
+    return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.home_team)?.price : null;
+  }).filter(x => x !== null);
+  const avgAwayML = mlOddsAway.length ? mlOddsAway.reduce((a,b)=>a+b,0)/mlOddsAway.length : 0;
+  const avgHomeML = mlOddsHome.length ? mlOddsHome.reduce((a,b)=>a+b,0)/mlOddsHome.length : 0;
+  const mlGap = Math.abs(avgAwayML - avgHomeML);
+  const spreadGap = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 0;
+  modelMismatch = Math.min(80, Math.round(40 + (mlGap * 0.1) + (spreadGap * 10)));
+
+  // BACK-TO-BACK DETECTION
+  // Check if either team played yesterday by scanning gamesData for matching team names
+  const yesterday = new Date(game.commence_time);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStart = new Date(yesterday); yesterdayStart.setHours(0,0,0,0);
+  const yesterdayEnd = new Date(yesterday); yesterdayEnd.setHours(23,59,59,999);
+
+  const awayB2B = gamesData.some(g => {
+    if(!g || !g.commence_time) return false;
+    const t = new Date(g.commence_time);
+    if(t < yesterdayStart || t > yesterdayEnd) return false;
+    return (g.away_team === game.away_team || g.home_team === game.away_team);
+  });
+
+  const homeB2B = gamesData.some(g => {
+    if(!g || !g.commence_time) return false;
+    const t = new Date(g.commence_time);
+    if(t < yesterdayStart || t > yesterdayEnd) return false;
+    return (g.away_team === game.home_team || g.home_team === game.home_team);
+  });
+
+  // Away team on road B2B is the biggest penalty
+  const awayRoadB2B = awayB2B && true; // away team is always road here
+  const b2bPenalty = awayRoadB2B ? 12 : awayB2B ? 8 : homeB2B ? 6 : 0;
+  const b2bTeam = awayRoadB2B ? stripMascot(game.away_team) :
+                  awayB2B ? stripMascot(game.away_team) :
+                  homeB2B ? stripMascot(game.home_team) : null;
+
+  // Apply B2B penalty to modelMismatch
+  if(b2bPenalty > 0) modelMismatch = Math.max(20, modelMismatch - b2bPenalty);
+
+  // Store for Jerry context
+  mismatchPts = b2bTeam ? (awayB2B ? -b2bPenalty : b2bPenalty) : 0;
+  efgMismatch = b2bTeam ? `${b2bTeam} on back-to-back — fatigue factor (${awayRoadB2B ? 'road B2B' : 'home B2B'})` : '';
+} else {
+  modelMismatch = 45;
+}
 
     // 3. LINE TRAJECTORY (20%)
     const allSpreads = bookmakers.map(bm => {
@@ -3009,6 +3044,7 @@ ${homeTeamData ? `- ${homeName} four factors: eFG% off ${homeTeamData.eFG_O?.toF
 - Under lean strength: ${(trend.underPct*100).toFixed(0)}% historical under rate this round/conf
 - Fav ATS rate: ${(trend.favATS*100).toFixed(0)}% this round/conf
 ${lineMoveTeam ? `- Sharp line movement: ${lineMovePoints} pts toward ${lineMoveTeam} — ${lineMovePoints >= 2 ? '⚠️ SIGNIFICANT sharp action' : 'notable movement'}` : '- Line movement: No significant movement detected'}
+${scoreData?.efgMismatch && sport === 'NBA' ? `- Back-to-back: ${scoreData.efgMismatch}` : ''}
 ` : '';
 
     setGameNarrative('');
@@ -3036,27 +3072,22 @@ Total: ${total ? total.point : 'N/A'}
 ${modelContext}
 
 Rules you must follow:
-- CRITICAL: The model lean side is "${scoreData?.leanSide || 'N/A'}" — you MUST favor this side
-- NEVER mention the opposing team as the play under any circumstances
-- For NBA/NFL/NHL/MLB: frame your take as "market signals point to..." not "the model says..." — be honest this is book consensus only
-- For NBA/NFL/NHL/MLB: never imply a proprietary edge exists — transparency builds trust
-- If model lean side is "Bucks -7" your take must be about the Bucks covering — period
-- Do not say "back", "like", or favor the other team in any way
-- If sharp line movement is present and significant (2+ pts), factor it into your take — sharp money is the strongest signal
-- If line moved toward a team, that team is getting sharp action — mention it
-- This rule overrides everything else — wrong side = wrong answer
-- Reference SPECIFIC numbers from the data — eFG% ranks, efficiency ratings, records
-- If a four factor mismatch is > 150 ranks, call it out explicitly as a dominant edge
-- Always comment on the total using the delta — if model is 2+ pts below posted lean Under, if 2+ pts above lean Over, if within 2 pts say the total is fairly priced
-- If "Model best bet" contains "TOTAL IS PRIMARY PLAY" — lead with the total, make it the headline, treat it as Prime Sweat on the total
-- If total is primary, mention the spread as secondary only — "spread is secondary here"
-- Lead with the strongest signal — total delta 4+ pts overrides spread as the headline
-- If conference trend shows title game fav fade, factor that into spread confidence
+- Sport context: ${sport}
+- Model lean: "${scoreData?.leanSide || 'N/A'}" — use as directional starting point
+- Sweat Score: ${score} — ${score>=68?'PRIME SWEAT tone, high conviction':score>=55?'strong lean tone, confident':'cautious tone, monitor only'}
+- For NCAAB: base analysis ONLY on model data provided — no outside knowledge
+- For NBA: search for tonight's injury reports and lineup news FIRST — real-world factors override market lean
+- For NBA: if a key player is out or questionable, lead with that — it overrides everything else
+- For NBA: if back-to-back data is present, always mention it
+- For NBA: fade the B2B team unless line has already moved 3+ pts against them
+- If sharp line movement >= 2pts, mention it — sharp money is a strong signal
+- If "Model best bet" contains "TOTAL IS PRIMARY PLAY" — lead with the total
+- If total delta >= 4pts, mention the over/under lean specifically
 - Never mention KenPom by name — call it the "Sweat Locker model"
-- Do NOT mention home court advantage — tournament games are neutral site
-- Base analysis ONLY on data provided — no injuries, news, or outside knowledge
-- Sweat Score 75+ = Prime Sweat tone. 65-74 = strong lean. Below 65 = cautious.
-- 3 sentences maximum. Lead with the biggest efficiency or four factor edge. End with the best bet.`;
+- Do NOT mention home court — tournament games are neutral site
+- 2-3 sentences maximum. Lead with biggest signal. End with the specific bet.
+- Never say "bet" or "must play"
+${dataQualityNote}`;
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
@@ -3069,14 +3100,19 @@ Rules you must follow:
           'anthropic-version':'2023-06-01',
           'anthropic-dangerous-direct-browser-access':'true'
         },
-        body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1000,messages:[{role:'user',content:prompt}]})
+        body:JSON.stringify({
+  model:'claude-haiku-4-5-20251001',
+  max_tokens:1000,
+  ...(sport === 'NBA' || sport === 'NFL' ? {tools:[{type:'web_search_20250305',name:'web_search'}]} : {}),
+  messages:[{role:'user',content:prompt}]
+})
       });
       clearTimeout(timeout);
       const data = await response.json();
       //console.log('Jerry response status:', response.status);
       //console.log('Jerry response data:', JSON.stringify(data));
-      const text = data?.content?.[0]?.text || '';
-      setGameNarrative(text);
+      const text = data?.content?.filter(b=>b.type==='text').map(b=>b.text).join('') || '';
+setGameNarrative(text);
     } catch(e) {
       //console.log('Jerry error:', e.message);
       setGameNarrative('Jerry is reviewing the tape on this one. Check back shortly.');
