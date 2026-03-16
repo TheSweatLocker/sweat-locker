@@ -1410,10 +1410,15 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
   const losses = bets.filter(b=>b.result==='Loss').length;
   const pushes = bets.filter(b=>b.result==='Push').length;
   const totalUnits = bets.reduce((sum,b) => {
-    if (b.result==='Win') return sum+parseFloat(b.units||0)*0.91;
-    if (b.result==='Loss') return sum-parseFloat(b.units||0);
-    return sum;
-  }, 0);
+  const units = parseFloat(b.units||0) || 1;
+  const odds = parseInt(b.odds) || -110;
+  if(b.result==='Win') {
+    const profit = odds > 0 ? units * (odds/100) : units * (100/Math.abs(odds));
+    return sum + profit;
+  }
+  if(b.result==='Loss') return sum - units;
+  return sum;
+}, 0);
   const totalDollars = totalUnits*usd;
   const winRate = wins+losses>0 ? ((wins/(wins+losses))*100).toFixed(1) : '0.0';
   const resultColor = (r) => r==='Win'?'#00e5a0':r==='Loss'?'#ff4d6d':r==='Push'?'#ffd166':'#0099ff';
@@ -4451,12 +4456,12 @@ setPropJerryLoading(false);
               </View>
               <View style={styles.roiCircle}>
                 <Text style={styles.roiVal}>{trackingMode==='units'?(totalUnits>=0?'+':'')+totalUnits.toFixed(1)+'u':(totalDollars>=0?'+':'-')+'$'+Math.abs(totalDollars).toFixed(0)}</Text>
-                <Text style={styles.roiLbl}>{trackingMode==='units'?'UNITS':'P/L'}</Text>
+                <Text style={styles.roiLbl}>{trackingMode==='units'?'UNITS':'Profit'}</Text>
               </View>
             </View>
             <View style={styles.statRow}>
               <View style={[styles.statBox,styles.statGreen]}><Text style={[styles.statVal,{color:'#00e5a0'}]}>{winRate}%</Text><Text style={styles.statKey}>Win Rate</Text></View>
-              <View style={[styles.statBox,styles.statBlue]}><Text style={[styles.statVal,{color:'#0099ff',fontSize:trackingMode==='dollars'?16:20}]}>{trackingMode==='units'?(totalUnits>=0?'+':'')+totalUnits.toFixed(1)+'u':(totalDollars>=0?'+':'-')+'$'+Math.abs(totalDollars).toFixed(0)}</Text><Text style={styles.statKey}>{trackingMode==='units'?'Units':'P/L'}</Text></View>
+              <View style={[styles.statBox,styles.statBlue]}><Text style={[styles.statVal,{color:'#0099ff',fontSize:trackingMode==='dollars'?16:20}]}>{trackingMode==='units'?(totalUnits>=0?'+':'')+totalUnits.toFixed(1)+'u':(totalDollars>=0?'+':'-')+'$'+Math.abs(totalDollars).toFixed(0)}</Text><Text style={styles.statKey}>{trackingMode==='units'?'UNITS':'Profit'}</Text></View>
               <View style={styles.statBox}><Text style={styles.statVal}>{bets.length}</Text><Text style={styles.statKey}>Total Bets</Text></View>
             </View>
             {/* ROI CHART */}
@@ -4477,6 +4482,7 @@ setPropJerryLoading(false);
               </View>
               {roiChartTab==='cumulative'&&(()=>{
                 const data = calcROIData(bets, roiTimeRange, roiUnit, unitSize);
+                console.log('ROI LAST:', data[data.length-1]?.value, '| DATA LENGTH:', data.length);
                 if(data.length === 0) return(
                   <View style={{alignItems:'center',paddingVertical:24}}>
                     <Text style={{fontSize:28}}>📊</Text>
@@ -4633,7 +4639,7 @@ setPropJerryLoading(false);
             <View style={styles.statRow}>
               <View style={[styles.statBox,styles.statGreen]}><Text style={[styles.statVal,{color:'#00e5a0'}]}>{wins}W</Text><Text style={styles.statKey}>Wins</Text></View>
               <View style={[styles.statBox,styles.statRed]}><Text style={[styles.statVal,{color:'#ff4d6d'}]}>{losses}L</Text><Text style={styles.statKey}>Losses</Text></View>
-              <View style={[styles.statBox,styles.statBlue]}><Text style={[styles.statVal,{color:'#0099ff',fontSize:trackingMode==='dollars'?15:20}]}>{trackingMode==='units'?(totalUnits>=0?'+':'')+totalUnits.toFixed(1)+'u':(totalDollars>=0?'+':'-')+'$'+Math.abs(totalDollars).toFixed(0)}</Text><Text style={styles.statKey}>{trackingMode==='units'?'Units':'P/L'}</Text></View>
+              <View style={[styles.statBox,styles.statBlue]}><Text style={[styles.statVal,{color:'#0099ff',fontSize:trackingMode==='dollars'?15:20}]}>{trackingMode==='units'?(totalUnits>=0?'+':'')+totalUnits.toFixed(1)+'u':(totalDollars>=0?'+':'-')+'$'+Math.abs(totalDollars).toFixed(0)}</Text><Text style={styles.statKey}>{trackingMode==='units'?'UNITS':'Profit'}</Text></View>
             </View>
             <Text style={styles.sectionLabel}>ALL BETS — {bets.length} total</Text>
             {bets.map(bet=>(
