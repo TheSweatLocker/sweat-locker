@@ -2683,9 +2683,9 @@ Combined odds: ${parlayAmerican}
 Implied probability: ${parlayProb}%
 Total legs: ${parlayLegs.length}
 
-Search the web for current injury reports, recent form, and line movement for each team or player in these legs.
+Search the web for current injury reports, recent form, and line movement for each team or player in these legs. Do NOT write any preamble like "I'll search..." or "Let me look up..." — go straight to the JSON output after searching.
 
-Return ONLY a JSON object — no markdown, no preamble, no explanation outside the JSON. Format:
+Return ONLY a JSON object
 {
   "legs": [
     {
@@ -2713,7 +2713,8 @@ D = Weak leg, significant concerns, consider removing
 F = Avoid — injury, bad line, sharp money against, or no edge
 
 gradeColor values: A=#00e5a0, B=#FFB800, C=#0099ff, D=#ff8c00, F=#ff4d6d
-Never say "bet" or "must play". Be sharp and direct.`;
+Never say "bet" or "must play". Be sharp and direct.
+CRITICAL: Your entire response must be valid JSON starting with { and ending with }. No text before or after the JSON under any circumstances.`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -2733,9 +2734,37 @@ Never say "bet" or "must play". Be sharp and direct.`;
     const data = await response.json();
     const text = data?.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
     try {
-      const clean = text.replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(clean);
-      setParlayAnalysis(parsed);
+      // Try multiple extraction methods
+let parsed = null;
+try {
+  // Method 1: direct parse after cleaning markdown
+  const clean = text.replace(/```json|```/g, '').trim();
+  parsed = JSON.parse(clean);
+} catch(e1) {
+  try {
+    // Method 2: find JSON object in text
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if(jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+  } catch(e2) {
+    try {
+      // Method 3: find from first { to last }
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      if(start !== -1 && end !== -1) {
+        parsed = JSON.parse(text.substring(start, end + 1));
+      }
+    } catch(e3) {
+      parsed = null;
+    }
+  }
+}
+if(parsed) {
+  setParlayAnalysis(parsed);
+} else {
+  // Extract just the verdict text if JSON fails completely
+  const verdictMatch = text.match(/"verdict":\s*"([^"]+)"/);
+  setParlayAnalysis({error: verdictMatch ? verdictMatch[1] : text.replace(/[{}"[\]]/g, '').substring(0, 300)});
+}
     } catch(e) {
       setParlayAnalysis({error: text});
     }
@@ -4350,15 +4379,15 @@ setPropJerryLoading(false);
         ) : parlayAnalysis?.legs ? (
           <View>
             {/* Overall Grade */}
-            <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',backgroundColor:'rgba(255,184,0,0.08)',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
-              <View>
-                <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',letterSpacing:1}}>OVERALL GRADE</Text>
-                <Text style={{color:'#e8f0f8',fontSize:13,lineHeight:18,marginTop:4,fontStyle:'italic'}}>"{parlayAnalysis.verdict}"</Text>
-              </View>
-              <View style={{width:48,height:48,borderRadius:24,borderWidth:2,borderColor:parlayAnalysis.overallColor||HRB_COLOR,alignItems:'center',justifyContent:'center',marginLeft:12}}>
-                <Text style={{color:parlayAnalysis.overallColor||HRB_COLOR,fontSize:18,fontWeight:'800'}}>{parlayAnalysis.overallGrade}</Text>
-              </View>
-            </View>
+            <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
+  <View style={{flexDirection:'row',alignItems:'center',marginBottom:8}}>
+    <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',letterSpacing:1,flex:1}}>OVERALL GRADE</Text>
+    <View style={{width:36,height:36,borderRadius:18,borderWidth:2,borderColor:parlayAnalysis.overallColor||HRB_COLOR,alignItems:'center',justifyContent:'center'}}>
+      <Text style={{color:parlayAnalysis.overallColor||HRB_COLOR,fontSize:14,fontWeight:'800'}}>{parlayAnalysis.overallGrade}</Text>
+    </View>
+  </View>
+  <Text style={{color:'#e8f0f8',fontSize:13,lineHeight:18,fontStyle:'italic'}}>"{(parlayAnalysis.verdict||'').replace(/[\[\]{}*_`#]/g, '').trim()}"</Text>
+</View>
             {/* Leg Grades */}
             {parlayAnalysis.legs.map((leg, i) => (
               <View key={i} style={{backgroundColor:'#0a1520',borderRadius:12,padding:12,marginBottom:8,borderWidth:1,borderColor:leg.gradeColor+'44',borderLeftWidth:3,borderLeftColor:leg.gradeColor}}>
@@ -4374,11 +4403,11 @@ setPropJerryLoading(false);
                     <Text style={{color:'#4a6070',fontSize:9,marginTop:2}}>{leg.confidence}%</Text>
                   </View>
                 </View>
-                <Text style={{color:'#c8d8e8',fontSize:12,lineHeight:17,fontStyle:'italic',marginBottom:4}}>"{leg.jerry}"</Text>
+                <Text style={{color:'#c8d8e8',fontSize:12,lineHeight:17,fontStyle:'italic',marginBottom:4,flexWrap:'wrap',flex:1}}>"{(leg.jerry||'').replace(/[\[\]{}*_`#]/g, '').trim()}"</Text>
                 {leg.risk&&(
                   <View style={{flexDirection:'row',alignItems:'center',gap:4,marginTop:4}}>
                     <Text style={{color:'#ff4d6d',fontSize:10}}>⚠️</Text>
-                    <Text style={{color:'#ff4d6d',fontSize:11}}>{leg.risk}</Text>
+                    <Text style={{color:'#ff4d6d',fontSize:11,flexWrap:'wrap',flex:1}}>{leg.risk}</Text>
                   </View>
                 )}
                 {(i === parlayAnalysis.strongestLeg - 1) && (
