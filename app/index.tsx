@@ -752,6 +752,11 @@ const EXACT_MAP = {
   'navy': 'Navy',
   'navy midshipmen': 'Navy',
   'nc state': 'N.C. State',
+  'NC State': 'NC State',
+'N.C. State': 'NC State',
+'NC State Wolfpack': 'NC State',
+'North Carolina State': 'NC State',
+'North Carolina State Wolfpack': 'NC State',
   'north carolina state': 'N.C. State',
   'n.c. state': 'N.C. State',
   'nc state wolfpack': 'N.C. State',
@@ -1675,6 +1680,7 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
     }));
 
     setGamesData(mappedGames);
+console.log('NCAAB GAMES LOADED:', mappedGames.map(g => g.away_team + ' vs ' + g.home_team));
 
     // Save to AsyncStorage
     try {
@@ -2172,12 +2178,27 @@ if(score >= 40) return {label:'👀 Worth a Look', color:'#ffd166'};
  //console.log('NCAAB MATCH ATTEMPT:', game.away_team, '->', awayStripped, '|', game.home_team, '->', homeStripped);
   //console.log('FANMATCH KEYS:', Object.keys(fanmatchData||{}).slice(0,5));
 
-  let fanmatchGame = null;
+  if(sport==='NCAAB') console.log('FANMATCH KEYS AVAILABLE:', Object.keys(fanmatchData||{}).slice(0,10));
+let fanmatchGame = null;
   Object.values(fanmatchData||{}).forEach(fg => {
     const fVisitor = (fg.visitor||'').toLowerCase().trim().replace(/\./g, '');
     const fHome = (fg.home||'').toLowerCase().trim().replace(/\./g, '');
     const awayStrippedClean = awayStripped.replace(/\./g, '');
     const homeStrippedClean = homeStripped.replace(/\./g, '');
+    if(fVisitor.includes('texas') || fHome.includes('texas')) {
+  console.log('REVERSE CHECK:', 
+    'visitorMatch:', visitorMatch, 
+    'homeMatch:', homeMatch,
+    'visitorMatchRev:', visitorMatchRev, 
+    'homeMatchRev:', homeMatchRev
+  );
+}
+    if(fVisitor.includes('texas') || fHome.includes('texas') || fVisitor.includes('state') || fHome.includes('state')) {
+      console.log('TEXAS DEBUG fVisitor:', fVisitor, '| fHome:', fHome, '| away:', awayStrippedClean, '| home:', homeStrippedClean);
+    }
+    if(awayStripped.includes('texas') || homeStripped.includes('state')) {
+  console.log('TX/NC DEBUG:', fVisitor, '|', fHome, '|', awayStrippedClean, '|', homeStrippedClean);
+}
     const visitorMatch = fVisitor === awayStrippedClean || 
   fVisitor.startsWith(awayStrippedClean + ' ') || 
   awayStrippedClean.startsWith(fVisitor + ' ') ||
@@ -2188,7 +2209,43 @@ const homeMatch = fHome === homeStrippedClean ||
   homeStrippedClean.startsWith(fHome + ' ') ||
   homeStrippedClean.startsWith(fHome) ||
   fHome.startsWith(homeStrippedClean);
-    if(visitorMatch && homeMatch) fanmatchGame = fg;
+
+// Also check reversed — tournament neutral site games may be flipped
+const visitorMatchRev = fVisitor === homeStrippedClean || 
+  fVisitor.startsWith(homeStrippedClean + ' ') || 
+  homeStrippedClean.startsWith(fVisitor) ||
+  fVisitor.startsWith(homeStrippedClean);
+const homeMatchRev = fHome === awayStrippedClean || 
+  fHome.startsWith(awayStrippedClean + ' ') || 
+  awayStrippedClean.startsWith(fHome) ||
+  fHome.startsWith(awayStrippedClean);
+
+if(visitorMatch && homeMatch) fanmatchGame = fg;
+else if(visitorMatchRev && homeMatchRev) fanmatchGame = fg;
+// Also try partial word match for abbreviated names like NC State / N.C. State
+else if(!fanmatchGame) {
+  const awayWords = awayStrippedClean.split(' ').filter(w => w.length > 2);
+  const homeWords = homeStrippedClean.split(' ').filter(w => w.length > 2);
+  const fVisitorWords = fVisitor.split(' ').filter(w => w.length > 2);
+  const fHomeWords = fHome.split(' ').filter(w => w.length > 2);
+  
+  const awayMatchesFVisitor = awayWords.every(w => fVisitor.includes(w));
+  const homeMatchesFHome = homeWords.every(w => fHome.includes(w));
+  const awayMatchesFHome = awayWords.every(w => fHome.includes(w));
+  const homeMatchesFVisitor = homeWords.every(w => fVisitor.includes(w));
+  
+  if(awayMatchesFVisitor && homeMatchesFHome) fanmatchGame = fg;
+  else if(awayMatchesFHome && homeMatchesFVisitor) fanmatchGame = fg;
+}
+if(visitorMatch && homeMatch) fanmatchGame = fg;
+else if(visitorMatchRev && homeMatchRev) fanmatchGame = fg;
+else if(!fanmatchGame) {
+  // ... word match code
+}
+// ADD THIS:
+if(fanmatchGame && (fVisitor.includes('texas') || fHome.includes('texas'))) {
+  console.log('FANMATCH FOUND FOR TEXAS:', fanmatchGame.visitor, 'vs', fanmatchGame.home);
+}
 });
 
   if(fanmatchGame && fanmatchGame.homePred && fanmatchGame.visitorPred) {
@@ -2807,7 +2864,7 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
   const fetchDailyBestBet = async () => {
  const CACHE_KEY = 'sweatlocker_daily_best_bet';
 try {
-  const cached = await AsyncStorage.getItem(CACHE_KEY);
+  const cached = await AsyncStorage.removeItem(CACHE_KEY); // TEMP
     if(cached) {
       const parsed = JSON.parse(cached);
       const ageMin = (Date.now() - parsed.timestamp) / 60000;
@@ -2863,21 +2920,55 @@ const todayGames = ncaabGames;
     }
 
     // Score every game
-    const scored = todayGames
-      .map(game => {
-        const score = calcGameSweatScore(game, 'NCAAB', fanmatchData);
-        return score ? {game, score} : null;
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.score.total - a.score.total);
+const scored = todayGames
+  .map(game => {
+    const score = calcGameSweatScore(game, 'NCAAB', fanmatchData);
+    return score ? {game, score} : null;
+  })
+  .filter(Boolean)
+  .sort((a, b) => b.score.total - a.score.total);
 
-    if(!scored.length || scored[0].score.total < 68) {
-      setDailyBestBet({noPrime: true, topScore: scored[0]?.score.total || 0});
-      setDailyBestBetLoading(false);
-      return;
-    }
+if(!scored.length) {
+  setDailyBestBet({noGames: true});
+  setDailyBestBetLoading(false);
+  return;
+}
 
-    const top = scored[0];
+// Tournament-aware selection logic
+// Priority 1: fanmatch + four factor boost + score >= 62
+let top = scored.find(s =>
+  s.score.hasFanmatch &&
+  (s.score.fourFactorBoost || 0) >= 8 &&
+  s.score.total >= 62
+);
+
+// Priority 2: fanmatch + score >= 65
+if(!top) {
+  top = scored.find(s =>
+    s.score.hasFanmatch &&
+    s.score.total >= 65
+  );
+}
+
+// Priority 3: score >= 68 any signal
+if(!top) {
+  top = scored.find(s => s.score.total >= 68);
+}
+
+// Priority 4: tournament floor — always surface best available
+if(!top) {
+  top = scored[0];
+  // Label it as a monitor play not prime
+  top.score.isPrime = false;
+  top.score.isTournamentFloor = true;
+}
+
+// Hard floor — if best game scores below 55 on a thin slate say no plays
+if(top.score.total < 55 && !top.score.hasFanmatch) {
+  setDailyBestBet({noPrime: true, topScore: top.score.total});
+  setDailyBestBetLoading(false);
+  return;
+}
     const game = top.game;
     const scoreData = top.score;
     const isPrimaryTotal = scoreData.totalIsPrimary;
@@ -2941,6 +3032,8 @@ Write exactly 2 sharp sentences. This is your best bet of the day — be convict
       odds,
       score: scoreData.total,
       isPrime: scoreData.total >= 68,
+isTournamentFloor: scoreData.isTournamentFloor || false,
+label: scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? 'STRONG LEAN' : 'BEST AVAILABLE',
       jerry: text,
       commenceTime: game.commence_time,
     };
@@ -3183,7 +3276,9 @@ ${modelContext}
 Rules you must follow:
 - Sport context: ${sport}
 - Model lean: "${scoreData?.leanSide || 'N/A'}" — use as directional starting point
-- Sweat Score: ${score} — ${score>=68?'PRIME SWEAT tone, high conviction':score>=55?'strong lean tone, confident':'cautious tone, monitor only'}
+Sweat Score: ${scoreData.total}/100 ${scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? '— Strong Lean' : '— Best Available Today'}
+Confidence tier: ${scoreData.hasFanmatch ? 'HIGH — KenPom game model active' : 'MODERATE — efficiency model only'}
+${scoreData.isTournamentFloor ? 'Note: This is the best available play today — not a Prime Sweat. Jerry should be measured in tone.' : ''}
 - For NCAAB: base analysis ONLY on model data provided — no outside knowledge
 - For NBA: search for tonight's injury reports and lineup news FIRST — real-world factors override market lean
 - For NBA: if a key player is out or questionable, lead with that — it overrides everything else
@@ -4467,9 +4562,16 @@ setPropJerryLoading(false);
         </View>
       </View>
       {dailyBestBet?.score && (
-        <View style={{backgroundColor:dailyBestBet.isPrime?'rgba(255,184,0,0.15)':'rgba(0,229,160,0.1)',borderRadius:8,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:dailyBestBet.isPrime?HRB_COLOR:'#00e5a0'}}>
-          <Text style={{color:dailyBestBet.isPrime?HRB_COLOR:'#00e5a0',fontSize:10,fontWeight:'800'}}>{dailyBestBet.score} {dailyBestBet.isPrime?'🔒 PRIME':''}</Text>
-        </View>
+        <View style={{
+  backgroundColor:dailyBestBet.isPrime?'rgba(255,184,0,0.15)':dailyBestBet.label==='STRONG LEAN'?'rgba(0,229,160,0.1)':'rgba(0,153,255,0.1)',
+  borderRadius:8,paddingHorizontal:8,paddingVertical:3,borderWidth:1,
+  borderColor:dailyBestBet.isPrime?HRB_COLOR:dailyBestBet.label==='STRONG LEAN'?'#00e5a0':'#0099ff'
+}}>
+  <Text style={{
+    color:dailyBestBet.isPrime?HRB_COLOR:dailyBestBet.label==='STRONG LEAN'?'#00e5a0':'#0099ff',
+    fontSize:10,fontWeight:'800'
+  }}>{dailyBestBet.score} {dailyBestBet.label}</Text>
+</View>
       )}
     </View>
 
