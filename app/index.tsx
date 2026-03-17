@@ -1531,9 +1531,15 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
       const noHistoryScore = ['soccer_epl','soccer_usa_mls','golf_masters_tournament_winner'].includes(SPORT_KEYS[sport]);
       const supported = ['NBA','NFL','NHL','MLB','NCAAB','NCAAF'];
       if(!supported.includes(sport)) return [];
-      const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/scores', {
-        params: {apiKey: ODDS_API_KEY, daysFrom: 3, dateFormat: 'iso'}
-      });
+      const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
+  params: {
+    apiKey: ODDS_API_KEY,
+    regions: 'us,us2',
+    markets: 'spreads,totals,h2h',
+    oddsFormat: 'american',
+    bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars'
+  }
+});
       const evOpps=[];
       r.data.forEach(game=>{
         ['spreads','totals','h2h'].forEach(market=>{
@@ -1570,7 +1576,17 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
         if(!a.isHRB&&b.isHRB) return 1;
         return parseFloat(b.ev)-parseFloat(a.ev);
       });
-      setEvData(evOpps.slice(0,20));
+      // Sort: HRB first, then spreads/totals before ML, then by EV
+evOpps.sort((a,b)=>{
+  if(a.isHRB&&!b.isHRB) return -1;
+  if(!a.isHRB&&b.isHRB) return 1;
+  const aIsML = a.market==='ML';
+  const bIsML = b.market==='ML';
+  if(!aIsML&&bIsML) return -1;
+  if(aIsML&&!bIsML) return 1;
+  return parseFloat(b.ev)-parseFloat(a.ev);
+});
+setEvData(evOpps.slice(0,20));
     }catch(e){setEvData([]);}
     setEvLoading(false);setRefreshing(false);
   };
@@ -3054,7 +3070,7 @@ label: scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? 'STR
 
 Today's slate: ${todayGames || 'NBA and NCAAB games today'}.
 
-Write exactly 3 sentences. This is a MORNING BRIEFING — not a pick. Set the scene for today's slate. What storylines matter? What should bettors be watching? What's the vibe on the board today? Build anticipation for the games ahead. Reference specific matchups from the slate. Do NOT give a specific bet or pick — that's handled separately. Do NOT say "I like" or recommend a side. Just paint the picture of today's action like a sharp beat reporter. End with — Jerry.`;
+Write exactly 3 sentences from your knowledge of these teams and today's slate. This is a MORNING BRIEFING — not a pick. Set the scene for today's slate.`;
 
       const response = await fetch('https://api.anthropic.com/v1/messages',{
         method:'POST',
@@ -3065,11 +3081,10 @@ Write exactly 3 sentences. This is a MORNING BRIEFING — not a pick. Set the sc
           'anthropic-dangerous-direct-browser-access':'true'
         },
         body:JSON.stringify({
-          model:'claude-haiku-4-5-20251001',
-          max_tokens:400,
-          tools:[{type:'web_search_20250305',name:'web_search'}],
-          messages:[{role:'user',content:prompt}]
-        })
+  model:'claude-haiku-4-5-20251001',
+  max_tokens:400,
+  messages:[{role:'user',content:prompt}]
+})
       });
       const data = await response.json();
       const text = data?.content?.filter(b=>b.type==='text').map(b=>b.text).join('') || '';
@@ -5370,7 +5385,7 @@ setPropJerryLoading(false);
           <View>
             <Text style={styles.pageTitle}>Stats & Props</Text>
             <View style={{flexDirection:'row',gap:8,marginBottom:14}}>
-              {[{id:'props',label:'🎯 Props'},{id:'players',label:'📊 Players'},{id:'teams',label:'🎤 Jerry'}].map(t=>(
+              {[{id:'props',label:'🎯 Props'},{id:'players',label:'📊 Players'},{id:'teams',label:'🏆 Board'}].map(t=>(
                 <TouchableOpacity key={t.id} style={[styles.chipBtn,statsTab===t.id&&styles.chipBtnActive,{flex:1,alignItems:'center'}]} onPress={()=>setStatsTab(t.id)}>
                   <Text style={[styles.chipTxt,statsTab===t.id&&styles.chipTxtActive]}>{t.label}</Text>
                 </TouchableOpacity>
@@ -5436,131 +5451,76 @@ setPropJerryLoading(false);
     </View>
   </View>
 )}
-            {statsTab==='teams'&&(()=>{
-  const settled = jerryHistory.filter(h=>h.result==='Win'||h.result==='Loss');
-  const wins = settled.filter(h=>h.result==='Win').length;
-  const losses = settled.filter(h=>h.result==='Loss').length;
-  const winRate = wins+losses>0?((wins/(wins+losses))*100).toFixed(0):'—';
-  const byGrade = ['A','B','C','D'].map(g=>{
-    const gradeSettled = settled.filter(h=>h.grade===g);
-    const gWins = gradeSettled.filter(h=>h.result==='Win').length;
-    const gLosses = gradeSettled.filter(h=>h.result==='Loss').length;
-    const pending = jerryHistory.filter(h=>h.grade===g&&h.result==='Pending').length;
-    return{grade:g, wins:gWins, losses:gLosses, pending, pct:gWins+gLosses>0?((gWins/(gWins+gLosses))*100).toFixed(0):'—'};
-  });
-  const bySport = ['NBA','NFL','NHL','MLB'].map(s=>{
-    const sportSettled = settled.filter(h=>h.sport===s);
-    const sWins = sportSettled.filter(h=>h.result==='Win').length;
-    const sLosses = sportSettled.filter(h=>h.result==='Loss').length;
-    return{sport:s, wins:sWins, losses:sLosses, pct:sWins+sLosses>0?((sWins/(sLosses+sWins))*100).toFixed(0):'—'};
-  }).filter(s=>s.wins+s.losses>0);
-  const aGrades = jerryHistory.filter(h=>h.grade==='A');
-  const aSettled = aGrades.filter(h=>h.result==='Win'||h.result==='Loss');
-  const aWins = aSettled.filter(h=>h.result==='Win').length;
-  const aLosses = aSettled.filter(h=>h.result==='Loss').length;
+{statsTab==='teams'&&(()=>{
+  const ncaabGames = gamesData.filter(g => g && g.away_team && g.home_team);
+  const scored = ncaabGames
+    .map(game => {
+      try {
+        const score = calcGameSweatScore(game, gamesSport, fanmatchData);
+        return score ? {game, score} : null;
+      } catch(e) { return null; }
+    })
+    .filter(Boolean)
+    .sort((a,b) => b.score.total - a.score.total)
+    .slice(0, 10);
+
   return(
     <View>
-      {/* Hero Record */}
-      <View style={[styles.hero,{flexDirection:'column',alignItems:'stretch',marginBottom:14}]}>
-        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-          <View>
-            <Text style={{color:'#7a92a8',fontSize:12,fontWeight:'600'}}>JERRY'S RECORD</Text>
-            <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:32}}>{wins}-{losses}</Text>
-            <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{winRate}% hit rate • {jerryHistory.filter(h=>h.result==='Pending').length} pending</Text>
-          </View>
-          <View style={{alignItems:'center'}}>
-            <View style={{width:72,height:72,borderRadius:36,borderWidth:2.5,borderColor:'#00e5a0',alignItems:'center',justifyContent:'center',backgroundColor:'rgba(0,229,160,0.1)'}}>
-              <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:22}}>{winRate}%</Text>
-            </View>
-            <Text style={{color:'#7a92a8',fontSize:10,marginTop:4}}>HIT RATE</Text>
-          </View>
+      <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.2)',marginBottom:12}}>
+  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,marginBottom:4}}>🏆 MODEL LEADERBOARD</Text>
+  <Text style={{color:'#7a92a8',fontSize:12}}>Today's top plays ranked by Sweat Score</Text>
+</View>
+<ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>
+  <View style={{flexDirection:'row',gap:6}}>
+    {SPORTS.map(s=>(
+      <TouchableOpacity key={s} 
+        style={[styles.chipBtn, gamesSport===s&&styles.chipBtnActive]} 
+        onPress={()=>{setGamesSport(s); fetchGames(s, 'today');}}>
+        <Text style={[styles.chipTxt, gamesSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text>
+      </TouchableOpacity>
+    ))}
+  </View>
+</ScrollView>
+      {scored.length === 0 ? (
+        <View style={{alignItems:'center',paddingTop:40}}>
+          <Text style={{fontSize:32}}>🏆</Text>
+          <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center'}}>Switch to a sport tab with games to see the leaderboard.</Text>
         </View>
-        {/* A Grade highlight */}
-        <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:12,padding:12,borderWidth:1,borderColor:'rgba(0,229,160,0.3)',flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-          <View>
-            <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:13}}>🔥 A GRADE RECORD</Text>
-            <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{aGrades.length} total • {aGrades.filter(h=>h.result==='Pending').length} pending</Text>
-          </View>
-          <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:28}}>{aWins}-{aLosses}</Text>
-        </View>
-      </View>
-      {/* Grade Breakdown */}
-      <Text style={styles.sectionLabel}>BY GRADE</Text>
-      <View style={[styles.card,{marginBottom:14}]}>
-        {byGrade.map((g,i)=>{
-          const gradeColors = {'A':'#00e5a0','B':'#FFB800','C':'#0099ff','D':'#ff4d6d'};
-          const color = gradeColors[g.grade];
+      ) : (
+        scored.map((item, i) => {
+          const ss = item.score;
+          const tier = ss.total >= 68 ? {label:'🔒 PRIME', color:'#FFB800'} :
+                       ss.total >= 55 ? {label:'✅ LEAN', color:'#00e5a0'} :
+                       {label:'👀 WATCH', color:'#0099ff'};
+          const gameTime = new Date(item.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
           return(
-            <View key={i} style={{flexDirection:'row',alignItems:'center',paddingVertical:10,borderBottomWidth:i<3?1:0,borderBottomColor:'#1f2d3d'}}>
-              <View style={{width:36,height:36,borderRadius:18,borderWidth:2,borderColor:color,alignItems:'center',justifyContent:'center',backgroundColor:color+'20',marginRight:12}}>
-                <Text style={{color:color,fontWeight:'900',fontSize:16}}>{g.grade}</Text>
-              </View>
-              <View style={{flex:1}}>
-                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{g.wins}-{g.losses}</Text>
-                <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{g.pending} pending</Text>
-              </View>
-              <Text style={{color:parseFloat(g.pct)>=50?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:16}}>{g.pct}{g.pct!=='—'?'%':''}</Text>
-            </View>
-          );
-        })}
-      </View>
-      {/* By Sport */}
-      {bySport.length>0&&(
-        <>
-          <Text style={styles.sectionLabel}>BY SPORT</Text>
-          <View style={[styles.card,{marginBottom:14}]}>
-            {bySport.map((s,i)=>(
-              <View key={i} style={{flexDirection:'row',alignItems:'center',paddingVertical:10,borderBottomWidth:i<bySport.length-1?1:0,borderBottomColor:'#1f2d3d'}}>
-                <Text style={{fontSize:20,marginRight:12}}>{SPORT_EMOJI[s.sport]||'🎯'}</Text>
+            <TouchableOpacity key={i} onPress={()=>openGameDetail(item.game)}
+              style={{backgroundColor:'#0e1318',borderRadius:14,padding:14,marginBottom:8,borderWidth:1,borderLeftWidth:3,borderColor:'#1f2d3d',borderLeftColor:tier.color}}>
+              <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                 <View style={{flex:1}}>
-                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{s.sport}</Text>
-                  <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{s.wins}-{s.losses}</Text>
+                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{item.game.away_team} vs {item.game.home_team}</Text>
+                  <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{gamesSport} • {gameTime}</Text>
                 </View>
-                <Text style={{color:parseFloat(s.pct)>=50?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:16}}>{s.pct}{s.pct!=='—'?'%':''}</Text>
-              </View>
-            ))}
-          </View>
-        </>
-      )}
-      {/* Recent Jerry Picks */}
-      <Text style={styles.sectionLabel}>RECENT JERRY PICKS</Text>
-      {jerryHistory.length===0?(
-        <View style={{alignItems:'center',paddingVertical:40}}>
-          <Text style={{fontSize:32}}>🎤</Text>
-          <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center'}}>No Jerry picks yet.{'\n'}Head to Prop Jerry to start tracking!</Text>
-        </View>
-      ):(
-        jerryHistory.filter(h=>h.grade!=='D').slice(0,20).map((h,i)=>{
-          const gradeColors = {'A':'#00e5a0','B':'#FFB800','C':'#0099ff','D':'#ff4d6d'};
-          const color = gradeColors[h.grade];
-          return(
-            <View key={i} style={[styles.betCard,{borderLeftColor:color,marginBottom:8}]}>
-              <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'}}>
-                <View style={{flex:1,marginRight:12}}>
-                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{h.player}</Text>
-                  <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{h.bestSide} {h.bestLine} • {h.market}</Text>
-                  <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{h.game}</Text>
-                </View>
-                <View style={{alignItems:'center',gap:4}}>
-                  <View style={{width:36,height:36,borderRadius:18,borderWidth:2,borderColor:color,alignItems:'center',justifyContent:'center',backgroundColor:color+'20'}}>
-                    <Text style={{color:color,fontWeight:'900',fontSize:16}}>{h.grade}</Text>
+                <View style={{alignItems:'center',marginLeft:12}}>
+                  <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:tier.color,alignItems:'center',justifyContent:'center',backgroundColor:tier.color+'15'}}>
+                    <Text style={{color:tier.color,fontWeight:'800',fontSize:16}}>{ss.total}</Text>
                   </View>
-                  <TouchableOpacity onPress={()=>{
-                    const updated = jerryHistory.map((item)=>item.id===h.id?{...item,result:item.result==='Pending'?'Win':item.result==='Win'?'Loss':'Pending'}:item);
-                    setJerryHistory(updated);
-                    AsyncStorage.setItem(JERRY_HISTORY_KEY, JSON.stringify(updated));
-                  }}>
-                    <Text style={{color:h.result==='Win'?'#00e5a0':h.result==='Loss'?'#ff4d6d':'#4a6070',fontSize:11,fontWeight:'700'}}>{h.result}</Text>
-                  </TouchableOpacity>
+                  <Text style={{color:tier.color,fontSize:9,fontWeight:'700',marginTop:2}}>{tier.label}</Text>
                 </View>
               </View>
-              <View style={{flexDirection:'row',gap:6,marginTop:8,flexWrap:'wrap'}}>
-                <View style={styles.metaChip}><Text style={{color:'#7a92a8',fontSize:11}}>{h.sport}</Text></View>
-                <View style={styles.metaChip}><Text style={{color:'#00e5a0',fontSize:11}}>+{h.ev.toFixed(1)}% EV</Text></View>
-                <View style={styles.metaChip}><Text style={{color:'#7a92a8',fontSize:11}}>{h.bestOdds>0?'+':''}{h.bestOdds}</Text></View>
-                <View style={styles.metaChip}><Text style={{color:'#7a92a8',fontSize:11}}>{h.date}</Text></View>
-              </View>
-            </View>
+              {ss.leanSide && (
+                <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+                  <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
+                    <Text style={{color:HRB_COLOR,fontSize:11,fontWeight:'700'}}>📊 {ss.leanSide}</Text>
+                  </View>
+                  {ss.totalIsPrimary && (
+                    <View style={{backgroundColor:'rgba(0,153,255,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,153,255,0.3)'}}>
+                      <Text style={{color:'#0099ff',fontSize:11,fontWeight:'700'}}>📈 Total Signal</Text>
+                    </View>
+                  )}
+                </View>
+              )}
+            </TouchableOpacity>
           );
         })
       )}
