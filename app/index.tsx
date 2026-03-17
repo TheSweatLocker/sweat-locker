@@ -1387,6 +1387,7 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
         }
         setHasSeenOnboarding(!!seen);
         fetchBartData();
+        await AsyncStorage.removeItem('sweatlocker_fanmatch_cache'); // TEMP
         fetchKenpomFanmatch();
         fetchNBATeamData();
     };
@@ -1680,7 +1681,7 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
     }));
 
     setGamesData(mappedGames);
-console.log('NCAAB GAMES LOADED:', mappedGames.map(g => g.away_team + ' vs ' + g.home_team));
+//console.log('NCAAB GAMES LOADED:', mappedGames.map(g => g.away_team + ' vs ' + g.home_team));
 
     // Save to AsyncStorage
     try {
@@ -1862,12 +1863,13 @@ console.log('NCAAB GAMES LOADED:', mappedGames.map(g => g.away_team + ' vs ' + g
  const PROP_JERRY_CACHE_KEY = 'sweatlocker_jerry_cache';
 
 const fetchKenpomFanmatch = async () => {
+  await AsyncStorage.removeItem('sweatlocker_fanmatch_cache'); // TEMP
   try {
     const now = new Date();
     const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     const today = fmt(now);
-    const yesterday = fmt(new Date(now - 24*60*60*1000));
-
+const tomorrow = fmt(new Date(now.getTime() + 24*60*60*1000));
+const yesterday = fmt(new Date(now - 24*60*60*1000));
     // Load cache first so UI has data immediately
     try {
       const cached = await AsyncStorage.getItem(FANMATCH_CACHE_KEY);
@@ -1881,19 +1883,28 @@ const fetchKenpomFanmatch = async () => {
 
     let r;
     try {
-      r = await axios.get('https://kenpom.com/api.php', {
-        params: {endpoint:'fanmatch', d:today},
-        headers: {Authorization:`Bearer ${KENPOM_KEY}`},
-        timeout: 15000,
-      });
-      if(!Array.isArray(r.data)||r.data.length===0) throw new Error('empty');
-    } catch(e) {
-      r = await axios.get('https://kenpom.com/api.php', {
-        params: {endpoint:'fanmatch', d:yesterday},
-        headers: {Authorization:`Bearer ${KENPOM_KEY}`},
-        timeout: 15000,
-      });
-    }
+  r = await axios.get('https://kenpom.com/api.php', {
+    params: {endpoint:'fanmatch', d:today},
+    headers: {Authorization:`Bearer ${KENPOM_KEY}`},
+    timeout: 15000,
+  });
+  if(!Array.isArray(r.data)||r.data.length===0) throw new Error('empty');
+} catch(e) {
+  try {
+    r = await axios.get('https://kenpom.com/api.php', {
+      params: {endpoint:'fanmatch', d:tomorrow},
+      headers: {Authorization:`Bearer ${KENPOM_KEY}`},
+      timeout: 15000,
+    });
+    if(!Array.isArray(r.data)||r.data.length===0) throw new Error('empty');
+  } catch(e2) {
+    r = await axios.get('https://kenpom.com/api.php', {
+      params: {endpoint:'fanmatch', d:yesterday},
+      headers: {Authorization:`Bearer ${KENPOM_KEY}`},
+      timeout: 15000,
+    });
+  }
+}
     const games = Array.isArray(r.data) ? r.data : [];
     const mapped = {};
     games.forEach(g => {
@@ -2178,74 +2189,45 @@ if(score >= 40) return {label:'👀 Worth a Look', color:'#ffd166'};
  //console.log('NCAAB MATCH ATTEMPT:', game.away_team, '->', awayStripped, '|', game.home_team, '->', homeStripped);
   //console.log('FANMATCH KEYS:', Object.keys(fanmatchData||{}).slice(0,5));
 
-  if(sport==='NCAAB') console.log('FANMATCH KEYS AVAILABLE:', Object.keys(fanmatchData||{}).slice(0,10));
 let fanmatchGame = null;
-  Object.values(fanmatchData||{}).forEach(fg => {
-    const fVisitor = (fg.visitor||'').toLowerCase().trim().replace(/\./g, '');
-    const fHome = (fg.home||'').toLowerCase().trim().replace(/\./g, '');
-    const awayStrippedClean = awayStripped.replace(/\./g, '');
-    const homeStrippedClean = homeStripped.replace(/\./g, '');
-    if(fVisitor.includes('texas') || fHome.includes('texas')) {
-  console.log('REVERSE CHECK:', 
-    'visitorMatch:', visitorMatch, 
-    'homeMatch:', homeMatch,
-    'visitorMatchRev:', visitorMatchRev, 
-    'homeMatchRev:', homeMatchRev
-  );
-}
-    if(fVisitor.includes('texas') || fHome.includes('texas') || fVisitor.includes('state') || fHome.includes('state')) {
-      console.log('TEXAS DEBUG fVisitor:', fVisitor, '| fHome:', fHome, '| away:', awayStrippedClean, '| home:', homeStrippedClean);
-    }
-    if(awayStripped.includes('texas') || homeStripped.includes('state')) {
-  console.log('TX/NC DEBUG:', fVisitor, '|', fHome, '|', awayStrippedClean, '|', homeStrippedClean);
-}
-    const visitorMatch = fVisitor === awayStrippedClean || 
-  fVisitor.startsWith(awayStrippedClean + ' ') || 
-  awayStrippedClean.startsWith(fVisitor + ' ') ||
-  awayStrippedClean.startsWith(fVisitor) ||
-  fVisitor.startsWith(awayStrippedClean);
-const homeMatch = fHome === homeStrippedClean || 
-  fHome.startsWith(homeStrippedClean + ' ') || 
-  homeStrippedClean.startsWith(fHome + ' ') ||
-  homeStrippedClean.startsWith(fHome) ||
-  fHome.startsWith(homeStrippedClean);
+Object.values(fanmatchData||{}).forEach(fg => {
+  const fVisitor = (fg.visitor||'').toLowerCase().trim().replace(/\./g, '');
+  const fHome = (fg.home||'').toLowerCase().trim().replace(/\./g, '');
+  const awayStrippedClean = awayStripped.replace(/\./g, '');
+  const homeStrippedClean = homeStripped.replace(/\./g, '');
 
-// Also check reversed — tournament neutral site games may be flipped
-const visitorMatchRev = fVisitor === homeStrippedClean || 
-  fVisitor.startsWith(homeStrippedClean + ' ') || 
-  homeStrippedClean.startsWith(fVisitor) ||
-  fVisitor.startsWith(homeStrippedClean);
-const homeMatchRev = fHome === awayStrippedClean || 
-  fHome.startsWith(awayStrippedClean + ' ') || 
-  awayStrippedClean.startsWith(fHome) ||
-  fHome.startsWith(awayStrippedClean);
+  const visitorMatch = fVisitor === awayStrippedClean || 
+    fVisitor.startsWith(awayStrippedClean + ' ') || 
+    awayStrippedClean.startsWith(fVisitor + ' ') ||
+    awayStrippedClean.startsWith(fVisitor) ||
+    fVisitor.startsWith(awayStrippedClean);
+  const homeMatch = fHome === homeStrippedClean || 
+    fHome.startsWith(homeStrippedClean + ' ') || 
+    homeStrippedClean.startsWith(fHome + ' ') ||
+    homeStrippedClean.startsWith(fHome) ||
+    fHome.startsWith(homeStrippedClean);
 
-if(visitorMatch && homeMatch) fanmatchGame = fg;
-else if(visitorMatchRev && homeMatchRev) fanmatchGame = fg;
-// Also try partial word match for abbreviated names like NC State / N.C. State
-else if(!fanmatchGame) {
-  const awayWords = awayStrippedClean.split(' ').filter(w => w.length > 2);
-  const homeWords = homeStrippedClean.split(' ').filter(w => w.length > 2);
-  const fVisitorWords = fVisitor.split(' ').filter(w => w.length > 2);
-  const fHomeWords = fHome.split(' ').filter(w => w.length > 2);
-  
-  const awayMatchesFVisitor = awayWords.every(w => fVisitor.includes(w));
-  const homeMatchesFHome = homeWords.every(w => fHome.includes(w));
-  const awayMatchesFHome = awayWords.every(w => fHome.includes(w));
-  const homeMatchesFVisitor = homeWords.every(w => fVisitor.includes(w));
-  
-  if(awayMatchesFVisitor && homeMatchesFHome) fanmatchGame = fg;
-  else if(awayMatchesFHome && homeMatchesFVisitor) fanmatchGame = fg;
-}
-if(visitorMatch && homeMatch) fanmatchGame = fg;
-else if(visitorMatchRev && homeMatchRev) fanmatchGame = fg;
-else if(!fanmatchGame) {
-  // ... word match code
-}
-// ADD THIS:
-if(fanmatchGame && (fVisitor.includes('texas') || fHome.includes('texas'))) {
-  console.log('FANMATCH FOUND FOR TEXAS:', fanmatchGame.visitor, 'vs', fanmatchGame.home);
-}
+  const visitorMatchRev = fVisitor === homeStrippedClean || 
+    fVisitor.startsWith(homeStrippedClean + ' ') || 
+    homeStrippedClean.startsWith(fVisitor) ||
+    fVisitor.startsWith(homeStrippedClean);
+  const homeMatchRev = fHome === awayStrippedClean || 
+    fHome.startsWith(awayStrippedClean + ' ') || 
+    awayStrippedClean.startsWith(fHome) ||
+    fHome.startsWith(awayStrippedClean);
+
+  if(visitorMatch && homeMatch) fanmatchGame = fg;
+  else if(visitorMatchRev && homeMatchRev) fanmatchGame = fg;
+  else if(!fanmatchGame) {
+    const awayWords = awayStrippedClean.split(' ').filter(w => w.length > 2);
+    const homeWords = homeStrippedClean.split(' ').filter(w => w.length > 2);
+    const awayMatchesFVisitor = awayWords.every(w => fVisitor.includes(w));
+    const homeMatchesFHome = homeWords.every(w => fHome.includes(w));
+    const awayMatchesFHome = awayWords.every(w => fHome.includes(w));
+    const homeMatchesFVisitor = homeWords.every(w => fVisitor.includes(w));
+    if(awayMatchesFVisitor && homeMatchesFHome) fanmatchGame = fg;
+    else if(awayMatchesFHome && homeMatchesFVisitor) fanmatchGame = fg;
+  }
 });
 
   if(fanmatchGame && fanmatchGame.homePred && fanmatchGame.visitorPred) {
@@ -2609,7 +2591,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
   } else {
     favTeam = avgAwayML < avgHomeML ? stripMascot(game.away_team) : stripMascot(game.home_team);
   }
-  const favSpread = allSpreads.length ? Math.min(...allSpreads.map(Math.abs)).toFixed(1) : null;
+  const favSpread = allSpreads.length ? (allSpreads.map(Math.abs).reduce((a,b)=>a+b,0)/allSpreads.length).toFixed(1) : null;
   leanSide = favTeam+(favSpread ? ' -'+favSpread : '');
   leanBet = 'spread';
 }
@@ -2864,7 +2846,7 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
   const fetchDailyBestBet = async () => {
  const CACHE_KEY = 'sweatlocker_daily_best_bet';
 try {
-  const cached = await AsyncStorage.removeItem(CACHE_KEY); // TEMP
+  const cached = await AsyncStorage.getItem(CACHE_KEY);
     if(cached) {
       const parsed = JSON.parse(cached);
       const ageMin = (Date.now() - parsed.timestamp) / 60000;
