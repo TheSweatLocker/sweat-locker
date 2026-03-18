@@ -5013,7 +5013,7 @@ setPropJerryLoading(false);
             <Text style={styles.pageTitle}>Trends & EV</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
               <View style={{flexDirection:'row',gap:6}}>
-                {[{id:'ev',label:'⚡ +EV'},{id:'propjerry',label:'🧠 Prop Jerry'},{id:'mytrends',label:'📊 My Trends'},{id:'clv',label:'📈 CLV'}].map(t=>(
+                {[{id:'ev',label:'⚡ +EV'},{id:'propjerry',label:'🧠 Prop Jerry'},{id:'mytrends',label:'📊 My Trends'},{id:'clv',label:'📈 CLV'},{id:'tournament',label:'🏀 Tourney'}].map(t=>(
                   <TouchableOpacity key={t.id} style={[styles.chipBtn,trendsTab===t.id&&styles.chipBtnActive]} onPress={()=>setTrendsTab(t.id)}>
                     <Text style={[styles.chipTxt,trendsTab===t.id&&styles.chipTxtActive]}>{t.label}</Text>
                   </TouchableOpacity>
@@ -5331,6 +5331,127 @@ setPropJerryLoading(false);
                 )}
               </View>
             )}
+            {trendsTab==='tournament'&&(()=>{
+  const tourneyBets = bets.filter(b => b.sport === 'NCAAB');
+  const settled = tourneyBets.filter(b => b.result === 'Win' || b.result === 'Loss');
+  const wins = settled.filter(b => b.result === 'Win').length;
+  const losses = settled.filter(b => b.result === 'Loss').length;
+  const pending = tourneyBets.filter(b => b.result === 'Pending').length;
+  const winRate = wins+losses > 0 ? ((wins/(wins+losses))*100).toFixed(0) : '—';
+  const profit = settled.reduce((sum,b) => {
+    const units = parseFloat(b.units||0) || 1;
+    const odds = parseInt(b.odds) || -110;
+    if(b.result==='Win') return sum + (odds > 0 ? units*(odds/100) : units*(100/Math.abs(odds)));
+    if(b.result==='Loss') return sum - units;
+    return sum;
+  }, 0);
+
+  // Get today's top NCAAB games from gamesData
+  const ncaabGames = gamesData.filter(g => g && g.away_team && g.home_team);
+  const topGames = ncaabGames
+    .map(game => {
+      try {
+        const score = calcGameSweatScore(game, 'NCAAB', fanmatchData);
+        return score ? {game, score} : null;
+      } catch(e) { return null; }
+    })
+    .filter(Boolean)
+    .sort((a,b) => b.score.total - a.score.total)
+    .slice(0, 5);
+
+  return(
+    <View>
+      {/* Header */}
+      <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.2)',marginBottom:16}}>
+        <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🏀 2026 MARCH MADNESS TRACKER</Text>
+        <Text style={{color:'#7a92a8',fontSize:12}}>Your tournament record + today's top model plays</Text>
+      </View>
+
+      {/* Record Hero */}
+      <View style={[styles.hero,{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:16}]}>
+        <View>
+          <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700'}}>TOURNAMENT RECORD</Text>
+          <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:36}}>{wins}-{losses}</Text>
+          <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{pending} pending • {winRate}% hit rate</Text>
+        </View>
+        <View style={{alignItems:'center'}}>
+          <Text style={{color:profit>=0?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:28}}>
+            {profit>=0?'+':''}{profit.toFixed(1)}u
+          </Text>
+          <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>PROFIT</Text>
+        </View>
+      </View>
+
+      {/* Today's Top Model Plays */}
+      <Text style={styles.sectionLabel}>🔒 TODAY'S TOP MODEL PLAYS</Text>
+      {topGames.length === 0 ? (
+        <View style={{alignItems:'center',paddingVertical:30}}>
+          <Text style={{fontSize:32}}>🏀</Text>
+          <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center'}}>Switch Games tab to NCAAB to load tournament games.</Text>
+        </View>
+      ) : (
+        topGames.map((item, i) => {
+          const ss = item.score;
+          const tier = ss.total >= 68 ? {label:'🔒 PRIME', color:'#FFB800'} :
+                       ss.total >= 62 ? {label:'✅ LEAN', color:'#00e5a0'} :
+                       {label:'👀 WATCH', color:'#0099ff'};
+          const gameTime = new Date(item.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+          return(
+            <TouchableOpacity key={i} onPress={()=>{setActiveTab('games');setGamesSport('NCAAB');openGameDetail(item.game);}}
+              style={{backgroundColor:'#0e1318',borderRadius:14,padding:14,marginBottom:8,borderWidth:1,borderLeftWidth:3,borderColor:'#1f2d3d',borderLeftColor:tier.color}}>
+              <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                <View style={{flex:1}}>
+                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{item.game.away_team} vs {item.game.home_team}</Text>
+                  <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{gameTime}</Text>
+                </View>
+                <View style={{alignItems:'center',marginLeft:12}}>
+                  <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:tier.color,alignItems:'center',justifyContent:'center',backgroundColor:tier.color+'15'}}>
+                    <Text style={{color:tier.color,fontWeight:'800',fontSize:16}}>{ss.total}</Text>
+                  </View>
+                  <Text style={{color:tier.color,fontSize:9,fontWeight:'700',marginTop:2}}>{tier.label}</Text>
+                </View>
+              </View>
+              {ss.leanSide&&(
+                <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+                  <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
+                    <Text style={{color:HRB_COLOR,fontSize:11,fontWeight:'700'}}>📊 {ss.leanSide}</Text>
+                  </View>
+                  {ss.hasFanmatch&&(
+                    <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}>
+                      <Text style={{color:'#00e5a0',fontSize:11,fontWeight:'700'}}>📡 KenPom Model</Text>
+                    </View>
+                  )}
+                </View>
+              )}
+            </TouchableOpacity>
+          );
+        })
+      )}
+
+      {/* Tournament Bets Log */}
+      {tourneyBets.length > 0 && (
+        <>
+          <Text style={styles.sectionLabel}>📋 TOURNAMENT BETS</Text>
+          {tourneyBets.slice(0,20).map((bet,i) => (
+            <View key={i} style={[styles.betCard,{borderLeftColor:bet.result==='Win'?'#00e5a0':bet.result==='Loss'?'#ff4d6d':'#4a6070'}]}>
+              <View style={styles.betTop}>
+                <View style={{flex:1}}>
+                  <Text style={styles.betMatchup}>{bet.matchup}</Text>
+                  <Text style={styles.betPick}>{bet.pick}</Text>
+                </View>
+                <View style={{alignItems:'flex-end',gap:3}}>
+                  <Text style={{color:resultColor(bet.result),fontWeight:'700',fontSize:13}}>{bet.result}</Text>
+                  <Text style={{color:'#7a92a8',fontSize:11}}>{bet.units}u • {bet.odds>0?'+':''}{bet.odds}</Text>
+                </View>
+              </View>
+            </View>
+          ))}
+        </>
+      )}
+      <View style={{height:20}}/>
+    </View>
+  );
+})()}
             <View style={{height:20}}/>
           </View>
         )}
