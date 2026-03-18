@@ -2712,11 +2712,16 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
 
       const getSweatScoreForGame = (game, sport) => {
     if(!game) return null;
-    const key = game.id || (game.away_team + game.home_team);
-    if(sweatScores[key]) return sweatScores[key];
-    const score = calcGameSweatScore(game, sport, fanmatchData);
-    if(score) setSweatScores(prev => ({...prev, [key]: score}));
-    return score;
+    try {
+      const key = game.id || (game.away_team + game.home_team);
+      if(sweatScores[key]) return sweatScores[key];
+      const score = calcGameSweatScore(game, sport, fanmatchData);
+      if(score) setSweatScores(prev => ({...prev, [key]: score}));
+      return score;
+    } catch(e) {
+      console.log('SweatScore error:', e.message, game?.away_team);
+      return null;
+    }
   };
 
   const fuzzyMatch = (a, b) => {
@@ -3344,9 +3349,20 @@ Rules you must follow:
 - Sport context: ${sport}
 - Model lean: "${scoreData?.leanSide || 'N/A'}" — use as directional starting point
 Sweat Score: ${scoreData.total}/100 ${scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? '— Strong Lean' : '— Best Available Today'}
-Confidence tier: ${scoreData.hasFanmatch ? 'HIGH — KenPom game model active' : 'MODERATE — efficiency model only'}
+Confidence tier: ${
+  sport === 'NCAAB' && scoreData.hasFanmatch ? 'HIGH — The Sweat Locker game model active' :
+  sport === 'NCAAB' ? 'MODERATE — efficiency model only, no game prediction' :
+  sport === 'NBA' ? 'MARKET — no proprietary efficiency model, market signals only' :
+  sport === 'NHL' ? 'MARKET — no NHL model, pure market analysis' :
+  sport === 'NFL' ? 'MARKET — no NFL model, market signals only' :
+  sport === 'MLB' ? 'MARKET — no MLB model yet, market signals only' :
+  'MODERATE — efficiency model only'
+}
 ${scoreData.isTournamentFloor ? 'Note: This is the best available play today — not a Prime Sweat. Jerry should be measured in tone.' : ''}
 - For NCAAB: base analysis ONLY on model data provided — no outside knowledge
+- For NBA, NHL, NFL, MLB: always open with one sentence acknowledging this is market-based analysis, not a proprietary model — be transparent that the edge comes from market signals not efficiency data
+- For NCAAB with KenPom active: lead with the model data, no disclaimer needed
+- For NCAAB without KenPom: mention you're working from season-long efficiency data
 - For NBA: search for tonight's injury reports and lineup news FIRST — real-world factors override market lean
 - For NBA: if a key player is out or questionable, lead with that — it overrides everything else
 - For NBA: if back-to-back data is present, always mention it

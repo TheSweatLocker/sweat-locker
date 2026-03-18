@@ -12,7 +12,10 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.sweatlocker.app"
+      "bundleIdentifier": "com.sweatlocker.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -32,6 +35,12 @@
       ]
     ],
     "scheme": "sweatlocker",
-    "newArchEnabled": true
+    "newArchEnabled": true,
+    "extra": {
+      "eas": {
+        "projectId": "074e9e82-8903-42b2-b90b-fcb2fe20a1f2"
+      }
+    },
+    "owner": "sweatshop"
   }
 }
