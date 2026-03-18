@@ -1598,7 +1598,7 @@ setEvData(evOpps.slice(0,20));
     setSharpLoading(true);
     try {
       const r=await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds',{
-        params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:'spreads,h2h',oddsFormat:'american',bookmakers:'hardrock,draftkings,fanduel,betmgm,caesars'}
+        params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:'spreads,h2h',oddsFormat:'american',bookmakers:'hardrockbet,draftkings,fanduel,betmgm,caesars'}
       });
       const moves=r.data.map(game=>{
         const spreads=(game.bookmakers||[]).map(bm=>{
@@ -1622,7 +1622,7 @@ setEvData(evOpps.slice(0,20));
     setOddsLoading(true);
     try {
       const r=await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds',{
-        params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:'spreads,totals,h2h',oddsFormat:'american',bookmakers:'hardrock,draftkings,fanduel,espnbet,betmgm,caesars,bet365'}
+        params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:'spreads,totals,h2h',oddsFormat:'american',bookmakers:'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,bet365'}
       });
       setOddsData(r.data);
     }catch(e){setOddsData([]);}
@@ -1732,7 +1732,7 @@ setEvData(evOpps.slice(0,20));
       for(const game of gamesResp.data.slice(0,8)){
         try{
           const pr=await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/events/'+game.id+'/odds',{
-            params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:PROP_MARKETS[sport].join(','),oddsFormat:'american',bookmakers:'hardrock,draftkings,fanduel,betmgm'}
+            params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:PROP_MARKETS[sport].join(','),oddsFormat:'american',bookmakers:'hardrockbet,draftkings,fanduel,betmgm'}
           });
           if(pr.data&&pr.data.bookmakers&&pr.data.bookmakers.length){
             const playerMap={};
