@@ -1294,6 +1294,8 @@ const [playersSearch, setPlayersSearch] = useState('');
   const [dailyBestBet, setDailyBestBet] = useState(null);
 const [dailyBestBetLoading, setDailyBestBetLoading] = useState(false);
 const [dailyBestBetError, setDailyBestBetError] = useState('');
+const [modelEdgeData, setModelEdgeData] = useState([]);
+const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
   const [pickRecap, setPickRecap] = useState('');
   const [pickRecapVisible, setPickRecapVisible] = useState(false);
@@ -1316,6 +1318,7 @@ const [dailyBestBetError, setDailyBestBetError] = useState('');
   const [evData, setEvData] = useState([]);
   const [evLoading, setEvLoading] = useState(false);
   const [evSport, setEvSport] = useState('NBA');
+  const [modelEdgeSport, setModelEdgeSport] = useState('NCAAB');
   const [sharpData, setSharpData] = useState([]);
   const [propJerryLastUpdate, setPropJerryLastUpdate] = useState(null);
   const [sharpLoading, setSharpLoading] = useState(false);
@@ -1419,6 +1422,11 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
   useEffect(() => {
   if(bartData.length) {
     fetchDailyBestBet();
+  }
+}, [bartData]);
+useEffect(() => {
+  if(bartData.length) {
+    fetchModelEdgeGames('NCAAB');
   }
 }, [bartData]);
   const saveUnitSize = () => { setUnitSize(tempUnitSize); saveSettings(trackingMode,tempUnitSize); setUnitSizeModal(false); };
@@ -1570,11 +1578,6 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
             });
           });
         });
-      });
-      evOpps.sort((a,b)=>{
-        if(a.isHRB&&!b.isHRB) return -1;
-        if(!a.isHRB&&b.isHRB) return 1;
-        return parseFloat(b.ev)-parseFloat(a.ev);
       });
       // Sort: HRB first, then spreads/totals before ML, then by EV
 evOpps.sort((a,b)=>{
@@ -2859,7 +2862,29 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     }
   };
 
-  const fetchDailyBestBet = async () => {
+  const fetchModelEdgeGames = async (sport = 'NCAAB') => {
+  setModelEdgeLoading(true);
+  try {
+    const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
+      params: {
+        apiKey: ODDS_API_KEY,
+        regions: 'us,us2',
+        markets: 'spreads,totals,h2h',
+        oddsFormat: 'american',
+        bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars'
+      }
+    });
+    const mapped = (r.data||[]).map(g => ({
+      ...g,
+      away_team: sport==='NCAAB' ? stripMascot(g.away_team) : g.away_team,
+      home_team: sport==='NCAAB' ? stripMascot(g.home_team) : g.home_team,
+    }));
+    setModelEdgeData(mapped);
+  } catch(e) { setModelEdgeData([]); }
+  setModelEdgeLoading(false);
+};
+
+const fetchDailyBestBet = async () => {
  const CACHE_KEY = 'sweatlocker_daily_best_bet';
 try {
   const cached = await AsyncStorage.getItem(CACHE_KEY);
@@ -5013,51 +5038,108 @@ setPropJerryLoading(false);
             <Text style={styles.pageTitle}>Trends & EV</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
               <View style={{flexDirection:'row',gap:6}}>
-                {[{id:'ev',label:'⚡ +EV'},{id:'propjerry',label:'🧠 Prop Jerry'},{id:'mytrends',label:'📊 My Trends'},{id:'clv',label:'📈 CLV'},{id:'tournament',label:'🏀 Tourney'}].map(t=>(
-                  <TouchableOpacity key={t.id} style={[styles.chipBtn,trendsTab===t.id&&styles.chipBtnActive]} onPress={()=>setTrendsTab(t.id)}>
+                {[{id:'ev',label:'📊 Model Edge'},{id:'propjerry',label:'🧠 Prop Jerry'},{id:'mytrends',label:'📊 My Trends'},{id:'clv',label:'📈 CLV'},{id:'tournament',label:'🏀 Tourney'}].map(t=>(
+                  <TouchableOpacity key={t.id} style={[styles.chipBtn,trendsTab===t.id&&styles.chipBtnActive]} onPress={()=>{
+  setTrendsTab(t.id);
+  if(t.id==='ev') { setModelEdgeSport('NCAAB'); setGamesSport('NCAAB'); fetchGames('NCAAB','today'); }
+}}>
                     <Text style={[styles.chipTxt,trendsTab===t.id&&styles.chipTxtActive]}>{t.label}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
             </ScrollView>
 
-            {trendsTab==='ev'&&(
-              <View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
-                  <View style={{flexDirection:'row',gap:6}}>{SPORTS.map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,evSport===s&&styles.chipBtnActive]} onPress={()=>setEvSport(s)}><Text style={[styles.chipTxt,evSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text></TouchableOpacity>))}</View>
-                </ScrollView>
-                <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:'rgba(255,184,0,0.25)'}}>
-                  <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginBottom:4}}>🎸 HARD ROCK BET — +EV TRACKER</Text>
-                  <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Hard Rock opportunities pinned to top. We calculate vig-free market probability and flag when Hard Rock offers better odds than the market.</Text>
+            {trendsTab==='ev'&&(()=>{
+  const ncaabGames = gamesData.filter(g => g && g.away_team && g.home_team);
+  const modelEdges = ncaabGames
+    .map(game => {
+      try {
+        const score = calcGameSweatScore(game, gamesSport, fanmatchData);
+        if(!score) return null;
+        const spreadDelta = Math.abs(score.spreadEdge||0);
+        const totalDelta = Math.abs(score.totalDelta||0);
+        if(spreadDelta < 1 && totalDelta < 1) return null;
+        return {game, score, spreadDelta, totalDelta};
+      } catch(e) { return null; }
+    })
+    .filter(Boolean)
+    .sort((a,b) => (b.spreadDelta + b.totalDelta) - (a.spreadDelta + a.totalDelta))
+    .slice(0, 15);
+
+  return(
+    <View>
+      {/* Sport selector */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>
+        <View style={{flexDirection:'row',gap:6}}>
+          {['NCAAB'].map(s=>(
+  <TouchableOpacity key={s} style={[styles.chipBtn,styles.chipBtnActive]}>
+    <Text style={[styles.chipTxt,styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text>
+  </TouchableOpacity>
+))}
+<View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:8,paddingHorizontal:10,paddingVertical:6,borderWidth:1,borderColor:'rgba(255,184,0,0.2)',justifyContent:'center'}}>
+  <Text style={{color:'#4a6070',fontSize:11}}>NBA/NHL model coming post-tournament 🔜</Text>
+</View>
+        </View>
+      </ScrollView>
+
+      {/* Header */}
+      <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:'rgba(255,184,0,0.25)'}}>
+        <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginBottom:4}}>📊 MODEL VS MARKET</Text>
+       <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>NCAAB games where our KenPom model disagrees most with the posted line. Bigger delta = bigger edge. Tap any game for Jerry's full take.</Text>
+      </View>
+
+      {modelEdges.length === 0 ? (
+        <View style={{alignItems:'center',paddingTop:40}}>
+          <Text style={{fontSize:32}}>📊</Text>
+          <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No significant model vs market gaps found.{'\n'}Try switching sports or check back later.</Text>
+        </View>
+      ) : (
+        <>
+          <Text style={styles.sectionLabel}>{modelEdges.length} MODEL EDGES TODAY</Text>
+          {modelEdges.map((item,i) => {
+            const ss = item.score;
+            const tier = ss.total >= 68 ? {color:'#FFB800'} :
+                         ss.total >= 55 ? {color:'#00e5a0'} :
+                         {color:'#0099ff'};
+            const gameTime = new Date(item.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+            return(
+              <TouchableOpacity key={i} onPress={()=>openGameDetail(item.game)}
+                style={{backgroundColor:'#0e1318',borderRadius:14,padding:14,marginBottom:8,borderWidth:1,borderLeftWidth:3,borderColor:'#1f2d3d',borderLeftColor:tier.color}}>
+                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                  <View style={{flex:1}}>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{item.game.away_team} vs {item.game.home_team}</Text>
+                    <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{gameTime}</Text>
+                  </View>
+                  <View style={{width:40,height:40,borderRadius:20,borderWidth:2,borderColor:tier.color,alignItems:'center',justifyContent:'center',backgroundColor:tier.color+'15',marginLeft:8}}>
+                    <Text style={{color:tier.color,fontWeight:'800',fontSize:14}}>{ss.total}</Text>
+                  </View>
                 </View>
-                {evLoading?(<View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:'#7a92a8',marginTop:12}}>Scanning for +EV...</Text></View>):
-                evData.length===0?(<View style={{alignItems:'center',paddingTop:40}}><Text style={{fontSize:32}}>⚡</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No +EV opportunities found.{'\n'}Pull to refresh.</Text></View>):(
-                  <>
-                    <Text style={styles.sectionLabel}>{evData.length} +EV OPPORTUNITIES</Text>
-                    {evData.map((opp,i)=>(
-                      <View key={i} style={[styles.card,{marginBottom:10,borderLeftWidth:3,borderLeftColor:opp.isHRB?HRB_COLOR:'#00e5a0'}]}>
-                        {opp.isHRB&&<View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:8,paddingHorizontal:10,paddingVertical:4,marginBottom:8,alignSelf:'flex-start',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}><Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800'}}>🎸 HARD ROCK BET EDGE</Text></View>}
-                        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
-                          <View style={{flex:1}}><Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{opp.pick}</Text><Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{opp.game}</Text></View>
-                          <View style={{backgroundColor:opp.isHRB?'rgba(255,184,0,0.15)':'rgba(0,229,160,0.15)',borderRadius:8,paddingHorizontal:10,paddingVertical:4,borderWidth:1,borderColor:opp.isHRB?HRB_COLOR:'#00e5a0'}}>
-                            <Text style={{color:opp.isHRB?HRB_COLOR:'#00e5a0',fontWeight:'800',fontSize:14}}>+{opp.ev}% EV</Text>
-                          </View>
-                        </View>
-                        <View style={{flexDirection:'row',gap:6,flexWrap:'wrap'}}>
-                          <View style={[styles.metaChip,{borderColor:opp.isHRB?HRB_COLOR:'#1f2d3d'}]}><Text style={{color:opp.isHRB?HRB_COLOR:'#7a92a8',fontSize:11,fontWeight:opp.isHRB?'700':'400'}}>{opp.book}</Text></View>
-                          <View style={styles.metaChip}><Text style={{color:'#e8f0f8',fontSize:11}}>{opp.odds>0?'+':''}{opp.odds}</Text></View>
-                          <View style={styles.metaChip}><Text style={{color:'#7a92a8',fontSize:11}}>{opp.market}</Text></View>
-                          <View style={styles.metaChip}><Text style={{color:'#7a92a8',fontSize:11}}>Mkt: {opp.marketProb}%</Text></View>
-                        </View>
-                        <TouchableOpacity style={[styles.btnPrimary,{marginTop:10,paddingVertical:8,backgroundColor:opp.isHRB?HRB_COLOR:'#00e5a0'}]} onPress={()=>{setForm({matchup:opp.game,pick:opp.pick,sport:evSport,type:opp.market,odds:String(opp.odds),units:'',book:opp.book,result:'Pending'});setModalVisible(true);}}>
-                          <Text style={styles.btnPrimaryText}>+ Log This Pick</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                  </>
-                )}
-              </View>
-            )}
+                <View style={{flexDirection:'row',gap:6,flexWrap:'wrap'}}>
+                  {item.spreadDelta >= 1 && (
+                    <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
+                      <Text style={{color:HRB_COLOR,fontSize:11,fontWeight:'700'}}>📊 Spread gap: {item.spreadDelta.toFixed(1)} pts</Text>
+                    </View>
+                  )}
+                  {item.totalDelta >= 1 && (
+                    <View style={{backgroundColor:'rgba(0,153,255,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,153,255,0.3)'}}>
+                      <Text style={{color:'#0099ff',fontSize:11,fontWeight:'700'}}>📈 Total gap: {item.totalDelta.toFixed(1)} pts</Text>
+                    </View>
+                  )}
+                  {ss.hasFanmatch && (
+                    <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}>
+                      <Text style={{color:'#00e5a0',fontSize:11,fontWeight:'700'}}>📡 KenPom</Text>
+                    </View>
+                  )}
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </>
+      )}
+      <View style={{height:20}}/>
+    </View>
+  );
+})()}
 
              {trendsTab==='propjerry'&&(
   <View>
@@ -5348,6 +5430,11 @@ setPropJerryLoading(false);
 
   // Get today's top NCAAB games from gamesData
   const ncaabGames = gamesData.filter(g => g && g.away_team && g.home_team);
+// Auto-load NCAAB if no games loaded yet
+if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAAB') {
+  setGamesSport('NCAAB');
+  fetchGames('NCAAB', 'today');
+}
   const topGames = ncaabGames
     .map(game => {
       try {
