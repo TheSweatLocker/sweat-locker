@@ -2915,15 +2915,27 @@ try {
   const todayStart = new Date(now2); todayStart.setHours(0,0,0,0);
   const todayEnd = new Date(now2); todayEnd.setHours(23,59,59,999);
   ncaabGames = (r.data || [])
-    .filter(g => {
-      const t = new Date(g.commence_time);
-      return t >= todayStart && t <= todayEnd;
-    })
-    .map(g => ({
-      ...g,
-      away_team: stripMascot(g.away_team),
-      home_team: stripMascot(g.home_team),
-    }));
+  .filter(g => {
+    const t = new Date(g.commence_time);
+    if(t < todayStart || t > todayEnd) return false;
+    // Must have Hard Rock line
+    const hasHRB = (g.bookmakers||[]).some(bm => 
+      bm.key==='hardrockbet' || bm.key==='hardrock'
+    );
+    if(!hasHRB) return false;
+    // Must be a tournament team — check bartData seed
+    const awayStripped = stripMascot(g.away_team);
+    const homeStripped = stripMascot(g.home_team);
+    const awayData = fuzzyMatchTeam(awayStripped, bartData, 'team');
+    const homeData = fuzzyMatchTeam(homeStripped, bartData, 'team');
+    const isTournament = (awayData && awayData.seed) || (homeData && homeData.seed);
+    return isTournament;
+  })
+  .map(g => ({
+    ...g,
+    away_team: stripMascot(g.away_team),
+    home_team: stripMascot(g.home_team),
+  }));
 } catch(e) {
   console.log('Daily best bet fetch error:', e.message);
 }
@@ -3085,17 +3097,46 @@ label: scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? 'STR
       const losses = bets.filter(b=>b.result==='Loss').length;
       const pending = bets.filter(b=>b.result==='Pending').length;
      const now = new Date();
-      const todayGames = gamesData
-        .filter(g => g && g.away_team && g.home_team && new Date(g.commence_time) > now)
-        .slice(0,10)
-        .map(g=>`${g.away_team} vs ${g.home_team}`)
-        .join('\n');
+      // Fetch games fresh for briefing — don't rely on gamesData state
+let todayGames = '';
+try {
+  const gamesResp = await axios.get('https://api.the-odds-api.com/v4/sports/basketball_ncaab/odds', {
+    params: {
+      apiKey: ODDS_API_KEY,
+      regions: 'us,us2',
+      markets: 'h2h',
+      oddsFormat: 'american',
+      bookmakers: 'draftkings'
+    }
+  });
+  const now2 = new Date();
+  const todayEnd = new Date(now2); todayEnd.setHours(23,59,59,999);
+  todayGames = (gamesResp.data||[])
+    .filter(g => new Date(g.commence_time) > now2 && new Date(g.commence_time) <= todayEnd)
+    .slice(0,10)
+    .map(g => `${stripMascot(g.away_team)} vs ${stripMascot(g.home_team)}`)
+    .join(', ');
+} catch(e) {
+  // Fall back to NBA if NCAAB fails
+  try {
+    const nbaResp = await axios.get('https://api.the-odds-api.com/v4/sports/basketball_nba/odds', {
+      params: { apiKey: ODDS_API_KEY, regions: 'us', markets: 'h2h', oddsFormat: 'american', bookmakers: 'draftkings' }
+    });
+    const now2 = new Date();
+    const todayEnd = new Date(now2); todayEnd.setHours(23,59,59,999);
+    todayGames = (nbaResp.data||[])
+      .filter(g => new Date(g.commence_time) > now2 && new Date(g.commence_time) <= todayEnd)
+      .slice(0,10)
+      .map(g => `${g.away_team} vs ${g.home_team}`)
+      .join(', ');
+  } catch(e2) {}
+}
 
-      const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker. Confident, energetic, like a seasoned handicapper. Today is ${today}. User record: ${wins}-${losses}. Pending bets: ${pending}.
+      const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker. Confident, energetic, like a seasoned handicapper. Today is ${today}. User record: ${wins}-${losses}. Pending: ${pending}.
 
-Today's slate: ${todayGames || 'NBA and NCAAB games today'}.
+Today's slate: ${todayGames || 'games today'}.
 
-Write exactly 3 sentences from your knowledge of these teams and today's slate. This is a MORNING BRIEFING — not a pick. Set the scene for today's slate.`;
+Write exactly 3 sentences in plain conversational text — no markdown, no headers, no asterisks, no hashtags, no bold text. React to what's actually on the slate today. If it's a big slate call it out. If there are marquee matchups name them. If it's a light day say so and find the angle. Set the scene like a sharp beat reporter who just looked at today's board. Do NOT give a specific bet or pick. Do NOT mention what you cannot find. End with — Jerry.`;
 
       const response = await fetch('https://api.anthropic.com/v1/messages',{
         method:'POST',
@@ -5035,7 +5076,7 @@ setPropJerryLoading(false);
 
         {activeTab==='trends'&&(
           <View>
-            <Text style={styles.pageTitle}>Trends & EV</Text>
+            <Text style={styles.pageTitle}>Trends</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
               <View style={{flexDirection:'row',gap:6}}>
                 {[{id:'ev',label:'📊 Model Edge'},{id:'propjerry',label:'🧠 Prop Jerry'},{id:'mytrends',label:'📊 My Trends'},{id:'clv',label:'📈 CLV'},{id:'tournament',label:'🏀 Tourney'}].map(t=>(
@@ -5085,7 +5126,7 @@ setPropJerryLoading(false);
       {/* Header */}
       <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:'rgba(255,184,0,0.25)'}}>
         <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginBottom:4}}>📊 MODEL VS MARKET</Text>
-       <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>NCAAB games where our KenPom model disagrees most with the posted line. Bigger delta = bigger edge. Tap any game for Jerry's full take.</Text>
+       <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>NCAAB games where our efficiency model disagrees most with the posted line. Bigger delta = bigger edge. Tap any game for Jerry's full take.</Text>
       </View>
 
       {modelEdges.length === 0 ? (
