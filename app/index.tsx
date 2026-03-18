@@ -2712,7 +2712,11 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
 
       const getSweatScoreForGame = (game, sport) => {
     if(!game) return null;
-    return calcGameSweatScore(game, sport, fanmatchData);
+    const key = game.id || (game.away_team + game.home_team);
+    if(sweatScores[key]) return sweatScores[key];
+    const score = calcGameSweatScore(game, sport, fanmatchData);
+    if(score) setSweatScores(prev => ({...prev, [key]: score}));
+    return score;
   };
 
   const fuzzyMatch = (a, b) => {
@@ -4415,7 +4419,20 @@ setPropJerryLoading(false);
   const parlayProfit=parlayLegs.length>0?(parseFloat(parlayPayout)-parseFloat(parlayWager||0)).toFixed(2):'0.00';
   const parlayProb=parlayLegs.length>0?impliedProb(parlayDecimal):'0.0';
   const getBestPropLine=(lines)=>lines&&lines.length?lines.reduce((best,l)=>(!best||l.line<best.line)?l:best,null):null;
-  const openGameDetail=(game)=>{setSelectedGame(game);setMatchupTab('money');setScheduleTeam('away');setSitMarket('spread');setStatView('offense');setGameDetailModal(true);fetchHistoricalOdds(game, gamesSport);fetchGameNarrative(game, calcGameSweatScore(game, gamesSport, fanmatchData));};
+  const openGameDetail=(game)=>{
+  const scoreData = sweatScores[game.id] || calcGameSweatScore(game, gamesSport, fanmatchData);
+  if(!sweatScores[game.id]) {
+    setSweatScores(prev => ({...prev, [game.id]: scoreData}));
+  }
+  setSelectedGame(game);
+  setMatchupTab('money');
+  setScheduleTeam('away');
+  setSitMarket('spread');
+  setStatView('offense');
+  setGameDetailModal(true);
+  fetchHistoricalOdds(game, gamesSport);
+  fetchGameNarrative(game, scoreData);
+};
   const logPickFromGame=(game,pick)=>{
     setForm({matchup:game.away_team+' vs '+game.home_team,pick,sport:gamesSport,type:'Spread',odds:'',units:'',book:'Hard Rock',result:'Pending'});
     setGameDetailModal(false);setModalVisible(true);
