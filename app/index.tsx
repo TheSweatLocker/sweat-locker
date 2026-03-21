@@ -3254,13 +3254,20 @@ const homeSeed = homeTeamData?.seed || 0;
 const seedSum = awaySeed + homeSeed;
 const isNCAATourney = awaySeed > 0 && homeSeed > 0;
 
-const detectRound = (seedSum) => {
-  if (seedSum === 17) return 'R64';  // 1v16, 2v15, etc all sum to 17
-  if (seedSum >= 13 && seedSum <= 16) return 'R32'; // typical R32 matchups
-  if (seedSum >= 9 && seedSum <= 12) return 'S16';
-  if (seedSum >= 6 && seedSum <= 9) return 'E8';
-  if (seedSum <= 5) return 'F4';
-  return 'R64'; // default
+const detectRound = () => {
+  const now = new Date();
+  const month = now.getMonth() + 1; // 1-indexed
+  const day = now.getDate();
+  
+  // 2026 NCAA Tournament dates
+  if(month === 3 && day <= 18) return 'R64'; // First Four
+  if(month === 3 && day <= 20) return 'R64'; // First Round
+  if(month === 3 && day <= 22) return 'R32'; // Second Round
+  if(month === 3 && day <= 27) return 'S16'; // Sweet 16
+  if(month === 3 && day <= 29) return 'E8';  // Elite 8
+  if(month === 4 && day <= 5) return 'F4';   // Final Four
+  if(month === 4 && day <= 7) return 'NCG';  // Championship
+  return 'R64';
 };
 
 const NCAA_TRENDS = {
