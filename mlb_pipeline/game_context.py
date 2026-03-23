@@ -2,10 +2,109 @@ import requests
 from datetime import datetime, date
 import json
 
-SUPABASE_URL = "https://vctzbruocrjiojtmpjlw.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjdHpicnVvY3JqaW9qdG1wamx3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1MzYyNDgsImV4cCI6MjA4OTExMjI0OH0.tRebBZpsKS4qTmK5AwkuguVFGWMZlpjXz5Hz4rFQIw0"
-ODDS_API_KEY = "7526d2360f9203e651b629baf56fb235"
-WEATHER_API_KEY = "502b515af845a717adc8059b759e9257"  # free at openweathermap.org
+import os
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "your_supabase_url")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "your_supabase_anon_key")
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "your_odds_api_key")
+WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "your_openweathermap_key")
+
+def get_probable_pitchers(game_date):
+    """Fetch probable pitchers from MLB Stats API"""
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/schedule",
+            params={
+                "sportId": 1,
+                "date": game_date,
+                "hydrate": "probablePitcher"
+            }
+        )
+        data = r.json()
+        pitchers = {}
+        for date_entry in data.get("dates", []):
+            for game in date_entry.get("games", []):
+                game_pk = str(game.get("gamePk", ""))
+                home_team = game.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
+                away_team = game.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
+                home_pitcher = game.get("teams", {}).get("home", {}).get("probablePitcher", {}).get("fullName", None)
+                away_pitcher = game.get("teams", {}).get("away", {}).get("probablePitcher", {}).get("fullName", None)
+                pitchers[home_team] = {
+                    "home_pitcher": home_pitcher,
+                    "away_pitcher": away_pitcher,
+                    "away_team": away_team
+                }
+        print(f"Found probable pitchers for {len(pitchers)} games")
+        return pitchers
+    except Exception as e:
+        print(f"MLB Stats API error: {e}")
+        return {}
+
+def get_umpires(game_date):
+    """Fetch home plate umpires from MLB Stats API"""
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/schedule",
+            params={
+                "sportId": 1,
+                "date": game_date,
+                "hydrate": "officials"
+            }
+        )
+        data = r.json()
+        umpires = {}
+        for date_entry in data.get("dates", []):
+            for game in date_entry.get("games", []):
+                home_team = game.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
+                officials = game.get("officials", [])
+                home_plate_ump = next(
+                    (o.get("official", {}).get("fullName") 
+                     for o in officials 
+                     if o.get("officialType") == "Home Plate"),
+                    None
+                )
+                if home_plate_ump:
+                    umpires[home_team] = home_plate_ump
+        print(f"Found umpires for {len(umpires)} games")
+        return umpires
+    except Exception as e:
+        print(f"Umpire fetch error: {e}")
+        return {}
+
+def get_umpire_stats(ump_name):
+    """Look up umpire tendencies from Supabase"""
+    if not ump_name:
+        return None
+    try:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+        }
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_umpires?ump_name=ilike.{requests.utils.quote('*'+ump_name+'*')}&select=*&limit=1",
+            headers=headers
+        )
+        data = r.json()
+        return data[0] if data else None
+    except:
+        return None
+
+def get_pitcher_stats(pitcher_name):
+    """Look up pitcher stats from Supabase"""
+    if not pitcher_name:
+        return None
+    try:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+        }
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.{requests.utils.quote('*'+pitcher_name+'*')}&select=*&limit=1",
+            headers=headers
+        )
+        data = r.json()
+        return data[0] if data else None
+    except:
+        return None
 
 # Venue coordinates for weather lookup
 VENUE_COORDS = {
@@ -170,11 +269,31 @@ def run():
     today = date.today().isoformat()
     processed = 0
     
+    # Fetch probable pitchers from MLB Stats API
+    probable_pitchers = get_probable_pitchers(today)
+    print(f"Probable pitchers loaded for {len(probable_pitchers)} teams")
+    umpire_assignments = get_umpires(today)
+    print(f"Umpire assignments loaded for {len(umpire_assignments)} games")
+
     for game in games:
         try:
             home_team = game["home_team"]
             away_team = game["away_team"]
             game_id = game["id"]
+            
+            # Get probable pitchers
+            pitcher_info = probable_pitchers.get(home_team, {})
+            home_pitcher = pitcher_info.get("home_pitcher")
+            away_pitcher = pitcher_info.get("away_pitcher")
+            
+            # Get pitcher stats from Supabase
+            home_pitcher_stats = get_pitcher_stats(home_pitcher) if home_pitcher else None
+            away_pitcher_stats = get_pitcher_stats(away_pitcher) if away_pitcher else None
+            
+            if home_pitcher:
+                print(f"  {home_team} starter: {home_pitcher} — xERA: {home_pitcher_stats.get('xera', 'N/A') if home_pitcher_stats else 'stats not found'}")
+            if away_pitcher:
+                print(f"  {away_team} starter: {away_pitcher} — xERA: {away_pitcher_stats.get('xera', 'N/A') if away_pitcher_stats else 'stats not found'}")
             
             # Get venue
             venue = TEAM_VENUE.get(home_team, "Unknown")
@@ -215,12 +334,45 @@ def run():
             # Confidence
             confidence = "HIGH" if park and not weather.get("is_dome") else "MEDIUM" if park else "LOW"
 
+            # Get umpire
+            ump_name = umpire_assignments.get(home_team)
+            ump_stats = get_umpire_stats(ump_name) if ump_name else None
+            if ump_name:
+                k_rate = ump_stats.get('k_rate_above_avg', 'N/A') if ump_stats else 'not in database'
+                over_pct = ump_stats.get('over_rate', 'N/A') if ump_stats else 'N/A'
+                print(f"  Umpire: {ump_name} — K rate: {k_rate}, Over%: {over_pct}")
+
+            # Build pitcher context string for Jerry
+            pitcher_context = ""
+            if home_pitcher_stats:
+                xera = home_pitcher_stats.get('xera', 'N/A')
+                kpct = home_pitcher_stats.get('k_pct', 0)
+                whiff = home_pitcher_stats.get('whiff_rate', 0)
+                pitcher_context += f"{home_pitcher}: xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%"
+            if away_pitcher_stats:
+                xera = away_pitcher_stats.get('xera', 'N/A')
+                kpct = away_pitcher_stats.get('k_pct', 0)
+                whiff = away_pitcher_stats.get('whiff_rate', 0)
+                pitcher_context += f" | {away_pitcher}: xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%"
+
+            # Build umpire note
+            ump_note = ""
+            if ump_stats:
+                k_tendency = "K-friendly" if ump_stats.get('k_rate_above_avg', 0) > 0.5 else "hitter-friendly" if ump_stats.get('k_rate_above_avg', 0) < -0.5 else "neutral"
+                over_pct = ump_stats.get('over_rate', 0.5) * 100
+                ump_note = f"{ump_name} — {k_tendency} zone, {over_pct:.0f}% over rate"
+
             context = {
                 "game_id": game_id,
                 "home_team": home_team,
                 "away_team": away_team,
                 "game_date": today,
                 "venue": venue,
+                "home_pitcher": home_pitcher,
+                "away_pitcher": away_pitcher,
+                "umpire": ump_name,
+                "umpire_note": ump_note,
+                "pitcher_context": pitcher_context,
                 "temperature": weather["temperature"],
                 "wind_speed": weather["wind_speed"],
                 "wind_direction": weather["wind_direction"],
@@ -231,7 +383,6 @@ def run():
                 "confidence": confidence,
                 "fetched_at": datetime.now().isoformat()
             }
-            
             if upload_game_context(context):
                 lean = "OVER" if context["over_lean"] else "UNDER" if context["over_lean"] is False else "NEUTRAL"
                 print(f"✅ {away_team} @ {home_team} — {venue} — {weather['temperature']}°F, wind {weather['wind_speed']}mph {weather['wind_direction']} — {lean}")
