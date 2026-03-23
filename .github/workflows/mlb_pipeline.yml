@@ -2,7 +2,8 @@ name: MLB Pipeline Daily
 
 on:
   schedule:
-    - cron: '0 12 * * *'
+    - cron: '0 12 * * *'  # 8am ET
+    - cron: '0 18 * * *'  # 2pm ET — catches late pitcher scratches
   workflow_dispatch:
 
 jobs:
