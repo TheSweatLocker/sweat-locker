@@ -3221,6 +3221,32 @@ Do NOT give a specific bet or pick. End with — Jerry.`;
       return null;
     }
   };
+  const fetchMLBContext = async (game) => {
+  try {
+    const { data } = await supabase
+      .from('mlb_game_context')
+      .select('*')
+      .eq('game_id', game.id)
+      .single();
+    return data || null;
+  } catch(e) {
+    return null;
+  }
+};
+
+const fetchMLBPitchers = async (homePitcher, awayPitcher) => {
+  if(!homePitcher && !awayPitcher) return null;
+  try {
+    const names = [homePitcher, awayPitcher].filter(Boolean);
+    const { data } = await supabase
+      .from('mlb_pitcher_stats')
+      .select('*')
+      .in('player_name', names);
+    return data || [];
+  } catch(e) {
+    return [];
+  }
+};
   const fetchGameNarrative = async (game, scoreData) => {
   const score = typeof scoreData === 'object' ? (scoreData?.total || 50) : (scoreData || 50);
   const spreadEdge = scoreData?.spreadEdge || 0;
@@ -3313,6 +3339,27 @@ const trendNote = ncaaTrend
   : `${conf} conf tournament — fav ATS ${(confTrend.favATS*100).toFixed(0)}%, under ${(confTrend.underPct*100).toFixed(0)}%${confTrend.titleFadeFav ? ', title game fav fade trend' : ''}`;
 const isTitleGame = false; // wire in later when round detection is added
 
+// Fetch MLB context if needed
+let mlbContext = '';
+if(sport === 'MLB') {
+  const mlbData = await fetchMLBContext(game);
+  if(mlbData) {
+    const overUnder = mlbData.over_lean ? 'OVER lean' : 'UNDER lean';
+    const weatherNote = mlbData.wind_speed > 10 
+      ? `Wind ${mlbData.wind_speed}mph ${mlbData.wind_direction} — ${mlbData.wind_direction === 'S' || mlbData.wind_direction === 'SW' ? 'blowing OUT (over lean)' : 'blowing IN (under lean)'}`
+      : `${mlbData.temperature}°F, light wind`;
+    mlbContext = `
+MLB GAME CONTEXT:
+- Venue: ${mlbData.venue}
+- Park run factor: ${mlbData.park_run_factor} (${mlbData.park_run_factor > 103 ? 'hitter friendly' : mlbData.park_run_factor < 97 ? 'pitcher friendly' : 'neutral'})
+- Weather: ${weatherNote}
+- Temperature: ${mlbData.temperature}°F
+- Precipitation: ${mlbData.precipitation > 0 ? mlbData.precipitation + 'mm — rain concern' : 'none'}
+- Model lean: ${overUnder}
+- Projected total adjustment: ${mlbData.projected_total ? mlbData.projected_total + ' (park + weather adjusted)' : 'N/A'}
+- Data confidence: ${mlbData.confidence}`;
+  }
+}
 const modelContext = scoreData?.predictedSpread ? `
 SWEAT LOCKER MODEL DATA:
 - Projected spread: ${predictedSpread > 0 ? homeName : awayName} by ${Math.abs(predictedSpread).toFixed(1)}
@@ -3383,6 +3430,7 @@ ${score>=68?' (PRIME SWEAT 🔒)':score>=55?' (Strong lean)':' (Monitor)'}
 Spread: ${spread?`${spread.name} ${spread.point > 0 ? '+' : ''}${spread.point}`:'N/A'}
 Total: ${total ? total.point : 'N/A'}
 ${modelContext}
+${mlbContext}
 
 Rules you must follow:
 - Sport context: ${sport}
