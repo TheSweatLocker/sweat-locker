@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Linking, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Circle, Defs, G, LinearGradient, Path, Rect, Stop, Svg, Line as SvgLine, Text as SvgText } from 'react-native-svg';
 
 const ODDS_API_KEY = process.env.EXPO_PUBLIC_ODDS_API_KEY;
@@ -1345,6 +1345,7 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [expandedSweatScore, setExpandedSweatScore] = useState(null);
   const [bartData, setBartData] = useState([]);
   const [gamesSearch, setGamesSearch] = useState('');
+  const [gamesSort, setGamesSort] = useState('time');
    const [fanmatchData, setFanmatchData] = useState({});
   const [nbaTeamData, setNbaTeamData] = useState([]);
     const [scoresCache, setScoresCache] = useState({});
@@ -5009,6 +5010,15 @@ setPropJerryLoading(false);
     </TouchableOpacity>
   )}
 </View>
+<View style={{flexDirection:'row',gap:6,marginBottom:14}}>
+  {[{id:'time',label:'⏰ Time'},{id:'score',label:'🔥 Sweat Score'},{id:'hrb',label:'🎸 HRB First'}].map(s=>(
+    <TouchableOpacity key={s.id} 
+      style={[styles.chipBtn,gamesSort===s.id&&styles.chipBtnActive,{flex:1,alignItems:'center'}]}
+      onPress={()=>setGamesSort(s.id)}>
+      <Text style={[styles.chipTxt,gamesSort===s.id&&styles.chipTxtActive]}>{s.label}</Text>
+    </TouchableOpacity>
+  ))}
+</View>
 
             {gamesSport==='MLB'&&(
               <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:12,padding:16,marginBottom:14,borderWidth:1,borderColor:'rgba(255,184,0,0.25)',alignItems:'center'}}>
@@ -5025,10 +5035,25 @@ setPropJerryLoading(false);
               <>
                  <Text style={styles.sectionLabel}>{gamesData.length} GAMES — {gamesDay.toUpperCase()}</Text>
                 {gamesData.filter((game) =>
-                  gamesSearch==='' ||
-                  game.away_team.toLowerCase().includes(gamesSearch.toLowerCase()) ||
-                  game.home_team.toLowerCase().includes(gamesSearch.toLowerCase())
-                ).map((game, i) => {
+  gamesSearch==='' ||
+  game.away_team.toLowerCase().includes(gamesSearch.toLowerCase()) ||
+  game.home_team.toLowerCase().includes(gamesSearch.toLowerCase())
+).sort((a, b) => {
+  if(gamesSort === 'time') return new Date(a.commence_time) - new Date(b.commence_time);
+  if(gamesSort === 'score') {
+    const scoreA = sweatScores[a.id]?.total || getSweatScoreForGame(a, gamesSport)?.total || 0;
+    const scoreB = sweatScores[b.id]?.total || getSweatScoreForGame(b, gamesSport)?.total || 0;
+    return scoreB - scoreA;
+  }
+  if(gamesSort === 'hrb') {
+    const aHasHRB = (a.bookmakers||[]).some(bm => bm.key==='hardrockbet'||bm.key==='hardrock');
+    const bHasHRB = (b.bookmakers||[]).some(bm => bm.key==='hardrockbet'||bm.key==='hardrock');
+    if(aHasHRB && !bHasHRB) return -1;
+    if(!aHasHRB && bHasHRB) return 1;
+    return new Date(a.commence_time) - new Date(b.commence_time);
+  }
+  return 0;
+}).map((game, i) => {
                   const summary=getGameSummary(game);
                   const gameTime=new Date(game.commence_time);
                   const isLive=new Date()>gameTime&&new Date()<new Date(gameTime.getTime()+3*60*60*1000);
@@ -6515,8 +6540,9 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
         </View>
       </Modal>
 
-      <Modal visible={modalVisible} animationType="slide" transparent>
+     <Modal visible={modalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{flex:1,justifyContent:'flex-end'}}>
           <View style={styles.modalSheet}>
   <View style={styles.modalHandle}/>
   <Text style={styles.modalTitle}>Log New Pick</Text>
@@ -6606,6 +6632,7 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
             <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>setModalVisible(false)}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
           </ScrollView>
           </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
 
@@ -6636,6 +6663,7 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
 
       <Modal visible={addLegModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{flex:1,justifyContent:'flex-end'}}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHandle}/>
             <Text style={styles.modalTitle}>Add Parlay Leg</Text>
@@ -6659,6 +6687,7 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
             <TouchableOpacity style={styles.btnPrimary} onPress={addLeg}><Text style={styles.btnPrimaryText}>Add to Parlay ✓</Text></TouchableOpacity>
             <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>{setAddLegModal(false);setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-'});}}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
           </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     </View>
