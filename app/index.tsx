@@ -16,15 +16,16 @@ const supabase = createClient(
 const HRB = 'Hard Rock';
 const HRB_COLOR = '#FFB800';
 
-const SPORTS = ['NBA', 'NFL', 'NHL', 'MLB', 'NCAAB', 'NCAAF'];
+const SPORTS = ['NBA', 'NFL', 'NHL', 'MLB', 'NCAAB', 'NCAAF', 'UFC'];
 const BET_TYPES = ['Spread', 'Moneyline', 'Total (O/U)', 'Player Prop', 'Parlay'];
 const BOOKS = ['Hard Rock', 'DraftKings', 'FanDuel', 'ESPN Bet', 'BetMGM', 'Caesars', 'Bet365'];
 const RESULTS = ['Pending', 'Win', 'Loss', 'Push'];
 const SPORT_KEYS = {
   NBA:'basketball_nba', NFL:'americanfootball_nfl', NHL:'icehockey_nhl',
   MLB:'baseball_mlb', NCAAB:'basketball_ncaab', NCAAF:'americanfootball_ncaaf',
+  UFC:'mma_mixed_martial_arts',
 };
-const SPORT_EMOJI = { NBA:'🏀', NFL:'🏈', NHL:'🏒', MLB:'⚾', NCAAB:'🏀', NCAAF:'🏈' };
+const SPORT_EMOJI = { NBA:'🏀', NFL:'🏈', NHL:'🏒', MLB:'⚾', NCAAB:'🏀', NCAAF:'🏈', UFC:'🥊' };
 const BOOKMAKER_MAP = {
   'draftkings':'DraftKings','fanduel':'FanDuel','espnbet':'ESPN Bet',
   'betmgm':'BetMGM','caesars':'Caesars','bet365':'Bet365',
@@ -3096,8 +3097,17 @@ label: scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? 'STR
       const cached = await AsyncStorage.getItem('sweatlocker_briefing_cache');
       if(cached) {
         const parsed = JSON.parse(cached);
-        const ageMin = (Date.now() - parsed.timestamp) / 60000;
-        if(ageMin < 360) { setDailyBriefing(parsed.text); return; }
+        const now = new Date();
+        const cacheTime = new Date(parsed.timestamp);
+        // Reset at 5am daily — always fresh for morning
+        const fiveAMToday = new Date(now);
+        fiveAMToday.setHours(5,0,0,0);
+        const cacheIsFromToday = cacheTime >= fiveAMToday;
+        const cacheIsYoung = (Date.now() - parsed.timestamp) < 20*60*1000;
+        if(cacheIsYoung || (cacheIsFromToday && (Date.now() - parsed.timestamp) < 4*60*60*1000)) {
+          setDailyBriefing(parsed.text);
+          return;
+        }
       }
     } catch(e) {}
     setDailyBriefingLoading(true);
@@ -3110,43 +3120,44 @@ label: scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? 'STR
       // Fetch games fresh for briefing — don't rely on gamesData state
 let todayGames = '';
 try {
-  const gamesResp = await axios.get('https://api.the-odds-api.com/v4/sports/basketball_ncaab/odds', {
-    params: {
-      apiKey: ODDS_API_KEY,
-      regions: 'us,us2',
-      markets: 'h2h',
-      oddsFormat: 'american',
-      bookmakers: 'draftkings'
-    }
-  });
-  const now2 = new Date();
-  const todayEnd = new Date(now2); todayEnd.setHours(23,59,59,999);
-  todayGames = (gamesResp.data||[])
-    .filter(g => new Date(g.commence_time) > now2 && new Date(g.commence_time) <= todayEnd)
-    .slice(0,10)
-    .map(g => `${stripMascot(g.away_team)} vs ${stripMascot(g.home_team)}`)
-    .join(', ');
-} catch(e) {
-  // Fall back to NBA if NCAAB fails
+  const sportsToCheck = ['basketball_ncaab', 'basketball_nba', 'baseball_mlb', 'icehockey_nhl', 'americanfootball_nfl', 'mma_mixed_martial_arts'];
+const now2 = new Date();
+const todayEnd = new Date(now2); todayEnd.setHours(23,59,59,999);
+
+for(const sportKey of sportsToCheck) {
   try {
-    const nbaResp = await axios.get('https://api.the-odds-api.com/v4/sports/basketball_nba/odds', {
-      params: { apiKey: ODDS_API_KEY, regions: 'us', markets: 'h2h', oddsFormat: 'american', bookmakers: 'draftkings' }
+    const gamesResp = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/odds`, {
+      params: {
+        apiKey: ODDS_API_KEY,
+        regions: 'us',
+        markets: 'h2h',
+        oddsFormat: 'american',
+        bookmakers: 'draftkings'
+      }
     });
-    const now2 = new Date();
-    const todayEnd = new Date(now2); todayEnd.setHours(23,59,59,999);
-    todayGames = (nbaResp.data||[])
+    const games = (gamesResp.data||[])
       .filter(g => new Date(g.commence_time) > now2 && new Date(g.commence_time) <= todayEnd)
-      .slice(0,10)
-      .map(g => `${g.away_team} vs ${g.home_team}`)
-      .join(', ');
-  } catch(e2) {}
+      .slice(0, 5)
+      .map(g => `${stripMascot(g.away_team)} vs ${stripMascot(g.home_team)}`);
+   if(games.length > 0) {
+      todayGames += (todayGames ? ', ' : '') + games.join(', ');
+    }
+  } catch(e) {}
 }
+} catch(e) {}
 
       const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker. Confident, energetic, like a seasoned handicapper. Today is ${today}. User record: ${wins}-${losses}. Pending: ${pending}.
 
-Today's slate: ${todayGames || 'games today'}.
+Today's slate: ${todayGames || 'no major games scheduled today'}.
 
-Write exactly 3 sentences in plain conversational text — no markdown, no headers, no asterisks, no hashtags, no bold text. React to what's actually on the slate today. If it's a big slate call it out. If there are marquee matchups name them. If it's a light day say so and find the angle. Set the scene like a sharp beat reporter who just looked at today's board. Do NOT give a specific bet or pick. Do NOT mention what you cannot find. End with — Jerry.`;
+Write exactly 3 sentences in plain conversational text — no markdown, no headers, no asterisks, no hashtags, no bold text. React to what's actually on the slate today. Sport-specific context:
+- NCAAB/NBA: reference efficiency edges, line movement, back-to-backs
+- MLB: reference pitching matchups, weather, park factors if relevant
+- NHL: reference goalie matchups, pace, line movement
+- UFC/MMA: reference fighter styles, finishing rates, sharp money
+- If multiple sports are on the slate mention the best angle across all of them
+- If no games are on the slate, give bettors useful advice about line shopping, bankroll management, or what to watch for this week. Never mention data limitations.
+Do NOT give a specific bet or pick. End with — Jerry.`;
 
       const response = await fetch('https://api.anthropic.com/v1/messages',{
         method:'POST',
@@ -3332,6 +3343,26 @@ ${scoreData?.efgMismatch && sport === 'NBA' ? `- Back-to-back: ${scoreData.efgMi
 
     setGameNarrative('');
     setGameNarrativeLoading(true);
+
+    // Check Supabase cache first
+    const gameKey = game.id || (game.away_team + '_' + game.home_team);
+    try {
+      const { data: cachedNarrative } = await supabase
+        .from('jerry_cache')
+        .select('narrative, created_at')
+        .eq('game_id', gameKey)
+        .eq('sport', sport)
+        .single();
+      if(cachedNarrative) {
+        const ageMin = (Date.now() - new Date(cachedNarrative.created_at).getTime()) / 60000;
+        if(ageMin < 120) {
+          setGameNarrative(cachedNarrative.narrative);
+          setGameNarrativeLoading(false);
+          return;
+        }
+      }
+    } catch(e) {}
+
     try {
       const isNBAorNHL = sport === 'NBA' || sport === 'NHL' || sport === 'MLB' || sport === 'NFL';
 const dataQualityNote = isNBAorNHL 
@@ -3368,13 +3399,24 @@ Confidence tier: ${
 }
 ${scoreData.isTournamentFloor ? 'Note: This is the best available play today — not a Prime Sweat. Jerry should be measured in tone.' : ''}
 - For NCAAB: base analysis ONLY on model data provided — no outside knowledge
-- For NBA, NHL, NFL, MLB: always open with one sentence acknowledging this is market-based analysis, not a proprietary model — be transparent that the edge comes from market signals not efficiency data
 - For NCAAB with KenPom active: lead with the model data, no disclaimer needed
 - For NCAAB without KenPom: mention you're working from season-long efficiency data
 - For NBA: search for tonight's injury reports and lineup news FIRST — real-world factors override market lean
 - For NBA: if a key player is out or questionable, lead with that — it overrides everything else
 - For NBA: if back-to-back data is present, always mention it
 - For NBA: fade the B2B team unless line has already moved 3+ pts against them
+- For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
+- For MLB: reference park factors if relevant (Coors Field = over lean, pitcher's parks = under lean)
+- For MLB: check umpire tendencies — K-friendly umps favor unders and strikeout props
+- For MLB: be transparent this is market signals + pitcher research, no proprietary model yet
+- For UFC/MMA: search for fighter records, recent form, style matchups, and any camp/injury news
+- For UFC/MMA: reference finishing rates, striking accuracy, takedown defense — specific stats build credibility
+- For UFC/MMA: sharp money on UFC moves fast — always check line movement
+- For NHL: search for confirmed goalie starters — most important signal in hockey
+- For NHL: reference pace and special teams if relevant
+- For NFL: search for injury report and weather FIRST
+- For NFL: reference efficiency metrics and line movement
+- For NBA, NHL, NFL, MLB, UFC: always open with one sentence transparency — market-based analysis, not a proprietary model
 - If sharp line movement >= 2pts, mention it — sharp money is a strong signal
 - If "Model best bet" contains "TOTAL IS PRIMARY PLAY" — lead with the total
 - If total delta >= 4pts, mention the over/under lean specifically
@@ -3398,7 +3440,7 @@ ${dataQualityNote}`;
         body:JSON.stringify({
   model:'claude-haiku-4-5-20251001',
   max_tokens:1000,
-  ...(sport === 'NBA' || sport === 'NFL' ? {tools:[{type:'web_search_20250305',name:'web_search'}]} : {}),
+  ...(sport === 'NBA' || sport === 'NFL' || sport === 'MLB' || sport === 'UFC' || sport === 'NHL' ? {tools:[{type:'web_search_20250305',name:'web_search'}]} : {}),
   messages:[{role:'user',content:prompt}]
 })
       });
@@ -3407,7 +3449,18 @@ ${dataQualityNote}`;
       //console.log('Jerry response status:', response.status);
       //console.log('Jerry response data:', JSON.stringify(data));
       const text = data?.content?.filter(b=>b.type==='text').map(b=>b.text).join('') || '';
-setGameNarrative(text);
+      setGameNarrative(text);
+      // Save to Supabase cache
+      if(text) {
+        try {
+          await supabase.from('jerry_cache').upsert({
+            game_id: gameKey,
+            sport: sport,
+            narrative: text,
+            created_at: new Date().toISOString(),
+          }, {onConflict: 'game_id,sport'});
+        } catch(e) {}
+      };
     } catch(e) {
       //console.log('Jerry error:', e.message);
       setGameNarrative('Jerry is reviewing the tape on this one. Check back shortly.');
