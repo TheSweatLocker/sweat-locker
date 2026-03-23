@@ -3228,7 +3228,15 @@ Do NOT give a specific bet or pick. End with — Jerry.`;
       .select('*')
       .eq('game_id', game.id)
       .single();
-    return data || null;
+    if(data) return data;
+    // Try matching by team names if game_id doesn't match
+    const { data: data2 } = await supabase
+      .from('mlb_game_context')
+      .select('*')
+      .eq('home_team', game.home_team)
+      .eq('away_team', game.away_team)
+      .single();
+    return data2 || null;
   } catch(e) {
     return null;
   }
@@ -3355,8 +3363,12 @@ MLB GAME CONTEXT:
 - Weather: ${weatherNote}
 - Temperature: ${mlbData.temperature}°F
 - Precipitation: ${mlbData.precipitation > 0 ? mlbData.precipitation + 'mm — rain concern' : 'none'}
+- Home starter: ${mlbData.home_pitcher || 'TBD'}
+- Away starter: ${mlbData.away_pitcher || 'TBD'}
+- Pitcher stats: ${mlbData.pitcher_context || 'not available'}
+- Umpire: ${mlbData.umpire_note || mlbData.umpire || 'TBD'}
 - Model lean: ${overUnder}
-- Projected total adjustment: ${mlbData.projected_total ? mlbData.projected_total + ' (park + weather adjusted)' : 'N/A'}
+- Projected total: ${mlbData.projected_total ? mlbData.projected_total + ' (park + weather adjusted)' : 'N/A'}
 - Data confidence: ${mlbData.confidence}`;
   }
 }
