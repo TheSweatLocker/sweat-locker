@@ -3630,7 +3630,24 @@ setPropJerryLoading(true);
       const sportKey = SPORT_KEYS[sport];
       if(!sportKey) { setPropJerryLoading(false); return; }
 
-      // Load cache first
+      // Load cache first — check Supabase then AsyncStorage
+      try {
+        // Check Supabase cache first (shared across all users)
+        const { data: supabaseCache } = await supabase
+          .from('prop_jerry_cache')
+          .select('data, fetched_at')
+          .eq('sport', sport)
+          .single();
+        if(supabaseCache) {
+          const ageMin = (Date.now() - new Date(supabaseCache.fetched_at).getTime()) / 60000;
+          if(ageMin < 120) {
+            setPropJerryData(supabaseCache.data);
+            setPropJerryLastUpdate(new Date(supabaseCache.fetched_at));
+            setPropJerryLoading(false);
+            return;
+          }
+        }
+      } catch(e) {}
       try {
         const cached = await AsyncStorage.getItem(PROP_JERRY_CACHE_KEY+'_'+sport);
         if(cached) {
@@ -3701,7 +3718,16 @@ setPropJerryLoading(true);
       }));
 
       // Grade each prop
-      const propEntries = Object.values(propMap).slice(0,15);
+      // Take top props distributed across games — max 3 per game
+const propsByGame = {};
+Object.values(propMap).forEach(prop => {
+  const game = prop.gameName;
+  if(!propsByGame[game]) propsByGame[game] = [];
+  propsByGame[game].push(prop);
+});
+const propEntries = Object.values(propsByGame)
+  .flatMap(gameProps => gameProps.slice(0, 3))
+  .slice(0, 24);
 const gradedRaw = [];
 for(let pi = 0; pi < propEntries.length; pi++) {
   const prop = propEntries[pi];
@@ -3837,7 +3863,28 @@ const graded = gradedRaw.filter(p => {
         .sort((a,b) => b.bestEV - a.bestEV)
         .slice(0,30);
 
-      // Auto-save graded props to Jerry history
+      // Auto-save A grades to Supabase prop_grades
+const aGrades = graded.filter(p => p.grade === 'A');
+if(aGrades.length > 0) {
+  try {
+    await supabase.from('prop_grades').insert(
+      aGrades.map(p => ({
+        player: p.player,
+        market: p.marketLabel,
+        line: p.bestLine?.line,
+        grade: p.grade,
+        ev: p.bestEV,
+        game: p.gameName,
+        sport: propJerrySport,
+        best_side: p.bestSide,
+        best_odds: p.bestLine?.odds,
+        book: p.bestLine?.book,
+        result: 'Pending',
+      }))
+    );
+  } catch(e) {}
+}
+        // Auto-save graded props to Jerry history
 const newEntries = graded.map(prop => ({
   id: `${prop.player}_${prop.market}_${Date.now()}`,
   player: prop.player,
@@ -3870,13 +3917,20 @@ setJerryHistory(prev => {
 
         setPropJerryData(graded);
         try {
-        await AsyncStorage.setItem(PROP_JERRY_CACHE_KEY+'_'+sport, JSON.stringify({data:graded, timestamp:Date.now()}));
-      } catch(e) {}
+          await AsyncStorage.setItem(PROP_JERRY_CACHE_KEY+'_'+sport, JSON.stringify({data:graded, timestamp:Date.now()}));
+        } catch(e) {}
+        // Save to Supabase cache — shared across all users
+        try {
+          await supabase.from('prop_jerry_cache').upsert({
+            sport: sport,
+            data: graded,
+            fetched_at: new Date().toISOString(),
+          }, {onConflict: 'sport'});
+        } catch(e) {}
     } catch(e) {
       //console.log('PropJerry error:', e?.message);
     }
     setPropJerryLastUpdate(new Date());
-setPropJerryLoading(false);
     setPropJerryLoading(false);
   };
 
