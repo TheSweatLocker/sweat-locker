@@ -170,6 +170,55 @@ def get_team_stats(team_name, season=2026):
     except Exception as e:
         return None
 
+def get_team_splits(team_name, season=2026):
+    """Fetch home/away splits from MLB Stats API"""
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/teams",
+            params={"sportId": 1, "season": season}
+        )
+        teams = r.json().get("teams", [])
+        team = next((t for t in teams if t["name"].lower() == team_name.lower()), None)
+        if not team:
+            team = next((t for t in teams if team_name.lower() in t["name"].lower() or t["name"].lower() in team_name.lower()), None)
+        if not team:
+            return None
+
+        team_id = team["id"]
+
+        r2 = requests.get(
+            f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats",
+            params={
+                "stats": "homeAndAway",
+                "group": "hitting",
+                "season": season
+            }
+        )
+        splits = r2.json().get("stats", [])
+        if not splits:
+            return None
+
+        home_stats = None
+        away_stats = None
+
+        for split_group in splits:
+            for split in split_group.get("splits", []):
+                split_type = split.get("split", {}).get("code", "")
+                stat = split.get("stat", {})
+                games = int(stat.get("gamesPlayed", 1))
+                if games == 0:
+                    continue
+                runs_per_game = float(stat.get("runs", 0)) / games
+                ops = float(stat.get("ops", 0.720))
+                if split_type == "H":
+                    home_stats = {"runs_per_game": runs_per_game, "ops": ops, "games": games}
+                elif split_type == "A":
+                    away_stats = {"runs_per_game": runs_per_game, "ops": ops, "games": games}
+
+        return {"home": home_stats, "away": away_stats}
+    except Exception as e:
+        return None
+
 def get_pitcher_stats(pitcher_name):
     """Look up pitcher stats from Supabase"""
     if not pitcher_name:
@@ -440,9 +489,22 @@ def run():
             # Confidence
             confidence = "HIGH" if park and not weather.get("is_dome") else "MEDIUM" if park else "LOW"
 
-            # Get team offensive stats
+            # Get team offensive stats + home/away splits
             home_stats = get_team_stats(home_team)
             away_stats = get_team_stats(away_team)
+            home_splits = get_team_splits(home_team)
+            away_splits = get_team_splits(away_team)
+
+            # Use home split for home team, away split for away team
+            home_rpg = home_splits['home']['runs_per_game'] if home_splits and home_splits.get('home') else (home_stats['runs_per_game'] if home_stats else None)
+            away_rpg = away_splits['away']['runs_per_game'] if away_splits and away_splits.get('away') else (away_stats['runs_per_game'] if away_stats else None)
+            home_ops_split = home_splits['home']['ops'] if home_splits and home_splits.get('home') else (home_stats['ops'] if home_stats else None)
+            away_ops_split = away_splits['away']['ops'] if away_splits and away_splits.get('away') else (away_stats['ops'] if away_stats else None)
+
+            if home_rpg:
+                print(f"  {home_team} home R/G: {home_rpg:.2f}")
+            if away_rpg:
+                print(f"  {away_team} away R/G: {away_rpg:.2f}")
 
             # Get bullpen stats
             home_bullpen = get_bullpen_stats(home_team)
@@ -453,8 +515,8 @@ def run():
                 print(f"  {away_team} bullpen ERA: {away_bullpen.get('bullpen_era')} save%: {away_bullpen.get('save_pct')}%")
             
             # Calculate projected total from team stats + park + weather
-            if home_stats and away_stats and home_stats['games_played'] > 0 and away_stats['games_played'] > 0:
-                base_total = home_stats['runs_per_game'] + away_stats['runs_per_game']
+            if home_rpg and away_rpg:
+                base_total = home_rpg + away_rpg
                 park_multiplier = park_run_factor / 100
                 projected_runs = base_total * park_multiplier
                 print(f"  {home_team} avg: {home_stats['runs_per_game']:.2f} R/G | {away_team} avg: {away_stats['runs_per_game']:.2f} R/G | Projected: {projected_runs:.1f}")
@@ -512,10 +574,10 @@ def run():
                 "over_lean": (weather_adj + park_adj) > 0.5 if total_line else None,
                 "confidence": confidence,
                 "fetched_at": datetime.now().isoformat()
-                "home_runs_per_game": home_stats['runs_per_game'] if home_stats else None,
-                "away_runs_per_game": away_stats['runs_per_game'] if away_stats else None,
-                "home_ops": home_stats['ops'] if home_stats else None,
-                "away_ops": away_stats['ops'] if away_stats else None,
+                "home_runs_per_game": home_rpg,
+                "away_runs_per_game": away_rpg,
+                "home_ops": home_ops_split,
+                "away_ops": away_ops_split,
                 "home_bullpen_era": home_bullpen['bullpen_era'] if home_bullpen else None,
                 "away_bullpen_era": away_bullpen['bullpen_era'] if away_bullpen else None,
                 "home_save_pct": home_bullpen['save_pct'] if home_bullpen else None,
