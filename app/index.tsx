@@ -1334,6 +1334,8 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [roiUnit, setRoiUnit] = useState('units');
     const [sweatScores, setSweatScores] = useState({});
     const [historicalOdds, setHistoricalOdds] = useState({});
+    const [altLines, setAltLines] = useState({});
+const [altLinesLoading, setAltLinesLoading] = useState({});
   const [historicalOddsLoading, setHistoricalOddsLoading] = useState({});
   const [propHistoryModal, setPropHistoryModal] = useState(false);
   const [settingsModal, setSettingsModal] = useState(false);
@@ -3591,6 +3593,61 @@ ${dataQualityNote}`;
     }
     setGameNarrativeLoading(false);
   };
+  
+  const fetchAltLines = async (game, sport) => {
+  if(!game) return;
+  const key = game.id || (game.away_team + game.home_team);
+  if(altLines[key]) return;
+  if(altLinesLoading[key]) return;
+  setAltLinesLoading(prev => ({...prev, [key]: true}));
+  try {
+    const sportKey = SPORT_KEYS[sport];
+    if(!sportKey) return;
+    const r = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/events/${game.id}/odds`, {
+      params: {
+        apiKey: ODDS_API_KEY,
+        regions: 'us,us2',
+        markets: 'alternate_spreads,alternate_totals',
+        oddsFormat: 'american',
+        bookmakers: 'hardrockbet,draftkings,fanduel,betmgm'
+      }
+    });
+    const bookmakers = r.data?.bookmakers || [];
+    const altSpreads = [];
+    const altTotals = [];
+    bookmakers.forEach(bm => {
+      bm.markets?.forEach(mkt => {
+        if(mkt.key === 'alternate_spreads') {
+          mkt.outcomes?.forEach(outcome => {
+            altSpreads.push({
+              book: BOOKMAKER_MAP[bm.key] || bm.key,
+              name: outcome.name,
+              point: outcome.point,
+              odds: outcome.price,
+              isHRB: (BOOKMAKER_MAP[bm.key] || bm.key) === HRB
+            });
+          });
+        }
+        if(mkt.key === 'alternate_totals') {
+          mkt.outcomes?.forEach(outcome => {
+            altTotals.push({
+              book: BOOKMAKER_MAP[bm.key] || bm.key,
+              name: outcome.name,
+              point: outcome.point,
+              odds: outcome.price,
+              isHRB: (BOOKMAKER_MAP[bm.key] || bm.key) === HRB
+            });
+          });
+        }
+      });
+    });
+    // Sort by point value
+    altSpreads.sort((a,b) => a.point - b.point);
+    altTotals.sort((a,b) => a.point - b.point);
+    setAltLines(prev => ({...prev, [key]: {altSpreads, altTotals}}));
+  } catch(e) {}
+  setAltLinesLoading(prev => ({...prev, [key]: false}));
+};
   const fetchHistoricalOdds = async (game, sport) => {
     if(!game) return null;
     const key = game.id || (game.away_team+game.home_team);
@@ -4676,6 +4733,7 @@ setJerryHistory(prev => {
   const getBestPropLine=(lines)=>lines&&lines.length?lines.reduce((best,l)=>(!best||l.line<best.line)?l:best,null):null;
   const openGameDetail=(game)=>{
   const scoreData = sweatScores[game.id] || calcGameSweatScore(game, gamesSport, fanmatchData);
+  fetchAltLines(game, gamesSport);
   if(!sweatScores[game.id]) {
     setSweatScores(prev => ({...prev, [game.id]: scoreData}));
   }
@@ -6333,6 +6391,70 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   );
                 })()}
                 {renderLineMovement(selectedGame, historicalOdds, historicalOddsLoading)}
+                {(()=>{
+  const key = selectedGame.id || (selectedGame.away_team + selectedGame.home_team);
+  const alt = altLines[key];
+  if(!alt && !altLinesLoading[key]) return null;
+  if(altLinesLoading[key]) return(
+    <View style={{alignItems:'center',paddingVertical:12}}>
+      <ActivityIndicator size="small" color={HRB_COLOR}/>
+      <Text style={{color:'#4a6070',fontSize:11,marginTop:4}}>Loading alt lines...</Text>
+    </View>
+  );
+  if(!alt || (!alt.altSpreads.length && !alt.altTotals.length)) return null;
+  return(
+    <View style={{marginBottom:16}}>
+      <Text style={styles.sectionLabel}>ALT LINES</Text>
+      {alt.altSpreads.length > 0 && (
+        <View style={[styles.card,{marginBottom:10}]}>
+          <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8}}>ALTERNATE SPREADS</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View style={{flexDirection:'row',gap:8}}>
+             {alt.altSpreads.filter(s => s.name === selectedGame.away_team || s.name === selectedGame.home_team).reduce((acc, s) => {
+                const existing = acc.find(a => a.point === s.point && a.name === s.name);
+                if(!existing) acc.push(s);
+                else if(s.odds > existing.odds) acc[acc.indexOf(existing)] = s;
+                return acc;
+              }, []).filter(s => Math.abs(s.odds) <= 350).slice(0,10).map((s,i) => (
+                <TouchableOpacity key={i} 
+                  onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:s.name+' '+( s.point>0?'+':'')+s.point,sport:gamesSport,type:'Spread',odds:String(s.odds),units:'',book:s.book,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}
+                  style={{backgroundColor:s.isHRB?'rgba(255,184,0,0.1)':'#151c24',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:s.isHRB?HRB_COLOR:'#1f2d3d',minWidth:80}}>
+                  <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>{s.name.split(' ').pop()}</Text>
+                  <Text style={{color:s.isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'800',fontSize:14,marginTop:2}}>{s.point>0?'+':''}{s.point}</Text>
+                  <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{s.odds>0?'+':''}{s.odds}</Text>
+                  {s.isHRB&&<Text style={{color:HRB_COLOR,fontSize:9,marginTop:2}}>🎸</Text>}
+                </TouchableOpacity>
+              ))}
+            </View>
+          </ScrollView>
+        </View>
+      )}
+      {alt.altTotals.length > 0 && (
+        <View style={[styles.card,{marginBottom:10}]}>
+          <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8}}>ALTERNATE TOTALS</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View style={{flexDirection:'row',gap:8}}>
+              {alt.altTotals.filter(t => t.name === 'Over').reduce((acc, t) => {
+                const existing = acc.find(a => a.point === t.point);
+                if(!existing) acc.push(t);
+                else if(t.odds > existing.odds) acc[acc.indexOf(existing)] = t;
+                return acc;
+              }, []).filter(t => Math.abs(t.odds) <= 350).slice(0,10).map((t,i) => (
+                <TouchableOpacity key={i}
+                  onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:'Over '+t.point,sport:gamesSport,type:'Total (O/U)',odds:String(t.odds),units:'',book:t.book,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}
+                  style={{backgroundColor:t.isHRB?'rgba(255,184,0,0.1)':'#151c24',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:t.isHRB?HRB_COLOR:'#1f2d3d',minWidth:70}}>
+                  <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>O {t.point}</Text>
+                  <Text style={{color:t.isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'800',fontSize:14,marginTop:2}}>{t.odds>0?'+':''}{t.odds}</Text>
+                  {t.isHRB&&<Text style={{color:HRB_COLOR,fontSize:9,marginTop:2}}>🎸</Text>}
+                </TouchableOpacity>
+              ))}
+            </View>
+          </ScrollView>
+        </View>
+      )}
+    </View>
+  );
+})()}
                 <Text style={styles.sectionLabel}>LOG A PICK</Text>
                 <View style={{flexDirection:'row',gap:6,marginBottom:16,flexWrap:'wrap'}}>
                   {[
