@@ -2046,7 +2046,20 @@ if(r.data && r.data.data) {
           }
           if(result) {
             const idx = newBets.findIndex(b => b.id === bet.id);
-            if(idx !== -1) { newBets[idx] = {...newBets[idx], result}; updated = true; fetchPickRecap(bet, result); }
+            if(idx !== -1) {
+              Alert.alert(
+                '🎯 Result Detected',
+                `${bet.pick}\n\nFinal: ${matchedGame.away_team} ${awayScore} - ${homeScore} ${matchedGame.home_team}\n\nResult: ${result}`,
+                [
+                  {text: 'Confirm', onPress: () => {
+                    setBets(prev => prev.map(b => b.id === bet.id ? {...b, result} : b));
+                    fetchPickRecap(bet, result);
+                    quickUpdateResult(bet.id, result);
+                  }},
+                  {text: 'Skip', style: 'cancel'},
+                ]
+              );
+            }
           }
         }
       }
@@ -2056,7 +2069,7 @@ if(r.data && r.data.data) {
     }
   }; 
   const fetchScores = async (sport) => {
-    if(scoresCache[sport]) return scoresCache[sport];
+    if(scoresCache[sport] && scoresCache[`${sport}_time`] && (Date.now() - scoresCache[`${sport}_time`]) < 10*60*1000) return scoresCache[sport];
     try {
       const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/scores', {
         params: {apiKey: ODDS_API_KEY, daysFrom: 3, dateFormat: 'iso'}
