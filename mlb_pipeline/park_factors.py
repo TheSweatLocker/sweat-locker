@@ -1,10 +1,11 @@
 import requests
 import json
 import os
+from dotenv import load_dotenv
 
-# Supabase config - paste your values here
-SUPABASE_URL = "https://vctzbruocrjiojtmpjlw.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjdHpicnVvY3JqaW9qdG1wamx3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1MzYyNDgsImV4cCI6MjA4OTExMjI0OH0.tRebBZpsKS4qTmK5AwkuguVFGWMZlpjXz5Hz4rFQIw0"
+load_dotenv()
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 # 2026 MLB Park Factors
 # Run factor > 100 = hitter friendly, < 100 = pitcher friendly

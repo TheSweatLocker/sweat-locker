@@ -3,10 +3,12 @@ from datetime import datetime, date
 import json
 
 import os
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "your_supabase_url")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "your_supabase_anon_key")
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "your_odds_api_key")
-WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "your_openweathermap_key")
+from dotenv import load_dotenv
+load_dotenv()
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
+WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY")
 
 def get_probable_pitchers(game_date):
     """Fetch probable pitchers from MLB Stats API"""
@@ -86,6 +88,45 @@ def get_umpire_stats(ump_name):
         data = r.json()
         return data[0] if data else None
     except:
+        return None
+
+def get_team_stats(team_name, season=2026):
+    """Fetch team batting stats from MLB Stats API"""
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/teams",
+            params={"sportId": 1, "season": season}
+        )
+        teams = r.json().get("teams", [])
+        team = next((t for t in teams if t["name"].lower() == team_name.lower()), None)
+        if not team:
+            # Try partial match
+            team = next((t for t in teams if team_name.lower() in t["name"].lower() or t["name"].lower() in team_name.lower()), None)
+        if not team:
+            return None
+        
+        team_id = team["id"]
+        
+        # Get team batting stats
+        r2 = requests.get(
+            f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats",
+            params={"stats": "season", "group": "hitting", "season": season}
+        )
+        stats = r2.json().get("stats", [])
+        if not stats or not stats[0].get("splits"):
+            return None
+            
+        batting = stats[0]["splits"][0]["stat"]
+        return {
+            "runs_per_game": float(batting.get("runs", 0)) / max(float(batting.get("gamesPlayed", 1)), 1),
+            "avg": float(batting.get("avg", 0.250)),
+            "obp": float(batting.get("obp", 0.320)),
+            "slg": float(batting.get("slg", 0.400)),
+            "ops": float(batting.get("ops", 0.720)),
+            "home_runs": int(batting.get("homeRuns", 0)),
+            "games_played": int(batting.get("gamesPlayed", 0)),
+        }
+    except Exception as e:
         return None
 
 def get_pitcher_stats(pitcher_name):
@@ -334,6 +375,20 @@ def run():
             # Confidence
             confidence = "HIGH" if park and not weather.get("is_dome") else "MEDIUM" if park else "LOW"
 
+            # Get team offensive stats
+            home_stats = get_team_stats(home_team)
+            away_stats = get_team_stats(away_team)
+            
+            # Calculate projected total from team stats + park + weather
+            if home_stats and away_stats and home_stats['games_played'] > 0 and away_stats['games_played'] > 0:
+                base_total = home_stats['runs_per_game'] + away_stats['runs_per_game']
+                park_multiplier = park_run_factor / 100
+                projected_runs = base_total * park_multiplier
+                print(f"  {home_team} avg: {home_stats['runs_per_game']:.2f} R/G | {away_team} avg: {away_stats['runs_per_game']:.2f} R/G | Projected: {projected_runs:.1f}")
+            else:
+                projected_runs = None
+                print(f"  Team stats not available yet (early season)")
+
             # Get umpire
             ump_name = umpire_assignments.get(home_team)
             ump_stats = get_umpire_stats(ump_name) if ump_name else None
@@ -378,10 +433,14 @@ def run():
                 "wind_direction": weather["wind_direction"],
                 "precipitation": weather["precipitation"],
                 "park_run_factor": park_run_factor,
-                "projected_total": round(total_line + weather_adj + park_adj, 1) if total_line else None,
+                "projected_total": round(projected_runs + weather_adj, 1) if projected_runs else (round(total_line + weather_adj + park_adj, 1) if total_line else None),
                 "over_lean": (weather_adj + park_adj) > 0.5 if total_line else None,
                 "confidence": confidence,
                 "fetched_at": datetime.now().isoformat()
+                "home_runs_per_game": home_stats['runs_per_game'] if home_stats else None,
+                "away_runs_per_game": away_stats['runs_per_game'] if away_stats else None,
+                "home_ops": home_stats['ops'] if home_stats else None,
+                "away_ops": away_stats['ops'] if away_stats else None,
             }
             if upload_game_context(context):
                 lean = "OVER" if context["over_lean"] else "UNDER" if context["over_lean"] is False else "NEUTRAL"
