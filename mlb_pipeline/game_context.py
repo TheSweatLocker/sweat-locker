@@ -28,18 +28,59 @@ def get_probable_pitchers(game_date):
                 game_pk = str(game.get("gamePk", ""))
                 home_team = game.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
                 away_team = game.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
-                home_pitcher = game.get("teams", {}).get("home", {}).get("probablePitcher", {}).get("fullName", None)
+               home_pitcher = game.get("teams", {}).get("home", {}).get("probablePitcher", {}).get("fullName", None)
                 away_pitcher = game.get("teams", {}).get("away", {}).get("probablePitcher", {}).get("fullName", None)
+                home_pitcher_id = game.get("teams", {}).get("home", {}).get("probablePitcher", {}).get("id", None)
+                away_pitcher_id = game.get("teams", {}).get("away", {}).get("probablePitcher", {}).get("id", None)
                 pitchers[home_team] = {
                     "home_pitcher": home_pitcher,
                     "away_pitcher": away_pitcher,
-                    "away_team": away_team
-                }
+                    "away_team": away_team,
+                    "home_pitcher_id": home_pitcher_id,
+                    "away_pitcher_id": away_pitcher_id
+}
         print(f"Found probable pitchers for {len(pitchers)} games")
         return pitchers
     except Exception as e:
         print(f"MLB Stats API error: {e}")
         return {}
+
+        def get_pitcher_days_rest(pitcher_id, game_date):
+    """Calculate days rest for a pitcher based on last appearance"""
+    if not pitcher_id:
+        return None
+    try:
+        # Look back 15 days for last start
+        end_date = game_date
+        start_date = (datetime.strptime(game_date, '%Y-%m-%d') - timedelta(days=15)).strftime('%Y-%m-%d')
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/schedule",
+            params={
+                "sportId": 1,
+                "startDate": start_date,
+                "endDate": end_date,
+                "hydrate": f"probablePitcher",
+                "fields": "dates,date,games,teams,probablePitcher,id"
+            }
+        )
+        data = r.json()
+        last_start = None
+        for date_entry in data.get("dates", []):
+            for game in date_entry.get("games", []):
+                for side in ["home", "away"]:
+                    pp = game.get("teams", {}).get(side, {}).get("probablePitcher", {})
+                    if pp.get("id") == pitcher_id:
+                        game_date_str = date_entry.get("date")
+                        if game_date_str and game_date_str < end_date:
+                            if not last_start or game_date_str > last_start:
+                                last_start = game_date_str
+        if last_start:
+            last_dt = datetime.strptime(last_start, '%Y-%m-%d')
+            today_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            return (today_dt - last_dt).days
+        return None
+    except Exception as e:
+        return None
 
 def get_umpires(game_date):
     """Fetch home plate umpires from MLB Stats API"""
@@ -258,6 +299,20 @@ def get_mlb_games():
     except Exception as e:
         print(f"Odds API error: {e}")
         return []
+def get_bullpen_stats(team_name):
+    """Look up bullpen ERA from Supabase"""
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_bullpen_stats?team=eq.{requests.utils.quote(team_name)}&select=*&limit=1",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+            }
+        )
+        data = r.json()
+        return data[0] if data else None
+    except:
+        return None
 
 def get_park_factors(home_team):
     headers = {
@@ -326,6 +381,16 @@ def run():
             pitcher_info = probable_pitchers.get(home_team, {})
             home_pitcher = pitcher_info.get("home_pitcher")
             away_pitcher = pitcher_info.get("away_pitcher")
+            home_pitcher_id = pitcher_info.get("home_pitcher_id")
+            away_pitcher_id = pitcher_info.get("away_pitcher_id")
+            
+            # Calculate days rest
+            home_days_rest = get_pitcher_days_rest(home_pitcher_id, today)
+            away_days_rest = get_pitcher_days_rest(away_pitcher_id, today)
+            if home_days_rest:
+                print(f"  {home_pitcher} days rest: {home_days_rest}")
+            if away_days_rest:
+                print(f"  {away_pitcher} days rest: {away_days_rest}")
             
             # Get pitcher stats from Supabase
             home_pitcher_stats = get_pitcher_stats(home_pitcher) if home_pitcher else None
@@ -378,6 +443,14 @@ def run():
             # Get team offensive stats
             home_stats = get_team_stats(home_team)
             away_stats = get_team_stats(away_team)
+
+            # Get bullpen stats
+            home_bullpen = get_bullpen_stats(home_team)
+            away_bullpen = get_bullpen_stats(away_team)
+            if home_bullpen:
+                print(f"  {home_team} bullpen ERA: {home_bullpen.get('bullpen_era')} save%: {home_bullpen.get('save_pct')}%")
+            if away_bullpen:
+                print(f"  {away_team} bullpen ERA: {away_bullpen.get('bullpen_era')} save%: {away_bullpen.get('save_pct')}%")
             
             # Calculate projected total from team stats + park + weather
             if home_stats and away_stats and home_stats['games_played'] > 0 and away_stats['games_played'] > 0:
@@ -425,6 +498,8 @@ def run():
                 "venue": venue,
                 "home_pitcher": home_pitcher,
                 "away_pitcher": away_pitcher,
+                "home_days_rest": home_days_rest,
+                "away_days_rest": away_days_rest,
                 "umpire": ump_name,
                 "umpire_note": ump_note,
                 "pitcher_context": pitcher_context,
@@ -441,6 +516,10 @@ def run():
                 "away_runs_per_game": away_stats['runs_per_game'] if away_stats else None,
                 "home_ops": home_stats['ops'] if home_stats else None,
                 "away_ops": away_stats['ops'] if away_stats else None,
+                "home_bullpen_era": home_bullpen['bullpen_era'] if home_bullpen else None,
+                "away_bullpen_era": away_bullpen['bullpen_era'] if away_bullpen else None,
+                "home_save_pct": home_bullpen['save_pct'] if home_bullpen else None,
+                "away_save_pct": away_bullpen['save_pct'] if away_bullpen else None,
             }
             if upload_game_context(context):
                 lean = "OVER" if context["over_lean"] else "UNDER" if context["over_lean"] is False else "NEUTRAL"
