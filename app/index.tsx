@@ -1296,6 +1296,7 @@ const [playersSearch, setPlayersSearch] = useState('');
 const [dailyBestBetLoading, setDailyBestBetLoading] = useState(false);
 const [dailyBestBetError, setDailyBestBetError] = useState('');
 const [modelEdgeData, setModelEdgeData] = useState([]);
+const [mlbGameContext, setMlbGameContext] = useState({});
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
   const [pickRecap, setPickRecap] = useState('');
@@ -1426,6 +1427,11 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
   useEffect(() => {
   if(bartData.length) {
     fetchDailyBestBet();
+  }
+}, [bartData]);
+useEffect(() => {
+  if(bartData.length) {
+    fetchMLBGameContext();
   }
 }, [bartData]);
 useEffect(() => {
@@ -2191,7 +2197,7 @@ if(score >= 40) return {label:'👀 Worth a Look', color:'#ffd166'};
     return {label:'❌ Pass', color:'#4a6070'};
   };
 
-    const calcGameSweatScore = (game, sport, fanmatchData = {}) => {
+    const calcGameSweatScore = (game, sport, fanmatchData = {}, mlbContext = {}) => {
      // console.log('calcSweat:', game?.away_team, sport, 'bartData:', bartData.length);
     //console.log('calcSweat called:', game.away_team, 'vs', game.home_team, 'sport:', sport, 'bartData:', bartData.length);
       if(!game) return null;
@@ -2439,13 +2445,14 @@ modelMismatch = Math.min(85, modelMismatch);
   mismatchPts = b2bTeam ? (awayB2B ? -b2bPenalty : b2bPenalty) : 0;
   efgMismatch = b2bTeam ? `${b2bTeam} on back-to-back — fatigue factor (${awayRoadB2B ? 'road B2B' : 'home B2B'})` : '';
 } else if(sport==='MLB') {
-  // MLB Sweat Score based on market signals + line movement
+  // Base market signals
   const spreadGap = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 0;
   const totals = bookmakers.map(bm => {
     const t = bm.markets && bm.markets.find(m => m.key==='totals');
     return t && t.outcomes && t.outcomes[0] ? parseFloat(t.outcomes[0].point) : null;
   }).filter(x => x !== null);
   const totalGap = totals.length > 1 ? Math.max(...totals) - Math.min(...totals) : 0;
+  const avgTotal = totals.length ? totals.reduce((a,b)=>a+b,0)/totals.length : 9.0;
   const mlOddsAway = bookmakers.map(bm => {
     const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
     return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.away_team)?.price : null;
@@ -2457,16 +2464,53 @@ modelMismatch = Math.min(85, modelMismatch);
   const avgAwayML = mlOddsAway.length ? mlOddsAway.reduce((a,b)=>a+b,0)/mlOddsAway.length : 0;
   const avgHomeML = mlOddsHome.length ? mlOddsHome.reduce((a,b)=>a+b,0)/mlOddsHome.length : 0;
   const mlGap = Math.abs(avgAwayML - avgHomeML);
-  
+
   // Base score from market signals
   modelMismatch = Math.min(75, Math.round(35 + (mlGap * 0.08) + (spreadGap * 8) + (totalGap * 6)));
 
-  // Boost for extreme park factors — Coors Field etc
-  // Will be enhanced when mlb_game_context data is wired in
-  leanSide = avgAwayML < avgHomeML ? 
-    stripMascot(game.away_team) : 
-    stripMascot(game.home_team);
-  leanBet = 'ml';
+  // Get MLB context from pre-fetched data
+  const mlbCtx = mlbContext?.[game.id] || 
+                 mlbContext?.[game.home_team] ||
+                 mlbContext?.[game.away_team] ||
+                 null;
+
+  if(mlbCtx) {
+    // Total delta boost — projected vs posted
+    if(mlbCtx.projected_total && avgTotal) {
+      const totalDeltaAbs = Math.abs(mlbCtx.projected_total - avgTotal);
+      if(totalDeltaAbs >= 2) modelMismatch = Math.min(85, modelMismatch + 15);
+      else if(totalDeltaAbs >= 1) modelMismatch = Math.min(80, modelMismatch + 8);
+      projectedTotal = mlbCtx.projected_total.toString();
+      postedTotal = avgTotal;
+      mismatchPts = mlbCtx.projected_total - avgTotal;
+    }
+
+    // Park factor boost — extreme parks
+    if(mlbCtx.park_run_factor) {
+      if(mlbCtx.park_run_factor >= 110 || mlbCtx.park_run_factor <= 93) {
+        modelMismatch = Math.min(85, modelMismatch + 8);
+        efgMismatch = `${mlbCtx.venue} park factor: ${mlbCtx.park_run_factor} (${mlbCtx.park_run_factor >= 110 ? 'extreme hitter park' : 'extreme pitcher park'})`;
+      }
+    }
+
+    // Umpire signal boost
+    if(mlbCtx.umpire_note && mlbCtx.umpire_note.includes('K-friendly')) {
+      modelMismatch = Math.min(85, modelMismatch + 5);
+    }
+
+    // Over/under lean
+    if(mlbCtx.over_lean !== null) {
+      leanBet = 'total';
+      const overUnderSide = mlbCtx.over_lean ? 'Over' : 'Under';
+      leanSide = `${overUnderSide} ${avgTotal}`;
+    }
+  } else {
+    // No context — use ML lean
+    leanSide = avgAwayML < avgHomeML ?
+      stripMascot(game.away_team) :
+      stripMascot(game.home_team);
+    leanBet = 'ml';
+  }
 } else if(sport==='NHL') {
   // NHL market signals
   const spreadGap = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 0;
@@ -2780,7 +2824,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
     try {
       const key = game.id || (game.away_team + game.home_team);
       if(sweatScores[key]) return sweatScores[key];
-      const score = calcGameSweatScore(game, sport, fanmatchData);
+      const score = calcGameSweatScore(game, sport, fanmatchData, mlbGameContext);
       if(score) setSweatScores(prev => ({...prev, [key]: score}));
       return score;
     } catch(e) {
@@ -2936,6 +2980,28 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     }
   };
 
+  const fetchMLBGameContext = async () => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const { data } = await supabase
+      .from('mlb_game_context')
+      .select('*')
+      .eq('game_date', today);
+    if(data && data.length > 0) {
+      const contextMap = {};
+      data.forEach(game => {
+        contextMap[game.home_team] = game;
+        contextMap[game.away_team] = game;
+        if(game.game_id) contextMap[game.game_id] = game;
+      });
+      setMlbGameContext(contextMap);
+      console.log('MLB context loaded:', data.length, 'games');
+    }
+  } catch(e) {
+    console.log('MLB context fetch error:', e.message);
+  }
+};
+  
   const fetchModelEdgeGames = async (sport = 'NCAAB') => {
   setModelEdgeLoading(true);
   try {
@@ -3426,14 +3492,17 @@ MLB GAME CONTEXT:
 - Weather: ${weatherNote}
 - Temperature: ${mlbData.temperature}°F
 - Precipitation: ${mlbData.precipitation > 0 ? mlbData.precipitation + 'mm — rain concern' : 'none'}
-- Home starter: ${mlbData.home_pitcher || 'TBD'}
-- Away starter: ${mlbData.away_pitcher || 'TBD'}
+- Home starter: ${mlbData.home_pitcher || 'TBD'}${mlbData.home_days_rest ? ` (${mlbData.home_days_rest} days rest)` : ''}
+- Away starter: ${mlbData.away_pitcher || 'TBD'}${mlbData.away_days_rest ? ` (${mlbData.away_days_rest} days rest)` : ''}
 - Pitcher stats: ${mlbData.pitcher_context || 'not available'}
+- Days rest signal: ${mlbData.home_days_rest && mlbData.away_days_rest ? (mlbData.home_days_rest > mlbData.away_days_rest ? mlbData.home_pitcher + ' has rest advantage (' + mlbData.home_days_rest + ' vs ' + mlbData.away_days_rest + ' days)' : mlbData.away_days_rest > mlbData.home_days_rest ? mlbData.away_pitcher + ' has rest advantage (' + mlbData.away_days_rest + ' vs ' + mlbData.home_days_rest + ' days)' : 'Even rest') : 'TBD'}
 - Umpire: ${mlbData.umpire_note || mlbData.umpire || 'TBD'}
 - Model lean: ${overUnder}
 - Projected total: ${mlbData.projected_total ? mlbData.projected_total + ' (team stats + park + weather)' : 'N/A'}
 - ${mlbData.home_runs_per_game ? `${game.home_team} offense: ${mlbData.home_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.home_ops?.toFixed(3)}` : ''}
 - ${mlbData.away_runs_per_game ? `${game.away_team} offense: ${mlbData.away_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.away_ops?.toFixed(3)}` : ''}
+- ${mlbData.home_bullpen_era ? `${game.home_team} bullpen: ${mlbData.home_bullpen_era} ERA, ${mlbData.home_save_pct}% save rate` : ''}
+- ${mlbData.away_bullpen_era ? `${game.away_team} bullpen: ${mlbData.away_bullpen_era} ERA, ${mlbData.away_save_pct}% save rate` : ''}
 - Total delta: ${mlbData.projected_total && mlbData.projected_total > 0 ? (mlbData.projected_total - (game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0]?.point || mlbData.projected_total)).toFixed(1) + ' pts vs posted line' : 'N/A'}
 - Data confidence: ${mlbData.confidence}`;
   }
@@ -4116,7 +4185,12 @@ setJerryHistory(prev => {
   };
 
   useEffect(()=>{if(activeTab==='odds')fetchOdds(oddsSport);},[activeTab,oddsSport]);
-  useEffect(()=>{if(activeTab==='games')fetchGames(gamesSport,gamesDay);},[activeTab,gamesSport,gamesDay,bartData.length]);
+ useEffect(()=>{
+  if(activeTab==='games') {
+    fetchGames(gamesSport,gamesDay);
+    if(gamesSport==='MLB') fetchMLBGameContext();
+  }
+},[activeTab,gamesSport,gamesDay,bartData.length]);
   useEffect(()=>{
     if(activeTab==='stats'){
       if(statsTab==='props')fetchProps(propsSport);
@@ -4732,7 +4806,7 @@ setJerryHistory(prev => {
   const parlayProb=parlayLegs.length>0?impliedProb(parlayDecimal):'0.0';
   const getBestPropLine=(lines)=>lines&&lines.length?lines.reduce((best,l)=>(!best||l.line<best.line)?l:best,null):null;
   const openGameDetail=(game)=>{
-  const scoreData = sweatScores[game.id] || calcGameSweatScore(game, gamesSport, fanmatchData);
+  const scoreData = sweatScores[game.id] || calcGameSweatScore(game, gamesSport, fanmatchData, mlbGameContext);
   fetchAltLines(game, gamesSport);
   if(!sweatScores[game.id]) {
     setSweatScores(prev => ({...prev, [game.id]: scoreData}));
@@ -6355,7 +6429,13 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     </View>
                   );
                 })()}
-                {renderMatchupView(selectedGame, gamesSport)}
+                {gamesSport === 'MLB' && (
+  <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
+    <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,marginBottom:4}}>⚾ MLB DATA NOTE</Text>
+    <Text style={{color:'#7a92a8',fontSize:11,lineHeight:17}}>Schedule and situational stats update as the season progresses. Jerry's analysis uses live pitcher Statcast data, park factors, umpire tendencies, and weather — all updated daily.</Text>
+  </View>
+)}
+{renderMatchupView(selectedGame, gamesSport)}
                 {(()=>{
                   const hrbLine=getHRBLine(selectedGame);
                   const hrbEV=getHRBEV(selectedGame);
