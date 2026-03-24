@@ -2077,7 +2077,7 @@ if(r.data && r.data.data) {
       //console.log('Scores raw count:', r.data?.length);
       const completed = (r.data||[]).filter(g => g.completed);
       //console.log('Scores fetched:', sport, 'total:', r.data?.length, 'completed:', completed.length);
-      setScoresCache(prev => ({...prev, [sport]: completed}));
+      setScoresCache(prev => ({...prev, [sport]: completed, [`${sport}_time`]: Date.now()}));
       return completed;
     } catch(e) {
       //console.log('Scores fetch error:', sport. e?.message);
@@ -2436,6 +2436,54 @@ modelMismatch = Math.min(85, modelMismatch);
   // Store for Jerry context
   mismatchPts = b2bTeam ? (awayB2B ? -b2bPenalty : b2bPenalty) : 0;
   efgMismatch = b2bTeam ? `${b2bTeam} on back-to-back — fatigue factor (${awayRoadB2B ? 'road B2B' : 'home B2B'})` : '';
+} else if(sport==='MLB') {
+  // MLB Sweat Score based on market signals + line movement
+  const spreadGap = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 0;
+  const totals = bookmakers.map(bm => {
+    const t = bm.markets && bm.markets.find(m => m.key==='totals');
+    return t && t.outcomes && t.outcomes[0] ? parseFloat(t.outcomes[0].point) : null;
+  }).filter(x => x !== null);
+  const totalGap = totals.length > 1 ? Math.max(...totals) - Math.min(...totals) : 0;
+  const mlOddsAway = bookmakers.map(bm => {
+    const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
+    return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.away_team)?.price : null;
+  }).filter(x => x !== null);
+  const mlOddsHome = bookmakers.map(bm => {
+    const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
+    return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.home_team)?.price : null;
+  }).filter(x => x !== null);
+  const avgAwayML = mlOddsAway.length ? mlOddsAway.reduce((a,b)=>a+b,0)/mlOddsAway.length : 0;
+  const avgHomeML = mlOddsHome.length ? mlOddsHome.reduce((a,b)=>a+b,0)/mlOddsHome.length : 0;
+  const mlGap = Math.abs(avgAwayML - avgHomeML);
+  
+  // Base score from market signals
+  modelMismatch = Math.min(75, Math.round(35 + (mlGap * 0.08) + (spreadGap * 8) + (totalGap * 6)));
+
+  // Boost for extreme park factors — Coors Field etc
+  // Will be enhanced when mlb_game_context data is wired in
+  leanSide = avgAwayML < avgHomeML ? 
+    stripMascot(game.away_team) : 
+    stripMascot(game.home_team);
+  leanBet = 'ml';
+} else if(sport==='NHL') {
+  // NHL market signals
+  const spreadGap = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 0;
+  const mlOddsAway = bookmakers.map(bm => {
+    const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
+    return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.away_team)?.price : null;
+  }).filter(x => x !== null);
+  const mlOddsHome = bookmakers.map(bm => {
+    const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
+    return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.home_team)?.price : null;
+  }).filter(x => x !== null);
+  const avgAwayML = mlOddsAway.length ? mlOddsAway.reduce((a,b)=>a+b,0)/mlOddsAway.length : 0;
+  const avgHomeML = mlOddsHome.length ? mlOddsHome.reduce((a,b)=>a+b,0)/mlOddsHome.length : 0;
+  const mlGap = Math.abs(avgAwayML - avgHomeML);
+  modelMismatch = Math.min(70, Math.round(35 + (mlGap * 0.08) + (spreadGap * 8)));
+  leanSide = avgAwayML < avgHomeML ?
+    stripMascot(game.away_team) :
+    stripMascot(game.home_team);
+  leanBet = 'ml';
 } else {
   modelMismatch = 45;
 }
@@ -3381,7 +3429,10 @@ MLB GAME CONTEXT:
 - Pitcher stats: ${mlbData.pitcher_context || 'not available'}
 - Umpire: ${mlbData.umpire_note || mlbData.umpire || 'TBD'}
 - Model lean: ${overUnder}
-- Projected total: ${mlbData.projected_total ? mlbData.projected_total + ' (park + weather adjusted)' : 'N/A'}
+- Projected total: ${mlbData.projected_total ? mlbData.projected_total + ' (team stats + park + weather)' : 'N/A'}
+- ${mlbData.home_runs_per_game ? `${game.home_team} offense: ${mlbData.home_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.home_ops?.toFixed(3)}` : ''}
+- ${mlbData.away_runs_per_game ? `${game.away_team} offense: ${mlbData.away_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.away_ops?.toFixed(3)}` : ''}
+- Total delta: ${mlbData.projected_total && mlbData.projected_total > 0 ? (mlbData.projected_total - (game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0]?.point || mlbData.projected_total)).toFixed(1) + ' pts vs posted line' : 'N/A'}
 - Data confidence: ${mlbData.confidence}`;
   }
 }
