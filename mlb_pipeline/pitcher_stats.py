@@ -1,18 +1,20 @@
 import requests
 import pandas as pd
-from pybaseball import pitching_stats, statcast_pitcher_arsenal_stats
+import traceback
+from pybaseball import pitching_stats, pitching_stats_range
 import warnings
+import os
+from datetime import datetime, timedelta
 warnings.filterwarnings('ignore')
 
-SUPABASE_URL = "https://vctzbruocrjiojtmpjlw.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjdHpicnVvY3JqaW9qdG1wamx3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1MzYyNDgsImV4cCI6MjA4OTExMjI0OH0.tRebBZpsKS4qTmK5AwkuguVFGWMZlpjXz5Hz4rFQIw0"
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://vctzbruocrjiojtmpjlw.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjdHpicnVvY3JqaW9qdG1wamx3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1MzYyNDgsImV4cCI6MjA4OTExMjI0OH0.tRebBZpsKS4qTmK5AwkuguVFGWMZlpjXz5Hz4rFQIw0")
 
 def fetch_pitcher_stats():
     print("Fetching 2026 pitcher stats from Baseball Savant...")
     try:
-        # Get season pitching stats
-        stats = pitching_stats(2026, qual=20)
-        print(f"Fetched {len(stats)} pitchers")
+        stats = pitching_stats(2026, qual=10)
+        print(f"Fetched {len(stats)} pitchers from 2026")
         return stats
     except Exception as e:
         print(f"Error fetching 2026 stats, trying 2025: {e}")
@@ -24,60 +26,119 @@ def fetch_pitcher_stats():
             print(f"Error: {e2}")
             return None
 
+def fetch_recent_pitcher_stats():
+    print("Fetching recent pitcher stats (last 30 days)...")
+    try:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        recent = pitching_stats_range(start_date, end_date)
+        if recent is None or len(recent) == 0:
+            print("No recent stats available yet — early season")
+            return None
+        print(f"Fetched recent stats for {len(recent)} pitchers")
+        return recent
+    except Exception as e:
+        print(f"Recent stats not available yet: {e}")
+        return None
+
+def fetch_last5_era(pitcher_name, recent_stats):
+    if recent_stats is None or pitcher_name is None:
+        return None
+    try:
+        match = recent_stats[recent_stats['Name'].str.lower() == pitcher_name.lower()]
+        if match.empty:
+            match = recent_stats[recent_stats['Name'].str.lower().str.contains(pitcher_name.lower().split(' ')[-1])]
+        if match.empty:
+            return None
+        return float(match.iloc[0].get('ERA', None))
+    except:
+        return None
+
+def safe_float(val, default):
+    try:
+        f = float(val)
+        return f if not pd.isna(f) else default
+    except:
+        return default
+
 def upload_pitcher(pitcher_data):
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates"
+        "Prefer": "resolution=merge-duplicates,return=minimal"
     }
-    
+    # Use PATCH/upsert pattern
     response = requests.post(
         f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats",
-        headers=headers,
+        headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates,return=minimal"
+        },
         json=pitcher_data
     )
-    return response.status_code in [200, 201]
-
+    if response.status_code == 409:
+        # Record exists — update it
+        update_resp = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=eq.{requests.utils.quote(pitcher_data['player_name'])}&season=eq.{pitcher_data['season']}",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=pitcher_data
+        )
+        return update_resp.status_code in [200, 201, 204]
+    return response.status_code in [200, 201, 204]
 def run():
     stats = fetch_pitcher_stats()
     if stats is None:
         print("Could not fetch pitcher stats")
         return
 
+    recent_stats = fetch_recent_pitcher_stats()
     success = 0
     errors = 0
-    
+
     for _, row in stats.iterrows():
         try:
-            # Map pybaseball columns to our schema
+            name = str(row.get('Name', ''))
+            last5_era = fetch_last5_era(name, recent_stats)
+
             pitcher = {
-                "player_name": str(row.get('Name', '')),
+                "player_name": name,
                 "team": str(row.get('Team', '')),
-                "xera": float(row.get('xERA', row.get('ERA', 4.50))),
-                "k_pct": float(row.get('K%', 0)) * 100 if row.get('K%', 0) < 1 else float(row.get('K%', 0)),
-                "bb_pct": float(row.get('BB%', 0)) * 100 if row.get('BB%', 0) < 1 else float(row.get('BB%', 0)),
-                "whiff_rate": float(row.get('Whiff%', row.get('SwStr%', 0))) * 100 if row.get('Whiff%', row.get('SwStr%', 0)) < 1 else float(row.get('Whiff%', row.get('SwStr%', 0))),
-                "hard_hit_pct": float(row.get('Hard%', 35.0)),
-                "barrel_pct": float(row.get('Barrel%', row.get('Barrels', 6.0))),
-                "avg_fastball_velo": float(row.get('FBv', row.get('vFB', 93.0))),
-                "last_5_era": float(row.get('ERA', 4.50)),
+                "xera": safe_float(row.get('xERA', row.get('ERA')), 4.50),
+                "k_pct": safe_float(row.get('K%'), 20.0),
+                "bb_pct": safe_float(row.get('BB%'), 8.0),
+                "whiff_rate": safe_float(row.get('Whiff%', row.get('SwStr%')), 10.0),
+                "hard_hit_pct": safe_float(row.get('Hard%'), 35.0),
+                "barrel_pct": safe_float(row.get('Barrel%', row.get('Barrels')), 6.0),
+                "avg_fastball_velo": safe_float(row.get('FBv', row.get('vFB')), 93.0),
+                "last_5_era": last5_era if last5_era else safe_float(row.get('ERA'), 4.50),
                 "season": "2026",
                 "updated_at": "now()"
             }
-            
-            if upload_pitcher(pitcher):
+
+            result = upload_pitcher(pitcher)
+            if result:
                 success += 1
                 if success % 50 == 0:
                     print(f"✅ Uploaded {success} pitchers...")
             else:
                 errors += 1
-                
+
         except Exception as e:
             errors += 1
+            if errors <= 3:
+                print(f"Error on {name}: {e}")
             continue
-    
+
     print(f"\nDone! ✅ {success} uploaded, ❌ {errors} errors")
+    if recent_stats is not None:
+        print(f"Recent form data available for {len(recent_stats)} pitchers")
 
 if __name__ == "__main__":
     run()
