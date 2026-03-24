@@ -41,3 +41,11 @@ jobs:
         run: |
           cd mlb_pipeline
           python pitcher_stats.py
+          
+          - name: Run bullpen stats update
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python bullpen_stats.py
