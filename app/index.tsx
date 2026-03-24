@@ -5310,14 +5310,14 @@ setJerryHistory(prev => {
 </View>
 
             {gamesSport==='MLB'&&(
-              <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:12,padding:16,marginBottom:14,borderWidth:1,borderColor:'rgba(255,184,0,0.25)',alignItems:'center'}}>
-                <Text style={{fontSize:28,marginBottom:6}}>⚾</Text>
-                <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>MLB MODEL COMING MARCH 27</Text>
-                <Text style={{color:'#7a92a8',fontSize:12,textAlign:'center',lineHeight:18}}>Opening Day. Statcast-powered model with park factors, umpire tendencies, pitcher rest, and weather data.</Text>
-                <View style={{marginTop:10,backgroundColor:'rgba(255,184,0,0.15)',borderRadius:8,paddingHorizontal:12,paddingVertical:5}}>
-                  <Text style={{color:HRB_COLOR,fontSize:11,fontWeight:'700'}}>🔬 CUTTING EDGE ANALYSIS INCOMING</Text>
-                </View>
-              </View>
+            <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:12,padding:16,marginBottom:14,borderWidth:1,borderColor:'rgba(255,184,0,0.25)',alignItems:'center'}}>
+  <Text style={{fontSize:28,marginBottom:6}}>⚾</Text>
+  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>MLB MODEL — OPENING DAY THURSDAY</Text>
+  <Text style={{color:'#7a92a8',fontSize:12,textAlign:'center',lineHeight:18}}>Park factors, umpire tendencies, confirmed starters, weather data, and pitcher Statcast stats. Jerry is ready.</Text>
+  <View style={{marginTop:10,backgroundColor:'rgba(255,184,0,0.15)',borderRadius:8,paddingHorizontal:12,paddingVertical:5}}>
+    <Text style={{color:HRB_COLOR,fontSize:11,fontWeight:'700'}}>🔬 POWERED BY STATCAST + WEATHER API</Text>
+  </View>
+</View>
             )}
             {gamesLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:'#7a92a8',marginTop:12}}>Loading games...</Text></View>):
             gamesData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:40}}>{SPORT_EMOJI[gamesSport]}</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No {gamesSport} games {gamesDay}.{'\n'}Try a different sport or day.</Text></View>):(
