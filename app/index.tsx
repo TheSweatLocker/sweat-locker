@@ -3554,6 +3554,8 @@ MLB GAME CONTEXT:
 - ${mlbData.away_runs_per_game ? `${game.away_team} offense: ${mlbData.away_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.away_ops?.toFixed(3)}` : ''}
 - ${mlbData.home_bullpen_era ? `${game.home_team} bullpen: ${mlbData.home_bullpen_era} ERA, ${mlbData.home_save_pct}% save rate` : ''}
 - ${mlbData.away_bullpen_era ? `${game.away_team} bullpen: ${mlbData.away_bullpen_era} ERA, ${mlbData.away_save_pct}% save rate` : ''}
+- ${mlbData.home_record ? `${game.home_team} record: ${mlbData.home_record}, last 10: ${mlbData.home_last10 || 'N/A'}, streak: ${mlbData.home_streak || 'N/A'}` : ''}
+- ${mlbData.away_record ? `${game.away_team} record: ${mlbData.away_record}, last 10: ${mlbData.away_last10 || 'N/A'}, streak: ${mlbData.away_streak || 'N/A'}` : ''};
 - Total delta: ${mlbData.projected_total && mlbData.projected_total > 0 ? (mlbData.projected_total - (game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0]?.point || mlbData.projected_total)).toFixed(1) + ' pts vs posted line' : 'N/A'}
 - Data confidence: ${mlbData.confidence}`;
   }
