@@ -538,7 +538,20 @@ def run():
                 xera = home_pitcher_stats.get('xera', 'N/A')
                 kpct = home_pitcher_stats.get('k_pct', 0)
                 whiff = home_pitcher_stats.get('whiff_rate', 0)
-                pitcher_context += f"{home_pitcher}: xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%"
+                gb = home_pitcher_stats.get('gb_pct', 0)
+                fb = home_pitcher_stats.get('fb_pct', 0)
+                lob = home_pitcher_stats.get('lob_pct', 0)
+                pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
+                pitcher_context += f"{home_pitcher}: xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
+            if away_pitcher_stats:
+                xera = away_pitcher_stats.get('xera', 'N/A')
+                kpct = away_pitcher_stats.get('k_pct', 0)
+                whiff = away_pitcher_stats.get('whiff_rate', 0)
+                gb = away_pitcher_stats.get('gb_pct', 0)
+                fb = away_pitcher_stats.get('fb_pct', 0)
+                lob = away_pitcher_stats.get('lob_pct', 0)
+                pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
+                pitcher_context += f" | {away_pitcher}: xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
             if away_pitcher_stats:
                 xera = away_pitcher_stats.get('xera', 'N/A')
                 kpct = away_pitcher_stats.get('k_pct', 0)
