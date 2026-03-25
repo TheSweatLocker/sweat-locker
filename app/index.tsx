@@ -3746,7 +3746,7 @@ ${dataQualityNote}`;
       params: {
         apiKey: ODDS_API_KEY,
         regions: 'us,us2',
-        markets: 'alternate_spreads,alternate_totals',
+        markets: 'alternate_spreads,alternate_totals,h2h_1st_5_innings,totals_1st_5_innings',
         oddsFormat: 'american',
         bookmakers: 'hardrockbet,draftkings,fanduel,betmgm'
       }
@@ -3778,6 +3778,32 @@ ${dataQualityNote}`;
             });
           });
         }
+        if(mkt.key === 'h2h_1st_5_innings') {
+  mkt.outcomes?.forEach(outcome => {
+    altSpreads.push({
+      book: BOOKMAKER_MAP[bm.key] || bm.key,
+      name: outcome.name,
+      point: null,
+      odds: outcome.price,
+      isHRB: (BOOKMAKER_MAP[bm.key] || bm.key) === HRB,
+      isF5: true,
+      label: 'F5 ML'
+    });
+  });
+}
+if(mkt.key === 'totals_1st_5_innings') {
+  mkt.outcomes?.forEach(outcome => {
+    altTotals.push({
+      book: BOOKMAKER_MAP[bm.key] || bm.key,
+      name: outcome.name,
+      point: outcome.point,
+      odds: outcome.price,
+      isHRB: (BOOKMAKER_MAP[bm.key] || bm.key) === HRB,
+      isF5: true,
+      label: `F5 ${outcome.name} ${outcome.point}`
+    });
+  });
+}
       });
     });
     // Sort by point value
@@ -6602,6 +6628,30 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           </ScrollView>
         </View>
       )}
+      {alt.altTotals.filter(t => t.isF5).length > 0 && gamesSport === 'MLB' && (
+  <View style={[styles.card,{marginBottom:10}]}>
+    <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8}}>FIRST 5 INNINGS</Text>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <View style={{flexDirection:'row',gap:8}}>
+        {alt.altTotals.filter(t => t.isF5).reduce((acc, t) => {
+          const existing = acc.find(a => a.point === t.point && a.name === t.name);
+          if(!existing) acc.push(t);
+          else if(t.odds > existing.odds) acc[acc.indexOf(existing)] = t;
+          return acc;
+        }, []).filter(t => Math.abs(t.odds) <= 350).slice(0,8).map((t,i) => (
+          <TouchableOpacity key={i}
+            onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:'F5 '+t.name+' '+t.point,sport:gamesSport,type:'Total (O/U)',odds:String(t.odds),units:'',book:t.book,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}
+            style={{backgroundColor:t.isHRB?'rgba(255,184,0,0.1)':'#151c24',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:t.isHRB?HRB_COLOR:'#1f2d3d',minWidth:80}}>
+            <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>F5 {t.name}</Text>
+            <Text style={{color:t.isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'800',fontSize:14,marginTop:2}}>{t.point}</Text>
+            <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{t.odds>0?'+':''}{t.odds}</Text>
+            {t.isHRB&&<Text style={{color:HRB_COLOR,fontSize:9,marginTop:2}}>🎸</Text>}
+          </TouchableOpacity>
+        ))}
+      </View>
+    </ScrollView>
+  </View>
+)}
     </View>
   );
 })()}
