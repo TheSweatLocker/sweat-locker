@@ -3543,9 +3543,10 @@ MLB GAME CONTEXT:
 - Weather: ${weatherNote}
 - Temperature: ${mlbData.temperature}°F
 - Precipitation: ${mlbData.precipitation > 0 ? mlbData.precipitation + 'mm — rain concern' : 'none'}
-- Home starter: ${mlbData.home_pitcher || 'TBD'}${mlbData.home_days_rest ? ` (${mlbData.home_days_rest} days rest)` : ''}
-- Away starter: ${mlbData.away_pitcher || 'TBD'}${mlbData.away_days_rest ? ` (${mlbData.away_days_rest} days rest)` : ''}
+- Home starter: ${mlbData.home_pitcher || 'TBD'}${mlbData.home_days_rest ? ` (${mlbData.home_days_rest} days rest)` : ''}${mlbData.home_pitcher_home_era ? ` | Home ERA: ${mlbData.home_pitcher_home_era}` : ''}
+- Away starter: ${mlbData.away_pitcher || 'TBD'}${mlbData.away_days_rest ? ` (${mlbData.away_days_rest} days rest)` : ''}${mlbData.away_pitcher_away_era ? ` | Away ERA: ${mlbData.away_pitcher_away_era}` : ''}
 - Pitcher stats: ${mlbData.pitcher_context || 'not available'}
+- Pitcher splits signal: ${mlbData.home_pitcher_home_era && mlbData.away_pitcher_away_era ? `${mlbData.home_pitcher} home ERA ${mlbData.home_pitcher_home_era} vs ${mlbData.away_pitcher} away ERA ${mlbData.away_pitcher_away_era}` : 'splits pending — early season'};
 - Days rest signal: ${mlbData.home_days_rest && mlbData.away_days_rest ? (mlbData.home_days_rest > mlbData.away_days_rest ? mlbData.home_pitcher + ' has rest advantage (' + mlbData.home_days_rest + ' vs ' + mlbData.away_days_rest + ' days)' : mlbData.away_days_rest > mlbData.home_days_rest ? mlbData.away_pitcher + ' has rest advantage (' + mlbData.away_days_rest + ' vs ' + mlbData.home_days_rest + ' days)' : 'Even rest') : 'TBD'}
 - Umpire: ${mlbData.umpire_note || mlbData.umpire || 'TBD'}
 - Model lean: ${overUnder}
