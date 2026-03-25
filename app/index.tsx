@@ -3757,7 +3757,7 @@ ${dataQualityNote}`;
       params: {
         apiKey: ODDS_API_KEY,
         regions: 'us,us2',
-        markets: 'alternate_spreads,alternate_totals,h2h_1st_5_innings,totals_1st_5_innings',
+        markets: 'alternate_spreads,alternate_totals,h2h_1st_5_innings,totals_1st_5_innings,pitcher_props',
         oddsFormat: 'american',
         bookmakers: 'hardrockbet,draftkings,fanduel,betmgm'
       }
@@ -3813,6 +3813,23 @@ if(mkt.key === 'totals_1st_5_innings') {
       isF5: true,
       label: `F5 ${outcome.name} ${outcome.point}`
     });
+  });
+}
+if(mkt.key === 'pitcher_props') {
+  mkt.outcomes?.forEach(outcome => {
+    if(outcome.description?.toLowerCase().includes('no run') || 
+       outcome.name?.toLowerCase().includes('nrfi') ||
+       outcome.description?.toLowerCase().includes('nrfi')) {
+      altTotals.push({
+        book: BOOKMAKER_MAP[bm.key] || bm.key,
+        name: 'NRFI',
+        point: null,
+        odds: outcome.price,
+        isHRB: (BOOKMAKER_MAP[bm.key] || bm.key) === HRB,
+        isNRFI: true,
+        label: 'NRFI'
+      });
+    }
   });
 }
       });
@@ -6675,6 +6692,63 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           </ScrollView>
         </View>
       )}
+      {gamesSport === 'MLB' && (()=>{
+  const key = selectedGame.id || (selectedGame.away_team + selectedGame.home_team);
+  const alt = altLines[key];
+  const mlbCtx = mlbGameContext[selectedGame.home_team] || mlbGameContext[selectedGame.away_team];
+  if(!mlbCtx) return null;
+  
+  // Calculate NRFI score from model data
+  const homePitcherStats = mlbCtx.pitcher_context || '';
+  const kRate = parseFloat(homePitcherStats.match(/K% ([\d.]+)/)?.[1] || 0);
+  const whiffRate = parseFloat(homePitcherStats.match(/whiff ([\d.]+)/)?.[1] || 0);
+  const parkFactor = mlbCtx.park_run_factor || 100;
+  const umpireK = mlbCtx.umpire_note?.includes('K-friendly') ? 1 : mlbCtx.umpire_note?.includes('hitter-friendly') ? -1 : 0;
+  const weatherPenalty = !mlbCtx.wind_speed ? 0 : mlbCtx.wind_direction === 'S' || mlbCtx.wind_direction === 'SW' ? -1 : 0;
+  
+  // NRFI score — higher = more NRFI lean
+  const nrfiScore = Math.round(50 + (kRate * 0.5) + (whiffRate * 0.3) + ((100 - parkFactor) * 0.3) + (umpireK * 8) + (weatherPenalty * 5));
+  const nrfiLean = nrfiScore >= 55 ? 'NRFI' : nrfiScore <= 45 ? 'YRFI' : 'NEUTRAL';
+  const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d6d' : '#7a92a8';
+
+  return(
+    <View style={[styles.card,{marginBottom:10}]}>
+      <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700'}}>NRFI / YRFI SIGNAL</Text>
+        <View style={{backgroundColor:`${nrfiColor}20`,borderRadius:6,paddingHorizontal:8,paddingVertical:3}}>
+          <Text style={{color:nrfiColor,fontSize:11,fontWeight:'800'}}>{nrfiLean}</Text>
+        </View>
+      </View>
+      <View style={{flexDirection:'row',gap:8,marginBottom:8}}>
+        <View style={{flex:1,backgroundColor:'#151c24',borderRadius:8,padding:8,alignItems:'center'}}>
+          <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>NRFI SCORE</Text>
+          <Text style={{color:nrfiColor,fontWeight:'800',fontSize:20,marginTop:2}}>{Math.min(99,Math.max(1,nrfiScore))}</Text>
+        </View>
+        <View style={{flex:2,backgroundColor:'#151c24',borderRadius:8,padding:8}}>
+          <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:4}}>KEY SIGNALS</Text>
+          {kRate > 0 && <Text style={{color:'#e8f0f8',fontSize:10}}>K%: {kRate.toFixed(1)}% {kRate > 25 ? '🔒' : ''}</Text>}
+          {umpireK !== 0 && <Text style={{color:'#e8f0f8',fontSize:10}}>{umpireK > 0 ? '✅ K-friendly ump' : '⚠️ Hitter-friendly ump'}</Text>}
+          <Text style={{color:'#e8f0f8',fontSize:10}}>Park: {parkFactor} {parkFactor >= 110 ? '⚠️ hitter' : parkFactor <= 93 ? '✅ pitcher' : '—'}</Text>
+        </View>
+      </View>
+      {alt?.altTotals?.filter(t => t.isNRFI).length > 0 && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View style={{flexDirection:'row',gap:8}}>
+            {alt.altTotals.filter(t => t.isNRFI).map((t,i) => (
+              <TouchableOpacity key={i}
+                onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:'NRFI',sport:gamesSport,type:'Total (O/U)',odds:String(t.odds),units:'',book:t.book,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}
+                style={{backgroundColor:t.isHRB?'rgba(255,184,0,0.1)':'#151c24',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:t.isHRB?HRB_COLOR:'#1f2d3d',minWidth:80}}>
+                <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>NRFI</Text>
+                <Text style={{color:t.isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'800',fontSize:14,marginTop:2}}>{t.odds>0?'+':''}{t.odds}</Text>
+                {t.isHRB&&<Text style={{color:HRB_COLOR,fontSize:9,marginTop:2}}>🎸</Text>}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </ScrollView>
+      )}
+    </View>
+  );
+})()}
       {alt.altTotals.filter(t => t.isF5).length > 0 && gamesSport === 'MLB' && (
   <View style={[styles.card,{marginBottom:10}]}>
     <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8}}>FIRST 5 INNINGS</Text>
