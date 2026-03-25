@@ -63,6 +63,26 @@ def safe_float(val, default):
     except:
         return default
 
+def get_pitcher_handedness(player_name):
+    """Fetch pitcher throwing hand from MLB Stats API"""
+    try:
+        r = requests.get(
+            "https://statsapi.mlb.com/api/v1/people/search",
+            params={
+                "names": player_name,
+                "sportId": 1
+            }
+        )
+        data = r.json()
+        people = data.get("people", [])
+        if not people:
+            return None
+        person = people[0]
+        hand = person.get("pitchHand", {}).get("code", None)
+        return hand  # "R" or "L"
+    except Exception as e:
+        return None
+
 def upload_pitcher(pitcher_data):
     headers = {
         "apikey": SUPABASE_KEY,
@@ -109,9 +129,11 @@ def run():
             name = str(row.get('Name', ''))
             last5_era = fetch_last5_era(name, recent_stats)
 
+            throws = get_pitcher_handedness(name)
             pitcher = {
                 "player_name": name,
                 "team": str(row.get('Team', '')),
+                "throws": throws or 'R',
                 "xera": safe_float(row.get('xERA', row.get('ERA')), 4.50),
                 "gb_pct": safe_float(row.get('GB%'), 45.0),
                 "fb_pct": safe_float(row.get('FB%'), 35.0),

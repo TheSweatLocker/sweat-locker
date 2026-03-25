@@ -3677,8 +3677,10 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NBA: if back-to-back data is present, always mention it
 - For NBA: fade the B2B team unless line has already moved 3+ pts against them
 - For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
-- For MLB: if lineup is confirmed reference specific batters vs pitcher handedness — this is real edge
-- For MLB: if lineup shows lefty-heavy vs RHP or righty-heavy vs LHP mention it — platoon advantage matters
+- For MLB: pitcher handedness is in the data as (RHP) or (LHP) — always reference it
+- For MLB: if lineup is confirmed count lefty vs righty batters vs the starting pitcher hand
+- For MLB: lefty-heavy lineup vs LHP = pitcher advantage, righty-heavy vs RHP = pitcher advantage
+- For MLB: opposite hand batters have significant platoon advantage — mention if relevant
 - For MLB: team on hot streak (W5+) or cold streak (L5+) is a momentum signal
 - For MLB: reference park factors if relevant (Coors Field = over lean, pitcher's parks = under lean)
 - For MLB: check umpire tendencies — K-friendly umps favor unders and strikeout props

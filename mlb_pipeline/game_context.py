@@ -219,6 +219,112 @@ def get_team_splits(team_name, season=2026):
     except Exception as e:
         return None
 
+def get_team_last10(team_name, season=2026):
+    """Fetch team last 10 games record from MLB Stats API standings"""
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/standings",
+            params={
+                "leagueId": "103,104",
+                "season": season,
+                "standingsTypes": "regularSeason",
+                "hydrate": "team,streak,division,sport,league,record(overallRecords)"
+            }
+        )
+        data = r.json()
+        for record in data.get("records", []):
+            for team_record in record.get("teamRecords", []):
+                name = team_record.get("team", {}).get("name", "")
+                if name.lower() == team_name.lower() or team_name.lower() in name.lower() or name.lower() in team_name.lower():
+                    # Get last 10
+                    overall = team_record.get("records", {}).get("overallRecords", [])
+                    last10 = next((r for r in overall if r.get("type") == "lastTen"), None)
+                    streak = team_record.get("streak", {}).get("streakCode", "")
+                    wins = team_record.get("wins", 0)
+                    losses = team_record.get("losses", 0)
+                    return {
+                        "wins": wins,
+                        "losses": losses,
+                        "last10": f"{last10.get('wins', 0)}-{last10.get('losses', 0)}" if last10 else None,
+                        "streak": streak
+                    }
+        return None
+    except Exception as e:
+        return None
+
+def get_confirmed_lineups(game_date):
+    """Fetch confirmed batting lineups from MLB Stats API"""
+    print(f"Fetching confirmed lineups for {game_date}...")
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/schedule",
+            params={
+                "sportId": 1,
+                "date": game_date,
+                "hydrate": "lineups"
+            }
+        )
+        data = r.json()
+        lineups = {}
+        for date_entry in data.get("dates", []):
+            for game in date_entry.get("games", []):
+                home_team = game.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
+                away_team = game.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
+                home_lineup = game.get("lineups", {}).get("homePlayers", [])
+                away_lineup = game.get("lineups", {}).get("awayPlayers", [])
+                home_batters = [p.get("fullName", "") for p in home_lineup if p.get("primaryPosition", {}).get("abbreviation") != "P"]
+                away_batters = [p.get("fullName", "") for p in away_lineup if p.get("primaryPosition", {}).get("abbreviation") != "P"]
+                if home_batters or away_batters:
+                    lineups[home_team] = {
+                        "home_lineup": home_batters[:9],
+                        "away_lineup": away_batters[:9],
+                        "away_team": away_team,
+                        "lineup_confirmed": True
+                    }
+                    print(f"  ✅ Lineup confirmed: {away_team} @ {home_team}")
+                else:
+                    lineups[home_team] = {
+                        "home_lineup": [],
+                        "away_lineup": [],
+                        "away_team": away_team,
+                        "lineup_confirmed": False
+                    }
+        return lineups
+    except Exception as e:
+        print(f"Lineup fetch error: {e}")
+        return {}
+
+def get_pitcher_splits(pitcher_id, season=2026):
+    """Fetch pitcher home/away splits from MLB Stats API"""
+    if not pitcher_id:
+        return None
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
+            params={
+                "stats": "homeAndAway",
+                "group": "pitching",
+                "season": season
+            }
+        )
+        data = r.json()
+        stats = data.get("stats", [])
+        if not stats:
+            return None
+        home_era = None
+        away_era = None
+        for split_group in stats:
+            for split in split_group.get("splits", []):
+                split_type = split.get("split", {}).get("code", "")
+                era = float(split.get("stat", {}).get("era", 0))
+                if split_type == "H":
+                    home_era = era
+                elif split_type == "A":
+                    away_era = era
+        return {"home_era": home_era, "away_era": away_era}
+    except Exception as e:
+        return None
+
 def get_pitcher_stats(pitcher_name):
     """Look up pitcher stats from Supabase"""
     if not pitcher_name:
@@ -419,6 +525,8 @@ def run():
     print(f"Probable pitchers loaded for {len(probable_pitchers)} teams")
     umpire_assignments = get_umpires(today)
     print(f"Umpire assignments loaded for {len(umpire_assignments)} games")
+    confirmed_lineups = get_confirmed_lineups(today)
+    print(f"Confirmed lineups loaded for {len(confirmed_lineups)} games")
 
     for game in games:
         try:
@@ -444,6 +552,14 @@ def run():
             # Get pitcher stats from Supabase
             home_pitcher_stats = get_pitcher_stats(home_pitcher) if home_pitcher else None
             away_pitcher_stats = get_pitcher_stats(away_pitcher) if away_pitcher else None
+
+            # Get pitcher home/away splits
+            home_pitcher_splits = get_pitcher_splits(home_pitcher_id) if home_pitcher_id else None
+            away_pitcher_splits = get_pitcher_splits(away_pitcher_id) if away_pitcher_id else None
+            if home_pitcher_splits:
+                print(f"  {home_pitcher} splits — Home ERA: {home_pitcher_splits.get('home_era')}, Away ERA: {home_pitcher_splits.get('away_era')}")
+            if away_pitcher_splits:
+                print(f"  {away_pitcher} splits — Home ERA: {away_pitcher_splits.get('home_era')}, Away ERA: {away_pitcher_splits.get('away_era')}")
             
             if home_pitcher:
                 print(f"  {home_team} starter: {home_pitcher} — xERA: {home_pitcher_stats.get('xera', 'N/A') if home_pitcher_stats else 'stats not found'}")
@@ -509,6 +625,18 @@ def run():
             # Get bullpen stats
             home_bullpen = get_bullpen_stats(home_team)
             away_bullpen = get_bullpen_stats(away_team)
+            # Get confirmed lineup
+            lineup_info = confirmed_lineups.get(home_team, {})
+            home_lineup = lineup_info.get("home_lineup", [])
+            away_lineup = lineup_info.get("away_lineup", [])
+            lineup_confirmed = lineup_info.get("lineup_confirmed", False)
+            # Get last 10 form
+            home_form = get_team_last10(home_team)
+            away_form = get_team_last10(away_team)
+            if home_form:
+                print(f"  {home_team} record: {home_form['wins']}-{home_form['losses']}, last 10: {home_form['last10']}, streak: {home_form['streak']}")
+            if away_form:
+                print(f"  {away_team} record: {away_form['wins']}-{away_form['losses']}, last 10: {away_form['last10']}, streak: {away_form['streak']}")
             if home_bullpen:
                 print(f"  {home_team} bullpen ERA: {home_bullpen.get('bullpen_era')} save%: {home_bullpen.get('save_pct')}%")
             if away_bullpen:
@@ -533,7 +661,7 @@ def run():
                 print(f"  Umpire: {ump_name} — K rate: {k_rate}, Over%: {over_pct}")
 
             # Build pitcher context string for Jerry
-            pitcher_context = ""
+           pitcher_context = ""
             if home_pitcher_stats:
                 xera = home_pitcher_stats.get('xera', 'N/A')
                 kpct = home_pitcher_stats.get('k_pct', 0)
@@ -541,8 +669,9 @@ def run():
                 gb = home_pitcher_stats.get('gb_pct', 0)
                 fb = home_pitcher_stats.get('fb_pct', 0)
                 lob = home_pitcher_stats.get('lob_pct', 0)
+                throws = home_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-                pitcher_context += f"{home_pitcher}: xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
+                pitcher_context += f"{home_pitcher} ({throws}HP): xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
             if away_pitcher_stats:
                 xera = away_pitcher_stats.get('xera', 'N/A')
                 kpct = away_pitcher_stats.get('k_pct', 0)
@@ -550,8 +679,9 @@ def run():
                 gb = away_pitcher_stats.get('gb_pct', 0)
                 fb = away_pitcher_stats.get('fb_pct', 0)
                 lob = away_pitcher_stats.get('lob_pct', 0)
+                throws = away_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-                pitcher_context += f" | {away_pitcher}: xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
+                pitcher_context += f" | {away_pitcher} ({throws}HP): xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
             if away_pitcher_stats:
                 xera = away_pitcher_stats.get('xera', 'N/A')
                 kpct = away_pitcher_stats.get('k_pct', 0)
@@ -575,6 +705,10 @@ def run():
                 "away_pitcher": away_pitcher,
                 "home_days_rest": home_days_rest,
                 "away_days_rest": away_days_rest,
+                "home_pitcher_home_era": home_pitcher_splits.get('home_era') if home_pitcher_splits else None,
+                "home_pitcher_away_era": home_pitcher_splits.get('away_era') if home_pitcher_splits else None,
+                "away_pitcher_home_era": away_pitcher_splits.get('home_era') if away_pitcher_splits else None,
+                "away_pitcher_away_era": away_pitcher_splits.get('away_era') if away_pitcher_splits else None,
                 "umpire": ump_name,
                 "umpire_note": ump_note,
                 "pitcher_context": pitcher_context,
@@ -591,6 +725,15 @@ def run():
                 "away_runs_per_game": away_rpg,
                 "home_ops": home_ops_split,
                 "away_ops": away_ops_split,
+                "home_lineup": ", ".join(home_lineup) if home_lineup else None,
+                "away_lineup": ", ".join(away_lineup) if away_lineup else None,
+                "lineup_confirmed": lineup_confirmed,
+                "home_record": f"{home_form['wins']}-{home_form['losses']}" if home_form else None,
+                "away_record": f"{away_form['wins']}-{away_form['losses']}" if away_form else None,
+                "home_last10": home_form['last10'] if home_form else None,
+                "away_last10": away_form['last10'] if away_form else None,
+                "home_streak": home_form['streak'] if home_form else None,
+                "away_streak": away_form['streak'] if away_form else None,
                 "home_bullpen_era": home_bullpen['bullpen_era'] if home_bullpen else None,
                 "away_bullpen_era": away_bullpen['bullpen_era'] if away_bullpen else None,
                 "home_save_pct": home_bullpen['save_pct'] if home_bullpen else None,
