@@ -4186,7 +4186,43 @@ for(let pi = 0; pi < propEntries.length; pi++) {
                       playerContext = ` Player last 5 games avg: ${stats.last5.pts}pts, ${stats.last5.reb}reb, ${stats.last5.ast}ast, ${stats.last5.min}min.`;
                     }
                   }
-                  return `You are Prop Jerry, a sharp and entertaining sports betting analyst with a big personality. Generate a single 2-sentence insight for this prop: ${prop.player} ${bestSide} ${bestLine?.line}, ${bestEV.toFixed(1)}% EV across ${bookCount} books, line consensus range: ${lineRange.toFixed(1)} pts. Grade: ${grade}. ${gradeContext}.${kenpomContext}${playerContext} Base analysis ONLY on data provided. Never say "bet" or "must play". Keep it under 120 characters total. Sound like a real analyst not a robot.`;
+                  if(sport === 'MLB') {
+                    try {
+                      // Get game context for this prop's game
+                      const gameTeams = prop.gameName?.split(' @ ') || [];
+                      const homeTeam = gameTeams[1]?.trim();
+                      const awayTeam = gameTeams[0]?.trim();
+                      if(homeTeam) {
+                        const { data: mlbCtx } = await supabase
+                          .from('mlb_game_context')
+                          .select('*')
+                          .eq('home_team', homeTeam)
+                          .single();
+                        if(mlbCtx) {
+                          // For strikeout props — pitcher K rate + umpire is key
+                          const isKProp = prop.market.toLowerCase().includes('strikeout') || prop.market.toLowerCase().includes('strike');
+                          const isHRProp = prop.market.toLowerCase().includes('home_run') || prop.market.toLowerCase().includes('homer');
+                          const isHitsProp = prop.market.toLowerCase().includes('hits') || prop.market.toLowerCase().includes('total_bases');
+                          
+                          if(isKProp) {
+                            // Find which pitcher this prop is for
+                            const isHomePitcher = mlbCtx.home_pitcher && prop.player.toLowerCase().includes(mlbCtx.home_pitcher.split(' ').pop().toLowerCase());
+                            const pitcherCtx = isHomePitcher ? 
+                              `${mlbCtx.home_pitcher} (${mlbCtx.pitcher_context?.split('|')[0] || 'stats N/A'})` :
+                              `${mlbCtx.away_pitcher} (${mlbCtx.pitcher_context?.split('|')[1] || 'stats N/A'})`;
+                            playerContext = ` MLB K prop context: ${pitcherCtx}. Umpire: ${mlbCtx.umpire_note || 'N/A'}. Park: ${mlbCtx.venue} (run factor ${mlbCtx.park_run_factor}).`;
+                          } else if(isHRProp) {
+                            playerContext = ` MLB HR prop context: ${mlbCtx.venue} HR factor ${mlbCtx.park_run_factor}. Weather: ${mlbCtx.temperature}°F, wind ${mlbCtx.wind_speed}mph ${mlbCtx.wind_direction}.`;
+                          } else if(isHitsProp) {
+                            playerContext = ` MLB hits context: ${mlbCtx.venue} run factor ${mlbCtx.park_run_factor}. ${mlbCtx.umpire_note || ''}`;
+                          } else {
+                            playerContext = ` MLB context: ${mlbCtx.venue} (park factor ${mlbCtx.park_run_factor}), ${mlbCtx.temperature}°F. Umpire: ${mlbCtx.umpire_note || 'N/A'}.`;
+                          }
+                        }
+                      }
+                    } catch(e) {}
+                  }
+                  return `You are Prop Jerry, a sharp and entertaining sports betting analyst with a big personality. Generate a single 2-sentence insight for this prop: ${prop.player} ${bestSide} ${bestLine?.line}, ${bestEV.toFixed(1)}% EV across ${bookCount} books, line consensus range: ${lineRange.toFixed(1)} pts. Grade: ${grade}. ${gradeContext}.${kenpomContext}${playerContext}${sport === 'MLB' && playerContext ? ' Use the MLB context data to give a specific analytical take — reference pitcher K rate, umpire tendency, or park factor as relevant.' : ''} Base analysis ONLY on data provided. Never say "bet" or "must play". Keep it under 150 characters total. Sound like a real analyst not a robot.`;
                 })()
               }]
             })
