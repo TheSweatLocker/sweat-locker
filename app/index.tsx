@@ -2536,11 +2536,9 @@ modelMismatch = Math.min(85, modelMismatch);
       leanSide = `${overUnderSide} ${avgTotal}`;
     }
   } else {
-    // No context — use ML lean
-    leanSide = avgAwayML < avgHomeML ?
-      stripMascot(game.away_team) :
-      stripMascot(game.home_team);
-    leanBet = 'ml';
+    // No context — no lean, don't default to favorite
+    leanSide = null;
+    leanBet = null;
   }
 } else if(sport==='NHL') {
   // NHL market signals
@@ -2557,10 +2555,9 @@ modelMismatch = Math.min(85, modelMismatch);
   const avgHomeML = mlOddsHome.length ? mlOddsHome.reduce((a,b)=>a+b,0)/mlOddsHome.length : 0;
   const mlGap = Math.abs(avgAwayML - avgHomeML);
   modelMismatch = Math.min(70, Math.round(35 + (mlGap * 0.08) + (spreadGap * 8)));
-  leanSide = avgAwayML < avgHomeML ?
-    stripMascot(game.away_team) :
-    stripMascot(game.home_team);
-  leanBet = 'ml';
+  // No default lean — only lean when model has real signal
+  leanSide = null;
+  leanBet = null;
 } else {
   modelMismatch = 45;
 }
