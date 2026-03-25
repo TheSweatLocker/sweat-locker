@@ -2740,9 +2740,9 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
       const avgAwayML = awayML.length ? awayML.reduce((a,b)=>a+b,0)/awayML.length : 0;
       const avgHomeML = homeML.length ? homeML.reduce((a,b)=>a+b,0)/homeML.length : 0;
       if(avgAwayML && avgHomeML) {
+  if(sport === 'NCAAB') {
   let favTeam;
-  if(sport === 'NCAAB' && spreadEdge !== 0) {
-    // Use model edge — positive spreadEdge means home team undervalued
+  if(spreadEdge !== 0) {
     favTeam = spreadEdge > 0 ? stripMascot(game.home_team) : stripMascot(game.away_team);
   } else {
     favTeam = avgAwayML < avgHomeML ? stripMascot(game.away_team) : stripMascot(game.home_team);
@@ -2750,6 +2750,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
   const favSpread = allSpreads.length ? (allSpreads.map(Math.abs).reduce((a,b)=>a+b,0)/allSpreads.length).toFixed(1) : null;
   leanSide = favTeam+(favSpread ? ' -'+favSpread : '');
   leanBet = 'spread';
+}
 }
     }
     return {
@@ -4036,10 +4037,11 @@ setPropJerryLoading(true);
       } catch(e) {}
      
       const markets = sport==='NBA' ?
-        'player_points,player_rebounds,player_assists,player_threes' :
-        sport==='NFL' ? 'player_pass_yards,player_rush_yards,player_reception_yards,player_anytime_td' :
-        sport==='NHL' ? 'player_points,player_goals,player_assists' :
-        'player_points,player_rebounds,player_assists';
+  'player_points,player_rebounds,player_assists,player_threes' :
+  sport==='NFL' ? 'player_pass_yards,player_rush_yards,player_reception_yards,player_anytime_td' :
+  sport==='NHL' ? 'player_points,player_goals,player_assists' :
+  sport==='MLB' ? 'batter_hits,batter_total_bases,batter_rbis,batter_runs_scored,pitcher_strikeouts,batter_home_runs' :
+  'player_points,player_rebounds,player_assists';
 
       const resp = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/events`, {
         params: {apiKey: ODDS_API_KEY, dateFormat: 'iso'}
@@ -4266,7 +4268,7 @@ const graded = gradedRaw.filter(p => {
   if(!p || p.bestEV <= 0) return false;
   const odds = parseFloat(p.bestLine?.odds);
   if(isNaN(odds)) return true;
-  const minBooks = propJerrySport==='NHL' ? 1 : 2;
+  const minBooks = propJerrySport==='NHL' || propJerrySport==='MLB' ? 1 : 2;
   return Math.abs(odds) <= 350 && p.bookCount >= minBooks;
 })
 
