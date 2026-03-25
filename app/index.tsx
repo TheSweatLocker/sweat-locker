@@ -3555,7 +3555,10 @@ MLB GAME CONTEXT:
 - ${mlbData.home_bullpen_era ? `${game.home_team} bullpen: ${mlbData.home_bullpen_era} ERA, ${mlbData.home_save_pct}% save rate` : ''}
 - ${mlbData.away_bullpen_era ? `${game.away_team} bullpen: ${mlbData.away_bullpen_era} ERA, ${mlbData.away_save_pct}% save rate` : ''}
 - ${mlbData.home_record ? `${game.home_team} record: ${mlbData.home_record}, last 10: ${mlbData.home_last10 || 'N/A'}, streak: ${mlbData.home_streak || 'N/A'}` : ''}
-- ${mlbData.away_record ? `${game.away_team} record: ${mlbData.away_record}, last 10: ${mlbData.away_last10 || 'N/A'}, streak: ${mlbData.away_streak || 'N/A'}` : ''};
+- ${mlbData.away_record ? `${game.away_team} record: ${mlbData.away_record}, last 10: ${mlbData.away_last10 || 'N/A'}, streak: ${mlbData.away_streak || 'N/A'}` : ''}
+- ${mlbData.lineup_confirmed ? `✅ Lineups confirmed` : '⏳ Lineups pending (available 2-3 hours before first pitch)'}
+- ${mlbData.home_lineup ? `${game.home_team} lineup: ${mlbData.home_lineup}` : ''}
+- ${mlbData.away_lineup ? `${game.away_team} lineup: ${mlbData.away_lineup}` : ''};
 - Total delta: ${mlbData.projected_total && mlbData.projected_total > 0 ? (mlbData.projected_total - (game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0]?.point || mlbData.projected_total)).toFixed(1) + ' pts vs posted line' : 'N/A'}
 - Data confidence: ${mlbData.confidence}`;
   }
@@ -3673,6 +3676,9 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NBA: if back-to-back data is present, always mention it
 - For NBA: fade the B2B team unless line has already moved 3+ pts against them
 - For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
+- For MLB: if lineup is confirmed reference specific batters vs pitcher handedness — this is real edge
+- For MLB: if lineup shows lefty-heavy vs RHP or righty-heavy vs LHP mention it — platoon advantage matters
+- For MLB: team on hot streak (W5+) or cold streak (L5+) is a momentum signal
 - For MLB: reference park factors if relevant (Coors Field = over lean, pitcher's parks = under lean)
 - For MLB: check umpire tendencies — K-friendly umps favor unders and strikeout props
 - For MLB: be transparent this is market signals + pitcher research, no proprietary model yet
