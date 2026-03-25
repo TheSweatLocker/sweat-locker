@@ -1351,7 +1351,7 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [gamesSearch, setGamesSearch] = useState('');
   const [gamesSort, setGamesSort] = useState('time');
    const [fanmatchData, setFanmatchData] = useState({});
-  const [nbaTeamData, setNbaTeamData] = useState([]);
+  const [nbaTeamData, setNbaTeamData] = useState({});
     const [scoresCache, setScoresCache] = useState({});
   const [scoresLoading, setScoresLoading] = useState(false);
   const [form, setForm] = useState({matchup:'',pick:'',sport:'NBA',type:'Spread',odds:'',units:'',book:'Hard Rock',result:'Pending',oddsSign:'-'});
@@ -1432,6 +1432,11 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
 useEffect(() => {
   if(bartData.length) {
     fetchMLBGameContext();
+  }
+}, [bartData]);
+useEffect(() => {
+  if(bartData.length) {
+    fetchNBATeamContext();
   }
 }, [bartData]);
 useEffect(() => {
@@ -1988,7 +1993,7 @@ if(r.data && r.data.data) {
         await AsyncStorage.setItem(cacheKey, JSON.stringify({data:teams, timestamp:Date.now()}));
       }
     } catch(e) {
-      console.log('NBA team data error:', e?.message);
+      //console.log('NBA team data error:', e?.message);
     }
   };
 
@@ -2197,7 +2202,7 @@ if(score >= 40) return {label:'👀 Worth a Look', color:'#ffd166'};
     return {label:'❌ Pass', color:'#4a6070'};
   };
 
-    const calcGameSweatScore = (game, sport, fanmatchData = {}, mlbContext = {}) => {
+    const calcGameSweatScore = (game, sport, fanmatchData = {}, mlbContext = {}, nbaContext = {}) => {
      // console.log('calcSweat:', game?.away_team, sport, 'bartData:', bartData.length);
     //console.log('calcSweat called:', game.away_team, 'vs', game.home_team, 'sport:', sport, 'bartData:', bartData.length);
       if(!game) return null;
@@ -2396,7 +2401,8 @@ modelMismatch = Math.min(85, modelMismatch);
 }
   }
    } else if(sport==='NBA') {
-  const mlOddsAway = bookmakers.map(bm => {
+  //console.log('NBA context check:', Object.keys(nbaContext||{}).length, 'teams | home:', game.home_team);
+    const mlOddsAway = bookmakers.map(bm => {
     const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
     return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.away_team)?.price : null;
   }).filter(x => x !== null);
@@ -2444,6 +2450,31 @@ modelMismatch = Math.min(85, modelMismatch);
   // Store for Jerry context
   mismatchPts = b2bTeam ? (awayB2B ? -b2bPenalty : b2bPenalty) : 0;
   efgMismatch = b2bTeam ? `${b2bTeam} on back-to-back — fatigue factor (${awayRoadB2B ? 'road B2B' : 'home B2B'})` : '';
+
+  // Wire in real NBA team stats if available
+  const homeNBA = nbaContext[game.home_team] || 
+    Object.values(nbaContext).find(t => t.team && (t.team.includes(stripMascot(game.home_team)) || stripMascot(game.home_team).includes(t.team.split(' ').pop())));
+  const awayNBA = nbaContext[game.away_team] ||
+    Object.values(nbaContext).find(t => t.team && (t.team.includes(stripMascot(game.away_team)) || stripMascot(game.away_team).includes(t.team.split(' ').pop())));
+
+  if(homeNBA && awayNBA) {
+    const netRatingGap = Math.abs(homeNBA.net_rating - awayNBA.net_rating);
+    const netRatingBoost = Math.min(20, Math.round(netRatingGap * 1.5));
+    modelMismatch = Math.min(85, modelMismatch + netRatingBoost);
+    const efgGap = Math.abs(homeNBA.efg_pct - awayNBA.efg_pct);
+    if(efgGap >= 3) modelMismatch = Math.min(85, modelMismatch + 8);
+    //console.log('homeNBA:', homeNBA?.team, homeNBA?.net_rating, '| awayNBA:', awayNBA?.team, awayNBA?.net_rating);
+    const avgPace = (homeNBA.pace + awayNBA.pace) / 2;
+    projectedTotal = ((avgPace / 100) * 220).toFixed(1);
+    const betterTeam = homeNBA.net_rating > awayNBA.net_rating ? game.home_team : game.away_team;
+    const worseTeam = homeNBA.net_rating > awayNBA.net_rating ? game.away_team : game.home_team;
+    if(!efgMismatch) efgMismatch = `Net rating gap: ${netRatingGap.toFixed(1)} pts (${stripMascot(betterTeam)} +${Math.max(homeNBA.net_rating, awayNBA.net_rating).toFixed(1)} vs ${stripMascot(worseTeam)} ${Math.min(homeNBA.net_rating, awayNBA.net_rating).toFixed(1)})`;
+    if(!b2bTeam) {
+      leanSide = homeNBA.net_rating > awayNBA.net_rating ? 
+        stripMascot(game.home_team) : 
+        stripMascot(game.away_team);
+    }
+  }
 } else if(sport==='MLB') {
   // Base market signals
   const spreadGap = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 0;
@@ -2824,7 +2855,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
     try {
       const key = game.id || (game.away_team + game.home_team);
       if(sweatScores[key]) return sweatScores[key];
-      const score = calcGameSweatScore(game, sport, fanmatchData, mlbGameContext);
+      const score = calcGameSweatScore(game, sport, fanmatchData, mlbGameContext, nbaTeamData);
       if(score) setSweatScores(prev => ({...prev, [key]: score}));
       return score;
     } catch(e) {
@@ -2999,6 +3030,26 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     }
   } catch(e) {
     console.log('MLB context fetch error:', e.message);
+  }
+};
+
+const fetchNBATeamContext = async () => {
+  try {
+    const result = await supabase
+      .from('nba_team_stats')
+      .select('*')
+      .eq('season', '2025-26');
+    const data = result?.data;
+    if(data && data.length > 0) {
+      const contextMap = {};
+      data.forEach(team => {
+        contextMap[team.team] = team;
+      });
+      setNbaTeamData(contextMap);
+      //console.log('NBA team stats loaded:', data.length, 'teams');
+    }
+  } catch(e) {
+    console.log('NBA team stats fetch error:', e.message);
   }
 };
   
@@ -3507,6 +3558,24 @@ MLB GAME CONTEXT:
 - Data confidence: ${mlbData.confidence}`;
   }
 }
+// Build NBA context for Jerry
+let nbaContextStr = '';
+if(sport === 'NBA') {
+  const homeNBAData = nbaTeamData[game.home_team] ||
+    Object.values(nbaTeamData).find(t => t.team && game.home_team.includes(t.team.split(' ').pop()));
+  const awayNBAData = nbaTeamData[game.away_team] ||
+    Object.values(nbaTeamData).find(t => t.team && game.away_team.includes(t.team.split(' ').pop()));
+  if(homeNBAData && awayNBAData) {
+    const netGap = (homeNBAData.net_rating - awayNBAData.net_rating).toFixed(1);
+    nbaContextStr = `
+NBA EFFICIENCY DATA:
+- ${game.home_team} net rating: ${homeNBAData.net_rating > 0 ? '+' : ''}${homeNBAData.net_rating.toFixed(1)} | eFG%: ${homeNBAData.efg_pct?.toFixed(1)}% | Pace: ${homeNBAData.pace?.toFixed(1)} | Record: ${homeNBAData.wins}-${homeNBAData.losses}
+- ${game.away_team} net rating: ${awayNBAData.net_rating > 0 ? '+' : ''}${awayNBAData.net_rating.toFixed(1)} | eFG%: ${awayNBAData.efg_pct?.toFixed(1)}% | Pace: ${awayNBAData.pace?.toFixed(1)} | Record: ${awayNBAData.wins}-${awayNBAData.losses}
+- Net rating gap: ${Math.abs(parseFloat(netGap)).toFixed(1)} pts favor ${parseFloat(netGap) > 0 ? game.home_team : game.away_team}
+- Last 10 net rating: ${game.home_team.split(' ').pop()} ${homeNBAData.last_10_net_rating > 0 ? '+' : ''}${homeNBAData.last_10_net_rating?.toFixed(1)} | ${game.away_team.split(' ').pop()} ${awayNBAData.last_10_net_rating > 0 ? '+' : ''}${awayNBAData.last_10_net_rating?.toFixed(1)}
+- Avg pace: ${((homeNBAData.pace + awayNBAData.pace)/2).toFixed(1)} possessions/game`;
+  }
+}
 const modelContext = scoreData?.predictedSpread ? `
 SWEAT LOCKER MODEL DATA:
 - Projected spread: ${predictedSpread > 0 ? homeName : awayName} by ${Math.abs(predictedSpread).toFixed(1)}
@@ -3578,6 +3647,7 @@ Spread: ${spread?`${spread.name} ${spread.point > 0 ? '+' : ''}${spread.point}`:
 Total: ${total ? total.point : 'N/A'}
 ${modelContext}
 ${mlbContext}
+${nbaContextStr}
 
 Rules you must follow:
 - Sport context: ${sport}
@@ -3586,7 +3656,7 @@ Sweat Score: ${scoreData.total}/100 ${scoreData.total >= 68 ? '🔒 PRIME SWEAT'
 Confidence tier: ${
   sport === 'NCAAB' && scoreData.hasFanmatch ? 'HIGH — The Sweat Locker game model active' :
   sport === 'NCAAB' ? 'MODERATE — efficiency model only, no game prediction' :
-  sport === 'NBA' ? 'MARKET — no proprietary efficiency model, market signals only' :
+  sport === 'NBA' ? 'MODERATE — NBA efficiency model active (net rating, eFG%, pace, last 10 form)' :
   sport === 'NHL' ? 'MARKET — no NHL model, pure market analysis' :
   sport === 'NFL' ? 'MARKET — no NFL model, market signals only' :
   sport === 'MLB' ? 'MARKET — no MLB model yet, market signals only' :
@@ -4806,7 +4876,7 @@ setJerryHistory(prev => {
   const parlayProb=parlayLegs.length>0?impliedProb(parlayDecimal):'0.0';
   const getBestPropLine=(lines)=>lines&&lines.length?lines.reduce((best,l)=>(!best||l.line<best.line)?l:best,null):null;
   const openGameDetail=(game)=>{
-  const scoreData = sweatScores[game.id] || calcGameSweatScore(game, gamesSport, fanmatchData, mlbGameContext);
+  const scoreData = sweatScores[game.id] || calcGameSweatScore(game, gamesSport, fanmatchData, mlbGameContext, nbaTeamData);
   fetchAltLines(game, gamesSport);
   if(!sweatScores[game.id]) {
     setSweatScores(prev => ({...prev, [game.id]: scoreData}));
@@ -5523,7 +5593,7 @@ setJerryHistory(prev => {
   const modelEdges = ncaabGames
     .map(game => {
       try {
-        const score = calcGameSweatScore(game, gamesSport, fanmatchData);
+        const score = calcGameSweatScore(game, gamesSport, fanmatchData, mlbGameContext, nbaTeamData);
         if(!score) return null;
         const spreadDelta = Math.abs(score.spreadEdge||0);
         const totalDelta = Math.abs(score.totalDelta||0);
@@ -6133,7 +6203,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
   const scored = ncaabGames
     .map(game => {
       try {
-        const score = calcGameSweatScore(game, gamesSport, fanmatchData);
+        const score = calcGameSweatScore(game, gamesSport, fanmatchData, mlbGameContext, nbaTeamData);
         return score ? {game, score} : null;
       } catch(e) { return null; }
     })
