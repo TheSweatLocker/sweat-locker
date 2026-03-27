@@ -28,7 +28,7 @@ def get_probable_pitchers(game_date):
                 game_pk = str(game.get("gamePk", ""))
                 home_team = game.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
                 away_team = game.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
-               home_pitcher = game.get("teams", {}).get("home", {}).get("probablePitcher", {}).get("fullName", None)
+                home_pitcher = game.get("teams", {}).get("home", {}).get("probablePitcher", {}).get("fullName", None)
                 away_pitcher = game.get("teams", {}).get("away", {}).get("probablePitcher", {}).get("fullName", None)
                 home_pitcher_id = game.get("teams", {}).get("home", {}).get("probablePitcher", {}).get("id", None)
                 away_pitcher_id = game.get("teams", {}).get("away", {}).get("probablePitcher", {}).get("id", None)

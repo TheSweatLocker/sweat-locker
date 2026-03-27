@@ -4103,7 +4103,7 @@ setPropJerryLoading(true);
   'player_points,player_rebounds,player_assists,player_threes' :
   sport==='NFL' ? 'player_pass_yards,player_rush_yards,player_reception_yards,player_anytime_td' :
   sport==='NHL' ? 'player_points,player_goals,player_assists' :
-  sport==='MLB' ? 'batter_hits,batter_total_bases,batter_rbis,batter_runs_scored,pitcher_strikeouts,batter_home_runs' :
+  sport==='MLB' ? 'batter_hits,batter_total_bases,batter_rbis,batter_runs_scored,pitcher_strikeouts,batter_strikeouts,batter_home_runs' :
   'player_points,player_rebounds,player_assists';
 
       const resp = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/events`, {
@@ -6813,8 +6813,30 @@ const weatherPenalty = mlbCtx.wind_speed > 10
   : 0;
 // Fix: recalibrated baseline — league avg K% ~22%, starts neutral
 // K rate signal: only meaningful deviation from 22% avg matters
-const kDelta = avgKRate - 22;
-const nrfiScore = Math.round(50 + (kDelta * 0.6) + (avgWhiff * 0.25) + ((100 - parkFactor) * 0.3) + (umpireK * 8) + (weatherPenalty * 5));
+const homeGB    = parseFloat(homeCtx.match(/GB% ([\d.]+)/)?.[1] || 0);
+const awayGB    = parseFloat(awayCtx.match(/GB% ([\d.]+)/)?.[1] || 0);
+const avgGB     = homeGB && awayGB ? (homeGB + awayGB) / 2 : homeGB || awayGB;
+const gbBonus   = avgGB > 50 ? 3 : avgGB > 45 ? 1 : 0;
+const restBonus = (mlbCtx.home_days_rest >= 5 ? 2 : mlbCtx.home_days_rest <= 3 ? -2 : 0)
+                + (mlbCtx.away_days_rest >= 5 ? 2 : mlbCtx.away_days_rest <= 3 ? -2 : 0);
+const tempBonus = !mlbCtx.temperature ? 0 :
+                  mlbCtx.temperature < 45 ? 4 :
+                  mlbCtx.temperature < 55 ? 2 :
+                  mlbCtx.temperature > 85 ? -2 : 0;
+const kDelta    = avgKRate - 22;
+const nrfiScore = Math.round(
+  50
+  + (kDelta * 0.6)
+  + (avgWhiff * 0.25)
+  + ((100 - parkFactor) * 0.3)
+  + (umpireK * 8)
+  + (weatherPenalty * 5)
+  + gbBonus
+  + restBonus
+  + tempBonus
+);
+const nrfiLean   = nrfiScore >= 55 ? 'NRFI' : nrfiScore <= 45 ? 'YRFI' : 'NEUTRAL';
+const nrfiColor  = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d6d' : '#7a92a8';
   return(
     <View style={[styles.card,{marginBottom:10}]}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
@@ -6830,7 +6852,7 @@ const nrfiScore = Math.round(50 + (kDelta * 0.6) + (avgWhiff * 0.25) + ((100 - p
         </View>
         <View style={{flex:2,backgroundColor:'#151c24',borderRadius:8,padding:8}}>
           <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:4}}>KEY SIGNALS</Text>
-          {kRate > 0 && <Text style={{color:'#e8f0f8',fontSize:10}}>K%: {kRate.toFixed(1)}% {kRate > 25 ? '🔒' : ''}</Text>}
+          {avgKRate > 0 && <Text style={{color:'#e8f0f8',fontSize:10}}>K%: {avgKRate.toFixed(1)}% {avgKRate > 25 ? '🔒' : ''}</Text>}
           {umpireK !== 0 && <Text style={{color:'#e8f0f8',fontSize:10}}>{umpireK > 0 ? '✅ K-friendly ump' : '⚠️ Hitter-friendly ump'}</Text>}
           <Text style={{color:'#e8f0f8',fontSize:10}}>Park: {parkFactor} {parkFactor >= 110 ? '⚠️ hitter' : parkFactor <= 93 ? '✅ pitcher' : '—'}</Text>
         </View>
