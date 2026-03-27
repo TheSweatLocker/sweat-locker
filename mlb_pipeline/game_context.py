@@ -489,16 +489,16 @@ def upload_game_context(context):
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates"
+        "Prefer": "resolution=merge-duplicates,return=minimal"
     }
     r = requests.post(
         f"{SUPABASE_URL}/rest/v1/mlb_game_context",
         headers=headers,
         json=context
     )
-    if r.status_code not in [200, 201]:
+    if r.status_code not in [200, 201, 204]:
         print(f"Upload failed {r.status_code}: {r.text}")
-    return r.status_code in [200, 201]
+    return r.status_code in [200, 201, 204]
 
 def run():
     print(f"Fetching MLB games for today...")
