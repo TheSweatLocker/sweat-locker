@@ -45,7 +45,7 @@ def get_probable_pitchers(game_date):
         print(f"MLB Stats API error: {e}")
         return {}
 
-        def get_pitcher_days_rest(pitcher_id, game_date):
+def get_pitcher_days_rest(pitcher_id, game_date):
     """Calculate days rest for a pitcher based on last appearance"""
     if not pitcher_id:
         return None
