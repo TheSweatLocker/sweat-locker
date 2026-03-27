@@ -101,8 +101,8 @@ def get_umpires(game_date):
                 officials = game.get("officials", [])
                 home_plate_ump = next(
                     (o.get("official", {}).get("fullName") 
-                     for o in officials 
-                     if o.get("officialType") == "Home Plate"),
+                    for o in officials 
+                    if o.get("officialType") == "Home Plate"),
                     None
                 )
                 if home_plate_ump:
