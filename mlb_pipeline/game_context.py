@@ -496,6 +496,8 @@ def upload_game_context(context):
         headers=headers,
         json=context
     )
+    if r.status_code not in [200, 201]:
+        print(f"Upload failed {r.status_code}: {r.text}")
     return r.status_code in [200, 201]
 
 def run():
