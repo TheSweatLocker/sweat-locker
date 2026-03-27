@@ -647,10 +647,23 @@ def run():
                 base_total = home_rpg + away_rpg
                 park_multiplier = park_run_factor / 100
                 projected_runs = base_total * park_multiplier
-                print(f"  {home_team} avg: {home_stats['runs_per_game']:.2f} R/G | {away_team} avg: {away_stats['runs_per_game']:.2f} R/G | Projected: {projected_runs:.1f}")
+                projected_total = round(projected_runs + weather_adj, 1)
+                if total_line:
+                    delta = projected_total - total_line
+                    over_lean = True if delta > 0.3 else False if delta < -0.3 else None
+                else:
+                    over_lean = True if weather_adj + park_adj > 0.5 else None
+                print(f"  {home_team} avg: {home_rpg:.2f} R/G | {away_team} avg: {away_rpg:.2f} R/G | Projected: {projected_total}")
             else:
                 projected_runs = None
-                print(f"  Team stats not available yet (early season)")
+                if total_line:
+                    net_adj = weather_adj + park_adj
+                    projected_total = round(total_line + net_adj, 1)
+                    over_lean = True if net_adj > 0.5 else False if net_adj < -0.5 else None
+                else:
+                    projected_total = None
+                    over_lean = None
+                print(f"  Team stats not available yet — market line fallback: {projected_total}")
 
             # Get umpire
             ump_name = umpire_assignments.get(home_team)
@@ -661,7 +674,7 @@ def run():
                 print(f"  Umpire: {ump_name} — K rate: {k_rate}, Over%: {over_pct}")
 
             # Build pitcher context string for Jerry
-           pitcher_context = ""
+            pitcher_context = ""
             if home_pitcher_stats:
                 xera = home_pitcher_stats.get('xera', 'N/A')
                 kpct = home_pitcher_stats.get('k_pct', 0)
@@ -681,13 +694,7 @@ def run():
                 lob = away_pitcher_stats.get('lob_pct', 0)
                 throws = away_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-                pitcher_context += f" | {away_pitcher} ({throws}HP): xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
-            if away_pitcher_stats:
-                xera = away_pitcher_stats.get('xera', 'N/A')
-                kpct = away_pitcher_stats.get('k_pct', 0)
-                whiff = away_pitcher_stats.get('whiff_rate', 0)
-                pitcher_context += f" | {away_pitcher}: xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%"
-
+            pitcher_context += f" | {away_pitcher} ({throws}HP): xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
             # Build umpire note
             ump_note = ""
             if ump_stats:
@@ -717,10 +724,10 @@ def run():
                 "wind_direction": weather["wind_direction"],
                 "precipitation": weather["precipitation"],
                 "park_run_factor": park_run_factor,
-                "projected_total": round(projected_runs + weather_adj, 1) if projected_runs else (round(total_line + weather_adj + park_adj, 1) if total_line else None),
-                "over_lean": (weather_adj + park_adj) > 0.5 if total_line else None,
+                "projected_total": projected_total,
+                "over_lean": over_lean,
                 "confidence": confidence,
-                "fetched_at": datetime.now().isoformat()
+                "fetched_at": datetime.now().isoformat(),
                 "home_runs_per_game": home_rpg,
                 "away_runs_per_game": away_rpg,
                 "home_ops": home_ops_split,

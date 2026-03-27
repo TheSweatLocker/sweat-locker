@@ -3009,6 +3009,65 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     }
   };
 
+  const calcAndPatchMLBContext = async (contextData: any[]) => {
+  for (const game of contextData) {
+    if (game.projected_total !== null && game.over_lean !== null) continue;
+
+    const homeRPG  = game.home_runs_per_game ?? 4.5;
+    const awayRPG  = game.away_runs_per_game ?? 4.5;
+    const parkFactor = (game.park_run_factor ?? 100) / 100;
+    const temp     = game.temperature ?? 72;
+    const windMph  = game.wind_speed   ?? 0;
+    const windDir  = (game.wind_direction ?? '').toLowerCase();
+    const precip   = game.precipitation ?? 0;
+
+    let projected = (homeRPG + awayRPG) * parkFactor;
+
+    if (!game.dome_game) {
+      if      (temp < 50)  projected -= 0.8;
+      else if (temp < 60)  projected -= 0.4;
+      else if (temp > 85)  projected += 0.3;
+
+      const blowingOut = windMph > 10 && (windDir.includes('out') || ['sw','s','se'].includes(windDir));
+      const blowingIn  = windMph > 10 && (windDir.includes('in')  || ['ne','n','nw','e','w'].includes(windDir));
+      if      (blowingOut) projected += windMph > 15 ? 0.8 : 0.4;
+      else if (blowingIn)  projected -= windMph > 15 ? 0.8 : 0.4;
+
+      if (precip > 0) projected -= 0.3;
+    }
+
+    const homeERA = game.home_pitcher_home_era;
+    const awayERA = game.away_pitcher_away_era;
+    if (homeERA != null) {
+      if      (homeERA < 3.0)  projected -= 0.5;
+      else if (homeERA < 3.75) projected -= 0.25;
+      else if (homeERA > 5.0)  projected += 0.3;
+    }
+    if (awayERA != null) {
+      if      (awayERA < 3.0)  projected -= 0.5;
+      else if (awayERA < 3.75) projected -= 0.25;
+      else if (awayERA > 5.0)  projected += 0.3;
+    }
+
+    projected = Math.round(projected * 10) / 10;
+
+    const delta   = projected - 8.8;
+    const overLean = delta > 0.3 ? true : delta < -0.3 ? false : null;
+
+    const confidence =
+      (game.home_runs_per_game != null && game.away_runs_per_game != null && homeERA != null && awayERA != null && game.temperature != null) ? 'HIGH' :
+      (game.home_runs_per_game != null && game.away_runs_per_game != null && game.temperature != null) ? 'MEDIUM' :
+      (game.home_runs_per_game != null && game.away_runs_per_game != null) ? 'LOW' : 'VERY LOW';
+
+    const { error } = await supabase
+      .from('mlb_game_context')
+      .update({ projected_total: projected, over_lean: overLean, confidence })
+      .eq('id', game.id);
+
+    if (error) console.error('[calcAndPatchMLBContext]', game.game_id, error.message);
+  }
+};
+  
   const fetchMLBGameContext = async () => {
   try {
     const today = new Date().toISOString().split('T')[0];
@@ -3533,7 +3592,9 @@ let mlbContext = '';
 if(sport === 'MLB') {
   const mlbData = await fetchMLBContext(game);
   if(mlbData) {
-    const overUnder = mlbData.over_lean ? 'OVER lean' : 'UNDER lean';
+    const overUnder = mlbData.over_lean === true  ? 'OVER lean' :
+                  mlbData.over_lean === false ? 'UNDER lean' :
+                  'NEUTRAL — projected total not yet calculated for this game';
     const weatherNote = mlbData.wind_speed > 10 
       ? `Wind ${mlbData.wind_speed}mph ${mlbData.wind_direction} — ${mlbData.wind_direction === 'S' || mlbData.wind_direction === 'SW' ? 'blowing OUT (over lean)' : 'blowing IN (under lean)'}`
       : `${mlbData.temperature}°F, light wind`;
@@ -3551,7 +3612,8 @@ MLB GAME CONTEXT:
 - Days rest signal: ${mlbData.home_days_rest && mlbData.away_days_rest ? (mlbData.home_days_rest > mlbData.away_days_rest ? mlbData.home_pitcher + ' has rest advantage (' + mlbData.home_days_rest + ' vs ' + mlbData.away_days_rest + ' days)' : mlbData.away_days_rest > mlbData.home_days_rest ? mlbData.away_pitcher + ' has rest advantage (' + mlbData.away_days_rest + ' vs ' + mlbData.home_days_rest + ' days)' : 'Even rest') : 'TBD'}
 - Umpire: ${mlbData.umpire_note || mlbData.umpire || 'TBD'}
 - Model lean: ${overUnder}
-- Projected total: ${mlbData.projected_total ? mlbData.projected_total + ' (team stats + park + weather)' : 'N/A'}
+- Projected total: ${mlbData.projected_total ? mlbData.projected_total + ' (team stats + park + weather)' : 'NOT YET CALCULATED — do not infer a lean from pitcher data alone'}
+- Total analysis: ${mlbData.projected_total ? 'Model total available' : 'IMPORTANT: No projected total available. Base total take only on posted line context and weather/park. Do not default to under.'}
 - ${mlbData.home_runs_per_game ? `${game.home_team} offense: ${mlbData.home_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.home_ops?.toFixed(3)}` : ''}
 - ${mlbData.away_runs_per_game ? `${game.away_team} offense: ${mlbData.away_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.away_ops?.toFixed(3)}` : ''}
 - ${mlbData.home_bullpen_era ? `${game.home_team} bullpen: ${mlbData.home_bullpen_era} ERA, ${mlbData.home_save_pct}% save rate` : ''}
@@ -3683,6 +3745,7 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For MLB: lefty-heavy lineup vs LHP = pitcher advantage, righty-heavy vs RHP = pitcher advantage
 - For MLB: opposite hand batters have significant platoon advantage — mention if relevant
 - For MLB: team on hot streak (W5+) or cold streak (L5+) is a momentum signal
+- For MLB: if projected total shows "NOT YET CALCULATED" — explicitly state you have no model total and give a NEUTRAL take on the total. Do NOT default to under.
 - For MLB: reference park factors if relevant (Coors Field = over lean, pitcher's parks = under lean)
 - For MLB: check umpire tendencies — K-friendly umps favor unders and strikeout props
 - For MLB: be transparent this is market signals + pitcher research, no proprietary model yet
@@ -4208,8 +4271,8 @@ for(let pi = 0; pi < propEntries.length; pi++) {
                   if(sport === 'MLB') {
                     try {
                       // Get game context for this prop's game
-                      const gameTeams = prop.gameName?.split(' @ ') || [];
-                      const homeTeam = gameTeams[1]?.trim();
+                      const gameTeams = prop.game?.split(' @ ') || []; // use prop.game not prop.gameName — has full team names
+                      const homeTeam = gameTeams[1]?.trim()
                       const awayTeam = gameTeams[0]?.trim();
                       if(homeTeam) {
                         const { data: mlbCtx } = await supabase
@@ -6730,15 +6793,28 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       <Text style={{color:'#7a92a8',fontSize:11}}>NRFI — awaiting game context data</Text>
     </View>
   );
-  const homePitcherStats = mlbCtx.pitcher_context || '';
-  const kRate = parseFloat(homePitcherStats.match(/K% ([\d.]+)/)?.[1] || 0);
-  const whiffRate = parseFloat(homePitcherStats.match(/whiff ([\d.]+)/)?.[1] || 0);
-  const parkFactor = mlbCtx.park_run_factor || 100;
-  const umpireK = mlbCtx.umpire_note?.includes('K-friendly') ? 1 : mlbCtx.umpire_note?.includes('hitter-friendly') ? -1 : 0;
-  const weatherPenalty = !mlbCtx.wind_speed ? 0 : mlbCtx.wind_direction === 'S' || mlbCtx.wind_direction === 'SW' ? -1 : 0;
-  const nrfiScore = Math.round(50 + (kRate * 0.5) + (whiffRate * 0.3) + ((100 - parkFactor) * 0.3) + (umpireK * 8) + (weatherPenalty * 5));
-  const nrfiLean = nrfiScore >= 55 ? 'NRFI' : nrfiScore <= 45 ? 'YRFI' : 'NEUTRAL';
-  const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d6d' : '#7a92a8';
+  const pitcherCtxStr = mlbCtx.pitcher_context || '';
+// Parse both pitchers — home is before '|', away is after
+const homeCtx = pitcherCtxStr.split('|')[0] || '';
+const awayCtx = pitcherCtxStr.split('|')[1] || '';
+const homeKRate   = parseFloat(homeCtx.match(/K% ([\d.]+)/)?.[1] || 0);
+const awayKRate   = parseFloat(awayCtx.match(/K% ([\d.]+)/)?.[1] || 0);
+const homeWhiff   = parseFloat(homeCtx.match(/whiff ([\d.]+)/)?.[1] || 0);
+const awayWhiff   = parseFloat(awayCtx.match(/whiff ([\d.]+)/)?.[1] || 0);
+// Average both pitchers — if only one available, use that one
+const avgKRate  = homeKRate && awayKRate ? (homeKRate + awayKRate) / 2 : homeKRate || awayKRate;
+const avgWhiff  = homeWhiff && awayWhiff ? (homeWhiff + awayWhiff) / 2 : homeWhiff || awayWhiff;
+const parkFactor = mlbCtx.park_run_factor || 100;
+const umpireK = mlbCtx.umpire_note?.includes('K-friendly') ? 1 : mlbCtx.umpire_note?.includes('hitter-friendly') ? -1 : 0;
+// Fix: blowing out = YRFI (-1), blowing in = NRFI (+1)
+const windDir = mlbCtx.wind_direction || '';
+const weatherPenalty = mlbCtx.wind_speed > 10
+  ? (['S','SW','SE'].includes(windDir) ? -1 : ['N','NW','NE'].includes(windDir) ? 1 : 0)
+  : 0;
+// Fix: recalibrated baseline — league avg K% ~22%, starts neutral
+// K rate signal: only meaningful deviation from 22% avg matters
+const kDelta = avgKRate - 22;
+const nrfiScore = Math.round(50 + (kDelta * 0.6) + (avgWhiff * 0.25) + ((100 - parkFactor) * 0.3) + (umpireK * 8) + (weatherPenalty * 5));
   return(
     <View style={[styles.card,{marginBottom:10}]}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
