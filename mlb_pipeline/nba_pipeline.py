@@ -8,12 +8,16 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 NBA_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Referer': 'https://www.nba.com/',
-    'Accept': 'application/json',
+    'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'x-nba-stats-origin': 'stats',
+    'x-nba-stats-token': 'true',
     'Origin': 'https://www.nba.com',
     'Connection': 'keep-alive',
+    'Host': 'stats.nba.com',
 }
 
 def get_team_stats(measure_type='Advanced', last_n=0, season='2025-26'):
@@ -33,7 +37,7 @@ def get_team_stats(measure_type='Advanced', last_n=0, season='2025-26'):
                 'ShotClockRange': '', 'StarterBench': '', 'TeamID': 0,
                 'TwoWay': 0, 'VsConference': '', 'VsDivision': '',
             },
-            timeout=30
+            timeout=60
         )
         data = r.json()
         headers = data['resultSets'][0]['headers']
