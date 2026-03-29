@@ -63,7 +63,7 @@ def upload_team_offense(record):
         "Prefer": "resolution=merge-duplicates,return=minimal"
     }
     r = requests.post(
-        f"{SUPABASE_URL}/rest/v1/mlb_team_offense",
+        f"{SUPABASE_URL}/rest/v1/mlb_team_offense?on_conflict=team",
         headers=headers,
         json=record
     )

@@ -718,7 +718,7 @@ def log_game_result(context):
             "Prefer": "resolution=merge-duplicates,return=minimal"
         }
         r = requests.post(
-            f"{SUPABASE_URL}/rest/v1/mlb_game_results",
+            f"{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id",
             headers=headers,
             json=record
         )
