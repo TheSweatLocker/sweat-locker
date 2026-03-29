@@ -4275,6 +4275,7 @@ setPropJerryLoading(true);
   sport==='NFL' ? 'player_pass_yards,player_rush_yards,player_reception_yards,player_anytime_td' :
   sport==='NHL' ? 'player_points,player_goals,player_assists' :
   sport==='MLB' ? 'batter_hits,batter_total_bases,batter_rbis,batter_runs_scored,pitcher_strikeouts,batter_strikeouts,batter_home_runs' :
+  sport==='UFC' ? 'fighter_total_rounds,fighter_ko_tko,fighter_decision,fighter_method_of_victory' :
   'player_points,player_rebounds,player_assists';
 
       const resp = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/events`, {
@@ -4574,7 +4575,7 @@ const graded = gradedRaw.filter(p => {
   if(!p || p.bestEV <= 0) return false;
   const odds = parseFloat(p.bestLine?.odds);
   if(isNaN(odds)) return true;
-  const minBooks = propJerrySport==='NHL' || propJerrySport==='MLB' ? 1 : 2;
+  const minBooks = propJerrySport==='NHL' || propJerrySport==='MLB' || propJerrySport==='UFC' ? 1 : 2;
   return Math.abs(odds) <= 350 && p.bookCount >= minBooks;
 })
 
@@ -6096,7 +6097,7 @@ setJerryHistory(prev => {
     {/* Sport Selector - no NCAAB */}
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
       <View style={{flexDirection:'row',gap:6}}>
-        {['NBA','NFL','NHL','MLB'].map(s=>(
+        {['NBA','NFL','NHL','MLB','UFC'].map(s=>(
           <TouchableOpacity key={s} style={[styles.chipBtn,propJerrySport===s&&styles.chipBtnActive]} onPress={()=>{setPropJerrySport(s);fetchPropJerry(s);}}>
             <Text style={[styles.chipTxt,propJerrySport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text>
           </TouchableOpacity>
