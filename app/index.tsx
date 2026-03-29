@@ -36,6 +36,7 @@ const PROP_MARKETS = {
   NFL:['player_pass_yds','player_rush_yds','player_reception_yds','player_receptions'],
   MLB:['batter_hits','batter_home_runs','pitcher_strikeouts'],
   NHL:['player_goals','player_assists','player_shots_on_goal'],
+  UFC:['fighter_total_rounds','fighter_ko_tko','fighter_decision','fighter_method_of_victory'],
 };
 const PROP_LABELS = {
   player_points:'Points', player_rebounds:'Rebounds', player_assists:'Assists',
@@ -43,6 +44,8 @@ const PROP_LABELS = {
   player_reception_yds:'Rec Yards', player_receptions:'Receptions',
   batter_hits:'Hits', batter_home_runs:'Home Runs', pitcher_strikeouts:'Strikeouts',
   player_goals:'Goals', player_shots_on_goal:'Shots on Goal',
+  fighter_total_rounds:'Total Rounds', fighter_ko_tko:'KO/TKO',
+  fighter_decision:'Decision', fighter_method_of_victory:'Method of Victory',
 };
 const STORAGE_KEY = 'sweatlocker_bets';
 const JERRY_HISTORY_KEY = 'sweatlocker_jerry_history';
@@ -3918,6 +3921,8 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For UFC/MMA: search for fighter records, recent form, style matchups, and any camp/injury news
 - For UFC/MMA: reference finishing rates, striking accuracy, takedown defense — specific stats build credibility
 - For UFC/MMA: sharp money on UFC moves fast — always check line movement
+- For UFC/MMA: finishing rate is the single most important stat — 80%+ finisher vs decision fighter is a massive style edge
+- For UFC/MMA: slpm gap tells you who controls striking distance — always reference if the data is available from Supabase context
 - For NHL: search for confirmed goalie starters — most important signal in hockey
 - For NHL: reference pace and special teams if relevant
 - For NFL: search for injury report and weather FIRST
@@ -4483,6 +4488,29 @@ if(pathOneA || pathTwoA) {
                             playerContext = ` MLB context: ${mlbCtx.venue} (park factor ${mlbCtx.park_run_factor}), ${mlbCtx.temperature}°F. Umpire: ${mlbCtx.umpire_note || 'N/A'}.`;
                           }
                         }
+                      }
+                    } catch(e) {}
+                  }
+                  if(sport === 'UFC') {
+                    try {
+                      const fighterName = prop.player;
+                      const { data: ufcCtx } = await supabase
+                        .from('ufc_fighter_stats')
+                        .select('*')
+                        .ilike('fighter_name', `%${fighterName.split(' ').pop()}%`)
+                        .single();
+                      if(ufcCtx) {
+                        const finishingStr = ufcCtx.finishing_rate 
+                          ? `${ufcCtx.finishing_rate}% finishing rate` 
+                          : 'finishing rate N/A';
+                        const strikingStr = ufcCtx.slpm 
+                          ? `${ufcCtx.slpm} sig strikes/min, ${ufcCtx.str_acc}% accuracy` 
+                          : 'striking N/A';
+                        const grapplingStr = ufcCtx.td_avg 
+                          ? `${ufcCtx.td_avg} TD/15min, ${ufcCtx.td_acc}% TD acc, ${ufcCtx.sub_avg} sub/15min` 
+                          : 'grappling N/A';
+                        const recordStr = ufcCtx.record || 'record N/A';
+                        playerContext = ` UFC fighter context: ${ufcCtx.fighter_name} (${recordStr}). Striking: ${strikingStr}. Grappling: ${grapplingStr}. Finishing: ${finishingStr}. Stance: ${ufcCtx.stance || 'N/A'}.`;
                       }
                     } catch(e) {}
                   }
