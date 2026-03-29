@@ -509,7 +509,7 @@ def run():
         "Prefer": "return=minimal"
     }
     today = date.today().isoformat()
-   delete_resp = requests.delete(
+    delete_resp = requests.delete(
         f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_date=eq.{today}",
         headers={
             "apikey": SUPABASE_KEY,
