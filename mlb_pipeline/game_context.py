@@ -219,6 +219,40 @@ def get_team_splits(team_name, season=2026):
     except Exception as e:
         return None
 
+def get_team_strikeout_rate(team_name, season=2026):
+    """Fetch team strikeout rate from MLB Stats API"""
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/teams",
+            params={"sportId": 1, "season": season}
+        )
+        teams = r.json().get("teams", [])
+        team = next((t for t in teams if t["name"].lower() == team_name.lower()), None)
+        if not team:
+            team = next((t for t in teams if team_name.lower() in t["name"].lower() or t["name"].lower() in team_name.lower()), None)
+        if not team:
+            return None
+
+        team_id = team["id"]
+        r2 = requests.get(
+            f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats",
+            params={"stats": "season", "group": "hitting", "season": season}
+        )
+        stats = r2.json().get("stats", [])
+        if not stats or not stats[0].get("splits"):
+            return None
+
+        batting = stats[0]["splits"][0]["stat"]
+        ab = float(batting.get("atBats", 0))
+        so = float(batting.get("strikeOuts", 0))
+        games = float(batting.get("gamesPlayed", 1))
+        if ab == 0 or games < 5:
+            return None
+        k_rate = (so / ab) * 100
+        return round(k_rate, 1)
+    except Exception as e:
+        return None
+
 def get_team_last10(team_name, season=2026):
     """Fetch team last 10 games record from MLB Stats API standings"""
     try:
@@ -714,6 +748,37 @@ def run():
             if away_rpg:
                 print(f"  {away_team} away R/G: {away_rpg:.2f}")
 
+            # Reset throws variables to avoid scope issues
+            home_throws = None
+            away_throws = None
+            
+            # Get team strikeout rates
+            home_k_pct = get_team_strikeout_rate(home_team)
+            away_k_pct = get_team_strikeout_rate(away_team)
+            if home_k_pct:
+                print(f"  {home_team} K%: {home_k_pct:.1f}%")
+            if away_k_pct:
+                print(f"  {away_team} K%: {away_k_pct:.1f}%")
+
+            # Calculate K rate gap vs pitcher
+            home_pitcher_k = None
+            away_pitcher_k = None
+            if home_pitcher_stats:
+                raw_k = home_pitcher_stats.get('k_pct', 0)
+                home_pitcher_k = raw_k * 100 if raw_k < 1 else raw_k
+            if away_pitcher_stats:
+                raw_k = away_pitcher_stats.get('k_pct', 0)
+                away_pitcher_k = raw_k * 100 if raw_k < 1 else raw_k
+
+            # K gap: positive = pitcher K rate exceeds lineup K rate (pitcher edge)
+            # away lineup faces home pitcher, home lineup faces away pitcher
+            home_k_gap = round(home_pitcher_k - away_k_pct, 1) if home_pitcher_k and away_k_pct else None
+            away_k_gap = round(away_pitcher_k - home_k_pct, 1) if away_pitcher_k and home_k_pct else None
+            if home_k_gap is not None:
+                print(f"  K gap — {home_pitcher} vs {away_team} lineup: {home_k_gap:+.1f}pts")
+            if away_k_gap is not None:
+                print(f"  K gap — {away_pitcher} vs {home_team} lineup: {away_k_gap:+.1f}pts")
+            
             # Get bullpen stats
             home_bullpen = get_bullpen_stats(home_team)
             away_bullpen = get_bullpen_stats(away_team)
@@ -796,9 +861,9 @@ def run():
                 gb = home_pitcher_stats.get('gb_pct', 0)
                 fb = home_pitcher_stats.get('fb_pct', 0)
                 lob = home_pitcher_stats.get('lob_pct', 0)
-                throws = home_pitcher_stats.get('throws', 'R')
+                home_throws = home_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-                pitcher_context += f"{home_pitcher} ({throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
+                pitcher_context += f"{home_pitcher} ({home_throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
             if away_pitcher_stats:
                 xera = away_pitcher_stats.get('xera', 'N/A')
                 kpct = away_pitcher_stats.get('k_pct', 0)
@@ -806,9 +871,9 @@ def run():
                 gb = away_pitcher_stats.get('gb_pct', 0)
                 fb = away_pitcher_stats.get('fb_pct', 0)
                 lob = away_pitcher_stats.get('lob_pct', 0)
-                throws = away_pitcher_stats.get('throws', 'R')
+                away_throws = away_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-            pitcher_context += f" | {away_pitcher} ({throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
+            pitcher_context += f" | {away_pitcher} ({away_throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
             # Build umpire note
             ump_note = ""
             if ump_stats:
@@ -849,6 +914,10 @@ def run():
                 "home_lineup": ", ".join(home_lineup) if home_lineup else None,
                 "away_lineup": ", ".join(away_lineup) if away_lineup else None,
                 "lineup_confirmed": lineup_confirmed,
+                "home_team_k_pct": home_k_pct,
+                "away_team_k_pct": away_k_pct,
+                "home_k_gap": home_k_gap,
+                "away_k_gap": away_k_gap,
                 "home_platoon_advantage": home_platoon_score,
                 "away_platoon_advantage": away_platoon_score,
                 "home_platoon_note": home_platoon_note,
