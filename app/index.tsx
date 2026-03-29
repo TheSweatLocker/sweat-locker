@@ -4116,7 +4116,7 @@ setPropJerryLoading(true);
 
       const propMap = {};
      
-      await Promise.all(events.slice(0,8).map(async event => {
+      await Promise.all(events.slice(0,15).map(async event => {
         try {
           const propResp = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/events/${event.id}/odds`, {
             params: {
@@ -4167,8 +4167,8 @@ Object.values(propMap).forEach(prop => {
   propsByGame[game].push(prop);
 });
 const propEntries = Object.values(propsByGame)
-  .flatMap(gameProps => gameProps.slice(0, 3))
-  .slice(0, 24);
+  .flatMap(gameProps => gameProps.slice(0, 5))
+  .slice(0, 60);
 const gradedRaw = [];
 for(let pi = 0; pi < propEntries.length; pi++) {
   const prop = propEntries[pi];
@@ -4227,15 +4227,22 @@ for(let pi = 0; pi < propEntries.length; pi++) {
           `🎤 Negative EV on ${playerFirst} — the market's efficient here. Nothing to exploit today.`,
         ];
 
-           if(bestEV >= 4 && bookCount >= 4 && lineRange <= 0.5) {
-          grade='A'; gradeColor='#00e5a0';
-        } else if(bestEV >= 3 && bookCount >= 3 && lineRange <= 1.0) {
-          grade='B'; gradeColor='#FFB800';
-        } else if(bestEV >= 1) {
-          grade='C'; gradeColor='#0099ff';
-        } else {
-          grade='D'; gradeColor='#ff4d6d';
-        }
+           const isMLB = propJerrySport === 'MLB';
+const isNHL = propJerrySport === 'NHL';
+const minBooksA = isMLB || isNHL ? 2 : 4;
+const minBooksB = isMLB || isNHL ? 1 : 3;
+const maxRangeA = isMLB || isNHL ? 1.0 : 0.5;
+const maxRangeB = isMLB || isNHL ? 1.5 : 1.0;
+
+if(bestEV >= 4 && bookCount >= minBooksA && lineRange <= maxRangeA) {
+  grade='A'; gradeColor='#00e5a0';
+} else if(bestEV >= 3 && bookCount >= minBooksB && lineRange <= maxRangeB) {
+  grade='B'; gradeColor='#FFB800';
+} else if(bestEV >= 1) {
+  grade='C'; gradeColor='#0099ff';
+} else {
+  grade='D'; gradeColor='#ff4d6d';
+}
         // AI Jerry narration
         try {
           const gradeContext = grade==='A' ? 'This is a strong edge — be enthusiastic but not reckless' :
