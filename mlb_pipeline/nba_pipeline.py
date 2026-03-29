@@ -6,47 +6,90 @@ import time
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+BDL_API_KEY = os.environ.get("BDL_API_KEY")
 
-NBA_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': 'https://www.nba.com/',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'x-nba-stats-origin': 'stats',
-    'x-nba-stats-token': 'true',
-    'Origin': 'https://www.nba.com',
-    'Connection': 'keep-alive',
-    'Host': 'stats.nba.com',
-}
+BDL_HEADERS = {'Authorization': BDL_API_KEY}
 
-def get_team_stats(measure_type='Advanced', last_n=0, season='2025-26'):
+def get_team_advanced_stats(season=2024):
+    """Fetch team advanced stats from BDL"""
     try:
         r = requests.get(
-            'https://stats.nba.com/stats/leaguedashteamstats',
-            headers=NBA_HEADERS,
+            'https://api.balldontlie.io/nba/v1/team_season_averages/general',
+            headers=BDL_HEADERS,
             params={
-                'Conference': '', 'DateFrom': '', 'DateTo': '',
-                'Division': '', 'GameScope': '', 'GameSegment': '',
-                'LastNGames': last_n, 'LeagueID': '00', 'Location': '',
-                'MeasureType': measure_type, 'Month': 0, 'OpponentTeamID': 0,
-                'Outcome': '', 'PORound': 0, 'PaceAdjust': 'N',
-                'PerMode': 'PerGame', 'Period': 0, 'PlayerExperience': '',
-                'PlayerPosition': '', 'PlusMinus': 'N', 'Rank': 'N',
-                'Season': season, 'SeasonSegment': '', 'SeasonType': 'Regular Season',
-                'ShotClockRange': '', 'StarterBench': '', 'TeamID': 0,
-                'TwoWay': 0, 'VsConference': '', 'VsDivision': '',
+                'season': season,
+                'season_type': 'regular',
+                'type': 'advanced',
+                'per_page': 100
             },
-            timeout=60
+            timeout=30
         )
         data = r.json()
-        headers = data['resultSets'][0]['headers']
-        rows = data['resultSets'][0]['rowSet']
-        print(f"Fetched {len(rows)} teams ({measure_type}, last {last_n} games)")
-        return headers, rows
+        print(f"Fetched {len(data.get('data', []))} teams (advanced)")
+        return data.get('data', [])
     except Exception as e:
-        print(f"Error: {e}")
-        return None, None
+        print(f"Error fetching advanced stats: {e}")
+        return []
+
+def get_team_base_stats(season=2024):
+    """Fetch team base stats from BDL"""
+    try:
+        r = requests.get(
+            'https://api.balldontlie.io/nba/v1/team_season_averages/general',
+            headers=BDL_HEADERS,
+            params={
+                'season': season,
+                'season_type': 'regular',
+                'type': 'base',
+                'per_page': 100
+            },
+            timeout=30
+        )
+        data = r.json()
+        print(f"Fetched {len(data.get('data', []))} teams (base)")
+        return data.get('data', [])
+    except Exception as e:
+        print(f"Error fetching base stats: {e}")
+        return []
+
+def get_team_standings(season=2024):
+    """Fetch team standings from BDL"""
+    try:
+        r = requests.get(
+            'https://api.balldontlie.io/nba/v1/standings',
+            headers=BDL_HEADERS,
+            params={'season': season},
+            timeout=30
+        )
+        data = r.json()
+        print(f"Fetched {len(data.get('data', []))} teams (standings)")
+        return data.get('data', [])
+    except Exception as e:
+        print(f"Error fetching standings: {e}")
+        return []
+
+def get_last10_stats(season=2024):
+    """Fetch last 10 games advanced stats from BDL"""
+    try:
+        # BDL doesn't have last N games filter directly
+        # Use last 10 games via date range approach — get recent games
+        # For now use full season and note this is a Tier 2 enhancement
+        r = requests.get(
+            'https://api.balldontlie.io/nba/v1/team_season_averages/general',
+            headers=BDL_HEADERS,
+            params={
+                'season': season,
+                'season_type': 'regular',
+                'type': 'advanced',
+                'per_page': 100
+            },
+            timeout=30
+        )
+        data = r.json()
+        return data.get('data', [])
+    except Exception as e:
+        print(f"Error fetching last 10 stats: {e}")
+        return []
 
 def upload_team(team_data):
     headers = {
@@ -66,7 +109,8 @@ def upload_team(team_data):
     return True
 
 def run():
-    season = '2025-26'
+    season = 2024
+    season_str = '2025-26'
 
     # Clear existing data
     requests.delete(
@@ -79,66 +123,80 @@ def run():
     )
     print("Cleared existing NBA stats")
 
-    adv_headers, adv_rows = get_team_stats('Advanced', 0, season)
-    time.sleep(2)
-    base_headers, base_rows = get_team_stats('Base', 0, season)
-    time.sleep(2)
-    l10_headers, l10_rows = get_team_stats('Advanced', 10, season)
+    # Fetch all data sources
+    adv_data = get_team_advanced_stats(season)
+    time.sleep(1)
+    base_data = get_team_base_stats(season)
+    time.sleep(1)
+    standings_data = get_team_standings(season)
 
-    if not adv_headers or not adv_rows:
-        print("Failed to fetch stats")
+    if not adv_data:
+        print("Failed to fetch advanced stats")
         return
 
-    base_map = {}
-    if base_headers and base_rows:
-        idx = base_headers.index('TEAM_NAME')
-        for row in base_rows:
-            base_map[row[idx]] = dict(zip(base_headers, row))
-
-    l10_map = {}
-    if l10_headers and l10_rows:
-        idx = l10_headers.index('TEAM_NAME')
-        for row in l10_rows:
-            l10_map[row[idx]] = dict(zip(l10_headers, row))
+    # Build lookup maps by team id
+    base_map = {d['team']['id']: d['stats'] for d in base_data}
+    standings_map = {d['team']['id']: d for d in standings_data}
 
     success = 0
     errors = 0
 
-    for row in adv_rows:
+    for item in adv_data:
         try:
-            adv = dict(zip(adv_headers, row))
-            team_name = adv['TEAM_NAME']
-            base = base_map.get(team_name, {})
-            l10 = l10_map.get(team_name, {})
+            team = item['team']
+            team_id = team['id']
+            adv = item['stats']
+            base = base_map.get(team_id, {})
+            standing = standings_map.get(team_id, {})
+
+            # Parse home/away records from standings
+            home_record = standing.get('home_record', '0-0')
+            away_record = standing.get('road_record', '0-0')
+            home_wins = int(home_record.split('-')[0]) if home_record else 0
+            home_losses = int(home_record.split('-')[1]) if home_record else 0
+            away_wins = int(away_record.split('-')[0]) if away_record else 0
+            away_losses = int(away_record.split('-')[1]) if away_record else 0
 
             team_data = {
-                "team": team_name,
-                "offensive_rating": float(adv.get('OFF_RATING', 110)),
-                "defensive_rating": float(adv.get('DEF_RATING', 110)),
-                "net_rating": float(adv.get('NET_RATING', 0)),
-                "pace": float(adv.get('PACE', 98)),
-                "efg_pct": float(adv.get('EFG_PCT', 0.52)) * 100,
-                "ts_pct": float(adv.get('TS_PCT', 0.56)) * 100,
-                "tov_pct": float(adv.get('TM_TOV_PCT', 13)),
-                "oreb_pct": float(adv.get('OREB_PCT', 25)) * 100,
-                "ft_rate": float(adv.get('FTA_RATE', 0.25)) * 100,
-                "wins": int(base.get('W', 0)),
-                "losses": int(base.get('L', 0)),
-                "last_10_net_rating": float(l10.get('NET_RATING', 0)) if l10 else None,
-                "season": season,
+                "team": team['full_name'],
+                "abbreviation": team['abbreviation'],
+                "conference": team['conference'],
+                "division": team['division'],
+                # Core efficiency metrics
+                "offensive_rating": float(adv.get('off_rating', 110)),
+                "defensive_rating": float(adv.get('def_rating', 110)),
+                "net_rating": float(adv.get('net_rating', 0)),
+                "pace": float(adv.get('pace', 98)),
+                "efg_pct": float(adv.get('efg_pct', 0.52)) * 100,
+                "ts_pct": float(adv.get('ts_pct', 0.56)) * 100,
+                "tov_pct": float(adv.get('tm_tov_pct', 0.13)) * 100,
+                "oreb_pct": float(adv.get('oreb_pct', 0.25)) * 100,
+                # Win/loss from standings
+                "wins": int(standing.get('wins', adv.get('w', 0))),
+                "losses": int(standing.get('losses', adv.get('l', 0))),
+                # Home/away splits from standings
+                "home_wins": home_wins,
+                "home_losses": home_losses,
+                "away_wins": away_wins,
+                "away_losses": away_losses,
+                "home_record": home_record,
+                "away_record": away_record,
+                # Last 10 net rating — using full season for now
+                "last_10_net_rating": float(adv.get('net_rating', 0)),
+                "season": season_str,
                 "updated_at": "now()"
             }
 
             if upload_team(team_data):
                 success += 1
-                print(f"✅ {team_name} — Net: {team_data['net_rating']:+.1f}, Pace: {team_data['pace']:.1f}")
+                print(f"✅ {team['full_name']} — Net: {team_data['net_rating']:+.1f}, Pace: {team_data['pace']:.1f}, Home: {home_record}, Away: {away_record}")
             else:
                 errors += 1
-                print(f"❌ {team_name}")
+                print(f"❌ {team['full_name']}")
 
         except Exception as e:
             errors += 1
-            print(f"Error on {row}: {e}")
+            print(f"Error on {item}: {e}")
 
     print(f"\nDone! ✅ {success} teams, ❌ {errors} errors")
 

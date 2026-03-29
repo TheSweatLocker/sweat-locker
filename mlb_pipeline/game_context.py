@@ -509,10 +509,14 @@ def run():
         "Prefer": "return=minimal"
     }
     today = date.today().isoformat()
-    requests.delete(
+   delete_resp = requests.delete(
         f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_date=eq.{today}",
-        headers=headers
+        headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+        }
     )
+    print(f"Cleared today's games ({today}): status {delete_resp.status_code}")
     games = get_mlb_games()
     
     if not games:
