@@ -1352,6 +1352,7 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [gamesSort, setGamesSort] = useState('time');
    const [fanmatchData, setFanmatchData] = useState({});
   const [nbaTeamData, setNbaTeamData] = useState({});
+  const [nbaInjuryData, setNbaInjuryData] = useState<Record<string, any[]>>({});
     const [scoresCache, setScoresCache] = useState({});
   const [scoresLoading, setScoresLoading] = useState(false);
   const [form, setForm] = useState({matchup:'',pick:'',sport:'NBA',type:'Spread',odds:'',units:'',book:'Hard Rock',result:'Pending',oddsSign:'-'});
@@ -1437,6 +1438,7 @@ useEffect(() => {
 useEffect(() => {
   if(bartData.length) {
     fetchNBATeamContext();
+    fetchNBAInjuries();
   }
 }, [bartData]);
 useEffect(() => {
@@ -3228,6 +3230,27 @@ const fetchNBATeamContext = async () => {
     console.log('NBA team stats fetch error:', e.message);
   }
 };
+
+const fetchNBAInjuries = async () => {
+  try {
+    const { data } = await supabase
+      .from('nba_injuries')
+      .select('*');
+    if(data && data.length > 0) {
+      const injuryMap: Record<string, any[]> = {};
+      data.forEach(inj => {
+        const team = inj.team_name;
+        if(!team) return;
+        if(!injuryMap[team]) injuryMap[team] = [];
+        injuryMap[team].push(inj);
+      });
+      setNbaInjuryData(injuryMap);
+      console.log('NBA injuries loaded:', data.length, 'players');
+    }
+  } catch(e) {
+    console.log('NBA injury fetch error:', e);
+  }
+};
   
   const fetchModelEdgeGames = async (sport = 'NCAAB') => {
   setModelEdgeLoading(true);
@@ -3773,8 +3796,8 @@ NBA EFFICIENCY DATA:
 - Last 5 net rating: ${game.home_team.split(' ').pop()} ${homeNBAData.last_10_net_rating > 0 ? '+' : ''}${homeNBAData.last_10_net_rating?.toFixed(1)} | ${game.away_team.split(' ').pop()} ${awayNBAData.last_10_net_rating > 0 ? '+' : ''}${awayNBAData.last_10_net_rating?.toFixed(1)}
 - Defensive rating: ${game.home_team.split(' ').pop()} ${homeNBAData.defensive_rating?.toFixed(1)} (opp eFG%: ${homeNBAData.opp_efg_pct?.toFixed(1) || 'N/A'}%) | ${game.away_team.split(' ').pop()} ${awayNBAData.defensive_rating?.toFixed(1)} (opp eFG%: ${awayNBAData.opp_efg_pct?.toFixed(1) || 'N/A'}%)
 - Avg pace: ${((homeNBAData.pace + awayNBAData.pace)/2).toFixed(1)} possessions/game
-${homeNBAData.injury_note ? `- ${game.home_team} injuries: ${homeNBAData.injury_note}` : ''}
-${awayNBAData.injury_note ? `- ${game.away_team} injuries: ${awayNBAData.injury_note}` : ''}`;
+${(nbaInjuryData[game.home_team] || []).length > 0 ? `- ${game.home_team} injuries: ${(nbaInjuryData[game.home_team] || []).filter(i => i.status === 'Out').map(i => i.player_name + ' (OUT)').concat((nbaInjuryData[game.home_team] || []).filter(i => i.status === 'Questionable').map(i => i.player_name + ' (Q)')).slice(0, 5).join(', ')}` : `- ${game.home_team}: no reported injuries`}
+${(nbaInjuryData[game.away_team] || []).length > 0 ? `- ${game.away_team} injuries: ${(nbaInjuryData[game.away_team] || []).filter(i => i.status === 'Out').map(i => i.player_name + ' (OUT)').concat((nbaInjuryData[game.away_team] || []).filter(i => i.status === 'Questionable').map(i => i.player_name + ' (Q)')).slice(0, 5).join(', ')}` : `- ${game.away_team}: no reported injuries`}`;
   }
 }
 const modelContext = scoreData?.predictedSpread ? `
