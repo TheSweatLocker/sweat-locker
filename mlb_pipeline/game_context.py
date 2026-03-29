@@ -684,7 +684,7 @@ def log_game_result(context):
             "Content-Type": "application/json",
             "Prefer": "resolution=merge-duplicates,return=minimal"
         }
-       r = requests.post(
+        r = requests.post(
             f"{SUPABASE_URL}/rest/v1/mlb_game_results",
             headers={**headers, "Prefer": "resolution=merge-duplicates,return=minimal"},
             json=record
