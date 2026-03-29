@@ -3740,6 +3740,8 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NBA: if back-to-back data is present, always mention it
 - For NBA: fade the B2B team unless line has already moved 3+ pts against them
 - For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
+- For MLB: if web search shows the game has ALREADY BEEN PLAYED — do NOT recap it. Instead say "This game has already been played." and stop.
+- For MLB: you are giving a PRE-GAME take only. Never recap a completed game.
 - For MLB: pitcher handedness is in the data as (RHP) or (LHP) — always reference it
 - For MLB: if lineup is confirmed count lefty vs righty batters vs the starting pitcher hand
 - For MLB: lefty-heavy lineup vs LHP = pitcher advantage, righty-heavy vs RHP = pitcher advantage
@@ -3762,7 +3764,7 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - If total delta >= 4pts, mention the over/under lean specifically
 - Never mention KenPom by name — call it the "Sweat Locker model"
 - Do NOT mention home court — tournament games are neutral site
-- 2-3 sentences maximum. Lead with biggest signal. End with the specific bet.
+- 2-3 sentences HARD MAXIMUM. No exceptions. Lead with biggest signal. End with the specific bet. Never write more than 3 sentences total.
 - Never say "bet" or "must play"
 ${dataQualityNote}`;
 
