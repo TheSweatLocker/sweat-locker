@@ -2533,18 +2533,62 @@ modelMismatch = Math.min(85, modelMismatch);
     const netRatingGap = Math.abs(homeNBA.net_rating - awayNBA.net_rating);
     const netRatingBoost = Math.min(20, Math.round(netRatingGap * 1.5));
     modelMismatch = Math.min(85, modelMismatch + netRatingBoost);
+
+    // eFG% mismatch boost
     const efgGap = Math.abs(homeNBA.efg_pct - awayNBA.efg_pct);
     if(efgGap >= 3) modelMismatch = Math.min(85, modelMismatch + 8);
-    //console.log('homeNBA:', homeNBA?.team, homeNBA?.net_rating, '| awayNBA:', awayNBA?.team, awayNBA?.net_rating);
+
+    // Defensive rating boost — better defense = higher confidence
+    const defRatingGap = homeNBA.defensive_rating && awayNBA.defensive_rating
+      ? Math.abs(homeNBA.defensive_rating - awayNBA.defensive_rating)
+      : 0;
+    if(defRatingGap >= 5) modelMismatch = Math.min(85, modelMismatch + 6);
+    else if(defRatingGap >= 3) modelMismatch = Math.min(85, modelMismatch + 3);
+
+    // Home/away record boost — teams dramatically different at home vs road
+    const homeWinPct = homeNBA.home_wins && homeNBA.home_losses
+      ? homeNBA.home_wins / (homeNBA.home_wins + homeNBA.home_losses)
+      : 0.5;
+    const awayWinPct = awayNBA.away_wins && awayNBA.away_losses
+      ? awayNBA.away_wins / (awayNBA.away_wins + awayNBA.away_losses)
+      : 0.5;
+    const situationalEdge = (homeWinPct - awayWinPct) * 20;
+    if(Math.abs(situationalEdge) >= 5) {
+      modelMismatch = Math.min(85, modelMismatch + Math.round(Math.abs(situationalEdge) * 0.3));
+    }
+
+    // Injury penalty — key players out dramatically affects model
+    const homeHasInjury = homeNBA.injury_note && homeNBA.injury_note.includes('OUT');
+    const awayHasInjury = awayNBA.injury_note && awayNBA.injury_note.includes('OUT');
+    if(homeHasInjury) modelMismatch = Math.max(20, modelMismatch - 10);
+    if(awayHasInjury) modelMismatch = Math.max(20, modelMismatch - 10);
+
+    // Pace matchup for projected total
     const avgPace = (homeNBA.pace + awayNBA.pace) / 2;
     projectedTotal = ((avgPace / 100) * 220).toFixed(1);
+
     const betterTeam = homeNBA.net_rating > awayNBA.net_rating ? game.home_team : game.away_team;
     const worseTeam = homeNBA.net_rating > awayNBA.net_rating ? game.away_team : game.home_team;
-    if(!efgMismatch) efgMismatch = `Net rating gap: ${netRatingGap.toFixed(1)} pts (${stripMascot(betterTeam)} +${Math.max(homeNBA.net_rating, awayNBA.net_rating).toFixed(1)} vs ${stripMascot(worseTeam)} ${Math.min(homeNBA.net_rating, awayNBA.net_rating).toFixed(1)})`;
+
+    // Build efgMismatch context string
+    const injuryContext = (homeNBA.injury_note || awayNBA.injury_note)
+      ? ` | Injuries: ${[homeNBA.injury_note, awayNBA.injury_note].filter(Boolean).join(' / ')}`
+      : '';
+    const homeAwayContext = `${stripMascot(game.home_team)} ${homeNBA.home_record} home | ${stripMascot(game.away_team)} ${awayNBA.away_record} road`;
+
+    if(!efgMismatch) {
+      efgMismatch = `Net rating gap: ${netRatingGap.toFixed(1)} pts (${stripMascot(betterTeam)} +${Math.max(homeNBA.net_rating, awayNBA.net_rating).toFixed(1)} vs ${stripMascot(worseTeam)} ${Math.min(homeNBA.net_rating, awayNBA.net_rating).toFixed(1)}) | ${homeAwayContext}${injuryContext}`;
+    }
+
+    // Lean side — factor in injuries
     if(!b2bTeam) {
-      leanSide = homeNBA.net_rating > awayNBA.net_rating ? 
-        stripMascot(game.home_team) : 
-        stripMascot(game.away_team);
+      let homeLeanScore = homeNBA.net_rating + (situationalEdge * 0.5);
+      let awayLeanScore = awayNBA.net_rating - (situationalEdge * 0.5);
+      if(homeHasInjury) homeLeanScore -= 5;
+      if(awayHasInjury) awayLeanScore -= 5;
+      leanSide = homeLeanScore > awayLeanScore
+        ? stripMascot(game.home_team)
+        : stripMascot(game.away_team);
     }
   }
 } else if(sport==='MLB') {
