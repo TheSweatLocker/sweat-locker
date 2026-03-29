@@ -1684,38 +1684,110 @@ setEvData(evOpps.slice(0,20));
     }
   } catch(e) {}
 
-  // 3. Fetch fresh from Odds API
+// 3. Fetch fresh
   try {
-    const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
-      params: {
-        apiKey: ODDS_API_KEY,
-        regions: 'us,us2',
-        markets: 'spreads,totals,h2h',
-        oddsFormat: 'american',
-        bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,williamhill_us,bet365'
+    let mappedGames = [];
+
+    if(sport === 'MLB') {
+      // ── MLB: use MLB Stats API for schedule + Odds API for lines ──
+      const dateStr = day === 'tomorrow'
+        ? new Date(Date.now() + 86400000).toISOString().split('T')[0]
+        : day === 'yesterday'
+        ? new Date(Date.now() - 86400000).toISOString().split('T')[0]
+        : new Date().toISOString().split('T')[0];
+
+      // Fetch schedule from MLB Stats API
+      const schedResp = await axios.get('https://statsapi.mlb.com/api/v1/schedule', {
+        params: { sportId: 1, date: dateStr, hydrate: 'probablePitcher,linescore' }
+      });
+      const mlbGames = [];
+      for(const dateEntry of schedResp.data?.dates || []) {
+        for(const game of dateEntry.games || []) {
+          // Only include scheduled or in-progress games
+          if(game.status?.abstractGameState === 'Final') continue;
+          mlbGames.push({
+            mlb_game_pk: String(game.gamePk),
+            home_team: game.teams?.home?.team?.name || '',
+            away_team: game.teams?.away?.team?.name || '',
+            commence_time: game.gameDate,
+            home_pitcher: game.teams?.home?.probablePitcher?.fullName || null,
+            away_pitcher: game.teams?.away?.probablePitcher?.fullName || null,
+          });
+        }
       }
-    });
-    const now = new Date();
-    const todayStart = new Date(now); todayStart.setHours(0,0,0,0);
-    const todayEnd = new Date(now); todayEnd.setHours(23,59,59,999);
-    const tomorrowStart = new Date(todayEnd); tomorrowStart.setDate(tomorrowStart.getDate()+1); tomorrowStart.setHours(0,0,0,0);
-    const tomorrowEnd = new Date(tomorrowStart); tomorrowEnd.setHours(23,59,59,999);
-    const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(yesterdayStart.getDate()-1);
-    const filtered = r.data.filter(game => {
-      const t = new Date(game.commence_time);
-      if(day==='today') return t>=todayStart && t<=todayEnd;
-      if(day==='tomorrow') return t>=tomorrowStart && t<=tomorrowEnd;
-      if(day==='yesterday') return t>=yesterdayStart && t<todayStart;
-      return true;
-    });
-    const mappedGames = filtered.map(g => ({
-      ...g,
-      away_team: sport==='NCAAB' ? stripMascot(g.away_team) : g.away_team,
-      home_team: sport==='NCAAB' ? stripMascot(g.home_team) : g.home_team,
-    }));
+
+      // Fetch odds from Odds API and merge
+      const oddsResp = await axios.get('https://api.the-odds-api.com/v4/sports/baseball_mlb/odds', {
+        params: {
+          apiKey: ODDS_API_KEY,
+          regions: 'us,us2',
+          markets: 'spreads,totals,h2h',
+          oddsFormat: 'american',
+          bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,williamhill_us,bet365'
+        }
+      });
+
+      // Build team name normalizer for matching
+      const normalizeMLB = (name: string) => name?.toLowerCase()
+        .replace('athletics', 'athletics')
+        .replace('a\'s', 'athletics')
+        .trim() || '';
+
+      // Merge: match by team name similarity
+      mappedGames = mlbGames.map(mlbGame => {
+        const oddsGame = (oddsResp.data || []).find((og: any) => {
+          const homeMatch = normalizeMLB(og.home_team).includes(mlbGame.home_team.split(' ').pop()?.toLowerCase() || '')
+            || mlbGame.home_team.toLowerCase().includes(normalizeMLB(og.home_team).split(' ').pop() || '');
+          const awayMatch = normalizeMLB(og.away_team).includes(mlbGame.away_team.split(' ').pop()?.toLowerCase() || '')
+            || mlbGame.away_team.toLowerCase().includes(normalizeMLB(og.away_team).split(' ').pop() || '');
+          return homeMatch && awayMatch;
+        });
+        return {
+          id: oddsGame?.id || mlbGame.mlb_game_pk,
+          home_team: mlbGame.home_team,
+          away_team: mlbGame.away_team,
+          commence_time: mlbGame.commence_time,
+          sport_key: 'baseball_mlb',
+          sport_title: 'MLB',
+          bookmakers: oddsGame?.bookmakers || [],
+          home_pitcher: mlbGame.home_pitcher,
+          away_pitcher: mlbGame.away_pitcher,
+          mlb_game_pk: mlbGame.mlb_game_pk,
+        };
+      });
+
+    } else {
+      // ── All other sports: use Odds API as before ──
+      const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
+        params: {
+          apiKey: ODDS_API_KEY,
+          regions: 'us,us2',
+          markets: 'spreads,totals,h2h',
+          oddsFormat: 'american',
+          bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,williamhill_us,bet365'
+        }
+      });
+      const now = new Date();
+      const todayStart = new Date(now); todayStart.setHours(0,0,0,0);
+      const todayEnd = new Date(now); todayEnd.setHours(23,59,59,999);
+      const tomorrowStart = new Date(todayEnd); tomorrowStart.setDate(tomorrowStart.getDate()+1); tomorrowStart.setHours(0,0,0,0);
+      const tomorrowEnd = new Date(tomorrowStart); tomorrowEnd.setHours(23,59,59,999);
+      const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(yesterdayStart.getDate()-1);
+      const filtered = r.data.filter((game: any) => {
+        const t = new Date(game.commence_time);
+        if(day==='today') return t>=todayStart && t<=todayEnd;
+        if(day==='tomorrow') return t>=tomorrowStart && t<=tomorrowEnd;
+        if(day==='yesterday') return t>=yesterdayStart && t<todayStart;
+        return true;
+      });
+      mappedGames = filtered.map((g: any) => ({
+        ...g,
+        away_team: sport==='NCAAB' ? stripMascot(g.away_team) : g.away_team,
+        home_team: sport==='NCAAB' ? stripMascot(g.home_team) : g.home_team,
+      }));
+    }
 
     setGamesData(mappedGames);
-//console.log('NCAAB GAMES LOADED:', mappedGames.map(g => g.away_team + ' vs ' + g.home_team));
 
     // Save to AsyncStorage
     try {
