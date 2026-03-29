@@ -582,6 +582,21 @@ def get_bullpen_stats(team_name):
     except:
         return None
 
+def get_team_woba_wrc(team_name):
+    """Look up team wOBA and wRC+ from Supabase mlb_team_offense table"""
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_team_offense?team=eq.{requests.utils.quote(team_name)}&select=*&limit=1",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+            }
+        )
+        data = r.json()
+        return data[0] if data else None
+    except:
+        return None
+
 def get_park_factors(home_team):
     headers = {
         "apikey": SUPABASE_KEY,
@@ -868,6 +883,14 @@ def run():
             if away_k_gap is not None:
                 print(f"  K gap — {away_pitcher} vs {home_team} lineup: {away_k_gap:+.1f}pts")
             
+            # Get wOBA/wRC+ team offense
+            home_offense = get_team_woba_wrc(home_team)
+            away_offense = get_team_woba_wrc(away_team)
+            if home_offense:
+                print(f"  {home_team} wOBA: {home_offense.get('woba')} wRC+: {home_offense.get('wrc_plus')} K%: {home_offense.get('k_pct')}%")
+            if away_offense:
+                print(f"  {away_team} wOBA: {away_offense.get('woba')} wRC+: {away_offense.get('wrc_plus')} K%: {away_offense.get('k_pct')}%")
+
             # Get bullpen stats
             home_bullpen = get_bullpen_stats(home_team)
             away_bullpen = get_bullpen_stats(away_team)
@@ -1005,6 +1028,10 @@ def run():
                 "home_lineup": ", ".join(home_lineup) if home_lineup else None,
                 "away_lineup": ", ".join(away_lineup) if away_lineup else None,
                 "lineup_confirmed": lineup_confirmed,
+                "home_woba": home_offense.get('woba') if home_offense else None,
+                "away_woba": away_offense.get('woba') if away_offense else None,
+                "home_wrc_plus": home_offense.get('wrc_plus') if home_offense else None,
+                "away_wrc_plus": away_offense.get('wrc_plus') if away_offense else None,
                 "home_team_k_pct": home_k_pct,
                 "away_team_k_pct": away_k_pct,
                 "home_k_gap": home_k_gap,

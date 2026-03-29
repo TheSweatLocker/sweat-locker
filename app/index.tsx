@@ -3748,6 +3748,7 @@ MLB GAME CONTEXT:
 - Away starter: ${mlbData.away_pitcher || 'TBD'}${mlbData.away_days_rest ? ` (${mlbData.away_days_rest} days rest)` : ''}${mlbData.away_pitcher_away_era ? ` | Away ERA: ${mlbData.away_pitcher_away_era}` : ''}
 - Pitcher stats: ${mlbData.pitcher_context || 'not available'}
 - Pitcher splits signal: ${mlbData.home_pitcher_home_era && mlbData.away_pitcher_away_era ? `${mlbData.home_pitcher} home ERA ${mlbData.home_pitcher_home_era} vs ${mlbData.away_pitcher} away ERA ${mlbData.away_pitcher_away_era}` : 'splits pending — early season'};
+- Offensive quality: ${mlbData.home_woba ? `${game.home_team} wOBA ${mlbData.home_woba} / wRC+ ${mlbData.home_wrc_plus} ${mlbData.home_wrc_plus > 110 ? '⚡ elite offense' : mlbData.home_wrc_plus < 90 ? '⚠️ weak offense' : '(avg)'}` : 'wOBA pending'} | ${mlbData.away_woba ? `${game.away_team} wOBA ${mlbData.away_woba} / wRC+ ${mlbData.away_wrc_plus} ${mlbData.away_wrc_plus > 110 ? '⚡ elite offense' : mlbData.away_wrc_plus < 90 ? '⚠️ weak offense' : '(avg)'}` : 'wOBA pending'}
 - K rate matchup: ${mlbData.home_k_gap !== null && mlbData.home_k_gap !== undefined ? `${mlbData.home_pitcher} K gap vs ${game.away_team} lineup: ${mlbData.home_k_gap > 0 ? '+' : ''}${mlbData.home_k_gap}pts ${Math.abs(mlbData.home_k_gap) >= 8 ? '⚡ LARGE K EDGE' : Math.abs(mlbData.home_k_gap) >= 4 ? '(notable)' : '(small)'}` : 'K gap: early season data pending'}
 - ${mlbData.away_k_gap !== null && mlbData.away_k_gap !== undefined ? `${mlbData.away_pitcher} K gap vs ${game.home_team} lineup: ${mlbData.away_k_gap > 0 ? '+' : ''}${mlbData.away_k_gap}pts ${Math.abs(mlbData.away_k_gap) >= 8 ? '⚡ LARGE K EDGE' : Math.abs(mlbData.away_k_gap) >= 4 ? '(notable)' : '(small)'}` : ''}
 - Days rest signal: ${mlbData.home_days_rest && mlbData.away_days_rest ? (mlbData.home_days_rest > mlbData.away_days_rest ? mlbData.home_pitcher + ' has rest advantage (' + mlbData.home_days_rest + ' vs ' + mlbData.away_days_rest + ' days)' : mlbData.away_days_rest > mlbData.home_days_rest ? mlbData.away_pitcher + ' has rest advantage (' + mlbData.away_days_rest + ' vs ' + mlbData.home_days_rest + ' days)' : 'Even rest') : 'TBD'}
@@ -3903,6 +3904,8 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For MLB: you are giving a PRE-GAME take only. Never recap a completed game.
 - For MLB: pitcher handedness is in the data as (RHP) or (LHP) — always reference it
 - For MLB: if K rate gap >= 8pts, lead with it — "Cole's 31% K rate vs a lineup that punches out 23% of the time is a real strikeout prop edge"
+- For MLB: wRC+ above 110 = elite offense, below 90 = weak offense — always reference if available
+- For MLB: wOBA is park-adjusted offensive quality — use it to assess lineup strength vs pitcher
 - For MLB: platoon advantage note is in the data — always reference it if lineup is confirmed
 - For MLB: if lineup is confirmed count lefty vs righty batters vs the starting pitcher hand
 - For MLB: lefty-heavy lineup vs LHP = pitcher advantage, righty-heavy vs RHP = pitcher advantage
