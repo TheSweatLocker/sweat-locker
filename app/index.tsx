@@ -3726,9 +3726,11 @@ NBA EFFICIENCY DATA:
 - ${game.away_team} road record: ${awayNBAData.away_record || 'N/A'} | Road net rating adj: ${awayNetAdj > 0 ? '+' : ''}${awayNetAdj.toFixed(1)}
 - Net rating gap: ${Math.abs(parseFloat(netGap)).toFixed(1)} pts favor ${parseFloat(netGap) > 0 ? game.home_team : game.away_team}
 - Home/away context: ${game.home_team.split(' ').pop()} is ${homeNBAData.home_record || 'N/A'} at home | ${game.away_team.split(' ').pop()} is ${awayNBAData.away_record || 'N/A'} on road
-- Last 10 net rating: ${game.home_team.split(' ').pop()} ${homeNBAData.last_10_net_rating > 0 ? '+' : ''}${homeNBAData.last_10_net_rating?.toFixed(1)} | ${game.away_team.split(' ').pop()} ${awayNBAData.last_10_net_rating > 0 ? '+' : ''}${awayNBAData.last_10_net_rating?.toFixed(1)}
+- Last 5 net rating: ${game.home_team.split(' ').pop()} ${homeNBAData.last_10_net_rating > 0 ? '+' : ''}${homeNBAData.last_10_net_rating?.toFixed(1)} | ${game.away_team.split(' ').pop()} ${awayNBAData.last_10_net_rating > 0 ? '+' : ''}${awayNBAData.last_10_net_rating?.toFixed(1)}
+- Defensive rating: ${game.home_team.split(' ').pop()} ${homeNBAData.defensive_rating?.toFixed(1)} (opp eFG%: ${homeNBAData.opp_efg_pct?.toFixed(1) || 'N/A'}%) | ${game.away_team.split(' ').pop()} ${awayNBAData.defensive_rating?.toFixed(1)} (opp eFG%: ${awayNBAData.opp_efg_pct?.toFixed(1) || 'N/A'}%)
 - Avg pace: ${((homeNBAData.pace + awayNBAData.pace)/2).toFixed(1)} possessions/game
-- Defensive rating: ${game.home_team.split(' ').pop()} ${homeNBAData.defensive_rating?.toFixed(1)} | ${game.away_team.split(' ').pop()} ${awayNBAData.defensive_rating?.toFixed(1)}`;
+${homeNBAData.injury_note ? `- ${game.home_team} injuries: ${homeNBAData.injury_note}` : ''}
+${awayNBAData.injury_note ? `- ${game.away_team} injuries: ${awayNBAData.injury_note}` : ''}`;
   }
 }
 const modelContext = scoreData?.predictedSpread ? `
@@ -3822,7 +3824,9 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NCAAB with KenPom active: lead with the model data, no disclaimer needed
 - For NCAAB without KenPom: mention you're working from season-long efficiency data
 - For NBA: search for tonight's injury reports and lineup news FIRST — real-world factors override market lean
+- For NBA: injury_note in the data shows OUT and Questionable players — if any star is OUT lead with that immediately, it overrides everything else
 - For NBA: if a key player is out or questionable, lead with that — it overrides everything else
+- For NBA: OUT players affect spread by 4-10 points depending on the player — always quantify the impact
 - For NBA: if back-to-back data is present, always mention it
 - For NBA: always reference home/away records — a team that is 34-7 at home vs a road team that is 14-27 away is a massive situational edge
 - For NBA: if home team has strong home record and away team has poor road record, lean home regardless of net rating gap
