@@ -51,7 +51,7 @@ jobs:
           cd mlb_pipeline
           python bullpen_stats.py
 
-          - name: Run team offense stats
+      - name: Run team offense stats
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
