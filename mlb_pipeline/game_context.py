@@ -1,5 +1,5 @@
 import requests
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import json
 
 import os
@@ -502,28 +502,23 @@ def upload_game_context(context):
 
 def run():
     print(f"Fetching MLB games for today...")
-    # Clear today's games first
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Prefer": "return=minimal"
-    }
     today = date.today().isoformat()
-    delete_resp = requests.delete(
-        f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_date=eq.{today}",
-        headers={
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-        }
-    )
-    print(f"Cleared today's games ({today}): status {delete_resp.status_code}")
+    for d in range(3):
+        past_date = (date.today() - timedelta(days=d)).isoformat()
+        delete_resp = requests.delete(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_date=eq.{past_date}",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+            }
+        )
+        print(f"Cleared {past_date}: status {delete_resp.status_code}")
     games = get_mlb_games()
-    
+
     if not games:
         print("No MLB games found")
         return
-    
-    today = date.today().isoformat()
+
     processed = 0
     
     # Fetch probable pitchers from MLB Stats API
@@ -690,7 +685,7 @@ def run():
                 lob = home_pitcher_stats.get('lob_pct', 0)
                 throws = home_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-                pitcher_context += f"{home_pitcher} ({throws}HP): xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
+                pitcher_context += f"{home_pitcher} ({throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
             if away_pitcher_stats:
                 xera = away_pitcher_stats.get('xera', 'N/A')
                 kpct = away_pitcher_stats.get('k_pct', 0)
@@ -700,7 +695,7 @@ def run():
                 lob = away_pitcher_stats.get('lob_pct', 0)
                 throws = away_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-            pitcher_context += f" | {away_pitcher} ({throws}HP): xERA {xera}, K% {kpct:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
+            pitcher_context += f" | {away_pitcher} ({throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
             # Build umpire note
             ump_note = ""
             if ump_stats:
