@@ -294,6 +294,84 @@ def get_confirmed_lineups(game_date):
         print(f"Lineup fetch error: {e}")
         return {}
 
+def get_batter_handedness(player_name, season=2026):
+    """Look up batter hitting hand from MLB Stats API"""
+    try:
+        r = requests.get(
+            "https://statsapi.mlb.com/api/v1/people/search",
+            params={"names": player_name, "sportId": 1},
+            timeout=10
+        )
+        data = r.json()
+        people = data.get("people", [])
+        if not people:
+            return None
+        person = people[0]
+        bat_side = person.get("batSide", {}).get("code", None)
+        return bat_side  # 'L', 'R', or 'S' (switch)
+    except Exception as e:
+        return None
+
+def calc_platoon_advantage(lineup_names, pitcher_hand):
+    """
+    Calculate platoon advantage score for a lineup vs a pitcher.
+    Returns (score, note) where score > 0 = lineup advantage, < 0 = pitcher advantage
+    """
+    if not lineup_names or not pitcher_hand:
+        return None, None
+
+    batters = [b.strip() for b in lineup_names.split(',') if b.strip()]
+    if not batters:
+        return None, None
+
+    handedness = []
+    for name in batters[:9]:  # top 9 only
+        hand = get_batter_handedness(name)
+        if hand:
+            handedness.append(hand)
+        time.sleep(0.1)  # rate limit
+
+    if not handedness:
+        return None, None
+
+    total = len(handedness)
+    # Opposite hand batters have platoon advantage
+    if pitcher_hand == 'R':
+        # LHB and switch hitters have advantage vs RHP
+        advantage_batters = [h for h in handedness if h in ['L', 'S']]
+        disadvantage_batters = [h for h in handedness if h == 'R']
+    elif pitcher_hand == 'L':
+        # RHB and switch hitters have advantage vs LHP
+        advantage_batters = [h for h in handedness if h in ['R', 'S']]
+        disadvantage_batters = [h for h in handedness if h == 'L']
+    else:
+        return None, None
+
+    adv_count = len(advantage_batters)
+    dis_count = len(disadvantage_batters)
+
+    # Score: positive = lineup has platoon advantage, negative = pitcher has platoon advantage
+    # Scale: each batter with platoon advantage = +1, disadvantage = -1
+    score = round((adv_count - dis_count) / total * 10, 1)
+
+    l_count = handedness.count('L')
+    r_count = handedness.count('R')
+    s_count = handedness.count('S')
+
+    note = f"{l_count}L/{r_count}R/{s_count}S vs {pitcher_hand}HP — "
+    if score >= 3:
+        note += f"lineup has strong platoon advantage (+{score})"
+    elif score >= 1:
+        note += f"lineup has slight platoon advantage (+{score})"
+    elif score <= -3:
+        note += f"pitcher has strong platoon advantage ({score})"
+    elif score <= -1:
+        note += f"pitcher has slight platoon advantage ({score})"
+    else:
+        note += "neutral platoon matchup"
+
+    return score, note
+
 def get_pitcher_splits(pitcher_id, season=2026):
     """Fetch pitcher home/away splits from MLB Stats API"""
     if not pitcher_id:
@@ -644,6 +722,28 @@ def run():
             home_lineup = lineup_info.get("home_lineup", [])
             away_lineup = lineup_info.get("away_lineup", [])
             lineup_confirmed = lineup_info.get("lineup_confirmed", False)
+            # Calculate platoon advantage if lineups confirmed
+            home_platoon_score, home_platoon_note = None, None
+            away_platoon_score, away_platoon_note = None, None
+            if lineup_confirmed and home_pitcher_stats and away_pitcher_stats:
+                home_throws = home_pitcher_stats.get('throws', None)
+                away_throws = away_pitcher_stats.get('throws', None)
+                if home_lineup and away_throws:
+                    print(f"  Calculating away lineup platoon vs {away_pitcher} ({away_throws}HP)...")
+                    away_platoon_score, away_platoon_note = calc_platoon_advantage(
+                        ', '.join(away_lineup) if isinstance(away_lineup, list) else away_lineup,
+                        away_throws
+                    )
+                    if away_platoon_note:
+                        print(f"  Away platoon: {away_platoon_note}")
+                if away_lineup and home_throws:
+                    print(f"  Calculating home lineup platoon vs {home_pitcher} ({home_throws}HP)...")
+                    home_platoon_score, home_platoon_note = calc_platoon_advantage(
+                        ', '.join(home_lineup) if isinstance(home_lineup, list) else home_lineup,
+                        home_throws
+                    )
+                    if home_platoon_note:
+                        print(f"  Home platoon: {home_platoon_note}")
             # Get last 10 form
             home_form = get_team_last10(home_team)
             away_form = get_team_last10(away_team)
@@ -749,6 +849,10 @@ def run():
                 "home_lineup": ", ".join(home_lineup) if home_lineup else None,
                 "away_lineup": ", ".join(away_lineup) if away_lineup else None,
                 "lineup_confirmed": lineup_confirmed,
+                "home_platoon_advantage": home_platoon_score,
+                "away_platoon_advantage": away_platoon_score,
+                "home_platoon_note": home_platoon_note,
+                "away_platoon_note": away_platoon_note,
                 "home_record": f"{home_form['wins']}-{home_form['losses']}" if home_form else None,
                 "away_record": f"{away_form['wins']}-{away_form['losses']}" if away_form else None,
                 "home_last10": home_form['last10'] if home_form else None,
