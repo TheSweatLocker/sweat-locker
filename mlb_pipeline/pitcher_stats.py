@@ -4,6 +4,7 @@ import traceback
 from pybaseball import pitching_stats, pitching_stats_range
 import warnings
 import os
+import time
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 warnings.filterwarnings('ignore')
@@ -126,6 +127,9 @@ def run():
 
     for _, row in stats.iterrows():
         try:
+            # Small delay every 10 pitchers to avoid MLB Stats API rate limit
+            if (success + errors) % 10 == 0:
+                time.sleep(0.5)
             name = str(row.get('Name', ''))
             last5_era = fetch_last5_era(name, recent_stats)
 
