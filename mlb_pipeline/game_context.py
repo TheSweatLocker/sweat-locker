@@ -1,5 +1,6 @@
 import requests
 from datetime import datetime, date, timedelta
+import time
 import json
 
 import os
@@ -686,7 +687,7 @@ def log_game_result(context):
         }
         r = requests.post(
             f"{SUPABASE_URL}/rest/v1/mlb_game_results",
-            headers={**headers, "Prefer": "resolution=merge-duplicates,return=minimal"},
+            headers=headers,
             json=record
         )
         if r.status_code not in [200, 201, 204]:
