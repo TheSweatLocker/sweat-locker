@@ -660,6 +660,8 @@ def log_game_result(context):
             "over_lean": context.get("over_lean"),
             "confidence": context.get("confidence"),
             "model_version": "v0.1",
+            "open_total": context.get("open_total"),
+            "close_total": context.get("close_total"),
         }
 
         # Parse away pitcher stats from pitcher_context
@@ -781,6 +783,10 @@ def run():
                         break
                 if total_line:
                     break
+
+            # Determine if this is 8am (open) or 2pm (close) run
+            current_hour = datetime.now().hour
+            is_open_run = current_hour < 15  # before 3pm ET = opening line
             
             # Weather adjustment
             weather_adj = 0
@@ -985,6 +991,8 @@ def run():
                 "wind_direction": weather["wind_direction"],
                 "precipitation": weather["precipitation"],
                 "park_run_factor": park_run_factor,
+                "open_total": total_line if is_open_run else None,
+                "close_total": total_line if not is_open_run else None,
                 "projected_total": projected_total,
                 "over_lean": over_lean,
                 "confidence": confidence,
