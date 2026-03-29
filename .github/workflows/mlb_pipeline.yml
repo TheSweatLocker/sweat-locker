@@ -2,9 +2,8 @@ name: MLB Pipeline Daily
 
 on:
   schedule:
-    - cron: '0 12 * * *'  # 8am ET
-    - cron: '0 18 * * *'  # 2pm ET
-  workflow_dispatch:
+    - cron: '0 12 * * *'  # 8am ET (UTC-4) = noon UTC
+  workflow_dispatch:  # allows manual trigger from GitHub
 
 jobs:
   run-mlb-pipeline:
@@ -12,10 +11,10 @@ jobs:
     
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
@@ -30,6 +29,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+          BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
         run: |
           cd mlb_pipeline
           python game_context.py
@@ -41,19 +41,3 @@ jobs:
         run: |
           cd mlb_pipeline
           python pitcher_stats.py
-
-      - name: Run bullpen stats update
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python bullpen_stats.py
-
-      - name: Run NBA team stats update
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python nba_pipeline.py
