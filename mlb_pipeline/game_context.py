@@ -612,6 +612,88 @@ def upload_game_context(context):
         print(f"Upload failed {r.status_code}: {r.text}")
     return r.status_code in [200, 201, 204]
 
+def log_game_result(context):
+    """Log pre-game data to mlb_game_results for XGBoost training"""
+    try:
+        record = {
+            "game_id": context.get("game_id"),
+            "game_date": context.get("game_date"),
+            "season": 2026,
+            "home_team": context.get("home_team"),
+            "away_team": context.get("away_team"),
+            "venue": context.get("venue"),
+            "dome_game": context.get("venue") in DOME_VENUES,
+            "home_sp_name": context.get("home_pitcher"),
+            "home_sp_hand": context.get("pitcher_context", "").split("(")[1][0] if context.get("pitcher_context") and "(" in context.get("pitcher_context", "") else None,
+            "home_sp_xera": float(context["pitcher_context"].split("xERA ")[1].split(",")[0]) if context.get("pitcher_context") and "xERA " in context.get("pitcher_context", "") else None,
+            "home_sp_k_pct": float(context["pitcher_context"].split("K% ")[1].split("%")[0]) if context.get("pitcher_context") and "K% " in context.get("pitcher_context", "") else None,
+            "home_sp_whiff_rate": float(context["pitcher_context"].split("whiff ")[1].split("%")[0]) if context.get("pitcher_context") and "whiff " in context.get("pitcher_context", "") else None,
+            "home_sp_gb_pct": float(context["pitcher_context"].split("GB% ")[1].split("%")[0]) if context.get("pitcher_context") and "GB% " in context.get("pitcher_context", "") else None,
+            "home_sp_days_rest": context.get("home_days_rest"),
+            "away_sp_name": context.get("away_pitcher"),
+            "away_sp_xera": None,  # parsed from pitcher_context away section
+            "away_sp_k_pct": None,
+            "away_sp_whiff_rate": None,
+            "away_sp_gb_pct": None,
+            "away_sp_days_rest": context.get("away_days_rest"),
+            "home_runs_per_game": context.get("home_runs_per_game"),
+            "away_runs_per_game": context.get("away_runs_per_game"),
+            "home_ops": context.get("home_ops"),
+            "away_ops": context.get("away_ops"),
+            "home_team_k_pct": context.get("home_team_k_pct"),
+            "away_team_k_pct": context.get("away_team_k_pct"),
+            "home_k_gap": context.get("home_k_gap"),
+            "away_k_gap": context.get("away_k_gap"),
+            "home_platoon_advantage": context.get("home_platoon_advantage"),
+            "away_platoon_advantage": context.get("away_platoon_advantage"),
+            "home_platoon_note": context.get("home_platoon_note"),
+            "away_platoon_note": context.get("away_platoon_note"),
+            "home_bullpen_era": context.get("home_bullpen_era"),
+            "away_bullpen_era": context.get("away_bullpen_era"),
+            "park_run_factor": context.get("park_run_factor"),
+            "temperature": context.get("temperature"),
+            "wind_mph": context.get("wind_speed"),
+            "wind_direction": context.get("wind_direction"),
+            "umpire": context.get("umpire"),
+            "umpire_note": context.get("umpire_note"),
+            "projected_total": context.get("projected_total"),
+            "over_lean": context.get("over_lean"),
+            "confidence": context.get("confidence"),
+            "model_version": "v0.1",
+        }
+
+        # Parse away pitcher stats from pitcher_context
+        pitcher_ctx = context.get("pitcher_context", "")
+        if " | " in pitcher_ctx:
+            away_ctx = pitcher_ctx.split(" | ")[1]
+            try:
+                record["away_sp_xera"] = float(away_ctx.split("xERA ")[1].split(",")[0]) if "xERA " in away_ctx else None
+                record["away_sp_k_pct"] = float(away_ctx.split("K% ")[1].split("%")[0]) if "K% " in away_ctx else None
+                record["away_sp_whiff_rate"] = float(away_ctx.split("whiff ")[1].split("%")[0]) if "whiff " in away_ctx else None
+                record["away_sp_gb_pct"] = float(away_ctx.split("GB% ")[1].split("%")[0]) if "GB% " in away_ctx else None
+                record["away_sp_hand"] = away_ctx.split("(")[1][0] if "(" in away_ctx else None
+            except:
+                pass
+
+        # Also parse close total from bookmakers for training
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates,return=minimal"
+        }
+        r = requests.post(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_results",
+            headers=headers,
+            json=record
+        )
+        if r.status_code not in [200, 201, 204]:
+            print(f"  ⚠️ game_results log failed {r.status_code}: {r.text[:100]}")
+        else:
+            print(f"  📊 Training row logged: {context.get('away_team')} @ {context.get('home_team')}")
+    except Exception as e:
+        print(f"  ⚠️ game_results error: {e}")
+
 def run():
     print(f"Fetching MLB games for today...")
     today = date.today().isoformat()
@@ -937,6 +1019,7 @@ def run():
                 lean = "OVER" if context["over_lean"] else "UNDER" if context["over_lean"] is False else "NEUTRAL"
                 print(f"✅ {away_team} @ {home_team} — {venue} — {weather['temperature']}°F, wind {weather['wind_speed']}mph {weather['wind_direction']} — {lean}")
                 processed += 1
+                log_game_result(context)
             else:
                 print(f"❌ Failed: {away_team} @ {home_team}")
                 
