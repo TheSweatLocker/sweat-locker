@@ -3636,13 +3636,25 @@ if(sport === 'NBA') {
     Object.values(nbaTeamData).find(t => t.team && game.away_team.includes(t.team.split(' ').pop()));
   if(homeNBAData && awayNBAData) {
     const netGap = (homeNBAData.net_rating - awayNBAData.net_rating).toFixed(1);
-    nbaContextStr = `
+    const homeIsHome = true;
+const homeNetAdj = homeNBAData.home_wins && homeNBAData.home_losses
+  ? (homeNBAData.home_wins / (homeNBAData.home_wins + homeNBAData.home_losses) - 0.5) * 10
+  : 0;
+const awayNetAdj = awayNBAData.away_wins && awayNBAData.away_losses
+  ? (awayNBAData.away_wins / (awayNBAData.away_wins + awayNBAData.away_losses) - 0.5) * 10
+  : 0;
+
+nbaContextStr = `
 NBA EFFICIENCY DATA:
 - ${game.home_team} net rating: ${homeNBAData.net_rating > 0 ? '+' : ''}${homeNBAData.net_rating.toFixed(1)} | eFG%: ${homeNBAData.efg_pct?.toFixed(1)}% | Pace: ${homeNBAData.pace?.toFixed(1)} | Record: ${homeNBAData.wins}-${homeNBAData.losses}
+- ${game.home_team} home record: ${homeNBAData.home_record || 'N/A'} | Home net rating adj: ${homeNetAdj > 0 ? '+' : ''}${homeNetAdj.toFixed(1)}
 - ${game.away_team} net rating: ${awayNBAData.net_rating > 0 ? '+' : ''}${awayNBAData.net_rating.toFixed(1)} | eFG%: ${awayNBAData.efg_pct?.toFixed(1)}% | Pace: ${awayNBAData.pace?.toFixed(1)} | Record: ${awayNBAData.wins}-${awayNBAData.losses}
+- ${game.away_team} road record: ${awayNBAData.away_record || 'N/A'} | Road net rating adj: ${awayNetAdj > 0 ? '+' : ''}${awayNetAdj.toFixed(1)}
 - Net rating gap: ${Math.abs(parseFloat(netGap)).toFixed(1)} pts favor ${parseFloat(netGap) > 0 ? game.home_team : game.away_team}
+- Home/away context: ${game.home_team.split(' ').pop()} is ${homeNBAData.home_record || 'N/A'} at home | ${game.away_team.split(' ').pop()} is ${awayNBAData.away_record || 'N/A'} on road
 - Last 10 net rating: ${game.home_team.split(' ').pop()} ${homeNBAData.last_10_net_rating > 0 ? '+' : ''}${homeNBAData.last_10_net_rating?.toFixed(1)} | ${game.away_team.split(' ').pop()} ${awayNBAData.last_10_net_rating > 0 ? '+' : ''}${awayNBAData.last_10_net_rating?.toFixed(1)}
-- Avg pace: ${((homeNBAData.pace + awayNBAData.pace)/2).toFixed(1)} possessions/game`;
+- Avg pace: ${((homeNBAData.pace + awayNBAData.pace)/2).toFixed(1)} possessions/game
+- Defensive rating: ${game.home_team.split(' ').pop()} ${homeNBAData.defensive_rating?.toFixed(1)} | ${game.away_team.split(' ').pop()} ${awayNBAData.defensive_rating?.toFixed(1)}`;
   }
 }
 const modelContext = scoreData?.predictedSpread ? `
@@ -3738,6 +3750,8 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NBA: search for tonight's injury reports and lineup news FIRST — real-world factors override market lean
 - For NBA: if a key player is out or questionable, lead with that — it overrides everything else
 - For NBA: if back-to-back data is present, always mention it
+- For NBA: always reference home/away records — a team that is 34-7 at home vs a road team that is 14-27 away is a massive situational edge
+- For NBA: if home team has strong home record and away team has poor road record, lean home regardless of net rating gap
 - For NBA: fade the B2B team unless line has already moved 3+ pts against them
 - For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
 - For MLB: if web search shows the game has ALREADY BEEN PLAYED — do NOT recap it. Instead say "This game has already been played." and stop.
