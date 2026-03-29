@@ -4406,10 +4406,13 @@ if(bestEV >= 4 && bookCount >= minBooksA && lineRange <= maxRangeA) {
 }
         // AI Jerry narration
         try {
-          const gradeContext = grade==='A' ? 'This is a strong edge — be enthusiastic but not reckless' :
-                              grade==='B' ? 'This is a solid edge — confident but measured' :
-                              grade==='C' ? 'This is a mild edge — cautious and analytical' :
-                              'No real edge here — advise passing';
+          const gradeContext = grade==='A' 
+            ? `STRONG EDGE — ${bookCount >= 4 ? 'market-confirmed across ' + bookCount + ' books' : 'high EV at ' + bestEV.toFixed(1) + '%'}. Explain the specific reason this line is mispriced.`
+              : grade==='B' 
+            ? `Solid edge at ${bestEV.toFixed(1)}% EV. Confident but measured.`
+              : grade==='C' 
+            ? `Mild edge. Cautious and analytical.`
+              : `No real edge. Advise passing.`;
           //console.log('AI Jerry calling for:', prop.player, grade);
                               const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -4474,7 +4477,40 @@ if(bestEV >= 4 && bookCount >= minBooksA && lineRange <= maxRangeA) {
                       }
                     } catch(e) {}
                   }
-                  return `You are Prop Jerry, a sharp and entertaining sports betting analyst with a big personality. Generate a single 2-sentence insight for this prop: ${prop.player} ${bestSide} ${bestLine?.line}, ${bestEV.toFixed(1)}% EV across ${bookCount} books, line consensus range: ${lineRange.toFixed(1)} pts. Grade: ${grade}. ${gradeContext}.${kenpomContext}${playerContext}${sport === 'MLB' && playerContext ? ' Use the MLB context data to give a specific analytical take — reference pitcher K rate, umpire tendency, or park factor as relevant.' : ''} Base analysis ONLY on data provided. Never say "bet" or "must play". Keep it under 150 characters total. Sound like a real analyst not a robot.`;
+                  const isAGrade = grade === 'A';
+const isBGrade = grade === 'B';
+const aGradeInstruction = isAGrade ? `
+CRITICAL — This is an A grade prop. You MUST explain WHY the market is mispriced in specific statistical terms.
+Structure: [What the data shows] + [Why this creates value at this line/book].
+Example format: "Gore's 27% K rate faces a lineup punching out 24% of ABs — that gap is real. DraftKings has the line 0.5 Ks soft vs the consensus."
+Never just say "edge detected" or "value here" — say WHY specifically.` : '';
+
+const bookContext = bookCount >= 4 
+  ? `${bookCount} books in tight consensus — this is a market-confirmed edge`
+  : bookCount >= 2 
+  ? `${bookCount} books posting — cross-book value confirmed`
+  : `1 book posting — high EV but verify line before it moves`;
+
+return `You are Prop Jerry, a sharp sports betting analyst. Generate a 2-sentence insight for this prop.
+
+Prop: ${prop.player} ${bestSide} ${bestLine?.line}
+EV: ${bestEV.toFixed(1)}% | Books: ${bookCount} | Line range: ${lineRange.toFixed(1)} pts | Best book: ${bestLine?.book}
+Grade: ${grade} — ${gradeContext}
+Book context: ${bookContext}
+${kenpomContext}${playerContext}
+${aGradeInstruction}
+
+Rules:
+- For A grades: lead with the specific stat that explains WHY this line is mispriced. Reference the actual numbers.
+- For B grades: lead with the edge, mention the best book to get it at.
+- For C grades: be measured — "mild edge, worth tracking"
+- For all grades: end with the specific action (e.g. "Over ${bestLine?.line} at ${bestLine?.book}")
+- Never say "bet" or "must play"
+- 2 sentences maximum
+- Sound like a sharp friend texting you, not a robot
+- MLB: always reference pitcher K rate, umpire, or park factor if available
+- NBA: always reference player recent form or injury context if available
+- If no technical data available, lead with the EV and book consensus signal`;
                 })()
               }]
             })
