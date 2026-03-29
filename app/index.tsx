@@ -4395,7 +4395,13 @@ const minBooksB = isMLB || isNHL ? 1 : 3;
 const maxRangeA = isMLB || isNHL ? 1.0 : 0.5;
 const maxRangeB = isMLB || isNHL ? 1.5 : 1.0;
 
-if(bestEV >= 4 && bookCount >= minBooksA && lineRange <= maxRangeA) {
+// Two paths to A grade:
+// Path 1: High consensus (4+ books) + solid EV — market confirmed
+// Path 2: Very high EV (6%+) + minimum books — high conviction even with fewer books
+const pathOneA = bestEV >= 4 && bookCount >= minBooksA && lineRange <= maxRangeA;
+const pathTwoA = bestEV >= 6 && bookCount >= minBooksB && lineRange <= maxRangeB;
+
+if(pathOneA || pathTwoA) {
   grade='A'; gradeColor='#00e5a0';
 } else if(bestEV >= 3 && bookCount >= minBooksB && lineRange <= maxRangeB) {
   grade='B'; gradeColor='#FFB800';
