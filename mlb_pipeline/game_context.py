@@ -597,6 +597,23 @@ def get_team_woba_wrc(team_name):
     except:
         return None
 
+def calc_batting_order_weight(lineup_names):
+    """
+    Weight lineup quality by batting order position.
+    Top 3 = high leverage, 4-6 = medium, 7-9 = low.
+    Returns a score 0-10 representing top-of-order strength.
+    """
+    if not lineup_names:
+        return None
+    batters = [b.strip() for b in lineup_names.split(',') if b.strip()]
+    if len(batters) < 3:
+        return None
+    # Weights by position: 1-3 face starter first inning
+    weights = [1.0, 0.95, 0.90, 0.70, 0.65, 0.60, 0.45, 0.40, 0.35]
+    # Score is just a weighted count — higher = more lineup depth
+    score = sum(weights[i] for i in range(min(len(batters), 9)))
+    return round(score, 2)
+
 def get_park_factors(home_team):
     headers = {
         "apikey": SUPABASE_KEY,
@@ -899,6 +916,15 @@ def run():
             home_lineup = lineup_info.get("home_lineup", [])
             away_lineup = lineup_info.get("away_lineup", [])
             lineup_confirmed = lineup_info.get("lineup_confirmed", False)
+            # Calculate batting order weights
+            home_lineup_str = ', '.join(home_lineup) if isinstance(home_lineup, list) else home_lineup or ''
+            away_lineup_str = ', '.join(away_lineup) if isinstance(away_lineup, list) else away_lineup or ''
+            home_lineup_weight = calc_batting_order_weight(home_lineup_str) if lineup_confirmed else None
+            away_lineup_weight = calc_batting_order_weight(away_lineup_str) if lineup_confirmed else None
+            if home_lineup_weight:
+                print(f"  {home_team} lineup weight: {home_lineup_weight}")
+            if away_lineup_weight:
+                print(f"  {away_team} lineup weight: {away_lineup_weight}")
             # Calculate platoon advantage if lineups confirmed
             home_platoon_score, home_platoon_note = None, None
             away_platoon_score, away_platoon_note = None, None
@@ -1028,6 +1054,8 @@ def run():
                 "home_lineup": ", ".join(home_lineup) if home_lineup else None,
                 "away_lineup": ", ".join(away_lineup) if away_lineup else None,
                 "lineup_confirmed": lineup_confirmed,
+                "home_lineup_weight": home_lineup_weight,
+                "away_lineup_weight": away_lineup_weight,
                 "home_woba": home_offense.get('woba') if home_offense else None,
                 "away_woba": away_offense.get('woba') if away_offense else None,
                 "home_wrc_plus": home_offense.get('wrc_plus') if home_offense else None,
