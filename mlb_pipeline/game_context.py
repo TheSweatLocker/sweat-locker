@@ -612,11 +612,24 @@ def run():
             home_splits = get_team_splits(home_team)
             away_splits = get_team_splits(away_team)
 
-            # Use home split for home team, away split for away team
-            home_rpg = home_splits['home']['runs_per_game'] if home_splits and home_splits.get('home') else (home_stats['runs_per_game'] if home_stats else None)
-            away_rpg = away_splits['away']['runs_per_game'] if away_splits and away_splits.get('away') else (away_stats['runs_per_game'] if away_stats else None)
-            home_ops_split = home_splits['home']['ops'] if home_splits and home_splits.get('home') else (home_stats['ops'] if home_stats else None)
-            away_ops_split = away_splits['away']['ops'] if away_splits and away_splits.get('away') else (away_stats['ops'] if away_stats else None)
+           # Minimum 5 games before trusting team R/G — early season samples are noise
+            home_split_games = home_splits['home']['games'] if home_splits and home_splits.get('home') else 0
+            away_split_games = away_splits['away']['games'] if away_splits and away_splits.get('away') else 0
+            home_total_games = home_stats.get('games_played', 0) if home_stats else 0
+            away_total_games = away_stats.get('games_played', 0) if away_stats else 0
+
+            home_rpg = (home_splits['home']['runs_per_game'] if home_split_games >= 5
+                else home_stats['runs_per_game'] if home_stats and home_total_games >= 5
+                else None)
+            away_rpg = (away_splits['away']['runs_per_game'] if away_split_games >= 5
+                else away_stats['runs_per_game'] if away_stats and away_total_games >= 5
+                else None)
+            home_ops_split = (home_splits['home']['ops'] if home_split_games >= 5
+                  else home_stats['ops'] if home_stats and home_total_games >= 5
+                  else None)
+            away_ops_split = (away_splits['away']['ops'] if away_split_games >= 5
+                  else away_stats['ops'] if away_stats and away_total_games >= 5
+                  else None)
 
             if home_rpg:
                 print(f"  {home_team} home R/G: {home_rpg:.2f}")
