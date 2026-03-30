@@ -1808,7 +1808,12 @@ setEvData(evOpps.slice(0,20));
       }, {onConflict: 'cache_key'});
     } catch(e) {}
 
-  } catch(e) { setGamesData([]); }
+  } catch(e) { 
+    setGamesData([]);
+    if(e?.response?.status === 401 || e?.response?.status === 429) {
+      setGamesError('Data refreshing — check back shortly.');
+    }
+  }
   setGamesLoading(false);
   setRefreshing(false);
 };
