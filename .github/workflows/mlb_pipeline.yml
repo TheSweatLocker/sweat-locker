@@ -60,7 +60,6 @@ jobs:
           python team_stats.py
 
       - name: Run UFC fighter stats scrape
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && contains(github.event.schedule, '0 12') && format('{0}', github.run_number) != '' )
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
