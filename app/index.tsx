@@ -5534,7 +5534,7 @@ setJerryHistory(prev => {
   <Text style={{
     color:dailyBestBet.isPrime?HRB_COLOR:dailyBestBet.label==='STRONG LEAN'?'#00e5a0':'#0099ff',
     fontSize:10,fontWeight:'800'
-  }}>{dailyBestBet.score} {dailyBestBet.label}</Text>
+  }}>{dailyBestBet.score?.total || dailyBestBet.score} {dailyBestBet.label}</Text>
 </View>
       )}
     </View>
@@ -5545,28 +5545,34 @@ setJerryHistory(prev => {
         <Text style={{color:'#4a6070',fontSize:13}}>Jerry is finding today's best play...</Text>
       </View>
     ) : dailyBestBet?.noGames ? (
-      <Text style={{color:'#7a92a8',fontSize:13}}>No NCAAB games on the slate today. Check back tomorrow.</Text>
+      <Text style={{color:'#7a92a8',fontSize:13}}>No games on the slate today. Check back tomorrow.</Text>
     ) : dailyBestBet?.noPrime ? (
       <Text style={{color:'#7a92a8',fontSize:13}}>No prime plays today — top game scores {dailyBestBet.topScore}/100. Jerry says wait for a better spot.</Text>
     ) : dailyBestBet?.game ? (
       <View>
-        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',letterSpacing:0.5,marginBottom:6}}>🏀 NCAAB — {new Date(dailyBestBet.commenceTime).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} ET</Text>
-        <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:15,marginBottom:8}}>{dailyBestBet.game}</Text>
+        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',letterSpacing:0.5,marginBottom:6}}>
+          {SPORT_EMOJI[dailyBestBet.sport] || '🎯'} {dailyBestBet.sport} — {new Date(dailyBestBet.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} ET
+        </Text>
+        <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:15,marginBottom:8}}>
+          {dailyBestBet.game.away_team} @ {dailyBestBet.game.home_team}
+        </Text>
         <View style={{flexDirection:'row',alignItems:'center',gap:10,marginBottom:12}}>
           <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:HRB_COLOR,flex:1}}>
-            <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>{dailyBestBet.betType.toUpperCase()}</Text>
-            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16}}>{dailyBestBet.primaryBet}</Text>
+            <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>TOP PLAY</Text>
+            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16}}>
+              {dailyBestBet.score?.leanSide || 'Model Edge'}
+            </Text>
           </View>
-          <View style={{backgroundColor:'#151c24',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:'#1f2d3d',alignItems:'center'}}>
-            <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>ODDS</Text>
-            <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16}}>{dailyBestBet.odds > 0 ? '+' : ''}{dailyBestBet.odds}</Text>
+          <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:'rgba(0,229,160,0.3)',alignItems:'center'}}>
+            <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>SWEAT</Text>
+            <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:16}}>{dailyBestBet.score?.total || '--'}</Text>
           </View>
           <View style={{backgroundColor:'rgba(0,153,255,0.1)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:'rgba(0,153,255,0.3)',alignItems:'center'}}>
             <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>BOOK</Text>
             <Text style={{color:'#0099ff',fontWeight:'800',fontSize:11}}>🎸 HRB</Text>
           </View>
         </View>
-        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.jerry}"</Text>
+        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.narrative}"</Text>
       </View>
     ) : null}
   </View>
