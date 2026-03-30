@@ -1652,7 +1652,7 @@ setEvData(evOpps.slice(0,20));
   const fetchGames = async (sport=gamesSport, day=gamesDay) => {
   setGamesLoading(true);
   const CACHE_KEY = `odds_games_${sport}_${day}`;
-  const CACHE_MINUTES = 10;
+  const CACHE_MINUTES = 60;
 
   // 1. Check AsyncStorage first
   try {
@@ -4032,7 +4032,7 @@ ${scoreData?.efgMismatch && sport === 'NBA' ? `- Back-to-back: ${scoreData.efgMi
         .single();
       if(cachedNarrative) {
         const ageMin = (Date.now() - new Date(cachedNarrative.created_at).getTime()) / 60000;
-        if(ageMin < 120) {
+        if(ageMin < 480) {
           setGameNarrative(cachedNarrative.narrative);
           setGameNarrativeLoading(false);
           return;
