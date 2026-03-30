@@ -2306,6 +2306,8 @@ if(score >= 40) return {label:'👀 Worth a Look', color:'#ffd166'};
     let projectedTotal = null;
     let postedTotal = null;
     let mismatchPts = 0;
+    let leanSide = null;
+    let leanBet = null;
     if(sport==='NCAAB') {
 //console.log('BARTDATA FLORIDA:', bartData.filter(t=>t.team.toLowerCase().includes('florida')).map(t=>t.team));  
       const awayStripped = normalizeTeamName(stripMascot(game.away_team)).toLowerCase().trim();
@@ -2596,6 +2598,25 @@ modelMismatch = Math.min(85, modelMismatch);
         : stripMascot(game.away_team);
     }
   }
+// NBA fallback lean — use moneyline favorite if no NBA data
+  if(!leanSide) {
+    const mlOddsAwayNBA = bookmakers.map(bm => {
+      const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
+      return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.away_team)?.price : null;
+    }).filter(x => x !== null);
+    const mlOddsHomeNBA = bookmakers.map(bm => {
+      const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
+      return ml && ml.outcomes ? ml.outcomes.find(o => o.name===game.home_team)?.price : null;
+    }).filter(x => x !== null);
+    const avgAwayMLNBA = mlOddsAwayNBA.length ? mlOddsAwayNBA.reduce((a,b)=>a+b,0)/mlOddsAwayNBA.length : 0;
+    const avgHomeMLNBA = mlOddsHomeNBA.length ? mlOddsHomeNBA.reduce((a,b)=>a+b,0)/mlOddsHomeNBA.length : 0;
+    if(avgAwayMLNBA && avgHomeMLNBA) {
+      leanSide = avgHomeMLNBA < avgAwayMLNBA 
+        ? stripMascot(game.home_team) 
+        : stripMascot(game.away_team);
+      leanBet = 'ml';
+    }
+  }
 } else if(sport==='MLB') {
   // Base market signals
   const spreadGap = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 0;
@@ -2648,6 +2669,41 @@ modelMismatch = Math.min(85, modelMismatch);
     // Umpire signal boost
     if(mlbCtx.umpire_note && mlbCtx.umpire_note.includes('K-friendly')) {
       modelMismatch = Math.min(85, modelMismatch + 5);
+    }
+
+    // wRC+ gap boost — elite offense vs weak offense is real signal
+    if(mlbCtx.home_wrc_plus && mlbCtx.away_wrc_plus) {
+      const wrcGap = Math.abs(mlbCtx.home_wrc_plus - mlbCtx.away_wrc_plus);
+      if(wrcGap >= 20) modelMismatch = Math.min(85, modelMismatch + 8);
+      else if(wrcGap >= 10) modelMismatch = Math.min(85, modelMismatch + 4);
+    }
+
+    // K rate gap boost — pitcher K% vs lineup K% gap
+    const kGap = Math.max(
+      Math.abs(mlbCtx.home_k_gap || 0),
+      Math.abs(mlbCtx.away_k_gap || 0)
+    );
+    if(kGap >= 8) modelMismatch = Math.min(85, modelMismatch + 6);
+    else if(kGap >= 4) modelMismatch = Math.min(85, modelMismatch + 3);
+
+    // Platoon advantage boost
+    const platoonEdge = Math.max(
+      Math.abs(mlbCtx.home_platoon_advantage || 0),
+      Math.abs(mlbCtx.away_platoon_advantage || 0)
+    );
+    if(platoonEdge >= 5) modelMismatch = Math.min(85, modelMismatch + 5);
+    else if(platoonEdge >= 3) modelMismatch = Math.min(85, modelMismatch + 3);
+
+    // MLB lean — use team with better offense vs pitcher matchup
+    if(mlbCtx.over_lean !== null) {
+      leanBet = 'total';
+      const overUnderSide = mlbCtx.over_lean ? 'Over' : 'Under';
+      const totals = bookmakers.map(bm => {
+        const t = bm.markets && bm.markets.find(m => m.key==='totals');
+        return t && t.outcomes && t.outcomes[0] ? parseFloat(t.outcomes[0].point) : null;
+      }).filter(x => x !== null);
+      const avgTotalMLB = totals.length ? totals.reduce((a,b)=>a+b,0)/totals.length : 9.0;
+      leanSide = `${overUnderSide} ${avgTotalMLB.toFixed(1)}`;
     }
 
     // Over/under lean
@@ -2842,9 +2898,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
     const mlLine = mlResult?.outcome;
     const mlBook = mlResult?.book;
 
-    // Directional lean
-    let leanSide = null;
-    let leanBet = null;
+    // Directional lean — leanSide/leanBet set in sport blocks above
     const totalMismatchPts = projectedTotal && postedTotal ? Math.abs(projectedTotal - postedTotal) : 0;
     if(false) {
       // Total leans disabled until dedicated model is built
@@ -3278,7 +3332,7 @@ const fetchNBAInjuries = async () => {
 };
 
 const fetchDailyBestBet = async () => {
-  const CACHE_KEY = 'sweatlocker_daily_best_bet_v2';
+  const CACHE_KEY = 'sweatlocker_daily_best_bet_v4';
   const today = new Date().toISOString().split('T')[0];
 
   // Check Supabase first — shared across all users, locked per day
@@ -3363,7 +3417,9 @@ const fetchDailyBestBet = async () => {
           .select('*')
           .eq('home_team', game.home_team)
           .single();
-        const scoreObj = calcGameSweatScore(game, 'MLB', fanmatchData, mlbCtx, nbaTeamData);
+        // Wrap in dict keyed by home_team so calcGameSweatScore can find it
+        const mlbCtxMap = mlbCtx ? { [game.home_team]: mlbCtx } : {};
+        const scoreObj = calcGameSweatScore(game, 'MLB', fanmatchData, mlbCtxMap, nbaTeamData);
         if(scoreObj && scoreObj.total > bestScore) {
           bestScore = scoreObj.total;
           bestGame = game;
@@ -3474,6 +3530,11 @@ Give a 2-3 sentence take on WHY this is today's best bet. Reference the specific
       score: bestScoreObj,
       narrative,
       generatedAt: today,
+      leanDisplay: typeof bestScoreObj?.leanSide === 'string' 
+        ? bestScoreObj.leanSide 
+        : bestSport === 'NBA' 
+        ? stripMascot(bestGame?.home_team || '') 
+        : 'Model Edge',
     };
 
     // Save to Supabase — shared across all users for the day
@@ -5560,9 +5621,7 @@ setJerryHistory(prev => {
           <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:HRB_COLOR,flex:1}}>
             <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>TOP PLAY</Text>
             <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16}}>
-  {typeof dailyBestBet.score?.leanSide === 'string' 
-    ? dailyBestBet.score.leanSide 
-    : dailyBestBet.score?.leanBet || dailyBestBet.score?.spreadBet || 'Top Model Edge'}
+  {dailyBestBet.leanDisplay || 'Top Model Edge'}
 </Text>
           </View>
           <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:'rgba(0,229,160,0.3)',alignItems:'center'}}>

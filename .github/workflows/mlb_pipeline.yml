@@ -60,12 +60,18 @@ jobs:
           python team_stats.py
 
       - name: Run UFC fighter stats scrape
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && contains(github.event.schedule, '0 12') && format('{0}', github.run_number) != '' )
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          cd mlb_pipeline
-          python ufc_scraper.py
+          # Only run on Thursdays (day 1) to keep fighter stats fresh after weekend events
+          if [ "$(date +%u)" = "4" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            cd mlb_pipeline
+            python ufc_scraper.py
+          else
+            echo "Skipping UFC scraper — runs Thursdays only"
+          fi
       
       - name: Run NBA team stats update
         env:
