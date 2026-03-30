@@ -3278,200 +3278,228 @@ const fetchNBAInjuries = async () => {
 };
 
 const fetchDailyBestBet = async () => {
- const CACHE_KEY = 'sweatlocker_daily_best_bet';
-try {
-  const cached = await AsyncStorage.getItem(CACHE_KEY);
+  const CACHE_KEY = 'sweatlocker_daily_best_bet';
+  const today = new Date().toISOString().split('T')[0];
+
+  // Check Supabase first — shared across all users, locked per day
+  try {
+    const { data: supabaseCache } = await supabase
+      .from('jerry_cache')
+      .select('data, fetched_at')
+      .eq('cache_key', `best_bet_${today}`)
+      .single();
+    if(supabaseCache) {
+      setDailyBestBet(supabaseCache.data);
+      return;
+    }
+  } catch(e) {}
+
+  // Check local cache
+  try {
+    const cached = await AsyncStorage.getItem(CACHE_KEY);
     if(cached) {
       const parsed = JSON.parse(cached);
-      const ageMin = (Date.now() - parsed.timestamp) / 60000;
-      if(ageMin < 180) { setDailyBestBet(parsed.data); return; }
+      const cacheDate = new Date(parsed.timestamp).toISOString().split('T')[0];
+      if(cacheDate === today) {
+        setDailyBestBet(parsed.data);
+        return;
+      }
     }
   } catch(e) {}
 
   setDailyBestBetLoading(true);
+
   try {
-    // Get today's NCAAB games
+    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+    const todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
     const now = new Date();
-    // Fetch NCAAB games specifically — don't rely on current gamesData sport
-let ncaabGames = [];
-try {
-  const r = await axios.get('https://api.the-odds-api.com/v4/sports/basketball_ncaab/odds', {
-    params: {
-      apiKey: ODDS_API_KEY,
-      regions: 'us,us2',
-      markets: 'spreads,totals,h2h',
-      oddsFormat: 'american',
-      bookmakers: 'hardrockbet,draftkings,fanduel,betmgm'
-    }
-  });
-  const now2 = new Date();
-  const todayStart = new Date(now2); todayStart.setHours(0,0,0,0);
-  const todayEnd = new Date(now2); todayEnd.setHours(23,59,59,999);
-  ncaabGames = (r.data || [])
-  .filter(g => {
-    const t = new Date(g.commence_time);
-    if(t < todayStart || t > todayEnd) return false;
-    // Must have Hard Rock line
-    const hasHRB = (g.bookmakers||[]).some(bm => 
-      bm.key==='hardrockbet' || bm.key==='hardrock'
-    );
-    if(!hasHRB) return false;
-    // Must be a tournament team — check bartData seed
-    const awayStripped = stripMascot(g.away_team);
-    const homeStripped = stripMascot(g.home_team);
-    const awayData = fuzzyMatchTeam(awayStripped, bartData, 'team');
-    const homeData = fuzzyMatchTeam(homeStripped, bartData, 'team');
-    const isTournament = (awayData && awayData.seed) || (homeData && homeData.seed);
-    return isTournament;
-  })
-  .map(g => ({
-    ...g,
-    away_team: stripMascot(g.away_team),
-    home_team: stripMascot(g.home_team),
-  }));
-} catch(e) {
-  console.log('Daily best bet fetch error:', e.message);
-}
 
-if(!ncaabGames.length) {
-  setDailyBestBet({noGames: true});
-  setDailyBestBetLoading(false);
-  return;
-}
+    let bestGame = null;
+    let bestScore = 0;
+    let bestSport = null;
+    let bestScoreObj = null;
 
-const todayGames = ncaabGames;
+    // Scan MLB games
+    try {
+      const mlbResp = await axios.get('https://statsapi.mlb.com/api/v1/schedule', {
+        params: { sportId: 1, date: today, hydrate: 'probablePitcher' }
+      });
+      const mlbOddsResp = await axios.get('https://api.the-odds-api.com/v4/sports/baseball_mlb/odds', {
+        params: {
+          apiKey: ODDS_API_KEY,
+          regions: 'us,us2',
+          markets: 'spreads,totals,h2h',
+          oddsFormat: 'american',
+          bookmakers: 'hardrockbet,draftkings,fanduel,betmgm,caesars'
+        }
+      });
 
-    if(!todayGames.length) {
+      const mlbGames = [];
+      for(const dateEntry of mlbResp.data?.dates || []) {
+        for(const game of dateEntry.games || []) {
+          if(game.status?.abstractGameState === 'Final') continue;
+          const gameTime = new Date(game.gameDate);
+          if(gameTime < todayStart || gameTime > todayEnd) continue;
+          // Must not have started yet
+          if(gameTime < now) continue;
+          const oddsGame = (mlbOddsResp.data || []).find((og: any) => {
+            return og.home_team.includes(game.teams?.home?.team?.name?.split(' ').pop() || '') ||
+                   game.teams?.home?.team?.name?.includes(og.home_team.split(' ').pop() || '');
+          });
+          if(oddsGame) {
+            mlbGames.push({
+              ...oddsGame,
+              home_team: game.teams?.home?.team?.name || oddsGame.home_team,
+              away_team: game.teams?.away?.team?.name || oddsGame.away_team,
+              commence_time: game.gameDate,
+            });
+          }
+        }
+      }
+
+      for(const game of mlbGames) {
+        const { data: mlbCtx } = await supabase
+          .from('mlb_game_context')
+          .select('*')
+          .eq('home_team', game.home_team)
+          .single();
+        const scoreObj = calcGameSweatScore(game, 'MLB', fanmatchData, mlbCtx, nbaTeamData);
+        if(scoreObj && scoreObj.total > bestScore) {
+          bestScore = scoreObj.total;
+          bestGame = game;
+          bestSport = 'MLB';
+          bestScoreObj = scoreObj;
+        }
+      }
+    } catch(e) {}
+
+    // Scan NBA games
+    try {
+      const nbaResp = await axios.get('https://api.the-odds-api.com/v4/sports/basketball_nba/odds', {
+        params: {
+          apiKey: ODDS_API_KEY,
+          regions: 'us,us2',
+          markets: 'spreads,totals,h2h',
+          oddsFormat: 'american',
+          bookmakers: 'hardrockbet,draftkings,fanduel,betmgm,caesars'
+        }
+      });
+
+      const nbaGames = (nbaResp.data || []).filter((g: any) => {
+        const t = new Date(g.commence_time);
+        return t >= todayStart && t <= todayEnd && t > now;
+      });
+
+      for(const game of nbaGames) {
+        const scoreObj = calcGameSweatScore(game, 'NBA', fanmatchData, null, nbaTeamData);
+        if(scoreObj && scoreObj.total > bestScore) {
+          bestScore = scoreObj.total;
+          bestGame = game;
+          bestSport = 'NBA';
+          bestScoreObj = scoreObj;
+        }
+      }
+    } catch(e) {}
+   
+// Scan UFC — only on fight days
+    try {
+      const ufcResp = await axios.get('https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/odds', {
+        params: {
+          apiKey: ODDS_API_KEY,
+          regions: 'us,us2',
+          markets: 'h2h',
+          oddsFormat: 'american',
+          bookmakers: 'hardrockbet,draftkings,fanduel,betmgm,caesars'
+        }
+      });
+
+      const ufcEvents = (ufcResp.data || []).filter((g: any) => {
+        const t = new Date(g.commence_time);
+        return t >= todayStart && t <= todayEnd && t > now;
+      });
+
+      // Only consider main card fights — filter for top bouts by odds volume
+      const topUFCFights = ufcEvents
+        .filter((g: any) => (g.bookmakers || []).length >= 3)
+        .slice(0, 5);
+
+      for(const fight of topUFCFights) {
+        const scoreObj = calcGameSweatScore(fight, 'UFC', fanmatchData, null, nbaTeamData);
+        if(scoreObj && scoreObj.total > bestScore) {
+          bestScore = scoreObj.total;
+          bestGame = fight;
+          bestSport = 'UFC';
+          bestScoreObj = scoreObj;
+        }
+      }
+    } catch(e) {}
+
+    if(!bestGame || !bestScoreObj) {
       setDailyBestBet({noGames: true});
       setDailyBestBetLoading(false);
       return;
     }
 
-    // Score every game
-const scored = todayGames
-  .map(game => {
-    const score = calcGameSweatScore(game, 'NCAAB', fanmatchData);
-    return score ? {game, score} : null;
-  })
-  .filter(Boolean)
-  .sort((a, b) => b.score.total - a.score.total);
-
-if(!scored.length) {
-  setDailyBestBet({noGames: true});
-  setDailyBestBetLoading(false);
-  return;
-}
-
-// Tournament-aware selection logic
-// Priority 1: fanmatch + four factor boost + score >= 62
-let top = scored.find(s =>
-  s.score.hasFanmatch &&
-  (s.score.fourFactorBoost || 0) >= 8 &&
-  s.score.total >= 62
-);
-
-// Priority 2: fanmatch + score >= 65
-if(!top) {
-  top = scored.find(s =>
-    s.score.hasFanmatch &&
-    s.score.total >= 65
-  );
-}
-
-// Priority 3: score >= 68 any signal
-if(!top) {
-  top = scored.find(s => s.score.total >= 68);
-}
-
-// Priority 4: tournament floor — always surface best available
-if(!top) {
-  top = scored[0];
-  // Label it as a monitor play not prime
-  top.score.isPrime = false;
-  top.score.isTournamentFloor = true;
-}
-
-// Hard floor — if best game scores below 55 on a thin slate say no plays
-if(top.score.total < 55 && !top.score.hasFanmatch) {
-  setDailyBestBet({noPrime: true, topScore: top.score.total});
-  setDailyBestBetLoading(false);
-  return;
-}
-    const game = top.game;
-    const scoreData = top.score;
-    const isPrimaryTotal = scoreData.totalIsPrimary;
-    const totalLine = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
-    const spreadLine = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='spreads')?.outcomes?.[0];
-    const hrbBm = game.bookmakers?.find(bm => bm.key==='hardrockbet' || bm.key==='hardrock' || (BOOKMAKER_MAP[bm.key]||bm.key)===HRB);
-    const hrbTotal = hrbBm?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
-    const hrbSpread = hrbBm?.markets?.find(m=>m.key==='spreads')?.outcomes?.[0];
-
-    const primaryBet = isPrimaryTotal
-      ? `${scoreData.totalSignalBet || (scoreData.projectedTotal < scoreData.postedTotal ? 'Under' : 'Over')} ${hrbTotal?.point || totalLine?.point || '?'}`
-      : `${scoreData.leanSide || (hrbSpread ? hrbSpread.name + ' ' + (hrbSpread.point > 0 ? '+' : '') + hrbSpread.point : '?')}`;
-
-    const betType = isPrimaryTotal ? 'Total' : 'Spread';
-    const odds = isPrimaryTotal
-      ? (hrbTotal?.price || totalLine?.price || -110)
-      : (hrbSpread?.price || spreadLine?.price || -110);
-
-    const awayTeamData = scoreData.awayTeamData;
-    const homeTeamData = scoreData.homeTeamData;
-    const projTotal = scoreData.projectedTotal;
-    const postedTotal = hrbTotal?.point || totalLine?.point;
-    const delta = projTotal && postedTotal ? (parseFloat(projTotal) - parseFloat(postedTotal)).toFixed(1) : null;
-
-    const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker. This is your FEATURED PICK OF THE DAY — your highest confidence play.
-
-Game: ${game.away_team} @ ${game.home_team}
-Sweat ${scoreData.total >= 68 ? '🔒 PRIME SWEAT' : '— Strong Lean'}
-Primary bet: ${primaryBet} (${betType})
-Odds: ${odds > 0 ? '+' : ''}${odds}
-${awayTeamData ? `${game.away_team.split(' ').pop()} — AdjOE #${awayTeamData.adjOERank}, AdjDE #${awayTeamData.adjDERank}, eFG% off #${awayTeamData.eFG_O_rank}, eFG% def #${awayTeamData.eFG_D_rank}` : ''}
-${homeTeamData ? `${game.home_team.split(' ').pop()} — AdjOE #${homeTeamData.adjOERank}, AdjDE #${homeTeamData.adjDERank}, eFG% off #${homeTeamData.eFG_O_rank}, eFG% def #${homeTeamData.eFG_D_rank}` : ''}
-${scoreData.efgMismatch ? `Top mismatches: ${scoreData.efgMismatch}` : ''}
-${delta ? `Total delta: model projects ${projTotal} vs posted ${postedTotal} (${delta > 0 ? '+' : ''}${delta} pts)` : ''}
-${scoreData.lineMoveTeam ? `Sharp money: ${scoreData.lineMovePoints} pts toward ${scoreData.lineMoveTeam}` : ''}
-Net efficiency edge: ${Math.abs(scoreData.mismatchPts || 0).toFixed(1)} pts
-
-Write exactly 2 sharp sentences. This is your best bet of the day — be convicted but not reckless. Lead with the biggest data edge. End with the specific bet. Never say "bet" or "must play". Never mention KenPom. Sign off with — Jerry 🔒`;
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    // Generate Jerry narrative for best bet
+    const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 200,
-        messages: [{role: 'user', content: prompt}]
+        messages: [{
+          role: 'user',
+          content: `You are Jerry, a sharp sports betting analyst. This is today's single best bet across all sports.
+
+Game: ${bestGame.away_team} @ ${bestGame.home_team} (${bestSport})
+Sweat Score: ${bestScoreObj.total}/100
+Lean: ${bestScoreObj.leanSide || 'unclear'}
+Key factors: ${bestScoreObj.efgMismatch || bestScoreObj.injuryContext || 'model edge detected'}
+
+Give a 2-3 sentence take on WHY this is today's best bet. Reference the specific data. End with the specific side to back. Never say "bet" or "must play". Sound like a sharp friend.`
+        }]
       })
     });
-    const data = await response.json();
-    const text = data?.content?.[0]?.text || '';
 
-    const result = {
-      game: `${stripMascot(game.away_team)} vs ${stripMascot(game.home_team)}`,
-      primaryBet,
-      betType,
-      odds,
-      score: scoreData.total,
-      isPrime: scoreData.total >= 68,
-isTournamentFloor: scoreData.isTournamentFloor || false,
-label: scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? 'STRONG LEAN' : 'BEST AVAILABLE',
-      jerry: text,
-      commenceTime: game.commence_time,
+    const aiData = await aiResp.json();
+    const narrative = aiData?.content?.[0]?.text || 'Top model edge of the day.';
+
+    const bestBetData = {
+      game: bestGame,
+      sport: bestSport,
+      score: bestScoreObj,
+      narrative,
+      generatedAt: today,
     };
 
-    setDailyBestBet(result);
-    await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data: result, timestamp: Date.now()}));
+    // Save to Supabase — shared across all users for the day
+    try {
+      await supabase.from('jerry_cache').upsert({
+        cache_key: `best_bet_${today}`,
+        data: bestBetData,
+        fetched_at: new Date().toISOString(),
+      }, {onConflict: 'cache_key'});
+    } catch(e) {}
+
+    // Save to local cache
+    try {
+      await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({
+        data: bestBetData,
+        timestamp: Date.now()
+      }));
+    } catch(e) {}
+
+    setDailyBestBet(bestBetData);
+
   } catch(e) {
-    console.log('Daily best bet error:', e.message);
-    setDailyBestBetError('Jerry is scouting the board. Check back shortly.');
+    console.log('Daily best bet error:', e);
+    setDailyBestBet({noGames: true});
   }
+
   setDailyBestBetLoading(false);
 };
   const fetchDailyBriefing = async () => {
