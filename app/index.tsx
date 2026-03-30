@@ -4041,10 +4041,13 @@ ${scoreData?.efgMismatch && sport === 'NBA' ? `- Back-to-back: ${scoreData.efgMi
     } catch(e) {}
 
     try {
-      const isNBAorNHL = sport === 'NBA' || sport === 'NHL' || sport === 'MLB' || sport === 'NFL';
-const dataQualityNote = isNBAorNHL 
-  ? `NOTE: This is a market-based analysis only — no proprietary efficiency model exists for ${sport} yet. Analysis is based on line movement and book consensus only. Be transparent about this limitation.`
-  : `NOTE: Full KenPom efficiency model active — four factors, tempo, efficiency gaps all available.`;
+      const dataQualityNote = sport === 'NCAAB'
+  ? `NOTE: Full KenPom efficiency model active — four factors, tempo, efficiency gaps all available.`
+  : sport === 'MLB'
+  ? `NOTE: Sweat Locker MLB model active — pitcher xERA, wOBA/wRC+, K rate gap, platoon advantage, bullpen ERA, park factor, weather, umpire tendencies all feeding the model. Use these signals specifically.`
+  : sport === 'NBA'
+  ? `NOTE: Sweat Locker NBA model active — net rating, defensive rating, opp eFG%, home/away records, last 5 net rating, injury report, pace matchup all feeding the model. Use these signals specifically.`
+  : `NOTE: Market-based analysis only for ${sport}. Be transparent about this limitation.`;
       const spread = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='spreads')?.outcomes?.[0];
 const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
   totalDelta <= -4 ? `STRONG UNDER (model ${Math.abs(totalDelta)} pts below posted — heavy under lean)` :
@@ -4052,13 +4055,57 @@ const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcome
   totalDelta >= 4  ? `STRONG OVER (model ${Math.abs(totalDelta)} pts above posted — heavy over lean)` :
   totalDelta >= 2  ? `OVER lean (model ${totalDelta} pts above posted)` :
   `NEUTRAL (model within ${Math.abs(totalDelta)} pts of posted — no strong lean)`;
-      const prompt = `You are Jerry, a sharp sports analyst for The Sweat Locker app. Confident, direct, no fluff. You have access to deep KenPom efficiency data — use it specifically.
+  // Build Sweat Score signal context to pass to Jerry
+const sweatSignals = [];
+if(scoreData) {
+  if(sport === 'MLB' && mlbContext) {
+    const mlbData = await fetchMLBContext(game);
+    if(mlbData) {
+      if(mlbData.projected_total && mlbData.projected_total > 0) {
+        const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0]?.point;
+        const delta = total ? (mlbData.projected_total - total).toFixed(1) : null;
+        if(delta) sweatSignals.push(`Model projects ${mlbData.projected_total} runs vs market ${total} → ${parseFloat(delta) < 0 ? 'UNDER' : 'OVER'} lean (${delta} run gap)`);
+      }
+      if(mlbData.home_k_gap && Math.abs(mlbData.home_k_gap) >= 4) sweatSignals.push(`K rate gap: ${mlbData.home_pitcher} ${mlbData.home_k_gap > 0 ? '+' : ''}${mlbData.home_k_gap}pts vs ${game.away_team} lineup`);
+      if(mlbData.away_k_gap && Math.abs(mlbData.away_k_gap) >= 4) sweatSignals.push(`K rate gap: ${mlbData.away_pitcher} ${mlbData.away_k_gap > 0 ? '+' : ''}${mlbData.away_k_gap}pts vs ${game.home_team} lineup`);
+      if(mlbData.home_wrc_plus && mlbData.away_wrc_plus) {
+        const wrcGap = mlbData.home_wrc_plus - mlbData.away_wrc_plus;
+        if(Math.abs(wrcGap) >= 10) sweatSignals.push(`wRC+ edge: ${wrcGap > 0 ? game.home_team : game.away_team} +${Math.abs(wrcGap)} wRC+ advantage`);
+      }
+      if(mlbData.home_platoon_note) sweatSignals.push(`Platoon: ${mlbData.home_platoon_note}`);
+      if(mlbData.away_platoon_note) sweatSignals.push(`Platoon: ${mlbData.away_platoon_note}`);
+    }
+  }
+  if(sport === 'NBA') {
+    const homeNBA = Object.values(nbaTeamData).find(t => t.team && game.home_team.includes(t.team.split(' ').pop()));
+    const awayNBA = Object.values(nbaTeamData).find(t => t.team && game.away_team.includes(t.team.split(' ').pop()));
+    if(homeNBA && awayNBA) {
+      const netGap = homeNBA.net_rating - awayNBA.net_rating;
+      if(Math.abs(netGap) >= 3) sweatSignals.push(`Net rating gap: ${netGap > 0 ? game.home_team : game.away_team} +${Math.abs(netGap).toFixed(1)} pts advantage`);
+      if(homeNBA.defensive_rating && awayNBA.defensive_rating) {
+        const defGap = awayNBA.defensive_rating - homeNBA.defensive_rating;
+        if(Math.abs(defGap) >= 3) sweatSignals.push(`Defensive edge: ${defGap > 0 ? game.home_team : game.away_team} ${Math.abs(defGap).toFixed(1)} pts better DefRtg`);
+      }
+      const homeWinPct = homeNBA.home_wins/(homeNBA.home_wins+homeNBA.home_losses||1);
+      const awayWinPct = awayNBA.away_wins/(awayNBA.away_wins+awayNBA.away_losses||1);
+      if(homeWinPct - awayWinPct >= 0.15) sweatSignals.push(`Situational edge: ${game.home_team} ${homeNBA.home_record} at home vs ${game.away_team} ${awayNBA.away_record} on road`);
+      if(homeNBA.injury_note?.includes('OUT')) sweatSignals.push(`⚠️ ${game.home_team} injuries: ${homeNBA.injury_note}`);
+      if(awayNBA.injury_note?.includes('OUT')) sweatSignals.push(`⚠️ ${game.away_team} injuries: ${awayNBA.injury_note}`);
+    }
+  }
+  if(scoreData.leanSide) sweatSignals.push(`Model lean: ${scoreData.leanSide}`);
+}
+const sweatScoreContext = sweatSignals.length > 0 
+  ? `\nSWEAT LOCKER MODEL SIGNALS (Score: ${scoreData.total}/100):\n${sweatSignals.map(s => `- ${s}`).join('\n')}`
+  : '';    
+  const prompt = `You are Jerry, a sharp sports analyst for The Sweat Locker app. Confident, direct, no fluff. You have access to deep KenPom efficiency data — use it specifically.
 
 Game: ${game.away_team} @ ${game.home_team}
 Sport: ${sport}
 ${score>=68?' (PRIME SWEAT 🔒)':score>=55?' (Strong lean)':' (Monitor)'}
 Spread: ${spread?`${spread.name} ${spread.point > 0 ? '+' : ''}${spread.point}`:'N/A'}
 Total: ${total ? total.point : 'N/A'}
+${sweatScoreContext}
 ${modelContext}
 ${mlbContext}
 ${nbaContextStr}
@@ -4068,12 +4115,12 @@ Rules you must follow:
 - Model lean: "${scoreData?.leanSide || 'N/A'}" — use as directional starting point
 Sweat Score: ${scoreData.total}/100 ${scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? '— Strong Lean' : '— Best Available Today'}
 Confidence tier: ${
-  sport === 'NCAAB' && scoreData.hasFanmatch ? 'HIGH — The Sweat Locker game model active' :
-  sport === 'NCAAB' ? 'MODERATE — efficiency model only, no game prediction' :
-  sport === 'NBA' ? 'MODERATE — NBA efficiency model active (net rating, eFG%, pace, last 10 form)' :
+  sport === 'NCAAB' && scoreData.hasFanmatch ? 'HIGH — Full Sweat Locker game model active (fanmatch + KenPom four factors)' :
+  sport === 'NCAAB' ? 'MODERATE — KenPom efficiency model only, no game prediction' :
+  sport === 'NBA' ? 'HIGH — NBA model active (net rating, defensive rating, opp eFG%, home/away records, injuries, pace)' :
   sport === 'NHL' ? 'MARKET — no NHL model, pure market analysis' :
   sport === 'NFL' ? 'MARKET — no NFL model, market signals only' :
-  sport === 'MLB' ? 'MARKET — no MLB model yet, market signals only' :
+  sport === 'MLB' ? 'HIGH — MLB model active (pitcher xERA, wOBA, K rate gap, platoon, bullpen, park, weather, umpire)' :
   'MODERATE — efficiency model only'
 }
 ${scoreData.isTournamentFloor ? 'Note: This is the best available play today — not a Prime Sweat. Jerry should be measured in tone.' : ''}
@@ -4103,7 +4150,7 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For MLB: if projected total shows "NOT YET CALCULATED" — explicitly state you have no model total and give a NEUTRAL take on the total. Do NOT default to under.
 - For MLB: reference park factors if relevant (Coors Field = over lean, pitcher's parks = under lean)
 - For MLB: check umpire tendencies — K-friendly umps favor unders and strikeout props
-- For MLB: be transparent this is market signals + pitcher research, no proprietary model yet
+- For MLB: the Sweat Locker model is active — reference the specific signals that fired (K rate gap, wRC+ edge, platoon advantage, projected total delta) rather than generic market analysis
 - For UFC/MMA: search for fighter records, recent form, style matchups, and any camp/injury news
 - For UFC/MMA: reference finishing rates, striking accuracy, takedown defense — specific stats build credibility
 - For UFC/MMA: sharp money on UFC moves fast — always check line movement
