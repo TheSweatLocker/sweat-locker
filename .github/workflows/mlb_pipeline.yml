@@ -65,7 +65,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           # Only run on Thursdays (day 1) to keep fighter stats fresh after weekend events
-          if [ "$(date +%u)" = "4" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$(date +%u)" = "4" ]; then
             cd mlb_pipeline
             python ufc_scraper.py
           else
