@@ -5560,8 +5560,10 @@ setJerryHistory(prev => {
           <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:HRB_COLOR,flex:1}}>
             <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>TOP PLAY</Text>
             <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16}}>
-              {dailyBestBet.score?.leanSide || 'Model Edge'}
-            </Text>
+  {typeof dailyBestBet.score?.leanSide === 'string' 
+    ? dailyBestBet.score.leanSide 
+    : dailyBestBet.score?.leanBet || dailyBestBet.score?.spreadBet || 'Top Model Edge'}
+</Text>
           </View>
           <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:'rgba(0,229,160,0.3)',alignItems:'center'}}>
             <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>SWEAT</Text>
