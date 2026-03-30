@@ -2570,8 +2570,44 @@ modelMismatch = Math.min(85, modelMismatch);
     if(homeHasInjury) modelMismatch = Math.max(20, modelMismatch - 10);
     if(awayHasInjury) modelMismatch = Math.max(20, modelMismatch - 10);
 
-    // Pace matchup for projected total
+    // ── OPP eFG% DEFENSIVE QUALITY ──
+    const homeOppEFG = parseFloat(homeNBA.opp_efg_pct) || 0;
+    const awayOppEFG = parseFloat(awayNBA.opp_efg_pct) || 0;
+    if(homeOppEFG > 0 && awayOppEFG > 0) {
+      const oppEFGGap = Math.abs(homeOppEFG - awayOppEFG);
+      // Lower opp_efg_pct = better defense
+      if(oppEFGGap >= 3) modelMismatch = Math.min(88, modelMismatch + 6);
+      else if(oppEFGGap >= 1.5) modelMismatch = Math.min(85, modelMismatch + 3);
+    }
+
+    // ── PAINT DEFENSE ──
+    const homeOppPaint = parseFloat(homeNBA.opp_pts_paint) || 0;
+    const awayOppPaint = parseFloat(awayNBA.opp_pts_paint) || 0;
+    if(homeOppPaint > 0 && awayOppPaint > 0) {
+      const paintGap = Math.abs(homeOppPaint - awayOppPaint);
+      if(paintGap >= 5) modelMismatch = Math.min(88, modelMismatch + 4);
+    }
+
+    // ── LAST 5 NET RATING (recent form) ──
+    const homeLast5 = parseFloat(homeNBA.last_10_net_rating) || homeNBA.net_rating;
+    const awayLast5 = parseFloat(awayNBA.last_10_net_rating) || awayNBA.net_rating;
+    const last5Gap = Math.abs(homeLast5 - awayLast5);
+    // If recent form diverges significantly from season net rating, boost confidence
+    const homeFormDrift = Math.abs(homeLast5 - homeNBA.net_rating);
+    const awayFormDrift = Math.abs(awayLast5 - awayNBA.net_rating);
+    if(homeFormDrift >= 5 || awayFormDrift >= 5) modelMismatch = Math.min(88, modelMismatch + 5);
+    if(last5Gap >= 10) modelMismatch = Math.min(88, modelMismatch + 6);
+    else if(last5Gap >= 5) modelMismatch = Math.min(85, modelMismatch + 3);
+
+    // ── TRACKING PACE MATCHUP ──
+    const homeSpeed = parseFloat(homeNBA.avg_speed) || 0;
+    const awaySpeed = parseFloat(awayNBA.avg_speed) || 0;
     const avgPace = (homeNBA.pace + awayNBA.pace) / 2;
+
+    // Both fast teams = more possessions = over lean
+    // Both slow teams = fewer possessions = under lean
+    const paceSignal = avgPace > 101 ? 'fast' : avgPace < 98 ? 'slow' : 'neutral';
+
     projectedTotal = ((avgPace / 100) * 220).toFixed(1);
 
     const betterTeam = homeNBA.net_rating > awayNBA.net_rating ? game.home_team : game.away_team;
@@ -2587,15 +2623,39 @@ modelMismatch = Math.min(85, modelMismatch);
       efgMismatch = `Net rating gap: ${netRatingGap.toFixed(1)} pts (${stripMascot(betterTeam)} +${Math.max(homeNBA.net_rating, awayNBA.net_rating).toFixed(1)} vs ${stripMascot(worseTeam)} ${Math.min(homeNBA.net_rating, awayNBA.net_rating).toFixed(1)}) | ${homeAwayContext}${injuryContext}`;
     }
 
-    // Lean side — factor in injuries
+    // Lean side — composite score using all available data
     if(!b2bTeam) {
-      let homeLeanScore = homeNBA.net_rating + (situationalEdge * 0.5);
-      let awayLeanScore = awayNBA.net_rating - (situationalEdge * 0.5);
-      if(homeHasInjury) homeLeanScore -= 5;
-      if(awayHasInjury) awayLeanScore -= 5;
+      // Net rating (season) weighted 40%
+      let homeLeanScore = homeNBA.net_rating * 0.4;
+      let awayLeanScore = awayNBA.net_rating * 0.4;
+
+      // Last 5 net rating (recent form) weighted 30%
+      homeLeanScore += homeLast5 * 0.3;
+      awayLeanScore += awayLast5 * 0.3;
+
+      // Home/away situational edge weighted 20%
+      homeLeanScore += situationalEdge * 0.2;
+      awayLeanScore -= situationalEdge * 0.2;
+
+      // Defensive rating bonus weighted 10% (lower = better)
+      if(homeNBA.defensive_rating && awayNBA.defensive_rating) {
+        const defAdv = (awayNBA.defensive_rating - homeNBA.defensive_rating) * 0.1;
+        homeLeanScore += defAdv;
+        awayLeanScore -= defAdv;
+      }
+
+      // Injury penalties
+      if(homeHasInjury) homeLeanScore -= 6;
+      if(awayHasInjury) awayLeanScore -= 6;
+
+      // B2B fatigue
+      if(awayB2B) awayLeanScore -= 4;
+      if(homeB2B) homeLeanScore -= 3;
+
       leanSide = homeLeanScore > awayLeanScore
         ? stripMascot(game.home_team)
         : stripMascot(game.away_team);
+      leanBet = 'ml';
     }
   }
 // NBA fallback lean — use moneyline favorite if no NBA data
@@ -2648,72 +2708,109 @@ modelMismatch = Math.min(85, modelMismatch);
                  null;
 
   if(mlbCtx) {
-    // Total delta boost — projected vs posted
+    // ── PROJECTED TOTAL vs MARKET LINE ──
     if(mlbCtx.projected_total && avgTotal) {
       const totalDeltaAbs = Math.abs(mlbCtx.projected_total - avgTotal);
-      if(totalDeltaAbs >= 2) modelMismatch = Math.min(85, modelMismatch + 15);
-      else if(totalDeltaAbs >= 1) modelMismatch = Math.min(80, modelMismatch + 8);
+      if(totalDeltaAbs >= 2) modelMismatch = Math.min(88, modelMismatch + 15);
+      else if(totalDeltaAbs >= 1) modelMismatch = Math.min(85, modelMismatch + 8);
+      else if(totalDeltaAbs >= 0.5) modelMismatch = Math.min(80, modelMismatch + 4);
       projectedTotal = mlbCtx.projected_total.toString();
       postedTotal = avgTotal;
       mismatchPts = mlbCtx.projected_total - avgTotal;
     }
 
-    // Park factor boost — extreme parks
+    // ── PITCHER QUALITY GAP ──
+    const homeXera = parseFloat(mlbCtx.home_sp_xera) || 0;
+    const awayXera = parseFloat(mlbCtx.away_sp_xera) || 0;
+    if(homeXera > 0 && awayXera > 0) {
+      const xeraGap = Math.abs(homeXera - awayXera);
+      if(xeraGap >= 1.5) modelMismatch = Math.min(88, modelMismatch + 10);
+      else if(xeraGap >= 0.75) modelMismatch = Math.min(85, modelMismatch + 5);
+      const betterPitcherTeam = homeXera < awayXera ? game.home_team : game.away_team;
+      efgMismatch = `Pitcher edge: ${stripMascot(betterPitcherTeam)} xERA ${Math.min(homeXera, awayXera).toFixed(2)} vs ${Math.max(homeXera, awayXera).toFixed(2)}`;
+    }
+
+    // ── K RATE GAP (pitcher K% vs lineup K%) ──
+    const homeKGap = parseFloat(mlbCtx.home_k_gap) || 0;
+    const awayKGap = parseFloat(mlbCtx.away_k_gap) || 0;
+    const maxKGap = Math.max(Math.abs(homeKGap), Math.abs(awayKGap));
+    if(maxKGap >= 8) modelMismatch = Math.min(88, modelMismatch + 8);
+    else if(maxKGap >= 4) modelMismatch = Math.min(85, modelMismatch + 4);
+
+    // ── wOBA / wRC+ OFFENSIVE QUALITY GAP ──
+    const homeWRC = parseFloat(mlbCtx.home_wrc_plus) || 100;
+    const awayWRC = parseFloat(mlbCtx.away_wrc_plus) || 100;
+    const homeWOBA = parseFloat(mlbCtx.home_woba) || 0;
+    const awayWOBA = parseFloat(mlbCtx.away_woba) || 0;
+    const wrcGap = Math.abs(homeWRC - awayWRC);
+    if(wrcGap >= 20) modelMismatch = Math.min(88, modelMismatch + 8);
+    else if(wrcGap >= 10) modelMismatch = Math.min(85, modelMismatch + 4);
+
+    // ── PLATOON ADVANTAGE ──
+    const homePlatoon = parseFloat(mlbCtx.home_platoon_advantage) || 0;
+    const awayPlatoon = parseFloat(mlbCtx.away_platoon_advantage) || 0;
+    const maxPlatoon = Math.max(Math.abs(homePlatoon), Math.abs(awayPlatoon));
+    if(maxPlatoon >= 5) modelMismatch = Math.min(88, modelMismatch + 6);
+    else if(maxPlatoon >= 3) modelMismatch = Math.min(85, modelMismatch + 3);
+
+    // ── BULLPEN ERA GAP ──
+    const homeBullpen = parseFloat(mlbCtx.home_bullpen_era) || 0;
+    const awayBullpen = parseFloat(mlbCtx.away_bullpen_era) || 0;
+    if(homeBullpen > 0 && awayBullpen > 0) {
+      const bullpenGap = Math.abs(homeBullpen - awayBullpen);
+      if(bullpenGap >= 1.5) modelMismatch = Math.min(88, modelMismatch + 5);
+      else if(bullpenGap >= 0.75) modelMismatch = Math.min(85, modelMismatch + 2);
+    }
+
+    // ── DAYS REST ADVANTAGE ──
+    const homeDaysRest = parseInt(mlbCtx.home_days_rest) || 4;
+    const awayDaysRest = parseInt(mlbCtx.away_days_rest) || 4;
+    if(homeDaysRest >= 5 && awayDaysRest <= 3) modelMismatch = Math.min(88, modelMismatch + 5);
+    else if(awayDaysRest >= 5 && homeDaysRest <= 3) modelMismatch = Math.min(88, modelMismatch + 5);
+
+    // ── WEATHER SIGNAL ──
+    const temp = parseFloat(mlbCtx.temperature) || 72;
+    const windSpeed = parseFloat(mlbCtx.wind_speed) || 0;
+    const windDir = mlbCtx.wind_direction || '';
+    if(temp <= 45) modelMismatch = Math.min(88, modelMismatch + 4); // cold suppresses scoring
+    if(windSpeed >= 12 && windDir.includes('out')) modelMismatch = Math.min(88, modelMismatch + 5); // wind blowing out
+    if(windSpeed >= 12 && windDir.includes('in')) modelMismatch = Math.min(88, modelMismatch + 4); // wind blowing in
+
+    // ── PARK FACTOR ──
     if(mlbCtx.park_run_factor) {
       if(mlbCtx.park_run_factor >= 110 || mlbCtx.park_run_factor <= 93) {
-        modelMismatch = Math.min(85, modelMismatch + 8);
-        efgMismatch = `${mlbCtx.venue} park factor: ${mlbCtx.park_run_factor} (${mlbCtx.park_run_factor >= 110 ? 'extreme hitter park' : 'extreme pitcher park'})`;
+        modelMismatch = Math.min(88, modelMismatch + 8);
+        if(!efgMismatch) efgMismatch = `${mlbCtx.venue} park factor: ${mlbCtx.park_run_factor} (${mlbCtx.park_run_factor >= 110 ? 'hitter park' : 'pitcher park'})`;
       }
     }
 
-    // Umpire signal boost
+    // ── UMPIRE SIGNAL ──
     if(mlbCtx.umpire_note && mlbCtx.umpire_note.includes('K-friendly')) {
-      modelMismatch = Math.min(85, modelMismatch + 5);
+      modelMismatch = Math.min(88, modelMismatch + 5);
+    }
+    if(mlbCtx.umpire_note && mlbCtx.umpire_note.includes('over')) {
+      modelMismatch = Math.min(88, modelMismatch + 3);
     }
 
-    // wRC+ gap boost — elite offense vs weak offense is real signal
-    if(mlbCtx.home_wrc_plus && mlbCtx.away_wrc_plus) {
-      const wrcGap = Math.abs(mlbCtx.home_wrc_plus - mlbCtx.away_wrc_plus);
-      if(wrcGap >= 20) modelMismatch = Math.min(85, modelMismatch + 8);
-      else if(wrcGap >= 10) modelMismatch = Math.min(85, modelMismatch + 4);
-    }
-
-    // K rate gap boost — pitcher K% vs lineup K% gap
-    const kGap = Math.max(
-      Math.abs(mlbCtx.home_k_gap || 0),
-      Math.abs(mlbCtx.away_k_gap || 0)
-    );
-    if(kGap >= 8) modelMismatch = Math.min(85, modelMismatch + 6);
-    else if(kGap >= 4) modelMismatch = Math.min(85, modelMismatch + 3);
-
-    // Platoon advantage boost
-    const platoonEdge = Math.max(
-      Math.abs(mlbCtx.home_platoon_advantage || 0),
-      Math.abs(mlbCtx.away_platoon_advantage || 0)
-    );
-    if(platoonEdge >= 5) modelMismatch = Math.min(85, modelMismatch + 5);
-    else if(platoonEdge >= 3) modelMismatch = Math.min(85, modelMismatch + 3);
-
-    // MLB lean — use team with better offense vs pitcher matchup
-    if(mlbCtx.over_lean !== null) {
+    // ── LEAN SIDE ──
+    // Primary: use model's over/under lean
+    if(mlbCtx.over_lean !== null && mlbCtx.over_lean !== undefined) {
       leanBet = 'total';
       const overUnderSide = mlbCtx.over_lean ? 'Over' : 'Under';
-      const totals = bookmakers.map(bm => {
-        const t = bm.markets && bm.markets.find(m => m.key==='totals');
-        return t && t.outcomes && t.outcomes[0] ? parseFloat(t.outcomes[0].point) : null;
-      }).filter(x => x !== null);
-      const avgTotalMLB = totals.length ? totals.reduce((a,b)=>a+b,0)/totals.length : 9.0;
-      leanSide = `${overUnderSide} ${avgTotalMLB.toFixed(1)}`;
+      leanSide = `${overUnderSide} ${avgTotal.toFixed(1)}`;
+    }
+    // Secondary: if no total lean, use offensive quality to lean moneyline
+    if(!leanSide && homeWRC > 0 && awayWRC > 0 && homeXera > 0 && awayXera > 0) {
+      // Home team edge = better offense (wRC+) + opponent has worse pitcher (higher xERA)
+      const homeEdge = (homeWRC - awayWRC) + ((awayXera - homeXera) * 10);
+      const awayEdge = (awayWRC - homeWRC) + ((homeXera - awayXera) * 10);
+      if(Math.abs(homeEdge - awayEdge) >= 15) {
+        leanSide = homeEdge > awayEdge ? stripMascot(game.home_team) : stripMascot(game.away_team);
+        leanBet = 'ml';
+      }
     }
 
-    // Over/under lean
-    if(mlbCtx.over_lean !== null) {
-      leanBet = 'total';
-      const overUnderSide = mlbCtx.over_lean ? 'Over' : 'Under';
-      leanSide = `${overUnderSide} ${avgTotal}`;
-    }
   } else {
-    // No context — no lean, don't default to favorite
     leanSide = null;
     leanBet = null;
   }
