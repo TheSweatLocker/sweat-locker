@@ -3278,7 +3278,7 @@ const fetchNBAInjuries = async () => {
 };
 
 const fetchDailyBestBet = async () => {
-  const CACHE_KEY = 'sweatlocker_daily_best_bet';
+  const CACHE_KEY = 'sweatlocker_daily_best_bet_v2';
   const today = new Date().toISOString().split('T')[0];
 
   // Check Supabase first — shared across all users, locked per day
