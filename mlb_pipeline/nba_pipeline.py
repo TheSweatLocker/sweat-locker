@@ -104,61 +104,89 @@ def get_player_injuries():
         return []
 
 def get_last5_net_rating(season=2024):
-    """Calculate last 5 games net rating by fetching recent game advanced stats"""
+    """Calculate last 5 games net rating per team"""
     try:
-        # Get games from last 10 days
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
-
-        # Get recent games
+        # Get last 30 games of the season — sorted by date descending
         r = requests.get(
             'https://api.balldontlie.io/nba/v1/games',
             headers=BDL_HEADERS,
             params={
                 'seasons[]': season,
-                'start_date': start_date,
-                'end_date': end_date,
-                'per_page': 100
+                'per_page': 100,
+                'page': 1,
             },
             timeout=30
         )
-        games = r.json().get('data', [])
-        final_games = [g for g in games if g.get('status') == 'Final']
-        print(f"Fetched {len(final_games)} recent final games for last 5 calc")
-
-        if not final_games:
-            return {}
-
-        # Get advanced stats for recent games
-        game_ids = [g['id'] for g in final_games[:30]]
-        team_net_ratings = {}
-
-        for game_id in game_ids:
+        all_games = r.json().get('data', [])
+        
+        # Get total pages
+        meta = r.json().get('meta', {})
+        total_pages = meta.get('total_pages', 1)
+        
+        # Fetch last few pages to get most recent games
+        recent_games = []
+        pages_to_fetch = min(3, total_pages)
+        for page in range(total_pages - pages_to_fetch + 1, total_pages + 1):
             try:
                 r2 = requests.get(
+                    'https://api.balldontlie.io/nba/v1/games',
+                    headers=BDL_HEADERS,
+                    params={
+                        'seasons[]': season,
+                        'per_page': 100,
+                        'page': page,
+                    },
+                    timeout=30
+                )
+                games = r2.json().get('data', [])
+                final_games = [g for g in games if g.get('status') == 'Final']
+                recent_games.extend(final_games)
+                time.sleep(0.3)
+            except:
+                pass
+
+        print(f"Fetched {len(recent_games)} recent final games for last 5 calc")
+
+        if not recent_games:
+            return {}
+
+        # Sort by date descending
+        recent_games.sort(key=lambda g: g.get('date', ''), reverse=True)
+
+        # Get advanced stats for recent games — limit to 20 most recent
+        team_games = {}  # team_id -> list of net ratings
+
+        for game in recent_games[:30]:
+            game_id = game.get('id')
+            if not game_id:
+                continue
+            try:
+                r3 = requests.get(
                     f'https://api.balldontlie.io/nba/v1/games/advanced_stats/{game_id}',
                     headers=BDL_HEADERS,
                     timeout=15
                 )
-                if r2.status_code == 200:
-                    adv = r2.json().get('data', {})
+                if r3.status_code == 200:
+                    adv = r3.json().get('data', {})
                     for side in ['home_team', 'visitor_team']:
                         team_data = adv.get(side, {})
                         team = team_data.get('team', {})
                         team_id = team.get('id')
                         net = team_data.get('net_rating')
                         if team_id and net is not None:
-                            if team_id not in team_net_ratings:
-                                team_net_ratings[team_id] = []
-                            team_net_ratings[team_id].append(float(net))
+                            if team_id not in team_games:
+                                team_games[team_id] = []
+                            if len(team_games[team_id]) < 5:
+                                team_games[team_id].append(float(net))
                 time.sleep(0.2)
             except:
                 pass
 
-        # Average last 5 games per team
+        # Average last 5 per team
         last5_map = {}
-        for team_id, ratings in team_net_ratings.items():
-            last5_map[team_id] = round(sum(ratings[-5:]) / len(ratings[-5:]), 1)
+        for team_id, ratings in team_games.items():
+            if ratings:
+                last5_map[team_id] = round(sum(ratings) / len(ratings), 1)
 
         print(f"Calculated last 5 net rating for {len(last5_map)} teams")
         return last5_map
