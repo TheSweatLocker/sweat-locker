@@ -6096,16 +6096,15 @@ setJerryHistory(prev => {
   ))}
 </View>
 
-            {gamesSport==='MLB'&&(
-            <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:12,padding:16,marginBottom:14,borderWidth:1,borderColor:'rgba(255,184,0,0.25)',alignItems:'center'}}>
-  <Text style={{fontSize:28,marginBottom:6}}>⚾</Text>
-  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>MLB MODEL — OPENING DAY THURSDAY</Text>
-  <Text style={{color:'#7a92a8',fontSize:12,textAlign:'center',lineHeight:18}}>Park factors, umpire tendencies, confirmed starters, weather data, and pitcher Statcast stats. Jerry is ready.</Text>
-  <View style={{marginTop:10,backgroundColor:'rgba(255,184,0,0.15)',borderRadius:8,paddingHorizontal:12,paddingVertical:5}}>
-    <Text style={{color:HRB_COLOR,fontSize:11,fontWeight:'700'}}>🔬 POWERED BY STATCAST + WEATHER API</Text>
+           {gamesSport==='MLB'&&(
+  <View style={{backgroundColor:'rgba(0,153,255,0.06)',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:'rgba(0,153,255,0.2)'}}>
+    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+      <Text style={{color:'#0099ff',fontWeight:'800',fontSize:12}}>⚾ MLB MODEL ACTIVE</Text>
+      <Text style={{color:'#4a6070',fontSize:10}}>🔄 8am + 2pm ET</Text>
+    </View>
+    <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back at 2pm for full confirmed slate.</Text>
   </View>
-</View>
-            )}
+)}
             {gamesLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:'#7a92a8',marginTop:12}}>Loading games...</Text></View>):
             gamesData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:40}}>{SPORT_EMOJI[gamesSport]}</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No {gamesSport} games {gamesDay}.{'\n'}Try a different sport or day.</Text></View>):(
               <>
