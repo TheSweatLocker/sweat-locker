@@ -6151,13 +6151,66 @@ setJerryHistory(prev => {
                   const ss = getSweatScoreForGame(game, gamesSport);
                   if(!ss) return null;
                         const tier = getSweatTier(ss.total);
+                        // Build top signals for display
+                        const signals = [];
+                        if(gamesSport === 'MLB') {
+                          const mlbCtx = mlbGameContext[game.home_team] || mlbGameContext[game.away_team];
+                          if(mlbCtx) {
+                            if(mlbCtx.projected_total && mlbCtx.projected_total > 0) {
+                              const totals = (game.bookmakers||[]).map(bm => {
+                                const t = bm.markets && bm.markets.find(m => m.key==='totals');
+                                return t && t.outcomes && t.outcomes[0] ? parseFloat(t.outcomes[0].point) : null;
+                              }).filter(x => x !== null);
+                              const avgTotal = totals.length ? totals.reduce((a,b)=>a+b,0)/totals.length : null;
+                              if(avgTotal) {
+                                const delta = (mlbCtx.projected_total - avgTotal).toFixed(1);
+                                if(Math.abs(parseFloat(delta)) >= 0.5) signals.push(`Model: ${parseFloat(delta) < 0 ? '⬇️' : '⬆️'} ${Math.abs(parseFloat(delta))}R ${parseFloat(delta) < 0 ? 'under' : 'over'} lean`);
+                              }
+                            }
+                            if(mlbCtx.home_k_gap && Math.abs(mlbCtx.home_k_gap) >= 4) signals.push(`K gap: ${mlbCtx.home_k_gap > 0 ? '+' : ''}${mlbCtx.home_k_gap}pts`);
+                            if(mlbCtx.away_k_gap && Math.abs(mlbCtx.away_k_gap) >= 4 && signals.length < 2) signals.push(`K gap: ${mlbCtx.away_k_gap > 0 ? '+' : ''}${mlbCtx.away_k_gap}pts`);
+                            if(mlbCtx.home_platoon_note && signals.length < 2) signals.push(mlbCtx.home_platoon_note.split('—')[1]?.trim() || 'Platoon edge');
+                            if(mlbCtx.temperature <= 45 && signals.length < 3) signals.push(`❄️ ${mlbCtx.temperature}°F`);
+                            if(mlbCtx.park_run_factor >= 110 && signals.length < 3) signals.push(`🏟️ Hitter park ${mlbCtx.park_run_factor}`);
+                            if(mlbCtx.park_run_factor <= 93 && signals.length < 3) signals.push(`🏟️ Pitcher park ${mlbCtx.park_run_factor}`);
+                          }
+                        } else if(gamesSport === 'NBA') {
+                          const homeNBA = nbaTeamData[game.home_team] || Object.values(nbaTeamData).find(t => t.team && game.home_team.includes(t.team.split(' ').pop()));
+                          const awayNBA = nbaTeamData[game.away_team] || Object.values(nbaTeamData).find(t => t.team && game.away_team.includes(t.team.split(' ').pop()));
+                          if(homeNBA && awayNBA) {
+                            const netGap = Math.abs(homeNBA.net_rating - awayNBA.net_rating);
+                            if(netGap >= 3) signals.push(`Net rtg gap: ${netGap.toFixed(1)}pts`);
+                            if(homeNBA.injury_note?.includes('OUT')) signals.push(`⚠️ ${game.home_team.split(' ').pop()} injuries`);
+                            if(awayNBA.injury_note?.includes('OUT')) signals.push(`⚠️ ${game.away_team.split(' ').pop()} injuries`);
+                            const homeWinPct = homeNBA.home_wins/(homeNBA.home_wins+homeNBA.home_losses||1);
+                            const awayWinPct = awayNBA.away_wins/(awayNBA.away_wins+awayNBA.away_losses||1);
+                            if(homeWinPct - awayWinPct >= 0.2 && signals.length < 2) signals.push(`${game.home_team.split(' ').pop()} ${homeNBA.home_record} home`);
+                          }
+                        } else if(gamesSport === 'NCAAB' && ss.efgMismatch) {
+                          const topMismatch = ss.efgMismatch.split('|')[0]?.trim();
+                          if(topMismatch) signals.push(topMismatch);
+                          if(ss.mismatchPts && Math.abs(ss.mismatchPts) >= 3) signals.push(`Model edge: ${ss.mismatchPts > 0 ? '+' : ''}${ss.mismatchPts}pts`);
+                        }
+                        if(ss.leanSide && signals.length < 3) signals.push(`Lean: ${ss.leanSide}`);
+
                         return(
-                          <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8}}>
-                            <View style={{paddingHorizontal:10,paddingVertical:4,borderRadius:20,backgroundColor:tier.color+'22',borderWidth:1,borderColor:tier.color,flexDirection:'row',alignItems:'center',gap:4}}>
-                              <Text style={{color:tier.color,fontWeight:'800',fontSize:13}}>{ss.total}</Text>
-                              <Text style={{color:tier.color,fontSize:10,fontWeight:'700'}}>SWEAT</Text>
+                          <View style={{marginBottom:8}}>
+                            <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:signals.length > 0 ? 5 : 0}}>
+                              <View style={{paddingHorizontal:10,paddingVertical:4,borderRadius:20,backgroundColor:tier.color+'22',borderWidth:1,borderColor:tier.color,flexDirection:'row',alignItems:'center',gap:4}}>
+                                <Text style={{color:tier.color,fontWeight:'800',fontSize:13}}>{ss.total}</Text>
+                                <Text style={{color:tier.color,fontSize:10,fontWeight:'700'}}>SWEAT</Text>
+                              </View>
+                              <Text style={{color:tier.color,fontSize:11,fontWeight:'600'}}>{tier.label}</Text>
                             </View>
-                            <Text style={{color:tier.color,fontSize:11,fontWeight:'600'}}>{tier.label}</Text>
+                            {signals.length > 0 && (
+                              <View style={{flexDirection:'row',flexWrap:'wrap',gap:4}}>
+                                {signals.slice(0,3).map((sig,i) => (
+                                  <View key={i} style={{backgroundColor:'rgba(255,255,255,0.05)',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:'#1f2d3d'}}>
+                                    <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'600'}}>{sig}</Text>
+                                  </View>
+                                ))}
+                              </View>
+                            )}
                           </View>
                         );
                       })()}
