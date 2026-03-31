@@ -72,6 +72,15 @@ jobs:
             echo "Skipping UFC scraper — runs Thursdays only"
           fi
       
+      - name: Resolve prop grades
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python resolve_props.py
+
       - name: Run NBA team stats update
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
