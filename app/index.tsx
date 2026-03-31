@@ -4826,12 +4826,12 @@ if(aGrades.length > 0) {
   try {
     await supabase.from('prop_grades').insert(
       aGrades.map(p => ({
-        player: p.player,
-        market: p.marketLabel,
-        line: p.bestLine?.line,
-        grade: p.grade,
-        ev: p.bestEV,
-        game: p.gameName,
+  player: p.player,
+  market: p.marketLabel,
+  grade: p.grade,
+  ev: p.bestEV,
+  game: p.gameName,
+  sport: sport, // use the local sport parameter not the state variable
         sport: propJerrySport,
         best_side: p.bestSide,
         best_odds: p.bestLine?.odds,
