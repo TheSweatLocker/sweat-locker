@@ -7281,50 +7281,50 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       <Text style={{color:'#7a92a8',fontSize:11}}>NRFI — awaiting game context data</Text>
     </View>
   );
+  // Use pipeline NRFI score if available, fall back to client-side calc
+const pipelineNRFI = mlbCtx.nrfi_score;
+let nrfiScore;
+
+if(pipelineNRFI !== null && pipelineNRFI !== undefined) {
+  // Use server-side score — full model with all inputs
+  nrfiScore = pipelineNRFI;
+} else {
+  // Fall back to client-side calc until pipeline score is available
   const pitcherCtxStr = mlbCtx.pitcher_context || '';
-// Parse both pitchers — home is before '|', away is after
-const homeCtx = pitcherCtxStr.split('|')[0] || '';
-const awayCtx = pitcherCtxStr.split('|')[1] || '';
-const homeKRate   = parseFloat(homeCtx.match(/K% ([\d.]+)/)?.[1] || 0);
-const awayKRate   = parseFloat(awayCtx.match(/K% ([\d.]+)/)?.[1] || 0);
-const homeWhiff   = parseFloat(homeCtx.match(/whiff ([\d.]+)/)?.[1] || 0);
-const awayWhiff   = parseFloat(awayCtx.match(/whiff ([\d.]+)/)?.[1] || 0);
-// Average both pitchers — if only one available, use that one
-const avgKRate  = homeKRate && awayKRate ? (homeKRate + awayKRate) / 2 : homeKRate || awayKRate;
-const avgWhiff  = homeWhiff && awayWhiff ? (homeWhiff + awayWhiff) / 2 : homeWhiff || awayWhiff;
-const parkFactor = mlbCtx.park_run_factor || 100;
-const umpireK = mlbCtx.umpire_note?.includes('K-friendly') ? 1 : mlbCtx.umpire_note?.includes('hitter-friendly') ? -1 : 0;
-// Fix: blowing out = YRFI (-1), blowing in = NRFI (+1)
-const windDir = mlbCtx.wind_direction || '';
-const weatherPenalty = mlbCtx.wind_speed > 10
-  ? (['S','SW','SE'].includes(windDir) ? -1 : ['N','NW','NE'].includes(windDir) ? 1 : 0)
-  : 0;
-// Fix: recalibrated baseline — league avg K% ~22%, starts neutral
-// K rate signal: only meaningful deviation from 22% avg matters
-const homeGB    = parseFloat(homeCtx.match(/GB% ([\d.]+)/)?.[1] || 0);
-const awayGB    = parseFloat(awayCtx.match(/GB% ([\d.]+)/)?.[1] || 0);
-const avgGB     = homeGB && awayGB ? (homeGB + awayGB) / 2 : homeGB || awayGB;
-const gbBonus   = avgGB > 50 ? 3 : avgGB > 45 ? 1 : 0;
-const restBonus = (mlbCtx.home_days_rest >= 5 ? 2 : mlbCtx.home_days_rest <= 3 ? -2 : 0)
-                + (mlbCtx.away_days_rest >= 5 ? 2 : mlbCtx.away_days_rest <= 3 ? -2 : 0);
-const tempBonus = !mlbCtx.temperature ? 0 :
-                  mlbCtx.temperature < 45 ? 4 :
-                  mlbCtx.temperature < 55 ? 2 :
-                  mlbCtx.temperature > 85 ? -2 : 0;
-const kDelta    = avgKRate - 22;
-const nrfiScore = Math.round(
-  50
-  + (kDelta * 0.6)
-  + (avgWhiff * 0.25)
-  + ((100 - parkFactor) * 0.3)
-  + (umpireK * 8)
-  + (weatherPenalty * 5)
-  + gbBonus
-  + restBonus
-  + tempBonus
-);
-const nrfiLean   = nrfiScore >= 55 ? 'NRFI' : nrfiScore <= 45 ? 'YRFI' : 'NEUTRAL';
-const nrfiColor  = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d6d' : '#7a92a8';
+  const homeCtx = pitcherCtxStr.split('|')[0] || '';
+  const awayCtx = pitcherCtxStr.split('|')[1] || '';
+  const homeKRate = parseFloat(homeCtx.match(/K% ([\d.]+)/)?.[1] || 0);
+  const awayKRate = parseFloat(awayCtx.match(/K% ([\d.]+)/)?.[1] || 0);
+  const homeWhiff = parseFloat(homeCtx.match(/whiff ([\d.]+)/)?.[1] || 0);
+  const awayWhiff = parseFloat(awayCtx.match(/whiff ([\d.]+)/)?.[1] || 0);
+  const avgKRate = homeKRate && awayKRate ? (homeKRate + awayKRate) / 2 : homeKRate || awayKRate;
+  const avgWhiff = homeWhiff && awayWhiff ? (homeWhiff + awayWhiff) / 2 : homeWhiff || awayWhiff;
+  const parkFactor = mlbCtx.park_run_factor || 100;
+  const umpireK = mlbCtx.umpire_note?.includes('K-friendly') ? 1 : mlbCtx.umpire_note?.includes('hitter-friendly') ? -1 : 0;
+  const windDir = mlbCtx.wind_direction || '';
+  const weatherPenalty = mlbCtx.wind_speed > 10
+    ? (['S','SW','SE'].includes(windDir) ? -1 : ['N','NW','NE'].includes(windDir) ? 1 : 0)
+    : 0;
+  const homeGB = parseFloat(homeCtx.match(/GB% ([\d.]+)/)?.[1] || 0);
+  const awayGB = parseFloat(awayCtx.match(/GB% ([\d.]+)/)?.[1] || 0);
+  const avgGB = homeGB && awayGB ? (homeGB + awayGB) / 2 : homeGB || awayGB;
+  const gbBonus = avgGB > 50 ? 3 : avgGB > 45 ? 1 : 0;
+  const restBonus = (mlbCtx.home_days_rest >= 5 ? 2 : mlbCtx.home_days_rest <= 3 ? -2 : 0)
+                  + (mlbCtx.away_days_rest >= 5 ? 2 : mlbCtx.away_days_rest <= 3 ? -2 : 0);
+  const tempBonus = !mlbCtx.temperature ? 0 :
+                    mlbCtx.temperature < 45 ? 4 :
+                    mlbCtx.temperature < 55 ? 2 :
+                    mlbCtx.temperature > 85 ? -2 : 0;
+  const kDelta = avgKRate - 22;
+  nrfiScore = Math.round(
+    50 + (kDelta * 0.6) + (avgWhiff * 0.25) +
+    ((100 - parkFactor) * 0.3) + (umpireK * 8) +
+    (weatherPenalty * 5) + gbBonus + restBonus + tempBonus
+  );
+}
+
+const nrfiLean  = nrfiScore >= 55 ? 'NRFI' : nrfiScore <= 45 ? 'YRFI' : 'NEUTRAL';
+const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d6d' : '#7a92a8';
   return(
     <View style={[styles.card,{marginBottom:10}]}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
@@ -7340,9 +7340,11 @@ const nrfiColor  = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4
         </View>
         <View style={{flex:2,backgroundColor:'#151c24',borderRadius:8,padding:8}}>
           <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:4}}>KEY SIGNALS</Text>
-          {avgKRate > 0 && <Text style={{color:'#e8f0f8',fontSize:10}}>K%: {avgKRate.toFixed(1)}% {avgKRate > 25 ? '🔒' : ''}</Text>}
-          {umpireK !== 0 && <Text style={{color:'#e8f0f8',fontSize:10}}>{umpireK > 0 ? '✅ K-friendly ump' : '⚠️ Hitter-friendly ump'}</Text>}
-          <Text style={{color:'#e8f0f8',fontSize:10}}>Park: {parkFactor} {parkFactor >= 110 ? '⚠️ hitter' : parkFactor <= 93 ? '✅ pitcher' : '—'}</Text>
+          {mlbCtx.home_pitcher && <Text style={{color:'#e8f0f8',fontSize:10}}>🏠 {mlbCtx.home_pitcher} xERA: {mlbCtx.home_sp_xera || 'N/A'}</Text>}
+          {mlbCtx.away_pitcher && <Text style={{color:'#e8f0f8',fontSize:10}}>✈️ {mlbCtx.away_pitcher} xERA: {mlbCtx.away_sp_xera || 'N/A'}</Text>}
+          {mlbCtx.umpire_note ? <Text style={{color:'#e8f0f8',fontSize:10}}>{mlbCtx.umpire_note.includes('K-friendly') ? '✅ K-friendly ump' : mlbCtx.umpire_note.includes('hitter') ? '⚠️ Hitter-friendly ump' : `Ump: ${mlbCtx.umpire || 'TBD'}`}</Text> : null}
+          <Text style={{color:'#e8f0f8',fontSize:10}}>Park: {mlbCtx.park_run_factor} {mlbCtx.park_run_factor >= 110 ? '⚠️ hitter' : mlbCtx.park_run_factor <= 93 ? '✅ pitcher' : '—'} | {mlbCtx.temperature}°F</Text>
+          {pipelineNRFI !== null && pipelineNRFI !== undefined && <Text style={{color:'#4a6070',fontSize:9,marginTop:2}}>Pipeline model ✓</Text>}
         </View>
       </View>
     </View>

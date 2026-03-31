@@ -614,6 +614,96 @@ def calc_batting_order_weight(lineup_names):
     score = sum(weights[i] for i in range(min(len(batters), 9)))
     return round(score, 2)
 
+def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus):
+    """
+    Calculate NRFI (No Run First Inning) probability score 0-100.
+    Higher = stronger NRFI lean.
+    """
+    score = 50  # neutral baseline
+
+    # ── HOME PITCHER ──
+    if home_pitcher_stats:
+        xera = float(home_pitcher_stats.get('xera', 4.5) or 4.5)
+        gb_pct = float(home_pitcher_stats.get('gb_pct', 0.42) or 0.42)
+        k_pct = float(home_pitcher_stats.get('k_pct', 0.20) or 0.20)
+        whiff = float(home_pitcher_stats.get('whiff_rate', 0.25) or 0.25)
+
+        # xERA signal — elite starter = strong NRFI lean
+        if xera <= 3.00: score += 12
+        elif xera <= 3.50: score += 8
+        elif xera <= 4.00: score += 4
+        elif xera >= 5.00: score -= 6
+        elif xera >= 4.50: score -= 3
+
+        # GB% — ground ball pitchers limit first inning damage
+        if gb_pct >= 0.50: score += 6
+        elif gb_pct >= 0.45: score += 3
+        elif gb_pct <= 0.35: score -= 4
+
+        # K% — high strikeout pitchers limit traffic
+        if k_pct >= 0.28: score += 6
+        elif k_pct >= 0.23: score += 3
+        elif k_pct <= 0.15: score -= 4
+
+    # ── AWAY PITCHER ──
+    if away_pitcher_stats:
+        xera = float(away_pitcher_stats.get('xera', 4.5) or 4.5)
+        gb_pct = float(away_pitcher_stats.get('gb_pct', 0.42) or 0.42)
+        k_pct = float(away_pitcher_stats.get('k_pct', 0.20) or 0.20)
+
+        if xera <= 3.00: score += 12
+        elif xera <= 3.50: score += 8
+        elif xera <= 4.00: score += 4
+        elif xera >= 5.00: score -= 6
+        elif xera >= 4.50: score -= 3
+
+        if gb_pct >= 0.50: score += 6
+        elif gb_pct >= 0.45: score += 3
+        elif gb_pct <= 0.35: score -= 4
+
+        if k_pct >= 0.28: score += 6
+        elif k_pct >= 0.23: score += 3
+        elif k_pct <= 0.15: score -= 4
+
+    # ── DAYS REST ──
+    # Fresh pitchers = best stuff in inning 1
+    home_rest = int(home_days_rest or 4)
+    away_rest = int(away_days_rest or 4)
+    if home_rest >= 5 and away_rest >= 5: score += 6
+    elif home_rest >= 5 or away_rest >= 5: score += 3
+    elif home_rest <= 3 or away_rest <= 3: score -= 4
+
+    # ── WEATHER ──
+    temp = float(temperature or 72)
+    wind = float(wind_speed or 0)
+    wind_dir = (wind_direction or '').upper()
+
+    if temp <= 45: score += 8   # cold suppresses offense
+    elif temp <= 55: score += 4
+    elif temp >= 85: score -= 3  # hot = more offense
+
+    if wind >= 12:
+        if any(d in wind_dir for d in ['N', 'IN', 'NW', 'NE']): score += 5  # blowing in
+        elif any(d in wind_dir for d in ['S', 'OUT', 'SW', 'SE']): score -= 5  # blowing out
+
+    # ── PARK FACTOR ──
+    park = float(park_run_factor or 100)
+    if park <= 93: score += 6    # extreme pitcher park
+    elif park <= 97: score += 3
+    elif park >= 110: score -= 6  # extreme hitter park
+    elif park >= 105: score -= 3
+
+    # ── OFFENSIVE QUALITY ──
+    home_wrc = float(home_wrc_plus or 100)
+    away_wrc = float(away_wrc_plus or 100)
+    avg_wrc = (home_wrc + away_wrc) / 2
+    if avg_wrc >= 115: score -= 8   # both elite offenses
+    elif avg_wrc >= 108: score -= 4
+    elif avg_wrc <= 88: score += 6  # both weak offenses
+    elif avg_wrc <= 95: score += 3
+
+    return max(0, min(100, round(score)))
+
 def get_park_factors(home_team):
     headers = {
         "apikey": SUPABASE_KEY,
@@ -702,6 +792,7 @@ def log_game_result(context):
             "model_version": "v0.1",
             "open_total": context.get("open_total"),
             "close_total": context.get("close_total"),
+            "nrfi_score": context.get("nrfi_score"),
         }
 
         # Parse away pitcher stats from pitcher_context
@@ -918,6 +1009,21 @@ def run():
             # Get bullpen stats
             home_bullpen = get_bullpen_stats(home_team)
             away_bullpen = get_bullpen_stats(away_team)
+            # Calculate NRFI score
+            nrfi_score = calc_nrfi_score(
+                home_pitcher_stats,
+                away_pitcher_stats,
+                context.get("home_days_rest"),
+                context.get("away_days_rest"),
+                weather.get("temperature"),
+                weather.get("wind_speed"),
+                weather.get("wind_direction"),
+                park_factor.get("run_factor") if park_factor else None,
+                home_offense.get("wrc_plus") if home_offense else None,
+                away_offense.get("wrc_plus") if away_offense else None,
+            )
+            if nrfi_score:
+                print(f"  NRFI score: {nrfi_score} ({'NRFI lean' if nrfi_score >= 60 else 'YRFI lean' if nrfi_score <= 40 else 'neutral'})")
             # Get confirmed lineup
             lineup_info = confirmed_lineups.get(home_team, {})
             home_lineup = lineup_info.get("home_lineup", [])
@@ -1065,6 +1171,7 @@ def run():
                 "lineup_confirmed": lineup_confirmed,
                 "home_lineup_weight": home_lineup_weight,
                 "away_lineup_weight": away_lineup_weight,
+                "nrfi_score": nrfi_score,
                 "home_woba": home_offense.get('woba') if home_offense else None,
                 "away_woba": away_offense.get('woba') if away_offense else None,
                 "home_wrc_plus": home_offense.get('wrc_plus') if home_offense else None,
