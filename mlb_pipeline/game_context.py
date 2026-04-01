@@ -1009,12 +1009,12 @@ def run():
             # Get bullpen stats
             home_bullpen = get_bullpen_stats(home_team)
             away_bullpen = get_bullpen_stats(away_team)
-            # Calculate NRFI score
+            # Calculate NRFI score — use local variables not context dict
             nrfi_score = calc_nrfi_score(
                 home_pitcher_stats,
                 away_pitcher_stats,
-                context.get("home_days_rest"),
-                context.get("away_days_rest"),
+                home_days_rest,
+                away_days_rest,
                 weather.get("temperature"),
                 weather.get("wind_speed"),
                 weather.get("wind_direction"),
