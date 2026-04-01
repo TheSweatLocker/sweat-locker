@@ -3363,10 +3363,10 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         if(game.game_id) contextMap[game.game_id] = game;
       });
       setMlbGameContext(contextMap);
-      console.log('MLB context loaded:', data.length, 'games');
+      //console.log('MLB context loaded:', data.length, 'games');
     }
   } catch(e) {
-    console.log('MLB context fetch error:', e.message);
+    //console.log('MLB context fetch error:', e.message);
   }
 };
 
@@ -3404,10 +3404,10 @@ const fetchNBAInjuries = async () => {
         injuryMap[team].push(inj);
       });
       setNbaInjuryData(injuryMap);
-      console.log('NBA injuries loaded:', data.length, 'players');
+      //console.log('NBA injuries loaded:', data.length, 'players');
     }
   } catch(e) {
-    console.log('NBA injury fetch error:', e);
+    //console.log('NBA injury fetch error:', e);
   }
 };
   
@@ -3496,8 +3496,6 @@ const fetchDailyBestBet = async () => {
           if(game.status?.abstractGameState === 'Final') continue;
           const gameTime = new Date(game.gameDate);
           if(gameTime < todayStart || gameTime > todayEnd) continue;
-          // Must not have started yet
-          if(gameTime < now) continue;
           const oddsGame = (mlbOddsResp.data || []).find((og: any) => {
             return og.home_team.includes(game.teams?.home?.team?.name?.split(' ').pop() || '') ||
                    game.teams?.home?.team?.name?.includes(og.home_team.split(' ').pop() || '');
@@ -3659,7 +3657,7 @@ Give a 2-3 sentence take on WHY this is today's best bet. Reference the specific
     setDailyBestBet(bestBetData);
 
   } catch(e) {
-    console.log('Daily best bet error:', e);
+    //console.log('Daily best bet error:', e);
     setDailyBestBet({noGames: true});
   }
 
@@ -3948,6 +3946,7 @@ MLB GAME CONTEXT:
 - Days rest signal: ${mlbData.home_days_rest && mlbData.away_days_rest ? (mlbData.home_days_rest > mlbData.away_days_rest ? mlbData.home_pitcher + ' has rest advantage (' + mlbData.home_days_rest + ' vs ' + mlbData.away_days_rest + ' days)' : mlbData.away_days_rest > mlbData.home_days_rest ? mlbData.away_pitcher + ' has rest advantage (' + mlbData.away_days_rest + ' vs ' + mlbData.home_days_rest + ' days)' : 'Even rest') : 'TBD'}
 - Umpire: ${mlbData.umpire_note || mlbData.umpire || 'TBD'}
 - Model lean: ${overUnder}
+- NRFI signal: ${mlbData.nrfi_score ? `Score ${mlbData.nrfi_score}/100 — ${mlbData.nrfi_score >= 70 ? '🔒 Strong NRFI lean — both starters elite, run suppression likely' : mlbData.nrfi_score >= 60 ? 'NRFI lean — solid pitcher matchup' : mlbData.nrfi_score <= 40 ? 'YRFI lean — offense expected early' : 'neutral first inning signal'}` : 'NRFI score pending'}
 - Projected total: ${mlbData.projected_total ? mlbData.projected_total + ' (team stats + park + weather)' : 'NOT YET CALCULATED — do not infer a lean from pitcher data alone'}
 - Total analysis: ${mlbData.projected_total ? 'Model total available' : 'IMPORTANT: No projected total available. Base total take only on posted line context and weather/park. Do not default to under.'}
 - ${mlbData.home_runs_per_game ? `${game.home_team} offense: ${mlbData.home_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.home_ops?.toFixed(3)}` : ''}
@@ -4023,11 +4022,19 @@ ${lineMoveTeam ? `- Sharp line movement: ${lineMovePoints} pts toward ${lineMove
 ${scoreData?.efgMismatch && sport === 'NBA' ? `- Back-to-back: ${scoreData.efgMismatch}` : ''}
 ` : '';
 
+const gameTime = new Date(game.commence_time);
+const isLive = new Date() > gameTime && new Date() < new Date(gameTime.getTime() + 3*60*60*1000);
+if(isLive) {
+  setGameNarrative('⚡ Game in progress — Jerry\'s pre-game analysis is locked. Check live lines for current action.');
+  setGameNarrativeLoading(false);
+  return;
+}
+
     setGameNarrative('');
     setGameNarrativeLoading(true);
 
     // Check Supabase cache first
-    const gameKey = game.id || (game.away_team + '_' + game.home_team);
+    const gameKey = (game.id || (game.away_team + '_' + game.home_team)) + '_' + new Date().toISOString().split('T')[0];
     try {
       const { data: cachedNarrative } = await supabase
         .from('jerry_cache')
@@ -4925,7 +4932,10 @@ setJerryHistory(prev => {
   const onRefresh=()=>{
     setRefreshing(true);
     if(activeTab==='odds')fetchOdds(oddsSport);
-    else if(activeTab==='games')fetchGames(gamesSport,gamesDay);
+    else if(activeTab==='games'){
+      AsyncStorage.removeItem(GAMES_CACHE_KEY+'_'+gamesSport+'_'+gamesDay);
+      fetchGames(gamesSport,gamesDay);
+    }
     else if(activeTab==='stats'){if(statsTab==='props')fetchProps(propsSport);else fetchPlayerStats();}
     else if(activeTab==='trends'){if(trendsTab==='ev')fetchEV(evSport);else if(trendsTab==='sharp')fetchSharp(sharpSport);else setRefreshing(false);}
     else setRefreshing(false);
@@ -6109,11 +6119,16 @@ setJerryHistory(prev => {
             gamesData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:40}}>{SPORT_EMOJI[gamesSport]}</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No {gamesSport} games {gamesDay}.{'\n'}Try a different sport or day.</Text></View>):(
               <>
                  <Text style={styles.sectionLabel}>{gamesData.length} GAMES — {gamesDay.toUpperCase()}</Text>
-                {gamesData.filter((game) =>
-  gamesSearch==='' ||
-  game.away_team.toLowerCase().includes(gamesSearch.toLowerCase()) ||
-  game.home_team.toLowerCase().includes(gamesSearch.toLowerCase())
-).sort((a, b) => {
+                {gamesData.filter((game) => {
+  // Hide games that started more than 4 hours ago (completed)
+  const gameTime = new Date(game.commence_time);
+  const fourHoursAgo = new Date(Date.now() - 4*60*60*1000);
+  if(gameTime < fourHoursAgo) return false;
+  // Search filter
+  if(gamesSearch === '') return true;
+  return game.away_team.toLowerCase().includes(gamesSearch.toLowerCase()) ||
+    game.home_team.toLowerCase().includes(gamesSearch.toLowerCase());
+}).sort((a, b) => {
   if(gamesSort === 'time') return new Date(a.commence_time) - new Date(b.commence_time);
   if(gamesSort === 'score') {
     const scoreA = sweatScores[a.id]?.total || getSweatScoreForGame(a, gamesSport)?.total || 0;
@@ -6131,7 +6146,7 @@ setJerryHistory(prev => {
 }).map((game, i) => {
                   const summary=getGameSummary(game);
                   const gameTime=new Date(game.commence_time);
-                  const isLive=new Date()>gameTime&&new Date()<new Date(gameTime.getTime()+3*60*60*1000);
+                  const isLive=new Date()>gameTime&&new Date()<new Date(gameTime.getTime()+4*60*60*1000);
                   //console.log('HRB search - bookmaker keys:', game.bookmakers.map(bm=>bm.key));
                   const hrbLine=getHRBLine(game);
                   const hrbSpread=hrbLine&&hrbLine.spread?hrbLine.spread[0]:null;
@@ -6139,14 +6154,13 @@ setJerryHistory(prev => {
                   return(
                     <TouchableOpacity key={i} style={styles.gameCard} onPress={()=>openGameDetail(game)} activeOpacity={0.8}>
                       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-                        <Text style={{fontSize:11,color:'#7a92a8',fontWeight:'600'}}>{gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</Text>
+                        <Text style={{fontSize:11,color:'#7a92a8',fontWeight:'600'}}>{gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})}</Text>
                         {isLive?(<View style={{flexDirection:'row',alignItems:'center',gap:4,backgroundColor:'rgba(255,77,109,0.15)',paddingHorizontal:8,paddingVertical:3,borderRadius:20}}><View style={{width:6,height:6,borderRadius:3,backgroundColor:'#ff4d6d'}}/><Text style={{color:'#ff4d6d',fontSize:11,fontWeight:'700'}}>LIVE</Text></View>):
                         (<View style={[styles.pill,{backgroundColor:'rgba(0,153,255,0.15)'}]}><Text style={{color:'#0099ff',fontSize:11,fontWeight:'700'}}>{gamesSport}</Text></View>)}
                       </View>
                        {(()=>{
                           if(gamesSport==='NCAAB' && !bartData.length) return null;
-                  const isLive = new Date(game.commence_time) <= new Date();
-                  if(isLive) return null;
+  
                   const ss = getSweatScoreForGame(game, gamesSport);
                   if(!ss) return null;
                         const tier = getSweatTier(ss.total);
@@ -6193,14 +6207,21 @@ setJerryHistory(prev => {
                         if(ss.leanSide && signals.length < 3) signals.push(`Lean: ${ss.leanSide}`);
 
                         return(
-                          <View style={{marginBottom:8}}>
-                            <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:signals.length > 0 ? 5 : 0}}>
-                              <View style={{paddingHorizontal:10,paddingVertical:4,borderRadius:20,backgroundColor:tier.color+'22',borderWidth:1,borderColor:tier.color,flexDirection:'row',alignItems:'center',gap:4}}>
-                                <Text style={{color:tier.color,fontWeight:'800',fontSize:13}}>{ss.total}</Text>
-                                <Text style={{color:tier.color,fontSize:10,fontWeight:'700'}}>SWEAT</Text>
-                              </View>
-                              <Text style={{color:tier.color,fontSize:11,fontWeight:'600'}}>{tier.label}</Text>
-                            </View>
+  <View style={{marginBottom:8}}>
+    <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:signals.length > 0 ? 5 : 0}}>
+      {isLive ? (
+        <View style={{paddingHorizontal:10,paddingVertical:4,borderRadius:20,backgroundColor:'#ff4d6d22',borderWidth:1,borderColor:'#ff4d6d',flexDirection:'row',alignItems:'center',gap:4}}>
+          <View style={{width:6,height:6,borderRadius:3,backgroundColor:'#ff4d6d'}}/>
+          <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:11}}>LIVE</Text>
+        </View>
+      ) : (
+        <View style={{paddingHorizontal:10,paddingVertical:4,borderRadius:20,backgroundColor:tier.color+'22',borderWidth:1,borderColor:tier.color,flexDirection:'row',alignItems:'center',gap:4}}>
+          <Text style={{color:tier.color,fontWeight:'800',fontSize:13}}>{ss.total}</Text>
+          <Text style={{color:tier.color,fontSize:10,fontWeight:'700'}}>SWEAT</Text>
+        </View>
+      )}
+      <Text style={{color:isLive ? '#ff4d6d' : tier.color,fontSize:11,fontWeight:'600'}}>{isLive ? 'In Progress' : tier.label}</Text>
+    </View>
                             {signals.length > 0 && (
                               <View style={{flexDirection:'row',flexWrap:'wrap',gap:4}}>
                                 {signals.slice(0,3).map((sig,i) => (
@@ -7054,12 +7075,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             <View style={[styles.modalSheet,{maxHeight:'92%'}]}>
               <View style={styles.modalHandle}/>
               <Text style={[styles.modalTitle, {fontSize:18}]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{stripMascot(selectedGame.away_team)} @ {stripMascot(selectedGame.home_team)}</Text>
-              <Text style={{color:'#7a92a8',fontSize:12,marginTop:-10,marginBottom:16}}>{new Date(selectedGame.commence_time).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} • {new Date(selectedGame.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</Text>
+              <Text style={{color:'#7a92a8',fontSize:12,marginTop:-10,marginBottom:16}}>{new Date(selectedGame.commence_time).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} • {new Date(selectedGame.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})} ET</Text>
               <ScrollView showsVerticalScrollIndicator={false}>
                 
                 {(()=>{
                   const isLive = new Date(selectedGame.commence_time) <= new Date();
-                  if(isLive) return null;
                   const ss = getSweatScoreForGame(selectedGame, gamesSport);
                   if(!ss) return null;
                   const tier = getSweatTier(ss.total);
