@@ -1656,7 +1656,7 @@ setEvData(evOpps.slice(0,20));
 
   // 1. Check AsyncStorage first
   try {
-    const cached = await AsyncStorage.getItem(GAMES_CACHE_KEY+'_'+sport+'_'+day);
+    const cached = await AsyncStorage.getItem('sweatlocker_games'+'_'+sport+'_'+day);
     if(cached) {
       const parsed = JSON.parse(cached);
       const ageMin = (Date.now() - parsed.timestamp) / 60000;
@@ -1681,7 +1681,7 @@ setEvData(evOpps.slice(0,20));
       if(ageMin < CACHE_MINUTES) {
         const mappedGames = supabaseCache.data;
         setGamesData(mappedGames);
-        await AsyncStorage.setItem(GAMES_CACHE_KEY+'_'+sport+'_'+day, JSON.stringify({data:mappedGames, timestamp:Date.now()}));
+        await AsyncStorage.setItem('sweatlocker_games'+'_'+sport+'_'+day, JSON.stringify({data:mappedGames, timestamp:Date.now()}));
         setGamesLoading(false);
         setRefreshing(false);
         return;
@@ -1796,7 +1796,7 @@ setEvData(evOpps.slice(0,20));
 
     // Save to AsyncStorage
     try {
-      await AsyncStorage.setItem(GAMES_CACHE_KEY+'_'+sport+'_'+day, JSON.stringify({data:mappedGames, timestamp:Date.now()}));
+      await AsyncStorage.setItem('sweatlocker_games'+'_'+sport+'_'+day, JSON.stringify({data:mappedGames, timestamp:Date.now()}));
     } catch(e) {}
 
     // Save to Supabase cache
@@ -4933,7 +4933,7 @@ setJerryHistory(prev => {
     setRefreshing(true);
     if(activeTab==='odds')fetchOdds(oddsSport);
     else if(activeTab==='games'){
-      AsyncStorage.removeItem(GAMES_CACHE_KEY+'_'+gamesSport+'_'+gamesDay);
+      AsyncStorage.removeItem(`odds_games_cache_${gamesSport}_${gamesDay}`);
       fetchGames(gamesSport,gamesDay);
     }
     else if(activeTab==='stats'){if(statsTab==='props')fetchProps(propsSport);else fetchPlayerStats();}
