@@ -1018,7 +1018,7 @@ def run():
                 weather.get("temperature"),
                 weather.get("wind_speed"),
                 weather.get("wind_direction"),
-                park_factor.get("run_factor") if park_factor else None,
+                park_run_factor,
                 home_offense.get("wrc_plus") if home_offense else None,
                 away_offense.get("wrc_plus") if away_offense else None,
             )
@@ -1114,7 +1114,7 @@ def run():
                 lob = home_pitcher_stats.get('lob_pct', 0)
                 home_throws = home_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-                pitcher_context += f"{home_pitcher} ({home_throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
+                pitcher_context += f"{home_pitcher} ({home_throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff*100:.1f}%, GB% {gb*100:.1f}%, FB% {fb*100:.1f}%, LOB% {lob*100:.1f}% ({pitcher_type})"
             if away_pitcher_stats:
                 xera = away_pitcher_stats.get('xera', 'N/A')
                 kpct = away_pitcher_stats.get('k_pct', 0)
@@ -1124,7 +1124,7 @@ def run():
                 lob = away_pitcher_stats.get('lob_pct', 0)
                 away_throws = away_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-            pitcher_context += f" | {away_pitcher} ({away_throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff:.1f}%, GB% {gb:.1f}%, FB% {fb:.1f}%, LOB% {lob:.1f}% ({pitcher_type})"
+                pitcher_context += f" | {away_pitcher} ({away_throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff*100:.1f}%, GB% {gb*100:.1f}%, FB% {fb*100:.1f}%, LOB% {lob*100:.1f}% ({pitcher_type})"
             # Build umpire note
             ump_note = ""
             if ump_stats:
@@ -1142,6 +1142,8 @@ def run():
                 "away_pitcher": away_pitcher,
                 "home_sp_xera": home_pitcher_stats.get("xera") if home_pitcher_stats else None,
                 "away_sp_xera": away_pitcher_stats.get("xera") if away_pitcher_stats else None,
+                "home_throws": home_throws,
+                "away_throws": away_throws,
                 "home_days_rest": home_days_rest,
                 "away_days_rest": away_days_rest,
                 "home_pitcher_home_era": home_pitcher_splits.get('home_era') if home_pitcher_splits else None,
