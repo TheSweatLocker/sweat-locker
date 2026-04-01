@@ -1649,11 +1649,12 @@ setEvData(evOpps.slice(0,20));
     setOddsLoading(false);setRefreshing(false);
   };
 
-  const fetchGames = async (sport=gamesSport, day=gamesDay) => {
+  const fetchGames = async (sport=gamesSport, day=gamesDay, forceRefresh=false) => {
   setGamesLoading(true);
   const CACHE_KEY = `odds_games_${sport}_${day}`;
   const CACHE_MINUTES = 60;
 
+  if(!forceRefresh) {
   // 1. Check AsyncStorage first
   try {
     const cached = await AsyncStorage.getItem('sweatlocker_games'+'_'+sport+'_'+day);
@@ -1688,6 +1689,7 @@ setEvData(evOpps.slice(0,20));
       }
     }
   } catch(e) {}
+  } // end !forceRefresh
 
 // 3. Fetch fresh
   try {
@@ -1695,11 +1697,11 @@ setEvData(evOpps.slice(0,20));
 
     if(sport === 'MLB') {
       // ── MLB: use MLB Stats API for schedule + Odds API for lines ──
-      const dateStr = day === 'tomorrow'
-        ? new Date(Date.now() + 86400000).toISOString().split('T')[0]
-        : day === 'yesterday'
-        ? new Date(Date.now() - 86400000).toISOString().split('T')[0]
-        : new Date().toISOString().split('T')[0];
+      // Use local device date (US user ≈ ET) for MLB schedule query
+      const localNow = new Date();
+      if(day === 'tomorrow') localNow.setDate(localNow.getDate() + 1);
+      if(day === 'yesterday') localNow.setDate(localNow.getDate() - 1);
+      const dateStr = localNow.getFullYear() + '-' + String(localNow.getMonth()+1).padStart(2,'0') + '-' + String(localNow.getDate()).padStart(2,'0');
 
       // Fetch schedule from MLB Stats API
       const schedResp = await axios.get('https://statsapi.mlb.com/api/v1/schedule', {
@@ -1709,7 +1711,8 @@ setEvData(evOpps.slice(0,20));
       for(const dateEntry of schedResp.data?.dates || []) {
         for(const game of dateEntry.games || []) {
           // Only include scheduled or in-progress games
-          if(game.status?.abstractGameState === 'Final') continue;
+          const gameState = game.status?.abstractGameState || '';
+          if(gameState === 'Final') continue;
           mlbGames.push({
             mlb_game_pk: String(game.gamePk),
             home_team: game.teams?.home?.team?.name || '',
@@ -1717,6 +1720,7 @@ setEvData(evOpps.slice(0,20));
             commence_time: game.gameDate,
             home_pitcher: game.teams?.home?.probablePitcher?.fullName || null,
             away_pitcher: game.teams?.away?.probablePitcher?.fullName || null,
+            gameState,
           });
         }
       }
@@ -1758,6 +1762,7 @@ setEvData(evOpps.slice(0,20));
           home_pitcher: mlbGame.home_pitcher,
           away_pitcher: mlbGame.away_pitcher,
           mlb_game_pk: mlbGame.mlb_game_pk,
+          gameState: mlbGame.gameState,
         };
       });
 
@@ -3435,7 +3440,8 @@ const fetchNBAInjuries = async () => {
 
 const fetchDailyBestBet = async () => {
   const CACHE_KEY = 'sweatlocker_daily_best_bet_v4';
-  const today = new Date().toISOString().split('T')[0];
+  const _now = new Date();
+  const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
 
   // Check Supabase first — shared across all users, locked per day
   try {
@@ -3445,8 +3451,13 @@ const fetchDailyBestBet = async () => {
       .eq('cache_key', `best_bet_${today}`)
       .single();
     if(supabaseCache) {
-      setDailyBestBet(supabaseCache.data);
-      return;
+      // Verify cached game hasn't already passed (stale from UTC key mismatch)
+      const cachedGame = supabaseCache.data?.game;
+      const cachedTime = cachedGame?.commence_time ? new Date(cachedGame.commence_time) : null;
+      if(!cachedTime || cachedTime > new Date()) {
+        setDailyBestBet(supabaseCache.data);
+        return;
+      }
     }
   } catch(e) {}
 
@@ -3455,10 +3466,15 @@ const fetchDailyBestBet = async () => {
     const cached = await AsyncStorage.getItem(CACHE_KEY);
     if(cached) {
       const parsed = JSON.parse(cached);
-      const cacheDate = new Date(parsed.timestamp).toISOString().split('T')[0];
-      if(cacheDate === today) {
-        setDailyBestBet(parsed.data);
-        return;
+      const cacheDate = new Date(parsed.timestamp);
+      const cacheDateStr = cacheDate.getFullYear() + '-' + String(cacheDate.getMonth()+1).padStart(2,'0') + '-' + String(cacheDate.getDate()).padStart(2,'0');
+      if(cacheDateStr === today) {
+        const cachedGame = parsed.data?.game;
+        const cachedTime = cachedGame?.commence_time ? new Date(cachedGame.commence_time) : null;
+        if(!cachedTime || cachedTime > new Date()) {
+          setDailyBestBet(parsed.data);
+          return;
+        }
       }
     }
   } catch(e) {}
@@ -3511,13 +3527,16 @@ const fetchDailyBestBet = async () => {
         }
       }
 
+      let bestNRFIScore = 0;
+      let bestNRFIGame = null;
+      let bestNRFICtx = null;
+
       for(const game of mlbGames) {
         const { data: mlbCtx } = await supabase
           .from('mlb_game_context')
           .select('*')
           .eq('home_team', game.home_team)
           .single();
-        // Wrap in dict keyed by home_team so calcGameSweatScore can find it
         const mlbCtxMap = mlbCtx ? { [game.home_team]: mlbCtx } : {};
         const scoreObj = calcGameSweatScore(game, 'MLB', fanmatchData, mlbCtxMap, nbaTeamData);
         if(scoreObj && scoreObj.total > bestScore) {
@@ -3526,6 +3545,26 @@ const fetchDailyBestBet = async () => {
           bestSport = 'MLB';
           bestScoreObj = scoreObj;
         }
+        // Track best NRFI candidate separately
+        if(mlbCtx?.nrfi_score && mlbCtx.nrfi_score > bestNRFIScore) {
+          bestNRFIScore = mlbCtx.nrfi_score;
+          bestNRFIGame = game;
+          bestNRFICtx = mlbCtx;
+        }
+      }
+
+      // If best NRFI score >= 75 and beats the current best game score, surface as NRFI play
+      if(bestNRFIScore >= 75 && bestNRFIGame && bestNRFIScore > bestScore - 10) {
+        bestGame = bestNRFIGame;
+        bestSport = 'MLB';
+        bestScoreObj = {
+          ...calcGameSweatScore(bestNRFIGame, 'MLB', fanmatchData, {[bestNRFIGame.home_team]: bestNRFICtx}, nbaTeamData),
+          isNRFI: true,
+          nrfiScore: bestNRFIScore,
+          leanSide: 'NRFI',
+          leanBet: 'No Run First Inning',
+        };
+        bestScore = bestNRFIScore;
       }
     } catch(e) {}
 
@@ -3612,11 +3651,19 @@ const fetchDailyBestBet = async () => {
           content: `You are Jerry, a sharp sports betting analyst. This is today's single best bet across all sports.
 
 Game: ${bestGame.away_team} @ ${bestGame.home_team} (${bestSport})
-Sweat Score: ${bestScoreObj.total}/100
+${bestScoreObj.isNRFI ? `NRFI Score: ${bestScoreObj.nrfiScore}/100 — No Run First Inning play
+Home pitcher: ${bestNRFICtx?.home_pitcher} xERA ${bestNRFICtx?.home_sp_xera}
+Away pitcher: ${bestNRFICtx?.away_pitcher} xERA ${bestNRFICtx?.away_sp_xera}
+Temperature: ${bestNRFICtx?.temperature}°F | Wind: ${bestNRFICtx?.wind_speed}mph ${bestNRFICtx?.wind_direction}
+Park factor: ${bestNRFICtx?.park_run_factor}
+Home wRC+: ${bestNRFICtx?.home_wrc_plus} | Away wRC+: ${bestNRFICtx?.away_wrc_plus}` : 
+`Sweat Score: ${bestScoreObj.total}/100
 Lean: ${bestScoreObj.leanSide || 'unclear'}
-Key factors: ${bestScoreObj.efgMismatch || bestScoreObj.injuryContext || 'model edge detected'}
+Key factors: ${bestScoreObj.efgMismatch || bestScoreObj.injuryContext || 'model edge detected'}`}
 
-Give a 2-3 sentence take on WHY this is today's best bet. Reference the specific data. End with the specific side to back. Never say "bet" or "must play". Sound like a sharp friend.`
+${bestScoreObj.isNRFI ? 
+'This is a NRFI (No Run First Inning) play. Explain WHY both pitchers are expected to have clean first innings based on the xERA values, weather, and park. End with "NRFI is the play." Never say "bet" or "must play".' :
+'Give a 2-3 sentence take on WHY this is today\'s best bet. Reference the specific data. End with the specific side to back. Never say "bet" or "must play".'} Sound like a sharp friend.`
         }]
       })
     });
@@ -3630,7 +3677,9 @@ Give a 2-3 sentence take on WHY this is today's best bet. Reference the specific
       score: bestScoreObj,
       narrative,
       generatedAt: today,
-      leanDisplay: typeof bestScoreObj?.leanSide === 'string' 
+      leanDisplay: bestScoreObj.isNRFI 
+        ? `NRFI — Score ${bestScoreObj.nrfiScore}/100`
+        : typeof bestScoreObj?.leanSide === 'string' 
         ? bestScoreObj.leanSide 
         : bestSport === 'NBA' 
         ? stripMascot(bestGame?.home_team || '') 
@@ -4932,10 +4981,7 @@ setJerryHistory(prev => {
   const onRefresh=()=>{
     setRefreshing(true);
     if(activeTab==='odds')fetchOdds(oddsSport);
-    else if(activeTab==='games'){
-      AsyncStorage.removeItem(`odds_games_cache_${gamesSport}_${gamesDay}`);
-      fetchGames(gamesSport,gamesDay);
-    }
+    else if(activeTab==='games') fetchGames(gamesSport,gamesDay,true);
     else if(activeTab==='stats'){if(statsTab==='props')fetchProps(propsSport);else fetchPlayerStats();}
     else if(activeTab==='trends'){if(trendsTab==='ev')fetchEV(evSport);else if(trendsTab==='sharp')fetchSharp(sharpSport);else setRefreshing(false);}
     else setRefreshing(false);
@@ -6120,7 +6166,8 @@ setJerryHistory(prev => {
               <>
                  <Text style={styles.sectionLabel}>{gamesData.length} GAMES — {gamesDay.toUpperCase()}</Text>
                 {gamesData.filter((game) => {
-  // Hide games that started more than 4 hours ago (completed)
+  // Hide completed games
+  if(game.gameState === 'Final') return false;
   const gameTime = new Date(game.commence_time);
   const fourHoursAgo = new Date(Date.now() - 4*60*60*1000);
   if(gameTime < fourHoursAgo) return false;
@@ -6146,7 +6193,7 @@ setJerryHistory(prev => {
 }).map((game, i) => {
                   const summary=getGameSummary(game);
                   const gameTime=new Date(game.commence_time);
-                  const isLive=new Date()>gameTime&&new Date()<new Date(gameTime.getTime()+4*60*60*1000);
+                  const isLive=game.gameState==='Live'||(new Date()>gameTime&&new Date()<new Date(gameTime.getTime()+4*60*60*1000));
                   //console.log('HRB search - bookmaker keys:', game.bookmakers.map(bm=>bm.key));
                   const hrbLine=getHRBLine(game);
                   const hrbSpread=hrbLine&&hrbLine.spread?hrbLine.spread[0]:null;
@@ -6154,7 +6201,7 @@ setJerryHistory(prev => {
                   return(
                     <TouchableOpacity key={i} style={styles.gameCard} onPress={()=>openGameDetail(game)} activeOpacity={0.8}>
                       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-                        <Text style={{fontSize:11,color:'#7a92a8',fontWeight:'600'}}>{gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})}</Text>
+                        <Text style={{fontSize:11,color:'#7a92a8',fontWeight:'600'}}>{gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})} ET</Text>
                         {isLive?(<View style={{flexDirection:'row',alignItems:'center',gap:4,backgroundColor:'rgba(255,77,109,0.15)',paddingHorizontal:8,paddingVertical:3,borderRadius:20}}><View style={{width:6,height:6,borderRadius:3,backgroundColor:'#ff4d6d'}}/><Text style={{color:'#ff4d6d',fontSize:11,fontWeight:'700'}}>LIVE</Text></View>):
                         (<View style={[styles.pill,{backgroundColor:'rgba(0,153,255,0.15)'}]}><Text style={{color:'#0099ff',fontSize:11,fontWeight:'700'}}>{gamesSport}</Text></View>)}
                       </View>
