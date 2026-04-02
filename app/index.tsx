@@ -1291,7 +1291,13 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
       const legs = [];
 
       // 1. Scan MLB for NRFI plays (score >= 75)
-      const mlbCtxValues = Object.values(mlbGameContext);
+      // Deduplicate by game_id to prevent same game appearing twice
+const seen = new Set();
+const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
+  if(!ctx.game_id || seen.has(ctx.game_id)) return false;
+  seen.add(ctx.game_id);
+  return true;
+});
       const topNRFI = mlbCtxValues
         .filter((ctx: any) => ctx.nrfi_score >= 75 && ctx.game_date === today)
         .sort((a: any, b: any) => b.nrfi_score - a.nrfi_score)
