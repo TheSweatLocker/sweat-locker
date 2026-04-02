@@ -61,16 +61,9 @@ jobs:
 
       - name: Run UFC fighter stats scrape
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ...
         run: |
-          # Only run on Thursdays (day 1) to keep fighter stats fresh after weekend events
-          if [ "$(date +%u)" = "4" ]; then
-            cd mlb_pipeline
-            python ufc_scraper.py
-          else
-            echo "Skipping UFC scraper — runs Thursdays only"
-          fi
+          echo "Skipping UFC scraper — runs Thursdays only"
       
       - name: Resolve prop grades
         env:
