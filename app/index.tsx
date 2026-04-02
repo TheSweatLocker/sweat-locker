@@ -1261,7 +1261,248 @@ const stripMascot = (teamName) => {
     });
     return result || teamName;
   };
-export default function App() {
+const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parlayLegs, setParlayLegs, setActiveTab, setMybetsTab, showToast, ANTHROPIC_API_KEY, supabase }) => {
+  const [degenData, setDegenData] = React.useState(null);
+  const [degenLoading, setDegenLoading] = React.useState(false);
+  const [degenError, setDegenError] = React.useState('');
+
+  React.useEffect(() => { fetchDailyDegen(); }, []);
+
+  const fetchDailyDegen = async () => {
+    const _now = new Date();
+    const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
+
+    // Check Supabase cache
+    try {
+      const { data: cached } = await supabase
+        .from('jerry_cache')
+        .select('data, fetched_at')
+        .eq('cache_key', `daily_degen_${today}`)
+        .single();
+      if(cached) {
+        setDegenData(cached.data);
+        return;
+      }
+    } catch(e) {}
+
+    setDegenLoading(true);
+
+    try {
+      const legs = [];
+
+      // 1. Scan MLB for NRFI plays (score >= 75)
+      const mlbCtxValues = Object.values(mlbGameContext);
+      const topNRFI = mlbCtxValues
+        .filter((ctx: any) => ctx.nrfi_score >= 75 && ctx.game_date === today)
+        .sort((a: any, b: any) => b.nrfi_score - a.nrfi_score)
+        .slice(0, 2);
+
+      for(const ctx of topNRFI) {
+        const game = gamesData.find((g: any) =>
+          g.home_team === ctx.home_team || g.away_team === ctx.away_team
+        );
+        const odds = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'h2h')?.outcomes?.[0]?.price || -110;
+        legs.push({
+          type: 'NRFI',
+          matchup: `${ctx.away_team} @ ${ctx.home_team}`,
+          pick: `NRFI`,
+          odds: -120,
+          signal: `NRFI Score ${ctx.nrfi_score} — ${ctx.home_pitcher} xERA ${ctx.home_sp_xera} + ${ctx.away_pitcher} xERA ${ctx.away_sp_xera}`,
+          game,
+          ctx,
+        });
+      }
+
+      // 2. Scan MLB totals for strong under leans
+      const topUnders = mlbCtxValues
+        .filter((ctx: any) => ctx.over_lean === false && ctx.projected_total && ctx.game_date === today)
+        .sort((a: any, b: any) => {
+          const gameA = gamesData.find((g: any) => g.home_team === a.home_team);
+          const gameB = gamesData.find((g: any) => g.home_team === b.home_team);
+          const totalA = gameA?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals')?.outcomes?.[0]?.point || 0;
+          const totalB = gameB?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals')?.outcomes?.[0]?.point || 0;
+          return (totalA - a.projected_total) - (totalB - b.projected_total);
+        })
+        .slice(0, 1);
+
+      for(const ctx of topUnders) {
+        const game = gamesData.find((g: any) => g.home_team === ctx.home_team);
+        if(!game) continue;
+        const totalMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals');
+        const totalLine = totalMkt?.outcomes?.[0]?.point;
+        const totalOdds = totalMkt?.outcomes?.find((o: any) => o.name === 'Under')?.price || -110;
+        if(!totalLine) continue;
+        const delta = (ctx.projected_total - totalLine).toFixed(1);
+        legs.push({
+          type: 'UNDER',
+          matchup: `${ctx.away_team} @ ${ctx.home_team}`,
+          pick: `Under ${totalLine}`,
+          odds: totalOdds,
+          signal: `Model projects ${ctx.projected_total} runs — ${Math.abs(parseFloat(delta))} run gap vs market`,
+          game,
+          ctx,
+        });
+      }
+
+      // 3. Scan NBA for strong leans
+      const nbaGames = gamesData.filter((g: any) => g.sport_key === 'basketball_nba' || g.sport_title === 'NBA');
+      for(const game of nbaGames.slice(0, 5)) {
+        const homeNBA = Object.values(nbaTeamData).find((t: any) => t.team && game.home_team.includes(t.team.split(' ').pop()));
+        const awayNBA = Object.values(nbaTeamData).find((t: any) => t.team && game.away_team.includes(t.team.split(' ').pop()));
+        if(!homeNBA || !awayNBA) continue;
+        const netGap = Math.abs((homeNBA as any).net_rating - (awayNBA as any).net_rating);
+        if(netGap >= 6) {
+          const favTeam = (homeNBA as any).net_rating > (awayNBA as any).net_rating ? game.home_team : game.away_team;
+          const spreadMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'spreads');
+          const favSpread = spreadMkt?.outcomes?.find((o: any) => o.name === favTeam);
+          if(favSpread) {
+            legs.push({
+              type: 'NBA',
+              matchup: `${game.away_team} @ ${game.home_team}`,
+              pick: `${favTeam} ${favSpread.point > 0 ? '+' : ''}${favSpread.point}`,
+              odds: favSpread.price,
+              signal: `Net rating gap ${netGap.toFixed(1)} pts — model strongly favors ${favTeam.split(' ').pop()}`,
+              game,
+            });
+            break;
+          }
+        }
+      }
+
+      // Limit to 3-4 legs, pick best non-correlated
+      const finalLegs = legs.slice(0, 4);
+
+      if(finalLegs.length < 2) {
+        setDegenData({ noPlays: true });
+        setDegenLoading(false);
+        return;
+      }
+
+      // Generate Jerry narrative
+      const legsDesc = finalLegs.map((l, i) => `Leg ${i+1}: ${l.pick} (${l.matchup}) — ${l.signal}`).join('\n');
+      const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 200,
+          messages: [{
+            role: 'user',
+            content: `You are Jerry — sharp, energetic, slightly degenerate but always analytically grounded. Build a narrative for today's Degen Parlay.
+
+Legs:
+${legsDesc}
+
+Write 2-3 sentences MAX. Reference the specific data signals. Sound like a sharp friend who found edges today. End with something like "Jerry's riding all of these." or "That's the Degen Parlay." Never say "bet" or "must play". High energy but data-backed.`
+          }]
+        })
+      });
+      const aiData = await aiResp.json();
+      const narrative = aiData?.content?.[0]?.text || "Model found edges across the slate today. Jerry's playing all of these.";
+
+      const result = { legs: finalLegs, narrative, generatedAt: today };
+
+      // Cache in Supabase
+      try {
+        await supabase.from('jerry_cache').upsert({
+          cache_key: `daily_degen_${today}`,
+          data: result,
+          fetched_at: new Date().toISOString(),
+        }, { onConflict: 'cache_key' });
+      } catch(e) {}
+
+      setDegenData(result);
+    } catch(e) {
+      setDegenData({ noPlays: true });
+    }
+    setDegenLoading(false);
+  };
+
+  const addAllToParlay = () => {
+    if(!degenData?.legs) return;
+    let added = 0;
+    degenData.legs.forEach((leg: any) => {
+      const isNeg = leg.odds < 0;
+      const newLeg = {
+        id: Date.now() + Math.random(),
+        matchup: leg.matchup,
+        pick: leg.pick,
+        odds: String(Math.abs(leg.odds)),
+        oddsSign: isNeg ? '-' : '+'
+      };
+      setParlayLegs((prev: any) => {
+        if(prev.some((l: any) => l.matchup === newLeg.matchup && l.pick === newLeg.pick)) return prev;
+        added++;
+        return [...prev, newLeg];
+      });
+    });
+    showToast(`✅ ${degenData.legs.length} legs added to parlay`);
+    setActiveTab('mybets');
+    setMybetsTab('parlay_sub');
+  };
+
+  if(degenLoading) return (
+    <View style={{alignItems:'center',paddingTop:60,gap:12}}>
+      <Text style={{fontSize:32}}>🎲</Text>
+      <Text style={{color:'#7a92a8',fontSize:14}}>Jerry is scanning the slate...</Text>
+    </View>
+  );
+
+  if(!degenData || degenData.noPlays) return (
+    <View style={{alignItems:'center',paddingTop:60,paddingHorizontal:40}}>
+      <Text style={{fontSize:32}}>🎲</Text>
+      <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18,marginTop:16}}>No Degen Plays Today</Text>
+      <Text style={{color:'#7a92a8',marginTop:8,fontSize:14,textAlign:'center'}}>Jerry didn't find enough edges for a parlay today. Check back after the 2pm pipeline update.</Text>
+    </View>
+  );
+
+  return (
+    <View style={{padding:16}}>
+      {/* Header */}
+      <View style={{backgroundColor:'rgba(255,77,109,0.08)',borderRadius:14,padding:14,marginBottom:16,borderWidth:1,borderColor:'rgba(255,77,109,0.25)'}}>
+        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+          <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:16}}>🎲 DAILY DEGEN</Text>
+          <View style={{backgroundColor:'rgba(255,77,109,0.15)',borderRadius:10,paddingHorizontal:8,paddingVertical:3}}>
+            <Text style={{color:'#ff4d6d',fontSize:11,fontWeight:'800'}}>{degenData.legs?.length}-LEG PARLAY</Text>
+          </View>
+        </View>
+        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{degenData.narrative}"</Text>
+      </View>
+
+      {/* Legs */}
+      {degenData.legs?.map((leg: any, i: number) => (
+        <View key={i} style={{backgroundColor:'#111820',borderRadius:12,padding:12,marginBottom:10,borderWidth:1,borderColor:'#1f2d3d'}}>
+          <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+            <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+              <View style={{backgroundColor:leg.type==='NRFI'?'rgba(0,229,160,0.15)':leg.type==='NBA'?'rgba(0,153,255,0.15)':'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2}}>
+                <Text style={{color:leg.type==='NRFI'?'#00e5a0':leg.type==='NBA'?'#0099ff':'#FFB800',fontSize:10,fontWeight:'800'}}>{leg.type}</Text>
+              </View>
+              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{leg.pick}</Text>
+            </View>
+            <Text style={{color:leg.odds<0?'#e8f0f8':'#00e5a0',fontWeight:'800',fontSize:13}}>{leg.odds>0?'+':''}{leg.odds}</Text>
+          </View>
+          <Text style={{color:'#7a92a8',fontSize:11}}>{leg.matchup}</Text>
+          <Text style={{color:'#4a6070',fontSize:10,marginTop:3}}>{leg.signal}</Text>
+        </View>
+      ))}
+
+      {/* Add all to parlay */}
+      <TouchableOpacity
+        style={{backgroundColor:'#ff4d6d',borderRadius:12,padding:14,alignItems:'center',marginTop:4}}
+        onPress={addAllToParlay}
+      >
+        <Text style={{color:'#fff',fontWeight:'800',fontSize:15}}>🎰 Add All to Parlay Builder</Text>
+      </TouchableOpacity>
+
+      <Text style={{color:'#4a6070',fontSize:11,textAlign:'center',marginTop:12}}>Updated twice daily • 8am + 2pm ET</Text>
+    </View>
+  );
+};
+  export default function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [mybetsTab, setMybetsTab] = useState('picks');
   const [onboardingDone, setOnboardingDone] = useState(true);
@@ -6659,12 +6900,20 @@ setJerryHistory(prev => {
 
 
             {trendsTab==='dailydegen'&&(
-              <View style={{alignItems:'center',paddingTop:60}}>
-                <Text style={{fontSize:40}}>🎲</Text>
-                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18,marginTop:16}}>Daily Degen</Text>
-                <Text style={{color:'#7a92a8',marginTop:8,fontSize:14,textAlign:'center',paddingHorizontal:40}}>Coming soon — degenerate picks, lottery parlays, and more.</Text>
-              </View>
-            )}
+  <DailyDegen
+    mlbGameContext={mlbGameContext}
+    nbaTeamData={nbaTeamData}
+    gamesData={gamesData}
+    fanmatchData={fanmatchData}
+    parlayLegs={parlayLegs}
+    setParlayLegs={setParlayLegs}
+    setActiveTab={setActiveTab}
+    setMybetsTab={setMybetsTab}
+    showToast={showToast}
+    ANTHROPIC_API_KEY={ANTHROPIC_API_KEY}
+    supabase={supabase}
+  />
+)}
 
             {trendsTab==='mytrends'&&(
               <View>
