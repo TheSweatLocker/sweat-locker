@@ -1263,6 +1263,7 @@ const stripMascot = (teamName) => {
   };
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
+  const [mybetsTab, setMybetsTab] = useState('picks');
   const [onboardingDone, setOnboardingDone] = useState(true);
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [modalVisible, setModalVisible] = useState(false);
@@ -6071,8 +6072,18 @@ setJerryHistory(prev => {
           </View>
         )}
 
-        {activeTab==='picks'&&(
+        {(activeTab==='picks'||(activeTab==='mybets'&&mybetsTab==='picks'))&&(
           <View>
+            <View style={{flexDirection:'row',marginBottom:14,gap:0,backgroundColor:'#151c24',borderRadius:12,overflow:'hidden'}}>
+              <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='picks'?'#1a2a3a':'transparent'}} onPress={()=>setMybetsTab('picks')}>
+                <Text style={{color:mybetsTab==='picks'?'#00e5a0':'#7a92a8',fontWeight:'700',fontSize:13}}>My Picks</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='parlay_sub'?'#1a2a3a':'transparent'}} onPress={()=>setMybetsTab('parlay_sub')}>
+                <Text style={{color:mybetsTab==='parlay_sub'?'#00e5a0':'#7a92a8',fontWeight:'700',fontSize:13}}>Parlay Builder</Text>
+              </TouchableOpacity>
+            </View>
+            {mybetsTab==='picks'&&(
+            <View>
             <Text style={styles.pageTitle}>My Picks</Text>
             <View style={styles.statRow}>
               <View style={[styles.statBox,styles.statGreen]}><Text style={[styles.statVal,{color:'#00e5a0'}]}>{wins}W</Text><Text style={styles.statKey}>Wins</Text></View>
@@ -6108,6 +6119,8 @@ setJerryHistory(prev => {
             {bets.length===0&&<View style={{alignItems:'center',paddingTop:40}}><Text style={{fontSize:32}}>🎯</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14}}>No picks logged yet.</Text></View>}
             <TouchableOpacity style={styles.btnPrimary} onPress={()=>setModalVisible(true)}><Text style={styles.btnPrimaryText}>+ Log New Pick</Text></TouchableOpacity>
             <View style={{height:20}}/>
+            </View>
+            )}
           </View>
         )}
 
@@ -6144,10 +6157,10 @@ setJerryHistory(prev => {
 </View>
 <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
   {[{id:'time',label:'⏰ Time'},{id:'score',label:'🔥 Sweat Score'},{id:'hrb',label:'🎸 HRB First'}].map(s=>(
-    <TouchableOpacity key={s.id} 
-      style={[styles.chipBtn,gamesSort===s.id&&styles.chipBtnActive,{flex:1,alignItems:'center'}]}
+    <TouchableOpacity key={s.id}
+      style={[styles.chipBtn,gamesSort===s.id&&styles.chipBtnActive,{flex:1,justifyContent:'center',alignItems:'center'}]}
       onPress={()=>setGamesSort(s.id)}>
-      <Text style={[styles.chipTxt,gamesSort===s.id&&styles.chipTxtActive]}>{s.label}</Text>
+      <Text style={[styles.chipTxt,gamesSort===s.id&&styles.chipTxtActive,{textAlign:'center'}]}>{s.label}</Text>
     </TouchableOpacity>
   ))}
 </View>
@@ -6335,21 +6348,16 @@ setJerryHistory(prev => {
           </View>
         )}
 
-        {activeTab==='trends'&&(
+        {(activeTab==='trends'||activeTab==='jerry')&&(
           <View>
-            <Text style={styles.pageTitle}>Trends</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
-              <View style={{flexDirection:'row',gap:6}}>
-                {[{id:'ev',label:'📊 Model Edge'},{id:'propjerry',label:'🧠 Prop Jerry'},{id:'mytrends',label:'📊 My Trends'},{id:'clv',label:'📈 CLV'},{id:'tournament',label:'🏀 Tourney'}].map(t=>(
-                  <TouchableOpacity key={t.id} style={[styles.chipBtn,trendsTab===t.id&&styles.chipBtnActive]} onPress={()=>{
-  setTrendsTab(t.id);
-  if(t.id==='ev') { setModelEdgeSport('NCAAB'); setGamesSport('NCAAB'); fetchGames('NCAAB','today'); }
-}}>
-                    <Text style={[styles.chipTxt,trendsTab===t.id&&styles.chipTxtActive]}>{t.label}</Text>
+            <Text style={styles.pageTitle}>🧠 Jerry 🎤</Text>
+            <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
+                {[{id:'propjerry',label:'🧠 Prop Jerry'},{id:'dailydegen',label:'🎲 Daily Degen'},{id:'mytrends',label:'📋 My Record'}].map(t=>(
+                  <TouchableOpacity key={t.id} style={[styles.chipBtn,{flex:1,justifyContent:'center',alignItems:'center'},trendsTab===t.id&&styles.chipBtnActive]} onPress={()=>setTrendsTab(t.id)}>
+                    <Text style={[styles.chipTxt,trendsTab===t.id&&styles.chipTxtActive,{textAlign:'center'}]}>{t.label}</Text>
                   </TouchableOpacity>
                 ))}
-              </View>
-            </ScrollView>
+            </View>
 
             {trendsTab==='ev'&&(()=>{
   const ncaabGames = gamesData.filter(g => g && g.away_team && g.home_team);
@@ -6595,7 +6603,7 @@ setJerryHistory(prev => {
                       if(prev.find(l=>l.pick===leg.pick)) return prev;
                       return [...prev, leg];
                     });
-                    setActiveTab('parlay');
+                    setActiveTab('mybets');
                   }}
                 >
                   <Text style={{fontSize:14}}>🔗</Text>
@@ -6649,6 +6657,14 @@ setJerryHistory(prev => {
   </View>
 )}
 
+
+            {trendsTab==='dailydegen'&&(
+              <View style={{alignItems:'center',paddingTop:60}}>
+                <Text style={{fontSize:40}}>🎲</Text>
+                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18,marginTop:16}}>Daily Degen</Text>
+                <Text style={{color:'#7a92a8',marginTop:8,fontSize:14,textAlign:'center',paddingHorizontal:40}}>Coming soon — degenerate picks, lottery parlays, and more.</Text>
+              </View>
+            )}
 
             {trendsTab==='mytrends'&&(
               <View>
@@ -7040,7 +7056,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
 })()}
       </View>
         )}
-        {activeTab==='parlay'&&(
+        {(activeTab==='parlay'||(activeTab==='mybets'&&mybetsTab==='parlay_sub'))&&(
           <View>
             <Text style={styles.pageTitle}>Parlay Builder</Text>
             <View style={[styles.hero,{flexDirection:'column',alignItems:'stretch'}]}>
@@ -7104,8 +7120,8 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             </View>
             <View style={styles.bottomNavContainer}></View>
       <View style={styles.bottomNavContainer}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.bottomNav}>
-          {[{id:'home',icon:'📊',label:'Home'},{id:'picks',icon:'🎯',label:'Picks'},{id:'games',icon:'🏟',label:'Games'},{id:'trends',icon:'⚡',label:'Trends'},{id:'odds',icon:'💰',label:'Odds'},{id:'stats',icon:'📈',label:'Stats'},{id:'parlay',icon:'🎰',label:'Parlay'}].map(tab=>(
+        <View style={{flexDirection:'row',justifyContent:'space-evenly'}}>
+          {[{id:'home',icon:'📊',label:'Home'},{id:'games',icon:'🏟',label:'Games'},{id:'jerry',icon:'🧠',label:'Jerry'},{id:'mybets',icon:'🎯',label:'My Bets'},{id:'odds',icon:'💰',label:'Odds'}].map(tab=>(
             <TouchableOpacity key={tab.id} style={styles.tabItem} onPress={()=>setActiveTab(tab.id)}>
               <Text style={styles.tabIcon}>{tab.icon}</Text>
               {tab.id==='parlay'&&parlayLegs.length>0?(
@@ -7113,7 +7129,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
               ):(<Text style={[styles.tabLabel,activeTab===tab.id&&{color:HRB_COLOR}]}>{tab.label}</Text>)}
             </TouchableOpacity>
           ))}
-        </ScrollView>
+        </View>
       </View>
 
       {selectedGame&&(
