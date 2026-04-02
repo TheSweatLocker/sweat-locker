@@ -16,7 +16,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 def fetch_pitcher_stats():
     print("Fetching 2026 pitcher stats from Baseball Savant...")
     try:
-        stats = pitching_stats(2026, qual=10)
+        stats = pitching_stats(2026, qual=1)
         print(f"Fetched {len(stats)} pitchers from 2026")
         return stats
     except Exception as e:
