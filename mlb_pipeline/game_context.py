@@ -572,7 +572,9 @@ def get_mlb_games():
                 "regions": "us",
                 "markets": "totals,h2h",
                 "oddsFormat": "american",
-                "bookmakers": "draftkings"
+                "bookmakers": "draftkings",
+                "commenceTimeFrom": datetime.utcnow().strftime('%Y-%m-%dT00:00:00Z'),
+                "commenceTimeTo": datetime.utcnow().strftime('%Y-%m-%dT23:59:59Z'),
             }
         )
         return r.json()
@@ -739,7 +741,7 @@ def upload_game_context(context):
         "Prefer": "resolution=merge-duplicates,return=minimal"
     }
     r = requests.post(
-        f"{SUPABASE_URL}/rest/v1/mlb_game_context",
+        f"{SUPABASE_URL}/rest/v1/mlb_game_context?on_conflict=game_id",
         headers=headers,
         json=context
     )
