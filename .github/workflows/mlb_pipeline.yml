@@ -61,9 +61,10 @@ jobs:
 
       - name: Run UFC fighter stats scrape
         env:
-          ...
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          echo "Skipping UFC scraper — runs Thursdays only"
+          echo "Skipping UFC scraper — manual skip today"
       
       - name: Resolve prop grades
         env:
