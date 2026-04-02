@@ -443,16 +443,28 @@ def get_pitcher_stats(pitcher_name):
     if not pitcher_name:
         return None
     try:
+        import unicodedata
+        # Normalize accent characters so López matches Lopez etc
+        normalized_name = unicodedata.normalize('NFKD', pitcher_name).encode('ascii', 'ignore').decode('ascii')
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
         }
+        # Try normalized name first
         r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.{requests.utils.quote('*'+pitcher_name+'*')}&select=*&limit=1",
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.{requests.utils.quote('*'+normalized_name+'*')}&select=*&limit=1",
             headers=headers
         )
         data = r.json()
-        return data[0] if data else None
+        if data:
+            return data[0]
+        # Fall back to original name
+        r2 = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.{requests.utils.quote('*'+pitcher_name+'*')}&select=*&limit=1",
+            headers=headers
+        )
+        data2 = r2.json()
+        return data2[0] if data2 else None
     except:
         return None
 
