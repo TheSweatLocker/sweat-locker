@@ -86,6 +86,74 @@ def get_team_standings(season=2024):
         print(f"Error fetching standings: {e}")
         return []
 
+def is_playoff_time():
+    """Returns True if NBA playoffs have started (after April 19 2026)"""
+    today = datetime.now()
+    playoff_start = datetime(2026, 4, 19)
+    return today >= playoff_start
+
+def get_playoff_series(season=2024):
+    """Get current playoff series standings from BDL"""
+    try:
+        r = requests.get(
+            'https://api.balldontlie.io/nba/v1/series',
+            headers=BDL_HEADERS,
+            params={'season': season},
+            timeout=30
+        )
+        data = r.json()
+        series_list = data.get('data', [])
+        print(f"Fetched {len(series_list)} playoff series")
+        return series_list
+    except Exception as e:
+        print(f"Error fetching playoff series: {e}")
+        return []
+
+def build_series_map(series_list):
+    """
+    Build a lookup map: team_name -> series context
+    Returns dict with home_team as key
+    """
+    series_map = {}
+    for s in series_list:
+        home = s.get('home_team', {}).get('full_name', '')
+        away = s.get('visitor_team', {}).get('full_name', '')
+        home_wins = s.get('home_team_wins', 0)
+        away_wins = s.get('visitor_team_wins', 0)
+        game_num = home_wins + away_wins + 1
+
+        if home_wins > away_wins:
+            leader = home
+            leader_wins = home_wins
+            trailer_wins = away_wins
+        elif away_wins > home_wins:
+            leader = away
+            leader_wins = away_wins
+            trailer_wins = home_wins
+        else:
+            leader = None
+            leader_wins = 0
+            trailer_wins = 0
+
+        series_context = {
+            'home_team': home,
+            'away_team': away,
+            'home_wins': home_wins,
+            'away_wins': away_wins,
+            'game_number': game_num,
+            'leader': leader,
+            'leader_wins': leader_wins,
+            'trailer_wins': trailer_wins,
+            'series_tied': home_wins == away_wins,
+            'is_elimination': leader_wins == 3,
+            'series_label': f"Game {game_num}" if home_wins == away_wins == 0 else
+                           f"{leader.split(' ')[-1]} leads {leader_wins}-{trailer_wins}" if leader else
+                           f"Series tied {home_wins}-{away_wins}",
+        }
+        series_map[home] = series_context
+        series_map[away] = series_context
+    return series_map
+
 def get_player_injuries():
     """Fetch current NBA player injuries"""
     try:
@@ -270,6 +338,53 @@ def run():
         }
     )
     print("Cleared existing NBA stats")
+
+    # ── PLAYOFF MODE ──
+    if is_playoff_time():
+        print("🏆 Playoff mode active — fetching series data...")
+        series_list = get_playoff_series(season=2024)
+        if series_list:
+            series_map = build_series_map(series_list)
+            # Upload to Supabase
+            headers_sb = {
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates,return=minimal"
+            }
+            records = []
+            seen = set()
+            for team, ctx in series_map.items():
+                key = f"{ctx['home_team']}_{ctx['away_team']}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                records.append({
+                    "season": 2024,
+                    "home_team": ctx['home_team'],
+                    "away_team": ctx['away_team'],
+                    "home_wins": ctx['home_wins'],
+                    "away_wins": ctx['away_wins'],
+                    "game_number": ctx['game_number'],
+                    "leader": ctx['leader'],
+                    "leader_wins": ctx['leader_wins'],
+                    "trailer_wins": ctx['trailer_wins'],
+                    "series_tied": ctx['series_tied'],
+                    "is_elimination": ctx['is_elimination'],
+                    "series_label": ctx['series_label'],
+                    "updated_at": datetime.now().isoformat()
+                })
+            if records:
+                r = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/nba_playoff_series",
+                    headers=headers_sb,
+                    json=records
+                )
+                print(f"✅ Uploaded {len(records)} playoff series — status {r.status_code}")
+        else:
+            print("No playoff series found yet — check back after April 19")
+    else:
+        print(f"⏳ Playoff mode starts April 19 — {(datetime(2026,4,19) - datetime.now()).days} days away")
 
     # Fetch all data sources
     adv_data = get_team_advanced_stats(season)
