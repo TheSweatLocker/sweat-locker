@@ -1343,45 +1343,80 @@ const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
         });
       }
 
-      // 2. Scan MLB totals for strong under leans
-      const topUnders = mlbCtxValues
-        .filter((ctx: any) => ctx.over_lean === false && ctx.projected_total && ctx.game_date === today)
-        .sort((a: any, b: any) => {
-          const gameA = gamesData.find((g: any) => g.home_team === a.home_team);
-          const gameB = gamesData.find((g: any) => g.home_team === b.home_team);
-          const totalA = gameA?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals')?.outcomes?.[0]?.point || 0;
-          const totalB = gameB?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals')?.outcomes?.[0]?.point || 0;
-          return (totalA - a.projected_total) - (totalB - b.projected_total);
+      // 2. Scan MLB totals for strong over/under leans
+      const topTotals = mlbCtxValues
+        .filter((ctx: any) => ctx.over_lean !== null && ctx.projected_total && ctx.game_date === today)
+        .map((ctx: any) => {
+          const game = gamesData.find((g: any) => g.home_team === ctx.home_team);
+          if(!game) return null;
+          const totalMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals');
+          const totalLine = totalMkt?.outcomes?.[0]?.point;
+          if(!totalLine) return null;
+          const delta = Math.abs(ctx.projected_total - totalLine);
+          return { ctx, game, totalLine, delta, isOver: ctx.over_lean };
         })
-        .slice(0, 1);
+        .filter(Boolean)
+        .sort((a, b) => b.delta - a.delta)
+        .slice(0, 2);
 
-      for(const ctx of topUnders) {
-        const game = gamesData.find((g: any) => g.home_team === ctx.home_team);
-        if(!game) continue;
-        const totalMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals');
-        const totalLine = totalMkt?.outcomes?.[0]?.point;
-        const totalOdds = totalMkt?.outcomes?.find((o: any) => o.name === 'Under')?.price || -110;
-        if(!totalLine) continue;
-        const delta = (ctx.projected_total - totalLine).toFixed(1);
+      for(const item of topTotals) {
+        if(item.delta < 0.5) continue;
+        const side = item.isOver ? 'Over' : 'Under';
+        const odds = item.game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals')?.outcomes?.find((o: any) => o.name === side)?.price || -110;
         legs.push({
-          type: 'UNDER',
-          matchup: `${ctx.away_team} @ ${ctx.home_team}`,
-          pick: `Under ${totalLine}`,
-          odds: totalOdds,
-          signal: `Model projects ${ctx.projected_total} runs — ${Math.abs(parseFloat(delta))} run gap vs market`,
-          game,
-          ctx,
+          type: side.toUpperCase(),
+          matchup: `${item.ctx.away_team} @ ${item.ctx.home_team}`,
+          pick: `${side} ${item.totalLine}`,
+          odds,
+          signal: `Model projects ${item.ctx.projected_total} runs — ${item.delta.toFixed(1)} run gap vs market`,
+          game: item.game,
+          ctx: item.ctx,
         });
       }
 
-      // 3. Scan NBA for strong leans
+      // 3. Scan MLB moneyline for pitcher mismatches
+      const pitcherEdges = mlbCtxValues
+        .filter((ctx: any) => ctx.home_sp_xera && ctx.away_sp_xera && ctx.game_date === today)
+        .map((ctx: any) => {
+          const xeraGap = Math.abs(parseFloat(ctx.home_sp_xera) - parseFloat(ctx.away_sp_xera));
+          if(xeraGap < 1.0) return null;
+          const betterSide = parseFloat(ctx.home_sp_xera) < parseFloat(ctx.away_sp_xera) ? 'home' : 'away';
+          const game = gamesData.find((g: any) => g.home_team === ctx.home_team);
+          if(!game) return null;
+          const mlMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'h2h');
+          const favTeam = betterSide === 'home' ? ctx.home_team : ctx.away_team;
+          const mlOdds = mlMkt?.outcomes?.find((o: any) => o.name === favTeam)?.price;
+          if(!mlOdds || mlOdds < -200) return null; // skip heavy favorites
+          return { ctx, game, xeraGap, favTeam, mlOdds, betterPitcher: betterSide === 'home' ? ctx.home_pitcher : ctx.away_pitcher };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.xeraGap - a.xeraGap)
+        .slice(0, 1);
+
+      for(const item of pitcherEdges) {
+        // Don't duplicate if same game already has an NRFI or total leg
+        if(legs.some(l => l.matchup === `${item.ctx.away_team} @ ${item.ctx.home_team}`)) continue;
+        legs.push({
+          type: 'MLB',
+          matchup: `${item.ctx.away_team} @ ${item.ctx.home_team}`,
+          pick: `${item.favTeam} ML`,
+          odds: item.mlOdds,
+          signal: `${item.betterPitcher} xERA edge — ${item.xeraGap.toFixed(2)} gap vs opponent starter`,
+          game: item.game,
+          ctx: item.ctx,
+        });
+      }
+
+      // 4. Scan NBA for strong spread leans (up to 2 legs)
       const nbaGames = gamesData.filter((g: any) => g.sport_key === 'basketball_nba' || g.sport_title === 'NBA');
-      for(const game of nbaGames.slice(0, 5)) {
+      let nbaLegsAdded = 0;
+      for(const game of nbaGames.slice(0, 8)) {
+        if(nbaLegsAdded >= 2) break;
         const homeNBA = Object.values(nbaTeamData).find((t: any) => t.team && game.home_team.includes(t.team.split(' ').pop()));
         const awayNBA = Object.values(nbaTeamData).find((t: any) => t.team && game.away_team.includes(t.team.split(' ').pop()));
         if(!homeNBA || !awayNBA) continue;
         const netGap = Math.abs((homeNBA as any).net_rating - (awayNBA as any).net_rating);
-        if(netGap >= 6) {
+        if(netGap >= 4) {
           const favTeam = (homeNBA as any).net_rating > (awayNBA as any).net_rating ? game.home_team : game.away_team;
           const spreadMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'spreads');
           const favSpread = spreadMkt?.outcomes?.find((o: any) => o.name === favTeam);
@@ -1391,38 +1426,75 @@ const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
               matchup: `${game.away_team} @ ${game.home_team}`,
               pick: `${favTeam} ${favSpread.point > 0 ? '+' : ''}${favSpread.point}`,
               odds: favSpread.price,
-              signal: `Net rating gap ${netGap.toFixed(1)} pts — model strongly favors ${favTeam.split(' ').pop()}`,
+              signal: `Net rating gap ${netGap.toFixed(1)} pts — model favors ${favTeam.split(' ').pop()}`,
               game,
             });
-            break;
+            nbaLegsAdded++;
           }
+        }
+      }
+
+      // 5. Scan NBA totals using projected total model
+      for(const game of nbaGames.slice(0, 8)) {
+        const homeNBA = Object.values(nbaTeamData).find((t: any) => t.team && game.home_team.includes(t.team.split(' ').pop())) as any;
+        const awayNBA = Object.values(nbaTeamData).find((t: any) => t.team && game.away_team.includes(t.team.split(' ').pop())) as any;
+        if(!homeNBA || !awayNBA || !homeNBA.pace || !homeNBA.offensive_rating) continue;
+        // Already has a side leg from this game? skip to avoid correlation
+        if(legs.some(l => l.matchup === `${game.away_team} @ ${game.home_team}`)) continue;
+        const projPoss = (homeNBA.pace + awayNBA.pace) / 2 - 3;
+        const homeExp = projPoss * ((homeNBA.offensive_rating + awayNBA.defensive_rating) / 2) / 100;
+        const awayExp = projPoss * ((awayNBA.offensive_rating + homeNBA.defensive_rating) / 2) / 100;
+        let projTotal = homeExp + awayExp;
+        // eFG adjustment
+        const homeOppEFG = parseFloat(homeNBA.opp_efg_pct) || 0;
+        const awayOppEFG = parseFloat(awayNBA.opp_efg_pct) || 0;
+        if(homeOppEFG > 0 && awayOppEFG > 0) {
+          projTotal += ((homeNBA.efg_pct - awayOppEFG) + (awayNBA.efg_pct - homeOppEFG)) * 0.8;
+        }
+        // Injury adjustment
+        if(homeNBA.injury_note?.includes('OUT')) projTotal -= 3;
+        if(awayNBA.injury_note?.includes('OUT')) projTotal -= 3;
+        const totalMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals');
+        const postedLine = totalMkt?.outcomes?.[0]?.point;
+        if(!postedLine) continue;
+        const delta = projTotal - postedLine;
+        if(Math.abs(delta) >= 4) {
+          const side = delta > 0 ? 'Over' : 'Under';
+          const totalOdds = totalMkt?.outcomes?.find((o: any) => o.name === side)?.price || -110;
+          legs.push({
+            type: 'NBA',
+            matchup: `${game.away_team} @ ${game.home_team}`,
+            pick: `${side} ${postedLine}`,
+            odds: totalOdds,
+            signal: `Model projects ${projTotal.toFixed(1)} pts — ${Math.abs(delta).toFixed(1)} pt gap vs posted ${postedLine}`,
+            game,
+          });
+          break; // max 1 NBA total leg
         }
       }
 
       // Validate legs against model signals — drop legs that conflict
       const validatedLegs = legs.filter(leg => {
-        // NRFI legs: keep if nrfi_score is strong (already filtered >= 75)
         if(leg.type === 'NRFI') return true;
-
-        // UNDER legs: verify the model still leans under
         if(leg.type === 'UNDER' && leg.ctx) {
-          if(leg.ctx.over_lean === true) return false; // model flipped to over — drop
+          if(leg.ctx.over_lean === true) return false;
           return true;
         }
-
-        // NBA legs: verify net rating gap still supports the pick
+        if(leg.type === 'OVER' && leg.ctx) {
+          if(leg.ctx.over_lean === false) return false;
+          return true;
+        }
+        if(leg.type === 'MLB') return true; // pitcher edge already validated
         if(leg.type === 'NBA' && leg.game) {
           const homeNBA = Object.values(nbaTeamData).find((t: any) => t.team && leg.game.home_team.includes(t.team.split(' ').pop()));
           const awayNBA = Object.values(nbaTeamData).find((t: any) => t.team && leg.game.away_team.includes(t.team.split(' ').pop()));
           if(homeNBA && awayNBA) {
             const netGap = Math.abs((homeNBA as any).net_rating - (awayNBA as any).net_rating);
-            if(netGap < 4) return false; // gap closed — no longer a strong lean
-            // Check if pick aligns with the better team
+            if(netGap < 3) return false;
             const betterTeam = (homeNBA as any).net_rating > (awayNBA as any).net_rating ? leg.game.home_team : leg.game.away_team;
-            if(!leg.pick.includes(betterTeam.split(' ').pop())) return false; // picking the wrong side
+            if(!leg.pick.includes(betterTeam.split(' ').pop())) return false;
           }
         }
-
         return true;
       });
 
@@ -3109,16 +3181,59 @@ modelMismatch = Math.min(85, modelMismatch);
     if(last5Gap >= 10) modelMismatch = Math.min(88, modelMismatch + 6);
     else if(last5Gap >= 5) modelMismatch = Math.min(85, modelMismatch + 3);
 
-    // ── TRACKING PACE MATCHUP ──
-    const homeSpeed = parseFloat(homeNBA.avg_speed) || 0;
-    const awaySpeed = parseFloat(awayNBA.avg_speed) || 0;
+    // ── NBA PROJECTED TOTAL MODEL ──
     const avgPace = (homeNBA.pace + awayNBA.pace) / 2;
+    const projPoss = avgPace - 3; // venue/game adjustment
 
-    // Both fast teams = more possessions = over lean
-    // Both slow teams = fewer possessions = under lean
+    // Cross-match offense vs opposing defense
+    // Home team scores: their offense vs away defense
+    const homeExpPts = projPoss * ((homeNBA.offensive_rating + awayNBA.defensive_rating) / 2) / 100;
+    // Away team scores: their offense vs home defense
+    const awayExpPts = projPoss * ((awayNBA.offensive_rating + homeNBA.defensive_rating) / 2) / 100;
+
+    let nbaProjectedRaw = homeExpPts + awayExpPts;
+
+    // eFG% efficiency adjustment — teams shooting well vs poor defenses score more
+    if(homeOppEFG > 0 && awayOppEFG > 0) {
+      const homeEFGAdv = homeNBA.efg_pct - awayOppEFG; // positive = home shoots better than defense allows
+      const awayEFGAdv = awayNBA.efg_pct - homeOppEFG;
+      const efgTotalAdj = (homeEFGAdv + awayEFGAdv) * 0.8; // each 1% eFG gap ≈ 0.8 pts
+      nbaProjectedRaw += efgTotalAdj;
+    }
+
+    // Recent form drift — if both teams trending hot, bump total up
+    const homeFormTrend = homeLast5 - homeNBA.net_rating; // positive = playing better recently
+    const awayFormTrend = awayLast5 - awayNBA.net_rating;
+    if(homeFormTrend > 3 && awayFormTrend > 3) nbaProjectedRaw += 2; // both hot
+    else if(homeFormTrend < -3 && awayFormTrend < -3) nbaProjectedRaw -= 2; // both cold
+
+    // Injury adjustment — key player OUT suppresses scoring
+    if(homeHasInjury) nbaProjectedRaw -= 3;
+    if(awayHasInjury) nbaProjectedRaw -= 3;
+
+    projectedTotal = nbaProjectedRaw.toFixed(1);
+
+    // Get posted total for comparison
+    const nbaTotals = bookmakers.map(bm => {
+      const t = bm.markets && bm.markets.find(m => m.key==='totals');
+      return t && t.outcomes && t.outcomes[0] ? parseFloat(t.outcomes[0].point) : null;
+    }).filter(x => x !== null);
+    const nbaPostedTotal = nbaTotals.length ? nbaTotals.reduce((a,b)=>a+b,0)/nbaTotals.length : null;
+    postedTotal = nbaPostedTotal;
+
+    const nbaTotalDelta = nbaPostedTotal ? parseFloat(projectedTotal) - nbaPostedTotal : 0;
     const paceSignal = avgPace > 101 ? 'fast' : avgPace < 98 ? 'slow' : 'neutral';
 
-    projectedTotal = ((avgPace / 100) * 220).toFixed(1);
+    // Total lean for NBA — if model disagrees with market by 3+ pts
+    if(nbaPostedTotal && Math.abs(nbaTotalDelta) >= 3) {
+      const totalLean = nbaTotalDelta > 0 ? 'Over' : 'Under';
+      // Only set total lean if no strong side lean already exists, or if total delta is huge
+      if(!leanSide || Math.abs(nbaTotalDelta) >= 5) {
+        leanBet = 'total';
+        leanSide = `${totalLean} ${nbaPostedTotal.toFixed(1)}`;
+        mismatchPts = parseFloat(nbaTotalDelta.toFixed(1));
+      }
+    }
 
     const betterTeam = homeNBA.net_rating > awayNBA.net_rating ? game.home_team : game.away_team;
     const worseTeam = homeNBA.net_rating > awayNBA.net_rating ? game.away_team : game.home_team;
@@ -4743,6 +4858,8 @@ NBA EFFICIENCY DATA:
 - Last 5 net rating: ${game.home_team.split(' ').pop()} ${homeNBAData.last_10_net_rating > 0 ? '+' : ''}${homeNBAData.last_10_net_rating?.toFixed(1)} | ${game.away_team.split(' ').pop()} ${awayNBAData.last_10_net_rating > 0 ? '+' : ''}${awayNBAData.last_10_net_rating?.toFixed(1)}
 - Defensive rating: ${game.home_team.split(' ').pop()} ${homeNBAData.defensive_rating?.toFixed(1)} (opp eFG%: ${homeNBAData.opp_efg_pct?.toFixed(1) || 'N/A'}%) | ${game.away_team.split(' ').pop()} ${awayNBAData.defensive_rating?.toFixed(1)} (opp eFG%: ${awayNBAData.opp_efg_pct?.toFixed(1) || 'N/A'}%)
 - Avg pace: ${((homeNBAData.pace + awayNBAData.pace)/2).toFixed(1)} possessions/game
+- SWEAT LOCKER NBA TOTAL MODEL: Projected ${scoreData?.projectedTotal || 'N/A'} pts (posted: ${scoreData?.postedTotal?.toFixed(1) || 'N/A'})${scoreData?.projectedTotal && scoreData?.postedTotal ? ` — delta: ${(parseFloat(scoreData.projectedTotal) - scoreData.postedTotal).toFixed(1)} pts ${Math.abs(parseFloat(scoreData.projectedTotal) - scoreData.postedTotal) >= 3 ? (parseFloat(scoreData.projectedTotal) > scoreData.postedTotal ? '→ OVER lean' : '→ UNDER lean') : '→ neutral'}` : ''}
+- Model inputs: OffRtg cross-matched vs DefRtg, eFG% vs opp eFG%, pace-adjusted possessions, recent form drift, injury adjustments
 ${(nbaInjuryData[game.home_team] || []).length > 0 ? `- ${game.home_team} injuries: ${(nbaInjuryData[game.home_team] || []).filter(i => i.status === 'Out').map(i => i.player_name + ' (OUT)').concat((nbaInjuryData[game.home_team] || []).filter(i => i.status === 'Questionable').map(i => i.player_name + ' (Q)')).slice(0, 5).join(', ')}` : `- ${game.home_team}: no reported injuries`}
 ${(nbaInjuryData[game.away_team] || []).length > 0 ? `- ${game.away_team} injuries: ${(nbaInjuryData[game.away_team] || []).filter(i => i.status === 'Out').map(i => i.player_name + ' (OUT)').concat((nbaInjuryData[game.away_team] || []).filter(i => i.status === 'Questionable').map(i => i.player_name + ' (Q)')).slice(0, 5).join(', ')}` : `- ${game.away_team}: no reported injuries`}
 ${isPlayoffMode && (playoffSeries[game.home_team] || playoffSeries[game.away_team]) ?
@@ -4909,6 +5026,9 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NBA playoffs: home court advantage is earned not given — series leader at home is a massive edge
 - For NBA playoffs: if it's an elimination game lead with that immediately — teams play differently when facing elimination
 - For NBA playoffs: reference historical series comeback rates — teams down 3-1 win only 7% of the time
+- For NBA totals: the Sweat Locker NBA total model is in the data — if projected total delta >= 3pts from posted, reference it as a total lean. Cross-matched OffRtg vs DefRtg + pace + eFG% matchup + form drift + injuries
+- For NBA totals: if model projects 3+ pts over posted total, lean over and explain why (pace matchup, poor defenses, both teams trending hot)
+- For NBA totals: if model projects 3+ pts under posted total, lean under and explain why (elite defenses, slow pace, injuries suppressing scoring)
 - For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
 - For MLB: if web search shows the game has ALREADY BEEN PLAYED — do NOT recap it. Instead say "This game has already been played." and stop.
 - For MLB: you are giving a PRE-GAME take only. Never recap a completed game.
