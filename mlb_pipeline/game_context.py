@@ -525,6 +525,7 @@ TEAM_VENUE = {
     "Pittsburgh Pirates": "PNC Park",
     "San Francisco Giants": "Oracle Park",
     "Oakland Athletics": "Sutter Health Park",
+    "Athletics": "Sutter Health Park",
     "Detroit Tigers": "Comerica Park",
     "Los Angeles Dodgers": "Dodger Stadium",
     "San Diego Padres": "Petco Park",

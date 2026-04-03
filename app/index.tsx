@@ -1313,6 +1313,13 @@ const seen = new Set();
 const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
   if(!ctx.game_id || seen.has(ctx.game_id)) return false;
   seen.add(ctx.game_id);
+  const game = gamesData.find((g: any) =>
+    g.home_team === ctx.home_team || g.away_team === ctx.away_team
+  );
+  if(game) {
+    const gameTime = new Date(game.commence_time);
+    if(gameTime <= new Date()) return false;
+  }
   return true;
 });
       const topNRFI = mlbCtxValues
@@ -1596,6 +1603,8 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [sharpSport, setSharpSport] = useState('NBA');
    const [propJerrySport, setPropJerrySport] = useState('NBA');
    const [jerryHistory, setJerryHistory] = useState([]);
+  const [jerryRecord, setJerryRecord] = useState(null);
+  const [jerryRecordLoading, setJerryRecordLoading] = useState(false);
   const [propJerryData, setPropJerryData] = useState([]);
   const [propJerryLoading, setPropJerryLoading] = useState(false);
   const [expandedPropJerry, setExpandedPropJerry] = useState(null);
@@ -3743,6 +3752,68 @@ const fetchPlayoffSeries = async () => {
       setPlayoffSeries(seriesMap);
     }
   } catch(e) {}
+};
+
+const fetchJerryRecord = async () => {
+  setJerryRecordLoading(true);
+  try {
+    // Prop Jerry A-grade results only
+    const { data: propGrades } = await supabase
+      .from('prop_grades')
+      .select('*')
+      .eq('grade', 'A')
+      .order('created_at', {ascending: false})
+      .limit(100);
+
+    const allAGrades = propGrades || [];
+    const resolvedProps = allAGrades.filter(p => p.result === 'Win' || p.result === 'Loss');
+    const propWins = resolvedProps.filter(p => p.result === 'Win').length;
+    const propLosses = resolvedProps.filter(p => p.result === 'Loss').length;
+    const pendingProps = allAGrades.filter(p => p.result === 'Pending').length;
+
+    // Break down by sport
+    const propBySport = {};
+    resolvedProps.forEach(p => {
+      const s = p.sport || 'Unknown';
+      if(!propBySport[s]) propBySport[s] = {wins:0, losses:0};
+      if(p.result === 'Win') propBySport[s].wins++;
+      else propBySport[s].losses++;
+    });
+
+    // Recent A-grade picks (resolved + pending)
+    const recentProps = allAGrades.slice(0, 10);
+
+    // NRFI Model record from mlb_game_results
+    let nrfi = {wins:0, losses:0};
+    try {
+      const { data: nrfiData } = await supabase
+        .from('mlb_game_results')
+        .select('nrfi_score, nrfi_result')
+        .gte('nrfi_score', 55)
+        .not('nrfi_result', 'is', null);
+      if(nrfiData && nrfiData.length > 0) {
+        nrfi.wins = nrfiData.filter(r => r.nrfi_result === true).length;
+        nrfi.losses = nrfiData.filter(r => r.nrfi_result === false).length;
+      }
+    } catch(e) {}
+
+    // Best Bet history from jerry_cache
+    const { data: bestBets } = await supabase
+      .from('jerry_cache')
+      .select('data, fetched_at, cache_key')
+      .like('cache_key', 'best_bet_%')
+      .order('fetched_at', {ascending: false})
+      .limit(14);
+
+    setJerryRecord({
+      props: { wins: propWins, losses: propLosses, pending: pendingProps, bySport: propBySport, recent: recentProps },
+      nrfi,
+      bestBets: (bestBets || []).map(b => ({ ...b.data, date: b.fetched_at })).filter(b => b.game),
+    });
+  } catch(e) {
+    console.log('Jerry record error:', e?.message);
+  }
+  setJerryRecordLoading(false);
 };
 
   const fetchModelEdgeGames = async (sport = 'NCAAB') => {
@@ -6943,14 +7014,14 @@ setJerryHistory(prev => {
                         <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:10,padding:10,marginBottom:8,borderWidth:1,borderColor:'rgba(255,184,0,0.25)'}}>
                           <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',marginBottom:6}}>🎸 HARD ROCK BET</Text>
                           <View style={{flexDirection:'row',gap:6}}>
-                            {hrbSpread&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbSpread.name.split(' ').pop()} {hrbSpread.point>0?'+':''}{hrbSpread.point}</Text><Text style={{color:'#7a92a8',fontSize:10}}>{hrbSpread.price>0?'+':''}{hrbSpread.price}</Text></View>}
+                            {hrbSpread&&gamesSport!=='UFC'&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbSpread.name.split(' ').pop()} {hrbSpread.point>0?'+':''}{hrbSpread.point}</Text><Text style={{color:'#7a92a8',fontSize:10}}>{hrbSpread.price>0?'+':''}{hrbSpread.price}</Text></View>}
                             {hrbTotal&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>O/U {hrbTotal.point}</Text><Text style={{color:'#7a92a8',fontSize:10}}>{hrbTotal.price>0?'+':''}{hrbTotal.price}</Text></View>}
                             {hrbLine.ml&&hrbLine.ml[0]&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>ML</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbLine.ml[0].price>0?'+':''}{hrbLine.ml[0].price}</Text><Text style={{color:'#7a92a8',fontSize:10}}>{game.away_team.split(' ').pop()}</Text></View>}
                           </View>
                         </View>
                       ):(
                         <View style={{flexDirection:'row',gap:6,marginBottom:8}}>
-                          <View style={styles.oddsQuickChip}><Text style={styles.oddsQuickLabel}>SPREAD</Text><Text style={styles.oddsQuickVal}>{summary.spread}</Text></View>
+                          {gamesSport!=='UFC'&&(<View style={styles.oddsQuickChip}><Text style={styles.oddsQuickLabel}>SPREAD</Text><Text style={styles.oddsQuickVal}>{summary.spread}</Text></View>)}
                           <View style={styles.oddsQuickChip}><Text style={styles.oddsQuickLabel}>TOTAL</Text><Text style={styles.oddsQuickVal}>{summary.total}</Text></View>
                           <View style={styles.oddsQuickChip}><Text style={styles.oddsQuickLabel}>ML</Text><Text style={styles.oddsQuickVal}>{summary.mlAway}/{summary.mlHome}</Text></View>
                         </View>
@@ -6969,7 +7040,7 @@ setJerryHistory(prev => {
           <View>
             <Text style={styles.pageTitle}>🧠 Jerry 🎤</Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
-                {[{id:'propjerry',label:'🧠 Prop Jerry'},{id:'dailydegen',label:'🎲 Daily Degen'},{id:'mytrends',label:'📋 My Record'}].map(t=>(
+                {[{id:'propjerry',label:'🧠 Prop Jerry'},{id:'dailydegen',label:'🎲 Daily Degen'},{id:'mytrends',label:'📋 Jerry Record'}].map(t=>(
                   <TouchableOpacity key={t.id} style={[styles.chipBtn,{flex:1,justifyContent:'center',alignItems:'center'},trendsTab===t.id&&styles.chipBtnActive]} onPress={()=>setTrendsTab(t.id)}>
                     <Text style={[styles.chipTxt,trendsTab===t.id&&styles.chipTxtActive,{textAlign:'center'}]}>{t.label}</Text>
                   </TouchableOpacity>
@@ -7202,35 +7273,145 @@ setJerryHistory(prev => {
   />
 )}
 
-            {trendsTab==='mytrends'&&(
-              <View>
-                {trends.total===0?(<View style={{alignItems:'center',paddingTop:40}}><Text style={{fontSize:32}}>📊</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>Log some settled bets to see your trends!</Text></View>):(
-                  <>
-                    <View style={{flexDirection:'row',gap:8,marginBottom:14}}>
-                      <View style={[styles.statBox,{flex:2,borderColor:trends.streakType==='Win'?'rgba(0,229,160,0.3)':'rgba(255,77,109,0.3)'}]}><Text style={{fontSize:22,fontWeight:'800',color:trends.streakType==='Win'?'#00e5a0':'#ff4d6d'}}>{trends.streak}</Text><Text style={{fontSize:10,color:'#7a92a8',fontWeight:'600',marginTop:2}}>{trends.streakType==='Win'?'WIN':'LOSS'} STREAK</Text></View>
-                      {trends.best&&<View style={[styles.statBox,{flex:3,borderColor:'rgba(0,229,160,0.3)'}]}><Text style={{fontSize:12,fontWeight:'800',color:'#00e5a0'}}>🔥 {trends.best.label}</Text><Text style={{fontSize:10,color:'#7a92a8',marginTop:2}}>{trends.best.w}-{trends.best.l} • {trends.best.pct}%</Text></View>}
-                      {trends.worst&&<View style={[styles.statBox,{flex:3,borderColor:'rgba(255,77,109,0.3)'}]}><Text style={{fontSize:12,fontWeight:'800',color:'#ff4d6d'}}>🧊 {trends.worst.label}</Text><Text style={{fontSize:10,color:'#7a92a8',marginTop:2}}>{trends.worst.w}-{trends.worst.l} • {trends.worst.pct}%</Text></View>}
+            {trendsTab==='mytrends'&&(()=>{
+              if(!jerryRecord && !jerryRecordLoading) fetchJerryRecord();
+              if(jerryRecordLoading) return(
+                <View style={{alignItems:'center',paddingTop:60}}>
+                  <ActivityIndicator size="large" color={HRB_COLOR}/>
+                  <Text style={{color:'#7a92a8',marginTop:12}}>Loading Jerry's record...</Text>
+                </View>
+              );
+              if(!jerryRecord) return(
+                <View style={{alignItems:'center',paddingTop:40}}>
+                  <Text style={{fontSize:32}}>📋</Text>
+                  <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No record data yet.{'\n'}Jerry's picks will be tracked automatically.</Text>
+                </View>
+              );
+              const p = jerryRecord.props;
+              const propTotal = p.wins + p.losses;
+              const propWinRate = propTotal > 0 ? ((p.wins/propTotal)*100).toFixed(0) : '—';
+              return(
+                <View>
+                  {/* Header */}
+                  <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:14,padding:14,marginBottom:16,borderWidth:1,borderColor:'rgba(255,184,0,0.25)'}}>
+                    <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🎤 JERRY'S TRACK RECORD</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Model performance — updated daily</Text>
+                  </View>
+
+                  {/* Prop Jerry A-Grade Record Hero */}
+                  <View style={[styles.hero,{marginBottom:16}]}>
+                    <View>
+                      <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700'}}>PROP JERRY A-GRADES</Text>
+                      <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:36}}>{p.wins}-{p.losses}</Text>
+                      <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{p.pending} pending • {propWinRate}% hit rate</Text>
                     </View>
-                    {[{title:'BY SPORT',data:trends.bySport},{title:'BY BET TYPE',data:trends.byType},{title:'BY SPORTSBOOK',data:trends.byBook}].map((section,si)=>(
-                      <View key={si}>
-                        <Text style={styles.sectionLabel}>{section.title}</Text>
-                        <View style={styles.card}>
-                          {section.data.map((item,i)=>(
-                            <View key={i} style={[styles.teamRow,{paddingVertical:10}]}>
-                              <View style={{flex:1}}><Text style={[styles.teamName,item.label===HRB&&{color:HRB_COLOR}]}>{item.label===HRB?'🎸 ':SPORT_EMOJI[item.label]||''} {item.label}</Text><Text style={styles.teamSub}>{item.w}W - {item.l}L</Text></View>
-                              <View style={{alignItems:'flex-end'}}>
-                                <Text style={{color:parseFloat(item.pct)>=50?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:15}}>{item.pct}%</Text>
-                                <View style={{width:80,height:4,backgroundColor:'#1f2d3d',borderRadius:2,marginTop:4,overflow:'hidden'}}><View style={{height:'100%',width:item.pct+'%',backgroundColor:item.label===HRB?HRB_COLOR:parseFloat(item.pct)>=50?'#00e5a0':'#ff4d6d',borderRadius:2}}/></View>
-                              </View>
+                    <View style={{alignItems:'center'}}>
+                      <View style={{width:80,height:80,borderRadius:40,borderWidth:2.5,borderColor:parseFloat(propWinRate)>=55?'#00e5a0':parseFloat(propWinRate)>=50?HRB_COLOR:'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
+                        <Text style={{color:parseFloat(propWinRate)>=55?'#00e5a0':parseFloat(propWinRate)>=50?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:22}}>{propWinRate}%</Text>
+                      </View>
+                      <Text style={{color:'#4a6070',fontSize:10,marginTop:4}}>WIN RATE</Text>
+                    </View>
+                  </View>
+
+                  {/* NRFI Model Record */}
+                  {(jerryRecord.nrfi.wins + jerryRecord.nrfi.losses > 0) && (()=>{
+                    const nTotal = jerryRecord.nrfi.wins + jerryRecord.nrfi.losses;
+                    const nPct = ((jerryRecord.nrfi.wins/nTotal)*100).toFixed(0);
+                    return(
+                      <View style={[styles.card,{marginBottom:12}]}>
+                        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+                          <View>
+                            <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL (Score 55+)</Text>
+                            <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:24,marginTop:4}}>{jerryRecord.nrfi.wins}-{jerryRecord.nrfi.losses}</Text>
+                          </View>
+                          <View style={{alignItems:'center'}}>
+                            <View style={{width:56,height:56,borderRadius:28,borderWidth:2,borderColor:parseFloat(nPct)>=55?'#00e5a0':'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
+                              <Text style={{color:parseFloat(nPct)>=55?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:18}}>{nPct}%</Text>
                             </View>
-                          ))}
+                          </View>
                         </View>
                       </View>
-                    ))}
-                  </>
-                )}
-              </View>
-            )}
+                    );
+                  })()}
+
+                  {/* By Sport breakdown */}
+                  {Object.keys(p.bySport).length > 0 && (
+                    <View style={[styles.card,{marginBottom:12}]}>
+                      <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',letterSpacing:1,marginBottom:10}}>A-GRADE HIT RATE BY SPORT</Text>
+                      {Object.entries(p.bySport).map(([sport, rec], i) => {
+                        const total = rec.wins + rec.losses;
+                        const pct = total > 0 ? ((rec.wins/total)*100).toFixed(0) : '—';
+                        return(
+                          <View key={i} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
+                            <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+                              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{SPORT_EMOJI[sport]||'🎯'} {sport}</Text>
+                              <Text style={{color:'#7a92a8',fontSize:12}}>{rec.wins}W - {rec.losses}L</Text>
+                            </View>
+                            <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+                              <View style={{width:60,height:4,backgroundColor:'#1f2d3d',borderRadius:2,overflow:'hidden'}}>
+                                <View style={{height:'100%',width:`${pct}%`,backgroundColor:parseFloat(pct)>=55?'#00e5a0':parseFloat(pct)>=50?HRB_COLOR:'#ff4d6d',borderRadius:2}}/>
+                              </View>
+                              <Text style={{color:parseFloat(pct)>=55?'#00e5a0':parseFloat(pct)>=50?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:14,width:36,textAlign:'right'}}>{pct}%</Text>
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  )}
+
+                  {/* Recent A-Grade Picks */}
+                  {p.recent.length > 0 && (
+                    <>
+                      <Text style={styles.sectionLabel}>RECENT A-GRADE PICKS</Text>
+                      {p.recent.map((prop, i) => {
+                        const isPending = prop.result === 'Pending';
+                        const isWin = prop.result === 'Win';
+                        const borderColor = isPending ? '#4a6070' : isWin ? '#00e5a0' : '#ff4d6d';
+                        return(
+                          <View key={i} style={[styles.betCard,{borderLeftColor:borderColor,marginBottom:8}]}>
+                            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'}}>
+                              <View style={{flex:1}}>
+                                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{prop.player}</Text>
+                                <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{prop.market} • {prop.game}</Text>
+                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{prop.best_side} {prop.best_odds>0?'+':''}{prop.best_odds} @ {prop.book}</Text>
+                              </View>
+                              <View style={{alignItems:'center'}}>
+                                <View style={{width:32,height:32,borderRadius:16,backgroundColor:borderColor+'33',alignItems:'center',justifyContent:'center',borderWidth:1,borderColor}}>
+                                  <Text style={{color:borderColor,fontWeight:'800',fontSize:isPending?9:12}}>{isPending?'PND':isWin?'W':'L'}</Text>
+                                </View>
+                              </View>
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </>
+                  )}
+
+                  {/* Best Bet History */}
+                  {jerryRecord.bestBets.length > 0 && (
+                    <>
+                      <Text style={styles.sectionLabel}>🔒 DAILY BEST BET HISTORY</Text>
+                      {jerryRecord.bestBets.slice(0,7).map((bet, i) => (
+                        <View key={i} style={[styles.card,{marginBottom:8,padding:12}]}>
+                          <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+                            <View style={{flex:1}}>
+                              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{bet.game?.away_team?.split(' ').pop()} @ {bet.game?.home_team?.split(' ').pop()}</Text>
+                              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginTop:2}}>{bet.leanDisplay || 'Model Edge'}</Text>
+                              <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{SPORT_EMOJI[bet.sport]||''} {bet.sport} • {new Date(bet.date).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</Text>
+                            </View>
+                            <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:HRB_COLOR,alignItems:'center',justifyContent:'center',backgroundColor:'rgba(255,184,0,0.1)'}}>
+                              <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14}}>{bet.score?.total||'—'}</Text>
+                            </View>
+                          </View>
+                        </View>
+                      ))}
+                    </>
+                  )}
+
+                  <View style={{height:20}}/>
+                </View>
+              );
+            })()}
 
             {trendsTab==='clv'&&(
               <View>
@@ -7831,7 +8012,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         <View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:8,paddingVertical:3}}><Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700'}}>YOUR BOOK</Text></View>
                       </View>
                       <View style={{flexDirection:'row',gap:8,marginBottom:10}}>
-                        {hrbLine.spread&&hrbLine.spread[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.spread[0].name.split(' ').pop()} {hrbLine.spread[0].point>0?'+':''}{hrbLine.spread[0].point}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{hrbLine.spread[0].price>0?'+':''}{hrbLine.spread[0].price}</Text></View>}
+                        {hrbLine.spread&&hrbLine.spread[0]&&gamesSport!=='UFC'&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.spread[0].name.split(' ').pop()} {hrbLine.spread[0].point>0?'+':''}{hrbLine.spread[0].point}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{hrbLine.spread[0].price>0?'+':''}{hrbLine.spread[0].price}</Text></View>}
                         {hrbLine.total&&hrbLine.total[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>O/U {hrbLine.total[0].point}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{hrbLine.total[0].price>0?'+':''}{hrbLine.total[0].price}</Text></View>}
                         {hrbLine.ml&&hrbLine.ml[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>ML</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.ml[0].price>0?'+':''}{hrbLine.ml[0].price}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{selectedGame.away_team.split(' ').pop()}</Text></View>}
                       </View>
@@ -8062,7 +8243,7 @@ const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d
                         <Text style={{color:isHRB?HRB_COLOR:'#00e5a0',fontWeight:'700',fontSize:12}}>{isHRB?'🎸 HARD ROCK BET':bookName}</Text>
                         {isHRB&&<View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2}}><Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'800'}}>YOUR BOOK</Text></View>}
                       </View>
-                      {spreadMkt&&spreadMkt.outcomes&&spreadMkt.outcomes.map((outcome,j)=>(
+                      {spreadMkt&&spreadMkt.outcomes&&gamesSport!=='UFC'&&spreadMkt.outcomes.map((outcome,j)=>(
                         <TouchableOpacity key={j} style={styles.parlayLineRow} onPress={()=>addToParlay(selectedGame,outcome.name+' '+(outcome.point>0?'+':'')+outcome.point,outcome.price)}>
                           <View style={{flex:1}}><Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'600'}}>{outcome.name} {outcome.point>0?'+':''}{outcome.point}</Text><Text style={{color:'#7a92a8',fontSize:11}}>Spread</Text></View>
                           <Text style={{color:isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'700',marginRight:12}}>{outcome.price>0?'+':''}{outcome.price}</Text>
