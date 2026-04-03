@@ -3415,13 +3415,33 @@ if(isPlayoffMode) {
       }
     }
 
-   let total = Math.round(
-  (marketEfficiency * 0.15) +
-  (modelMismatch * 0.30) +
-  (lineTrajectory * 0.20) +
-  (sharpSignal * 0.15) +
-  (situationalEdge * 0.20)
-);
+   // Sport-specific weights — model-heavy for sports with pipeline data, market-heavy otherwise
+   const hasModelData = sport === 'NCAAB' || sport === 'NBA' || sport === 'MLB';
+   const w = hasModelData
+     ? {market: 0.10, model: 0.40, line: 0.15, sharp: 0.10, situation: 0.25}
+     : {market: 0.20, model: 0.20, line: 0.25, sharp: 0.20, situation: 0.15};
+
+   let rawTotal = Math.round(
+     (marketEfficiency * w.market) +
+     (modelMismatch * w.model) +
+     (lineTrajectory * w.line) +
+     (sharpSignal * w.sharp) +
+     (situationalEdge * w.situation)
+   );
+
+   // Normalization curve — compresses scores so Prime Sweats are rare
+   // Maps 0-100 raw → 0-100 display with compression in the 50-80 range
+   // Raw 40 → ~38, Raw 55 → ~50, Raw 65 → ~60, Raw 75 → ~68, Raw 85 → ~76, Raw 95 → ~88
+   let total;
+   if(rawTotal <= 40) {
+     total = rawTotal; // low scores pass through
+   } else if(rawTotal <= 90) {
+     // Compress the 40-90 range into 40-80 — makes 68+ (Prime Sweat) harder to hit
+     total = Math.round(40 + ((rawTotal - 40) / 50) * 40 * (0.7 + (rawTotal - 40) / 50 * 0.3));
+   } else {
+     total = Math.round(80 + ((rawTotal - 90) / 10) * 12); // 90-100 raw → 80-92 display
+   }
+   total = Math.min(95, total); // absolute cap
 
 // TOTAL SIGNAL BOOST — when projected vs posted delta is significant
 let totalBetDirection = null;
@@ -3439,7 +3459,7 @@ if(sport === 'NCAAB' && projectedTotal && postedTotal) {
     totalBoost = 3;
     totalBetDirection = delta < 0 ? 'Under' : 'Over';
   }
-  total = Math.min(99, total + totalBoost);
+  total = Math.min(95, total + totalBoost);
   // Total becomes primary when its boost exceeds the four factor spread signal
   // AND the delta is significant enough (4+ pts)
   totalIsPrimary = totalBoost >= 7 && totalBoost >= fourFactorBoost;
@@ -4109,7 +4129,8 @@ const fetchDailyBestBet = async () => {
   const _now = new Date();
   const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
 
-  // Check Supabase first — one best bet per day, shared across all users, never regenerates
+  // Check Supabase first — one best bet per day, shared across all users
+  const etHour = parseInt(new Date().toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
   try {
     const { data: supabaseCache } = await supabase
       .from('jerry_cache')
@@ -4117,12 +4138,23 @@ const fetchDailyBestBet = async () => {
       .eq('cache_key', `best_bet_${today}`)
       .single();
     if(supabaseCache?.data) {
-      setDailyBestBet(supabaseCache.data);
-      // Also save to local cache so it's instant next time
-      try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}
-      return;
+      const fetchedHour = parseInt(new Date(supabaseCache.fetched_at).toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
+      // If cached bet was generated before 10am ET and it's now after 10am, regenerate with fresh pipeline data
+      if(fetchedHour < 10 && etHour >= 10) {
+        // Stale pre-pipeline bet — fall through to regenerate
+      } else {
+        setDailyBestBet(supabaseCache.data);
+        try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}
+        return;
+      }
     }
   } catch(e) {}
+
+  // Don't generate a new best bet before 10am ET — pipeline hasn't run yet
+  if(etHour < 10) {
+    setDailyBestBet({noGames: false, waiting: true});
+    return;
+  }
 
   // Check local cache — same rule, if today's pick exists, use it
   try {
@@ -5551,18 +5583,83 @@ for(let pi = 0; pi < propEntries.length; pi++) {
           `🎤 Negative EV on ${playerFirst} — the market's efficient here. Nothing to exploit today.`,
         ];
 
-           const isMLB = propJerrySport === 'MLB';
+           // Model probability — independent signal from BDL/pipeline data
+        let modelProb = null;
+        let modelAvg = null;
+        let modelSignal = '';
+
+        // NBA — use BDL last 5 game averages
+        if(propJerrySport === 'NBA') {
+          try {
+            const stats = await fetchBDLPlayerStats(prop.player);
+            if(stats) {
+              const market = prop.market;
+              const line = parseFloat(bestLine?.line || bestOver?.line || bestUnder?.line);
+              if(market.includes('points')) modelAvg = parseFloat(stats.last5.pts);
+              else if(market.includes('rebounds')) modelAvg = parseFloat(stats.last5.reb);
+              else if(market.includes('assists')) modelAvg = parseFloat(stats.last5.ast);
+              if(modelAvg !== null && !isNaN(modelAvg) && line > 0) {
+                const gap = ((modelAvg - line) / line) * 100;
+                if(bestSide === 'Over') {
+                  if(gap >= 15) { modelProb = 0.62; modelSignal = `L5 avg ${modelAvg} vs line ${line} (+${gap.toFixed(0)}% above)`; }
+                  else if(gap >= 8) { modelProb = 0.56; modelSignal = `L5 avg ${modelAvg} vs line ${line} (+${gap.toFixed(0)}% above)`; }
+                  else if(gap <= -8) { modelProb = 0.42; modelSignal = `L5 avg ${modelAvg} vs line ${line} (${gap.toFixed(0)}% below — wrong side)`; }
+                  else { modelProb = 0.50; modelSignal = `L5 avg ${modelAvg} near line ${line}`; }
+                } else {
+                  if(gap <= -15) { modelProb = 0.62; modelSignal = `L5 avg ${modelAvg} vs line ${line} (${gap.toFixed(0)}% below)`; }
+                  else if(gap <= -8) { modelProb = 0.56; modelSignal = `L5 avg ${modelAvg} vs line ${line} (${gap.toFixed(0)}% below)`; }
+                  else if(gap >= 8) { modelProb = 0.42; modelSignal = `L5 avg ${modelAvg} vs line ${line} (+${gap.toFixed(0)}% above — wrong side)`; }
+                  else { modelProb = 0.50; modelSignal = `L5 avg ${modelAvg} near line ${line}`; }
+                }
+              }
+            }
+          } catch(e) {}
+        }
+
+        // MLB — use pipeline data for K gap and platoon
+        if(propJerrySport === 'MLB') {
+          try {
+            const gameTeams = prop.game?.split(' @ ') || [];
+            const homeTeam = gameTeams[1]?.trim();
+            const mlbCtx = homeTeam ? (mlbGameContext[homeTeam] ||
+              Object.values(mlbGameContext).find((c: any) => prop.game?.includes(c.home_team?.split(' ').pop()))) : null;
+            if(mlbCtx) {
+              if(prop.market.includes('strikeout') || prop.marketLabel === 'PITCHER STRIKEOUTS') {
+                const isHome = mlbCtx.home_pitcher?.toLowerCase().includes(prop.player.split(' ').pop()?.toLowerCase());
+                const kGap = parseFloat(isHome ? mlbCtx.home_k_gap : mlbCtx.away_k_gap);
+                if(!isNaN(kGap)) {
+                  modelSignal = `K gap: ${kGap > 0 ? '+' : ''}${kGap}pts vs lineup`;
+                  if(kGap >= 8) modelProb = 0.58;
+                  else if(kGap >= 4) modelProb = 0.54;
+                  else if(kGap <= -8) modelProb = 0.42;
+                  else modelProb = 0.50;
+                }
+              }
+              if(prop.market.includes('hits') || prop.market.includes('total_bases')) {
+                const isHome = mlbCtx.home_lineup?.toLowerCase().includes(prop.player.split(' ').pop()?.toLowerCase());
+                const platoon = parseFloat(isHome ? mlbCtx.home_platoon_advantage : mlbCtx.away_platoon_advantage);
+                const wrcPlus = parseInt(isHome ? mlbCtx.home_wrc_plus : mlbCtx.away_wrc_plus);
+                if(!isNaN(platoon) && platoon > 3) { modelProb = 0.56; modelSignal = `Platoon +${platoon}, wRC+ ${wrcPlus || 'N/A'}`; }
+                else if(!isNaN(wrcPlus) && wrcPlus > 115) { modelProb = 0.54; modelSignal = `wRC+ ${wrcPlus} — strong contact`; }
+                else modelProb = 0.50;
+              }
+            }
+          } catch(e) {}
+        }
+
+        const isMLB = propJerrySport === 'MLB';
 const isNHL = propJerrySport === 'NHL';
 const minBooksA = isMLB || isNHL ? 2 : 4;
 const minBooksB = isMLB || isNHL ? 1 : 3;
 const maxRangeA = isMLB || isNHL ? 1.0 : 0.5;
 const maxRangeB = isMLB || isNHL ? 1.5 : 1.0;
 
-// Two paths to A grade:
-// Path 1: High consensus (4+ books) + solid EV — market confirmed
-// Path 2: Very high EV (6%+) + minimum books — high conviction even with fewer books
-const pathOneA = bestEV >= 4 && bookCount >= minBooksA && lineRange <= maxRangeA;
-const pathTwoA = bestEV >= 6 && bookCount >= minBooksB && lineRange <= maxRangeB;
+// Model confirmation gates — require independent data to back up EV edge
+const hasModelEdge = (propJerrySport === 'NBA' || propJerrySport === 'MLB') ? (modelProb !== null && modelProb >= 0.54) : true;
+const modelConfirmed = (propJerrySport === 'NBA' || propJerrySport === 'MLB') ? (modelProb !== null && modelProb >= 0.56) : true;
+
+const pathOneA = bestEV >= 4 && bookCount >= minBooksA && lineRange <= maxRangeA && hasModelEdge;
+const pathTwoA = bestEV >= 6 && bookCount >= minBooksB && lineRange <= maxRangeB && modelConfirmed;
 
 if(pathOneA || pathTwoA) {
   grade='A'; gradeColor='#00e5a0';
@@ -5572,6 +5669,19 @@ if(pathOneA || pathTwoA) {
   grade='C'; gradeColor='#0099ff';
 } else {
   grade='D'; gradeColor='#ff4d6d';
+}
+
+// Model override — if model says wrong side or coin flip, cap grade
+if((propJerrySport === 'NBA' || propJerrySport === 'MLB') && modelProb !== null && modelProb <= 0.50) {
+  if(grade === 'A' || grade === 'B') { grade = 'C'; gradeColor = '#0099ff'; }
+}
+// NBA without BDL stats — can't confirm, cap at B
+if(propJerrySport === 'NBA' && modelAvg === null && grade === 'A') {
+  grade = 'B'; gradeColor = '#FFB800';
+}
+// Temporarily exclude pitcher K props — early season data too thin
+if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-01')) {
+  grade = 'C'; gradeColor = '#0099ff';
 }
         // AI Jerry narration
         try {
@@ -5689,7 +5799,7 @@ Prop: ${prop.player} ${bestSide} ${bestLine?.line}
 EV: ${bestEV.toFixed(1)}% | Books: ${bookCount} | Line range: ${lineRange.toFixed(1)} pts | Best book: ${bestLine?.book}
 Grade: ${grade} — ${gradeContext}
 Book context: ${bookContext}
-${kenpomContext}${playerContext}
+${kenpomContext}${playerContext}${modelSignal ? `\nModel signal: ${modelSignal}${modelProb >= 0.56 ? ' — CONFIRMS edge' : modelProb <= 0.50 ? ' — CONFLICTS with edge' : ' — weak signal'}` : ''}
 ${aGradeInstruction}
 
 Rules:
@@ -5721,7 +5831,7 @@ Rules:
         return {
           ...prop, bestEV, bestSide, bestLine, bestOver, bestUnder,
           lineRange, bookCount, grade, gradeColor, Jerry,
-          bestOverEV, bestUnderEV,
+          bestOverEV, bestUnderEV, modelSignal, modelProb,
         };
        })(prop));
 }
@@ -6933,6 +7043,8 @@ setJerryHistory(prev => {
         <ActivityIndicator size='small' color={HRB_COLOR}/>
         <Text style={{color:'#4a6070',fontSize:13}}>Jerry is finding today's best play...</Text>
       </View>
+    ) : dailyBestBet?.waiting ? (
+      <Text style={{color:'#7a92a8',fontSize:13}}>Best bet updates after the 8am pipeline. Check back after 10am ET for today's top play.</Text>
     ) : dailyBestBet?.noGames ? (
       <Text style={{color:'#7a92a8',fontSize:13}}>No games on the slate today. Check back tomorrow.</Text>
     ) : dailyBestBet?.noPrime ? (
@@ -8300,6 +8412,16 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
         )}
         {(activeTab==='parlay'||(activeTab==='mybets'&&mybetsTab==='parlay_sub'))&&(
           <View>
+            {activeTab==='mybets'&&(
+              <View style={{flexDirection:'row',marginBottom:14,gap:0,backgroundColor:'#151c24',borderRadius:12,overflow:'hidden'}}>
+                <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='picks'?'#1a2a3a':'transparent'}} onPress={()=>setMybetsTab('picks')}>
+                  <Text style={{color:mybetsTab==='picks'?'#00e5a0':'#7a92a8',fontWeight:'700',fontSize:13}}>My Picks</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='parlay_sub'?'#1a2a3a':'transparent'}} onPress={()=>setMybetsTab('parlay_sub')}>
+                  <Text style={{color:mybetsTab==='parlay_sub'?'#00e5a0':'#7a92a8',fontWeight:'700',fontSize:13}}>Parlay Builder</Text>
+                </TouchableOpacity>
+              </View>
+            )}
             <Text style={styles.pageTitle}>Parlay Builder</Text>
             <View style={[styles.hero,{flexDirection:'column',alignItems:'stretch'}]}>
               <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
