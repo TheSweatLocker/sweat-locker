@@ -31,6 +31,22 @@ const BOOKMAKER_MAP = {
   'betmgm':'BetMGM','caesars':'Caesars','bet365':'Bet365',
   'williamhill_us':'Caesars','hardrockbet':'Hard Rock','hardrock':'Hard Rock',
 };
+// Odds API uses slightly different names for some MLB teams — map alternates to canonical MLB Stats API names
+const MLB_TEAM_ALIASES: Record<string, string[]> = {
+  'Arizona Diamondbacks': ['Arizona Diamondbacks', 'ARI Diamondbacks', 'AZ Diamondbacks'],
+  'Cleveland Guardians': ['Cleveland Guardians', 'Cleveland Indians'],
+  'Oakland Athletics': ['Oakland Athletics', "Oakland A's", 'Athletics'],
+  'Los Angeles Angels': ['Los Angeles Angels', 'LA Angels', 'Anaheim Angels'],
+  'Chicago White Sox': ['Chicago White Sox', 'Chi White Sox'],
+  'Tampa Bay Rays': ['Tampa Bay Rays', 'TB Rays'],
+  'St. Louis Cardinals': ['St. Louis Cardinals', 'St Louis Cardinals', 'STL Cardinals'],
+  'San Francisco Giants': ['San Francisco Giants', 'SF Giants'],
+  'San Diego Padres': ['San Diego Padres', 'SD Padres'],
+  'New York Yankees': ['New York Yankees', 'NY Yankees'],
+  'New York Mets': ['New York Mets', 'NY Mets'],
+  'Los Angeles Dodgers': ['Los Angeles Dodgers', 'LA Dodgers'],
+  'Kansas City Royals': ['Kansas City Royals', 'KC Royals'],
+};
 const PROP_MARKETS = {
   NBA:['player_points','player_rebounds','player_assists','player_threes'],
   NFL:['player_pass_yds','player_rush_yds','player_reception_yds','player_receptions'],
@@ -43,7 +59,8 @@ const PROP_LABELS = {
   player_threes:'3-Pointers', player_pass_yds:'Pass Yards', player_rush_yds:'Rush Yards',
   player_reception_yds:'Rec Yards', player_receptions:'Receptions',
   batter_hits:'Hits', batter_home_runs:'Home Runs', pitcher_strikeouts:'Strikeouts',
-  player_goals:'Goals', player_shots_on_goal:'Shots on Goal',
+  player_goals:'Goals', player_shots_on_goal:'Shots on Goal', player_anytime_td:'Anytime TD',
+  batter_total_bases:'Total Bases', batter_rbis:'RBIs', batter_runs_scored:'Runs Scored', batter_strikeouts:'Strikeouts',
   fighter_total_rounds:'Total Rounds', fighter_ko_tko:'KO/TKO',
   fighter_decision:'Decision', fighter_method_of_victory:'Method of Victory',
 };
@@ -1476,7 +1493,7 @@ Write 2-3 sentences MAX. Reference the specific data signals. Sound like a sharp
             <Text style={{color:'#ff4d6d',fontSize:11,fontWeight:'800'}}>{degenData.legs?.length}-LEG PARLAY</Text>
           </View>
         </View>
-        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{degenData.narrative}"</Text>
+        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{degenData.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>
       </View>
 
       {/* Legs */}
@@ -1505,6 +1522,7 @@ Write 2-3 sentences MAX. Reference the specific data signals. Sound like a sharp
       </TouchableOpacity>
 
       <Text style={{color:'#4a6070',fontSize:11,textAlign:'center',marginTop:12}}>Updated twice daily • 8am + 2pm ET</Text>
+      <Text style={{color:'#4a6070',fontSize:10,textAlign:'center',marginTop:6,paddingHorizontal:20,lineHeight:14}}>Daily Degen uses model signals only. Jerry's full game read may weigh additional situational factors differently.</Text>
     </View>
   );
 };
@@ -1567,7 +1585,7 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [tempUnitSize, setTempUnitSize] = useState('25');
   const [toastMsg, setToastMsg] = useState('');
   const [toastVisible, setToastVisible] = useState(false);
-  const [trendsTab, setTrendsTab] = useState('ev');
+  const [trendsTab, setTrendsTab] = useState('propjerry');
   const [evData, setEvData] = useState([]);
   const [evLoading, setEvLoading] = useState(false);
   const [evSport, setEvSport] = useState('NBA');
@@ -3600,23 +3618,47 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
   
   const fetchMLBGameContext = async () => {
   try {
-    const today = new Date().toISOString().split('T')[0];
-    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    // Use ET date to match pipeline's game_date
+    const etStr = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
     const result = await supabase
       .from('mlb_game_context')
       .select('*')
-      .order('game_date', {ascending: false})
+      .eq('game_date', etStr)
       .limit(30);
-    const data = result?.data;
+    let data = result?.data;
+    // If no games for today (pipeline hasn't run yet), fall back to most recent
+    if(!data || data.length === 0) {
+      const fallback = await supabase
+        .from('mlb_game_context')
+        .select('*')
+        .order('game_date', {ascending: false})
+        .limit(30);
+      data = fallback?.data;
+      // Only use if from the last 2 days — dedupe by keeping newest per team
+      if(data && data.length > 0) {
+        const seen = {};
+        data = data.filter(g => {
+          const key = g.home_team + '_' + g.away_team;
+          if(seen[key]) return false;
+          seen[key] = true;
+          return true;
+        });
+      }
+    }
     if(data && data.length > 0) {
       const contextMap = {};
       data.forEach(game => {
         contextMap[game.home_team] = game;
         contextMap[game.away_team] = game;
         if(game.game_id) contextMap[game.game_id] = game;
+        const addAliases = (team: string) => {
+          const aliases = MLB_TEAM_ALIASES[team];
+          if(aliases) aliases.forEach(a => { contextMap[a] = game; });
+        };
+        addAliases(game.home_team);
+        addAliases(game.away_team);
       });
       setMlbGameContext(contextMap);
-      //console.log('MLB context loaded:', data.length, 'games');
     }
   } catch(e) {
     //console.log('MLB context fetch error:', e.message);
@@ -4783,7 +4825,6 @@ setPropJerryLoading(true);
 
       // Load cache first — check Supabase then AsyncStorage
       try {
-        // Check Supabase cache first (shared across all users)
         const { data: supabaseCache } = await supabase
           .from('prop_jerry_cache')
           .select('data, fetched_at')
@@ -4814,8 +4855,8 @@ setPropJerryLoading(true);
      
       const markets = sport==='NBA' ?
   'player_points,player_rebounds,player_assists,player_threes' :
-  sport==='NFL' ? 'player_pass_yards,player_rush_yards,player_reception_yards,player_anytime_td' :
-  sport==='NHL' ? 'player_points,player_goals,player_assists' :
+  sport==='NFL' ? 'player_pass_yds,player_rush_yds,player_reception_yds,player_receptions,player_anytime_td' :
+  sport==='NHL' ? 'player_goals,player_assists,player_shots_on_goal' :
   sport==='MLB' ? 'batter_hits,batter_total_bases,batter_rbis,batter_runs_scored,pitcher_strikeouts,batter_strikeouts,batter_home_runs' :
   sport==='UFC' ? 'fighter_total_rounds,fighter_ko_tko,fighter_decision,fighter_method_of_victory' :
   'player_points,player_rebounds,player_assists';
@@ -4823,7 +4864,13 @@ setPropJerryLoading(true);
       const resp = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/events`, {
         params: {apiKey: ODDS_API_KEY, dateFormat: 'iso'}
       });
-      const events = resp.data || [];
+      // Filter to today's games only (within next 16 hours to catch late west coast starts)
+      const now = new Date();
+      const cutoff = now.getTime() + 16 * 60 * 60 * 1000;
+      const events = (resp.data || []).filter(e => {
+        const t = new Date(e.commence_time).getTime();
+        return t >= now.getTime() - 3600000 && t <= cutoff; // include games started up to 1hr ago
+      });
       if(!events.length) { setPropJerryLoading(false); return; }
 
       const propMap = {};
@@ -4839,7 +4886,6 @@ setPropJerryLoading(true);
             }
           });
           const bookmakers = propResp.data?.bookmakers || [];
-         
           bookmakers.forEach(bm => {
             bm.markets?.forEach(mkt => {
               mkt.outcomes?.forEach(outcome => {
@@ -4860,7 +4906,9 @@ setPropJerryLoading(true);
                 }
                 const line = outcome.point;
                 const odds = outcome.price;
-                const side = outcome.name?.toLowerCase().includes('over') ? 'over' : 'under';
+                const nm = outcome.name?.toLowerCase() || '';
+                const side = (nm.includes('over') || nm === 'yes') ? 'over' : (nm.includes('under') || nm === 'no') ? 'under' : null;
+                if(!side) return; // skip outcomes that aren't over/under
                 if(side==='over') propMap[key].overLines.push({book: BOOKMAKER_MAP[bm.key]||bm.key, line, odds});
                 else propMap[key].underLines.push({book: BOOKMAKER_MAP[bm.key]||bm.key, line, odds});
                 propMap[key].lines.push({book: BOOKMAKER_MAP[bm.key]||bm.key, line, odds, side});
@@ -4870,13 +4918,33 @@ setPropJerryLoading(true);
         } catch(e) {}
       }));
 
-      // Grade each prop
-      // Take top props distributed across games — max 3 per game
+      // Grade each prop — take top props distributed across games, max 5 per game
+      // Pre-filter: only keep props with reasonable odds (skip extreme longshots)
+const validProps = Object.values(propMap).filter(p => {
+  if(!p.overLines.length || !p.underLines.length) return false;
+  // Only keep parlay-friendly props: at least one side between -300 and +150
+  const bestOverOdds = Math.max(...p.overLines.map(l => l.odds));
+  const bestUnderOdds = Math.max(...p.underLines.map(l => l.odds));
+  const overActionable = bestOverOdds >= -300 && bestOverOdds <= 150;
+  const underActionable = bestUnderOdds >= -300 && bestUnderOdds <= 150;
+  return overActionable || underActionable;
+});
 const propsByGame = {};
-Object.values(propMap).forEach(prop => {
+validProps.forEach(prop => {
   const game = prop.gameName;
   if(!propsByGame[game]) propsByGame[game] = [];
   propsByGame[game].push(prop);
+});
+// Sort each game's props so actionable markets come first
+const marketPriority = {
+  // NHL
+  'player_shots_on_goal':0, 'player_assists':1, 'player_goals':2,
+  // MLB — strikeouts and hits are parlay-friendly, HRs/RBIs are longshots
+  'pitcher_strikeouts':0, 'batter_hits':0, 'batter_total_bases':1, 'batter_strikeouts':1,
+  'batter_runs_scored':2, 'batter_rbis':2, 'batter_home_runs':3,
+};
+Object.values(propsByGame).forEach(gameProps => {
+  gameProps.sort((a,b) => (marketPriority[a.market]??99) - (marketPriority[b.market]??99));
 });
 const propEntries = Object.values(propsByGame)
   .flatMap(gameProps => gameProps.slice(0, 5))
@@ -4890,26 +4958,35 @@ for(let pi = 0; pi < propEntries.length; pi++) {
         const underOdds = prop.underLines.map(l=>l.odds);
         if(!overOdds.length || !underOdds.length) return null;
 
-        // Best lines
-        const bestOver = prop.overLines.reduce((best,l) => l.odds > (best?.odds||-9999) ? l : best, null);
-        const bestUnder = prop.underLines.reduce((best,l) => l.odds > (best?.odds||-9999) ? l : best, null);
-       
-        // EV calculation
-        const avgOverOdds = overOdds.reduce((a,b)=>a+b,0)/overOdds.length;
-        const avgUnderOdds = underOdds.reduce((a,b)=>a+b,0)/underOdds.length;
-        const overProb = avgOverOdds < 0 ? Math.abs(avgOverOdds)/(Math.abs(avgOverOdds)+100) : 100/(avgOverOdds+100);
-        const underProb = avgUnderOdds < 0 ? Math.abs(avgUnderOdds)/(Math.abs(avgUnderOdds)+100) : 100/(avgUnderOdds+100);
+        // Use median odds for true probability (resists outliers better than average)
+        const median = (arr: number[]) => {
+          const s = [...arr].sort((a,b)=>a-b);
+          const mid = Math.floor(s.length/2);
+          return s.length%2 ? s[mid] : (s[mid-1]+s[mid])/2;
+        };
+        const medOverOdds = median(overOdds);
+        const medUnderOdds = median(underOdds);
+
+        // Best lines — only consider parlay-friendly odds (-300 to +150)
+        const actionableOver = prop.overLines.filter(l => l.odds >= -300 && l.odds <= 150);
+        const actionableUnder = prop.underLines.filter(l => l.odds >= -300 && l.odds <= 150);
+        const bestOver = actionableOver.length ? actionableOver.reduce((best,l) => l.odds > (best?.odds||-9999) ? l : best, null) : null;
+        const bestUnder = actionableUnder.length ? actionableUnder.reduce((best,l) => l.odds > (best?.odds||-9999) ? l : best, null) : null;
+        if(!bestOver && !bestUnder) return null;
+
+        // EV calculation using median for true probability
+        const overProb = medOverOdds < 0 ? Math.abs(medOverOdds)/(Math.abs(medOverOdds)+100) : 100/(medOverOdds+100);
+        const underProb = medUnderOdds < 0 ? Math.abs(medUnderOdds)/(Math.abs(medUnderOdds)+100) : 100/(medUnderOdds+100);
         const vigFree = overProb + underProb;
         const vfOver = overProb/vigFree;
         const vfUnder = underProb/vigFree;
-       
+
         const bestOverEV = bestOver ? (bestOver.odds > 0 ? (bestOver.odds/100)*vfOver - (1-vfOver) : (100/Math.abs(bestOver.odds))*vfOver - (1-vfOver)) * 100 : -99;
         const bestUnderEV = bestUnder ? (bestUnder.odds > 0 ? (bestUnder.odds/100)*vfUnder - (1-vfUnder) : (100/Math.abs(bestUnder.odds))*vfUnder - (1-vfUnder)) * 100 : -99;
        
         const bestEV = Math.max(bestOverEV, bestUnderEV);
         const bestSide = bestOverEV >= bestUnderEV ? 'Over' : 'Under';
         const bestLine = bestSide==='Over' ? bestOver : bestUnder;
-       
         // Line consensus
         const overLines = prop.overLines.map(l=>l.line);
         const lineRange = overLines.length>1 ? Math.max(...overLines)-Math.min(...overLines) : 0;
@@ -5118,7 +5195,8 @@ const graded = gradedRaw.filter(p => {
   const odds = parseFloat(p.bestLine?.odds);
   if(isNaN(odds)) return true;
   const minBooks = propJerrySport==='NHL' || propJerrySport==='MLB' || propJerrySport==='UFC' ? 1 : 2;
-  return Math.abs(odds) <= 350 && p.bookCount >= minBooks;
+  // Parlay-friendly range: -300 to +150
+  return odds >= -300 && odds <= 150 && p.bookCount >= minBooks;
 })
 
         .sort((a,b) => b.bestEV - a.bestEV)
@@ -5210,14 +5288,117 @@ setJerryHistory(prev => {
   },[activeTab,statsTab,propsSport]);
  useEffect(()=>{
     if(activeTab==='trends'){
-      if(trendsTab==='ev')fetchEV(evSport);
-      if(trendsTab==='sharp')fetchSharp(sharpSport);
       if(trendsTab==='propjerry')fetchPropJerry(propJerrySport);
+      if(trendsTab==='sharp')fetchSharp(sharpSport);
     }
   },[activeTab,trendsTab,evSport,sharpSport,propJerrySport]);
     useEffect(()=>{
     if(!gameDetailModal||!selectedGame) return;
     setScheduleGamesLoading(true);
+
+    const teamName = scheduleTeam==='away' ? selectedGame.away_team : selectedGame.home_team;
+
+    // NBA — use BDL for real game logs
+    if(gamesSport==='NBA') {
+      (async()=>{
+        try {
+          // Find BDL team by matching last word of team name
+          const teamLast = teamName.split(' ').pop()?.toLowerCase();
+          const teamsResp = await axios.get('https://api.balldontlie.io/v1/teams', {
+            headers:{'Authorization':BDL_API_KEY}, params:{per_page:30}
+          });
+          const bdlTeam = (teamsResp.data?.data||[]).find(t =>
+            t.full_name?.toLowerCase().includes(teamLast) || t.name?.toLowerCase()===teamLast
+          );
+          if(!bdlTeam) { setScheduleGamesLoading(false); return; }
+
+          const gamesResp = await axios.get('https://api.balldontlie.io/v1/games', {
+            headers:{'Authorization':BDL_API_KEY},
+            params:{'team_ids[]':bdlTeam.id, 'seasons[]':2024, per_page:50}
+          });
+          const bdlGames = (gamesResp.data?.data||[])
+            .filter(g => g.status === 'Final')
+            .sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+            .slice(0,10);
+
+          const mapped = bdlGames.map(g => {
+            const isHome = g.home_team?.id === bdlTeam.id;
+            const tScore = isHome ? g.home_team_score : g.visitor_team_score;
+            const oScore = isHome ? g.visitor_team_score : g.home_team_score;
+            const opp = isHome ? g.visitor_team : g.home_team;
+            const win = tScore > oScore;
+            const d = new Date(g.date);
+            return {
+              date: (d.getMonth()+1)+'/'+(d.getDate()),
+              opp: opp?.name || opp?.full_name?.split(' ').pop() || '?',
+              home: isHome,
+              score: tScore+'-'+oScore,
+              win,
+              atsWin: win, // no spread data from BDL
+              ouOver: (tScore+oScore) > 220,
+              isReal: true,
+            };
+          });
+          setScheduleGames(mapped);
+        } catch(e) {
+          // Fall back to odds API scores
+          const scores = await fetchScores(gamesSport);
+          setScheduleGames(getTeamGamesFromScores(scores, teamName, gamesSport));
+        }
+        setScheduleGamesLoading(false);
+      })();
+      return;
+    }
+
+    // MLB — use MLB Stats API for real game logs
+    if(gamesSport==='MLB') {
+      (async()=>{
+        try {
+          // Get MLB team ID
+          const teamsResp = await axios.get('https://statsapi.mlb.com/api/v1/teams?sportId=1');
+          const teamLast = teamName.split(' ').pop()?.toLowerCase();
+          const mlbTeam = (teamsResp.data?.teams||[]).find(t =>
+            t.name?.toLowerCase().includes(teamLast) || t.teamName?.toLowerCase()===teamLast
+          );
+          if(!mlbTeam) { setScheduleGamesLoading(false); return; }
+          const today = new Date().toISOString().split('T')[0];
+          const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0];
+          const schedResp = await axios.get(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=${mlbTeam.id}&startDate=${thirtyAgo}&endDate=${today}&hydrate=linescore`);
+
+          const allGames = (schedResp.data?.dates||[]).flatMap(d => d.games||[])
+            .filter(g => g.status?.detailedState === 'Final')
+            .reverse()
+            .slice(0,10);
+
+          const mapped = allGames.map(g => {
+            const isHome = g.teams?.home?.team?.id === mlbTeam.id;
+            const tScore = isHome ? g.teams?.home?.score : g.teams?.away?.score;
+            const oScore = isHome ? g.teams?.away?.score : g.teams?.home?.score;
+            const opp = isHome ? g.teams?.away?.team?.name : g.teams?.home?.team?.name;
+            const win = tScore > oScore;
+            const d = new Date(g.gameDate);
+            return {
+              date: (d.getMonth()+1)+'/'+(d.getDate()),
+              opp: opp?.split(' ').pop() || '?',
+              home: isHome,
+              score: tScore+'-'+oScore,
+              win,
+              atsWin: win,
+              ouOver: (tScore+oScore) > 8.5,
+              isReal: true,
+            };
+          });
+          setScheduleGames(mapped);
+        } catch(e) {
+          const scores = await fetchScores(gamesSport);
+          setScheduleGames(getTeamGamesFromScores(scores, teamName, gamesSport));
+        }
+        setScheduleGamesLoading(false);
+      })();
+      return;
+    }
+
+    // All other sports — use odds API scores
     fetchScores(gamesSport).then(scores => {
       if(scheduleTeam==='away') setScheduleGames(getTeamGamesFromScores(scores, selectedGame.away_team, gamesSport));
       else if(scheduleTeam==='home') setScheduleGames(getTeamGamesFromScores(scores, selectedGame.home_team, gamesSport));
@@ -5231,7 +5412,7 @@ setJerryHistory(prev => {
     if(activeTab==='odds')fetchOdds(oddsSport);
     else if(activeTab==='games') fetchGames(gamesSport,gamesDay,true);
     else if(activeTab==='stats'){if(statsTab==='props')fetchProps(propsSport);else fetchPlayerStats();}
-    else if(activeTab==='trends'){if(trendsTab==='ev')fetchEV(evSport);else if(trendsTab==='sharp')fetchSharp(sharpSport);else setRefreshing(false);}
+    else if(activeTab==='trends'){if(trendsTab==='sharp')fetchSharp(sharpSport);else setRefreshing(false);}
     else setRefreshing(false);
   };
 
@@ -5393,7 +5574,6 @@ setJerryHistory(prev => {
                     </TouchableOpacity>
                   ))}
                 </View>
-                {isReal&&<View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)',overflow:'hidden'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 LIVE - last 3 days</Text></View>}
               </View>
               {scheduleGamesLoading?(
                 <View style={{alignItems:'center',paddingVertical:20}}><ActivityIndicator size="small" color={HRB_COLOR}/><Text style={{color:'#7a92a8',fontSize:11,marginTop:8}}>Loading results...</Text></View>
@@ -5440,54 +5620,137 @@ setJerryHistory(prev => {
         {matchupTab==='stats'&&(()=>{
           const isNCAAB = gamesSport==='NCAAB';
           const isNBA = gamesSport==='NBA';
-          const awayReal = isNCAAB ? fuzzyMatchTeam(md.away, bartData, 'team') : isNBA ? fuzzyMatchTeam(md.away, nbaTeamData, 'team') : null;
-          const homeReal = isNCAAB ? fuzzyMatchTeam(md.home, bartData, 'team') : isNBA ? fuzzyMatchTeam(md.home, nbaTeamData, 'team') : null;
-          const hasReal = awayReal && homeReal;
-          const statCats = hasReal ? [
-            {label:'Off Efficiency', away: awayReal.adjOERank, home: homeReal.adjOERank},
-            {label:'Def Efficiency', away: awayReal.adjDERank, home: homeReal.adjDERank},
-            {label:'Tempo', away: awayReal.tempoRank, home: homeReal.tempoRank},
+          const isMLB = gamesSport==='MLB';
+          const nbaTeamList = isNBA ? Object.values(nbaTeamData) : [];
+          const awayReal = isNCAAB ? fuzzyMatchTeam(md.away, bartData, 'team') : isNBA ? fuzzyMatchTeam(md.away, nbaTeamList, 'team') : null;
+          const homeReal = isNCAAB ? fuzzyMatchTeam(md.home, bartData, 'team') : isNBA ? fuzzyMatchTeam(md.home, nbaTeamList, 'team') : null;
+          const mlbCtx = isMLB ? (mlbGameContext[selectedGame?.home_team] ||
+            mlbGameContext[selectedGame?.away_team] ||
+            mlbGameContext[selectedGame?.home_team?.trim()] ||
+            mlbGameContext[selectedGame?.away_team?.trim()] ||
+            Object.values(mlbGameContext).find((ctx: any) =>
+              ctx.home_team === selectedGame?.home_team ||
+              ctx.away_team === selectedGame?.away_team ||
+              ctx.home_team === selectedGame?.away_team ||
+              ctx.away_team === selectedGame?.home_team
+            )) : null;
+          const hasReal = (awayReal && homeReal) || mlbCtx;
+          const statCats = isNBA && awayReal && homeReal ? [
+            {label:'Net Rating', away: awayReal.net_rating?.toFixed(1), home: homeReal.net_rating?.toFixed(1), higherBetter: true},
+            {label:'Off Rating', away: awayReal.offensive_rating?.toFixed(1), home: homeReal.offensive_rating?.toFixed(1), higherBetter: true},
+            {label:'Def Rating', away: awayReal.defensive_rating?.toFixed(1), home: homeReal.defensive_rating?.toFixed(1), higherBetter: false},
+            {label:'eFG%', away: awayReal.efg_pct?.toFixed(1)+'%', home: homeReal.efg_pct?.toFixed(1)+'%', higherBetter: true},
+            {label:'Pace', away: awayReal.pace?.toFixed(1), home: homeReal.pace?.toFixed(1), higherBetter: null},
+          ] : (awayReal && homeReal) ? [
+            {label:'Off Efficiency', away: awayReal.adjOERank, home: homeReal.adjOERank, higherBetter: null},
+            {label:'Def Efficiency', away: awayReal.adjDERank, home: homeReal.adjDERank, higherBetter: null},
+            {label:'Tempo', away: awayReal.tempoRank, home: homeReal.tempoRank, higherBetter: null},
           ] : md.statCategories;
           const totalTeams = isNCAAB ? bartData.length||358 : 30;
           return(
             <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
-              <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-                <View style={{flexDirection:'row',gap:8}}>
-                  {[{id:'offense',label:'Offense'},{id:'defense',label:'Defense'}].map(t=>(
-                    <TouchableOpacity key={t.id} style={[{paddingHorizontal:12,paddingVertical:6,borderRadius:10,borderWidth:1,borderColor:'#1f2d3d',backgroundColor:'#151c24'},statView===t.id&&{backgroundColor:'rgba(255,184,0,0.12)',borderColor:HRB_COLOR}]} onPress={()=>setStatView(t.id)}>
-                      <Text style={{color:statView===t.id?HRB_COLOR:'#7a92a8',fontWeight:'700',fontSize:11}}>{t.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                {hasReal&&<View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 LIVE DATA</Text></View>}
-              </View>
+              {hasReal&&<View style={{flexDirection:'row',justifyContent:'flex-end',marginBottom:10}}>
+                <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 LIVE DATA</Text></View>
+              </View>}
               <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:10}}>
                 <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{awayShort}</Text>
                 <Text style={{color:'#4a6070',fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
                 <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{homeShort}</Text>
               </View>
-              {(hasReal ? statCats : md.statCategories).map((stat,i)=>{
-               const awayRank = stat.away || 0;
-               const homeRank = stat.home || 0;
-
-                const awayColor = rankColor(awayRank, totalTeams);
-                const homeColor = rankColor(homeRank, totalTeams);
+              {!isMLB && (hasReal ? statCats : md.statCategories).map((stat,i)=>{
+               const awayVal = stat.away || 0;
+               const homeVal = stat.home || 0;
+               const hb = stat.higherBetter;
+               // For NBA/value-based stats, use higherBetter coloring
+               const useComparison = (isNBA || isMLB) && hb !== undefined;
+               const awayNum = parseFloat(awayVal);
+               const homeNum = parseFloat(homeVal);
+               const awayBetter = useComparison ? (hb===true ? awayNum>homeNum : hb===false ? awayNum<homeNum : null) : null;
+               const homeBetter = useComparison ? (hb===true ? homeNum>awayNum : hb===false ? homeNum<awayNum : null) : null;
+               const awayColor = useComparison ? (awayBetter?'#00e5a0':homeBetter?'#ff4d6d':'#7a92a8') : rankColor(awayVal, totalTeams);
+               const homeColor = useComparison ? (homeBetter?'#00e5a0':awayBetter?'#ff4d6d':'#7a92a8') : rankColor(homeVal, totalTeams);
                 return(
                   <View key={i} style={{flexDirection:'row',alignItems:'center',marginBottom:10}}>
                     <View style={{flex:1,alignItems:'flex-start'}}>
                       <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:awayColor+'22',borderWidth:1,borderColor:awayColor+'44',minWidth:48,alignItems:'center'}}>
-                        <Text style={{color:awayColor,fontWeight:'800',fontSize:12}}>{isNCAAB?'#':''}{awayRank}</Text>
+                        <Text style={{color:awayColor,fontWeight:awayBetter?'800':'700',fontSize:12}}>{isNCAAB?'#':''}{awayVal}</Text>
                       </View>
                     </View>
                     <Text style={{flex:1.5,color:'#7a92a8',fontSize:11,textAlign:'center'}}>{stat.label}</Text>
                     <View style={{flex:1,alignItems:'flex-end'}}>
                       <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:homeColor+'22',borderWidth:1,borderColor:homeColor+'44',minWidth:48,alignItems:'center'}}>
-                        <Text style={{color:homeColor,fontWeight:'800',fontSize:12}}>{isNCAAB?'#':''}{homeRank}</Text>
+                        <Text style={{color:homeColor,fontWeight:homeBetter?'800':'700',fontSize:12}}>{isNCAAB?'#':''}{homeVal}</Text>
                       </View>
                     </View>
                   </View>
                 );
               })}
+              {isMLB&&mlbCtx&&(()=>{
+                const pitcherCtxStr = mlbCtx.pitcher_context || '';
+                const homeCtx = pitcherCtxStr.split('|')[0] || '';
+                const awayCtx = pitcherCtxStr.split('|')[1] || '';
+                const homeKRate = homeCtx.match(/K% ([\d.]+)/)?.[1] || 'N/A';
+                const awayKRate = awayCtx.match(/K% ([\d.]+)/)?.[1] || 'N/A';
+                const mlbRows = [
+                  {label:'SP xERA', away: mlbCtx.away_sp_xera?.toFixed(2) || 'N/A', home: mlbCtx.home_sp_xera?.toFixed(2) || 'N/A', higherBetter: false},
+                  {label:'SP K%', away: awayKRate, home: homeKRate, higherBetter: true},
+                  {label:'wRC+', away: mlbCtx.away_wrc_plus?.toFixed(0) || 'N/A', home: mlbCtx.home_wrc_plus?.toFixed(0) || 'N/A', higherBetter: true},
+                  {label:'wOBA', away: mlbCtx.away_woba?.toFixed(3) || 'N/A', home: mlbCtx.home_woba?.toFixed(3) || 'N/A', higherBetter: true},
+                  {label:'R/G', away: mlbCtx.away_runs_per_game?.toFixed(2) || 'N/A', home: mlbCtx.home_runs_per_game?.toFixed(2) || 'N/A', higherBetter: true},
+                ];
+                return(
+                  <View>
+                    {/* Pitcher matchup header */}
+                    <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:10,padding:10,marginBottom:10,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
+                      <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,marginBottom:6}}>PITCHER MATCHUP</Text>
+                      <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                        <View style={{flex:1}}>
+                          <Text style={{color:'#e8f0f8',fontSize:12,fontWeight:'700'}}>{mlbCtx.away_pitcher || selectedGame?.away_pitcher || 'TBD'}</Text>
+                          <Text style={{color:'#7a92a8',fontSize:10}}>xERA: {mlbCtx.away_sp_xera?.toFixed(2) || 'N/A'}</Text>
+                        </View>
+                        <Text style={{color:'#4a6070',fontSize:11,fontWeight:'700',alignSelf:'center'}}>vs</Text>
+                        <View style={{flex:1,alignItems:'flex-end'}}>
+                          <Text style={{color:'#e8f0f8',fontSize:12,fontWeight:'700'}}>{mlbCtx.home_pitcher || selectedGame?.home_pitcher || 'TBD'}</Text>
+                          <Text style={{color:'#7a92a8',fontSize:10}}>xERA: {mlbCtx.home_sp_xera?.toFixed(2) || 'N/A'}</Text>
+                        </View>
+                      </View>
+                    </View>
+                    {/* Stat comparison table */}
+                    {mlbRows.map((row,i)=>{
+                      const awayNum = parseFloat(row.away);
+                      const homeNum = parseFloat(row.home);
+                      const awayBetter = row.higherBetter===true ? awayNum>homeNum : row.higherBetter===false ? awayNum<homeNum : null;
+                      const homeBetter = row.higherBetter===true ? homeNum>awayNum : row.higherBetter===false ? homeNum<awayNum : null;
+                      return(
+                        <View key={i} style={{flexDirection:'row',alignItems:'center',marginBottom:10}}>
+                          <View style={{flex:1,alignItems:'flex-start'}}>
+                            <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:(awayBetter?'#00e5a0':homeBetter?'#ff4d6d':'#7a92a8')+'22',borderWidth:1,borderColor:(awayBetter?'#00e5a0':homeBetter?'#ff4d6d':'#7a92a8')+'44',minWidth:48,alignItems:'center'}}>
+                              <Text style={{color:awayBetter?'#00e5a0':homeBetter?'#ff4d6d':'#7a92a8',fontWeight:awayBetter?'800':'700',fontSize:12}}>{row.away}</Text>
+                            </View>
+                          </View>
+                          <Text style={{flex:1.5,color:'#7a92a8',fontSize:11,textAlign:'center'}}>{row.label}</Text>
+                          <View style={{flex:1,alignItems:'flex-end'}}>
+                            <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:(homeBetter?'#00e5a0':awayBetter?'#ff4d6d':'#7a92a8')+'22',borderWidth:1,borderColor:(homeBetter?'#00e5a0':awayBetter?'#ff4d6d':'#7a92a8')+'44',minWidth:48,alignItems:'center'}}>
+                              <Text style={{color:homeBetter?'#00e5a0':awayBetter?'#ff4d6d':'#7a92a8',fontWeight:homeBetter?'800':'700',fontSize:12}}>{row.home}</Text>
+                            </View>
+                          </View>
+                        </View>
+                      );
+                    })}
+                    {/* Park & weather */}
+                    <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,gap:4}}>
+                      <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                        <Text style={{color:'#7a92a8',fontSize:11}}>Park Factor</Text>
+                        <Text style={{color:mlbCtx.park_run_factor>=110?'#ff4d6d':mlbCtx.park_run_factor<=93?'#00e5a0':'#e8f0f8',fontWeight:'700',fontSize:12}}>{mlbCtx.park_run_factor || 'N/A'}</Text>
+                      </View>
+                      <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                        <Text style={{color:'#7a92a8',fontSize:11}}>Weather</Text>
+                        <Text style={{color:'#e8f0f8',fontSize:12}}>{mlbCtx.temperature ? mlbCtx.temperature+'°F' : 'N/A'} | {mlbCtx.wind_speed ? mlbCtx.wind_speed+'mph '+mlbCtx.wind_direction : 'N/A'}</Text>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })()}
               {hasReal&&awayReal&&homeReal&&(
                 <View style={{marginTop:8,backgroundColor:'rgba(255,184,0,0.07)',borderRadius:10,padding:10,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
                   {isNCAAB&&<Text style={{color:'#e8f0f8',fontSize:12,lineHeight:18}}>
@@ -5528,7 +5791,7 @@ setJerryHistory(prev => {
 
                 </View>
               )}
-              {!hasReal&&<Text style={{color:'#4a6070',fontSize:10,textAlign:'right',marginTop:4}}>* Simulated — select NCAAB or NBA for live data</Text>}
+              {!hasReal&&!isMLB&&!isNBA&&<Text style={{color:'#4a6070',fontSize:10,textAlign:'right',marginTop:4}}>* Simulated data</Text>}
               <View style={{flexDirection:'row',gap:12,paddingTop:10,borderTopWidth:1,borderTopColor:'#1f2d3d',marginTop:8}}>
                 <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#00e5a0'}}/><Text style={{color:'#7a92a8',fontSize:10}}>Top tier</Text></View>
                 <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#ffd166'}}/><Text style={{color:'#7a92a8',fontSize:10}}>Mid</Text></View>
@@ -5576,6 +5839,46 @@ setJerryHistory(prev => {
                             </View>
                             <View style={{flex:1,backgroundColor:!row.awayGood?'rgba(0,229,160,0.1)':'rgba(255,77,109,0.1)',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:!row.awayGood?'rgba(0,229,160,0.3)':'rgba(255,77,109,0.3)'}}>
                               <Text style={{color:!row.awayGood?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:16}}>{row.home}</Text>
+                            </View>
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  );
+                }
+              }
+              if(gamesSport==='NBA') {
+                const nbaList = Object.values(nbaTeamData);
+                const awayT = fuzzyMatchTeam(stripMascot(selectedGame.away_team), nbaList, 'team');
+                const homeT = fuzzyMatchTeam(stripMascot(selectedGame.home_team), nbaList, 'team');
+                if(awayT && homeT) {
+                  const rows = [
+                    {label:'Home Record', away: awayT.home_record||'N/A', home: homeT.home_record||'N/A', desc:'Record at home'},
+                    {label:'Away Record', away: awayT.away_record||'N/A', home: homeT.away_record||'N/A', desc:'Record on the road'},
+                    {label:'Last 5 Net Rtg', away: (awayT.last_10_net_rating||0).toFixed(1), home: (homeT.last_10_net_rating||0).toFixed(1), awayGood: (awayT.last_10_net_rating||0)>(homeT.last_10_net_rating||0), desc:'Recent form — net rating over last 5 games'},
+                    {label:'TOV%', away: (awayT.tov_pct||0).toFixed(1)+'%', home: (homeT.tov_pct||0).toFixed(1)+'%', awayGood: (awayT.tov_pct||0)<(homeT.tov_pct||0), desc:'Lower = fewer turnovers'},
+                    {label:'OREB%', away: (awayT.oreb_pct||0).toFixed(1)+'%', home: (homeT.oreb_pct||0).toFixed(1)+'%', awayGood: (awayT.oreb_pct||0)>(homeT.oreb_pct||0), desc:'Offensive rebounding rate'},
+                  ];
+                  if(awayT.injury_note || homeT.injury_note) {
+                    rows.push({label:'Injuries', away: awayT.injury_note||'None', home: homeT.injury_note||'None', desc:'Key injuries', awayGood: false});
+                  }
+                  return(
+                    <View>
+                      <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                        <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13}}>{awayShort}</Text>
+                        <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 LIVE DATA</Text></View>
+                        <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13}}>{homeShort}</Text>
+                      </View>
+                      {rows.map((row,i)=>(
+                        <View key={i} style={{marginBottom:12}}>
+                          <Text style={{color:'#4a6070',fontSize:10,fontWeight:'600',marginBottom:2,textAlign:'center'}}>{row.label}</Text>
+                          <Text style={{color:'#4a6071',fontSize:9,textAlign:'center',marginBottom:6}}>{row.desc}</Text>
+                          <View style={{flexDirection:'row',gap:8}}>
+                            <View style={{flex:1,backgroundColor:row.awayGood?'rgba(0,229,160,0.1)':row.awayGood===false?'rgba(255,77,109,0.1)':'rgba(122,146,168,0.1)',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:row.awayGood?'rgba(0,229,160,0.3)':row.awayGood===false?'rgba(255,77,109,0.3)':'rgba(122,146,168,0.3)'}}>
+                              <Text style={{color:row.awayGood?'#00e5a0':row.awayGood===false?'#ff4d6d':'#e8f0f8',fontWeight:'800',fontSize:14}}>{row.away}</Text>
+                            </View>
+                            <View style={{flex:1,backgroundColor:row.awayGood===false?'rgba(0,229,160,0.1)':row.awayGood?'rgba(255,77,109,0.1)':'rgba(122,146,168,0.1)',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:row.awayGood===false?'rgba(0,229,160,0.3)':row.awayGood?'rgba(255,77,109,0.3)':'rgba(122,146,168,0.3)'}}>
+                              <Text style={{color:row.awayGood===false?'#00e5a0':row.awayGood?'#ff4d6d':'#e8f0f8',fontWeight:'800',fontSize:14}}>{row.home}</Text>
                             </View>
                           </View>
                         </View>
@@ -6474,7 +6777,12 @@ setJerryHistory(prev => {
                         // Build top signals for display
                         const signals = [];
                         if(gamesSport === 'MLB') {
-                          const mlbCtx = mlbGameContext[game.home_team] || mlbGameContext[game.away_team];
+                          const mlbCtx = mlbGameContext[game.home_team] || mlbGameContext[game.away_team] ||
+                            mlbGameContext[game.home_team?.trim()] || mlbGameContext[game.away_team?.trim()] ||
+                            Object.values(mlbGameContext).find((ctx: any) =>
+                              ctx.home_team === game.home_team || ctx.away_team === game.away_team ||
+                              ctx.home_team === game.away_team || ctx.away_team === game.home_team
+                            );
                           if(mlbCtx) {
                             if(mlbCtx.projected_total && mlbCtx.projected_total > 0) {
                               const totals = (game.bookmakers||[]).map(bm => {
@@ -6606,97 +6914,6 @@ setJerryHistory(prev => {
                 ))}
             </View>
 
-            {trendsTab==='ev'&&(()=>{
-  const ncaabGames = gamesData.filter(g => g && g.away_team && g.home_team);
-  const modelEdges = ncaabGames
-    .map(game => {
-      try {
-        const score = calcGameSweatScore(game, gamesSport, fanmatchData, mlbGameContext, nbaTeamData);
-        if(!score) return null;
-        const spreadDelta = Math.abs(score.spreadEdge||0);
-        const totalDelta = Math.abs(score.totalDelta||0);
-        if(spreadDelta < 1 && totalDelta < 1) return null;
-        return {game, score, spreadDelta, totalDelta};
-      } catch(e) { return null; }
-    })
-    .filter(Boolean)
-    .sort((a,b) => (b.spreadDelta + b.totalDelta) - (a.spreadDelta + a.totalDelta))
-    .slice(0, 15);
-
-  return(
-    <View>
-      {/* Sport selector */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>
-        <View style={{flexDirection:'row',gap:6}}>
-          {['NCAAB'].map(s=>(
-  <TouchableOpacity key={s} style={[styles.chipBtn,styles.chipBtnActive]}>
-    <Text style={[styles.chipTxt,styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text>
-  </TouchableOpacity>
-))}
-<View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:8,paddingHorizontal:10,paddingVertical:6,borderWidth:1,borderColor:'rgba(255,184,0,0.2)',justifyContent:'center'}}>
-  <Text style={{color:'#4a6070',fontSize:11}}>NBA/NHL model coming post-tournament 🔜</Text>
-</View>
-        </View>
-      </ScrollView>
-
-      {/* Header */}
-      <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:'rgba(255,184,0,0.25)'}}>
-        <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginBottom:4}}>📊 MODEL VS MARKET</Text>
-       <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>NCAAB games where our efficiency model disagrees most with the posted line. Bigger delta = bigger edge. Tap any game for Jerry's full take.</Text>
-      </View>
-
-      {modelEdges.length === 0 ? (
-        <View style={{alignItems:'center',paddingTop:40}}>
-          <Text style={{fontSize:32}}>📊</Text>
-          <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No significant model vs market gaps found.{'\n'}Try switching sports or check back later.</Text>
-        </View>
-      ) : (
-        <>
-          <Text style={styles.sectionLabel}>{modelEdges.length} MODEL EDGES TODAY</Text>
-          {modelEdges.map((item,i) => {
-            const ss = item.score;
-            const tier = ss.total >= 68 ? {color:'#FFB800'} :
-                         ss.total >= 55 ? {color:'#00e5a0'} :
-                         {color:'#0099ff'};
-            const gameTime = new Date(item.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
-            return(
-              <TouchableOpacity key={i} onPress={()=>openGameDetail(item.game)}
-                style={{backgroundColor:'#0e1318',borderRadius:14,padding:14,marginBottom:8,borderWidth:1,borderLeftWidth:3,borderColor:'#1f2d3d',borderLeftColor:tier.color}}>
-                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-                  <View style={{flex:1}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{item.game.away_team} vs {item.game.home_team}</Text>
-                    <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{gameTime}</Text>
-                  </View>
-                  <View style={{width:40,height:40,borderRadius:20,borderWidth:2,borderColor:tier.color,alignItems:'center',justifyContent:'center',backgroundColor:tier.color+'15',marginLeft:8}}>
-                    <Text style={{color:tier.color,fontWeight:'800',fontSize:14}}>{ss.total}</Text>
-                  </View>
-                </View>
-                <View style={{flexDirection:'row',gap:6,flexWrap:'wrap'}}>
-                  {item.spreadDelta >= 1 && (
-                    <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
-                      <Text style={{color:HRB_COLOR,fontSize:11,fontWeight:'700'}}>📊 Spread gap: {item.spreadDelta.toFixed(1)} pts</Text>
-                    </View>
-                  )}
-                  {item.totalDelta >= 1 && (
-                    <View style={{backgroundColor:'rgba(0,153,255,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,153,255,0.3)'}}>
-                      <Text style={{color:'#0099ff',fontSize:11,fontWeight:'700'}}>📈 Total gap: {item.totalDelta.toFixed(1)} pts</Text>
-                    </View>
-                  )}
-                  {ss.hasFanmatch && (
-                    <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}>
-                      <Text style={{color:'#00e5a0',fontSize:11,fontWeight:'700'}}>📡 KenPom</Text>
-                    </View>
-                  )}
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </>
-      )}
-      <View style={{height:20}}/>
-    </View>
-  );
-})()}
 
              {trendsTab==='propjerry'&&(
   <View>
@@ -7663,7 +7880,16 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
   );
 })()}
 {gamesSport === 'MLB' && (()=>{
-  const mlbCtx = mlbGameContext[selectedGame?.home_team] || mlbGameContext[selectedGame?.away_team];
+  const mlbCtx = mlbGameContext[selectedGame?.home_team] ||
+    mlbGameContext[selectedGame?.away_team] ||
+    mlbGameContext[selectedGame?.home_team?.trim()] ||
+    mlbGameContext[selectedGame?.away_team?.trim()] ||
+    Object.values(mlbGameContext).find((ctx: any) =>
+      ctx.home_team === selectedGame?.home_team ||
+      ctx.away_team === selectedGame?.away_team ||
+      ctx.home_team === selectedGame?.away_team ||
+      ctx.away_team === selectedGame?.home_team
+    );
   //console.log('mlbGameContext keys:', Object.keys(mlbGameContext).slice(0,5));
   //console.log('NRFI check - sport:', gamesSport, 'mlbCtx:', mlbCtx ? 'FOUND' : 'NOT FOUND', 'home:', selectedGame?.home_team);
   if(!mlbCtx) return(
@@ -7730,8 +7956,8 @@ const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d
         </View>
         <View style={{flex:2,backgroundColor:'#151c24',borderRadius:8,padding:8}}>
           <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:4}}>KEY SIGNALS</Text>
-          {mlbCtx.home_pitcher && <Text style={{color:'#e8f0f8',fontSize:10}}>🏠 {mlbCtx.home_pitcher} xERA: {mlbCtx.home_sp_xera || 'N/A'}</Text>}
-          {mlbCtx.away_pitcher && <Text style={{color:'#e8f0f8',fontSize:10}}>✈️ {mlbCtx.away_pitcher} xERA: {mlbCtx.away_sp_xera || 'N/A'}</Text>}
+          {(mlbCtx.home_pitcher || selectedGame?.home_pitcher) && <Text style={{color:'#e8f0f8',fontSize:10}}>🏠 {mlbCtx.home_pitcher || selectedGame?.home_pitcher} xERA: {mlbCtx.home_sp_xera || 'N/A'}</Text>}
+          {(mlbCtx.away_pitcher || selectedGame?.away_pitcher) && <Text style={{color:'#e8f0f8',fontSize:10}}>✈️ {mlbCtx.away_pitcher || selectedGame?.away_pitcher} xERA: {mlbCtx.away_sp_xera || 'N/A'}</Text>}
           {mlbCtx.umpire_note ? <Text style={{color:'#e8f0f8',fontSize:10}}>{mlbCtx.umpire_note.includes('K-friendly') ? '✅ K-friendly ump' : mlbCtx.umpire_note.includes('hitter') ? '⚠️ Hitter-friendly ump' : `Ump: ${mlbCtx.umpire || 'TBD'}`}</Text> : null}
           <Text style={{color:'#e8f0f8',fontSize:10}}>Park: {mlbCtx.park_run_factor} {mlbCtx.park_run_factor >= 110 ? '⚠️ hitter' : mlbCtx.park_run_factor <= 93 ? '✅ pitcher' : '—'} | {mlbCtx.temperature}°F</Text>
           {pipelineNRFI !== null && pipelineNRFI !== undefined && <Text style={{color:'#4a6070',fontSize:9,marginTop:2}}>Pipeline model ✓</Text>}
