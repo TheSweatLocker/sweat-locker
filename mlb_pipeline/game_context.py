@@ -575,7 +575,7 @@ def get_mlb_games():
                 "oddsFormat": "american",
                 "bookmakers": "draftkings",
                 "commenceTimeFrom": datetime.utcnow().strftime('%Y-%m-%dT00:00:00Z'),
-                "commenceTimeTo": datetime.utcnow().strftime('%Y-%m-%dT23:59:59Z'),
+                "commenceTimeTo": (datetime.utcnow() + timedelta(hours=6)).strftime('%Y-%m-%dT23:59:59Z'),
             }
         )
         return r.json()
