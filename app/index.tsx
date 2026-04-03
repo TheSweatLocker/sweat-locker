@@ -1399,8 +1399,35 @@ const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
         }
       }
 
+      // Validate legs against model signals — drop legs that conflict
+      const validatedLegs = legs.filter(leg => {
+        // NRFI legs: keep if nrfi_score is strong (already filtered >= 75)
+        if(leg.type === 'NRFI') return true;
+
+        // UNDER legs: verify the model still leans under
+        if(leg.type === 'UNDER' && leg.ctx) {
+          if(leg.ctx.over_lean === true) return false; // model flipped to over — drop
+          return true;
+        }
+
+        // NBA legs: verify net rating gap still supports the pick
+        if(leg.type === 'NBA' && leg.game) {
+          const homeNBA = Object.values(nbaTeamData).find((t: any) => t.team && leg.game.home_team.includes(t.team.split(' ').pop()));
+          const awayNBA = Object.values(nbaTeamData).find((t: any) => t.team && leg.game.away_team.includes(t.team.split(' ').pop()));
+          if(homeNBA && awayNBA) {
+            const netGap = Math.abs((homeNBA as any).net_rating - (awayNBA as any).net_rating);
+            if(netGap < 4) return false; // gap closed — no longer a strong lean
+            // Check if pick aligns with the better team
+            const betterTeam = (homeNBA as any).net_rating > (awayNBA as any).net_rating ? leg.game.home_team : leg.game.away_team;
+            if(!leg.pick.includes(betterTeam.split(' ').pop())) return false; // picking the wrong side
+          }
+        }
+
+        return true;
+      });
+
       // Limit to 3-4 legs, pick best non-correlated
-      const finalLegs = legs.slice(0, 4);
+      const finalLegs = validatedLegs.slice(0, 4);
 
       if(finalLegs.length < 2) {
         setDegenData({ noPlays: true });
@@ -1533,6 +1560,199 @@ Write 2-3 sentences MAX. Reference the specific data signals. Sound like a sharp
     </View>
   );
 };
+const FadesScanner = ({ gamesData, mlbGameContext, gamesSport, ANTHROPIC_API_KEY, supabase }) => {
+  const [fadesData, setFadesData] = React.useState(null);
+  const [fadesLoading, setFadesLoading] = React.useState(false);
+
+  React.useEffect(() => { fetchFades(); }, []);
+
+  const fetchFades = async () => {
+    const _now = new Date();
+    const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
+
+    // Check cache
+    try {
+      const { data: cached } = await supabase
+        .from('jerry_cache')
+        .select('data, fetched_at')
+        .eq('cache_key', `fades_${today}`)
+        .single();
+      if(cached) {
+        const ageHrs = (Date.now() - new Date(cached.fetched_at).getTime()) / 3600000;
+        if(ageHrs < 8) {
+          setFadesData(cached.data);
+          return;
+        }
+      }
+    } catch(e) {}
+
+    setFadesLoading(true);
+    try {
+      const now = new Date();
+      const fades = [];
+
+      // Scan all future games across gamesData
+      const futureGames = gamesData.filter(g => new Date(g.commence_time) > now);
+
+      for(const game of futureGames.slice(0, 20)) {
+        const reasons = [];
+        const bookmakers = game.bookmakers || [];
+        if(bookmakers.length < 2) continue;
+
+        // Rule 1: Sharp consensus — all books agree on spread
+        const spreads = bookmakers.map(bm => {
+          const s = bm.markets?.find(m => m.key === 'spreads');
+          return s?.outcomes?.[0]?.point;
+        }).filter(x => x !== null && x !== undefined);
+        const spreadRange = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 99;
+        if(spreadRange === 0 && spreads.length >= 3) {
+          reasons.push('Sharp consensus — books in perfect agreement, no edge to exploit');
+        }
+
+        // Rule 2: Heavy public side — massive favorite juice
+        const mls = bookmakers.map(bm => {
+          const m = bm.markets?.find(mk => mk.key === 'h2h');
+          return m?.outcomes?.map(o => o.price) || [];
+        }).flat().filter(Boolean);
+        const heavyFav = mls.some(ml => ml < -250);
+        if(heavyFav) {
+          reasons.push('Heavy public side — juice is already gone, no value backing the favorite');
+        }
+
+        // Rule 3: MLB thin data — no pitcher or projected total
+        const mlbCtx = mlbGameContext?.[game.home_team] || mlbGameContext?.[game.away_team];
+        if(mlbCtx && !mlbCtx.projected_total && !mlbCtx.home_pitcher) {
+          reasons.push('Thin data — no confirmed pitcher or projected total available');
+        }
+
+        // Rule 4: Totals consensus — all books on same number with tight odds
+        const totals = bookmakers.map(bm => {
+          const t = bm.markets?.find(m => m.key === 'totals');
+          return t?.outcomes?.[0]?.point;
+        }).filter(x => x !== null && x !== undefined);
+        const totalRange = totals.length > 1 ? Math.max(...totals) - Math.min(...totals) : 99;
+        if(totalRange === 0 && totals.length >= 3 && spreadRange <= 0.5) {
+          reasons.push('Market is locked — both spread and total in full consensus');
+        }
+
+        if(reasons.length >= 1) {
+          fades.push({
+            game: `${stripMascot(game.away_team)} @ ${stripMascot(game.home_team)}`,
+            away: game.away_team,
+            home: game.home_team,
+            commence_time: game.commence_time,
+            reasons,
+            reasonCount: reasons.length,
+          });
+        }
+      }
+
+      // Sort by most reasons, take top 5
+      fades.sort((a, b) => b.reasonCount - a.reasonCount);
+      const topFades = fades.slice(0, 5);
+
+      // Generate Jerry narrative for each fade
+      for(const fade of topFades) {
+        try {
+          const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': ANTHROPIC_API_KEY,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+              model: 'claude-haiku-4-5-20251001',
+              max_tokens: 80,
+              messages: [{
+                role: 'user',
+                content: `You are Jerry. This game is a FADE — a play to avoid.\nGame: ${fade.game}\nReasons: ${fade.reasons.join('. ')}\nWrite ONE sentence explaining why to step aside. Sound like a sharp bettor who sees no edge. Start with 'Books are...' or 'Sharp money...' or 'Public is...' — never say 'bet' or 'avoid'.`
+              }]
+            })
+          });
+          const aiData = await aiResp.json();
+          fade.jerry = aiData?.content?.[0]?.text || fade.reasons[0];
+        } catch(e) {
+          fade.jerry = fade.reasons[0];
+        }
+      }
+
+      const result = { fades: topFades, generatedAt: today };
+
+      // Cache
+      try {
+        await supabase.from('jerry_cache').upsert({
+          cache_key: `fades_${today}`,
+          data: result,
+          fetched_at: new Date().toISOString(),
+        }, { onConflict: 'cache_key' });
+      } catch(e) {}
+
+      setFadesData(result);
+    } catch(e) {
+      setFadesData({ fades: [] });
+    }
+    setFadesLoading(false);
+  };
+
+  if(fadesLoading) return (
+    <View style={{alignItems:'center',paddingTop:60,gap:12}}>
+      <Text style={{fontSize:32}}>🚫</Text>
+      <Text style={{color:'#7a92a8',fontSize:14}}>Jerry is scanning for traps...</Text>
+    </View>
+  );
+
+  if(!fadesData || !fadesData.fades || fadesData.fades.length === 0) return (
+    <View style={{alignItems:'center',paddingTop:60,paddingHorizontal:40}}>
+      <Text style={{fontSize:32}}>✅</Text>
+      <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18,marginTop:16}}>Slate Looks Clean</Text>
+      <Text style={{color:'#7a92a8',marginTop:8,fontSize:14,textAlign:'center'}}>No obvious traps today — Jerry doesn't see anything to fade. Green light on the board.</Text>
+    </View>
+  );
+
+  return (
+    <View style={{padding:16}}>
+      <View style={{backgroundColor:'rgba(255,140,0,0.08)',borderRadius:14,padding:14,marginBottom:16,borderWidth:1,borderColor:'rgba(255,140,0,0.25)'}}>
+        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+          <Text style={{color:'#ff8c00',fontWeight:'800',fontSize:16}}>🚫 JERRY'S FADES</Text>
+          <View style={{backgroundColor:'rgba(255,140,0,0.15)',borderRadius:10,paddingHorizontal:8,paddingVertical:3}}>
+            <Text style={{color:'#ff8c00',fontSize:11,fontWeight:'800'}}>{fadesData.fades.length} FADES</Text>
+          </View>
+        </View>
+        <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Games Jerry says to step aside on. Sharp money is already priced in or public juice has killed the value.</Text>
+      </View>
+
+      {fadesData.fades.map((fade, i) => {
+        const gameTime = new Date(fade.commence_time);
+        return (
+          <View key={i} style={{backgroundColor:'#111820',borderRadius:12,padding:12,marginBottom:10,borderWidth:1,borderColor:'rgba(255,140,0,0.3)',borderLeftWidth:3,borderLeftColor:'#ff8c00'}}>
+            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+              <View style={{flex:1}}>
+                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{fade.game}</Text>
+                <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} ET</Text>
+              </View>
+              <View style={{backgroundColor:'rgba(255,140,0,0.15)',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:'rgba(255,140,0,0.4)'}}>
+                <Text style={{color:'#ff8c00',fontWeight:'800',fontSize:11}}>🚫 FADE</Text>
+              </View>
+            </View>
+            {fade.reasons.map((reason, j) => (
+              <View key={j} style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:4}}>
+                <Text style={{color:'#ff8c00',fontSize:10}}>⚠️</Text>
+                <Text style={{color:'#7a92a8',fontSize:11}}>{reason}</Text>
+              </View>
+            ))}
+            <View style={{backgroundColor:'rgba(255,140,0,0.05)',borderRadius:8,padding:8,marginTop:6,borderLeftWidth:2,borderLeftColor:'#ff8c00'}}>
+              <Text style={{color:'#7a92a8',fontSize:12,fontStyle:'italic',lineHeight:18}}>🎤 {fade.jerry}</Text>
+            </View>
+          </View>
+        );
+      })}
+
+      <Text style={{color:'#4a6070',fontSize:10,textAlign:'center',marginTop:12}}>Fades update when games load • Jerry sees what the public doesn't</Text>
+    </View>
+  );
+};
+
   export default function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [mybetsTab, setMybetsTab] = useState('picks');
@@ -1607,6 +1827,8 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [jerryRecordLoading, setJerryRecordLoading] = useState(false);
   const [propJerryData, setPropJerryData] = useState([]);
   const [propJerryLoading, setPropJerryLoading] = useState(false);
+  const [propOfDay, setPropOfDay] = useState(null);
+  const [propOfDayLoading, setPropOfDayLoading] = useState(false);
   const [expandedPropJerry, setExpandedPropJerry] = useState(null);
   const [roiChartTab, setRoiChartTab] = useState('cumulative');
   const [roiTimeRange, setRoiTimeRange] = useState('all');
@@ -4934,6 +5156,150 @@ if(mkt.key === 'pitcher_props') {
     })).sort((a,b) => b.total-a.total);
   };
 
+  const fetchPropOfDay = async () => {
+    const _now = new Date();
+    const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
+
+    // Check cache
+    try {
+      const { data: cached } = await supabase
+        .from('jerry_cache')
+        .select('data, fetched_at')
+        .eq('cache_key', `prop_of_day_${today}`)
+        .single();
+      if(cached) {
+        const ageHrs = (Date.now() - new Date(cached.fetched_at).getTime()) / 3600000;
+        if(ageHrs < 4) { setPropOfDay(cached.data); return; }
+      }
+    } catch(e) {}
+
+    setPropOfDayLoading(true);
+    try {
+      // Get today's A-grade props
+      const { data: aGrades } = await supabase
+        .from('prop_grades')
+        .select('*')
+        .eq('grade', 'A')
+        .gte('created_at', today)
+        .order('ev', {ascending: false})
+        .limit(20);
+
+      if(!aGrades || aGrades.length === 0) { setPropOfDayLoading(false); return; }
+
+      // Score each prop with matchup context
+      const scored = aGrades.map(prop => {
+        let matchupScore = 0;
+        const signals = [];
+        const market = (prop.market || '').toLowerCase();
+
+        // MLB pitcher strikeouts
+        if(market.includes('strikeout') || market.includes('k')) {
+          const mlbCtx = mlbGameContext[prop.game?.split(' @ ')?.[1]?.trim()] ||
+            Object.values(mlbGameContext).find((c: any) => prop.game?.includes(c.home_team?.split(' ').pop()));
+          if(mlbCtx) {
+            const isHome = mlbCtx.home_pitcher?.toLowerCase().includes(prop.player?.split(' ').pop()?.toLowerCase());
+            const kGap = isHome ? mlbCtx.home_k_gap : mlbCtx.away_k_gap;
+            const xera = isHome ? parseFloat(mlbCtx.home_sp_xera) : parseFloat(mlbCtx.away_sp_xera);
+            if(kGap && kGap > 8) { matchupScore += 25; signals.push(`K gap +${kGap}pts`); }
+            else if(kGap && kGap > 5) { matchupScore += 15; signals.push(`K gap +${kGap}pts`); }
+            if(xera && xera < 3.5) { matchupScore += 20; signals.push(`xERA ${xera.toFixed(2)}`); }
+            else if(xera && xera < 4.0) { matchupScore += 10; signals.push(`xERA ${xera.toFixed(2)}`); }
+            if(mlbCtx.umpire_note?.includes('K-friendly')) { matchupScore += 20; signals.push('K-friendly ump'); }
+            if(mlbCtx.temperature && mlbCtx.temperature < 55) { matchupScore += 10; signals.push(`${mlbCtx.temperature}°F cold`); }
+          }
+        }
+
+        // MLB batter hits/total bases
+        if(market.includes('hit') || market.includes('total base')) {
+          const mlbCtx = mlbGameContext[prop.game?.split(' @ ')?.[1]?.trim()] ||
+            Object.values(mlbGameContext).find((c: any) => prop.game?.includes(c.home_team?.split(' ').pop()));
+          if(mlbCtx) {
+            const isHome = mlbCtx.home_lineup?.toLowerCase().includes(prop.player?.split(' ').pop()?.toLowerCase());
+            const platoon = isHome ? mlbCtx.home_platoon_advantage : mlbCtx.away_platoon_advantage;
+            const wrcPlus = isHome ? mlbCtx.home_wrc_plus : mlbCtx.away_wrc_plus;
+            if(platoon && platoon > 3) { matchupScore += 30; signals.push(`Platoon +${platoon}pts`); }
+            else if(platoon && platoon > 1) { matchupScore += 15; signals.push(`Platoon +${platoon}pts`); }
+            if(wrcPlus && wrcPlus > 110) { matchupScore += 15; signals.push(`wRC+ ${wrcPlus}`); }
+            if(mlbCtx.park_run_factor && mlbCtx.park_run_factor > 105) { matchupScore += 15; signals.push(`Park factor ${mlbCtx.park_run_factor}`); }
+          }
+        }
+
+        // NBA props
+        if(prop.sport === 'NBA') {
+          const teamData = Object.values(nbaTeamData).find((t: any) =>
+            prop.game?.includes(t.team?.split(' ').pop())
+          ) as any;
+          if(teamData) {
+            if(teamData.pace && teamData.pace > 100) { matchupScore += 20; signals.push(`Pace ${teamData.pace.toFixed(0)}`); }
+            if(teamData.defensive_rating && teamData.defensive_rating > 115) { matchupScore += 25; signals.push(`Opp DefRtg ${teamData.defensive_rating.toFixed(0)}`); }
+            if(teamData.opp_efg_pct && teamData.opp_efg_pct > 52) { matchupScore += 20; signals.push(`Opp eFG ${teamData.opp_efg_pct.toFixed(1)}%`); }
+          }
+        }
+
+        matchupScore = Math.min(100, matchupScore);
+        const combinedScore = (prop.ev * 0.4) + (matchupScore * 0.4) + 20;
+        return { ...prop, matchupScore, combinedScore, signals };
+      });
+
+      // Pick highest combined score
+      scored.sort((a, b) => b.combinedScore - a.combinedScore);
+      const best = scored.find(p => p.combinedScore >= 50) || scored[0];
+      if(!best) { setPropOfDayLoading(false); return; }
+
+      // Generate Jerry narrative
+      let narrative = '';
+      try {
+        const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 120,
+            messages: [{
+              role: 'user',
+              content: `You are Jerry. This is today's single best prop — the one with the deepest analytical edge.\n\nPlayer: ${best.player}\nMarket: ${best.market} ${best.best_side} \nEV: ${best.ev?.toFixed(1)}%\nMatchup signals: ${best.signals.join(', ') || 'Strong EV edge'}\nGame: ${best.game}\n\nWrite 2 sentences MAX explaining WHY this prop has edge. Reference the specific matchup data. End with the specific play. Never say 'bet'. Sound like a sharp friend who found real value.`
+            }]
+          })
+        });
+        const aiData = await aiResp.json();
+        narrative = aiData?.content?.[0]?.text || 'Jerry sees real value here based on the matchup data.';
+      } catch(e) {
+        narrative = 'Jerry sees real value here based on the matchup data.';
+      }
+
+      const result = {
+        player: best.player,
+        market: best.market,
+        side: best.best_side,
+        line: best.best_odds,
+        ev: best.ev,
+        game: best.game,
+        book: best.book,
+        sport: best.sport,
+        signals: best.signals,
+        matchupScore: best.matchupScore,
+        combinedScore: best.combinedScore,
+        narrative,
+      };
+
+      // Cache
+      try {
+        await supabase.from('jerry_cache').upsert({
+          cache_key: `prop_of_day_${today}`,
+          data: result,
+          fetched_at: new Date().toISOString(),
+        }, { onConflict: 'cache_key' });
+      } catch(e) {}
+
+      setPropOfDay(result);
+    } catch(e) {}
+    setPropOfDayLoading(false);
+  };
+
   const fetchPropJerry = async (sport=propJerrySport) => {
     
 setPropJerryLoading(true);
@@ -5407,7 +5773,7 @@ setJerryHistory(prev => {
   },[activeTab,statsTab,propsSport]);
  useEffect(()=>{
     if(activeTab==='trends'){
-      if(trendsTab==='propjerry')fetchPropJerry(propJerrySport);
+      if(trendsTab==='propjerry'){fetchPropJerry(propJerrySport);fetchPropOfDay();}
       if(trendsTab==='sharp')fetchSharp(sharpSport);
     }
   },[activeTab,trendsTab,evSport,sharpSport,propJerrySport]);
@@ -7040,7 +7406,7 @@ setJerryHistory(prev => {
           <View>
             <Text style={styles.pageTitle}>🧠 Jerry 🎤</Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
-                {[{id:'propjerry',label:'🧠 Prop Jerry'},{id:'dailydegen',label:'🎲 Daily Degen'},{id:'mytrends',label:'📋 Jerry Record'}].map(t=>(
+                {[{id:'propjerry',label:'🧠 Prop Jerry'},{id:'dailydegen',label:'🎲 Daily Degen'},{id:'fades',label:'🚫 Fades'},{id:'mytrends',label:'📋 Record'}].map(t=>(
                   <TouchableOpacity key={t.id} style={[styles.chipBtn,{flex:1,justifyContent:'center',alignItems:'center'},trendsTab===t.id&&styles.chipBtnActive]} onPress={()=>setTrendsTab(t.id)}>
                     <Text style={[styles.chipTxt,trendsTab===t.id&&styles.chipTxtActive,{textAlign:'center'}]}>{t.label}</Text>
                   </TouchableOpacity>
@@ -7063,6 +7429,30 @@ setJerryHistory(prev => {
 </View>
     </View>
    
+    {/* Prop of the Day */}
+    {propOfDay && (
+      <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:14,padding:14,marginBottom:16,borderWidth:1.5,borderColor:'rgba(255,184,0,0.4)'}}>
+        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+          <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14}}>⭐ PROP OF THE DAY</Text>
+          <View style={{backgroundColor:'rgba(0,229,160,0.15)',borderRadius:8,paddingHorizontal:8,paddingVertical:3}}>
+            <Text style={{color:'#00e5a0',fontSize:11,fontWeight:'800'}}>{propOfDay.ev?.toFixed(1)}% EV</Text>
+          </View>
+        </View>
+        <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:15,marginBottom:4}}>{propOfDay.player} — {propOfDay.market} {propOfDay.side} {propOfDay.line > 0 ? '+' : ''}{propOfDay.line}</Text>
+        <Text style={{color:'#7a92a8',fontSize:11,marginBottom:10}}>{propOfDay.game} • {propOfDay.book}</Text>
+        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{propOfDay.narrative}"</Text>
+        {propOfDay.signals?.length > 0 && (
+          <View style={{flexDirection:'row',gap:6,marginTop:10,flexWrap:'wrap'}}>
+            {propOfDay.signals.map((sig: string, i: number) => (
+              <View key={i} style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3}}>
+                <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700'}}>{sig}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+    )}
+
     {/* Sport Selector - no NCAAB */}
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
       <View style={{flexDirection:'row',gap:6}}>
@@ -7270,6 +7660,16 @@ setJerryHistory(prev => {
     supabase={supabase}
     isPlayoffMode={isPlayoffMode}
     playoffSeries={playoffSeries}
+  />
+)}
+
+            {trendsTab==='fades'&&(
+  <FadesScanner
+    gamesData={gamesData}
+    mlbGameContext={mlbGameContext}
+    gamesSport={gamesSport}
+    ANTHROPIC_API_KEY={ANTHROPIC_API_KEY}
+    supabase={supabase}
   />
 )}
 
