@@ -3673,18 +3673,54 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
   setParlayAnalysisVisible(true);
   setParlayAnalysisLoading(true);
   try {
-    const legs = parlayLegs.map((l,i) => `Leg ${i+1}: ${l.pick} (${l.matchup}) at ${l.oddsSign}${l.odds}`).join('\n');
+    // Build context for each leg from pipeline data
+    const buildLegContext = (leg) => {
+      const mlbCtx = Object.values(mlbGameContext).find((ctx: any) =>
+        leg.matchup?.includes(ctx.home_team?.split(' ').pop()) ||
+        leg.matchup?.includes(ctx.away_team?.split(' ').pop())
+      ) as any;
+      if(mlbCtx) {
+        return `MLB Pipeline: ${mlbCtx.home_pitcher || 'TBD'} xERA ${mlbCtx.home_sp_xera || 'N/A'} vs ${mlbCtx.away_pitcher || 'TBD'} xERA ${mlbCtx.away_sp_xera || 'N/A'}. K gap: home ${mlbCtx.home_k_gap || 'N/A'}, away ${mlbCtx.away_k_gap || 'N/A'}. wRC+: ${mlbCtx.home_wrc_plus || 'N/A'} vs ${mlbCtx.away_wrc_plus || 'N/A'}. Park: ${mlbCtx.park_run_factor || 'N/A'}. Weather: ${mlbCtx.temperature || '?'}°F, ${mlbCtx.wind_speed || 0}mph ${mlbCtx.wind_direction || ''}. NRFI score: ${mlbCtx.nrfi_score || 'N/A'}. Model lean: ${mlbCtx.over_lean === true ? 'OVER' : mlbCtx.over_lean === false ? 'UNDER' : 'NEUTRAL'}.`;
+      }
+      const homeNBA = Object.values(nbaTeamData).find((t: any) =>
+        leg.matchup?.includes(t.team?.split(' ').pop())
+      ) as any;
+      if(homeNBA) {
+        return `NBA Pipeline: Net ${homeNBA.net_rating > 0 ? '+' : ''}${homeNBA.net_rating?.toFixed(1)}, DefRtg ${homeNBA.defensive_rating?.toFixed(1)}, eFG% ${homeNBA.efg_pct?.toFixed(1)}, Pace ${homeNBA.pace?.toFixed(1)}, Home ${homeNBA.home_record || 'N/A'}, Away ${homeNBA.away_record || 'N/A'}, Last5 Net ${homeNBA.last_10_net_rating?.toFixed(1) || 'N/A'}${homeNBA.injury_note ? ', Injuries: ' + homeNBA.injury_note : ''}.`;
+      }
+      return '';
+    };
+
+    // Detect correlated legs
+    const matchupMap = {};
+    parlayLegs.forEach((l, i) => {
+      const key = l.matchup?.toLowerCase().replace(/\s+/g, '') || '';
+      if(!matchupMap[key]) matchupMap[key] = [];
+      matchupMap[key].push(i + 1);
+    });
+    const correlatedPairs = Object.values(matchupMap).filter(arr => arr.length > 1);
+    const hasCorrelation = correlatedPairs.length > 0;
+
+    const legsWithContext = parlayLegs.map((l, i) => {
+      const ctx = buildLegContext(l);
+      return `Leg ${i+1}: ${l.pick} (${l.matchup}) at ${l.oddsSign}${l.odds}${ctx ? '\n  → ' + ctx : ''}`;
+    }).join('\n');
+
+    const correlationNote = hasCorrelation
+      ? `\n\nCORRELATION ALERT: Legs ${correlatedPairs.map(p => p.join(' & ')).join(', ')} are from the same game — flag as HIGH correlation.\n`
+      : '';
+
     const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker sports betting app.
 
-Parlay legs:
-${legs}
+Parlay legs with pipeline data:
+${legsWithContext}
 Combined odds: ${parlayAmerican}
 Implied probability: ${parlayProb}%
 Total legs: ${parlayLegs.length}
+${correlationNote}
+Search the web for current injury reports, recent form, and line movement for each team or player. Combine web findings with the pipeline data above. Do NOT write any preamble — go straight to JSON output after searching.
 
-Search the web for current injury reports, recent form, and line movement for each team or player in these legs. Do NOT write any preamble like "I'll search..." or "Let me look up..." — go straight to the JSON output after searching.
-
-Return ONLY a JSON object
+Return ONLY a JSON object:
 {
   "legs": [
     {
@@ -3693,27 +3729,40 @@ Return ONLY a JSON object
       "grade": "A",
       "gradeColor": "#00e5a0",
       "confidence": 85,
-      "jerry": "One sharp sentence about this leg — specific reason why it grades this way based on what you found.",
-      "risk": "One specific risk factor for this leg"
+      "jerry": "One sharp sentence — reference specific pipeline data or web findings that justify the grade.",
+      "risk": "One specific risk factor",
+      "correlation": "NONE",
+      "pipelineData": true
     }
   ],
   "overallGrade": "B+",
   "overallColor": "#FFB800",
-  "verdict": "One sharp Jerry verdict on the full parlay — is the juice worth the squeeze?",
+  "verdict": "One sharp Jerry verdict — is the juice worth the squeeze?",
   "strongestLeg": 1,
-  "weakestLeg": 2
+  "weakestLeg": 2,
+  "hasCorrelation": false
 }
 
-Grade scale:
-A = Strong edge, high confidence, line movement supports, no major injury concerns
-B = Solid play, good value, minor concerns only
-C = Playable but risky, some red flags
-D = Weak leg, significant concerns, consider removing
-F = Avoid — injury, bad line, sharp money against, or no edge
+CORRELATION CHECK per leg:
+- "HIGH" if multiple legs from the same game
+- "MODERATE" if OVER total + team ML from same game, or two MLB unders from same division
+- "NONE" if no correlation detected
 
-gradeColor values: A=#00e5a0, B=#FFB800, C=#0099ff, D=#ff8c00, F=#ff4d6d
+NRFI LEG RULES:
+- If a leg says 'NRFI' — grade based on NRFI score in pipeline data
+- NRFI score >= 75: Grade A. 65-74: Grade B. 55-64: Grade C. < 55: Grade D
+- Always reference both pitcher xERA values when grading NRFI legs
+
+Grade scale:
+A = Strong edge, pipeline data confirms, line movement supports
+B = Solid play, good value, pipeline data mostly supports
+C = Playable but risky, pipeline data mixed or missing
+D = Weak leg, pipeline data against or significant concerns
+F = Avoid — injury, bad line, pipeline data conflicts
+
+gradeColor: A=#00e5a0, B=#FFB800, C=#0099ff, D=#ff8c00, F=#ff4d6d
 Never say "bet" or "must play". Be sharp and direct.
-CRITICAL: Your entire response must be valid JSON starting with { and ending with }. No text before or after the JSON under any circumstances.`;
+CRITICAL: Your entire response must be valid JSON starting with { and ending with }. No text before or after.`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -3733,34 +3782,29 @@ CRITICAL: Your entire response must be valid JSON starting with { and ending wit
     const data = await response.json();
     const text = data?.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
     try {
-      // Try multiple extraction methods
 let parsed = null;
 try {
-  // Method 1: direct parse after cleaning markdown
   const clean = text.replace(/```json|```/g, '').trim();
   parsed = JSON.parse(clean);
 } catch(e1) {
   try {
-    // Method 2: find JSON object in text
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if(jsonMatch) parsed = JSON.parse(jsonMatch[0]);
   } catch(e2) {
     try {
-      // Method 3: find from first { to last }
       const start = text.indexOf('{');
       const end = text.lastIndexOf('}');
-      if(start !== -1 && end !== -1) {
-        parsed = JSON.parse(text.substring(start, end + 1));
-      }
-    } catch(e3) {
-      parsed = null;
-    }
+      if(start !== -1 && end !== -1) parsed = JSON.parse(text.substring(start, end + 1));
+    } catch(e3) { parsed = null; }
   }
 }
 if(parsed) {
+  // Ensure hasCorrelation is set
+  if(parsed.hasCorrelation === undefined) {
+    parsed.hasCorrelation = hasCorrelation || (parsed.legs || []).some(l => l.correlation === 'HIGH' || l.correlation === 'MODERATE');
+  }
   setParlayAnalysis(parsed);
 } else {
-  // Extract just the verdict text if JSON fails completely
   const verdictMatch = text.match(/"verdict":\s*"([^"]+)"/);
   setParlayAnalysis({error: verdictMatch ? verdictMatch[1] : text.replace(/[{}"[\]]/g, '').substring(0, 300)});
 }
@@ -4008,29 +4052,29 @@ const fetchJerryRecord = async () => {
     // NRFI Model record from mlb_game_results
     let nrfi = {wins:0, losses:0};
     try {
-      const { data: nrfiData } = await supabase
+      const { data: nrfiData, error: nrfiError } = await supabase
         .from('mlb_game_results')
         .select('nrfi_score, nrfi_result')
-        .gte('nrfi_score', 55)
+        .gte('nrfi_score', 70)
         .not('nrfi_result', 'is', null);
+      console.log('NRFI data:', nrfiData?.length, nrfiError);
       if(nrfiData && nrfiData.length > 0) {
-        nrfi.wins = nrfiData.filter(r => r.nrfi_result === true).length;
-        nrfi.losses = nrfiData.filter(r => r.nrfi_result === false).length;
+        nrfi.wins = nrfiData.filter((r: any) => r.nrfi_result === 'NRFI').length;
+        nrfi.losses = nrfiData.filter((r: any) => r.nrfi_result === 'YRFI').length;
       }
     } catch(e) {}
 
-    // Best Bet history from jerry_cache
-    const { data: bestBets } = await supabase
-      .from('jerry_cache')
-      .select('data, fetched_at, cache_key')
-      .like('cache_key', 'best_bet_%')
-      .order('fetched_at', {ascending: false})
+    // Best Bet history from dedicated table
+    const { data: bestBetHistory } = await supabase
+      .from('daily_best_bet_history')
+      .select('*')
+      .order('bet_date', {ascending: false})
       .limit(14);
 
     setJerryRecord({
       props: { wins: propWins, losses: propLosses, pending: pendingProps, bySport: propBySport, recent: recentProps },
       nrfi,
-      bestBets: (bestBets || []).map(b => ({ ...b.data, date: b.fetched_at })).filter(b => b.game),
+      bestBets: bestBetHistory || [],
     });
   } catch(e) {
     console.log('Jerry record error:', e?.message);
@@ -4065,38 +4109,31 @@ const fetchDailyBestBet = async () => {
   const _now = new Date();
   const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
 
-  // Check Supabase first — shared across all users, locked per day
+  // Check Supabase first — one best bet per day, shared across all users, never regenerates
   try {
     const { data: supabaseCache } = await supabase
       .from('jerry_cache')
       .select('data, fetched_at')
       .eq('cache_key', `best_bet_${today}`)
       .single();
-    if(supabaseCache) {
-      // Verify cached game hasn't already passed (stale from UTC key mismatch)
-      const cachedGame = supabaseCache.data?.game;
-      const cachedTime = cachedGame?.commence_time ? new Date(cachedGame.commence_time) : null;
-      if(!cachedTime || cachedTime > new Date()) {
-        setDailyBestBet(supabaseCache.data);
-        return;
-      }
+    if(supabaseCache?.data) {
+      setDailyBestBet(supabaseCache.data);
+      // Also save to local cache so it's instant next time
+      try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}
+      return;
     }
   } catch(e) {}
 
-  // Check local cache
+  // Check local cache — same rule, if today's pick exists, use it
   try {
     const cached = await AsyncStorage.getItem(CACHE_KEY);
     if(cached) {
       const parsed = JSON.parse(cached);
       const cacheDate = new Date(parsed.timestamp);
       const cacheDateStr = cacheDate.getFullYear() + '-' + String(cacheDate.getMonth()+1).padStart(2,'0') + '-' + String(cacheDate.getDate()).padStart(2,'0');
-      if(cacheDateStr === today) {
-        const cachedGame = parsed.data?.game;
-        const cachedTime = cachedGame?.commence_time ? new Date(cachedGame.commence_time) : null;
-        if(!cachedTime || cachedTime > new Date()) {
-          setDailyBestBet(parsed.data);
-          return;
-        }
+      if(cacheDateStr === today && parsed.data) {
+        setDailyBestBet(parsed.data);
+        return;
       }
     }
   } catch(e) {}
@@ -4131,9 +4168,9 @@ const fetchDailyBestBet = async () => {
       const mlbGames = [];
       for(const dateEntry of mlbResp.data?.dates || []) {
         for(const game of dateEntry.games || []) {
-          if(game.status?.abstractGameState === 'Final') continue;
+          if(game.status?.abstractGameState === 'Final' || game.status?.abstractGameState === 'Live') continue;
           const gameTime = new Date(game.gameDate);
-          if(gameTime < todayStart || gameTime > todayEnd) continue;
+          if(gameTime < now || gameTime > todayEnd) continue;
           const oddsGame = (mlbOddsResp.data || []).find((og: any) => {
             return og.home_team.includes(game.teams?.home?.team?.name?.split(' ').pop() || '') ||
                    game.teams?.home?.team?.name?.includes(og.home_team.split(' ').pop() || '');
@@ -4315,6 +4352,19 @@ ${bestScoreObj.isNRFI ?
         data: bestBetData,
         fetched_at: new Date().toISOString(),
       }, {onConflict: 'cache_key'});
+    } catch(e) {}
+
+    // Log to best bet history for Jerry's Track Record
+    try {
+      await supabase.from('daily_best_bet_history').upsert({
+        bet_date: today,
+        sport: bestSport,
+        game: `${bestGame.away_team} @ ${bestGame.home_team}`,
+        lean: bestScoreObj.isNRFI ? 'NRFI' : (bestScoreObj.leanSide || 'Model Edge'),
+        sweat_score: bestScoreObj.isNRFI ? bestScoreObj.nrfiScore : bestScoreObj.total,
+        narrative,
+        result: 'Pending',
+      }, {onConflict: 'bet_date'});
     } catch(e) {}
 
     // Save to local cache
@@ -6047,6 +6097,16 @@ setJerryHistory(prev => {
 
             {/* SCHEDULE TAB */}
         {matchupTab==='schedule'&&(()=>{
+          if(gamesSport==='NHL') return(
+            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:'#1f2d3d',alignItems:'center'}}>
+              <Text style={{fontSize:32}}>🏒</Text>
+              <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>NHL Schedule Data</Text>
+              <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Real-time schedule and game log data will be available for the 2026-27 NHL season.</Text>
+              <View style={{marginTop:12,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,paddingHorizontal:14,paddingVertical:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
+                <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11}}>🔜 COMING NEXT SEASON</Text>
+              </View>
+            </View>
+          );
           const games = scheduleGames.length > 0 ? scheduleGames : (scheduleTeam==='away'?md.awayGames:scheduleTeam==='home'?md.homeGames:md.h2hGames);
           const isReal = scheduleGames.length > 0;
           return(
@@ -6103,6 +6163,16 @@ setJerryHistory(prev => {
 
             {/* TEAM STATS TAB */}
         {matchupTab==='stats'&&(()=>{
+          if(gamesSport==='NHL') return(
+            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:'#1f2d3d',alignItems:'center'}}>
+              <Text style={{fontSize:32}}>🏒</Text>
+              <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>NHL Team Stats</Text>
+              <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Advanced team stats and efficiency data will be available for the 2026-27 NHL season.</Text>
+              <View style={{marginTop:12,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,paddingHorizontal:14,paddingVertical:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
+                <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11}}>🔜 COMING NEXT SEASON</Text>
+              </View>
+            </View>
+          );
           const isNCAAB = gamesSport==='NCAAB';
           const isNBA = gamesSport==='NBA';
           const isMLB = gamesSport==='MLB';
@@ -6739,6 +6809,13 @@ setJerryHistory(prev => {
           <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>{parlayAnalysis.error}</Text>
         ) : parlayAnalysis?.legs ? (
           <View>
+            {/* Correlation Warning */}
+            {parlayAnalysis?.hasCorrelation && (
+              <View style={{backgroundColor:'rgba(255,77,109,0.1)',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:'rgba(255,77,109,0.3)'}}>
+                <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:12}}>⚠️ CORRELATION WARNING</Text>
+                <Text style={{color:'#7a92a8',fontSize:11,marginTop:4}}>One or more legs are from the same game — this affects true parlay odds. Some books void correlated parlays.</Text>
+              </View>
+            )}
             {/* Overall Grade */}
             <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
   <View style={{flexDirection:'row',alignItems:'center',marginBottom:8}}>
@@ -6779,6 +6856,16 @@ setJerryHistory(prev => {
                 {(i === parlayAnalysis.weakestLeg - 1) && (
                   <View style={{backgroundColor:'rgba(255,77,109,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,alignSelf:'flex-start',marginTop:6}}>
                     <Text style={{color:'#ff4d6d',fontSize:10,fontWeight:'700'}}>⚠️ WEAKEST LEG</Text>
+                  </View>
+                )}
+                {(leg.correlation === 'HIGH' || leg.correlation === 'MODERATE') && (
+                  <View style={{backgroundColor:'rgba(255,140,0,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,alignSelf:'flex-start',marginTop:6}}>
+                    <Text style={{color:'#ff8c00',fontSize:10,fontWeight:'700'}}>🔗 {leg.correlation} CORRELATION</Text>
+                  </View>
+                )}
+                {leg.pipelineData && (
+                  <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,alignSelf:'flex-start',marginTop:6}}>
+                    <Text style={{color:'#00e5a0',fontSize:10,fontWeight:'700'}}>📡 PIPELINE DATA</Text>
                   </View>
                 )}
               </View>
@@ -7698,44 +7785,66 @@ setJerryHistory(prev => {
                     <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Model performance — updated daily</Text>
                   </View>
 
-                  {/* Prop Jerry A-Grade Record Hero */}
-                  <View style={[styles.hero,{marginBottom:16}]}>
-                    <View>
-                      <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700'}}>PROP JERRY A-GRADES</Text>
-                      <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:36}}>{p.wins}-{p.losses}</Text>
-                      <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{p.pending} pending • {propWinRate}% hit rate</Text>
-                    </View>
-                    <View style={{alignItems:'center'}}>
-                      <View style={{width:80,height:80,borderRadius:40,borderWidth:2.5,borderColor:parseFloat(propWinRate)>=55?'#00e5a0':parseFloat(propWinRate)>=50?HRB_COLOR:'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
-                        <Text style={{color:parseFloat(propWinRate)>=55?'#00e5a0':parseFloat(propWinRate)>=50?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:22}}>{propWinRate}%</Text>
-                      </View>
-                      <Text style={{color:'#4a6070',fontSize:10,marginTop:4}}>WIN RATE</Text>
-                    </View>
-                  </View>
-
-                  {/* NRFI Model Record */}
-                  {(jerryRecord.nrfi.wins + jerryRecord.nrfi.losses > 0) && (()=>{
+                  {/* NRFI Model Record — always show prominently */}
+                  {(()=>{
                     const nTotal = jerryRecord.nrfi.wins + jerryRecord.nrfi.losses;
-                    const nPct = ((jerryRecord.nrfi.wins/nTotal)*100).toFixed(0);
+                    const nPct = nTotal > 0 ? Math.round((jerryRecord.nrfi.wins/nTotal)*100) : 0;
+                    if(nTotal === 0) return(
+                      <View style={[styles.card,{marginBottom:16}]}>
+                        <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL (Score 70+)</Text>
+                        <Text style={{color:'#7a92a8',fontSize:13,marginTop:8}}>NRFI results loading...</Text>
+                      </View>
+                    );
                     return(
-                      <View style={[styles.card,{marginBottom:12}]}>
-                        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-                          <View>
-                            <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL (Score 55+)</Text>
-                            <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:24,marginTop:4}}>{jerryRecord.nrfi.wins}-{jerryRecord.nrfi.losses}</Text>
+                      <View style={[styles.hero,{marginBottom:16}]}>
+                        <View>
+                          <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL (Score 70+)</Text>
+                          <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:36}}>{jerryRecord.nrfi.wins}-{jerryRecord.nrfi.losses}</Text>
+                          <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{nPct}% hit rate on scores 70+</Text>
+                        </View>
+                        <View style={{alignItems:'center'}}>
+                          <View style={{width:72,height:72,borderRadius:36,borderWidth:2.5,borderColor:nPct>=55?'#00e5a0':'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
+                            <Text style={{color:nPct>=55?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:20}}>{nPct}%</Text>
                           </View>
-                          <View style={{alignItems:'center'}}>
-                            <View style={{width:56,height:56,borderRadius:28,borderWidth:2,borderColor:parseFloat(nPct)>=55?'#00e5a0':'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
-                              <Text style={{color:parseFloat(nPct)>=55?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:18}}>{nPct}%</Text>
-                            </View>
-                          </View>
+                          <Text style={{color:'#4a6070',fontSize:10,marginTop:4}}>HIT RATE</Text>
                         </View>
                       </View>
                     );
                   })()}
 
-                  {/* By Sport breakdown */}
-                  {Object.keys(p.bySport).length > 0 && (
+                  {/* Prop Jerry A-Grade Record */}
+                  <View style={[styles.card,{marginBottom:16}]}>
+                    <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8}}>PROP JERRY A-GRADES</Text>
+                    {propTotal >= 15 ? (
+                      <>
+                        <View style={{flexDirection:'row',justifyContent:'space-around',marginBottom:8}}>
+                          <View style={{alignItems:'center'}}>
+                            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:28}}>{p.pending + propTotal}</Text>
+                            <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>TRACKED</Text>
+                          </View>
+                          <View style={{alignItems:'center'}}>
+                            <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:28}}>{p.wins}</Text>
+                            <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>WINS</Text>
+                          </View>
+                          <View style={{alignItems:'center'}}>
+                            <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:28}}>{p.losses}</Text>
+                            <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>LOSSES</Text>
+                          </View>
+                        </View>
+                        <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}>
+                          <Text style={{color:parseFloat(propWinRate)>=55?'#00e5a0':parseFloat(propWinRate)>=50?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:20}}>{propWinRate}% hit rate</Text>
+                          <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{propTotal} resolved • {p.pending} pending</Text>
+                        </View>
+                      </>
+                    ) : (
+                      <Text style={{color:'#7a92a8',fontSize:13,textAlign:'center',paddingHorizontal:20,lineHeight:20}}>
+                        Prop results calibrating — tracking {p.pending + propTotal} props this season. Results auto-resolve daily via box score data.
+                      </Text>
+                    )}
+                  </View>
+
+                  {/* By Sport breakdown — only show with 25+ resolved */}
+                  {propTotal >= 15 && Object.keys(p.bySport).length > 0 && (
                     <View style={[styles.card,{marginBottom:12}]}>
                       <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',letterSpacing:1,marginBottom:10}}>A-GRADE HIT RATE BY SPORT</Text>
                       {Object.entries(p.bySport).map(([sport, rec], i) => {
@@ -7759,14 +7868,17 @@ setJerryHistory(prev => {
                     </View>
                   )}
 
-                  {/* Recent A-Grade Picks */}
+                  {/* Recent A-Grade Picks — always show */}
                   {p.recent.length > 0 && (
                     <>
                       <Text style={styles.sectionLabel}>RECENT A-GRADE PICKS</Text>
                       {p.recent.map((prop, i) => {
                         const isPending = prop.result === 'Pending';
                         const isWin = prop.result === 'Win';
+                        const isLoss = prop.result === 'Loss';
                         const borderColor = isPending ? '#4a6070' : isWin ? '#00e5a0' : '#ff4d6d';
+                        const statusLabel = isPending ? 'PENDING' : isWin ? 'WIN' : 'LOSS';
+                        const statusColor = isPending ? '#7a92a8' : isWin ? '#00e5a0' : '#ff4d6d';
                         return(
                           <View key={i} style={[styles.betCard,{borderLeftColor:borderColor,marginBottom:8}]}>
                             <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'}}>
@@ -7776,8 +7888,8 @@ setJerryHistory(prev => {
                                 <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{prop.best_side} {prop.best_odds>0?'+':''}{prop.best_odds} @ {prop.book}</Text>
                               </View>
                               <View style={{alignItems:'center'}}>
-                                <View style={{width:32,height:32,borderRadius:16,backgroundColor:borderColor+'33',alignItems:'center',justifyContent:'center',borderWidth:1,borderColor}}>
-                                  <Text style={{color:borderColor,fontWeight:'800',fontSize:isPending?9:12}}>{isPending?'PND':isWin?'W':'L'}</Text>
+                                <View style={{backgroundColor:borderColor+'22',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor}}>
+                                  <Text style={{color:statusColor,fontWeight:'800',fontSize:10}}>{statusLabel}</Text>
                                 </View>
                               </View>
                             </View>
@@ -7791,22 +7903,35 @@ setJerryHistory(prev => {
                   {jerryRecord.bestBets.length > 0 && (
                     <>
                       <Text style={styles.sectionLabel}>🔒 DAILY BEST BET HISTORY</Text>
-                      {jerryRecord.bestBets.slice(0,7).map((bet, i) => (
-                        <View key={i} style={[styles.card,{marginBottom:8,padding:12}]}>
-                          <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-                            <View style={{flex:1}}>
-                              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{bet.game?.away_team?.split(' ').pop()} @ {bet.game?.home_team?.split(' ').pop()}</Text>
-                              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginTop:2}}>{bet.leanDisplay || 'Model Edge'}</Text>
-                              <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{SPORT_EMOJI[bet.sport]||''} {bet.sport} • {new Date(bet.date).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</Text>
-                            </View>
-                            <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:HRB_COLOR,alignItems:'center',justifyContent:'center',backgroundColor:'rgba(255,184,0,0.1)'}}>
-                              <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14}}>{bet.score?.total||'—'}</Text>
+                      {jerryRecord.bestBets.slice(0,14).map((bet, i) => {
+                        const isPending = bet.result === 'Pending';
+                        const isWin = bet.result === 'Win';
+                        const resultColor = isPending ? '#4a6070' : isWin ? '#00e5a0' : '#ff4d6d';
+                        return(
+                          <View key={i} style={[styles.betCard,{borderLeftColor:resultColor,marginBottom:8}]}>
+                            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+                              <View style={{flex:1}}>
+                                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{bet.game}</Text>
+                                <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginTop:2}}>{bet.lean || 'Model Edge'}</Text>
+                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{SPORT_EMOJI[bet.sport]||''} {bet.sport} • {new Date(bet.bet_date).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</Text>
+                              </View>
+                              <View style={{alignItems:'center',gap:4}}>
+                                <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:HRB_COLOR,alignItems:'center',justifyContent:'center',backgroundColor:'rgba(255,184,0,0.1)'}}>
+                                  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14}}>{bet.sweat_score||'—'}</Text>
+                                </View>
+                                <View style={{backgroundColor:resultColor+'22',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:resultColor}}>
+                                  <Text style={{color:resultColor,fontWeight:'800',fontSize:9}}>{isPending?'PENDING':isWin?'WIN':'LOSS'}</Text>
+                                </View>
+                              </View>
                             </View>
                           </View>
-                        </View>
-                      ))}
+                        );
+                      })}
                     </>
                   )}
+
+                  {/* Footer note */}
+                  <Text style={{color:'#4a6070',fontSize:10,textAlign:'center',marginTop:12,lineHeight:14}}>Results auto-resolve daily via MLB Stats API and BDL box scores</Text>
 
                   <View style={{height:20}}/>
                 </View>
