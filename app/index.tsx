@@ -1278,7 +1278,7 @@ const stripMascot = (teamName) => {
     });
     return result || teamName;
   };
-const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parlayLegs, setParlayLegs, setActiveTab, setMybetsTab, showToast, ANTHROPIC_API_KEY, supabase }) => {
+const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parlayLegs, setParlayLegs, setActiveTab, setMybetsTab, showToast, ANTHROPIC_API_KEY, supabase, isPlayoffMode, playoffSeries }) => {
   const [degenData, setDegenData] = React.useState(null);
   const [degenLoading, setDegenLoading] = React.useState(false);
   const [degenError, setDegenError] = React.useState('');
@@ -1622,6 +1622,8 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
    const [fanmatchData, setFanmatchData] = useState({});
   const [nbaTeamData, setNbaTeamData] = useState({});
   const [nbaInjuryData, setNbaInjuryData] = useState<Record<string, any[]>>({});
+  const [playoffSeries, setPlayoffSeries] = useState({});
+  const [isPlayoffMode, setIsPlayoffMode] = useState(false);
     const [scoresCache, setScoresCache] = useState({});
   const [scoresLoading, setScoresLoading] = useState(false);
   const [form, setForm] = useState({matchup:'',pick:'',sport:'NBA',type:'Spread',odds:'',units:'',book:'Hard Rock',result:'Pending',oddsSign:'-'});
@@ -1708,6 +1710,7 @@ useEffect(() => {
   if(bartData.length) {
     fetchNBATeamContext();
     fetchNBAInjuries();
+    fetchPlayoffSeries();
   }
 }, [bartData]);
 useEffect(() => {
@@ -2934,6 +2937,18 @@ modelMismatch = Math.min(85, modelMismatch);
       leanBet = 'ml';
     }
   }
+// Playoff adjustments
+if(isPlayoffMode) {
+  const series = playoffSeries?.[game.home_team] || playoffSeries?.[game.away_team];
+  if(series) {
+    if(series.leader === game.home_team && series.leader_wins > series.trailer_wins) {
+      modelMismatch = Math.min(88, modelMismatch + 8);
+    }
+    if(series.is_elimination) {
+      modelMismatch = Math.min(88, modelMismatch + 5);
+    }
+  }
+}
 // NBA fallback lean — use moneyline favorite if no NBA data
   if(!leanSide) {
     const mlOddsAwayNBA = bookmakers.map(bm => {
@@ -3705,7 +3720,31 @@ const fetchNBAInjuries = async () => {
     //console.log('NBA injury fetch error:', e);
   }
 };
-  
+
+const fetchPlayoffSeries = async () => {
+  try {
+    const today = new Date();
+    const playoffStart = new Date('2026-04-19');
+    if(today < playoffStart) {
+      setIsPlayoffMode(false);
+      return;
+    }
+    setIsPlayoffMode(true);
+    const { data } = await supabase
+      .from('nba_playoff_series')
+      .select('*')
+      .eq('season', 2024);
+    if(data && data.length > 0) {
+      const seriesMap = {};
+      data.forEach(s => {
+        seriesMap[s.home_team] = s;
+        seriesMap[s.away_team] = s;
+      });
+      setPlayoffSeries(seriesMap);
+    }
+  } catch(e) {}
+};
+
   const fetchModelEdgeGames = async (sport = 'NCAAB') => {
   setModelEdgeLoading(true);
   try {
@@ -4330,7 +4369,12 @@ NBA EFFICIENCY DATA:
 - Defensive rating: ${game.home_team.split(' ').pop()} ${homeNBAData.defensive_rating?.toFixed(1)} (opp eFG%: ${homeNBAData.opp_efg_pct?.toFixed(1) || 'N/A'}%) | ${game.away_team.split(' ').pop()} ${awayNBAData.defensive_rating?.toFixed(1)} (opp eFG%: ${awayNBAData.opp_efg_pct?.toFixed(1) || 'N/A'}%)
 - Avg pace: ${((homeNBAData.pace + awayNBAData.pace)/2).toFixed(1)} possessions/game
 ${(nbaInjuryData[game.home_team] || []).length > 0 ? `- ${game.home_team} injuries: ${(nbaInjuryData[game.home_team] || []).filter(i => i.status === 'Out').map(i => i.player_name + ' (OUT)').concat((nbaInjuryData[game.home_team] || []).filter(i => i.status === 'Questionable').map(i => i.player_name + ' (Q)')).slice(0, 5).join(', ')}` : `- ${game.home_team}: no reported injuries`}
-${(nbaInjuryData[game.away_team] || []).length > 0 ? `- ${game.away_team} injuries: ${(nbaInjuryData[game.away_team] || []).filter(i => i.status === 'Out').map(i => i.player_name + ' (OUT)').concat((nbaInjuryData[game.away_team] || []).filter(i => i.status === 'Questionable').map(i => i.player_name + ' (Q)')).slice(0, 5).join(', ')}` : `- ${game.away_team}: no reported injuries`}`;
+${(nbaInjuryData[game.away_team] || []).length > 0 ? `- ${game.away_team} injuries: ${(nbaInjuryData[game.away_team] || []).filter(i => i.status === 'Out').map(i => i.player_name + ' (OUT)').concat((nbaInjuryData[game.away_team] || []).filter(i => i.status === 'Questionable').map(i => i.player_name + ' (Q)')).slice(0, 5).join(', ')}` : `- ${game.away_team}: no reported injuries`}
+${isPlayoffMode && (playoffSeries[game.home_team] || playoffSeries[game.away_team]) ?
+  `- PLAYOFF SERIES: ${(playoffSeries[game.home_team] || playoffSeries[game.away_team]).series_label}
+- Game number: ${(playoffSeries[game.home_team] || playoffSeries[game.away_team]).game_number}
+- Is elimination game: ${(playoffSeries[game.home_team] || playoffSeries[game.away_team]).is_elimination ? 'YES — MUST WIN' : 'No'}`
+  : ''}`;
   }
 }
 const modelContext = scoreData?.predictedSpread ? `
@@ -4486,6 +4530,10 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NBA: always reference home/away records — a team that is 34-7 at home vs a road team that is 14-27 away is a massive situational edge
 - For NBA: if home team has strong home record and away team has poor road record, lean home regardless of net rating gap
 - For NBA: fade the B2B team unless line has already moved 3+ pts against them
+- For NBA playoffs: ALWAYS mention the series context first — who leads, what game it is, elimination scenarios
+- For NBA playoffs: home court advantage is earned not given — series leader at home is a massive edge
+- For NBA playoffs: if it's an elimination game lead with that immediately — teams play differently when facing elimination
+- For NBA playoffs: reference historical series comeback rates — teams down 3-1 win only 7% of the time
 - For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
 - For MLB: if web search shows the game has ALREADY BEEN PLAYED — do NOT recap it. Instead say "This game has already been played." and stop.
 - For MLB: you are giving a PRE-GAME take only. Never recap a completed game.
@@ -6367,6 +6415,11 @@ setJerryHistory(prev => {
       <Text style={{color:'#7a92a8',fontSize:13}}>No prime plays today — top game scores {dailyBestBet.topScore}/100. Jerry says wait for a better spot.</Text>
     ) : dailyBestBet?.game ? (
       <View>
+{isPlayoffMode && dailyBestBet?.sport === 'NBA' && (
+  <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,marginBottom:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
+    <Text style={{color:'#FFB800',fontSize:11,fontWeight:'700'}}>🏆 NBA PLAYOFFS</Text>
+  </View>
+)}
         <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',letterSpacing:0.5,marginBottom:6}}>
           {SPORT_EMOJI[dailyBestBet.sport] || '🎯'} {dailyBestBet.sport} — {new Date(dailyBestBet.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} ET
         </Text>
@@ -6877,6 +6930,15 @@ setJerryHistory(prev => {
                           </View>
                         );
                       })()}
+{gamesSport === 'NBA' && isPlayoffMode && (()=>{
+  const series = playoffSeries[game.home_team] || playoffSeries[game.away_team];
+  if(!series) return null;
+  return(
+    <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:8,paddingHorizontal:10,paddingVertical:4,marginBottom:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)',alignSelf:'flex-start'}}>
+      <Text style={{color:'#FFB800',fontSize:11,fontWeight:'800'}}>🏆 {series.series_label} — Game {series.game_number}</Text>
+    </View>
+  );
+})()}
                       {hrbLine?(
                         <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:10,padding:10,marginBottom:8,borderWidth:1,borderColor:'rgba(255,184,0,0.25)'}}>
                           <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',marginBottom:6}}>🎸 HARD ROCK BET</Text>
@@ -7135,6 +7197,8 @@ setJerryHistory(prev => {
     showToast={showToast}
     ANTHROPIC_API_KEY={ANTHROPIC_API_KEY}
     supabase={supabase}
+    isPlayoffMode={isPlayoffMode}
+    playoffSeries={playoffSeries}
   />
 )}
 
