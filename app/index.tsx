@@ -4253,14 +4253,19 @@ const fetchDailyBestBet = async () => {
       .eq('cache_key', `best_bet_${today}`)
       .single();
     if(supabaseCache?.data) {
-      const fetchedHour = parseInt(new Date(supabaseCache.fetched_at).toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
-      // If cached bet was generated before 10am ET and it's now after 10am, regenerate with fresh pipeline data
-      if(fetchedHour < 10 && etHour >= 10) {
-        // Stale pre-pipeline bet — fall through to regenerate
+      // Don't serve cached noGames results — always try fresh after 10am
+      if(supabaseCache.data.noGames) {
+        // Fall through to regenerate
       } else {
-        setDailyBestBet(supabaseCache.data);
-        try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}
-        return;
+        const fetchedHour = parseInt(new Date(supabaseCache.fetched_at).toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
+        // If cached bet was generated before 10am ET and it's now after 10am, regenerate with fresh pipeline data
+        if(fetchedHour < 10 && etHour >= 10) {
+          // Stale pre-pipeline bet — fall through to regenerate
+        } else {
+          setDailyBestBet(supabaseCache.data);
+          try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}
+          return;
+        }
       }
     }
   } catch(e) {}
@@ -4278,7 +4283,7 @@ const fetchDailyBestBet = async () => {
       const parsed = JSON.parse(cached);
       const cacheDate = new Date(parsed.timestamp);
       const cacheDateStr = cacheDate.getFullYear() + '-' + String(cacheDate.getMonth()+1).padStart(2,'0') + '-' + String(cacheDate.getDate()).padStart(2,'0');
-      if(cacheDateStr === today && parsed.data) {
+      if(cacheDateStr === today && parsed.data && !parsed.data.noGames) {
         setDailyBestBet(parsed.data);
         return;
       }
@@ -4315,9 +4320,11 @@ const fetchDailyBestBet = async () => {
       const mlbGames = [];
       for(const dateEntry of mlbResp.data?.dates || []) {
         for(const game of dateEntry.games || []) {
-          if(game.status?.abstractGameState === 'Final' || game.status?.abstractGameState === 'Live') continue;
+          if(game.status?.abstractGameState === 'Final') continue;
           const gameTime = new Date(game.gameDate);
-          if(gameTime < now || gameTime > todayEnd) continue;
+          if(gameTime > todayEnd) continue;
+          // Only skip games that started 4+ hours ago (likely over)
+          if(gameTime < new Date(now.getTime() - 4*60*60*1000)) continue;
           const oddsGame = (mlbOddsResp.data || []).find((og: any) => {
             return og.home_team.includes(game.teams?.home?.team?.name?.split(' ').pop() || '') ||
                    game.teams?.home?.team?.name?.includes(og.home_team.split(' ').pop() || '');
@@ -4388,7 +4395,8 @@ const fetchDailyBestBet = async () => {
 
       const nbaGames = (nbaResp.data || []).filter((g: any) => {
         const t = new Date(g.commence_time);
-        return t >= todayStart && t <= todayEnd && t > now;
+        // Include today's games that haven't been over for 4+ hours
+        return t >= todayStart && t <= todayEnd && t > new Date(now.getTime() - 4*60*60*1000);
       });
 
       for(const game of nbaGames) {
