@@ -645,8 +645,9 @@ def get_mlb_games():
                 "markets": "totals,h2h",
                 "oddsFormat": "american",
                 "bookmakers": "draftkings",
-                "commenceTimeFrom": datetime.utcnow().strftime('%Y-%m-%dT00:00:00Z'),
-                "commenceTimeTo": (datetime.utcnow() + timedelta(hours=6)).strftime('%Y-%m-%dT23:59:59Z'),
+                # Anchor to ET date — midnight ET = 04:00 UTC, end at 3:59am next day UTC = 11:59pm ET
+                "commenceTimeFrom": f"{(datetime.utcnow() - timedelta(hours=5)).strftime('%Y-%m-%d')}T04:00:00Z",
+                "commenceTimeTo": f"{(datetime.utcnow() - timedelta(hours=5) + timedelta(days=1)).strftime('%Y-%m-%d')}T03:59:59Z",
             }
         )
         return r.json()
