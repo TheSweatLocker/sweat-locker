@@ -83,6 +83,14 @@ jobs:
           cd mlb_pipeline
           python resolve_nrfi.py
 
+      - name: Resolve game results
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python resolve_game_results.py
+
       - name: Run NBA team stats update
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

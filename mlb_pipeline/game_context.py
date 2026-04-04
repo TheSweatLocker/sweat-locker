@@ -11,6 +11,77 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY")
 
+def sanitize_xera(xera, pitcher_name=''):
+    """Cap xERA at 6.5 — values above this are bad early season data"""
+    if xera is None:
+        return None
+    try:
+        val = float(xera)
+        if val > 6.5:
+            print(f'  ⚠️ Suspicious xERA {val} for {pitcher_name} — bad early season data, treating as None')
+            return None
+        return round(val, 2)
+    except:
+        return None
+
+def sanitize_k_pct(k_pct, pitcher_name=''):
+    """Cap K% at 40 — above this is suspect early season small sample"""
+    if k_pct is None:
+        return None
+    try:
+        val = float(k_pct)
+        if val > 40.0:
+            print(f'  ⚠️ Suspicious K% {val} for {pitcher_name} — capping at None')
+            return None
+        return round(val, 2)
+    except:
+        return None
+
+def get_final_score(game_id_mlb):
+    """Fetch final score from MLB Stats API by game PK"""
+    try:
+        r = requests.get(
+            f'https://statsapi.mlb.com/api/v1/game/{game_id_mlb}/linescore',
+            timeout=15
+        )
+        data = r.json()
+        home_runs = data.get('teams', {}).get('home', {}).get('runs')
+        away_runs = data.get('teams', {}).get('away', {}).get('runs')
+        innings = data.get('innings', [])
+        game_over = len(innings) >= 9 and home_runs is not None
+        return home_runs, away_runs, game_over
+    except Exception as e:
+        print(f'  Error fetching final score: {e}')
+        return None, None, False
+
+def get_mlb_game_pk(home_team, away_team, game_date):
+    """Find MLB Stats API game PK by team names and date"""
+    try:
+        r = requests.get(
+            'https://statsapi.mlb.com/api/v1/schedule',
+            params={
+                'sportId': 1,
+                'date': game_date,
+                'hydrate': 'linescore'
+            },
+            timeout=15
+        )
+        dates = r.json().get('dates', [])
+        for d in dates:
+            for game in d.get('games', []):
+                mlb_home = game.get('teams', {}).get('home', {}).get('team', {}).get('name', '')
+                mlb_away = game.get('teams', {}).get('away', {}).get('team', {}).get('name', '')
+                home_match = home_team.lower() in mlb_home.lower() or mlb_home.lower() in home_team.lower()
+                away_match = away_team.lower() in mlb_away.lower() or mlb_away.lower() in away_team.lower()
+                if home_match and away_match:
+                    status = game.get('status', {}).get('abstractGameState', '')
+                    if status == 'Final':
+                        return game.get('gamePk'), game
+        return None, None
+    except Exception as e:
+        print(f'  Error finding game PK: {e}')
+        return None, None
+
 def get_probable_pitchers(game_date):
     """Fetch probable pitchers from MLB Stats API"""
     try:
@@ -638,9 +709,11 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
 
     # ── HOME PITCHER ──
     if home_pitcher_stats:
-        xera = float(home_pitcher_stats.get('xera', 4.5) or 4.5)
+        raw_xera = sanitize_xera(home_pitcher_stats.get('xera'), 'home')
+        xera = float(raw_xera if raw_xera is not None else 4.5)
         gb_pct = float(home_pitcher_stats.get('gb_pct', 0.42) or 0.42)
-        k_pct = float(home_pitcher_stats.get('k_pct', 0.20) or 0.20)
+        raw_k = home_pitcher_stats.get('k_pct', 0.20) or 0.20
+        k_pct = float(raw_k) if float(raw_k) <= 0.40 else 0.20  # cap at 40% — above is suspect
         whiff = float(home_pitcher_stats.get('whiff_rate', 0.25) or 0.25)
 
         # xERA signal — elite starter = strong NRFI lean
@@ -662,9 +735,11 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
 
     # ── AWAY PITCHER ──
     if away_pitcher_stats:
-        xera = float(away_pitcher_stats.get('xera', 4.5) or 4.5)
+        raw_xera = sanitize_xera(away_pitcher_stats.get('xera'), 'away')
+        xera = float(raw_xera if raw_xera is not None else 4.5)
         gb_pct = float(away_pitcher_stats.get('gb_pct', 0.42) or 0.42)
-        k_pct = float(away_pitcher_stats.get('k_pct', 0.20) or 0.20)
+        raw_k = away_pitcher_stats.get('k_pct', 0.20) or 0.20
+        k_pct = float(raw_k) if float(raw_k) <= 0.40 else 0.20  # cap at 40% — above is suspect
 
         if xera <= 3.00: score += 12
         elif xera <= 3.50: score += 8
@@ -764,7 +839,7 @@ def log_game_result(context):
             "home_sp_name": context.get("home_pitcher"),
             "home_sp_hand": context.get("home_throws"),
             "home_sp_xera": context.get("home_sp_xera"),
-            "home_sp_k_pct": float(context["pitcher_context"].split("K% ")[1].split("%")[0]) if context.get("pitcher_context") and "K% " in context.get("pitcher_context", "") else None,
+            "home_sp_k_pct": sanitize_k_pct(float(context["pitcher_context"].split("K% ")[1].split("%")[0]), context.get("home_pitcher", '')) if context.get("pitcher_context") and "K% " in context.get("pitcher_context", "") else None,
             "home_sp_whiff_rate": float(context["pitcher_context"].split("whiff ")[1].split("%")[0]) if context.get("pitcher_context") and "whiff " in context.get("pitcher_context", "") else None,
             "home_sp_gb_pct": float(context["pitcher_context"].split("GB% ")[1].split("%")[0]) if context.get("pitcher_context") and "GB% " in context.get("pitcher_context", "") else None,
             "home_sp_days_rest": context.get("home_days_rest"),
@@ -815,13 +890,59 @@ def log_game_result(context):
         if " | " in pitcher_ctx:
             away_ctx = pitcher_ctx.split(" | ")[1]
             try:
-                record["away_sp_xera"] = float(away_ctx.split("xERA ")[1].split(",")[0]) if "xERA " in away_ctx else None
-                record["away_sp_k_pct"] = float(away_ctx.split("K% ")[1].split("%")[0]) if "K% " in away_ctx else None
+                record["away_sp_xera"] = sanitize_xera(float(away_ctx.split("xERA ")[1].split(",")[0]), context.get("away_pitcher", '')) if "xERA " in away_ctx else None
+                record["away_sp_k_pct"] = sanitize_k_pct(float(away_ctx.split("K% ")[1].split("%")[0]), context.get("away_pitcher", '')) if "K% " in away_ctx else None
                 record["away_sp_whiff_rate"] = float(away_ctx.split("whiff ")[1].split("%")[0]) if "whiff " in away_ctx else None
                 record["away_sp_gb_pct"] = float(away_ctx.split("GB% ")[1].split("%")[0]) if "GB% " in away_ctx else None
                 record["away_sp_hand"] = away_ctx.split("(")[1][0] if "(" in away_ctx else None
             except:
                 pass
+
+        # Try to fetch final score
+        home_score = None
+        away_score = None
+        total_runs = 0
+        home_win = None
+        total_result = None
+        run_line_result = None
+        margin_of_victory = 0
+        home_spread_covered = None
+
+        home_team = context.get("home_team")
+        away_team = context.get("away_team")
+        game_date = context.get("game_date")
+
+        game_pk, mlb_game = get_mlb_game_pk(home_team, away_team, game_date)
+        if game_pk:
+            home_score, away_score, game_over = get_final_score(game_pk)
+            if home_score is not None and away_score is not None:
+                total_runs = home_score + away_score
+                home_win = home_score > away_score
+                margin_of_victory = abs(home_score - away_score)
+
+                # Total result vs close total
+                close_total = record.get('close_total')
+                if close_total:
+                    total_result = 'Over' if total_runs > float(close_total) else 'Under' if total_runs < float(close_total) else 'Push'
+
+                # Run line result (home -1.5)
+                run_line_result = 'Win' if (home_score - away_score) > 1.5 else 'Loss'
+
+                # Home spread covered (using close spread if available)
+                close_spread = record.get('close_spread')
+                if close_spread:
+                    home_spread_covered = (home_score - away_score) > -float(close_spread)
+
+                print(f'  Final score: {away_team} {away_score} @ {home_team} {home_score} | Total: {total_runs}')
+
+        record['home_score'] = home_score
+        record['away_score'] = away_score
+        record['total_runs'] = total_runs
+        record['home_win'] = home_win
+        record['margin_of_victory'] = margin_of_victory
+        record['total_result'] = total_result
+        record['run_line_result'] = run_line_result
+        record['home_spread_covered'] = home_spread_covered
 
         # Also parse close total from bookmakers for training
         headers = {
@@ -1008,6 +1129,11 @@ def run():
             # away lineup faces home pitcher, home lineup faces away pitcher
             home_k_gap = round(home_pitcher_k - away_k_pct, 1) if home_pitcher_k and away_k_pct else None
             away_k_gap = round(away_pitcher_k - home_k_pct, 1) if away_pitcher_k and home_k_pct else None
+            # Cap K gap contribution — early season K% samples are volatile
+            if home_k_gap is not None:
+                home_k_gap = max(min(home_k_gap, 15), -15)
+            if away_k_gap is not None:
+                away_k_gap = max(min(away_k_gap, 15), -15)
             if home_k_gap is not None:
                 print(f"  K gap — {home_pitcher} vs {away_team} lineup: {home_k_gap:+.1f}pts")
             if away_k_gap is not None:
@@ -1155,8 +1281,8 @@ def run():
                 "venue": venue,
                 "home_pitcher": home_pitcher,
                 "away_pitcher": away_pitcher,
-                "home_sp_xera": home_pitcher_stats.get("xera") if home_pitcher_stats else None,
-                "away_sp_xera": away_pitcher_stats.get("xera") if away_pitcher_stats else None,
+                "home_sp_xera": sanitize_xera(home_pitcher_stats.get("xera"), home_pitcher) if home_pitcher_stats else None,
+                "away_sp_xera": sanitize_xera(away_pitcher_stats.get("xera"), away_pitcher) if away_pitcher_stats else None,
                 "home_throws": home_throws,
                 "away_throws": away_throws,
                 "home_days_rest": home_days_rest,

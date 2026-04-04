@@ -3357,8 +3357,8 @@ if(isPlayoffMode) {
     }
 
     // ── PITCHER QUALITY GAP ──
-    const homeXera = parseFloat(mlbCtx.home_sp_xera) || 0;
-    const awayXera = parseFloat(mlbCtx.away_sp_xera) || 0;
+    const homeXera = mlbCtx.home_sp_xera && parseFloat(mlbCtx.home_sp_xera) <= 6.5 ? parseFloat(mlbCtx.home_sp_xera) : 0;
+    const awayXera = mlbCtx.away_sp_xera && parseFloat(mlbCtx.away_sp_xera) <= 6.5 ? parseFloat(mlbCtx.away_sp_xera) : 0;
     if(homeXera > 0 && awayXera > 0) {
       const xeraGap = Math.abs(homeXera - awayXera);
       if(xeraGap >= 1.5) modelMismatch = Math.min(88, modelMismatch + 10);
@@ -5401,7 +5401,8 @@ if(mkt.key === 'pitcher_props') {
           if(mlbCtx) {
             const isHome = mlbCtx.home_pitcher?.toLowerCase().includes(prop.player?.split(' ').pop()?.toLowerCase());
             const kGap = isHome ? mlbCtx.home_k_gap : mlbCtx.away_k_gap;
-            const xera = isHome ? parseFloat(mlbCtx.home_sp_xera) : parseFloat(mlbCtx.away_sp_xera);
+            const rawXera = isHome ? parseFloat(mlbCtx.home_sp_xera) : parseFloat(mlbCtx.away_sp_xera);
+            const xera = rawXera && rawXera <= 6.5 ? rawXera : NaN;
             if(kGap && kGap > 8) { matchupScore += 25; signals.push(`K gap +${kGap}pts`); }
             else if(kGap && kGap > 5) { matchupScore += 15; signals.push(`K gap +${kGap}pts`); }
             if(xera && xera < 3.5) { matchupScore += 20; signals.push(`xERA ${xera.toFixed(2)}`); }
@@ -6477,7 +6478,7 @@ setJerryHistory(prev => {
                 const homeKRate = homeCtx.match(/K% ([\d.]+)/)?.[1] || 'N/A';
                 const awayKRate = awayCtx.match(/K% ([\d.]+)/)?.[1] || 'N/A';
                 const mlbRows = [
-                  {label:'SP xERA', away: mlbCtx.away_sp_xera?.toFixed(2) || 'N/A', home: mlbCtx.home_sp_xera?.toFixed(2) || 'N/A', higherBetter: false},
+                  {label:'SP xERA', away: mlbCtx.away_sp_xera && parseFloat(mlbCtx.away_sp_xera) <= 6.5 ? parseFloat(mlbCtx.away_sp_xera).toFixed(2) : 'N/A', home: mlbCtx.home_sp_xera && parseFloat(mlbCtx.home_sp_xera) <= 6.5 ? parseFloat(mlbCtx.home_sp_xera).toFixed(2) : 'N/A', higherBetter: false},
                   {label:'SP K%', away: awayKRate, home: homeKRate, higherBetter: true},
                   {label:'wRC+', away: mlbCtx.away_wrc_plus?.toFixed(0) || 'N/A', home: mlbCtx.home_wrc_plus?.toFixed(0) || 'N/A', higherBetter: true},
                   {label:'wOBA', away: mlbCtx.away_woba?.toFixed(3) || 'N/A', home: mlbCtx.home_woba?.toFixed(3) || 'N/A', higherBetter: true},
@@ -6491,12 +6492,12 @@ setJerryHistory(prev => {
                       <View style={{flexDirection:'row',justifyContent:'space-between'}}>
                         <View style={{flex:1}}>
                           <Text style={{color:'#e8f0f8',fontSize:12,fontWeight:'700'}}>{mlbCtx.away_pitcher || selectedGame?.away_pitcher || 'TBD'}</Text>
-                          <Text style={{color:'#7a92a8',fontSize:10}}>xERA: {mlbCtx.away_sp_xera?.toFixed(2) || 'N/A'}</Text>
+                          <Text style={{color:'#7a92a8',fontSize:10}}>xERA: {mlbCtx.away_sp_xera && parseFloat(mlbCtx.away_sp_xera) <= 6.5 ? parseFloat(mlbCtx.away_sp_xera).toFixed(2) : 'N/A'}</Text>
                         </View>
                         <Text style={{color:'#4a6070',fontSize:11,fontWeight:'700',alignSelf:'center'}}>vs</Text>
                         <View style={{flex:1,alignItems:'flex-end'}}>
                           <Text style={{color:'#e8f0f8',fontSize:12,fontWeight:'700'}}>{mlbCtx.home_pitcher || selectedGame?.home_pitcher || 'TBD'}</Text>
-                          <Text style={{color:'#7a92a8',fontSize:10}}>xERA: {mlbCtx.home_sp_xera?.toFixed(2) || 'N/A'}</Text>
+                          <Text style={{color:'#7a92a8',fontSize:10}}>xERA: {mlbCtx.home_sp_xera && parseFloat(mlbCtx.home_sp_xera) <= 6.5 ? parseFloat(mlbCtx.home_sp_xera).toFixed(2) : 'N/A'}</Text>
                         </View>
                       </View>
                     </View>
@@ -8968,8 +8969,18 @@ const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d
         </View>
         <View style={{flex:2,backgroundColor:'#151c24',borderRadius:8,padding:8}}>
           <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:4}}>KEY SIGNALS</Text>
-          {(mlbCtx.home_pitcher || selectedGame?.home_pitcher) && <Text style={{color:'#e8f0f8',fontSize:10}}>🏠 {mlbCtx.home_pitcher || selectedGame?.home_pitcher} xERA: {mlbCtx.home_sp_xera || 'N/A'}</Text>}
-          {(mlbCtx.away_pitcher || selectedGame?.away_pitcher) && <Text style={{color:'#e8f0f8',fontSize:10}}>✈️ {mlbCtx.away_pitcher || selectedGame?.away_pitcher} xERA: {mlbCtx.away_sp_xera || 'N/A'}</Text>}
+          {(()=>{
+            const homeXERA = mlbCtx.home_sp_xera && parseFloat(mlbCtx.home_sp_xera) <= 6.5
+              ? parseFloat(mlbCtx.home_sp_xera).toFixed(2)
+              : null;
+            const awayXERA = mlbCtx.away_sp_xera && parseFloat(mlbCtx.away_sp_xera) <= 6.5
+              ? parseFloat(mlbCtx.away_sp_xera).toFixed(2)
+              : null;
+            return(<>
+              {(mlbCtx.home_pitcher || selectedGame?.home_pitcher) && <Text style={{color:'#e8f0f8',fontSize:10}}>🏠 {mlbCtx.home_pitcher || selectedGame?.home_pitcher} xERA: {homeXERA || 'N/A'}</Text>}
+              {(mlbCtx.away_pitcher || selectedGame?.away_pitcher) && <Text style={{color:'#e8f0f8',fontSize:10}}>✈️ {mlbCtx.away_pitcher || selectedGame?.away_pitcher} xERA: {awayXERA || 'N/A'}</Text>}
+            </>);
+          })()}
           {mlbCtx.umpire_note ? <Text style={{color:'#e8f0f8',fontSize:10}}>{mlbCtx.umpire_note.includes('K-friendly') ? '✅ K-friendly ump' : mlbCtx.umpire_note.includes('hitter') ? '⚠️ Hitter-friendly ump' : `Ump: ${mlbCtx.umpire || 'TBD'}`}</Text> : null}
           <Text style={{color:'#e8f0f8',fontSize:10}}>Park: {mlbCtx.park_run_factor} {mlbCtx.park_run_factor >= 110 ? '⚠️ hitter' : mlbCtx.park_run_factor <= 93 ? '✅ pitcher' : '—'} | {mlbCtx.temperature}°F</Text>
           {pipelineNRFI !== null && pipelineNRFI !== undefined && <Text style={{color:'#4a6070',fontSize:9,marginTop:2}}>Pipeline model ✓</Text>}
