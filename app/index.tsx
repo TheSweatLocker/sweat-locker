@@ -6940,34 +6940,50 @@ setJerryHistory(prev => {
               <Text style={{fontSize:64,marginBottom:24}}>🔒</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:34,textAlign:'center',marginBottom:12,letterSpacing:1}}>THE SWEAT LOCKER</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Bet Smarter, Sweat Less.</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>AI-powered sports analytics built for bettors who want a real edge — not just vibes.</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>A real sports analytics engine — not picks, not vibes. Proprietary models updated twice daily.</Text>
             </View>
           )}
           {onboardingStep===1&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🔥</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Sweat Score</Text>
-              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Every game graded 0-100</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>We analyze market efficiency, sharp money movement, line variance, and our analytics model to find mispriced lines.{'\n\n'}{'🔒 68+ = Prime Sweat\nOur highest confidence signal.'}</Text>
+              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Every game graded 0–100</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Built on pitcher Statcast data, NBA tracking stats, market efficiency, sharp money movement, and weather. 68+ is a Prime Sweat — our highest confidence signal.{'\n\n'}Updates at 8am and 2pm ET daily.</Text>
             </View>
           )}
           {onboardingStep===2&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>🎤</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Meet Prop Jerry</Text>
-              <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your AI prop analyst</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Jerry is your AI analyst — he grades props A through D based on real EV math, narrates every game with sharp insight, briefs you every morning, and reacts to your results in real time.{'\n\n'}A grades hitting 77% this season.{'\n'}Jerry never sleeps. You make the call.</Text>
+              <Text style={{fontSize:64,marginBottom:24}}>🏟</Text>
+              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Games Tab</Text>
+              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your daily command center</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Every game card shows its Sweat Score and top model signals at a glance.{'\n\n'}Tap any game for the full breakdown:{'\n'}📚 Book consensus across 7+ sportsbooks{'\n'}🎤 Jerry's AI-powered game read{'\n'}📊 Real team stats and pitcher matchups{'\n'}📈 Line movement with opening vs current{'\n'}⚾ NRFI score and first inning prediction{'\n\n'}Add any line to Parlay Builder with one tap.</Text>
             </View>
           )}
           {onboardingStep===3&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>📈</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Track Your Edge</Text>
-              <Text style={{color:'#ffd166',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>No hiding from the data</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Log every pick and track your real performance. Win rate, units, profit/loss — all in one place.{'\n\n'}The only way to know if you have an edge is to track it honestly.</Text>
+              <Text style={{fontSize:64,marginBottom:24}}>🧠</Text>
+              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Meet Jerry</Text>
+              <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your AI sports analyst</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Jerry lives in the Jerry tab. Four tools:{'\n\n'}🎯 Prop Jerry — EV scanner across MLB, NBA, NHL, UFC{'\n'}🎰 Daily Degen — Jerry's analytically backed 3-4 leg parlay{'\n'}🚫 Jerry's Fades — plays to avoid today{'\n'}📊 My Record — Jerry's verified model performance</Text>
             </View>
           )}
           {onboardingStep===4&&(
+            <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
+              <Text style={{fontSize:64,marginBottom:24}}>⚾</Text>
+              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>NRFI Model</Text>
+              <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>No Run First Inning — our flagship</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Built on pitcher xERA, strikeout rate vs lineup K%, ground ball rate, days rest, weather, park factor, and offensive quality.{'\n\n'}Model updates twice daily. Check scores 70+ for highest confidence plays.{'\n\n'}Current record: 15-9 on scores 70+</Text>
+            </View>
+          )}
+          {onboardingStep===5&&(
+            <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
+              <Text style={{fontSize:64,marginBottom:24}}>⏰</Text>
+              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Best Times to Check</Text>
+              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Pipeline runs twice daily</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>8am ET — NRFI scores, game context, pitchers confirmed{'\n\n'}2pm ET — Lineups confirmed, umpires assigned, Prop Jerry most accurate, Daily Degen fully loaded{'\n\n'}After 2pm — All data locked in. Best time for full analysis.</Text>
+            </View>
+          )}
+          {onboardingStep===6&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>⚠️</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>One More Thing</Text>
@@ -6975,12 +6991,12 @@ setJerryHistory(prev => {
             </View>
           )}
           <View style={{flexDirection:'row',justifyContent:'center',gap:8,marginBottom:28}}>
-            {[0,1,2,3,4].map(i=>(
+            {[0,1,2,3,4,5,6].map(i=>(
               <View key={i} style={{width:i===onboardingStep?24:8,height:8,borderRadius:4,backgroundColor:i===onboardingStep?HRB_COLOR:'#1f2d3d'}}/>
             ))}
           </View>
           <View style={{gap:12}}>
-            {onboardingStep<4?(
+            {onboardingStep<6?(
               <TouchableOpacity
                 style={{backgroundColor:HRB_COLOR,borderRadius:14,padding:18,alignItems:'center'}}
                 onPress={()=>setOnboardingStep(s=>s+1)}
@@ -7006,7 +7022,7 @@ setJerryHistory(prev => {
                 <Text style={{color:'#4a6070',fontSize:13}}>← Back</Text>
               </TouchableOpacity>
             )}
-            {onboardingStep<4&&(
+            {onboardingStep<6&&(
               <TouchableOpacity
                 style={{alignItems:'center',padding:10}}
                 onPress={async()=>{
@@ -9109,19 +9125,31 @@ const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d
                 <View style={{gap:12}}>
                   <View style={{borderLeftWidth:3,borderLeftColor:HRB_COLOR,paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🔥 Sweat Score</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Every game graded 0-100 based on market efficiency, sharp money movement, line variance, and our analytics model. 68+ is a Prime Sweat — our highest confidence signal.</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Every game graded 0-100. Model-heavy for MLB and NBA using real pipeline data. 68+ is Prime Sweat — requires multiple strong signals aligning. Updates at 8am and 2pm ET.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#00e5a0',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🎤 Prop Jerry</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>AI-powered prop analyst grading every player prop A through D based on real expected value math. A grades are elite edges. Jerry tells you what he sees in plain English.</Text>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>⚾ NRFI Model</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>No Run First Inning predictions built on pitcher xERA, K rate matchups, ground ball rate, rest, weather, park factor, and lineup quality. Updates twice daily.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#0099ff',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>📊 Line Movement</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>See how lines move across all major books. Sharp money moves lines — we show you where Hard Rock stands vs the market so you always get the best number.</Text>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🎯 Prop Jerry</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>EV scanner across MLB, NBA, NHL, and UFC. A grades require both market edge AND independent model confirmation — BDL last 5 game averages for NBA, K gap and platoon data for MLB. Pitcher K props capped until May 1.</Text>
                   </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:'#ffd166',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>📈 ROI Tracker</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Log every pick and track your real performance. Win rate, units, profit/loss — all in one place. The only way to know if you have an edge is to track it honestly.</Text>
+                  <View style={{borderLeftWidth:3,borderLeftColor:'#ff4d6d',paddingLeft:10}}>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🎰 Daily Degen</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Jerry scans the full slate and builds a 3-4 leg analytically validated parlay daily. Legs must pass Sweat Score validation before inclusion. Loads after 2pm ET with full pipeline data.</Text>
+                  </View>
+                  <View style={{borderLeftWidth:3,borderLeftColor:'#ff8c00',paddingLeft:10}}>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🚫 Jerry's Fades</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Games to avoid based on sharp consensus, heavy public action, and thin data signals. Updated daily alongside Daily Degen.</Text>
+                  </View>
+                  <View style={{borderLeftWidth:3,borderLeftColor:'#9b59b6',paddingLeft:10}}>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>📊 Jerry's Track Record</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Model performance dashboard. NRFI record, A-grade prop results, and Daily Best Bet history. Results auto-resolve daily via MLB Stats API and BDL box scores.</Text>
+                  </View>
+                  <View style={{borderLeftWidth:3,borderLeftColor:'#4a6070',paddingLeft:10}}>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>⏰ Pipeline Schedule</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>8am ET — Game context, pitchers, NRFI scores{'\n'}2pm ET — Confirmed lineups, umpires, final weather{'\n'}After 2pm — Prop Jerry most accurate, Daily Degen fully loaded</Text>
                   </View>
                 </View>
               </View>

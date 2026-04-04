@@ -271,7 +271,7 @@ def upload_team(team_data):
         "Prefer": "resolution=merge-duplicates,return=minimal"
     }
     r = requests.post(
-        f"{SUPABASE_URL}/rest/v1/nba_team_stats",
+        f"{SUPABASE_URL}/rest/v1/nba_team_stats?on_conflict=team,season",
         headers=headers,
         json=team_data
     )
@@ -328,16 +328,7 @@ def run():
     season = 2024
     season_str = '2025-26'
 
-    # Clear existing team stats
-    requests.delete(
-        f"{SUPABASE_URL}/rest/v1/nba_team_stats?id=neq.00000000-0000-0000-0000-000000000000",
-        headers={
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Prefer": "return=minimal"
-        }
-    )
-    print("Cleared existing NBA stats")
+    # Upsert handles duplicates — no need to clear first
 
     # ── PLAYOFF MODE ──
     if is_playoff_time():
