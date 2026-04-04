@@ -920,13 +920,19 @@ def log_game_result(context):
                 home_win = home_score > away_score
                 margin_of_victory = abs(home_score - away_score)
 
-                # Total result vs close total
-                close_total = record.get('close_total')
-                if close_total:
-                    total_result = 'Over' if total_runs > float(close_total) else 'Under' if total_runs < float(close_total) else 'Push'
+                # Total result vs close total (fall back to open_total if close unavailable)
+                total_line = record.get('close_total') or record.get('open_total')
+                if total_line:
+                    total_result = 'Over' if total_runs > float(total_line) else 'Under' if total_runs < float(total_line) else 'Push'
 
                 # Run line result (home -1.5)
-                run_line_result = 'Win' if (home_score - away_score) > 1.5 else 'Loss'
+                # Run line result — home covers if they win by 2+
+                if (home_score - away_score) > 1.5:
+                    run_line_result = 'home'
+                elif (away_score - home_score) > 1.5:
+                    run_line_result = 'away'
+                else:
+                    run_line_result = 'push'
 
                 # Home spread covered (using close spread if available)
                 close_spread = record.get('close_spread')
@@ -937,9 +943,9 @@ def log_game_result(context):
 
         record['home_score'] = home_score
         record['away_score'] = away_score
-        record['total_runs'] = total_runs
+
         record['home_win'] = home_win
-        record['margin_of_victory'] = margin_of_victory
+
         record['total_result'] = total_result
         record['run_line_result'] = run_line_result
         record['home_spread_covered'] = home_spread_covered

@@ -58,25 +58,34 @@ def run():
                             home_win = home_score > away_score
                             margin = abs(home_score - away_score)
                             total_result = None
-                            if close_total:
-                                total_result = 'Over' if total_runs > float(close_total) else 'Under' if total_runs < float(close_total) else 'Push'
-                            run_line = 'Win' if (home_score - away_score) > 1.5 else 'Loss'
+                            total_line = close_total or game.get('open_total')
+                            if total_line:
+                                total_result = 'Over' if total_runs > float(total_line) else 'Under' if total_runs < float(total_line) else 'Push'
+                            # Run line result — home covers if they win by 2+
+                            if (home_score - away_score) > 1.5:
+                                run_line = 'home'
+                            elif (away_score - home_score) > 1.5:
+                                run_line = 'away'
+                            else:
+                                run_line = 'push'
 
                             # Update Supabase
-                            requests.patch(
+                            print(f'  Attempting patch for game_id: {game_id}')
+                            patch_resp = requests.patch(
                                 f'{SUPABASE_URL}/rest/v1/mlb_game_results?game_id=eq.{game_id}',
                                 headers=HEADERS,
                                 json={
                                     'home_score': home_score,
                                     'away_score': away_score,
-                                    'total_runs': total_runs,
                                     'home_win': home_win,
-                                    'margin_of_victory': margin,
                                     'total_result': total_result,
                                     'run_line_result': run_line,
                                     'result_logged_at': datetime.utcnow().isoformat()
                                 }
                             )
+                            print(f'  Patch status: {patch_resp.status_code}')
+                            if patch_resp.status_code not in [200, 204]:
+                                print(f'  Patch error: {patch_resp.text[:200]}')
                             print(f'  ✅ {away_team} {away_score} @ {home_team} {home_score} | Total {total_runs} → {total_result}')
                             resolved += 1
         except Exception as e:
