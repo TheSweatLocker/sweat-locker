@@ -1004,6 +1004,15 @@ def run():
             home_team = game["home_team"]
             away_team = game["away_team"]
             game_id = game["id"]
+            # Derive game_date from commence_time in ET, not system date
+            commence_time = game.get("commence_time", "")
+            if commence_time:
+                from datetime import timezone
+                game_utc = datetime.fromisoformat(commence_time.replace('Z', '+00:00'))
+                game_et = game_utc - timedelta(hours=4)  # EDT
+                game_date_et = game_et.strftime('%Y-%m-%d')
+            else:
+                game_date_et = today
             
             # Get probable pitchers
             pitcher_info = probable_pitchers.get(home_team, {})
@@ -1284,7 +1293,7 @@ def run():
                 "game_id": game_id,
                 "home_team": home_team,
                 "away_team": away_team,
-                "game_date": today,
+                "game_date": game_date_et,
                 "venue": venue,
                 "home_pitcher": home_pitcher,
                 "away_pitcher": away_pitcher,

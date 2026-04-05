@@ -4291,6 +4291,7 @@ const fetchDailyBestBet = async () => {
   } catch(e) {}
 
   setDailyBestBetLoading(true);
+  console.log('[BestBet] Starting scan, etHour:', etHour);
 
   try {
     const todayStart = new Date(); todayStart.setHours(0,0,0,0);
@@ -4340,16 +4341,17 @@ const fetchDailyBestBet = async () => {
         }
       }
 
+      console.log('[BestBet] MLB games found:', mlbGames.length, mlbGames.map(g => g.home_team).slice(0,3));
       let bestNRFIScore = 0;
       let bestNRFIGame = null;
       let bestNRFICtx = null;
 
       for(const game of mlbGames) {
-        const { data: mlbCtx } = await supabase
-          .from('mlb_game_context')
-          .select('*')
-          .eq('home_team', game.home_team)
-          .single();
+        // Use pre-fetched mlbGameContext instead of individual Supabase queries
+        const mlbCtx = mlbGameContext[game.home_team] || mlbGameContext[game.away_team] ||
+          Object.values(mlbGameContext).find((ctx: any) =>
+            ctx.home_team === game.home_team || ctx.away_team === game.away_team
+          ) as any;
         const mlbCtxMap = mlbCtx ? { [game.home_team]: mlbCtx } : {};
         const scoreObj = calcGameSweatScore(game, 'MLB', fanmatchData, mlbCtxMap, nbaTeamData);
         if(scoreObj && scoreObj.total > bestScore) {
@@ -4365,9 +4367,11 @@ const fetchDailyBestBet = async () => {
           bestNRFICtx = mlbCtx;
         }
       }
+      console.log('[BestBet] MLB scan done — bestScore:', bestScore, 'bestNRFI:', bestNRFIScore, 'mlbGameContext keys:', Object.keys(mlbGameContext).length);
 
-      // If best NRFI score >= 75 and beats the current best game score, surface as NRFI play
-      if(bestNRFIScore >= 75 && bestNRFIGame && bestNRFIScore > bestScore - 10) {
+      // NRFI is our flagship model — prioritize it over generic Sweat Scores
+      // NRFI 75+ always wins unless another game has a truly elite Sweat Score (80+)
+      if(bestNRFIScore >= 75 && bestNRFIGame && (bestScore < 80 || bestNRFIScore >= bestScore)) {
         bestGame = bestNRFIGame;
         bestSport = 'MLB';
         bestScoreObj = {
@@ -4401,7 +4405,8 @@ const fetchDailyBestBet = async () => {
 
       for(const game of nbaGames) {
         const scoreObj = calcGameSweatScore(game, 'NBA', fanmatchData, null, nbaTeamData);
-        if(scoreObj && scoreObj.total > bestScore) {
+        // Don't let NBA overwrite a strong NRFI pick unless NBA score is truly elite (80+)
+        if(scoreObj && scoreObj.total > bestScore && (!bestScoreObj?.isNRFI || scoreObj.total >= 80)) {
           bestScore = scoreObj.total;
           bestGame = game;
           bestSport = 'NBA';
@@ -4443,7 +4448,9 @@ const fetchDailyBestBet = async () => {
       }
     } catch(e) {}
 
+    console.log('[BestBet] Final — bestScore:', bestScore, 'bestSport:', bestSport, 'bestGame:', bestGame?.home_team);
     if(!bestGame || !bestScoreObj) {
+      console.log('[BestBet] No best game found — showing noGames');
       setDailyBestBet({noGames: true});
       setDailyBestBetLoading(false);
       return;
@@ -4993,9 +5000,12 @@ if(scoreData) {
 const sweatScoreContext = sweatSignals.length > 0 
   ? `\nSWEAT LOCKER MODEL SIGNALS (Score: ${scoreData.total}/100):\n${sweatSignals.map(s => `- ${s}`).join('\n')}`
   : '';    
-  const prompt = `You are Jerry, a sharp sports analyst for The Sweat Locker app. Confident, direct, no fluff. You have access to deep KenPom efficiency data — use it specifically.
+  const prompt = `CRITICAL: This is a PRE-GAME analysis for a game that has NOT yet been played. The game is scheduled for today. Do NOT search for scores or results. Do NOT check if the game has been played. Assume the game starts in the future. Go directly to analyzing the matchup data provided. Never say "this game has already been played."
+
+You are Jerry, a sharp sports analyst for The Sweat Locker app. Confident, direct, no fluff. You have access to deep KenPom efficiency data — use it specifically.
 
 Game: ${game.away_team} @ ${game.home_team}
+Game scheduled: ${new Date(game.commence_time).toLocaleString('en-US', {timeZone: 'America/New_York'})} ET
 Sport: ${sport}
 ${score>=68?' (PRIME SWEAT 🔒)':score>=55?' (Strong lean)':' (Monitor)'}
 Spread: ${spread?`${spread.name} ${spread.point > 0 ? '+' : ''}${spread.point}`:'N/A'}
