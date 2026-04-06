@@ -4258,9 +4258,11 @@ const fetchDailyBestBet = async () => {
         // Fall through to regenerate
       } else {
         const fetchedHour = parseInt(new Date(supabaseCache.fetched_at).toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
-        // If cached bet was generated before 10am ET and it's now after 10am, regenerate with fresh pipeline data
+        // Regenerate if: cached before 10am and now after 10am, OR cached before 2pm and now after 2pm (fresh pipeline data)
         if(fetchedHour < 10 && etHour >= 10) {
           // Stale pre-pipeline bet — fall through to regenerate
+        } else if(fetchedHour < 14 && etHour >= 14) {
+          // Pre-2pm bet — regenerate with confirmed lineups/umpires
         } else {
           setDailyBestBet(supabaseCache.data);
           try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}

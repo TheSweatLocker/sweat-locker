@@ -746,7 +746,7 @@ def get_mlb_games():
             params={
                 "apiKey": ODDS_API_KEY,
                 "regions": "us",
-                "markets": "totals,h2h",
+                "markets": "spreads,totals,h2h",
                 "oddsFormat": "american",
                 "bookmakers": "draftkings",
                 # Anchor to ET date — midnight ET = 04:00 UTC, end at 3:59am next day UTC = 11:59pm ET
@@ -770,6 +770,25 @@ def get_bullpen_stats(team_name):
         )
         data = r.json()
         return data[0] if data else None
+    except:
+        return None
+
+def get_pitcher_first_inning(pitcher_name):
+    """Fetch pitcher's first inning splits from mlb_pitcher_stats"""
+    if not pitcher_name:
+        return None
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.*{requests.utils.quote(pitcher_name.split(' ')[-1])}*&select=first_inning_era,first_inning_whip,first_inning_avg,first_inning_ip&limit=1",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+            }
+        )
+        data = r.json()
+        if data and len(data) > 0 and data[0].get('first_inning_era') is not None:
+            return data[0]
+        return None
     except:
         return None
 
@@ -805,7 +824,7 @@ def calc_batting_order_weight(lineup_names):
     score = sum(weights[i] for i in range(min(len(batters), 9)))
     return round(score, 2)
 
-def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus):
+def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None):
     """
     Calculate NRFI (No Run First Inning) probability score 0-100.
     Higher = stronger NRFI lean.
@@ -897,6 +916,29 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
     elif avg_wrc <= 88: score += 6  # both weak offenses
     elif avg_wrc <= 95: score += 3
 
+    # ── FIRST INNING SPLITS ──
+    # Pitcher's actual 1st inning ERA is the most direct NRFI signal
+    if home_first_inn and home_first_inn.get('first_inning_era') is not None:
+        fi_era = float(home_first_inn['first_inning_era'])
+        if fi_era <= 1.50: score += 8     # elite 1st inning pitcher
+        elif fi_era <= 3.00: score += 4
+        elif fi_era >= 6.00: score -= 6   # gets hit early
+        elif fi_era >= 4.50: score -= 3
+        # WHIP reinforces — low traffic = no runs
+        fi_whip = float(home_first_inn.get('first_inning_whip', 1.3) or 1.3)
+        if fi_whip <= 0.90: score += 3
+        elif fi_whip >= 1.60: score -= 3
+
+    if away_first_inn and away_first_inn.get('first_inning_era') is not None:
+        fi_era = float(away_first_inn['first_inning_era'])
+        if fi_era <= 1.50: score += 8
+        elif fi_era <= 3.00: score += 4
+        elif fi_era >= 6.00: score -= 6
+        elif fi_era >= 4.50: score -= 3
+        fi_whip = float(away_first_inn.get('first_inning_whip', 1.3) or 1.3)
+        if fi_whip <= 0.90: score += 3
+        elif fi_whip >= 1.60: score -= 3
+
     return max(0, min(100, round(score)))
 
 def get_park_factors(home_team):
@@ -983,6 +1025,11 @@ def log_game_result(context):
             "umpire_note": context.get("umpire_note"),
             "projected_total": context.get("projected_total"),
             "over_lean": context.get("over_lean"),
+            "projected_spread": context.get("projected_spread"),
+            "spread_lean": context.get("spread_lean"),
+            "spread_delta": context.get("spread_delta"),
+            "open_spread": context.get("open_spread"),
+            "close_spread": context.get("close_spread"),
             "confidence": context.get("confidence"),
             "model_version": "v0.1",
             "wind_blowing_in": context.get("wind_blowing_in"),
@@ -995,6 +1042,8 @@ def log_game_result(context):
             "open_total": context.get("open_total"),
             "close_total": context.get("close_total"),
             "nrfi_score": context.get("nrfi_score"),
+            "home_first_inning_era": context.get("home_first_inning_era"),
+            "away_first_inning_era": context.get("away_first_inning_era"),
         }
 
         # Parse away pitcher stats from pitcher_context
@@ -1168,14 +1217,19 @@ def run():
             park = get_park_factors(home_team)
             park_run_factor = park["run_factor"] if park else 100
             
-            # Calculate over/under lean
+            # Parse market lines from Odds API
             total_line = None
+            spread_line = None
             for bm in game.get("bookmakers", []):
                 for mkt in bm.get("markets", []):
-                    if mkt["key"] == "totals":
+                    if mkt["key"] == "totals" and not total_line:
                         total_line = mkt["outcomes"][0]["point"] if mkt["outcomes"] else None
-                        break
-                if total_line:
+                    if mkt["key"] == "spreads" and not spread_line:
+                        # Home team spread (find the home team outcome)
+                        home_outcome = next((o for o in mkt.get("outcomes", []) if o.get("name") == home_team), None)
+                        if home_outcome:
+                            spread_line = home_outcome.get("point")
+                if total_line and spread_line is not None:
                     break
 
             # Determine if this is 8am (open) or 2pm (close) run
@@ -1277,6 +1331,14 @@ def run():
             # Get bullpen stats
             home_bullpen = get_bullpen_stats(home_team)
             away_bullpen = get_bullpen_stats(away_team)
+            # Fetch first inning splits for NRFI model
+            home_first_inn = get_pitcher_first_inning(home_pitcher) if home_pitcher else None
+            away_first_inn = get_pitcher_first_inning(away_pitcher) if away_pitcher else None
+            if home_first_inn:
+                print(f"  {home_pitcher} 1st inning: ERA {home_first_inn.get('first_inning_era')}, WHIP {home_first_inn.get('first_inning_whip')}")
+            if away_first_inn:
+                print(f"  {away_pitcher} 1st inning: ERA {away_first_inn.get('first_inning_era')}, WHIP {away_first_inn.get('first_inning_whip')}")
+
             # Calculate NRFI score — use local variables not context dict
             nrfi_score = calc_nrfi_score(
                 home_pitcher_stats,
@@ -1289,6 +1351,8 @@ def run():
                 park_run_factor,
                 home_offense.get("wrc_plus") if home_offense else None,
                 away_offense.get("wrc_plus") if away_offense else None,
+                home_first_inn,
+                away_first_inn,
             )
             if nrfi_score:
                 print(f"  NRFI score: {nrfi_score} ({'NRFI lean' if nrfi_score >= 60 else 'YRFI lean' if nrfi_score <= 40 else 'neutral'})")
@@ -1362,6 +1426,58 @@ def run():
                     projected_total = None
                     over_lean = None
                 print(f"  Team stats not available yet — market line fallback: {projected_total}")
+
+            # ── PROJECTED SPREAD ──
+            # Home expected runs vs away expected runs → spread projection
+            projected_spread = None
+            spread_lean = None
+            try:
+                home_xera = sanitize_xera(home_pitcher_stats.get('xera'), home_pitcher) if home_pitcher_stats else None
+                away_xera = sanitize_xera(away_pitcher_stats.get('xera'), away_pitcher) if away_pitcher_stats else None
+                home_wrc = home_stats.get('wrc_plus') if home_stats else None
+                away_wrc = away_stats.get('wrc_plus') if away_stats else None
+                park_mult = park_run_factor / 100 if park_run_factor else 1.0
+
+                if home_rpg and away_rpg and home_xera and away_xera:
+                    # Adjust each team's expected runs by opposing pitcher quality
+                    league_avg_era = 4.25
+                    home_expected = home_rpg * (away_xera / league_avg_era) * park_mult
+                    away_expected = away_rpg * (home_xera / league_avg_era) * park_mult
+
+                    # wRC+ adjustment — scale offensive quality relative to league average (100)
+                    if home_wrc:
+                        home_expected *= (home_wrc / 100)
+                    if away_wrc:
+                        away_expected *= (away_wrc / 100)
+
+                    # Weather adjustment (cold/wind suppresses both sides equally for total, but not spread)
+                    # Bullpen quality adjustment
+                    home_bp_era = home_bullpen.get('bullpen_era', 4.0) if home_bullpen else 4.0
+                    away_bp_era = away_bullpen.get('bullpen_era', 4.0) if away_bullpen else 4.0
+                    bp_adj = (away_bp_era - home_bp_era) * 0.15  # better home bullpen → home advantage
+
+                    projected_spread = round(home_expected - away_expected + bp_adj, 2)
+                    # Positive = home favored, negative = away favored
+                    if projected_spread >= 0.5:
+                        spread_lean = 'home'
+                    elif projected_spread <= -0.5:
+                        spread_lean = 'away'
+                    else:
+                        spread_lean = None  # too close to call
+                    print(f"  Projected spread: {home_team} {'+' if projected_spread >= 0 else ''}{projected_spread} | Lean: {spread_lean or 'neutral'}")
+                elif home_rpg and away_rpg:
+                    # No pitcher data — use raw R/G + park only
+                    projected_spread = round((home_rpg - away_rpg) * (park_run_factor / 100 if park_run_factor else 1.0), 2)
+                    spread_lean = 'home' if projected_spread >= 0.5 else 'away' if projected_spread <= -0.5 else None
+                    print(f"  Projected spread (no pitcher data): {projected_spread}")
+            except Exception as e:
+                print(f"  ⚠️ Spread projection error: {e}")
+
+            # Spread delta — projected vs posted
+            spread_delta = None
+            if projected_spread is not None and spread_line is not None:
+                spread_delta = round(projected_spread - spread_line, 2)
+                print(f"  Spread delta: model {projected_spread} vs posted {spread_line} = {'+' if spread_delta >= 0 else ''}{spread_delta}")
 
             # Get umpire
             ump_name = umpire_assignments.get(home_team)
@@ -1454,6 +1570,11 @@ def run():
                 "close_total": total_line if not is_open_run else None,
                 "projected_total": projected_total,
                 "over_lean": over_lean,
+                "projected_spread": projected_spread,
+                "spread_lean": spread_lean,
+                "spread_delta": spread_delta,
+                "open_spread": spread_line if is_open_run else None,
+                "close_spread": spread_line if not is_open_run else None,
                 "confidence": confidence,
                 "fetched_at": datetime.now().isoformat(),
                 "home_runs_per_game": home_rpg,
@@ -1466,6 +1587,10 @@ def run():
                 "home_lineup_weight": home_lineup_weight,
                 "away_lineup_weight": away_lineup_weight,
                 "nrfi_score": nrfi_score,
+                "home_first_inning_era": home_first_inn.get("first_inning_era") if home_first_inn else None,
+                "away_first_inning_era": away_first_inn.get("first_inning_era") if away_first_inn else None,
+                "home_first_inning_whip": home_first_inn.get("first_inning_whip") if home_first_inn else None,
+                "away_first_inning_whip": away_first_inn.get("first_inning_whip") if away_first_inn else None,
                 "home_woba": home_offense.get('woba') if home_offense else None,
                 "away_woba": away_offense.get('woba') if away_offense else None,
                 "home_wrc_plus": home_offense.get('wrc_plus') if home_offense else None,

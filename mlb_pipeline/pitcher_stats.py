@@ -84,6 +84,75 @@ def get_pitcher_handedness(player_name):
     except Exception as e:
         return None
 
+def get_first_inning_splits(player_name):
+    """Fetch pitcher's 1st inning ERA, WHIP, and batting avg allowed from MLB Stats API"""
+    try:
+        # Look up player ID
+        search_resp = requests.get(
+            "https://statsapi.mlb.com/api/v1/people/search",
+            params={"names": player_name, "sportId": 1},
+            timeout=10
+        )
+        people = search_resp.json().get("people", [])
+        if not people:
+            return None
+        player_id = people[0]["id"]
+
+        # Fetch 1st inning situational stats for current season
+        stats_resp = requests.get(
+            f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats",
+            params={
+                "stats": "statSplits",
+                "group": "pitching",
+                "season": 2026,
+                "sitCodes": "i1"  # 1st inning
+            },
+            timeout=10
+        )
+        splits = stats_resp.json().get("stats", [])
+        if not splits or not splits[0].get("splits"):
+            # Try previous season as fallback
+            stats_resp = requests.get(
+                f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats",
+                params={
+                    "stats": "statSplits",
+                    "group": "pitching",
+                    "season": 2025,
+                    "sitCodes": "i1"
+                },
+                timeout=10
+            )
+            splits = stats_resp.json().get("stats", [])
+            if not splits or not splits[0].get("splits"):
+                return None
+
+        split_data = splits[0]["splits"][0].get("stat", {})
+        innings_pitched = float(split_data.get("inningsPitched", "0") or "0")
+
+        # Need at least 5 first innings to trust the data
+        if innings_pitched < 5:
+            return None
+
+        era = float(split_data.get("era", "0") or "0")
+        whip = float(split_data.get("whip", "0") or "0")
+        avg = float(split_data.get("avg", "0") or "0")
+        hits = int(split_data.get("hits", 0) or 0)
+        strikeouts = int(split_data.get("strikeOuts", 0) or 0)
+        walks = int(split_data.get("baseOnBalls", 0) or 0)
+        home_runs = int(split_data.get("homeRuns", 0) or 0)
+
+        return {
+            "first_inning_era": round(era, 2),
+            "first_inning_whip": round(whip, 2),
+            "first_inning_avg": round(avg, 3),
+            "first_inning_k": strikeouts,
+            "first_inning_bb": walks,
+            "first_inning_hr": home_runs,
+            "first_inning_ip": round(innings_pitched, 1),
+        }
+    except Exception as e:
+        return None
+
 def upload_pitcher(pitcher_data):
     headers = {
         "apikey": SUPABASE_KEY,
@@ -134,6 +203,7 @@ def run():
             last5_era = fetch_last5_era(name, recent_stats)
 
             throws = get_pitcher_handedness(name)
+            first_inn = get_first_inning_splits(name)
             pitcher = {
                 "player_name": name,
                 "team": str(row.get('Team', '')),
@@ -153,6 +223,14 @@ def run():
                 "baa_allowed": safe_float(row.get('AVG', row.get('BA')), None),
                 "xba_allowed": safe_float(row.get('xBA', row.get('xAVG')), None),
                 "hard_hit_pct_allowed": safe_float(row.get('Hard%'), None),
+                # First inning splits — key NRFI signal
+                "first_inning_era": first_inn["first_inning_era"] if first_inn else None,
+                "first_inning_whip": first_inn["first_inning_whip"] if first_inn else None,
+                "first_inning_avg": first_inn["first_inning_avg"] if first_inn else None,
+                "first_inning_k": first_inn["first_inning_k"] if first_inn else None,
+                "first_inning_bb": first_inn["first_inning_bb"] if first_inn else None,
+                "first_inning_hr": first_inn["first_inning_hr"] if first_inn else None,
+                "first_inning_ip": first_inn["first_inning_ip"] if first_inn else None,
                 "season": "2026",
                 "updated_at": "now()"
             }
