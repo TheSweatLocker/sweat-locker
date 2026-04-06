@@ -180,9 +180,9 @@ def upload_pitcher(pitcher_data):
         "Content-Type": "application/json",
         "Prefer": "resolution=merge-duplicates,return=minimal"
     }
-    # Use PATCH/upsert pattern
+    # Use upsert with on_conflict
     response = requests.post(
-        f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats",
+        f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?on_conflict=player_name,season",
         headers={
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -191,19 +191,15 @@ def upload_pitcher(pitcher_data):
         },
         json=pitcher_data
     )
-    if response.status_code == 409:
-        # Record exists — update it
-        update_resp = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=eq.{requests.utils.quote(pitcher_data['player_name'])}&season=eq.{pitcher_data['season']}",
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=pitcher_data
-        )
-        return update_resp.status_code in [200, 201, 204]
-    return response.status_code in [200, 201, 204]
+    if response.status_code not in [200, 201, 204]:
+        # Log first few failures for diagnosis
+        if not hasattr(upload_pitcher, '_err_count'):
+            upload_pitcher._err_count = 0
+        upload_pitcher._err_count += 1
+        if upload_pitcher._err_count <= 5:
+            print(f"  Upload failed {response.status_code}: {response.text[:300]}")
+        return False
+    return True
 def get_todays_starters():
     """Fetch today's probable starters from MLB Stats API"""
     try:
