@@ -204,74 +204,155 @@ def upload_pitcher(pitcher_data):
         )
         return update_resp.status_code in [200, 201, 204]
     return response.status_code in [200, 201, 204]
+def get_todays_starters():
+    """Fetch today's probable starters from MLB Stats API"""
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        r = requests.get(
+            'https://statsapi.mlb.com/api/v1/schedule',
+            params={'sportId': 1, 'date': today, 'hydrate': 'probablePitcher'},
+            timeout=15
+        )
+        starters = set()
+        for d in r.json().get('dates', []):
+            for game in d.get('games', []):
+                home_p = game.get('teams', {}).get('home', {}).get('probablePitcher', {}).get('fullName')
+                away_p = game.get('teams', {}).get('away', {}).get('probablePitcher', {}).get('fullName')
+                if home_p: starters.add(home_p)
+                if away_p: starters.add(away_p)
+        print(f"Today's probable starters: {len(starters)}")
+        return starters
+    except Exception as e:
+        print(f"Error fetching starters: {e}")
+        return set()
+
+def build_pitcher_record(row, name, recent_stats, is_fangraphs=True):
+    """Build pitcher record from either FanGraphs or Statcast data"""
+    last5_era = fetch_last5_era(name, recent_stats) if recent_stats is not None else None
+    throws = get_pitcher_handedness(name)
+    first_inn = get_first_inning_splits(name)
+
+    if is_fangraphs:
+        pitcher = {
+            "player_name": name,
+            "team": str(row.get('Team', '')),
+            "throws": throws or 'R',
+            "xera": safe_float(row.get('xERA', row.get('ERA')), 4.50),
+            "gb_pct": safe_float(row.get('GB%'), 45.0),
+            "fb_pct": safe_float(row.get('FB%'), 35.0),
+            "lob_pct": safe_float(row.get('LOB%'), 72.0),
+            "k_pct": safe_float(row.get('K%'), 20.0),
+            "bb_pct": safe_float(row.get('BB%'), 8.0),
+            "whiff_rate": safe_float(row.get('Whiff%', row.get('SwStr%')), 10.0),
+            "hard_hit_pct": safe_float(row.get('Hard%'), 35.0),
+            "barrel_pct": safe_float(row.get('Barrel%', row.get('Barrels')), 6.0),
+            "avg_fastball_velo": safe_float(row.get('FBv', row.get('vFB')), 93.0),
+            "last_5_era": last5_era if last5_era else safe_float(row.get('ERA'), 4.50),
+            "baa_allowed": safe_float(row.get('AVG', row.get('BA')), None),
+            "xba_allowed": safe_float(row.get('xBA', row.get('xAVG')), None),
+            "hard_hit_pct_allowed": safe_float(row.get('Hard%'), None),
+        }
+    else:
+        # Statcast exit velo/barrels format — different column names
+        pitcher = {
+            "player_name": name,
+            "team": '',
+            "throws": throws or 'R',
+            "xera": None,  # not in Statcast exit velo data
+            "gb_pct": None,
+            "fb_pct": None,
+            "lob_pct": None,
+            "k_pct": None,
+            "bb_pct": None,
+            "whiff_rate": None,
+            "hard_hit_pct": safe_float(row.get('hard_hit_percent', row.get('ev95percent')), None),
+            "barrel_pct": safe_float(row.get('brl_percent'), None),
+            "avg_fastball_velo": None,
+            "last_5_era": last5_era,
+            "baa_allowed": safe_float(row.get('ba'), None),
+            "xba_allowed": safe_float(row.get('xba'), None),
+            "hard_hit_pct_allowed": safe_float(row.get('hard_hit_percent'), None),
+        }
+
+    # First inning splits — same for both sources
+    pitcher["first_inning_era"] = first_inn["first_inning_era"] if first_inn else None
+    pitcher["first_inning_whip"] = first_inn["first_inning_whip"] if first_inn else None
+    pitcher["first_inning_avg"] = first_inn["first_inning_avg"] if first_inn else None
+    pitcher["first_inning_k"] = first_inn["first_inning_k"] if first_inn else None
+    pitcher["first_inning_bb"] = first_inn["first_inning_bb"] if first_inn else None
+    pitcher["first_inning_hr"] = first_inn["first_inning_hr"] if first_inn else None
+    pitcher["first_inning_ip"] = first_inn["first_inning_ip"] if first_inn else None
+    pitcher["season"] = "2026"
+    pitcher["updated_at"] = "now()"
+    return pitcher
+
 def run():
+    # Determine if full refresh or daily starters only
+    is_monday = datetime.now().weekday() == 0
+    todays_starters = get_todays_starters()
+
     stats = fetch_pitcher_stats()
     if stats is None:
         print("Could not fetch pitcher stats")
         return
 
+    # Detect if data is FanGraphs or Statcast format
+    is_fangraphs = 'Name' in stats.columns
+    name_col = 'Name' if is_fangraphs else 'last_name'
+
+    if not is_fangraphs:
+        # Statcast format — build full name from first_name + last_name
+        if 'first_name' in stats.columns and 'last_name' in stats.columns:
+            stats['full_name'] = stats['first_name'].astype(str) + ' ' + stats['last_name'].astype(str)
+            name_col = 'full_name'
+        else:
+            name_col = 'last_name'
+        print(f"Using Statcast format — columns: {list(stats.columns[:10])}")
+
     recent_stats = fetch_recent_pitcher_stats()
     success = 0
     errors = 0
+    skipped = 0
 
     for _, row in stats.iterrows():
         try:
-            # Small delay every 10 pitchers to avoid MLB Stats API rate limit
-            if (success + errors) % 10 == 0:
-                time.sleep(0.5)
-            name = str(row.get('Name', ''))
-            last5_era = fetch_last5_era(name, recent_stats)
+            name = str(row.get(name_col, ''))
+            if not name or name == 'nan':
+                continue
 
-            throws = get_pitcher_handedness(name)
-            first_inn = get_first_inning_splits(name)
-            pitcher = {
-                "player_name": name,
-                "team": str(row.get('Team', '')),
-                "throws": throws or 'R',
-                "xera": safe_float(row.get('xERA', row.get('ERA')), 4.50),
-                "gb_pct": safe_float(row.get('GB%'), 45.0),
-                "fb_pct": safe_float(row.get('FB%'), 35.0),
-                "lob_pct": safe_float(row.get('LOB%'), 72.0),
-                "k_pct": safe_float(row.get('K%'), 20.0),
-                "bb_pct": safe_float(row.get('BB%'), 8.0),
-                "whiff_rate": safe_float(row.get('Whiff%', row.get('SwStr%')), 10.0),
-                "hard_hit_pct": safe_float(row.get('Hard%'), 35.0),
-                "barrel_pct": safe_float(row.get('Barrel%', row.get('Barrels')), 6.0),
-                "avg_fastball_velo": safe_float(row.get('FBv', row.get('vFB')), 93.0),
-                "last_5_era": last5_era if last5_era else safe_float(row.get('ERA'), 4.50),
-                # Contact-allowed profile for batter prop evaluation
-                "baa_allowed": safe_float(row.get('AVG', row.get('BA')), None),
-                "xba_allowed": safe_float(row.get('xBA', row.get('xAVG')), None),
-                "hard_hit_pct_allowed": safe_float(row.get('Hard%'), None),
-                # First inning splits — key NRFI signal
-                "first_inning_era": first_inn["first_inning_era"] if first_inn else None,
-                "first_inning_whip": first_inn["first_inning_whip"] if first_inn else None,
-                "first_inning_avg": first_inn["first_inning_avg"] if first_inn else None,
-                "first_inning_k": first_inn["first_inning_k"] if first_inn else None,
-                "first_inning_bb": first_inn["first_inning_bb"] if first_inn else None,
-                "first_inning_hr": first_inn["first_inning_hr"] if first_inn else None,
-                "first_inning_ip": first_inn["first_inning_ip"] if first_inn else None,
-                "season": "2026",
-                "updated_at": "now()"
-            }
+            # Daily runs: only update today's starters (unless Monday = full refresh)
+            if not is_monday and todays_starters:
+                # Check if this pitcher is starting today (fuzzy match on last name)
+                pitcher_last = name.split(' ')[-1].lower()
+                is_starter = any(pitcher_last in s.lower() for s in todays_starters)
+                if not is_starter:
+                    skipped += 1
+                    continue
 
+            # Rate limit — lighter since we're processing fewer pitchers
+            if (success + errors) % 10 == 0 and (success + errors) > 0:
+                time.sleep(0.3)
+
+            pitcher = build_pitcher_record(row, name, recent_stats, is_fangraphs)
             result = upload_pitcher(pitcher)
             if result:
                 success += 1
-                if success % 50 == 0:
+                if success % 20 == 0:
                     print(f"✅ Uploaded {success} pitchers...")
             else:
                 errors += 1
 
         except Exception as e:
             errors += 1
-            if errors <= 3:
-                print(f"Error on {name}: {e}")
+            if errors <= 5:
+                print(f"Error on {row.get(name_col, '?')}: {e}")
             continue
 
-    print(f"\nDone! ✅ {success} uploaded, ❌ {errors} errors")
-    if recent_stats is not None:
-        print(f"Recent form data available for {len(recent_stats)} pitchers")
+    print(f"\nDone! ✅ {success} uploaded, ❌ {errors} errors, ⏭️ {skipped} skipped (not starting today)")
+    if is_monday:
+        print("📋 Full Monday refresh completed")
+    else:
+        print(f"📋 Daily starters update — {len(todays_starters)} starters targeted")
 
 if __name__ == "__main__":
     run()
