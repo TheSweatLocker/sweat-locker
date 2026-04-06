@@ -3436,9 +3436,16 @@ if(isPlayoffMode) {
       const overUnderSide = mlbCtx.over_lean ? 'Over' : 'Under';
       leanSide = `${overUnderSide} ${avgTotal.toFixed(1)}`;
     }
-    // Secondary: if no total lean, use offensive quality to lean moneyline
+    // Secondary: use pipeline spread projection if available
+    if(!leanSide && mlbCtx.spread_lean) {
+      leanSide = mlbCtx.spread_lean === 'home' ? stripMascot(game.home_team) : stripMascot(game.away_team);
+      leanBet = 'ml';
+      if(mlbCtx.spread_delta && Math.abs(mlbCtx.spread_delta) >= 0.5) {
+        modelMismatch = Math.min(88, modelMismatch + Math.round(Math.abs(mlbCtx.spread_delta) * 3));
+      }
+    }
+    // Tertiary: if no pipeline spread, fall back to offensive quality
     if(!leanSide && homeWRC > 0 && awayWRC > 0 && homeXera > 0 && awayXera > 0) {
-      // Home team edge = better offense (wRC+) + opponent has worse pitcher (higher xERA)
       const homeEdge = (homeWRC - awayWRC) + ((awayXera - homeXera) * 10);
       const awayEdge = (awayWRC - homeWRC) + ((homeXera - awayXera) * 10);
       if(Math.abs(homeEdge - awayEdge) >= 15) {
@@ -3815,7 +3822,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         leg.matchup?.includes(ctx.away_team?.split(' ').pop())
       ) as any;
       if(mlbCtx) {
-        return `MLB Pipeline: ${mlbCtx.home_pitcher || 'TBD'} xERA ${mlbCtx.home_sp_xera || 'N/A'} vs ${mlbCtx.away_pitcher || 'TBD'} xERA ${mlbCtx.away_sp_xera || 'N/A'}. K gap: home ${mlbCtx.home_k_gap || 'N/A'}, away ${mlbCtx.away_k_gap || 'N/A'}. wRC+: ${mlbCtx.home_wrc_plus || 'N/A'} vs ${mlbCtx.away_wrc_plus || 'N/A'}. Park: ${mlbCtx.park_run_factor || 'N/A'}. Weather: ${mlbCtx.temperature || '?'}°F, ${mlbCtx.wind_speed || 0}mph ${mlbCtx.wind_direction || ''}. NRFI score: ${mlbCtx.nrfi_score || 'N/A'}. Model lean: ${mlbCtx.over_lean === true ? 'OVER' : mlbCtx.over_lean === false ? 'UNDER' : 'NEUTRAL'}.`;
+        return `MLB Pipeline: ${mlbCtx.home_pitcher || 'TBD'} xERA ${mlbCtx.home_sp_xera || 'N/A'} vs ${mlbCtx.away_pitcher || 'TBD'} xERA ${mlbCtx.away_sp_xera || 'N/A'}. K gap: home ${mlbCtx.home_k_gap || 'N/A'}, away ${mlbCtx.away_k_gap || 'N/A'}. wRC+: ${mlbCtx.home_wrc_plus || 'N/A'} vs ${mlbCtx.away_wrc_plus || 'N/A'}. Park: ${mlbCtx.park_run_factor || 'N/A'}. Weather: ${mlbCtx.temperature || '?'}°F, ${mlbCtx.wind_speed || 0}mph ${mlbCtx.wind_direction || ''}. NRFI score: ${mlbCtx.nrfi_score || 'N/A'}. Total lean: ${mlbCtx.over_lean === true ? 'OVER' : mlbCtx.over_lean === false ? 'UNDER' : 'NEUTRAL'}. Spread lean: ${mlbCtx.spread_lean === 'home' ? mlbCtx.home_team + ' favored' : mlbCtx.spread_lean === 'away' ? mlbCtx.away_team + ' favored' : 'neutral'}. Spread delta: ${mlbCtx.spread_delta != null ? mlbCtx.spread_delta.toFixed(1) + ' runs' : 'N/A'}.`;
       }
       const homeNBA = Object.values(nbaTeamData).find((t: any) =>
         leg.matchup?.includes(t.team?.split(' ').pop())
@@ -4844,6 +4851,10 @@ MLB GAME CONTEXT:
 - ${mlbData.home_lineup ? `${game.home_team} lineup: ${mlbData.home_lineup}` : ''}
 - ${mlbData.away_lineup ? `${game.away_team} lineup: ${mlbData.away_lineup}` : ''};
 - Total delta: ${mlbData.projected_total && mlbData.projected_total > 0 ? (mlbData.projected_total - (game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0]?.point || mlbData.projected_total)).toFixed(1) + ' pts vs posted line' : 'N/A'}
+- Projected spread: ${mlbData.projected_spread != null ? `${mlbData.projected_spread > 0 ? game.home_team : game.away_team} by ${Math.abs(mlbData.projected_spread).toFixed(1)} runs` : 'N/A'}
+- Spread lean: ${mlbData.spread_lean === 'home' ? game.home_team + ' favored by model' : mlbData.spread_lean === 'away' ? game.away_team + ' favored by model' : 'No strong side lean'}
+- Spread delta: ${mlbData.spread_delta != null ? (mlbData.spread_delta > 0 ? '+' : '') + mlbData.spread_delta.toFixed(1) + ' runs vs posted line' : 'N/A'}
+- First inning ERA: ${mlbData.home_first_inning_era != null ? mlbData.home_pitcher + ' 1st inn ERA ' + mlbData.home_first_inning_era : ''} ${mlbData.away_first_inning_era != null ? '| ' + mlbData.away_pitcher + ' 1st inn ERA ' + mlbData.away_first_inning_era : ''}
 - Data confidence: ${mlbData.confidence}`;
   }
 }

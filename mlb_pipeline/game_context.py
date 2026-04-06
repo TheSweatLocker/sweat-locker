@@ -1044,6 +1044,13 @@ def log_game_result(context):
             "nrfi_score": context.get("nrfi_score"),
             "home_first_inning_era": context.get("home_first_inning_era"),
             "away_first_inning_era": context.get("away_first_inning_era"),
+            "home_first_inning_whip": context.get("home_first_inning_whip"),
+            "away_first_inning_whip": context.get("away_first_inning_whip"),
+            "projected_spread": context.get("projected_spread"),
+            "spread_lean": context.get("spread_lean"),
+            "spread_delta": context.get("spread_delta"),
+            "open_spread": context.get("open_spread"),
+            "close_spread": context.get("close_spread"),
         }
 
         # Parse away pitcher stats from pitcher_context

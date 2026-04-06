@@ -20,13 +20,33 @@ def fetch_pitcher_stats():
         print(f"Fetched {len(stats)} pitchers from 2026")
         return stats
     except Exception as e:
-        print(f"Error fetching 2026 stats, trying 2025: {e}")
+        print(f"Error fetching 2026 stats: {e}")
+        # Try with different pybaseball cache settings
+        try:
+            import pybaseball
+            pybaseball.cache.enable()
+            stats = pitching_stats(2026, qual=1)
+            print(f"Fetched {len(stats)} pitchers from 2026 (cached)")
+            return stats
+        except Exception as e1b:
+            print(f"Retry failed: {e1b}")
+        # Fall back to Baseball Savant Statcast directly
+        try:
+            from pybaseball import statcast_pitcher_exitvelo_barrels
+            print("Trying Baseball Savant Statcast fallback...")
+            stats = statcast_pitcher_exitvelo_barrels(2026, minBBE=10)
+            if stats is not None and len(stats) > 0:
+                print(f"Fetched {len(stats)} pitchers from Statcast")
+                return stats
+        except Exception as e1c:
+            print(f"Statcast fallback failed: {e1c}")
+        # Last resort — 2025 data
         try:
             stats = pitching_stats(2025, qual=20)
-            print(f"Fetched {len(stats)} pitchers from 2025")
+            print(f"Fetched {len(stats)} pitchers from 2025 fallback")
             return stats
         except Exception as e2:
-            print(f"Error: {e2}")
+            print(f"All sources failed: {e2}")
             return None
 
 def fetch_recent_pitcher_stats():
