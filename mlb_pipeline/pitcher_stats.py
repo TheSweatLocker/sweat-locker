@@ -226,11 +226,12 @@ def get_todays_starters():
         print(f"Error fetching starters: {e}")
         return set()
 
-def build_pitcher_record(row, name, recent_stats, is_fangraphs=True):
+def build_pitcher_record(row, name, recent_stats, is_fangraphs=True, is_starter=False):
     """Build pitcher record from either FanGraphs or Statcast data"""
     last5_era = fetch_last5_era(name, recent_stats) if recent_stats is not None else None
-    throws = get_pitcher_handedness(name)
-    first_inn = get_first_inning_splits(name)
+    # Only fetch expensive API data for today's starters
+    throws = get_pitcher_handedness(name) if is_starter else None
+    first_inn = get_first_inning_splits(name) if is_starter else None
 
     if is_fangraphs:
         pitcher = {
@@ -287,8 +288,11 @@ def build_pitcher_record(row, name, recent_stats, is_fangraphs=True):
     return pitcher
 
 def run():
-    # Determine if full refresh or daily starters only
-    is_monday = datetime.now().weekday() == 0
+    # Determine if full refresh or daily starters only — use ET not UTC
+    from datetime import timezone
+    et_now = datetime.now(timezone.utc) - timedelta(hours=4)
+    is_monday = et_now.weekday() == 0
+    print(f"ET day: {et_now.strftime('%A %Y-%m-%d %H:%M')}, is_monday: {is_monday}")
     todays_starters = get_todays_starters()
 
     stats = fetch_pitcher_stats()
@@ -320,20 +324,20 @@ def run():
             if not name or name == 'nan':
                 continue
 
+            # Check if this pitcher is starting today
+            pitcher_last = name.split(' ')[-1].lower()
+            is_starter = any(pitcher_last in s.lower() for s in todays_starters) if todays_starters else False
+
             # Daily runs: only update today's starters (unless Monday = full refresh)
-            if not is_monday and todays_starters:
-                # Check if this pitcher is starting today (fuzzy match on last name)
-                pitcher_last = name.split(' ')[-1].lower()
-                is_starter = any(pitcher_last in s.lower() for s in todays_starters)
-                if not is_starter:
-                    skipped += 1
-                    continue
+            if not is_monday and todays_starters and not is_starter:
+                skipped += 1
+                continue
 
             # Rate limit — lighter since we're processing fewer pitchers
             if (success + errors) % 10 == 0 and (success + errors) > 0:
                 time.sleep(0.3)
 
-            pitcher = build_pitcher_record(row, name, recent_stats, is_fangraphs)
+            pitcher = build_pitcher_record(row, name, recent_stats, is_fangraphs, is_starter)
             result = upload_pitcher(pitcher)
             if result:
                 success += 1
@@ -344,8 +348,9 @@ def run():
 
         except Exception as e:
             errors += 1
-            if errors <= 5:
+            if errors <= 10:
                 print(f"Error on {row.get(name_col, '?')}: {e}")
+                traceback.print_exc()
             continue
 
     print(f"\nDone! ✅ {success} uploaded, ❌ {errors} errors, ⏭️ {skipped} skipped (not starting today)")
