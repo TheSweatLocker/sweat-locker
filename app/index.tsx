@@ -5856,7 +5856,20 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                   if(sport === 'NBA' || sport === 'NFL') {
                     const stats = await fetchBDLPlayerStats(prop.player);
                     if(stats) {
-                      playerContext = ` Player last 5 games avg: ${stats.last5.pts}pts, ${stats.last5.reb}reb, ${stats.last5.ast}ast, ${stats.last5.min}min.`;
+                      const MARKET_STAT_MAP = {
+                        'player_points': {key:'pts', label:'pts/game'},
+                        'player_rebounds': {key:'reb', label:'reb/game'},
+                        'player_assists': {key:'ast', label:'ast/game'},
+                        'player_threes': {key:'fg3m', label:'3pm/game'},
+                        'player_blocks': {key:'blk', label:'blk/game'},
+                        'player_steals': {key:'stl', label:'stl/game'},
+                      };
+                      const statInfo = MARKET_STAT_MAP[prop.market as keyof typeof MARKET_STAT_MAP];
+                      if(statInfo && stats.last5[statInfo.key] !== undefined) {
+                        playerContext = ` ${prop.player} last 5 avg: ${stats.last5[statInfo.key]} ${statInfo.label}. Line: ${bestSide} ${bestLine?.line}.`;
+                      } else {
+                        playerContext = ` ${prop.player} last 5 avg: ${stats.last5.pts}pts, ${stats.last5.reb}reb, ${stats.last5.ast}ast.`;
+                      }
                     }
                   }
                   if(sport === 'MLB') {
@@ -5886,8 +5899,27 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                             playerContext = ` MLB K prop context: ${pitcherCtx}. Umpire: ${mlbCtx.umpire_note || 'N/A'}. Park: ${mlbCtx.venue} (run factor ${mlbCtx.park_run_factor}).`;
                           } else if(isHRProp) {
                             playerContext = ` MLB HR prop context: ${mlbCtx.venue} HR factor ${mlbCtx.park_run_factor}. Weather: ${mlbCtx.temperature}°F, wind ${mlbCtx.wind_speed}mph ${mlbCtx.wind_direction}.`;
-                          } else if(isHitsProp) {
-                            playerContext = ` MLB hits context: ${mlbCtx.venue} run factor ${mlbCtx.park_run_factor}. ${mlbCtx.umpire_note || ''}`;
+                          } else if(isHitsProp || prop.market.includes('rbis') || prop.market.includes('runs_scored')) {
+                            // Batter prop — find opposing pitcher's contact profile
+                            const isBatterHome = mlbCtx.home_lineup?.toLowerCase().includes(prop.player.split(' ').pop()?.toLowerCase() || '');
+                            const oppPitcher = isBatterHome ? mlbCtx.away_pitcher : mlbCtx.home_pitcher;
+                            let contactProfile = '';
+                            if(oppPitcher) {
+                              try {
+                                const { data: pitcherStats } = await supabase
+                                  .from('mlb_pitcher_stats')
+                                  .select('baa_allowed, xba_allowed, hard_hit_pct_allowed, throws')
+                                  .ilike('player_name', `%${oppPitcher.split(' ').pop()}%`)
+                                  .limit(1)
+                                  .single();
+                                if(pitcherStats && (pitcherStats.baa_allowed || pitcherStats.xba_allowed)) {
+                                  contactProfile = ` Opposing pitcher ${oppPitcher} contact profile: BAA ${pitcherStats.baa_allowed?.toFixed(3) || 'N/A'}, xBA ${pitcherStats.xba_allowed?.toFixed(3) || 'N/A'}, hard hit% ${pitcherStats.hard_hit_pct_allowed?.toFixed(1) || 'N/A'}%. Throws ${pitcherStats.throws || 'R'}.`;
+                                }
+                              } catch(e) {}
+                            }
+                            const platoon = isBatterHome ? mlbCtx.home_platoon_advantage : mlbCtx.away_platoon_advantage;
+                            const wrcPlus = isBatterHome ? mlbCtx.home_wrc_plus : mlbCtx.away_wrc_plus;
+                            playerContext = ` MLB batter prop: ${mlbCtx.venue} (park factor ${mlbCtx.park_run_factor}). Team wRC+ ${wrcPlus || 'N/A'}. Platoon adv: ${platoon ? '+' + platoon : 'N/A'}.${contactProfile} ${mlbCtx.umpire_note || ''}`;
                           } else {
                             playerContext = ` MLB context: ${mlbCtx.venue} (park factor ${mlbCtx.park_run_factor}), ${mlbCtx.temperature}°F. Umpire: ${mlbCtx.umpire_note || 'N/A'}.`;
                           }
@@ -7174,7 +7206,7 @@ setJerryHistory(prev => {
   <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:HRB_COLOR,marginBottom:16,shadowColor:HRB_COLOR,shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
       <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-        <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,letterSpacing:1}}>🔒 JERRY'S BEST BET</Text>
+        <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,letterSpacing:1}}>🔒 JERRY'S PLAY OF THE DAY</Text>
         <View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2}}>
           <Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'800'}}>TODAY</Text>
         </View>

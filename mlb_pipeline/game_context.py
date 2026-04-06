@@ -2,6 +2,7 @@ import requests
 from datetime import datetime, date, timedelta
 import time
 import json
+from math import radians, sin, cos, sqrt, atan2
 
 import os
 from dotenv import load_dotenv
@@ -611,6 +612,109 @@ TEAM_VENUE = {
 # Dome stadiums — weather irrelevant
 DOME_VENUES = ["Tropicana Field", "loanDepot Park", "Rogers Centre", "American Family Field", "Chase Field", "Globe Life Field"]
 
+TEAM_TIMEZONES = {
+    'New York Yankees': 'ET', 'New York Mets': 'ET', 'Boston Red Sox': 'ET',
+    'Baltimore Orioles': 'ET', 'Tampa Bay Rays': 'ET', 'Toronto Blue Jays': 'ET',
+    'Philadelphia Phillies': 'ET', 'Atlanta Braves': 'ET', 'Miami Marlins': 'ET',
+    'Washington Nationals': 'ET', 'Pittsburgh Pirates': 'ET', 'Cleveland Guardians': 'ET',
+    'Detroit Tigers': 'ET', 'Cincinnati Reds': 'ET',
+    'Chicago Cubs': 'CT', 'Chicago White Sox': 'CT',
+    'Milwaukee Brewers': 'CT', 'Minnesota Twins': 'CT', 'Kansas City Royals': 'CT',
+    'St. Louis Cardinals': 'CT', 'Houston Astros': 'CT', 'Texas Rangers': 'CT',
+    'Colorado Rockies': 'MT', 'Arizona Diamondbacks': 'MT',
+    'Los Angeles Dodgers': 'PT', 'Los Angeles Angels': 'PT', 'Athletics': 'PT',
+    'San Francisco Giants': 'PT', 'San Diego Padres': 'PT',
+    'Seattle Mariners': 'PT', 'Oakland Athletics': 'PT',
+}
+TZ_OFFSET = {'ET': 0, 'CT': 1, 'MT': 2, 'PT': 3}
+
+def haversine(coord1, coord2):
+    """Calculate distance in miles between two lat/lon coordinates"""
+    R = 3958.8  # Earth radius in miles
+    lat1, lon1 = radians(coord1[0]), radians(coord1[1])
+    lat2, lon2 = radians(coord2[0]), radians(coord2[1])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
+    return R * 2 * atan2(sqrt(a), sqrt(1-a))
+
+def get_team_schedule_features(team_name, game_date):
+    """Fetch last 5 games for a team and calculate run diff, consecutive road games, days since last home game"""
+    try:
+        # Get MLB team ID
+        teams_resp = requests.get('https://statsapi.mlb.com/api/v1/teams?sportId=1', timeout=15)
+        team_last = team_name.split(' ')[-1].lower()
+        mlb_team = None
+        for t in teams_resp.json().get('teams', []):
+            if t.get('name', '').lower().endswith(team_last) or team_last in t.get('name', '').lower():
+                mlb_team = t
+                break
+        if not mlb_team:
+            return None, None, None, None
+
+        team_id = mlb_team['id']
+        end_date = game_date
+        start_date = (datetime.strptime(game_date, '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
+
+        sched_resp = requests.get(
+            'https://statsapi.mlb.com/api/v1/schedule',
+            params={'teamId': team_id, 'sportId': 1, 'startDate': start_date, 'endDate': end_date, 'hydrate': 'linescore', 'gameType': 'R'},
+            timeout=15
+        )
+
+        all_games = []
+        for d in sched_resp.json().get('dates', []):
+            for g in d.get('games', []):
+                if g.get('status', {}).get('detailedState') == 'Final':
+                    all_games.append(g)
+
+        # Sort by date descending
+        all_games.sort(key=lambda g: g.get('gameDate', ''), reverse=True)
+
+        # Last 5 run differential
+        run_diff = 0
+        for g in all_games[:5]:
+            ls = g.get('linescore', {})
+            home_runs = ls.get('teams', {}).get('home', {}).get('runs', 0) or 0
+            away_runs = ls.get('teams', {}).get('away', {}).get('runs', 0) or 0
+            is_home = g.get('teams', {}).get('home', {}).get('team', {}).get('id') == team_id
+            if is_home:
+                run_diff += (home_runs - away_runs)
+            else:
+                run_diff += (away_runs - home_runs)
+
+        last5_run_diff = round(run_diff, 1) if len(all_games) >= 1 else None
+
+        # Days since last home game
+        days_since_home = None
+        for g in all_games:
+            is_home = g.get('teams', {}).get('home', {}).get('team', {}).get('id') == team_id
+            if is_home:
+                last_home_date = g.get('gameDate', '')[:10]
+                try:
+                    days_since_home = (datetime.strptime(game_date, '%Y-%m-%d') - datetime.strptime(last_home_date, '%Y-%m-%d')).days
+                except:
+                    pass
+                break
+
+        # Consecutive road games (counting backwards)
+        consec_road = 0
+        for g in all_games:
+            is_home = g.get('teams', {}).get('home', {}).get('team', {}).get('id') == team_id
+            if is_home:
+                break
+            consec_road += 1
+
+        # Last game venue name (for travel distance)
+        last_venue = None
+        if all_games:
+            last_venue = all_games[0].get('venue', {}).get('name')
+
+        return last5_run_diff, days_since_home, consec_road, last_venue
+    except Exception as e:
+        print(f"  ⚠️ Schedule features error for {team_name}: {e}")
+        return None, None, None, None
+
 def get_weather(venue, lat, lon):
     if venue in DOME_VENUES:
         return {"temperature": 72, "wind_speed": 0, "wind_direction": "N/A", "precipitation": 0, "is_dome": True}
@@ -881,6 +985,13 @@ def log_game_result(context):
             "over_lean": context.get("over_lean"),
             "confidence": context.get("confidence"),
             "model_version": "v0.1",
+            "wind_blowing_in": context.get("wind_blowing_in"),
+            "timezone_change": context.get("timezone_change"),
+            "home_last5_run_diff": context.get("home_last5_run_diff"),
+            "away_last5_run_diff": context.get("away_last5_run_diff"),
+            "days_since_last_home_game": context.get("days_since_last_home_game"),
+            "away_consecutive_road_games": context.get("away_consecutive_road_games"),
+            "home_travel_distance_last_game": context.get("home_travel_distance_last_game"),
             "open_total": context.get("open_total"),
             "close_total": context.get("close_total"),
             "nrfi_score": context.get("nrfi_score"),
@@ -1289,6 +1400,30 @@ def run():
                 over_pct = ump_stats.get('over_rate', 0.5) * 100
                 ump_note = f"{ump_name} — {k_tendency} zone, {over_pct:.0f}% over rate"
 
+            # ── XGBOOST FEATURES ──
+            # Wind blowing in (Wrigley-specific for now, expandable later)
+            wind_blowing_in = False
+            if venue == 'Wrigley Field' and weather.get('wind_direction') in ['N', 'NE', 'NW'] and (weather.get('wind_speed') or 0) > 12:
+                wind_blowing_in = True
+
+            # Timezone change
+            home_tz = TEAM_TIMEZONES.get(home_team, TEAM_TIMEZONES.get(home_team.split(' ')[-1], 'ET'))
+            away_tz = TEAM_TIMEZONES.get(away_team, TEAM_TIMEZONES.get(away_team.split(' ')[-1], 'ET'))
+            tz_change = abs(TZ_OFFSET.get(home_tz, 0) - TZ_OFFSET.get(away_tz, 0))
+
+            # Schedule-based features (one API call per team covers run diff, home days, road streak)
+            home_run_diff, home_days_since_home, _, home_last_venue = get_team_schedule_features(home_team, game_date_et)
+            time.sleep(0.3)
+            away_run_diff, _, away_consec_road, _ = get_team_schedule_features(away_team, game_date_et)
+
+            # Travel distance for home team
+            home_travel_dist = None
+            if home_last_venue and home_last_venue in VENUE_COORDS and venue in VENUE_COORDS:
+                try:
+                    home_travel_dist = round(haversine(VENUE_COORDS[home_last_venue], VENUE_COORDS[venue]))
+                except:
+                    pass
+
             context = {
                 "game_id": game_id,
                 "home_team": home_team,
@@ -1353,6 +1488,13 @@ def run():
                 "away_bullpen_era": away_bullpen['bullpen_era'] if away_bullpen else None,
                 "home_save_pct": home_bullpen['save_pct'] if home_bullpen else None,
                 "away_save_pct": away_bullpen['save_pct'] if away_bullpen else None,
+                "wind_blowing_in": wind_blowing_in,
+                "timezone_change": tz_change,
+                "home_last5_run_diff": home_run_diff,
+                "away_last5_run_diff": away_run_diff,
+                "days_since_last_home_game": home_days_since_home,
+                "away_consecutive_road_games": away_consec_road,
+                "home_travel_distance_last_game": home_travel_dist,
             }
             if upload_game_context(context):
                 lean = "OVER" if context["over_lean"] else "UNDER" if context["over_lean"] is False else "NEUTRAL"

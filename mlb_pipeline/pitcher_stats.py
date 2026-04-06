@@ -149,6 +149,10 @@ def run():
                 "barrel_pct": safe_float(row.get('Barrel%', row.get('Barrels')), 6.0),
                 "avg_fastball_velo": safe_float(row.get('FBv', row.get('vFB')), 93.0),
                 "last_5_era": last5_era if last5_era else safe_float(row.get('ERA'), 4.50),
+                # Contact-allowed profile for batter prop evaluation
+                "baa_allowed": safe_float(row.get('AVG', row.get('BA')), None),
+                "xba_allowed": safe_float(row.get('xBA', row.get('xAVG')), None),
+                "hard_hit_pct_allowed": safe_float(row.get('Hard%'), None),
                 "season": "2026",
                 "updated_at": "now()"
             }
