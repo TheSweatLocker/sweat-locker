@@ -6035,21 +6035,32 @@ const graded = gradedRaw.filter(p => {
 const aGrades = graded.filter(p => p.grade === 'A');
 if(aGrades.length > 0) {
   try {
-    await supabase.from('prop_grades').insert(
-      aGrades.map(p => ({
-  player: p.player,
-  market: p.marketLabel,
-  grade: p.grade,
-  ev: p.bestEV,
-  game: p.gameName,
-  sport: sport, // use the local sport parameter not the state variable
-        sport: propJerrySport,
-        best_side: p.bestSide,
-        best_odds: p.bestLine?.odds,
-        book: p.bestLine?.book,
-        result: 'Pending',
-      }))
-    );
+    // Dedup — check existing props for today before inserting
+    const today = new Date().toISOString().split('T')[0];
+    const { data: existing } = await supabase
+      .from('prop_grades')
+      .select('player, market')
+      .eq('sport', sport)
+      .gte('created_at', today + 'T00:00:00Z');
+    const existingKeys = new Set((existing || []).map(e => `${e.player}_${e.market}`));
+    const newGrades = aGrades.filter(p => !existingKeys.has(`${p.player}_${p.marketLabel}`));
+    if(newGrades.length > 0) {
+      await supabase.from('prop_grades').insert(
+        newGrades.map(p => ({
+          player: p.player,
+          market: p.marketLabel,
+          grade: p.grade,
+          ev: p.bestEV,
+          line: p.bestLine?.line,
+          game: p.gameName,
+          sport: sport,
+          best_side: p.bestSide,
+          best_odds: p.bestLine?.odds,
+          book: p.bestLine?.book,
+          result: 'Pending',
+        }))
+      );
+    }
   } catch(e) {}
 }
         // Auto-save graded props to Jerry history
@@ -7772,6 +7783,23 @@ setJerryHistory(prev => {
   return(
     <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:8,paddingHorizontal:10,paddingVertical:4,marginBottom:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)',alignSelf:'flex-start'}}>
       <Text style={{color:'#FFB800',fontSize:11,fontWeight:'800'}}>🏆 {series.series_label} — Game {series.game_number}</Text>
+    </View>
+  );
+})()}
+{gamesSport==='MLB'&&(()=>{
+  const nrfiCtx = mlbGameContext[game.home_team] || mlbGameContext[game.away_team] ||
+    Object.values(mlbGameContext).find((ctx: any) => ctx.home_team === game.home_team || ctx.away_team === game.away_team);
+  const nScore = nrfiCtx?.nrfi_score;
+  if(!nScore) return null;
+  const nColor = nScore >= 70 ? '#00e5a0' : nScore >= 55 ? '#ffd166' : nScore <= 40 ? '#ff4d6d' : '#7a92a8';
+  const nLabel = nScore >= 70 ? 'NRFI' : nScore >= 55 ? 'NRFI lean' : nScore <= 40 ? 'YRFI' : 'Neutral';
+  return(
+    <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8}}>
+      <View style={{backgroundColor:nColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:nColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
+        <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>⚾ {nLabel}</Text>
+        <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>{nScore}</Text>
+      </View>
+      {nrfiCtx?.home_pitcher && <Text style={{color:'#4a6070',fontSize:10}}>{nrfiCtx.home_pitcher?.split(' ').pop()} vs {nrfiCtx.away_pitcher?.split(' ').pop()}</Text>}
     </View>
   );
 })()}
