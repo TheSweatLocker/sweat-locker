@@ -7,52 +7,114 @@ load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# MLB team name mapping from pybaseball to full names
-TEAM_NAME_MAP = {
-    'ARI': 'Arizona Diamondbacks',
-    'ATL': 'Atlanta Braves',
-    'BAL': 'Baltimore Orioles',
-    'BOS': 'Boston Red Sox',
-    'CHC': 'Chicago Cubs',
-    'CHW': 'Chicago White Sox',
-    'CIN': 'Cincinnati Reds',
-    'CLE': 'Cleveland Guardians',
-    'COL': 'Colorado Rockies',
-    'DET': 'Detroit Tigers',
-    'HOU': 'Houston Astros',
-    'KCR': 'Kansas City Royals',
-    'LAA': 'Los Angeles Angels',
-    'LAD': 'Los Angeles Dodgers',
-    'MIA': 'Miami Marlins',
-    'MIL': 'Milwaukee Brewers',
-    'MIN': 'Minnesota Twins',
-    'NYM': 'New York Mets',
-    'NYY': 'New York Yankees',
-    'OAK': 'Athletics',
-    'ATH': 'Athletics',
-    'PHI': 'Philadelphia Phillies',
-    'PIT': 'Pittsburgh Pirates',
-    'SDP': 'San Diego Padres',
-    'SEA': 'Seattle Mariners',
-    'SFG': 'San Francisco Giants',
-    'STL': 'St. Louis Cardinals',
-    'TBR': 'Tampa Bay Rays',
-    'TEX': 'Texas Rangers',
-    'TOR': 'Toronto Blue Jays',
-    'WSN': 'Washington Nationals',
-}
-
-def get_team_woba_wrc(season=2025):
-    """Fetch team wOBA and wRC+ from pybaseball — uses 2025 as baseline until 2026 accumulates"""
+def safe_float(val, default=None):
     try:
-        import pybaseball
-        pybaseball.cache.enable()
-        print(f"Fetching team batting stats for {season}...")
-        df = pybaseball.team_batting(season)
-        print(f"Got {len(df)} team rows from pybaseball")
-        return df
+        f = float(val)
+        return round(f, 3) if f == f else default  # NaN check
+    except:
+        return default
+
+def safe_int(val, default=None):
+    try:
+        return int(val)
+    except:
+        return default
+
+def get_team_stats_mlb_api():
+    """Fetch team batting stats from MLB Stats API — free, never blocks"""
+    print("Fetching team batting stats from MLB Stats API...")
+    try:
+        # Get all team IDs
+        teams_resp = requests.get('https://statsapi.mlb.com/api/v1/teams?sportId=1', timeout=15)
+        teams = teams_resp.json().get('teams', [])
+        print(f"Found {len(teams)} MLB teams")
+
+        results = []
+        for team in teams:
+            team_id = team['id']
+            team_name = team['name']
+
+            try:
+                # Fetch team hitting stats for current season
+                stats_resp = requests.get(
+                    f'https://statsapi.mlb.com/api/v1/teams/{team_id}/stats',
+                    params={
+                        'stats': 'season',
+                        'group': 'hitting',
+                        'season': 2026
+                    },
+                    timeout=15
+                )
+                stats_data = stats_resp.json().get('stats', [])
+                if not stats_data or not stats_data[0].get('splits'):
+                    continue
+
+                s = stats_data[0]['splits'][0]['stat']
+                games = safe_int(s.get('gamesPlayed'), 0)
+                if games == 0:
+                    continue
+
+                runs = safe_int(s.get('runs'), 0)
+                hits = safe_int(s.get('hits'), 0)
+                hr = safe_int(s.get('homeRuns'), 0)
+                ab = safe_int(s.get('atBats'), 1)
+                bb = safe_int(s.get('baseOnBalls'), 0)
+                so = safe_int(s.get('strikeOuts'), 0)
+                pa = safe_int(s.get('plateAppearances'), 1)
+                doubles = safe_int(s.get('doubles'), 0)
+                triples = safe_int(s.get('triples'), 0)
+
+                avg = safe_float(s.get('avg'))
+                obp = safe_float(s.get('obp'))
+                slg = safe_float(s.get('slg'))
+                ops = safe_float(s.get('ops'))
+
+                # Calculate derived stats
+                k_pct = round((so / pa) * 100, 1) if pa > 0 else None
+                bb_pct = round((bb / pa) * 100, 1) if pa > 0 else None
+                iso = round(slg - avg, 3) if slg and avg else None
+                babip = round((hits - hr) / (ab - so - hr + 0.001), 3) if (ab - so - hr) > 0 else None
+
+                # wOBA approximation using linear weights
+                # wOBA = (0.69*BB + 0.72*HBP + 0.89*1B + 1.27*2B + 1.62*3B + 2.10*HR) / PA
+                hbp = safe_int(s.get('hitByPitch'), 0)
+                singles = hits - doubles - triples - hr
+                woba = round((0.69*bb + 0.72*hbp + 0.89*singles + 1.27*doubles + 1.62*triples + 2.10*hr) / pa, 3) if pa > 0 else None
+
+                # wRC+ approximation — normalize wOBA to league average
+                # League avg wOBA ~.310, wOBA scale ~1.15
+                league_woba = 0.310
+                woba_scale = 1.15
+                wrc_plus = round(((((woba - league_woba) / woba_scale) + (runs / pa)) / (runs / pa if runs > 0 else 0.12)) * 100) if woba and pa > 0 else None
+                # Simpler wRC+ approximation: (wOBA / league_wOBA) * 100
+                if wrc_plus is None or wrc_plus > 200 or wrc_plus < 50:
+                    wrc_plus = round((woba / league_woba) * 100) if woba else 100
+
+                results.append({
+                    'team_name': team_name,
+                    'games': games,
+                    'runs': runs,
+                    'avg': avg,
+                    'obp': obp,
+                    'slg': slg,
+                    'ops': ops,
+                    'k_pct': k_pct,
+                    'bb_pct': bb_pct,
+                    'iso': iso,
+                    'babip': babip,
+                    'woba': woba,
+                    'wrc_plus': wrc_plus,
+                    'hr': hr,
+                })
+
+            except Exception as e:
+                print(f"  Error fetching {team_name}: {e}")
+                continue
+
+        print(f"Fetched stats for {len(results)} teams")
+        return results
     except Exception as e:
-        print(f"Error fetching pybaseball data: {e}")
+        print(f"MLB Stats API error: {e}")
         return None
 
 def upload_team_offense(record):
@@ -73,62 +135,44 @@ def upload_team_offense(record):
     return True
 
 def run():
-    # Use 2025 as baseline — switch to 2026 after 15+ games played
-    season = 2025
-
-    df = get_team_woba_wrc(season)
-    if df is None or len(df) == 0:
-        print("No data returned from pybaseball")
+    teams = get_team_stats_mlb_api()
+    if not teams:
+        print("No team stats available")
         return
-
-    print(f"Columns available: {list(df.columns)}")
 
     success = 0
     errors = 0
 
-    for _, row in df.iterrows():
+    for t in teams:
         try:
-            team_abbr = str(row.get('Team', '')).strip()
-            if not team_abbr or team_abbr == 'nan':
-                continue
-
-            full_name = TEAM_NAME_MAP.get(team_abbr)
-            if not full_name:
-                print(f"  Unknown team abbreviation: {team_abbr}")
-                continue
-
-            games = int(row.get('G', 0))
-            runs = float(row.get('R', 0))
-
             record = {
-                "team": full_name,
-                "season": season,
-                "woba": round(float(row.get('wOBA', 0)), 3) if row.get('wOBA') else None,
-                "wrc_plus": int(row.get('wRC+', 100)) if row.get('wRC+') else None,
-                "k_pct": round(float(str(row.get('K%', '0')).replace('%', '')) * (100 if float(str(row.get('K%', '0')).replace('%', '')) < 1 else 1), 1) if row.get('K%') else None,
-                "bb_pct": round(float(str(row.get('BB%', '0')).replace('%', '')) * (100 if float(str(row.get('BB%', '0')).replace('%', '')) < 1 else 1), 1) if row.get('BB%') else None,
-                "iso": round(float(row.get('ISO', 0)), 3) if row.get('ISO') else None,
-                "babip": round(float(row.get('BABIP', 0)), 3) if row.get('BABIP') else None,
-                "avg": round(float(row.get('AVG', 0)), 3) if row.get('AVG') else None,
-                "obp": round(float(row.get('OBP', 0)), 3) if row.get('OBP') else None,
-                "slg": round(float(row.get('SLG', 0)), 3) if row.get('SLG') else None,
-                "ops": round(float(row.get('OPS', 0)), 3) if row.get('OPS') else None,
-                "runs_per_game": round(runs / games, 2) if games > 0 else None,
-                "hr_per_game": round(float(row.get('HR', 0)) / games, 3) if games > 0 else None,
-                "games_played": games,
+                "team": t['team_name'],
+                "season": 2026,
+                "woba": t['woba'],
+                "wrc_plus": t['wrc_plus'],
+                "k_pct": t['k_pct'],
+                "bb_pct": t['bb_pct'],
+                "iso": t['iso'],
+                "babip": t['babip'],
+                "avg": t['avg'],
+                "obp": t['obp'],
+                "slg": t['slg'],
+                "ops": t['ops'],
+                "runs_per_game": round(t['runs'] / t['games'], 2) if t['games'] > 0 else None,
+                "hr_per_game": round(t['hr'] / t['games'], 3) if t['games'] > 0 else None,
+                "games_played": t['games'],
                 "updated_at": datetime.now().isoformat()
             }
 
             if upload_team_offense(record):
                 success += 1
-                print(f"✅ {full_name} — wOBA: {record['woba']}, wRC+: {record['wrc_plus']}, K%: {record['k_pct']}%")
+                print(f"✅ {t['team_name']} — wOBA: {t['woba']}, wRC+: {t['wrc_plus']}, K%: {t['k_pct']}%")
             else:
                 errors += 1
-                print(f"❌ {full_name}")
 
         except Exception as e:
             errors += 1
-            print(f"Error on {row.get('Team', 'unknown')}: {e}")
+            print(f"Error on {t.get('team_name', '?')}: {e}")
 
     print(f"\nDone! ✅ {success} teams, ❌ {errors} errors")
 
