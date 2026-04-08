@@ -59,12 +59,19 @@ jobs:
           cd mlb_pipeline
           python team_stats.py
 
-      - name: Run UFC fighter stats scrape
+      - name: Run UFC card scraper (Thursdays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          echo "Skipping UFC scraper — manual skip today"
+          DAY=$(date -u -d '-4 hours' +%u)
+          if [ "$DAY" = "4" ]; then
+            echo "Thursday — running UFC card scraper"
+            cd mlb_pipeline
+            python ufc_card_scraper.py
+          else
+            echo "Not Thursday (day=$DAY) — skipping UFC scraper"
+          fi
       
       - name: Resolve prop grades
         env:
