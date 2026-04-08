@@ -4668,6 +4668,18 @@ Do NOT give a specific bet or pick. End with — Jerry.`;
       const games = statsResp.data?.data || [];
       if(!games.length) return null;
       const avg = (key) => (games.reduce((s,g) => s + (g[key]||0), 0) / games.length).toFixed(1);
+      // Recency-weighted average — most recent game weighted highest
+      const RECENCY_WEIGHTS = [1.0, 0.85, 0.70, 0.55, 0.40];
+      const weightedAvg = (key: string) => {
+        const sorted = [...games].sort((a: any,b: any) => new Date(b.game?.date||0).getTime() - new Date(a.game?.date||0).getTime());
+        let totalWeight = 0, weightedSum = 0;
+        sorted.forEach((g, i) => {
+          const w = RECENCY_WEIGHTS[i] || 0.30;
+          weightedSum += (g[key]||0) * w;
+          totalWeight += w;
+        });
+        return totalWeight > 0 ? parseFloat((weightedSum / totalWeight).toFixed(1)) : 0;
+      };
       const data = {
         name: `${player.first_name} ${player.last_name}`,
         team: player.team?.abbreviation || '',
@@ -4676,7 +4688,13 @@ Do NOT give a specific bet or pick. End with — Jerry.`;
           reb: avg('reb'),
           ast: avg('ast'),
           min: avg('min')
-        }
+        },
+        weighted: {
+          pts: weightedAvg('pts'),
+          reb: weightedAvg('reb'),
+          ast: weightedAvg('ast'),
+        },
+        rawGames: games.map(g => ({pts: g.pts, reb: g.reb, ast: g.ast, opp: g.game?.home_team_id === player.team?.id ? g.game?.visitor_team_id : g.game?.home_team_id})),
       };
       await AsyncStorage.setItem(cacheKey, JSON.stringify({data, timestamp: Date.now()}));
       return data;
@@ -5781,29 +5799,68 @@ for(let pi = 0; pi < propEntries.length; pi++) {
         let modelAvg = null;
         let modelSignal = '';
 
-        // NBA — use BDL last 5 game averages
+        // NBA — use BDL weighted averages + opponent defense
         if(propJerrySport === 'NBA') {
           try {
             const stats = await fetchBDLPlayerStats(prop.player);
             if(stats) {
               const market = prop.market;
               const line = parseFloat(bestLine?.line || bestOver?.line || bestUnder?.line);
-              if(market.includes('points')) modelAvg = parseFloat(stats.last5.pts);
-              else if(market.includes('rebounds')) modelAvg = parseFloat(stats.last5.reb);
-              else if(market.includes('assists')) modelAvg = parseFloat(stats.last5.ast);
+              // Use recency-weighted average instead of straight average
+              const weighted = stats.weighted || stats.last5;
+              if(market.includes('points')) modelAvg = parseFloat(weighted.pts);
+              else if(market.includes('rebounds')) modelAvg = parseFloat(weighted.reb);
+              else if(market.includes('assists')) modelAvg = parseFloat(weighted.ast);
+
+              // Opponent defensive adjustment
+              let oppDefAdj = 0;
+              let oppDefSignal = '';
+              const gameTeams = prop.game?.split(' @ ') || [];
+              const oppTeamName = gameTeams[0]?.trim() || gameTeams[1]?.trim();
+              if(oppTeamName) {
+                const oppTeam = Object.values(nbaTeamData).find((t: any) =>
+                  oppTeamName.includes(t.team?.split(' ').pop()) || t.team?.includes(oppTeamName.split(' ').pop())
+                ) as any;
+                if(oppTeam) {
+                  const defRtg = parseFloat(oppTeam.defensive_rating);
+                  const oppEFG = parseFloat(oppTeam.opp_efg_pct);
+                  const pace = parseFloat(oppTeam.pace);
+                  if(market.includes('points') && defRtg) {
+                    // Bad defense (high DefRtg) → boost over, good defense → boost under
+                    if(defRtg >= 115) { oppDefAdj = 0.04; oppDefSignal = `vs weak defense (DefRtg ${defRtg.toFixed(1)})`; }
+                    else if(defRtg >= 112) { oppDefAdj = 0.02; oppDefSignal = `vs below avg defense (DefRtg ${defRtg.toFixed(1)})`; }
+                    else if(defRtg <= 108) { oppDefAdj = -0.04; oppDefSignal = `vs elite defense (DefRtg ${defRtg.toFixed(1)})`; }
+                    else if(defRtg <= 110) { oppDefAdj = -0.02; oppDefSignal = `vs good defense (DefRtg ${defRtg.toFixed(1)})`; }
+                  } else if(market.includes('rebounds')) {
+                    // High pace → more possessions → more rebound opportunities
+                    if(pace && pace >= 101) { oppDefAdj = 0.02; oppDefSignal = `vs fast pace team (${pace.toFixed(1)})`; }
+                    else if(pace && pace <= 97) { oppDefAdj = -0.02; oppDefSignal = `vs slow pace team (${pace.toFixed(1)})`; }
+                  } else if(market.includes('assists')) {
+                    // Bad defense → more open looks → more assists
+                    if(oppEFG && oppEFG >= 52) { oppDefAdj = 0.03; oppDefSignal = `vs porous defense (opp eFG ${oppEFG.toFixed(1)}%)`; }
+                    else if(oppEFG && oppEFG <= 48) { oppDefAdj = -0.03; oppDefSignal = `vs stingy defense (opp eFG ${oppEFG.toFixed(1)}%)`; }
+                  }
+                }
+              }
+
               if(modelAvg !== null && !isNaN(modelAvg) && line > 0) {
                 const gap = ((modelAvg - line) / line) * 100;
+                const straightAvg = market.includes('points') ? stats.last5.pts : market.includes('rebounds') ? stats.last5.reb : stats.last5.ast;
+                const recencyNote = Math.abs(modelAvg - parseFloat(straightAvg)) >= 1.5 ? ` (recency-weighted, straight avg ${straightAvg})` : '';
+
                 if(bestSide === 'Over') {
-                  if(gap >= 15) { modelProb = 0.62; modelSignal = `L5 avg ${modelAvg} vs line ${line} (+${gap.toFixed(0)}% above)`; }
-                  else if(gap >= 8) { modelProb = 0.56; modelSignal = `L5 avg ${modelAvg} vs line ${line} (+${gap.toFixed(0)}% above)`; }
-                  else if(gap <= -8) { modelProb = 0.42; modelSignal = `L5 avg ${modelAvg} vs line ${line} (${gap.toFixed(0)}% below — wrong side)`; }
-                  else { modelProb = 0.50; modelSignal = `L5 avg ${modelAvg} near line ${line}`; }
+                  if(gap >= 15) { modelProb = 0.62 + oppDefAdj; modelSignal = `Weighted avg ${modelAvg} vs line ${line} (+${gap.toFixed(0)}% above)${recencyNote} ${oppDefSignal}`; }
+                  else if(gap >= 8) { modelProb = 0.56 + oppDefAdj; modelSignal = `Weighted avg ${modelAvg} vs line ${line} (+${gap.toFixed(0)}% above)${recencyNote} ${oppDefSignal}`; }
+                  else if(gap <= -8) { modelProb = 0.42 + oppDefAdj; modelSignal = `Weighted avg ${modelAvg} vs line ${line} (${gap.toFixed(0)}% below — wrong side) ${oppDefSignal}`; }
+                  else { modelProb = 0.50 + oppDefAdj; modelSignal = `Weighted avg ${modelAvg} near line ${line}${recencyNote} ${oppDefSignal}`; }
                 } else {
-                  if(gap <= -15) { modelProb = 0.62; modelSignal = `L5 avg ${modelAvg} vs line ${line} (${gap.toFixed(0)}% below)`; }
-                  else if(gap <= -8) { modelProb = 0.56; modelSignal = `L5 avg ${modelAvg} vs line ${line} (${gap.toFixed(0)}% below)`; }
-                  else if(gap >= 8) { modelProb = 0.42; modelSignal = `L5 avg ${modelAvg} vs line ${line} (+${gap.toFixed(0)}% above — wrong side)`; }
-                  else { modelProb = 0.50; modelSignal = `L5 avg ${modelAvg} near line ${line}`; }
+                  if(gap <= -15) { modelProb = 0.62 + oppDefAdj; modelSignal = `Weighted avg ${modelAvg} vs line ${line} (${gap.toFixed(0)}% below)${recencyNote} ${oppDefSignal}`; }
+                  else if(gap <= -8) { modelProb = 0.56 + oppDefAdj; modelSignal = `Weighted avg ${modelAvg} vs line ${line} (${gap.toFixed(0)}% below)${recencyNote} ${oppDefSignal}`; }
+                  else if(gap >= 8) { modelProb = 0.42 + oppDefAdj; modelSignal = `Weighted avg ${modelAvg} vs line ${line} (+${gap.toFixed(0)}% above — wrong side) ${oppDefSignal}`; }
+                  else { modelProb = 0.50 + oppDefAdj; modelSignal = `Weighted avg ${modelAvg} near line ${line}${recencyNote} ${oppDefSignal}`; }
                 }
+                // Clamp probability
+                modelProb = Math.max(0.35, Math.min(0.70, modelProb));
               }
             }
           } catch(e) {}

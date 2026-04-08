@@ -939,6 +939,14 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
         if fi_whip <= 0.90: score += 3
         elif fi_whip >= 1.60: score -= 3
 
+    # ── HOME ACE BONUS ──
+    # If home pitcher xERA is 1.5+ better than away pitcher, boost NRFI
+    if home_pitcher_stats and away_pitcher_stats:
+        home_xera = sanitize_xera(home_pitcher_stats.get('xera'), 'home')
+        away_xera = sanitize_xera(away_pitcher_stats.get('xera'), 'away')
+        if home_xera and away_xera and (float(away_xera) - float(home_xera)) >= 1.5:
+            score += 5
+
     return max(0, min(100, round(score)))
 
 def get_park_factors(home_team):
@@ -1033,6 +1041,7 @@ def log_game_result(context):
             "confidence": context.get("confidence"),
             "model_version": "v0.1",
             "wind_blowing_in": context.get("wind_blowing_in"),
+            "is_dome": context.get("is_dome"),
             "timezone_change": context.get("timezone_change"),
             "home_last5_run_diff": context.get("home_last5_run_diff"),
             "away_last5_run_diff": context.get("away_last5_run_diff"),
@@ -1525,9 +1534,13 @@ def run():
 
             # ── XGBOOST FEATURES ──
             # Wind blowing in (Wrigley-specific for now, expandable later)
-            wind_blowing_in = False
-            if venue == 'Wrigley Field' and weather.get('wind_direction') in ['N', 'NE', 'NW'] and (weather.get('wind_speed') or 0) > 12:
-                wind_blowing_in = True
+            # Any outdoor park with wind > 15mph blowing toward home plate
+            is_dome = venue in DOME_VENUES
+            wind_blowing_in = (
+                not is_dome and
+                (weather.get('wind_speed') or 0) > 15 and
+                weather.get('wind_direction') in ['N', 'NE', 'NW']
+            )
 
             # Timezone change
             home_tz = TEAM_TIMEZONES.get(home_team, TEAM_TIMEZONES.get(home_team.split(' ')[-1], 'ET'))
@@ -1638,6 +1651,7 @@ def run():
                 "home_save_pct": home_bullpen['save_pct'] if home_bullpen else None,
                 "away_save_pct": away_bullpen['save_pct'] if away_bullpen else None,
                 "wind_blowing_in": wind_blowing_in,
+                "is_dome": is_dome,
                 "timezone_change": tz_change,
                 "home_last5_run_diff": home_run_diff,
                 "away_last5_run_diff": away_run_diff,
