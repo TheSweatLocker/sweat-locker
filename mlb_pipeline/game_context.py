@@ -1315,11 +1315,11 @@ def run():
             # Calculate K rate gap vs pitcher
             home_pitcher_k = None
             away_pitcher_k = None
-            if home_pitcher_stats:
-                raw_k = home_pitcher_stats.get('k_pct', 0)
+            if home_pitcher_stats and home_pitcher_stats.get('k_pct') is not None:
+                raw_k = float(home_pitcher_stats.get('k_pct', 0) or 0)
                 home_pitcher_k = raw_k * 100 if raw_k < 1 else raw_k
-            if away_pitcher_stats:
-                raw_k = away_pitcher_stats.get('k_pct', 0)
+            if away_pitcher_stats and away_pitcher_stats.get('k_pct') is not None:
+                raw_k = float(away_pitcher_stats.get('k_pct', 0) or 0)
                 away_pitcher_k = raw_k * 100 if raw_k < 1 else raw_k
 
             # K gap: positive = pitcher K rate exceeds lineup K rate (pitcher edge)
