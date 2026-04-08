@@ -503,11 +503,12 @@ def run():
             pitcher = build_pitcher_record(row, name, recent_stats, is_fangraphs, is_starter, is_monday)
 
             # Supplement with Baseball Savant xERA if MLB API source
-            if xera_map and pitcher.get('xera') is None:
+            if xera_map and source == 'mlb_api':
                 savant = xera_map.get(name.lower()) or xera_map.get(name.split(' ')[-1].lower())
-                if savant:
-                    pitcher['xera'] = savant.get('xERA')
-                    pitcher['xba_allowed'] = savant.get('xBA') or pitcher.get('xba_allowed')
+                if savant and savant.get('xERA'):
+                    pitcher['xera'] = savant['xERA']
+                    if savant.get('xBA'):
+                        pitcher['xba_allowed'] = savant['xBA']
 
             result = upload_pitcher(pitcher)
             if result:
