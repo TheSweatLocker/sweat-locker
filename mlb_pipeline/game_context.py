@@ -1566,6 +1566,8 @@ def run():
                     'loandepot park': 'loanDepot Park',
                     'Tropicana Field ': 'Tropicana Field',
                     'T-Mobile Park ': 'T-Mobile Park',
+                    'Rate Field': 'Guaranteed Rate Field',
+                    'Guaranteed Rate  Field': 'Guaranteed Rate Field',
                 }
                 last_venue_norm = VENUE_ALIASES.get(home_last_venue, home_last_venue)
                 venue_norm = VENUE_ALIASES.get(venue, venue)
