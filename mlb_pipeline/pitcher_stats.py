@@ -101,6 +101,53 @@ def fetch_pitcher_stats():
         print(f"All sources failed: {e2}")
         return None, None
 
+def fetch_savant_xera():
+    """Fetch xERA and expected stats directly from Baseball Savant CSV endpoint"""
+    try:
+        print("Fetching xERA from Baseball Savant...")
+        url = "https://baseballsavant.mlb.com/leaderboard/expected_statistics?type=pitcher&year=2026&position=&team=&min=1&csv=true"
+        r = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }, timeout=30)
+        if r.status_code != 200:
+            print(f"  Savant returned {r.status_code}")
+            return {}
+
+        import io
+        df = pd.read_csv(io.StringIO(r.text))
+        print(f"  Fetched {len(df)} pitchers from Baseball Savant")
+
+        # Build lookup by last name (handles most matches)
+        xera_map = {}
+        for _, row in df.iterrows():
+            name = str(row.get('last_name', '') or '') + ', ' + str(row.get('first_name', '') or '')
+            full_name = str(row.get('first_name', '') or '') + ' ' + str(row.get('last_name', '') or '')
+            full_name = full_name.strip()
+            last_name = str(row.get('last_name', '') or '').strip().lower()
+
+            xera = row.get('est_era') or row.get('xera') or row.get('xERA')
+            xba = row.get('est_ba') or row.get('xba') or row.get('xBA')
+            xwoba = row.get('est_woba') or row.get('xwoba')
+
+            if full_name and xera is not None:
+                try:
+                    xera_map[full_name.lower()] = {
+                        'xERA': round(float(xera), 2),
+                        'xBA': round(float(xba), 3) if xba is not None else None,
+                        'xwOBA': round(float(xwoba), 3) if xwoba is not None else None,
+                    }
+                    # Also key by last name for fuzzy matching
+                    if last_name:
+                        xera_map[last_name] = xera_map[full_name.lower()]
+                except:
+                    pass
+
+        print(f"  Built xERA lookup for {len([k for k in xera_map if ' ' in k])} pitchers")
+        return xera_map
+    except Exception as e:
+        print(f"  Baseball Savant xERA fetch failed: {e}")
+        return {}
+
 def fetch_recent_pitcher_stats():
     print("Fetching recent pitcher stats (last 30 days)...")
     try:
@@ -349,6 +396,11 @@ def run():
         print("Could not fetch pitcher stats")
         return
 
+    # Fetch xERA from Baseball Savant — supplement MLB API data which lacks xERA
+    xera_map = {}
+    if source == 'mlb_api':
+        xera_map = fetch_savant_xera()
+
     # Detect data format based on source
     is_fangraphs = source == 'fangraphs' or (hasattr(stats, 'columns') and 'Name' in stats.columns)
     name_col = 'Name' if is_fangraphs else 'last_name'
@@ -406,6 +458,14 @@ def run():
                 time.sleep(0.3)
 
             pitcher = build_pitcher_record(row, name, recent_stats, is_fangraphs, is_starter, is_monday)
+
+            # Supplement with Baseball Savant xERA if MLB API source
+            if xera_map and pitcher.get('xera') is None:
+                savant = xera_map.get(name.lower()) or xera_map.get(name.split(' ')[-1].lower())
+                if savant:
+                    pitcher['xera'] = savant.get('xERA')
+                    pitcher['xba_allowed'] = savant.get('xBA') or pitcher.get('xba_allowed')
+
             result = upload_pitcher(pitcher)
             if result:
                 success += 1
