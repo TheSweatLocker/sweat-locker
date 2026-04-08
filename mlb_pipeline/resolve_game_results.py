@@ -69,6 +69,19 @@ def run():
                             else:
                                 run_line = 'push'
 
+                            # Spread result — compare margin against posted spread
+                            spread = game.get('close_spread') or game.get('open_spread')
+                            spread_result = None
+                            if spread is not None:
+                                margin = home_score - away_score
+                                spread_cover = margin + float(spread)
+                                if spread_cover > 0:
+                                    spread_result = 'home_covered'
+                                elif spread_cover < 0:
+                                    spread_result = 'away_covered'
+                                else:
+                                    spread_result = 'push'
+
                             # Update Supabase
                             print(f'  Attempting patch for game_id: {game_id}')
                             patch_resp = requests.patch(
@@ -80,13 +93,14 @@ def run():
                                     'home_win': home_win,
                                     'total_result': total_result,
                                     'run_line_result': run_line,
+                                    'spread_result': spread_result,
                                     'result_logged_at': datetime.utcnow().isoformat()
                                 }
                             )
                             print(f'  Patch status: {patch_resp.status_code}')
                             if patch_resp.status_code not in [200, 204]:
                                 print(f'  Patch error: {patch_resp.text[:200]}')
-                            print(f'  ✅ {away_team} {away_score} @ {home_team} {home_score} | Total {total_runs} → {total_result}')
+                            print(f'  ✅ {away_team} {away_score} @ {home_team} {home_score} | Total {total_runs} → {total_result} | Spread → {spread_result or "no line"}')
                             resolved += 1
         except Exception as e:
             print(f'  Error: {e}')
