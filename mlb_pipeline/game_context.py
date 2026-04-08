@@ -1507,21 +1507,21 @@ def run():
             pitcher_context = ""
             if home_pitcher_stats:
                 xera = home_pitcher_stats.get('xera', 'N/A')
-                kpct = home_pitcher_stats.get('k_pct', 0)
-                whiff = home_pitcher_stats.get('whiff_rate', 0)
-                gb = home_pitcher_stats.get('gb_pct', 0)
-                fb = home_pitcher_stats.get('fb_pct', 0)
-                lob = home_pitcher_stats.get('lob_pct', 0)
+                kpct = float(home_pitcher_stats.get('k_pct') or 0)
+                whiff = float(home_pitcher_stats.get('whiff_rate') or 0)
+                gb = float(home_pitcher_stats.get('gb_pct') or 0)
+                fb = float(home_pitcher_stats.get('fb_pct') or 0)
+                lob = float(home_pitcher_stats.get('lob_pct') or 0)
                 home_throws = home_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
                 pitcher_context += f"{home_pitcher} ({home_throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff*100:.1f}%, GB% {gb*100:.1f}%, FB% {fb*100:.1f}%, LOB% {lob*100:.1f}% ({pitcher_type})"
             if away_pitcher_stats:
                 xera = away_pitcher_stats.get('xera', 'N/A')
-                kpct = away_pitcher_stats.get('k_pct', 0)
-                whiff = away_pitcher_stats.get('whiff_rate', 0)
-                gb = away_pitcher_stats.get('gb_pct', 0)
-                fb = away_pitcher_stats.get('fb_pct', 0)
-                lob = away_pitcher_stats.get('lob_pct', 0)
+                kpct = float(away_pitcher_stats.get('k_pct') or 0)
+                whiff = float(away_pitcher_stats.get('whiff_rate') or 0)
+                gb = float(away_pitcher_stats.get('gb_pct') or 0)
+                fb = float(away_pitcher_stats.get('fb_pct') or 0)
+                lob = float(away_pitcher_stats.get('lob_pct') or 0)
                 away_throws = away_pitcher_stats.get('throws', 'R')
                 pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
                 pitcher_context += f" | {away_pitcher} ({away_throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff*100:.1f}%, GB% {gb*100:.1f}%, FB% {fb*100:.1f}%, LOB% {lob*100:.1f}% ({pitcher_type})"
