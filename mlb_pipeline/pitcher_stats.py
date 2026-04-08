@@ -302,13 +302,26 @@ def run():
     name_col = 'Name' if is_fangraphs else 'last_name'
 
     if not is_fangraphs:
-        # Statcast format — build full name from first_name + last_name
+        # Statcast format — column names vary by endpoint
+        print(f"Statcast columns: {list(stats.columns[:15])}")
         if 'first_name' in stats.columns and 'last_name' in stats.columns:
             stats['full_name'] = stats['first_name'].astype(str) + ' ' + stats['last_name'].astype(str)
             name_col = 'full_name'
+        elif 'last_name, first_name' in stats.columns:
+            # Combined "Last, First" column — split and reverse
+            stats['full_name'] = stats['last_name, first_name'].apply(
+                lambda x: ' '.join(reversed(str(x).split(', '))) if ', ' in str(x) else str(x)
+            )
+            name_col = 'full_name'
+        elif 'player_name' in stats.columns:
+            name_col = 'player_name'
         else:
-            name_col = 'last_name'
-        print(f"Using Statcast format — columns: {list(stats.columns[:10])}")
+            # Last resort — find any column with names
+            for col in stats.columns:
+                if 'name' in col.lower():
+                    name_col = col
+                    break
+        print(f"Using Statcast format — name column: '{name_col}', sample: {stats[name_col].iloc[0] if name_col in stats.columns else 'NOT FOUND'}")
 
     recent_stats = fetch_recent_pitcher_stats()
     success = 0

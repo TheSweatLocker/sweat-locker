@@ -1862,6 +1862,7 @@ const [playersSearch, setPlayersSearch] = useState('');
   const [dailyBriefingLoading, setDailyBriefingLoading] = useState(false);
   const [dailyBestBet, setDailyBestBet] = useState(null);
 const [dailyBestBetLoading, setDailyBestBetLoading] = useState(false);
+const [bestBetFetched, setBestBetFetched] = useState(false);
 const [dailyBestBetError, setDailyBestBetError] = useState('');
 const [modelEdgeData, setModelEdgeData] = useState([]);
 const [mlbGameContext, setMlbGameContext] = useState({});
@@ -2001,14 +2002,20 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
 
   useEffect(() => {
   if(bartData.length) {
-    fetchDailyBestBet();
-  }
-}, [bartData]);
-useEffect(() => {
-  if(bartData.length) {
     fetchMLBGameContext();
   }
 }, [bartData]);
+// Best Bet waits for nbaTeamData + mlbGameContext to load first
+// Fires once after both data sources are populated
+useEffect(() => {
+  if(bestBetFetched) return;
+  const hasMLB = Object.keys(mlbGameContext).length > 0;
+  const hasNBA = Object.keys(nbaTeamData).length > 0;
+  if(hasMLB || hasNBA) {
+    setBestBetFetched(true);
+    fetchDailyBestBet();
+  }
+}, [mlbGameContext, nbaTeamData]);
 useEffect(() => {
   if(bartData.length) {
     fetchNBATeamContext();
@@ -7382,7 +7389,7 @@ setJerryHistory(prev => {
         <Text style={{color:'#4a6070',fontSize:13}}>Jerry is finding today's best play...</Text>
       </View>
     ) : dailyBestBet?.waiting ? (
-      <Text style={{color:'#7a92a8',fontSize:13}}>Best bet updates after the 8am pipeline. Check back after 10am ET for today's top play.</Text>
+      <Text style={{color:'#7a92a8',fontSize:13,lineHeight:20}}>Jerry's Play of the Day generates after the morning pipeline runs. Data locks in at 10am ET with pitcher matchups and NRFI scores, then refreshes at 2pm ET with confirmed lineups and umpires.</Text>
     ) : dailyBestBet?.noGames ? (
       <Text style={{color:'#7a92a8',fontSize:13}}>No games on the slate today. Check back tomorrow.</Text>
     ) : dailyBestBet?.noPrime ? (
