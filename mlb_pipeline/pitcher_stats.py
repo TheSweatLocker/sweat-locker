@@ -222,12 +222,13 @@ def get_todays_starters():
         print(f"Error fetching starters: {e}")
         return set()
 
-def build_pitcher_record(row, name, recent_stats, is_fangraphs=True, is_starter=False):
+def build_pitcher_record(row, name, recent_stats, is_fangraphs=True, is_starter=False, is_full_refresh=False):
     """Build pitcher record from either FanGraphs or Statcast data"""
     last5_era = fetch_last5_era(name, recent_stats) if recent_stats is not None else None
-    # Only fetch expensive API data for today's starters
-    throws = get_pitcher_handedness(name) if is_starter else None
-    first_inn = get_first_inning_splits(name) if is_starter else None
+    # Handedness + first inning: always on full refresh (Monday), starters-only on daily
+    fetch_api = is_starter or is_full_refresh
+    throws = get_pitcher_handedness(name) if fetch_api else None
+    first_inn = get_first_inning_splits(name) if fetch_api else None
 
     if is_fangraphs:
         pitcher = {
@@ -333,7 +334,7 @@ def run():
             if (success + errors) % 10 == 0 and (success + errors) > 0:
                 time.sleep(0.3)
 
-            pitcher = build_pitcher_record(row, name, recent_stats, is_fangraphs, is_starter)
+            pitcher = build_pitcher_record(row, name, recent_stats, is_fangraphs, is_starter, is_monday)
             result = upload_pitcher(pitcher)
             if result:
                 success += 1

@@ -4897,6 +4897,43 @@ ${isPlayoffMode && (playoffSeries[game.home_team] || playoffSeries[game.away_tea
   : ''}`;
   }
 }
+// Build UFC context for Jerry
+let ufcContextStr = '';
+if(sport === 'UFC') {
+  try {
+    // Fetch both fighters' stats from Supabase
+    const fighterA = game.away_team; // UFC: away_team = fighter 1
+    const fighterB = game.home_team; // UFC: home_team = fighter 2
+    const { data: fighterAStats } = await supabase
+      .from('ufc_fighter_stats')
+      .select('*')
+      .ilike('fighter_name', `%${fighterA.split(' ').pop()}%`)
+      .limit(1)
+      .single();
+    const { data: fighterBStats } = await supabase
+      .from('ufc_fighter_stats')
+      .select('*')
+      .ilike('fighter_name', `%${fighterB.split(' ').pop()}%`)
+      .limit(1)
+      .single();
+
+    const formatFighter = (name, s) => {
+      if(!s) return `${name}: stats not available`;
+      return `${s.fighter_name} (${s.record || 'N/A'}) — SLpM ${s.slpm || 'N/A'}, str_acc ${s.str_acc || 'N/A'}%, SApM ${s.sapm || 'N/A'}, str_def ${s.str_def || 'N/A'}%, TD avg ${s.td_avg || 'N/A'}, TD acc ${s.td_acc || 'N/A'}%, TD def ${s.td_def || 'N/A'}%, sub avg ${s.sub_avg || 'N/A'}, finishing rate ${s.finishing_rate || 'N/A'}%. Stance: ${s.stance || 'N/A'}. Wins: ${s.wins_by_ko || 0} KO, ${s.wins_by_sub || 0} SUB, ${s.wins_by_dec || 0} DEC.`;
+    };
+
+    ufcContextStr = `
+UFC FIGHT CONTEXT:
+- Fighter A: ${formatFighter(fighterA, fighterAStats)}
+- Fighter B: ${formatFighter(fighterB, fighterBStats)}
+- Moneyline: ${fighterA} ${game.bookmakers?.[0]?.markets?.find(m=>m.key==='h2h')?.outcomes?.[0]?.price || 'N/A'} / ${fighterB} ${game.bookmakers?.[0]?.markets?.find(m=>m.key==='h2h')?.outcomes?.[1]?.price || 'N/A'}
+${fighterAStats && fighterBStats ? `- Striking gap: SLpM diff ${((fighterAStats.slpm||0) - (fighterBStats.slpm||0)).toFixed(1)}, accuracy gap ${((fighterAStats.str_acc||0) - (fighterBStats.str_acc||0)).toFixed(1)}%
+- Grappling: ${fighterAStats.fighter_name} TD avg ${fighterAStats.td_avg||0}/15min vs ${fighterBStats.fighter_name} TD def ${fighterBStats.td_def||0}%
+- Finishing: ${fighterAStats.fighter_name} ${fighterAStats.finishing_rate||0}% vs ${fighterBStats.fighter_name} ${fighterBStats.finishing_rate||0}%` : ''}`;
+  } catch(e) {
+    //console.log('UFC context error:', e);
+  }
+}
 const modelContext = scoreData?.predictedSpread ? `
 SWEAT LOCKER MODEL DATA:
 - Projected spread: ${predictedSpread > 0 ? homeName : awayName} by ${Math.abs(predictedSpread).toFixed(1)}
@@ -5027,6 +5064,7 @@ ${sweatScoreContext}
 ${modelContext}
 ${mlbContext}
 ${nbaContextStr}
+${ufcContextStr}
 
 Rules you must follow:
 - Sport context: ${sport}
@@ -5076,11 +5114,14 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For MLB: reference park factors if relevant (Coors Field = over lean, pitcher's parks = under lean)
 - For MLB: check umpire tendencies — K-friendly umps favor unders and strikeout props
 - For MLB: the Sweat Locker model is active — reference the specific signals that fired (K rate gap, wRC+ edge, platoon advantage, projected total delta) rather than generic market analysis
-- For UFC/MMA: search for fighter records, recent form, style matchups, and any camp/injury news
-- For UFC/MMA: reference finishing rates, striking accuracy, takedown defense — specific stats build credibility
-- For UFC/MMA: sharp money on UFC moves fast — always check line movement
+- For UFC/MMA: search for "[Fighter A] vs [Fighter B] prediction" and "[Fighter A] vs [Fighter B] analysis". Priority sources: Doc Sports, Covers MMA, MMA Fighting, MMA Decisions, BestFightOdds.
+- For UFC/MMA: Sentence 1 — what the MODEL stats say about the stylistic matchup (SLpM gap, finishing rate, TD defense). Reference specific numbers from the UFC FIGHT CONTEXT data.
+- For UFC/MMA: Sentence 2 — what PUBLIC ANALYSTS are saying from your web search. Name the source if possible.
+- For UFC/MMA: Sentence 3 — where they AGREE or DISAGREE. This is the edge — if model and analysts diverge, explain why.
 - For UFC/MMA: finishing rate is the single most important stat — 80%+ finisher vs decision fighter is a massive style edge
-- For UFC/MMA: slpm gap tells you who controls striking distance — always reference if the data is available from Supabase context
+- For UFC/MMA: SLpM gap tells you who controls striking distance — always reference from the stats provided
+- For UFC/MMA: TD def vs TD avg is the grappling matchup — if one fighter has 70% TD def and the other averages 4 TD/fight, that neutralizes the grappling
+- For UFC/MMA: 3 sentences HARD MAXIMUM. No exceptions.
 - For NHL: search for confirmed goalie starters — most important signal in hockey
 - For NHL: reference pace and special teams if relevant
 - For NFL: search for injury report and weather FIRST
@@ -5948,18 +5989,47 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                         .select('*')
                         .ilike('fighter_name', `%${fighterName.split(' ').pop()}%`)
                         .single();
+
+                      // Find opponent from the game matchup
+                      const gameTeams = prop.game?.split(' @ ') || [];
+                      const awayFighter = gameTeams[0]?.trim();
+                      const homeFighter = gameTeams[1]?.trim();
+                      const opponentName = fighterName === awayFighter ? homeFighter : awayFighter;
+                      let oppCtx = null;
+                      if(opponentName) {
+                        try {
+                          const { data: oppData } = await supabase
+                            .from('ufc_fighter_stats')
+                            .select('*')
+                            .ilike('fighter_name', `%${opponentName.split(' ').pop()}%`)
+                            .single();
+                          oppCtx = oppData;
+                        } catch(e) {}
+                      }
+
                       if(ufcCtx) {
-                        const finishingStr = ufcCtx.finishing_rate 
-                          ? `${ufcCtx.finishing_rate}% finishing rate` 
-                          : 'finishing rate N/A';
-                        const strikingStr = ufcCtx.slpm 
-                          ? `${ufcCtx.slpm} sig strikes/min, ${ufcCtx.str_acc}% accuracy` 
-                          : 'striking N/A';
-                        const grapplingStr = ufcCtx.td_avg 
-                          ? `${ufcCtx.td_avg} TD/15min, ${ufcCtx.td_acc}% TD acc, ${ufcCtx.sub_avg} sub/15min` 
-                          : 'grappling N/A';
-                        const recordStr = ufcCtx.record || 'record N/A';
-                        playerContext = ` UFC fighter context: ${ufcCtx.fighter_name} (${recordStr}). Striking: ${strikingStr}. Grappling: ${grapplingStr}. Finishing: ${finishingStr}. Stance: ${ufcCtx.stance || 'N/A'}.`;
+                        const finishingStr = ufcCtx.finishing_rate ? `${ufcCtx.finishing_rate}% finishing rate` : 'finishing rate N/A';
+                        const strikingStr = ufcCtx.slpm ? `${ufcCtx.slpm} SLpM, ${ufcCtx.str_acc}% accuracy` : 'striking N/A';
+                        const grapplingStr = ufcCtx.td_avg ? `${ufcCtx.td_avg} TD/15min, ${ufcCtx.td_acc}% TD acc, ${ufcCtx.sub_avg} sub/15min` : 'grappling N/A';
+                        const decisionRate = ufcCtx.total_wins > 0 ? Math.round((ufcCtx.wins_by_dec / ufcCtx.total_wins) * 100) : null;
+
+                        let oppStr = '';
+                        let matchupStr = '';
+                        if(oppCtx) {
+                          const oppFinishing = oppCtx.finishing_rate ? `${oppCtx.finishing_rate}% finishing` : 'N/A';
+                          const oppDecRate = oppCtx.total_wins > 0 ? Math.round((oppCtx.wins_by_dec / oppCtx.total_wins) * 100) : null;
+                          oppStr = ` Opponent ${oppCtx.fighter_name} (${oppCtx.record || 'N/A'}): str_def ${oppCtx.str_def || 'N/A'}%, TD def ${oppCtx.td_def || 'N/A'}%, SApM ${oppCtx.sapm || 'N/A'}, ${oppFinishing}.`;
+
+                          // Market-specific matchup analysis
+                          if(prop.market.includes('method_of_victory') || prop.market.includes('ko_tko')) {
+                            matchupStr = ` Matchup: ${ufcCtx.fighter_name} finishing ${ufcCtx.finishing_rate || 0}% vs ${oppCtx.fighter_name} str_def ${oppCtx.str_def || 'N/A'}% / TD def ${oppCtx.td_def || 'N/A'}%.`;
+                          } else if(prop.market.includes('total_rounds') || prop.market.includes('decision')) {
+                            const combinedDecRate = decisionRate !== null && oppDecRate !== null ? Math.round((decisionRate + oppDecRate) / 2) : null;
+                            matchupStr = ` Rounds context: ${ufcCtx.fighter_name} goes to decision ${decisionRate ?? 'N/A'}% of wins, ${oppCtx.fighter_name} ${oppDecRate ?? 'N/A'}%. Combined decision rate: ${combinedDecRate ?? 'N/A'}%.`;
+                          }
+                        }
+
+                        playerContext = ` UFC prop fighter: ${ufcCtx.fighter_name} (${ufcCtx.record || 'N/A'}). Striking: ${strikingStr}. Grappling: ${grapplingStr}. Finishing: ${finishingStr}. Stance: ${ufcCtx.stance || 'N/A'}.${oppStr}${matchupStr}`;
                       }
                     } catch(e) {}
                   }

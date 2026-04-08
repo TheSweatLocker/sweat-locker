@@ -1541,11 +1541,28 @@ def run():
 
             # Travel distance for home team
             home_travel_dist = None
-            if home_last_venue and home_last_venue in VENUE_COORDS and venue in VENUE_COORDS:
-                try:
-                    home_travel_dist = round(haversine(VENUE_COORDS[home_last_venue], VENUE_COORDS[venue]))
-                except:
-                    pass
+            if home_last_venue and venue:
+                # Normalize venue names — MLB API may return slightly different names
+                VENUE_ALIASES = {
+                    'Oriole Park at Camden Yards': 'Camden Yards',
+                    'Oriole Park At Camden Yards': 'Camden Yards',
+                    'Oakland Coliseum': 'Sutter Health Park',
+                    'Oakland-Alameda County Coliseum': 'Sutter Health Park',
+                    'RingCentral Coliseum': 'Sutter Health Park',
+                    'loanDepot park': 'loanDepot Park',
+                    'loandepot park': 'loanDepot Park',
+                    'Tropicana Field ': 'Tropicana Field',
+                    'T-Mobile Park ': 'T-Mobile Park',
+                }
+                last_venue_norm = VENUE_ALIASES.get(home_last_venue, home_last_venue)
+                venue_norm = VENUE_ALIASES.get(venue, venue)
+                if last_venue_norm in VENUE_COORDS and venue_norm in VENUE_COORDS:
+                    try:
+                        home_travel_dist = round(haversine(VENUE_COORDS[last_venue_norm], VENUE_COORDS[venue_norm]))
+                    except:
+                        pass
+                elif home_last_venue not in VENUE_COORDS and home_last_venue:
+                    print(f"  ⚠️ Missing VENUE_COORDS for: '{home_last_venue}'")
 
             context = {
                 "game_id": game_id,
