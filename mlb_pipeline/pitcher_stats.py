@@ -14,40 +14,92 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 def fetch_pitcher_stats():
-    print("Fetching 2026 pitcher stats from Baseball Savant...")
+    print("Fetching 2026 pitcher stats...")
+    # Try FanGraphs via pybaseball first (has xERA, K%, GB%, etc.)
     try:
         stats = pitching_stats(2026, qual=1)
-        print(f"Fetched {len(stats)} pitchers from 2026")
-        return stats
+        print(f"Fetched {len(stats)} pitchers from FanGraphs")
+        return stats, 'fangraphs'
     except Exception as e:
-        print(f"Error fetching 2026 stats: {e}")
-        # Try with different pybaseball cache settings
-        try:
-            import pybaseball
-            pybaseball.cache.enable()
-            stats = pitching_stats(2026, qual=1)
-            print(f"Fetched {len(stats)} pitchers from 2026 (cached)")
-            return stats
-        except Exception as e1b:
-            print(f"Retry failed: {e1b}")
-        # Fall back to Baseball Savant Statcast directly
-        try:
-            from pybaseball import statcast_pitcher_exitvelo_barrels
-            print("Trying Baseball Savant Statcast fallback...")
-            stats = statcast_pitcher_exitvelo_barrels(2026, minBBE=10)
-            if stats is not None and len(stats) > 0:
-                print(f"Fetched {len(stats)} pitchers from Statcast")
-                return stats
-        except Exception as e1c:
-            print(f"Statcast fallback failed: {e1c}")
-        # Last resort — 2025 data
-        try:
-            stats = pitching_stats(2025, qual=20)
-            print(f"Fetched {len(stats)} pitchers from 2025 fallback")
-            return stats
-        except Exception as e2:
-            print(f"All sources failed: {e2}")
-            return None
+        print(f"FanGraphs failed: {e}")
+
+    # Fallback: MLB Stats API — free, never blocks, has K%, BB%, ERA, WHIP
+    print("Falling back to MLB Stats API...")
+    try:
+        all_pitchers = []
+        teams_resp = requests.get('https://statsapi.mlb.com/api/v1/teams?sportId=1', timeout=15)
+        teams = teams_resp.json().get('teams', [])
+        for team in teams:
+            try:
+                roster_resp = requests.get(
+                    f'https://statsapi.mlb.com/api/v1/teams/{team["id"]}/roster',
+                    params={'rosterType': 'active', 'season': 2026},
+                    timeout=10
+                )
+                for player in roster_resp.json().get('roster', []):
+                    if player.get('position', {}).get('abbreviation') != 'P':
+                        continue
+                    pid = player['person']['id']
+                    name = player['person']['fullName']
+                    try:
+                        stats_resp = requests.get(
+                            f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',
+                            params={'stats': 'season', 'group': 'pitching', 'season': 2026},
+                            timeout=10
+                        )
+                        splits = stats_resp.json().get('stats', [])
+                        if not splits or not splits[0].get('splits'):
+                            continue
+                        s = splits[0]['splits'][0]['stat']
+                        ip = float(s.get('inningsPitched', '0').replace('.1', '.33').replace('.2', '.67') or '0')
+                        if ip < 3:
+                            continue  # skip pitchers with very few innings
+                        pa = int(s.get('battersFaced', 0) or 0)
+                        so = int(s.get('strikeOuts', 0) or 0)
+                        bb = int(s.get('baseOnBalls', 0) or 0)
+                        gb = int(s.get('groundOuts', 0) or 0)
+                        fb_outs = int(s.get('airOuts', 0) or 0)
+                        total_outs = gb + fb_outs if (gb + fb_outs) > 0 else 1
+                        all_pitchers.append({
+                            'Name': name,
+                            'Team': team.get('abbreviation', ''),
+                            'ERA': float(s.get('era', '4.50') or '4.50'),
+                            'xERA': None,  # MLB API doesn't have xERA — will be supplemented
+                            'K%': round(so / pa, 3) if pa > 0 else 0.20,
+                            'BB%': round(bb / pa, 3) if pa > 0 else 0.08,
+                            'GB%': round(gb / total_outs, 3) if total_outs > 0 else 0.45,
+                            'FB%': round(fb_outs / total_outs, 3) if total_outs > 0 else 0.35,
+                            'WHIP': float(s.get('whip', '1.30') or '1.30'),
+                            'Hard%': None,
+                            'Barrel%': None,
+                            'Whiff%': None,
+                            'SwStr%': None,
+                            'LOB%': None,
+                            'FBv': None,
+                            'vFB': None,
+                            'AVG': float(s.get('avg', '.250') or '.250'),
+                            'BA': float(s.get('avg', '.250') or '.250'),
+                            'IP': ip,
+                        })
+                    except:
+                        continue
+            except:
+                continue
+            time.sleep(0.2)
+        if all_pitchers:
+            print(f"Fetched {len(all_pitchers)} pitchers from MLB Stats API")
+            return pd.DataFrame(all_pitchers), 'mlb_api'
+    except Exception as e:
+        print(f"MLB Stats API failed: {e}")
+
+    # Last resort — 2025 FanGraphs data
+    try:
+        stats = pitching_stats(2025, qual=20)
+        print(f"Fetched {len(stats)} pitchers from 2025 fallback")
+        return stats, 'fangraphs'
+    except Exception as e2:
+        print(f"All sources failed: {e2}")
+        return None, None
 
 def fetch_recent_pitcher_stats():
     print("Fetching recent pitcher stats (last 30 days)...")
@@ -292,14 +344,20 @@ def run():
     print(f"ET day: {et_now.strftime('%A %Y-%m-%d %H:%M')}, is_monday: {is_monday}")
     todays_starters = get_todays_starters()
 
-    stats = fetch_pitcher_stats()
+    stats, source = fetch_pitcher_stats()
     if stats is None:
         print("Could not fetch pitcher stats")
         return
 
-    # Detect if data is FanGraphs or Statcast format
-    is_fangraphs = 'Name' in stats.columns
+    # Detect data format based on source
+    is_fangraphs = source == 'fangraphs' or (hasattr(stats, 'columns') and 'Name' in stats.columns)
     name_col = 'Name' if is_fangraphs else 'last_name'
+
+    if source == 'mlb_api':
+        # MLB Stats API returns a DataFrame with 'Name' column
+        is_fangraphs = True  # same column format as FanGraphs
+        name_col = 'Name'
+        print(f"Using MLB Stats API format — {len(stats)} pitchers")
 
     if not is_fangraphs:
         # Statcast format — column names vary by endpoint
