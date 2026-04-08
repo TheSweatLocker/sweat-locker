@@ -1,5 +1,5 @@
 import requests
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import time
 import json
 from math import radians, sin, cos, sqrt, atan2
@@ -724,13 +724,17 @@ def get_weather(venue, lat, lon):
             params={"lat": lat, "lon": lon, "appid": WEATHER_API_KEY, "units": "imperial"}
         )
         data = r.json()
+        main_data = data.get("main", {})
+        if not main_data:
+            print(f"  Weather API no 'main' data for {venue}: {data.get('message', 'unknown')}")
+            return {"temperature": 70, "wind_speed": 5, "wind_direction": "N", "precipitation": 0, "is_dome": False}
         wind_data = data.get("wind", {})
         wind_deg = wind_data.get("deg", 0)
         wind_speed = round(wind_data.get("speed", 0))
         directions = ["N","NE","E","SE","S","SW","W","NW"]
         wind_dir = directions[round(wind_deg/45) % 8]
         return {
-            "temperature": round(data["main"]["temp"]),
+            "temperature": round(main_data.get("temp", 70)),
             "wind_speed": wind_speed,
             "wind_direction": wind_dir,
             "precipitation": data.get("rain", {}).get("1h", 0),
@@ -750,8 +754,8 @@ def get_mlb_games():
                 "oddsFormat": "american",
                 "bookmakers": "draftkings",
                 # Anchor to ET date — midnight ET = 04:00 UTC, end at 3:59am next day UTC = 11:59pm ET
-                "commenceTimeFrom": f"{(datetime.utcnow() - timedelta(hours=5)).strftime('%Y-%m-%d')}T04:00:00Z",
-                "commenceTimeTo": f"{(datetime.utcnow() - timedelta(hours=5) + timedelta(days=1)).strftime('%Y-%m-%d')}T03:59:59Z",
+                "commenceTimeFrom": f"{(datetime.now(timezone.utc) - timedelta(hours=5)).strftime('%Y-%m-%d')}T04:00:00Z",
+                "commenceTimeTo": f"{(datetime.now(timezone.utc) - timedelta(hours=5) + timedelta(days=1)).strftime('%Y-%m-%d')}T03:59:59Z",
             }
         )
         return r.json()
