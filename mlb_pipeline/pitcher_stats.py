@@ -116,18 +116,61 @@ def fetch_savant_xera():
         import io
         df = pd.read_csv(io.StringIO(r.text))
         print(f"  Fetched {len(df)} pitchers from Baseball Savant")
+        print(f"  Savant columns: {list(df.columns[:20])}")
+        if len(df) > 0:
+            print(f"  Sample row: {dict(df.iloc[0])}")
 
-        # Build lookup by last name (handles most matches)
+        # Build lookup — try multiple column name patterns
         xera_map = {}
         for _, row in df.iterrows():
-            name = str(row.get('last_name', '') or '') + ', ' + str(row.get('first_name', '') or '')
-            full_name = str(row.get('first_name', '') or '') + ' ' + str(row.get('last_name', '') or '')
-            full_name = full_name.strip()
-            last_name = str(row.get('last_name', '') or '').strip().lower()
+            # Name columns vary: 'last_name', 'player_name', 'last_name, first_name', etc.
+            first = str(row.get('first_name', '') or row.get('name_first', '') or '')
+            last = str(row.get('last_name', '') or row.get('name_last', '') or '')
+            player_name = str(row.get('player_name', '') or '')
 
-            xera = row.get('est_era') or row.get('xera') or row.get('xERA')
-            xba = row.get('est_ba') or row.get('xba') or row.get('xBA')
-            xwoba = row.get('est_woba') or row.get('xwoba')
+            if first and last:
+                full_name = f"{first} {last}".strip()
+            elif player_name:
+                full_name = player_name.strip()
+            elif 'last_name, first_name' in row.index:
+                combo = str(row.get('last_name, first_name', ''))
+                parts = combo.split(', ')
+                full_name = f"{parts[1]} {parts[0]}".strip() if len(parts) == 2 else combo
+            else:
+                continue
+
+            last_name = last.strip().lower() if last else full_name.split(' ')[-1].lower()
+
+            # xERA column varies: 'est_era', 'xera', 'xERA', 'expected_era'
+            xera = None
+            for col in ['est_era', 'xera', 'xERA', 'expected_era']:
+                val = row.get(col)
+                if val is not None and str(val) != 'nan' and str(val) != '':
+                    try:
+                        xera = float(val)
+                        break
+                    except:
+                        pass
+
+            xba = None
+            for col in ['est_ba', 'xba', 'xBA', 'expected_ba']:
+                val = row.get(col)
+                if val is not None and str(val) != 'nan' and str(val) != '':
+                    try:
+                        xba = float(val)
+                        break
+                    except:
+                        pass
+
+            xwoba = None
+            for col in ['est_woba', 'xwoba', 'xwOBA', 'expected_woba']:
+                val = row.get(col)
+                if val is not None and str(val) != 'nan' and str(val) != '':
+                    try:
+                        xwoba = float(val)
+                        break
+                    except:
+                        pass
 
             if full_name and xera is not None:
                 try:
