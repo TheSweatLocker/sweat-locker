@@ -59,6 +59,20 @@ jobs:
           cd mlb_pipeline
           python team_stats.py
 
+      - name: Update umpire database (Mondays only)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          DAY=$(date -u -d '-4 hours' +%u)
+          if [ "$DAY" = "1" ]; then
+            echo "Monday — updating umpire database"
+            cd mlb_pipeline
+            python umpires_scrape.py
+          else
+            echo "Not Monday (day=$DAY) — skipping umpire update"
+          fi
+
       - name: Run UFC card scraper (Thursdays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
