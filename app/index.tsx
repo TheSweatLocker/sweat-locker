@@ -2006,16 +2006,29 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
   }
 }, [bartData]);
 // Best Bet waits for nbaTeamData + mlbGameContext to load first
-// Fires once after both data sources are populated
+// Fires once after MLB context is loaded (NRFI scores depend on it)
+// Falls back to NBA-only after 30 seconds if MLB context never loads
 useEffect(() => {
   if(bestBetFetched) return;
   const hasMLB = Object.keys(mlbGameContext).length > 0;
   const hasNBA = Object.keys(nbaTeamData).length > 0;
-  if(hasMLB || hasNBA) {
+  if(hasMLB) {
+    // MLB context loaded — fire with full data
     setBestBetFetched(true);
     fetchDailyBestBet();
   }
-}, [mlbGameContext, nbaTeamData]);
+}, [mlbGameContext]);
+useEffect(() => {
+  if(bestBetFetched) return;
+  // Fallback: if only NBA loaded after 30s, fire without MLB
+  const timer = setTimeout(() => {
+    if(!bestBetFetched && Object.keys(nbaTeamData).length > 0) {
+      setBestBetFetched(true);
+      fetchDailyBestBet();
+    }
+  }, 30000);
+  return () => clearTimeout(timer);
+}, [nbaTeamData]);
 useEffect(() => {
   if(bartData.length) {
     fetchNBATeamContext();
