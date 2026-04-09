@@ -4594,12 +4594,16 @@ ${bestScoreObj.isNRFI ?
       score: bestScoreObj,
       narrative,
       generatedAt: today,
-      leanDisplay: bestScoreObj.isNRFI 
+      leanDisplay: bestScoreObj.isNRFI
         ? `NRFI — Score ${bestScoreObj.nrfiScore}/100`
-        : typeof bestScoreObj?.leanSide === 'string' 
-        ? bestScoreObj.leanSide 
-        : bestSport === 'NBA' 
-        ? stripMascot(bestGame?.home_team || '') 
+        : typeof bestScoreObj?.leanSide === 'string'
+        ? bestScoreObj.leanSide
+        : bestScoreObj?.totalBet?.pick
+        ? bestScoreObj.totalBet.pick
+        : bestSport === 'NBA'
+        ? stripMascot(bestGame?.home_team || '')
+        : bestSport === 'MLB'
+        ? `${stripMascot(bestGame?.home_team || '')} vs ${stripMascot(bestGame?.away_team || '')}`
         : 'Model Edge',
     };
 
@@ -7685,7 +7689,7 @@ setJerryHistory(prev => {
             <Text style={{color:'#0099ff',fontWeight:'800',fontSize:11}}>🎸 HRB</Text>
           </View>
         </View>
-        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.narrative}"</Text>
+        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>
       </View>
     ) : null}
   </View>
