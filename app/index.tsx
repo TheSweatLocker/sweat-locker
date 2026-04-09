@@ -2006,29 +2006,13 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
   }
 }, [bartData]);
 // Best Bet waits for nbaTeamData + mlbGameContext to load first
-// Fires once after MLB context is loaded (NRFI scores depend on it)
-// Falls back to NBA-only after 30 seconds if MLB context never loads
+// Play of the Day — computed server-side by pipeline, app just reads it
+// No dependency on mlbGameContext or nbaTeamData loading
 useEffect(() => {
   if(bestBetFetched) return;
-  const hasMLB = Object.keys(mlbGameContext).length > 0;
-  const hasNBA = Object.keys(nbaTeamData).length > 0;
-  if(hasMLB) {
-    // MLB context loaded — fire with full data
-    setBestBetFetched(true);
-    fetchDailyBestBet();
-  }
-}, [mlbGameContext]);
-useEffect(() => {
-  if(bestBetFetched) return;
-  // Fallback: if only NBA loaded after 30s, fire without MLB
-  const timer = setTimeout(() => {
-    if(!bestBetFetched && Object.keys(nbaTeamData).length > 0) {
-      setBestBetFetched(true);
-      fetchDailyBestBet();
-    }
-  }, 30000);
-  return () => clearTimeout(timer);
-}, [nbaTeamData]);
+  setBestBetFetched(true);
+  fetchDailyBestBet();
+}, []);
 useEffect(() => {
   if(bartData.length) {
     fetchNBATeamContext();
@@ -4341,51 +4325,97 @@ const fetchDailyBestBet = async () => {
   const CACHE_KEY = 'sweatlocker_daily_best_bet_v4';
   const _now = new Date();
   const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
-
-  // Check Supabase first — one best bet per day, shared across all users
   const etHour = parseInt(new Date().toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
+
+  // Play of the Day is now computed server-side by play_of_day.py
+  // App just reads from jerry_cache and generates Jerry narrative if missing
   try {
     const { data: supabaseCache } = await supabase
       .from('jerry_cache')
       .select('data, fetched_at')
       .eq('cache_key', `best_bet_${today}`)
       .single();
-    if(supabaseCache?.data) {
-      // Don't serve cached noGames results — always try fresh after 10am
-      if(supabaseCache.data.noGames) {
-        // Fall through to regenerate
-      } else {
-        const fetchedHour = parseInt(new Date(supabaseCache.fetched_at).toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
-        // Only regenerate if the cached pick was generated before 10am (pre-pipeline)
-        if(fetchedHour < 10 && etHour >= 10) {
-          // Stale pre-pipeline bet — fall through to regenerate
-        } else {
-          // Verify the cached pick was generated with real pipeline data
-          // If mlbGameContext is loaded and has NRFI scores but the cached pick doesn't reference NRFI, regenerate
-          const hasMLBContext = Object.keys(mlbGameContext).length > 0;
-          const cachedHasNRFI = supabaseCache.data.score?.isNRFI || supabaseCache.data.score?.nrfiScore;
-          const bestNRFIAvailable = hasMLBContext && Object.values(mlbGameContext).some((ctx: any) => ctx.nrfi_score >= 75);
 
-          if(bestNRFIAvailable && !cachedHasNRFI && etHour >= 10) {
-            // Pipeline has a strong NRFI but cached pick missed it — regenerate
-            console.log('[BestBet] Strong NRFI available but cached pick missed it — regenerating');
-          } else {
-            setDailyBestBet(supabaseCache.data);
-            try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}
-            return;
+    if(supabaseCache?.data) {
+      if(supabaseCache.data.noGames) {
+        setDailyBestBet({noGames: true});
+        return;
+      }
+
+      // Pipeline generated the pick — use it
+      if(supabaseCache.data.pipelineGenerated) {
+        // Generate Jerry narrative if not already present
+        if(!supabaseCache.data.narrative && supabaseCache.data.game) {
+          try {
+            const ctx = supabaseCache.data.context || {};
+            const gameStr = `${supabaseCache.data.game.away_team} @ ${supabaseCache.data.game.home_team}`;
+            const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01',
+                'anthropic-dangerous-direct-browser-access': 'true'
+              },
+              body: JSON.stringify({
+                model: 'claude-haiku-4-5-20251001',
+                max_tokens: 200,
+                tools: [{type: 'web_search_20250305', name: 'web_search'}],
+                messages: [{
+                  role: 'user',
+                  content: `You are Jerry, a sharp sports betting analyst. This is today's Play of the Day — the single best play across all sports.
+
+Game: ${gameStr} (${supabaseCache.data.sport})
+${supabaseCache.data.score?.isNRFI ? `NRFI Score: ${supabaseCache.data.score.nrfiScore}/100
+Home pitcher: ${ctx.home_pitcher} xERA ${ctx.home_sp_xera}
+Away pitcher: ${ctx.away_pitcher} xERA ${ctx.away_sp_xera}` :
+`Sweat Score: ${supabaseCache.data.score?.total}/100
+Lean: ${supabaseCache.data.leanDisplay}`}
+${ctx.projected_total ? `Projected total: ${ctx.projected_total}` : ''}
+${ctx.spread_delta ? `Spread delta: ${ctx.spread_delta}` : ''}
+${ctx.venue ? `Venue: ${ctx.venue} | Temp: ${ctx.temperature}°F` : ''}
+${ctx.nrfi_score ? `NRFI score: ${ctx.nrfi_score}` : ''}
+
+Give a 2-3 sentence take on WHY this is today's best play. Reference specific data. Never say "bet" or "must play". Sound like a sharp friend.`
+                }]
+              })
+            });
+            const aiData = await aiResp.json();
+            const narrative = aiData?.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
+            supabaseCache.data.narrative = narrative;
+            // Update cache with narrative
+            try {
+              await supabase.from('jerry_cache').upsert({
+                cache_key: `best_bet_${today}`,
+                data: supabaseCache.data,
+                fetched_at: supabaseCache.fetched_at,
+              }, { onConflict: 'cache_key' });
+            } catch(e) {}
+          } catch(e) {
+            supabaseCache.data.narrative = "Jerry's analyzing this one. Check back shortly.";
           }
         }
+        setDailyBestBet(supabaseCache.data);
+        try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}
+        return;
+      }
+
+      // Legacy client-side pick — serve it
+      if(!supabaseCache.data.noGames) {
+        setDailyBestBet(supabaseCache.data);
+        try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}
+        return;
       }
     }
   } catch(e) {}
 
-  // Don't generate a new best bet before 10am ET — pipeline hasn't run yet
+  // No pipeline pick yet — show waiting message before 10am, try local cache after
   if(etHour < 10) {
     setDailyBestBet({noGames: false, waiting: true});
     return;
   }
 
-  // Check local cache — same rule, if today's pick exists, use it
+  // Check local cache
   try {
     const cached = await AsyncStorage.getItem(CACHE_KEY);
     if(cached) {

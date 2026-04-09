@@ -2,8 +2,8 @@ name: MLB Pipeline Daily
 
 on:
   schedule:
-    - cron: '0 12 * * *'  # 8am ET
-    - cron: '0 18 * * *'  # 2pm ET
+    - cron: '0 12 * * *'  # 8:00am EDT (12:00 UTC)
+    - cron: '0 18 * * *'  # 2:00pm EDT (18:00 UTC)
   workflow_dispatch:
 
 jobs:
@@ -120,3 +120,12 @@ jobs:
         run: |
           cd mlb_pipeline
           python nba_pipeline.py
+
+      - name: Generate Play of the Day
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python play_of_day.py
