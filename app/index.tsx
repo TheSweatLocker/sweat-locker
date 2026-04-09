@@ -8296,7 +8296,7 @@ setJerryHistory(prev => {
     <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🎤 PROP JERRY</Text>
     <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Pure EV + market consensus. No simulated data. Jerry finds the real edges.</Text>
   </View>
-  <TouchableOpacity onPress={async()=>{try{await AsyncStorage.removeItem(PROP_JERRY_CACHE_KEY+'_'+propJerrySport);}catch(e){}try{await supabase.from('prop_jerry_cache').delete().eq('sport',propJerrySport);}catch(e){}fetchPropJerry(propJerrySport);}} style={{alignItems:'center',gap:3}}>
+  <TouchableOpacity onPress={async()=>{const lastRefresh=await AsyncStorage.getItem('propjerry_last_refresh');if(lastRefresh&&Date.now()-parseInt(lastRefresh)<5*60*1000){showToast('⏳ Wait 5 minutes between refreshes');return;}await AsyncStorage.setItem('propjerry_last_refresh',String(Date.now()));try{await AsyncStorage.removeItem(PROP_JERRY_CACHE_KEY+'_'+propJerrySport);}catch(e){}try{await supabase.from('prop_jerry_cache').delete().eq('sport',propJerrySport);}catch(e){}fetchPropJerry(propJerrySport);}} style={{alignItems:'center',gap:3}}>
     <Text style={{fontSize:18}}>🔄</Text>
     <Text style={{color:'#4a6070',fontSize:9}}>{propJerryLastUpdate ? Math.floor((new Date()-propJerryLastUpdate)/60000)+'m ago' : 'tap to load'}</Text>
   </TouchableOpacity>
