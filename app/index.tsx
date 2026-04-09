@@ -5777,6 +5777,54 @@ setPropJerryLoading(true);
         }
       }
 
+      // NBA pre-scan — flag games with exploitable defensive matchups
+      if(sport === 'NBA' && Object.keys(nbaTeamData).length > 0) {
+        const nbaList = Object.values(nbaTeamData) as any[];
+        // Check each potential game matchup
+        for(const team of nbaList) {
+          // Find opponent by checking today's events later — for now flag team-level signals
+          const defRtg = parseFloat(team.defensive_rating) || 0;
+          const pace = parseFloat(team.pace) || 0;
+          const oppEfg = parseFloat(team.opp_efg_pct) || 0;
+          const teamName = team.team || '';
+
+          const flags: {type: string, signal: string, conviction: number}[] = [];
+
+          // Bad defense = points prop heaven for opponents
+          if(defRtg >= 116) {
+            flags.push({type: 'player_points', signal: `vs ${teamName.split(' ').pop()} DefRtg ${defRtg.toFixed(0)} (bottom 5)`, conviction: 20});
+            flags.push({type: 'player_assists', signal: `vs ${teamName.split(' ').pop()} porous D — open looks`, conviction: 10});
+          } else if(defRtg >= 114) {
+            flags.push({type: 'player_points', signal: `vs ${teamName.split(' ').pop()} DefRtg ${defRtg.toFixed(0)} (weak)`, conviction: 10});
+          }
+
+          // High pace = more possessions = more counting stats
+          if(pace >= 102) {
+            flags.push({type: 'player_points', signal: `${teamName.split(' ').pop()} pace ${pace.toFixed(0)} (fast)`, conviction: 10});
+            flags.push({type: 'player_rebounds', signal: `${teamName.split(' ').pop()} pace ${pace.toFixed(0)} — more possessions`, conviction: 15});
+          }
+
+          // Porous defense = assists
+          if(oppEfg >= 53) {
+            flags.push({type: 'player_assists', signal: `vs ${teamName.split(' ').pop()} opp eFG ${oppEfg.toFixed(1)}% (porous)`, conviction: 15});
+          }
+
+          // Elite defense = under props for opponents
+          if(defRtg <= 108) {
+            flags.push({type: 'player_points_under', signal: `vs ${teamName.split(' ').pop()} DefRtg ${defRtg.toFixed(0)} (elite)`, conviction: 15});
+          }
+
+          if(flags.length > 0) {
+            // Key by team name — will match against game matchups when props come in
+            matchupFlags[teamName] = flags;
+          }
+        }
+        const nbaFlagged = Object.keys(matchupFlags).filter(k => !k.includes('@')).length;
+        if(nbaFlagged > 0) {
+          console.log(`[PropJerry NBA] Pre-scan flagged ${nbaFlagged} teams with defensive exploits`);
+        }
+      }
+
       const markets = sport==='NBA' ?
   'player_points,player_rebounds,player_assists,player_threes' :
   sport==='NFL' ? 'player_pass_yds,player_rush_yds,player_reception_yds,player_receptions,player_anytime_td' :
@@ -6058,11 +6106,22 @@ const modelConfirmed = (propJerrySport === 'NBA' || propJerrySport === 'MLB') ? 
 // If pipeline pre-scan flagged this game+market, boost EV thresholds
 let matchupConviction = 0;
 let matchupSignals: string[] = [];
+// Check MLB game-level flags
 const gameFlags = matchupFlags[prop.game] || [];
-if(gameFlags.length > 0) {
-  for(const flag of gameFlags) {
-    // Check if the flag type matches this prop's market
-    const marketLower = prop.market.toLowerCase();
+// Check NBA team-level flags — match opponent team name against the prop's game
+let teamFlags: {type: string, signal: string, conviction: number}[] = [];
+if(propJerrySport === 'NBA') {
+  // Find which teams are in this prop's game
+  const gameParts = prop.game?.split(' @ ') || [];
+  for(const part of gameParts) {
+    const teamMatch = Object.keys(matchupFlags).find(k => !k.includes('@') && part.includes(k.split(' ').pop() || ''));
+    if(teamMatch) teamFlags = [...teamFlags, ...matchupFlags[teamMatch]];
+  }
+}
+const allFlags = [...gameFlags, ...teamFlags];
+if(allFlags.length > 0) {
+  const marketLower = prop.market.toLowerCase();
+  for(const flag of allFlags) {
     if(flag.type === 'batter_hits' && (marketLower.includes('hits') || marketLower.includes('total_bases') || marketLower.includes('rbis'))) {
       matchupConviction += flag.conviction;
       matchupSignals.push(flag.signal);
@@ -6073,6 +6132,18 @@ if(gameFlags.length > 0) {
       matchupConviction += flag.conviction;
       matchupSignals.push(flag.signal);
     } else if(flag.type === 'batter_home_runs' && marketLower.includes('home_run')) {
+      matchupConviction += flag.conviction;
+      matchupSignals.push(flag.signal);
+    } else if(flag.type === 'player_points' && marketLower.includes('points')) {
+      matchupConviction += flag.conviction;
+      matchupSignals.push(flag.signal);
+    } else if(flag.type === 'player_rebounds' && marketLower.includes('rebounds')) {
+      matchupConviction += flag.conviction;
+      matchupSignals.push(flag.signal);
+    } else if(flag.type === 'player_assists' && marketLower.includes('assists')) {
+      matchupConviction += flag.conviction;
+      matchupSignals.push(flag.signal);
+    } else if(flag.type === 'player_points_under' && marketLower.includes('points') && bestSide === 'Under') {
       matchupConviction += flag.conviction;
       matchupSignals.push(flag.signal);
     }
