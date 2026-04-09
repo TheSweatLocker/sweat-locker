@@ -6217,17 +6217,27 @@ if(allFlags.length > 0) {
     }
   }
 }
+// ── ODDS-BASED CONVICTION SCALING ──
+// Heavy favorites are partially priced in — reduce conviction
+// Underdogs with matchup signal = market disagrees = more value
+if(matchupConviction > 0 && bestLine?.odds) {
+  const propOdds = parseFloat(bestLine.odds);
+  if(propOdds >= 100) matchupConviction += 10;       // plus odds — market underpricing
+  else if(propOdds >= -150) matchupConviction += 5;   // mild favorite — value exists
+  else if(propOdds <= -250) matchupConviction -= 5;   // heavy fav — mostly priced in
+}
+
 // ── DUAL-TRACK GRADING ──
 const isMatchupProp = matchupConviction >= 15;
 
 if(isMatchupProp) {
   // MATCHUP TRACK — graded on pipeline conviction, not EV
   if(matchupConviction >= 30) {
-    grade='A'; gradeColor='#00e5a0';  // multiple strong signals stacking
+    grade='A'; gradeColor='#00e5a0';  // multiple signals or strong signal + good odds
   } else if(matchupConviction >= 20) {
-    grade='A'; gradeColor='#00e5a0';  // single strong signal (bad pitcher + bad bullpen, or K gap 8+)
+    grade='B'; gradeColor='#FFB800';  // solid single signal
   } else if(matchupConviction >= 15) {
-    grade='B'; gradeColor='#FFB800';  // one moderate signal
+    grade='C'; gradeColor='#0099ff';  // moderate signal
   }
   // EV bonus — if matchup prop ALSO has positive EV, upgrade
   if(bestEV >= 3 && grade === 'B') { grade='A'; gradeColor='#00e5a0'; }
@@ -6498,8 +6508,29 @@ const graded = gradedRaw.filter(p => {
   return true;
 })
 
-        .sort((a,b) => b.bestEV - a.bestEV)
-        .slice(0,30);
+        .sort((a,b) => {
+          // Sort by: matchup conviction first, then EV
+          if(a.matchupConviction >= 15 && b.matchupConviction < 15) return -1;
+          if(b.matchupConviction >= 15 && a.matchupConviction < 15) return 1;
+          if(a.matchupConviction >= 15 && b.matchupConviction >= 15) return b.matchupConviction - a.matchupConviction;
+          return b.bestEV - a.bestEV;
+        });
+
+      // Cap matchup props to top 3 per game — don't flood with 9 batters from same game
+      const matchupPerGame: Record<string, number> = {};
+      const cappedGraded = graded.filter(p => {
+        if(p.matchupConviction >= 15) {
+          const game = p.gameName || p.game || '';
+          matchupPerGame[game] = (matchupPerGame[game] || 0) + 1;
+          if(matchupPerGame[game] > 3) return false;
+        }
+        return true;
+      }).slice(0, 30);
+
+      // Replace graded with capped version for display
+      graded.length = 0;
+      graded.push(...cappedGraded);
+
       console.log(`[PropJerry ${sport}] Filter results:`, JSON.stringify(filteredReasons));
       if(gradedRaw.filter(Boolean).length > 0 && graded.length === 0) {
         // Log first 3 rejected props for diagnosis
