@@ -3436,6 +3436,18 @@ if(isPlayoffMode) {
       modelMismatch = Math.min(88, modelMismatch + 3);
     }
 
+    // ── NRFI CONVICTION BOOST ──
+    // High NRFI score = pipeline verified both arms → higher confidence game
+    // Low NRFI score = offense expected → also a signal worth elevating
+    if(mlbCtx.nrfi_score) {
+      const nrfi = mlbCtx.nrfi_score;
+      if(nrfi >= 88) modelMismatch = Math.min(88, modelMismatch + 8);       // both arms elite — high conviction
+      else if(nrfi >= 75) modelMismatch = Math.min(88, modelMismatch + 5);  // strong NRFI lean
+      else if(nrfi <= 35) modelMismatch = Math.min(88, modelMismatch + 5);  // strong YRFI lean — offense signal
+      else if(nrfi <= 45) modelMismatch = Math.min(88, modelMismatch + 3);  // moderate YRFI
+      // 46-74 = no boost — neutral zone doesn't help confidence
+    }
+
     // ── LEAN SIDE ──
     // Primary: use model's over/under lean
     if(mlbCtx.over_lean !== null && mlbCtx.over_lean !== undefined) {
