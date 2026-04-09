@@ -117,6 +117,98 @@ def upload_umpires():
 
     print(f"Done! ✅ {success} umpires uploaded, ❌ {errors} errors")
 
+def update_umpire_tendencies():
+    """Calculate real NRFI tendencies from mlb_game_results outcomes and update mlb_umpires"""
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    print("Calculating umpire NRFI tendencies from game results...")
+
+    # Fetch all games with umpire + NRFI result
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/mlb_game_results?nrfi_result=not.is.null&umpire=not.is.null&select=umpire,nrfi_result,home_score,away_score",
+        headers=headers
+    )
+    games = r.json()
+    if not games or not isinstance(games, list):
+        print("No game results with umpire data yet")
+        return
+
+    print(f"Found {len(games)} games with umpire + NRFI data")
+
+    # Aggregate per umpire
+    ump_stats = {}
+    for game in games:
+        ump = game.get('umpire')
+        if not ump:
+            continue
+        if ump not in ump_stats:
+            ump_stats[ump] = {'games': 0, 'nrfi': 0, 'yrfi': 0, 'total_runs': 0}
+        ump_stats[ump]['games'] += 1
+        if game.get('nrfi_result') == 'NRFI':
+            ump_stats[ump]['nrfi'] += 1
+        else:
+            ump_stats[ump]['yrfi'] += 1
+        home_score = game.get('home_score') or 0
+        away_score = game.get('away_score') or 0
+        ump_stats[ump]['total_runs'] += (home_score + away_score)
+
+    # Update umpires with real data — only if 5+ games sample
+    updated = 0
+    for ump_name, stats in ump_stats.items():
+        if stats['games'] < 5:
+            continue
+
+        nrfi_rate = round(stats['nrfi'] / stats['games'], 3)
+        avg_runs = round(stats['total_runs'] / stats['games'], 2)
+        # over_rate approximation: if avg runs > 8.5 (league avg total line), lean over
+        over_rate = round(min(0.65, max(0.35, 0.5 + (avg_runs - 8.5) * 0.05)), 2)
+        # run_factor: 100 = neutral, higher = more runs
+        run_factor = round(100 + (avg_runs - 8.5) * 3)
+        # k_rate proxy: umpires with high NRFI rate tend to have bigger zones (more Ks)
+        k_rate_above_avg = round((nrfi_rate - 0.5) * 3, 1)
+
+        patch_resp = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/mlb_umpires?ump_name=eq.{requests.utils.quote(ump_name)}",
+            headers={**headers, "Prefer": "return=minimal"},
+            json={
+                "over_rate": over_rate,
+                "run_factor": run_factor,
+                "k_rate_above_avg": k_rate_above_avg,
+                "games_sampled": stats['games'],
+                "nrfi_rate": nrfi_rate,
+                "updated_at": "now()"
+            }
+        )
+        if patch_resp.status_code in [200, 204]:
+            updated += 1
+            print(f"  ✅ {ump_name}: {stats['nrfi']}-{stats['yrfi']} NRFI ({nrfi_rate:.0%}), avg runs {avg_runs}, {stats['games']} games")
+        else:
+            # Umpire might not be in table yet — insert
+            if patch_resp.status_code == 404 or 'No rows' in patch_resp.text:
+                requests.post(
+                    f"{SUPABASE_URL}/rest/v1/mlb_umpires",
+                    headers={**headers, "Prefer": "resolution=merge-duplicates,return=minimal"},
+                    json={
+                        "ump_name": ump_name,
+                        "over_rate": over_rate,
+                        "run_factor": run_factor,
+                        "k_rate_above_avg": k_rate_above_avg,
+                        "games_sampled": stats['games'],
+                        "nrfi_rate": nrfi_rate,
+                        "updated_at": "now()"
+                    }
+                )
+                updated += 1
+                print(f"  ✅ {ump_name} (NEW): {stats['nrfi']}-{stats['yrfi']} NRFI ({nrfi_rate:.0%})")
+
+    print(f"Updated {updated} umpires with real NRFI tendencies")
+
 if __name__ == "__main__":
     print(f"Uploading {len(UMPIRES)} active MLB umpires...")
     upload_umpires()
+    print()
+    update_umpire_tendencies()
