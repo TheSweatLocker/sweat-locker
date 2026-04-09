@@ -5845,9 +5845,30 @@ setPropJerryLoading(true);
       });
       if(!events.length) { setPropJerryLoading(false); return; }
 
+      // Sort events — flagged matchups first so they're guaranteed in the 15-event window
+      const scoredEvents = events.map(event => {
+        const gameKey = `${event.away_team} @ ${event.home_team}`;
+        const gameFlags = matchupFlags[gameKey] || [];
+        // For NBA, check team-level flags too
+        let teamFlagScore = 0;
+        if(sport === 'NBA') {
+          for(const teamName of Object.keys(matchupFlags)) {
+            if(!teamName.includes('@') && (event.home_team.includes(teamName.split(' ').pop() || '') || event.away_team.includes(teamName.split(' ').pop() || ''))) {
+              teamFlagScore += matchupFlags[teamName].reduce((s: number, f: any) => s + f.conviction, 0);
+            }
+          }
+        }
+        const totalConviction = gameFlags.reduce((s, f) => s + f.conviction, 0) + teamFlagScore;
+        return { ...event, _conviction: totalConviction };
+      });
+      scoredEvents.sort((a, b) => b._conviction - a._conviction);
+      if(scoredEvents[0]._conviction > 0) {
+        console.log(`[PropJerry] Events sorted — top: ${scoredEvents[0].away_team} @ ${scoredEvents[0].home_team} (conviction ${scoredEvents[0]._conviction})`);
+      }
+
       const propMap = {};
-     
-      await Promise.all(events.slice(0,15).map(async event => {
+
+      await Promise.all(scoredEvents.slice(0,15).map(async event => {
         try {
           const propResp = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/events/${event.id}/odds`, {
             params: {
