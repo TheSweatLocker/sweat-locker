@@ -291,8 +291,8 @@ def get_first_inning_splits(player_name):
         split_data = splits[0]["splits"][0].get("stat", {})
         innings_pitched = float(split_data.get("inningsPitched", "0") or "0")
 
-        # Need at least 5 first innings to trust the data
-        if innings_pitched < 5:
+        # Need at least 2 first innings for early season (was 5 — too strict for April)
+        if innings_pitched < 2:
             return None
 
         era = float(split_data.get("era", "0") or "0")

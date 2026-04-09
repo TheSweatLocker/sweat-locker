@@ -1370,13 +1370,30 @@ def run():
             # Get bullpen stats
             home_bullpen = get_bullpen_stats(home_team)
             away_bullpen = get_bullpen_stats(away_team)
-            # Fetch first inning splits for NRFI model
+            # Fetch first inning splits for NRFI model — try Supabase first, then MLB API direct
             home_first_inn = get_pitcher_first_inning(home_pitcher) if home_pitcher else None
             away_first_inn = get_pitcher_first_inning(away_pitcher) if away_pitcher else None
+            # If Supabase has no first inning data, query MLB Stats API directly
+            if not home_first_inn and home_pitcher:
+                try:
+                    from pitcher_stats import get_first_inning_splits
+                    home_first_inn = get_first_inning_splits(home_pitcher)
+                except:
+                    pass
+            if not away_first_inn and away_pitcher:
+                try:
+                    from pitcher_stats import get_first_inning_splits
+                    away_first_inn = get_first_inning_splits(away_pitcher)
+                except:
+                    pass
             if home_first_inn:
                 print(f"  {home_pitcher} 1st inning: ERA {home_first_inn.get('first_inning_era')}, WHIP {home_first_inn.get('first_inning_whip')}")
+            else:
+                print(f"  {home_pitcher} 1st inning: no data yet")
             if away_first_inn:
                 print(f"  {away_pitcher} 1st inning: ERA {away_first_inn.get('first_inning_era')}, WHIP {away_first_inn.get('first_inning_whip')}")
+            else:
+                print(f"  {away_pitcher} 1st inning: no data yet")
 
             # Calculate NRFI score — use local variables not context dict
             nrfi_score = calc_nrfi_score(
