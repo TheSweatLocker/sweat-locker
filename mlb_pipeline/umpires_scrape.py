@@ -207,8 +207,70 @@ def update_umpire_tendencies():
 
     print(f"Updated {updated} umpires with real NRFI tendencies")
 
+def update_pitcher_nrfi_rates():
+    """Calculate per-pitcher NRFI rates from mlb_game_results and update mlb_pitcher_stats"""
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    print("Calculating pitcher NRFI rates from game results...")
+
+    # Fetch all games with pitcher + NRFI result — check both home and away
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/mlb_game_results?nrfi_result=not.is.null&select=home_sp_name,away_sp_name,nrfi_result",
+        headers=headers
+    )
+    games = r.json()
+    if not games or not isinstance(games, list):
+        print("No game results with pitcher NRFI data yet")
+        return
+
+    print(f"Found {len(games)} games with NRFI data")
+
+    # Aggregate per pitcher (pitcher appears as either home or away starter)
+    pitcher_stats = {}
+    for game in games:
+        nrfi = game.get('nrfi_result')
+        for role in ['home_sp_name', 'away_sp_name']:
+            pitcher = game.get(role)
+            if not pitcher:
+                continue
+            if pitcher not in pitcher_stats:
+                pitcher_stats[pitcher] = {'games': 0, 'nrfi': 0, 'yrfi': 0}
+            pitcher_stats[pitcher]['games'] += 1
+            if nrfi == 'NRFI':
+                pitcher_stats[pitcher]['nrfi'] += 1
+            else:
+                pitcher_stats[pitcher]['yrfi'] += 1
+
+    # Update pitchers with 3+ starts (minimum for early season)
+    updated = 0
+    for pitcher_name, stats in pitcher_stats.items():
+        if stats['games'] < 3:
+            continue
+
+        nrfi_rate = round(stats['nrfi'] / stats['games'], 3)
+
+        # Update mlb_pitcher_stats
+        patch_resp = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.*{requests.utils.quote(pitcher_name.split(' ')[-1])}*&season=eq.2026",
+            headers={**headers, "Prefer": "return=minimal"},
+            json={
+                "nrfi_rate": nrfi_rate,
+            }
+        )
+        if patch_resp.status_code in [200, 204]:
+            updated += 1
+            print(f"  ✅ {pitcher_name}: {stats['nrfi']}-{stats['yrfi']} NRFI ({nrfi_rate:.0%}) in {stats['games']} starts")
+
+    print(f"Updated {updated} pitchers with NRFI rates")
+
 if __name__ == "__main__":
     print(f"Uploading {len(UMPIRES)} active MLB umpires...")
     upload_umpires()
     print()
     update_umpire_tendencies()
+    print()
+    update_pitcher_nrfi_rates()
