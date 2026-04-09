@@ -4273,15 +4273,23 @@ const fetchDailyBestBet = async () => {
       } else {
         const fetchedHour = parseInt(new Date(supabaseCache.fetched_at).toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
         // Only regenerate if the cached pick was generated before 10am (pre-pipeline)
-        // Once a real pick is generated after 10am, it's locked for the day
         if(fetchedHour < 10 && etHour >= 10) {
           // Stale pre-pipeline bet — fall through to regenerate
-        } else if(false) {
-          // 2pm refresh disabled — pick locks after first post-10am generation
         } else {
-          setDailyBestBet(supabaseCache.data);
-          try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}
-          return;
+          // Verify the cached pick was generated with real pipeline data
+          // If mlbGameContext is loaded and has NRFI scores but the cached pick doesn't reference NRFI, regenerate
+          const hasMLBContext = Object.keys(mlbGameContext).length > 0;
+          const cachedHasNRFI = supabaseCache.data.score?.isNRFI || supabaseCache.data.score?.nrfiScore;
+          const bestNRFIAvailable = hasMLBContext && Object.values(mlbGameContext).some((ctx: any) => ctx.nrfi_score >= 75);
+
+          if(bestNRFIAvailable && !cachedHasNRFI && etHour >= 10) {
+            // Pipeline has a strong NRFI but cached pick missed it — regenerate
+            console.log('[BestBet] Strong NRFI available but cached pick missed it — regenerating');
+          } else {
+            setDailyBestBet(supabaseCache.data);
+            try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({data:supabaseCache.data, timestamp:Date.now()})); } catch(e) {}
+            return;
+          }
         }
       }
     }
@@ -5124,6 +5132,7 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NBA totals: the Sweat Locker NBA total model is in the data — if projected total delta >= 3pts from posted, reference it as a total lean. Cross-matched OffRtg vs DefRtg + pace + eFG% matchup + form drift + injuries
 - For NBA totals: if model projects 3+ pts over posted total, lean over and explain why (pace matchup, poor defenses, both teams trending hot)
 - For NBA totals: if model projects 3+ pts under posted total, lean under and explain why (elite defenses, slow pace, injuries suppressing scoring)
+- For MLB: the Sweat Locker model has computed a spread lean and total lean from pipeline data (xERA, wRC+, park, bullpen, weather). Your job is to EXPLAIN why the model leans that way using the specific data provided. Do not contradict the model lean unless your web search finds concrete breaking news (injury, lineup scratch, weather change) that the model doesn't know about. If you override the model, explicitly say "Override: [reason]".
 - For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
 - For MLB: if web search shows the game has ALREADY BEEN PLAYED — do NOT recap it. Instead say "This game has already been played." and stop.
 - For MLB: you are giving a PRE-GAME take only. Never recap a completed game.
