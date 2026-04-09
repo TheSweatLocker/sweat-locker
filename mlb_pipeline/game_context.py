@@ -1533,8 +1533,9 @@ def run():
             try:
                 home_xera = sanitize_xera(home_pitcher_stats.get('xera'), home_pitcher) if home_pitcher_stats else None
                 away_xera = sanitize_xera(away_pitcher_stats.get('xera'), away_pitcher) if away_pitcher_stats else None
-                home_wrc = home_stats.get('wrc_plus') if home_stats else None
-                away_wrc = away_stats.get('wrc_plus') if away_stats else None
+                # Use wRC+ from team offense table (get_team_woba_wrc), not get_team_stats which doesn't have it
+                home_wrc = home_offense.get('wrc_plus') if home_offense else None
+                away_wrc = away_offense.get('wrc_plus') if away_offense else None
                 park_mult = park_run_factor / 100 if park_run_factor else 1.0
 
                 if home_rpg and away_rpg and home_xera and away_xera:
