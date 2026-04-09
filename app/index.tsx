@@ -3525,8 +3525,52 @@ if(isPlayoffMode) {
     const mlVariance = mlOdds.length > 1 ? Math.max(...mlOdds) - Math.min(...mlOdds) : 0;
     const sharpSignal = mlVariance > 20 ? 80 : mlVariance > 10 ? 60 : mlVariance > 5 ? 45 : 30;
 
-    // 5. SITUATIONAL EDGE (15%)
+    // 5. SITUATIONAL EDGE
     let situationalEdge = 50;
+
+    // MLB situational factors from pipeline
+    if(sport==='MLB' && mlbContext) {
+      const mlbCtx = mlbContext?.[game.home_team] || mlbContext?.[game.away_team] ||
+        Object.values(mlbContext).find((ctx: any) => ctx.home_team === game.home_team || ctx.away_team === game.away_team) as any;
+      if(mlbCtx) {
+        let sitScore = 30;
+
+        // Platoon advantage — confirmed lineup handedness vs pitcher hand
+        const homePlatoon = parseFloat(mlbCtx.home_platoon_advantage) || 0;
+        const awayPlatoon = parseFloat(mlbCtx.away_platoon_advantage) || 0;
+        const platoonGap = Math.abs(homePlatoon - awayPlatoon);
+        if(platoonGap >= 5) sitScore += 15;
+        else if(platoonGap >= 3) sitScore += 8;
+        else if(platoonGap >= 1) sitScore += 3;
+
+        // Team streaks — hot/cold teams
+        const homeStreak = mlbCtx.home_streak || '';
+        const awayStreak = mlbCtx.away_streak || '';
+        const homeStreakNum = parseInt(homeStreak.replace(/[WL]/,'')) || 0;
+        const awayStreakNum = parseInt(awayStreak.replace(/[WL]/,'')) || 0;
+        if(homeStreakNum >= 4 || awayStreakNum >= 4) sitScore += 10;
+        else if(homeStreakNum >= 3 || awayStreakNum >= 3) sitScore += 5;
+
+        // Days rest — pitcher rest advantage
+        const homeRest = parseInt(mlbCtx.home_days_rest) || 4;
+        const awayRest = parseInt(mlbCtx.away_days_rest) || 4;
+        const restGap = Math.abs(homeRest - awayRest);
+        if(restGap >= 3) sitScore += 8;
+        else if(restGap >= 2) sitScore += 4;
+
+        // Travel / road fatigue from XGBoost features
+        const tzChange = parseInt(mlbCtx.timezone_change) || 0;
+        const consecRoad = parseInt(mlbCtx.away_consecutive_road_games) || 0;
+        const travelDist = parseInt(mlbCtx.home_travel_distance_last_game) || 0;
+        if(tzChange >= 2) sitScore += 5;
+        if(consecRoad >= 6) sitScore += 8;
+        else if(consecRoad >= 4) sitScore += 4;
+        if(travelDist >= 1500) sitScore += 4;
+
+        situationalEdge = Math.min(90, sitScore);
+      }
+    }
+
     if(sport==='NCAAB' && bartData.length) {
       const awayT = fuzzyMatchTeam(stripMascot(game.away_team), bartData, 'team');
       const homeT = fuzzyMatchTeam(stripMascot(game.home_team), bartData, 'team');
