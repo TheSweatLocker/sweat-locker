@@ -6217,22 +6217,34 @@ if(allFlags.length > 0) {
     }
   }
 }
-// Pipeline-flagged props get lower EV thresholds for A/B grades
-const evBonus = matchupConviction >= 20 ? 2.0 : matchupConviction >= 10 ? 1.0 : 0;
+// ── DUAL-TRACK GRADING ──
+const isMatchupProp = matchupConviction >= 15;
 
-const pathOneA = bestEV >= (4 - evBonus) && bookCount >= minBooksA && lineRange <= maxRangeA && hasModelEdge;
-const pathTwoA = bestEV >= (6 - evBonus) && bookCount >= minBooksB && lineRange <= maxRangeB && modelConfirmed;
-// Path Three: Pipeline-initiated — strong matchup signal + positive EV + actionable odds
-const pathThreeA = matchupConviction >= 20 && bestEV >= 2 && bookCount >= minBooksB;
-
-if(pathOneA || pathTwoA || pathThreeA) {
-  grade='A'; gradeColor='#00e5a0';
-} else if(bestEV >= (3 - evBonus * 0.5) && bookCount >= minBooksB && lineRange <= maxRangeB) {
-  grade='B'; gradeColor='#FFB800';
-} else if(bestEV >= 1) {
-  grade='C'; gradeColor='#0099ff';
+if(isMatchupProp) {
+  // MATCHUP TRACK — graded on pipeline conviction, not EV
+  if(matchupConviction >= 30) {
+    grade='A'; gradeColor='#00e5a0';  // multiple strong signals stacking
+  } else if(matchupConviction >= 20) {
+    grade='A'; gradeColor='#00e5a0';  // single strong signal (bad pitcher + bad bullpen, or K gap 8+)
+  } else if(matchupConviction >= 15) {
+    grade='B'; gradeColor='#FFB800';  // one moderate signal
+  }
+  // EV bonus — if matchup prop ALSO has positive EV, upgrade
+  if(bestEV >= 3 && grade === 'B') { grade='A'; gradeColor='#00e5a0'; }
 } else {
-  grade='D'; gradeColor='#ff4d6d';
+  // EV TRACK — original grading, pure line-shopping math
+  const pathOneA = bestEV >= 4 && bookCount >= minBooksA && lineRange <= maxRangeA && hasModelEdge;
+  const pathTwoA = bestEV >= 6 && bookCount >= minBooksB && lineRange <= maxRangeB && modelConfirmed;
+
+  if(pathOneA || pathTwoA) {
+    grade='A'; gradeColor='#00e5a0';
+  } else if(bestEV >= 3 && bookCount >= minBooksB && lineRange <= maxRangeB) {
+    grade='B'; gradeColor='#FFB800';
+  } else if(bestEV >= 1) {
+    grade='C'; gradeColor='#0099ff';
+  } else {
+    grade='D'; gradeColor='#ff4d6d';
+  }
 }
 
 // Model override — if model says wrong side or coin flip, cap grade
