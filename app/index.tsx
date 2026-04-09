@@ -6462,11 +6462,15 @@ Rules:
         };
        })(prop));
 }
+console.log(`[PropJerry ${sport}] GradedRaw: ${gradedRaw.length} (non-null: ${gradedRaw.filter(Boolean).length})`);
 const graded = gradedRaw.filter(p => {
-  if(!p || p.bestEV <= 0) return false;
+  if(!p) return false;
   const odds = parseFloat(p.bestLine?.odds);
   if(isNaN(odds)) return true;
   const minBooks = propJerrySport==='NHL' || propJerrySport==='MLB' || propJerrySport==='UFC' ? 1 : 2;
+  // Pipeline-flagged props get through with slightly negative EV (matchup justifies it)
+  const minEV = p.isPipelinePick ? -2.0 : 0;
+  if(p.bestEV <= minEV) return false;
   // Parlay-friendly range: -300 to +150
   return odds >= -300 && odds <= 150 && p.bookCount >= minBooks;
 })
@@ -8292,7 +8296,7 @@ setJerryHistory(prev => {
     <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🎤 PROP JERRY</Text>
     <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Pure EV + market consensus. No simulated data. Jerry finds the real edges.</Text>
   </View>
-  <TouchableOpacity onPress={()=>fetchPropJerry(propJerrySport)} style={{alignItems:'center',gap:3}}>
+  <TouchableOpacity onPress={async()=>{try{await AsyncStorage.removeItem(PROP_JERRY_CACHE_KEY+'_'+propJerrySport);}catch(e){}try{await supabase.from('prop_jerry_cache').delete().eq('sport',propJerrySport);}catch(e){}fetchPropJerry(propJerrySport);}} style={{alignItems:'center',gap:3}}>
     <Text style={{fontSize:18}}>🔄</Text>
     <Text style={{color:'#4a6070',fontSize:9}}>{propJerryLastUpdate ? Math.floor((new Date()-propJerryLastUpdate)/60000)+'m ago' : 'tap to load'}</Text>
   </TouchableOpacity>
