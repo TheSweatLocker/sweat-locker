@@ -948,8 +948,27 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
     if home_pitcher_stats and away_pitcher_stats:
         home_xera = sanitize_xera(home_pitcher_stats.get('xera'), 'home')
         away_xera = sanitize_xera(away_pitcher_stats.get('xera'), 'away')
-        if home_xera and away_xera and (float(away_xera) - float(home_xera)) >= 1.5:
-            score += 5
+        if home_xera and away_xera:
+            xera_gap = abs(float(home_xera) - float(away_xera))
+            worse_xera = max(float(home_xera), float(away_xera))
+            better_xera = min(float(home_xera), float(away_xera))
+
+            # Ace bonus — both arms elite or one dominant
+            if (float(away_xera) - float(home_xera)) >= 1.5:
+                score += 5
+
+            # ── DUAL ARM GATE ──
+            # Single liability arm penalty — one bad pitcher kills NRFI confidence
+            # If one arm is good (<3.5) but other is bad (>4.5), penalize
+            if better_xera <= 3.5 and worse_xera >= 4.5:
+                penalty = min(12, round((worse_xera - 4.0) * 3))
+                score -= penalty
+            # Both arms bad — heavy penalty
+            elif better_xera >= 4.5 and worse_xera >= 4.5:
+                score -= 10
+            # Both arms elite — bonus
+            elif better_xera <= 3.5 and worse_xera <= 3.5:
+                score += 5
 
     return max(0, min(100, round(score)))
 

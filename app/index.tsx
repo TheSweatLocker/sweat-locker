@@ -7926,8 +7926,8 @@ setJerryHistory(prev => {
     Object.values(mlbGameContext).find((ctx: any) => ctx.home_team === game.home_team || ctx.away_team === game.away_team);
   const nScore = nrfiCtx?.nrfi_score;
   if(!nScore) return null;
-  const nColor = nScore >= 70 ? '#00e5a0' : nScore >= 55 ? '#ffd166' : nScore <= 40 ? '#ff4d6d' : '#7a92a8';
-  const nLabel = nScore >= 70 ? 'NRFI' : nScore >= 55 ? 'NRFI lean' : nScore <= 40 ? 'YRFI' : 'Neutral';
+  const nColor = nScore >= 88 ? '#00e5a0' : nScore >= 70 ? '#00e5a0' : nScore >= 55 ? '#ffd166' : nScore <= 40 ? '#ff4d6d' : '#7a92a8';
+  const nLabel = nScore >= 88 ? 'NRFI 🔒' : nScore >= 70 ? 'NRFI' : nScore >= 55 ? 'NRFI lean' : nScore <= 40 ? 'YRFI' : 'Neutral';
   return(
     <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8}}>
       <View style={{backgroundColor:nColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:nColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
@@ -9194,7 +9194,7 @@ if(pipelineNRFI !== null && pipelineNRFI !== undefined) {
   );
 }
 
-const nrfiLean  = nrfiScore >= 55 ? 'NRFI' : nrfiScore <= 45 ? 'YRFI' : 'NEUTRAL';
+const nrfiLean  = nrfiScore >= 88 ? 'NRFI 🔒' : nrfiScore >= 70 ? 'NRFI' : nrfiScore >= 55 ? 'NRFI lean' : nrfiScore <= 40 ? 'YRFI' : 'NEUTRAL';
 const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d6d' : '#7a92a8';
   return(
     <View style={[styles.card,{marginBottom:10}]}>
