@@ -828,7 +828,33 @@ def calc_batting_order_weight(lineup_names):
     score = sum(weights[i] for i in range(min(len(batters), 9)))
     return round(score, 2)
 
-def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None):
+def detect_opener(pitcher_id):
+    """Check if pitcher is likely an opener/bullpen day — low games started vs games played"""
+    if not pitcher_id:
+        return False
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
+            params={"stats": "season", "group": "pitching", "season": 2026},
+            timeout=10
+        )
+        splits = r.json().get("stats", [])
+        if not splits or not splits[0].get("splits"):
+            return False
+        s = splits[0]["splits"][0]["stat"]
+        gs = int(s.get("gamesStarted", 0) or 0)
+        gp = int(s.get("gamesPlayed", 0) or 0)
+        ip = float(s.get("inningsPitched", "0").replace('.1','.33').replace('.2','.67') or "0")
+        # Opener signals: mostly relief appearances, or very low IP per start
+        if gp > 0 and gs == 0:
+            return True  # pure reliever being used as opener
+        if gs > 0 and ip / gs < 3.5:
+            return True  # averaging less than 3.5 IP per start — likely short opener
+        return False
+    except:
+        return False
+
+def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None, home_is_opener=False, away_is_opener=False):
     """
     Calculate NRFI (No Run First Inning) probability score 0-100.
     Higher = stronger NRFI lean.
@@ -969,6 +995,13 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
             # Both arms elite — bonus
             elif better_xera <= 3.5 and worse_xera <= 3.5:
                 score += 5
+
+    # ── OPENER / BULLPEN GAME DETECTION ──
+    # Relievers used as openers are volatile — unpredictable first inning
+    if home_is_opener:
+        score -= 8
+    if away_is_opener:
+        score -= 8
 
     return max(0, min(100, round(score)))
 
@@ -1395,6 +1428,14 @@ def run():
             else:
                 print(f"  {away_pitcher} 1st inning: no data yet")
 
+            # Detect opener/bullpen games
+            home_is_opener = detect_opener(home_pitcher_id) if home_pitcher_id else False
+            away_is_opener = detect_opener(away_pitcher_id) if away_pitcher_id else False
+            if home_is_opener:
+                print(f"  ⚠️ {home_pitcher} detected as OPENER/BULLPEN — NRFI penalty applied")
+            if away_is_opener:
+                print(f"  ⚠️ {away_pitcher} detected as OPENER/BULLPEN — NRFI penalty applied")
+
             # Calculate NRFI score — use local variables not context dict
             nrfi_score = calc_nrfi_score(
                 home_pitcher_stats,
@@ -1409,6 +1450,8 @@ def run():
                 away_offense.get("wrc_plus") if away_offense else None,
                 home_first_inn,
                 away_first_inn,
+                home_is_opener,
+                away_is_opener,
             )
             if nrfi_score:
                 print(f"  NRFI score: {nrfi_score} ({'NRFI lean' if nrfi_score >= 60 else 'YRFI lean' if nrfi_score <= 40 else 'neutral'})")
