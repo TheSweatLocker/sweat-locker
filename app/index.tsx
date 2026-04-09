@@ -6463,6 +6463,8 @@ Rules:
        })(prop));
 }
 console.log(`[PropJerry ${sport}] GradedRaw: ${gradedRaw.length} (non-null: ${gradedRaw.filter(Boolean).length})`);
+// Debug: log why props are being filtered
+let filteredReasons = {noEV:0, oddsRange:0, books:0, passed:0};
 const graded = gradedRaw.filter(p => {
   if(!p) return false;
   const odds = parseFloat(p.bestLine?.odds);
@@ -6470,13 +6472,22 @@ const graded = gradedRaw.filter(p => {
   const minBooks = propJerrySport==='NHL' || propJerrySport==='MLB' || propJerrySport==='UFC' ? 1 : 2;
   // Pipeline-flagged props get through with slightly negative EV (matchup justifies it)
   const minEV = p.isPipelinePick ? -2.0 : 0;
-  if(p.bestEV <= minEV) return false;
-  // Parlay-friendly range: -300 to +150
-  return odds >= -300 && odds <= 150 && p.bookCount >= minBooks;
+  if(p.bestEV <= minEV) { filteredReasons.noEV++; return false; }
+  if(odds < -300 || odds > 150) { filteredReasons.oddsRange++; return false; }
+  if(p.bookCount < minBooks) { filteredReasons.books++; return false; }
+  filteredReasons.passed++;
+  return true;
 })
 
         .sort((a,b) => b.bestEV - a.bestEV)
         .slice(0,30);
+      console.log(`[PropJerry ${sport}] Filter results:`, JSON.stringify(filteredReasons));
+      if(gradedRaw.filter(Boolean).length > 0 && graded.length === 0) {
+        // Log first 3 rejected props for diagnosis
+        gradedRaw.filter(Boolean).slice(0,3).forEach(p => {
+          console.log(`  Rejected: ${p.player} ${p.market} EV=${p.bestEV?.toFixed(2)} odds=${p.bestLine?.odds} books=${p.bookCount} pipeline=${p.isPipelinePick}`);
+        });
+      }
 
       // Auto-save A grades to Supabase prop_grades
 const aGrades = graded.filter(p => p.grade === 'A');
