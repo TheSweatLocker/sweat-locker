@@ -159,8 +159,8 @@ def update_umpire_tendencies():
     # Update umpires with real data — only if 5+ games sample
     updated = 0
     for ump_name, stats in ump_stats.items():
-        if stats['games'] < 5:
-            continue
+        if stats['games'] < 20:
+            continue  # need 20+ games before overwriting static data — small samples are noise
 
         nrfi_rate = round(stats['nrfi'] / stats['games'], 3)
         avg_runs = round(stats['total_runs'] / stats['games'], 2)
