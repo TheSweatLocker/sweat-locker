@@ -8387,6 +8387,22 @@ setJerryHistory(prev => {
                 <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:15}}>{prop.player}</Text>
                 <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{prop.marketLabel}</Text>
                 <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{prop.gameName}</Text>
+                <View style={{flexDirection:'row',gap:4,marginTop:4}}>
+                  {prop.matchupConviction >= 15 ? (
+                    <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
+                      <Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'800'}}>🎯 MATCHUP PLAY</Text>
+                    </View>
+                  ) : prop.bestEV > 0 ? (
+                    <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}>
+                      <Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📊 EV EDGE</Text>
+                    </View>
+                  ) : null}
+                  {prop.matchupSignals?.length > 0 && prop.matchupSignals.slice(0,2).map((sig: string, j: number) => (
+                    <View key={j} style={{backgroundColor:'rgba(255,255,255,0.05)',borderRadius:6,paddingHorizontal:5,paddingVertical:2,borderWidth:1,borderColor:'#1f2d3d'}}>
+                      <Text style={{color:'#7a92a8',fontSize:8,fontWeight:'600'}}>{sig}</Text>
+                    </View>
+                  ))}
+                </View>
               </View>
               <View style={{alignItems:'center'}}>
                 <View style={{width:52,height:52,borderRadius:26,borderWidth:2,borderColor:prop.gradeColor,alignItems:'center',justifyContent:'center',backgroundColor:prop.gradeColor+'20'}}>
