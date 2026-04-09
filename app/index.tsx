@@ -6464,15 +6464,22 @@ Rules:
 }
 console.log(`[PropJerry ${sport}] GradedRaw: ${gradedRaw.length} (non-null: ${gradedRaw.filter(Boolean).length})`);
 // Debug: log why props are being filtered
-let filteredReasons = {noEV:0, oddsRange:0, books:0, passed:0};
+let filteredReasons = {noEV:0, oddsRange:0, books:0, passed:0, matchupOverride:0};
 const graded = gradedRaw.filter(p => {
   if(!p) return false;
   const odds = parseFloat(p.bestLine?.odds);
   if(isNaN(odds)) return true;
   const minBooks = propJerrySport==='NHL' || propJerrySport==='MLB' || propJerrySport==='UFC' ? 1 : 2;
-  // Pipeline-flagged props get through with slightly negative EV (matchup justifies it)
-  const minEV = p.isPipelinePick ? -2.0 : 0;
-  if(p.bestEV <= minEV) { filteredReasons.noEV++; return false; }
+
+  // Pipeline matchup props — pass on conviction alone, EV not required
+  // These are analytically identified plays where the matchup is the edge, not the odds
+  if(p.matchupConviction >= 15 && odds >= -300 && odds <= 150 && p.bookCount >= minBooks) {
+    filteredReasons.matchupOverride++;
+    return true;
+  }
+
+  // EV scanner props — original flow, requires positive EV
+  if(p.bestEV <= 0) { filteredReasons.noEV++; return false; }
   if(odds < -300 || odds > 150) { filteredReasons.oddsRange++; return false; }
   if(p.bookCount < minBooks) { filteredReasons.books++; return false; }
   filteredReasons.passed++;
