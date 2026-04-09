@@ -37,7 +37,7 @@ def run():
         try:
             r2 = requests.get(
                 'https://statsapi.mlb.com/api/v1/schedule',
-                params={'sportId': 1, 'date': game_date, 'hydrate': 'linescore'},
+                params={'sportId': 1, 'date': game_date, 'hydrate': 'linescore,officials'},
                 timeout=15
             )
             dates = r2.json().get('dates', [])
@@ -69,6 +69,19 @@ def run():
                             else:
                                 run_line = 'push'
 
+                            # Backfill umpire if missing from original log
+                            umpire = None
+                            if not game.get('umpire'):
+                                officials = mlb_game.get('officials', [])
+                                hp_ump = next(
+                                    (o.get('official', {}).get('fullName')
+                                     for o in officials
+                                     if o.get('officialType') == 'Home Plate'),
+                                    None
+                                )
+                                if hp_ump:
+                                    umpire = hp_ump
+
                             # Spread result — compare margin against posted spread
                             spread = game.get('close_spread') or game.get('open_spread')
                             spread_result = None
@@ -94,13 +107,14 @@ def run():
                                     'total_result': total_result,
                                     'run_line_result': run_line,
                                     'spread_result': spread_result,
+                                    **(({'umpire': umpire} if umpire else {})),
                                     'result_logged_at': datetime.utcnow().isoformat()
                                 }
                             )
                             print(f'  Patch status: {patch_resp.status_code}')
                             if patch_resp.status_code not in [200, 204]:
                                 print(f'  Patch error: {patch_resp.text[:200]}')
-                            print(f'  ✅ {away_team} {away_score} @ {home_team} {home_score} | Total {total_runs} → {total_result} | Spread → {spread_result or "no line"}')
+                            print(f'  ✅ {away_team} {away_score} @ {home_team} {home_score} | Total {total_runs} → {total_result} | Spread → {spread_result or "no line"} | Ump: {umpire or "already logged"}')
                             resolved += 1
         except Exception as e:
             print(f'  Error: {e}')
