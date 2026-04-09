@@ -5719,6 +5719,64 @@ setPropJerryLoading(true);
         }
       } catch(e) {}
      
+      // ── PRE-SCAN: Identify strong matchup signals from pipeline data BEFORE pulling odds ──
+      const matchupFlags: Record<string, {type: string, signal: string, conviction: number}[]> = {};
+
+      if(sport === 'MLB' && Object.keys(mlbGameContext).length > 0) {
+        const seen = new Set();
+        Object.values(mlbGameContext).forEach((ctx: any) => {
+          if(!ctx.game_id || seen.has(ctx.game_id)) return;
+          seen.add(ctx.game_id);
+          const gameKey = `${ctx.away_team} @ ${ctx.home_team}`;
+          const flags: {type: string, signal: string, conviction: number}[] = [];
+
+          const homeXera = ctx.home_sp_xera ? parseFloat(ctx.home_sp_xera) : null;
+          const awayXera = ctx.away_sp_xera ? parseFloat(ctx.away_sp_xera) : null;
+          const homeWrc = ctx.home_wrc_plus ? parseFloat(ctx.home_wrc_plus) : null;
+          const awayWrc = ctx.away_wrc_plus ? parseFloat(ctx.away_wrc_plus) : null;
+          const homeBpEra = ctx.home_bullpen_era ? parseFloat(ctx.home_bullpen_era) : null;
+          const awayBpEra = ctx.away_bullpen_era ? parseFloat(ctx.away_bullpen_era) : null;
+          const homeKGap = ctx.home_k_gap ? parseFloat(ctx.home_k_gap) : null;
+          const awayKGap = ctx.away_k_gap ? parseFloat(ctx.away_k_gap) : null;
+
+          // Batter-favorable: opposing pitcher bad + bullpen bad + team offense strong
+          // Away batters face home pitcher
+          if(homeXera && homeXera > 4.5 && homeWrc && awayWrc && awayWrc > 100) {
+            flags.push({type: 'batter_hits', signal: `vs ${ctx.home_pitcher} xERA ${homeXera} + wRC+ ${awayWrc}`, conviction: 15});
+            if(homeBpEra && homeBpEra > 4.5) {
+              flags.push({type: 'batter_total_bases', signal: `weak pitcher + bullpen ERA ${homeBpEra}`, conviction: 20});
+            }
+          }
+          // Home batters face away pitcher
+          if(awayXera && awayXera > 4.5 && homeWrc && homeWrc > 100) {
+            flags.push({type: 'batter_hits', signal: `vs ${ctx.away_pitcher} xERA ${awayXera} + wRC+ ${homeWrc}`, conviction: 15});
+            if(awayBpEra && awayBpEra > 4.5) {
+              flags.push({type: 'batter_total_bases', signal: `weak pitcher + bullpen ERA ${awayBpEra}`, conviction: 20});
+            }
+          }
+
+          // Strikeout-favorable: elite pitcher K rate vs high-K lineup
+          if(homeKGap && homeKGap > 8) {
+            flags.push({type: 'pitcher_strikeouts', signal: `${ctx.home_pitcher} K gap +${homeKGap}pts`, conviction: 20});
+          }
+          if(awayKGap && awayKGap > 8) {
+            flags.push({type: 'pitcher_strikeouts', signal: `${ctx.away_pitcher} K gap +${awayKGap}pts`, conviction: 20});
+          }
+
+          // Park + weather boost for power props
+          if(ctx.park_run_factor && ctx.park_run_factor >= 108 && ctx.temperature && ctx.temperature >= 75) {
+            flags.push({type: 'batter_home_runs', signal: `Park ${ctx.park_run_factor} + ${ctx.temperature}°F`, conviction: 10});
+          }
+
+          if(flags.length > 0) {
+            matchupFlags[gameKey] = flags;
+          }
+        });
+        if(Object.keys(matchupFlags).length > 0) {
+          console.log(`[PropJerry MLB] Pre-scan flagged ${Object.keys(matchupFlags).length} games with matchup signals`);
+        }
+      }
+
       const markets = sport==='NBA' ?
   'player_points,player_rebounds,player_assists,player_threes' :
   sport==='NFL' ? 'player_pass_yds,player_rush_yds,player_reception_yds,player_receptions,player_anytime_td' :
@@ -5996,12 +6054,41 @@ const maxRangeB = isMLB || isNHL ? 1.5 : 1.0;
 const hasModelEdge = (propJerrySport === 'NBA' || propJerrySport === 'MLB') ? (modelProb !== null && modelProb >= 0.54) : true;
 const modelConfirmed = (propJerrySport === 'NBA' || propJerrySport === 'MLB') ? (modelProb !== null && modelProb >= 0.56) : true;
 
-const pathOneA = bestEV >= 4 && bookCount >= minBooksA && lineRange <= maxRangeA && hasModelEdge;
-const pathTwoA = bestEV >= 6 && bookCount >= minBooksB && lineRange <= maxRangeB && modelConfirmed;
+// ── MATCHUP FLAG CONVICTION BONUS ──
+// If pipeline pre-scan flagged this game+market, boost EV thresholds
+let matchupConviction = 0;
+let matchupSignals: string[] = [];
+const gameFlags = matchupFlags[prop.game] || [];
+if(gameFlags.length > 0) {
+  for(const flag of gameFlags) {
+    // Check if the flag type matches this prop's market
+    const marketLower = prop.market.toLowerCase();
+    if(flag.type === 'batter_hits' && (marketLower.includes('hits') || marketLower.includes('total_bases') || marketLower.includes('rbis'))) {
+      matchupConviction += flag.conviction;
+      matchupSignals.push(flag.signal);
+    } else if(flag.type === 'batter_total_bases' && (marketLower.includes('total_bases') || marketLower.includes('home_run'))) {
+      matchupConviction += flag.conviction;
+      matchupSignals.push(flag.signal);
+    } else if(flag.type === 'pitcher_strikeouts' && marketLower.includes('strikeout')) {
+      matchupConviction += flag.conviction;
+      matchupSignals.push(flag.signal);
+    } else if(flag.type === 'batter_home_runs' && marketLower.includes('home_run')) {
+      matchupConviction += flag.conviction;
+      matchupSignals.push(flag.signal);
+    }
+  }
+}
+// Pipeline-flagged props get lower EV thresholds for A/B grades
+const evBonus = matchupConviction >= 20 ? 2.0 : matchupConviction >= 10 ? 1.0 : 0;
 
-if(pathOneA || pathTwoA) {
+const pathOneA = bestEV >= (4 - evBonus) && bookCount >= minBooksA && lineRange <= maxRangeA && hasModelEdge;
+const pathTwoA = bestEV >= (6 - evBonus) && bookCount >= minBooksB && lineRange <= maxRangeB && modelConfirmed;
+// Path Three: Pipeline-initiated — strong matchup signal + positive EV + actionable odds
+const pathThreeA = matchupConviction >= 20 && bestEV >= 2 && bookCount >= minBooksB;
+
+if(pathOneA || pathTwoA || pathThreeA) {
   grade='A'; gradeColor='#00e5a0';
-} else if(bestEV >= 3 && bookCount >= minBooksB && lineRange <= maxRangeB) {
+} else if(bestEV >= (3 - evBonus * 0.5) && bookCount >= minBooksB && lineRange <= maxRangeB) {
   grade='B'; gradeColor='#FFB800';
 } else if(bestEV >= 1) {
   grade='C'; gradeColor='#0099ff';
@@ -6198,7 +6285,7 @@ Prop: ${prop.player} ${bestSide} ${bestLine?.line}
 EV: ${bestEV.toFixed(1)}% | Books: ${bookCount} | Line range: ${lineRange.toFixed(1)} pts | Best book: ${bestLine?.book}
 Grade: ${grade} — ${gradeContext}
 Book context: ${bookContext}
-${kenpomContext}${playerContext}${modelSignal ? `\nModel signal: ${modelSignal}${modelProb >= 0.56 ? ' — CONFIRMS edge' : modelProb <= 0.50 ? ' — CONFLICTS with edge' : ' — weak signal'}` : ''}
+${kenpomContext}${playerContext}${modelSignal ? `\nModel signal: ${modelSignal}${modelProb >= 0.56 ? ' — CONFIRMS edge' : modelProb <= 0.50 ? ' — CONFLICTS with edge' : ' — weak signal'}` : ''}${matchupSignals.length > 0 ? `\nPIPELINE MATCHUP FLAG: ${matchupSignals.join(' + ')} — this prop was identified by the model BEFORE checking odds. ${matchupConviction >= 20 ? 'HIGH CONVICTION — explain the specific matchup advantage.' : 'Moderate signal.'}` : ''}
 ${aGradeInstruction}
 
 Rules:
@@ -6231,6 +6318,8 @@ Rules:
           ...prop, bestEV, bestSide, bestLine, bestOver, bestUnder,
           lineRange, bookCount, grade, gradeColor, Jerry,
           bestOverEV, bestUnderEV, modelSignal, modelProb,
+          matchupConviction, matchupSignals,
+          isPipelinePick: matchupConviction >= 20,
         };
        })(prop));
 }
