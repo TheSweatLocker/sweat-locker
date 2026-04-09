@@ -3544,11 +3544,26 @@ if(isPlayoffMode) {
       }
     }
 
-   // Sport-specific weights — model-heavy for sports with pipeline data, market-heavy otherwise
-   const hasModelData = sport === 'NCAAB' || sport === 'NBA' || sport === 'MLB';
-   const w = hasModelData
+   // Sport-specific weights — tuned per sport based on data quality
+   const w = sport === 'MLB'
+     ? {market: 0.08, model: 0.45, line: 0.12, sharp: 0.10, situation: 0.25}
+     // MLB: deepest pipeline (xERA, K gap, wRC+, park, weather, umpire, spread proj, NRFI) → model dominates
+     : sport === 'NBA'
      ? {market: 0.10, model: 0.40, line: 0.15, sharp: 0.10, situation: 0.25}
-     : {market: 0.20, model: 0.20, line: 0.25, sharp: 0.20, situation: 0.15};
+     // NBA: strong pipeline (net rating, DefRtg, pace, injuries, projected total) → model heavy
+     : sport === 'NCAAB'
+     ? {market: 0.10, model: 0.35, line: 0.15, sharp: 0.15, situation: 0.25}
+     // NCAAB: KenPom efficiency model + fanmatch → model + situation heavy
+     : sport === 'NHL'
+     ? {market: 0.25, model: 0.15, line: 0.25, sharp: 0.25, situation: 0.10}
+     // NHL: no pipeline model → market signals + line movement dominate
+     : sport === 'NFL'
+     ? {market: 0.20, model: 0.15, line: 0.25, sharp: 0.25, situation: 0.15}
+     // NFL: no pipeline model → sharp money + line movement key
+     : sport === 'UFC'
+     ? {market: 0.20, model: 0.20, line: 0.15, sharp: 0.30, situation: 0.15}
+     // UFC: fighter stats in pipeline but thin → sharp money most reliable
+     : {market: 0.20, model: 0.20, line: 0.20, sharp: 0.20, situation: 0.20};
 
    let rawTotal = Math.round(
      (marketEfficiency * w.market) +
