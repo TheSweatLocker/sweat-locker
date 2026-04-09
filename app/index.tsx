@@ -5786,9 +5786,9 @@ setPropJerryLoading(true);
           const homeKGap = ctx.home_k_gap ? parseFloat(ctx.home_k_gap) : null;
           const awayKGap = ctx.away_k_gap ? parseFloat(ctx.away_k_gap) : null;
 
-          // Batter-favorable: opposing pitcher bad + bullpen bad + team offense strong
+          // ── BATTER-FAVORABLE FLAGS ──
           // Away batters face home pitcher
-          if(homeXera && homeXera > 4.5 && homeWrc && awayWrc && awayWrc > 100) {
+          if(homeXera && homeXera > 4.5 && awayWrc && awayWrc > 100) {
             flags.push({type: 'batter_hits', signal: `vs ${ctx.home_pitcher} xERA ${homeXera} + wRC+ ${awayWrc}`, conviction: 15});
             if(homeBpEra && homeBpEra > 4.5) {
               flags.push({type: 'batter_total_bases', signal: `weak pitcher + bullpen ERA ${homeBpEra}`, conviction: 20});
@@ -5802,7 +5802,32 @@ setPropJerryLoading(true);
             }
           }
 
-          // Strikeout-favorable: elite pitcher K rate vs high-K lineup
+          // ── UNKNOWN PITCHER = BATTER FAVORABLE ──
+          // Missing starter often means bullpen day or late scratch — offense benefits
+          if(!ctx.home_pitcher && awayWrc && awayWrc > 95) {
+            flags.push({type: 'batter_hits', signal: `vs unknown/bullpen starter + wRC+ ${awayWrc}`, conviction: 12});
+          }
+          if(!ctx.away_pitcher && homeWrc && homeWrc > 95) {
+            flags.push({type: 'batter_hits', signal: `vs unknown/bullpen starter + wRC+ ${homeWrc}`, conviction: 12});
+          }
+          // Null xERA but pitcher named = early season unknown — moderate signal
+          if(ctx.home_pitcher && !homeXera && awayWrc && awayWrc > 100) {
+            flags.push({type: 'batter_hits', signal: `vs ${ctx.home_pitcher} (no xERA data) + wRC+ ${awayWrc}`, conviction: 10});
+          }
+          if(ctx.away_pitcher && !awayXera && homeWrc && homeWrc > 100) {
+            flags.push({type: 'batter_hits', signal: `vs ${ctx.away_pitcher} (no xERA data) + wRC+ ${homeWrc}`, conviction: 10});
+          }
+
+          // ── STRONG OFFENSE STANDALONE ──
+          // Elite offense regardless of opposing pitcher — wRC+ 110+ is top tier
+          if(homeWrc && homeWrc >= 115) {
+            flags.push({type: 'batter_hits', signal: `${ctx.home_team} wRC+ ${homeWrc} (elite offense)`, conviction: 12});
+          }
+          if(awayWrc && awayWrc >= 115) {
+            flags.push({type: 'batter_hits', signal: `${ctx.away_team} wRC+ ${awayWrc} (elite offense)`, conviction: 12});
+          }
+
+          // ── STRIKEOUT-FAVORABLE ──
           if(homeKGap && homeKGap > 8) {
             flags.push({type: 'pitcher_strikeouts', signal: `${ctx.home_pitcher} K gap +${homeKGap}pts`, conviction: 20});
           }
@@ -5810,9 +5835,13 @@ setPropJerryLoading(true);
             flags.push({type: 'pitcher_strikeouts', signal: `${ctx.away_pitcher} K gap +${awayKGap}pts`, conviction: 20});
           }
 
-          // Park + weather boost for power props
+          // ── PARK + WEATHER BOOST ──
           if(ctx.park_run_factor && ctx.park_run_factor >= 108 && ctx.temperature && ctx.temperature >= 75) {
             flags.push({type: 'batter_home_runs', signal: `Park ${ctx.park_run_factor} + ${ctx.temperature}°F`, conviction: 10});
+          }
+          // Cold weather = pitcher advantage = K prop boost
+          if(ctx.temperature && ctx.temperature <= 45) {
+            flags.push({type: 'pitcher_strikeouts', signal: `${ctx.temperature}°F cold — offense suppressed`, conviction: 8});
           }
 
           if(flags.length > 0) {
