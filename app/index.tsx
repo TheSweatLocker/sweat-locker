@@ -4429,8 +4429,15 @@ Give a 2-3 sentence take on WHY this is today's best play. Reference specific da
     }
   } catch(e) {}
 
+  // No pipeline pick found — show waiting message
+  // Client-side scanning removed — Play of the Day is computed by play_of_day.py in the pipeline
+  console.log('[BestBet] No pipeline pick found for today — showing waiting');
+  setDailyBestBet({noGames: false, waiting: true});
+  setDailyBestBetLoading(false);
+  return;
+
+  // ── LEGACY CLIENT-SIDE SCANNING BELOW — DISABLED ──
   setDailyBestBetLoading(true);
-  console.log('[BestBet] Starting scan, etHour:', etHour);
 
   try {
     const todayStart = new Date(); todayStart.setHours(0,0,0,0);
