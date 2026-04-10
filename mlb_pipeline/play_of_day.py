@@ -208,6 +208,19 @@ def run():
     today = get_today_et()
     print(f"Play of the Day — scanning {today}")
 
+    # Check if today's pick already exists — first pick of the day locks
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jerry_cache?cache_key=eq.best_bet_{today}&select=data",
+            headers=HEADERS
+        )
+        existing = r.json()
+        if existing and len(existing) > 0 and existing[0].get('data', {}).get('pipelineGenerated'):
+            print(f"✅ Today's pick already locked — skipping regeneration")
+            return
+    except:
+        pass
+
     # Get all MLB games with context
     mlb_games = get_mlb_games()
     print(f"MLB games: {len(mlb_games)}")
