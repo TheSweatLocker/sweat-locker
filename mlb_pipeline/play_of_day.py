@@ -280,12 +280,14 @@ def run():
     # Sort by score — NRFI 75+ gets priority unless another game scores 80+
     candidates.sort(key=lambda c: c['score'], reverse=True)
 
-    # Check for strong NRFI
-    best_nrfi = next((c for c in candidates if c.get('is_nrfi') and (c.get('nrfi_score') or 0) >= 75), None)
+    # Find the strongest NRFI — sort by NRFI score, not game score
+    nrfi_candidates = [c for c in candidates if c.get('is_nrfi') and (c.get('nrfi_score') or 0) >= 75]
+    nrfi_candidates.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
+    best_nrfi = nrfi_candidates[0] if nrfi_candidates else None
     best_overall = candidates[0]
 
-    # NRFI wins unless another game scores 80+
-    if best_nrfi and (best_overall['score'] < 80 or best_nrfi == best_overall):
+    # Highest NRFI score wins unless a non-NRFI game scores 80+
+    if best_nrfi and (best_overall['score'] < 80 or best_overall.get('is_nrfi')):
         pick = best_nrfi
         print(f"🔒 NRFI pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
     else:
