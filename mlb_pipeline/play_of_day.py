@@ -211,7 +211,7 @@ def run():
     # Check if today's pick already exists — first pick of the day locks
     try:
         r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/jerry_cache?cache_key=eq.best_bet_{today}&select=data",
+            f"{SUPABASE_URL}/rest/v1/jerry_cache?game_id=eq.best_bet_{today}&select=data",
             headers=HEADERS
         )
         existing = r.json()
@@ -277,7 +277,7 @@ def run():
     if not candidates:
         print("No games found — storing noGames")
         requests.post(
-            f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=cache_key",
+            f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport",
             headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
             json={
                 "cache_key": f"best_bet_{today}",
@@ -340,7 +340,7 @@ def run():
 
     # Store in jerry_cache
     r = requests.post(
-        f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=cache_key",
+        f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport",
         headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
         json={
             "cache_key": f"best_bet_{today}",

@@ -4333,7 +4333,7 @@ const fetchDailyBestBet = async () => {
     const { data: supabaseCache } = await supabase
       .from('jerry_cache')
       .select('data, fetched_at')
-      .eq('cache_key', `best_bet_${today}`)
+      .eq('game_id', `best_bet_${today}`)
       .single();
 
     if(supabaseCache?.data) {
@@ -4388,10 +4388,13 @@ Write 2-3 sentences explaining WHY this play has edge. Reference the specific xE
             // Update cache with narrative
             try {
               await supabase.from('jerry_cache').upsert({
+                game_id: `best_bet_${today}`,
+                sport: supabaseCache.data.sport || 'MLB',
+                narrative: supabaseCache.data.narrative || '',
                 cache_key: `best_bet_${today}`,
                 data: supabaseCache.data,
                 fetched_at: supabaseCache.fetched_at,
-              }, { onConflict: 'cache_key' });
+              }, { onConflict: 'game_id,sport' });
             } catch(e) {}
           } catch(e) {
             supabaseCache.data.narrative = "Jerry's analyzing this one. Check back shortly.";
