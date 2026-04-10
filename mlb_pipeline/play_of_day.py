@@ -294,7 +294,7 @@ def run():
     candidates.sort(key=lambda c: c['score'], reverse=True)
 
     # Find the strongest NRFI — sort by NRFI score, not game score
-    nrfi_candidates = [c for c in candidates if c.get('is_nrfi') and (c.get('nrfi_score') or 0) >= 75]
+    nrfi_candidates = [c for c in candidates if c.get('is_nrfi') and (c.get('nrfi_score') or 0) >= 85]
     nrfi_candidates.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
     best_nrfi = nrfi_candidates[0] if nrfi_candidates else None
     best_overall = candidates[0]
