@@ -268,6 +268,9 @@ def run():
             headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
             json={
                 "cache_key": f"best_bet_{today}",
+                "game_id": f"best_bet_{today}",
+                "sport": "none",
+                "narrative": "No games on the slate today.",
                 "data": {"noGames": True},
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -326,6 +329,9 @@ def run():
         headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
         json={
             "cache_key": f"best_bet_{today}",
+            "game_id": f"best_bet_{today}",
+            "sport": pick['sport'],
+            "narrative": f"Play of the Day: {pick['away_team']} @ {pick['home_team']} | {pick.get('lean_display', '')}",
             "data": result,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
