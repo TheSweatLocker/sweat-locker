@@ -4360,23 +4360,25 @@ const fetchDailyBestBet = async () => {
               body: JSON.stringify({
                 model: 'claude-haiku-4-5-20251001',
                 max_tokens: 200,
-                tools: [{type: 'web_search_20250305', name: 'web_search'}],
                 messages: [{
                   role: 'user',
-                  content: `You are Jerry, a sharp sports betting analyst. This is today's Play of the Day — the single best play across all sports.
+                  content: `CRITICAL: You are Jerry, a sharp sports analyst for The Sweat Locker app. You HAVE all the data you need below — do NOT say you lack data, do NOT offer to verify, do NOT hedge. Write with full confidence using the specific numbers provided.
+
+This is today's Play of the Day — the single best play across all sports, selected by the Sweat Locker pipeline.
 
 Game: ${gameStr} (${supabaseCache.data.sport})
-${supabaseCache.data.score?.isNRFI ? `NRFI Score: ${supabaseCache.data.score.nrfiScore}/100
-Home pitcher: ${ctx.home_pitcher} xERA ${ctx.home_sp_xera}
-Away pitcher: ${ctx.away_pitcher} xERA ${ctx.away_sp_xera}` :
-`Sweat Score: ${supabaseCache.data.score?.total}/100
-Lean: ${supabaseCache.data.leanDisplay}`}
+${supabaseCache.data.score?.isNRFI ? `PLAY: NRFI (No Run First Inning)
+NRFI Score: ${supabaseCache.data.score.nrfiScore}/100
+Home pitcher: ${ctx.home_pitcher || 'TBD'} xERA ${ctx.home_sp_xera || 'N/A'}
+Away pitcher: ${ctx.away_pitcher || 'TBD'} xERA ${ctx.away_sp_xera || 'N/A'}` :
+`PLAY: ${supabaseCache.data.leanDisplay || 'Model Edge'}
+Sweat Score: ${supabaseCache.data.score?.total}/100`}
 ${ctx.projected_total ? `Projected total: ${ctx.projected_total}` : ''}
 ${ctx.spread_delta ? `Spread delta: ${ctx.spread_delta}` : ''}
 ${ctx.venue ? `Venue: ${ctx.venue} | Temp: ${ctx.temperature}°F` : ''}
 ${ctx.nrfi_score ? `NRFI score: ${ctx.nrfi_score}` : ''}
 
-Give a 2-3 sentence take on WHY this is today's best play. Reference specific data. Never say "bet" or "must play". Sound like a sharp friend.`
+Write 2-3 sentences explaining WHY this play has edge. Reference the specific xERA values, NRFI score, or matchup data above. End with the specific play. Never say "bet", "must play", "I don't have data", or "let me verify". Sound like a sharp friend who already did the homework.`
                 }]
               })
             });
