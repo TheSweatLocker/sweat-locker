@@ -338,8 +338,8 @@ def run():
     # Also log to history
     try:
         requests.post(
-            f"{SUPABASE_URL}/rest/v1/daily_best_bet_history",
-            headers={**HEADERS, "Prefer": "return=minimal"},
+            f"{SUPABASE_URL}/rest/v1/daily_best_bet_history?on_conflict=bet_date",
+            headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
             json={
                 "bet_date": today,
                 "sport": pick['sport'],
