@@ -5266,6 +5266,8 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For MLB: the Sweat Locker model has computed a total lean from pipeline data (xERA, wRC+, park, bullpen, weather). Your job is to EXPLAIN why the model leans that way using the specific data provided. Do not contradict the model lean unless your web search finds concrete breaking news (injury, lineup scratch, weather change) that the model doesn't know about. If you override the model, explicitly say "Override: [reason]".
 - For MLB: when NRFI score and projected total appear to conflict (high NRFI but high projected total), these are NOT contradictory — elite starters suppress the first inning while bullpen and later innings produce runs. Acknowledge the conflict briefly then resolve it in one sentence.
 - For MLB: NEVER refuse to give a directional lean. NEVER ask the user to clarify. ALWAYS end with a concrete recommendation.
+- For MLB props: when grading UNDER 0.5 hits, the edge is about limited plate appearances, high pitcher K rate, or bench player role — NOT about contact quality. High wRC+ is an argument FOR hits, not against. Never cite elite wRC+ as a reason to take the Under on a batter prop.
+- For MLB props: when grading OVER 0.5 hits, cite wRC+, contact quality, opposing pitcher BAA allowed, and platoon advantage. These support the Over thesis.
 - For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
 - For MLB: if web search shows the game has ALREADY BEEN PLAYED — do NOT recap it. Instead say "This game has already been played." and stop.
 - For MLB: you are giving a PRE-GAME take only. Never recap a completed game.
