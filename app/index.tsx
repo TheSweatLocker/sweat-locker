@@ -5263,7 +5263,9 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NBA totals: the Sweat Locker NBA total model is in the data — if projected total delta >= 3pts from posted, reference it as a total lean. Cross-matched OffRtg vs DefRtg + pace + eFG% matchup + form drift + injuries
 - For NBA totals: if model projects 3+ pts over posted total, lean over and explain why (pace matchup, poor defenses, both teams trending hot)
 - For NBA totals: if model projects 3+ pts under posted total, lean under and explain why (elite defenses, slow pace, injuries suppressing scoring)
-- For MLB: the Sweat Locker model has computed a spread lean and total lean from pipeline data (xERA, wRC+, park, bullpen, weather). Your job is to EXPLAIN why the model leans that way using the specific data provided. Do not contradict the model lean unless your web search finds concrete breaking news (injury, lineup scratch, weather change) that the model doesn't know about. If you override the model, explicitly say "Override: [reason]".
+- For MLB: the Sweat Locker model has computed a total lean from pipeline data (xERA, wRC+, park, bullpen, weather). Your job is to EXPLAIN why the model leans that way using the specific data provided. Do not contradict the model lean unless your web search finds concrete breaking news (injury, lineup scratch, weather change) that the model doesn't know about. If you override the model, explicitly say "Override: [reason]".
+- For MLB: when NRFI score and projected total appear to conflict (high NRFI but high projected total), these are NOT contradictory — elite starters suppress the first inning while bullpen and later innings produce runs. Acknowledge the conflict briefly then resolve it in one sentence.
+- For MLB: NEVER refuse to give a directional lean. NEVER ask the user to clarify. ALWAYS end with a concrete recommendation.
 - For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
 - For MLB: if web search shows the game has ALREADY BEEN PLAYED — do NOT recap it. Instead say "This game has already been played." and stop.
 - For MLB: you are giving a PRE-GAME take only. Never recap a completed game.
@@ -6897,7 +6899,7 @@ setJerryHistory(prev => {
                 <Text style={{color:'#4a6070',fontSize:13}}>Jerry is breaking down the tape...</Text>
               </View>
             ):(
-              <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{gameNarrative}"</Text>
+              <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{gameNarrative?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}"</Text>
             )}
           </View>
 
@@ -8444,7 +8446,7 @@ setJerryHistory(prev => {
         </View>
         <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:15,marginBottom:4}}>{propOfDay.player} — {propOfDay.market} {propOfDay.side} {propOfDay.line > 0 ? '+' : ''}{propOfDay.line}</Text>
         <Text style={{color:'#7a92a8',fontSize:11,marginBottom:10}}>{propOfDay.game} • {propOfDay.book}</Text>
-        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{propOfDay.narrative}"</Text>
+        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{propOfDay.narrative?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}"</Text>
         {propOfDay.signals?.length > 0 && (
           <View style={{flexDirection:'row',gap:6,marginTop:10,flexWrap:'wrap'}}>
             {propOfDay.signals.map((sig: string, i: number) => (
@@ -8569,7 +8571,7 @@ setJerryHistory(prev => {
 
              {/* Jerry quote */}
             <View style={{backgroundColor:'rgba(255,184,0,0.05)',borderRadius:8,padding:10,borderLeftWidth:2,borderLeftColor:HRB_COLOR,marginBottom:10}}>
-              <Text style={{color:'#7a92a8',fontSize:12,fontStyle:'italic',lineHeight:18}}>{prop.Jerry}</Text>
+              <Text style={{color:'#7a92a8',fontSize:12,fontStyle:'italic',lineHeight:18}}>{prop.Jerry?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
             </View>
 
              {/* Action buttons */}
@@ -8655,7 +8657,7 @@ setJerryHistory(prev => {
               </View>
             </View>
             <View style={{backgroundColor:'rgba(255,184,0,0.05)',borderRadius:8,padding:10,borderLeftWidth:2,borderLeftColor:HRB_COLOR}}>
-              <Text style={{color:'#7a92a8',fontSize:12,fontStyle:'italic',lineHeight:18}}>{prop.Jerry}</Text>
+              <Text style={{color:'#7a92a8',fontSize:12,fontStyle:'italic',lineHeight:18}}>{prop.Jerry?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
             </View>
           </View>
         ))}
