@@ -4849,6 +4849,54 @@ Do NOT give a specific bet or pick. End with — Jerry.`;
       return null;
     }
   };
+  const fetchMLBBatterStats = async (playerName: string) => {
+    if(!playerName) return null;
+    try {
+      const cacheKey = `sweatlocker_mlb_batter_${playerName.replace(/\s/g,'_')}`;
+      const cached = await AsyncStorage.getItem(cacheKey);
+      if(cached) {
+        const parsed = JSON.parse(cached);
+        if(Date.now() - parsed.timestamp < 12*3600000) return parsed.data; // 12hr cache
+      }
+      // Search MLB Stats API for player
+      const searchResp = await axios.get('https://statsapi.mlb.com/api/v1/people/search', {
+        params: {names: playerName, sportId: 1},
+        timeout: 10
+      });
+      const people = searchResp.data?.people;
+      if(!people || !people.length) return null;
+      const playerId = people[0].id;
+      const position = people[0].primaryPosition?.abbreviation || '';
+      // Get current season hitting stats
+      const statsResp = await axios.get(`https://statsapi.mlb.com/api/v1/people/${playerId}/stats`, {
+        params: {stats: 'season', group: 'hitting', season: 2026},
+        timeout: 10
+      });
+      const splits = statsResp.data?.stats;
+      if(!splits || !splits[0]?.splits?.length) return null;
+      const s = splits[0].splits[0].stat;
+      const pa = parseInt(s.plateAppearances || 0);
+      const ab = parseInt(s.atBats || 1);
+      const hits = parseInt(s.hits || 0);
+      const so = parseInt(s.strikeOuts || 0);
+      const data = {
+        name: playerName,
+        ba: pa > 0 ? parseFloat(s.avg || '.000') : null,
+        ops: pa > 0 ? parseFloat(s.ops || '.000') : null,
+        pa: pa,
+        hits: hits,
+        k_rate: pa > 0 ? Math.round((so / pa) * 100) : null,
+        hr: parseInt(s.homeRuns || 0),
+        position: position,
+        isBench: pa < 20, // fewer than 20 PA = likely bench/platoon player
+      };
+      await AsyncStorage.setItem(cacheKey, JSON.stringify({data, timestamp: Date.now()}));
+      return data;
+    } catch(e) {
+      return null;
+    }
+  };
+
   const fetchMLBContext = async (game) => {
   try {
     const { data } = await supabase
@@ -6193,13 +6241,36 @@ for(let pi = 0; pi < propEntries.length; pi++) {
                   else modelProb = 0.50;
                 }
               }
-              if(prop.market.includes('hits') || prop.market.includes('total_bases')) {
-                const isHome = mlbCtx.home_lineup?.toLowerCase().includes(prop.player.split(' ').pop()?.toLowerCase());
-                const platoon = parseFloat(isHome ? mlbCtx.home_platoon_advantage : mlbCtx.away_platoon_advantage);
-                const wrcPlus = parseInt(isHome ? mlbCtx.home_wrc_plus : mlbCtx.away_wrc_plus);
-                if(!isNaN(platoon) && platoon > 3) { modelProb = 0.56; modelSignal = `Platoon +${platoon}, wRC+ ${wrcPlus || 'N/A'}`; }
-                else if(!isNaN(wrcPlus) && wrcPlus > 115) { modelProb = 0.54; modelSignal = `wRC+ ${wrcPlus} — strong contact`; }
-                else modelProb = 0.50;
+              if(prop.market.includes('hits') || prop.market.includes('total_bases') || prop.market.includes('rbis') || prop.market.includes('runs_scored') || prop.market.includes('home_run')) {
+                // Fetch individual batter stats from MLB Stats API
+                const batterStats = await fetchMLBBatterStats(prop.player);
+                if(batterStats && batterStats.pa >= 10) {
+                  const ba = batterStats.ba || 0;
+                  const kRate = batterStats.k_rate || 0;
+                  const pa = batterStats.pa;
+                  const isBench = batterStats.isBench;
+
+                  if(bestSide === 'Over') {
+                    // Over hits: high BA, low K rate = good
+                    if(ba >= .300) { modelProb = 0.60; modelSignal = `${prop.player} BA .${Math.round(ba*1000)} in ${pa} PA — elite contact`; }
+                    else if(ba >= .270) { modelProb = 0.56; modelSignal = `${prop.player} BA .${Math.round(ba*1000)} in ${pa} PA — solid contact`; }
+                    else if(ba >= .240) { modelProb = 0.52; modelSignal = `${prop.player} BA .${Math.round(ba*1000)} in ${pa} PA — average`; }
+                    else { modelProb = 0.45; modelSignal = `${prop.player} BA .${Math.round(ba*1000)} in ${pa} PA — weak contact`; }
+                  } else {
+                    // Under hits: high K rate, low PA, bench role = good for under
+                    if(isBench) { modelProb = 0.58; modelSignal = `${prop.player} bench role — ${pa} PA, limited opportunities`; }
+                    else if(kRate >= 30) { modelProb = 0.56; modelSignal = `${prop.player} ${kRate}% K rate — high strikeout risk`; }
+                    else if(ba <= .200) { modelProb = 0.56; modelSignal = `${prop.player} BA .${Math.round(ba*1000)} — struggling`; }
+                    else { modelProb = 0.48; modelSignal = `${prop.player} BA .${Math.round(ba*1000)}, ${kRate}% K — no clear under edge`; }
+                  }
+                } else {
+                  // No individual stats — fall back to team level
+                  const isHome = mlbCtx.home_lineup?.toLowerCase().includes(prop.player.split(' ').pop()?.toLowerCase());
+                  const platoon = parseFloat(isHome ? mlbCtx.home_platoon_advantage : mlbCtx.away_platoon_advantage);
+                  const wrcPlus = parseInt(isHome ? mlbCtx.home_wrc_plus : mlbCtx.away_wrc_plus);
+                  if(!isNaN(platoon) && platoon > 3) { modelProb = 0.54; modelSignal = `Team platoon +${platoon} (no individual stats)`; }
+                  else modelProb = 0.50;
+                }
               }
             }
           } catch(e) {}
@@ -6438,7 +6509,15 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                             }
                             const platoon = isBatterHome ? mlbCtx.home_platoon_advantage : mlbCtx.away_platoon_advantage;
                             const wrcPlus = isBatterHome ? mlbCtx.home_wrc_plus : mlbCtx.away_wrc_plus;
-                            playerContext = ` MLB batter prop: ${mlbCtx.venue} (park factor ${mlbCtx.park_run_factor}). Team wRC+ ${wrcPlus || 'N/A'}. Platoon adv: ${platoon ? '+' + platoon : 'N/A'}.${contactProfile} ${mlbCtx.umpire_note || ''}`;
+                            // Fetch individual batter stats for prompt
+                            let individualStats = '';
+                            try {
+                              const bs = await fetchMLBBatterStats(prop.player);
+                              if(bs && bs.pa >= 10) {
+                                individualStats = ` ${prop.player}: BA .${Math.round((bs.ba||0)*1000)}, ${bs.pa} PA, ${bs.k_rate}% K rate, OPS ${bs.ops?.toFixed(3) || 'N/A'}${bs.isBench ? ' (BENCH/PLATOON — limited role)' : ''}.`;
+                              }
+                            } catch(e) {}
+                            playerContext = ` MLB batter prop:${individualStats} ${mlbCtx.venue} (park factor ${mlbCtx.park_run_factor}). Team wRC+ ${wrcPlus || 'N/A'}. Platoon adv: ${platoon ? '+' + platoon : 'N/A'}.${contactProfile} ${mlbCtx.umpire_note || ''}`;
                           } else {
                             playerContext = ` MLB context: ${mlbCtx.venue} (park factor ${mlbCtx.park_run_factor}), ${mlbCtx.temperature}°F. Umpire: ${mlbCtx.umpire_note || 'N/A'}.`;
                           }
