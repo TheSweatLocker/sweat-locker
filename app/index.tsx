@@ -6232,6 +6232,22 @@ const allFlags = [...gameFlags, ...teamFlags];
 if(allFlags.length > 0) {
   const marketLower = prop.market.toLowerCase();
   for(const flag of allFlags) {
+    // Batter props: conviction only applies to OVER side (matchup = batter favorable)
+    // If bestSide is Under, suppress batter conviction — contradicts the matchup signal
+    const isBatterFlag = flag.type.startsWith('batter_');
+    if(isBatterFlag && bestSide === 'Under') continue; // skip — conviction is for Over, not Under
+
+    // Pitcher K props: conviction only applies to OVER strikeouts
+    const isKFlag = flag.type === 'pitcher_strikeouts';
+    if(isKFlag && bestSide === 'Under') continue;
+
+    // NBA points/rebounds/assists: conviction is for Over
+    const isNBAOverFlag = ['player_points', 'player_rebounds', 'player_assists'].includes(flag.type);
+    if(isNBAOverFlag && bestSide === 'Under') continue;
+
+    // NBA under flag only applies to Under side
+    if(flag.type === 'player_points_under' && bestSide !== 'Under') continue;
+
     if(flag.type === 'batter_hits' && (marketLower.includes('hits') || marketLower.includes('total_bases') || marketLower.includes('rbis'))) {
       matchupConviction += flag.conviction;
       matchupSignals.push(flag.signal);
@@ -6253,7 +6269,7 @@ if(allFlags.length > 0) {
     } else if(flag.type === 'player_assists' && marketLower.includes('assists')) {
       matchupConviction += flag.conviction;
       matchupSignals.push(flag.signal);
-    } else if(flag.type === 'player_points_under' && marketLower.includes('points') && bestSide === 'Under') {
+    } else if(flag.type === 'player_points_under' && marketLower.includes('points')) {
       matchupConviction += flag.conviction;
       matchupSignals.push(flag.signal);
     }
@@ -6390,19 +6406,29 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                             playerContext = ` MLB HR prop context: ${mlbCtx.venue} HR factor ${mlbCtx.park_run_factor}. Weather: ${mlbCtx.temperature}°F, wind ${mlbCtx.wind_speed}mph ${mlbCtx.wind_direction}.`;
                           } else if(isHitsProp || prop.market.includes('rbis') || prop.market.includes('runs_scored')) {
                             // Batter prop — find opposing pitcher's contact profile
-                            const isBatterHome = mlbCtx.home_lineup?.toLowerCase().includes(prop.player.split(' ').pop()?.toLowerCase() || '');
+                            // Determine if batter is home or away by checking both lineups
+                            const playerLast = prop.player.split(' ').pop()?.toLowerCase() || '';
+                            const inHomeLineup = mlbCtx.home_lineup?.toLowerCase().includes(playerLast);
+                            const inAwayLineup = mlbCtx.away_lineup?.toLowerCase().includes(playerLast);
+                            const isBatterHome = inHomeLineup && !inAwayLineup ? true : inAwayLineup && !inHomeLineup ? false : inHomeLineup;
+                            // Opposing pitcher is the starter the batter faces
                             const oppPitcher = isBatterHome ? mlbCtx.away_pitcher : mlbCtx.home_pitcher;
                             let contactProfile = '';
                             if(oppPitcher) {
                               try {
+                                // Validate: query by full last name and verify it matches the game's starter
+                                const oppLast = oppPitcher.split(' ').pop() || '';
                                 const { data: pitcherStats } = await supabase
                                   .from('mlb_pitcher_stats')
-                                  .select('baa_allowed, xba_allowed, hard_hit_pct_allowed, throws')
-                                  .ilike('player_name', `%${oppPitcher.split(' ').pop()}%`)
-                                  .limit(1)
-                                  .single();
-                                if(pitcherStats && (pitcherStats.baa_allowed || pitcherStats.xba_allowed)) {
-                                  contactProfile = ` Opposing pitcher ${oppPitcher} contact profile: BAA ${pitcherStats.baa_allowed?.toFixed(3) || 'N/A'}, xBA ${pitcherStats.xba_allowed?.toFixed(3) || 'N/A'}, hard hit% ${pitcherStats.hard_hit_pct_allowed?.toFixed(1) || 'N/A'}%. Throws ${pitcherStats.throws || 'R'}.`;
+                                  .select('player_name, baa_allowed, xba_allowed, hard_hit_pct_allowed, throws')
+                                  .ilike('player_name', `%${oppLast}%`)
+                                  .limit(3);
+                                // Find the exact match — don't use a different pitcher with the same last name
+                                const exactMatch = pitcherStats?.find(p =>
+                                  p.player_name?.toLowerCase().includes(oppLast.toLowerCase())
+                                );
+                                if(exactMatch && (exactMatch.baa_allowed || exactMatch.xba_allowed)) {
+                                  contactProfile = ` Opposing pitcher ${oppPitcher} contact profile: BAA ${exactMatch.baa_allowed?.toFixed(3) || 'N/A'}, xBA ${exactMatch.xba_allowed?.toFixed(3) || 'N/A'}, hard hit% ${exactMatch.hard_hit_pct_allowed?.toFixed(1) || 'N/A'}%. Throws ${exactMatch.throws || 'R'}.`;
                                 }
                               } catch(e) {}
                             }
@@ -6537,7 +6563,8 @@ const graded = gradedRaw.filter(p => {
 
   // Pipeline matchup props — pass on conviction alone, EV not required
   // These are analytically identified plays where the matchup is the edge, not the odds
-  if(p.matchupConviction >= 15 && odds >= -300 && odds <= 150 && p.bookCount >= minBooks) {
+  // Matchup props pass on conviction but NEVER with negative EV — that's contradictory signals
+  if(p.matchupConviction >= 15 && p.bestEV >= -1.0 && odds >= -300 && odds <= 150 && p.bookCount >= minBooks) {
     filteredReasons.matchupOverride++;
     return true;
   }
