@@ -762,6 +762,101 @@ def get_mlb_games():
     except Exception as e:
         print(f"Odds API error: {e}")
         return []
+def get_pitcher_last_outing(pitcher_id):
+    """Fetch pitcher's last game pitch count and innings from MLB Stats API"""
+    if not pitcher_id:
+        return None
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
+            params={"stats": "gameLog", "group": "pitching", "season": 2026},
+            timeout=10
+        )
+        splits = r.json().get("stats", [])
+        if not splits or not splits[0].get("splits"):
+            return None
+        # Most recent game is first in the list
+        last = splits[0]["splits"][0]["stat"]
+        return {
+            "pitches": int(last.get("numberOfPitches", 0) or 0),
+            "innings": float(last.get("inningsPitched", "0").replace('.1','.33').replace('.2','.67') or "0"),
+            "earned_runs": int(last.get("earnedRuns", 0) or 0),
+        }
+    except:
+        return None
+
+def get_pitcher_vs_team(pitcher_id, opponent_team_id):
+    """Fetch pitcher's career stats vs a specific team"""
+    if not pitcher_id or not opponent_team_id:
+        return None
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
+            params={"stats": "vsTeam", "group": "pitching", "season": 2026, "opposingTeamId": opponent_team_id},
+            timeout=10
+        )
+        splits = r.json().get("stats", [])
+        if not splits or not splits[0].get("splits"):
+            # Try career stats
+            r2 = requests.get(
+                f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
+                params={"stats": "vsTeamTotal", "group": "pitching", "opposingTeamId": opponent_team_id},
+                timeout=10
+            )
+            splits = r2.json().get("stats", [])
+            if not splits or not splits[0].get("splits"):
+                return None
+        s = splits[0]["splits"][0]["stat"]
+        ip = float(s.get("inningsPitched", "0").replace('.1','.33').replace('.2','.67') or "0")
+        if ip < 3:
+            return None  # too small sample
+        return {
+            "era_vs_team": float(s.get("era", "0") or "0"),
+            "avg_vs_team": float(s.get("avg", "0") or "0"),
+            "ip_vs_team": round(ip, 1),
+            "k_vs_team": int(s.get("strikeOuts", 0) or 0),
+        }
+    except:
+        return None
+
+def get_bullpen_usage(team_name, game_date):
+    """Check how many bullpen arms were used in the last 3 days"""
+    if not team_name:
+        return None
+    try:
+        teams_resp = requests.get('https://statsapi.mlb.com/api/v1/teams?sportId=1', timeout=10)
+        team_last = team_name.split(' ')[-1].lower()
+        mlb_team = next((t for t in teams_resp.json().get('teams', [])
+            if t.get('name', '').lower().endswith(team_last) or team_last in t.get('name', '').lower()), None)
+        if not mlb_team:
+            return None
+
+        end = game_date
+        start = (datetime.strptime(game_date, '%Y-%m-%d') - timedelta(days=3)).strftime('%Y-%m-%d')
+        sched = requests.get(
+            'https://statsapi.mlb.com/api/v1/schedule',
+            params={'teamId': mlb_team['id'], 'sportId': 1, 'startDate': start, 'endDate': end, 'hydrate': 'pitchers', 'gameType': 'R'},
+            timeout=10
+        )
+        total_relievers = 0
+        games_played = 0
+        for d in sched.json().get('dates', []):
+            for g in d.get('games', []):
+                if g.get('status', {}).get('detailedState') != 'Final':
+                    continue
+                games_played += 1
+                # Count pitchers used minus the starter = relievers
+                pitchers = g.get('pitchers', [])
+                if len(pitchers) > 1:
+                    total_relievers += len(pitchers) - 1
+        return {
+            "relievers_used_3d": total_relievers,
+            "games_last_3d": games_played,
+            "avg_relievers": round(total_relievers / max(games_played, 1), 1),
+        }
+    except:
+        return None
+
 def get_bullpen_stats(team_name):
     """Look up bullpen ERA from Supabase"""
     try:
@@ -1088,6 +1183,12 @@ def log_game_result(context):
             "away_lineup_weight": context.get("away_lineup_weight"),
             "home_bullpen_era": context.get("home_bullpen_era"),
             "away_bullpen_era": context.get("away_bullpen_era"),
+            "home_last_pitch_count": context.get("home_last_pitch_count"),
+            "away_last_pitch_count": context.get("away_last_pitch_count"),
+            "home_pitcher_vs_team_era": context.get("home_pitcher_vs_team_era"),
+            "away_pitcher_vs_team_era": context.get("away_pitcher_vs_team_era"),
+            "home_bp_relievers_3d": context.get("home_bp_relievers_3d"),
+            "away_bp_relievers_3d": context.get("away_bp_relievers_3d"),
             "park_run_factor": context.get("park_run_factor"),
             "temperature": context.get("temperature"),
             "wind_mph": context.get("wind_speed"),
@@ -1410,6 +1511,43 @@ def run():
             # Get bullpen stats
             home_bullpen = get_bullpen_stats(home_team)
             away_bullpen = get_bullpen_stats(away_team)
+
+            # Pitcher last outing — pitch count affects fatigue
+            home_last_outing = get_pitcher_last_outing(home_pitcher_id) if home_pitcher_id else None
+            away_last_outing = get_pitcher_last_outing(away_pitcher_id) if away_pitcher_id else None
+            if home_last_outing:
+                print(f"  {home_pitcher} last outing: {home_last_outing['pitches']} pitches, {home_last_outing['innings']} IP")
+            if away_last_outing:
+                print(f"  {away_pitcher} last outing: {away_last_outing['pitches']} pitches, {away_last_outing['innings']} IP")
+
+            # Pitcher vs team history
+            # Get opponent team IDs
+            home_team_id = None
+            away_team_id = None
+            try:
+                teams_r = requests.get('https://statsapi.mlb.com/api/v1/teams?sportId=1', timeout=10)
+                for t in teams_r.json().get('teams', []):
+                    if home_team.lower() in t.get('name', '').lower() or t.get('name', '').lower().endswith(home_team.split(' ')[-1].lower()):
+                        home_team_id = t['id']
+                    if away_team.lower() in t.get('name', '').lower() or t.get('name', '').lower().endswith(away_team.split(' ')[-1].lower()):
+                        away_team_id = t['id']
+            except:
+                pass
+            home_vs_away = get_pitcher_vs_team(home_pitcher_id, away_team_id) if home_pitcher_id and away_team_id else None
+            away_vs_home = get_pitcher_vs_team(away_pitcher_id, home_team_id) if away_pitcher_id and home_team_id else None
+            if home_vs_away:
+                print(f"  {home_pitcher} vs {away_team}: ERA {home_vs_away['era_vs_team']}, AVG {home_vs_away['avg_vs_team']}, {home_vs_away['ip_vs_team']} IP")
+            if away_vs_home:
+                print(f"  {away_pitcher} vs {home_team}: ERA {away_vs_home['era_vs_team']}, AVG {away_vs_home['avg_vs_team']}, {away_vs_home['ip_vs_team']} IP")
+
+            # Bullpen usage last 3 days
+            home_bp_usage = get_bullpen_usage(home_team, game_date_et)
+            away_bp_usage = get_bullpen_usage(away_team, game_date_et)
+            if home_bp_usage and home_bp_usage['games_last_3d'] > 0:
+                print(f"  {home_team} bullpen last 3d: {home_bp_usage['relievers_used_3d']} relievers in {home_bp_usage['games_last_3d']} games")
+            if away_bp_usage and away_bp_usage['games_last_3d'] > 0:
+                print(f"  {away_team} bullpen last 3d: {away_bp_usage['relievers_used_3d']} relievers in {away_bp_usage['games_last_3d']} games")
+
             # Fetch first inning splits for NRFI model — try Supabase first, then MLB API direct
             home_first_inn = get_pitcher_first_inning(home_pitcher) if home_pitcher else None
             away_first_inn = get_pitcher_first_inning(away_pitcher) if away_pitcher else None
@@ -1757,6 +1895,16 @@ def run():
                 "away_bullpen_era": away_bullpen['bullpen_era'] if away_bullpen else None,
                 "home_save_pct": home_bullpen['save_pct'] if home_bullpen else None,
                 "away_save_pct": away_bullpen['save_pct'] if away_bullpen else None,
+                "home_last_pitch_count": home_last_outing['pitches'] if home_last_outing else None,
+                "away_last_pitch_count": away_last_outing['pitches'] if away_last_outing else None,
+                "home_last_ip": home_last_outing['innings'] if home_last_outing else None,
+                "away_last_ip": away_last_outing['innings'] if away_last_outing else None,
+                "home_pitcher_vs_team_era": home_vs_away['era_vs_team'] if home_vs_away else None,
+                "away_pitcher_vs_team_era": away_vs_home['era_vs_team'] if away_vs_home else None,
+                "home_pitcher_vs_team_avg": home_vs_away['avg_vs_team'] if home_vs_away else None,
+                "away_pitcher_vs_team_avg": away_vs_home['avg_vs_team'] if away_vs_home else None,
+                "home_bp_relievers_3d": home_bp_usage['relievers_used_3d'] if home_bp_usage else None,
+                "away_bp_relievers_3d": away_bp_usage['relievers_used_3d'] if away_bp_usage else None,
                 "wind_blowing_in": wind_blowing_in,
                 "is_dome": is_dome,
                 "timezone_change": tz_change,
