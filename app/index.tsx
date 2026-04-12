@@ -3446,21 +3446,22 @@ if(isPlayoffMode) {
     }
 
     // ── LEAN SIDE ──
-    // Primary: use model's over/under lean
-    if(mlbCtx.over_lean !== null && mlbCtx.over_lean !== undefined) {
+    // Primary: use model's over lean ONLY — under leans are 48.3% (no edge)
+    // Over leans hit at 58.1% — real signal worth surfacing
+    if(mlbCtx.over_lean === true) {
       leanBet = 'total';
-      const overUnderSide = mlbCtx.over_lean ? 'Over' : 'Under';
-      leanSide = `${overUnderSide} ${avgTotal.toFixed(1)}`;
+      leanSide = `Over ${avgTotal.toFixed(1)}`;
     }
-    // Secondary: use pipeline spread projection if available
-    if(!leanSide && mlbCtx.spread_lean) {
-      leanSide = mlbCtx.spread_lean === 'home' ? stripMascot(game.home_team) : stripMascot(game.away_team);
-      leanBet = 'ml';
-      if(mlbCtx.spread_delta && Math.abs(mlbCtx.spread_delta) >= 0.5) {
-        modelMismatch = Math.min(88, modelMismatch + Math.round(Math.abs(mlbCtx.spread_delta) * 3));
-      }
-    }
-    // Tertiary: if no pipeline spread, fall back to offensive quality
+    // Under leans disabled — model doesn't identify unders well (48.3% accuracy)
+    // Still logged for training but not surfaced to users
+    // Secondary: spread lean DISABLED — 37.8% accuracy over 45 games with broken wRC+ data
+    // Pipeline still logs spread_lean and spread_delta for training, just not surfaced to users
+    // Re-enable after May 1 audit with corrected wRC+ data
+    // if(!leanSide && mlbCtx.spread_lean) {
+    //   leanSide = mlbCtx.spread_lean === 'home' ? stripMascot(game.home_team) : stripMascot(game.away_team);
+    //   leanBet = 'ml';
+    // }
+    // Fallback: if no total lean, fall back to offensive quality
     if(!leanSide && homeWRC > 0 && awayWRC > 0 && homeXera > 0 && awayXera > 0) {
       const homeEdge = (homeWRC - awayWRC) + ((awayXera - homeXera) * 10);
       const awayEdge = (awayWRC - homeWRC) + ((homeXera - awayXera) * 10);
@@ -5016,7 +5017,7 @@ MLB GAME CONTEXT:
 - ${mlbData.away_lineup ? `${game.away_team} lineup: ${mlbData.away_lineup}` : ''};
 - Total delta: ${mlbData.projected_total && mlbData.projected_total > 0 ? (mlbData.projected_total - (game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0]?.point || mlbData.projected_total)).toFixed(1) + ' pts vs posted line' : 'N/A'}
 - Projected spread: ${mlbData.projected_spread != null ? `${mlbData.projected_spread > 0 ? game.home_team : game.away_team} by ${Math.abs(mlbData.projected_spread).toFixed(1)} runs` : 'N/A'}
-- Spread lean: ${mlbData.spread_lean === 'home' ? game.home_team + ' favored by model' : mlbData.spread_lean === 'away' ? game.away_team + ' favored by model' : 'No strong side lean'}
+- Spread lean: DISABLED — spread model under calibration, do not reference spread side leans
 - Spread delta: ${mlbData.spread_delta != null ? (mlbData.spread_delta > 0 ? '+' : '') + mlbData.spread_delta.toFixed(1) + ' runs vs posted line' : 'N/A'}
 - First inning ERA: ${mlbData.home_first_inning_era != null ? mlbData.home_pitcher + ' 1st inn ERA ' + mlbData.home_first_inning_era : ''} ${mlbData.away_first_inning_era != null ? '| ' + mlbData.away_pitcher + ' 1st inn ERA ' + mlbData.away_first_inning_era : ''}
 - Data confidence: ${mlbData.confidence}`;
