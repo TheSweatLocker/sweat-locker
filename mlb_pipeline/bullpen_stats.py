@@ -64,22 +64,17 @@ def upload_bullpen(data):
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal"
     }
-    # Try update first
-    update = requests.patch(
-        f"{SUPABASE_URL}/rest/v1/mlb_bullpen_stats?team=eq.{requests.utils.quote(data['team'])}&season=eq.{data['season']}",
+    r = requests.post(
+        f"{SUPABASE_URL}/rest/v1/mlb_bullpen_stats?on_conflict=team,season",
         headers=headers,
         json=data
     )
-    if update.status_code == 204:
-        return True
-    # Insert if not exists
-    insert = requests.post(
-        f"{SUPABASE_URL}/rest/v1/mlb_bullpen_stats",
-        headers={**headers, "Prefer": "return=minimal"},
-        json=data
-    )
-    return insert.status_code in [200, 201, 204]
+    if r.status_code not in [200, 201, 204]:
+        print(f"  Upload error {r.status_code}: {r.text[:200]}")
+        return False
+    return True
 
 def run():
     teams = get_team_bullpen_stats(2026)
