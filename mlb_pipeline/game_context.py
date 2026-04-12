@@ -1533,6 +1533,20 @@ def run():
                     over_lean = None
                 print(f"  Team stats not available yet — market line fallback: {projected_total}")
 
+            # ── xERA GAP OVER BOOST ──
+            # Data shows: big xERA gap (2.0+) → 59.3% Over. Bad pitcher drives total up.
+            home_xera_val = sanitize_xera(home_pitcher_stats.get('xera'), home_pitcher) if home_pitcher_stats else None
+            away_xera_val = sanitize_xera(away_pitcher_stats.get('xera'), away_pitcher) if away_pitcher_stats else None
+            if home_xera_val and away_xera_val:
+                xera_gap = abs(float(home_xera_val) - float(away_xera_val))
+                if xera_gap >= 2.0 and over_lean is None:
+                    over_lean = True  # big mismatch → lean Over
+                    print(f"  xERA gap {xera_gap:.1f} → Over lean (59.3% hit rate on 2.0+ gaps)")
+                elif xera_gap >= 2.0 and over_lean == False:
+                    # Model said Under but xERA gap says Over — conflict, go neutral
+                    over_lean = None
+                    print(f"  xERA gap {xera_gap:.1f} conflicts with Under lean → neutral")
+
             # ── PROJECTED SPREAD ──
             # Home expected runs vs away expected runs → spread projection
             projected_spread = None
