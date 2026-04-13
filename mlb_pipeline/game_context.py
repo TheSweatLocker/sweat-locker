@@ -1684,12 +1684,37 @@ def run():
             if away_bullpen:
                 print(f"  {away_team} bullpen ERA: {away_bullpen.get('bullpen_era')} save%: {away_bullpen.get('save_pct')}%")
             
-            # Calculate projected total from team stats + park + weather
+            # ── PROJECTED TOTAL (calibrated from 170+ game backtesting) ──
+            # Inputs used + their correlation with actual total:
+            # projected_total: 0.212, temperature: 0.143, nrfi_score: -0.164
+            # away_xera: 0.123, home_xera: 0.096, away_wrc: 0.086
+            home_xera_val = sanitize_xera(home_pitcher_stats.get('xera'), home_pitcher) if home_pitcher_stats else None
+            away_xera_val = sanitize_xera(away_pitcher_stats.get('xera'), away_pitcher) if away_pitcher_stats else None
+            home_wrc = home_offense.get('wrc_plus') if home_offense else None
+            away_wrc = away_offense.get('wrc_plus') if away_offense else None
+            park_mult = park_run_factor / 100 if park_run_factor else 1.0
+
             if home_rpg and away_rpg:
                 base_total = home_rpg + away_rpg
-                park_multiplier = park_run_factor / 100
-                projected_runs = base_total * park_multiplier
+                projected_runs = base_total * park_mult
                 projected_total = round(projected_runs + weather_adj, 1)
+
+                # NRFI score adjustment — strong -0.164 inverse correlation with total runs
+                if nrfi_score:
+                    nrfi_adj = (nrfi_score - 50) * -0.08  # high NRFI = lower total
+                    projected_total = round(projected_total + nrfi_adj, 1)
+
+                # Bullpen differential — late innings matter for totals
+                home_bp_era = home_bullpen.get('bullpen_era', 4.0) if home_bullpen else 4.0
+                away_bp_era = away_bullpen.get('bullpen_era', 4.0) if away_bullpen else 4.0
+                bp_total_adj = ((home_bp_era + away_bp_era) / 2 - 4.0) * 0.25
+                projected_total = round(projected_total + bp_total_adj, 1)
+
+                # Umpire over_rate adjustment
+                if ump_stats and ump_stats.get('over_rate'):
+                    ump_adj = (float(ump_stats['over_rate']) - 0.5) * 1.2  # 0.56 over_rate → +0.072
+                    projected_total = round(projected_total + ump_adj, 1)
+
                 if total_line:
                     delta = projected_total - total_line
                     over_lean = True if delta > 0.3 else False if delta < -0.3 else None
@@ -1708,61 +1733,43 @@ def run():
                 print(f"  Team stats not available yet — market line fallback: {projected_total}")
 
             # ── xERA GAP OVER BOOST ──
-            # Data shows: big xERA gap (2.0+) → 59.3% Over. Bad pitcher drives total up.
-            home_xera_val = sanitize_xera(home_pitcher_stats.get('xera'), home_pitcher) if home_pitcher_stats else None
-            away_xera_val = sanitize_xera(away_pitcher_stats.get('xera'), away_pitcher) if away_pitcher_stats else None
+            # Data shows: big xERA gap (2.0+) → 59.3% Over
             if home_xera_val and away_xera_val:
                 xera_gap = abs(float(home_xera_val) - float(away_xera_val))
                 if xera_gap >= 2.0 and over_lean is None:
-                    over_lean = True  # big mismatch → lean Over
+                    over_lean = True
                     print(f"  xERA gap {xera_gap:.1f} → Over lean (59.3% hit rate on 2.0+ gaps)")
                 elif xera_gap >= 2.0 and over_lean == False:
-                    # Model said Under but xERA gap says Over — conflict, go neutral
                     over_lean = None
                     print(f"  xERA gap {xera_gap:.1f} conflicts with Under lean → neutral")
 
-            # ── PROJECTED SPREAD ──
-            # Home expected runs vs away expected runs → spread projection
+            # ── PROJECTED SPREAD (fixed formula — no double-counting) ──
+            # Old formula double-counted offense: rpg × wrc × xera
+            # New: league_avg × (wrc/100) × (4.25/opp_xera) × park — standard multiplicative approach
             projected_spread = None
             spread_lean = None
             try:
-                home_xera = sanitize_xera(home_pitcher_stats.get('xera'), home_pitcher) if home_pitcher_stats else None
-                away_xera = sanitize_xera(away_pitcher_stats.get('xera'), away_pitcher) if away_pitcher_stats else None
-                # Use wRC+ from team offense table (get_team_woba_wrc), not get_team_stats which doesn't have it
-                home_wrc = home_offense.get('wrc_plus') if home_offense else None
-                away_wrc = away_offense.get('wrc_plus') if away_offense else None
-                park_mult = park_run_factor / 100 if park_run_factor else 1.0
+                league_avg_rpg = 4.25  # 2026 league average R/G
 
-                if home_rpg and away_rpg and home_xera and away_xera:
-                    # Adjust each team's expected runs by opposing pitcher quality
-                    league_avg_era = 4.25
-                    home_expected = home_rpg * (away_xera / league_avg_era) * park_mult
-                    away_expected = away_rpg * (home_xera / league_avg_era) * park_mult
+                if home_xera_val and away_xera_val and home_wrc and away_wrc:
+                    # Clean separation: offense (wRC+) × pitching quality (xERA) × park
+                    home_expected = league_avg_rpg * (float(home_wrc) / 100) * (4.25 / float(away_xera_val)) * park_mult
+                    away_expected = league_avg_rpg * (float(away_wrc) / 100) * (4.25 / float(home_xera_val)) * park_mult
 
-                    # wRC+ adjustment — scale offensive quality relative to league average (100)
-                    if home_wrc:
-                        home_expected *= (home_wrc / 100)
-                    if away_wrc:
-                        away_expected *= (away_wrc / 100)
-
-                    # Weather adjustment (cold/wind suppresses both sides equally for total, but not spread)
                     # Bullpen quality adjustment
-                    home_bp_era = home_bullpen.get('bullpen_era', 4.0) if home_bullpen else 4.0
-                    away_bp_era = away_bullpen.get('bullpen_era', 4.0) if away_bullpen else 4.0
-                    bp_adj = (away_bp_era - home_bp_era) * 0.15  # better home bullpen → home advantage
+                    bp_adj = (away_bp_era - home_bp_era) * 0.15
 
                     projected_spread = round(home_expected - away_expected + bp_adj, 2)
-                    # Positive = home favored, negative = away favored
                     if projected_spread >= 0.5:
                         spread_lean = 'home'
                     elif projected_spread <= -0.5:
                         spread_lean = 'away'
                     else:
-                        spread_lean = None  # too close to call
+                        spread_lean = None
                     print(f"  Projected spread: {home_team} {'+' if projected_spread >= 0 else ''}{projected_spread} | Lean: {spread_lean or 'neutral'}")
                 elif home_rpg and away_rpg:
                     # No pitcher data — use raw R/G + park only
-                    projected_spread = round((home_rpg - away_rpg) * (park_run_factor / 100 if park_run_factor else 1.0), 2)
+                    projected_spread = round((home_rpg - away_rpg) * park_mult, 2)
                     spread_lean = 'home' if projected_spread >= 0.5 else 'away' if projected_spread <= -0.5 else None
                     print(f"  Projected spread (no pitcher data): {projected_spread}")
             except Exception as e:
