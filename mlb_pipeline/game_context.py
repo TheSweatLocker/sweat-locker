@@ -820,7 +820,7 @@ def get_pitcher_vs_team(pitcher_id, opponent_team_id):
         return None
 
 def get_bullpen_usage(team_name, game_date):
-    """Check how many bullpen arms were used in the last 3 days"""
+    """Check how many bullpen arms were used in the last 3 days via boxscore"""
     if not team_name:
         return None
     try:
@@ -831,11 +831,14 @@ def get_bullpen_usage(team_name, game_date):
         if not mlb_team:
             return None
 
+        team_id = mlb_team['id']
         end = game_date
         start = (datetime.strptime(game_date, '%Y-%m-%d') - timedelta(days=3)).strftime('%Y-%m-%d')
+
+        # Get recent games
         sched = requests.get(
             'https://statsapi.mlb.com/api/v1/schedule',
-            params={'teamId': mlb_team['id'], 'sportId': 1, 'startDate': start, 'endDate': end, 'hydrate': 'pitchers', 'gameType': 'R'},
+            params={'teamId': team_id, 'sportId': 1, 'startDate': start, 'endDate': end, 'gameType': 'R'},
             timeout=10
         )
         total_relievers = 0
@@ -844,11 +847,26 @@ def get_bullpen_usage(team_name, game_date):
             for g in d.get('games', []):
                 if g.get('status', {}).get('detailedState') != 'Final':
                     continue
-                games_played += 1
-                # Count pitchers used minus the starter = relievers
-                pitchers = g.get('pitchers', [])
-                if len(pitchers) > 1:
-                    total_relievers += len(pitchers) - 1
+                game_pk = g.get('gamePk')
+                if not game_pk:
+                    continue
+                # Fetch boxscore to count pitchers used
+                try:
+                    box = requests.get(
+                        f'https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore',
+                        timeout=10
+                    )
+                    box_data = box.json()
+                    # Determine if team is home or away
+                    is_home = g.get('teams', {}).get('home', {}).get('team', {}).get('id') == team_id
+                    side = 'home' if is_home else 'away'
+                    team_box = box_data.get('teams', {}).get(side, {})
+                    pitcher_ids = team_box.get('pitchers', [])
+                    if len(pitcher_ids) > 1:
+                        total_relievers += len(pitcher_ids) - 1  # subtract starter
+                    games_played += 1
+                except:
+                    games_played += 1
         return {
             "relievers_used_3d": total_relievers,
             "games_last_3d": games_played,
