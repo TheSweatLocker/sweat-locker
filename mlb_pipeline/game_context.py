@@ -750,7 +750,7 @@ def get_mlb_games():
             params={
                 "apiKey": ODDS_API_KEY,
                 "regions": "us",
-                "markets": "spreads,totals,h2h",
+                "markets": "spreads,totals,totals_1st_5_innings,h2h",
                 "oddsFormat": "american",
                 "bookmakers": "draftkings",
                 # Anchor to ET date — midnight ET = 04:00 UTC, end at 3:59am next day UTC = 11:59pm ET
@@ -1232,6 +1232,7 @@ def log_game_result(context):
             "home_travel_distance_last_game": context.get("home_travel_distance_last_game"),
             "open_total": context.get("open_total"),
             "close_total": context.get("close_total"),
+            "f5_total_line": context.get("f5_total_line"),
             "nrfi_score": context.get("nrfi_score"),
             "home_first_inning_era": context.get("home_first_inning_era"),
             "away_first_inning_era": context.get("away_first_inning_era"),
@@ -1418,17 +1419,21 @@ def run():
             # Parse market lines from Odds API
             total_line = None
             spread_line = None
+            f5_total_line = None
             for bm in game.get("bookmakers", []):
                 for mkt in bm.get("markets", []):
                     if mkt["key"] == "totals" and not total_line:
                         total_line = mkt["outcomes"][0]["point"] if mkt["outcomes"] else None
+                    if mkt["key"] == "totals_1st_5_innings" and not f5_total_line:
+                        f5_total_line = mkt["outcomes"][0]["point"] if mkt["outcomes"] else None
                     if mkt["key"] == "spreads" and not spread_line:
-                        # Home team spread (find the home team outcome)
                         home_outcome = next((o for o in mkt.get("outcomes", []) if o.get("name") == home_team), None)
                         if home_outcome:
                             spread_line = home_outcome.get("point")
-                if total_line and spread_line is not None:
+                if total_line and spread_line is not None and f5_total_line is not None:
                     break
+            if f5_total_line:
+                print(f"  F5 total line: {f5_total_line}")
 
             # Determine if this is 8am (open) or 2pm (close) run
             current_hour = datetime.now().hour
@@ -1881,6 +1886,7 @@ def run():
                 "park_run_factor": park_run_factor,
                 "open_total": total_line if is_open_run else None,
                 "close_total": total_line if not is_open_run else None,
+                "f5_total_line": f5_total_line,
                 "projected_total": projected_total,
                 "over_lean": over_lean,
                 "projected_spread": projected_spread,

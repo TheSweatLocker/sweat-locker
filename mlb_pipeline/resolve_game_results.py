@@ -95,6 +95,16 @@ def run():
                                 else:
                                     spread_result = 'push'
 
+                            # F5 result — first 5 innings scoring from linescore
+                            f5_result = None
+                            f5_total_line = game.get('f5_total_line')
+                            innings = linescore.get('innings', [])
+                            if len(innings) >= 5 and f5_total_line:
+                                f5_home = sum(inn.get('home', {}).get('runs', 0) or 0 for inn in innings[:5])
+                                f5_away = sum(inn.get('away', {}).get('runs', 0) or 0 for inn in innings[:5])
+                                f5_total = f5_home + f5_away
+                                f5_result = 'Over' if f5_total > float(f5_total_line) else 'Under' if f5_total < float(f5_total_line) else 'Push'
+
                             # Update Supabase
                             print(f'  Attempting patch for game_id: {game_id}')
                             patch_resp = requests.patch(
@@ -107,6 +117,7 @@ def run():
                                     'total_result': total_result,
                                     'run_line_result': run_line,
                                     'spread_result': spread_result,
+                                    **(({'f5_total_result': f5_result} if f5_result else {})),
                                     **(({'umpire': umpire} if umpire else {})),
                                     'result_logged_at': datetime.utcnow().isoformat()
                                 }
