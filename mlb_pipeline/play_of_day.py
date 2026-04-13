@@ -136,7 +136,7 @@ def score_mlb_game(ctx):
     return min(100, score)
 
 def score_nba_game(game, nba_teams):
-    """Score an NBA game for Play of the Day candidacy"""
+    """Score an NBA game for Play of the Day candidacy — playoff-enhanced"""
     score = 25  # base
 
     home_team = game.get('home_team', '')
@@ -146,13 +146,20 @@ def score_nba_game(game, nba_teams):
     away_data = next((t for t in nba_teams if away_team.endswith(t.get('team', '').split(' ')[-1])), None)
 
     if not home_data or not away_data:
-        return score
+        return score, None, None
 
-    # Net rating gap
     home_net = float(home_data.get('net_rating') or 0)
     away_net = float(away_data.get('net_rating') or 0)
+    home_def = float(home_data.get('defensive_rating') or 112)
+    away_def = float(away_data.get('defensive_rating') or 112)
+    home_pace = float(home_data.get('pace') or 100)
+    away_pace = float(away_data.get('pace') or 100)
+
+    # Net rating gap — strongest NBA predictor
     net_gap = abs(home_net - away_net)
-    if net_gap >= 8:
+    if net_gap >= 10:
+        score += 25
+    elif net_gap >= 8:
         score += 20
     elif net_gap >= 5:
         score += 12
@@ -160,27 +167,60 @@ def score_nba_game(game, nba_teams):
         score += 6
 
     # Defensive rating mismatch
-    home_def = float(home_data.get('defensive_rating') or 112)
-    away_def = float(away_data.get('defensive_rating') or 112)
     def_gap = abs(home_def - away_def)
-    if def_gap >= 5:
-        score += 10
+    if def_gap >= 6:
+        score += 12
+    elif def_gap >= 4:
+        score += 8
 
     # Home/away record edge
     home_record = home_data.get('home_record', '')
     away_record = away_data.get('away_record', '')
-    # Parse W-L from "28-13" format
+    home_wpct = 0.5
+    away_wpct = 0.5
     try:
         hw, hl = map(int, home_record.split('-'))
         aw, al = map(int, away_record.split('-'))
         home_wpct = hw / (hw + hl) if (hw + hl) > 0 else 0.5
         away_wpct = aw / (aw + al) if (aw + al) > 0 else 0.5
-        if home_wpct - away_wpct >= 0.2:
-            score += 10
+        if home_wpct - away_wpct >= 0.25:
+            score += 12
+        elif home_wpct - away_wpct >= 0.15:
+            score += 6
     except:
         pass
 
-    return min(100, score)
+    # Playoff boost — April 19+ is playoffs, matchups are more predictable
+    is_playoff = datetime.now(timezone.utc).month >= 4 and datetime.now(timezone.utc).day >= 19
+    if is_playoff:
+        score += 10  # baseline playoff boost — matchups more predictable
+        # Home court is stronger in playoffs (65% vs 57% regular season)
+        if home_wpct >= 0.65:
+            score += 8
+        # Both elite defenses = under lean signal
+        if home_def <= 110 and away_def <= 110:
+            score += 8
+
+    # Determine lean
+    lean = None
+    lean_type = None
+    # Pace-based total lean
+    avg_pace = (home_pace + away_pace) / 2
+    if home_def <= 110 and away_def <= 110 and avg_pace < 100:
+        lean = 'Under'
+        lean_type = 'total'
+    elif home_def >= 115 and away_def >= 115 and avg_pace > 101:
+        lean = 'Over'
+        lean_type = 'total'
+    # Side lean — better team at home with strong record
+    elif net_gap >= 5 and home_net > away_net and home_wpct >= 0.6:
+        lean = home_team.split(' ')[-1]
+        lean_type = 'ml'
+    elif net_gap >= 5 and away_net > home_net:
+        lean = away_team.split(' ')[-1]
+        lean_type = 'ml'
+
+    return min(100, score), lean, lean_type
 
 def build_lean(ctx):
     """Determine the lean for an MLB game"""
@@ -256,12 +296,7 @@ def run():
         })
 
     for game in nba_games:
-        game_score = score_nba_game(game, nba_teams)
-        home_data = next((t for t in nba_teams if game['home_team'].endswith(t.get('team', '').split(' ')[-1])), None)
-        away_data = next((t for t in nba_teams if game['away_team'].endswith(t.get('team', '').split(' ')[-1])), None)
-        home_net = float(home_data.get('net_rating', 0)) if home_data else 0
-        away_net = float(away_data.get('net_rating', 0)) if away_data else 0
-        fav = game['home_team'] if home_net > away_net else game['away_team']
+        game_score, nba_lean, nba_lean_type = score_nba_game(game, nba_teams)
         candidates.append({
             'sport': 'NBA',
             'home_team': game.get('home_team'),
@@ -269,8 +304,8 @@ def run():
             'score': game_score,
             'nrfi_score': None,
             'is_nrfi': False,
-            'lean_display': fav.split(' ')[-1] if game_score >= 50 else None,
-            'lean_bet': 'ml',
+            'lean_display': nba_lean,
+            'lean_bet': nba_lean_type or 'ml',
             'commence_time': game.get('commence_time'),
         })
 
@@ -317,14 +352,46 @@ def run():
 
     best_overall = candidates[0]
 
-    # NRFI wins unless a non-NRFI game scores 80+
-    if best_nrfi and (best_overall['score'] < 80 or best_overall.get('is_nrfi')):
-        pick = best_nrfi
-        tier_label = "SWEET SPOT" if 90 <= pick.get('nrfi_score', 0) <= 94 else "NRFI"
-        print(f"🔒 {tier_label} pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
-    else:
+    # Confidence tiers — always pick something on a full slate, but label confidence
+    # Tier 1: NRFI sweet spot 90-94 (90% hit rate) or NBA playoff with score 75+
+    # Tier 2: NRFI 85-89 or MLB xERA gap Over or NBA with score 65+
+    # Tier 3: Best available — still a pick but lower confidence
+
+    pick = None
+    confidence = 'standard'
+
+    # Tier 1 — high conviction
+    if sweet_spot:
+        pick = sweet_spot[0]
+        confidence = 'high'
+        print(f"🔒 SWEET SPOT pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
+    elif best_overall.get('sport') == 'NBA' and best_overall['score'] >= 75:
         pick = best_overall
-        print(f"🎯 Top pick: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']} ({pick['sport']})")
+        confidence = 'high'
+        print(f"🔒 NBA HIGH CONVICTION: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']}")
+
+    # Tier 2 — solid
+    if not pick:
+        if other_nrfi:
+            pick = other_nrfi[0]
+            confidence = 'solid'
+            print(f"✅ NRFI pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
+        elif best_overall.get('sport') == 'NBA' and best_overall['score'] >= 65:
+            pick = best_overall
+            confidence = 'solid'
+            print(f"✅ NBA pick: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']}")
+
+    # Tier 3 — best available (always fires on a full slate)
+    if not pick:
+        # Prefer non-100 NRFI over 95+ scores
+        if high_scores:
+            pick = high_scores[0]
+            confidence = 'standard'
+            print(f"🎯 NRFI pick (market priced): {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
+        else:
+            pick = best_overall
+            confidence = 'standard'
+            print(f"🎯 Best available: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']} ({pick['sport']})")
 
     # Print all candidates
     for c in candidates[:5]:
@@ -343,6 +410,7 @@ def run():
         'leanDisplay': pick.get('lean_display') or f"{pick['away_team']} @ {pick['home_team']}",
         'generatedAt': today,
         'pipelineGenerated': True,
+        'confidence': confidence,  # high, solid, standard
         # Include context for Jerry narrative generation
         'context': {
             'home_pitcher': pick.get('home_pitcher'),
