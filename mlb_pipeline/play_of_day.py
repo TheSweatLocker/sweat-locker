@@ -293,16 +293,35 @@ def run():
     # Sort by score — NRFI 75+ gets priority unless another game scores 80+
     candidates.sort(key=lambda c: c['score'], reverse=True)
 
-    # Find the strongest NRFI — sort by NRFI score, not game score
+    # Find the best NRFI — prefer 90-94 sweet spot (90% hit rate) over 95+ (33%)
+    # Data: 90-94 = 9-1 (90%), 95-99 = 1-2 (33%), 100 = 2-4 (33%)
     nrfi_candidates = [c for c in candidates if c.get('is_nrfi') and (c.get('nrfi_score') or 0) >= 85]
-    nrfi_candidates.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
-    best_nrfi = nrfi_candidates[0] if nrfi_candidates else None
+
+    # Prioritize 90-94 range — proven sweet spot
+    sweet_spot = [c for c in nrfi_candidates if 90 <= (c.get('nrfi_score') or 0) <= 94]
+    high_scores = [c for c in nrfi_candidates if (c.get('nrfi_score') or 0) >= 95]
+    other_nrfi = [c for c in nrfi_candidates if 85 <= (c.get('nrfi_score') or 0) < 90]
+
+    # Pick order: sweet spot first, then 85-89, then 95+ (market already prices those)
+    if sweet_spot:
+        sweet_spot.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
+        best_nrfi = sweet_spot[0]
+    elif other_nrfi:
+        other_nrfi.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
+        best_nrfi = other_nrfi[0]
+    elif high_scores:
+        high_scores.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
+        best_nrfi = high_scores[0]
+    else:
+        best_nrfi = None
+
     best_overall = candidates[0]
 
-    # Highest NRFI score wins unless a non-NRFI game scores 80+
+    # NRFI wins unless a non-NRFI game scores 80+
     if best_nrfi and (best_overall['score'] < 80 or best_overall.get('is_nrfi')):
         pick = best_nrfi
-        print(f"🔒 NRFI pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
+        tier_label = "SWEET SPOT" if 90 <= pick.get('nrfi_score', 0) <= 94 else "NRFI"
+        print(f"🔒 {tier_label} pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
     else:
         pick = best_overall
         print(f"🎯 Top pick: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']} ({pick['sport']})")
