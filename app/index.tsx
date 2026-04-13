@@ -1902,6 +1902,8 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [propJerryLoading, setPropJerryLoading] = useState(false);
   const [propOfDay, setPropOfDay] = useState(null);
   const [propOfDayLoading, setPropOfDayLoading] = useState(false);
+  const [hrWatch, setHrWatch] = useState<any[]>([]);
+  const [hrWatchLoading, setHrWatchLoading] = useState(false);
   const [expandedPropJerry, setExpandedPropJerry] = useState(null);
   const [roiChartTab, setRoiChartTab] = useState('cumulative');
   const [roiTimeRange, setRoiTimeRange] = useState('all');
@@ -5648,6 +5650,93 @@ if(mkt.key === 'pitcher_props') {
     })).sort((a,b) => b.total-a.total);
   };
 
+  const fetchHRWatch = async () => {
+    if(Object.keys(mlbGameContext).length === 0) return;
+    setHrWatchLoading(true);
+    try {
+      const seen = new Set();
+      const candidates: any[] = [];
+
+      for(const ctx of Object.values(mlbGameContext) as any[]) {
+        if(!ctx.game_id || seen.has(ctx.game_id)) continue;
+        seen.add(ctx.game_id);
+
+        const parkFactor = parseFloat(ctx.park_run_factor) || 100;
+        const temp = parseFloat(ctx.temperature) || 70;
+        const windSpeed = parseFloat(ctx.wind_speed) || 0;
+        const windDir = (ctx.wind_direction || '').toUpperCase();
+        const windOut = windSpeed > 10 && ['S', 'SW', 'SE', 'OUT'].some(d => windDir.includes(d));
+        const homeXera = ctx.home_sp_xera ? parseFloat(ctx.home_sp_xera) : null;
+        const awayXera = ctx.away_sp_xera ? parseFloat(ctx.away_sp_xera) : null;
+
+        // Get game environment score
+        let envScore = 0;
+        if(parkFactor >= 108) envScore += 15;
+        else if(parkFactor >= 103) envScore += 8;
+        if(temp >= 80) envScore += 10;
+        else if(temp >= 70) envScore += 5;
+        if(windOut) envScore += 12;
+
+        // Get lineups and look up top batters
+        const lineups = [
+          {lineup: ctx.home_lineup, team: ctx.home_team, oppXera: awayXera, side: 'home'},
+          {lineup: ctx.away_lineup, team: ctx.away_team, oppXera: homeXera, side: 'away'},
+        ];
+
+        for(const {lineup, team, oppXera, side} of lineups) {
+          if(!lineup) continue;
+          const batters = lineup.split(',').map((b: string) => b.trim()).filter(Boolean).slice(0, 5); // top 5 in order
+          for(const batterName of batters) {
+            if(!batterName || batterName.length < 3) continue;
+            try {
+              const stats = await fetchMLBBatterStats(batterName);
+              if(!stats || stats.pa < 15) continue;
+              const hrRate = stats.hr > 0 ? (stats.hr / stats.pa) : 0;
+              if(hrRate < 0.02) continue; // skip players with very low HR rate
+
+              let score = 0;
+              // Player power
+              score += Math.round(hrRate * 500); // 0.05 HR/PA = 25 pts
+              if(stats.hr >= 4) score += 10;
+              // Opposing pitcher quality
+              if(oppXera && oppXera > 4.5) score += 15;
+              else if(oppXera && oppXera > 3.5) score += 5;
+              // Environment
+              score += envScore;
+
+              if(score >= 20) {
+                candidates.push({
+                  player: stats.name || batterName,
+                  team: team,
+                  hr: stats.hr,
+                  pa: stats.pa,
+                  hrRate: hrRate,
+                  ba: stats.ba,
+                  oppPitcher: side === 'home' ? ctx.away_pitcher : ctx.home_pitcher,
+                  oppXera: oppXera,
+                  venue: ctx.venue,
+                  parkFactor: parkFactor,
+                  temp: temp,
+                  windOut: windOut,
+                  windSpeed: windSpeed,
+                  windDir: windDir,
+                  score: score,
+                  game: `${ctx.away_team} @ ${ctx.home_team}`,
+                });
+              }
+            } catch(e) { continue; }
+          }
+        }
+      }
+
+      candidates.sort((a, b) => b.score - a.score);
+      setHrWatch(candidates.slice(0, 5));
+    } catch(e) {
+      console.log('HR Watch error:', e);
+    }
+    setHrWatchLoading(false);
+  };
+
   const fetchPropOfDay = async () => {
     const _now = new Date();
     const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
@@ -6777,7 +6866,7 @@ setJerryHistory(prev => {
  useEffect(()=>{
   if(activeTab==='games') {
     fetchGames(gamesSport,gamesDay);
-    if(gamesSport==='MLB') fetchMLBGameContext();
+    if(gamesSport==='MLB') { fetchMLBGameContext(); fetchHRWatch(); }
   }
 },[activeTab,gamesSport,gamesDay,bartData.length]);
   useEffect(()=>{
@@ -8282,6 +8371,39 @@ setJerryHistory(prev => {
       <Text style={{color:'#4a6070',fontSize:10}}>🔄 8am + 2pm ET</Text>
     </View>
     <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back at 2pm for full confirmed slate.</Text>
+  </View>
+)}
+{gamesSport==='MLB' && hrWatch.length > 0 && (
+  <View style={{backgroundColor:'rgba(255,77,109,0.06)',borderRadius:14,padding:14,marginBottom:14,borderWidth:1,borderColor:'rgba(255,77,109,0.25)'}}>
+    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+      <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:13}}>💣 HR WATCH</Text>
+      <Text style={{color:'#4a6070',fontSize:10}}>Park + Weather + Power</Text>
+    </View>
+    {hrWatch.map((h: any, i: number) => (
+      <View key={i} style={{flexDirection:'row',alignItems:'center',paddingVertical:8,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
+        <View style={{flex:1}}>
+          <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{h.player}</Text>
+          <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>{h.game}</Text>
+        </View>
+        <View style={{alignItems:'flex-end',gap:3}}>
+          <View style={{flexDirection:'row',gap:4,flexWrap:'wrap',justifyContent:'flex-end'}}>
+            <View style={{backgroundColor:'rgba(255,77,109,0.15)',borderRadius:5,paddingHorizontal:5,paddingVertical:1}}>
+              <Text style={{color:'#ff4d6d',fontSize:9,fontWeight:'700'}}>{h.hr} HR / {h.pa} PA</Text>
+            </View>
+            {h.parkFactor >= 105 && <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:5,paddingHorizontal:5,paddingVertical:1}}>
+              <Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'700'}}>Park {h.parkFactor}</Text>
+            </View>}
+            {h.windOut && <View style={{backgroundColor:'rgba(0,229,160,0.12)',borderRadius:5,paddingHorizontal:5,paddingVertical:1}}>
+              <Text style={{color:'#00e5a0',fontSize:9,fontWeight:'700'}}>Wind Out {h.windSpeed}mph</Text>
+            </View>}
+            {h.oppXera && h.oppXera > 4.0 && <View style={{backgroundColor:'rgba(0,153,255,0.12)',borderRadius:5,paddingHorizontal:5,paddingVertical:1}}>
+              <Text style={{color:'#0099ff',fontSize:9,fontWeight:'700'}}>vs {h.oppXera.toFixed(1)} xERA</Text>
+            </View>}
+          </View>
+          <Text style={{color:'#4a6070',fontSize:9}}>vs {h.oppPitcher?.split(' ').pop() || 'TBD'} • {h.venue?.split(' ').pop() || ''} • {h.temp}°F</Text>
+        </View>
+      </View>
+    ))}
   </View>
 )}
             {gamesLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:'#7a92a8',marginTop:12}}>Loading games...</Text></View>):
