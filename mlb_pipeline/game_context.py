@@ -761,7 +761,11 @@ def get_mlb_games():
                 "commenceTimeTo": f"{(datetime.now(timezone.utc) - timedelta(hours=5) + timedelta(days=1)).strftime('%Y-%m-%d')}T03:59:59Z",
             }
         )
-        return r.json()
+        data = r.json()
+        if not isinstance(data, list):
+            print(f"Odds API returned unexpected response: {str(data)[:200]}")
+            return []
+        return data
     except Exception as e:
         print(f"Odds API error: {e}")
         return []
@@ -2079,7 +2083,8 @@ def run():
                 print(f"❌ Failed: {away_team} @ {home_team}")
                 
         except Exception as e:
-            print(f"❌ Error processing {game.get('home_team', 'unknown')}: {e}")
+            game_label = game.get('home_team', 'unknown') if isinstance(game, dict) else 'unknown'
+            print(f"❌ Error processing {game_label}: {e}")
     
     print(f"\nDone! Processed {processed} games")
 

@@ -1915,6 +1915,8 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [historicalOddsLoading, setHistoricalOddsLoading] = useState({});
   const [propHistoryModal, setPropHistoryModal] = useState(false);
   const [settingsModal, setSettingsModal] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
   const [selectedPropPlayer, setSelectedPropPlayer] = useState(null);
   const [propHistoryData, setPropHistoryData] = useState([]);
   const [propHistoryLoading, setPropHistoryLoading] = useState(false);
@@ -10062,10 +10064,14 @@ const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d
                 </TouchableOpacity>
               </View>
               {/* Privacy Policy */}
-              <View style={[styles.card,{marginBottom:12}]}>
-                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14,marginBottom:12}}>🔒 Privacy Policy</Text>
-                <Text style={{color:'#7a92a8',fontSize:12,lineHeight:20}}>
-                  Last Updated: April 2026{'\n\n'}
+              <TouchableOpacity style={[styles.card,{marginBottom:12}]} onPress={()=>setShowPrivacy(!showPrivacy)} activeOpacity={0.7}>
+                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>🔒 Privacy Policy</Text>
+                  <Text style={{color:'#4a6070',fontSize:12}}>{showPrivacy?'Hide ▲':'View ▼'}</Text>
+                </View>
+                <Text style={{color:'#7a92a8',fontSize:12,marginTop:8,lineHeight:18}}>Your data stays yours. We never sell or share it with advertisers. Last updated April 2026.</Text>
+                {showPrivacy&&(
+                <Text style={{color:'#7a92a8',fontSize:12,lineHeight:20,marginTop:12}}>
                   Note: "Hard Rock Bet" and the guitar logo are trademarks of the Seminole Tribe of Florida/Hard Rock Digital. Referenced for informational purposes only.{'\n\n'}
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>WHO WE ARE{'\n'}</Text>
                   The Sweat Locker is an AI powered, model driven, sports analytics application owned and operated by The Sweat Locker LLC, a veteran-owned business. Contact us at: support@thesweatlocker.com{'\n\n'}
@@ -10119,12 +10125,17 @@ const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d
                   The Sweat Locker LLC{'\n'}
                   support@thesweatlocker.com
                 </Text>
-              </View>
+                )}
+              </TouchableOpacity>
                 {/* Terms of Service */}
-              <View style={[styles.card,{marginBottom:12}]}>
-                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14,marginBottom:12}}>📋 Terms of Service</Text>
-                <Text style={{color:'#7a92a8',fontSize:12,lineHeight:20}}>
-                  Last Updated: April 2026{'\n\n'}
+              <TouchableOpacity style={[styles.card,{marginBottom:12}]} onPress={()=>setShowTerms(!showTerms)} activeOpacity={0.7}>
+                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>📋 Terms of Service</Text>
+                  <Text style={{color:'#4a6070',fontSize:12}}>{showTerms?'Hide ▲':'View ▼'}</Text>
+                </View>
+                <Text style={{color:'#7a92a8',fontSize:12,marginTop:8,lineHeight:18}}>Entertainment and analytics only. Not gambling advice. Must be 18+. Last updated April 2026.</Text>
+                {showTerms&&(
+                <Text style={{color:'#7a92a8',fontSize:12,lineHeight:20,marginTop:12}}>
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>1. ACCEPTANCE OF TERMS{'\n'}</Text>
                   By downloading, accessing, or using The Sweat Locker ("App"), you agree to these Terms of Service. If you do not agree, do not use the App.{'\n\n'}
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>2. ELIGIBILITY{'\n'}</Text>
@@ -10172,7 +10183,8 @@ const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d
                   The Sweat Locker LLC{'\n'}
                   support@thesweatlocker.com
                 </Text>
-              </View>
+                )}
+              </TouchableOpacity>
               {/* Delete Data */}
               <View style={[styles.card,{marginBottom:12}]}>
                 <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14,marginBottom:8}}>🗑️ Delete My Data</Text>
