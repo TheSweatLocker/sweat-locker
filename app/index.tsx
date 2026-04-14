@@ -5069,7 +5069,8 @@ MLB GAME CONTEXT:
 - ${mlbData.away_lineup ? `${game.away_team} lineup: ${mlbData.away_lineup}` : ''};
 - Total delta: ${mlbData.projected_total && mlbData.projected_total > 0 ? (mlbData.projected_total - (game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0]?.point || mlbData.projected_total)).toFixed(1) + ' pts vs posted line' : 'N/A'}
 - Projected spread: ${mlbData.projected_spread != null ? `${mlbData.projected_spread > 0 ? game.home_team : game.away_team} by ${Math.abs(mlbData.projected_spread).toFixed(1)} runs` : 'N/A'}
-- Spread lean: DISABLED — spread model under calibration, do not reference spread side leans
+- ML lean: ${mlbData.projected_spread != null ? (Math.abs(mlbData.projected_spread) >= 1.0 ? `${mlbData.projected_spread > 0 ? game.home_team : game.away_team} ML — model projects ${Math.abs(mlbData.projected_spread).toFixed(1)} run edge` : 'No strong ML lean — projected margin under 1.0 runs') : 'N/A'}
+- ML conviction: ${mlbData.projected_spread != null ? (Math.abs(mlbData.projected_spread) >= 2.0 ? 'HIGH — 2+ run projected edge' : Math.abs(mlbData.projected_spread) >= 1.0 ? 'MODERATE — 1+ run edge' : 'LOW — too close to call') : 'N/A'}
 - Spread delta: ${mlbData.spread_delta != null ? (mlbData.spread_delta > 0 ? '+' : '') + mlbData.spread_delta.toFixed(1) + ' runs vs posted line' : 'N/A'}
 - First inning ERA: ${mlbData.home_first_inning_era != null ? mlbData.home_pitcher + ' 1st inn ERA ' + mlbData.home_first_inning_era : ''} ${mlbData.away_first_inning_era != null ? '| ' + mlbData.away_pitcher + ' 1st inn ERA ' + mlbData.away_first_inning_era : ''}
 - Data confidence: ${mlbData.confidence}`;
@@ -5243,6 +5244,11 @@ if(scoreData) {
       }
       if(mlbData.home_platoon_note) sweatSignals.push(`Platoon: ${mlbData.home_platoon_note}`);
       if(mlbData.away_platoon_note) sweatSignals.push(`Platoon: ${mlbData.away_platoon_note}`);
+      if(mlbData.projected_spread != null && Math.abs(mlbData.projected_spread) >= 1.0) {
+        const mlFav = mlbData.projected_spread > 0 ? game.home_team : game.away_team;
+        const mlEdge = Math.abs(mlbData.projected_spread).toFixed(1);
+        sweatSignals.push(`ML lean: ${mlFav} (${mlEdge} run projected edge${Math.abs(mlbData.projected_spread) >= 2.0 ? ' — HIGH conviction' : ''})`);
+      }
     }
   }
   if(sport === 'NBA') {
@@ -5315,7 +5321,10 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NBA totals: the Sweat Locker NBA total model is in the data — if projected total delta >= 3pts from posted, reference it as a total lean. Cross-matched OffRtg vs DefRtg + pace + eFG% matchup + form drift + injuries
 - For NBA totals: if model projects 3+ pts over posted total, lean over and explain why (pace matchup, poor defenses, both teams trending hot)
 - For NBA totals: if model projects 3+ pts under posted total, lean under and explain why (elite defenses, slow pace, injuries suppressing scoring)
-- For MLB: the Sweat Locker model has computed a total lean from pipeline data (xERA, wRC+, park, bullpen, weather). Your job is to EXPLAIN why the model leans that way using the specific data provided. Do not contradict the model lean unless your web search finds concrete breaking news (injury, lineup scratch, weather change) that the model doesn't know about. If you override the model, explicitly say "Override: [reason]".
+- For MLB: the Sweat Locker model has computed a total lean AND a moneyline lean from pipeline data (xERA, wRC+, park, bullpen, weather, spread projection). Your job is to EXPLAIN why the model leans that way using the specific data provided. Do not contradict the model lean unless your web search finds concrete breaking news (injury, lineup scratch, weather change) that the model doesn't know about. If you override the model, explicitly say "Override: [reason]".
+- For MLB: if ML conviction is HIGH (2+ run projected edge), lead with the moneyline lean and explain why — cite the xERA matchup, wRC+ gap, and bullpen differential that drive the edge. End with something like "lean [Team] ML".
+- For MLB: if ML conviction is MODERATE (1+ run edge), mention the ML lean but frame it as secondary to the total play. "Model slightly favors [Team] on the side."
+- For MLB: if ML conviction is LOW, do NOT mention a moneyline lean — stick to total and NRFI analysis only.
 - For MLB: when NRFI score and projected total appear to conflict (high NRFI but high projected total), these are NOT contradictory — elite starters suppress the first inning while bullpen and later innings produce runs. Acknowledge the conflict briefly then resolve it in one sentence.
 - For MLB: NEVER refuse to give a directional lean. NEVER ask the user to clarify. ALWAYS end with a concrete recommendation.
 - For MLB props: when grading UNDER 0.5 hits, the edge is about limited plate appearances, high pitcher K rate, or bench player role — NOT about contact quality. High wRC+ is an argument FOR hits, not against. Never cite elite wRC+ as a reason to take the Under on a batter prop.
