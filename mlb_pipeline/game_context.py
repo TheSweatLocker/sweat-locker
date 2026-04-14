@@ -819,6 +819,60 @@ def get_pitcher_vs_team(pitcher_id, opponent_team_id):
     except:
         return None
 
+def get_mlb_injuries(team_name):
+    """Fetch injured players for a team from MLB Stats API"""
+    if not team_name:
+        return None
+    try:
+        teams_resp = requests.get('https://statsapi.mlb.com/api/v1/teams?sportId=1', timeout=10)
+        team_last = team_name.split(' ')[-1].lower()
+        mlb_team = next((t for t in teams_resp.json().get('teams', [])
+            if t.get('name', '').lower().endswith(team_last) or team_last in t.get('name', '').lower()), None)
+        if not mlb_team:
+            return None
+
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/teams/{mlb_team['id']}/roster",
+            params={'rosterType': 'depthChart', 'season': 2026},
+            timeout=10
+        )
+        # Get injured list
+        il_resp = requests.get(
+            f"https://statsapi.mlb.com/api/v1/teams/{mlb_team['id']}/roster",
+            params={'rosterType': 'active', 'season': 2026},
+            timeout=10
+        )
+        active_ids = set()
+        for p in il_resp.json().get('roster', []):
+            active_ids.add(p.get('person', {}).get('id'))
+
+        # Now check 40-man for guys NOT on active roster = likely IL
+        full_resp = requests.get(
+            f"https://statsapi.mlb.com/api/v1/teams/{mlb_team['id']}/roster/40Man",
+            timeout=10
+        )
+        injured = []
+        for p in full_resp.json().get('roster', []):
+            pid = p.get('person', {}).get('id')
+            status = p.get('status', {}).get('description', '')
+            if pid not in active_ids and 'Injured' in status:
+                injured.append({
+                    'name': p.get('person', {}).get('fullName', ''),
+                    'position': p.get('position', {}).get('abbreviation', ''),
+                    'status': status,
+                })
+
+        if injured:
+            return {
+                'count': len(injured),
+                'key_players': [p['name'] for p in injured if p['position'] in ['P', 'SP', 'RP', 'C', 'SS', 'CF', 'DH']],
+                'all': injured,
+                'summary': ', '.join([f"{p['name']} ({p['position']})" for p in injured[:5]]),
+            }
+        return {'count': 0, 'key_players': [], 'all': [], 'summary': 'No key injuries'}
+    except:
+        return None
+
 def get_bullpen_usage(team_name, game_date):
     """Check how many bullpen arms were used in the last 3 days via boxscore"""
     if not team_name:
@@ -1207,6 +1261,10 @@ def log_game_result(context):
             "away_pitcher_vs_team_era": context.get("away_pitcher_vs_team_era"),
             "home_bp_relievers_3d": context.get("home_bp_relievers_3d"),
             "away_bp_relievers_3d": context.get("away_bp_relievers_3d"),
+            "home_injury_count": context.get("home_injury_count"),
+            "away_injury_count": context.get("away_injury_count"),
+            "home_injury_summary": context.get("home_injury_summary"),
+            "away_injury_summary": context.get("away_injury_summary"),
             "park_run_factor": context.get("park_run_factor"),
             "temperature": context.get("temperature"),
             "wind_mph": context.get("wind_speed"),
@@ -1548,6 +1606,14 @@ def run():
             home_bullpen = get_bullpen_stats(home_team)
             away_bullpen = get_bullpen_stats(away_team)
 
+            # MLB Injuries
+            home_injuries = get_mlb_injuries(home_team)
+            away_injuries = get_mlb_injuries(away_team)
+            if home_injuries and home_injuries['count'] > 0:
+                print(f"  {home_team} injuries ({home_injuries['count']}): {home_injuries['summary']}")
+            if away_injuries and away_injuries['count'] > 0:
+                print(f"  {away_team} injuries ({away_injuries['count']}): {away_injuries['summary']}")
+
             # Pitcher last outing — pitch count affects fatigue
             home_last_outing = get_pitcher_last_outing(home_pitcher_id) if home_pitcher_id else None
             away_last_outing = get_pitcher_last_outing(away_pitcher_id) if away_pitcher_id else None
@@ -1712,8 +1778,29 @@ def run():
 
                 # Umpire over_rate adjustment
                 if ump_stats and ump_stats.get('over_rate'):
-                    ump_adj = (float(ump_stats['over_rate']) - 0.5) * 1.2  # 0.56 over_rate → +0.072
+                    ump_adj = (float(ump_stats['over_rate']) - 0.5) * 1.2
                     projected_total = round(projected_total + ump_adj, 1)
+
+                # Lineup weight adjustment — confirmed lineup quality vs average
+                # lineup_weight 6.0 = average, higher = stronger top of order
+                if home_lineup_weight and home_lineup_weight != 6.0:
+                    lineup_adj = (home_lineup_weight - 6.0) * 0.15
+                    projected_total = round(projected_total + lineup_adj, 1)
+                if away_lineup_weight and away_lineup_weight != 6.0:
+                    lineup_adj = (away_lineup_weight - 6.0) * 0.15
+                    projected_total = round(projected_total + lineup_adj, 1)
+
+                # Injury impact — key players missing suppresses offense
+                home_inj_count = home_injuries['count'] if home_injuries else 0
+                away_inj_count = away_injuries['count'] if away_injuries else 0
+                if home_inj_count >= 3:
+                    projected_total = round(projected_total - 0.4, 1)
+                elif home_inj_count >= 1:
+                    projected_total = round(projected_total - 0.15, 1)
+                if away_inj_count >= 3:
+                    projected_total = round(projected_total - 0.4, 1)
+                elif away_inj_count >= 1:
+                    projected_total = round(projected_total - 0.15, 1)
 
                 if total_line:
                     delta = projected_total - total_line
@@ -1949,6 +2036,10 @@ def run():
                 "away_pitcher_vs_team_avg": away_vs_home['avg_vs_team'] if away_vs_home else None,
                 "home_bp_relievers_3d": home_bp_usage['relievers_used_3d'] if home_bp_usage else None,
                 "away_bp_relievers_3d": away_bp_usage['relievers_used_3d'] if away_bp_usage else None,
+                "home_injury_count": home_injuries['count'] if home_injuries else 0,
+                "away_injury_count": away_injuries['count'] if away_injuries else 0,
+                "home_injury_summary": home_injuries['summary'] if home_injuries else None,
+                "away_injury_summary": away_injuries['summary'] if away_injuries else None,
                 "wind_blowing_in": wind_blowing_in,
                 "is_dome": is_dome,
                 "timezone_change": tz_change,
