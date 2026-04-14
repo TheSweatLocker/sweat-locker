@@ -748,23 +748,58 @@ def get_weather(venue, lat, lon):
         return {"temperature": 70, "wind_speed": 5, "wind_direction": "N", "precipitation": 0, "is_dome": False}
 def get_mlb_games():
     try:
+        time_from = f"{(datetime.now(timezone.utc) - timedelta(hours=5)).strftime('%Y-%m-%d')}T04:00:00Z"
+        time_to = f"{(datetime.now(timezone.utc) - timedelta(hours=5) + timedelta(days=1)).strftime('%Y-%m-%d')}T03:59:59Z"
         r = requests.get(
             "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds",
             params={
                 "apiKey": ODDS_API_KEY,
                 "regions": "us",
-                "markets": "spreads,totals,totals_1st_5_innings,h2h",
+                "markets": "spreads,totals,h2h",
                 "oddsFormat": "american",
                 "bookmakers": "draftkings",
-                # Anchor to ET date — midnight ET = 04:00 UTC, end at 3:59am next day UTC = 11:59pm ET
-                "commenceTimeFrom": f"{(datetime.now(timezone.utc) - timedelta(hours=5)).strftime('%Y-%m-%d')}T04:00:00Z",
-                "commenceTimeTo": f"{(datetime.now(timezone.utc) - timedelta(hours=5) + timedelta(days=1)).strftime('%Y-%m-%d')}T03:59:59Z",
+                "commenceTimeFrom": time_from,
+                "commenceTimeTo": time_to,
             }
         )
         data = r.json()
         if not isinstance(data, list):
             print(f"Odds API returned unexpected response: {str(data)[:200]}")
             return []
+
+        # Fetch F5 totals separately (alternate markets endpoint)
+        try:
+            r2 = requests.get(
+                "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds",
+                params={
+                    "apiKey": ODDS_API_KEY,
+                    "regions": "us",
+                    "markets": "alternate_totals_1st_5_innings",
+                    "oddsFormat": "american",
+                    "bookmakers": "draftkings",
+                    "commenceTimeFrom": time_from,
+                    "commenceTimeTo": time_to,
+                }
+            )
+            f5_data = r2.json()
+            if isinstance(f5_data, list):
+                # Merge F5 markets into main game data
+                f5_by_id = {g["id"]: g for g in f5_data}
+                for game in data:
+                    f5_game = f5_by_id.get(game["id"])
+                    if f5_game:
+                        for bk in f5_game.get("bookmakers", []):
+                            # Find matching bookmaker in main data
+                            for main_bk in game.get("bookmakers", []):
+                                if main_bk["key"] == bk["key"]:
+                                    main_bk["markets"].extend(bk.get("markets", []))
+                                    break
+                print(f"F5 totals merged for {len(f5_by_id)} games")
+            else:
+                print(f"F5 totals not available: {str(f5_data)[:100]}")
+        except Exception as e2:
+            print(f"F5 totals fetch failed (non-critical): {e2}")
+
         return data
     except Exception as e:
         print(f"Odds API error: {e}")
@@ -1501,7 +1536,7 @@ def run():
                 for mkt in bm.get("markets", []):
                     if mkt["key"] == "totals" and not total_line:
                         total_line = mkt["outcomes"][0]["point"] if mkt["outcomes"] else None
-                    if mkt["key"] == "totals_1st_5_innings" and not f5_total_line:
+                    if mkt["key"] in ("totals_1st_5_innings", "alternate_totals_1st_5_innings") and not f5_total_line:
                         f5_total_line = mkt["outcomes"][0]["point"] if mkt["outcomes"] else None
                     if mkt["key"] == "spreads" and not spread_line:
                         home_outcome = next((o for o in mkt.get("outcomes", []) if o.get("name") == home_team), None)
