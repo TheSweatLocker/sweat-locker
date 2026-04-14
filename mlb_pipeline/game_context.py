@@ -546,6 +546,7 @@ VENUE_COORDS = {
     "Great American Ball Park": (39.0979, -84.5082),
     "Citizens Bank Park": (39.9061, -75.1665),
     "Fenway Park": (42.3467, -71.0972),
+    "Daikin Park": (29.7572, -95.3555),
     "Minute Maid Park": (29.7572, -95.3555),
     "Wrigley Field": (41.9484, -87.6553),
     "Globe Life Field": (32.7473, -97.0822),
@@ -557,6 +558,7 @@ VENUE_COORDS = {
     "Progressive Field": (41.4962, -81.6852),
     "Kauffman Stadium": (39.0517, -94.4803),
     "T-Mobile Park": (47.5914, -122.3325),
+    "George M. Steinbrenner Field": (27.9784, -82.5033),
     "Tropicana Field": (27.7683, -82.6534),
     "Guaranteed Rate Field": (41.8300, -87.6339),
     "loanDepot Park": (25.7781, -80.2197),
@@ -565,6 +567,7 @@ VENUE_COORDS = {
     "Sutter Health Park": (38.5803, -121.5014),
     "Comerica Park": (42.3390, -83.0485),
     "Dodger Stadium": (34.0739, -118.2400),
+    "UNIQLO Field at Dodger Stadium": (34.0739, -118.2400),
     "Petco Park": (32.7076, -117.1570),
     "Citi Field": (40.7571, -73.8458),
     "Yankee Stadium": (40.8296, -73.9262),
@@ -580,7 +583,7 @@ TEAM_VENUE = {
     "Cincinnati Reds": "Great American Ball Park",
     "Philadelphia Phillies": "Citizens Bank Park",
     "Boston Red Sox": "Fenway Park",
-    "Houston Astros": "Minute Maid Park",
+    "Houston Astros": "Daikin Park",
     "Chicago Cubs": "Wrigley Field",
     "Texas Rangers": "Globe Life Field",
     "Baltimore Orioles": "Camden Yards",
@@ -591,7 +594,7 @@ TEAM_VENUE = {
     "Cleveland Guardians": "Progressive Field",
     "Kansas City Royals": "Kauffman Stadium",
     "Seattle Mariners": "T-Mobile Park",
-    "Tampa Bay Rays": "Tropicana Field",
+    "Tampa Bay Rays": "George M. Steinbrenner Field",
     "Chicago White Sox": "Guaranteed Rate Field",
     "Miami Marlins": "loanDepot Park",
     "Pittsburgh Pirates": "PNC Park",
@@ -610,7 +613,7 @@ TEAM_VENUE = {
 }
 
 # Dome stadiums — weather irrelevant
-DOME_VENUES = ["Tropicana Field", "loanDepot Park", "Rogers Centre", "American Family Field", "Chase Field", "Globe Life Field"]
+DOME_VENUES = ["George M. Steinbrenner Field", "Tropicana Field", "loanDepot Park", "Rogers Centre", "American Family Field", "Chase Field", "Globe Life Field", "Daikin Park"]
 
 TEAM_TIMEZONES = {
     'New York Yankees': 'ET', 'New York Mets': 'ET', 'Boston Red Sox': 'ET',
@@ -1021,7 +1024,7 @@ def detect_opener(pitcher_id):
     except:
         return False
 
-def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None, home_is_opener=False, away_is_opener=False):
+def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None, home_is_opener=False, away_is_opener=False, game_month=None):
     """
     Calculate NRFI (No Run First Inning) probability score 0-100.
     Higher = stronger NRFI lean.
@@ -1104,12 +1107,14 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
         if any(d in wind_dir for d in ['N', 'IN', 'NW', 'NE']): score += 5  # blowing in
         elif any(d in wind_dir for d in ['S', 'OUT', 'SW', 'SE']): score -= 5  # blowing out
 
-    # ── PARK FACTOR ──
+    # ── PARK FACTOR ── (recalibrated: range is now 80-133)
     park = float(park_run_factor or 100)
-    if park <= 93: score += 6    # extreme pitcher park
-    elif park <= 97: score += 3
-    elif park >= 110: score -= 6  # extreme hitter park
-    elif park >= 105: score -= 3
+    if park <= 85: score += 8    # extreme pitcher park (Globe Life, KC)
+    elif park <= 92: score += 5  # strong pitcher park
+    elif park <= 97: score += 2
+    elif park >= 120: score -= 8  # extreme hitter park (Coors)
+    elif park >= 110: score -= 5  # strong hitter park
+    elif park >= 105: score -= 2
 
     # ── OFFENSIVE QUALITY ──
     home_wrc = float(home_wrc_plus or 100)
@@ -1169,6 +1174,16 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
             # Both arms elite — bonus
             elif better_xera <= 3.5 and worse_xera <= 3.5:
                 score += 5
+
+    # ── MONTHLY ADJUSTMENT ──
+    # 2025 data (2,401 games): Sept 44.4%, Aug 48.2% vs June 53.3%, March 55.4%
+    # Late season fatigue + expanded rosters + motivation drops = more YRFI
+    if game_month:
+        m = int(game_month)
+        if m == 9: score -= 5          # September: -5.4% vs baseline
+        elif m == 8: score -= 2        # August: slight penalty
+        elif m in (3, 4): score += 2   # Early season: pitchers fresh, lineups cold
+        elif m == 6: score += 3        # June: peak NRFI month (53.3%)
 
     # ── OPENER / BULLPEN GAME DETECTION ──
     # Relievers used as openers are volatile — unpredictable first inning
@@ -1523,7 +1538,7 @@ def run():
                     weather_adj -= 0.5
 
             # Park adjustment
-            park_adj = (park_run_factor - 100) / 20  # normalize to runs
+            park_adj = (park_run_factor - 100) / 40  # dampened — 2025 data shows PF overstates real impact
 
             # Confidence
             confidence = "HIGH" if park and not weather.get("is_dome") else "MEDIUM" if park else "LOW"
@@ -1699,6 +1714,7 @@ def run():
                 away_first_inn,
                 home_is_opener,
                 away_is_opener,
+                game_month=game_date[5:7] if game_date else None,
             )
             if nrfi_score:
                 print(f"  NRFI score: {nrfi_score} ({'NRFI lean' if nrfi_score >= 60 else 'YRFI lean' if nrfi_score <= 40 else 'neutral'})")
@@ -1758,7 +1774,9 @@ def run():
             away_xera_val = sanitize_xera(away_pitcher_stats.get('xera'), away_pitcher) if away_pitcher_stats else None
             home_wrc = home_offense.get('wrc_plus') if home_offense else None
             away_wrc = away_offense.get('wrc_plus') if away_offense else None
-            park_mult = park_run_factor / 100 if park_run_factor else 1.0
+            # Park factor dampened — 2025 data shows 20-pt PF swing = only ~0.4 runs real impact
+            # Old: park_mult = pf/100 (way too aggressive). New: halve the effect.
+            park_mult = 1.0 + (park_run_factor - 100) / 200 if park_run_factor else 1.0
 
             if home_rpg and away_rpg:
                 base_total = home_rpg + away_rpg
@@ -1938,6 +1956,9 @@ def run():
                     'loanDepot park': 'loanDepot Park',
                     'loandepot park': 'loanDepot Park',
                     'Tropicana Field ': 'Tropicana Field',
+                    'Minute Maid Park': 'Daikin Park',
+                    'UNIQLO Field at Dodger Stadium': 'Dodger Stadium',
+                    'Tropicana Field': 'George M. Steinbrenner Field',
                     'T-Mobile Park ': 'T-Mobile Park',
                     'Rate Field': 'Guaranteed Rate Field',
                     'Guaranteed Rate  Field': 'Guaranteed Rate Field',

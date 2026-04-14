@@ -127,13 +127,23 @@ def update_umpire_tendencies():
 
     print("Calculating umpire NRFI tendencies from game results...")
 
-    # Fetch all games with umpire + NRFI result
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/mlb_game_results?nrfi_result=not.is.null&umpire=not.is.null&select=umpire,nrfi_result,home_score,away_score",
-        headers=headers
-    )
-    games = r.json()
-    if not games or not isinstance(games, list):
+    # Fetch all games with umpire + NRFI result (paginate past 1000 row limit)
+    games = []
+    offset = 0
+    while True:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_results?nrfi_result=not.is.null&umpire=not.is.null&select=umpire,nrfi_result,home_score,away_score&limit=1000&offset={offset}",
+            headers=headers
+        )
+        batch = r.json()
+        if not batch or not isinstance(batch, list):
+            break
+        games.extend(batch)
+        if len(batch) < 1000:
+            break
+        offset += 1000
+
+    if not games:
         print("No game results with umpire data yet")
         return
 
@@ -217,13 +227,23 @@ def update_pitcher_nrfi_rates():
 
     print("Calculating pitcher NRFI rates from game results...")
 
-    # Fetch all games with pitcher + NRFI result — check both home and away
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/mlb_game_results?nrfi_result=not.is.null&select=home_sp_name,away_sp_name,nrfi_result",
-        headers=headers
-    )
-    games = r.json()
-    if not games or not isinstance(games, list):
+    # Fetch all games with pitcher + NRFI result (paginate past 1000 row limit)
+    games = []
+    offset = 0
+    while True:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_results?nrfi_result=not.is.null&select=home_sp_name,away_sp_name,nrfi_result&limit=1000&offset={offset}",
+            headers=headers
+        )
+        batch = r.json()
+        if not batch or not isinstance(batch, list):
+            break
+        games.extend(batch)
+        if len(batch) < 1000:
+            break
+        offset += 1000
+
+    if not games:
         print("No game results with pitcher NRFI data yet")
         return
 
