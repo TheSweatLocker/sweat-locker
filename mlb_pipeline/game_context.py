@@ -1809,6 +1809,10 @@ def run():
             if away_bullpen:
                 print(f"  {away_team} bullpen ERA: {away_bullpen.get('bullpen_era')} save%: {away_bullpen.get('save_pct')}%")
             
+            # Get umpire early — needed for total projection
+            ump_name = umpire_assignments.get(home_team)
+            ump_stats = get_umpire_stats(ump_name) if ump_name else None
+
             # ── PROJECTED TOTAL (calibrated from 170+ game backtesting) ──
             # Inputs used + their correlation with actual total:
             # projected_total: 0.212, temperature: 0.143, nrfi_score: -0.164
@@ -1929,9 +1933,7 @@ def run():
                 spread_delta = round(projected_spread - spread_line, 2)
                 print(f"  Spread delta: model {projected_spread} vs posted {spread_line} = {'+' if spread_delta >= 0 else ''}{spread_delta}")
 
-            # Get umpire
-            ump_name = umpire_assignments.get(home_team)
-            ump_stats = get_umpire_stats(ump_name) if ump_name else None
+            # Print umpire info (already fetched above for total projection)
             if ump_name:
                 k_rate = ump_stats.get('k_rate_above_avg', 'N/A') if ump_stats else 'not in database'
                 over_pct = ump_stats.get('over_rate', 'N/A') if ump_stats else 'N/A'
