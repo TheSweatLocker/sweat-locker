@@ -1544,7 +1544,11 @@ def run():
                             spread_line = home_outcome.get("point")
                 if total_line and spread_line is not None and f5_total_line is not None:
                     break
-            if f5_total_line:
+            # Estimate F5 from full total if API doesn't provide it
+            if not f5_total_line and total_line:
+                f5_total_line = round(float(total_line) * 0.565, 1)
+                print(f"  F5 total line: {f5_total_line} (estimated from full total)")
+            elif f5_total_line:
                 print(f"  F5 total line: {f5_total_line}")
 
             # Determine if this is 8am (open) or 2pm (close) run
@@ -1753,7 +1757,7 @@ def run():
                 away_first_inn,
                 home_is_opener,
                 away_is_opener,
-                game_month=game_date[5:7] if game_date else None,
+                game_month=game_date_et[5:7] if game_date_et else None,
             )
             if nrfi_score:
                 print(f"  NRFI score: {nrfi_score} ({'NRFI lean' if nrfi_score >= 60 else 'YRFI lean' if nrfi_score <= 40 else 'neutral'})")
