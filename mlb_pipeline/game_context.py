@@ -1830,9 +1830,10 @@ def run():
                 projected_runs = base_total * park_mult
                 projected_total = round(projected_runs + weather_adj, 1)
 
-                # NRFI score adjustment — strong -0.164 inverse correlation with total runs
+                # NRFI score adjustment — inverse correlation with total runs
+                # Capped at ±1.0 run max — NRFI signal shouldn't dominate total projection
                 if nrfi_score:
-                    nrfi_adj = (nrfi_score - 50) * -0.08  # high NRFI = lower total
+                    nrfi_adj = max(-1.0, min(1.0, (nrfi_score - 50) * -0.02))  # high NRFI = lower total
                     projected_total = round(projected_total + nrfi_adj, 1)
 
                 # Bullpen differential — late innings matter for totals
