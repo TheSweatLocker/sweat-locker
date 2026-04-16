@@ -3442,8 +3442,10 @@ if(isPlayoffMode) {
     // Low NRFI score = offense expected → also a signal worth elevating
     if(mlbCtx.nrfi_score) {
       const nrfi = mlbCtx.nrfi_score;
-      if(nrfi >= 88) modelMismatch = Math.min(88, modelMismatch + 8);       // both arms elite — high conviction
-      else if(nrfi >= 75) modelMismatch = Math.min(88, modelMismatch + 5);  // strong NRFI lean
+      if(nrfi >= 95) modelMismatch = Math.min(88, modelMismatch + 4);         // 95+ historically volatile — reduced boost
+      else if(nrfi >= 90) modelMismatch = Math.min(88, modelMismatch + 10); // 90-94 sweet spot — 77% hit rate
+      else if(nrfi >= 85) modelMismatch = Math.min(88, modelMismatch + 6);  // strong NRFI lean
+      else if(nrfi >= 75) modelMismatch = Math.min(88, modelMismatch + 4);  // moderate NRFI lean
       else if(nrfi <= 35) modelMismatch = Math.min(88, modelMismatch + 5);  // strong YRFI lean — offense signal
       else if(nrfi <= 45) modelMismatch = Math.min(88, modelMismatch + 3);  // moderate YRFI
       // 46-74 = no boost — neutral zone doesn't help confidence
@@ -4862,22 +4864,30 @@ Do NOT give a specific bet or pick. End with — Jerry.`;
         const parsed = JSON.parse(cached);
         if(Date.now() - parsed.timestamp < 12*3600000) return parsed.data; // 12hr cache
       }
+      // Strip accents for API search compatibility (Iván → Ivan)
+      const searchName = playerName.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       // Search MLB Stats API for player
       const searchResp = await axios.get('https://statsapi.mlb.com/api/v1/people/search', {
-        params: {names: playerName, sportId: 1},
-        timeout: 10
+        params: {names: searchName, sportId: 1, active: true},
+        timeout: 10000
       });
       const people = searchResp.data?.people;
-      if(!people || !people.length) return null;
+      if(!people || !people.length) {
+        console.log(`⚾ [BatterStats] ${playerName} → no person found in MLB API search`);
+        return null;
+      }
       const playerId = people[0].id;
       const position = people[0].primaryPosition?.abbreviation || '';
       // Get current season hitting stats
       const statsResp = await axios.get(`https://statsapi.mlb.com/api/v1/people/${playerId}/stats`, {
         params: {stats: 'season', group: 'hitting', season: 2026},
-        timeout: 10
+        timeout: 10000
       });
       const splits = statsResp.data?.stats;
-      if(!splits || !splits[0]?.splits?.length) return null;
+      if(!splits || !splits[0]?.splits?.length) {
+        console.log(`⚾ [BatterStats] ${playerName} (id ${playerId}) → no 2026 hitting splits`);
+        return null;
+      }
       const s = splits[0].splits[0].stat;
       const pa = parseInt(s.plateAppearances || 0);
       const ab = parseInt(s.atBats || 1);
@@ -4896,7 +4906,8 @@ Do NOT give a specific bet or pick. End with — Jerry.`;
       };
       await AsyncStorage.setItem(cacheKey, JSON.stringify({data, timestamp: Date.now()}));
       return data;
-    } catch(e) {
+    } catch(e: any) {
+      console.log(`⚾ [BatterStats] ${playerName} → error:`, e?.message || e);
       return null;
     }
   };
@@ -5055,7 +5066,7 @@ MLB GAME CONTEXT:
 - Days rest signal: ${mlbData.home_days_rest && mlbData.away_days_rest ? (mlbData.home_days_rest > mlbData.away_days_rest ? mlbData.home_pitcher + ' has rest advantage (' + mlbData.home_days_rest + ' vs ' + mlbData.away_days_rest + ' days)' : mlbData.away_days_rest > mlbData.home_days_rest ? mlbData.away_pitcher + ' has rest advantage (' + mlbData.away_days_rest + ' vs ' + mlbData.home_days_rest + ' days)' : 'Even rest') : 'TBD'}
 - Umpire: ${mlbData.umpire_note || mlbData.umpire || 'TBD'}
 - Model lean: ${overUnder}
-- NRFI signal: ${mlbData.nrfi_score ? `Score ${mlbData.nrfi_score}/100 — ${mlbData.nrfi_score >= 70 ? '🔒 Strong NRFI lean — both starters elite, run suppression likely' : mlbData.nrfi_score >= 60 ? 'NRFI lean — solid pitcher matchup' : mlbData.nrfi_score <= 40 ? 'YRFI lean — offense expected early' : 'neutral first inning signal'}` : 'NRFI score pending'}
+- NRFI signal: ${mlbData.nrfi_score ? `Score ${mlbData.nrfi_score}/100 — ${mlbData.nrfi_score >= 95 ? 'All signals maxed BUT historically volatile (28% hit rate on 100s) — mention this is a high-score trap' : mlbData.nrfi_score >= 90 ? 'PRIME NRFI — 90-94 sweet spot has 77% hit rate, highest conviction tier' : mlbData.nrfi_score >= 85 ? 'Strong NRFI lean — solid pitcher matchup' : mlbData.nrfi_score >= 75 ? 'NRFI lean — above average signal' : mlbData.nrfi_score >= 60 ? 'Mild NRFI lean' : mlbData.nrfi_score <= 35 ? 'Strong YRFI lean — runs expected early' : mlbData.nrfi_score <= 45 ? 'YRFI lean — offense expected early' : 'neutral first inning signal'}` : 'NRFI score pending'}
 - Projected total: ${mlbData.projected_total ? mlbData.projected_total + ' (team stats + park + weather)' : 'NOT YET CALCULATED — do not infer a lean from pitcher data alone'}
 - Total analysis: ${mlbData.projected_total ? 'Model total available' : 'IMPORTANT: No projected total available. Base total take only on posted line context and weather/park. Do not default to under.'}
 - ${mlbData.home_runs_per_game ? `${game.home_team} offense: ${mlbData.home_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.home_ops?.toFixed(3)}` : ''}
@@ -5662,11 +5673,23 @@ if(mkt.key === 'pitcher_props') {
   };
 
   const fetchHRWatch = async () => {
-    if(Object.keys(mlbGameContext).length === 0) return;
+    console.log('🏠 [HR Watch] Starting scan...');
+    if(Object.keys(mlbGameContext).length === 0) {
+      console.log('🏠 [HR Watch] ABORT — no MLB game context loaded');
+      return;
+    }
+    console.log(`🏠 [HR Watch] Scanning ${Object.keys(mlbGameContext).length} games`);
     setHrWatchLoading(true);
     try {
       const seen = new Set();
       const candidates: any[] = [];
+      let gamesWithLineups = 0;
+      let gamesWithoutLineups = 0;
+      let battersChecked = 0;
+      let battersSkippedNoStats = 0;
+      let battersSkippedLowPA = 0;
+      let battersSkippedLowHR = 0;
+      let battersSkippedLowScore = 0;
 
       for(const ctx of Object.values(mlbGameContext) as any[]) {
         if(!ctx.game_id || seen.has(ctx.game_id)) continue;
@@ -5688,6 +5711,11 @@ if(mkt.key === 'pitcher_props') {
         else if(temp >= 70) envScore += 5;
         if(windOut) envScore += 12;
 
+        const gameLabel = `${ctx.away_team} @ ${ctx.home_team}`;
+        const hasLineups = !!(ctx.home_lineup || ctx.away_lineup);
+        if(hasLineups) gamesWithLineups++; else gamesWithoutLineups++;
+        console.log(`🏠 [HR Watch] ${gameLabel} | park ${parkFactor} | temp ${temp}°F | wind ${windSpeed}mph ${windDir} | env ${envScore} | lineups: ${hasLineups ? '✅' : '❌ MISSING'}`);
+
         // Get lineups and look up top batters
         const lineups = [
           {lineup: ctx.home_lineup, team: ctx.home_team, oppXera: awayXera, side: 'home'},
@@ -5695,27 +5723,45 @@ if(mkt.key === 'pitcher_props') {
         ];
 
         for(const {lineup, team, oppXera, side} of lineups) {
-          if(!lineup) continue;
+          if(!lineup) {
+            console.log(`🏠 [HR Watch]   ${team} (${side}) — no lineup, skipping`);
+            continue;
+          }
           const batters = lineup.split(',').map((b: string) => b.trim()).filter(Boolean).slice(0, 5); // top 5 in order
+          console.log(`🏠 [HR Watch]   ${team} (${side}) batters: ${batters.join(', ')} | opp xERA ${oppXera}`);
           for(const batterName of batters) {
             if(!batterName || batterName.length < 3) continue;
+            battersChecked++;
             try {
               const stats = await fetchMLBBatterStats(batterName);
-              if(!stats || stats.pa < 15) continue;
+              if(!stats) {
+                battersSkippedNoStats++;
+                console.log(`🏠 [HR Watch]     ${batterName} — no stats found`);
+                continue;
+              }
+              if(stats.pa < 15) {
+                battersSkippedLowPA++;
+                console.log(`🏠 [HR Watch]     ${batterName} — only ${stats.pa} PA, skipping (need 15+)`);
+                continue;
+              }
               const hrRate = stats.hr > 0 ? (stats.hr / stats.pa) : 0;
-              if(hrRate < 0.02) continue; // skip players with very low HR rate
+              if(hrRate < 0.02) {
+                battersSkippedLowHR++;
+                console.log(`🏠 [HR Watch]     ${batterName} — HR rate ${(hrRate*100).toFixed(1)}% too low (need 2%+)`);
+                continue;
+              }
 
               let score = 0;
-              // Player power
-              score += Math.round(hrRate * 500); // 0.05 HR/PA = 25 pts
-              if(stats.hr >= 4) score += 10;
-              // Opposing pitcher quality
-              if(oppXera && oppXera > 4.5) score += 15;
-              else if(oppXera && oppXera > 3.5) score += 5;
-              // Environment
+              const powerScore = Math.round(hrRate * 500);
+              score += powerScore;
+              const hrBonus = stats.hr >= 4 ? 10 : 0;
+              score += hrBonus;
+              const oppScore = oppXera && oppXera > 4.5 ? 15 : (oppXera && oppXera > 3.5 ? 5 : 0);
+              score += oppScore;
               score += envScore;
 
               if(score >= 20) {
+                console.log(`🏠 [HR Watch]     ✅ ${batterName} (${stats.hr} HR/${stats.pa} PA) | score ${score} = power ${powerScore} + hrBonus ${hrBonus} + opp ${oppScore} + env ${envScore}`);
                 candidates.push({
                   player: stats.name || batterName,
                   team: team,
@@ -5734,16 +5780,24 @@ if(mkt.key === 'pitcher_props') {
                   score: score,
                   game: `${ctx.away_team} @ ${ctx.home_team}`,
                 });
+              } else {
+                battersSkippedLowScore++;
+                console.log(`🏠 [HR Watch]     ${batterName} (${stats.hr} HR/${stats.pa} PA) | score ${score} below 20 threshold`);
               }
-            } catch(e) { continue; }
+            } catch(e) {
+              console.log(`🏠 [HR Watch]     ${batterName} — error: ${e}`);
+              continue;
+            }
           }
         }
       }
 
+      console.log(`🏠 [HR Watch] SUMMARY: ${gamesWithLineups} games with lineups, ${gamesWithoutLineups} without | ${battersChecked} batters checked | ${candidates.length} candidates found`);
+      console.log(`🏠 [HR Watch] Skipped: ${battersSkippedNoStats} no stats, ${battersSkippedLowPA} low PA, ${battersSkippedLowHR} low HR rate, ${battersSkippedLowScore} below score threshold`);
       candidates.sort((a, b) => b.score - a.score);
       setHrWatch(candidates.slice(0, 5));
     } catch(e) {
-      console.log('HR Watch error:', e);
+      console.log('🏠 [HR Watch] ERROR:', e);
     }
     setHrWatchLoading(false);
   };
@@ -9868,8 +9922,8 @@ if(pipelineNRFI !== null && pipelineNRFI !== undefined) {
   );
 }
 
-const nrfiLean  = nrfiScore >= 88 ? 'NRFI 🔒' : nrfiScore <= 40 ? 'YRFI' : 'NEUTRAL';
-const nrfiColor = nrfiLean === 'NRFI' ? '#00e5a0' : nrfiLean === 'YRFI' ? '#ff4d6d' : '#7a92a8';
+const nrfiLean  = nrfiScore >= 95 ? 'NRFI (volatile)' : nrfiScore >= 90 ? 'PRIME NRFI' : nrfiScore >= 85 ? 'NRFI' : nrfiScore >= 75 ? 'NRFI lean' : nrfiScore <= 35 ? 'YRFI' : nrfiScore <= 45 ? 'YRFI lean' : 'NEUTRAL';
+const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 95 ? '#ffb800' : nrfiScore >= 75 ? '#4a9eff' : nrfiScore <= 45 ? '#ff4d6d' : '#7a92a8';
   return(
     <View style={[styles.card,{marginBottom:10}]}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
