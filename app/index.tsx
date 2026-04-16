@@ -5703,6 +5703,26 @@ if(mkt.key === 'pitcher_props') {
         const homeXera = ctx.home_sp_xera ? parseFloat(ctx.home_sp_xera) : null;
         const awayXera = ctx.away_sp_xera ? parseFloat(ctx.away_sp_xera) : null;
 
+        // Fetch pitcher contact profiles from Supabase (hard hit %, barrel %)
+        let homePitcherContact: any = null;
+        let awayPitcherContact: any = null;
+        try {
+          if(ctx.home_pitcher) {
+            const { data: hp } = await supabase.from('mlb_pitcher_stats')
+              .select('hard_hit_pct_allowed,barrel_pct,baa_allowed,player_name')
+              .ilike('player_name', `%${ctx.home_pitcher.split(' ').pop()}%`)
+              .limit(1).single();
+            if(hp) homePitcherContact = hp;
+          }
+          if(ctx.away_pitcher) {
+            const { data: ap } = await supabase.from('mlb_pitcher_stats')
+              .select('hard_hit_pct_allowed,barrel_pct,baa_allowed,player_name')
+              .ilike('player_name', `%${ctx.away_pitcher.split(' ').pop()}%`)
+              .limit(1).single();
+            if(ap) awayPitcherContact = ap;
+          }
+        } catch(e) {}
+
         // Get game environment score
         let envScore = 0;
         if(parkFactor >= 108) envScore += 15;
@@ -5718,11 +5738,11 @@ if(mkt.key === 'pitcher_props') {
 
         // Get lineups and look up top batters
         const lineups = [
-          {lineup: ctx.home_lineup, team: ctx.home_team, oppXera: awayXera, side: 'home'},
-          {lineup: ctx.away_lineup, team: ctx.away_team, oppXera: homeXera, side: 'away'},
+          {lineup: ctx.home_lineup, team: ctx.home_team, oppXera: awayXera, oppContact: awayPitcherContact, side: 'home'},
+          {lineup: ctx.away_lineup, team: ctx.away_team, oppXera: homeXera, oppContact: homePitcherContact, side: 'away'},
         ];
 
-        for(const {lineup, team, oppXera, side} of lineups) {
+        for(const {lineup, team, oppXera, oppContact, side} of lineups) {
           if(!lineup) {
             console.log(`🏠 [HR Watch]   ${team} (${side}) — no lineup, skipping`);
             continue;
@@ -5758,10 +5778,22 @@ if(mkt.key === 'pitcher_props') {
               score += hrBonus;
               const oppScore = oppXera && oppXera > 4.5 ? 15 : (oppXera && oppXera > 3.5 ? 5 : 0);
               score += oppScore;
+              // Pitcher contact profile — hard hit % and barrel % allowed
+              let contactScore = 0;
+              if(oppContact) {
+                const hardHit = parseFloat(oppContact.hard_hit_pct_allowed) || 0;
+                const barrel = parseFloat(oppContact.barrel_pct) || 0;
+                if(hardHit >= 42) contactScore += 12;       // top 25% most hittable
+                else if(hardHit >= 38) contactScore += 6;    // above average
+                else if(hardHit <= 30) contactScore -= 5;    // elite contact suppressor
+                if(barrel >= 10) contactScore += 10;         // homer-prone pitcher
+                else if(barrel >= 7) contactScore += 5;
+              }
+              score += contactScore;
               score += envScore;
 
               if(score >= 20) {
-                console.log(`🏠 [HR Watch]     ✅ ${batterName} (${stats.hr} HR/${stats.pa} PA) | score ${score} = power ${powerScore} + hrBonus ${hrBonus} + opp ${oppScore} + env ${envScore}`);
+                console.log(`🏠 [HR Watch]     ✅ ${batterName} (${stats.hr} HR/${stats.pa} PA) | score ${score} = power ${powerScore} + hrBonus ${hrBonus} + opp ${oppScore} + contact ${contactScore} + env ${envScore}`);
                 candidates.push({
                   player: stats.name || batterName,
                   team: team,
@@ -5778,11 +5810,14 @@ if(mkt.key === 'pitcher_props') {
                   windSpeed: windSpeed,
                   windDir: windDir,
                   score: score,
+                  contactScore: contactScore,
+                  oppHardHit: oppContact?.hard_hit_pct_allowed || null,
+                  oppBarrel: oppContact?.barrel_pct || null,
                   game: `${ctx.away_team} @ ${ctx.home_team}`,
                 });
               } else {
                 battersSkippedLowScore++;
-                console.log(`🏠 [HR Watch]     ${batterName} (${stats.hr} HR/${stats.pa} PA) | score ${score} below 20 threshold`);
+                console.log(`🏠 [HR Watch]     ${batterName} (${stats.hr} HR/${stats.pa} PA) | score ${score} = power ${powerScore} + hrBonus ${hrBonus} + opp ${oppScore} + contact ${contactScore} + env ${envScore} — below 20`);
               }
             } catch(e) {
               console.log(`🏠 [HR Watch]     ${batterName} — error: ${e}`);
