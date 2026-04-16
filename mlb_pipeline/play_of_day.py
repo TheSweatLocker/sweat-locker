@@ -79,14 +79,18 @@ def score_mlb_game(ctx):
     """Score an MLB game for Play of the Day candidacy"""
     score = 30  # base
 
-    # NRFI signal — strongest indicator
+    # NRFI signal — 88-94 sweet spot is highest conviction (77% hit rate)
     nrfi = ctx.get('nrfi_score') or 0
-    if nrfi >= 88:
-        score += 25
+    if 90 <= nrfi <= 94:
+        score += 30    # prime sweet spot
+    elif 88 <= nrfi <= 89:
+        score += 22    # edge of sweet spot
+    elif nrfi >= 95:
+        score += 10    # historically volatile — reduced boost
     elif nrfi >= 75:
-        score += 18
+        score += 15
     elif nrfi >= 70:
-        score += 12
+        score += 10
 
     # Pitcher quality — xERA gap
     home_xera = float(ctx.get('home_sp_xera') or 4.5)
@@ -101,9 +105,11 @@ def score_mlb_game(ctx):
     if home_xera <= 3.0 and away_xera <= 3.0:
         score += 10
 
-    # Spread delta
+    # Spread delta — big market mispricing = strong ML lean candidate
     spread_delta = abs(float(ctx.get('spread_delta') or 0))
-    if spread_delta >= 2.0:
+    if spread_delta >= 3.0:
+        score += 15    # massive market disagreement
+    elif spread_delta >= 2.0:
         score += 10
     elif spread_delta >= 1.0:
         score += 5
@@ -224,16 +230,20 @@ def score_nba_game(game, nba_teams):
 
 def build_lean(ctx):
     """Determine the lean for an MLB game"""
-    # NRFI first
+    # NRFI — only flag as NRFI play in the 88-94 sweet spot (77% hit rate)
     nrfi = ctx.get('nrfi_score') or 0
-    if nrfi >= 75:
-        return f"NRFI — Score {nrfi}/100", 'nrfi', True
+    if 88 <= nrfi <= 94:
+        return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
 
-    # Spread lean
-    spread_lean = ctx.get('spread_lean')
-    if spread_lean:
-        team = ctx.get('home_team') if spread_lean == 'home' else ctx.get('away_team')
-        return team, 'ml', False
+    # ML lean — when projected spread diverges significantly from posted
+    projected_spread = ctx.get('projected_spread')
+    spread_delta = ctx.get('spread_delta')
+    if projected_spread is not None and spread_delta is not None:
+        delta = abs(float(spread_delta))
+        proj = float(projected_spread)
+        if delta >= 2.0:
+            fav_team = ctx.get('home_team') if proj > 0 else ctx.get('away_team')
+            return f"{fav_team} ML (spread delta {'+' if float(spread_delta) > 0 else ''}{float(spread_delta):.1f})", 'ml', False
 
     # Total lean
     over_lean = ctx.get('over_lean')
@@ -290,6 +300,7 @@ def run():
             'home_sp_xera': ctx.get('home_sp_xera'),
             'away_sp_xera': ctx.get('away_sp_xera'),
             'projected_total': ctx.get('projected_total'),
+            'projected_spread': ctx.get('projected_spread'),
             'spread_delta': ctx.get('spread_delta'),
             'venue': ctx.get('venue'),
             'temperature': ctx.get('temperature'),
@@ -325,43 +336,26 @@ def run():
         )
         return
 
-    # Sort by score — NRFI 75+ gets priority unless another game scores 80+
+    # Sort by score
     candidates.sort(key=lambda c: c['score'], reverse=True)
 
-    # Find the best NRFI — prefer 90-94 sweet spot (90% hit rate) over 95+ (33%)
-    # Data: 90-94 = 9-1 (90%), 95-99 = 1-2 (33%), 100 = 2-4 (33%)
-    nrfi_candidates = [c for c in candidates if c.get('is_nrfi') and (c.get('nrfi_score') or 0) >= 85]
+    # NRFI candidates — only 88-94 range (77% hit rate proven sweet spot)
+    # 95+ excluded from NRFI POTD — historically volatile (38.5%)
+    sweet_spot = [c for c in candidates if c.get('is_nrfi') and 90 <= (c.get('nrfi_score') or 0) <= 94]
+    edge_nrfi = [c for c in candidates if c.get('is_nrfi') and 88 <= (c.get('nrfi_score') or 0) <= 89]
 
-    # Prioritize 90-94 range — proven sweet spot
-    sweet_spot = [c for c in nrfi_candidates if 90 <= (c.get('nrfi_score') or 0) <= 94]
-    high_scores = [c for c in nrfi_candidates if (c.get('nrfi_score') or 0) >= 95]
-    other_nrfi = [c for c in nrfi_candidates if 85 <= (c.get('nrfi_score') or 0) < 90]
-
-    # Pick order: sweet spot first, then 85-89, then 95+ (market already prices those)
-    if sweet_spot:
-        sweet_spot.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
-        best_nrfi = sweet_spot[0]
-    elif other_nrfi:
-        other_nrfi.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
-        best_nrfi = other_nrfi[0]
-    elif high_scores:
-        high_scores.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
-        best_nrfi = high_scores[0]
-    else:
-        best_nrfi = None
+    # ML lean candidates — games with 2+ run spread delta
+    ml_candidates = [c for c in candidates if c.get('lean_bet') == 'ml' and c.get('sport') == 'MLB']
 
     best_overall = candidates[0]
-
-    # Confidence tiers — always pick something on a full slate, but label confidence
-    # Tier 1: NRFI sweet spot 90-94 (90% hit rate) or NBA playoff with score 75+
-    # Tier 2: NRFI 85-89 or MLB xERA gap Over or NBA with score 65+
-    # Tier 3: Best available — still a pick but lower confidence
 
     pick = None
     confidence = 'standard'
 
     # Tier 1 — high conviction
+    # NRFI 90-94 sweet spot or NBA playoff 75+
     if sweet_spot:
+        sweet_spot.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
         pick = sweet_spot[0]
         confidence = 'high'
         print(f"🔒 SWEET SPOT pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
@@ -371,11 +365,18 @@ def run():
         print(f"🔒 NBA HIGH CONVICTION: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']}")
 
     # Tier 2 — solid
+    # NRFI 88-89, or ML lean with big spread delta, or NBA 65+
     if not pick:
-        if other_nrfi:
-            pick = other_nrfi[0]
+        if edge_nrfi:
+            edge_nrfi.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
+            pick = edge_nrfi[0]
             confidence = 'solid'
             print(f"✅ NRFI pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
+        elif ml_candidates:
+            ml_candidates.sort(key=lambda c: c['score'], reverse=True)
+            pick = ml_candidates[0]
+            confidence = 'solid'
+            print(f"✅ ML lean pick: {pick['away_team']} @ {pick['home_team']} — {pick.get('lean_display')}")
         elif best_overall.get('sport') == 'NBA' and best_overall['score'] >= 65:
             pick = best_overall
             confidence = 'solid'
@@ -383,15 +384,9 @@ def run():
 
     # Tier 3 — best available (always fires on a full slate)
     if not pick:
-        # Prefer non-100 NRFI over 95+ scores
-        if high_scores:
-            pick = high_scores[0]
-            confidence = 'standard'
-            print(f"🎯 NRFI pick (market priced): {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
-        else:
-            pick = best_overall
-            confidence = 'standard'
-            print(f"🎯 Best available: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']} ({pick['sport']})")
+        pick = best_overall
+        confidence = 'standard'
+        print(f"🎯 Best available: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']} ({pick['sport']})")
 
     # Print all candidates
     for c in candidates[:5]:
@@ -419,6 +414,8 @@ def run():
             'away_sp_xera': pick.get('away_sp_xera'),
             'projected_total': pick.get('projected_total'),
             'spread_delta': pick.get('spread_delta'),
+            'projected_spread': pick.get('projected_spread'),
+            'lean_bet': pick.get('lean_bet'),
             'nrfi_score': pick.get('nrfi_score'),
             'venue': pick.get('venue'),
             'temperature': pick.get('temperature'),
