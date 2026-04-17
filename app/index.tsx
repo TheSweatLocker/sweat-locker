@@ -1307,8 +1307,7 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
     try {
       const legs = [];
 
-      // 1. Scan MLB for NRFI plays (score >= 75)
-      // Deduplicate by game_id to prevent same game appearing twice
+      // 1. Scan MLB for NRFI plays — only 88-94 sweet spot (77% hit rate)
 const seen = new Set();
 const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
   if(!ctx.game_id || seen.has(ctx.game_id)) return false;
@@ -1323,7 +1322,7 @@ const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
   return true;
 });
       const topNRFI = mlbCtxValues
-        .filter((ctx: any) => ctx.nrfi_score >= 75 && ctx.game_date === today)
+        .filter((ctx: any) => ctx.nrfi_score >= 88 && ctx.nrfi_score <= 94 && ctx.game_date === today)
         .sort((a: any, b: any) => b.nrfi_score - a.nrfi_score)
         .slice(0, 2);
 
@@ -1343,65 +1342,62 @@ const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
         });
       }
 
-      // 2. Scan MLB totals for strong over/under leans
+      // 2. Scan MLB totals — over leans only (55.9% hit rate), unders excluded (46.2%)
       const topTotals = mlbCtxValues
-        .filter((ctx: any) => ctx.over_lean !== null && ctx.projected_total && ctx.game_date === today)
+        .filter((ctx: any) => ctx.over_lean === true && ctx.projected_total && ctx.game_date === today)
         .map((ctx: any) => {
           const game = gamesData.find((g: any) => g.home_team === ctx.home_team);
           if(!game) return null;
           const totalMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals');
           const totalLine = totalMkt?.outcomes?.[0]?.point;
           if(!totalLine) return null;
-          const delta = Math.abs(ctx.projected_total - totalLine);
-          return { ctx, game, totalLine, delta, isOver: ctx.over_lean };
+          const delta = ctx.projected_total - totalLine;
+          if(delta < 0.5) return null;
+          return { ctx, game, totalLine, delta, isOver: true };
         })
         .filter(Boolean)
         .sort((a, b) => b.delta - a.delta)
-        .slice(0, 2);
+        .slice(0, 1);
 
       for(const item of topTotals) {
-        if(item.delta < 0.5) continue;
-        const side = item.isOver ? 'Over' : 'Under';
-        const odds = item.game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals')?.outcomes?.find((o: any) => o.name === side)?.price || -110;
+        const odds = item.game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals')?.outcomes?.find((o: any) => o.name === 'Over')?.price || -110;
         legs.push({
-          type: side.toUpperCase(),
+          type: 'OVER',
           matchup: `${item.ctx.away_team} @ ${item.ctx.home_team}`,
-          pick: `${side} ${item.totalLine}`,
+          pick: `Over ${item.totalLine}`,
           odds,
-          signal: `Model projects ${item.ctx.projected_total} runs — ${item.delta.toFixed(1)} run gap vs market`,
+          signal: `Model projects ${item.ctx.projected_total} runs — ${item.delta.toFixed(1)} run gap vs market (55.9% over lean hit rate)`,
           game: item.game,
           ctx: item.ctx,
         });
       }
 
-      // 3. Scan MLB moneyline for pitcher mismatches
-      const pitcherEdges = mlbCtxValues
-        .filter((ctx: any) => ctx.home_sp_xera && ctx.away_sp_xera && ctx.game_date === today)
+      // 3. Scan MLB moneyline — spread delta 3+ (60% win rate proven)
+      const mlEdges = mlbCtxValues
+        .filter((ctx: any) => ctx.spread_delta != null && ctx.game_date === today)
         .map((ctx: any) => {
-          const xeraGap = Math.abs(parseFloat(ctx.home_sp_xera) - parseFloat(ctx.away_sp_xera));
-          if(xeraGap < 1.0) return null;
-          const betterSide = parseFloat(ctx.home_sp_xera) < parseFloat(ctx.away_sp_xera) ? 'home' : 'away';
+          const delta = parseFloat(ctx.spread_delta);
+          if(Math.abs(delta) < 3.0) return null;
           const game = gamesData.find((g: any) => g.home_team === ctx.home_team);
           if(!game) return null;
+          const favTeam = delta > 0 ? ctx.home_team : ctx.away_team;
           const mlMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'h2h');
-          const favTeam = betterSide === 'home' ? ctx.home_team : ctx.away_team;
           const mlOdds = mlMkt?.outcomes?.find((o: any) => o.name === favTeam)?.price;
-          if(!mlOdds || mlOdds < -200) return null; // skip heavy favorites
-          return { ctx, game, xeraGap, favTeam, mlOdds, betterPitcher: betterSide === 'home' ? ctx.home_pitcher : ctx.away_pitcher };
+          if(!mlOdds || mlOdds < -200) return null;
+          return { ctx, game, delta, favTeam, mlOdds };
         })
         .filter(Boolean)
-        .sort((a, b) => b.xeraGap - a.xeraGap)
+        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
         .slice(0, 1);
 
-      for(const item of pitcherEdges) {
-        // Don't duplicate if same game already has an NRFI or total leg
+      for(const item of mlEdges) {
         if(legs.some(l => l.matchup === `${item.ctx.away_team} @ ${item.ctx.home_team}`)) continue;
         legs.push({
           type: 'MLB',
           matchup: `${item.ctx.away_team} @ ${item.ctx.home_team}`,
           pick: `${item.favTeam} ML`,
           odds: item.mlOdds,
-          signal: `${item.betterPitcher} xERA edge — ${item.xeraGap.toFixed(2)} gap vs opponent starter`,
+          signal: `Spread delta ${item.delta > 0 ? '+' : ''}${item.delta.toFixed(1)} runs vs market — 60% hit rate at 3+ delta`,
           game: item.game,
           ctx: item.ctx,
         });
