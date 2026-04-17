@@ -1632,7 +1632,7 @@ Write 2-3 sentences MAX. Reference the specific data signals. Sound like a sharp
     </View>
   );
 };
-const FadesScanner = ({ gamesData, mlbGameContext, gamesSport, ANTHROPIC_API_KEY, supabase }) => {
+const FadesScanner = ({ gamesData, mlbGameContext, nbaTeamData, nbaInjuryData, gamesSport, ANTHROPIC_API_KEY, supabase }) => {
   const [fadesData, setFadesData] = React.useState(null);
   const [fadesLoading, setFadesLoading] = React.useState(false);
 
@@ -1661,57 +1661,117 @@ const FadesScanner = ({ gamesData, mlbGameContext, gamesSport, ANTHROPIC_API_KEY
     setFadesLoading(true);
     try {
       const now = new Date();
-      const fades = [];
+      const fades: any[] = [];
+      const futureGames = gamesData.filter((g:any) => new Date(g.commence_time) > now);
 
-      // Scan all future games across gamesData
-      const futureGames = gamesData.filter(g => new Date(g.commence_time) > now);
+      for(const game of futureGames.slice(0, 25)) {
+        const reasons: string[] = [];
+        const sport = game.sport_key?.includes('nba') ? 'NBA' : game.sport_key?.includes('mlb') ? 'MLB' : game.sport_key?.includes('nhl') ? 'NHL' : 'OTHER';
 
-      for(const game of futureGames.slice(0, 20)) {
-        const reasons = [];
+        // ── MLB PIPELINE-DRIVEN FADES ──
+        const mlbCtx = Object.values(mlbGameContext as Record<string, any>).find((ctx:any) =>
+          ctx.home_team === game.home_team || ctx.away_team === game.away_team
+        );
+        if(mlbCtx) {
+          // NRFI 95+ — historically volatile (38.5% hit rate)
+          const nrfi = mlbCtx.nrfi_score;
+          if(nrfi >= 95) {
+            reasons.push(`NRFI score ${nrfi} looks elite but 95+ scores hit just 38% historically — model says step aside on NRFI`);
+          }
+
+          // Both pitchers xERA sanitized or missing
+          if(!mlbCtx.home_sp_xera && !mlbCtx.away_sp_xera) {
+            reasons.push('No pitcher xERA data — model is flying blind, unpredictable game');
+          }
+
+          // Spread delta < 1.0 — no edge
+          const sDelta = mlbCtx.spread_delta != null ? Math.abs(parseFloat(mlbCtx.spread_delta)) : null;
+          if(sDelta !== null && sDelta < 1.0 && mlbCtx.projected_total) {
+            reasons.push(`Spread delta ${sDelta.toFixed(1)} runs — market and model agree, no ML edge`);
+          }
+
+          // Both openers / bullpen day
+          if(mlbCtx.home_pitcher && mlbCtx.away_pitcher) {
+            const homeLP = mlbCtx.home_last_pitch_count;
+            const awayLP = mlbCtx.away_last_pitch_count;
+            if(homeLP && awayLP && homeLP < 40 && awayLP < 40) {
+              reasons.push('Both starters had short outings — possible bullpen games, high volatility');
+            }
+          }
+
+          // Both teams weak offense — boring game, no side lean
+          const hWrc = mlbCtx.home_wrc_plus ? parseFloat(mlbCtx.home_wrc_plus) : null;
+          const aWrc = mlbCtx.away_wrc_plus ? parseFloat(mlbCtx.away_wrc_plus) : null;
+          if(hWrc && aWrc && hWrc < 90 && aWrc < 90) {
+            reasons.push(`Both offenses weak (wRC+ ${hWrc} vs ${aWrc}) — low-scoring grind with no clear lean`);
+          }
+
+          // No pitcher confirmed
+          if(!mlbCtx.home_pitcher || !mlbCtx.away_pitcher) {
+            reasons.push('Pitcher TBD — can\'t model the game without knowing who\'s on the mound');
+          }
+        }
+
+        // ── NBA PIPELINE-DRIVEN FADES ──
+        if(game.sport_key?.includes('nba') && nbaTeamData) {
+          const homeNBA = Object.values(nbaTeamData as Record<string, any>).find((t:any) => t.team && game.home_team?.includes(t.team.split(' ').pop()));
+          const awayNBA = Object.values(nbaTeamData as Record<string, any>).find((t:any) => t.team && game.away_team?.includes(t.team.split(' ').pop()));
+
+          if(homeNBA && awayNBA) {
+            const netGap = Math.abs((homeNBA.net_rating || 0) - (awayNBA.net_rating || 0));
+            const homeDef = homeNBA.defensive_rating || 112;
+            const awayDef = awayNBA.defensive_rating || 112;
+
+            // Net rating gap < 2 — coin flip
+            if(netGap < 2.0) {
+              reasons.push(`Net rating gap only ${netGap.toFixed(1)} pts — too close for the model to pick a side`);
+            }
+
+            // Both middling defenses — no total lean
+            if(homeDef >= 110 && homeDef <= 114 && awayDef >= 110 && awayDef <= 114) {
+              reasons.push(`Both teams average defensively (${homeDef.toFixed(0)} / ${awayDef.toFixed(0)} DRtg) — no clear over/under edge`);
+            }
+
+            // Star player questionable
+            const homeInj = nbaInjuryData?.[game.home_team] || [];
+            const awayInj = nbaInjuryData?.[game.away_team] || [];
+            const questionable = [...homeInj, ...awayInj].filter((i:any) => i.status === 'Questionable');
+            if(questionable.length >= 2) {
+              const names = questionable.slice(0, 3).map((i:any) => i.player_name).join(', ');
+              reasons.push(`${questionable.length} questionable players (${names}) — too much lineup risk`);
+            }
+
+            // Road favorite — historically underperforms
+            if(awayNBA.net_rating > homeNBA.net_rating) {
+              try {
+                const aw = parseInt(awayNBA.away_record?.split('-')[0] || '0');
+                const al = parseInt(awayNBA.away_record?.split('-')[1] || '0');
+                const awayRoadPct = aw / (aw + al || 1);
+                if(awayRoadPct < 0.45) {
+                  reasons.push(`${game.away_team.split(' ').pop()} favored on the road but only ${awayNBA.away_record} away — road favorites underperform`);
+                }
+              } catch(e) {}
+            }
+          }
+        }
+
+        // ── MARKET-BASED FADES (all sports) ──
         const bookmakers = game.bookmakers || [];
-        if(bookmakers.length < 2) continue;
-
-        // Rule 1: Sharp consensus — all books agree on spread
-        const spreads = bookmakers.map(bm => {
-          const s = bm.markets?.find(m => m.key === 'spreads');
-          return s?.outcomes?.[0]?.point;
-        }).filter(x => x !== null && x !== undefined);
-        const spreadRange = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 99;
-        if(spreadRange === 0 && spreads.length >= 3) {
-          reasons.push('Sharp consensus — books in perfect agreement, no edge to exploit');
-        }
-
-        // Rule 2: Heavy public side — massive favorite juice
-        const mls = bookmakers.map(bm => {
-          const m = bm.markets?.find(mk => mk.key === 'h2h');
-          return m?.outcomes?.map(o => o.price) || [];
+        const mls = bookmakers.map((bm:any) => {
+          const m = bm.markets?.find((mk:any) => mk.key === 'h2h');
+          return m?.outcomes?.map((o:any) => o.price) || [];
         }).flat().filter(Boolean);
-        const heavyFav = mls.some(ml => ml < -250);
+        const heavyFav = mls.some((ml:number) => ml < -280);
         if(heavyFav) {
-          reasons.push('Heavy public side — juice is already gone, no value backing the favorite');
-        }
-
-        // Rule 3: MLB thin data — no pitcher or projected total
-        const mlbCtx = mlbGameContext?.[game.home_team] || mlbGameContext?.[game.away_team];
-        if(mlbCtx && !mlbCtx.projected_total && !mlbCtx.home_pitcher) {
-          reasons.push('Thin data — no confirmed pitcher or projected total available');
-        }
-
-        // Rule 4: Totals consensus — all books on same number with tight odds
-        const totals = bookmakers.map(bm => {
-          const t = bm.markets?.find(m => m.key === 'totals');
-          return t?.outcomes?.[0]?.point;
-        }).filter(x => x !== null && x !== undefined);
-        const totalRange = totals.length > 1 ? Math.max(...totals) - Math.min(...totals) : 99;
-        if(totalRange === 0 && totals.length >= 3 && spreadRange <= 0.5) {
-          reasons.push('Market is locked — both spread and total in full consensus');
+          reasons.push('Massive favorite juice (-280+) — value is gone, public has already hammered this');
         }
 
         if(reasons.length >= 1) {
           fades.push({
-            game: `${stripMascot(game.away_team)} @ ${stripMascot(game.home_team)}`,
+            game: `${game.away_team?.split(' ').pop()} @ ${game.home_team?.split(' ').pop()}`,
             away: game.away_team,
             home: game.home_team,
+            sport: mlbCtx ? 'MLB' : game.sport_key?.includes('nba') ? 'NBA' : game.sport_key?.includes('nhl') ? 'NHL' : 'OTHER',
             commence_time: game.commence_time,
             reasons,
             reasonCount: reasons.length,
@@ -1719,11 +1779,9 @@ const FadesScanner = ({ gamesData, mlbGameContext, gamesSport, ANTHROPIC_API_KEY
         }
       }
 
-      // Sort by most reasons, take top 5
-      fades.sort((a, b) => b.reasonCount - a.reasonCount);
+      fades.sort((a:any, b:any) => b.reasonCount - a.reasonCount);
       const topFades = fades.slice(0, 5);
 
-      // Generate Jerry narrative for each fade
       for(const fade of topFades) {
         try {
           const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1735,10 +1793,10 @@ const FadesScanner = ({ gamesData, mlbGameContext, gamesSport, ANTHROPIC_API_KEY
             },
             body: JSON.stringify({
               model: 'claude-haiku-4-5-20251001',
-              max_tokens: 80,
+              max_tokens: 100,
               messages: [{
                 role: 'user',
-                content: `You are Jerry. This game is a FADE — a play to avoid.\nGame: ${fade.game}\nReasons: ${fade.reasons.join('. ')}\nWrite ONE sentence explaining why to step aside. Sound like a sharp bettor who sees no edge. Start with 'Books are...' or 'Sharp money...' or 'Public is...' — never say 'bet' or 'avoid'.`
+                content: `You are Jerry, a sharp sports analyst. This ${fade.sport} game is a FADE — a play to step aside on.\nGame: ${fade.game}\nReasons: ${fade.reasons.join('. ')}\nWrite ONE sentence explaining why there's no edge here. Be specific — reference the actual data point (xERA, wRC+, net rating, injury). Sound like a sharp bettor, not a disclaimer. Never say 'bet' or 'avoid' or 'I recommend'.`
               }]
             })
           });
@@ -1751,7 +1809,6 @@ const FadesScanner = ({ gamesData, mlbGameContext, gamesSport, ANTHROPIC_API_KEY
 
       const result = { fades: topFades, generatedAt: today };
 
-      // Cache
       try {
         await supabase.from('jerry_cache').upsert({
           cache_key: `fades_${today}`,
@@ -1791,7 +1848,7 @@ const FadesScanner = ({ gamesData, mlbGameContext, gamesSport, ANTHROPIC_API_KEY
             <Text style={{color:'#ff8c00',fontSize:11,fontWeight:'800'}}>{fadesData.fades.length} FADES</Text>
           </View>
         </View>
-        <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Games Jerry says to step aside on. Sharp money is already priced in or public juice has killed the value.</Text>
+        <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Games where the model sees no edge. Missing data, volatile matchups, or market consensus — sometimes the best play is no play.</Text>
       </View>
 
       {fadesData.fades.map((fade, i) => {
@@ -1801,7 +1858,7 @@ const FadesScanner = ({ gamesData, mlbGameContext, gamesSport, ANTHROPIC_API_KEY
             <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
               <View style={{flex:1}}>
                 <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{fade.game}</Text>
-                <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} ET</Text>
+                <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{fade.sport} • {gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} ET</Text>
               </View>
               <View style={{backgroundColor:'rgba(255,140,0,0.15)',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:'rgba(255,140,0,0.4)'}}>
                 <Text style={{color:'#ff8c00',fontWeight:'800',fontSize:11}}>🚫 FADE</Text>
@@ -9000,6 +9057,8 @@ setJerryHistory(prev => {
   <FadesScanner
     gamesData={gamesData}
     mlbGameContext={mlbGameContext}
+    nbaTeamData={nbaTeamData}
+    nbaInjuryData={nbaInjuryData}
     gamesSport={gamesSport}
     ANTHROPIC_API_KEY={ANTHROPIC_API_KEY}
     supabase={supabase}
