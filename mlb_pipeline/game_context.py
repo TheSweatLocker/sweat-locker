@@ -1022,20 +1022,74 @@ def get_team_woba_wrc(team_name):
 
 def calc_batting_order_weight(lineup_names):
     """
-    Weight lineup quality by batting order position.
-    Top 3 = high leverage, 4-6 = medium, 7-9 = low.
-    Returns a score 0-10 representing top-of-order strength.
+    Fetch individual batter OPS from MLB Stats API and compute
+    a weighted lineup strength score. Top of order weighted more heavily.
+    Returns (lineup_weight, lineup_ops_avg) tuple.
+    lineup_weight: 0-10 scale, 6.0 = league average
+    lineup_ops_avg: actual OPS average of confirmed batters
     """
     if not lineup_names:
-        return None
+        return None, None
     batters = [b.strip() for b in lineup_names.split(',') if b.strip()]
     if len(batters) < 3:
-        return None
-    # Weights by position: 1-3 face starter first inning
-    weights = [1.0, 0.95, 0.90, 0.70, 0.65, 0.60, 0.45, 0.40, 0.35]
-    # Score is just a weighted count — higher = more lineup depth
-    score = sum(weights[i] for i in range(min(len(batters), 9)))
-    return round(score, 2)
+        return None, None
+
+    # Position weights: top of order matters more for run production
+    weights = [1.0, 0.95, 0.90, 0.75, 0.70, 0.65, 0.50, 0.45, 0.40]
+    league_avg_ops = 0.710
+
+    ops_values = []
+    weighted_ops_sum = 0
+    weight_sum = 0
+
+    for i, batter in enumerate(batters[:9]):
+        w = weights[i] if i < len(weights) else 0.35
+        try:
+            search_name = batter.encode('ascii', 'ignore').decode('ascii').strip()
+            if len(search_name) < 3:
+                continue
+            r = requests.get(
+                'https://statsapi.mlb.com/api/v1/people/search',
+                params={'names': search_name, 'sportId': 1},
+                timeout=8
+            )
+            people = r.json().get('people', [])
+            if not people:
+                continue
+            pid = people[0]['id']
+            sr = requests.get(
+                f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',
+                params={'stats': 'season', 'group': 'hitting', 'season': 2026},
+                timeout=8
+            )
+            splits = sr.json().get('stats', [{}])[0].get('splits', [])
+            if not splits:
+                continue
+            stat = splits[0].get('stat', {})
+            ops = float(stat.get('ops', 0) or 0)
+            pa = int(stat.get('plateAppearances', 0) or 0)
+            if pa < 10 or ops == 0:
+                continue
+            ops_values.append(ops)
+            weighted_ops_sum += ops * w
+            weight_sum += w
+        except:
+            continue
+
+    if len(ops_values) < 3 or weight_sum == 0:
+        # Fallback to position-based weight if not enough stats
+        fallback = sum(weights[i] for i in range(min(len(batters), 9)))
+        return round(fallback, 2), None
+
+    weighted_ops = weighted_ops_sum / weight_sum
+    lineup_ops_avg = sum(ops_values) / len(ops_values)
+
+    # Convert to 0-10 scale: league avg OPS (0.710) = 6.0
+    # Every 0.050 OPS above/below shifts score by ~1.0
+    lineup_weight = round(6.0 + (weighted_ops - league_avg_ops) / 0.050, 2)
+    lineup_weight = max(2.0, min(10.0, lineup_weight))
+
+    return lineup_weight, round(lineup_ops_avg, 3)
 
 def detect_opener(pitcher_id):
     """Check if pitcher is likely an opener/bullpen day — low games started vs games played"""
@@ -1766,15 +1820,19 @@ def run():
             home_lineup = lineup_info.get("home_lineup", [])
             away_lineup = lineup_info.get("away_lineup", [])
             lineup_confirmed = lineup_info.get("lineup_confirmed", False)
-            # Calculate batting order weights
+            # Calculate batting order weights with individual batter OPS
             home_lineup_str = ', '.join(home_lineup) if isinstance(home_lineup, list) else home_lineup or ''
             away_lineup_str = ', '.join(away_lineup) if isinstance(away_lineup, list) else away_lineup or ''
-            home_lineup_weight = calc_batting_order_weight(home_lineup_str) if lineup_confirmed else None
-            away_lineup_weight = calc_batting_order_weight(away_lineup_str) if lineup_confirmed else None
+            home_lineup_weight, home_lineup_ops = (None, None)
+            away_lineup_weight, away_lineup_ops = (None, None)
+            if lineup_confirmed and home_lineup_str:
+                home_lineup_weight, home_lineup_ops = calc_batting_order_weight(home_lineup_str)
+            if lineup_confirmed and away_lineup_str:
+                away_lineup_weight, away_lineup_ops = calc_batting_order_weight(away_lineup_str)
             if home_lineup_weight:
-                print(f"  {home_team} lineup weight: {home_lineup_weight}")
+                print(f"  {home_team} lineup weight: {home_lineup_weight}{f' (avg OPS {home_lineup_ops})' if home_lineup_ops else ''}")
             if away_lineup_weight:
-                print(f"  {away_team} lineup weight: {away_lineup_weight}")
+                print(f"  {away_team} lineup weight: {away_lineup_weight}{f' (avg OPS {away_lineup_ops})' if away_lineup_ops else ''}")
             # Calculate platoon advantage if lineups confirmed
             home_platoon_score, home_platoon_note = None, None
             away_platoon_score, away_platoon_note = None, None
@@ -1868,7 +1926,25 @@ def run():
                 elif away_inj_count >= 1:
                     projected_total = round(projected_total - 0.15, 1)
 
+                # ── MARKET-ANCHORED MODEL ──
+                # Start from posted total and only adjust where we have proven edges
+                # Blended with stats model: 40% stats + 60% market-anchored
                 if total_line:
+                    market_base = float(total_line)
+                    market_adj = 0
+                    market_adj += weather_adj  # weather proven at 0.143 correlation
+                    if nrfi_score:
+                        market_adj += max(-0.5, min(0.5, (nrfi_score - 50) * -0.01))
+                    market_adj += bp_total_adj * 0.5  # half-weight bullpen on market model
+                    if ump_stats and ump_stats.get('over_rate'):
+                        market_adj += (float(ump_stats['over_rate']) - 0.5) * 0.6
+                    market_anchored = round(market_base + market_adj, 1)
+
+                    # Blend: 40% stats model + 60% market-anchored
+                    blended_total = round(projected_total * 0.4 + market_anchored * 0.6, 1)
+                    print(f"  Stats model: {projected_total} | Market-anchored: {market_anchored} | Blended: {blended_total}")
+                    projected_total = blended_total
+
                     delta = projected_total - total_line
                     # Over leans at 55.9% — keep aggressive threshold
                     # Under leans at 46.2% — require 2+ run delta (57.7% at that level)
@@ -2068,6 +2144,8 @@ def run():
                 "lineup_confirmed": lineup_confirmed,
                 "home_lineup_weight": home_lineup_weight,
                 "away_lineup_weight": away_lineup_weight,
+                "home_lineup_ops": home_lineup_ops,
+                "away_lineup_ops": away_lineup_ops,
                 "nrfi_score": nrfi_score,
                 "home_first_inning_era": home_first_inn.get("first_inning_era") if home_first_inn else None,
                 "away_first_inning_era": away_first_inn.get("first_inning_era") if away_first_inn else None,
