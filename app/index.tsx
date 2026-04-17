@@ -5814,6 +5814,7 @@ if(mkt.key === 'pitcher_props') {
                   oppHardHit: oppContact?.hard_hit_pct_allowed || null,
                   oppBarrel: oppContact?.barrel_pct || null,
                   game: `${ctx.away_team} @ ${ctx.home_team}`,
+                  homeTeam: ctx.home_team,
                 });
               } else {
                 battersSkippedLowScore++;
@@ -8473,13 +8474,19 @@ setJerryHistory(prev => {
     <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back at 2pm for full confirmed slate.</Text>
   </View>
 )}
-{gamesSport==='MLB' && hrWatch.length > 0 && (
+{gamesSport==='MLB' && hrWatch.filter((h:any) => {
+  const mg = gamesData.find((g:any) => g.home_team === h.homeTeam);
+  return !mg || new Date(mg.commence_time) > new Date();
+}).length > 0 && (
   <View style={{backgroundColor:'rgba(255,77,109,0.06)',borderRadius:14,padding:14,marginBottom:14,borderWidth:1,borderColor:'rgba(255,77,109,0.25)'}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
       <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:13}}>💣 HR WATCH</Text>
-      <Text style={{color:'#4a6070',fontSize:10}}>Park + Weather + Power</Text>
+      <Text style={{color:'#4a6070',fontSize:10}}>Power + Pitcher + Environment</Text>
     </View>
-    {hrWatch.map((h: any, i: number) => (
+    {hrWatch.filter((h:any) => {
+      const mg = gamesData.find((g:any) => g.home_team === h.homeTeam);
+      return !mg || new Date(mg.commence_time) > new Date();
+    }).map((h: any, i: number) => (
       <View key={i} style={{flexDirection:'row',alignItems:'center',paddingVertical:8,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
         <View style={{flex:1}}>
           <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{h.player}</Text>
