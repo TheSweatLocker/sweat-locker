@@ -2144,6 +2144,8 @@ def run():
                 "lineup_confirmed": lineup_confirmed,
                 "home_lineup_weight": home_lineup_weight,
                 "away_lineup_weight": away_lineup_weight,
+                "home_lineup_ops": home_lineup_ops,
+                "away_lineup_ops": away_lineup_ops,
                 "nrfi_score": nrfi_score,
                 "home_first_inning_era": home_first_inn.get("first_inning_era") if home_first_inn else None,
                 "away_first_inning_era": away_first_inn.get("first_inning_era") if away_first_inn else None,
