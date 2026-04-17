@@ -3504,30 +3504,27 @@ if(isPlayoffMode) {
       // 46-74 = no boost — neutral zone doesn't help confidence
     }
 
+    // ── SPREAD DELTA BOOST ── (60% win rate at 3+ delta)
+    const spreadDelta = mlbCtx.spread_delta != null ? Math.abs(parseFloat(mlbCtx.spread_delta)) : 0;
+    if(spreadDelta >= 4.0) modelMismatch = Math.min(92, modelMismatch + 12);
+    else if(spreadDelta >= 3.0) modelMismatch = Math.min(88, modelMismatch + 8);
+
     // ── LEAN SIDE ──
-    // Primary: use model's over lean ONLY — under leans are 48.3% (no edge)
-    // Over leans hit at 58.1% — real signal worth surfacing
-    if(mlbCtx.over_lean === true) {
+    // Primary: ML lean from spread delta 3+ (60% win rate — proven edge)
+    if(spreadDelta >= 3.0 && mlbCtx.spread_delta != null) {
+      const delta = parseFloat(mlbCtx.spread_delta);
+      leanSide = delta > 0 ? stripMascot(game.home_team) + ' ML' : stripMascot(game.away_team) + ' ML';
+      leanBet = 'ml';
+    }
+    // Secondary: over lean (55.9% hit rate)
+    if(!leanSide && mlbCtx.over_lean === true) {
       leanBet = 'total';
       leanSide = `Over ${avgTotal.toFixed(1)}`;
     }
-    // Under leans disabled — model doesn't identify unders well (48.3% accuracy)
-    // Still logged for training but not surfaced to users
-    // Secondary: spread lean DISABLED — 37.8% accuracy over 45 games with broken wRC+ data
-    // Pipeline still logs spread_lean and spread_delta for training, just not surfaced to users
-    // Re-enable after May 1 audit with corrected wRC+ data
-    // if(!leanSide && mlbCtx.spread_lean) {
-    //   leanSide = mlbCtx.spread_lean === 'home' ? stripMascot(game.home_team) : stripMascot(game.away_team);
-    //   leanBet = 'ml';
-    // }
-    // Fallback: if no total lean, fall back to offensive quality
-    if(!leanSide && homeWRC > 0 && awayWRC > 0 && homeXera > 0 && awayXera > 0) {
-      const homeEdge = (homeWRC - awayWRC) + ((awayXera - homeXera) * 10);
-      const awayEdge = (awayWRC - homeWRC) + ((homeXera - awayXera) * 10);
-      if(Math.abs(homeEdge - awayEdge) >= 15) {
-        leanSide = homeEdge > awayEdge ? stripMascot(game.home_team) : stripMascot(game.away_team);
-        leanBet = 'ml';
-      }
+    // Tertiary: NRFI sweet spot (77% hit rate)
+    if(!leanSide && mlbCtx.nrfi_score >= 88 && mlbCtx.nrfi_score <= 94) {
+      leanSide = 'NRFI';
+      leanBet = 'nrfi';
     }
 
   } else {
@@ -8734,8 +8731,8 @@ setJerryHistory(prev => {
     Object.values(mlbGameContext).find((ctx: any) => ctx.home_team === game.home_team || ctx.away_team === game.away_team);
   const nScore = nrfiCtx?.nrfi_score;
   if(!nScore) return null;
-  const nColor = nScore >= 88 ? '#00e5a0' : nScore <= 40 ? '#ff4d6d' : '#7a92a8';
-  const nLabel = nScore >= 88 ? 'NRFI 🔒' : nScore <= 40 ? 'YRFI' : 'Neutral';
+  const nColor = nScore >= 90 && nScore <= 94 ? '#00e5a0' : nScore >= 95 ? '#ffb800' : nScore >= 75 ? '#4a9eff' : nScore <= 40 ? '#ff4d6d' : '#7a92a8';
+  const nLabel = nScore >= 95 ? 'NRFI ⚠️' : nScore >= 90 ? 'PRIME NRFI' : nScore >= 85 ? 'NRFI' : nScore >= 75 ? 'NRFI lean' : nScore <= 35 ? 'YRFI' : nScore <= 40 ? 'YRFI lean' : 'Neutral';
   return(
     <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8}}>
       <View style={{backgroundColor:nColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:nColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
