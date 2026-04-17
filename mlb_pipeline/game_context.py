@@ -1870,7 +1870,9 @@ def run():
 
                 if total_line:
                     delta = projected_total - total_line
-                    over_lean = True if delta > 0.3 else False if delta < -0.3 else None
+                    # Over leans at 55.9% — keep aggressive threshold
+                    # Under leans at 46.2% — require 2+ run delta (57.7% at that level)
+                    over_lean = True if delta > 0.3 else False if delta < -2.0 else None
                 else:
                     over_lean = True if weather_adj + park_adj > 0.5 else None
                 print(f"  {home_team} avg: {home_rpg:.2f} R/G | {away_team} avg: {away_rpg:.2f} R/G | Projected: {projected_total}")
@@ -1879,7 +1881,7 @@ def run():
                 if total_line:
                     net_adj = weather_adj + park_adj
                     projected_total = round(total_line + net_adj, 1)
-                    over_lean = True if net_adj > 0.5 else False if net_adj < -0.5 else None
+                    over_lean = True if net_adj > 0.5 else None  # no under lean on fallback — 46.2% hit rate
                 else:
                     projected_total = None
                     over_lean = None

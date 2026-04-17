@@ -105,14 +105,14 @@ def score_mlb_game(ctx):
     if home_xera <= 3.0 and away_xera <= 3.0:
         score += 10
 
-    # Spread delta — big market mispricing = strong ML lean candidate
+    # Spread delta — 3+ run market disagreement = 60% ML win rate
     spread_delta = abs(float(ctx.get('spread_delta') or 0))
-    if spread_delta >= 3.0:
-        score += 15    # massive market disagreement
+    if spread_delta >= 4.0:
+        score += 18    # massive market disagreement
+    elif spread_delta >= 3.0:
+        score += 12    # proven 60% threshold
     elif spread_delta >= 2.0:
-        score += 10
-    elif spread_delta >= 1.0:
-        score += 5
+        score += 4     # marginal — 56.5%, not enough for POTD
 
     # Total delta
     proj_total = float(ctx.get('projected_total') or 0)
@@ -235,14 +235,14 @@ def build_lean(ctx):
     if 88 <= nrfi <= 94:
         return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
 
-    # ML lean — when projected spread diverges significantly from posted
+    # ML lean — only when spread delta is 3+ runs (60% win rate at this threshold)
     projected_spread = ctx.get('projected_spread')
     spread_delta = ctx.get('spread_delta')
     if projected_spread is not None and spread_delta is not None:
         delta = abs(float(spread_delta))
         proj = float(projected_spread)
-        if delta >= 2.0:
-            fav_team = ctx.get('home_team') if proj > 0 else ctx.get('away_team')
+        if delta >= 3.0:
+            fav_team = ctx.get('home_team') if float(spread_delta) > 0 else ctx.get('away_team')
             return f"{fav_team} ML (spread delta {'+' if float(spread_delta) > 0 else ''}{float(spread_delta):.1f})", 'ml', False
 
     # Total lean
