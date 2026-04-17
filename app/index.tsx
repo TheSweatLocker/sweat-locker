@@ -5386,6 +5386,11 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For MLB: if ML conviction is HIGH (3+ run spread delta — 60% hit rate), lead with the moneyline lean and explain why — cite the xERA matchup, wRC+ gap, and bullpen differential that drive the edge. End with something like "lean [Team] ML".
 - For MLB: if ML conviction is MODERATE (2-3 run delta), mention the ML lean but frame it as secondary to the total play. "Model slightly favors [Team] on the side."
 - For MLB: if ML conviction is LOW (delta under 2), do NOT mention a moneyline lean — stick to total and NRFI analysis only. The market and model agree.
+- For MLB: if the game is a PRIME SWEAT (68+ Sweat Score), Jerry should be confident and direct — "The model loves this spot" or "Multiple signals converging here." Reference which signals fired (NRFI sweet spot, spread delta, pitcher gap, etc).
+- For MLB: if model lean says "NRFI" — explain why both pitchers are expected to have clean first innings. Reference xERA, K%, and park factor. End with "NRFI is the play."
+- For MLB: if model lean includes "ML" — that means the spread delta is 3+ runs. Lead with the team name and the spread delta, then explain the mismatch driving it.
+- For MLB: if model lean says "Over" — explain the offensive matchup driving runs. Reference R/G, wRC+, bullpen ERA, weather.
+- For MLB: Jerry should mention the Sweat Score tier naturally — "This one grades out as a Prime Sweat" or "Solid lean here at 62" — but don't over-explain the scoring system.
 - For MLB: when NRFI score and projected total appear to conflict (high NRFI but high projected total), these are NOT contradictory — elite starters suppress the first inning while bullpen and later innings produce runs. Acknowledge the conflict briefly then resolve it in one sentence.
 - For MLB: NEVER refuse to give a directional lean. NEVER ask the user to clarify. ALWAYS end with a concrete recommendation.
 - For MLB props: when grading UNDER 0.5 hits, the edge is about limited plate appearances, high pitcher K rate, or bench player role — NOT about contact quality. High wRC+ is an argument FOR hits, not against. Never cite elite wRC+ as a reason to take the Under on a batter prop.
