@@ -6467,14 +6467,14 @@ for(let pi = 0; pi < propEntries.length; pi++) {
 
         const isMLB = propJerrySport === 'MLB';
 const isNHL = propJerrySport === 'NHL';
-const minBooksA = isMLB || isNHL ? 2 : 4;
-const minBooksB = isMLB || isNHL ? 1 : 3;
-const maxRangeA = isMLB || isNHL ? 1.0 : 0.5;
-const maxRangeB = isMLB || isNHL ? 1.5 : 1.0;
+const minBooksA = isMLB ? 3 : isNHL ? 2 : 4;
+const minBooksB = isMLB ? 2 : isNHL ? 1 : 3;
+const maxRangeA = isMLB ? 0.5 : isNHL ? 1.0 : 0.5;
+const maxRangeB = isMLB ? 1.0 : isNHL ? 1.5 : 1.0;
 
 // Model confirmation gates — require independent data to back up EV edge
-const hasModelEdge = (propJerrySport === 'NBA' || propJerrySport === 'MLB') ? (modelProb !== null && modelProb >= 0.54) : true;
-const modelConfirmed = (propJerrySport === 'NBA' || propJerrySport === 'MLB') ? (modelProb !== null && modelProb >= 0.56) : true;
+const hasModelEdge = (propJerrySport === 'NBA' || propJerrySport === 'MLB') ? (modelProb !== null && modelProb >= 0.55) : true;
+const modelConfirmed = (propJerrySport === 'NBA' || propJerrySport === 'MLB') ? (modelProb !== null && modelProb >= 0.58) : true;
 
 // ── MATCHUP FLAG CONVICTION BONUS ──
 // If pipeline pre-scan flagged this game+market, boost EV thresholds
@@ -6554,23 +6554,23 @@ const isMatchupProp = matchupConviction >= 15;
 
 if(isMatchupProp) {
   // MATCHUP TRACK — graded on pipeline conviction, not EV
-  if(matchupConviction >= 30) {
-    grade='A'; gradeColor='#00e5a0';  // multiple signals or strong signal + good odds
-  } else if(matchupConviction >= 20) {
-    grade='B'; gradeColor='#FFB800';  // solid single signal
+  if(matchupConviction >= 35) {
+    grade='A'; gradeColor='#00e5a0';  // multiple strong signals converging
+  } else if(matchupConviction >= 25) {
+    grade='B'; gradeColor='#FFB800';  // solid signal
   } else if(matchupConviction >= 15) {
     grade='C'; gradeColor='#0099ff';  // moderate signal
   }
-  // EV bonus — if matchup prop ALSO has positive EV, upgrade
-  if(bestEV >= 3 && grade === 'B') { grade='A'; gradeColor='#00e5a0'; }
+  // EV bonus — if matchup prop ALSO has strong positive EV, upgrade
+  if(bestEV >= 5 && grade === 'B') { grade='A'; gradeColor='#00e5a0'; }
 } else {
-  // EV TRACK — original grading, pure line-shopping math
-  const pathOneA = bestEV >= 4 && bookCount >= minBooksA && lineRange <= maxRangeA && hasModelEdge;
-  const pathTwoA = bestEV >= 6 && bookCount >= minBooksB && lineRange <= maxRangeB && modelConfirmed;
+  // EV TRACK — line-shopping math, tightened from 1-8 A grade performance
+  const pathOneA = bestEV >= 5 && bookCount >= minBooksA && lineRange <= maxRangeA && hasModelEdge;
+  const pathTwoA = bestEV >= 7 && bookCount >= minBooksB && lineRange <= maxRangeB && modelConfirmed;
 
   if(pathOneA || pathTwoA) {
     grade='A'; gradeColor='#00e5a0';
-  } else if(bestEV >= 3 && bookCount >= minBooksB && lineRange <= maxRangeB) {
+  } else if(bestEV >= 3 && bookCount >= minBooksB && lineRange <= maxRangeB && hasModelEdge) {
     grade='B'; gradeColor='#FFB800';
   } else if(bestEV >= 1) {
     grade='C'; gradeColor='#0099ff';
