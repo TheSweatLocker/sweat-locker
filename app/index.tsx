@@ -8475,8 +8475,9 @@ setJerryHistory(prev => {
   </View>
 )}
 {gamesSport==='MLB' && hrWatch.filter((h:any) => {
-  const mg = gamesData.find((g:any) => g.home_team === h.homeTeam);
-  return !mg || new Date(mg.commence_time) > new Date();
+  const mg = gamesData.find((g:any) => g.home_team === h.homeTeam || g.home_team?.includes(h.homeTeam?.split(' ').pop()));
+  if(!mg) return false;
+  return new Date(mg.commence_time) > new Date();
 }).length > 0 && (
   <View style={{backgroundColor:'rgba(255,77,109,0.06)',borderRadius:14,padding:14,marginBottom:14,borderWidth:1,borderColor:'rgba(255,77,109,0.25)'}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
