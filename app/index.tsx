@@ -9217,7 +9217,7 @@ setJerryHistory(prev => {
                               <View style={{flex:1}}>
                                 <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{bet.game}</Text>
                                 <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginTop:2}}>{bet.lean || 'Model Edge'}</Text>
-                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{SPORT_EMOJI[bet.sport]||''} {bet.sport} • {new Date(bet.bet_date).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</Text>
+                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{SPORT_EMOJI[bet.sport]||''} {bet.sport} • {new Date(bet.bet_date + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</Text>
                               </View>
                               <View style={{alignItems:'center',gap:4}}>
                                 <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:HRB_COLOR,alignItems:'center',justifyContent:'center',backgroundColor:'rgba(255,184,0,0.1)'}}>
