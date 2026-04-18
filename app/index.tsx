@@ -9206,7 +9206,7 @@ setJerryHistory(prev => {
                   {/* Best Bet History */}
                   {jerryRecord.bestBets.length > 0 && (
                     <>
-                      <Text style={styles.sectionLabel}>🔒 DAILY BEST BET HISTORY</Text>
+                      <Text style={styles.sectionLabel}>🔒 DAILY PLAY OF THE DAY HISTORY</Text>
                       {jerryRecord.bestBets.slice(0,14).map((bet, i) => {
                         const isPending = bet.result === 'Pending';
                         const isWin = bet.result === 'Win';
@@ -10200,7 +10200,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#9b59b6',paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>📊 Jerry's Track Record</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Model performance dashboard. NRFI record, A-grade prop results, and Daily Best Bet history. Results auto-resolve daily via MLB Stats API and BDL box scores.</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Model performance dashboard. NRFI record, A-grade prop results, and Daily Play of the Day history. Results auto-resolve daily via MLB Stats API and BDL box scores.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#4a6070',paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>⏰ Pipeline Schedule</Text>
