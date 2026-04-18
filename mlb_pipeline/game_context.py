@@ -1983,9 +1983,11 @@ def run():
                 league_avg_rpg = 4.25  # 2026 league average R/G
 
                 if home_xera_val and away_xera_val and home_wrc and away_wrc:
-                    # Clean separation: offense (wRC+) × pitching quality (xERA) × park
-                    home_expected = league_avg_rpg * (float(home_wrc) / 100) * (4.25 / float(away_xera_val)) * park_mult
-                    away_expected = league_avg_rpg * (float(away_wrc) / 100) * (4.25 / float(home_xera_val)) * park_mult
+                    # Clean separation: offense (wRC+) × opposing pitcher quality × park
+                    # Pitcher multiplier: low xERA = low scoring against (suppressor)
+                    # away_xera / 4.25: 4.25 = league avg → 1.0, 2.0 xERA → 0.47, 6.0 xERA → 1.41
+                    home_expected = league_avg_rpg * (float(home_wrc) / 100) * (float(away_xera_val) / 4.25) * park_mult
+                    away_expected = league_avg_rpg * (float(away_wrc) / 100) * (float(home_xera_val) / 4.25) * park_mult
 
                     # Bullpen quality adjustment
                     bp_adj = (away_bp_era - home_bp_era) * 0.15
