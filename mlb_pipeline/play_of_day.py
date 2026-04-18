@@ -277,9 +277,12 @@ def build_lean(ctx):
 
 def run():
     today = get_today_et()
-    print(f"Play of the Day — scanning {today}")
+    et_now = datetime.now(timezone.utc) - timedelta(hours=4)
+    et_hour = et_now.hour
+    print(f"Play of the Day — scanning {today} (ET hour: {et_hour})")
 
-    # Check if today's pick already exists — first pick of the day locks
+    # Check if today's pick already exists — pick locks ONLY after 8am ET
+    # Before 8am, allow regeneration so fresh morning data can override stale overnight picks
     try:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/jerry_cache?game_id=eq.best_bet_{today}&select=data",
@@ -287,8 +290,11 @@ def run():
         )
         existing = r.json()
         if existing and len(existing) > 0 and existing[0].get('data', {}).get('pipelineGenerated'):
-            print(f"✅ Today's pick already locked — skipping regeneration")
-            return
+            if et_hour >= 8:
+                print(f"✅ Today's pick already locked (post-8am ET) — skipping regeneration")
+                return
+            else:
+                print(f"⏰ Pre-8am ET ({et_hour}h) — overwriting prior pick with fresh morning data")
     except:
         pass
 
