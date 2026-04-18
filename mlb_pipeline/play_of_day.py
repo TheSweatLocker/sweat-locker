@@ -37,6 +37,27 @@ def get_mlb_games():
         return data
     return []
 
+def get_mlb_game_times(date_str):
+    """Fetch game commence times from MLB Stats API for matching teams"""
+    try:
+        r = requests.get(
+            "https://statsapi.mlb.com/api/v1/schedule",
+            params={"sportId": 1, "date": date_str},
+            timeout=15
+        )
+        times = {}
+        for d in r.json().get("dates", []):
+            for g in d.get("games", []):
+                home = g.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
+                away = g.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
+                game_time = g.get("gameDate")  # ISO format UTC
+                if home and game_time:
+                    times[home] = game_time
+        return times
+    except Exception as e:
+        print(f"MLB game time fetch error: {e}")
+        return {}
+
 def get_nba_teams():
     """Fetch NBA team stats from Supabase"""
     r = requests.get(
@@ -280,6 +301,9 @@ def run():
     nba_games = get_nba_games()
     print(f"NBA games: {len(nba_games)}, teams: {len(nba_teams)}")
 
+    # Get MLB game times to populate commence_time
+    mlb_times = get_mlb_game_times(today)
+
     # Score all candidates
     candidates = []
 
@@ -290,6 +314,7 @@ def run():
             'sport': 'MLB',
             'home_team': ctx.get('home_team'),
             'away_team': ctx.get('away_team'),
+            'commence_time': mlb_times.get(ctx.get('home_team')),
             'score': game_score,
             'nrfi_score': ctx.get('nrfi_score'),
             'is_nrfi': is_nrfi,
