@@ -4417,25 +4417,39 @@ const fetchDailyBestBet = async () => {
               body: JSON.stringify({
                 model: 'claude-haiku-4-5-20251001',
                 max_tokens: 200,
+                ...(supabaseCache.data.sport === 'NBA' || supabaseCache.data.sport === 'NHL' ? {tools:[{type:'web_search_20250305',name:'web_search'}]} : {}),
                 messages: [{
                   role: 'user',
-                  content: `CRITICAL: You are Jerry, a sharp sports analyst for The Sweat Locker app. You HAVE all the data you need below — do NOT say you lack data, do NOT offer to verify, do NOT hedge. Write with full confidence using the specific numbers provided.
+                  content: `CRITICAL: You are Jerry, a sharp sports analyst for The Sweat Locker app. You HAVE all the data you need below — do NOT say you lack data, do NOT offer to verify, do NOT hedge. Write with full confidence using the specific numbers provided. Sport is ${supabaseCache.data.sport} — only reference metrics relevant to that sport.
 
 This is today's Play of the Day — the single best play across all sports, selected by the Sweat Locker pipeline.
 
-Game: ${gameStr} (${supabaseCache.data.sport})
-${supabaseCache.data.score?.isNRFI ? `PLAY: NRFI (No Run First Inning)
-NRFI Score: ${supabaseCache.data.score.nrfiScore}/100
-Home pitcher: ${ctx.home_pitcher || 'TBD'} xERA ${ctx.home_sp_xera || 'N/A'}
-Away pitcher: ${ctx.away_pitcher || 'TBD'} xERA ${ctx.away_sp_xera || 'N/A'}` :
-`PLAY: ${supabaseCache.data.leanDisplay || 'Model Edge'}
-Sweat Score: ${supabaseCache.data.score?.total}/100`}
+Game: ${gameStr}
+Sport: ${supabaseCache.data.sport}
+Play: ${supabaseCache.data.leanDisplay || 'Model Edge'}
+Sweat Score: ${supabaseCache.data.score?.total || 'N/A'}/100
+${supabaseCache.data.sport === 'MLB' ? `
+${supabaseCache.data.score?.isNRFI ? `PLAY TYPE: NRFI (No Run First Inning)
+NRFI Score: ${supabaseCache.data.score.nrfiScore}/100` : ''}
+${ctx.home_pitcher ? `Home pitcher: ${ctx.home_pitcher} xERA ${ctx.home_sp_xera || 'N/A'}` : ''}
+${ctx.away_pitcher ? `Away pitcher: ${ctx.away_pitcher} xERA ${ctx.away_sp_xera || 'N/A'}` : ''}
 ${ctx.projected_total ? `Projected total: ${ctx.projected_total}` : ''}
-${ctx.spread_delta ? `Spread delta: ${ctx.spread_delta}` : ''}
+${ctx.spread_delta != null ? `Spread delta: ${ctx.spread_delta} runs vs market` : ''}
 ${ctx.venue ? `Venue: ${ctx.venue} | Temp: ${ctx.temperature}°F` : ''}
-${ctx.nrfi_score ? `NRFI score: ${ctx.nrfi_score}` : ''}
+${ctx.nrfi_score ? `NRFI score: ${ctx.nrfi_score}` : ''}` : ''}
+${supabaseCache.data.sport === 'NBA' ? `
+This is an NBA play — reference net rating gap, defensive rating, pace, eFG%, home/away records, injuries, and playoff context if applicable. Do NOT mention xERA, NRFI, pitchers, or baseball stats. Web search for tonight's injury report and lineup news if needed.` : ''}
+${supabaseCache.data.sport === 'NHL' ? `
+This is an NHL play — reference goalie matchup, special teams, pace. Do NOT mention baseball or basketball stats.` : ''}
 
-Write 2-3 sentences explaining WHY this play has edge. Reference the specific xERA values, NRFI score, or matchup data above. End with the specific play. Never say "bet", "must play", "I don't have data", or "let me verify". Sound like a sharp friend who already did the homework.`
+Rules:
+- Write 2-3 sentences MAX explaining the edge
+- Reference specific data points for the correct sport
+- End with the specific play ("That's the play", "Model sits there", etc.)
+- NEVER say "bet", "must play", "I don't have data", "let me verify"
+- NEVER mix sports (no xERA for NBA games, no net rating for MLB games)
+- For NBA: if data is missing, use web search for tonight's news — do NOT say "no data available"
+- Sound like a sharp friend who already did the homework`
                 }]
               })
             });
