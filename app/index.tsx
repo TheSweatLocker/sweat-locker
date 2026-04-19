@@ -5799,12 +5799,29 @@ if(mkt.key === 'pitcher_props') {
         ];
 
         for(const {lineup, team, oppXera, oppContact, side} of lineups) {
-          if(!lineup) {
-            console.log(`🏠 [HR Watch]   ${team} (${side}) — no lineup, skipping`);
-            continue;
+          let batters: string[] = [];
+          let isFallback = false;
+          if(lineup) {
+            batters = lineup.split(',').map((b: string) => b.trim()).filter(Boolean).slice(0, 5);
+            console.log(`🏠 [HR Watch]   ${team} (${side}) batters: ${batters.join(', ')} | opp xERA ${oppXera}`);
+          } else {
+            // Fallback: use team's cached top HR threats from Supabase
+            try {
+              const { data: threats } = await supabase.from('mlb_team_hr_threats')
+                .select('top_hitters')
+                .eq('team', team)
+                .single();
+              if(threats?.top_hitters && Array.isArray(threats.top_hitters)) {
+                batters = threats.top_hitters.slice(0, 5).map((h:any) => h.name);
+                isFallback = true;
+                console.log(`🏠 [HR Watch]   ${team} (${side}) fallback top HR threats: ${batters.join(', ')} | opp xERA ${oppXera}`);
+              }
+            } catch(e) {}
+            if(batters.length === 0) {
+              console.log(`🏠 [HR Watch]   ${team} (${side}) — no lineup and no fallback, skipping`);
+              continue;
+            }
           }
-          const batters = lineup.split(',').map((b: string) => b.trim()).filter(Boolean).slice(0, 5); // top 5 in order
-          console.log(`🏠 [HR Watch]   ${team} (${side}) batters: ${batters.join(', ')} | opp xERA ${oppXera}`);
           for(const batterName of batters) {
             if(!batterName || batterName.length < 3) continue;
             battersChecked++;
@@ -5871,6 +5888,7 @@ if(mkt.key === 'pitcher_props') {
                   oppBarrel: oppContact?.barrel_pct || null,
                   game: `${ctx.away_team} @ ${ctx.home_team}`,
                   homeTeam: ctx.home_team,
+                  isFallback,
                 });
               } else {
                 battersSkippedLowScore++;
@@ -8546,7 +8564,10 @@ setJerryHistory(prev => {
     }).map((h: any, i: number) => (
       <View key={i} style={{flexDirection:'row',alignItems:'center',paddingVertical:8,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
         <View style={{flex:1}}>
-          <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{h.player}</Text>
+          <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+            <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{h.player}</Text>
+            {h.isFallback && <Text style={{color:'#7a92a8',fontSize:9,fontStyle:'italic'}}>est. lineup</Text>}
+          </View>
           <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>{h.game}</Text>
         </View>
         <View style={{alignItems:'flex-end',gap:3}}>

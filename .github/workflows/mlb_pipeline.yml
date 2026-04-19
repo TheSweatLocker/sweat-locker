@@ -59,6 +59,20 @@ jobs:
           cd mlb_pipeline
           python team_stats.py
 
+      - name: Update team HR threats (8am run only)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" = "12" ]; then
+            echo "8am ET run — updating team HR threats"
+            cd mlb_pipeline
+            python team_hr_threats.py
+          else
+            echo "Skipping HR threats update (not the 8am run)"
+          fi
+
       - name: Update umpire database (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
