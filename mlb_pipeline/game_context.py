@@ -1974,25 +1974,33 @@ def run():
                     over_lean = None
                     print(f"  xERA gap {xera_gap:.1f} conflicts with Under lean → neutral")
 
-            # ── PROJECTED SPREAD (fixed formula — no double-counting) ──
-            # Old formula double-counted offense: rpg × wrc × xera
-            # New: league_avg × (wrc/100) × (4.25/opp_xera) × park — standard multiplicative approach
+            # ── PROJECTED SPREAD (v3: starter + bullpen weighted run expectation) ──
+            # Starter throws ~5.5 IP (60% of 9-inning game), bullpen throws ~3.5 IP (40%)
+            # Weight BOTH into run expectation instead of treating bullpen as a post-hoc adjustment
+            # This fixes over-amplification when starter xERA is extreme (e.g. Gausman 1.78)
             projected_spread = None
             spread_lean = None
             try:
                 league_avg_rpg = 4.25  # 2026 league average R/G
+                STARTER_WEIGHT = 0.6
+                BULLPEN_WEIGHT = 0.4
+                LEAGUE_AVG_BP = 4.0  # league average bullpen ERA baseline
 
                 if home_xera_val and away_xera_val and home_wrc and away_wrc:
-                    # Clean separation: offense (wRC+) × opposing pitcher quality × park
-                    # Pitcher multiplier: low xERA = low scoring against (suppressor)
-                    # away_xera / 4.25: 4.25 = league avg → 1.0, 2.0 xERA → 0.47, 6.0 xERA → 1.41
-                    home_expected = league_avg_rpg * (float(home_wrc) / 100) * (float(away_xera_val) / 4.25) * park_mult
-                    away_expected = league_avg_rpg * (float(away_wrc) / 100) * (float(home_xera_val) / 4.25) * park_mult
+                    home_bp = home_bp_era if home_bp_era else LEAGUE_AVG_BP
+                    away_bp = away_bp_era if away_bp_era else LEAGUE_AVG_BP
 
-                    # Bullpen quality adjustment
-                    bp_adj = (away_bp_era - home_bp_era) * 0.15
+                    # Home team faces away starter + away bullpen
+                    home_factor = (STARTER_WEIGHT * (float(away_xera_val) / 4.25) +
+                                   BULLPEN_WEIGHT * (float(away_bp) / 4.25))
+                    # Away team faces home starter + home bullpen
+                    away_factor = (STARTER_WEIGHT * (float(home_xera_val) / 4.25) +
+                                   BULLPEN_WEIGHT * (float(home_bp) / 4.25))
 
-                    projected_spread = round(home_expected - away_expected + bp_adj, 2)
+                    home_expected = league_avg_rpg * (float(home_wrc) / 100) * home_factor * park_mult
+                    away_expected = league_avg_rpg * (float(away_wrc) / 100) * away_factor * park_mult
+
+                    projected_spread = round(home_expected - away_expected, 2)
                     if projected_spread >= 0.5:
                         spread_lean = 'home'
                     elif projected_spread <= -0.5:
