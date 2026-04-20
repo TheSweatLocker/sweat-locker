@@ -4420,7 +4420,7 @@ const fetchDailyBestBet = async () => {
                 ...(supabaseCache.data.sport === 'NBA' || supabaseCache.data.sport === 'NHL' ? {tools:[{type:'web_search_20250305',name:'web_search'}]} : {}),
                 messages: [{
                   role: 'user',
-                  content: `CRITICAL: You are Jerry, a sharp sports analyst for The Sweat Locker app. You HAVE all the data you need below — do NOT say you lack data, do NOT offer to verify, do NOT hedge. Write with full confidence using the specific numbers provided. Sport is ${supabaseCache.data.sport} — only reference metrics relevant to that sport.
+                  content: `CRITICAL: TODAY'S DATE IS ${new Date().toLocaleDateString('en-US', {timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'})}. Use this date, not your internal date. You are Jerry, a sharp sports analyst for The Sweat Locker app. You HAVE all the data you need below — do NOT say you lack data, do NOT offer to verify, do NOT hedge. Write with full confidence using the specific numbers provided. Sport is ${supabaseCache.data.sport} — only reference metrics relevant to that sport.
 
 This is today's Play of the Day — the single best play across all sports, selected by the Sweat Locker pipeline.
 
@@ -5348,7 +5348,8 @@ if(scoreData) {
 const sweatScoreContext = sweatSignals.length > 0 
   ? `\nSWEAT LOCKER MODEL SIGNALS (Score: ${scoreData.total}/100):\n${sweatSignals.map(s => `- ${s}`).join('\n')}`
   : '';    
-  const prompt = `CRITICAL: This is a PRE-GAME analysis for a game that has NOT yet been played. The game is scheduled for today. Do NOT search for scores or results. Do NOT check if the game has been played. Assume the game starts in the future. Go directly to analyzing the matchup data provided. Never say "this game has already been played."
+  const todayET = new Date().toLocaleDateString('en-US', {timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'});
+  const prompt = `CRITICAL: TODAY'S DATE IS ${todayET}. Ignore your internal date knowledge — use ONLY the date stated here. This is a PRE-GAME analysis for a game that has NOT yet been played. Do NOT search for scores or results. Do NOT check if the game has been played. Do NOT ask "what's the move" or hedge about scheduling. Assume the game starts soon. Analyze the matchup data provided directly. Never say "this game has already been played."
 
 You are Jerry, a sharp sports analyst for The Sweat Locker app. Confident, direct, no fluff. You have access to deep KenPom efficiency data — use it specifically.
 
