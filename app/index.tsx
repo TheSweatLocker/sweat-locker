@@ -3490,18 +3490,17 @@ if(isPlayoffMode) {
       modelMismatch = Math.min(88, modelMismatch + 3);
     }
 
-    // ── NRFI CONVICTION BOOST ──
-    // High NRFI score = pipeline verified both arms → higher confidence game
-    // Low NRFI score = offense expected → also a signal worth elevating
+    // ── NRFI CONVICTION BOOST (recalibrated from 235-game audit) ──
+    // 90-94: 73.3% (prime), 95+: 47% (volatile), 75-79: 60.9%, 70-74: 59.4%
+    // 80-89: 42.5% (no edge — no boost), <=40: 77.8% YRFI hit
     if(mlbCtx.nrfi_score) {
       const nrfi = mlbCtx.nrfi_score;
-      if(nrfi >= 95) modelMismatch = Math.min(88, modelMismatch + 4);         // 95+ historically volatile — reduced boost
-      else if(nrfi >= 90) modelMismatch = Math.min(88, modelMismatch + 10); // 90-94 sweet spot — 77% hit rate
-      else if(nrfi >= 85) modelMismatch = Math.min(88, modelMismatch + 6);  // strong NRFI lean
-      else if(nrfi >= 75) modelMismatch = Math.min(88, modelMismatch + 4);  // moderate NRFI lean
-      else if(nrfi <= 35) modelMismatch = Math.min(88, modelMismatch + 5);  // strong YRFI lean — offense signal
-      else if(nrfi <= 45) modelMismatch = Math.min(88, modelMismatch + 3);  // moderate YRFI
-      // 46-74 = no boost — neutral zone doesn't help confidence
+      if(nrfi >= 95) modelMismatch = Math.min(85, modelMismatch + 3);        // volatile — minimal boost
+      else if(nrfi >= 90) modelMismatch = Math.min(88, modelMismatch + 10); // prime sweet spot
+      else if(nrfi >= 70 && nrfi <= 79) modelMismatch = Math.min(85, modelMismatch + 5); // mild lean (60% hit)
+      else if(nrfi <= 35) modelMismatch = Math.min(85, modelMismatch + 5);  // strong YRFI signal
+      else if(nrfi <= 40) modelMismatch = Math.min(85, modelMismatch + 3);  // moderate YRFI
+      // 41-69 and 80-89 = no boost (no edge in audit)
     }
 
     // ── SPREAD DELTA BOOST ── (60% win rate at 3+ delta)
@@ -5130,7 +5129,7 @@ MLB GAME CONTEXT:
 - Days rest signal: ${mlbData.home_days_rest && mlbData.away_days_rest ? (mlbData.home_days_rest > mlbData.away_days_rest ? mlbData.home_pitcher + ' has rest advantage (' + mlbData.home_days_rest + ' vs ' + mlbData.away_days_rest + ' days)' : mlbData.away_days_rest > mlbData.home_days_rest ? mlbData.away_pitcher + ' has rest advantage (' + mlbData.away_days_rest + ' vs ' + mlbData.home_days_rest + ' days)' : 'Even rest') : 'TBD'}
 - Umpire: ${mlbData.umpire_note || mlbData.umpire || 'TBD'}
 - Model lean: ${overUnder}
-- NRFI signal: ${mlbData.nrfi_score ? `Score ${mlbData.nrfi_score}/100 — ${mlbData.nrfi_score >= 95 ? 'All signals maxed BUT historically volatile (28% hit rate on 100s) — mention this is a high-score trap' : mlbData.nrfi_score >= 90 ? 'PRIME NRFI — 90-94 sweet spot has 77% hit rate, highest conviction tier' : mlbData.nrfi_score >= 85 ? 'Strong NRFI lean — solid pitcher matchup' : mlbData.nrfi_score >= 75 ? 'NRFI lean — above average signal' : mlbData.nrfi_score >= 60 ? 'Mild NRFI lean' : mlbData.nrfi_score <= 35 ? 'Strong YRFI lean — runs expected early' : mlbData.nrfi_score <= 45 ? 'YRFI lean — offense expected early' : 'neutral first inning signal'}` : 'NRFI score pending'}
+- NRFI signal: ${mlbData.nrfi_score ? `Score ${mlbData.nrfi_score}/100 — ${mlbData.nrfi_score >= 95 ? 'All signals maxed BUT historically volatile (47% hit rate on 95+) — mention this is a high-score trap' : mlbData.nrfi_score >= 90 ? 'PRIME NRFI — 90-94 tier has 73.3% hit rate, highest conviction zone' : mlbData.nrfi_score >= 80 ? 'NEUTRAL — 80-89 tier only hits 42% historically, do NOT frame as strong NRFI lean' : mlbData.nrfi_score >= 70 ? 'Mild NRFI lean — 70-79 tier hits ~60%' : mlbData.nrfi_score <= 35 ? 'Strong YRFI lean — runs expected early (77.8% YRFI hit on sub-40)' : mlbData.nrfi_score <= 40 ? 'YRFI lean — offense expected early' : 'neutral first inning signal'}` : 'NRFI score pending'}
 - Projected total: ${mlbData.projected_total ? mlbData.projected_total + ' (team stats + park + weather)' : 'NOT YET CALCULATED — do not infer a lean from pitcher data alone'}
 - Total analysis: ${mlbData.projected_total ? 'Model total available' : 'IMPORTANT: No projected total available. Base total take only on posted line context and weather/park. Do not default to under.'}
 - ${mlbData.home_runs_per_game ? `${game.home_team} offense: ${mlbData.home_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.home_ops?.toFixed(3)}` : ''}
@@ -8683,13 +8682,21 @@ setJerryHistory(prev => {
     Object.values(mlbGameContext).find((ctx: any) => ctx.home_team === game.home_team || ctx.away_team === game.away_team);
   if(!nrfiCtx) return null;
   const nScore = nrfiCtx.nrfi_score;
+  const pf = nrfiCtx.park_run_factor ? parseFloat(nrfiCtx.park_run_factor) : 100;
   const spreadDelta = nrfiCtx.spread_delta != null ? parseFloat(nrfiCtx.spread_delta) : null;
-  const hasNrfiBadge = nScore && nScore >= 75 || nScore && nScore <= 40;
+  // Show badge only for tiers with proven edge (audit-backed): 90+ NRFI, 70-79 mild lean, <=40 YRFI
+  // 80-89 tier is 42.5% hit rate — hide | Coors-type parks (116+) = 12.5% NRFI — suppress NRFI badge
+  const suppressNrfiAtExtremePark = pf >= 116 && nScore >= 70;
+  const hasNrfiBadge = !suppressNrfiAtExtremePark && nScore && (nScore >= 90 || (nScore >= 70 && nScore <= 79) || nScore <= 40);
   const hasMlBadge = spreadDelta != null && Math.abs(spreadDelta) >= 3.0;
   if(!hasNrfiBadge && !hasMlBadge) return null;
 
-  const nColor = nScore >= 90 && nScore <= 94 ? '#00e5a0' : nScore >= 95 ? '#ffb800' : nScore >= 75 ? '#4a9eff' : nScore <= 40 ? '#ff4d6d' : '#7a92a8';
-  const nLabel = nScore >= 95 ? 'NRFI ⚠️' : nScore >= 90 ? 'PRIME NRFI' : nScore >= 85 ? 'NRFI' : nScore >= 75 ? 'NRFI lean' : nScore <= 35 ? 'YRFI' : nScore <= 40 ? 'YRFI lean' : null;
+  const nColor = nScore >= 90 && nScore <= 94 ? '#00e5a0' : nScore >= 95 ? '#ffb800' : nScore >= 70 && nScore <= 79 ? '#4a9eff' : nScore <= 40 ? '#ff4d6d' : '#7a92a8';
+  // Tier labels based on 235-game audit:
+  // 90-94: 73.3% (PRIME), 95+: 47% (volatile warning), 75-79: 60.9%, 70-74: 59.4%
+  // 85-89: 47.1% (too weak for badge), 80-84: 38.9% (no badge)
+  // <=40: 77.8% YRFI hit rate
+  const nLabel = nScore >= 95 ? 'NRFI ⚠️' : nScore >= 90 ? 'PRIME NRFI' : nScore >= 70 && nScore <= 79 ? 'NRFI lean' : nScore <= 35 ? 'YRFI' : nScore <= 40 ? 'YRFI lean' : null;
 
   // ML lean badge — 3+ spread delta is 70% historical, 5+ is 100%
   const mlTeam = spreadDelta != null ? (spreadDelta > 0 ? nrfiCtx.home_team : nrfiCtx.away_team) : null;
@@ -9988,8 +9995,11 @@ if(pipelineNRFI !== null && pipelineNRFI !== undefined) {
   );
 }
 
-const nrfiLean  = nrfiScore >= 95 ? 'NRFI (volatile)' : nrfiScore >= 90 ? 'PRIME NRFI' : nrfiScore >= 85 ? 'NRFI' : nrfiScore >= 75 ? 'NRFI lean' : nrfiScore <= 35 ? 'YRFI' : nrfiScore <= 45 ? 'YRFI lean' : 'NEUTRAL';
-const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 95 ? '#ffb800' : nrfiScore >= 75 ? '#4a9eff' : nrfiScore <= 45 ? '#ff4d6d' : '#7a92a8';
+// Audit-calibrated NRFI tiers (235 games):
+// 90-94: 73.3% (PRIME) | 95+: 47% (volatile) | 70-79: ~60% (mild lean)
+// 80-89: 42.5% (NEUTRAL — no edge) | <=40: 77.8% YRFI hit
+const nrfiLean  = nrfiScore >= 95 ? 'NRFI (volatile)' : nrfiScore >= 90 ? 'PRIME NRFI' : nrfiScore >= 80 && nrfiScore <= 89 ? 'NEUTRAL' : nrfiScore >= 70 ? 'NRFI lean' : nrfiScore <= 35 ? 'YRFI' : nrfiScore <= 40 ? 'YRFI lean' : 'NEUTRAL';
+const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 95 ? '#ffb800' : nrfiScore >= 80 && nrfiScore <= 89 ? '#7a92a8' : nrfiScore >= 70 ? '#4a9eff' : nrfiScore <= 40 ? '#ff4d6d' : '#7a92a8';
   return(
     <View style={[styles.card,{marginBottom:10}]}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
