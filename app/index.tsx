@@ -8605,6 +8605,48 @@ setJerryHistory(prev => {
     ))}
   </View>
 )}
+{gamesSport==='MLB' && (()=>{
+  const now = new Date();
+  const mlLeans = Object.values(mlbGameContext as Record<string, any>)
+    .filter((ctx:any) => {
+      if(!ctx.spread_delta || Math.abs(parseFloat(ctx.spread_delta)) < 3.0) return false;
+      const mg = gamesData.find((g:any) => g.home_team === ctx.home_team || g.away_team === ctx.away_team);
+      if(!mg) return false;
+      return new Date(mg.commence_time) > now;
+    })
+    .sort((a:any, b:any) => Math.abs(parseFloat(b.spread_delta)) - Math.abs(parseFloat(a.spread_delta)))
+    .slice(0, 5);
+  if(mlLeans.length === 0) return null;
+  return (
+    <View style={{backgroundColor:'rgba(0,229,160,0.06)',borderRadius:14,padding:14,marginBottom:14,borderWidth:1,borderColor:'rgba(0,229,160,0.25)'}}>
+      <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+        <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:13}}>💰 ML LEANS</Text>
+        <Text style={{color:'#4a6070',fontSize:10}}>3+ delta = 70% hist. | 5+ = elite</Text>
+      </View>
+      {mlLeans.map((ctx:any, i:number) => {
+        const delta = parseFloat(ctx.spread_delta);
+        const absDelta = Math.abs(delta);
+        const favTeam = delta > 0 ? ctx.home_team : ctx.away_team;
+        const tierColor = absDelta >= 5 ? '#00e5a0' : absDelta >= 4 ? '#00e5a0' : '#4a9eff';
+        const tierLabel = absDelta >= 5 ? 'ELITE' : absDelta >= 4 ? 'PRIME' : 'LEAN';
+        return (
+          <View key={i} style={{flexDirection:'row',alignItems:'center',paddingVertical:8,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
+            <View style={{flex:1}}>
+              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{favTeam.split(' ').pop()} ML</Text>
+              <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>{ctx.away_team.split(' ').pop()} @ {ctx.home_team.split(' ').pop()}</Text>
+            </View>
+            <View style={{alignItems:'flex-end',gap:3}}>
+              <View style={{backgroundColor:tierColor+'20',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:tierColor+'44'}}>
+                <Text style={{color:tierColor,fontWeight:'800',fontSize:10}}>{tierLabel} {delta > 0 ? '+' : ''}{delta.toFixed(1)}</Text>
+              </View>
+              <Text style={{color:'#4a6070',fontSize:9}}>vs market</Text>
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+})()}
             {gamesLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:'#7a92a8',marginTop:12}}>Loading games...</Text></View>):
             gamesData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:40}}>{SPORT_EMOJI[gamesSport]}</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No {gamesSport} games {gamesDay}.{'\n'}Try a different sport or day.</Text></View>):(
               <>
@@ -8770,17 +8812,36 @@ setJerryHistory(prev => {
 {gamesSport==='MLB'&&(()=>{
   const nrfiCtx = mlbGameContext[game.home_team] || mlbGameContext[game.away_team] ||
     Object.values(mlbGameContext).find((ctx: any) => ctx.home_team === game.home_team || ctx.away_team === game.away_team);
-  const nScore = nrfiCtx?.nrfi_score;
-  if(!nScore) return null;
+  if(!nrfiCtx) return null;
+  const nScore = nrfiCtx.nrfi_score;
+  const spreadDelta = nrfiCtx.spread_delta != null ? parseFloat(nrfiCtx.spread_delta) : null;
+  const hasNrfiBadge = nScore && nScore >= 75 || nScore && nScore <= 40;
+  const hasMlBadge = spreadDelta != null && Math.abs(spreadDelta) >= 3.0;
+  if(!hasNrfiBadge && !hasMlBadge) return null;
+
   const nColor = nScore >= 90 && nScore <= 94 ? '#00e5a0' : nScore >= 95 ? '#ffb800' : nScore >= 75 ? '#4a9eff' : nScore <= 40 ? '#ff4d6d' : '#7a92a8';
-  const nLabel = nScore >= 95 ? 'NRFI ⚠️' : nScore >= 90 ? 'PRIME NRFI' : nScore >= 85 ? 'NRFI' : nScore >= 75 ? 'NRFI lean' : nScore <= 35 ? 'YRFI' : nScore <= 40 ? 'YRFI lean' : 'Neutral';
+  const nLabel = nScore >= 95 ? 'NRFI ⚠️' : nScore >= 90 ? 'PRIME NRFI' : nScore >= 85 ? 'NRFI' : nScore >= 75 ? 'NRFI lean' : nScore <= 35 ? 'YRFI' : nScore <= 40 ? 'YRFI lean' : null;
+
+  // ML lean badge — 3+ spread delta is 70% historical, 5+ is 100%
+  const mlTeam = spreadDelta != null ? (spreadDelta > 0 ? nrfiCtx.home_team : nrfiCtx.away_team) : null;
+  const mlColor = Math.abs(spreadDelta || 0) >= 5 ? '#00e5a0' : Math.abs(spreadDelta || 0) >= 4 ? '#00e5a0' : '#4a9eff';
+  const mlLabel = Math.abs(spreadDelta || 0) >= 5 ? 'ELITE ML' : Math.abs(spreadDelta || 0) >= 4 ? 'PRIME ML' : 'ML LEAN';
+
   return(
-    <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8}}>
-      <View style={{backgroundColor:nColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:nColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
-        <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>⚾ {nLabel}</Text>
-        <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>{nScore}</Text>
-      </View>
-      {nrfiCtx?.home_pitcher && <Text style={{color:'#4a6070',fontSize:10}}>{nrfiCtx.home_pitcher?.split(' ').pop()} vs {nrfiCtx.away_pitcher?.split(' ').pop()}</Text>}
+    <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8,flexWrap:'wrap'}}>
+      {hasNrfiBadge && nLabel && (
+        <View style={{backgroundColor:nColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:nColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
+          <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>⚾ {nLabel}</Text>
+          <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>{nScore}</Text>
+        </View>
+      )}
+      {hasMlBadge && mlTeam && (
+        <View style={{backgroundColor:mlColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:mlColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
+          <Text style={{color:mlColor,fontWeight:'800',fontSize:12}}>💰 {mlLabel}</Text>
+          <Text style={{color:mlColor,fontWeight:'800',fontSize:12}}>{mlTeam.split(' ').pop()} {spreadDelta > 0 ? '+' : ''}{spreadDelta.toFixed(1)}</Text>
+        </View>
+      )}
+      {nrfiCtx.home_pitcher && <Text style={{color:'#4a6070',fontSize:10}}>{nrfiCtx.home_pitcher?.split(' ').pop()} vs {nrfiCtx.away_pitcher?.split(' ').pop()}</Text>}
     </View>
   );
 })()}
