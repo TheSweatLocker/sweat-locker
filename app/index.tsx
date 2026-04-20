@@ -8511,6 +8511,14 @@ setJerryHistory(prev => {
             {gamesLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:'#7a92a8',marginTop:12}}>Loading games...</Text></View>):
             gamesData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:40}}>{SPORT_EMOJI[gamesSport]}</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No {gamesSport} games {gamesDay}.{'\n'}Try a different sport or day.</Text></View>):(
               <>
+                {gamesSport==='NHL' && (
+                  <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.25)',flexDirection:'row',alignItems:'center',gap:8}}>
+                    <Text style={{fontSize:14}}>ℹ️</Text>
+                    <Text style={{color:'#b0c4d8',fontSize:11,flex:1,lineHeight:16}}>
+                      <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NHL — Market Model Only.</Text> No proprietary NHL pipeline yet. Analysis based on odds movement, public consensus, and goalie matchup. Proprietary model coming later this season.
+                    </Text>
+                  </View>
+                )}
                  <Text style={styles.sectionLabel}>{gamesData.length} GAMES — {gamesDay.toUpperCase()}</Text>
                 {gamesData.filter((game) => {
   // Hide completed games
