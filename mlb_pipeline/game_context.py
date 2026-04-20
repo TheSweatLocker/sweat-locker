@@ -1883,20 +1883,22 @@ def run():
             # Old: park_mult = pf/100 (way too aggressive). New: halve the effect.
             park_mult = 1.0 + (park_run_factor - 100) / 200 if park_run_factor else 1.0
 
+            home_bp_era = home_bullpen.get('bullpen_era', 4.0) if home_bullpen else 4.0
+            away_bp_era = away_bullpen.get('bullpen_era', 4.0) if away_bullpen else 4.0
             if home_rpg and away_rpg:
+                # Total formula: rpg-based (most accurate of tested approaches)
+                # v3 xERA-based and v4 rpg+pitcher_adj both performed worse in audit
+                # Keep projected_total for informational display; totals are NOT a strong signal
                 base_total = home_rpg + away_rpg
                 projected_runs = base_total * park_mult
                 projected_total = round(projected_runs + weather_adj, 1)
 
                 # NRFI score adjustment — inverse correlation with total runs
-                # Capped at ±1.0 run max — NRFI signal shouldn't dominate total projection
                 if nrfi_score:
-                    nrfi_adj = max(-1.0, min(1.0, (nrfi_score - 50) * -0.02))  # high NRFI = lower total
+                    nrfi_adj = max(-1.0, min(1.0, (nrfi_score - 50) * -0.02))
                     projected_total = round(projected_total + nrfi_adj, 1)
 
-                # Bullpen differential — late innings matter for totals
-                home_bp_era = home_bullpen.get('bullpen_era', 4.0) if home_bullpen else 4.0
-                away_bp_era = away_bullpen.get('bullpen_era', 4.0) if away_bullpen else 4.0
+                # Bullpen differential (weak signal but directional — 0.25 coefficient as before)
                 bp_total_adj = ((home_bp_era + away_bp_era) / 2 - 4.0) * 0.25
                 projected_total = round(projected_total + bp_total_adj, 1)
 
@@ -1946,11 +1948,13 @@ def run():
                     projected_total = blended_total
 
                     delta = projected_total - total_line
-                    # Over leans at 55.9% — keep aggressive threshold
-                    # Under leans at 46.2% — require 2+ run delta (57.7% at that level)
-                    over_lean = True if delta > 0.3 else False if delta < -2.0 else None
+                    # Over/Under lean thresholds tightened — audit shows total model
+                    # has weak predictive power (47-50% across delta tiers)
+                    # Only fire lean when the xERA gap boost applies (proven signal)
+                    # or on very extreme deltas (4+ runs)
+                    over_lean = True if delta > 4.0 else False if delta < -4.0 else None
                 else:
-                    over_lean = True if weather_adj + park_adj > 0.5 else None
+                    over_lean = None
                 print(f"  {home_team} avg: {home_rpg:.2f} R/G | {away_team} avg: {away_rpg:.2f} R/G | Projected: {projected_total}")
             else:
                 projected_runs = None
