@@ -73,6 +73,20 @@ jobs:
             echo "Skipping HR threats update (not the 8am run)"
           fi
 
+      - name: Build HR Watch (2pm run only — after lineups confirm)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" = "18" ]; then
+            echo "2pm ET run — building HR Watch candidates"
+            cd mlb_pipeline
+            python build_hr_watch.py
+          else
+            echo "Skipping HR Watch build (not the 2pm run)"
+          fi
+
       - name: Update umpire database (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

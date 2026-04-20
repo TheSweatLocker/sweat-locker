@@ -5743,185 +5743,45 @@ if(mkt.key === 'pitcher_props') {
   };
 
   const fetchHRWatch = async () => {
-    console.log('🏠 [HR Watch] Starting scan...');
-    if(Object.keys(mlbGameContext).length === 0) {
-      console.log('🏠 [HR Watch] ABORT — no MLB game context loaded');
-      return;
-    }
-    console.log(`🏠 [HR Watch] Scanning ${Object.keys(mlbGameContext).length} games`);
     setHrWatchLoading(true);
     try {
-      const seen = new Set();
-      const candidates: any[] = [];
-      let gamesWithLineups = 0;
-      let gamesWithoutLineups = 0;
-      let battersChecked = 0;
-      let battersSkippedNoStats = 0;
-      let battersSkippedLowPA = 0;
-      let battersSkippedLowHR = 0;
-      let battersSkippedLowScore = 0;
-
-      for(const ctx of Object.values(mlbGameContext) as any[]) {
-        if(!ctx.game_id || seen.has(ctx.game_id)) continue;
-        seen.add(ctx.game_id);
-
-        const parkFactor = parseFloat(ctx.park_run_factor) || 100;
-        const temp = parseFloat(ctx.temperature) || 70;
-        const windSpeed = parseFloat(ctx.wind_speed) || 0;
-        const windDir = (ctx.wind_direction || '').toUpperCase();
-        const windOut = windSpeed > 10 && ['S', 'SW', 'SE', 'OUT'].some(d => windDir.includes(d));
-        const homeXera = ctx.home_sp_xera ? parseFloat(ctx.home_sp_xera) : null;
-        const awayXera = ctx.away_sp_xera ? parseFloat(ctx.away_sp_xera) : null;
-
-        // Fetch pitcher contact profiles from Supabase (hard hit %, barrel %)
-        let homePitcherContact: any = null;
-        let awayPitcherContact: any = null;
-        try {
-          if(ctx.home_pitcher) {
-            const { data: hp } = await supabase.from('mlb_pitcher_stats')
-              .select('hard_hit_pct_allowed,barrel_pct,baa_allowed,player_name')
-              .ilike('player_name', `%${ctx.home_pitcher.split(' ').pop()}%`)
-              .limit(1).single();
-            if(hp) homePitcherContact = hp;
-          }
-          if(ctx.away_pitcher) {
-            const { data: ap } = await supabase.from('mlb_pitcher_stats')
-              .select('hard_hit_pct_allowed,barrel_pct,baa_allowed,player_name')
-              .ilike('player_name', `%${ctx.away_pitcher.split(' ').pop()}%`)
-              .limit(1).single();
-            if(ap) awayPitcherContact = ap;
-          }
-        } catch(e) {}
-
-        // Get game environment score
-        let envScore = 0;
-        if(parkFactor >= 108) envScore += 15;
-        else if(parkFactor >= 103) envScore += 8;
-        if(temp >= 80) envScore += 10;
-        else if(temp >= 70) envScore += 5;
-        if(windOut) envScore += 12;
-
-        const gameLabel = `${ctx.away_team} @ ${ctx.home_team}`;
-        const hasLineups = !!(ctx.home_lineup || ctx.away_lineup);
-        if(hasLineups) gamesWithLineups++; else gamesWithoutLineups++;
-        console.log(`🏠 [HR Watch] ${gameLabel} | park ${parkFactor} | temp ${temp}°F | wind ${windSpeed}mph ${windDir} | env ${envScore} | lineups: ${hasLineups ? '✅' : '❌ MISSING'}`);
-
-        // Get lineups and look up top batters
-        const lineups = [
-          {lineup: ctx.home_lineup, team: ctx.home_team, oppXera: awayXera, oppContact: awayPitcherContact, side: 'home'},
-          {lineup: ctx.away_lineup, team: ctx.away_team, oppXera: homeXera, oppContact: homePitcherContact, side: 'away'},
-        ];
-
-        for(const {lineup, team, oppXera, oppContact, side} of lineups) {
-          let batters: string[] = [];
-          let isFallback = false;
-          if(lineup) {
-            batters = lineup.split(',').map((b: string) => b.trim()).filter(Boolean).slice(0, 5);
-            console.log(`🏠 [HR Watch]   ${team} (${side}) batters: ${batters.join(', ')} | opp xERA ${oppXera}`);
-          } else {
-            // Fallback: use team's cached top HR threats from Supabase
-            try {
-              const { data: threats } = await supabase.from('mlb_team_hr_threats')
-                .select('top_hitters')
-                .eq('team', team)
-                .single();
-              if(threats?.top_hitters && Array.isArray(threats.top_hitters)) {
-                batters = threats.top_hitters.slice(0, 5).map((h:any) => h.name);
-                isFallback = true;
-                console.log(`🏠 [HR Watch]   ${team} (${side}) fallback top HR threats: ${batters.join(', ')} | opp xERA ${oppXera}`);
-              }
-            } catch(e) {}
-            if(batters.length === 0) {
-              console.log(`🏠 [HR Watch]   ${team} (${side}) — no lineup and no fallback, skipping`);
-              continue;
-            }
-          }
-          for(const batterName of batters) {
-            if(!batterName || batterName.length < 3) continue;
-            battersChecked++;
-            try {
-              const stats = await fetchMLBBatterStats(batterName);
-              if(!stats) {
-                battersSkippedNoStats++;
-                console.log(`🏠 [HR Watch]     ${batterName} — no stats found`);
-                continue;
-              }
-              if(stats.pa < 15) {
-                battersSkippedLowPA++;
-                console.log(`🏠 [HR Watch]     ${batterName} — only ${stats.pa} PA, skipping (need 15+)`);
-                continue;
-              }
-              const hrRate = stats.hr > 0 ? (stats.hr / stats.pa) : 0;
-              if(hrRate < 0.02) {
-                battersSkippedLowHR++;
-                console.log(`🏠 [HR Watch]     ${batterName} — HR rate ${(hrRate*100).toFixed(1)}% too low (need 2%+)`);
-                continue;
-              }
-
-              let score = 0;
-              const powerScore = Math.round(hrRate * 500);
-              score += powerScore;
-              const hrBonus = stats.hr >= 4 ? 10 : 0;
-              score += hrBonus;
-              const oppScore = oppXera && oppXera > 4.5 ? 15 : (oppXera && oppXera > 3.5 ? 5 : 0);
-              score += oppScore;
-              // Pitcher contact profile — hard hit % and barrel % allowed
-              let contactScore = 0;
-              if(oppContact) {
-                const hardHit = parseFloat(oppContact.hard_hit_pct_allowed) || 0;
-                const barrel = parseFloat(oppContact.barrel_pct) || 0;
-                if(hardHit >= 42) contactScore += 12;       // top 25% most hittable
-                else if(hardHit >= 38) contactScore += 6;    // above average
-                else if(hardHit <= 30) contactScore -= 5;    // elite contact suppressor
-                if(barrel >= 10) contactScore += 10;         // homer-prone pitcher
-                else if(barrel >= 7) contactScore += 5;
-              }
-              score += contactScore;
-              score += envScore;
-
-              if(score >= 20) {
-                console.log(`🏠 [HR Watch]     ✅ ${batterName} (${stats.hr} HR/${stats.pa} PA) | score ${score} = power ${powerScore} + hrBonus ${hrBonus} + opp ${oppScore} + contact ${contactScore} + env ${envScore}`);
-                candidates.push({
-                  player: stats.name || batterName,
-                  team: team,
-                  hr: stats.hr,
-                  pa: stats.pa,
-                  hrRate: hrRate,
-                  ba: stats.ba,
-                  oppPitcher: side === 'home' ? ctx.away_pitcher : ctx.home_pitcher,
-                  oppXera: oppXera,
-                  venue: ctx.venue,
-                  parkFactor: parkFactor,
-                  temp: temp,
-                  windOut: windOut,
-                  windSpeed: windSpeed,
-                  windDir: windDir,
-                  score: score,
-                  contactScore: contactScore,
-                  oppHardHit: oppContact?.hard_hit_pct_allowed || null,
-                  oppBarrel: oppContact?.barrel_pct || null,
-                  game: `${ctx.away_team} @ ${ctx.home_team}`,
-                  homeTeam: ctx.home_team,
-                  isFallback,
-                });
-              } else {
-                battersSkippedLowScore++;
-                console.log(`🏠 [HR Watch]     ${batterName} (${stats.hr} HR/${stats.pa} PA) | score ${score} = power ${powerScore} + hrBonus ${hrBonus} + opp ${oppScore} + contact ${contactScore} + env ${envScore} — below 20`);
-              }
-            } catch(e) {
-              console.log(`🏠 [HR Watch]     ${batterName} — error: ${e}`);
-              continue;
-            }
-          }
-        }
-      }
-
-      console.log(`🏠 [HR Watch] SUMMARY: ${gamesWithLineups} games with lineups, ${gamesWithoutLineups} without | ${battersChecked} batters checked | ${candidates.length} candidates found`);
-      console.log(`🏠 [HR Watch] Skipped: ${battersSkippedNoStats} no stats, ${battersSkippedLowPA} low PA, ${battersSkippedLowHR} low HR rate, ${battersSkippedLowScore} below score threshold`);
-      candidates.sort((a, b) => b.score - a.score);
-      setHrWatch(candidates.slice(0, 5));
+      const today = new Date();
+      const dateStr = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
+      const { data, error } = await supabase
+        .from('mlb_hr_watch')
+        .select('*')
+        .eq('game_date', dateStr)
+        .order('score', { ascending: false })
+        .limit(10);
+      if(error) throw error;
+      // Transform to match expected shape used in UI
+      const candidates = (data || []).map((row: any) => ({
+        player: row.player_name,
+        team: row.team,
+        homeTeam: row.home_team,
+        hr: row.hr,
+        pa: row.pa,
+        hrRate: row.hr_rate,
+        ba: row.ba,
+        oppPitcher: row.opp_pitcher,
+        oppXera: row.opp_xera,
+        oppHardHit: row.opp_hard_hit,
+        oppBarrel: row.opp_barrel,
+        venue: row.venue,
+        parkFactor: row.park_factor,
+        temp: row.temp,
+        windOut: row.wind_out,
+        windSpeed: row.wind_speed,
+        windDir: row.wind_dir,
+        score: row.score,
+        contactScore: row.contact_score,
+        game: row.matchup,
+        isFallback: row.is_fallback,
+      }));
+      setHrWatch(candidates);
     } catch(e) {
-      console.log('🏠 [HR Watch] ERROR:', e);
+      console.log('HR Watch fetch error:', e);
+      setHrWatch([]);
     }
     setHrWatchLoading(false);
   };
