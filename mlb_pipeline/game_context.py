@@ -1886,17 +1886,47 @@ def run():
             home_bp_era = home_bullpen.get('bullpen_era', 4.0) if home_bullpen else 4.0
             away_bp_era = away_bullpen.get('bullpen_era', 4.0) if away_bullpen else 4.0
             if home_rpg and away_rpg:
-                # Total formula: rpg-based (most accurate of tested approaches)
-                # v3 xERA-based and v4 rpg+pitcher_adj both performed worse in audit
-                # Keep projected_total for informational display; totals are NOT a strong signal
-                base_total = home_rpg + away_rpg
-                projected_runs = base_total * park_mult
-                projected_total = round(projected_runs + weather_adj, 1)
+                # Total formula v5: Ridge regression trained on 153 games
+                # CV results: 1.5+ delta 61.6%, 3+ delta 70.6%
+                # Market MAE: 3.64 | Model MAE: 3.75 (close to market but finds edges at extremes)
+                projected_total = None
 
-                # NRFI score adjustment — inverse correlation with total runs
-                if nrfi_score:
-                    nrfi_adj = max(-1.0, min(1.0, (nrfi_score - 50) * -0.02))
-                    projected_total = round(projected_total + nrfi_adj, 1)
+                # Try ML model first
+                try:
+                    import pickle
+                    import os
+                    model_path = os.path.join(os.path.dirname(__file__), 'models', 'total_model_v5.pkl')
+                    if os.path.exists(model_path):
+                        with open(model_path, 'rb') as mf:
+                            bundle = pickle.load(mf)
+                        features_needed = bundle['features']
+                        feat_vals = {
+                            'home_runs_per_game': home_rpg,
+                            'away_runs_per_game': away_rpg,
+                            'home_sp_xera': float(home_xera_val) if home_xera_val else 4.25,
+                            'away_sp_xera': float(away_xera_val) if away_xera_val else 4.25,
+                            'home_wrc_plus': float(home_wrc) if home_wrc else 100,
+                            'away_wrc_plus': float(away_wrc) if away_wrc else 100,
+                            'home_team_k_pct': float(home_k_pct) if home_k_pct else 22.0,
+                            'away_team_k_pct': float(away_k_pct) if away_k_pct else 22.0,
+                            'park_run_factor': float(park_run_factor) if park_run_factor else 100,
+                            'temperature': float(weather.get('temperature', 70)),
+                            'close_total': float(total_line) if total_line else 8.5,
+                        }
+                        X_row = [[feat_vals[f] for f in features_needed]]
+                        projected_total = round(float(bundle['model'].predict(X_row)[0]), 1)
+                except Exception as e:
+                    projected_total = None
+
+                # Fallback to rule-based if ML model missing or errored
+                if projected_total is None:
+                    base_total = home_rpg + away_rpg
+                    projected_runs = base_total * park_mult
+                    projected_total = round(projected_runs + weather_adj, 1)
+
+                    if nrfi_score:
+                        nrfi_adj = max(-1.0, min(1.0, (nrfi_score - 50) * -0.02))
+                        projected_total = round(projected_total + nrfi_adj, 1)
 
                 # Bullpen differential (weak signal but directional — 0.25 coefficient as before)
                 bp_total_adj = ((home_bp_era + away_bp_era) / 2 - 4.0) * 0.25
@@ -1948,11 +1978,10 @@ def run():
                     projected_total = blended_total
 
                     delta = projected_total - total_line
-                    # Over/Under lean thresholds tightened — audit shows total model
-                    # has weak predictive power (47-50% across delta tiers)
-                    # Only fire lean when the xERA gap boost applies (proven signal)
-                    # or on very extreme deltas (4+ runs)
-                    over_lean = True if delta > 4.0 else False if delta < -4.0 else None
+                    # v5 ML model thresholds (from cross-validated audit):
+                    # 1.5+ delta = 61.6% hit rate, 3.0+ delta = 70.6% hit rate
+                    # Minimum threshold 1.5 for lean, anything under is neutral
+                    over_lean = True if delta > 1.5 else False if delta < -1.5 else None
                 else:
                     over_lean = None
                 print(f"  {home_team} avg: {home_rpg:.2f} R/G | {away_team} avg: {away_rpg:.2f} R/G | Projected: {projected_total}")
