@@ -281,8 +281,14 @@ def run():
     et_hour = et_now.hour
     print(f"Play of the Day — scanning {today} (ET hour: {et_hour})")
 
-    # Check if today's pick already exists — pick locks ONLY after 8am ET
-    # Before 8am, allow regeneration so fresh morning data can override stale overnight picks
+    # POTD lock strategy (hybrid):
+    # - Pre-8am: always regenerate (stale overnight data)
+    # - 8am-11am: always regenerate (early morning data still settling)
+    # - 11am+ lock: pick locks so early-game users see a pick
+    # - 2pm run override: if new pick has Sweat Score 20+ higher than locked pick,
+    #                     overwrite (only trigger when 2pm data changes things materially)
+    SCORE_OVERRIDE_THRESHOLD = 20  # 20-point score delta to override locked pick
+    existing_pick = None
     try:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/jerry_cache?game_id=eq.best_bet_{today}&select=data",
@@ -290,11 +296,18 @@ def run():
         )
         existing = r.json()
         if existing and len(existing) > 0 and existing[0].get('data', {}).get('pipelineGenerated'):
-            if et_hour >= 8:
-                print(f"✅ Today's pick already locked (post-8am ET) — skipping regeneration")
+            existing_pick = existing[0]['data']
+            existing_score = existing_pick.get('score', {}).get('total', 0) or 0
+
+            if et_hour < 11:
+                print(f"⏰ Pre-11am ET ({et_hour}h) — regenerating with fresh data")
+                existing_pick = None  # clear so we overwrite
+            elif et_hour < 14:
+                print(f"✅ Today's pick locked (11am-2pm window) — skipping regeneration")
                 return
             else:
-                print(f"⏰ Pre-8am ET ({et_hour}h) — overwriting prior pick with fresh morning data")
+                # 2pm+ run: allow override only if new pick beats locked score significantly
+                print(f"🔄 2pm+ run — will override locked pick only if new Sweat Score > {existing_score} + {SCORE_OVERRIDE_THRESHOLD}")
     except:
         pass
 
@@ -423,6 +436,15 @@ def run():
     for c in candidates[:5]:
         nrfi_str = f" | NRFI {c['nrfi_score']}" if c.get('nrfi_score') else ''
         print(f"  {c['sport']} {c['away_team']} @ {c['home_team']} — Score {c['score']}{nrfi_str} | Lean: {c.get('lean_display') or 'none'}")
+
+    # 2pm override gate: if a locked pick exists, only overwrite if new pick beats it by threshold
+    if existing_pick and et_hour >= 14:
+        existing_score = existing_pick.get('score', {}).get('total', 0) or 0
+        new_score = pick.get('score', 0) or 0
+        if new_score < existing_score + SCORE_OVERRIDE_THRESHOLD:
+            print(f"🔒 Keeping locked pick — new score {new_score} doesn't beat locked {existing_score} + {SCORE_OVERRIDE_THRESHOLD}")
+            return
+        print(f"🔄 OVERRIDE — new pick scores {new_score} vs locked {existing_score} (+{new_score - existing_score})")
 
     # Build the result — app will generate Jerry narrative on first load
     result = {
