@@ -1397,7 +1397,7 @@ const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
           matchup: `${item.ctx.away_team} @ ${item.ctx.home_team}`,
           pick: `${item.favTeam} ML`,
           odds: item.mlOdds,
-          signal: `Spread delta ${item.delta > 0 ? '+' : ''}${item.delta.toFixed(1)} runs vs market — 60% hit rate at 3+ delta`,
+          signal: `Spread delta ${item.delta > 0 ? '+' : ''}${item.delta.toFixed(1)} runs vs market — high-conviction ML lean`,
           game: item.game,
           ctx: item.ctx,
         });
@@ -5321,7 +5321,7 @@ if(scoreData) {
       if(mlbData.spread_delta != null && Math.abs(mlbData.spread_delta) >= 2.0) {
         const mlFav = mlbData.spread_delta > 0 ? game.home_team : game.away_team;
         const mlDelta = Math.abs(mlbData.spread_delta).toFixed(1);
-        sweatSignals.push(`ML lean: ${mlFav} (${mlDelta} run spread delta vs market${Math.abs(mlbData.spread_delta) >= 3.0 ? ' — HIGH conviction, 60% hit rate' : ''})`);
+        sweatSignals.push(`ML lean: ${mlFav} (${mlDelta} run spread delta vs market${Math.abs(mlbData.spread_delta) >= 3.0 ? ' — HIGH conviction' : ''})`);
       }
     }
   }
@@ -5398,7 +5398,7 @@ ${scoreData.isTournamentFloor ? 'Note: This is the best available play today —
 - For NBA totals: if model projects 3+ pts under posted total, lean under and explain why (elite defenses, slow pace, injuries suppressing scoring)
 - For MLB: the Sweat Locker model has computed a total lean AND a moneyline lean from pipeline data (xERA, wRC+, park, bullpen, weather, spread projection). Your job is to EXPLAIN why the model leans that way using the specific data provided. Do not contradict the model lean unless your web search finds concrete breaking news (injury, lineup scratch, weather change) that the model doesn't know about. If you override the model, explicitly say "Override: [reason]".
 - For MLB: Jerry is an ANALYST, not a tout. Present the data, explain what the model sees, and let the user decide. Never say "take this", "lock this in", "smash this", or "play this". Instead say "here's what stands out", "the model sees an edge", "the data points to".
-- For MLB: if ML conviction is HIGH (3+ run spread delta — 60% hit rate), highlight the spread delta and explain the mismatch (xERA gap, wRC+ gap, bullpen differential). Frame it as "the model disagrees with the market by 3+ runs here — that's historically a 60% signal."
+- For MLB: if ML conviction is HIGH (3+ run spread delta), highlight the spread delta and explain the mismatch (xERA gap, wRC+ gap, bullpen differential). Frame it as "the model disagrees with the market by [X] runs here" — reference the specific delta, NOT a hardcoded percentage.
 - For MLB: if ML conviction is MODERATE (2-3 run delta), mention the model leans one direction but frame it as informational. "Model slightly favors [Team] but the edge is thin."
 - For MLB: if ML conviction is LOW (delta under 2), do NOT mention a moneyline lean — stick to total and NRFI analysis only. The market and model agree.
 - For MLB: if the game is a PRIME SWEAT (68+ Sweat Score), reference that multiple signals are converging and what those signals are. "This game grades out at [score] with pitcher quality, park factor, and weather all pointing the same direction."
@@ -8467,12 +8467,17 @@ setJerryHistory(prev => {
 )}
 {gamesSport==='MLB' && (()=>{
   const now = new Date();
+  // Dedupe by game_id (mlbGameContext keyed by both home and away team, so each game appears twice)
+  const seenGames = new Set<string>();
   const mlLeans = Object.values(mlbGameContext as Record<string, any>)
     .filter((ctx:any) => {
+      if(!ctx.game_id || seenGames.has(ctx.game_id)) return false;
       if(!ctx.spread_delta || Math.abs(parseFloat(ctx.spread_delta)) < 3.0) return false;
       const mg = gamesData.find((g:any) => g.home_team === ctx.home_team || g.away_team === ctx.away_team);
       if(!mg) return false;
-      return new Date(mg.commence_time) > now;
+      if(new Date(mg.commence_time) <= now) return false;
+      seenGames.add(ctx.game_id);
+      return true;
     })
     .sort((a:any, b:any) => Math.abs(parseFloat(b.spread_delta)) - Math.abs(parseFloat(a.spread_delta)))
     .slice(0, 5);
@@ -8481,7 +8486,7 @@ setJerryHistory(prev => {
     <View style={{backgroundColor:'rgba(0,229,160,0.06)',borderRadius:14,padding:14,marginBottom:14,borderWidth:1,borderColor:'rgba(0,229,160,0.25)'}}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
         <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:13}}>💰 ML LEANS</Text>
-        <Text style={{color:'#4a6070',fontSize:10}}>3+ delta = 70% hist. | 5+ = elite</Text>
+        <Text style={{color:'#4a6070',fontSize:10}}>Model disagrees with market</Text>
       </View>
       {mlLeans.map((ctx:any, i:number) => {
         const delta = parseFloat(ctx.spread_delta);
