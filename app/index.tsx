@@ -4323,17 +4323,21 @@ const fetchJerryRecord = async () => {
     const recentProps = allAGrades.slice(0, 10);
 
     // NRFI Model record from mlb_game_results
+    // Only track tiers with proven edge (90-94 PRIME + 70-79 mild lean)
+    // Exclude 80-89 dead zone (42-47% hit rate per audit) — drags record down
     let nrfi = {wins:0, losses:0};
     try {
       const { data: nrfiData, error: nrfiError } = await supabase
         .from('mlb_game_results')
         .select('nrfi_score, nrfi_result')
-        .gte('nrfi_score', 70)
         .not('nrfi_result', 'is', null);
-      console.log('NRFI data:', nrfiData?.length, nrfiError);
       if(nrfiData && nrfiData.length > 0) {
-        nrfi.wins = nrfiData.filter((r: any) => r.nrfi_result === 'NRFI').length;
-        nrfi.losses = nrfiData.filter((r: any) => r.nrfi_result === 'YRFI').length;
+        // Filter to tiers with edge: 90+ or 70-79
+        const edgeTierGames = nrfiData.filter((r: any) =>
+          (r.nrfi_score >= 90) || (r.nrfi_score >= 70 && r.nrfi_score <= 79)
+        );
+        nrfi.wins = edgeTierGames.filter((r: any) => r.nrfi_result === 'NRFI').length;
+        nrfi.losses = edgeTierGames.filter((r: any) => r.nrfi_result === 'YRFI').length;
       }
     } catch(e) {}
 
