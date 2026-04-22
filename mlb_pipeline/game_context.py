@@ -365,6 +365,25 @@ def get_team_last10(team_name, season=2026):
     except Exception:
         return None
 
+def get_catcher_framing(catcher_name):
+    """Look up catcher framing runs from Supabase mlb_catcher_framing"""
+    if not catcher_name:
+        return None
+    try:
+        import unicodedata
+        normalized = unicodedata.normalize('NFKD', catcher_name).encode('ascii', 'ignore').decode('ascii')
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_catcher_framing?player_name=ilike.{requests.utils.quote('*'+normalized+'*')}&select=framing_runs,strike_rate&limit=1",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            timeout=5
+        )
+        data = r.json()
+        if data and data[0].get('framing_runs') is not None:
+            return float(data[0]['framing_runs'])
+        return None
+    except Exception:
+        return None
+
 def get_confirmed_lineups(game_date):
     """Fetch confirmed batting lineups from MLB Stats API"""
     print(f"Fetching confirmed lineups for {game_date}...")
@@ -387,10 +406,14 @@ def get_confirmed_lineups(game_date):
                 away_lineup = game.get("lineups", {}).get("awayPlayers", [])
                 home_batters = [p.get("fullName", "") for p in home_lineup if p.get("primaryPosition", {}).get("abbreviation") != "P"]
                 away_batters = [p.get("fullName", "") for p in away_lineup if p.get("primaryPosition", {}).get("abbreviation") != "P"]
+                home_catcher = next((p.get("fullName", "") for p in home_lineup if p.get("primaryPosition", {}).get("abbreviation") == "C"), None)
+                away_catcher = next((p.get("fullName", "") for p in away_lineup if p.get("primaryPosition", {}).get("abbreviation") == "C"), None)
                 if home_batters or away_batters:
                     lineups[home_team] = {
                         "home_lineup": home_batters[:9],
                         "away_lineup": away_batters[:9],
+                        "home_catcher": home_catcher,
+                        "away_catcher": away_catcher,
                         "away_team": away_team,
                         "lineup_confirmed": True
                     }
@@ -1409,6 +1432,15 @@ def log_game_result(context):
             "away_pitcher_last_3_era": context.get("away_pitcher_last_3_era"),
             "home_pitcher_last_3_k_pct": context.get("home_pitcher_last_3_k_pct"),
             "away_pitcher_last_3_k_pct": context.get("away_pitcher_last_3_k_pct"),
+            "home_team_oaa": context.get("home_team_oaa"),
+            "away_team_oaa": context.get("away_team_oaa"),
+            "home_team_xwoba": context.get("home_team_xwoba"),
+            "away_team_xwoba": context.get("away_team_xwoba"),
+            "home_team_barrel_pct": context.get("home_team_barrel_pct"),
+            "away_team_barrel_pct": context.get("away_team_barrel_pct"),
+            "home_catcher_framing": context.get("home_catcher_framing"),
+            "away_catcher_framing": context.get("away_catcher_framing"),
+            "stats_snapshot_date": context.get("stats_snapshot_date"),
             "home_lineup_weight": context.get("home_lineup_weight"),
             "away_lineup_weight": context.get("away_lineup_weight"),
             "home_bullpen_era": context.get("home_bullpen_era"),
@@ -1764,6 +1796,28 @@ def run():
             if away_offense:
                 print(f"  {away_team} wOBA: {away_offense.get('woba')} wRC+: {away_offense.get('wrc_plus')} K%: {away_offense.get('k_pct')}%")
 
+            # Team defense + expected offense from Savant enrichment
+            def _fi(v):
+                try: return int(float(v)) if v is not None else None
+                except: return None
+            def _ff(v):
+                try:
+                    f = float(v)
+                    return f if f == f else None
+                except: return None
+            home_team_oaa = _fi(home_offense.get('oaa')) if home_offense else None
+            away_team_oaa = _fi(away_offense.get('oaa')) if away_offense else None
+            home_team_xwoba = _ff(home_offense.get('xwoba')) if home_offense else None
+            away_team_xwoba = _ff(away_offense.get('xwoba')) if away_offense else None
+            home_team_barrel_pct = _ff(home_offense.get('barrel_pct')) if home_offense else None
+            away_team_barrel_pct = _ff(away_offense.get('barrel_pct')) if away_offense else None
+            if home_team_oaa is not None or away_team_oaa is not None:
+                print(f"  OAA: {home_team} {home_team_oaa} vs {away_team} {away_team_oaa}")
+            if home_team_xwoba is not None:
+                print(f"  {home_team} xwOBA {home_team_xwoba} (season wOBA {home_offense.get('woba')})")
+            if away_team_xwoba is not None:
+                print(f"  {away_team} xwOBA {away_team_xwoba} (season wOBA {away_offense.get('woba')})")
+
             # Platoon-adjusted offense: home team's wRC+/OPS vs away pitcher's hand, and vice versa
             home_pitcher_hand = (home_pitcher_stats.get('throws') if home_pitcher_stats else None) or 'R'
             away_pitcher_hand = (away_pitcher_stats.get('throws') if away_pitcher_stats else None) or 'R'
@@ -1896,6 +1950,12 @@ def run():
             home_lineup = lineup_info.get("home_lineup", [])
             away_lineup = lineup_info.get("away_lineup", [])
             lineup_confirmed = lineup_info.get("lineup_confirmed", False)
+            home_catcher_name = lineup_info.get("home_catcher")
+            away_catcher_name = lineup_info.get("away_catcher")
+            home_catcher_framing = get_catcher_framing(home_catcher_name) if home_catcher_name else None
+            away_catcher_framing = get_catcher_framing(away_catcher_name) if away_catcher_name else None
+            if home_catcher_framing is not None or away_catcher_framing is not None:
+                print(f"  Catcher framing: {home_catcher_name or 'TBD'} {home_catcher_framing} | {away_catcher_name or 'TBD'} {away_catcher_framing}")
             # Calculate batting order weights with individual batter OPS
             home_lineup_str = ', '.join(home_lineup) if isinstance(home_lineup, list) else home_lineup or ''
             away_lineup_str = ', '.join(away_lineup) if isinstance(away_lineup, list) else away_lineup or ''
@@ -2290,6 +2350,15 @@ def run():
                 "away_pitcher_last_3_era": away_pitcher_last_3_era,
                 "home_pitcher_last_3_k_pct": home_pitcher_last_3_k_pct,
                 "away_pitcher_last_3_k_pct": away_pitcher_last_3_k_pct,
+                "home_team_oaa": home_team_oaa,
+                "away_team_oaa": away_team_oaa,
+                "home_team_xwoba": home_team_xwoba,
+                "away_team_xwoba": away_team_xwoba,
+                "home_team_barrel_pct": home_team_barrel_pct,
+                "away_team_barrel_pct": away_team_barrel_pct,
+                "home_catcher_framing": home_catcher_framing,
+                "away_catcher_framing": away_catcher_framing,
+                "stats_snapshot_date": datetime.now().strftime('%Y-%m-%d'),
                 "home_record": f"{home_form['wins']}-{home_form['losses']}" if home_form else None,
                 "away_record": f"{away_form['wins']}-{away_form['losses']}" if away_form else None,
                 "home_last10": home_form['last10'] if home_form else None,

@@ -3624,6 +3624,29 @@ if(isPlayoffMode) {
         if(!isNaN(homeXera) && !isNaN(homeL3) && Math.abs(homeL3 - homeXera) >= 1.5) sitScore += 5;
         if(!isNaN(awayXera) && !isNaN(awayL3) && Math.abs(awayL3 - awayXera) >= 1.5) sitScore += 5;
 
+        // Team defense gap (OAA) — defense saves 10-15 runs over 162g
+        const homeOaa = parseFloat(mlbCtx.home_team_oaa);
+        const awayOaa = parseFloat(mlbCtx.away_team_oaa);
+        if(!isNaN(homeOaa) && !isNaN(awayOaa)) {
+          const oaaGap = Math.abs(homeOaa - awayOaa);
+          if(oaaGap >= 15) sitScore += 8;
+          else if(oaaGap >= 10) sitScore += 5;
+          else if(oaaGap >= 5) sitScore += 2;
+        }
+
+        // Catcher framing gap — 5+ runs = K prop + total implication
+        const homeFraming = parseFloat(mlbCtx.home_catcher_framing);
+        const awayFraming = parseFloat(mlbCtx.away_catcher_framing);
+        if(!isNaN(homeFraming) && !isNaN(awayFraming) && Math.abs(homeFraming - awayFraming) >= 5) sitScore += 4;
+
+        // Expected vs actual wOBA divergence — regression signal
+        const homeXwoba = parseFloat(mlbCtx.home_team_xwoba);
+        const awayXwoba = parseFloat(mlbCtx.away_team_xwoba);
+        const homeWoba = parseFloat(mlbCtx.home_woba);
+        const awayWoba = parseFloat(mlbCtx.away_woba);
+        if(!isNaN(homeXwoba) && !isNaN(homeWoba) && Math.abs(homeXwoba - homeWoba) >= 0.020) sitScore += 3;
+        if(!isNaN(awayXwoba) && !isNaN(awayWoba) && Math.abs(awayXwoba - awayWoba) >= 0.020) sitScore += 3;
+
         // Team streaks — hot/cold teams
         const homeStreak = mlbCtx.home_streak || '';
         const awayStreak = mlbCtx.away_streak || '';
@@ -5173,6 +5196,10 @@ MLB GAME CONTEXT:
 - Platoon numerical: ${mlbData.home_platoon_advantage != null ? `${game.home_team} ${mlbData.home_platoon_advantage > 0 ? '+' : ''}${mlbData.home_platoon_advantage.toFixed(1)}` : 'pending'} | ${mlbData.away_platoon_advantage != null ? `${game.away_team} ${mlbData.away_platoon_advantage > 0 ? '+' : ''}${mlbData.away_platoon_advantage.toFixed(1)}` : 'pending'} (positive = lineup platoon advantage vs opposing SP, negative = pitcher advantage, ±5 or more is material)
 - Bullpen fatigue: ${mlbData.home_bp_relievers_3d != null ? `${game.home_team} ${mlbData.home_bp_relievers_3d} relievers used last 3d${mlbData.home_bp_relievers_3d >= 12 ? ' ⚠️ HIGH USAGE' : ''}` : ''} | ${mlbData.away_bp_relievers_3d != null ? `${game.away_team} ${mlbData.away_bp_relievers_3d} relievers used last 3d${mlbData.away_bp_relievers_3d >= 12 ? ' ⚠️ HIGH USAGE' : ''}` : ''}
 - Travel context: ${mlbData.timezone_change != null && Math.abs(mlbData.timezone_change) >= 2 ? `${Math.abs(mlbData.timezone_change)}hr TZ change for away side — fatigue concern` : 'no material TZ change'}${mlbData.away_consecutive_road_games != null && mlbData.away_consecutive_road_games >= 6 ? ` • ${game.away_team} on ${mlbData.away_consecutive_road_games}-game road trip (road fatigue)` : mlbData.away_consecutive_road_games >= 4 ? ` • ${game.away_team} ${mlbData.away_consecutive_road_games}-game road trip` : ''}
+- Defense (OAA): ${mlbData.home_team_oaa != null ? `${game.home_team} ${mlbData.home_team_oaa > 0 ? '+' : ''}${mlbData.home_team_oaa}` : ''} | ${mlbData.away_team_oaa != null ? `${game.away_team} ${mlbData.away_team_oaa > 0 ? '+' : ''}${mlbData.away_team_oaa}` : ''}${mlbData.home_team_oaa != null && mlbData.away_team_oaa != null && Math.abs(mlbData.home_team_oaa - mlbData.away_team_oaa) >= 10 ? ` ⚡ DEFENSE GAP ${Math.abs(mlbData.home_team_oaa - mlbData.away_team_oaa)} runs` : ''}
+- Expected offense quality: ${mlbData.home_team_xwoba != null ? `${game.home_team} xwOBA ${mlbData.home_team_xwoba}${mlbData.home_woba ? ` vs actual ${mlbData.home_woba} (${(mlbData.home_team_xwoba - mlbData.home_woba).toFixed(3)} diff — ${Math.abs(mlbData.home_team_xwoba - mlbData.home_woba) >= 0.015 ? 'regression signal' : 'in line'})` : ''}` : ''} | ${mlbData.away_team_xwoba != null ? `${game.away_team} xwOBA ${mlbData.away_team_xwoba}${mlbData.away_woba ? ` vs actual ${mlbData.away_woba} (${(mlbData.away_team_xwoba - mlbData.away_woba).toFixed(3)} diff)` : ''}` : ''}
+- Barrel/hard-hit: ${mlbData.home_team_barrel_pct != null ? `${game.home_team} ${mlbData.home_team_barrel_pct}% barrel` : ''} | ${mlbData.away_team_barrel_pct != null ? `${game.away_team} ${mlbData.away_team_barrel_pct}% barrel` : ''}
+- Catcher framing: ${mlbData.home_catcher_framing != null ? `${game.home_team} catcher ${mlbData.home_catcher_framing > 0 ? '+' : ''}${mlbData.home_catcher_framing} framing runs` : ''} | ${mlbData.away_catcher_framing != null ? `${game.away_team} catcher ${mlbData.away_catcher_framing > 0 ? '+' : ''}${mlbData.away_catcher_framing} framing runs` : ''}${mlbData.home_catcher_framing != null && mlbData.away_catcher_framing != null && Math.abs(mlbData.home_catcher_framing - mlbData.away_catcher_framing) >= 5 ? ` ⚡ MATERIAL framing edge (K-prop implication)` : ''}
 - Data confidence: ${mlbData.confidence}`;
   }
 }
@@ -5424,7 +5451,10 @@ OVERRIDE:
 - NEVER override based on gut feel or market consensus.
 
 SIGNAL COVERAGE:
-- Reference every material signal available in the data (streak, days rest, L3 form drift, platoon gap, park, weather, ump tendencies, bullpen fatigue, confirmed lineups, pitcher vs team history) — AND briefly explain why each matters for THIS specific matchup.
+- Reference every material signal available in the data (streak, days rest, L3 form drift, platoon gap, park, weather, ump tendencies, bullpen fatigue, confirmed lineups, pitcher vs team history, team defense OAA, catcher framing, expected vs actual wOBA) — AND briefly explain why each matters for THIS specific matchup.
+- Team defense (OAA): gap of 10+ runs favors better defense on totals (unders) and close games. Mention only when gap is material.
+- Catcher framing: 5+ run framing gap is a K-prop and NRFI signal — elite framer expands the strike zone for his pitcher.
+- Expected vs actual wOBA: if team xwOBA differs from actual wOBA by 0.020+, flag regression (hot teams over-performing come back, cold teams under-performing bounce).
 - Don't just list signals. Tie each to outcome implication like a sharp analyst. Example voice: "Mets on a 12-game skid, due for bounce-back — but today's lineup facing [pitcher type] in [park context] makes it hard to see that happening here."
 - Silent signals (available in data but unmentioned) are wasted context. If it's in the data and material, it gets one line of interpretation.
 

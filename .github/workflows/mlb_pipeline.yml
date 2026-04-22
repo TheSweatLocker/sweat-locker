@@ -48,6 +48,14 @@ jobs:
           cd mlb_pipeline
           python team_stats.py
 
+      - name: Run Savant enrichment (OAA, xwOBA, barrel%, catcher framing)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python savant_enrichment.py
+
       - name: Run game context pipeline
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
