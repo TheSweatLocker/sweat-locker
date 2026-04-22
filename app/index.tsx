@@ -1971,6 +1971,8 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
    const [jerryHistory, setJerryHistory] = useState([]);
   const [jerryRecord, setJerryRecord] = useState(null);
   const [jerryRecordLoading, setJerryRecordLoading] = useState(false);
+  const [dawgData, setDawgData] = useState<any>(null);
+  const [dawgLoading, setDawgLoading] = useState(false);
   const [propJerryData, setPropJerryData] = useState([]);
   const [propJerryLoading, setPropJerryLoading] = useState(false);
   // Pipeline-driven MLB props (replaces EV scanner for MLB sport)
@@ -4353,6 +4355,26 @@ const fetchPlayoffSeries = async () => {
       setPlayoffSeries(seriesMap);
     }
   } catch(e) {}
+};
+
+const fetchDawgOfDay = async () => {
+  setDawgLoading(true);
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const { data, error } = await supabase
+      .from('daily_dawg')
+      .select('*')
+      .eq('game_date', today)
+      .single();
+    if (data) {
+      setDawgData(data);
+    } else {
+      setDawgData({ noPick: true });
+    }
+  } catch (e) {
+    setDawgData({ noPick: true });
+  }
+  setDawgLoading(false);
 };
 
 const fetchJerryRecord = async () => {
@@ -8978,7 +9000,7 @@ setJerryHistory(prev => {
           <View>
             <Text style={styles.pageTitle}>🧠 Jerry 🎤</Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
-                {[{id:'propjerry',label:'🧠 Prop Jerry'},{id:'dailydegen',label:'🎲 Daily Degen'},{id:'fades',label:'🚫 Fades'},{id:'mytrends',label:'📋 Record'}].map(t=>(
+                {[{id:'propjerry',label:'🧠 Prop Jerry'},{id:'dailydegen',label:'🎲 Daily Degen'},{id:'dawg',label:'🐕 Dawg of the Day'},{id:'mytrends',label:'📋 Record'}].map(t=>(
                   <TouchableOpacity key={t.id} style={[styles.chipBtn,{flex:1,justifyContent:'center',alignItems:'center'},trendsTab===t.id&&styles.chipBtnActive]} onPress={()=>setTrendsTab(t.id)}>
                     <Text style={[styles.chipTxt,trendsTab===t.id&&styles.chipTxtActive,{textAlign:'center'}]}>{t.label}</Text>
                   </TouchableOpacity>
@@ -9305,17 +9327,60 @@ setJerryHistory(prev => {
   />
 )}
 
-            {trendsTab==='fades'&&(
-  <FadesScanner
-    gamesData={gamesData}
-    mlbGameContext={mlbGameContext}
-    nbaTeamData={nbaTeamData}
-    nbaInjuryData={nbaInjuryData}
-    gamesSport={gamesSport}
-    ANTHROPIC_API_KEY={ANTHROPIC_API_KEY}
-    supabase={supabase}
-  />
-)}
+            {trendsTab==='dawg' && (() => {
+              if(!dawgData && !dawgLoading) fetchDawgOfDay();
+              if(dawgLoading) return (
+                <View style={{alignItems:'center',paddingTop:60}}>
+                  <ActivityIndicator size="large" color={HRB_COLOR}/>
+                  <Text style={{color:'#7a92a8',marginTop:12}}>Finding today's barker...</Text>
+                </View>
+              );
+              if(!dawgData || dawgData.noPick) return (
+                <View style={{alignItems:'center',paddingTop:60}}>
+                  <Text style={{fontSize:48}}>🐕</Text>
+                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:16,marginTop:12}}>No Dawg today</Text>
+                  <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',paddingHorizontal:30,lineHeight:19}}>Market and model are aligned on today's favorites.{'\n'}Check back tomorrow — the right spot will come.</Text>
+                </View>
+              );
+              const d = dawgData;
+              const tierColor = d.tier === 'PRIME' ? '#00e5a0' : d.tier === 'STRONG' ? HRB_COLOR : '#7a92a8';
+              const signalEntries = Object.entries(d.signals || {});
+              return (
+                <View>
+                  {/* Header */}
+                  <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:14,padding:14,marginBottom:16,borderWidth:1.5,borderColor:'rgba(255,184,0,0.4)'}}>
+                    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                      <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14}}>🐕 DAWG OF THE DAY</Text>
+                      <View style={{backgroundColor:tierColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:tierColor+'55'}}>
+                        <Text style={{color:tierColor,fontSize:11,fontWeight:'800'}}>{d.tier} · {d.conviction}</Text>
+                      </View>
+                    </View>
+                    <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:22,marginBottom:4}}>{d.team} ML</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,marginBottom:10}}>{d.matchup} • Market has them {d.close_spread > 0 ? '+' : ''}{Number(d.close_spread).toFixed(1)}</Text>
+                    {d.narrative && (
+                      <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{String(d.narrative).replace(/\*\*/g,'').replace(/\*/g,'').replace(/#{1,6}\s/g,'').trim()}"</Text>
+                    )}
+                  </View>
+
+                  {/* Signals */}
+                  {signalEntries.length > 0 && (
+                    <View style={[styles.card,{marginBottom:12}]}>
+                      <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>WHY THIS DOG IS BARKING</Text>
+                      <View style={{gap:8}}>
+                        {signalEntries.map(([k, v], i) => (
+                          <View key={i} style={{flexDirection:'row',alignItems:'flex-start',gap:8}}>
+                            <Text style={{color:tierColor,fontSize:12,marginTop:1}}>•</Text>
+                            <Text style={{color:'#c8d8e8',fontSize:13,flex:1,lineHeight:18}}>{String(v)}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  )}
+
+                  <Text style={{color:'#4a6070',fontSize:10,textAlign:'center',marginTop:6,paddingHorizontal:20,lineHeight:14}}>Dawg of the Day = model-identified underdog where our pipeline sees more value than the market. Spread delta {Number(d.spread_delta).toFixed(1)} runs in {d.team.split(' ').pop()}'s favor vs posted line.</Text>
+                </View>
+              );
+            })()}
 
             {trendsTab==='mytrends'&&(()=>{
               if(!jerryRecord && !jerryRecordLoading) fetchJerryRecord();

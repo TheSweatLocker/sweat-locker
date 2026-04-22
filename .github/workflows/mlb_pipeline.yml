@@ -126,6 +126,15 @@ jobs:
             echo "Skipping Daily Degen (UTC hour $HOUR — afternoon only)"
           fi
 
+      - name: Generate Dawg of the Day
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_dawg_of_day.py
+
       - name: Update umpire database (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
