@@ -1380,6 +1380,14 @@ def log_game_result(context):
             "away_platoon_advantage": context.get("away_platoon_advantage"),
             "home_platoon_note": context.get("home_platoon_note"),
             "away_platoon_note": context.get("away_platoon_note"),
+            "home_wrc_vs_opp_hand": context.get("home_wrc_vs_opp_hand"),
+            "away_wrc_vs_opp_hand": context.get("away_wrc_vs_opp_hand"),
+            "home_ops_vs_opp_hand": context.get("home_ops_vs_opp_hand"),
+            "away_ops_vs_opp_hand": context.get("away_ops_vs_opp_hand"),
+            "home_pitcher_last_3_era": context.get("home_pitcher_last_3_era"),
+            "away_pitcher_last_3_era": context.get("away_pitcher_last_3_era"),
+            "home_pitcher_last_3_k_pct": context.get("home_pitcher_last_3_k_pct"),
+            "away_pitcher_last_3_k_pct": context.get("away_pitcher_last_3_k_pct"),
             "home_lineup_weight": context.get("home_lineup_weight"),
             "away_lineup_weight": context.get("away_lineup_weight"),
             "home_bullpen_era": context.get("home_bullpen_era"),
@@ -1734,6 +1742,32 @@ def run():
                 print(f"  {home_team} wOBA: {home_offense.get('woba')} wRC+: {home_offense.get('wrc_plus')} K%: {home_offense.get('k_pct')}%")
             if away_offense:
                 print(f"  {away_team} wOBA: {away_offense.get('woba')} wRC+: {away_offense.get('wrc_plus')} K%: {away_offense.get('k_pct')}%")
+
+            # Platoon-adjusted offense: home team's wRC+/OPS vs away pitcher's hand, and vice versa
+            home_pitcher_hand = (home_pitcher_stats.get('throws') if home_pitcher_stats else None) or 'R'
+            away_pitcher_hand = (away_pitcher_stats.get('throws') if away_pitcher_stats else None) or 'R'
+            home_wrc_vs_opp_hand = None
+            away_wrc_vs_opp_hand = None
+            home_ops_vs_opp_hand = None
+            away_ops_vs_opp_hand = None
+            if home_offense:
+                opp_hand_key = 'rhp' if away_pitcher_hand == 'R' else 'lhp'
+                home_wrc_vs_opp_hand = home_offense.get(f'wrc_plus_vs_{opp_hand_key}')
+                home_ops_vs_opp_hand = home_offense.get(f'ops_vs_{opp_hand_key}')
+            if away_offense:
+                opp_hand_key = 'rhp' if home_pitcher_hand == 'R' else 'lhp'
+                away_wrc_vs_opp_hand = away_offense.get(f'wrc_plus_vs_{opp_hand_key}')
+                away_ops_vs_opp_hand = away_offense.get(f'ops_vs_{opp_hand_key}')
+            if home_wrc_vs_opp_hand is not None:
+                print(f"  {home_team} wRC+ vs {away_pitcher_hand}HP: {home_wrc_vs_opp_hand} (season: {home_offense.get('wrc_plus')})")
+            if away_wrc_vs_opp_hand is not None:
+                print(f"  {away_team} wRC+ vs {home_pitcher_hand}HP: {away_wrc_vs_opp_hand} (season: {away_offense.get('wrc_plus')})")
+
+            # Pitcher recent form — last 3 starts
+            home_pitcher_last_3_era = home_pitcher_stats.get('last_3_era') if home_pitcher_stats else None
+            away_pitcher_last_3_era = away_pitcher_stats.get('last_3_era') if away_pitcher_stats else None
+            home_pitcher_last_3_k_pct = home_pitcher_stats.get('last_3_k_pct') if home_pitcher_stats else None
+            away_pitcher_last_3_k_pct = away_pitcher_stats.get('last_3_k_pct') if away_pitcher_stats else None
 
             # Get bullpen stats
             home_bullpen = get_bullpen_stats(home_team)
@@ -2227,6 +2261,14 @@ def run():
                 "away_platoon_advantage": away_platoon_score,
                 "home_platoon_note": home_platoon_note,
                 "away_platoon_note": away_platoon_note,
+                "home_wrc_vs_opp_hand": home_wrc_vs_opp_hand,
+                "away_wrc_vs_opp_hand": away_wrc_vs_opp_hand,
+                "home_ops_vs_opp_hand": home_ops_vs_opp_hand,
+                "away_ops_vs_opp_hand": away_ops_vs_opp_hand,
+                "home_pitcher_last_3_era": home_pitcher_last_3_era,
+                "away_pitcher_last_3_era": away_pitcher_last_3_era,
+                "home_pitcher_last_3_k_pct": home_pitcher_last_3_k_pct,
+                "away_pitcher_last_3_k_pct": away_pitcher_last_3_k_pct,
                 "home_record": f"{home_form['wins']}-{home_form['losses']}" if home_form else None,
                 "away_record": f"{away_form['wins']}-{away_form['losses']}" if away_form else None,
                 "home_last10": home_form['last10'] if home_form else None,

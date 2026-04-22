@@ -1,11 +1,15 @@
 import requests
 import os
+import time
 from dotenv import load_dotenv
 from datetime import datetime
 
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+LEAGUE_WOBA = 0.310
+WOBA_SCALE = 1.15
 
 def safe_float(val, default=None):
     try:
@@ -19,6 +23,58 @@ def safe_int(val, default=None):
         return int(val)
     except:
         return default
+
+def compute_woba_wrc(stat):
+    """Compute wOBA + wRC+ approximation from a stat split dict"""
+    pa = safe_int(stat.get('plateAppearances'), 0) or 0
+    if pa == 0:
+        return None, None, None, None
+    bb = safe_int(stat.get('baseOnBalls'), 0) or 0
+    hbp = safe_int(stat.get('hitByPitch'), 0) or 0
+    hits = safe_int(stat.get('hits'), 0) or 0
+    doubles = safe_int(stat.get('doubles'), 0) or 0
+    triples = safe_int(stat.get('triples'), 0) or 0
+    hr = safe_int(stat.get('homeRuns'), 0) or 0
+    so = safe_int(stat.get('strikeOuts'), 0) or 0
+    ops = safe_float(stat.get('ops'))
+    singles = hits - doubles - triples - hr
+    woba = round((0.69*bb + 0.72*hbp + 0.89*singles + 1.27*doubles + 1.62*triples + 2.10*hr) / pa, 3)
+    wrc_plus = round((woba / LEAGUE_WOBA) * 100) if woba else 100
+    k_pct = round((so / pa) * 100, 1)
+    return woba, wrc_plus, k_pct, ops
+
+def fetch_team_split(team_id, sit_code, season=2026):
+    """Fetch a single split (vr, vl, h, a) for a team"""
+    try:
+        r = requests.get(
+            f'https://statsapi.mlb.com/api/v1/teams/{team_id}/stats',
+            params={
+                'stats': 'statSplits',
+                'group': 'hitting',
+                'season': season,
+                'sitCodes': sit_code,
+            },
+            timeout=10
+        )
+        data = r.json().get('stats', [])
+        if not data or not data[0].get('splits'):
+            return None
+        stat = data[0]['splits'][0].get('stat', {})
+        if not stat or safe_int(stat.get('plateAppearances'), 0) == 0:
+            return None
+        woba, wrc, k_pct, ops = compute_woba_wrc(stat)
+        games = safe_int(stat.get('gamesPlayed'), 0) or 0
+        runs = safe_int(stat.get('runs'), 0) or 0
+        rpg = round(runs / games, 2) if games > 0 else None
+        return {
+            'woba': woba,
+            'wrc_plus': wrc,
+            'k_pct': k_pct,
+            'ops': ops,
+            'runs_per_game': rpg,
+        }
+    except Exception:
+        return None
 
 def get_team_stats_mlb_api():
     """Fetch team batting stats from MLB Stats API — free, never blocks"""
@@ -90,6 +146,16 @@ def get_team_stats_mlb_api():
                 if wrc_plus is None or wrc_plus > 200 or wrc_plus < 50:
                     wrc_plus = round((woba / league_woba) * 100) if woba else 100
 
+                # Fetch splits: vs RHP, vs LHP, home, away
+                vs_rhp = fetch_team_split(team_id, 'vr')
+                time.sleep(0.15)
+                vs_lhp = fetch_team_split(team_id, 'vl')
+                time.sleep(0.15)
+                home_split = fetch_team_split(team_id, 'h')
+                time.sleep(0.15)
+                away_split = fetch_team_split(team_id, 'a')
+                time.sleep(0.15)
+
                 results.append({
                     'team_name': team_name,
                     'games': games,
@@ -105,6 +171,10 @@ def get_team_stats_mlb_api():
                     'woba': woba,
                     'wrc_plus': wrc_plus,
                     'hr': hr,
+                    'vs_rhp': vs_rhp,
+                    'vs_lhp': vs_lhp,
+                    'home_split': home_split,
+                    'away_split': away_split,
                 })
 
             except Exception as e:
@@ -163,6 +233,23 @@ def run():
                 "games_played": t['games'],
                 "updated_at": datetime.now().isoformat()
             }
+            # Splits
+            if t.get('vs_rhp'):
+                record['woba_vs_rhp'] = t['vs_rhp']['woba']
+                record['wrc_plus_vs_rhp'] = t['vs_rhp']['wrc_plus']
+                record['k_pct_vs_rhp'] = t['vs_rhp']['k_pct']
+                record['ops_vs_rhp'] = t['vs_rhp']['ops']
+            if t.get('vs_lhp'):
+                record['woba_vs_lhp'] = t['vs_lhp']['woba']
+                record['wrc_plus_vs_lhp'] = t['vs_lhp']['wrc_plus']
+                record['k_pct_vs_lhp'] = t['vs_lhp']['k_pct']
+                record['ops_vs_lhp'] = t['vs_lhp']['ops']
+            if t.get('home_split'):
+                record['ops_home'] = t['home_split']['ops']
+                record['runs_per_game_home'] = t['home_split']['runs_per_game']
+            if t.get('away_split'):
+                record['ops_away'] = t['away_split']['ops']
+                record['runs_per_game_away'] = t['away_split']['runs_per_game']
 
             if upload_team_offense(record):
                 success += 1

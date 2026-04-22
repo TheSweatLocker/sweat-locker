@@ -5128,12 +5128,14 @@ MLB GAME CONTEXT:
 - Pitcher stats: ${mlbData.pitcher_context || 'not available'}
 - Pitcher splits signal: ${mlbData.home_pitcher_home_era && mlbData.away_pitcher_away_era ? `${mlbData.home_pitcher} home ERA ${mlbData.home_pitcher_home_era} vs ${mlbData.away_pitcher} away ERA ${mlbData.away_pitcher_away_era}` : 'splits pending — early season'};
 - Offensive quality: ${mlbData.home_woba ? `${game.home_team} wOBA ${mlbData.home_woba} / wRC+ ${mlbData.home_wrc_plus} ${mlbData.home_wrc_plus > 110 ? '⚡ elite offense' : mlbData.home_wrc_plus < 90 ? '⚠️ weak offense' : '(avg)'}` : 'wOBA pending'} | ${mlbData.away_woba ? `${game.away_team} wOBA ${mlbData.away_woba} / wRC+ ${mlbData.away_wrc_plus} ${mlbData.away_wrc_plus > 110 ? '⚡ elite offense' : mlbData.away_wrc_plus < 90 ? '⚠️ weak offense' : '(avg)'}` : 'wOBA pending'}
+- Platoon-adjusted offense: ${mlbData.home_wrc_vs_opp_hand != null ? `${game.home_team} wRC+ vs opposing hand: ${mlbData.home_wrc_vs_opp_hand}${mlbData.home_wrc_plus ? ` (season ${mlbData.home_wrc_plus}, ${Math.abs(mlbData.home_wrc_vs_opp_hand - mlbData.home_wrc_plus) >= 15 ? '⚡ MATERIAL gap vs season' : 'in line'})` : ''}` : 'split pending'} | ${mlbData.away_wrc_vs_opp_hand != null ? `${game.away_team} wRC+ vs opposing hand: ${mlbData.away_wrc_vs_opp_hand}${mlbData.away_wrc_plus ? ` (season ${mlbData.away_wrc_plus}, ${Math.abs(mlbData.away_wrc_vs_opp_hand - mlbData.away_wrc_plus) >= 15 ? '⚡ MATERIAL gap vs season' : 'in line'})` : ''}` : 'split pending'}
+- Pitcher recent form (last 3 starts): ${mlbData.home_pitcher_last_3_era != null ? `${mlbData.home_pitcher} ${mlbData.home_pitcher_last_3_era} ERA / ${mlbData.home_pitcher_last_3_k_pct || '?'}% K` : `${mlbData.home_pitcher || 'home SP'} L3 pending`} | ${mlbData.away_pitcher_last_3_era != null ? `${mlbData.away_pitcher} ${mlbData.away_pitcher_last_3_era} ERA / ${mlbData.away_pitcher_last_3_k_pct || '?'}% K` : `${mlbData.away_pitcher || 'away SP'} L3 pending`}
 - K rate matchup: ${mlbData.home_k_gap !== null && mlbData.home_k_gap !== undefined ? `${mlbData.home_pitcher} K gap vs ${game.away_team} lineup: ${mlbData.home_k_gap > 0 ? '+' : ''}${mlbData.home_k_gap}pts ${Math.abs(mlbData.home_k_gap) >= 8 ? '⚡ LARGE K EDGE' : Math.abs(mlbData.home_k_gap) >= 4 ? '(notable)' : '(small)'}` : 'K gap: early season data pending'}
 - ${mlbData.away_k_gap !== null && mlbData.away_k_gap !== undefined ? `${mlbData.away_pitcher} K gap vs ${game.home_team} lineup: ${mlbData.away_k_gap > 0 ? '+' : ''}${mlbData.away_k_gap}pts ${Math.abs(mlbData.away_k_gap) >= 8 ? '⚡ LARGE K EDGE' : Math.abs(mlbData.away_k_gap) >= 4 ? '(notable)' : '(small)'}` : ''}
 - Days rest signal: ${mlbData.home_days_rest && mlbData.away_days_rest ? (mlbData.home_days_rest > mlbData.away_days_rest ? mlbData.home_pitcher + ' has rest advantage (' + mlbData.home_days_rest + ' vs ' + mlbData.away_days_rest + ' days)' : mlbData.away_days_rest > mlbData.home_days_rest ? mlbData.away_pitcher + ' has rest advantage (' + mlbData.away_days_rest + ' vs ' + mlbData.home_days_rest + ' days)' : 'Even rest') : 'TBD'}
 - Umpire: ${mlbData.umpire_note || mlbData.umpire || 'TBD'}
 - Model lean: ${overUnder}
-- NRFI signal: ${mlbData.nrfi_score ? `Score ${mlbData.nrfi_score}/100 — ${mlbData.nrfi_score >= 95 ? 'All signals maxed BUT historically volatile (47% hit rate on 95+) — mention this is a high-score trap' : mlbData.nrfi_score >= 90 ? 'PRIME NRFI — 90-94 tier has 73.3% hit rate, highest conviction zone' : mlbData.nrfi_score >= 80 ? 'NEUTRAL — 80-89 tier only hits 42% historically, do NOT frame as strong NRFI lean' : mlbData.nrfi_score >= 70 ? 'Mild NRFI lean — 70-79 tier hits ~60%' : mlbData.nrfi_score <= 35 ? 'Strong YRFI lean — runs expected early (77.8% YRFI hit on sub-40)' : mlbData.nrfi_score <= 40 ? 'YRFI lean — offense expected early' : 'neutral first inning signal'}` : 'NRFI score pending'}
+- NRFI signal: ${mlbData.nrfi_score ? `Score ${mlbData.nrfi_score}/100 — ${mlbData.nrfi_score >= 95 ? 'VOLATILE tier — all signals maxed but historically a trap zone, flag the volatility' : mlbData.nrfi_score >= 90 ? 'PRIME NRFI tier — highest conviction zone, walk through both starters first-inning profiles' : mlbData.nrfi_score >= 80 ? 'NEUTRAL tier — do NOT frame as strong NRFI lean' : mlbData.nrfi_score >= 70 ? 'Mild NRFI lean' : mlbData.nrfi_score <= 35 ? 'Strong YRFI lean — runs expected early' : mlbData.nrfi_score <= 40 ? 'YRFI lean — offense expected early' : 'neutral first inning signal'}` : 'NRFI score pending'}
 - Projected total: ${mlbData.projected_total ? mlbData.projected_total + ' (team stats + park + weather)' : 'NOT YET CALCULATED — do not infer a lean from pitcher data alone'}
 - Total analysis: ${mlbData.projected_total ? 'Model total available' : 'IMPORTANT: No projected total available. Base total take only on posted line context and weather/park. Do not default to under.'}
 - ${mlbData.home_runs_per_game ? `${game.home_team} offense: ${mlbData.home_runs_per_game.toFixed(2)} R/G, OPS ${mlbData.home_ops?.toFixed(3)}` : ''}
@@ -5147,8 +5149,8 @@ MLB GAME CONTEXT:
 - ${mlbData.away_lineup ? `${game.away_team} lineup: ${mlbData.away_lineup}` : ''};
 - Total delta: ${mlbData.projected_total && mlbData.projected_total > 0 ? (mlbData.projected_total - (game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0]?.point || mlbData.projected_total)).toFixed(1) + ' pts vs posted line' : 'N/A'}
 - Projected spread: ${mlbData.projected_spread != null ? `${mlbData.projected_spread > 0 ? game.home_team : game.away_team} by ${Math.abs(mlbData.projected_spread).toFixed(1)} runs` : 'N/A'}
-- ML lean: ${mlbData.spread_delta != null ? (Math.abs(mlbData.spread_delta) >= 3.0 ? `${mlbData.spread_delta > 0 ? game.home_team : game.away_team} ML — spread delta ${mlbData.spread_delta > 0 ? '+' : ''}${mlbData.spread_delta.toFixed(1)} runs vs market (60% hit rate at 3+ delta)` : Math.abs(mlbData.spread_delta) >= 2.0 ? `Slight ${mlbData.spread_delta > 0 ? game.home_team : game.away_team} ML lean — delta ${mlbData.spread_delta > 0 ? '+' : ''}${mlbData.spread_delta.toFixed(1)}` : 'No strong ML lean — spread delta under 2.0') : 'N/A'}
-- ML conviction: ${mlbData.spread_delta != null ? (Math.abs(mlbData.spread_delta) >= 3.0 ? 'HIGH — 3+ run spread delta (60% win rate historically)' : Math.abs(mlbData.spread_delta) >= 2.0 ? 'MODERATE — 2+ run delta' : 'LOW — market and model agree') : 'N/A'}
+- ML lean: ${mlbData.spread_delta != null ? (Math.abs(mlbData.spread_delta) >= 3.0 ? `${mlbData.spread_delta > 0 ? game.home_team : game.away_team} ML — spread delta ${mlbData.spread_delta > 0 ? '+' : ''}${mlbData.spread_delta.toFixed(1)} runs vs market (HIGH conviction tier)` : Math.abs(mlbData.spread_delta) >= 2.0 ? `Slight ${mlbData.spread_delta > 0 ? game.home_team : game.away_team} ML lean — delta ${mlbData.spread_delta > 0 ? '+' : ''}${mlbData.spread_delta.toFixed(1)}` : 'No strong ML lean — spread delta under 2.0') : 'N/A'}
+- ML conviction: ${mlbData.spread_delta != null ? (Math.abs(mlbData.spread_delta) >= 3.0 ? 'HIGH — 3+ run spread delta' : Math.abs(mlbData.spread_delta) >= 2.0 ? 'MODERATE — 2+ run delta' : 'LOW — market and model agree') : 'N/A'}
 - Spread delta: ${mlbData.spread_delta != null ? (mlbData.spread_delta > 0 ? '+' : '') + mlbData.spread_delta.toFixed(1) + ' runs vs posted line' : 'N/A'}
 - First inning ERA: ${mlbData.home_first_inning_era != null ? mlbData.home_pitcher + ' 1st inn ERA ' + mlbData.home_first_inning_era : ''} ${mlbData.away_first_inning_era != null ? '| ' + mlbData.away_pitcher + ' 1st inn ERA ' + mlbData.away_first_inning_era : ''}
 - Data confidence: ${mlbData.confidence}`;
@@ -5352,104 +5354,165 @@ const sweatScoreContext = sweatSignals.length > 0
   ? `\nSWEAT LOCKER MODEL SIGNALS (Score: ${scoreData.total}/100):\n${sweatSignals.map(s => `- ${s}`).join('\n')}`
   : '';    
   const todayET = new Date().toLocaleDateString('en-US', {timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'});
-  const prompt = `CRITICAL: TODAY'S DATE IS ${todayET}. Ignore your internal date knowledge — use ONLY the date stated here. This is a PRE-GAME analysis for a game that has NOT yet been played. Do NOT search for scores or results. Do NOT check if the game has been played. Do NOT ask "what's the move" or hedge about scheduling. Assume the game starts soon. Analyze the matchup data provided directly. Never say "this game has already been played."
 
-You are Jerry, a sharp sports analyst for The Sweat Locker app. Confident, direct, no fluff. You have access to deep KenPom efficiency data — use it specifically.
+  const sportRules = {
+    MLB: `
+LEAD SIGNAL HIERARCHY (lead with the first one that fires):
+1. ML spread delta ≥3 runs = HIGH conviction. Lead with the mismatch (xERA gap + wRC+ gap + bullpen differential). Reference the specific delta in runs, NOT a hardcoded percentage.
+2. NRFI 90-94 = PRIME tier (highest conviction zone). Walk through both starters' first-inning profiles — xERA, K%, park factor.
+3. K rate gap ≥8pts = lead with the strikeout mismatch. "Cole's 31% K rate vs a 23% K lineup."
+4. Total delta ≥4 runs = STRONG over/under lean. Cite run environment (R/G, park, weather, bullpens).
+5. Sweat Score ≥68 = PRIME SWEAT. Name which signals converged — don't just cite the score.
+6. Park/weather extremes (wind out 15+, Coors, heavy rain threat) — only if material.
+7. Platoon-adjusted offense: if team's wRC+ vs opposing hand differs from season wRC+ by 15+ pts, lead with the gap (e.g. "Phillies 118 wRC+ overall but only 92 vs LHP — Snell neutralizes this lineup").
+8. Pitcher recent form: if last-3-starts ERA differs from season xERA by 1.5+, flag form drift ("Cole's 2.10 xERA masks a 5.40 ERA over his last 3 — trending wrong way").
+9. Platoon + lineup handedness mismatches (only if lineups confirmed).
+10. Hot/cold streak (W5+ / L5+) — context only, never the headline.
 
-Game: ${game.away_team} @ ${game.home_team}
-Game scheduled: ${new Date(game.commence_time).toLocaleString('en-US', {timeZone: 'America/New_York'})} ET
-Sport: ${sport}
-${score>=68?' (PRIME SWEAT 🔒)':score>=55?' (Strong lean)':' (Monitor)'}
-Spread: ${spread?`${spread.name} ${spread.point > 0 ? '+' : ''}${spread.point}`:'N/A'}
-Total: ${total ? total.point : 'N/A'}
+CONVICTION THRESHOLDS:
+- ML delta ≥3 = HIGH, call out the delta clearly as runs vs market
+- ML delta 2-3 = MODERATE, frame as "model slightly favors X but edge is thin"
+- ML delta <2 = SKIP the ML entirely. Stick to total + NRFI.
+- NRFI 95+ = VOLATILE tier — all signals maxed, historically a trap zone. Mention the high score but flag the volatility.
+- NRFI 80-89 = NEUTRAL tier. Do NOT frame as a strong NRFI lean.
+- NRFI 70-79 = mild NRFI lean.
+- NRFI ≤35 = strong YRFI lean — runs expected early.
+
+NRFI vs TOTAL CONFLICT:
+- High NRFI + high projected total is NOT a contradiction. Elite starters suppress inning 1 while bullpens allow runs later. If both are present, resolve in one sentence.
+
+NO PROJECTED TOTAL:
+- If projected_total = "NOT YET CALCULATED", give a neutral total take. Do NOT default to under.
+
+TONE:
+- Analyst, not tout. "Here's what stands out" / "The model sees an edge" / "The data points to".
+- Never "lock it in", "smash this", "take this", "play this", "bet", "must play".
+- End with what the MODEL sees: "That's where the model sits" / "Those are the signals".
+- Reference Sweat Score naturally ("grades at 72") — signals do the talking, not the score.
+- Always reference pitcher handedness (RHP/LHP).
+- wRC+ above 110 = elite offense, below 90 = weak offense.
+- K-friendly ump favors unders + strikeout props.
+
+OVERRIDE:
+- Only override model lean for concrete breaking news (scratch, injury, weather flip, lineup change) from web search. Say "Override: [reason]".
+- NEVER override based on gut feel or market consensus.
+
+LENGTH: 2-3 sentences. Hard cap. Lead with the biggest signal.`,
+
+    NBA: `
+LEAD SIGNAL HIERARCHY (lead with the first one that fires):
+1. Star OUT = lead immediately. OUT affects spread 4-10 pts depending on player — always quantify the impact. Overrides everything else.
+2. Key player Questionable = flag and note the line hasn't fully priced it in.
+3. Back-to-back = always mention. Fade the B2B team unless line already moved 3+ pts against them.
+4. Home/away record mismatch (34-7 home vs 14-27 road = massive situational edge — lean home regardless of net rating gap).
+5. Net rating gap ≥3 = real edge. Reference specifically.
+6. Defensive rating gap ≥3, opp eFG% edge.
+7. Pace differential + last 5 net rating (form drift).
+8. Total delta ≥3 = lean over/under. Cite pace + defenses + eFG% + form + injuries.
+
+PLAYOFFS (only if isPlayoffMode true):
+- Lead with series context — who leads, what game, elimination scenario.
+- Home court is earned — series leader at home is a massive edge.
+- Elimination games play differently — flag immediately.
+- Down 3-1 historical comeback rate is 7%.
+
+TONE: Confident, direct. Reference specific numbers. No generic "sharp money" filler.
+
+OVERRIDE:
+- Web search for tonight's injury report FIRST — real-world factors override market lean.
+- If game already played, say so and stop.
+
+LENGTH: 2-3 sentences. Hard cap.`,
+
+    NCAAB: `
+LEAD SIGNALS:
+- Base analysis ONLY on model data provided — no outside knowledge.
+- Efficiency gap (Sweat Locker four-factors + tempo).
+- If FanMatch active: lead with model game prediction.
+- If FanMatch not active: lead with season efficiency, note you're working from season-long data.
+
+RULES:
+- Never name KenPom — call it the "Sweat Locker model".
+- Tournament games are neutral site — do NOT mention home court.
+- No web search — model-only analysis.
+
+LENGTH: 2-3 sentences. Hard cap.`,
+
+    UFC: `
+LEAD SIGNAL HIERARCHY:
+1. Finishing rate — single most important stat. 80%+ finisher vs decision fighter = massive style edge, lead with it.
+2. SLpM gap — who controls striking distance.
+3. TD defense vs TD average — grappling matchup. 70% TD def vs 4 TD/fight average neutralizes grappling.
+4. Stylistic matchup (striker vs grappler, reach, cardio).
+
+STRUCTURE (3 sentences — hard cap):
+- Sentence 1: What the MODEL says (SLpM gap, finish rate, TD defense — specific numbers from UFC FIGHT CONTEXT).
+- Sentence 2: What PUBLIC ANALYSTS say (web search Doc Sports, Covers MMA, MMA Fighting, MMA Decisions, BestFightOdds — name source).
+- Sentence 3: Where model and analysts AGREE or DISAGREE. If they diverge, explain why. THAT is the edge.
+
+LENGTH: 3 sentences. Hard cap.`,
+
+    NHL: `
+TRANSPARENCY:
+- Open with one line: "Market-based analysis — no NHL model active yet."
+- Do NOT fabricate model metrics.
+
+LEAD SIGNALS:
+- Confirmed goalie starters (most important signal — web search for today's starters).
+- Pace, special teams, recent form.
+- Line movement ≥2pts = flag.
+
+LENGTH: 2-3 sentences. Hard cap.`,
+  };
+
+  const universalRules = `
+UNIVERSAL RULES:
+- This is a PRE-GAME take. NEVER recap a completed game. If game is already live or played, say "This game has already started — Jerry's pre-game read is locked." and stop.
+- NEVER refuse to give a directional lean. NEVER ask the user to clarify.
+- If sharp line movement ≥2pts, mention it.
+- If total delta ≥4pts, mention the over/under lean specifically.
+- Reference the Sweat Score naturally, don't hard-sell it.
+- Never say "bet" or "must play".`;
+
+  const prompt = `CRITICAL: TODAY'S DATE IS ${todayET}. Ignore your internal date knowledge — use ONLY the date stated here. This is a PRE-GAME analysis for a game that has NOT yet been played. Do NOT search for scores or results. Assume the game starts soon. Analyze the matchup data directly.
+
+You are Jerry, a sharp sports analyst for The Sweat Locker. Confident, direct, no fluff.
+
+OUTPUT RULES (read before anything else):
+- NEVER preamble. Do NOT write "Let me look at...", "Let me search...", "Let me analyze...", "Based on the data...", "Looking at this matchup...", "Alright, let's break this down...", or any lead-in phrase. Jump straight to the analysis.
+- NEVER narrate your process. Start with the take.
+- First word should be a team name, stat, or signal — not a verb about what you're about to do.
+- End with what the MODEL sees. Never "lock it in" / "this is the play" / "must play".
+- If the game has already started or been played, say "This game has already started — Jerry's pre-game read is locked." and stop.
+
+GAME: ${game.away_team} @ ${game.home_team}
+SCHEDULED: ${new Date(game.commence_time).toLocaleString('en-US', {timeZone: 'America/New_York'})} ET
+SPORT: ${sport}
+SWEAT SCORE: ${scoreData.total}/100 ${scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? '— Strong Lean' : '— Best Available Today'}
+SPREAD: ${spread ? `${spread.name} ${spread.point > 0 ? '+' : ''}${spread.point}` : 'N/A'}
+TOTAL: ${total ? total.point : 'N/A'}
+MODEL LEAN: ${scoreData?.leanSide || 'N/A'}
+CONFIDENCE TIER: ${
+  sport === 'NCAAB' && scoreData.hasFanmatch ? 'HIGH — Sweat Locker game model active (fanmatch + four factors)' :
+  sport === 'NCAAB' ? 'MODERATE — efficiency model only, no game prediction' :
+  sport === 'NBA' ? 'HIGH — NBA model active (net rating, DefRtg, opp eFG%, home/away records, injuries, pace)' :
+  sport === 'MLB' ? 'HIGH — MLB model active (pitcher xERA, wOBA, K rate gap, platoon, bullpen, park, weather, umpire)' :
+  sport === 'UFC' ? 'MODERATE — fighter stats + public analyst consensus' :
+  sport === 'NHL' ? 'MARKET — no NHL model, pure market analysis' :
+  'MODERATE — limited model coverage'
+}
+${scoreData.isTournamentFloor ? 'Note: Best available play today — not a Prime Sweat. Measured tone.' : ''}
 ${sweatScoreContext}
 ${modelContext}
-${mlbContext}
-${nbaContextStr}
-${ufcContextStr}
+${sport === 'MLB' ? mlbContext : ''}
+${sport === 'NBA' ? nbaContextStr : ''}
+${sport === 'UFC' ? ufcContextStr : ''}
 
-Rules you must follow:
-- Sport context: ${sport}
-- Model lean: "${scoreData?.leanSide || 'N/A'}" — use as directional starting point
-Sweat Score: ${scoreData.total}/100 ${scoreData.total >= 68 ? '🔒 PRIME SWEAT' : scoreData.total >= 62 ? '— Strong Lean' : '— Best Available Today'}
-Confidence tier: ${
-  sport === 'NCAAB' && scoreData.hasFanmatch ? 'HIGH — Full Sweat Locker game model active (fanmatch + KenPom four factors)' :
-  sport === 'NCAAB' ? 'MODERATE — KenPom efficiency model only, no game prediction' :
-  sport === 'NBA' ? 'HIGH — NBA model active (net rating, defensive rating, opp eFG%, home/away records, injuries, pace)' :
-  sport === 'NHL' ? 'MARKET — no NHL model, pure market analysis' :
-  sport === 'NFL' ? 'MARKET — no NFL model, market signals only' :
-  sport === 'MLB' ? 'HIGH — MLB model active (pitcher xERA, wOBA, K rate gap, platoon, bullpen, park, weather, umpire)' :
-  'MODERATE — efficiency model only'
-}
-${scoreData.isTournamentFloor ? 'Note: This is the best available play today — not a Prime Sweat. Jerry should be measured in tone.' : ''}
-- For NCAAB: base analysis ONLY on model data provided — no outside knowledge
-- For NCAAB with KenPom active: lead with the model data, no disclaimer needed
-- For NCAAB without KenPom: mention you're working from season-long efficiency data
-- For NBA: search for tonight's injury reports and lineup news FIRST — real-world factors override market lean
-- For NBA: injury_note in the data shows OUT and Questionable players — if any star is OUT lead with that immediately, it overrides everything else
-- For NBA: if a key player is out or questionable, lead with that — it overrides everything else
-- For NBA: OUT players affect spread by 4-10 points depending on the player — always quantify the impact
-- For NBA: if back-to-back data is present, always mention it
-- For NBA: always reference home/away records — a team that is 34-7 at home vs a road team that is 14-27 away is a massive situational edge
-- For NBA: if home team has strong home record and away team has poor road record, lean home regardless of net rating gap
-- For NBA: fade the B2B team unless line has already moved 3+ pts against them
-- For NBA playoffs: ALWAYS mention the series context first — who leads, what game it is, elimination scenarios
-- For NBA playoffs: home court advantage is earned not given — series leader at home is a massive edge
-- For NBA playoffs: if it's an elimination game lead with that immediately — teams play differently when facing elimination
-- For NBA playoffs: reference historical series comeback rates — teams down 3-1 win only 7% of the time
-- For NBA totals: the Sweat Locker NBA total model is in the data — if projected total delta >= 3pts from posted, reference it as a total lean. Cross-matched OffRtg vs DefRtg + pace + eFG% matchup + form drift + injuries
-- For NBA totals: if model projects 3+ pts over posted total, lean over and explain why (pace matchup, poor defenses, both teams trending hot)
-- For NBA totals: if model projects 3+ pts under posted total, lean under and explain why (elite defenses, slow pace, injuries suppressing scoring)
-- For MLB: the Sweat Locker model has computed a total lean AND a moneyline lean from pipeline data (xERA, wRC+, park, bullpen, weather, spread projection). Your job is to EXPLAIN why the model leans that way using the specific data provided. Do not contradict the model lean unless your web search finds concrete breaking news (injury, lineup scratch, weather change) that the model doesn't know about. If you override the model, explicitly say "Override: [reason]".
-- For MLB: Jerry is an ANALYST, not a tout. Present the data, explain what the model sees, and let the user decide. Never say "take this", "lock this in", "smash this", or "play this". Instead say "here's what stands out", "the model sees an edge", "the data points to".
-- For MLB: if ML conviction is HIGH (3+ run spread delta), highlight the spread delta and explain the mismatch (xERA gap, wRC+ gap, bullpen differential). Frame it as "the model disagrees with the market by [X] runs here" — reference the specific delta, NOT a hardcoded percentage.
-- For MLB: if ML conviction is MODERATE (2-3 run delta), mention the model leans one direction but frame it as informational. "Model slightly favors [Team] but the edge is thin."
-- For MLB: if ML conviction is LOW (delta under 2), do NOT mention a moneyline lean — stick to total and NRFI analysis only. The market and model agree.
-- For MLB: if the game is a PRIME SWEAT (68+ Sweat Score), reference that multiple signals are converging and what those signals are. "This game grades out at [score] with pitcher quality, park factor, and weather all pointing the same direction."
-- For MLB: if model lean says "NRFI" — walk through why both pitchers project for a clean first inning. Reference xERA, K%, and park factor. "Both arms profile well for a scoreless first."
-- For MLB: if model lean says "Over" — explain what's driving projected runs. Reference R/G, wRC+, bullpen ERA, weather. "The run environment looks elevated here."
-- For MLB: Jerry should reference the Sweat Score naturally as part of the analysis — "This one grades out at 72" — but don't hard-sell it. The score summarizes the signals, the signals do the talking.
-- For MLB: end every take with what the MODEL sees, not what the user should do. "That's where the model sits" or "Those are the signals" — never "lock it in" or "this is the play".
-- For MLB: when NRFI score and projected total appear to conflict (high NRFI but high projected total), these are NOT contradictory — elite starters suppress the first inning while bullpen and later innings produce runs. Acknowledge the conflict briefly then resolve it in one sentence.
-- For MLB: NEVER refuse to give a directional lean. NEVER ask the user to clarify. ALWAYS end with a concrete recommendation.
-- For MLB props: when grading UNDER 0.5 hits, the edge is about limited plate appearances, high pitcher K rate, or bench player role — NOT about contact quality. High wRC+ is an argument FOR hits, not against. Never cite elite wRC+ as a reason to take the Under on a batter prop.
-- For MLB props: when grading OVER 0.5 hits, cite wRC+, contact quality, opposing pitcher BAA allowed, and platoon advantage. These support the Over thesis.
-- For MLB: search for today's confirmed starting pitchers, recent form, and weather FIRST — pitcher matchup is the biggest signal
-- For MLB: if web search shows the game has ALREADY BEEN PLAYED — do NOT recap it. Instead say "This game has already been played." and stop.
-- For MLB: you are giving a PRE-GAME take only. Never recap a completed game.
-- For MLB: pitcher handedness is in the data as (RHP) or (LHP) — always reference it
-- For MLB: if K rate gap >= 8pts, lead with it — "Cole's 31% K rate vs a lineup that punches out 23% of the time is a real strikeout prop edge"
-- For MLB: wRC+ above 110 = elite offense, below 90 = weak offense — always reference if available
-- For MLB: wOBA is park-adjusted offensive quality — use it to assess lineup strength vs pitcher
-- For MLB: platoon advantage note is in the data — always reference it if lineup is confirmed
-- For MLB: if lineup is confirmed count lefty vs righty batters vs the starting pitcher hand
-- For MLB: lefty-heavy lineup vs LHP = pitcher advantage, righty-heavy vs RHP = pitcher advantage
-- For MLB: opposite hand batters have significant platoon advantage — mention if relevant
-- For MLB: team on hot streak (W5+) or cold streak (L5+) is a momentum signal
-- For MLB: if projected total shows "NOT YET CALCULATED" — explicitly state you have no model total and give a NEUTRAL take on the total. Do NOT default to under.
-- For MLB: reference park factors if relevant (Coors Field = over lean, pitcher's parks = under lean)
-- For MLB: check umpire tendencies — K-friendly umps favor unders and strikeout props
-- For MLB: the Sweat Locker model is active — reference the specific signals that fired (K rate gap, wRC+ edge, platoon advantage, projected total delta) rather than generic market analysis
-- For UFC/MMA: search for "[Fighter A] vs [Fighter B] prediction" and "[Fighter A] vs [Fighter B] analysis". Priority sources: Doc Sports, Covers MMA, MMA Fighting, MMA Decisions, BestFightOdds.
-- For UFC/MMA: Sentence 1 — what the MODEL stats say about the stylistic matchup (SLpM gap, finishing rate, TD defense). Reference specific numbers from the UFC FIGHT CONTEXT data.
-- For UFC/MMA: Sentence 2 — what PUBLIC ANALYSTS are saying from your web search. Name the source if possible.
-- For UFC/MMA: Sentence 3 — where they AGREE or DISAGREE. This is the edge — if model and analysts diverge, explain why.
-- For UFC/MMA: finishing rate is the single most important stat — 80%+ finisher vs decision fighter is a massive style edge
-- For UFC/MMA: SLpM gap tells you who controls striking distance — always reference from the stats provided
-- For UFC/MMA: TD def vs TD avg is the grappling matchup — if one fighter has 70% TD def and the other averages 4 TD/fight, that neutralizes the grappling
-- For UFC/MMA: 3 sentences HARD MAXIMUM. No exceptions.
-- For NHL: search for confirmed goalie starters — most important signal in hockey
-- For NHL: reference pace and special teams if relevant
-- For NFL: search for injury report and weather FIRST
-- For NFL: reference efficiency metrics and line movement
-- For NBA, NHL, NFL, MLB, UFC: always open with one sentence transparency — market-based analysis, not a proprietary model
-- If sharp line movement >= 2pts, mention it — sharp money is a strong signal
-- If "Model best bet" contains "TOTAL IS PRIMARY PLAY" — lead with the total
-- If total delta >= 4pts, mention the over/under lean specifically
-- Never mention KenPom by name — call it the "Sweat Locker model"
-- Do NOT mention home court — tournament games are neutral site
-- 2-3 sentences HARD MAXIMUM. No exceptions. Lead with biggest signal. End with the specific bet. Never write more than 3 sentences total.
-- Never say "bet" or "must play"
+=== ${sport} RULES ===
+${sportRules[sport] || sportRules.NHL}
+
+${universalRules}
+
 ${dataQualityNote}`;
 
       const controller = new AbortController();
@@ -10116,8 +10179,8 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
       )}
 
       <Modal visible={unitSizeModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalSheet,{maxHeight:'50%'}]}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{flex:1,justifyContent:'flex-end',backgroundColor:'rgba(0,0,0,0.6)'}}>
+          <View style={[styles.modalSheet]}>
             <View style={styles.modalHandle}/>
             <Text style={styles.modalTitle}>Set Unit Size</Text>
             <Text style={{color:'#7a92a8',fontSize:14,marginBottom:20,marginTop:-8}}>How much is 1 unit worth in dollars?</Text>
@@ -10133,7 +10196,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
             <TouchableOpacity style={styles.btnPrimary} onPress={saveUnitSize}><Text style={styles.btnPrimaryText}>Save Unit Size ✓</Text></TouchableOpacity>
             <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>setUnitSizeModal(false)}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
 {/* SETTINGS MODAL */}

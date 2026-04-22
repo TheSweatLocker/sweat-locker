@@ -1,6 +1,7 @@
 import requests
 import pandas as pd
 import traceback
+import sys
 from pybaseball import pitching_stats, pitching_stats_range
 import warnings
 import os
@@ -246,6 +247,61 @@ def get_pitcher_handedness(player_name):
     except Exception as e:
         return None
 
+def get_last_3_starts(player_name, season=2026):
+    """Fetch pitcher's last 3 starts ERA + K% from MLB Stats API gameLog"""
+    try:
+        search_resp = requests.get(
+            "https://statsapi.mlb.com/api/v1/people/search",
+            params={"names": player_name, "sportId": 1},
+            timeout=10
+        )
+        people = search_resp.json().get("people", [])
+        if not people:
+            return None
+        player_id = people[0]["id"]
+
+        stats_resp = requests.get(
+            f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats",
+            params={"stats": "gameLog", "group": "pitching", "season": season},
+            timeout=10
+        )
+        splits = stats_resp.json().get("stats", [])
+        if not splits or not splits[0].get("splits"):
+            return None
+
+        games = splits[0]["splits"]
+        # Filter to starts only (gamesStarted = 1), sort by date desc, take last 3
+        starts = [g for g in games if (g.get("stat", {}).get("gamesStarted") or 0) == 1]
+        starts.sort(key=lambda g: g.get("date", ""), reverse=True)
+        last_3 = starts[:3]
+
+        if len(last_3) == 0:
+            return None
+
+        total_er = sum(int(g["stat"].get("earnedRuns", 0) or 0) for g in last_3)
+        total_ip_str = [str(g["stat"].get("inningsPitched", "0") or "0") for g in last_3]
+        total_ip = 0.0
+        for ip_str in total_ip_str:
+            # Convert "5.2" (5 IP + 2 outs) → 5.667
+            if "." in ip_str:
+                whole, frac = ip_str.split(".")
+                total_ip += int(whole) + (int(frac) / 3)
+            else:
+                total_ip += float(ip_str)
+        total_so = sum(int(g["stat"].get("strikeOuts", 0) or 0) for g in last_3)
+        total_bf = sum(int(g["stat"].get("battersFaced", 0) or 0) for g in last_3)
+
+        era = round((total_er * 9) / total_ip, 2) if total_ip > 0 else None
+        k_pct = round((total_so / total_bf) * 100, 1) if total_bf > 0 else None
+
+        return {
+            "last_3_era": era,
+            "last_3_k_pct": k_pct,
+            "last_3_ip": round(total_ip, 1),
+        }
+    except Exception:
+        return None
+
 def get_first_inning_splits(player_name):
     """Fetch pitcher's 1st inning ERA, WHIP, and batting avg allowed from MLB Stats API"""
     try:
@@ -367,10 +423,11 @@ def get_todays_starters():
 def build_pitcher_record(row, name, recent_stats, is_fangraphs=True, is_starter=False, is_full_refresh=False):
     """Build pitcher record from either FanGraphs or Statcast data"""
     last5_era = fetch_last5_era(name, recent_stats) if recent_stats is not None else None
-    # Handedness + first inning: always on full refresh (Monday), starters-only on daily
+    # Handedness + first inning + last 3 starts: always on full refresh (Monday), starters-only on daily
     fetch_api = is_starter or is_full_refresh
     throws = get_pitcher_handedness(name) if fetch_api else None
     first_inn = get_first_inning_splits(name) if fetch_api else None
+    last_3 = get_last_3_starts(name) if fetch_api else None
 
     if is_fangraphs:
         pitcher = {
@@ -422,6 +479,9 @@ def build_pitcher_record(row, name, recent_stats, is_fangraphs=True, is_starter=
     pitcher["first_inning_bb"] = first_inn["first_inning_bb"] if first_inn else None
     pitcher["first_inning_hr"] = first_inn["first_inning_hr"] if first_inn else None
     pitcher["first_inning_ip"] = first_inn["first_inning_ip"] if first_inn else None
+    pitcher["last_3_era"] = last_3["last_3_era"] if last_3 else None
+    pitcher["last_3_k_pct"] = last_3["last_3_k_pct"] if last_3 else None
+    pitcher["last_3_ip"] = last_3["last_3_ip"] if last_3 else None
     pitcher["season"] = "2026"
     pitcher["updated_at"] = "now()"
     return pitcher
@@ -431,6 +491,10 @@ def run():
     from datetime import timezone
     et_now = datetime.now(timezone.utc) - timedelta(hours=4)
     is_monday = et_now.weekday() == 0
+    force_full = '--full-refresh' in sys.argv
+    if force_full:
+        print("⚙️  --full-refresh flag set — treating as full Monday refresh")
+        is_monday = True
     print(f"ET day: {et_now.strftime('%A %Y-%m-%d %H:%M')}, is_monday: {is_monday}")
     todays_starters = get_todays_starters()
 
