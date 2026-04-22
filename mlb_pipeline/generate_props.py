@@ -84,6 +84,12 @@ def score_pitcher_ks(g, side):
     if not pitcher or xera is None:
         return None
 
+    # Opener / small-sample filter — don't project Ks for relievers going 1 inning
+    last_ip = _f(g.get(f'{side}_last_ip'))
+    last_pitches = _f(g.get(f'{side}_last_pitch_count'))
+    if last_ip is not None and last_ip <= 1.5 and (last_pitches is None or last_pitches <= 35):
+        return None  # opener / bullpen arm — not a starter prop
+
     opp_side = 'away' if side == 'home' else 'home'
     k_gap = _f(g.get(f'{side}_k_gap'))  # pre-computed: pitcher K% - opp team K% vs hand
     opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
@@ -94,7 +100,10 @@ def score_pitcher_ks(g, side):
     # Pitcher's catcher's framing = own side's catcher
     framing = _f(g.get(f'{side}_catcher_framing'))
     throws = g.get(f'{side}_throws') or 'R'
-    pitcher_k_pct = parse_pitcher_k_pct_from_context(g.get('pitcher_context'), pitcher)
+    parsed_k_pct = parse_pitcher_k_pct_from_context(g.get('pitcher_context'), pitcher)
+    # Sanitize: MLB K% caps around ~40% (historical max ~42% for elite short-stint relievers).
+    # Values above 40 are small-sample noise — fall back to a conservative default.
+    pitcher_k_pct = parsed_k_pct if parsed_k_pct is not None and 5 <= parsed_k_pct <= 40 else None
     ump_note = (g.get('umpire_note') or '').lower()
 
     signals = {}
@@ -172,8 +181,10 @@ def score_pitcher_ks(g, side):
     conviction = max(0, min(100, conviction))
 
     # Suggested line: pitcher K% × typical IP × ~4.2 batters/inn
+    # Use sanitized pitcher_k_pct; default to 22% (league avg) if unavailable
+    k_pct_for_line = pitcher_k_pct if pitcher_k_pct is not None else 22
     typical_ip = 5.5
-    est_ks = ((pitcher_k_pct or 22) / 100) * (typical_ip * 4.2)
+    est_ks = (k_pct_for_line / 100) * (typical_ip * 4.2)
     suggested_line = max(3.5, min(8.5, round(est_ks - 0.5, 1)))
 
     return {
@@ -218,17 +229,19 @@ def score_batter_hits(g, batter, side):
         conviction -= 10
         signals['team_offense'] = f'Team wRC+ {team_wrc:.0f} vs {opp_throws}HP — weak'
 
-    # Opposing starter quality
-    if opp_xera is not None:
-        if opp_xera >= 4.75:
-            conviction += 15
-            signals['opp_starter'] = f'Opp starter {opp_xera:.2f} xERA — soft'
-        elif opp_xera >= 4.25:
-            conviction += 8
-            signals['opp_starter'] = f'Opp starter {opp_xera:.2f} xERA — below avg'
-        elif opp_xera <= 3.0:
+    # Opposing starter quality — fall back to L3 ERA when xERA is null (early season, suspicious values capped upstream)
+    opp_quality = opp_xera if opp_xera is not None else opp_l3
+    opp_quality_label = 'xERA' if opp_xera is not None else 'L3 ERA'
+    if opp_quality is not None:
+        if opp_quality >= 5.0:
+            conviction += 18
+            signals['opp_starter'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — very soft'
+        elif opp_quality >= 4.25:
+            conviction += 10
+            signals['opp_starter'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — below avg'
+        elif opp_quality <= 2.75:
             conviction -= 12
-            signals['opp_starter'] = f'Opp starter {opp_xera:.2f} xERA — elite arm'
+            signals['opp_starter'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — elite arm'
 
     # K-heavy starter punishes hit props
     if opp_pitcher_k_pct is not None and opp_pitcher_k_pct >= 28:
