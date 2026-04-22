@@ -1240,12 +1240,23 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
     elif temp >= 85: score -= 2     # hot = slight offense boost
     else: score += 2                # 71-84 = above base rate
 
-    if wind >= 12:
-        if any(d in wind_dir for d in ['N', 'IN', 'NW', 'NE']): score += 5  # blowing in
-        elif any(d in wind_dir for d in ['S', 'OUT', 'SW', 'SE']): score -= 5  # blowing out
+    # Park factor available for compounding with weather
+    park = float(park_run_factor or 100)
+
+    # Wind — threshold lowered from 12 to 10mph (material lift for offense starts earlier
+    # than historically modeled). Compound penalty at hitter-friendly parks (park >= 105).
+    if wind >= 10:
+        blowing_in = any(d in wind_dir for d in ['NNW', 'NNE', 'NW', 'NE', 'N', 'IN'])
+        blowing_out = any(d in wind_dir for d in ['SSW', 'SSE', 'SW', 'SE', 'S', 'OUT'])
+        if blowing_in:
+            score += 8 if wind >= 15 else 5  # blowing in = suppresses offense
+        elif blowing_out:
+            base_penalty = 8 if wind >= 15 else 5
+            if park >= 105:
+                base_penalty += 3  # hitter park + wind out = compound offense signal
+            score -= base_penalty
 
     # ── PARK FACTOR ── (recalibrated: range is now 80-133)
-    park = float(park_run_factor or 100)
     if park <= 85: score += 8    # extreme pitcher park (Globe Life, KC)
     elif park <= 92: score += 5  # strong pitcher park
     elif park <= 97: score += 2

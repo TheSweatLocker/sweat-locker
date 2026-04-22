@@ -397,8 +397,18 @@ def run():
     confidence = 'standard'
 
     # Tier 1 — high conviction
-    # NRFI 90-94 sweet spot or NBA playoff 75+
-    if sweet_spot:
+    # ML spread delta ≥4 ranks above NRFI sweet spot (biggest proven edge,
+    # NRFI can get burned by weather/offense signals the single-tier doesn't catch)
+    ml_high_conviction = [
+        c for c in ml_candidates
+        if c.get('spread_delta') is not None and abs(float(c['spread_delta'])) >= 4.0
+    ]
+    if ml_high_conviction:
+        ml_high_conviction.sort(key=lambda c: abs(float(c['spread_delta'])), reverse=True)
+        pick = ml_high_conviction[0]
+        confidence = 'high'
+        print(f"🔒 ML HIGH CONVICTION: {pick['away_team']} @ {pick['home_team']} — delta {float(pick['spread_delta']):+.1f} runs")
+    elif sweet_spot:
         sweet_spot.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
         pick = sweet_spot[0]
         confidence = 'high'
