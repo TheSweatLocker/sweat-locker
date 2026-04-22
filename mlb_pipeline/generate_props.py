@@ -322,6 +322,7 @@ def run():
 
     print(f"Scoring props across {len(games)} games...")
     all_props = []
+    diag = {'k_scored': 0, 'k_kept': 0, 'b_scored': 0, 'b_kept': 0, 'top_scores': []}
 
     for g in games:
         game_id = g.get('game_id')
@@ -352,8 +353,13 @@ def run():
                 continue
             framing_runs = float(opp_catcher) if opp_catcher is not None else None
             result = score_pitcher_ks(pitcher, pstats, opp_offense, g, framing_runs)
-            if not result or result['conviction'] < 50:
+            if not result:
                 continue
+            diag['k_scored'] += 1
+            diag['top_scores'].append((result['conviction'], 'Ks', pitcher))
+            if result['conviction'] < 45:
+                continue
+            diag['k_kept'] += 1
             all_props.append({
                 'game_date': game_date,
                 'game_id': game_id,
@@ -384,8 +390,13 @@ def run():
                 batter, home_offense, away_pitcher_stats, away_bp,
                 park, temp, wind_speed, wind_dir, ump_note,
             )
-            if not result or result['conviction'] < 55:
+            if not result:
                 continue
+            diag['b_scored'] += 1
+            diag['top_scores'].append((result['conviction'], 'Hits', batter))
+            if result['conviction'] < 50:
+                continue
+            diag['b_kept'] += 1
             all_props.append({
                 'game_date': game_date,
                 'game_id': game_id,
@@ -406,8 +417,13 @@ def run():
                 batter, away_offense, home_pitcher_stats, home_bp,
                 park, temp, wind_speed, wind_dir, ump_note,
             )
-            if not result or result['conviction'] < 55:
+            if not result:
                 continue
+            diag['b_scored'] += 1
+            diag['top_scores'].append((result['conviction'], 'Hits', batter))
+            if result['conviction'] < 50:
+                continue
+            diag['b_kept'] += 1
             all_props.append({
                 'game_date': game_date,
                 'game_id': game_id,
@@ -426,12 +442,21 @@ def run():
     all_props.sort(key=lambda p: p['conviction'], reverse=True)
     top = all_props[:TOP_N]
 
+    # Diagnostic summary
+    diag['top_scores'].sort(reverse=True)
+    print(f"\n  Diag: scored Ks={diag['k_scored']}, Hits={diag['b_scored']}  |  kept Ks={diag['k_kept']}, Hits={diag['b_kept']}")
+    print(f"  Top 10 computed convictions (kept or not):")
+    for sc, ptype, pname in diag['top_scores'][:10]:
+        print(f"    [{sc}] {ptype}: {pname}")
+
     # Wipe today's rows and replace
     wipe_todays_props()
     saved = upsert_props(top)
     print(f"\n✅ Stored {saved} top props")
     for p in top[:5]:
-        print(f"  [{p['conviction']}] {p['player_name']} {p['prop_type']} {p['prop_line']} — {p['tier']} — {list(p['signals'].keys())}")
+        print(f"  [{p['conviction']}] {p['player_name']} {p['prop_type']} {p['prop_line']} — {p['tier']}")
+        for k, v in p['signals'].items():
+            print(f"    · {k}: {v}")
 
 if __name__ == "__main__":
     run()
