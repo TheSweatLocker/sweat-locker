@@ -84,24 +84,50 @@ def fetch_csv(url, label):
         return None
 
 def fetch_team_defense():
-    """Team-level OAA from Savant defensive runs leaderboard"""
-    # Team OAA leaderboard — position=all returns team totals
+    """Team OAA — try team-level endpoint first, fallback to aggregating fielder-level"""
     urls = [
         f"https://baseballsavant.mlb.com/leaderboard/outs_above_average?type=Team&startYear={SEASON}&endYear={SEASON}&split=no&team=&range=year&min=0&pos=all&roles=&viz=hide&csv=true",
         f"https://baseballsavant.mlb.com/leaderboard/outs_above_average?type=Team&startYear={SEASON}&endYear={SEASON}&pos=&csv=true",
-        f"https://baseballsavant.mlb.com/leaderboard/outs_above_average?type=Team&year={SEASON}&pos=&csv=true",
     ]
     df = None
     for url in urls:
         df = fetch_csv(url, f"Team OAA {SEASON}")
         if df is not None and len(df) > 0:
             break
+
+    # Fallback: pull fielder-level OAA and aggregate by team
     if df is None or len(df) == 0:
-        return {}
+        print("  Team-level OAA returned empty. Falling back to fielder aggregation...")
+        fielder_url = f"https://baseballsavant.mlb.com/leaderboard/outs_above_average?type=Fielder&startYear={SEASON}&endYear={SEASON}&split=no&team=&range=year&min=0&pos=&roles=&viz=hide&csv=true"
+        df = fetch_csv(fielder_url, f"Fielder OAA {SEASON}")
+        if df is None or len(df) == 0:
+            return {}
+
+        team_defense = {}
+        for _, row in df.iterrows():
+            team_raw = None
+            for col in ['team', 'team_name', 'team_abbrev']:
+                if col in row.index and pd.notna(row[col]):
+                    team_raw = row[col]
+                    break
+            if not team_raw:
+                continue
+            team_full = normalize_team(team_raw)
+            oaa = safe_int(row.get('outs_above_average'))
+            if oaa is None:
+                continue
+            if team_full not in team_defense:
+                team_defense[team_full] = {"oaa": 0, "_count": 0}
+            team_defense[team_full]["oaa"] += oaa
+            team_defense[team_full]["_count"] += 1
+        for t in team_defense:
+            c = team_defense[t].pop("_count", 0)
+            team_defense[t]["oaa_per_game"] = None  # no game count at fielder level
+        print(f"  → Aggregated OAA for {len(team_defense)} teams from fielder rows")
+        return team_defense
 
     team_defense = {}
     for _, row in df.iterrows():
-        # Team column name varies: 'team', 'team_name', 'entity_name', 'name'
         team_raw = None
         for col in ['entity_name', 'team_name', 'team', 'name', 'display_team_name']:
             if col in row.index and pd.notna(row[col]):
@@ -110,7 +136,6 @@ def fetch_team_defense():
         if not team_raw:
             continue
         team_full = normalize_team(team_raw)
-
         oaa = None
         for col in ['outs_above_average', 'oaa', 'outs_above_avg']:
             if col in row.index and pd.notna(row[col]):
@@ -118,7 +143,6 @@ def fetch_team_defense():
                 break
         games = safe_int(row.get('games_played') or row.get('g') or row.get('gp') or 0) or 0
         oaa_pg = round(oaa / games, 3) if oaa is not None and games > 0 else None
-
         team_defense[team_full] = {"oaa": oaa, "oaa_per_game": oaa_pg}
 
     print(f"  → Parsed OAA for {len(team_defense)} teams")
