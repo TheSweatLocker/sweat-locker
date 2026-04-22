@@ -137,15 +137,15 @@ def get_pitcher_hand(pitcher_name):
         return 'R'
 
 def fetch_games_to_backfill():
-    """Pull 2026 games where matchup enrichment is NULL"""
+    """Pull 2026 training rows from mlb_game_results where enrichment is NULL"""
     r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/mlb_game_context"
+        f"{SUPABASE_URL}/rest/v1/mlb_game_results"
         f"?game_date=gte.{SEASON}-01-01"
         f"&game_date=lt.{SEASON + 1}-01-01"
         f"&or=(home_wrc_vs_opp_hand.is.null,home_pitcher_last_3_era.is.null)"
         f"&select=game_id,game_date,home_team,away_team,home_sp_name,away_sp_name"
         f"&order=game_date.asc"
-        f"&limit=500",
+        f"&limit=1000",
         headers=supabase_headers(),
         timeout=30
     )
@@ -153,7 +153,7 @@ def fetch_games_to_backfill():
 
 def update_game(game_id, payload):
     r = requests.patch(
-        f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_id=eq.{requests.utils.quote(game_id)}",
+        f"{SUPABASE_URL}/rest/v1/mlb_game_results?game_id=eq.{requests.utils.quote(game_id)}",
         headers=supabase_headers(),
         json=payload,
         timeout=15
