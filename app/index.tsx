@@ -1288,21 +1288,38 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
   const fetchDailyDegen = async () => {
     const _now = new Date();
     const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
+    setDegenLoading(true);
 
-    // Check Supabase cache
+    // Server-side generation: read the one canonical record for today.
+    // Pipeline generates this once (afternoon cron) — all users read identical data.
     try {
-      const { data: cached } = await supabase
-        .from('jerry_cache')
-        .select('data, fetched_at')
-        .eq('cache_key', `daily_degen_${today}`)
+      const { data: row, error } = await supabase
+        .from('daily_degen')
+        .select('*')
+        .eq('game_date', today)
         .single();
-      if(cached) {
-        setDegenData(cached.data);
+      if (row && row.legs && row.legs.length >= 2) {
+        setDegenData({
+          legs: row.legs,
+          narrative: row.narrative || '',
+          leg_count: row.leg_count,
+          avg_conviction: row.avg_conviction,
+          generatedAt: today,
+        });
+        setDegenLoading(false);
         return;
       }
-    } catch(e) {}
+    } catch (e) {}
 
-    setDegenLoading(true);
+    // No server-generated Degen yet today — show empty state
+    setDegenData({ noPlays: true });
+    setDegenLoading(false);
+    return;
+
+    // --- Legacy client-side generation retained below (unreachable) for reference ---
+    /* eslint-disable */
+    // @ts-nocheck-begin
+    const _unreachable = async () => {
 
     try {
       const legs = [];
@@ -1545,6 +1562,9 @@ Write 2-3 sentences MAX. Reference the specific data signals. Sound like a sharp
       setDegenData({ noPlays: true });
     }
     setDegenLoading(false);
+    };
+    // @ts-nocheck-end
+    /* eslint-enable */
   };
 
   const addAllToParlay = () => {
