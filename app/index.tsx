@@ -4434,9 +4434,25 @@ const fetchJerryRecord = async () => {
       .order('bet_date', {ascending: false})
       .limit(14);
 
+    // Dawg of the Day record — only resolved rows count
+    let dawg = {wins: 0, losses: 0, pending: 0};
+    try {
+      const { data: dawgRows } = await supabase
+        .from('daily_dawg')
+        .select('result')
+        .order('game_date', {ascending: false})
+        .limit(60);
+      if (dawgRows) {
+        dawg.wins = dawgRows.filter((d: any) => d.result === 'Win').length;
+        dawg.losses = dawgRows.filter((d: any) => d.result === 'Loss').length;
+        dawg.pending = dawgRows.filter((d: any) => !d.result).length;
+      }
+    } catch (e) {}
+
     setJerryRecord({
       props: { wins: propWins, losses: propLosses, pending: pendingProps, bySport: propBySport, recent: recentProps },
       nrfi,
+      dawg,
       bestBets: bestBetHistory || [],
     });
   } catch(e) {
@@ -9430,6 +9446,38 @@ setJerryHistory(prev => {
                           </View>
                           <Text style={{color:'#4a6070',fontSize:10,marginTop:4}}>HIT RATE</Text>
                         </View>
+                      </View>
+                    );
+                  })()}
+
+                  {/* Dawg of the Day Record */}
+                  {(() => {
+                    const d = jerryRecord.dawg || {wins:0, losses:0, pending:0};
+                    const total = d.wins + d.losses;
+                    const pct = total > 0 ? Math.round((d.wins / total) * 100) : 0;
+                    return (
+                      <View style={[styles.card,{marginBottom:16}]}>
+                        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🐕 DAWG OF THE DAY</Text>
+                        {total === 0 ? (
+                          <Text style={{color:'#7a92a8',fontSize:13,lineHeight:18}}>Tracking begins once picks resolve.{'\n'}{d.pending > 0 ? `${d.pending} pending result${d.pending === 1 ? '' : 's'}.` : ''}</Text>
+                        ) : (
+                          <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center'}}>
+                            <View style={{alignItems:'center'}}>
+                              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:32}}>{d.wins}-{d.losses}</Text>
+                              <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>RECORD</Text>
+                            </View>
+                            <View style={{alignItems:'center'}}>
+                              <Text style={{color:pct>=55?'#00e5a0':pct>=45?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:24}}>{pct}%</Text>
+                              <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
+                            </View>
+                            {d.pending > 0 && (
+                              <View style={{alignItems:'center'}}>
+                                <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:22}}>{d.pending}</Text>
+                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>PENDING</Text>
+                              </View>
+                            )}
+                          </View>
+                        )}
                       </View>
                     );
                   })()}

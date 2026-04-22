@@ -132,5 +132,48 @@ def run():
 
     print(f'Done! {resolved} game results resolved')
 
+    # --- Resolve Dawg of the Day results ---
+    print('\nResolving Dawg of the Day picks...')
+    r_dawg = requests.get(
+        f'{SUPABASE_URL}/rest/v1/daily_dawg?result=is.null&game_date=gte.{week_ago}&game_date=lte.{yesterday}&select=*',
+        headers=HEADERS
+    )
+    pending_dawgs = r_dawg.json() if r_dawg.status_code == 200 else []
+    print(f'Found {len(pending_dawgs)} pending Dawg picks')
+
+    dawg_resolved = 0
+    for dawg in pending_dawgs:
+        try:
+            # Pull the finalized game row — should have scores by now
+            gr = requests.get(
+                f'{SUPABASE_URL}/rest/v1/mlb_game_results?game_id=eq.{dawg["game_id"]}&select=home_team,away_team,home_score,away_score,home_win',
+                headers=HEADERS
+            )
+            gr_data = gr.json()
+            if not gr_data or gr_data[0].get('home_score') is None:
+                continue  # game not finalized yet
+
+            g = gr_data[0]
+            home_win = g.get('home_win')
+            # Dawg picked their team's ML. Did that team win?
+            dawg_won = (dawg['team'] == g['home_team'] and home_win) or \
+                       (dawg['team'] == g['away_team'] and home_win is False)
+            result = 'Win' if dawg_won else 'Loss'
+
+            requests.patch(
+                f'{SUPABASE_URL}/rest/v1/daily_dawg?game_date=eq.{dawg["game_date"]}',
+                headers=HEADERS,
+                json={
+                    'result': result,
+                    'final_score': f"{g['away_team']} {g['away_score']} @ {g['home_team']} {g['home_score']}",
+                }
+            )
+            dawg_resolved += 1
+            print(f'  🐕 {dawg["game_date"]} {dawg["team"]} ML → {result}')
+        except Exception as e:
+            print(f'  Dawg error: {e}')
+
+    print(f'Done! {dawg_resolved} Dawg picks resolved')
+
 if __name__ == '__main__':
     run()
