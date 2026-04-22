@@ -102,11 +102,11 @@ def fetch_pitcher_stats():
         print(f"All sources failed: {e2}")
         return None, None
 
-def fetch_savant_xera():
+def fetch_savant_xera(year=2026):
     """Fetch xERA and expected stats directly from Baseball Savant CSV endpoint"""
     try:
-        print("Fetching xERA from Baseball Savant...")
-        url = "https://baseballsavant.mlb.com/leaderboard/expected_statistics?type=pitcher&year=2026&position=&team=&min=1&csv=true"
+        print(f"Fetching xERA from Baseball Savant ({year})...")
+        url = f"https://baseballsavant.mlb.com/leaderboard/expected_statistics?type=pitcher&year={year}&position=&team=&min=1&csv=true"
         r = requests.get(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }, timeout=30)
@@ -316,36 +316,52 @@ def get_first_inning_splits(player_name):
             return None
         player_id = people[0]["id"]
 
-        # Fetch 1st inning situational stats for current season
-        stats_resp = requests.get(
-            f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats",
-            params={
-                "stats": "statSplits",
-                "group": "pitching",
-                "season": 2026,
-                "sitCodes": "i1"  # 1st inning
-            },
-            timeout=10
-        )
-        splits = stats_resp.json().get("stats", [])
-        if not splits or not splits[0].get("splits"):
-            # Try previous season as fallback
-            stats_resp = requests.get(
+        def try_season(year):
+            resp = requests.get(
                 f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats",
                 params={
                     "stats": "statSplits",
                     "group": "pitching",
-                    "season": 2025,
-                    "sitCodes": "i1"
+                    "season": year,
+                    "sitCodes": "i01"  # 1st inning (MLB API now expects zero-padded)
                 },
                 timeout=10
             )
-            splits = stats_resp.json().get("stats", [])
+            return resp.json().get("stats", [])
+
+        # Try 2026, fallback to 2025
+        splits = try_season(2026)
+        if not splits or not splits[0].get("splits"):
+            splits = try_season(2025)
             if not splits or not splits[0].get("splits"):
+                # One-shot diagnostic for debugging — only fires on first pitcher
+                if not hasattr(get_first_inning_splits, '_logged_once'):
+                    get_first_inning_splits._logged_once = True
+                    print(f"  DIAG (first inning): No splits for {player_name}. Raw response sample below:")
+                    try:
+                        test = requests.get(
+                            f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats",
+                            params={"stats": "statSplits", "group": "pitching", "season": 2025},
+                            timeout=10
+                        ).json()
+                        # Show first few split codes available
+                        avail = [s.get('split', {}).get('code') for g in test.get('stats', []) for s in g.get('splits', [])][:10]
+                        print(f"    available sitCodes for {player_name}: {avail}")
+                    except Exception as e:
+                        print(f"    diag call failed: {e}")
                 return None
 
         split_data = splits[0]["splits"][0].get("stat", {})
-        innings_pitched = float(split_data.get("inningsPitched", "0") or "0")
+        ip_raw = split_data.get("inningsPitched", "0") or "0"
+        # IP may be "5.2" format (5 IP + 2 outs) — convert to decimal
+        try:
+            if "." in str(ip_raw):
+                whole, frac = str(ip_raw).split(".")
+                innings_pitched = int(whole) + (int(frac) / 3)
+            else:
+                innings_pitched = float(ip_raw)
+        except (ValueError, TypeError):
+            innings_pitched = 0.0
 
         # Need at least 2 first innings for early season (was 5 — too strict for April)
         if innings_pitched < 2:
@@ -505,8 +521,11 @@ def run():
 
     # Fetch xERA from Baseball Savant — supplement MLB API data which lacks xERA
     xera_map = {}
+    xera_map_prior = {}
     if source == 'mlb_api':
-        xera_map = fetch_savant_xera()
+        xera_map = fetch_savant_xera(year=2026)
+        # Pull 2025 as fallback for pitchers with limited 2026 samples (rehab returns, rookies, etc)
+        xera_map_prior = fetch_savant_xera(year=2025)
 
     # Detect data format based on source
     is_fangraphs = source == 'fangraphs' or (hasattr(stats, 'columns') and 'Name' in stats.columns)
@@ -567,8 +586,13 @@ def run():
             pitcher = build_pitcher_record(row, name, recent_stats, is_fangraphs, is_starter, is_monday)
 
             # Supplement with Baseball Savant xERA if MLB API source
-            if xera_map and source == 'mlb_api':
-                savant = xera_map.get(name.lower()) or xera_map.get(name.split(' ')[-1].lower())
+            if source == 'mlb_api':
+                savant = None
+                if xera_map:
+                    savant = xera_map.get(name.lower()) or xera_map.get(name.split(' ')[-1].lower())
+                # 2025 fallback for pitchers not in 2026 Savant leaderboard (rehab, rookies, low sample)
+                if (not savant or not savant.get('xERA')) and xera_map_prior:
+                    savant = xera_map_prior.get(name.lower()) or xera_map_prior.get(name.split(' ')[-1].lower())
                 if savant and savant.get('xERA'):
                     pitcher['xera'] = savant['xERA']
                     if savant.get('xBA'):

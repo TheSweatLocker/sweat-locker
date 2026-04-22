@@ -335,17 +335,23 @@ def get_team_last10(team_name, season=2026):
                 "leagueId": "103,104",
                 "season": season,
                 "standingsTypes": "regularSeason",
-                "hydrate": "team,streak,division,sport,league,record(overallRecords)"
-            }
+                "hydrate": "team,streak,division,sport,league,record(overallRecords,splitRecords)"
+            },
+            timeout=10
         )
         data = r.json()
         for record in data.get("records", []):
             for team_record in record.get("teamRecords", []):
                 name = team_record.get("team", {}).get("name", "")
                 if name.lower() == team_name.lower() or team_name.lower() in name.lower() or name.lower() in team_name.lower():
-                    # Get last 10
-                    overall = team_record.get("records", {}).get("overallRecords", [])
-                    last10 = next((r for r in overall if r.get("type") == "lastTen"), None)
+                    records = team_record.get("records", {})
+                    # lastTen lives in splitRecords, not overallRecords
+                    split_records = records.get("splitRecords", [])
+                    last10 = next((r for r in split_records if r.get("type") == "lastTen"), None)
+                    # Belt-and-suspenders: also check overallRecords + top-level "records" list shape
+                    if not last10:
+                        overall = records.get("overallRecords", [])
+                        last10 = next((r for r in overall if r.get("type") == "lastTen"), None)
                     streak = team_record.get("streak", {}).get("streakCode", "")
                     wins = team_record.get("wins", 0)
                     losses = team_record.get("losses", 0)
@@ -356,7 +362,7 @@ def get_team_last10(team_name, season=2026):
                         "streak": streak
                     }
         return None
-    except Exception as e:
+    except Exception:
         return None
 
 def get_confirmed_lineups(game_date):
@@ -490,7 +496,8 @@ def get_pitcher_splits(pitcher_id, season=2026):
                 "stats": "homeAndAway",
                 "group": "pitching",
                 "season": season
-            }
+            },
+            timeout=10
         )
         data = r.json()
         stats = data.get("stats", [])
@@ -500,14 +507,27 @@ def get_pitcher_splits(pitcher_id, season=2026):
         away_era = None
         for split_group in stats:
             for split in split_group.get("splits", []):
-                split_type = split.get("split", {}).get("code", "")
-                era = float(split.get("stat", {}).get("era", 0))
-                if split_type == "H":
+                split_info = split.get("split", {})
+                # Code may be "H"/"A" or "h"/"a" or description "Home"/"Away"
+                split_type = (split_info.get("code", "") or split_info.get("description", "")).strip().upper()
+                is_home = split_info.get("isHome")
+                stat_obj = split.get("stat", {})
+                era_raw = stat_obj.get("era")
+                if era_raw is None or era_raw == "-.--":
+                    continue
+                try:
+                    era = float(era_raw)
+                except (ValueError, TypeError):
+                    continue
+                if split_type in ("H", "HOME") or is_home is True:
                     home_era = era
-                elif split_type == "A":
+                elif split_type in ("A", "AWAY") or is_home is False:
                     away_era = era
+        # Fallback to 2025 if current season has no data yet
+        if home_era is None and away_era is None and season == 2026:
+            return get_pitcher_splits(pitcher_id, season=2025)
         return {"home_era": home_era, "away_era": away_era}
-    except Exception as e:
+    except Exception:
         return None
 
 def get_pitcher_stats(pitcher_name):

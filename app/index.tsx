@@ -5403,7 +5403,12 @@ OVERRIDE:
 - Only override model lean for concrete breaking news (scratch, injury, weather flip, lineup change) from web search. Include in Setup or Play section. Say "Override: [reason]".
 - NEVER override based on gut feel or market consensus.
 
-LENGTH: Usually 6-10 sentences total across sections. Skip empty sections. No padding — if data isn't there, don't invent filler.`,
+SIGNAL COVERAGE:
+- Reference every material signal available in the data (streak, days rest, L3 form drift, platoon gap, park, weather, ump tendencies, bullpen fatigue, confirmed lineups, pitcher vs team history) — AND briefly explain why each matters for THIS specific matchup.
+- Don't just list signals. Tie each to outcome implication like a sharp analyst. Example voice: "Mets on a 12-game skid, due for bounce-back — but today's lineup facing [pitcher type] in [park context] makes it hard to see that happening here."
+- Silent signals (available in data but unmentioned) are wasted context. If it's in the data and material, it gets one line of interpretation.
+
+LENGTH: Usually 6-12 sentences total across sections. Skip empty sections. No padding — if data isn't material, don't invent filler.`,
 
     NBA: `
 LEAD SIGNAL HIERARCHY (lead with the first one that fires):
