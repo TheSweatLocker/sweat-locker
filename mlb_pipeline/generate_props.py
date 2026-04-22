@@ -74,14 +74,28 @@ def fetch_pitcher(name):
     if not name:
         return None
     last = name.split()[-1]
+    url = f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.*{requests.utils.quote(last)}*&select=*&limit=3"
     r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.*{requests.utils.quote(last)}*&select=*&limit=3",
+        url,
         headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
         timeout=10
     )
-    data = r.json() if r.status_code == 200 else []
+    if r.status_code != 200:
+        if not hasattr(fetch_pitcher, '_logged'):
+            fetch_pitcher._logged = True
+            print(f"  DIAG fetch_pitcher('{name}') status={r.status_code} body={r.text[:200]}")
+        return None
+    data = r.json()
+    if not data:
+        if not hasattr(fetch_pitcher, '_logged_empty'):
+            fetch_pitcher._logged_empty = True
+            print(f"  DIAG fetch_pitcher('{name}') empty result (last='{last}', url={url})")
+        return None
     for p in data:
         if p.get('player_name') and last.lower() in p['player_name'].lower():
+            if not hasattr(fetch_pitcher, '_logged_ok'):
+                fetch_pitcher._logged_ok = True
+                print(f"  DIAG fetch_pitcher('{name}') → matched '{p['player_name']}', xera={p.get('xera')}")
             return p
     return data[0] if data else None
 
@@ -104,7 +118,15 @@ def tier_for(conviction):
 
 def score_pitcher_ks(pitcher_name, pitcher_stats, opp_team_offense, game_ctx, framing_runs):
     """Score a pitcher K prop. Returns (conviction, signals_dict, suggested_line)."""
-    if not pitcher_stats or not pitcher_stats.get('xera'):
+    if not pitcher_stats:
+        if not hasattr(score_pitcher_ks, '_diag_nostats'):
+            score_pitcher_ks._diag_nostats = True
+            print(f"  DIAG score_pitcher_ks: {pitcher_name} has no pitcher_stats object")
+        return None
+    if not pitcher_stats.get('xera'):
+        if not hasattr(score_pitcher_ks, '_diag_noxera'):
+            score_pitcher_ks._diag_noxera = True
+            print(f"  DIAG score_pitcher_ks: {pitcher_name} has no xera. keys={list(pitcher_stats.keys())[:10]}")
         return None
 
     signals = {}
