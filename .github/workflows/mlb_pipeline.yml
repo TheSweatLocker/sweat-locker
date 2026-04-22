@@ -97,6 +97,20 @@ jobs:
             echo "Skipping HR Watch build (UTC hour $HOUR — not afternoon ET)"
           fi
 
+      - name: Generate pipeline props (afternoon run — needs confirmed lineups)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" = "17" ] || [ "$HOUR" = "18" ] || [ "$HOUR" = "19" ]; then
+            echo "Afternoon ET run — generating pipeline props from confirmed lineups"
+            cd mlb_pipeline
+            python generate_props.py
+          else
+            echo "Skipping prop generation (UTC hour $HOUR — afternoon only)"
+          fi
+
       - name: Update umpire database (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
