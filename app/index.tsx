@@ -1947,12 +1947,15 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [propJerryLastUpdate, setPropJerryLastUpdate] = useState(null);
   const [sharpLoading, setSharpLoading] = useState(false);
   const [sharpSport, setSharpSport] = useState('NBA');
-   const [propJerrySport, setPropJerrySport] = useState('NBA');
+   const [propJerrySport, setPropJerrySport] = useState('MLB');
    const [jerryHistory, setJerryHistory] = useState([]);
   const [jerryRecord, setJerryRecord] = useState(null);
   const [jerryRecordLoading, setJerryRecordLoading] = useState(false);
   const [propJerryData, setPropJerryData] = useState([]);
   const [propJerryLoading, setPropJerryLoading] = useState(false);
+  // Pipeline-driven MLB props (replaces EV scanner for MLB sport)
+  const [pipelineMLBProps, setPipelineMLBProps] = useState([]);
+  const [pipelineMLBLoading, setPipelineMLBLoading] = useState(false);
   const [propOfDay, setPropOfDay] = useState(null);
   const [propOfDayLoading, setPropOfDayLoading] = useState(false);
   const [hrWatch, setHrWatch] = useState<any[]>([]);
@@ -6061,8 +6064,35 @@ if(mkt.key === 'pitcher_props') {
     setPropOfDayLoading(false);
   };
 
+  const fetchPipelineMLBProps = async () => {
+    setPipelineMLBLoading(true);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const { data, error } = await supabase
+        .from('mlb_pipeline_props')
+        .select('*')
+        .eq('game_date', today)
+        .order('conviction', { ascending: false });
+      if (error) {
+        console.log('Pipeline MLB props fetch error:', error.message);
+        setPipelineMLBProps([]);
+      } else {
+        setPipelineMLBProps(data || []);
+      }
+    } catch (e) {
+      console.log('Pipeline MLB props exception:', e?.message);
+      setPipelineMLBProps([]);
+    }
+    setPipelineMLBLoading(false);
+  };
+
   const fetchPropJerry = async (sport=propJerrySport) => {
-    
+    // MLB now uses pipeline-driven props (server-generated, proprietary signals)
+    if (sport === 'MLB') {
+      await fetchPipelineMLBProps();
+      return;
+    }
+
 setPropJerryLoading(true);
     setPropJerryData([]);
     try {
@@ -8978,7 +9008,7 @@ setJerryHistory(prev => {
     {/* Sport Selector - no NCAAB */}
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
       <View style={{flexDirection:'row',gap:6}}>
-        {['NBA','NFL','NHL','MLB','UFC'].map(s=>(
+        {['MLB','NBA','NFL','NHL','UFC'].map(s=>(
           <TouchableOpacity key={s} style={[styles.chipBtn,propJerrySport===s&&styles.chipBtnActive]} onPress={()=>{setPropJerrySport(s);fetchPropJerry(s);}}>
             <Text style={[styles.chipTxt,propJerrySport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text>
           </TouchableOpacity>
@@ -8986,7 +9016,61 @@ setJerryHistory(prev => {
       </View>
     </ScrollView>
 
-    {propJerryLoading?(
+    {/* MLB: pipeline-driven props */}
+    {propJerrySport === 'MLB' ? (
+      pipelineMLBLoading ? (
+        <View style={{alignItems:'center',paddingTop:40}}>
+          <ActivityIndicator size="large" color={HRB_COLOR}/>
+          <Text style={{color:'#7a92a8',marginTop:12}}>Loading pipeline matchup edges...</Text>
+        </View>
+      ) : pipelineMLBProps.length === 0 ? (
+        <View style={{alignItems:'center',paddingTop:40}}>
+          <Text style={{fontSize:32}}>🎤</Text>
+          <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No pipeline props yet today.{'\n'}Generated after 2pm ET when lineups confirm.</Text>
+        </View>
+      ) : (
+        <>
+          <Text style={{color:'#4a6070',fontSize:11,marginBottom:12,textAlign:'center'}}>
+            {pipelineMLBProps.length} matchup edges • Model-driven, no market filter
+          </Text>
+          {pipelineMLBProps.map((prop, i) => {
+            const tierColor = prop.tier === 'PRIME' ? '#00e5a0' : prop.tier === 'STRONG' ? HRB_COLOR : '#7a92a8';
+            const propLabel = prop.prop_type === 'ks_over' ? `Over ${prop.prop_line} Strikeouts` : prop.prop_type === 'hits_over' ? 'Over 0.5 Hits' : prop.prop_type;
+            const signals = prop.signals || {};
+            const signalEntries = Object.entries(signals);
+            return (
+              <View key={prop.id || i} style={[styles.card, {marginBottom:10, borderLeftWidth:3, borderLeftColor:tierColor}]}>
+                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+                  <View style={{flex:1, marginRight:12}}>
+                    <Text style={{color:'#e8f0f8', fontWeight:'800', fontSize:15}}>{prop.player_name}</Text>
+                    <Text style={{color:tierColor, fontWeight:'700', fontSize:13, marginTop:2}}>{propLabel}</Text>
+                    <Text style={{color:'#4a6070', fontSize:11, marginTop:2}}>{prop.matchup}</Text>
+                  </View>
+                  <View style={{alignItems:'center'}}>
+                    <View style={{width:56, height:56, borderRadius:28, borderWidth:2, borderColor:tierColor, alignItems:'center', justifyContent:'center', backgroundColor:tierColor+'15'}}>
+                      <Text style={{color:tierColor, fontWeight:'900', fontSize:20}}>{prop.conviction}</Text>
+                    </View>
+                    <Text style={{color:tierColor, fontSize:9, fontWeight:'800', marginTop:3, letterSpacing:0.5}}>{prop.tier}</Text>
+                  </View>
+                </View>
+
+                {signalEntries.length > 0 && (
+                  <View style={{backgroundColor:'#0d1419', borderRadius:10, padding:10, gap:6}}>
+                    <Text style={{color:'#4a6070', fontSize:10, fontWeight:'700', marginBottom:2, letterSpacing:0.5}}>MODEL SIGNALS</Text>
+                    {signalEntries.slice(0, 5).map(([key, val], j) => (
+                      <View key={j} style={{flexDirection:'row', alignItems:'flex-start', gap:6}}>
+                        <Text style={{color:tierColor, fontSize:11, marginTop:1}}>•</Text>
+                        <Text style={{color:'#c8d8e8', fontSize:12, flex:1, lineHeight:17}}>{String(val)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </>
+      )
+    ) : propJerryLoading?(
       <View style={{alignItems:'center',paddingTop:40}}>
         <ActivityIndicator size="large" color={HRB_COLOR}/>
         <Text style={{color:'#7a92a8',marginTop:12}}>Jerry is finding edges...</Text>
