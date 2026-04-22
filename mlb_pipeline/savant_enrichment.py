@@ -106,7 +106,7 @@ def fetch_team_defense():
         team_defense = {}
         for _, row in df.iterrows():
             team_raw = None
-            for col in ['team', 'team_name', 'team_abbrev']:
+            for col in ['display_team_name', 'team', 'team_name', 'team_abbrev', 'entity_name']:
                 if col in row.index and pd.notna(row[col]):
                     team_raw = row[col]
                     break
