@@ -343,6 +343,11 @@ def run():
         return
 
     print(f"Scoring props across {len(games)} games...")
+    # One-shot: show what fields the game row actually has
+    if games:
+        print(f"  DIAG game row fields: {sorted(list(games[0].keys()))}")
+        sp_related = {k: v for k, v in games[0].items() if 'pitcher' in k.lower() or 'sp_' in k.lower()}
+        print(f"  DIAG pitcher-related: {sp_related}")
     all_props = []
     diag = {'k_scored': 0, 'k_kept': 0, 'b_scored': 0, 'b_kept': 0, 'top_scores': []}
 
