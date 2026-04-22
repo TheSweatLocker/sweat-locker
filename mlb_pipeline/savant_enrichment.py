@@ -248,17 +248,26 @@ def fetch_catcher_framing():
 
     catchers = []
     for _, row in df.iterrows():
-        # Name columns — 'name' can be "Firstname Lastname" directly
-        name = None
+        # Name may be "Firstname Lastname" or "Lastname, Firstname"
+        raw_name = None
         if 'last_name, first_name' in row.index and pd.notna(row['last_name, first_name']):
-            parts = str(row['last_name, first_name']).split(', ')
-            if len(parts) == 2:
-                name = f"{parts[1]} {parts[0]}".strip()
-        if not name:
+            raw_name = str(row['last_name, first_name'])
+        if not raw_name:
             for col in ['player_name', 'name', 'full_name']:
                 if col in row.index and pd.notna(row[col]):
-                    name = str(row[col]).strip()
+                    raw_name = str(row[col]).strip()
                     break
+        if not raw_name:
+            continue
+        # Always normalize to "First Last" format (MLB Stats API convention)
+        if ', ' in raw_name:
+            parts = raw_name.split(', ')
+            if len(parts) == 2:
+                name = f"{parts[1].strip()} {parts[0].strip()}"
+            else:
+                name = raw_name.strip()
+        else:
+            name = raw_name.strip()
         if not name:
             continue
 
