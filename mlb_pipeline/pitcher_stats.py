@@ -38,7 +38,9 @@ def fetch_pitcher_stats():
                     timeout=10
                 )
                 for player in roster_resp.json().get('roster', []):
-                    if player.get('position', {}).get('abbreviation') != 'P':
+                    pos = player.get('position', {}).get('abbreviation')
+                    # Include Two-Way Players (Ohtani) alongside pitchers
+                    if pos not in ('P', 'TWP'):
                         continue
                     pid = player['person']['id']
                     name = player['person']['fullName']

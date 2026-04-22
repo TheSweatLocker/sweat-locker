@@ -486,16 +486,18 @@ def calc_platoon_advantage(lineup_names, pitcher_hand):
     return score, note
 
 def get_pitcher_splits(pitcher_id, season=2026):
-    """Fetch pitcher home/away splits from MLB Stats API"""
+    """Fetch pitcher home/away splits from MLB Stats API via statSplits"""
     if not pitcher_id:
         return None
     try:
+        # statSplits with sitCodes=h,a is the reliable path; homeAndAway has been flaky
         r = requests.get(
             f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
             params={
-                "stats": "homeAndAway",
+                "stats": "statSplits",
                 "group": "pitching",
-                "season": season
+                "season": season,
+                "sitCodes": "h,a"
             },
             timeout=10
         )
@@ -508,9 +510,8 @@ def get_pitcher_splits(pitcher_id, season=2026):
         for split_group in stats:
             for split in split_group.get("splits", []):
                 split_info = split.get("split", {})
-                # Code may be "H"/"A" or "h"/"a" or description "Home"/"Away"
-                split_type = (split_info.get("code", "") or split_info.get("description", "")).strip().upper()
-                is_home = split_info.get("isHome")
+                code = (split_info.get("code", "") or "").strip().lower()
+                description = (split_info.get("description", "") or "").strip().lower()
                 stat_obj = split.get("stat", {})
                 era_raw = stat_obj.get("era")
                 if era_raw is None or era_raw == "-.--":
@@ -519,9 +520,9 @@ def get_pitcher_splits(pitcher_id, season=2026):
                     era = float(era_raw)
                 except (ValueError, TypeError):
                     continue
-                if split_type in ("H", "HOME") or is_home is True:
+                if code == "h" or "home" in description:
                     home_era = era
-                elif split_type in ("A", "AWAY") or is_home is False:
+                elif code == "a" or "away" in description or "road" in description:
                     away_era = era
         # Fallback to 2025 if current season has no data yet
         if home_era is None and away_era is None and season == 2026:
