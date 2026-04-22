@@ -8696,31 +8696,41 @@ setJerryHistory(prev => {
       const mg = gamesData.find((g:any) => g.home_team === h.homeTeam);
       return !mg || new Date(mg.commence_time) > new Date();
     }).map((h: any, i: number) => (
-      <View key={i} style={{flexDirection:'row',alignItems:'center',paddingVertical:8,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
-        <View style={{flex:1}}>
-          <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
-            <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{h.player}</Text>
-            {h.isFallback && <Text style={{color:'#7a92a8',fontSize:9,fontStyle:'italic'}}>est. lineup</Text>}
+      <View key={i} style={{paddingVertical:10,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
+        {/* Top row — player name + HR/PA badge */}
+        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+          <View style={{flexDirection:'row',alignItems:'center',gap:6,flex:1,marginRight:10}}>
+            <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}} numberOfLines={1}>{h.player}</Text>
+            {h.isFallback && <Text style={{color:'#7a92a8',fontSize:9,fontStyle:'italic'}}>est.</Text>}
           </View>
-          <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>{h.game}</Text>
-        </View>
-        <View style={{alignItems:'flex-end',gap:3}}>
-          <View style={{flexDirection:'row',gap:4,flexWrap:'wrap',justifyContent:'flex-end'}}>
-            <View style={{backgroundColor:'rgba(255,77,109,0.15)',borderRadius:5,paddingHorizontal:5,paddingVertical:1}}>
-              <Text style={{color:'#ff4d6d',fontSize:9,fontWeight:'700'}}>{h.hr} HR / {h.pa} PA</Text>
-            </View>
-            {h.parkFactor >= 105 && <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:5,paddingHorizontal:5,paddingVertical:1}}>
-              <Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'700'}}>Park {h.parkFactor}</Text>
-            </View>}
-            {h.windOut && <View style={{backgroundColor:'rgba(0,229,160,0.12)',borderRadius:5,paddingHorizontal:5,paddingVertical:1}}>
-              <Text style={{color:'#00e5a0',fontSize:9,fontWeight:'700'}}>Wind Out {h.windSpeed}mph</Text>
-            </View>}
-            {h.oppXera && h.oppXera > 4.0 && <View style={{backgroundColor:'rgba(0,153,255,0.12)',borderRadius:5,paddingHorizontal:5,paddingVertical:1}}>
-              <Text style={{color:'#0099ff',fontSize:9,fontWeight:'700'}}>vs {h.oppXera.toFixed(1)} xERA</Text>
-            </View>}
+          <View style={{backgroundColor:'rgba(255,77,109,0.15)',borderRadius:6,paddingHorizontal:7,paddingVertical:2}}>
+            <Text style={{color:'#ff4d6d',fontSize:10,fontWeight:'800'}}>{h.hr} HR / {h.pa} PA</Text>
           </View>
-          <Text style={{color:'#4a6070',fontSize:9}}>vs {h.oppPitcher?.split(' ').pop() || 'TBD'} • {h.venue?.split(' ').pop() || ''} • {h.temp}°F</Text>
         </View>
+        {/* Context line — matchup + venue + temp */}
+        <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6}} numberOfLines={1}>
+          {h.game} • vs {h.oppPitcher?.split(' ').pop() || 'TBD'} • {h.temp}°F
+        </Text>
+        {/* Badges row — only show non-empty; wraps cleanly on its own line */}
+        {(h.parkFactor >= 105 || h.windOut || (h.oppXera && h.oppXera > 4.0)) && (
+          <View style={{flexDirection:'row',gap:5,flexWrap:'wrap'}}>
+            {h.parkFactor >= 105 && (
+              <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
+                <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700'}}>🏟 Park {h.parkFactor}</Text>
+              </View>
+            )}
+            {h.windOut && (
+              <View style={{backgroundColor:'rgba(0,229,160,0.12)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
+                <Text style={{color:'#00e5a0',fontSize:10,fontWeight:'700'}}>💨 {h.windSpeed}mph OUT</Text>
+              </View>
+            )}
+            {h.oppXera && h.oppXera > 4.0 && (
+              <View style={{backgroundColor:'rgba(0,153,255,0.12)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
+                <Text style={{color:'#0099ff',fontSize:10,fontWeight:'700'}}>⚾ {h.oppXera.toFixed(2)} xERA</Text>
+              </View>
+            )}
+          </View>
+        )}
       </View>
     ))}
   </View>
