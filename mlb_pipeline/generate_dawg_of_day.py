@@ -62,23 +62,36 @@ def fetch_todays_games():
     return r.json() if r.status_code == 200 else []
 
 
-def score_dawg(g):
+def score_dawg(g, diag=None):
     """Evaluate a game for Dawg candidacy. Returns dict or None if not a Dawg."""
     sd = _f(g.get('spread_delta'))
     cs = _f(g.get('close_spread'))
+    matchup_label = f"{g.get('away_team')} @ {g.get('home_team')}"
+
     if sd is None or cs is None:
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: missing sd={sd} or cs={cs}")
         return None
 
-    # Need model + market on SAME side (both saying the same team is dog-ish) → Dawg scenario
-    # close_spread > 0 means home is dog; spread_delta > 0 means model likes home → HOME DAWG
-    # close_spread < 0 means home is favorite (away is dog); spread_delta < 0 means model likes away → AWAY DAWG
     if abs(sd) < MIN_DELTA:
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: |delta|={abs(sd):.2f} < {MIN_DELTA}")
         return None
-    if (sd > 0) != (cs > 0):
-        return None  # model and market disagree on direction — not a Dawg setup
 
-    # If close_spread is ~0 (pick'em), any delta direction works but less compelling
+    # A Dawg setup requires model to LIKE the team market has as UNDERDOG.
+    # close_spread is home team's posted spread:
+    #   cs > 0 (home +X) → HOME is market dog; Dawg if model also likes home (sd > 0)
+    #   cs < 0 (home -X) → AWAY is market dog; Dawg if model also likes away (sd < 0)
+    # So Dawg = same sign on (sd, cs).
+    if (sd > 0) != (cs > 0):
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: sd={sd:+.1f} cs={cs:+.1f} opposite signs (model likes favorite)")
+        return None
+
+    # Pick'em games — still eligible but need min delta to matter
     if abs(cs) < 0.5:
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: pick'em (cs={cs:+.1f}) — no dog/fav")
         return None
 
     is_home_dawg = sd > 0
@@ -239,13 +252,16 @@ def run():
     print(f"  Evaluating {len(games)} games...")
 
     dawg_candidates = []
+    diag = []
     for g in games:
-        d = score_dawg(g)
+        d = score_dawg(g, diag=diag)
         if d:
             dawg_candidates.append(d)
 
     if not dawg_candidates:
-        print("  No Dawg candidates today (no games where model + market align on underdog direction)")
+        print("  No Dawg candidates today — diag:")
+        for line in diag[:20]:
+            print(line)
         return
 
     dawg_candidates.sort(key=lambda d: d['conviction'], reverse=True)
