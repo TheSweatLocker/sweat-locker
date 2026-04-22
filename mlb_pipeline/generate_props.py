@@ -195,8 +195,9 @@ def score_pitcher_ks(g, side):
     }
 
 
-def score_batter_hits(g, batter, side):
-    """Score a batter's Hits Over 0.5 prop. side = 'home' or 'away' (batter's side)."""
+def score_batter_hits(g, batter, side, lineup_position=None):
+    """Score a batter's Hits Over 0.5 prop. side = 'home' or 'away' (batter's side).
+    lineup_position: 1-indexed spot in the confirmed lineup (1-9)."""
     opp_side = 'away' if side == 'home' else 'home'
 
     team_wrc_vs_hand = _f(g.get(f'{side}_wrc_vs_opp_hand'))
@@ -292,6 +293,18 @@ def score_batter_hits(g, batter, side):
     if 'k-friendly' in ump_note:
         conviction -= 5
 
+    # Lineup position bonus — top of order sees more PAs = higher hit probability
+    if lineup_position is not None:
+        if lineup_position <= 2:
+            conviction += 6
+            signals['lineup_spot'] = f'Hitting {lineup_position} — leadoff/2-hole (4-5 PAs)'
+        elif lineup_position <= 5:
+            conviction += 3
+            signals['lineup_spot'] = f'Hitting {lineup_position} — heart of order (4+ PAs)'
+        elif lineup_position >= 8:
+            conviction -= 4
+            signals['lineup_spot'] = f'Hitting {lineup_position} — bottom of order (3-4 PAs)'
+
     conviction = max(0, min(100, conviction))
     return {
         'conviction': conviction,
@@ -371,8 +384,9 @@ def run():
             lineup_str = g.get(lineup_field) or ''
             batters = [b.strip() for b in lineup_str.split(',') if b.strip()][:9]
             team_name = g.get(f'{side}_team')
-            for batter in batters:
-                result = score_batter_hits(g, batter, side)
+            for idx, batter in enumerate(batters):
+                lineup_position = idx + 1  # 1-indexed
+                result = score_batter_hits(g, batter, side, lineup_position)
                 if not result or result['conviction'] < HITS_CUTOFF:
                     continue
                 all_props.append({
@@ -390,7 +404,19 @@ def run():
                 })
 
     all_props.sort(key=lambda p: p['conviction'], reverse=True)
-    top = all_props[:TOP_N]
+
+    # Cap per game so one juicy matchup doesn't flood the board.
+    # Max 3 hits props per game + 1 K prop per pitcher is implicit (only 2 starters).
+    hits_per_game = {}
+    capped = []
+    for p in all_props:
+        if p['prop_type'] == 'hits_over':
+            key = p['game_id']
+            hits_per_game[key] = hits_per_game.get(key, 0) + 1
+            if hits_per_game[key] > 3:
+                continue
+        capped.append(p)
+    top = capped[:TOP_N]
 
     wipe_todays_props()
     saved = upsert_props(top)
