@@ -1309,6 +1309,27 @@ def upload_game_context(context):
         "Content-Type": "application/json",
         "Prefer": "resolution=merge-duplicates,return=minimal"
     }
+    # NRFI score stability: lock after 8am ET run so tier classifications don't drift
+    # between 8am and 2pm runs as xERA/K% data shifts by fractions
+    try:
+        et_now = datetime.now(timezone.utc) - timedelta(hours=4)
+        if et_now.hour >= 8 and context.get("nrfi_score") is not None:
+            game_id = context.get("game_id")
+            if game_id:
+                check_headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+                check_r = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_id=eq.{requests.utils.quote(game_id)}&select=nrfi_score",
+                    headers=check_headers, timeout=10
+                )
+                existing = check_r.json()
+                if existing and len(existing) > 0 and existing[0].get("nrfi_score") is not None:
+                    locked_score = existing[0]["nrfi_score"]
+                    if locked_score != context.get("nrfi_score"):
+                        print(f"  🔒 NRFI locked at {locked_score} (new calc was {context.get('nrfi_score')})")
+                        context["nrfi_score"] = locked_score
+    except Exception as e:
+        print(f"  NRFI lock check skipped: {e}")
+
     r = requests.post(
         f"{SUPABASE_URL}/rest/v1/mlb_game_context?on_conflict=game_id",
         headers=headers,

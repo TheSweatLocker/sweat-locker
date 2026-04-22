@@ -59,32 +59,34 @@ jobs:
           cd mlb_pipeline
           python team_stats.py
 
-      - name: Update team HR threats (8am run only)
+      - name: Update team HR threats (morning run — 11am UTC-13am UTC range)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           HOUR=$(date -u +%H)
-          if [ "$HOUR" = "12" ]; then
-            echo "8am ET run — updating team HR threats"
+          # Accept 11-13 UTC to cover 8am ET across EDT/EST/DST transitions
+          if [ "$HOUR" = "11" ] || [ "$HOUR" = "12" ] || [ "$HOUR" = "13" ]; then
+            echo "Morning ET run (UTC hour $HOUR) — updating team HR threats"
             cd mlb_pipeline
             python team_hr_threats.py
           else
-            echo "Skipping HR threats update (not the 8am run)"
+            echo "Skipping HR threats update (UTC hour $HOUR — not morning ET)"
           fi
 
-      - name: Build HR Watch (2pm run only — after lineups confirm)
+      - name: Build HR Watch (afternoon run — 17-19 UTC range)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           HOUR=$(date -u +%H)
-          if [ "$HOUR" = "18" ]; then
-            echo "2pm ET run — building HR Watch candidates"
+          # Accept 17-19 UTC to cover 2pm ET across EDT/EST
+          if [ "$HOUR" = "17" ] || [ "$HOUR" = "18" ] || [ "$HOUR" = "19" ]; then
+            echo "Afternoon ET run (UTC hour $HOUR) — building HR Watch candidates"
             cd mlb_pipeline
             python build_hr_watch.py
           else
-            echo "Skipping HR Watch build (not the 2pm run)"
+            echo "Skipping HR Watch build (UTC hour $HOUR — not afternoon ET)"
           fi
 
       - name: Update umpire database (Mondays only)
