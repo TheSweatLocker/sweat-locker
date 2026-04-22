@@ -5327,17 +5327,51 @@ if(sport === 'UFC') {
 
     const formatFighter = (name, s) => {
       if(!s) return `${name}: stats not available`;
-      return `${s.fighter_name} (${s.record || 'N/A'}) — SLpM ${s.slpm || 'N/A'}, str_acc ${s.str_acc || 'N/A'}%, SApM ${s.sapm || 'N/A'}, str_def ${s.str_def || 'N/A'}%, TD avg ${s.td_avg || 'N/A'}, TD acc ${s.td_acc || 'N/A'}%, TD def ${s.td_def || 'N/A'}%, sub avg ${s.sub_avg || 'N/A'}, finishing rate ${s.finishing_rate || 'N/A'}%. Stance: ${s.stance || 'N/A'}. Wins: ${s.wins_by_ko || 0} KO, ${s.wins_by_sub || 0} SUB, ${s.wins_by_dec || 0} DEC.`;
+      const physicalStr = `${s.height ? `${s.height}` : '?'}, reach ${s.reach || '?'}`;
+      return `${s.fighter_name} (${s.record || 'N/A'}) — ${physicalStr}, ${s.stance || 'Orthodox'}. SLpM ${s.slpm || 'N/A'}, str_acc ${s.str_acc || 'N/A'}%, SApM ${s.sapm || 'N/A'}, str_def ${s.str_def || 'N/A'}%. TD avg ${s.td_avg || 'N/A'}, TD acc ${s.td_acc || 'N/A'}%, TD def ${s.td_def || 'N/A'}%, sub avg ${s.sub_avg || 'N/A'}. Finishing rate ${s.finishing_rate || 'N/A'}%. Wins: ${s.wins_by_ko || 0} KO, ${s.wins_by_sub || 0} SUB, ${s.wins_by_dec || 0} DEC.`;
     };
+
+    // Helper to classify win style — surfaces "who this fighter is" as a matchup read
+    const winProfile = (s) => {
+      if (!s || !s.total_wins || s.total_wins < 5) return null;
+      const tw = s.total_wins;
+      const koPct = (s.wins_by_ko || 0) / tw;
+      const subPct = (s.wins_by_sub || 0) / tw;
+      const decPct = (s.wins_by_dec || 0) / tw;
+      if (koPct >= 0.5) return 'KO artist';
+      if (subPct >= 0.4) return 'submission specialist';
+      if (decPct >= 0.55) return 'decision fighter';
+      if (koPct + subPct >= 0.6) return 'finisher';
+      return 'balanced';
+    };
+
+    // Parse reach (e.g., "72\"") to inches for differential
+    const parseReach = (r) => {
+      if (!r) return null;
+      const m = String(r).match(/(\d+)/);
+      return m ? parseInt(m[1]) : null;
+    };
+
+    const reachA = parseReach(fighterAStats?.reach);
+    const reachB = parseReach(fighterBStats?.reach);
+    const reachDiff = (reachA && reachB) ? reachA - reachB : null;
+    const profileA = winProfile(fighterAStats);
+    const profileB = winProfile(fighterBStats);
+    const stanceMatchup = (fighterAStats?.stance && fighterBStats?.stance)
+      ? `${fighterAStats.stance} vs ${fighterBStats.stance}${(fighterAStats.stance !== fighterBStats.stance) ? ' — awkward stance matchup (often leads to knockdown opportunities)' : ''}`
+      : null;
 
     ufcContextStr = `
 UFC FIGHT CONTEXT:
 - Fighter A: ${formatFighter(fighterA, fighterAStats)}
 - Fighter B: ${formatFighter(fighterB, fighterBStats)}
 - Moneyline: ${fighterA} ${game.bookmakers?.[0]?.markets?.find(m=>m.key==='h2h')?.outcomes?.[0]?.price || 'N/A'} / ${fighterB} ${game.bookmakers?.[0]?.markets?.find(m=>m.key==='h2h')?.outcomes?.[1]?.price || 'N/A'}
-${fighterAStats && fighterBStats ? `- Striking gap: SLpM diff ${((fighterAStats.slpm||0) - (fighterBStats.slpm||0)).toFixed(1)}, accuracy gap ${((fighterAStats.str_acc||0) - (fighterBStats.str_acc||0)).toFixed(1)}%
-- Grappling: ${fighterAStats.fighter_name} TD avg ${fighterAStats.td_avg||0}/15min vs ${fighterBStats.fighter_name} TD def ${fighterBStats.td_def||0}%
-- Finishing: ${fighterAStats.fighter_name} ${fighterAStats.finishing_rate||0}% vs ${fighterBStats.fighter_name} ${fighterBStats.finishing_rate||0}%` : ''}`;
+${fighterAStats && fighterBStats ? `- Striking gap: SLpM diff ${((fighterAStats.slpm||0) - (fighterBStats.slpm||0)).toFixed(1)}, accuracy gap ${((fighterAStats.str_acc||0) - (fighterBStats.str_acc||0)).toFixed(1)}%. Striking defense: ${fighterAStats.fighter_name} ${fighterAStats.str_def||'?'}% vs ${fighterBStats.fighter_name} ${fighterBStats.str_def||'?'}%
+- Grappling: ${fighterAStats.fighter_name} TD avg ${fighterAStats.td_avg||0}/15min, TD def ${fighterAStats.td_def||'?'}% | ${fighterBStats.fighter_name} TD avg ${fighterBStats.td_avg||0}/15min, TD def ${fighterBStats.td_def||'?'}%
+- Finishing: ${fighterAStats.fighter_name} ${fighterAStats.finishing_rate||0}% vs ${fighterBStats.fighter_name} ${fighterBStats.finishing_rate||0}%
+${reachDiff !== null ? `- Reach advantage: ${reachDiff > 0 ? fighterAStats.fighter_name + ' +' + reachDiff + '\"' : reachDiff < 0 ? fighterBStats.fighter_name + ' +' + Math.abs(reachDiff) + '\"' : 'even reach'}${Math.abs(reachDiff) >= 3 ? ' ⚡ MATERIAL reach gap — aids striker/kickboxer' : ''}` : ''}
+${stanceMatchup ? `- Stance: ${stanceMatchup}` : ''}
+${profileA && profileB ? `- Win profiles: ${fighterAStats.fighter_name} = ${profileA}, ${fighterBStats.fighter_name} = ${profileB}${(profileA === 'KO artist' && profileB === 'decision fighter') || (profileB === 'KO artist' && profileA === 'decision fighter') ? ' ⚡ STYLE MISMATCH (power vs volume)' : ''}` : ''}` : ''}`;
   } catch(e) {
     //console.log('UFC context error:', e);
   }
@@ -5565,13 +5599,15 @@ LENGTH: 2-3 sentences. Hard cap.`,
     UFC: `
 LEAD SIGNAL HIERARCHY:
 1. Finishing rate — single most important stat. 80%+ finisher vs decision fighter = massive style edge, lead with it.
-2. SLpM gap — who controls striking distance.
-3. TD defense vs TD average — grappling matchup. 70% TD def vs 4 TD/fight average neutralizes grappling.
-4. Stylistic matchup (striker vs grappler, reach, cardio).
+2. Win profile mismatch — KO artist vs decision fighter, or submission specialist vs weak takedown defense. Explicitly called out in the data when material.
+3. SLpM gap + striking defense — who controls striking distance and absorbs less.
+4. TD defense vs TD average — grappling matchup. 70% TD def vs 4 TD/fight average neutralizes grappling.
+5. Reach advantage ≥3" — aids strikers/kickboxers, especially against pressure fighters.
+6. Stance matchup — orthodox vs southpaw is often flagged as "awkward" in the data; lead crosses and lead hooks land more often.
 
 STRUCTURE (3 sentences — hard cap):
-- Sentence 1: What the MODEL says (SLpM gap, finish rate, TD defense — specific numbers from UFC FIGHT CONTEXT).
-- Sentence 2: What PUBLIC ANALYSTS say (web search Doc Sports, Covers MMA, MMA Fighting, MMA Decisions, BestFightOdds — name source).
+- Sentence 1: What the MODEL says — cite specific numbers from UFC FIGHT CONTEXT (SLpM, finishing rate, TD defense, reach, win profile). Reference actual values, not generic descriptions.
+- Sentence 2: What PUBLIC ANALYSTS say (web search Doc Sports, Covers MMA, MMA Fighting, MMA Decisions, BestFightOdds — name source when possible).
 - Sentence 3: Where model and analysts AGREE or DISAGREE. If they diverge, explain why. THAT is the edge.
 
 LENGTH: 3 sentences. Hard cap.`,
