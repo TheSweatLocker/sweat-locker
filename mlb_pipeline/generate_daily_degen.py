@@ -188,7 +188,9 @@ def select_diverse_legs(candidates):
 def build_narrative(legs):
     """Generate a single 2-3 sentence Jerry narrative. One Haiku call per day."""
     if not ANTHROPIC_API_KEY:
+        print("  (no ANTHROPIC_API_KEY in env — using default narrative)")
         return "Model found edges across the slate. That's the Degen Parlay."
+    print("  Calling Haiku for narrative (10s timeout)...")
 
     legs_desc = "\n".join(
         f"Leg {i+1}: {l['pick']} ({l['matchup']}) — {l['signals'][0] if l.get('signals') else ''}"
@@ -214,7 +216,7 @@ Write 2-3 sentences MAX. Reference specific data signals. Sound like a sharp fri
                 'max_tokens': 240,
                 'messages': [{'role': 'user', 'content': prompt}]
             },
-            timeout=20
+            timeout=10
         )
         data = r.json()
         text = ''.join(
