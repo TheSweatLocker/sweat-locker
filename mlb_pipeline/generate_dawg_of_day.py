@@ -63,40 +63,57 @@ def fetch_todays_games():
 
 
 def score_dawg(g, diag=None):
-    """Evaluate a game for Dawg candidacy. Returns dict or None if not a Dawg."""
-    sd = _f(g.get('spread_delta'))
+    """Evaluate a game for Dawg candidacy. Returns dict or None if not a Dawg.
+
+    Conventions:
+      close_spread = home team's posted sportsbook spread (home -1.5 = favorite, home +1.5 = dog)
+      projected_spread = model's projected home run differential (positive = home wins by X)
+      spread_delta = projected_spread - close_spread (positive = home overvalued by market / away undervalued)
+
+    A Dawg is the MARKET UNDERDOG that the model views as more competitive than the line.
+    Metric: 'dog_edge' = model's differential from the dog's perspective + the points they're getting.
+    Example: cs=-1.5 (home -1.5 fav, away is dog), ps=+0.9 (home wins by 0.9 in model).
+             From away dog's view: model has them losing by 0.9, market has them losing by 1.5.
+             dog_edge = (-ps) + |cs| = -0.9 + 1.5 = 0.6 runs edge on the away dog.
+    Higher edge = bigger Dawg.
+    """
     cs = _f(g.get('close_spread'))
+    ps = _f(g.get('projected_spread'))
     matchup_label = f"{g.get('away_team')} @ {g.get('home_team')}"
 
-    if sd is None or cs is None:
+    if cs is None or ps is None:
         if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: missing sd={sd} or cs={cs}")
+            diag.append(f"  ✗ {matchup_label}: missing close_spread={cs} or projected_spread={ps}")
         return None
 
-    if abs(sd) < MIN_DELTA:
-        if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: |delta|={abs(sd):.2f} < {MIN_DELTA}")
-        return None
-
-    # A Dawg setup requires model to LIKE the team market has as UNDERDOG.
-    # close_spread is home team's posted spread:
-    #   cs > 0 (home +X) → HOME is market dog; Dawg if model also likes home (sd > 0)
-    #   cs < 0 (home -X) → AWAY is market dog; Dawg if model also likes away (sd < 0)
-    # So Dawg = same sign on (sd, cs).
-    if (sd > 0) != (cs > 0):
-        if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: sd={sd:+.1f} cs={cs:+.1f} opposite signs (model likes favorite)")
-        return None
-
-    # Pick'em games — still eligible but need min delta to matter
     if abs(cs) < 0.5:
         if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: pick'em (cs={cs:+.1f}) — no dog/fav")
+            diag.append(f"  ✗ {matchup_label}: pick'em line (cs={cs:+.1f}) — no dog/fav")
         return None
 
-    is_home_dawg = sd > 0
+    # Identify market dog and compute model's view of that dog's differential
+    if cs > 0:
+        # Home +X → home is market dog
+        is_home_dawg = True
+        dog_differential = ps  # positive = home wins
+    else:
+        # Home -X → home favorite, AWAY is market dog
+        is_home_dawg = False
+        dog_differential = -ps  # flip so positive = away wins
+
+    # dog_edge = how much better the dog is in the model vs what market priced
+    # dog's line in market: -|cs| (e.g., away +1.5 as dog = dog "loses by 1.5" expected per line)
+    dog_edge = dog_differential + abs(cs)
+
+    MIN_EDGE = 2.0  # require at least 2 runs of "better than market" on the dog side
+    if dog_edge < MIN_EDGE:
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: dog_edge={dog_edge:+.2f} (cs={cs:+.1f}, ps={ps:+.1f}) — model agrees with market")
+        return None
+
     team = g.get('home_team') if is_home_dawg else g.get('away_team')
     opp_team = g.get('away_team') if is_home_dawg else g.get('home_team')
+    sd = _f(g.get('spread_delta')) or 0
 
     # Team stats — pick the Dawg's side data
     prefix = 'home' if is_home_dawg else 'away'
@@ -117,11 +134,11 @@ def score_dawg(g, diag=None):
     signals = {}
     conviction = 40  # base for being a model-identified dawg
 
-    # Spread delta magnitude — bigger = more conviction
-    delta_abs = abs(sd)
-    delta_bump = min(35, int(delta_abs * 10))
-    conviction += delta_bump
-    signals['spread_delta'] = f"Model spread delta {sd:+.1f} runs — market has {team.split()[-1]} as {abs(cs):+.1f} dog"
+    # Dog edge — how much better the dog is per model vs market's line
+    edge_bump = min(35, int(dog_edge * 8))
+    conviction += edge_bump
+    dog_fate = "winning outright" if dog_differential > 0 else f"losing by only {abs(dog_differential):.1f}"
+    signals['model_view'] = f"Market has {team.split()[-1]} as {abs(cs):.1f}-run dog — model sees them {dog_fate} ({dog_edge:+.1f} run edge)"
 
     # Team offense vs opposing hand
     if team_wrc >= 110:
