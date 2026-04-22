@@ -85,10 +85,11 @@ def fetch_csv(url, label):
 
 def fetch_team_defense():
     """Team-level OAA from Savant defensive runs leaderboard"""
-    # Team OAA leaderboard — try multiple URL shapes defensively
+    # Team OAA leaderboard — position=all returns team totals
     urls = [
-        f"https://baseballsavant.mlb.com/leaderboard/outs_above_average?type=Team&startYear={SEASON}&endYear={SEASON}&split=no&team=&range=year&min=q&pos=&roles=&viz=hide&csv=true",
-        f"https://baseballsavant.mlb.com/leaderboard/outs_above_average?type=Team&year={SEASON}&csv=true",
+        f"https://baseballsavant.mlb.com/leaderboard/outs_above_average?type=Team&startYear={SEASON}&endYear={SEASON}&split=no&team=&range=year&min=0&pos=all&roles=&viz=hide&csv=true",
+        f"https://baseballsavant.mlb.com/leaderboard/outs_above_average?type=Team&startYear={SEASON}&endYear={SEASON}&pos=&csv=true",
+        f"https://baseballsavant.mlb.com/leaderboard/outs_above_average?type=Team&year={SEASON}&pos=&csv=true",
     ]
     df = None
     for url in urls:
@@ -191,12 +192,12 @@ def fetch_team_quality_of_contact():
         team_full = normalize_team(team_raw)
 
         barrel = None
-        for col in ['brl_percent', 'barrel_percent', 'barrel_pct', 'brl_pa']:
+        for col in ['brl_percent', 'barrel_percent', 'barrel_pct', 'brl_pa', 'brl_pct']:
             if col in row.index and pd.notna(row[col]):
                 barrel = safe_float(row[col])
                 break
         hard_hit = None
-        for col in ['hard_hit_percent', 'ev95percent', 'hard_hit_pct']:
+        for col in ['ev95percent', 'hard_hit_percent', 'hard_hit_pct', 'ev95_pct']:
             if col in row.index and pd.notna(row[col]):
                 hard_hit = safe_float(row[col])
                 break
@@ -223,7 +224,7 @@ def fetch_catcher_framing():
 
     catchers = []
     for _, row in df.iterrows():
-        # Name columns
+        # Name columns — 'name' can be "Firstname Lastname" directly
         name = None
         if 'last_name, first_name' in row.index and pd.notna(row['last_name, first_name']):
             parts = str(row['last_name, first_name']).split(', ')
@@ -244,18 +245,19 @@ def fetch_catcher_framing():
                 break
         team_full = normalize_team(team_raw) if team_raw else None
 
+        # rv_tot = total runs value from framing, pct_tot = strike rate, pitches = called pitches
         framing = None
-        for col in ['runs_extra_strikes', 'framing_runs', 'runs_extra_strikes_plus']:
+        for col in ['rv_tot', 'runs_extra_strikes', 'framing_runs', 'runs_extra_strikes_plus']:
             if col in row.index and pd.notna(row[col]):
                 framing = safe_float(row[col])
                 break
         strike_rate = None
-        for col in ['strike_rate', 'strike_rate_all', 'strike_pct']:
+        for col in ['pct_tot', 'strike_rate', 'strike_rate_all', 'strike_pct']:
             if col in row.index and pd.notna(row[col]):
                 strike_rate = safe_float(row[col])
                 break
         innings = None
-        for col in ['n_called_pitches', 'innings_caught', 'innings', 'ip']:
+        for col in ['pitches', 'n_called_pitches', 'innings_caught', 'innings', 'ip']:
             if col in row.index and pd.notna(row[col]):
                 innings = safe_float(row[col])
                 break
@@ -274,24 +276,23 @@ def fetch_catcher_framing():
     return catchers
 
 def upsert_team_offense_merge(team_full, payload):
-    """Merge payload into existing mlb_team_offense row for team"""
-    # Fetch existing row
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/mlb_team_offense?team=eq.{requests.utils.quote(team_full)}&season=eq.{SEASON}&select=*&limit=1",
-        headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
-        timeout=10
-    )
-    if r.status_code != 200 or not r.json():
-        return False  # team_stats.py must run first
-    existing = r.json()[0]
-    merged = {**existing, **payload, "team": team_full, "season": SEASON, "updated_at": datetime.now().isoformat()}
-    up = requests.post(
-        f"{SUPABASE_URL}/rest/v1/mlb_team_offense?on_conflict=team,season",
+    """PATCH Savant fields onto existing mlb_team_offense row — don't upsert
+    the whole record because the underlying table uses on_conflict=team only
+    and id/season round-trip can cause 400s."""
+    patch_payload = {k: v for k, v in payload.items() if v is not None}
+    patch_payload["updated_at"] = datetime.now().isoformat()
+    up = requests.patch(
+        f"{SUPABASE_URL}/rest/v1/mlb_team_offense?team=eq.{requests.utils.quote(team_full)}",
         headers=HEADERS,
-        json=merged,
+        json=patch_payload,
         timeout=10
     )
-    return up.status_code in (200, 201, 204)
+    if up.status_code not in (200, 204):
+        if not hasattr(upsert_team_offense_merge, '_err_once'):
+            upsert_team_offense_merge._err_once = True
+            print(f"  ⚠️ team upsert failed {up.status_code}: {up.text[:200]}")
+        return False
+    return True
 
 def upsert_catcher(catcher):
     up = requests.post(
@@ -300,7 +301,12 @@ def upsert_catcher(catcher):
         json=catcher,
         timeout=10
     )
-    return up.status_code in (200, 201, 204)
+    if up.status_code not in (200, 201, 204):
+        if not hasattr(upsert_catcher, '_err_once'):
+            upsert_catcher._err_once = True
+            print(f"  ⚠️ catcher upsert failed {up.status_code}: {up.text[:200]}")
+        return False
+    return True
 
 def run():
     print(f"=== Savant enrichment {SEASON} ===")
