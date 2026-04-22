@@ -3608,6 +3608,22 @@ if(isPlayoffMode) {
         else if(platoonGap >= 3) sitScore += 8;
         else if(platoonGap >= 1) sitScore += 3;
 
+        // Platoon-adjusted wRC+ differential — team's actual performance vs opposing hand
+        const homeWrcVsHand = parseFloat(mlbCtx.home_wrc_vs_opp_hand);
+        const awayWrcVsHand = parseFloat(mlbCtx.away_wrc_vs_opp_hand);
+        const homeWrcSeason = parseFloat(mlbCtx.home_wrc_plus) || 100;
+        const awayWrcSeason = parseFloat(mlbCtx.away_wrc_plus) || 100;
+        if(!isNaN(homeWrcVsHand) && Math.abs(homeWrcVsHand - homeWrcSeason) >= 15) sitScore += 6;
+        if(!isNaN(awayWrcVsHand) && Math.abs(awayWrcVsHand - awayWrcSeason) >= 15) sitScore += 6;
+
+        // Pitcher L3 form drift — recent form vs season xERA
+        const homeXera = parseFloat(mlbCtx.home_sp_xera);
+        const awayXera = parseFloat(mlbCtx.away_sp_xera);
+        const homeL3 = parseFloat(mlbCtx.home_pitcher_last_3_era);
+        const awayL3 = parseFloat(mlbCtx.away_pitcher_last_3_era);
+        if(!isNaN(homeXera) && !isNaN(homeL3) && Math.abs(homeL3 - homeXera) >= 1.5) sitScore += 5;
+        if(!isNaN(awayXera) && !isNaN(awayL3) && Math.abs(awayL3 - awayXera) >= 1.5) sitScore += 5;
+
         // Team streaks — hot/cold teams
         const homeStreak = mlbCtx.home_streak || '';
         const awayStreak = mlbCtx.away_streak || '';
@@ -5153,6 +5169,10 @@ MLB GAME CONTEXT:
 - ML conviction: ${mlbData.spread_delta != null ? (Math.abs(mlbData.spread_delta) >= 3.0 ? 'HIGH — 3+ run spread delta' : Math.abs(mlbData.spread_delta) >= 2.0 ? 'MODERATE — 2+ run delta' : 'LOW — market and model agree') : 'N/A'}
 - Spread delta: ${mlbData.spread_delta != null ? (mlbData.spread_delta > 0 ? '+' : '') + mlbData.spread_delta.toFixed(1) + ' runs vs posted line' : 'N/A'}
 - First inning ERA: ${mlbData.home_first_inning_era != null ? mlbData.home_pitcher + ' 1st inn ERA ' + mlbData.home_first_inning_era : ''} ${mlbData.away_first_inning_era != null ? '| ' + mlbData.away_pitcher + ' 1st inn ERA ' + mlbData.away_first_inning_era : ''}
+- Lineup strength: ${mlbData.home_lineup_weight != null ? `${game.home_team} ${mlbData.home_lineup_weight.toFixed(2)} weight${mlbData.home_lineup_ops ? ` (avg OPS ${mlbData.home_lineup_ops.toFixed(3)})` : ''}` : 'pending'} | ${mlbData.away_lineup_weight != null ? `${game.away_team} ${mlbData.away_lineup_weight.toFixed(2)} weight${mlbData.away_lineup_ops ? ` (avg OPS ${mlbData.away_lineup_ops.toFixed(3)})` : ''}` : 'pending'}${mlbData.home_lineup_weight != null && mlbData.away_lineup_weight != null && Math.abs(mlbData.home_lineup_weight - mlbData.away_lineup_weight) >= 2 ? ` ⚡ LARGE lineup gap (${Math.abs(mlbData.home_lineup_weight - mlbData.away_lineup_weight).toFixed(1)} pts)` : ''}
+- Platoon numerical: ${mlbData.home_platoon_advantage != null ? `${game.home_team} ${mlbData.home_platoon_advantage > 0 ? '+' : ''}${mlbData.home_platoon_advantage.toFixed(1)}` : 'pending'} | ${mlbData.away_platoon_advantage != null ? `${game.away_team} ${mlbData.away_platoon_advantage > 0 ? '+' : ''}${mlbData.away_platoon_advantage.toFixed(1)}` : 'pending'} (positive = lineup platoon advantage vs opposing SP, negative = pitcher advantage, ±5 or more is material)
+- Bullpen fatigue: ${mlbData.home_bp_relievers_3d != null ? `${game.home_team} ${mlbData.home_bp_relievers_3d} relievers used last 3d${mlbData.home_bp_relievers_3d >= 12 ? ' ⚠️ HIGH USAGE' : ''}` : ''} | ${mlbData.away_bp_relievers_3d != null ? `${game.away_team} ${mlbData.away_bp_relievers_3d} relievers used last 3d${mlbData.away_bp_relievers_3d >= 12 ? ' ⚠️ HIGH USAGE' : ''}` : ''}
+- Travel context: ${mlbData.timezone_change != null && Math.abs(mlbData.timezone_change) >= 2 ? `${Math.abs(mlbData.timezone_change)}hr TZ change for away side — fatigue concern` : 'no material TZ change'}${mlbData.away_consecutive_road_games != null && mlbData.away_consecutive_road_games >= 6 ? ` • ${game.away_team} on ${mlbData.away_consecutive_road_games}-game road trip (road fatigue)` : mlbData.away_consecutive_road_games >= 4 ? ` • ${game.away_team} ${mlbData.away_consecutive_road_games}-game road trip` : ''}
 - Data confidence: ${mlbData.confidence}`;
   }
 }
