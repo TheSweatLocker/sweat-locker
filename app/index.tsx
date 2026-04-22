@@ -4362,21 +4362,23 @@ const fetchJerryRecord = async () => {
     const recentProps = allAGrades.slice(0, 10);
 
     // NRFI Model record from mlb_game_results
-    // Only track tiers with proven edge (90-94 PRIME + 70-79 mild lean)
-    // Exclude 80-89 dead zone (42-47% hit rate per audit) — drags record down
+    // Track ONLY tiers where Jerry calls a NRFI lean in his reads:
+    //   70-79 = mild lean, 90-94 = PRIME tier
+    // Exclude 80-89 (neutral tier, no lean) and 95+ (volatile trap, Jerry flags
+    // volatility not a lean). Keeps record aligned with what Jerry actually said.
     let nrfi = {wins:0, losses:0};
     try {
-      const { data: nrfiData, error: nrfiError } = await supabase
+      const { data: nrfiData } = await supabase
         .from('mlb_game_results')
         .select('nrfi_score, nrfi_result')
         .not('nrfi_result', 'is', null);
       if(nrfiData && nrfiData.length > 0) {
-        // Filter to tiers with edge: 90+ or 70-79
-        const edgeTierGames = nrfiData.filter((r: any) =>
-          (r.nrfi_score >= 90) || (r.nrfi_score >= 70 && r.nrfi_score <= 79)
+        const leanTierGames = nrfiData.filter((r: any) =>
+          (r.nrfi_score >= 70 && r.nrfi_score <= 79) ||
+          (r.nrfi_score >= 90 && r.nrfi_score <= 94)
         );
-        nrfi.wins = edgeTierGames.filter((r: any) => r.nrfi_result === 'NRFI').length;
-        nrfi.losses = edgeTierGames.filter((r: any) => r.nrfi_result === 'YRFI').length;
+        nrfi.wins = leanTierGames.filter((r: any) => r.nrfi_result === 'NRFI').length;
+        nrfi.losses = leanTierGames.filter((r: any) => r.nrfi_result === 'YRFI').length;
       }
     } catch(e) {}
 
@@ -9200,16 +9202,16 @@ setJerryHistory(prev => {
                     const nPct = nTotal > 0 ? Math.round((jerryRecord.nrfi.wins/nTotal)*100) : 0;
                     if(nTotal === 0) return(
                       <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL (Score 70+)</Text>
+                        <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL — LEAN TIERS</Text>
                         <Text style={{color:'#7a92a8',fontSize:13,marginTop:8}}>NRFI results loading...</Text>
                       </View>
                     );
                     return(
                       <View style={[styles.hero,{marginBottom:16}]}>
                         <View>
-                          <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL (Score 70+)</Text>
+                          <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL — LEAN TIERS</Text>
                           <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:36}}>{jerryRecord.nrfi.wins}-{jerryRecord.nrfi.losses}</Text>
-                          <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{nPct}% hit rate on scores 70+</Text>
+                          <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{nPct}% hit rate on mild (70-79) + prime (90-94) leans only</Text>
                         </View>
                         <View style={{alignItems:'center'}}>
                           <View style={{width:72,height:72,borderRadius:36,borderWidth:2.5,borderColor:nPct>=55?'#00e5a0':'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
