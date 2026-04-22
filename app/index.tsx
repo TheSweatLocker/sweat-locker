@@ -6749,13 +6749,18 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                             playerContext = ` MLB HR prop context: ${mlbCtx.venue} HR factor ${mlbCtx.park_run_factor}. Weather: ${mlbCtx.temperature}°F, wind ${mlbCtx.wind_speed}mph ${mlbCtx.wind_direction}.`;
                           } else if(isHitsProp || prop.market.includes('rbis') || prop.market.includes('runs_scored')) {
                             // Batter prop — find opposing pitcher's contact profile
-                            // Determine if batter is home or away by checking both lineups
+                            // Use full name (not just last name) to avoid "Laureano" → matching "Laureano" who's a teammate
+                            const playerFullLower = prop.player.toLowerCase();
                             const playerLast = prop.player.split(' ').pop()?.toLowerCase() || '';
-                            const inHomeLineup = mlbCtx.home_lineup?.toLowerCase().includes(playerLast);
-                            const inAwayLineup = mlbCtx.away_lineup?.toLowerCase().includes(playerLast);
-                            const isBatterHome = inHomeLineup && !inAwayLineup ? true : inAwayLineup && !inHomeLineup ? false : inHomeLineup;
-                            // Opposing pitcher is the starter the batter faces
-                            const oppPitcher = isBatterHome ? mlbCtx.away_pitcher : mlbCtx.home_pitcher;
+                            const homeLineupLower = (mlbCtx.home_lineup || '').toLowerCase();
+                            const awayLineupLower = (mlbCtx.away_lineup || '').toLowerCase();
+                            const inHome = homeLineupLower.includes(playerFullLower) || homeLineupLower.includes(playerLast);
+                            const inAway = awayLineupLower.includes(playerFullLower) || awayLineupLower.includes(playerLast);
+                            // Only trust team assignment when UNAMBIGUOUS — one lineup, not both, not neither
+                            const ambiguous = inHome === inAway; // both true OR both false
+                            const isBatterHome = ambiguous ? null : inHome;
+                            // Opposing pitcher is the starter the batter faces — null if we can't confidently tell
+                            const oppPitcher = isBatterHome === true ? mlbCtx.away_pitcher : isBatterHome === false ? mlbCtx.home_pitcher : null;
                             let contactProfile = '';
                             if(oppPitcher) {
                               try {
@@ -6775,8 +6780,9 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                                 }
                               } catch(e) {}
                             }
-                            const platoon = isBatterHome ? mlbCtx.home_platoon_advantage : mlbCtx.away_platoon_advantage;
-                            const wrcPlus = isBatterHome ? mlbCtx.home_wrc_plus : mlbCtx.away_wrc_plus;
+                            // Only surface platoon/wRC+ when we're confident which team the batter is on
+                            const platoon = isBatterHome === true ? mlbCtx.home_platoon_advantage : isBatterHome === false ? mlbCtx.away_platoon_advantage : null;
+                            const wrcPlus = isBatterHome === true ? mlbCtx.home_wrc_plus : isBatterHome === false ? mlbCtx.away_wrc_plus : null;
                             // Fetch individual batter stats for prompt
                             let individualStats = '';
                             try {
@@ -6859,26 +6865,62 @@ const bookContext = bookCount >= 4
   ? `${bookCount} books posting — cross-book value confirmed`
   : `1 book posting — high EV but verify line before it moves`;
 
-return `You are Prop Jerry, a sharp sports betting analyst. Generate a 2-sentence insight for this prop.
+// Extract game entities for all sports (universal entity isolation)
+const gameTeams = prop.game?.split(' @ ') || [];
+const awayEntity = gameTeams[0]?.trim() || null;
+const homeEntity = gameTeams[1]?.trim() || null;
+// Subject team inference (conservative): for MLB/NBA/NFL teams are in game string.
+// For UFC, subject IS the entity — their "team" is themselves, opponent is the other fighter.
+// Default unknown when we can't confidently infer.
+let subjectTeam = null;
+let opposingEntity = null;
+if(awayEntity && homeEntity) {
+  if(sport === 'UFC') {
+    // Fighter name IS the entity — match prop.player to home/away fighter
+    subjectTeam = prop.player === awayEntity ? awayEntity : prop.player === homeEntity ? homeEntity : null;
+    opposingEntity = subjectTeam === awayEntity ? homeEntity : subjectTeam === homeEntity ? awayEntity : null;
+  }
+  // For team sports, subject team isn't reliably in prop.player — leave null if we can't infer,
+  // the ENTITY FACTS block will list both and let the LLM reason from context fields.
+}
 
-Prop: ${prop.player} ${bestSide} ${bestLine?.line}
+return `You are Prop Jerry, a sharp sports betting analyst for The Sweat Locker.
+
+=== ENTITY FACTS (read first, do not confuse) ===
+SUBJECT: ${prop.player}
+PROP: ${bestSide} ${bestLine?.line} ${prop.market || ''}
+${awayEntity && homeEntity ? `GAME: ${awayEntity} @ ${homeEntity}` : ''}
+${subjectTeam ? `SUBJECT'S SIDE: ${subjectTeam}` : ''}
+${opposingEntity ? `OPPONENT: ${opposingEntity}` : ''}
+
+ENTITY DISCIPLINE (universal, applies to every sport):
+- SUBJECT is ${prop.player}. Never reference a teammate as if they were the opponent.
+- The opposing pitcher, defender, or fighter is provided in the data below — use ONLY that name. Never invent an opposing player name.
+- If you are not 100% certain which player is the opponent, OMIT the opponent reference rather than guess.
+- Never confuse batter with pitcher, teammate with opposition, or subject with an unrelated player.
+
 EV: ${bestEV.toFixed(1)}% | Books: ${bookCount} | Line range: ${lineRange.toFixed(1)} pts | Best book: ${bestLine?.book}
 Grade: ${grade} — ${gradeContext}
 Book context: ${bookContext}
 ${kenpomContext}${playerContext}${modelSignal ? `\nModel signal: ${modelSignal}${modelProb >= 0.56 ? ' — CONFIRMS edge' : modelProb <= 0.50 ? ' — CONFLICTS with edge' : ' — weak signal'}` : ''}${matchupSignals.length > 0 ? `\nPIPELINE MATCHUP FLAG: ${matchupSignals.join(' + ')} — this prop was identified by the model BEFORE checking odds. ${matchupConviction >= 20 ? 'HIGH CONVICTION — explain the specific matchup advantage.' : 'Moderate signal.'}` : ''}
 ${aGradeInstruction}
 
-Rules:
-- For A grades: lead with the specific stat that explains WHY this line is mispriced. Reference the actual numbers.
+Rules (apply to every sport):
+- For A grades: lead with the specific stat that explains WHY this line is mispriced. Reference the actual numbers from the data block above — do NOT invent numbers.
 - For B grades: lead with the edge, mention the best book to get it at.
 - For C grades: be measured — "mild edge, worth tracking"
 - For all grades: end with the specific action (e.g. "Over ${bestLine?.line} at ${bestLine?.book}")
 - Never say "bet" or "must play"
 - 2 sentences maximum
 - Sound like a sharp friend texting you, not a robot
-- MLB: always reference pitcher K rate, umpire, or park factor if available
-- NBA: always reference player recent form or injury context if available
-- If no technical data available, lead with the EV and book consensus signal`;
+- If the only labeled opposing player in the data block conflicts with the subject's team, STOP — omit the opposing reference and lean on EV + book consensus.
+
+Sport-specific guidance (use only when that sport's data is present):
+- MLB: reference opposing pitcher ONLY by the name labeled "Opposing pitcher" in the context. Reference K rate, umpire, or park factor when available.
+- NBA: reference player recent form or injury context when available.
+- UFC: reference the labeled OPPONENT fighter by name, cite the specific matchup stat (striking, grappling, finishing rate).
+
+If no technical data available, lead with the EV and book consensus signal.`;
                 })()
               }]
             })
