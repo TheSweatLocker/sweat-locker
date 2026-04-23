@@ -1,9 +1,13 @@
 import requests
 import os
 from dotenv import load_dotenv
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 load_dotenv()
+
+def _et_today():
+    """ET date — NOT UTC/local. Resolver's 'yesterday' must match pipeline's ET stamping."""
+    return (datetime.now(timezone.utc) - timedelta(hours=4)).date()
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
@@ -16,8 +20,9 @@ HEADERS = {
 def run():
     print('Resolving game results...')
     # Get games missing scores from last 7 days
-    week_ago = (date.today() - timedelta(days=7)).isoformat()
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    et_today = _et_today()
+    week_ago = (et_today - timedelta(days=7)).isoformat()
+    yesterday = (et_today - timedelta(days=1)).isoformat()
     r = requests.get(
         f'{SUPABASE_URL}/rest/v1/mlb_game_results?home_score=is.null&game_date=gte.{week_ago}&game_date=lte.{yesterday}&select=*',
         headers=HEADERS

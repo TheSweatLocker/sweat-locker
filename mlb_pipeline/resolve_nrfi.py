@@ -1,7 +1,7 @@
 import requests
 import os
 from dotenv import load_dotenv
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -33,7 +33,9 @@ def get_first_inning_runs(game_pk):
 
 def get_pending_nrfi():
     """Get games from yesterday with no nrfi_result"""
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    # ET not UTC/local — match pipeline's ET stamping convention
+    et_today = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
+    yesterday = (et_today - timedelta(days=1)).isoformat()
     r = requests.get(
         f"{SUPABASE_URL}/rest/v1/mlb_game_results?game_date=eq.{yesterday}&nrfi_result=is.null&select=*",
         headers=HEADERS,

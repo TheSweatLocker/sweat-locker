@@ -11,7 +11,7 @@ mlb_catcher_framing for the current season.
 """
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -72,7 +72,8 @@ def run():
     if not games:
         return
 
-    today_iso = datetime.now().strftime('%Y-%m-%d')
+    # ET not local — match pipeline's ET convention
+    today_iso = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
     ok, fail = 0, 0
     for i, g in enumerate(games):
         try:

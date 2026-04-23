@@ -2372,7 +2372,7 @@ def run():
                 "away_team_barrel_pct": away_team_barrel_pct,
                 "home_catcher_framing": home_catcher_framing,
                 "away_catcher_framing": away_catcher_framing,
-                "stats_snapshot_date": datetime.now().strftime('%Y-%m-%d'),
+                "stats_snapshot_date": (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d'),
                 "home_record": f"{home_form['wins']}-{home_form['losses']}" if home_form else None,
                 "away_record": f"{away_form['wins']}-{away_form['losses']}" if away_form else None,
                 "home_last10": home_form['last10'] if home_form else None,
