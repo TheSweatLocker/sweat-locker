@@ -1628,7 +1628,6 @@ def run():
             # Derive game_date from commence_time in ET, not system date
             commence_time = game.get("commence_time", "")
             if commence_time:
-                from datetime import timezone
                 game_utc = datetime.fromisoformat(commence_time.replace('Z', '+00:00'))
                 game_et = game_utc - timedelta(hours=4)  # EDT
                 game_date_et = game_et.strftime('%Y-%m-%d')
