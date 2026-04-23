@@ -7437,15 +7437,49 @@ setJerryHistory(prev => {
 
            {/* Jerry Game Narrative */}
           <View style={{marginHorizontal:16,marginBottom:12,backgroundColor:'rgba(255,184,0,0.06)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
-            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,marginBottom:8}}>🎤 JERRY'S READ</Text>
+            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,marginBottom:10}}>🎤 JERRY'S READ</Text>
             {gameNarrativeLoading?(
               <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
                 <ActivityIndicator size='small' color={HRB_COLOR}/>
                 <Text style={{color:'#4a6070',fontSize:13}}>Jerry is breaking down the tape...</Text>
               </View>
-            ):(
-              <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{gameNarrative?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}"</Text>
-            )}
+            ):(()=>{
+              const raw = (gameNarrative || '').trim();
+              if(!raw) return <Text style={{color:'#7a92a8',fontSize:13}}>No read available yet.</Text>;
+              // Parse sections from **Header** markdown — split preserving headers
+              const sectionRegex = /\*\*([^*]+?)\*\*/g;
+              const hasHeaders = sectionRegex.test(raw);
+              if(!hasHeaders) {
+                // Plain paragraph (or compact single-paragraph style for NHL/UFC/NCAAB)
+                const clean = raw.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim();
+                return <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20}}>{clean}</Text>;
+              }
+              // Split — parts[0] is any leading text before first header, then
+              // alternating header/body pairs. We skip leading text (Jerry
+              // shouldn't preamble but if he does, drop it silently).
+              const parts = raw.split(/\*\*([^*]+?)\*\*/);
+              const sections: {title: string, body: string}[] = [];
+              for(let i = 1; i < parts.length; i += 2) {
+                const title = parts[i]?.trim();
+                const body = parts[i+1]?.trim();
+                if(title && body) sections.push({title, body});
+              }
+              if(sections.length === 0) {
+                // Fallback: render whatever we got, stripped
+                const clean = raw.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim();
+                return <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20}}>{clean}</Text>;
+              }
+              return (
+                <View style={{gap:12}}>
+                  {sections.map((s, i) => (
+                    <View key={i}>
+                      <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11,marginBottom:4,letterSpacing:0.5}}>{s.title.toUpperCase()}</Text>
+                      <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:19}}>{s.body.replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
+                    </View>
+                  ))}
+                </View>
+              );
+            })()}
           </View>
 
            {matchupTab==='money'&&(
