@@ -5588,29 +5588,45 @@ SIGNAL COVERAGE:
 LENGTH: Usually 6-12 sentences total across sections. Skip empty sections. No padding — if data isn't material, don't invent filler.`,
 
     NBA: `
-LEAD SIGNAL HIERARCHY (lead with the first one that fires):
-1. Star OUT = lead immediately. OUT affects spread 4-10 pts depending on player — always quantify the impact. Overrides everything else.
-2. Key player Questionable = flag and note the line hasn't fully priced it in.
-3. Back-to-back = always mention. Fade the B2B team unless line already moved 3+ pts against them.
-4. Home/away record mismatch (34-7 home vs 14-27 road = massive situational edge — lean home regardless of net rating gap).
-5. Net rating gap ≥3 = real edge. Reference specifically.
-6. Defensive rating gap ≥3, opp eFG% edge.
-7. Pace differential + last 5 net rating (form drift).
-8. Total delta ≥3 = lean over/under. Cite pace + defenses + eFG% + form + injuries.
+FORMAT: Write a structured game prep using these markdown section headers. Skip any section that has no material data. Each section is 1-3 sentences — short, specific, no padding. NEVER preamble — start with the first section header.
 
-PLAYOFFS (only if isPlayoffMode true):
-- Lead with series context — who leads, what game, elimination scenario.
-- Home court is earned — series leader at home is a massive edge.
-- Elimination games play differently — flag immediately.
-- Down 3-1 historical comeback rate is 7%.
+**The Setup**
+One-line matchup frame. Reference Sweat Score tier (PRIME / Strong Lean / Best Available) as context. If playoffs active: lead with series state — who leads, what game number, elimination scenario.
 
-TONE: Confident, direct. Reference specific numbers. No generic "sharp money" filler.
+**Injuries & Rest**
+Star OUT = lead here (quantify spread impact: OUT affects 4-10 pts depending on player). Back-to-back = flag immediately and note fade unless line already moved 3+ against. Rest advantage = mention if asymmetric.
+
+**Efficiency & Matchup**
+Net rating gap (≥3 pts = real edge). Defensive rating edge, opp eFG% mismatch. Home/away record asymmetry (34-7 home vs 14-27 road = massive situational edge — lean home regardless of net rating). Last 5 net rating vs season (form drift).
+
+**Pace & Total**
+Pace differential, combined tempo, projected total model delta. If total delta ≥3 = lean over/under with reasoning (pace, defenses, eFG%, injuries).
+
+**Where the Model Sits**
+Summarize ML spread + total conviction. Name what's driving the edge.
+
+**The Play**
+One directional sentence. Natural close — DO NOT repeat phrases across games. Vary sign-off: "data points to...", "signals align on...", "edge lives on...", "model's angle here is...". Never "lock it in", "smash this", "must play", "bet".
+
+PLAYOFFS (only when isPlayoffMode true):
+- Lead The Setup with series context
+- Home court is earned — series leader at home is a massive edge
+- Elimination games play differently — flag immediately
+- Down 3-1 historical comeback rate is 7%
+
+SIGNAL COVERAGE:
+- Reference every material signal in the data (injuries, B2B, home/away records, net rating, DefRtg, eFG%, pace, L5 form). Tie each to outcome implication, not just list.
+- If injury data is material, web search confirms via tonight's updated injury reports.
+
+TONE:
+- Sharp analyst writing pre-game prep, not tweet. Confident, specific, numbers-cited.
+- Never "bet" / "must play" / "lock it in" / "smash this".
 
 OVERRIDE:
-- Web search for tonight's injury report FIRST — real-world factors override market lean.
+- Web search for tonight's injury reports FIRST — real-world factors override market lean.
 - If game already played, say so and stop.
 
-LENGTH: 2-3 sentences. Hard cap.`,
+LENGTH: Usually 6-10 sentences total across sections. Skip empty sections. No padding.`,
 
     NCAAB: `
 LEAD SIGNALS:
