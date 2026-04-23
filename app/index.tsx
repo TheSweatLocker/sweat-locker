@@ -9120,6 +9120,16 @@ setJerryHistory(prev => {
       </View>
     </ScrollView>
 
+    {/* Non-MLB sports: banner clarifying EV scanner vs pipeline */}
+    {propJerrySport !== 'MLB' && (
+      <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.25)',flexDirection:'row',alignItems:'center',gap:10}}>
+        <Text style={{fontSize:18}}>🚧</Text>
+        <Text style={{color:'#b0c4d8',fontSize:11,flex:1,lineHeight:16}}>
+          <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{propJerrySport} pipeline props coming soon.</Text> Current picks use market EV scanning — our proprietary matchup model is live for MLB only today. {propJerrySport === 'NBA' ? 'NBA playoff props rolling out post-launch.' : propJerrySport === 'UFC' ? 'UFC card model expands next Thursday scrape.' : ''}
+        </Text>
+      </View>
+    )}
+
     {/* MLB: pipeline-driven props */}
     {propJerrySport === 'MLB' ? (
       pipelineMLBLoading ? (
@@ -9481,10 +9491,10 @@ setJerryHistory(prev => {
                     );
                     return(
                       <View style={[styles.hero,{marginBottom:16}]}>
-                        <View>
+                        <View style={{flex:1,marginRight:12}}>
                           <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL — LEAN TIERS</Text>
                           <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:36}}>{jerryRecord.nrfi.wins}-{jerryRecord.nrfi.losses}</Text>
-                          <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{nPct}% hit rate on mild (70-79) + prime (90-94) leans only</Text>
+                          <Text style={{color:'#7a92a8',fontSize:11,marginTop:2,lineHeight:15}}>{nPct}% on Mild (70-79) + Prime (90-94) leans</Text>
                         </View>
                         <View style={{alignItems:'center'}}>
                           <View style={{width:72,height:72,borderRadius:36,borderWidth:2.5,borderColor:nPct>=55?'#00e5a0':'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
