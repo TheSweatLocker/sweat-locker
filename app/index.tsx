@@ -4434,6 +4434,35 @@ const fetchJerryRecord = async () => {
       .order('bet_date', {ascending: false})
       .limit(14);
 
+    // Pipeline Props record — new conviction-tiered picks (post-pivot)
+    let pipelineProps = {
+      total: {wins: 0, losses: 0, pending: 0},
+      byTier: {PRIME: {wins:0, losses:0}, STRONG: {wins:0, losses:0}, LEAN: {wins:0, losses:0}},
+      byType: {hits_over: {wins:0, losses:0}, ks_over: {wins:0, losses:0}},
+    };
+    try {
+      const { data: ppRows } = await supabase
+        .from('mlb_pipeline_props')
+        .select('result,tier,prop_type')
+        .order('game_date', {ascending: false})
+        .limit(500);
+      if (ppRows) {
+        for (const r of ppRows as any[]) {
+          if (r.result === 'Win') {
+            pipelineProps.total.wins++;
+            if (r.tier && pipelineProps.byTier[r.tier]) pipelineProps.byTier[r.tier].wins++;
+            if (r.prop_type && pipelineProps.byType[r.prop_type]) pipelineProps.byType[r.prop_type].wins++;
+          } else if (r.result === 'Loss') {
+            pipelineProps.total.losses++;
+            if (r.tier && pipelineProps.byTier[r.tier]) pipelineProps.byTier[r.tier].losses++;
+            if (r.prop_type && pipelineProps.byType[r.prop_type]) pipelineProps.byType[r.prop_type].losses++;
+          } else {
+            pipelineProps.total.pending++;
+          }
+        }
+      }
+    } catch (e) {}
+
     // Dawg of the Day record — only resolved rows count
     let dawg = {wins: 0, losses: 0, pending: 0};
     try {
@@ -4453,6 +4482,7 @@ const fetchJerryRecord = async () => {
       props: { wins: propWins, losses: propLosses, pending: pendingProps, bySport: propBySport, recent: recentProps },
       nrfi,
       dawg,
+      pipelineProps,
       bestBets: bestBetHistory || [],
     });
   } catch(e) {
@@ -9549,6 +9579,62 @@ setJerryHistory(prev => {
                               </View>
                             )}
                           </View>
+                        )}
+                      </View>
+                    );
+                  })()}
+
+                  {/* Pipeline Props — conviction-tiered new-architecture record */}
+                  {(() => {
+                    const pp = jerryRecord.pipelineProps || {total: {wins:0, losses:0, pending:0}, byTier: {}, byType: {}};
+                    const t = pp.total;
+                    const resolved = t.wins + t.losses;
+                    const pct = resolved > 0 ? Math.round((t.wins / resolved) * 100) : 0;
+                    const tierRow = (label: string, tier: {wins:number, losses:number}, color: string) => {
+                      const tTotal = tier.wins + tier.losses;
+                      const tPct = tTotal > 0 ? Math.round((tier.wins / tTotal) * 100) : 0;
+                      return (
+                        <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:6}}>
+                          <Text style={{color:color,fontWeight:'700',fontSize:12}}>{label}</Text>
+                          <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+                            <Text style={{color:'#7a92a8',fontSize:12}}>{tier.wins}-{tier.losses}</Text>
+                            {tTotal > 0 && (
+                              <Text style={{color:tPct>=55?'#00e5a0':tPct>=45?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{tPct}%</Text>
+                            )}
+                          </View>
+                        </View>
+                      );
+                    };
+                    return (
+                      <View style={[styles.card,{marginBottom:16}]}>
+                        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🧠 PIPELINE PROPS — CONVICTION TIERS</Text>
+                        {resolved === 0 ? (
+                          <Text style={{color:'#7a92a8',fontSize:13,lineHeight:18}}>Tracking begins once picks resolve.{'\n'}{t.pending > 0 ? `${t.pending} pending result${t.pending === 1 ? '' : 's'}.` : 'First picks generated today.'}</Text>
+                        ) : (
+                          <>
+                            <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:10}}>
+                              <View style={{alignItems:'center'}}>
+                                <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30}}>{t.wins}-{t.losses}</Text>
+                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>OVERALL</Text>
+                              </View>
+                              <View style={{alignItems:'center'}}>
+                                <Text style={{color:pct>=55?'#00e5a0':pct>=45?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:24}}>{pct}%</Text>
+                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
+                              </View>
+                              {t.pending > 0 && (
+                                <View style={{alignItems:'center'}}>
+                                  <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:20}}>{t.pending}</Text>
+                                  <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>PENDING</Text>
+                                </View>
+                              )}
+                            </View>
+                            <View style={{backgroundColor:'#0d1419',borderRadius:10,padding:10,marginTop:4}}>
+                              <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:4,letterSpacing:0.5}}>BY TIER</Text>
+                              {tierRow('🔒 PRIME (80+)', pp.byTier.PRIME || {wins:0,losses:0}, '#00e5a0')}
+                              {tierRow('⚡ STRONG (65-79)', pp.byTier.STRONG || {wins:0,losses:0}, HRB_COLOR)}
+                              {tierRow('📊 LEAN (50-64)', pp.byTier.LEAN || {wins:0,losses:0}, '#7a92a8')}
+                            </View>
+                          </>
                         )}
                       </View>
                     );
