@@ -259,19 +259,9 @@ def run():
     gd = today_et()
     print(f"=== Daily Degen {gd} ===")
 
-    # Overwrite guard — skip if today's row already exists
-    force = '--force' in sys.argv
-    if not force:
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/daily_degen?game_date=eq.{gd}&select=leg_count,avg_conviction",
-            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
-            timeout=10
-        )
-        if r.status_code == 200 and r.json():
-            existing = r.json()[0]
-            print(f"  Daily Degen already exists for {gd}: {existing.get('leg_count')} legs, avg conviction {existing.get('avg_conviction')}")
-            print(f"  Skipping — pass --force to overwrite")
-            return
+    # No overwrite guard — each cron regenerates to incorporate latest
+    # pipeline props + live game state. Afternoon run with confirmed
+    # lineups produces a stronger parlay than morning run's K-only pool.
 
     games = fetch_todays_games()
     props = fetch_pipeline_props()

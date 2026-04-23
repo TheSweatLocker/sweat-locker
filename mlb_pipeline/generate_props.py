@@ -355,23 +355,10 @@ def run():
     gd = today_et()
     print(f"=== Pipeline prop generator {gd} ===")
 
-    # Overwrite guard — skip if today's props already generated
-    force = '--force' in sys.argv
-    if not force:
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{gd}&select=id&limit=1",
-            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
-            timeout=10
-        )
-        if r.status_code == 200 and r.json():
-            count_r = requests.get(
-                f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{gd}&select=id",
-                headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}', 'Prefer': 'count=exact'},
-                timeout=10
-            )
-            n = len(count_r.json()) if count_r.status_code == 200 else '?'
-            print(f"  {n} pipeline props already exist for {gd}. Pass --force to overwrite.")
-            return
+    # No overwrite guard — each cron wipes + regenerates so afternoon run
+    # with confirmed lineups REPLACES morning run's K-only output.
+    # Idempotent: running multiple times just produces the best-available
+    # picks based on current lineup confirmation state.
 
     games = fetch_todays_games()
     if not games:

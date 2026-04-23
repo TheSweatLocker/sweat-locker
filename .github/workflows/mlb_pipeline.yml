@@ -67,79 +67,47 @@ jobs:
           cd mlb_pipeline
           python game_context.py
 
-      - name: Update team HR threats (morning run — 11am UTC-13am UTC range)
+      - name: Update team HR threats
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          HOUR=$(date -u +%H)
-          # Accept 11-13 UTC to cover 8am ET across EDT/EST/DST transitions
-          if [ "$HOUR" = "11" ] || [ "$HOUR" = "12" ] || [ "$HOUR" = "13" ]; then
-            echo "Morning ET run (UTC hour $HOUR) — updating team HR threats"
-            cd mlb_pipeline
-            python team_hr_threats.py
-          else
-            echo "Skipping HR threats update (UTC hour $HOUR — not morning ET)"
-          fi
+          cd mlb_pipeline
+          python team_hr_threats.py
 
-      - name: Build HR Watch (afternoon run — 17-19 UTC range)
+      - name: Build HR Watch
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          HOUR=$(date -u +%H)
-          # Accept 17-19 UTC to cover 2pm ET across EDT/EST
-          if [ "$HOUR" = "17" ] || [ "$HOUR" = "18" ] || [ "$HOUR" = "19" ]; then
-            echo "Afternoon ET run (UTC hour $HOUR) — building HR Watch candidates"
-            cd mlb_pipeline
-            python build_hr_watch.py
-          else
-            echo "Skipping HR Watch build (UTC hour $HOUR — not afternoon ET)"
-          fi
+          cd mlb_pipeline
+          python build_hr_watch.py
 
-      - name: Generate pipeline props (afternoon run — needs confirmed lineups)
+      - name: Generate pipeline props
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          HOUR=$(date -u +%H)
-          if [ "$HOUR" = "17" ] || [ "$HOUR" = "18" ] || [ "$HOUR" = "19" ]; then
-            echo "Afternoon ET run — generating pipeline props from confirmed lineups"
-            cd mlb_pipeline
-            python generate_props.py
-          else
-            echo "Skipping prop generation (UTC hour $HOUR — afternoon only)"
-          fi
+          cd mlb_pipeline
+          python generate_props.py
 
-      - name: Generate Daily Degen (afternoon — after props)
+      - name: Generate Daily Degen
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          HOUR=$(date -u +%H)
-          if [ "$HOUR" = "17" ] || [ "$HOUR" = "18" ] || [ "$HOUR" = "19" ]; then
-            echo "Afternoon ET run — building Daily Degen parlay from pipeline picks"
-            cd mlb_pipeline
-            python generate_daily_degen.py
-          else
-            echo "Skipping Daily Degen (UTC hour $HOUR — afternoon only)"
-          fi
+          cd mlb_pipeline
+          python generate_daily_degen.py
 
-      - name: Generate Dawg of the Day (morning ET run)
+      - name: Generate Dawg of the Day
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          HOUR=$(date -u +%H)
-          if [ "$HOUR" = "11" ] || [ "$HOUR" = "12" ] || [ "$HOUR" = "13" ]; then
-            echo "Morning ET run — generating Dawg of the Day"
-            cd mlb_pipeline
-            python generate_dawg_of_day.py
-          else
-            echo "Skipping Dawg generation (UTC hour $HOUR — morning only)"
-          fi
+          cd mlb_pipeline
+          python generate_dawg_of_day.py
 
       - name: Update umpire database (Mondays only)
         env:
