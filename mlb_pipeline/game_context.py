@@ -1590,9 +1590,12 @@ def log_game_result(context):
 
 def run():
     print(f"Fetching MLB games for today...")
-    today = date.today().isoformat()
+    # Use ET not UTC/local — manual runs at 8pm ET shouldn't process tomorrow's games
+    et_now = datetime.now(timezone.utc) - timedelta(hours=4)
+    today = et_now.strftime('%Y-%m-%d')
+    print(f"  (ET date: {today})")
     for d in range(3):
-        past_date = (date.today() - timedelta(days=d)).isoformat()
+        past_date = (et_now - timedelta(days=d)).strftime('%Y-%m-%d')
         delete_resp = requests.delete(
             f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_date=eq.{past_date}",
             headers={

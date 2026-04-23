@@ -180,12 +180,25 @@ def score_pitcher_ks(g, side):
 
     conviction = max(0, min(100, conviction))
 
-    # Suggested line: pitcher K% × typical IP × ~4.2 batters/inn
-    # Use sanitized pitcher_k_pct; default to 22% (league avg) if unavailable
-    k_pct_for_line = pitcher_k_pct if pitcher_k_pct is not None else 22
-    typical_ip = 5.5
-    est_ks = (k_pct_for_line / 100) * (typical_ip * 4.2)
-    suggested_line = max(3.5, min(8.5, round(est_ks - 0.5, 1)))
+    # Suggested line: conservative projection with realistic caps.
+    # Books rarely post pitcher K lines above 7.5 even for elite arms —
+    # matching that distribution keeps our suggested line credible.
+    # Small-sample noise cap: if K% > 30, use 28 as ceiling for projection
+    # (prevents rookie/tiny-sample pitchers from getting 8+ K lines).
+    raw_k = pitcher_k_pct if pitcher_k_pct is not None else 22
+    k_pct_for_line = min(raw_k, 28)  # cap small-sample spikes
+    typical_ip = 5.0  # realistic average starter IP (not aspirational)
+    est_ks = (k_pct_for_line / 100) * (typical_ip * 4.0)  # 4.0 BF/IP for quality starts
+    # Tier-based line caps — mirrors book distribution
+    if raw_k >= 32:
+        line_cap = 7.0  # elite K guys max out around 7.0 on books
+    elif raw_k >= 28:
+        line_cap = 6.5
+    elif raw_k >= 24:
+        line_cap = 5.5
+    else:
+        line_cap = 5.0
+    suggested_line = max(3.5, min(line_cap, round(est_ks - 0.5, 1)))
 
     return {
         'conviction': conviction,
