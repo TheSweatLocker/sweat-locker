@@ -90,6 +90,16 @@ def score_dawg(g, diag=None):
             diag.append(f"  ✗ {matchup_label}: missing spread (close={g.get('close_spread')}, open={g.get('open_spread')}) or projected_spread={ps}")
         return None
 
+    # Require BOTH starters have xERA — otherwise projected_spread came from
+    # the fallback team R/G calc and creates artifact-driven huge deltas.
+    # A Dawg pick built on missing pitcher data isn't a real edge.
+    home_xera = _f(g.get('home_sp_xera'))
+    away_xera = _f(g.get('away_sp_xera'))
+    if home_xera is None or away_xera is None:
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: missing pitcher xERA (home={home_xera}, away={away_xera}) — projection unreliable")
+        return None
+
     if abs(cs) < 0.5:
         if diag is not None:
             diag.append(f"  ✗ {matchup_label}: pick'em line (cs={cs:+.1f}) — no dog/fav")

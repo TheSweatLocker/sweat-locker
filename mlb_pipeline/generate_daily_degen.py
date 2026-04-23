@@ -114,9 +114,13 @@ def extract_leg_candidates(games, props):
             })
 
     # ML spread delta ≥ 3.0 (HIGH conviction)
+    # Require BOTH starters to have xERA — skips games where projected_spread
+    # came from 'no pitcher data' fallback (creates artifact-driven huge deltas).
     for g in games:
         sd = _f(g.get('spread_delta'))
-        if sd is None:
+        home_xera = _f(g.get('home_sp_xera'))
+        away_xera = _f(g.get('away_sp_xera'))
+        if sd is None or home_xera is None or away_xera is None:
             continue
         if abs(sd) >= 3.0:
             fav_team = g.get('home_team') if sd > 0 else g.get('away_team')

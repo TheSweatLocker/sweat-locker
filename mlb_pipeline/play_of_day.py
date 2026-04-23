@@ -398,10 +398,15 @@ def run():
 
     # Tier 1 — high conviction
     # ML spread delta ≥4 ranks above NRFI sweet spot (biggest proven edge,
-    # NRFI can get burned by weather/offense signals the single-tier doesn't catch)
+    # NRFI can get burned by weather/offense signals the single-tier doesn't catch).
+    # BUT require both starters have xERA — else projected_spread is a team-R/G
+    # fallback that produces artifact-driven huge deltas.
+    def _has_pitcher_data(c):
+        return c.get('home_sp_xera') is not None and c.get('away_sp_xera') is not None
     ml_high_conviction = [
         c for c in ml_candidates
         if c.get('spread_delta') is not None and abs(float(c['spread_delta'])) >= 4.0
+        and _has_pitcher_data(c)
     ]
     if ml_high_conviction:
         ml_high_conviction.sort(key=lambda c: abs(float(c['spread_delta'])), reverse=True)
