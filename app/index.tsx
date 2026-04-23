@@ -8116,7 +8116,7 @@ setJerryHistory(prev => {
               <Text style={{fontSize:64,marginBottom:24}}>🔥</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Sweat Score</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Every game graded 0–100</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Built on pitcher Statcast data, NBA tracking stats, market efficiency, sharp money movement, and weather. Higher scores = stronger model conviction.{'\n\n'}Updates at 8am and 2pm ET daily.</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Built on deep pipeline signals no retail tool tracks at once:{'\n\n'}⚾ Pitcher xERA, K rate gap, first inning ERA, L3 form{'\n'}🧤 Team defense (OAA) + catcher framing runs{'\n'}📊 Expected vs actual wOBA (regression signal){'\n'}🎯 Platoon-adjusted wRC+ vs opposing pitcher hand{'\n'}💨 Park factor, weather, umpire tendencies{'\n'}💰 Market efficiency + sharp money movement{'\n\n'}Higher scores = stronger model conviction. Updates 8am and 2pm ET.</Text>
             </View>
           )}
           {onboardingStep===2&&(
@@ -8132,7 +8132,7 @@ setJerryHistory(prev => {
               <Text style={{fontSize:64,marginBottom:24}}>🧠</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Meet Jerry</Text>
               <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your AI sports analyst</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Jerry lives in the Jerry tab. Four tools:{'\n\n'}🎯 Prop Jerry — EV scanner across MLB, NBA, NHL, UFC{'\n'}🎰 Daily Degen — Jerry's analytically backed 3-4 leg parlay{'\n'}🚫 Jerry's Fades — plays to avoid today{'\n'}📊 My Record — Jerry's verified model performance</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Jerry lives in the Jerry tab. Four tools:{'\n\n'}🧠 Prop Jerry — Top 15 prop edges from our pipeline daily. Conviction-tiered (PRIME / STRONG / LEAN) with labeled signals.{'\n\n'}🎲 Daily Degen — 3-5 leg parlay built from the slate's best pipeline signals. Generated once, same pick for everyone.{'\n\n'}🐕 Dawg of the Day — The one underdog ML where our model sharply disagrees with the market.{'\n\n'}📋 Record — Verified performance: NRFI lean tiers, Prop Jerry A-grades, Play of the Day, Dawg record.</Text>
             </View>
           )}
           {onboardingStep===4&&(
@@ -8140,7 +8140,7 @@ setJerryHistory(prev => {
               <Text style={{fontSize:64,marginBottom:24}}>⚾</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>NRFI Model</Text>
               <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>No Run First Inning — our flagship</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Built on pitcher xERA, strikeout rate vs lineup K%, ground ball rate, first inning splits, days rest, weather, park factor, umpire tendencies, and offensive quality.{'\n\n'}Calibrated on 2,400+ games of real outcome data. Model updates twice daily.{'\n\n'}Scores 85+ are our highest confidence plays. The 90-94 sweet spot has historically been our best range.</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Built on pitcher xERA, strikeout gap vs lineup K%, ground ball rate, first inning splits, days rest, weather, park factor, umpires, and offensive quality.{'\n\n'}Calibrated on 2,700+ games of real outcome data. Tier-based leans:{'\n\n'}🟢 90-94 PRIME — highest conviction zone{'\n'}🟡 70-79 Mild — edge-of-lean territory{'\n'}⚪ 80-89 — neutral, Jerry doesn't lean here{'\n'}🔴 95+ — historically volatile, flagged not leaned</Text>
             </View>
           )}
           {onboardingStep===5&&(
