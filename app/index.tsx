@@ -9076,7 +9076,7 @@ setJerryHistory(prev => {
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'}}>
   <View style={{flex:1}}>
     <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🎤 PROP JERRY</Text>
-    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Pure EV + market consensus. No simulated data. Jerry finds the real edges.</Text>
+    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Top prop edges from our pipeline — conviction-tiered matchup plays (MLB). Market EV scanning for other sports while we build out their models.</Text>
   </View>
   <TouchableOpacity onPress={async()=>{const lastRefresh=await AsyncStorage.getItem('propjerry_last_refresh');if(lastRefresh&&Date.now()-parseInt(lastRefresh)<5*60*1000){showToast('⏳ Wait 5 minutes between refreshes');return;}await AsyncStorage.setItem('propjerry_last_refresh',String(Date.now()));try{await AsyncStorage.removeItem(PROP_JERRY_CACHE_KEY+'_'+propJerrySport);}catch(e){}try{await supabase.from('prop_jerry_cache').delete().eq('sport',propJerrySport);}catch(e){}fetchPropJerry(propJerrySport);}} style={{alignItems:'center',gap:3}}>
     <Text style={{fontSize:18}}>🔄</Text>
@@ -9120,12 +9120,28 @@ setJerryHistory(prev => {
       </View>
     </ScrollView>
 
-    {/* Non-MLB sports: banner clarifying EV scanner vs pipeline */}
+    {/* Non-MLB sports: sport-specific model transparency banner */}
     {propJerrySport !== 'MLB' && (
-      <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.25)',flexDirection:'row',alignItems:'center',gap:10}}>
-        <Text style={{fontSize:18}}>🚧</Text>
+      <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.25)',flexDirection:'row',alignItems:'flex-start',gap:10}}>
+        <Text style={{fontSize:18}}>{propJerrySport === 'NHL' ? 'ℹ️' : '🚧'}</Text>
         <Text style={{color:'#b0c4d8',fontSize:11,flex:1,lineHeight:16}}>
-          <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{propJerrySport} pipeline props coming soon.</Text> Current picks use market EV scanning — our proprietary matchup model is live for MLB only today. {propJerrySport === 'NBA' ? 'NBA playoff props rolling out post-launch.' : propJerrySport === 'UFC' ? 'UFC card model expands next Thursday scrape.' : ''}
+          {propJerrySport === 'NHL' ? (
+            <>
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NHL — Market Analysis Only.</Text> No proprietary NHL pipeline yet. Props show EV edges based on line movement, book consensus, and goalie matchup data from our scraper. Proprietary NHL model planned for later this season.
+            </>
+          ) : propJerrySport === 'NBA' ? (
+            <>
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NBA pipeline props coming soon.</Text> Currently showing market EV scanning across books. Proprietary NBA matchup model (net rating, opp DefRtg, pace, usage, injury context) rolling out post-launch with the playoff stretch.
+            </>
+          ) : propJerrySport === 'UFC' ? (
+            <>
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>UFC — Fighter Stats + Market EV.</Text> UFC scraper refreshes Thursdays with SLpM, TD defense, finishing rate, reach, stance. Props use both fighter-matchup stats and market EV scanning. Full pipeline conviction tiers coming post-launch.
+            </>
+          ) : (
+            <>
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{propJerrySport} pipeline props coming soon.</Text> Current picks use market EV scanning — our proprietary matchup model is live for MLB only today.
+            </>
+          )}
         </Text>
       </View>
     )}
