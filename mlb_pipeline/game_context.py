@@ -1698,9 +1698,10 @@ def run():
             elif f5_total_line:
                 print(f"  F5 total line: {f5_total_line}")
 
-            # Determine if this is 8am (open) or 2pm (close) run
-            current_hour = datetime.now().hour
-            is_open_run = current_hour < 15  # before 3pm ET = opening line
+            # Determine if this is 8am (open) or 2pm (close) run — use ET not local/UTC
+            et_now = datetime.now(timezone.utc) - timedelta(hours=4)
+            current_hour = et_now.hour
+            is_open_run = current_hour < 13  # before 1pm ET = opening line (morning run bucket)
             
             # Weather adjustment
             # Weather adjustment — calibrated from 170+ game correlation analysis:

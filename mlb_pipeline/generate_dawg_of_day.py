@@ -77,13 +77,17 @@ def score_dawg(g, diag=None):
              dog_edge = (-ps) + |cs| = -0.9 + 1.5 = 0.6 runs edge on the away dog.
     Higher edge = bigger Dawg.
     """
+    # Prefer close_spread (closing line, afternoon run) but fall back to open_spread
+    # so Dawg works even on morning runs before close is set
     cs = _f(g.get('close_spread'))
+    if cs is None:
+        cs = _f(g.get('open_spread'))
     ps = _f(g.get('projected_spread'))
     matchup_label = f"{g.get('away_team')} @ {g.get('home_team')}"
 
     if cs is None or ps is None:
         if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: missing close_spread={cs} or projected_spread={ps}")
+            diag.append(f"  ✗ {matchup_label}: missing spread (close={g.get('close_spread')}, open={g.get('open_spread')}) or projected_spread={ps}")
         return None
 
     if abs(cs) < 0.5:
