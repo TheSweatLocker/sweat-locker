@@ -9554,9 +9554,9 @@ setJerryHistory(prev => {
                     );
                   })()}
 
-                  {/* Prop Jerry A-Grade Record */}
+                  {/* Prop Jerry — Historical Record (legacy EV scanner data) */}
                   <View style={[styles.card,{marginBottom:16}]}>
-                    <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8}}>PROP JERRY A-GRADES</Text>
+                    <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8,letterSpacing:0.5}}>🎯 PROP JERRY — TRACKED PICKS</Text>
                     {propTotal >= 15 ? (
                       <>
                         <View style={{flexDirection:'row',justifyContent:'space-around',marginBottom:8}}>
@@ -9588,7 +9588,7 @@ setJerryHistory(prev => {
                   {/* By Sport breakdown — only show with 25+ resolved */}
                   {propTotal >= 15 && Object.keys(p.bySport).length > 0 && (
                     <View style={[styles.card,{marginBottom:12}]}>
-                      <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',letterSpacing:1,marginBottom:10}}>A-GRADE HIT RATE BY SPORT</Text>
+                      <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',letterSpacing:1,marginBottom:10}}>HIT RATE BY SPORT</Text>
                       {Object.entries(p.bySport).map(([sport, rec], i) => {
                         const total = rec.wins + rec.losses;
                         const pct = total > 0 ? ((rec.wins/total)*100).toFixed(0) : '—';
@@ -9613,7 +9613,7 @@ setJerryHistory(prev => {
                   {/* Recent A-Grade Picks — always show */}
                   {p.recent.length > 0 && (
                     <>
-                      <Text style={styles.sectionLabel}>RECENT A-GRADE PICKS</Text>
+                      <Text style={styles.sectionLabel}>RECENT PROP PICKS</Text>
                       {p.recent.map((prop, i) => {
                         const isPending = prop.result === 'Pending';
                         const isWin = prop.result === 'Win';
