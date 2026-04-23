@@ -23,6 +23,7 @@ Table schema:
   );
 """
 import os
+import sys
 import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -278,6 +279,20 @@ def upsert_dawg(gd, dawg, narrative):
 def run():
     gd = today_et()
     print(f"=== Dawg of the Day {gd} ===")
+
+    # Overwrite guard — if today's row already exists, don't regenerate unless --force
+    force = '--force' in sys.argv
+    if not force:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/daily_dawg?game_date=eq.{gd}&select=team,conviction",
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            timeout=10
+        )
+        if r.status_code == 200 and r.json():
+            existing = r.json()[0]
+            print(f"  Dawg already exists for {gd}: {existing.get('team')} (conviction {existing.get('conviction')})")
+            print(f"  Skipping — pass --force to overwrite")
+            return
 
     games = fetch_todays_games()
     print(f"  Evaluating {len(games)} games...")

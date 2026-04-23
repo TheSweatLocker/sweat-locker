@@ -11,6 +11,7 @@ Writes top N props by conviction to mlb_pipeline_props table.
 """
 import os
 import re
+import sys
 import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -351,7 +352,26 @@ def upsert_props(props):
 
 
 def run():
-    print(f"=== Pipeline prop generator {today_et()} ===")
+    gd = today_et()
+    print(f"=== Pipeline prop generator {gd} ===")
+
+    # Overwrite guard — skip if today's props already generated
+    force = '--force' in sys.argv
+    if not force:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{gd}&select=id&limit=1",
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            timeout=10
+        )
+        if r.status_code == 200 and r.json():
+            count_r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{gd}&select=id",
+                headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}', 'Prefer': 'count=exact'},
+                timeout=10
+            )
+            n = len(count_r.json()) if count_r.status_code == 200 else '?'
+            print(f"  {n} pipeline props already exist for {gd}. Pass --force to overwrite.")
+            return
 
     games = fetch_todays_games()
     if not games:

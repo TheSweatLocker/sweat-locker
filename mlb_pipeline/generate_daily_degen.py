@@ -22,6 +22,7 @@ Table schema:
   );
 """
 import os
+import sys
 import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -257,6 +258,20 @@ def upsert_daily_degen(game_date, legs, narrative):
 def run():
     gd = today_et()
     print(f"=== Daily Degen {gd} ===")
+
+    # Overwrite guard — skip if today's row already exists
+    force = '--force' in sys.argv
+    if not force:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/daily_degen?game_date=eq.{gd}&select=leg_count,avg_conviction",
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            timeout=10
+        )
+        if r.status_code == 200 and r.json():
+            existing = r.json()[0]
+            print(f"  Daily Degen already exists for {gd}: {existing.get('leg_count')} legs, avg conviction {existing.get('avg_conviction')}")
+            print(f"  Skipping — pass --force to overwrite")
+            return
 
     games = fetch_todays_games()
     props = fetch_pipeline_props()
