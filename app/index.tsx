@@ -10595,31 +10595,31 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                 <View style={{gap:12}}>
                   <View style={{borderLeftWidth:3,borderLeftColor:HRB_COLOR,paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🔥 Sweat Score</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Every game graded 0-100. Model-heavy for MLB and NBA using real pipeline data. 68+ is Prime Sweat — requires multiple strong signals aligning. Updates at 8am and 2pm ET.</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Every game graded 0-100. Built on pitcher xERA, K rate gap, L3 form, platoon-adjusted wRC+, team defense (OAA), catcher framing, expected wOBA, park, weather, and umpire tendencies. 68+ is Prime Sweat — multiple strong signals aligning. Updates 8am and 2pm ET.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#00e5a0',paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>⚾ NRFI Model</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>No Run First Inning predictions built on pitcher xERA, K rate matchups, ground ball rate, rest, weather, park factor, and lineup quality. Updates twice daily.</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>No Run First Inning — tier-based leans. 90-94 = PRIME (highest conviction). 70-79 = Mild lean. 80-89 = neutral (no lean). 95+ = flagged volatile but not leaned. Built on pitcher xERA, K gap, first-inning ERA, rest, weather, park, wRC+.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#0099ff',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🎯 Prop Jerry</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>EV scanner across MLB, NBA, NHL, and UFC. A grades require both market edge AND independent model confirmation — BDL last 5 game averages for NBA, K gap and platoon data for MLB. Pitcher K props capped until May 1.</Text>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🧠 Prop Jerry</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Top 15 prop edges from our pipeline daily. Not an EV scanner — picks come from proprietary matchup signals (K rate gaps, platoon-adjusted offense, L3 pitcher form, catcher framing, bullpen fatigue). Conviction-tiered: PRIME 80+, STRONG 65-79, LEAN 50-64. MLB first; NBA/UFC expand post-launch.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#ff4d6d',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🎰 Daily Degen</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Jerry scans the full slate and builds a 3-4 leg analytically validated parlay daily. Legs must pass Sweat Score validation before inclusion. Loads after 2pm ET with full pipeline data.</Text>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🎲 Daily Degen</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>3-5 leg parlay built once per day from the slate's highest-conviction pipeline picks (top ML leans, PRIME NRFIs, top props). Max 1 leg per game — no correlated legs. Generated server-side — every user sees the same pick.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#ff8c00',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🚫 Jerry's Fades</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Games to avoid based on sharp consensus, heavy public action, and thin data signals. Updated daily alongside Daily Degen.</Text>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🐕 Dawg of the Day</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>One underdog ML per day where our model sharply disagrees with the market. Requires 2+ runs of "better than market" edge on the dog. Comes with Jerry's take on why the dog is barking.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#9b59b6',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>📊 Jerry's Track Record</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Model performance dashboard. NRFI record, A-grade prop results, and Daily Play of the Day history. Results auto-resolve daily via MLB Stats API and BDL box scores.</Text>
+                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>📋 Jerry's Track Record</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Verified model performance: NRFI lean-tier record, Prop Jerry A-grades, Play of the Day history, Dawg of the Day record. Results auto-resolve via MLB Stats API and BDL box scores.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#4a6070',paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>⏰ Pipeline Schedule</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>8am ET — Game context, pitchers, NRFI scores{'\n'}2pm ET — Confirmed lineups, umpires, final weather{'\n'}After 2pm — Prop Jerry most accurate, Daily Degen fully loaded</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>8am ET — Pitcher stats, team splits, Savant enrichment, game context, NRFI scores, POTD, Dawg of the Day{'\n'}2pm ET — Confirmed lineups, umpire assignments, final weather, Prop Jerry, Daily Degen, HR Watch{'\n'}After 2pm — All pipeline data locked in. Best time for full analysis.</Text>
                   </View>
                 </View>
               </View>
