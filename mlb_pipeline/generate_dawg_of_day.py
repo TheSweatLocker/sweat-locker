@@ -112,34 +112,25 @@ def fetch_ml_odds_map():
 def score_dawg(g, diag=None, ml_map=None):
     """Evaluate a game for Dawg candidacy. Returns dict or None if not a Dawg.
 
-    Conventions:
-      close_spread = home team's posted sportsbook spread (home -1.5 = favorite, home +1.5 = dog)
-      projected_spread = model's projected home run differential (positive = home wins by X)
-      spread_delta = projected_spread - close_spread (positive = home overvalued by market / away undervalued)
+    Source of truth: MONEYLINE ODDS (not close_spread sign).
+    The ML dog is whichever team has ML >= +100. Run line spread sign in our
+    storage has been unreliable, and run line ≠ ML status anyway (a team can
+    be -1.5 RL but -110 ML, or +1.5 RL but ML favorite).
 
-    A Dawg is the MARKET UNDERDOG that the model views as more competitive than the line.
-    Metric: 'dog_edge' = model's differential from the dog's perspective + the points they're getting.
-    Example: cs=-1.5 (home -1.5 fav, away is dog), ps=+0.9 (home wins by 0.9 in model).
-             From away dog's view: model has them losing by 0.9, market has them losing by 1.5.
-             dog_edge = (-ps) + |cs| = -0.9 + 1.5 = 0.6 runs edge on the away dog.
-    Higher edge = bigger Dawg.
+    Metric: dog_edge = model's projected differential for the dog + 1.5
+            (MLB run line is always 1.5). Positive = model thinks the dog
+            covers the run line by more than market expects.
     """
-    # Prefer close_spread (closing line, afternoon run) but fall back to open_spread
-    # so Dawg works even on morning runs before close is set
-    cs = _f(g.get('close_spread'))
-    if cs is None:
-        cs = _f(g.get('open_spread'))
-    ps = _f(g.get('projected_spread'))
     matchup_label = f"{g.get('away_team')} @ {g.get('home_team')}"
+    ps = _f(g.get('projected_spread'))  # positive = home wins by X
 
-    if cs is None or ps is None:
+    if ps is None:
         if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: missing spread (close={g.get('close_spread')}, open={g.get('open_spread')}) or projected_spread={ps}")
+            diag.append(f"  ✗ {matchup_label}: no projected_spread")
         return None
 
     # Require BOTH starters have xERA — otherwise projected_spread came from
     # the fallback team R/G calc and creates artifact-driven huge deltas.
-    # A Dawg pick built on missing pitcher data isn't a real edge.
     home_xera = _f(g.get('home_sp_xera'))
     away_xera = _f(g.get('away_sp_xera'))
     if home_xera is None or away_xera is None:
@@ -147,56 +138,58 @@ def score_dawg(g, diag=None, ml_map=None):
             diag.append(f"  ✗ {matchup_label}: missing pitcher xERA (home={home_xera}, away={away_xera}) — projection unreliable")
         return None
 
-    if abs(cs) < 0.5:
+    # ML odds REQUIRED — no ML odds = no Dawg eligibility (we can't verify dog status)
+    if not ml_map:
         if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: pick'em line (cs={cs:+.1f}) — no dog/fav")
+            diag.append(f"  ✗ {matchup_label}: no ML map loaded")
+        return None
+    ml_entry = ml_map.get((g.get('home_team'), g.get('away_team')))
+    if not ml_entry:
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: ML odds not found for this matchup")
+        return None
+    home_ml = ml_entry.get('home_ml')
+    away_ml = ml_entry.get('away_ml')
+    if home_ml is None or away_ml is None:
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: incomplete ML odds (home={home_ml}, away={away_ml})")
         return None
 
-    # Identify market dog and compute model's view of that dog's differential
-    if cs > 0:
-        # Home +X → home is market dog
+    # Identify dog by ML — whichever team is plus money. If both negative
+    # (rare pick'em with juice), skip — no clear dog.
+    if home_ml >= 100 and away_ml < 0:
         is_home_dawg = True
-        dog_differential = ps  # positive = home wins
-    else:
-        # Home -X → home favorite, AWAY is market dog
+        team_ml = home_ml
+    elif away_ml >= 100 and home_ml < 0:
         is_home_dawg = False
-        dog_differential = -ps  # flip so positive = away wins
-
-    # dog_edge = how much better the dog is in the model vs what market priced
-    # dog's line in market: -|cs| (e.g., away +1.5 as dog = dog "loses by 1.5" expected per line)
-    dog_edge = dog_differential + abs(cs)
-
-    MIN_EDGE = 2.0  # require at least 2 runs of "better than market" on the dog side
-    if dog_edge < MIN_EDGE:
+        team_ml = away_ml
+    else:
         if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: dog_edge={dog_edge:+.2f} (cs={cs:+.1f}, ps={ps:+.1f}) — model agrees with market")
+            diag.append(f"  ✗ {matchup_label}: no ML dog (home {home_ml:+d} / away {away_ml:+d})")
         return None
 
     team = g.get('home_team') if is_home_dawg else g.get('away_team')
     opp_team = g.get('away_team') if is_home_dawg else g.get('home_team')
-    sd = _f(g.get('spread_delta')) or 0
 
-    # CRITICAL: require the "dog" team to actually be a moneyline underdog.
-    # Run line +1.5 doesn't mean ML dog — home team can be +1.5 on RL but
-    # -110 on ML (home-field edge + pitching matchup). Those aren't Dawgs.
-    # True Dawg = team with ML >= +100 (plus money).
-    if ml_map is not None:
-        ml_entry = ml_map.get((g.get('home_team'), g.get('away_team')))
-        if not ml_entry:
-            if diag is not None:
-                diag.append(f"  ✗ {matchup_label}: no ML odds found — can't verify Dawg status")
-            return None
-        team_ml = ml_entry.get('home_ml') if is_home_dawg else ml_entry.get('away_ml')
-        if team_ml is None:
-            if diag is not None:
-                diag.append(f"  ✗ {matchup_label}: ML odds missing for {team}")
-            return None
-        if team_ml < 100:
-            if diag is not None:
-                diag.append(f"  ✗ {matchup_label}: {team} ML {team_ml:+d} — ML favorite, NOT a Dawg")
-            return None
-        # Store for display
-        team_ml_display = team_ml
+    # Compute dog's projected differential: positive = dog wins
+    dog_differential = ps if is_home_dawg else -ps
+
+    # MLB run line is always 1.5. dog_edge = how much the dog beats the +1.5 cover line.
+    # If model says dog wins by 0.5 (dog_diff=+0.5), dog_edge = 0.5 + 1.5 = 2.0
+    # If model says dog loses by 0.8 (dog_diff=-0.8), dog_edge = -0.8 + 1.5 = 0.7
+    dog_edge = dog_differential + 1.5
+
+    MIN_EDGE = 2.0  # require at least 2 runs of "better than market run line"
+    if dog_edge < MIN_EDGE:
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: {team.split()[-1]} dog_edge={dog_edge:+.2f} (ps={ps:+.1f}, ML {team_ml:+d}) — model agrees")
+        return None
+
+    # close_spread for display only — may be wrong sign but we'll show it
+    cs = _f(g.get('close_spread'))
+    if cs is None:
+        cs = _f(g.get('open_spread'))
+    sd = _f(g.get('spread_delta')) or 0
 
     # Team stats — pick the Dawg's side data
     prefix = 'home' if is_home_dawg else 'away'
@@ -217,11 +210,11 @@ def score_dawg(g, diag=None, ml_map=None):
     signals = {}
     conviction = 40  # base for being a model-identified dawg
 
-    # Dog edge — how much better the dog is per model vs market's line
+    # Dog edge — how much better the dog is per model vs market's run line
     edge_bump = min(35, int(dog_edge * 8))
     conviction += edge_bump
     dog_fate = "winning outright" if dog_differential > 0 else f"losing by only {abs(dog_differential):.1f}"
-    signals['model_view'] = f"Market has {team.split()[-1]} as {abs(cs):.1f}-run dog — model sees them {dog_fate} ({dog_edge:+.1f} run edge)"
+    signals['model_view'] = f"{team.split()[-1]} ML {team_ml:+d} — model sees them {dog_fate} ({dog_edge:+.1f} runs vs +1.5 RL)"
 
     # Team offense vs opposing hand
     if team_wrc >= 110:
@@ -263,6 +256,7 @@ def score_dawg(g, diag=None, ml_map=None):
         'game_id': g.get('game_id'),
         'spread_delta': sd,
         'close_spread': cs,
+        'team_ml': team_ml,
         'conviction': conviction,
         'tier': tier,
         'signals': signals,
@@ -276,7 +270,7 @@ def score_dawg(g, diag=None, ml_map=None):
 def build_narrative(dawg):
     """One-sentence Jerry take on why the dog is barking."""
     if not ANTHROPIC_API_KEY:
-        return f"Market's got {dawg['team'].split()[-1]} as a {abs(dawg['close_spread']):+.1f} dog, but Jerry sees this one closer to a coin flip — value's on the dog."
+        return f"Market's got {dawg['team'].split()[-1]} at {dawg.get('team_ml', 0):+d} ML, but Jerry sees this one closer to a coin flip — value's on the dog."
 
     signals_text = " | ".join(dawg['signals'].values())
     prompt = f"""You are Jerry — sharp, energetic, slightly degenerate but always analytically grounded. Today's Dawg of the Day is {dawg['team']} ML vs {dawg['opp_team']}.
@@ -316,7 +310,7 @@ Rules:
         return text.strip() or f"Market's got {dawg['team'].split()[-1]} as a dog, but the model disagrees across multiple signals. This one's barking."
     except Exception as e:
         print(f"  ⚠️ narrative failed: {e}")
-        return f"Market's got {dawg['team'].split()[-1]} as a {abs(dawg['close_spread']):+.1f} dog, but Jerry sees this one closer to a coin flip — value's on the dog."
+        return f"Market's got {dawg['team'].split()[-1]} at {dawg.get('team_ml', 0):+d} ML, but Jerry sees this one closer to a coin flip — value's on the dog."
 
 
 def upsert_dawg(gd, dawg, narrative):
@@ -389,7 +383,7 @@ def run():
 
     print(f"\n🐕 Dawg of the Day: {top['team']} ({top['tier']} {top['conviction']})")
     print(f"  {top['matchup']}")
-    print(f"  Model delta {top['spread_delta']:+.1f} vs market close {top['close_spread']:+.1f}")
+    print(f"  ML {top.get('team_ml', 0):+d} | Model delta {top['spread_delta']:+.1f}")
     for s in top['signals'].values():
         print(f"      · {s}")
 
