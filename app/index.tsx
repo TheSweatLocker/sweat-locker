@@ -5503,9 +5503,11 @@ const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcome
   `NEUTRAL (model within ${Math.abs(totalDelta)} pts of posted — no strong lean)`;
   // Build Sweat Score signal context to pass to Jerry
 const sweatSignals = [];
+let mlbDataForCache = null;
 if(scoreData) {
-  if(sport === 'MLB' && mlbContext) {
+  if(sport === 'MLB') {
     const mlbData = await fetchMLBContext(game);
+    mlbDataForCache = mlbData;
     if(mlbData) {
       if(mlbData.projected_total && mlbData.projected_total > 0) {
         const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0]?.point;
@@ -5767,8 +5769,11 @@ ${dataQualityNote}`;
       //console.log('Jerry response data:', JSON.stringify(data));
       const text = data?.content?.filter(b=>b.type==='text').map(b=>b.text).join('') || '';
       setGameNarrative(text);
-      // Save to Supabase cache
-      if(text) {
+      // Save to Supabase cache — but NEVER cache MLB reads generated without mlb_game_context data.
+      // Those produce "no stats for game" narratives that then poison the cache for 8h, even after
+      // the pipeline finishes filling the row. Let those miss-cache so the next viewer regenerates.
+      const skipMlbNoDataCache = sport === 'MLB' && !mlbDataForCache;
+      if(text && !skipMlbNoDataCache) {
         try {
           await supabase.from('jerry_cache').upsert({
             game_id: gameKey,
