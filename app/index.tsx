@@ -5113,21 +5113,43 @@ Do NOT give a specific bet or pick. End with — Jerry.`;
 
   const fetchMLBContext = async (game) => {
   try {
+    // Primary: exact home+away team name match — use maybeSingle to avoid throwing on 0 rows
     const { data } = await supabase
-      .from('mlb_game_context')
-      .select('*')
-      .eq('game_id', game.id)
-      .single();
-    if(data) return data;
-    // Try matching by team names if game_id doesn't match
-    const { data: data2 } = await supabase
       .from('mlb_game_context')
       .select('*')
       .eq('home_team', game.home_team)
       .eq('away_team', game.away_team)
-      .single();
-    return data2 || null;
+      .maybeSingle();
+    if(data) return data;
+
+    // Fallback 1: ILIKE on team last names (handles "St. Louis Cardinals" vs "St Louis Cardinals" etc)
+    const homeLast = (game.home_team || '').split(' ').pop();
+    const awayLast = (game.away_team || '').split(' ').pop();
+    if(homeLast && awayLast) {
+      const { data: data2 } = await supabase
+        .from('mlb_game_context')
+        .select('*')
+        .ilike('home_team', `%${homeLast}%`)
+        .ilike('away_team', `%${awayLast}%`)
+        .order('game_date', { ascending: false })
+        .limit(1);
+      if(data2 && data2.length > 0) return data2[0];
+    }
+
+    // Fallback 2: match on home team alone, take most recent (user might be viewing wrong-sided game)
+    if(homeLast) {
+      const { data: data3 } = await supabase
+        .from('mlb_game_context')
+        .select('*')
+        .ilike('home_team', `%${homeLast}%`)
+        .order('game_date', { ascending: false })
+        .limit(1);
+      if(data3 && data3.length > 0) return data3[0];
+    }
+
+    return null;
   } catch(e) {
+    console.log('fetchMLBContext error:', e?.message);
     return null;
   }
 };
