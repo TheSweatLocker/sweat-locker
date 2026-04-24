@@ -178,7 +178,7 @@ def score_dawg(g, diag=None, ml_map=None):
     # If model says dog loses by 0.8 (dog_diff=-0.8), dog_edge = -0.8 + 1.5 = 0.7
     dog_edge = dog_differential + 1.5
 
-    MIN_EDGE = 1.5  # loosened from 2.0 so a Dawg surfaces most days
+    MIN_EDGE = 1.3  # loosened so a Dawg surfaces most days; conviction score picks winner
     if dog_edge < MIN_EDGE:
         if diag is not None:
             diag.append(f"  ✗ {matchup_label}: {team.split()[-1]} dog_edge={dog_edge:+.2f} (ps={ps:+.1f}, ML {team_ml:+d}) — model agrees")
