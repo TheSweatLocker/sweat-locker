@@ -28,6 +28,8 @@ import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
+ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
+
 load_dotenv()
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
@@ -63,7 +65,51 @@ def fetch_todays_games():
     return r.json() if r.status_code == 200 else []
 
 
-def score_dawg(g, diag=None):
+def fetch_ml_odds_map():
+    """Fetch today's MLB moneyline odds from Odds API, return {(home,away): {home_ml,away_ml}}."""
+    ml_map = {}
+    if not ODDS_API_KEY:
+        return ml_map
+    try:
+        r = requests.get(
+            "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds",
+            params={
+                "apiKey": ODDS_API_KEY,
+                "regions": "us",
+                "markets": "h2h",
+                "oddsFormat": "american",
+            },
+            timeout=15
+        )
+        if r.status_code != 200:
+            return ml_map
+        for g in r.json():
+            home = g.get("home_team")
+            away = g.get("away_team")
+            if not home or not away:
+                continue
+            for bm in g.get("bookmakers", []):
+                for mkt in bm.get("markets", []):
+                    if mkt.get("key") != "h2h":
+                        continue
+                    home_ml = None
+                    away_ml = None
+                    for o in mkt.get("outcomes", []):
+                        if o.get("name") == home:
+                            home_ml = o.get("price")
+                        elif o.get("name") == away:
+                            away_ml = o.get("price")
+                    if home_ml and away_ml:
+                        ml_map[(home, away)] = {"home_ml": home_ml, "away_ml": away_ml}
+                        break
+                if (home, away) in ml_map:
+                    break
+    except Exception as e:
+        print(f"  ⚠️ ML odds fetch failed: {e}")
+    return ml_map
+
+
+def score_dawg(g, diag=None, ml_map=None):
     """Evaluate a game for Dawg candidacy. Returns dict or None if not a Dawg.
 
     Conventions:
@@ -129,6 +175,28 @@ def score_dawg(g, diag=None):
     team = g.get('home_team') if is_home_dawg else g.get('away_team')
     opp_team = g.get('away_team') if is_home_dawg else g.get('home_team')
     sd = _f(g.get('spread_delta')) or 0
+
+    # CRITICAL: require the "dog" team to actually be a moneyline underdog.
+    # Run line +1.5 doesn't mean ML dog — home team can be +1.5 on RL but
+    # -110 on ML (home-field edge + pitching matchup). Those aren't Dawgs.
+    # True Dawg = team with ML >= +100 (plus money).
+    if ml_map is not None:
+        ml_entry = ml_map.get((g.get('home_team'), g.get('away_team')))
+        if not ml_entry:
+            if diag is not None:
+                diag.append(f"  ✗ {matchup_label}: no ML odds found — can't verify Dawg status")
+            return None
+        team_ml = ml_entry.get('home_ml') if is_home_dawg else ml_entry.get('away_ml')
+        if team_ml is None:
+            if diag is not None:
+                diag.append(f"  ✗ {matchup_label}: ML odds missing for {team}")
+            return None
+        if team_ml < 100:
+            if diag is not None:
+                diag.append(f"  ✗ {matchup_label}: {team} ML {team_ml:+d} — ML favorite, NOT a Dawg")
+            return None
+        # Store for display
+        team_ml_display = team_ml
 
     # Team stats — pick the Dawg's side data
     prefix = 'home' if is_home_dawg else 'away'
@@ -297,10 +365,16 @@ def run():
     games = fetch_todays_games()
     print(f"  Evaluating {len(games)} games...")
 
+    ml_map = fetch_ml_odds_map()
+    if ml_map:
+        print(f"  Loaded ML odds for {len(ml_map)} games")
+    else:
+        print("  ⚠️ No ML odds available — Dawg filter will reject all candidates")
+
     dawg_candidates = []
     diag = []
     for g in games:
-        d = score_dawg(g, diag=diag)
+        d = score_dawg(g, diag=diag, ml_map=ml_map)
         if d:
             dawg_candidates.append(d)
 

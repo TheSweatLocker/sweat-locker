@@ -1681,6 +1681,8 @@ def run():
             total_line = None
             spread_line = None
             f5_total_line = None
+            home_ml_odds = None
+            away_ml_odds = None
             for bm in game.get("bookmakers", []):
                 for mkt in bm.get("markets", []):
                     if mkt["key"] == "totals" and not total_line:
@@ -1691,7 +1693,13 @@ def run():
                         home_outcome = next((o for o in mkt.get("outcomes", []) if o.get("name") == home_team), None)
                         if home_outcome:
                             spread_line = home_outcome.get("point")
-                if total_line and spread_line is not None and f5_total_line is not None:
+                    if mkt["key"] == "h2h" and home_ml_odds is None:
+                        for o in mkt.get("outcomes", []):
+                            if o.get("name") == home_team:
+                                home_ml_odds = o.get("price")
+                            elif o.get("name") == away_team:
+                                away_ml_odds = o.get("price")
+                if total_line and spread_line is not None and f5_total_line is not None and home_ml_odds is not None:
                     break
             # Estimate F5 from full total if API doesn't provide it
             if not f5_total_line and total_line:
@@ -2326,6 +2334,8 @@ def run():
                 "spread_delta": spread_delta,
                 "open_spread": spread_line if is_open_run else None,
                 "close_spread": spread_line if not is_open_run else None,
+                "home_ml_odds": home_ml_odds,
+                "away_ml_odds": away_ml_odds,
                 "confidence": confidence,
                 "fetched_at": datetime.now().isoformat(),
                 "home_runs_per_game": home_rpg,
