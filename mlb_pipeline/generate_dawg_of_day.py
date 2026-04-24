@@ -28,12 +28,11 @@ import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
-ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
-
 load_dotenv()
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY')
+ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
 
 HEADERS = {
     'apikey': SUPABASE_KEY,
