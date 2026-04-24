@@ -114,7 +114,7 @@ def extract_leg_candidates(games, props):
                 'odds_suggestion': -130,
             })
 
-    # ML spread delta ≥ 3.0 (HIGH conviction)
+    # ML spread delta ≥ 1.0 (corrected) — retuned 2026-04-24 from 3.0 after sign-bug fix.
     # Require BOTH starters to have xERA — skips games where projected_spread
     # came from 'no pitcher data' fallback (creates artifact-driven huge deltas).
     for g in games:
@@ -123,18 +123,21 @@ def extract_leg_candidates(games, props):
         away_xera = _f(g.get('away_sp_xera'))
         if sd is None or home_xera is None or away_xera is None:
             continue
-        if abs(sd) >= 3.0:
+        if abs(sd) >= 1.0:
             fav_team = g.get('home_team') if sd > 0 else g.get('away_team')
+            # Conviction scaled to corrected magnitudes: 1.0 = base 60, 1.5 = +8, 2.0 = +16, cap at 85
+            conviction = min(85, 60 + int(abs(sd) * 15))
+            tier = 'STRONG' if abs(sd) >= 1.5 else 'LEAN'
             candidates.append({
                 'type': 'ML',
                 'sub_type': 'moneyline',
                 'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
                 'game_id': g.get('game_id'),
                 'pick': f"{fav_team} ML",
-                'conviction': min(85, 60 + int(abs(sd) * 5)),
-                'tier': 'STRONG' if abs(sd) >= 3.5 else 'LEAN',
+                'conviction': conviction,
+                'tier': tier,
                 'signals': [
-                    f"Spread delta {sd:+.1f} runs vs market — HIGH conviction",
+                    f"Spread delta {sd:+.1f} runs vs market — {tier}",
                     f"Model projects {fav_team} favored",
                 ],
                 'odds_suggestion': -130,

@@ -126,14 +126,16 @@ def score_mlb_game(ctx):
     if home_xera <= 3.0 and away_xera <= 3.0:
         score += 10
 
-    # Spread delta — 3+ run market disagreement = 60% ML win rate
+    # Spread delta — retuned 2026-04-24 after sign-bug fix.
+    # OLD (buggy 2x-inflated): 4.0+ HIGH, 3.0+ STRONG, 2.0+ LEAN
+    # NEW (corrected): 1.5+ HIGH, 1.0+ STRONG, 0.5+ LEAN — same hit-rate buckets, real magnitudes
     spread_delta = abs(float(ctx.get('spread_delta') or 0))
-    if spread_delta >= 4.0:
-        score += 18    # massive market disagreement
-    elif spread_delta >= 3.0:
-        score += 12    # proven 60% threshold
-    elif spread_delta >= 2.0:
-        score += 4     # marginal — 56.5%, not enough for POTD
+    if spread_delta >= 1.5:
+        score += 18    # massive market disagreement (was old 4.0)
+    elif spread_delta >= 1.0:
+        score += 12    # proven 60-70% threshold (was old 3.0)
+    elif spread_delta >= 0.5:
+        score += 4     # marginal lean (was old 2.0)
 
     # Total delta
     proj_total = float(ctx.get('projected_total') or 0)
@@ -256,13 +258,14 @@ def build_lean(ctx):
     if 88 <= nrfi <= 94:
         return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
 
-    # ML lean — only when spread delta is 3+ runs (60% win rate at this threshold)
+    # ML lean — retuned 2026-04-24: threshold 3.0 → 1.0 after sign-bug fix.
+    # Old buggy delta inflated by 2x posted; corrected 1.0 = same hit-rate band as old 3.0.
     projected_spread = ctx.get('projected_spread')
     spread_delta = ctx.get('spread_delta')
     if projected_spread is not None and spread_delta is not None:
         delta = abs(float(spread_delta))
         proj = float(projected_spread)
-        if delta >= 3.0:
+        if delta >= 1.0:
             fav_team = ctx.get('home_team') if float(spread_delta) > 0 else ctx.get('away_team')
             return f"{fav_team} ML (spread delta {'+' if float(spread_delta) > 0 else ''}{float(spread_delta):.1f})", 'ml', False
 
@@ -397,15 +400,15 @@ def run():
     confidence = 'standard'
 
     # Tier 1 — high conviction
-    # ML spread delta ≥4 ranks above NRFI sweet spot (biggest proven edge,
-    # NRFI can get burned by weather/offense signals the single-tier doesn't catch).
-    # BUT require both starters have xERA — else projected_spread is a team-R/G
+    # ML spread delta ≥1.5 (corrected) = biggest proven edge band.
+    # Retuned 2026-04-24 from 4.0 → 1.5 after sign-bug fix; same hit-rate bucket.
+    # Require both starters have xERA — else projected_spread is a team-R/G
     # fallback that produces artifact-driven huge deltas.
     def _has_pitcher_data(c):
         return c.get('home_sp_xera') is not None and c.get('away_sp_xera') is not None
     ml_high_conviction = [
         c for c in ml_candidates
-        if c.get('spread_delta') is not None and abs(float(c['spread_delta'])) >= 4.0
+        if c.get('spread_delta') is not None and abs(float(c['spread_delta'])) >= 1.5
         and _has_pitcher_data(c)
     ]
     if ml_high_conviction:

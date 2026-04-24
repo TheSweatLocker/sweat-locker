@@ -2208,10 +2208,16 @@ def run():
                 print(f"  ⚠️ Spread projection error: {e}")
 
             # Spread delta — projected vs posted
+            # CONVENTION FIX: projected_spread is in run-differential terms (positive = home wins by X).
+            # close_spread (spread_line) is in sportsbook convention (negative = home favorite).
+            # To compare, convert close_spread to run-diff: market_run_diff = -spread_line.
+            # delta = projected - market_run_diff = projected_spread + spread_line.
+            # Old buggy math (projected - spread_line) double-counted the sign and inflated
+            # the magnitude by 2x the posted spread on every game.
             spread_delta = None
             if projected_spread is not None and spread_line is not None:
-                spread_delta = round(projected_spread - spread_line, 2)
-                print(f"  Spread delta: model {projected_spread} vs posted {spread_line} = {'+' if spread_delta >= 0 else ''}{spread_delta}")
+                spread_delta = round(projected_spread + spread_line, 2)
+                print(f"  Spread delta: model {projected_spread} vs market run-diff {-spread_line} (posted {spread_line}) = {'+' if spread_delta >= 0 else ''}{spread_delta}")
 
             # Print umpire info (already fetched above for total projection)
             if ump_name:

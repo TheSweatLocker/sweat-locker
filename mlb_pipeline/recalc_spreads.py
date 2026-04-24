@@ -77,15 +77,17 @@ def recalculate_spread(g):
 
     # Spread delta: model - posted (matching original game_context.py logic)
     # close_spread is home team's posted line (-1.5 = home favored)
-    # projected_spread is model's home advantage (positive = home winning by X)
-    # Convention match: close_spread -1.5 means home "ahead" by 1.5 in our comparison
+    # projected_spread is run-diff (positive = home wins by X).
+    # close_spread is sportsbook convention (negative = home favorite).
+    # Convert: market_run_diff = -close_spread, so delta = projected + close_spread.
+    # Pre-2026-04-24 rows used the buggy `projected - close_spread` which inflated 2x.
     close_spread = g.get('close_spread')
     if close_spread is None:
         close_spread = g.get('open_spread')
     spread_delta = None
     if close_spread is not None:
         try:
-            spread_delta = round(projected_spread - float(close_spread), 2)
+            spread_delta = round(projected_spread + float(close_spread), 2)
         except:
             pass
 
