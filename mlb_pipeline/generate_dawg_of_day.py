@@ -128,13 +128,26 @@ def score_dawg(g, diag=None, ml_map=None):
             diag.append(f"  ✗ {matchup_label}: no projected_spread")
         return None
 
-    # Require BOTH starters have xERA — otherwise projected_spread came from
-    # the fallback team R/G calc and creates artifact-driven huge deltas.
+    # Pitcher xERA gate — RELAXED 2026-04-25:
+    # Originally rejected ANY game with one nulled pitcher because projected_spread
+    # falls back to team R/G and creates artifact deltas. Now we allow the game IF
+    # signal_confluence_net >= 2 (STRONG+) provides independent multi-signal evidence
+    # that doesn't depend on projected_spread magnitude.
+    # Reject only when BOTH pitchers null AND no confluence support.
     home_xera = _f(g.get('home_sp_xera'))
     away_xera = _f(g.get('away_sp_xera'))
-    if home_xera is None or away_xera is None:
+    confluence_net_raw = g.get('signal_confluence_net')
+    try:
+        confluence_net = int(confluence_net_raw) if confluence_net_raw is not None else 0
+    except (TypeError, ValueError):
+        confluence_net = 0
+    if home_xera is None and away_xera is None:
         if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: missing pitcher xERA (home={home_xera}, away={away_xera}) — projection unreliable")
+            diag.append(f"  ✗ {matchup_label}: both pitchers missing xERA — no projection")
+        return None
+    if (home_xera is None or away_xera is None) and confluence_net < 2:
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: missing pitcher xERA AND no confluence support (net {confluence_net:+d})")
         return None
 
     # ML odds REQUIRED — no ML odds = no Dawg eligibility (we can't verify dog status)
@@ -245,6 +258,19 @@ def score_dawg(g, diag=None, ml_map=None):
     if is_home_dawg:
         conviction += 5
         signals['venue'] = f"Home dog advantage ({g.get('venue')})"
+
+    # Signal confluence bump (added 2026-04-25) — when multiple independent signals
+    # back the model's pick (= the dog, since model picked the dog), that's stronger
+    # evidence than dog_edge alone. Each net confluence point worth ~3 conviction.
+    if confluence_net >= 4:
+        conviction += 12
+        signals['confluence'] = f"PRIME confluence (+{confluence_net} signals stack on {team.split()[-1]})"
+    elif confluence_net >= 2:
+        conviction += 8
+        signals['confluence'] = f"STRONG confluence (+{confluence_net} signals stack on {team.split()[-1]})"
+    elif confluence_net >= 1:
+        conviction += 3
+        signals['confluence'] = f"LEAN confluence (+{confluence_net} signal edge on {team.split()[-1]})"
 
     conviction = max(0, min(100, conviction))
     tier = 'PRIME' if conviction >= 80 else 'STRONG' if conviction >= 65 else 'LEAN'
