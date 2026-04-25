@@ -349,6 +349,11 @@ def run():
             'projected_total': ctx.get('projected_total'),
             'projected_spread': ctx.get('projected_spread'),
             'spread_delta': ctx.get('spread_delta'),
+            'signal_confluence_net': ctx.get('signal_confluence_net'),
+            'signal_confluence_support': ctx.get('signal_confluence_support'),
+            'signal_confluence_breakdown': ctx.get('signal_confluence_breakdown'),
+            'close_spread': ctx.get('close_spread'),
+            'open_spread': ctx.get('open_spread'),
             'venue': ctx.get('venue'),
             'temperature': ctx.get('temperature'),
         })
