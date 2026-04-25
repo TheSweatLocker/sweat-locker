@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pybaseball requests python-dotenv beautifulsoup4 scikit-learn numpy
+          pip install pybaseball requests python-dotenv beautifulsoup4 scikit-learn numpy xgboost
 
       - name: Run pitcher stats update
         env:
