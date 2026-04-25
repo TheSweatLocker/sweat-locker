@@ -1357,7 +1357,20 @@ def get_park_factors(home_team):
     except:
         return None
 
-def upload_game_context(context):
+def upload_game_context(context, commence_time=None):
+    """Upload game context to Supabase with line-lock semantics.
+
+    Two protections to prevent overwriting good data with bad:
+    1. STRIP NONE odds fields — when the morning run sends close_*=None or the
+       afternoon run sends open_*=None, those would overwrite previously-stored
+       values with NULL. Stripping the field from payload preserves DB value.
+    2. PRE-GAME LOCK — once commence_time has passed, the Odds API starts
+       returning live in-game spreads/totals (e.g. 15.5 spread when game is
+       in progress 12-2). Don't let those overwrite the captured pre-game
+       close_* values. Strip those fields after game start.
+
+    NRFI score lock (existing): preserves first-locked NRFI score after 8am ET.
+    """
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -1365,7 +1378,6 @@ def upload_game_context(context):
         "Prefer": "resolution=merge-duplicates,return=minimal"
     }
     # NRFI score stability: lock after 8am ET run so tier classifications don't drift
-    # between 8am and 2pm runs as xERA/K% data shifts by fractions
     try:
         et_now = datetime.now(timezone.utc) - timedelta(hours=4)
         if et_now.hour >= 8 and context.get("nrfi_score") is not None:
@@ -1384,6 +1396,41 @@ def upload_game_context(context):
                         context["nrfi_score"] = locked_score
     except Exception as e:
         print(f"  NRFI lock check skipped: {e}")
+
+    # === ODDS LINE LOCK ===
+    # Step 1: detect game state from commence_time
+    game_started = False
+    if commence_time:
+        try:
+            game_dt = datetime.fromisoformat(commence_time.replace('Z', '+00:00'))
+            game_started = datetime.now(timezone.utc) >= game_dt
+        except Exception:
+            game_started = False
+
+    # Step 2: Strip None odds fields (don't overwrite existing DB values with NULL)
+    odds_keys_all = [
+        'open_spread', 'open_total', 'close_spread', 'close_total',
+        'home_ml_open', 'away_ml_open', 'home_ml_close', 'away_ml_close',
+    ]
+    for k in list(odds_keys_all):
+        if k in context and context[k] is None:
+            del context[k]
+
+    # Step 3: If game has started, strip close_* + live ML fields
+    # (preserve last pre-game close values; don't write live in-game odds)
+    if game_started:
+        live_keys = [
+            'close_spread', 'close_total',
+            'home_ml_close', 'away_ml_close',
+            'home_ml_odds', 'away_ml_odds',  # these are the "latest" odds, would be live
+        ]
+        stripped = []
+        for k in live_keys:
+            if k in context:
+                del context[k]
+                stripped.append(k)
+        if stripped:
+            print(f"  🔒 Pre-game odds locked (game started) — preserved: {', '.join(stripped)}")
 
     r = requests.post(
         f"{SUPABASE_URL}/rest/v1/mlb_game_context?on_conflict=game_id",
@@ -1502,6 +1549,11 @@ def log_game_result(context):
             "spread_delta": context.get("spread_delta"),
             "open_spread": context.get("open_spread"),
             "close_spread": context.get("close_spread"),
+            # ML open/close for line movement audit
+            "home_ml_open": context.get("home_ml_open"),
+            "away_ml_open": context.get("away_ml_open"),
+            "home_ml_close": context.get("home_ml_close"),
+            "away_ml_close": context.get("away_ml_close"),
         }
 
         # Parse away pitcher stats from pitcher_context
@@ -1576,6 +1628,14 @@ def log_game_result(context):
             "Content-Type": "application/json",
             "Prefer": "resolution=merge-duplicates,return=minimal"
         }
+        # Strip None odds fields so morning open + afternoon close don't overwrite each other
+        odds_keys_all = [
+            'open_spread', 'open_total', 'close_spread', 'close_total',
+            'home_ml_open', 'away_ml_open', 'home_ml_close', 'away_ml_close',
+        ]
+        for k in list(odds_keys_all):
+            if k in record and record[k] is None:
+                del record[k]
         r = requests.post(
             f"{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id",
             headers=headers,
@@ -2485,8 +2545,13 @@ def run():
                 "close_spread": spread_line if not is_open_run else None,
                 "home_ml_odds": home_ml_odds,
                 "away_ml_odds": away_ml_odds,
-                # NOTE: home_ml_open/close removed pending SQL migration on mlb_game_context.
-                # Once columns are added, restore the four lines here so we capture line movement.
+                # ML open/close tracking — open captured on morning run, close on afternoon
+                # (before games start). Once game starts, upload_game_context strips close_*
+                # to preserve pre-game values.
+                "home_ml_open": home_ml_odds if is_open_run else None,
+                "away_ml_open": away_ml_odds if is_open_run else None,
+                "home_ml_close": home_ml_odds if not is_open_run else None,
+                "away_ml_close": away_ml_odds if not is_open_run else None,
                 "confidence": confidence,
                 "fetched_at": datetime.now().isoformat(),
                 "home_runs_per_game": home_rpg,
@@ -2567,7 +2632,7 @@ def run():
                 "away_consecutive_road_games": away_consec_road,
                 "home_travel_distance_last_game": home_travel_dist,
             }
-            if upload_game_context(context):
+            if upload_game_context(context, commence_time=commence_time):
                 lean = "OVER" if context["over_lean"] else "UNDER" if context["over_lean"] is False else "NEUTRAL"
                 print(f"✅ {away_team} @ {home_team} — {venue} — {weather['temperature']}°F, wind {weather['wind_speed']}mph {weather['wind_direction']} — {lean}")
                 processed += 1
