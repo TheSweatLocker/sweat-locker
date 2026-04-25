@@ -3949,14 +3949,18 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
     }
     _contribs.sort((a, b) => b.points - a.points);
 
-    // EVIDENCE — descriptive badges, no points
+    // EVIDENCE — descriptive badges, no point claims, no hardcoded hit rates.
+    // Hit-rate percentages are stale across the codebase (multiple inconsistent
+    // numbers for the same metrics) and not auto-refreshed. Labels alone are
+    // accurate and informative without making claims that may be out of date.
+    // TODO: when model_calibration table ships, pull live tier hit rates from there.
     const _evidence = [];
     if(sport === 'MLB' && mlbContext) {
       const ctx = (mlbContext[game.home_team]) || mlbContext;
       if(ctx) {
         const nrfi = ctx.nrfi_score;
         if(nrfi != null && nrfi >= 88 && nrfi <= 94) {
-          _evidence.push({ emoji: '🔒', label: 'NRFI PRIME tier', detail: `Score ${nrfi}/100 — 77% audited hit rate` });
+          _evidence.push({ emoji: '🔒', label: 'NRFI PRIME tier', detail: `Score ${nrfi}/100 — sweet spot tier` });
         } else if(nrfi != null && nrfi <= 25) {
           _evidence.push({ emoji: '🔥', label: 'YRFI lean', detail: `NRFI ${nrfi} — first inning runs likely` });
         }
@@ -3967,7 +3971,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
           _evidence.push({ emoji: '✨', label: 'STRONG signal confluence', detail: `${conf} signals back model` });
         }
         if(ctx.over_lean === true) {
-          _evidence.push({ emoji: '📊', label: 'OVER lean', detail: 'xERA gap rule fired (59% historical)' });
+          _evidence.push({ emoji: '📊', label: 'OVER lean', detail: 'xERA gap rule fired' });
         }
         const park = ctx.park_run_factor;
         if(park != null && (park >= 108 || park <= 92)) {
