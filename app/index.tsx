@@ -3884,17 +3884,23 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
 }
 }
     }
-    // ── WHY THIS SCORE — top contributing signals (added 2026-04-25) ──
-    // Each weighted bucket contributes (bucketScore * bucketWeight) points to total.
-    // Additional MLB-specific evidence signals (NRFI, confluence) surface as
-    // supporting context. Top 6 by points appear in the game-detail card.
-    const _signals = [];
+    // ── WHY THIS SCORE — two-section breakdown (added 2026-04-25) ──
+    // CONTRIBUTIONS: the 5 weighted buckets, where points = bucketScore × weight.
+    //                These literally sum (approximately) to the rawTotal. Note
+    //                the displayed total is normalized — at higher rawTotals
+    //                a compression curve trims it down a few points, so sums
+    //                won't exactly match displayed total.
+    // EVIDENCE:      MLB-specific descriptive signals that give human context.
+    //                NO POINTS shown — they're badges, not contributions.
+    //                Confluence is a separate gate (not in Sweat Score). NRFI
+    //                feeds modelMismatch via +3-10 bumps. Showing them with
+    //                fake hardcoded points (+12, +14) would mislead users.
     const homeName = (game.home_team || '').split(' ').pop();
     const awayName = (game.away_team || '').split(' ').pop();
 
-    // Core weighted buckets — always considered, only included if score >= 50
+    const _contribs = [];
     if(marketEfficiency >= 50) {
-      _signals.push({
+      _contribs.push({
         emoji: '📊',
         label: spreadVariance >= 1 ? 'Sharp split across books' : 'Market consensus',
         detail: spreadVariance > 0 ? `${spreadVariance.toFixed(1)}-pt spread variance` : null,
@@ -3915,15 +3921,10 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         mLabel = `Model favors ${spreadEdge > 0 ? homeName : awayName}`;
         mDetail = `${Math.abs(spreadEdge).toFixed(1)}-pt edge vs spread`;
       }
-      _signals.push({
-        emoji: '⚡',
-        label: mLabel,
-        detail: mDetail,
-        points: Math.round(modelMismatch * w.model),
-      });
+      _contribs.push({ emoji: '⚡', label: mLabel, detail: mDetail, points: Math.round(modelMismatch * w.model) });
     }
     if(lineTrajectory >= 50) {
-      _signals.push({
+      _contribs.push({
         emoji: '📈',
         label: 'Line movement detected',
         detail: lineMoveTeam ? `Move toward ${lineMoveTeam.split(' ').pop()}${lineMovePoints ? ' ('+Number(lineMovePoints).toFixed(1)+' pts)' : ''}` : (lineRange ? `${lineRange.toFixed(1)}-pt range across books` : null),
@@ -3931,7 +3932,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
       });
     }
     if(sharpSignal >= 50) {
-      _signals.push({
+      _contribs.push({
         emoji: '🎯',
         label: 'Sharp money signal',
         detail: lineRange >= 1 ? `${lineRange.toFixed(1)}-pt line range` : 'Variance across books',
@@ -3939,49 +3940,47 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
       });
     }
     if(situationalEdge >= 50) {
-      _signals.push({
+      _contribs.push({
         emoji: '🏟️',
         label: 'Situational factors',
         detail: null,
         points: Math.round(situationalEdge * w.situation),
       });
     }
+    _contribs.sort((a, b) => b.points - a.points);
 
-    // MLB-specific supporting evidence (helps explain WHY model_mismatch is high)
+    // EVIDENCE — descriptive badges, no points
+    const _evidence = [];
     if(sport === 'MLB' && mlbContext) {
       const ctx = (mlbContext[game.home_team]) || mlbContext;
       if(ctx) {
         const nrfi = ctx.nrfi_score;
         if(nrfi != null && nrfi >= 88 && nrfi <= 94) {
-          _signals.push({ emoji: '🔒', label: 'NRFI PRIME tier', detail: `Score ${nrfi}/100 — sweet spot (77% audited hit rate)`, points: 12 });
+          _evidence.push({ emoji: '🔒', label: 'NRFI PRIME tier', detail: `Score ${nrfi}/100 — 77% audited hit rate` });
         } else if(nrfi != null && nrfi <= 25) {
-          _signals.push({ emoji: '🔥', label: 'YRFI lean', detail: `NRFI ${nrfi} — first inning runs likely`, points: 9 });
+          _evidence.push({ emoji: '🔥', label: 'YRFI lean', detail: `NRFI ${nrfi} — first inning runs likely` });
         }
         const conf = ctx.signal_confluence_net;
         if(conf != null && conf >= 4) {
-          _signals.push({ emoji: '⭐', label: 'PRIME signal confluence', detail: `${conf} independent signals stack`, points: 14 });
+          _evidence.push({ emoji: '⭐', label: 'PRIME signal confluence', detail: `${conf} independent signals stack` });
         } else if(conf != null && conf >= 2) {
-          _signals.push({ emoji: '✨', label: 'STRONG signal confluence', detail: `${conf} signals back model`, points: 7 });
+          _evidence.push({ emoji: '✨', label: 'STRONG signal confluence', detail: `${conf} signals back model` });
         }
         if(ctx.over_lean === true) {
-          _signals.push({ emoji: '📊', label: 'OVER lean', detail: 'xERA gap rule (59% historical hit)', points: 9 });
+          _evidence.push({ emoji: '📊', label: 'OVER lean', detail: 'xERA gap rule fired (59% historical)' });
         }
-        // Park
         const park = ctx.park_run_factor;
         if(park != null && (park >= 108 || park <= 92)) {
-          _signals.push({
-            emoji: '🏟️',
+          _evidence.push({
+            emoji: park >= 108 ? '🏟️' : '🧤',
             label: park >= 108 ? 'Hitter-friendly park' : 'Pitcher-friendly park',
             detail: `Park factor ${park}`,
-            points: 5,
           });
         }
       }
     }
 
-    // Sort by points desc, take top 6
-    _signals.sort((a, b) => b.points - a.points);
-    const sweatScoreSignals = _signals.slice(0, 6);
+    const sweatScoreSignals = { contributions: _contribs.slice(0, 5), evidence: _evidence.slice(0, 4) };
 
     return {
   total,
@@ -10476,16 +10475,17 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         );
                       })()}
                       <Text style={{color:'#b0c4d8',fontSize:13,lineHeight:20,marginBottom:12}}>{ss.narrative}</Text>
-                      {/* Why This Score — top contributing signals */}
-                      {ss.signals && ss.signals.length > 0 && (
+                      {/* Why This Score — contributions + evidence (2-section honest breakdown) */}
+                      {ss.signals && ((ss.signals.contributions && ss.signals.contributions.length > 0) || (ss.signals.evidence && ss.signals.evidence.length > 0)) && (
                         <View style={{backgroundColor:'#151c24',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'#1f2d3d'}}>
                           <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>
                             WHY THIS SCORE
                           </Text>
-                          {ss.signals.map((sig, i) => (
-                            <View key={i} style={{flexDirection:'row',alignItems:'flex-start',marginBottom: i < ss.signals.length - 1 ? 8 : 0, gap: 10}}>
+                          {/* Weighted contributions — points add to total */}
+                          {ss.signals.contributions && ss.signals.contributions.map((sig, i) => (
+                            <View key={`c-${i}`} style={{flexDirection:'row',alignItems:'flex-start',marginBottom:8,gap:10}}>
                               <Text style={{fontSize:16}}>{sig.emoji}</Text>
-                              <View style={{flex: 1}}>
+                              <View style={{flex:1}}>
                                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
                                   <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,flex:1}}>{sig.label}</Text>
                                   <Text style={{color:tier.color,fontWeight:'800',fontSize:13,marginLeft:8}}>+{sig.points}</Text>
@@ -10496,6 +10496,25 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               </View>
                             </View>
                           ))}
+                          {/* Evidence badges — supporting context, no point claim */}
+                          {ss.signals.evidence && ss.signals.evidence.length > 0 && (
+                            <View style={{marginTop:6,paddingTop:10,borderTopWidth:1,borderTopColor:'#1f2d3d'}}>
+                              <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:8,letterSpacing:0.5}}>
+                                SUPPORTING EVIDENCE
+                              </Text>
+                              {ss.signals.evidence.map((ev, i) => (
+                                <View key={`e-${i}`} style={{flexDirection:'row',alignItems:'flex-start',marginBottom: i < ss.signals.evidence.length - 1 ? 6 : 0, gap:10}}>
+                                  <Text style={{fontSize:14}}>{ev.emoji}</Text>
+                                  <View style={{flex:1}}>
+                                    <Text style={{color:'#b0c4d8',fontWeight:'600',fontSize:12}}>{ev.label}</Text>
+                                    {ev.detail && (
+                                      <Text style={{color:'#7a92a8',fontSize:10,marginTop:1}}>{ev.detail}</Text>
+                                    )}
+                                  </View>
+                                </View>
+                              ))}
+                            </View>
+                          )}
                         </View>
                       )}
                       {/* Best Bets */}
