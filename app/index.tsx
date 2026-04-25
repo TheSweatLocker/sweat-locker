@@ -3884,6 +3884,105 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
 }
 }
     }
+    // ── WHY THIS SCORE — top contributing signals (added 2026-04-25) ──
+    // Each weighted bucket contributes (bucketScore * bucketWeight) points to total.
+    // Additional MLB-specific evidence signals (NRFI, confluence) surface as
+    // supporting context. Top 6 by points appear in the game-detail card.
+    const _signals = [];
+    const homeName = (game.home_team || '').split(' ').pop();
+    const awayName = (game.away_team || '').split(' ').pop();
+
+    // Core weighted buckets — always considered, only included if score >= 50
+    if(marketEfficiency >= 50) {
+      _signals.push({
+        emoji: '📊',
+        label: spreadVariance >= 1 ? 'Sharp split across books' : 'Market consensus',
+        detail: spreadVariance > 0 ? `${spreadVariance.toFixed(1)}-pt spread variance` : null,
+        points: Math.round(marketEfficiency * w.market),
+      });
+    }
+    if(modelMismatch >= 50) {
+      let mLabel = 'Model vs market edge';
+      let mDetail = null;
+      if(sport === 'MLB' && mlbContext) {
+        const ctx = (mlbContext[game.home_team]) || mlbContext;
+        const sd = ctx?.spread_delta;
+        if(sd != null && Math.abs(sd) >= 0.5) {
+          mLabel = `Model favors ${sd > 0 ? homeName : awayName}`;
+          mDetail = `Spread delta ${sd > 0 ? '+' : ''}${Number(sd).toFixed(1)} runs vs market`;
+        }
+      } else if(sport === 'NCAAB' && Math.abs(spreadEdge) >= 1) {
+        mLabel = `Model favors ${spreadEdge > 0 ? homeName : awayName}`;
+        mDetail = `${Math.abs(spreadEdge).toFixed(1)}-pt edge vs spread`;
+      }
+      _signals.push({
+        emoji: '⚡',
+        label: mLabel,
+        detail: mDetail,
+        points: Math.round(modelMismatch * w.model),
+      });
+    }
+    if(lineTrajectory >= 50) {
+      _signals.push({
+        emoji: '📈',
+        label: 'Line movement detected',
+        detail: lineMoveTeam ? `Move toward ${lineMoveTeam.split(' ').pop()}${lineMovePoints ? ' ('+Number(lineMovePoints).toFixed(1)+' pts)' : ''}` : (lineRange ? `${lineRange.toFixed(1)}-pt range across books` : null),
+        points: Math.round(lineTrajectory * w.line),
+      });
+    }
+    if(sharpSignal >= 50) {
+      _signals.push({
+        emoji: '🎯',
+        label: 'Sharp money signal',
+        detail: lineRange >= 1 ? `${lineRange.toFixed(1)}-pt line range` : 'Variance across books',
+        points: Math.round(sharpSignal * w.sharp),
+      });
+    }
+    if(situationalEdge >= 50) {
+      _signals.push({
+        emoji: '🏟️',
+        label: 'Situational factors',
+        detail: null,
+        points: Math.round(situationalEdge * w.situation),
+      });
+    }
+
+    // MLB-specific supporting evidence (helps explain WHY model_mismatch is high)
+    if(sport === 'MLB' && mlbContext) {
+      const ctx = (mlbContext[game.home_team]) || mlbContext;
+      if(ctx) {
+        const nrfi = ctx.nrfi_score;
+        if(nrfi != null && nrfi >= 88 && nrfi <= 94) {
+          _signals.push({ emoji: '🔒', label: 'NRFI PRIME tier', detail: `Score ${nrfi}/100 — sweet spot (77% audited hit rate)`, points: 12 });
+        } else if(nrfi != null && nrfi <= 25) {
+          _signals.push({ emoji: '🔥', label: 'YRFI lean', detail: `NRFI ${nrfi} — first inning runs likely`, points: 9 });
+        }
+        const conf = ctx.signal_confluence_net;
+        if(conf != null && conf >= 4) {
+          _signals.push({ emoji: '⭐', label: 'PRIME signal confluence', detail: `${conf} independent signals stack`, points: 14 });
+        } else if(conf != null && conf >= 2) {
+          _signals.push({ emoji: '✨', label: 'STRONG signal confluence', detail: `${conf} signals back model`, points: 7 });
+        }
+        if(ctx.over_lean === true) {
+          _signals.push({ emoji: '📊', label: 'OVER lean', detail: 'xERA gap rule (59% historical hit)', points: 9 });
+        }
+        // Park
+        const park = ctx.park_run_factor;
+        if(park != null && (park >= 108 || park <= 92)) {
+          _signals.push({
+            emoji: '🏟️',
+            label: park >= 108 ? 'Hitter-friendly park' : 'Pitcher-friendly park',
+            detail: `Park factor ${park}`,
+            points: 5,
+          });
+        }
+      }
+    }
+
+    // Sort by points desc, take top 6
+    _signals.sort((a, b) => b.points - a.points);
+    const sweatScoreSignals = _signals.slice(0, 6);
+
     return {
   total,
   leanSide, leanBet,
@@ -3894,6 +3993,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
       lineTrajectory: Math.round(lineTrajectory),
       sharpSignal: Math.round(sharpSignal),
       situationalEdge: Math.round(situationalEdge),
+      signals: sweatScoreSignals,
       narrative,
       spreadBet: spreadLine ? {
         pick: spreadLine.name+' '+(spreadLine.point>0?'+':'')+spreadLine.point,
@@ -10376,6 +10476,28 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         );
                       })()}
                       <Text style={{color:'#b0c4d8',fontSize:13,lineHeight:20,marginBottom:12}}>{ss.narrative}</Text>
+                      {/* Why This Score — top contributing signals */}
+                      {ss.signals && ss.signals.length > 0 && (
+                        <View style={{backgroundColor:'#151c24',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'#1f2d3d'}}>
+                          <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>
+                            WHY THIS SCORE
+                          </Text>
+                          {ss.signals.map((sig, i) => (
+                            <View key={i} style={{flexDirection:'row',alignItems:'flex-start',marginBottom: i < ss.signals.length - 1 ? 8 : 0, gap: 10}}>
+                              <Text style={{fontSize:16}}>{sig.emoji}</Text>
+                              <View style={{flex: 1}}>
+                                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+                                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,flex:1}}>{sig.label}</Text>
+                                  <Text style={{color:tier.color,fontWeight:'800',fontSize:13,marginLeft:8}}>+{sig.points}</Text>
+                                </View>
+                                {sig.detail && (
+                                  <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{sig.detail}</Text>
+                                )}
+                              </View>
+                            </View>
+                          ))}
+                        </View>
+                      )}
                       {/* Best Bets */}
                       <View style={{backgroundColor:'#151c24',borderRadius:12,padding:12,marginBottom:12}}>
                         <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:8}}>
