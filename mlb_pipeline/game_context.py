@@ -2485,6 +2485,8 @@ def run():
                 "close_spread": spread_line if not is_open_run else None,
                 "home_ml_odds": home_ml_odds,
                 "away_ml_odds": away_ml_odds,
+                # NOTE: home_ml_open/close removed pending SQL migration on mlb_game_context.
+                # Once columns are added, restore the four lines here so we capture line movement.
                 "confidence": confidence,
                 "fetched_at": datetime.now().isoformat(),
                 "home_runs_per_game": home_rpg,

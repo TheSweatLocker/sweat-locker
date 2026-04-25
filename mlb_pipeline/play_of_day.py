@@ -258,16 +258,32 @@ def build_lean(ctx):
     if 88 <= nrfi <= 94:
         return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
 
-    # ML lean — gated by SIGNAL CONFLUENCE (added 2026-04-24).
-    # Backtest: net confluence >= +2 = STRONG (55% hit), >= +4 = PRIME (71% hit).
-    # Without multi-signal alignment, single-delta picks are noise and lose money.
+    # ML lean — gated by SIGNAL CONFLUENCE + AUTO-FADE calibration (added 2026-04-25).
+    # Confluence: net >= +2 = STRONG (55% hit), >= +4 = PRIME (71% hit).
+    # Auto-fade: cohorts with hit rate <=30% get SUPPRESS, no-data mixed cohorts also SUPPRESS.
     projected_spread = ctx.get('projected_spread')
     confluence_net = ctx.get('signal_confluence_net')
     if projected_spread is not None and confluence_net is not None and int(confluence_net) >= 2:
-        # Model lean direction comes from projected_spread sign (positive = home)
-        fav_team = ctx.get('home_team') if float(projected_spread) > 0 else ctx.get('away_team')
-        tier_tag = 'PRIME' if int(confluence_net) >= 4 else 'STRONG'
-        return f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals)", 'ml', False
+        try:
+            from auto_fade import adjust_pick
+            res = adjust_pick(
+                projected_spread, ctx.get('close_spread'), confluence_net,
+                ctx.get('home_team'), ctx.get('away_team'),
+                home_ml=ctx.get('home_ml_odds'), away_ml=ctx.get('away_ml_odds')
+            )
+            if res['action'] == 'SUPPRESS':
+                # Don't surface this ML pick — model in losing cohort or uncalibrated
+                pass
+            elif res['action'] in ('SURFACE', 'FADE'):
+                fav_team = res['pick_team']
+                tier_tag = 'PRIME' if int(confluence_net) >= 4 else 'STRONG'
+                tag_extra = ' [auto-fade]' if res['action'] == 'FADE' else ''
+                return f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals){tag_extra}", 'ml', False
+        except Exception as e:
+            # Fallback if auto_fade unavailable: original behavior
+            fav_team = ctx.get('home_team') if float(projected_spread) > 0 else ctx.get('away_team')
+            tier_tag = 'PRIME' if int(confluence_net) >= 4 else 'STRONG'
+            return f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals)", 'ml', False
 
     # Total lean
     over_lean = ctx.get('over_lean')
@@ -354,6 +370,8 @@ def run():
             'signal_confluence_breakdown': ctx.get('signal_confluence_breakdown'),
             'close_spread': ctx.get('close_spread'),
             'open_spread': ctx.get('open_spread'),
+            'home_ml_odds': ctx.get('home_ml_odds'),
+            'away_ml_odds': ctx.get('away_ml_odds'),
             'venue': ctx.get('venue'),
             'temperature': ctx.get('temperature'),
         })
@@ -404,17 +422,29 @@ def run():
     pick = None
     confidence = 'standard'
 
-    # Tier 1 — high conviction = SIGNAL CONFLUENCE PRIME tier (added 2026-04-24).
+    # Tier 1 — high conviction = SIGNAL CONFLUENCE PRIME tier + AUTO-FADE filter.
     # Backtest: net confluence >= +4 hit 71% (n=7) over April 10-23 — true PRIME tier.
-    # Single-magnitude delta filtering (old 1.5+ / 4.0+ thresholds) was noisy and
-    # mostly caught chalk; confluence requires multiple independent signals to align.
+    # Auto-fade additionally filters out cohorts in losing buckets or uncalibrated.
     def _has_pitcher_data(c):
         return c.get('home_sp_xera') is not None and c.get('away_sp_xera') is not None
+    def _passes_auto_fade(c):
+        try:
+            from auto_fade import adjust_pick
+            res = adjust_pick(
+                c.get('projected_spread'), c.get('close_spread'),
+                c.get('signal_confluence_net'),
+                c.get('home_team'), c.get('away_team'),
+                home_ml=c.get('home_ml_odds'), away_ml=c.get('away_ml_odds'),
+            )
+            return res['action'] != 'SUPPRESS'
+        except Exception:
+            return True  # fail-open if auto_fade unavailable
     ml_high_conviction = [
         c for c in ml_candidates
         if c.get('signal_confluence_net') is not None
         and int(c['signal_confluence_net']) >= 4
         and _has_pitcher_data(c)
+        and _passes_auto_fade(c)
     ]
     if ml_high_conviction:
         # Sort by confluence net (descending) — most signals stacking wins

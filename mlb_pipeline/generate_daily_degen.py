@@ -114,14 +114,15 @@ def extract_leg_candidates(games, props):
                 'odds_suggestion': -130,
             })
 
-    # ML legs gated by SIGNAL CONFLUENCE (added 2026-04-24).
-    # Degen pool intentionally LOOSER than POTD HIGH CONVICTION (which requires PRIME >=+4).
-    # Backtest tiers:
-    #   PRIME  (net >= +4)  71% — headline play, drives POTD HIGH CONVICTION
-    #   STRONG (net >= +2)  55% — strong Degen leg
-    #   LEAN   (net >= +1)  47% — acceptable Degen leg (parlay context, variety > per-leg conviction)
-    # Below +1 = noise, never include.
-    # Require BOTH starters to have xERA — else projection is team-R/G fallback.
+    # ML legs gated by SIGNAL CONFLUENCE + AUTO-FADE calibration (added 2026-04-25).
+    # Confluence tiers: PRIME (>=+4) 71%, STRONG (>=+2) 55%, LEAN (>=+1) 47%.
+    # Auto-fade then drops/flips picks in losing cohorts (ml_dog @ 25% hit, mixed
+    # cohorts uncalibrated → SUPPRESS). See auto_fade.py for cohort logic.
+    try:
+        from auto_fade import adjust_pick
+    except ImportError:
+        adjust_pick = None
+
     for g in games:
         sd = _f(g.get('spread_delta'))
         ps = _f(g.get('projected_spread'))
@@ -135,10 +136,22 @@ def extract_leg_candidates(games, props):
             continue
         if confluence_net < 1:
             continue
-        # Direction comes from projected_spread sign (correct), not spread_delta sign.
+
+        # Apply auto-fade calibration
         fav_team = g.get('home_team') if ps > 0 else g.get('away_team')
+        is_faded = False
+        if adjust_pick is not None:
+            res = adjust_pick(
+                ps, g.get('close_spread'), confluence_net,
+                g.get('home_team'), g.get('away_team'),
+                home_ml=g.get('home_ml_odds'), away_ml=g.get('away_ml_odds')
+            )
+            if res['action'] == 'SUPPRESS':
+                continue  # don't include in Degen pool
+            fav_team = res['pick_team']
+            is_faded = (res['action'] == 'FADE')
+
         tier = 'PRIME' if confluence_net >= 4 else 'STRONG' if confluence_net >= 2 else 'LEAN'
-        # Conviction: PRIME ~84-90, STRONG ~72-78, LEAN ~66. Higher confluence = higher conviction.
         conviction = min(90, 60 + confluence_net * 6)
         breakdown = g.get('signal_confluence_breakdown') or {}
         sig_str = ', '.join(f"{k}" for k in breakdown.keys()) or 'multiple signals'
