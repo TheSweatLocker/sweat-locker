@@ -114,34 +114,45 @@ def extract_leg_candidates(games, props):
                 'odds_suggestion': -130,
             })
 
-    # ML spread delta ≥ 1.0 (corrected) — retuned 2026-04-24 from 3.0 after sign-bug fix.
-    # Require BOTH starters to have xERA — skips games where projected_spread
-    # came from 'no pitcher data' fallback (creates artifact-driven huge deltas).
+    # ML legs gated by SIGNAL CONFLUENCE (added 2026-04-24).
+    # Only surface ML when net confluence >= +2 (STRONG, 55% backtest hit).
+    # PRIME (>=+4) ranks above STRONG (>=+2). Below +2, single-delta ML picks are noise.
+    # Require BOTH starters to have xERA — else projection is team-R/G fallback.
     for g in games:
         sd = _f(g.get('spread_delta'))
+        ps = _f(g.get('projected_spread'))
         home_xera = _f(g.get('home_sp_xera'))
         away_xera = _f(g.get('away_sp_xera'))
-        if sd is None or home_xera is None or away_xera is None:
+        try:
+            confluence_net = int(g.get('signal_confluence_net') or 0)
+        except (TypeError, ValueError):
+            confluence_net = 0
+        if ps is None or home_xera is None or away_xera is None:
             continue
-        if abs(sd) >= 1.0:
-            fav_team = g.get('home_team') if sd > 0 else g.get('away_team')
-            # Conviction scaled to corrected magnitudes: 1.0 = base 60, 1.5 = +8, 2.0 = +16, cap at 85
-            conviction = min(85, 60 + int(abs(sd) * 15))
-            tier = 'STRONG' if abs(sd) >= 1.5 else 'LEAN'
-            candidates.append({
-                'type': 'ML',
-                'sub_type': 'moneyline',
-                'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
-                'game_id': g.get('game_id'),
-                'pick': f"{fav_team} ML",
-                'conviction': conviction,
-                'tier': tier,
-                'signals': [
-                    f"Spread delta {sd:+.1f} runs vs market — {tier}",
-                    f"Model projects {fav_team} favored",
-                ],
-                'odds_suggestion': -130,
-            })
+        if confluence_net < 2:
+            continue
+        # Direction comes from projected_spread sign (correct), not spread_delta sign.
+        fav_team = g.get('home_team') if ps > 0 else g.get('away_team')
+        tier = 'PRIME' if confluence_net >= 4 else 'STRONG'
+        # Conviction: PRIME 80-90, STRONG 65-75. Higher confluence = higher conviction.
+        conviction = min(90, 60 + confluence_net * 6)
+        breakdown = g.get('signal_confluence_breakdown') or {}
+        sig_str = ', '.join(f"{k}" for k in breakdown.keys()) or 'multiple signals'
+        candidates.append({
+            'type': 'ML',
+            'sub_type': 'moneyline',
+            'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
+            'game_id': g.get('game_id'),
+            'pick': f"{fav_team} ML",
+            'conviction': conviction,
+            'tier': tier,
+            'signals': [
+                f"Signal confluence {tier} (net {confluence_net:+d})",
+                f"{sig_str} all favor {fav_team.split()[-1]}",
+                f"Spread delta {sd:+.1f} runs" if sd is not None else f"Model projects {fav_team} favored",
+            ],
+            'odds_suggestion': -130,
+        })
 
     # Total lean — over only (per NRFI audit memory: over leans active, under disabled)
     for g in games:

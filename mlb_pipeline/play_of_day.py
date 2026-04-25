@@ -258,16 +258,16 @@ def build_lean(ctx):
     if 88 <= nrfi <= 94:
         return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
 
-    # ML lean — retuned 2026-04-24: threshold 3.0 → 1.0 after sign-bug fix.
-    # Old buggy delta inflated by 2x posted; corrected 1.0 = same hit-rate band as old 3.0.
+    # ML lean — gated by SIGNAL CONFLUENCE (added 2026-04-24).
+    # Backtest: net confluence >= +2 = STRONG (55% hit), >= +4 = PRIME (71% hit).
+    # Without multi-signal alignment, single-delta picks are noise and lose money.
     projected_spread = ctx.get('projected_spread')
-    spread_delta = ctx.get('spread_delta')
-    if projected_spread is not None and spread_delta is not None:
-        delta = abs(float(spread_delta))
-        proj = float(projected_spread)
-        if delta >= 1.0:
-            fav_team = ctx.get('home_team') if float(spread_delta) > 0 else ctx.get('away_team')
-            return f"{fav_team} ML (spread delta {'+' if float(spread_delta) > 0 else ''}{float(spread_delta):.1f})", 'ml', False
+    confluence_net = ctx.get('signal_confluence_net')
+    if projected_spread is not None and confluence_net is not None and int(confluence_net) >= 2:
+        # Model lean direction comes from projected_spread sign (positive = home)
+        fav_team = ctx.get('home_team') if float(projected_spread) > 0 else ctx.get('away_team')
+        tier_tag = 'PRIME' if int(confluence_net) >= 4 else 'STRONG'
+        return f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals)", 'ml', False
 
     # Total lean
     over_lean = ctx.get('over_lean')
@@ -399,23 +399,24 @@ def run():
     pick = None
     confidence = 'standard'
 
-    # Tier 1 — high conviction
-    # ML spread delta ≥1.5 (corrected) = biggest proven edge band.
-    # Retuned 2026-04-24 from 4.0 → 1.5 after sign-bug fix; same hit-rate bucket.
-    # Require both starters have xERA — else projected_spread is a team-R/G
-    # fallback that produces artifact-driven huge deltas.
+    # Tier 1 — high conviction = SIGNAL CONFLUENCE PRIME tier (added 2026-04-24).
+    # Backtest: net confluence >= +4 hit 71% (n=7) over April 10-23 — true PRIME tier.
+    # Single-magnitude delta filtering (old 1.5+ / 4.0+ thresholds) was noisy and
+    # mostly caught chalk; confluence requires multiple independent signals to align.
     def _has_pitcher_data(c):
         return c.get('home_sp_xera') is not None and c.get('away_sp_xera') is not None
     ml_high_conviction = [
         c for c in ml_candidates
-        if c.get('spread_delta') is not None and abs(float(c['spread_delta'])) >= 1.5
+        if c.get('signal_confluence_net') is not None
+        and int(c['signal_confluence_net']) >= 4
         and _has_pitcher_data(c)
     ]
     if ml_high_conviction:
-        ml_high_conviction.sort(key=lambda c: abs(float(c['spread_delta'])), reverse=True)
+        # Sort by confluence net (descending) — most signals stacking wins
+        ml_high_conviction.sort(key=lambda c: int(c.get('signal_confluence_net') or 0), reverse=True)
         pick = ml_high_conviction[0]
         confidence = 'high'
-        print(f"🔒 ML HIGH CONVICTION: {pick['away_team']} @ {pick['home_team']} — delta {float(pick['spread_delta']):+.1f} runs")
+        print(f"🔒 ML HIGH CONVICTION (PRIME confluence): {pick['away_team']} @ {pick['home_team']} — net {int(pick.get('signal_confluence_net') or 0):+d} signals, delta {float(pick.get('spread_delta') or 0):+.1f}")
     elif sweet_spot:
         sweet_spot.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
         pick = sweet_spot[0]

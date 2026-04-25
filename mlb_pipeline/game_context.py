@@ -2219,6 +2219,96 @@ def run():
                 spread_delta = round(projected_spread + spread_line, 2)
                 print(f"  Spread delta: model {projected_spread} vs market run-diff {-spread_line} (posted {spread_line}) = {'+' if spread_delta >= 0 else ''}{spread_delta}")
 
+            # ── SIGNAL CONFLUENCE (added 2026-04-24) ──
+            # Single-signal magnitude is noisy. Real edges show up when MULTIPLE
+            # independent signals all favor the same side. Backtest 4/10-4/23:
+            #   net confluence >= +4 → 71% hit rate (n=7) — PRIME tier
+            #   net confluence >= +2 → 55% hit rate (n=29) — STRONG
+            #   net confluence >= +1 → 47% hit rate (n=40) — LEAN/informational
+            # Each signal votes 'home' or 'away' if its threshold is met. Net = supporting - opposing.
+            confluence_net = None
+            confluence_support = 0
+            confluence_breakdown = {}
+            if projected_spread is not None:
+                model_pick = 'home' if projected_spread > 0 else 'away'
+                breakdown = {}
+
+                # Helper to safely cast
+                def _f(v):
+                    try: return float(v) if v is not None else None
+                    except: return None
+
+                # Signal: xERA gap (lower = better pitcher → that side's TEAM favored)
+                hx, ax = _f(home_xera_val), _f(away_xera_val)
+                if hx is not None and ax is not None:
+                    gap = ax - hx
+                    if abs(gap) >= 0.5:
+                        breakdown['xera'] = 'home' if gap > 0 else 'away'
+
+                # Signal: wRC+ vs opp hand (higher = better offense). Fall back to season wRC+ when split missing.
+                hw = _f(home_wrc_vs_opp_hand) if home_wrc_vs_opp_hand is not None else _f(home_wrc)
+                aw = _f(away_wrc_vs_opp_hand) if away_wrc_vs_opp_hand is not None else _f(away_wrc)
+                if hw is not None and aw is not None and abs(hw - aw) >= 8:
+                    breakdown['wrc_hand'] = 'home' if hw > aw else 'away'
+
+                # Signal: pitcher L3 ERA (lower = hot)
+                h_l3 = _f(home_pitcher_last_3_era)
+                a_l3 = _f(away_pitcher_last_3_era)
+                if h_l3 is not None and a_l3 is not None and abs(a_l3 - h_l3) >= 1.0:
+                    breakdown['l3_era'] = 'home' if h_l3 < a_l3 else 'away'
+
+                # Signal: pitcher L3 K% (higher = striking guys out)
+                h_l3k = _f(home_pitcher_last_3_k_pct)
+                a_l3k = _f(away_pitcher_last_3_k_pct)
+                if h_l3k is not None and a_l3k is not None and abs(h_l3k - a_l3k) >= 4:
+                    breakdown['l3_k'] = 'home' if h_l3k > a_l3k else 'away'
+
+                # Signal: lineup weight (confirmed lineup OPS edge)
+                h_lw = _f(home_lineup_weight)
+                a_lw = _f(away_lineup_weight)
+                if h_lw is not None and a_lw is not None and abs(h_lw - a_lw) >= 0.5:
+                    breakdown['lineup'] = 'home' if h_lw > a_lw else 'away'
+
+                # Signal: bullpen ERA (lower = better relief)
+                hbp = _f(home_bp_era)
+                abp = _f(away_bp_era)
+                if hbp is not None and abp is not None and abs(abp - hbp) >= 0.5:
+                    breakdown['bullpen'] = 'home' if hbp < abp else 'away'
+
+                # Signal: days rest (penalty when one pitcher is short rest)
+                h_dr = _f(home_days_rest)
+                a_dr = _f(away_days_rest)
+                if h_dr is not None and a_dr is not None:
+                    if h_dr < 4 and a_dr >= 4:
+                        breakdown['rest'] = 'away'  # home pitcher tired
+                    elif a_dr < 4 and h_dr >= 4:
+                        breakdown['rest'] = 'home'
+
+                # Signal: park + offense alignment
+                _park = _f(park_run_factor)
+                if _park is not None and hw is not None and aw is not None:
+                    if _park >= 105:  # hitter park rewards better offense
+                        if hw - aw >= 5: breakdown['park'] = 'home'
+                        elif aw - hw >= 5: breakdown['park'] = 'away'
+                    elif _park <= 95:  # pitcher park rewards better pitcher
+                        if hx is not None and ax is not None:
+                            if ax - hx >= 0.5: breakdown['park'] = 'home'
+                            elif hx - ax >= 0.5: breakdown['park'] = 'away'
+
+                support = sum(1 for v in breakdown.values() if v == model_pick)
+                against = sum(1 for v in breakdown.values() if v != model_pick)
+                confluence_net = support - against
+                confluence_support = support
+                confluence_breakdown = breakdown
+
+                # Tier label for diag
+                tier = 'NONE'
+                if confluence_net >= 4: tier = 'PRIME'
+                elif confluence_net >= 2: tier = 'STRONG'
+                elif confluence_net >= 1: tier = 'LEAN'
+                sig_str = ', '.join(f"{k}:{v[0].upper()}" for k,v in breakdown.items()) or 'no signals'
+                print(f"  Signal confluence: {tier} (net {confluence_net:+d}, support {support}, against {against}) — {sig_str}")
+
             # Print umpire info (already fetched above for total projection)
             if ump_name:
                 k_rate = ump_stats.get('k_rate_above_avg', 'N/A') if ump_stats else 'not in database'
@@ -2338,6 +2428,9 @@ def run():
                 "projected_spread": projected_spread,
                 "spread_lean": spread_lean,
                 "spread_delta": spread_delta,
+                "signal_confluence_net": confluence_net,
+                "signal_confluence_support": confluence_support,
+                "signal_confluence_breakdown": confluence_breakdown if confluence_breakdown else None,
                 "open_spread": spread_line if is_open_run else None,
                 "close_spread": spread_line if not is_open_run else None,
                 "home_ml_odds": home_ml_odds,
