@@ -2207,13 +2207,59 @@ def run():
             except Exception as e:
                 print(f"  ⚠️ Spread projection error: {e}")
 
+            # ── XGBoost RUNS MODEL — INFORMATIONAL (added 2026-04-25) ──
+            # Trained model predictions stored ALONGSIDE v3 (not replacing yet).
+            # Walk-forward validation showed +5.3pt direction lift but unreliable
+            # magnitudes on outlier games (Coors-type totals, pitcher's duels).
+            # Compare model vs v3 vs actual for 2 weeks before promoting to primary.
+            model_pred_home_runs = None
+            model_pred_away_runs = None
+            model_pred_spread = None
+            model_pred_total = None
+            try:
+                from predict_runs import predict_runs, MODELS_LOADED, build_feature_dict
+                if MODELS_LOADED and projected_spread is not None:
+                    _ctx_for_model = {
+                        'home_sp_xera': home_xera_val,
+                        'away_sp_xera': away_xera_val,
+                        'home_sp_whiff_rate': home_pitcher_stats.get('whiff_rate') if home_pitcher_stats else None,
+                        'away_sp_whiff_rate': away_pitcher_stats.get('whiff_rate') if away_pitcher_stats else None,
+                        'home_pitcher_last_3_era': home_pitcher_last_3_era,
+                        'away_pitcher_last_3_era': away_pitcher_last_3_era,
+                        'home_wrc_vs_opp_hand': home_wrc_vs_opp_hand,
+                        'away_wrc_vs_opp_hand': away_wrc_vs_opp_hand,
+                        'home_woba': home_offense.get('woba') if home_offense else None,
+                        'away_woba': away_offense.get('woba') if away_offense else None,
+                        'home_runs_per_game': home_rpg,
+                        'away_runs_per_game': away_rpg,
+                        'home_k_gap': home_k_gap,
+                        'away_k_gap': away_k_gap,
+                        'home_lineup_weight': home_lineup_weight,
+                        'away_lineup_weight': away_lineup_weight,
+                        'park_run_factor': park_run_factor,
+                        'wind_mph': weather.get('wind_speed'),
+                        'close_total': total_line if not is_open_run else None,
+                        'close_spread': spread_line if not is_open_run else None,
+                        'nrfi_score': nrfi_score,
+                        'projected_spread': projected_spread,
+                        'projected_total': projected_total,
+                    }
+                    feat = build_feature_dict(_ctx_for_model)
+                    pred_h, pred_a = predict_runs(feat)
+                    if pred_h is not None and pred_a is not None:
+                        model_pred_home_runs = round(pred_h, 2)
+                        model_pred_away_runs = round(pred_a, 2)
+                        model_pred_spread = round(pred_h - pred_a, 2)
+                        model_pred_total = round(pred_h + pred_a, 2)
+                        print(f"  XGBoost (informational): spread {model_pred_spread:+.2f} (v3 {projected_spread:+.2f}), total {model_pred_total:.1f} (v3 {projected_total:.1f})")
+            except Exception as e:
+                print(f"  XGBoost predict failed: {e}")
+
             # Spread delta — projected vs posted
             # CONVENTION FIX: projected_spread is in run-differential terms (positive = home wins by X).
             # close_spread (spread_line) is in sportsbook convention (negative = home favorite).
             # To compare, convert close_spread to run-diff: market_run_diff = -spread_line.
             # delta = projected - market_run_diff = projected_spread + spread_line.
-            # Old buggy math (projected - spread_line) double-counted the sign and inflated
-            # the magnitude by 2x the posted spread on every game.
             spread_delta = None
             if projected_spread is not None and spread_line is not None:
                 spread_delta = round(projected_spread + spread_line, 2)
@@ -2431,6 +2477,10 @@ def run():
                 "signal_confluence_net": confluence_net,
                 "signal_confluence_support": confluence_support,
                 "signal_confluence_breakdown": confluence_breakdown if confluence_breakdown else None,
+                "model_pred_home_runs": model_pred_home_runs,
+                "model_pred_away_runs": model_pred_away_runs,
+                "model_pred_spread": model_pred_spread,
+                "model_pred_total": model_pred_total,
                 "open_spread": spread_line if is_open_run else None,
                 "close_spread": spread_line if not is_open_run else None,
                 "home_ml_odds": home_ml_odds,
