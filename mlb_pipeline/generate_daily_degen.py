@@ -115,8 +115,12 @@ def extract_leg_candidates(games, props):
             })
 
     # ML legs gated by SIGNAL CONFLUENCE (added 2026-04-24).
-    # Only surface ML when net confluence >= +2 (STRONG, 55% backtest hit).
-    # PRIME (>=+4) ranks above STRONG (>=+2). Below +2, single-delta ML picks are noise.
+    # Degen pool intentionally LOOSER than POTD HIGH CONVICTION (which requires PRIME >=+4).
+    # Backtest tiers:
+    #   PRIME  (net >= +4)  71% — headline play, drives POTD HIGH CONVICTION
+    #   STRONG (net >= +2)  55% — strong Degen leg
+    #   LEAN   (net >= +1)  47% — acceptable Degen leg (parlay context, variety > per-leg conviction)
+    # Below +1 = noise, never include.
     # Require BOTH starters to have xERA — else projection is team-R/G fallback.
     for g in games:
         sd = _f(g.get('spread_delta'))
@@ -129,12 +133,12 @@ def extract_leg_candidates(games, props):
             confluence_net = 0
         if ps is None or home_xera is None or away_xera is None:
             continue
-        if confluence_net < 2:
+        if confluence_net < 1:
             continue
         # Direction comes from projected_spread sign (correct), not spread_delta sign.
         fav_team = g.get('home_team') if ps > 0 else g.get('away_team')
-        tier = 'PRIME' if confluence_net >= 4 else 'STRONG'
-        # Conviction: PRIME 80-90, STRONG 65-75. Higher confluence = higher conviction.
+        tier = 'PRIME' if confluence_net >= 4 else 'STRONG' if confluence_net >= 2 else 'LEAN'
+        # Conviction: PRIME ~84-90, STRONG ~72-78, LEAN ~66. Higher confluence = higher conviction.
         conviction = min(90, 60 + confluence_net * 6)
         breakdown = g.get('signal_confluence_breakdown') or {}
         sig_str = ', '.join(f"{k}" for k in breakdown.keys()) or 'multiple signals'
