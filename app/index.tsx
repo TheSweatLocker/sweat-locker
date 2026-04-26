@@ -2941,10 +2941,12 @@ if(r.data && r.data.data) {
   };
 
   const getSweatTier = (score) => {
-   if(score >= 68) return {label:'🔥 Prime Sweat', color:'#ff4d6d'};
-if(score >= 55) return {label:'✅ Solid Lock', color:'#00e5a0'};
-if(score >= 40) return {label:'👀 Worth a Look', color:'#ffd166'};
-    return {label:'❌ Pass', color:'#4a6070'};
+    // v2 (2026-04-25): tiers calibrated to mean "model's confidence in this game's strongest play"
+    // 80+ requires a PRIME signal (NRFI 88-94, confluence net >=4, etc) to fire.
+    if(score >= 80) return {label:'🔥 PRIME PLAY', color:'#ff4d6d'};
+    if(score >= 65) return {label:'✅ STRONG LEAN', color:'#00e5a0'};
+    if(score >= 50) return {label:'👀 LIGHT LEAN', color:'#ffd166'};
+    return {label:'❌ PASS', color:'#4a6070'};
   };
 
     const calcGameSweatScore = (game, sport, fanmatchData = {}, mlbContext = {}, nbaContext = {}) => {
@@ -3884,6 +3886,80 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
 }
 }
     }
+    // ── PRIMARY PLAY DETECTION + SIGNAL FLOOR (Sweat Score v2, 2026-04-25) ──
+    // Define what the score actually backs: the model's strongest play in this game.
+    // Score floor ensures composite doesn't drown a real PRIME signal (e.g. NRFI 91
+    // game shouldn't score 60 just because other buckets are mediocre).
+    const homeName = (game.home_team || '').split(' ').pop();
+    const awayName = (game.away_team || '').split(' ').pop();
+
+    let primaryPlay = null;
+    let signalFloor = 0;
+
+    if(sport === 'MLB' && mlbContext) {
+      const ctx = (mlbContext[game.home_team]) || mlbContext;
+      if(ctx) {
+        const nrfi = ctx.nrfi_score;
+        const conf = ctx.signal_confluence_net;
+        const projSpread = ctx.projected_spread;
+        const cs = ctx.close_spread;
+        const hml = ctx.home_ml_odds;
+        const aml = ctx.away_ml_odds;
+
+        // ML auto-fade gate: don't surface ML play if model picks dog OR mixed cohort.
+        // Mirrors auto_fade.py logic in mlb_pipeline. Cohorts that hit <30% historically
+        // (ml_dog, ml_dog_high_conv) or have no calibration (ml_fav_rl_dog, ml_dog_rl_fav)
+        // get suppressed from primary play surfacing.
+        const _mlPlayable = (() => {
+          if(projSpread == null) return false;
+          const modelPicksHome = projSpread > 0;
+          let mlMarketPicksHome = null;
+          let rlMarketPicksHome = null;
+          if(hml != null && aml != null) mlMarketPicksHome = Number(hml) < Number(aml);
+          if(cs != null) rlMarketPicksHome = Number(cs) < 0;
+          // Mixed cohort = ML fav and RL fav are different teams → suppress (uncalibrated)
+          if(mlMarketPicksHome != null && rlMarketPicksHome != null && mlMarketPicksHome !== rlMarketPicksHome) return false;
+          // Model agrees with market direction (use ML when available, else RL)
+          const marketPicksHome = mlMarketPicksHome != null ? mlMarketPicksHome : rlMarketPicksHome;
+          if(marketPicksHome == null) return true; // no market signal, allow
+          return modelPicksHome === marketPicksHome;
+        })();
+
+        // Priority order: highest tier wins
+        if(conf != null && Number(conf) >= 4 && _mlPlayable) {
+          const fav = projSpread > 0 ? homeName : awayName;
+          primaryPlay = { type: 'ml', tier: 'PRIME', label: `${fav} ML`, sub: `PRIME confluence (${conf} signals)` };
+          signalFloor = 85;
+        } else if(nrfi != null && nrfi >= 88 && nrfi <= 94) {
+          primaryPlay = { type: 'nrfi', tier: 'PRIME', label: 'NRFI', sub: `Score ${nrfi}/100 — sweet spot tier` };
+          signalFloor = 82;
+        } else if(nrfi != null && nrfi <= 25) {
+          primaryPlay = { type: 'yrfi', tier: 'STRONG', label: 'YRFI', sub: `NRFI ${nrfi} — first inning runs likely` };
+          signalFloor = 72;
+        } else if(conf != null && Number(conf) >= 2 && _mlPlayable) {
+          const fav = projSpread > 0 ? homeName : awayName;
+          primaryPlay = { type: 'ml', tier: 'STRONG', label: `${fav} ML lean`, sub: `STRONG confluence (${conf} signals)` };
+          signalFloor = 70;
+        } else if(ctx.over_lean === true) {
+          const ct = ctx.close_total;
+          primaryPlay = { type: 'over', tier: 'LIGHT', label: ct ? `Over ${ct}` : 'Over', sub: 'xERA gap rule fired' };
+          signalFloor = 60;
+        }
+      }
+    } else if(sport === 'NCAAB' && Math.abs(spreadEdge) >= 1.5) {
+      const fav = spreadEdge > 0 ? homeName : awayName;
+      primaryPlay = { type: 'spread', tier: spreadEdge >= 3 ? 'PRIME' : 'STRONG',
+        label: `${fav} ${Math.abs(spreadEdge) >= 3 ? '' : 'lean'}`,
+        sub: `${Math.abs(spreadEdge).toFixed(1)}-pt edge vs spread` };
+      signalFloor = Math.abs(spreadEdge) >= 3 ? 80 : 68;
+    }
+
+    // Apply signal floor — Sweat Score never goes BELOW the strongest play's tier minimum.
+    // (composite can still go above if multiple buckets stack)
+    if(signalFloor > total) {
+      total = signalFloor;
+    }
+
     // ── WHY THIS SCORE — two-section breakdown (added 2026-04-25) ──
     // CONTRIBUTIONS: the 5 weighted buckets, where points = bucketScore × weight.
     //                These literally sum (approximately) to the rawTotal. Note
@@ -3895,8 +3971,6 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
     //                Confluence is a separate gate (not in Sweat Score). NRFI
     //                feeds modelMismatch via +3-10 bumps. Showing them with
     //                fake hardcoded points (+12, +14) would mislead users.
-    const homeName = (game.home_team || '').split(' ').pop();
-    const awayName = (game.away_team || '').split(' ').pop();
 
     const _contribs = [];
     if(marketEfficiency >= 50) {
@@ -3997,6 +4071,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
       sharpSignal: Math.round(sharpSignal),
       situationalEdge: Math.round(situationalEdge),
       signals: sweatScoreSignals,
+      primaryPlay,
       narrative,
       spreadBet: spreadLine ? {
         pick: spreadLine.name+' '+(spreadLine.point>0?'+':'')+spreadLine.point,
@@ -10479,12 +10554,22 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         );
                       })()}
                       <Text style={{color:'#b0c4d8',fontSize:13,lineHeight:20,marginBottom:12}}>{ss.narrative}</Text>
-                      {/* Why This Score — contributions + evidence (2-section honest breakdown) */}
+                      {/* Why This Score — primary play + contributions + evidence */}
                       {ss.signals && ((ss.signals.contributions && ss.signals.contributions.length > 0) || (ss.signals.evidence && ss.signals.evidence.length > 0)) && (
                         <View style={{backgroundColor:'#151c24',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'#1f2d3d'}}>
                           <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>
                             WHY THIS SCORE
                           </Text>
+                          {/* Primary play — what the score actually backs */}
+                          {ss.primaryPlay && (
+                            <View style={{backgroundColor:tier.color+'15',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:tier.color+'44'}}>
+                              <Text style={{color:tier.color,fontSize:9,fontWeight:'700',letterSpacing:0.5,marginBottom:4}}>MODEL'S PLAY</Text>
+                              <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:15}}>{ss.primaryPlay.label}</Text>
+                              {ss.primaryPlay.sub && (
+                                <Text style={{color:'#7a92a8',fontSize:11,marginTop:3}}>{ss.primaryPlay.sub}</Text>
+                              )}
+                            </View>
+                          )}
                           {/* Weighted contributions — points add to total */}
                           {ss.signals.contributions && ss.signals.contributions.map((sig, i) => (
                             <View key={`c-${i}`} style={{flexDirection:'row',alignItems:'flex-start',marginBottom:8,gap:10}}>
