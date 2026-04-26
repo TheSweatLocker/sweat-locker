@@ -4621,24 +4621,26 @@ const fetchJerryRecord = async () => {
     // Recent A-grade picks (resolved + pending)
     const recentProps = allAGrades.slice(0, 10);
 
-    // NRFI Model record from mlb_game_results
-    // Track ONLY tiers where Jerry calls a NRFI lean in his reads:
-    //   70-79 = mild lean, 90-94 = PRIME tier
-    // Exclude 80-89 (neutral tier, no lean) and 95+ (volatile trap, Jerry flags
-    // volatility not a lean). Keeps record aligned with what Jerry actually said.
-    let nrfi = {wins:0, losses:0};
+    // NRFI Model record — split by tier so users see PRIME (gold tier) separately
+    // from Mild Lean (volume tier). Both reflect actual lean tiers Jerry surfaces.
+    // Exclude 80-89 (47% hit rate dead zone) and 95+ (44% volatile trap tier).
+    let nrfi = {wins:0, losses:0,
+                prime: {wins:0, losses:0},
+                mild: {wins:0, losses:0}};
     try {
       const { data: nrfiData } = await supabase
         .from('mlb_game_results')
         .select('nrfi_score, nrfi_result')
         .not('nrfi_result', 'is', null);
       if(nrfiData && nrfiData.length > 0) {
-        const leanTierGames = nrfiData.filter((r: any) =>
-          (r.nrfi_score >= 70 && r.nrfi_score <= 79) ||
-          (r.nrfi_score >= 90 && r.nrfi_score <= 94)
-        );
-        nrfi.wins = leanTierGames.filter((r: any) => r.nrfi_result === 'NRFI').length;
-        nrfi.losses = leanTierGames.filter((r: any) => r.nrfi_result === 'YRFI').length;
+        const primeGames = nrfiData.filter((r: any) => r.nrfi_score >= 90 && r.nrfi_score <= 94);
+        const mildGames = nrfiData.filter((r: any) => r.nrfi_score >= 70 && r.nrfi_score <= 79);
+        nrfi.prime.wins = primeGames.filter((r: any) => r.nrfi_result === 'NRFI').length;
+        nrfi.prime.losses = primeGames.filter((r: any) => r.nrfi_result === 'YRFI').length;
+        nrfi.mild.wins = mildGames.filter((r: any) => r.nrfi_result === 'NRFI').length;
+        nrfi.mild.losses = mildGames.filter((r: any) => r.nrfi_result === 'YRFI').length;
+        nrfi.wins = nrfi.prime.wins + nrfi.mild.wins;
+        nrfi.losses = nrfi.prime.losses + nrfi.mild.losses;
       }
     } catch(e) {}
 
@@ -4699,6 +4701,7 @@ const fetchJerryRecord = async () => {
       dawg,
       pipelineProps,
       bestBets: bestBetHistory || [],
+      fetched_at: Date.now(),
     });
   } catch(e) {
     console.log('Jerry record error:', e?.message);
@@ -5763,9 +5766,15 @@ if(scoreData) {
   }
   if(scoreData.leanSide) sweatSignals.push(`Model lean: ${scoreData.leanSide}`);
 }
-const sweatScoreContext = sweatSignals.length > 0 
+const sweatScoreContext = sweatSignals.length > 0
   ? `\nSWEAT LOCKER MODEL SIGNALS (Score: ${scoreData.total}/100):\n${sweatSignals.map(s => `- ${s}`).join('\n')}`
-  : '';    
+  : '';
+
+// Anchor Jerry on the model's identified primary play so badge + narrative align
+const primaryPlayContext = scoreData?.primaryPlay
+  ? `\nMODEL'S PRIMARY PLAY: ${scoreData.primaryPlay.label} (${scoreData.primaryPlay.tier} tier — ${scoreData.primaryPlay.sub || ''}). Walk through every angle pointing toward this play in the technical breakdown below — pitcher matchup, offensive edges, bullpen, park, weather, lineup, recent form. Even when wrong, the user should see the reasoning was sound and data-driven.`
+  : '';
+const fullScoreContext = sweatScoreContext + primaryPlayContext;
   const todayET = new Date().toLocaleDateString('en-US', {timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'});
 
   const sportRules = {
@@ -5947,7 +5956,7 @@ CONFIDENCE TIER: ${
   'MODERATE — limited model coverage'
 }
 ${scoreData.isTournamentFloor ? 'Note: Best available play today — not a Prime Sweat. Measured tone.' : ''}
-${sweatScoreContext}
+${fullScoreContext}
 ${modelContext}
 ${sport === 'MLB' ? mlbContext : ''}
 ${sport === 'NBA' ? nbaContextStr : ''}
@@ -9793,7 +9802,10 @@ setJerryHistory(prev => {
             })()}
 
             {trendsTab==='mytrends'&&(()=>{
-              if(!jerryRecord && !jerryRecordLoading) fetchJerryRecord();
+              // Refetch if no data OR data is stale (>6hr old) to catch overnight resolver runs
+              const STALE_MS = 6 * 60 * 60 * 1000;
+              const isStale = jerryRecord && jerryRecord.fetched_at && (Date.now() - jerryRecord.fetched_at > STALE_MS);
+              if(!jerryRecordLoading && (!jerryRecord || isStale)) fetchJerryRecord();
               if(jerryRecordLoading) return(
                 <View style={{alignItems:'center',paddingTop:60}}>
                   <ActivityIndicator size="large" color={HRB_COLOR}/>
@@ -9817,28 +9829,44 @@ setJerryHistory(prev => {
                     <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Model performance — updated daily</Text>
                   </View>
 
-                  {/* NRFI Model Record — always show prominently */}
+                  {/* NRFI Model Record — split by tier (PRIME 90-94 vs Mild 70-79) */}
                   {(()=>{
-                    const nTotal = jerryRecord.nrfi.wins + jerryRecord.nrfi.losses;
-                    const nPct = nTotal > 0 ? Math.round((jerryRecord.nrfi.wins/nTotal)*100) : 0;
-                    if(nTotal === 0) return(
+                    const prime = jerryRecord.nrfi.prime || {wins:0, losses:0};
+                    const mild = jerryRecord.nrfi.mild || {wins:0, losses:0};
+                    const primeTotal = prime.wins + prime.losses;
+                    const mildTotal = mild.wins + mild.losses;
+                    const primePct = primeTotal > 0 ? Math.round((prime.wins/primeTotal)*100) : 0;
+                    const mildPct = mildTotal > 0 ? Math.round((mild.wins/mildTotal)*100) : 0;
+                    if(primeTotal === 0 && mildTotal === 0) return(
                       <View style={[styles.card,{marginBottom:16}]}>
                         <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL — LEAN TIERS</Text>
                         <Text style={{color:'#7a92a8',fontSize:13,marginTop:8}}>NRFI results loading...</Text>
                       </View>
                     );
                     return(
-                      <View style={[styles.hero,{marginBottom:16}]}>
-                        <View style={{flex:1,marginRight:12}}>
-                          <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL — LEAN TIERS</Text>
-                          <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:36}}>{jerryRecord.nrfi.wins}-{jerryRecord.nrfi.losses}</Text>
-                          <Text style={{color:'#7a92a8',fontSize:11,marginTop:2,lineHeight:15}}>{nPct}% on Mild (70-79) + Prime (90-94) leans</Text>
-                        </View>
-                        <View style={{alignItems:'center'}}>
-                          <View style={{width:72,height:72,borderRadius:36,borderWidth:2.5,borderColor:nPct>=55?'#00e5a0':'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
-                            <Text style={{color:nPct>=55?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:20}}>{nPct}%</Text>
+                      <View style={[styles.card,{marginBottom:16}]}>
+                        <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12,marginBottom:12}}>⚾ NRFI MODEL — LEAN TIERS</Text>
+                        {/* PRIME tier — gold standard */}
+                        <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8,borderBottomWidth:1,borderBottomColor:'#1f2d3d'}}>
+                          <View style={{flex:1}}>
+                            <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>🟢 PRIME (90-94)</Text>
+                            <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>Sweet spot tier</Text>
                           </View>
-                          <Text style={{color:'#4a6070',fontSize:10,marginTop:4}}>HIT RATE</Text>
+                          <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:18,marginRight:14}}>{prime.wins}-{prime.losses}</Text>
+                          <View style={{width:48,height:48,borderRadius:24,borderWidth:2,borderColor:primePct>=55?'#00e5a0':'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
+                            <Text style={{color:primePct>=55?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:13}}>{primeTotal>0?`${primePct}%`:'—'}</Text>
+                          </View>
+                        </View>
+                        {/* Mild Lean tier — volume */}
+                        <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8}}>
+                          <View style={{flex:1}}>
+                            <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>🔵 Mild Lean (70-79)</Text>
+                            <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>Volume tier — edge but not lock</Text>
+                          </View>
+                          <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:18,marginRight:14}}>{mild.wins}-{mild.losses}</Text>
+                          <View style={{width:48,height:48,borderRadius:24,borderWidth:2,borderColor:mildPct>=55?'#00e5a0':mildPct>=50?HRB_COLOR:'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
+                            <Text style={{color:mildPct>=55?'#00e5a0':mildPct>=50?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:13}}>{mildTotal>0?`${mildPct}%`:'—'}</Text>
+                          </View>
                         </View>
                       </View>
                     );
@@ -10704,7 +10732,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 {gamesSport === 'MLB' && (
   <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
     <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,marginBottom:4}}>⚾ MLB DATA NOTE</Text>
-    <Text style={{color:'#7a92a8',fontSize:11,lineHeight:17}}>Schedule and situational stats update as the season progresses. Jerry's analysis uses live pitcher Statcast data, park factors, umpire tendencies, and weather — all updated daily.</Text>
+    <Text style={{color:'#7a92a8',fontSize:11,lineHeight:17}}>Jerry analyzes each game through The Sweat Locker's proprietary MLB pipeline — pitcher Statcast metrics (xERA, K%, whiff rate, ground ball rate), platoon-adjusted wRC+ vs opposing handedness, K rate gap vs opponent lineup, bullpen ERA + recent workload, projected total + spread models, NRFI tier scoring, signal confluence detection, park run factors, weather (temp, wind direction), umpire K rate + over tendencies, confirmed lineups + injury impact, and L3 starter form. All updated daily.</Text>
   </View>
 )}
 {renderMatchupView(selectedGame, gamesSport)}
