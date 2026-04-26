@@ -2215,12 +2215,27 @@ def run():
                 print(f"  Team stats not available yet — market line fallback: {projected_total}")
 
             # ── xERA GAP OVER BOOST ──
-            # Data shows: big xERA gap (2.0+) → 59.3% Over
+            # Heuristic: big xERA gap (2.0+) historically correlates with overs.
+            # FIX 2026-04-26: only fire OVER lean when run projection ALSO supports it.
+            # Was previously surfacing OVER badge while Jerry's projection-driven take
+            # said UNDER on the same game (Tigers/Reds today). Two contradicting voices
+            # confused users. Now requires: xERA gap rule fires AND projected_total
+            # is at or above market total. Otherwise xERA gap stays as supporting
+            # evidence in the breakdown, not an OVER lean badge.
             if home_xera_val and away_xera_val:
                 xera_gap = abs(float(home_xera_val) - float(away_xera_val))
-                if xera_gap >= 2.0 and over_lean is None:
+                _market_total = total_line if not is_open_run else None
+                if _market_total is None:
+                    _market_total = total_line  # fall back to whichever is set
+                _projection_supports_over = (
+                    projected_total is not None and _market_total is not None
+                    and float(projected_total) >= float(_market_total) - 0.5
+                )
+                if xera_gap >= 2.0 and over_lean is None and _projection_supports_over:
                     over_lean = True
-                    print(f"  xERA gap {xera_gap:.1f} → Over lean (59.3% hit rate on 2.0+ gaps)")
+                    print(f"  xERA gap {xera_gap:.1f} + projection supports → Over lean")
+                elif xera_gap >= 2.0 and not _projection_supports_over:
+                    print(f"  xERA gap {xera_gap:.1f} fires but projection ({projected_total}) below market ({_market_total}) — NOT setting Over lean (avoid contradicting Jerry)")
                 elif xera_gap >= 2.0 and over_lean == False:
                     over_lean = None
                     print(f"  xERA gap {xera_gap:.1f} conflicts with Under lean → neutral")
