@@ -3952,6 +3952,43 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         label: `${fav} ${Math.abs(spreadEdge) >= 3 ? '' : 'lean'}`,
         sub: `${Math.abs(spreadEdge).toFixed(1)}-pt edge vs spread` };
       signalFloor = Math.abs(spreadEdge) >= 3 ? 80 : 68;
+    } else if(sport === 'NBA' && nbaContext) {
+      // Conservative NBA primary play (added 2026-04-25):
+      // - spread/ML only, no totals (no validation data on NBA totals delta)
+      // - STRONG tier max (no PRIME) until we have nba_game_results audit data
+      // - auto-fade gate: skip if model picks the market underdog
+      // - star player OUT flag suppresses (uncalibrated impact)
+      const _hNBA = nbaContext[game.home_team] ||
+        Object.values(nbaContext).find(t => t && t.team && game.home_team.includes(t.team.split(' ').pop()));
+      const _aNBA = nbaContext[game.away_team] ||
+        Object.values(nbaContext).find(t => t && t.team && game.away_team.includes(t.team.split(' ').pop()));
+      if(_hNBA && _aNBA && _hNBA.net_rating != null && _aNBA.net_rating != null) {
+        const nrGap = _hNBA.net_rating - _aNBA.net_rating;  // positive = home better
+        const homeOut = _hNBA.injury_note && _hNBA.injury_note.includes('OUT');
+        const awayOut = _aNBA.injury_note && _aNBA.injury_note.includes('OUT');
+        // Read market direction from bookmakers — pick lower ML as favorite
+        let marketHomeFav = null;
+        const mlMkt = bookmakers[0]?.markets?.find(m => m.key === 'h2h');
+        if(mlMkt && mlMkt.outcomes) {
+          const homeMl = mlMkt.outcomes.find(o => o.name === game.home_team)?.price;
+          const awayMl = mlMkt.outcomes.find(o => o.name === game.away_team)?.price;
+          if(homeMl != null && awayMl != null) marketHomeFav = homeMl < awayMl;
+        }
+        const modelHomeFav = nrGap > 0;
+        const directionAgrees = marketHomeFav == null || modelHomeFav === marketHomeFav;
+        const fav = nrGap > 0 ? homeName : awayName;
+        if(!homeOut && !awayOut && directionAgrees) {
+          if(Math.abs(nrGap) >= 8) {
+            primaryPlay = { type: 'ml', tier: 'STRONG', label: `${fav} ML lean`,
+              sub: `Net rating gap +${Math.abs(nrGap).toFixed(1)}` };
+            signalFloor = 68;
+          } else if(Math.abs(nrGap) >= 5) {
+            primaryPlay = { type: 'ml', tier: 'LIGHT', label: `${fav} lean`,
+              sub: `Net rating gap +${Math.abs(nrGap).toFixed(1)}` };
+            signalFloor = 55;
+          }
+        }
+      }
     }
 
     // Apply signal floor — Sweat Score never goes BELOW the strongest play's tier minimum.
