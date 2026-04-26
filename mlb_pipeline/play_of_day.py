@@ -252,18 +252,24 @@ def score_nba_game(game, nba_teams):
     return min(100, score), lean, lean_type
 
 def build_lean(ctx):
-    """Determine the lean for an MLB game"""
-    # NRFI — only flag as NRFI play in the 88-94 sweet spot (77% hit rate)
-    nrfi = ctx.get('nrfi_score') or 0
-    if 88 <= nrfi <= 94:
-        return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
+    """Determine the lean for an MLB game.
 
-    # ML lean — gated by SIGNAL CONFLUENCE + AUTO-FADE calibration (added 2026-04-25).
-    # Confluence: net >= +2 = STRONG (55% hit), >= +4 = PRIME (71% hit).
-    # Auto-fade: cohorts with hit rate <=30% get SUPPRESS, no-data mixed cohorts also SUPPRESS.
+    Priority order (BUG #1 FIX 2026-04-26): PRIME confluence ML beats EDGE NRFI.
+    Yesterday's Braves @ Phillies had NRFI 89 + PRIME confluence +5 — old code
+    returned NRFI first, blocking the stronger ML pick from Tier 1 HIGH CONVICTION
+    selection. Now PRIME confluence ML (>= +4) checked FIRST since multi-signal
+    alignment (~71% backtest) is stronger than NRFI 88-89 dead-edge band (~47%).
+    """
+    nrfi = ctx.get('nrfi_score') or 0
     projected_spread = ctx.get('projected_spread')
     confluence_net = ctx.get('signal_confluence_net')
-    if projected_spread is not None and confluence_net is not None and int(confluence_net) >= 2:
+
+    # Helper: try ML lean via auto-fade, return (label, type, is_nrfi) or None if suppressed
+    def _try_ml_lean(min_confluence):
+        if projected_spread is None or confluence_net is None:
+            return None
+        if int(confluence_net) < min_confluence:
+            return None
         try:
             from auto_fade import adjust_pick
             res = adjust_pick(
@@ -272,18 +278,36 @@ def build_lean(ctx):
                 home_ml=ctx.get('home_ml_odds'), away_ml=ctx.get('away_ml_odds')
             )
             if res['action'] == 'SUPPRESS':
-                # Don't surface this ML pick — model in losing cohort or uncalibrated
-                pass
-            elif res['action'] in ('SURFACE', 'FADE'):
+                return None
+            if res['action'] in ('SURFACE', 'FADE'):
                 fav_team = res['pick_team']
                 tier_tag = 'PRIME' if int(confluence_net) >= 4 else 'STRONG'
                 tag_extra = ' [auto-fade]' if res['action'] == 'FADE' else ''
-                return f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals){tag_extra}", 'ml', False
-        except Exception as e:
-            # Fallback if auto_fade unavailable: original behavior
+                return (f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals){tag_extra}", 'ml', False)
+        except Exception:
+            # Fallback if auto_fade unavailable
             fav_team = ctx.get('home_team') if float(projected_spread) > 0 else ctx.get('away_team')
             tier_tag = 'PRIME' if int(confluence_net) >= 4 else 'STRONG'
-            return f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals)", 'ml', False
+            return (f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals)", 'ml', False)
+        return None
+
+    # PRIORITY 1: PRIME confluence ML (>=+4) — strongest single signal, ~71% backtest
+    prime_ml = _try_ml_lean(4)
+    if prime_ml:
+        return prime_ml
+
+    # PRIORITY 2: PRIME NRFI sweet spot (90-94) — audit 78.9% hit rate
+    if 90 <= nrfi <= 94:
+        return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
+
+    # PRIORITY 3: EDGE NRFI 88-89 — borderline tier, lower hit rate
+    if 88 <= nrfi <= 89:
+        return f"NRFI — Score {nrfi}/100 (edge tier)", 'nrfi', True
+
+    # PRIORITY 4: STRONG confluence ML (+2 or +3) — ~55% backtest
+    strong_ml = _try_ml_lean(2)
+    if strong_ml:
+        return strong_ml
 
     # Total lean
     over_lean = ctx.get('over_lean')
@@ -491,14 +515,33 @@ def run():
         nrfi_str = f" | NRFI {c['nrfi_score']}" if c.get('nrfi_score') else ''
         print(f"  {c['sport']} {c['away_team']} @ {c['home_team']} — Score {c['score']}{nrfi_str} | Lean: {c.get('lean_display') or 'none'}")
 
-    # 2pm override gate: if a locked pick exists, only overwrite if new pick beats it by threshold
+    # 2pm override gate (BUG #2 FIX 2026-04-26): TIER hierarchy beats numeric score.
+    # Yesterday: locked Tier 2 (NRFI edge 89, score 78), afternoon found Tier 1
+    # (PRIME confluence ML, score 71). Old code blocked override based on score alone,
+    # keeping the WEAKER tier locked. Now: a strictly higher tier overrides regardless
+    # of score; same-tier override still requires +20 score delta.
+    # Tier ranking: 'high' = 1 (HIGH CONVICTION), 'solid' = 2 (NRFI/ML lean/NBA solid),
+    #               'standard' = 3 (best available)
+    TIER_RANK = {'high': 1, 'solid': 2, 'standard': 3}
     if existing_pick and et_hour >= 14:
         existing_score = existing_pick.get('score', {}).get('total', 0) or 0
+        existing_confidence = existing_pick.get('confidence', 'standard')
         new_score = pick.get('score', 0) or 0
-        if new_score < existing_score + SCORE_OVERRIDE_THRESHOLD:
-            print(f"🔒 Keeping locked pick — new score {new_score} doesn't beat locked {existing_score} + {SCORE_OVERRIDE_THRESHOLD}")
+        existing_tier = TIER_RANK.get(existing_confidence, 3)
+        new_tier = TIER_RANK.get(confidence, 3)
+        if new_tier < existing_tier:
+            # Strictly higher tier (lower rank number) — override regardless of score
+            print(f"🔄 TIER UPGRADE OVERRIDE — new pick {confidence} (tier {new_tier}) beats locked {existing_confidence} (tier {existing_tier}) regardless of score")
+        elif new_tier > existing_tier:
+            # Strictly lower tier — never override even if score is higher
+            print(f"🔒 Keeping locked pick — new pick {confidence} is strictly lower tier than locked {existing_confidence}")
             return
-        print(f"🔄 OVERRIDE — new pick scores {new_score} vs locked {existing_score} (+{new_score - existing_score})")
+        else:
+            # Same tier — score delta rule applies
+            if new_score < existing_score + SCORE_OVERRIDE_THRESHOLD:
+                print(f"🔒 Keeping locked pick — new score {new_score} doesn't beat locked {existing_score} + {SCORE_OVERRIDE_THRESHOLD} (same tier)")
+                return
+            print(f"🔄 OVERRIDE — same tier, new score {new_score} beats locked {existing_score} + {SCORE_OVERRIDE_THRESHOLD}")
 
     # Build the result — app will generate Jerry narrative on first load
     result = {
