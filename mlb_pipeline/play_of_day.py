@@ -291,16 +291,16 @@ def build_lean(ctx):
             return (f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals)", 'ml', False)
         return None
 
-    # PRIORITY 1: PRIME confluence ML (>=+4) — strongest single signal, ~71% backtest
+    # PRIORITY 1: PRIME NRFI sweet spot (90-94) — audit 78.9% hit rate (n=19)
+    if 90 <= nrfi <= 94:
+        return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
+
+    # PRIORITY 2: PRIME confluence ML (>=+4) — backtest 71% (n=7, smaller sample)
     prime_ml = _try_ml_lean(4)
     if prime_ml:
         return prime_ml
 
-    # PRIORITY 2: PRIME NRFI sweet spot (90-94) — audit 78.9% hit rate
-    if 90 <= nrfi <= 94:
-        return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
-
-    # PRIORITY 3: EDGE NRFI 88-89 — borderline tier, lower hit rate
+    # PRIORITY 3: EDGE NRFI 88-89 — borderline tier, ~47% audit hit rate
     if 88 <= nrfi <= 89:
         return f"NRFI — Score {nrfi}/100 (edge tier)", 'nrfi', True
 
