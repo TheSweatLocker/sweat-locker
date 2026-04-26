@@ -5774,7 +5774,42 @@ const sweatScoreContext = sweatSignals.length > 0
 const primaryPlayContext = scoreData?.primaryPlay
   ? `\nMODEL'S PRIMARY PLAY: ${scoreData.primaryPlay.label} (${scoreData.primaryPlay.tier} tier — ${scoreData.primaryPlay.sub || ''}). Walk through every angle pointing toward this play in the technical breakdown below — pitcher matchup, offensive edges, bullpen, park, weather, lineup, recent form. Even when wrong, the user should see the reasoning was sound and data-driven.`
   : '';
-const fullScoreContext = sweatScoreContext + primaryPlayContext;
+
+// Build "badges visible to user" so Jerry addresses each one and reconciles contradictions.
+// User sees badges on the game card + game detail. Jerry must discuss them — don't ignore
+// any badge. If two badges conflict (e.g. xERA-gap OVER lean + projection UNDER), explain
+// both perspectives and lean toward whichever has stronger backing. Avoids the "badge says
+// X, Jerry says opposite" problem without silently suppressing real signals.
+let visibleBadges: string[] = [];
+if(sport === 'MLB') {
+  const ctx = (mlbContext && (mlbContext[game.home_team] || mlbContext[game.away_team])) || null;
+  if(ctx) {
+    const nrfi = ctx.nrfi_score;
+    if(nrfi >= 88 && nrfi <= 94) visibleBadges.push(`PRIME NRFI badge (${nrfi}/100, sweet spot tier)`);
+    else if(nrfi >= 95) visibleBadges.push(`NRFI volatile warning badge (${nrfi}/100, 95+ unreliable trap tier — hit rate drops)`);
+    else if(nrfi >= 70 && nrfi <= 79) visibleBadges.push(`NRFI mild lean badge (${nrfi}/100)`);
+    else if(nrfi <= 35) visibleBadges.push(`YRFI badge (NRFI ${nrfi}/100 — first inning runs likely)`);
+    else if(nrfi <= 40) visibleBadges.push(`YRFI lean badge (${nrfi}/100)`);
+    if(ctx.over_lean === true) {
+      const projT = ctx.projected_total;
+      const closeT = ctx.close_total || ctx.open_total;
+      const projAgrees = projT && closeT && projT >= closeT - 0.5;
+      visibleBadges.push(`OVER lean badge (xERA gap rule fired — ${projAgrees ? 'projection ALSO points OVER, signals agree' : `BUT run projection ${projT} is below market ${closeT} — these conflict, explain BOTH and lean toward the projection unless xERA gap is overwhelming`}`);
+    }
+    if(ctx.signal_confluence_net != null && ctx.signal_confluence_net >= 4) {
+      visibleBadges.push(`PRIME CONFLUENCE badge (+${ctx.signal_confluence_net} signals stack on model's pick)`);
+    } else if(ctx.signal_confluence_net != null && ctx.signal_confluence_net >= 2) {
+      visibleBadges.push(`STRONG CONFLUENCE badge (+${ctx.signal_confluence_net} signals)`);
+    }
+    if(ctx.park_run_factor >= 110) visibleBadges.push(`Hitter park badge (factor ${ctx.park_run_factor})`);
+    else if(ctx.park_run_factor <= 92) visibleBadges.push(`Pitcher park badge (factor ${ctx.park_run_factor})`);
+  }
+}
+const badgeContext = visibleBadges.length > 0
+  ? `\nVISIBLE BADGES on this game (user sees these — discuss each one, reconcile any contradictions, never ignore):\n${visibleBadges.map(b => `- ${b}`).join('\n')}`
+  : '';
+
+const fullScoreContext = sweatScoreContext + primaryPlayContext + badgeContext;
   const todayET = new Date().toLocaleDateString('en-US', {timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'});
 
   const sportRules = {
