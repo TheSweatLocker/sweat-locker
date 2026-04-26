@@ -172,6 +172,24 @@ jobs:
           cd mlb_pipeline
           python nba_pipeline.py
 
+      - name: Log NBA picks (per-game features + market lines)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_pick_logger.py
+
+      - name: Resolve NBA results (BDL boxscores)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_pick_logger.py --resolve
+
       - name: Generate Play of the Day
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
