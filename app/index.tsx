@@ -5582,18 +5582,54 @@ if(sport === 'UFC') {
     // Fetch both fighters' stats from Supabase
     const fighterA = game.away_team; // UFC: away_team = fighter 1
     const fighterB = game.home_team; // UFC: home_team = fighter 2
-    const { data: fighterAStats } = await supabase
-      .from('ufc_fighter_stats')
-      .select('*')
-      .ilike('fighter_name', `%${fighterA.split(' ').pop()}%`)
-      .limit(1)
-      .single();
-    const { data: fighterBStats } = await supabase
-      .from('ufc_fighter_stats')
-      .select('*')
-      .ilike('fighter_name', `%${fighterB.split(' ').pop()}%`)
-      .limit(1)
-      .single();
+
+    // FIX 2026-04-27: Robust name lookup — try exact match first, then full-name ilike,
+    // then last-word fallback. Never use .single() (throws on multiple matches —
+    // 8 of 24 Saturday May 2 fighters silently failed because of this).
+    const lookupFighter = async (fullName: string) => {
+      if(!fullName) return null;
+      // 1. Exact match (case-insensitive via ilike with no wildcards)
+      const exact = await supabase.from('ufc_fighter_stats').select('*')
+        .ilike('fighter_name', fullName).limit(1);
+      if(exact.data && exact.data.length > 0) return exact.data[0];
+      // 2. Full-name ilike with wildcards (handles 'Steve Erceg' vs 'Stephen Erceg')
+      const fullIlike = await supabase.from('ufc_fighter_stats').select('*')
+        .ilike('fighter_name', `%${fullName}%`).limit(5);
+      if(fullIlike.data && fullIlike.data.length > 0) {
+        // Prefer exact case-insensitive match if multiple
+        const exactCI = fullIlike.data.find(f => (f.fighter_name||'').toLowerCase() === fullName.toLowerCase());
+        if(exactCI) return exactCI;
+        if(fullIlike.data.length === 1) return fullIlike.data[0];
+      }
+      // 3. Last-word fallback — but ONLY if it returns 1 match (avoid wrong-fighter risk)
+      const lastWord = fullName.split(' ').pop();
+      if(lastWord && lastWord.length >= 4) {
+        const lastIlike = await supabase.from('ufc_fighter_stats').select('*')
+          .ilike('fighter_name', `%${lastWord}%`).limit(10);
+        if(lastIlike.data && lastIlike.data.length === 1) return lastIlike.data[0];
+        // If multiple last-name matches, look for partial first-name overlap
+        if(lastIlike.data && lastIlike.data.length > 1) {
+          const firstWord = fullName.split(' ')[0].toLowerCase();
+          const matched = lastIlike.data.find(f => (f.fighter_name||'').toLowerCase().includes(firstWord));
+          if(matched) return matched;
+        }
+      }
+      return null;
+    };
+
+    const fighterAStats = await lookupFighter(fighterA);
+    const fighterBStats = await lookupFighter(fighterB);
+
+    // FIX 2026-04-27: Compute finishing_rate on-the-fly. Stored column is 0 across
+    // entire table — bug in scraper. KO+SUB / total_wins is the correct metric.
+    const computeFinishRate = (s: any) => {
+      if(!s || !s.total_wins || s.total_wins < 1) return null;
+      const ko = s.wins_by_ko || 0;
+      const sub = s.wins_by_sub || 0;
+      return Math.round(((ko + sub) / s.total_wins) * 100);
+    };
+    if(fighterAStats) fighterAStats.finishing_rate = computeFinishRate(fighterAStats);
+    if(fighterBStats) fighterBStats.finishing_rate = computeFinishRate(fighterBStats);
 
     const formatFighter = (name, s) => {
       if(!s) return `${name}: stats not available`;
@@ -5631,6 +5667,25 @@ if(sport === 'UFC') {
       ? `${fighterAStats.stance} vs ${fighterBStats.stance}${(fighterAStats.stance !== fighterBStats.stance) ? ' — awkward stance matchup (often leads to knockdown opportunities)' : ''}`
       : null;
 
+    // FIX 2026-04-27: Add explicit ITD / distance prop angle. Most retail UFC bettors
+    // play distance/ITD props — Jerry needs to surface this directly so his read
+    // gives users actionable prop reasoning, not just "good fight."
+    let itdAngle = '';
+    if(fighterAStats && fighterBStats && fighterAStats.finishing_rate != null && fighterBStats.finishing_rate != null) {
+      const fA = fighterAStats.finishing_rate;
+      const fB = fighterBStats.finishing_rate;
+      const combinedFinish = (fA + fB) / 2;
+      // Decision % per fighter from total wins
+      const decA = fighterAStats.total_wins ? Math.round(((fighterAStats.wins_by_dec || 0) / fighterAStats.total_wins) * 100) : null;
+      const decB = fighterBStats.total_wins ? Math.round(((fighterBStats.wins_by_dec || 0) / fighterBStats.total_wins) * 100) : null;
+      let itdLean = 'NEUTRAL';
+      if(combinedFinish >= 65) itdLean = 'STRONG ITD lean — both fighters finish at high rate, fight likely ends inside distance';
+      else if(combinedFinish >= 55) itdLean = 'MILD ITD lean — combined finish profile suggests inside-distance edge';
+      else if(combinedFinish <= 30) itdLean = 'STRONG distance lean — both fighters typically go to decision';
+      else if(combinedFinish <= 40) itdLean = 'MILD distance lean — fighters trend toward decisions';
+      itdAngle = `\n- DISTANCE / ITD prop angle: ${fighterAStats.fighter_name} finishes ${fA}% (decision ${decA}%), ${fighterBStats.fighter_name} finishes ${fB}% (decision ${decB}%). Combined finish profile: ${combinedFinish.toFixed(0)}%. ${itdLean}`;
+    }
+
     ufcContextStr = `
 UFC FIGHT CONTEXT:
 - Fighter A: ${formatFighter(fighterA, fighterAStats)}
@@ -5641,7 +5696,7 @@ ${fighterAStats && fighterBStats ? `- Striking gap: SLpM diff ${((fighterAStats.
 - Finishing: ${fighterAStats.fighter_name} ${fighterAStats.finishing_rate||0}% vs ${fighterBStats.fighter_name} ${fighterBStats.finishing_rate||0}%
 ${reachDiff !== null ? `- Reach advantage: ${reachDiff > 0 ? fighterAStats.fighter_name + ' +' + reachDiff + '\"' : reachDiff < 0 ? fighterBStats.fighter_name + ' +' + Math.abs(reachDiff) + '\"' : 'even reach'}${Math.abs(reachDiff) >= 3 ? ' ⚡ MATERIAL reach gap — aids striker/kickboxer' : ''}` : ''}
 ${stanceMatchup ? `- Stance: ${stanceMatchup}` : ''}
-${profileA && profileB ? `- Win profiles: ${fighterAStats.fighter_name} = ${profileA}, ${fighterBStats.fighter_name} = ${profileB}${(profileA === 'KO artist' && profileB === 'decision fighter') || (profileB === 'KO artist' && profileA === 'decision fighter') ? ' ⚡ STYLE MISMATCH (power vs volume)' : ''}` : ''}` : ''}`;
+${profileA && profileB ? `- Win profiles: ${fighterAStats.fighter_name} = ${profileA}, ${fighterBStats.fighter_name} = ${profileB}${(profileA === 'KO artist' && profileB === 'decision fighter') || (profileB === 'KO artist' && profileA === 'decision fighter') ? ' ⚡ STYLE MISMATCH (power vs volume)' : ''}` : ''}` : ''}${itdAngle}`;
   } catch(e) {
     //console.log('UFC context error:', e);
   }
