@@ -59,6 +59,79 @@ def get_bullpen_era(team_id, team_name, season=2026):
     except Exception as e:
         return None
 
+def get_pitching_inning_buckets(team_id, season=2026):
+    """Fetch team pitching by inning bucket (1-3, 4-6, 7-9).
+    Note: 7-9 bucket (ig07) is effectively bullpen since starters rarely pitch past 6.
+    1-3 and 4-6 are TEAM pitching (starter + reliever blended)."""
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats",
+            params={
+                "stats": "statSplits",
+                "group": "pitching",
+                "season": season,
+                "sitCodes": "i01,i02,i03,i04,i05,i06,i07,i08,i09,ig07"
+            },
+            timeout=15
+        )
+        data = r.json().get("stats", [])
+        if not data or not data[0].get("splits"):
+            return None
+        rows = {}
+        for s in data[0]["splits"]:
+            code = s.get("split", {}).get("code")
+            if code:
+                rows[code] = s.get("stat", {})
+
+        def ip_to_decimal(ip_raw):
+            try:
+                if "." in str(ip_raw):
+                    whole, frac = str(ip_raw).split(".")
+                    return int(whole) + (int(frac) / 3)
+                return float(ip_raw)
+            except (ValueError, TypeError):
+                return 0.0
+
+        def aggregate(codes):
+            ip = 0.0
+            er = 0
+            k = 0
+            bb = 0
+            h = 0
+            bf = 0
+            for code in codes:
+                if code not in rows:
+                    continue
+                stat = rows[code]
+                ip += ip_to_decimal(stat.get("inningsPitched", "0") or "0")
+                er += int(stat.get("earnedRuns", 0) or 0)
+                k += int(stat.get("strikeOuts", 0) or 0)
+                bb += int(stat.get("baseOnBalls", 0) or 0)
+                h += int(stat.get("hits", 0) or 0)
+                bf += int(stat.get("battersFaced", 0) or 0)
+            if ip < 1:
+                return None
+            return {
+                "era": round((er * 9) / ip, 2),
+                "whip": round((bb + h) / ip, 2),
+                "k_pct": round((k / bf) * 100, 1) if bf else None,
+                "ip": round(ip, 1),
+                "bf": bf,
+            }
+
+        bucket_1_3 = aggregate(["i01", "i02", "i03"])
+        bucket_4_6 = aggregate(["i04", "i05", "i06"])
+        bucket_7_9 = aggregate(["ig07"]) if "ig07" in rows else aggregate(["i07", "i08", "i09"])
+        return {
+            "innings_1_3": bucket_1_3,
+            "innings_4_6": bucket_4_6,
+            "innings_7_9": bucket_7_9,
+        }
+    except Exception as e:
+        print(f"  Inning bucket pitching error for team {team_id}: {e}")
+        return None
+
+
 def upload_bullpen(data):
     headers = {
         "apikey": SUPABASE_KEY,
@@ -102,8 +175,22 @@ def run():
             stats = get_bullpen_era(team_id, team_name, season)
         
         if stats:
+            # Layer in inning bucket pitching splits (1-3, 4-6, 7-9 buckets)
+            buckets = get_pitching_inning_buckets(team_id, season)
+            if buckets:
+                for label in ("innings_1_3", "innings_4_6", "innings_7_9"):
+                    b = buckets.get(label)
+                    if not b:
+                        continue
+                    stats[f"pitching_{label.split('_', 1)[1]}_era"] = b["era"]
+                    stats[f"pitching_{label.split('_', 1)[1]}_whip"] = b["whip"]
+                    stats[f"pitching_{label.split('_', 1)[1]}_k_pct"] = b["k_pct"]
+                    stats[f"pitching_{label.split('_', 1)[1]}_ip"] = b["ip"]
+                    stats[f"pitching_{label.split('_', 1)[1]}_bf"] = b["bf"]
+
             if upload_bullpen(stats):
-                print(f"✅ {team_name} — Bullpen ERA: {stats['bullpen_era']}, Save%: {stats['save_pct']}%")
+                pen79 = stats.get("pitching_7_9_era", "—")
+                print(f"✅ {team_name} — Bullpen ERA: {stats['bullpen_era']}, 7-9 ERA: {pen79}")
                 success += 1
             else:
                 print(f"❌ {team_name} — upload failed")

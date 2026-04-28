@@ -76,6 +76,84 @@ def fetch_team_split(team_id, sit_code, season=2026):
     except Exception:
         return None
 
+def fetch_team_inning_buckets(team_id, season=2026):
+    """Fetch team hitting inning splits and aggregate to 1-3, 4-6, 7-9 buckets.
+    Returns runs_per_game, ops, k_pct, wrc_plus, hr_per_game per bucket."""
+    try:
+        r = requests.get(
+            f'https://statsapi.mlb.com/api/v1/teams/{team_id}/stats',
+            params={
+                'stats': 'statSplits',
+                'group': 'hitting',
+                'season': season,
+                'sitCodes': 'i01,i02,i03,i04,i05,i06,i07,i08,i09,ig07'
+            },
+            timeout=15
+        )
+        data = r.json().get('stats', [])
+        if not data or not data[0].get('splits'):
+            return None
+        rows = {}
+        for s in data[0]['splits']:
+            code = s.get('split', {}).get('code')
+            if code:
+                rows[code] = s.get('stat', {})
+
+        def aggregate(codes):
+            pa = ab = runs = hits = doubles = triples = hr = bb = hbp = so = 0
+            games_played_max = 0  # use the max games_played across innings as bucket denominator
+            for code in codes:
+                if code not in rows:
+                    continue
+                stat = rows[code]
+                pa += safe_int(stat.get('plateAppearances'), 0) or 0
+                ab += safe_int(stat.get('atBats'), 0) or 0
+                runs += safe_int(stat.get('runs'), 0) or 0
+                hits += safe_int(stat.get('hits'), 0) or 0
+                doubles += safe_int(stat.get('doubles'), 0) or 0
+                triples += safe_int(stat.get('triples'), 0) or 0
+                hr += safe_int(stat.get('homeRuns'), 0) or 0
+                bb += safe_int(stat.get('baseOnBalls'), 0) or 0
+                hbp += safe_int(stat.get('hitByPitch'), 0) or 0
+                so += safe_int(stat.get('strikeOuts'), 0) or 0
+                gp = safe_int(stat.get('gamesPlayed'), 0) or 0
+                if gp > games_played_max:
+                    games_played_max = gp
+            if pa < 10 or games_played_max == 0:
+                return None
+            singles = hits - doubles - triples - hr
+            obp_num = hits + bb + hbp
+            obp_den = ab + bb + hbp
+            obp = round(obp_num / obp_den, 3) if obp_den else None
+            slg = round((singles + 2*doubles + 3*triples + 4*hr) / ab, 3) if ab else None
+            ops = round((obp or 0) + (slg or 0), 3) if obp is not None and slg is not None else None
+            woba = round((0.69*bb + 0.72*hbp + 0.89*singles + 1.27*doubles + 1.62*triples + 2.10*hr) / pa, 3)
+            wrc_plus = round((woba / LEAGUE_WOBA) * 100) if woba else 100
+            k_pct = round((so / pa) * 100, 1)
+            return {
+                'runs_per_game': round(runs / games_played_max, 2),
+                'hr_per_game': round(hr / games_played_max, 3),
+                'ops': ops,
+                'wrc_plus': wrc_plus,
+                'k_pct': k_pct,
+                'pa': pa,
+                'games': games_played_max,
+            }
+
+        bucket_1_3 = aggregate(['i01', 'i02', 'i03'])
+        bucket_4_6 = aggregate(['i04', 'i05', 'i06'])
+        # 7-9 bucket: prefer ig07 (innings 7+) — single split with more reliable PA volume
+        bucket_7_9 = aggregate(['ig07']) if 'ig07' in rows else aggregate(['i07', 'i08', 'i09'])
+        return {
+            'innings_1_3': bucket_1_3,
+            'innings_4_6': bucket_4_6,
+            'innings_7_9': bucket_7_9,
+        }
+    except Exception as e:
+        print(f"  Inning bucket fetch error for team {team_id}: {e}")
+        return None
+
+
 def get_team_stats_mlb_api():
     """Fetch team batting stats from MLB Stats API — free, never blocks"""
     print("Fetching team batting stats from MLB Stats API...")
@@ -155,6 +233,8 @@ def get_team_stats_mlb_api():
                 time.sleep(0.15)
                 away_split = fetch_team_split(team_id, 'a')
                 time.sleep(0.15)
+                inning_buckets = fetch_team_inning_buckets(team_id)
+                time.sleep(0.15)
 
                 results.append({
                     'team_name': team_name,
@@ -175,6 +255,7 @@ def get_team_stats_mlb_api():
                     'vs_lhp': vs_lhp,
                     'home_split': home_split,
                     'away_split': away_split,
+                    'inning_buckets': inning_buckets,
                 })
 
             except Exception as e:
@@ -250,6 +331,18 @@ def run():
             if t.get('away_split'):
                 record['ops_away'] = t['away_split']['ops']
                 record['runs_per_game_away'] = t['away_split']['runs_per_game']
+            # Inning bucket splits (offense in 1-3, 4-6, 7-9)
+            ib = t.get('inning_buckets')
+            if ib:
+                for label in ('innings_1_3', 'innings_4_6', 'innings_7_9'):
+                    bucket = ib.get(label)
+                    if not bucket:
+                        continue
+                    record[f'{label}_runs_per_game'] = bucket['runs_per_game']
+                    record[f'{label}_hr_per_game'] = bucket['hr_per_game']
+                    record[f'{label}_ops'] = bucket['ops']
+                    record[f'{label}_wrc_plus'] = bucket['wrc_plus']
+                    record[f'{label}_k_pct'] = bucket['k_pct']
 
             if upload_team_offense(record):
                 success += 1

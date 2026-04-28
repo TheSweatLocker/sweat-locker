@@ -389,6 +389,107 @@ def get_first_inning_splits(player_name):
     except Exception as e:
         return None
 
+def get_inning_bucket_splits(player_name):
+    """Fetch pitcher inning splits and aggregate to 1-3, 4-6, 7-9 buckets.
+    Returns ERA/WHIP/K% per bucket plus IP and batters faced for sample-size context."""
+    try:
+        search_resp = requests.get(
+            "https://statsapi.mlb.com/api/v1/people/search",
+            params={"names": player_name, "sportId": 1},
+            timeout=10
+        )
+        people = search_resp.json().get("people", [])
+        if not people:
+            return None
+        player_id = people[0]["id"]
+
+        def try_season(year):
+            resp = requests.get(
+                f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats",
+                params={
+                    "stats": "statSplits",
+                    "group": "pitching",
+                    "season": year,
+                    "sitCodes": "i01,i02,i03,i04,i05,i06,i07,i08,i09,ig07"
+                },
+                timeout=10
+            )
+            return resp.json().get("stats", [])
+
+        splits_payload = try_season(2026)
+        if not splits_payload or not splits_payload[0].get("splits"):
+            splits_payload = try_season(2025)
+            if not splits_payload or not splits_payload[0].get("splits"):
+                return None
+
+        # Index split rows by sitCode
+        rows = {}
+        for s in splits_payload[0]["splits"]:
+            code = s.get("split", {}).get("code")
+            if code:
+                rows[code] = s.get("stat", {})
+
+        def ip_to_decimal(ip_raw):
+            try:
+                if "." in str(ip_raw):
+                    whole, frac = str(ip_raw).split(".")
+                    return int(whole) + (int(frac) / 3)
+                return float(ip_raw)
+            except (ValueError, TypeError):
+                return 0.0
+
+        def aggregate(codes):
+            ip = 0.0
+            er = 0
+            k = 0
+            bb = 0
+            h = 0
+            bf = 0
+            for code in codes:
+                if code not in rows:
+                    continue
+                stat = rows[code]
+                ip += ip_to_decimal(stat.get("inningsPitched", "0") or "0")
+                er += int(stat.get("earnedRuns", 0) or 0)
+                k += int(stat.get("strikeOuts", 0) or 0)
+                bb += int(stat.get("baseOnBalls", 0) or 0)
+                h += int(stat.get("hits", 0) or 0)
+                bf += int(stat.get("battersFaced", 0) or 0)
+            if ip < 1:
+                return None
+            era = round((er * 9) / ip, 2)
+            whip = round((bb + h) / ip, 2)
+            k_pct = round((k / bf) * 100, 1) if bf else None
+            return {"era": era, "whip": whip, "k_pct": k_pct, "ip": round(ip, 1), "bf": bf}
+
+        bucket_1_3 = aggregate(["i01", "i02", "i03"])
+        bucket_4_6 = aggregate(["i04", "i05", "i06"])
+        # 7-9 bucket: prefer ig07 (innings 7+) for cleanest sample, fallback to i07+i08+i09
+        if "ig07" in rows:
+            bucket_7_9 = aggregate(["ig07"])
+        else:
+            bucket_7_9 = aggregate(["i07", "i08", "i09"])
+
+        result = {}
+        for label, b in (("innings_1_3", bucket_1_3), ("innings_4_6", bucket_4_6), ("innings_7_9", bucket_7_9)):
+            if b:
+                result[f"{label}_era"] = b["era"]
+                result[f"{label}_whip"] = b["whip"]
+                result[f"{label}_k_pct"] = b["k_pct"]
+                result[f"{label}_ip"] = b["ip"]
+                result[f"{label}_bf"] = b["bf"]
+            else:
+                result[f"{label}_era"] = None
+                result[f"{label}_whip"] = None
+                result[f"{label}_k_pct"] = None
+                result[f"{label}_ip"] = None
+                result[f"{label}_bf"] = None
+        return result
+    except Exception as e:
+        print(f"  Inning bucket fetch error for {player_name}: {e}")
+        return None
+
+
 def upload_pitcher(pitcher_data):
     headers = {
         "apikey": SUPABASE_KEY,
@@ -446,6 +547,7 @@ def build_pitcher_record(row, name, recent_stats, is_fangraphs=True, is_starter=
     throws = get_pitcher_handedness(name) if fetch_api else None
     first_inn = get_first_inning_splits(name) if fetch_api else None
     last_3 = get_last_3_starts(name) if fetch_api else None
+    inning_buckets = get_inning_bucket_splits(name) if fetch_api else None
 
     if is_fangraphs:
         pitcher = {
@@ -500,6 +602,10 @@ def build_pitcher_record(row, name, recent_stats, is_fangraphs=True, is_starter=
     pitcher["last_3_era"] = last_3["last_3_era"] if last_3 else None
     pitcher["last_3_k_pct"] = last_3["last_3_k_pct"] if last_3 else None
     pitcher["last_3_ip"] = last_3["last_3_ip"] if last_3 else None
+    # Inning bucket splits (1-3, 4-6, 7-9) — for Hard Rock-style inning bucket bets
+    if inning_buckets:
+        for k, v in inning_buckets.items():
+            pitcher[k] = v
     pitcher["season"] = "2026"
     pitcher["updated_at"] = "now()"
     return pitcher
