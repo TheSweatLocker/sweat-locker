@@ -157,23 +157,35 @@ def parse_fighter(url):
         td_def = get_stat('TD Def.:', soup)
         sub_avg = get_stat('Sub. Avg.:', soup)
 
+        # 2026-04-29 fix: ufcstats.com removed the wins-by-method summary block.
+        # Now we iterate the fight history table and tally methods on rows
+        # marked W/L='win'. Note: this counts UFC fights only (table excludes
+        # pre-UFC career), which is actually more relevant for prop modeling
+        # than overall career totals.
         wins_by_ko, wins_by_sub, wins_by_dec = 0, 0, 0
-        method_items = soup.find_all('p', class_='b-list__box-list-item_type_block')
-        for item in method_items:
-            text = item.text.strip()
-            if 'KO/TKO' in text:
-                try: wins_by_ko = int(text.split('\n')[-1].strip())
-                except: pass
-            elif 'SUB' in text:
-                try: wins_by_sub = int(text.split('\n')[-1].strip())
-                except: pass
-            elif 'DEC' in text:
-                try: wins_by_dec = int(text.split('\n')[-1].strip())
-                except: pass
+        ufc_wins_total = 0
+        for row in soup.find_all('tr', class_='b-fight-details__table-row'):
+            cells = row.find_all('td')
+            if len(cells) < 8:
+                continue
+            wl = cells[0].get_text(' ', strip=True).lower()
+            if wl != 'win':
+                continue
+            ufc_wins_total += 1
+            method = cells[7].get_text(' ', strip=True).upper()
+            if 'KO' in method or 'TKO' in method:
+                wins_by_ko += 1
+            elif 'SUB' in method:
+                wins_by_sub += 1
+            elif 'DEC' in method:  # U-DEC, S-DEC, M-DEC
+                wins_by_dec += 1
 
+        # finishing_rate uses UFC wins as denominator (matches the per-method
+        # counts above) — more meaningful than dividing UFC ko+sub by career
+        # total wins (would systematically understate true UFC finish rate).
         finishing_rate = None
-        if total_wins > 0:
-            finishing_rate = round((wins_by_ko + wins_by_sub) / total_wins * 100, 1)
+        if ufc_wins_total > 0:
+            finishing_rate = round((wins_by_ko + wins_by_sub) / ufc_wins_total * 100, 1)
 
         return {
             "fighter_name": name,

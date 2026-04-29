@@ -2575,6 +2575,16 @@ def run():
                         net_recency = h_recency - a_recency
                         if abs(net_recency) >= 0.8:
                             breakdown['recency'] = 'home' if net_recency > 0 else 'away'
+                        # EXTREME matchup: one team genuinely HOT (≥+1.0 R/G L10
+                        # vs season) and opponent COLD (≤-1.0 R/G). When both
+                        # extremes converge, fire an additional confluence vote
+                        # so the matchup gets +2 net (vs +1 for normal recency).
+                        h_off_delta = h_off_l10 - h_off_szn
+                        a_off_delta = a_off_l10 - a_off_szn
+                        if h_off_delta >= 1.0 and a_off_delta <= -1.0:
+                            breakdown['recency_extreme'] = 'home'  # 🔥 home vs ❄️ away
+                        elif a_off_delta >= 1.0 and h_off_delta <= -1.0:
+                            breakdown['recency_extreme'] = 'away'  # 🔥 away vs ❄️ home
                 except Exception:
                     pass  # missing L10 data is fine — signal just doesn't fire
 
