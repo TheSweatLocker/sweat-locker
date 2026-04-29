@@ -265,10 +265,16 @@ def build_lean(ctx):
     confluence_net = ctx.get('signal_confluence_net')
 
     # Helper: try ML lean via auto-fade, return (label, type, is_nrfi) or None if suppressed
-    def _try_ml_lean(min_confluence):
+    # Hybrid tier formula 2026-04-29: PRIME requires confluence ≥+4 AND |spread_delta| ≥2.0;
+    # STRONG requires ≥+2 AND |delta| ≥1.5; LEAN requires ≥+1 AND |delta| ≥1.0.
+    # Prevents zero-edge confluence picks (e.g. Dodgers PRIME +6 with delta +0.1).
+    def _try_ml_lean(min_confluence, min_abs_delta):
         if projected_spread is None or confluence_net is None:
             return None
         if int(confluence_net) < min_confluence:
+            return None
+        spread_delta = ctx.get('spread_delta')
+        if spread_delta is None or abs(float(spread_delta)) < min_abs_delta:
             return None
         try:
             from auto_fade import adjust_pick
@@ -295,8 +301,8 @@ def build_lean(ctx):
     if 90 <= nrfi <= 94:
         return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
 
-    # PRIORITY 2: PRIME confluence ML (>=+4) — backtest 71% (n=7, smaller sample)
-    prime_ml = _try_ml_lean(4)
+    # PRIORITY 2: PRIME confluence ML (≥+4 AND |delta| ≥2.0) — hybrid threshold
+    prime_ml = _try_ml_lean(4, 2.0)
     if prime_ml:
         return prime_ml
 
@@ -304,8 +310,8 @@ def build_lean(ctx):
     if 88 <= nrfi <= 89:
         return f"NRFI — Score {nrfi}/100 (edge tier)", 'nrfi', True
 
-    # PRIORITY 4: STRONG confluence ML (+2 or +3) — ~55% backtest
-    strong_ml = _try_ml_lean(2)
+    # PRIORITY 4: STRONG confluence ML (≥+2 AND |delta| ≥1.5) — hybrid threshold
+    strong_ml = _try_ml_lean(2, 1.5)
     if strong_ml:
         return strong_ml
 
@@ -463,19 +469,28 @@ def run():
             return res['action'] != 'SUPPRESS'
         except Exception:
             return True  # fail-open if auto_fade unavailable
+    # Hybrid PRIME ML: confluence ≥+4 AND |spread_delta| ≥2.0.
+    # Prevents zero-edge confluence picks (e.g. Dodgers PRIME +6 with delta +0.1)
+    # from outranking true PRIME plays where model disagrees with market.
     ml_high_conviction = [
         c for c in ml_candidates
         if c.get('signal_confluence_net') is not None
         and int(c['signal_confluence_net']) >= 4
+        and c.get('spread_delta') is not None
+        and abs(float(c['spread_delta'])) >= 2.0
         and _has_pitcher_data(c)
         and _passes_auto_fade(c)
     ]
     if ml_high_conviction:
-        # Sort by confluence net (descending) — most signals stacking wins
-        ml_high_conviction.sort(key=lambda c: int(c.get('signal_confluence_net') or 0), reverse=True)
+        # Sort by combined signal: confluence_net + |spread_delta| weight
+        ml_high_conviction.sort(
+            key=lambda c: (int(c.get('signal_confluence_net') or 0)
+                           + abs(float(c.get('spread_delta') or 0))),
+            reverse=True,
+        )
         pick = ml_high_conviction[0]
         confidence = 'high'
-        print(f"🔒 ML HIGH CONVICTION (PRIME confluence): {pick['away_team']} @ {pick['home_team']} — net {int(pick.get('signal_confluence_net') or 0):+d} signals, delta {float(pick.get('spread_delta') or 0):+.1f}")
+        print(f"🔒 ML HIGH CONVICTION (PRIME confluence + delta): {pick['away_team']} @ {pick['home_team']} — net {int(pick.get('signal_confluence_net') or 0):+d} signals, delta {float(pick.get('spread_delta') or 0):+.1f}")
     elif sweet_spot:
         sweet_spot.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
         pick = sweet_spot[0]

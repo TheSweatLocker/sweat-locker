@@ -3925,20 +3925,28 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
           return modelPicksHome === marketPicksHome;
         })();
 
+        // Hybrid tier formula 2026-04-29: PRIME ML requires confluence ≥+4 AND
+        // |spread_delta| ≥2.0; STRONG requires ≥+2 AND ≥1.5. Prevents zero-edge
+        // confluence picks (e.g. PRIME +6 with delta +0.1 — chalk priced into market).
+        const sd = ctx.spread_delta;
+        const absDelta = sd != null ? Math.abs(Number(sd)) : 0;
+        const primeMlQualifies = conf != null && Number(conf) >= 4 && absDelta >= 2.0 && _mlPlayable;
+        const strongMlQualifies = conf != null && Number(conf) >= 2 && absDelta >= 1.5 && _mlPlayable;
+
         // Priority order: highest tier wins
-        if(conf != null && Number(conf) >= 4 && _mlPlayable) {
+        if(primeMlQualifies) {
           const fav = projSpread > 0 ? homeName : awayName;
-          primaryPlay = { type: 'ml', tier: 'PRIME', label: `${fav} ML`, sub: `PRIME confluence (${conf} signals)` };
+          primaryPlay = { type: 'ml', tier: 'PRIME', label: `${fav} ML`, sub: `PRIME confluence (${conf} signals, +${absDelta.toFixed(1)} delta)` };
           signalFloor = 85;
-        } else if(nrfi != null && nrfi >= 88 && nrfi <= 94) {
+        } else if(nrfi != null && nrfi >= 90 && nrfi <= 94) {
           primaryPlay = { type: 'nrfi', tier: 'PRIME', label: 'NRFI', sub: `Score ${nrfi}/100 — sweet spot tier` };
           signalFloor = 82;
         } else if(nrfi != null && nrfi <= 25) {
           primaryPlay = { type: 'yrfi', tier: 'STRONG', label: 'YRFI', sub: `NRFI ${nrfi} — first inning runs likely` };
           signalFloor = 72;
-        } else if(conf != null && Number(conf) >= 2 && _mlPlayable) {
+        } else if(strongMlQualifies) {
           const fav = projSpread > 0 ? homeName : awayName;
-          primaryPlay = { type: 'ml', tier: 'STRONG', label: `${fav} ML lean`, sub: `STRONG confluence (${conf} signals)` };
+          primaryPlay = { type: 'ml', tier: 'STRONG', label: `${fav} ML lean`, sub: `STRONG confluence (${conf} signals, +${absDelta.toFixed(1)} delta)` };
           signalFloor = 70;
         } else if(ctx.over_lean === true) {
           const ct = ctx.close_total;

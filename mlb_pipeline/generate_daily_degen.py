@@ -136,6 +136,17 @@ def extract_leg_candidates(games, props):
             continue
         if confluence_net < 1:
             continue
+        # Hybrid tier formula: require both confluence + spread_delta to qualify.
+        # Prevents zero-edge confluence picks (e.g. Dodgers PRIME +6 with delta +0.1)
+        # from being selected. PRIME = ≥+4 AND |delta| ≥2.0; STRONG = ≥+2 AND ≥1.5;
+        # LEAN = ≥+1 AND ≥1.0.
+        abs_delta = abs(sd) if sd is not None else 0
+        if confluence_net >= 4 and abs_delta < 2.0:
+            continue
+        if 2 <= confluence_net <= 3 and abs_delta < 1.5:
+            continue
+        if confluence_net == 1 and abs_delta < 1.0:
+            continue
 
         # Apply auto-fade calibration
         fav_team = g.get('home_team') if ps > 0 else g.get('away_team')
@@ -151,8 +162,10 @@ def extract_leg_candidates(games, props):
             fav_team = res['pick_team']
             is_faded = (res['action'] == 'FADE')
 
+        # Hybrid tier: confluence net AND spread_delta both contribute. After the
+        # threshold gate above, all picks here are valid; tier reflects strength.
         tier = 'PRIME' if confluence_net >= 4 else 'STRONG' if confluence_net >= 2 else 'LEAN'
-        conviction = min(90, 60 + confluence_net * 6)
+        conviction = min(90, 60 + confluence_net * 6 + min(int(abs_delta * 3), 12))
         breakdown = g.get('signal_confluence_breakdown') or {}
         sig_str = ', '.join(f"{k}" for k in breakdown.keys()) or 'multiple signals'
         candidates.append({
