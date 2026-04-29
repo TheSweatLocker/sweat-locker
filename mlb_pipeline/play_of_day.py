@@ -489,16 +489,18 @@ def run():
             reverse=True,
         )
         pick = ml_high_conviction[0]
-        # 'elite' tier (above 'high') so PRIME confluence ML overrides locked
-        # sweet-spot NRFI without requiring +20 score gap. Sub-ranking handles
-        # the case where morning lock is sweet-spot NRFI and afternoon finds
-        # PRIME confluence ML — confluence is more reliable per backtest.
-        confidence = 'elite'
+        # PRIME confluence ML = 'high' tier. Was briefly 'elite' but reverted
+        # 2026-04-29: 352-game audit shows sweet-spot NRFI hits 78.9% (proven)
+        # while PRIME ML is ~71% from a small backtest (n<30, unproven live).
+        # Sweet-spot NRFI takes the 'elite' slot; PRIME ML stays 'high'.
+        confidence = 'high'
         print(f"🔒 ML HIGH CONVICTION (PRIME confluence + delta): {pick['away_team']} @ {pick['home_team']} — net {int(pick.get('signal_confluence_net') or 0):+d} signals, delta {float(pick.get('spread_delta') or 0):+.1f}")
     elif sweet_spot:
         sweet_spot.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
         pick = sweet_spot[0]
-        confidence = 'high'
+        # 'elite' tier — sweet-spot NRFI 90-94 has the strongest empirical
+        # track record on the slate (78.9% over 352 audited games).
+        confidence = 'elite'
         print(f"🔒 SWEET SPOT pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
     elif best_overall.get('sport') == 'NBA' and best_overall['score'] >= 75:
         pick = best_overall
@@ -541,8 +543,8 @@ def run():
     # of score; same-tier override still requires +20 score delta.
     # Tier ranking: 'high' = 1 (HIGH CONVICTION), 'solid' = 2 (NRFI/ML lean/NBA solid),
     #               'standard' = 3 (best available)
-    # 'elite' = PRIME confluence ML (multi-signal + delta) — strongest tier.
-    # 'high' = sweet-spot NRFI / NBA high conviction.
+    # 'elite' = sweet-spot NRFI 90-94 — proven 78.9% over 352 audited games.
+    # 'high' = PRIME confluence ML / NBA high conviction.
     # 'solid' = NRFI edge / ML lean / NBA solid.
     # 'standard' = best available fallback.
     TIER_RANK = {'elite': 0, 'high': 1, 'solid': 2, 'standard': 3}
