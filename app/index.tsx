@@ -4596,20 +4596,37 @@ const fetchJerryRecord = async () => {
                 prime: {wins:0, losses:0},
                 mild: {wins:0, losses:0}};
     try {
-      const { data: nrfiData } = await supabase
+      // FIX: filter at DB level to PRIME (90-94) and Mild (70-79) tiers only.
+      // mlb_game_results has 2700+ resolved NRFI rows but supabase-js defaults to
+      // 1000-row limit, so unfiltered .select() was randomly truncating PRIME
+      // tier counts (PRIME is only ~1% of all NRFI games — easily missed).
+      // Pulling tier-bounded rows with explicit limit keeps the query tight.
+      const { data: primeData } = await supabase
         .from('mlb_game_results')
         .select('nrfi_score, nrfi_result')
-        .not('nrfi_result', 'is', null);
-      if(nrfiData && nrfiData.length > 0) {
-        const primeGames = nrfiData.filter((r: any) => r.nrfi_score >= 90 && r.nrfi_score <= 94);
-        const mildGames = nrfiData.filter((r: any) => r.nrfi_score >= 70 && r.nrfi_score <= 79);
-        nrfi.prime.wins = primeGames.filter((r: any) => r.nrfi_result === 'NRFI').length;
-        nrfi.prime.losses = primeGames.filter((r: any) => r.nrfi_result === 'YRFI').length;
-        nrfi.mild.wins = mildGames.filter((r: any) => r.nrfi_result === 'NRFI').length;
-        nrfi.mild.losses = mildGames.filter((r: any) => r.nrfi_result === 'YRFI').length;
-        nrfi.wins = nrfi.prime.wins + nrfi.mild.wins;
-        nrfi.losses = nrfi.prime.losses + nrfi.mild.losses;
+        .not('nrfi_result', 'is', null)
+        .gte('nrfi_score', 90)
+        .lte('nrfi_score', 94)
+        .order('game_date', {ascending: false})
+        .limit(500);
+      const { data: mildData } = await supabase
+        .from('mlb_game_results')
+        .select('nrfi_score, nrfi_result')
+        .not('nrfi_result', 'is', null)
+        .gte('nrfi_score', 70)
+        .lte('nrfi_score', 79)
+        .order('game_date', {ascending: false})
+        .limit(1000);
+      if(primeData) {
+        nrfi.prime.wins = primeData.filter((r: any) => r.nrfi_result === 'NRFI').length;
+        nrfi.prime.losses = primeData.filter((r: any) => r.nrfi_result === 'YRFI').length;
       }
+      if(mildData) {
+        nrfi.mild.wins = mildData.filter((r: any) => r.nrfi_result === 'NRFI').length;
+        nrfi.mild.losses = mildData.filter((r: any) => r.nrfi_result === 'YRFI').length;
+      }
+      nrfi.wins = nrfi.prime.wins + nrfi.mild.wins;
+      nrfi.losses = nrfi.prime.losses + nrfi.mild.losses;
     } catch(e) {}
 
     // Best Bet history from dedicated table
