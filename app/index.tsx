@@ -3899,59 +3899,19 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
     if(sport === 'MLB' && mlbContext) {
       const ctx = (mlbContext[game.home_team]) || mlbContext;
       if(ctx) {
-        const nrfi = ctx.nrfi_score;
-        const conf = ctx.signal_confluence_net;
-        const projSpread = ctx.projected_spread;
-        const cs = ctx.close_spread;
-        const hml = ctx.home_ml_odds;
-        const aml = ctx.away_ml_odds;
-
-        // ML auto-fade gate: don't surface ML play if model picks dog OR mixed cohort.
-        // Mirrors auto_fade.py logic in mlb_pipeline. Cohorts that hit <30% historically
-        // (ml_dog, ml_dog_high_conv) or have no calibration (ml_fav_rl_dog, ml_dog_rl_fav)
-        // get suppressed from primary play surfacing.
-        const _mlPlayable = (() => {
-          if(projSpread == null) return false;
-          const modelPicksHome = projSpread > 0;
-          let mlMarketPicksHome = null;
-          let rlMarketPicksHome = null;
-          if(hml != null && aml != null) mlMarketPicksHome = Number(hml) < Number(aml);
-          if(cs != null) rlMarketPicksHome = Number(cs) < 0;
-          // Mixed cohort = ML fav and RL fav are different teams → suppress (uncalibrated)
-          if(mlMarketPicksHome != null && rlMarketPicksHome != null && mlMarketPicksHome !== rlMarketPicksHome) return false;
-          // Model agrees with market direction (use ML when available, else RL)
-          const marketPicksHome = mlMarketPicksHome != null ? mlMarketPicksHome : rlMarketPicksHome;
-          if(marketPicksHome == null) return true; // no market signal, allow
-          return modelPicksHome === marketPicksHome;
-        })();
-
-        // Hybrid tier formula 2026-04-29: PRIME ML requires confluence ≥+4 AND
-        // |spread_delta| ≥2.0; STRONG requires ≥+2 AND ≥1.5. Prevents zero-edge
-        // confluence picks (e.g. PRIME +6 with delta +0.1 — chalk priced into market).
-        const sd = ctx.spread_delta;
-        const absDelta = sd != null ? Math.abs(Number(sd)) : 0;
-        const primeMlQualifies = conf != null && Number(conf) >= 4 && absDelta >= 2.0 && _mlPlayable;
-        const strongMlQualifies = conf != null && Number(conf) >= 2 && absDelta >= 1.5 && _mlPlayable;
-
-        // Priority order: highest tier wins
-        if(primeMlQualifies) {
-          const fav = projSpread > 0 ? homeName : awayName;
-          primaryPlay = { type: 'ml', tier: 'PRIME', label: `${fav} ML`, sub: `PRIME confluence (${conf} signals, +${absDelta.toFixed(1)} delta)` };
-          signalFloor = 85;
-        } else if(nrfi != null && nrfi >= 90 && nrfi <= 94) {
-          primaryPlay = { type: 'nrfi', tier: 'PRIME', label: 'NRFI', sub: `Score ${nrfi}/100 — sweet spot tier` };
-          signalFloor = 82;
-        } else if(nrfi != null && nrfi <= 25) {
-          primaryPlay = { type: 'yrfi', tier: 'STRONG', label: 'YRFI', sub: `NRFI ${nrfi} — first inning runs likely` };
-          signalFloor = 72;
-        } else if(strongMlQualifies) {
-          const fav = projSpread > 0 ? homeName : awayName;
-          primaryPlay = { type: 'ml', tier: 'STRONG', label: `${fav} ML lean`, sub: `STRONG confluence (${conf} signals, +${absDelta.toFixed(1)} delta)` };
-          signalFloor = 70;
-        } else if(ctx.over_lean === true) {
-          const ct = ctx.close_total;
-          primaryPlay = { type: 'over', tier: 'LIGHT', label: ct ? `Over ${ct}` : 'Over', sub: 'xERA gap rule fired' };
-          signalFloor = 60;
+        // Read server-computed primary play (compute_primary_play in game_context.py).
+        // All tier thresholds (confluence net, spread_delta, NRFI bands) live in
+        // Python so we can tune them without resubmitting to Apple. Don't put
+        // threshold values in this file — see compute_primary_play() backend-side.
+        const pp = ctx.primary_play;
+        if(pp && pp.type) {
+          primaryPlay = {
+            type: pp.type,
+            tier: pp.tier,
+            label: pp.label,
+            sub: pp.sub,
+          };
+          signalFloor = Number(pp.signal_floor) || 0;
         }
       }
     } else if(sport === 'NCAAB' && Math.abs(spreadEdge) >= 1.5) {

@@ -1357,6 +1357,117 @@ def get_park_factors(home_team):
     except:
         return None
 
+def compute_primary_play(ctx):
+    """Compute the headline primary-play recommendation for a game, server-side.
+
+    Lives here (not in the app) so that all tier thresholds — confluence net,
+    spread_delta, NRFI bands — can be tuned from Python without an App Store
+    submission. App reads ctx.primary_play directly; no threshold logic in JS.
+
+    Returns a dict (jsonb-friendly) or None if no qualifying play.
+    Schema: {type, tier, label, sub, signal_floor}
+      type: 'ml' | 'nrfi' | 'yrfi' | 'over' | None
+      tier: 'PRIME' | 'STRONG' | 'LEAN' | None
+      signal_floor: int — used for app's calcGameSweatScore floor
+
+    Mirrors prior in-app logic (now removed): hybrid PRIME ML requires both
+    confluence ≥+4 AND |spread_delta| ≥2.0; STRONG requires ≥+2 AND ≥1.5.
+    """
+    nrfi = ctx.get('nrfi_score')
+    conf = ctx.get('signal_confluence_net')
+    proj_spread = ctx.get('projected_spread')
+    close_spread = ctx.get('close_spread')
+    home_ml = ctx.get('home_ml_odds')
+    away_ml = ctx.get('away_ml_odds')
+    sd = ctx.get('spread_delta')
+    home_team = ctx.get('home_team') or 'Home'
+    away_team = ctx.get('away_team') or 'Away'
+
+    abs_delta = abs(float(sd)) if sd is not None else 0.0
+
+    # ML auto-fade gate: only surface ML primary play when model agrees with
+    # market direction (otherwise we're recommending an underdog or mixed cohort).
+    def _ml_playable():
+        if proj_spread is None:
+            return False
+        try:
+            model_picks_home = float(proj_spread) > 0
+        except (TypeError, ValueError):
+            return False
+        ml_market_picks_home = None
+        rl_market_picks_home = None
+        if home_ml is not None and away_ml is not None:
+            try:
+                ml_market_picks_home = float(home_ml) < float(away_ml)
+            except (TypeError, ValueError):
+                pass
+        if close_spread is not None:
+            try:
+                rl_market_picks_home = float(close_spread) < 0
+            except (TypeError, ValueError):
+                pass
+        # Mixed cohort = ML fav and RL fav are different teams → suppress
+        if (ml_market_picks_home is not None and rl_market_picks_home is not None
+                and ml_market_picks_home != rl_market_picks_home):
+            return False
+        market_picks_home = (ml_market_picks_home if ml_market_picks_home is not None
+                             else rl_market_picks_home)
+        if market_picks_home is None:
+            return True
+        return model_picks_home == market_picks_home
+
+    ml_playable = _ml_playable()
+    fav = home_team if (proj_spread is not None and float(proj_spread) > 0) else away_team
+
+    # PRIME ML: confluence ≥+4 AND |delta| ≥2.0 (hybrid threshold)
+    if conf is not None and int(conf) >= 4 and abs_delta >= 2.0 and ml_playable:
+        return {
+            "type": "ml",
+            "tier": "PRIME",
+            "label": f"{fav} ML",
+            "sub": f"PRIME confluence ({int(conf)} signals, {abs_delta:.1f} delta)",
+            "signal_floor": 85,
+        }
+    # PRIME NRFI sweet spot: 90-94 (78.9% audit hit rate per 352 games)
+    if nrfi is not None and 90 <= int(nrfi) <= 94:
+        return {
+            "type": "nrfi",
+            "tier": "PRIME",
+            "label": "NRFI",
+            "sub": f"Score {int(nrfi)}/100 — sweet spot tier",
+            "signal_floor": 82,
+        }
+    # YRFI (first inning runs likely): score very low
+    if nrfi is not None and int(nrfi) <= 25:
+        return {
+            "type": "yrfi",
+            "tier": "STRONG",
+            "label": "YRFI",
+            "sub": f"NRFI {int(nrfi)} — first inning runs likely",
+            "signal_floor": 72,
+        }
+    # STRONG ML: confluence ≥+2 AND |delta| ≥1.5
+    if conf is not None and int(conf) >= 2 and abs_delta >= 1.5 and ml_playable:
+        return {
+            "type": "ml",
+            "tier": "STRONG",
+            "label": f"{fav} ML lean",
+            "sub": f"STRONG confluence ({int(conf)} signals, {abs_delta:.1f} delta)",
+            "signal_floor": 70,
+        }
+    # OVER lean (xERA gap rule fired)
+    if ctx.get('over_lean') is True:
+        ct = ctx.get('close_total')
+        return {
+            "type": "over",
+            "tier": "LIGHT",
+            "label": f"Over {ct}" if ct else "Over",
+            "sub": "xERA gap rule fired",
+            "signal_floor": 60,
+        }
+    return None
+
+
 def upload_game_context(context, commence_time=None):
     """Upload game context to Supabase with line-lock semantics.
 
@@ -1377,6 +1488,16 @@ def upload_game_context(context, commence_time=None):
         "Content-Type": "application/json",
         "Prefer": "resolution=merge-duplicates,return=minimal"
     }
+
+    # Compute server-side primary play (replaces in-app threshold logic).
+    # App reads ctx.primary_play directly so tuning thresholds doesn't require
+    # an App Store resubmission.
+    try:
+        context["primary_play"] = compute_primary_play(context)
+    except Exception as e:
+        print(f"  primary_play compute failed: {e}")
+        context["primary_play"] = None
+
     # NRFI score stability: lock after 8am ET run so tier classifications don't drift
     try:
         et_now = datetime.now(timezone.utc) - timedelta(hours=4)
@@ -1490,6 +1611,7 @@ def log_game_result(context):
             "away_pitcher_last_3_era": context.get("away_pitcher_last_3_era"),
             "home_pitcher_last_3_k_pct": context.get("home_pitcher_last_3_k_pct"),
             "away_pitcher_last_3_k_pct": context.get("away_pitcher_last_3_k_pct"),
+            "primary_play": context.get("primary_play"),
             "home_team_oaa": context.get("home_team_oaa"),
             "away_team_oaa": context.get("away_team_oaa"),
             "home_team_xwoba": context.get("home_team_xwoba"),
