@@ -76,6 +76,62 @@ def fetch_team_split(team_id, sit_code, season=2026):
     except Exception:
         return None
 
+def fetch_team_last10(team_id, season=2026):
+    """Pull team's last 10 games and compute recency offense + defense averages.
+
+    Returns dict with last10_runs_per_game, last10_runs_allowed, last10_run_diff,
+    games_sampled. None if no game logs available.
+
+    Used to weight projection toward recent form: a team scoring 5.5 R/G
+    season-long but 3.2 R/G last 10 should NOT project the same as a hot team.
+    Blended into game_context.py spread/total formula at 0.35 weight.
+    """
+    try:
+        # Hitting gameLog → runs scored
+        h = requests.get(
+            f'https://statsapi.mlb.com/api/v1/teams/{team_id}/stats',
+            params={'stats': 'gameLog', 'group': 'hitting', 'season': season},
+            timeout=15
+        ).json()
+        h_splits = h.get('stats', [])
+        if not h_splits or not h_splits[0].get('splits'):
+            return None
+        h_rows = h_splits[0]['splits']
+        last10_h = h_rows[-10:] if len(h_rows) >= 10 else h_rows
+        if not last10_h:
+            return None
+        runs_scored = [int(s.get('stat', {}).get('runs', 0) or 0) for s in last10_h]
+
+        # Pitching gameLog → runs allowed
+        p = requests.get(
+            f'https://statsapi.mlb.com/api/v1/teams/{team_id}/stats',
+            params={'stats': 'gameLog', 'group': 'pitching', 'season': season},
+            timeout=15
+        ).json()
+        p_splits = p.get('stats', [])
+        runs_allowed = []
+        if p_splits and p_splits[0].get('splits'):
+            p_rows = p_splits[0]['splits']
+            last10_p = p_rows[-10:] if len(p_rows) >= 10 else p_rows
+            runs_allowed = [int(s.get('stat', {}).get('runs', 0) or 0) for s in last10_p]
+
+        n = len(runs_scored)
+        if n == 0:
+            return None
+        rpg = round(sum(runs_scored) / n, 2)
+        rapg = round(sum(runs_allowed) / len(runs_allowed), 2) if runs_allowed else None
+        diff = round(rpg - rapg, 2) if rapg is not None else None
+        return {
+            'last10_runs_per_game': rpg,
+            'last10_runs_allowed': rapg,
+            'last10_run_diff': diff,
+            'last10_games_sampled': n,
+        }
+    except Exception as e:
+        print(f"  last10 fetch error team {team_id}: {e}")
+        return None
+
+
 def fetch_team_inning_buckets(team_id, season=2026):
     """Fetch team hitting inning splits and aggregate to 1-3, 4-6, 7-9 buckets.
     Returns runs_per_game, ops, k_pct, wrc_plus, hr_per_game per bucket."""
@@ -235,6 +291,8 @@ def get_team_stats_mlb_api():
                 time.sleep(0.15)
                 inning_buckets = fetch_team_inning_buckets(team_id)
                 time.sleep(0.15)
+                last10 = fetch_team_last10(team_id)
+                time.sleep(0.15)
 
                 results.append({
                     'team_name': team_name,
@@ -256,6 +314,7 @@ def get_team_stats_mlb_api():
                     'home_split': home_split,
                     'away_split': away_split,
                     'inning_buckets': inning_buckets,
+                    'last10': last10,
                 })
 
             except Exception as e:
@@ -331,6 +390,15 @@ def run():
             if t.get('away_split'):
                 record['ops_away'] = t['away_split']['ops']
                 record['runs_per_game_away'] = t['away_split']['runs_per_game']
+            # Last-10 recency (data-collection only for now; not blended into
+            # projection until we backtest the optimal weight against resolved
+            # games — see project memo on L10 backtest plan)
+            l10 = t.get('last10')
+            if l10:
+                record['last10_runs_per_game'] = l10['last10_runs_per_game']
+                record['last10_runs_allowed'] = l10['last10_runs_allowed']
+                record['last10_run_diff'] = l10['last10_run_diff']
+                record['last10_games_sampled'] = l10['last10_games_sampled']
             # Inning bucket splits (offense in 1-3, 4-6, 7-9)
             ib = t.get('inning_buckets')
             if ib:

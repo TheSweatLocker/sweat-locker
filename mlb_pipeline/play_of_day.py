@@ -489,7 +489,11 @@ def run():
             reverse=True,
         )
         pick = ml_high_conviction[0]
-        confidence = 'high'
+        # 'elite' tier (above 'high') so PRIME confluence ML overrides locked
+        # sweet-spot NRFI without requiring +20 score gap. Sub-ranking handles
+        # the case where morning lock is sweet-spot NRFI and afternoon finds
+        # PRIME confluence ML — confluence is more reliable per backtest.
+        confidence = 'elite'
         print(f"🔒 ML HIGH CONVICTION (PRIME confluence + delta): {pick['away_team']} @ {pick['home_team']} — net {int(pick.get('signal_confluence_net') or 0):+d} signals, delta {float(pick.get('spread_delta') or 0):+.1f}")
     elif sweet_spot:
         sweet_spot.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
@@ -537,7 +541,11 @@ def run():
     # of score; same-tier override still requires +20 score delta.
     # Tier ranking: 'high' = 1 (HIGH CONVICTION), 'solid' = 2 (NRFI/ML lean/NBA solid),
     #               'standard' = 3 (best available)
-    TIER_RANK = {'high': 1, 'solid': 2, 'standard': 3}
+    # 'elite' = PRIME confluence ML (multi-signal + delta) — strongest tier.
+    # 'high' = sweet-spot NRFI / NBA high conviction.
+    # 'solid' = NRFI edge / ML lean / NBA solid.
+    # 'standard' = best available fallback.
+    TIER_RANK = {'elite': 0, 'high': 1, 'solid': 2, 'standard': 3}
     if existing_pick and et_hour >= 14:
         existing_score = existing_pick.get('score', {}).get('total', 0) or 0
         existing_confidence = existing_pick.get('confidence', 'standard')

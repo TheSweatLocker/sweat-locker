@@ -102,7 +102,7 @@ def fetch_team_offense(team):
         "mlb_team_offense",
         {
             "team": f"eq.{team}",
-            "select": "team,wrc_plus,ops,k_pct,runs_per_game,innings_1_3_runs_per_game,innings_1_3_ops,innings_1_3_wrc_plus,innings_1_3_k_pct,innings_4_6_runs_per_game,innings_4_6_ops,innings_4_6_wrc_plus,innings_4_6_k_pct,innings_7_9_runs_per_game,innings_7_9_ops,innings_7_9_wrc_plus,innings_7_9_k_pct",
+            "select": "team,wrc_plus,ops,k_pct,runs_per_game,last10_runs_per_game,last10_runs_allowed,last10_run_diff,last10_games_sampled,innings_1_3_runs_per_game,innings_1_3_ops,innings_1_3_wrc_plus,innings_1_3_k_pct,innings_4_6_runs_per_game,innings_4_6_ops,innings_4_6_wrc_plus,innings_4_6_k_pct,innings_7_9_runs_per_game,innings_7_9_ops,innings_7_9_wrc_plus,innings_7_9_k_pct",
             "limit": "1",
         },
     )
@@ -206,6 +206,33 @@ def render_game(game):
     home_pen = fetch_bullpen(home_team)
     away_sp_data = fetch_pitcher(away_sp)
     home_sp_data = fetch_pitcher(home_sp)
+
+    # Recency lens — informational only (not yet blended into projection;
+    # awaiting backtest for proper weight). Surfaces hot/cold streaks the
+    # season-long stats hide.
+    def _recency_line(team_label, off):
+        if not off:
+            return None
+        season_rpg = off.get('runs_per_game')
+        l10_rpg = off.get('last10_runs_per_game')
+        l10_diff = off.get('last10_run_diff')
+        l10_n = off.get('last10_games_sampled')
+        if l10_rpg is None or season_rpg is None:
+            return f"    {team_label}: L10 data unavailable"
+        delta = round(float(l10_rpg) - float(season_rpg), 2)
+        flag = ''
+        if abs(delta) >= 1.0:
+            flag = ' 🔥 HOT' if delta > 0 else ' ❄️ COLD'
+        elif abs(delta) >= 0.5:
+            flag = ' (mildly hot)' if delta > 0 else ' (mildly cold)'
+        diff_str = f"L10 run diff {fmt(l10_diff, 2)}" if l10_diff is not None else ''
+        return f"    {team_label}: season {fmt(season_rpg, 2)} R/G | L10 {fmt(l10_rpg, 2)} R/G ({'+' if delta >= 0 else ''}{delta:.2f}){flag} | {diff_str} (n={fmt_int(l10_n)})"
+
+    print(f"  ── RECENCY (last 10 games) ──")
+    away_rec = _recency_line(away_team, away_off)
+    home_rec = _recency_line(home_team, home_off)
+    if away_rec: print(away_rec)
+    if home_rec: print(home_rec)
 
     for label, key in (("1-3", "1_3"), ("4-6", "4_6"), ("7-9 (bullpen)", "7_9")):
         render_bucket(label, away_team, home_team, away_off, home_off, away_pen, home_pen,

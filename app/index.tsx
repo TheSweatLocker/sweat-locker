@@ -3517,14 +3517,16 @@ if(isPlayoffMode) {
       modelMismatch = Math.min(88, modelMismatch + 3);
     }
 
-    // ── NRFI CONVICTION BOOST (recalibrated from 235-game audit) ──
-    // 90-94: 73.3% (prime), 95+: 47% (volatile), 75-79: 60.9%, 70-74: 59.4%
-    // 80-89: 42.5% (no edge — no boost), <=40: 77.8% YRFI hit
+    // ── NRFI CONVICTION BOOST (audit-calibrated, 352 games) ──
+    // 90-94: 78.9% (PRIME), 95+: 44.1% (volatile trap), 70-79: 59.0% (mild lean)
+    // 80-89: 50% (dead zone), 60-69: 45.2% (negative EV — no boost)
+    // <=40: high YRFI hit rate. Magnitude-based boosts kept inline since the
+    // boost amount depends on the score itself, not just tier label.
     if(mlbCtx.nrfi_score) {
       const nrfi = mlbCtx.nrfi_score;
       if(nrfi >= 95) modelMismatch = Math.min(85, modelMismatch + 3);        // volatile — minimal boost
-      else if(nrfi >= 90) modelMismatch = Math.min(88, modelMismatch + 10); // prime sweet spot
-      else if(nrfi >= 70 && nrfi <= 79) modelMismatch = Math.min(85, modelMismatch + 5); // mild lean (60% hit)
+      else if(nrfi >= 90) modelMismatch = Math.min(88, modelMismatch + 10); // PRIME sweet spot (78.9%)
+      else if(nrfi >= 70 && nrfi <= 79) modelMismatch = Math.min(85, modelMismatch + 5); // mild lean (59%)
       else if(nrfi <= 35) modelMismatch = Math.min(85, modelMismatch + 5);  // strong YRFI signal
       else if(nrfi <= 40) modelMismatch = Math.min(85, modelMismatch + 3);  // moderate YRFI
       // 41-69 and 80-89 = no boost (no edge in audit)
@@ -3547,8 +3549,9 @@ if(isPlayoffMode) {
       leanBet = 'total';
       leanSide = `Over ${avgTotal.toFixed(1)}`;
     }
-    // Tertiary: NRFI sweet spot (77% hit rate)
-    if(!leanSide && mlbCtx.nrfi_score >= 88 && mlbCtx.nrfi_score <= 94) {
+    // Tertiary: NRFI sweet spot — read from server-computed primary_play tier.
+    // Backend (compute_primary_play in game_context.py) owns the threshold band.
+    if(!leanSide && mlbCtx.primary_play && mlbCtx.primary_play.type === 'nrfi' && mlbCtx.primary_play.tier === 'PRIME') {
       leanSide = 'NRFI';
       leanBet = 'nrfi';
     }
@@ -4037,10 +4040,12 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
     if(sport === 'MLB' && mlbContext) {
       const ctx = (mlbContext[game.home_team]) || mlbContext;
       if(ctx) {
+        // Read tier from server-computed primary_play (backend owns thresholds).
+        const pp = ctx.primary_play;
         const nrfi = ctx.nrfi_score;
-        if(nrfi != null && nrfi >= 88 && nrfi <= 94) {
+        if(pp && pp.type === 'nrfi' && pp.tier === 'PRIME') {
           _evidence.push({ emoji: '🔒', label: 'NRFI PRIME tier', detail: `Score ${nrfi}/100 — sweet spot tier` });
-        } else if(nrfi != null && nrfi <= 25) {
+        } else if(pp && pp.type === 'yrfi') {
           _evidence.push({ emoji: '🔥', label: 'YRFI lean', detail: `NRFI ${nrfi} — first inning runs likely` });
         }
         const conf = ctx.signal_confluence_net;
@@ -5824,12 +5829,23 @@ let visibleBadges: string[] = [];
 if(sport === 'MLB') {
   const ctx = (mlbContext && (mlbContext[game.home_team] || mlbContext[game.away_team])) || null;
   if(ctx) {
+    // Read NRFI/YRFI tier from server-computed primary_play. Backend owns
+    // tier band thresholds (compute_primary_play in game_context.py).
+    // Fallback inline checks for the volatile zone + mild lean since those
+    // tiers don't surface as primary_play (informational badges only).
+    const pp = ctx.primary_play;
     const nrfi = ctx.nrfi_score;
-    if(nrfi >= 88 && nrfi <= 94) visibleBadges.push(`PRIME NRFI badge (${nrfi}/100, sweet spot tier)`);
-    else if(nrfi >= 95) visibleBadges.push(`NRFI volatile warning badge (${nrfi}/100, 95+ unreliable trap tier — hit rate drops)`);
-    else if(nrfi >= 70 && nrfi <= 79) visibleBadges.push(`NRFI mild lean badge (${nrfi}/100)`);
-    else if(nrfi <= 35) visibleBadges.push(`YRFI badge (NRFI ${nrfi}/100 — first inning runs likely)`);
-    else if(nrfi <= 40) visibleBadges.push(`YRFI lean badge (${nrfi}/100)`);
+    if(pp && pp.type === 'nrfi' && pp.tier === 'PRIME') {
+      visibleBadges.push(`PRIME NRFI badge (${nrfi}/100, sweet spot tier)`);
+    } else if(nrfi >= 95) {
+      visibleBadges.push(`NRFI volatile warning badge (${nrfi}/100, 95+ unreliable trap tier — hit rate drops)`);
+    } else if(nrfi >= 70 && nrfi <= 79) {
+      visibleBadges.push(`NRFI mild lean badge (${nrfi}/100)`);
+    } else if(pp && pp.type === 'yrfi') {
+      visibleBadges.push(`YRFI badge (NRFI ${nrfi}/100 — first inning runs likely)`);
+    } else if(nrfi <= 40) {
+      visibleBadges.push(`YRFI lean badge (${nrfi}/100)`);
+    }
     if(ctx.over_lean === true) {
       const projT = ctx.projected_total;
       const closeT = ctx.close_total || ctx.open_total;

@@ -554,6 +554,40 @@ def get_pitcher_splits(pitcher_id, season=2026):
     except Exception:
         return None
 
+def _refresh_pitcher_inning_buckets(pitcher_name, existing_row):
+    """If a starter row exists but is missing inning bucket data (e.g. they were
+    confirmed AFTER pitcher_stats.py ran for the day), fetch + PATCH the buckets
+    in-place. Saves a manual backfill step for late-confirmed starters."""
+    try:
+        if existing_row.get('innings_1_3_era') is not None:
+            return existing_row  # already has buckets
+        from pitcher_stats import get_inning_bucket_splits
+        buckets = get_inning_bucket_splits(pitcher_name)
+        if not buckets:
+            return existing_row
+        # PATCH the row in Supabase
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        }
+        encoded = requests.utils.quote(existing_row.get('player_name', pitcher_name))
+        r = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=eq.{encoded}&season=eq.2026",
+            headers=headers,
+            json=buckets,
+            timeout=10,
+        )
+        if r.status_code in (200, 204):
+            print(f"  🔄 Auto-refreshed inning buckets for {pitcher_name} (was missing in DB)")
+            existing_row.update(buckets)
+        return existing_row
+    except Exception as e:
+        print(f"  inning bucket refresh failed for {pitcher_name}: {e}")
+        return existing_row
+
+
 def get_pitcher_stats(pitcher_name):
     """Look up pitcher stats from Supabase"""
     if not pitcher_name:
@@ -573,14 +607,14 @@ def get_pitcher_stats(pitcher_name):
         )
         data = r.json()
         if data:
-            return data[0]
+            return _refresh_pitcher_inning_buckets(pitcher_name, data[0])
         # Fall back to original name
         r2 = requests.get(
             f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.{requests.utils.quote('*'+pitcher_name+'*')}&select=*&limit=1",
             headers=headers
         )
         data2 = r2.json()
-        return data2[0] if data2 else None
+        return _refresh_pitcher_inning_buckets(pitcher_name, data2[0]) if data2 else None
     except:
         return None
 
@@ -1611,7 +1645,6 @@ def log_game_result(context):
             "away_pitcher_last_3_era": context.get("away_pitcher_last_3_era"),
             "home_pitcher_last_3_k_pct": context.get("home_pitcher_last_3_k_pct"),
             "away_pitcher_last_3_k_pct": context.get("away_pitcher_last_3_k_pct"),
-            "primary_play": context.get("primary_play"),
             "home_team_oaa": context.get("home_team_oaa"),
             "away_team_oaa": context.get("away_team_oaa"),
             "home_team_xwoba": context.get("home_team_xwoba"),
@@ -1646,6 +1679,7 @@ def log_game_result(context):
             "projected_spread": context.get("projected_spread"),
             "spread_lean": context.get("spread_lean"),
             "spread_delta": context.get("spread_delta"),
+            "signal_confluence_net": context.get("signal_confluence_net"),
             "open_spread": context.get("open_spread"),
             "close_spread": context.get("close_spread"),
             "confidence": context.get("confidence"),
@@ -2148,7 +2182,10 @@ def run():
                 game_month=game_date_et[5:7] if game_date_et else None,
             )
             if nrfi_score:
-                print(f"  NRFI score: {nrfi_score} ({'NRFI lean' if nrfi_score >= 60 else 'YRFI lean' if nrfi_score <= 40 else 'neutral'})")
+                # NRFI lean threshold raised from 60 to 70 (2026-04-29):
+                # 352-game audit showed 60-69 band hits 45.2% — actively negative EV.
+                # Only label as NRFI lean when in profitable zone (≥70 = 59% audit).
+                print(f"  NRFI score: {nrfi_score} ({'NRFI lean' if nrfi_score >= 70 else 'YRFI lean' if nrfi_score <= 40 else 'neutral'})")
             # Get confirmed lineup
             lineup_info = confirmed_lineups.get(home_team, {})
             home_lineup = lineup_info.get("home_lineup", [])
@@ -2505,6 +2542,41 @@ def run():
                 abp = _f(away_bp_era)
                 if hbp is not None and abp is not None and abs(abp - hbp) >= 0.5:
                     breakdown['bullpen'] = 'home' if hbp < abp else 'away'
+
+                # Signal: recency (last 10 games) — added 2026-04-29.
+                # Catches hot/cold streaks the season-long stats hide. Conservative
+                # single-vote integration; projection blend weight pending backtest.
+                # Each team's recency_score = (offense_L10_RPG - season_RPG)
+                #                            - (opp_pitching_L10_RA - opp_pitching_season_RA)
+                # If |home - away recency| >= 0.8, vote for the hotter side.
+                try:
+                    h_off_l10 = _f((home_offense or {}).get('last10_runs_per_game'))
+                    a_off_l10 = _f((away_offense or {}).get('last10_runs_per_game'))
+                    h_off_szn = _f((home_offense or {}).get('runs_per_game'))
+                    a_off_szn = _f((away_offense or {}).get('runs_per_game'))
+                    h_pitch_l10_ra = _f((home_offense or {}).get('last10_runs_allowed'))
+                    a_pitch_l10_ra = _f((away_offense or {}).get('last10_runs_allowed'))
+                    # Use season runs allowed proxy via bullpen_era (rough but available)
+                    # Better: pull team RA season — for now, just use offense delta as primary signal
+                    if (h_off_l10 is not None and a_off_l10 is not None
+                        and h_off_szn is not None and a_off_szn is not None):
+                        h_recency = h_off_l10 - h_off_szn
+                        a_recency = a_off_l10 - a_off_szn
+                        # Layer in opponent's recent pitching if available
+                        if a_pitch_l10_ra is not None:
+                            # Opp giving up more runs lately = bonus for home
+                            opp_pitch_szn = _f(away_bp_era)  # rough proxy
+                            if opp_pitch_szn is not None:
+                                h_recency += (a_pitch_l10_ra - opp_pitch_szn) * 0.3
+                        if h_pitch_l10_ra is not None:
+                            opp_pitch_szn = _f(home_bp_era)
+                            if opp_pitch_szn is not None:
+                                a_recency += (h_pitch_l10_ra - opp_pitch_szn) * 0.3
+                        net_recency = h_recency - a_recency
+                        if abs(net_recency) >= 0.8:
+                            breakdown['recency'] = 'home' if net_recency > 0 else 'away'
+                except Exception:
+                    pass  # missing L10 data is fine — signal just doesn't fire
 
                 # Signal: days rest (penalty when one pitcher is short rest)
                 h_dr = _f(home_days_rest)
