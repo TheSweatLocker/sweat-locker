@@ -5513,6 +5513,8 @@ MLB GAME CONTEXT:
 - ${mlbData.away_bullpen_era ? `${game.away_team} bullpen: ${mlbData.away_bullpen_era} ERA, ${mlbData.away_save_pct}% save rate` : ''}
 - ${mlbData.home_record ? `${game.home_team} record: ${mlbData.home_record}, last 10: ${mlbData.home_last10 || 'N/A'}, streak: ${mlbData.home_streak || 'N/A'}` : ''}
 - ${mlbData.away_record ? `${game.away_team} record: ${mlbData.away_record}, last 10: ${mlbData.away_last10 || 'N/A'}, streak: ${mlbData.away_streak || 'N/A'}` : ''}
+- ${mlbData.home_last10_runs_per_game != null && mlbData.home_runs_per_game != null ? `${game.home_team} L10 offense: ${mlbData.home_last10_runs_per_game} R/G vs season ${mlbData.home_runs_per_game.toFixed(2)} (${(mlbData.home_last10_runs_per_game - mlbData.home_runs_per_game).toFixed(2)} diff${Math.abs(mlbData.home_last10_runs_per_game - mlbData.home_runs_per_game) >= 1.0 ? (mlbData.home_last10_runs_per_game > mlbData.home_runs_per_game ? ' — 🔥 HOT bats' : ' — ❄️ COLD bats') : ''})` : ''}
+- ${mlbData.away_last10_runs_per_game != null && mlbData.away_runs_per_game != null ? `${game.away_team} L10 offense: ${mlbData.away_last10_runs_per_game} R/G vs season ${mlbData.away_runs_per_game.toFixed(2)} (${(mlbData.away_last10_runs_per_game - mlbData.away_runs_per_game).toFixed(2)} diff${Math.abs(mlbData.away_last10_runs_per_game - mlbData.away_runs_per_game) >= 1.0 ? (mlbData.away_last10_runs_per_game > mlbData.away_runs_per_game ? ' — 🔥 HOT bats' : ' — ❄️ COLD bats') : ''})` : ''}
 - ${mlbData.lineup_confirmed ? `✅ Lineups confirmed` : '⏳ Lineups pending (available 2-3 hours before first pitch)'}
 - ${mlbData.home_lineup ? `${game.home_team} lineup: ${mlbData.home_lineup}` : ''}
 - ${mlbData.away_lineup ? `${game.away_team} lineup: ${mlbData.away_lineup}` : ''};

@@ -2836,6 +2836,14 @@ def run():
                 "away_team_xwoba": away_team_xwoba,
                 "home_team_barrel_pct": home_team_barrel_pct,
                 "away_team_barrel_pct": away_team_barrel_pct,
+                # L10 R/G recency — copied from team_offense so app/Jerry can
+                # reference hot/cold streaks without an extra DB lookup
+                "home_last10_runs_per_game": home_offense.get('last10_runs_per_game') if home_offense else None,
+                "home_last10_runs_allowed": home_offense.get('last10_runs_allowed') if home_offense else None,
+                "home_last10_run_diff": home_offense.get('last10_run_diff') if home_offense else None,
+                "away_last10_runs_per_game": away_offense.get('last10_runs_per_game') if away_offense else None,
+                "away_last10_runs_allowed": away_offense.get('last10_runs_allowed') if away_offense else None,
+                "away_last10_run_diff": away_offense.get('last10_run_diff') if away_offense else None,
                 "home_catcher_framing": home_catcher_framing,
                 "away_catcher_framing": away_catcher_framing,
                 "stats_snapshot_date": (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d'),
