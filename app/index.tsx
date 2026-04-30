@@ -4722,9 +4722,14 @@ const fetchJerryRecord = async () => {
 };
 
 const fetchDailyBestBet = async () => {
-  const CACHE_KEY = 'sweatlocker_daily_best_bet_v4';
-  const _now = new Date();
-  const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
+  // Bumped CACHE_KEY to v5 to invalidate any stale local entries from the
+  // pre-fix v4 cache (legacy client-side scanner could have written wrong-date rows).
+  const CACHE_KEY = 'sweatlocker_daily_best_bet_v5';
+  // Use ET-derived date so 'today' matches the server's date logic regardless
+  // of the user's device timezone. Prior bug: _now.getDate() used local time,
+  // which rolled to tomorrow before ET did, querying a non-existent server POTD.
+  const etDateStr = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'}); // YYYY-MM-DD
+  const today = etDateStr;
   const etHour = parseInt(new Date().toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
 
   // Play of the Day is now computed server-side by play_of_day.py
@@ -4840,7 +4845,9 @@ Rules:
     if(cached) {
       const parsed = JSON.parse(cached);
       const cacheDate = new Date(parsed.timestamp);
-      const cacheDateStr = cacheDate.getFullYear() + '-' + String(cacheDate.getMonth()+1).padStart(2,'0') + '-' + String(cacheDate.getDate()).padStart(2,'0');
+      // ET-derived to match the `today` calc above (was local time, caused
+      // off-by-one date bug for users in non-ET timezones)
+      const cacheDateStr = cacheDate.toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
       if(cacheDateStr === today && parsed.data && !parsed.data.noGames) {
         setDailyBestBet(parsed.data);
         return;
