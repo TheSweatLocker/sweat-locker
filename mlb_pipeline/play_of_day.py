@@ -364,13 +364,37 @@ def run():
     mlb_games = get_mlb_games()
     print(f"MLB games: {len(mlb_games)}")
 
+    # Get MLB game times to populate commence_time (also used below for late-slate detection)
+    mlb_times = get_mlb_game_times(today)
+
+    # LATE-SLATE DEFER (added 2026-04-29):
+    # If no game starts before 4pm ET on this date, defer POTD generation to the
+    # 2pm pipeline run. Avoids locking a stale 8am pick on weeknight slates that
+    # don't need an early-locked POTD. Weekend slates with 1pm games still get
+    # POTD locked at 8am as before.
+    if et_hour < 14 and mlb_times:
+        try:
+            earliest = None
+            for ts in mlb_times.values():
+                if not ts:
+                    continue
+                t = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                t_et = t - timedelta(hours=4)
+                if earliest is None or t_et < earliest:
+                    earliest = t_et
+            if earliest is not None:
+                # 4pm ET cutoff — anything later = weeknight slate, defer
+                cutoff_hour = 16
+                if earliest.hour >= cutoff_hour:
+                    print(f"⏰ Late-slate detected — earliest game {earliest.strftime('%H:%M')} ET, deferring POTD to 2pm run for fresher data")
+                    return
+        except Exception as e:
+            print(f"  late-slate detect failed (continuing normally): {e}")
+
     # Get NBA data
     nba_teams = get_nba_teams()
     nba_games = get_nba_games()
     print(f"NBA games: {len(nba_games)}, teams: {len(nba_teams)}")
-
-    # Get MLB game times to populate commence_time
-    mlb_times = get_mlb_game_times(today)
 
     # Score all candidates
     candidates = []

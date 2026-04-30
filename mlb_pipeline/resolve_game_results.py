@@ -166,7 +166,14 @@ def run():
             schedule_cache[game_date] = []
         return schedule_cache[game_date]
 
-    def find_game_pk(game_date, home_team, away_team):
+    def find_game_pk(game_date, home_team, away_team, commence_time_hint=None):
+        """Find MLB Stats API gamePk by team + date. Doubleheader-aware:
+        when both DH games are Final, disambiguates by closest start time.
+
+        TODO (longer-term): store mlb_gamePk on mlb_game_context at write time
+        so resolvers can read it directly instead of re-resolving via teams+date.
+        """
+        candidates = []
         for d in get_schedule(game_date):
             for g in d.get('games', []):
                 mh = g.get('teams', {}).get('home', {}).get('team', {}).get('name', '')
@@ -174,8 +181,25 @@ def run():
                 if (home_team.lower() in mh.lower() or mh.lower() in home_team.lower()) \
                    and (away_team.lower() in ma.lower() or ma.lower() in away_team.lower()):
                     if g.get('status', {}).get('abstractGameState') == 'Final':
-                        return g.get('gamePk')
-        return None
+                        candidates.append(g)
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0].get('gamePk')
+        # Doubleheader: disambiguate by closest start time
+        if commence_time_hint:
+            try:
+                from datetime import datetime
+                hint_dt = datetime.fromisoformat(commence_time_hint.replace('Z', '+00:00'))
+                best = min(
+                    candidates,
+                    key=lambda g: abs((datetime.fromisoformat(g.get('gameDate', '').replace('Z', '+00:00')) - hint_dt).total_seconds())
+                )
+                return best.get('gamePk')
+            except Exception:
+                pass
+        print(f"  ⚠️ DH detected ({len(candidates)} games {away_team}@{home_team} {game_date}), no commence_time hint — using first")
+        return candidates[0].get('gamePk')
 
     def get_boxscore(game_pk):
         if game_pk in boxscore_cache:
@@ -222,7 +246,8 @@ def run():
     props_resolved = 0
     for prop in pending_props:
         try:
-            # Look up matching game result row
+            # Look up matching game result row + game_context for commence_time
+            # (needed for doubleheader disambiguation)
             gr = requests.get(
                 f'{SUPABASE_URL}/rest/v1/mlb_game_results?game_id=eq.{prop["game_id"]}&select=home_team,away_team,home_score',
                 headers=HEADERS
@@ -230,9 +255,22 @@ def run():
             gr_data = gr.json()
             if not gr_data or gr_data[0].get('home_score') is None:
                 continue  # game not finalized yet
-
             g = gr_data[0]
-            game_pk = find_game_pk(prop['game_date'], g['home_team'], g['away_team'])
+
+            # Pull commence_time from game_context for DH disambig
+            ct_hint = None
+            try:
+                ctx_r = requests.get(
+                    f'{SUPABASE_URL}/rest/v1/mlb_game_context?game_id=eq.{prop["game_id"]}&select=commence_time',
+                    headers=HEADERS
+                )
+                ctx_data = ctx_r.json()
+                if ctx_data:
+                    ct_hint = ctx_data[0].get('commence_time')
+            except Exception:
+                pass
+
+            game_pk = find_game_pk(prop['game_date'], g['home_team'], g['away_team'], commence_time_hint=ct_hint)
             if not game_pk:
                 continue
 

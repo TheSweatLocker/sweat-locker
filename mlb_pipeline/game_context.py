@@ -55,8 +55,15 @@ def get_final_score(game_id_mlb):
         print(f'  Error fetching final score: {e}')
         return None, None, False
 
-def get_mlb_game_pk(home_team, away_team, game_date):
-    """Find MLB Stats API game PK by team names and date"""
+def get_mlb_game_pk(home_team, away_team, game_date, commence_time_hint=None):
+    """Find MLB Stats API game PK by team names and date.
+
+    DOUBLEHEADER FIX (2026-04-29): when same teams play twice in a day, the
+    schedule endpoint returns BOTH games. Without disambiguation, this function
+    returned whichever game was first in the response — attaching game 1's
+    score to both DH rows. If commence_time_hint is provided, picks the game
+    with the closest start time.
+    """
     try:
         r = requests.get(
             'https://statsapi.mlb.com/api/v1/schedule',
@@ -68,6 +75,7 @@ def get_mlb_game_pk(home_team, away_team, game_date):
             timeout=15
         )
         dates = r.json().get('dates', [])
+        candidates = []
         for d in dates:
             for game in d.get('games', []):
                 mlb_home = game.get('teams', {}).get('home', {}).get('team', {}).get('name', '')
@@ -77,8 +85,29 @@ def get_mlb_game_pk(home_team, away_team, game_date):
                 if home_match and away_match:
                     status = game.get('status', {}).get('abstractGameState', '')
                     if status == 'Final':
-                        return game.get('gamePk'), game
-        return None, None
+                        candidates.append(game)
+
+        if not candidates:
+            return None, None
+        if len(candidates) == 1:
+            return candidates[0].get('gamePk'), candidates[0]
+
+        # Doubleheader: 2+ matches. Disambiguate by closest commence_time if provided.
+        if commence_time_hint:
+            try:
+                hint_dt = datetime.fromisoformat(commence_time_hint.replace('Z', '+00:00'))
+                best = min(
+                    candidates,
+                    key=lambda g: abs((datetime.fromisoformat(g.get('gameDate', '').replace('Z', '+00:00')) - hint_dt).total_seconds())
+                )
+                gn = best.get('gameNumber', '?')
+                print(f"  🎯 Doubleheader detected ({len(candidates)} games) — matched game #{gn} by start time")
+                return best.get('gamePk'), best
+            except Exception as e:
+                print(f"  DH disambig failed ({e}) — falling back to first game")
+        # No hint: warn and use first (preserves old behavior for safety)
+        print(f"  ⚠️ Doubleheader detected with NO commence_time hint — using first game (may be wrong DH leg)")
+        return candidates[0].get('gamePk'), candidates[0]
     except Exception as e:
         print(f'  Error finding game PK: {e}')
         return None, None
@@ -1739,7 +1768,11 @@ def log_game_result(context):
         away_team = context.get("away_team")
         game_date = context.get("game_date")
 
-        game_pk, mlb_game = get_mlb_game_pk(home_team, away_team, game_date)
+        # Pass commence_time hint so doubleheader days resolve to correct game
+        game_pk, mlb_game = get_mlb_game_pk(
+            home_team, away_team, game_date,
+            commence_time_hint=context.get("commence_time")
+        )
         if game_pk:
             home_score, away_score, game_over = get_final_score(game_pk)
             if home_score is not None and away_score is not None:
