@@ -186,12 +186,14 @@ def fetch_team_inning_buckets(team_id, season=2026):
             woba = round((0.69*bb + 0.72*hbp + 0.89*singles + 1.27*doubles + 1.62*triples + 2.10*hr) / pa, 3)
             wrc_plus = round((woba / LEAGUE_WOBA) * 100) if woba else 100
             k_pct = round((so / pa) * 100, 1)
+            bb_pct = round((bb / pa) * 100, 1) if pa else None
             return {
                 'runs_per_game': round(runs / games_played_max, 2),
                 'hr_per_game': round(hr / games_played_max, 3),
                 'ops': ops,
                 'wrc_plus': wrc_plus,
                 'k_pct': k_pct,
+                'bb_pct': bb_pct,
                 'pa': pa,
                 'games': games_played_max,
             }
@@ -200,10 +202,14 @@ def fetch_team_inning_buckets(team_id, season=2026):
         bucket_4_6 = aggregate(['i04', 'i05', 'i06'])
         # 7-9 bucket: prefer ig07 (innings 7+) — single split with more reliable PA volume
         bucket_7_9 = aggregate(['ig07']) if 'ig07' in rows else aggregate(['i07', 'i08', 'i09'])
+        # Per-inning: 1st inning specifically (NRFI-relevant — leadoff hitters
+        # skew the bucket avg, so 1st inning R/G alone is the sharper number)
+        inning_1_only = aggregate(['i01'])
         return {
             'innings_1_3': bucket_1_3,
             'innings_4_6': bucket_4_6,
             'innings_7_9': bucket_7_9,
+            'inning_1_only': inning_1_only,
         }
     except Exception as e:
         print(f"  Inning bucket fetch error for team {team_id}: {e}")
@@ -411,6 +417,16 @@ def run():
                     record[f'{label}_ops'] = bucket['ops']
                     record[f'{label}_wrc_plus'] = bucket['wrc_plus']
                     record[f'{label}_k_pct'] = bucket['k_pct']
+                    record[f'{label}_bb_pct'] = bucket['bb_pct']
+                # Per-inning: 1st inning only (NRFI-relevant)
+                inn1 = ib.get('inning_1_only')
+                if inn1:
+                    record['inning_1_runs_per_game'] = inn1['runs_per_game']
+                    record['inning_1_hr_per_game'] = inn1['hr_per_game']
+                    record['inning_1_ops'] = inn1['ops']
+                    record['inning_1_wrc_plus'] = inn1['wrc_plus']
+                    record['inning_1_k_pct'] = inn1['k_pct']
+                    record['inning_1_bb_pct'] = inn1['bb_pct']
 
             if upload_team_offense(record):
                 success += 1

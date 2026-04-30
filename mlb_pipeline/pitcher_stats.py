@@ -444,6 +444,7 @@ def get_inning_bucket_splits(player_name):
             k = 0
             bb = 0
             h = 0
+            hr = 0
             bf = 0
             for code in codes:
                 if code not in rows:
@@ -454,13 +455,17 @@ def get_inning_bucket_splits(player_name):
                 k += int(stat.get("strikeOuts", 0) or 0)
                 bb += int(stat.get("baseOnBalls", 0) or 0)
                 h += int(stat.get("hits", 0) or 0)
+                hr += int(stat.get("homeRuns", 0) or 0)
                 bf += int(stat.get("battersFaced", 0) or 0)
             if ip < 1:
                 return None
             era = round((er * 9) / ip, 2)
             whip = round((bb + h) / ip, 2)
             k_pct = round((k / bf) * 100, 1) if bf else None
-            return {"era": era, "whip": whip, "k_pct": k_pct, "ip": round(ip, 1), "bf": bf}
+            bb_pct = round((bb / bf) * 100, 1) if bf else None
+            hr_per_9 = round((hr * 9) / ip, 2)
+            return {"era": era, "whip": whip, "k_pct": k_pct, "bb_pct": bb_pct,
+                    "hr_per_9": hr_per_9, "ip": round(ip, 1), "bf": bf}
 
         bucket_1_3 = aggregate(["i01", "i02", "i03"])
         bucket_4_6 = aggregate(["i04", "i05", "i06"])
@@ -476,12 +481,16 @@ def get_inning_bucket_splits(player_name):
                 result[f"{label}_era"] = b["era"]
                 result[f"{label}_whip"] = b["whip"]
                 result[f"{label}_k_pct"] = b["k_pct"]
+                result[f"{label}_bb_pct"] = b["bb_pct"]
+                result[f"{label}_hr_per_9"] = b["hr_per_9"]
                 result[f"{label}_ip"] = b["ip"]
                 result[f"{label}_bf"] = b["bf"]
             else:
                 result[f"{label}_era"] = None
                 result[f"{label}_whip"] = None
                 result[f"{label}_k_pct"] = None
+                result[f"{label}_bb_pct"] = None
+                result[f"{label}_hr_per_9"] = None
                 result[f"{label}_ip"] = None
                 result[f"{label}_bf"] = None
         return result

@@ -98,6 +98,7 @@ def get_pitching_inning_buckets(team_id, season=2026):
             k = 0
             bb = 0
             h = 0
+            hr = 0
             bf = 0
             for code in codes:
                 if code not in rows:
@@ -108,6 +109,7 @@ def get_pitching_inning_buckets(team_id, season=2026):
                 k += int(stat.get("strikeOuts", 0) or 0)
                 bb += int(stat.get("baseOnBalls", 0) or 0)
                 h += int(stat.get("hits", 0) or 0)
+                hr += int(stat.get("homeRuns", 0) or 0)
                 bf += int(stat.get("battersFaced", 0) or 0)
             if ip < 1:
                 return None
@@ -115,6 +117,8 @@ def get_pitching_inning_buckets(team_id, season=2026):
                 "era": round((er * 9) / ip, 2),
                 "whip": round((bb + h) / ip, 2),
                 "k_pct": round((k / bf) * 100, 1) if bf else None,
+                "bb_pct": round((bb / bf) * 100, 1) if bf else None,
+                "hr_per_9": round((hr * 9) / ip, 2),
                 "ip": round(ip, 1),
                 "bf": bf,
             }
@@ -185,6 +189,8 @@ def run():
                     stats[f"pitching_{label.split('_', 1)[1]}_era"] = b["era"]
                     stats[f"pitching_{label.split('_', 1)[1]}_whip"] = b["whip"]
                     stats[f"pitching_{label.split('_', 1)[1]}_k_pct"] = b["k_pct"]
+                    stats[f"pitching_{label.split('_', 1)[1]}_bb_pct"] = b["bb_pct"]
+                    stats[f"pitching_{label.split('_', 1)[1]}_hr_per_9"] = b["hr_per_9"]
                     stats[f"pitching_{label.split('_', 1)[1]}_ip"] = b["ip"]
                     stats[f"pitching_{label.split('_', 1)[1]}_bf"] = b["bf"]
 
