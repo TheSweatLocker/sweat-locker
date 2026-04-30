@@ -2727,8 +2727,23 @@ def run():
                             breakdown['recency_extreme'] = 'home'  # 🔥 home vs ❄️ away
                         elif a_off_delta >= 1.0 and h_off_delta <= -1.0:
                             breakdown['recency_extreme'] = 'away'  # 🔥 away vs ❄️ home
+
+                    # STREAK INFLECTION (added 2026-04-30): detects when a team's
+                    # very-recent L5 disagrees with their L10 baseline by ≥1.0 R/G.
+                    # Signals a streak ending (cold team warming up) or starting
+                    # (hot team cooling). Layers on top of recency vote.
+                    h_off_l5 = _f((home_offense or {}).get('last5_runs_per_game'))
+                    a_off_l5 = _f((away_offense or {}).get('last5_runs_per_game'))
+                    if h_off_l5 is not None and h_off_l10 is not None and a_off_l5 is not None and a_off_l10 is not None:
+                        # Trend = L5 - L10. Positive = team accelerating, negative = decelerating.
+                        h_trend = h_off_l5 - h_off_l10
+                        a_trend = a_off_l5 - a_off_l10
+                        # Net trend favoring home minus away
+                        net_trend = h_trend - a_trend
+                        if abs(net_trend) >= 1.0:
+                            breakdown['trend'] = 'home' if net_trend > 0 else 'away'
                 except Exception:
-                    pass  # missing L10 data is fine — signal just doesn't fire
+                    pass  # missing L-N data is fine — signal just doesn't fire
 
                 # Signal: days rest (penalty when one pitcher is short rest)
                 h_dr = _f(home_days_rest)
@@ -2945,14 +2960,25 @@ def run():
                 "away_team_xwoba": away_team_xwoba,
                 "home_team_barrel_pct": home_team_barrel_pct,
                 "away_team_barrel_pct": away_team_barrel_pct,
-                # L10 R/G recency — copied from team_offense so app/Jerry can
-                # reference hot/cold streaks without an extra DB lookup
+                # Multi-window recency (L5 / L10 / L20) — copied from team_offense
+                "home_last5_runs_per_game": home_offense.get('last5_runs_per_game') if home_offense else None,
                 "home_last10_runs_per_game": home_offense.get('last10_runs_per_game') if home_offense else None,
+                "home_last20_runs_per_game": home_offense.get('last20_runs_per_game') if home_offense else None,
+                "home_last5_runs_allowed": home_offense.get('last5_runs_allowed') if home_offense else None,
                 "home_last10_runs_allowed": home_offense.get('last10_runs_allowed') if home_offense else None,
+                "home_last20_runs_allowed": home_offense.get('last20_runs_allowed') if home_offense else None,
+                "home_last5_run_diff": home_offense.get('last5_run_diff') if home_offense else None,
                 "home_last10_run_diff": home_offense.get('last10_run_diff') if home_offense else None,
+                "home_last20_run_diff": home_offense.get('last20_run_diff') if home_offense else None,
+                "away_last5_runs_per_game": away_offense.get('last5_runs_per_game') if away_offense else None,
                 "away_last10_runs_per_game": away_offense.get('last10_runs_per_game') if away_offense else None,
+                "away_last20_runs_per_game": away_offense.get('last20_runs_per_game') if away_offense else None,
+                "away_last5_runs_allowed": away_offense.get('last5_runs_allowed') if away_offense else None,
                 "away_last10_runs_allowed": away_offense.get('last10_runs_allowed') if away_offense else None,
+                "away_last20_runs_allowed": away_offense.get('last20_runs_allowed') if away_offense else None,
+                "away_last5_run_diff": away_offense.get('last5_run_diff') if away_offense else None,
                 "away_last10_run_diff": away_offense.get('last10_run_diff') if away_offense else None,
+                "away_last20_run_diff": away_offense.get('last20_run_diff') if away_offense else None,
                 "home_catcher_framing": home_catcher_framing,
                 "away_catcher_framing": away_catcher_framing,
                 "stats_snapshot_date": (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d'),

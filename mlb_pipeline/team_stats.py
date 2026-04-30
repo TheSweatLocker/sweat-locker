@@ -77,14 +77,13 @@ def fetch_team_split(team_id, sit_code, season=2026):
         return None
 
 def fetch_team_last10(team_id, season=2026):
-    """Pull team's last 10 games and compute recency offense + defense averages.
+    """Pull team's last-N game logs and compute recency averages for L5, L10, L20.
 
-    Returns dict with last10_runs_per_game, last10_runs_allowed, last10_run_diff,
-    games_sampled. None if no game logs available.
-
-    Used to weight projection toward recent form: a team scoring 5.5 R/G
-    season-long but 3.2 R/G last 10 should NOT project the same as a hot team.
-    Blended into game_context.py spread/total formula at 0.35 weight.
+    Multi-window recency catches different patterns:
+    - L5 = "what's happening RIGHT NOW" (catches streak endings, hot cooling down)
+    - L10 = balanced recency baseline
+    - L20 = broader trend, smooths out single-game noise
+    When L5 and L10 disagree → streak inflection. Useful confluence signal.
     """
     try:
         # Hitting gameLog → runs scored
@@ -97,10 +96,9 @@ def fetch_team_last10(team_id, season=2026):
         if not h_splits or not h_splits[0].get('splits'):
             return None
         h_rows = h_splits[0]['splits']
-        last10_h = h_rows[-10:] if len(h_rows) >= 10 else h_rows
-        if not last10_h:
+        if not h_rows:
             return None
-        runs_scored = [int(s.get('stat', {}).get('runs', 0) or 0) for s in last10_h]
+        runs_scored_all = [int(s.get('stat', {}).get('runs', 0) or 0) for s in h_rows]
 
         # Pitching gameLog → runs allowed
         p = requests.get(
@@ -108,27 +106,31 @@ def fetch_team_last10(team_id, season=2026):
             params={'stats': 'gameLog', 'group': 'pitching', 'season': season},
             timeout=15
         ).json()
+        runs_allowed_all = []
         p_splits = p.get('stats', [])
-        runs_allowed = []
         if p_splits and p_splits[0].get('splits'):
-            p_rows = p_splits[0]['splits']
-            last10_p = p_rows[-10:] if len(p_rows) >= 10 else p_rows
-            runs_allowed = [int(s.get('stat', {}).get('runs', 0) or 0) for s in last10_p]
+            runs_allowed_all = [int(s.get('stat', {}).get('runs', 0) or 0) for s in p_splits[0]['splits']]
 
-        n = len(runs_scored)
-        if n == 0:
-            return None
-        rpg = round(sum(runs_scored) / n, 2)
-        rapg = round(sum(runs_allowed) / len(runs_allowed), 2) if runs_allowed else None
-        diff = round(rpg - rapg, 2) if rapg is not None else None
-        return {
-            'last10_runs_per_game': rpg,
-            'last10_runs_allowed': rapg,
-            'last10_run_diff': diff,
-            'last10_games_sampled': n,
-        }
+        def window_stats(rs, ra, n):
+            r_w = rs[-n:] if len(rs) >= n else rs
+            a_w = ra[-n:] if len(ra) >= n else ra
+            if not r_w:
+                return None, None, None, 0
+            rpg = round(sum(r_w) / len(r_w), 2)
+            rapg = round(sum(a_w) / len(a_w), 2) if a_w else None
+            diff = round(rpg - rapg, 2) if rapg is not None else None
+            return rpg, rapg, diff, len(r_w)
+
+        result = {}
+        for n in (5, 10, 20):
+            rpg, rapg, diff, sampled = window_stats(runs_scored_all, runs_allowed_all, n)
+            result[f'last{n}_runs_per_game'] = rpg
+            result[f'last{n}_runs_allowed'] = rapg
+            result[f'last{n}_run_diff'] = diff
+            result[f'last{n}_games_sampled'] = sampled
+        return result
     except Exception as e:
-        print(f"  last10 fetch error team {team_id}: {e}")
+        print(f"  last-N fetch error team {team_id}: {e}")
         return None
 
 
@@ -396,15 +398,14 @@ def run():
             if t.get('away_split'):
                 record['ops_away'] = t['away_split']['ops']
                 record['runs_per_game_away'] = t['away_split']['runs_per_game']
-            # Last-10 recency (data-collection only for now; not blended into
-            # projection until we backtest the optimal weight against resolved
-            # games — see project memo on L10 backtest plan)
+            # Multi-window recency (L5 / L10 / L20) — for trend / streak inflection
             l10 = t.get('last10')
             if l10:
-                record['last10_runs_per_game'] = l10['last10_runs_per_game']
-                record['last10_runs_allowed'] = l10['last10_runs_allowed']
-                record['last10_run_diff'] = l10['last10_run_diff']
-                record['last10_games_sampled'] = l10['last10_games_sampled']
+                for n in (5, 10, 20):
+                    record[f'last{n}_runs_per_game'] = l10.get(f'last{n}_runs_per_game')
+                    record[f'last{n}_runs_allowed'] = l10.get(f'last{n}_runs_allowed')
+                    record[f'last{n}_run_diff'] = l10.get(f'last{n}_run_diff')
+                    record[f'last{n}_games_sampled'] = l10.get(f'last{n}_games_sampled')
             # Inning bucket splits (offense in 1-3, 4-6, 7-9)
             ib = t.get('inning_buckets')
             if ib:
