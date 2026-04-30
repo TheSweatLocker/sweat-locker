@@ -198,3 +198,26 @@ jobs:
         run: |
           cd mlb_pipeline
           python play_of_day.py
+
+      # Auto-generate tonight's content card after the 2pm ET pipeline run
+      # (skip on 8am run since lineups/lines aren't locked yet — content
+      # would just be replaced anyway)
+      - name: Generate tonight's content card
+        if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_tonight_card.py
+
+      # Commit the generated content card so Andy can pull it locally
+      - name: Commit content card
+        if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'
+        run: |
+          cd ${{ github.workspace }}
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add content/*.md || true
+          git diff --cached --quiet || git commit -m "Auto-generated tonight's card $(date +%Y-%m-%d)" || true
+          git push || true
