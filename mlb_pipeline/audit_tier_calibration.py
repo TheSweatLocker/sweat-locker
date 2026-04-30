@@ -246,7 +246,7 @@ def main():
                 continue
             upsert_rows.append({
                 "tier": tier,
-                "window": label,
+                "window_label": label,
                 "computed_date": et_today.isoformat(),
                 "hits": stats["hits"],
                 "total": total,
@@ -256,7 +256,7 @@ def main():
 
     if upsert_rows:
         print(f"\nUpserting {len(upsert_rows)} tier-window rows to mlb_tier_calibration...")
-        ok = sb_upsert("mlb_tier_calibration", upsert_rows, on_conflict="tier,window,computed_date")
+        ok = sb_upsert("mlb_tier_calibration", upsert_rows, on_conflict="tier,window_label,computed_date")
         print("✅ Upsert complete" if ok else "❌ Upsert failed")
     else:
         print("\nNo tier rows to upsert.")
