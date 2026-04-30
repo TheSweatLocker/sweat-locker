@@ -113,7 +113,12 @@ def get_mlb_game_pk(home_team, away_team, game_date, commence_time_hint=None):
         return None, None
 
 def get_probable_pitchers(game_date):
-    """Fetch probable pitchers from MLB Stats API"""
+    """Fetch probable pitchers from MLB Stats API.
+
+    DH FIX (2026-04-30): returns a LIST of per-game dicts (was a dict keyed by
+    home_team, which collided on doubleheaders — game 2 overwrote game 1).
+    Use match_probable_pitcher() with a commence_time hint to disambiguate.
+    """
     try:
         r = requests.get(
             f"https://statsapi.mlb.com/api/v1/schedule",
@@ -124,7 +129,7 @@ def get_probable_pitchers(game_date):
             }
         )
         data = r.json()
-        pitchers = {}
+        games_list = []
         for date_entry in data.get("dates", []):
             for game in date_entry.get("games", []):
                 game_pk = str(game.get("gamePk", ""))
@@ -134,18 +139,53 @@ def get_probable_pitchers(game_date):
                 away_pitcher = game.get("teams", {}).get("away", {}).get("probablePitcher", {}).get("fullName", None)
                 home_pitcher_id = game.get("teams", {}).get("home", {}).get("probablePitcher", {}).get("id", None)
                 away_pitcher_id = game.get("teams", {}).get("away", {}).get("probablePitcher", {}).get("id", None)
-                pitchers[home_team] = {
+                games_list.append({
+                    "game_pk": game_pk,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "commence_time": game.get("gameDate"),  # ISO timestamp
                     "home_pitcher": home_pitcher,
                     "away_pitcher": away_pitcher,
-                    "away_team": away_team,
                     "home_pitcher_id": home_pitcher_id,
-                    "away_pitcher_id": away_pitcher_id
-}
-        print(f"Found probable pitchers for {len(pitchers)} games")
-        return pitchers
+                    "away_pitcher_id": away_pitcher_id,
+                    "game_number": game.get("gameNumber", 1),
+                })
+        print(f"Found probable pitchers for {len(games_list)} games")
+        return games_list
     except Exception as e:
         print(f"MLB Stats API error: {e}")
+        return []
+
+
+def match_probable_pitcher(games_list, home_team, away_team, commence_time_hint=None):
+    """Find the matching probable-pitcher entry for a given Odds API game.
+
+    Uses team-pair match. If multiple matches (doubleheader), disambiguates
+    by closest commence_time. Returns dict (or empty dict if no match).
+    """
+    candidates = [
+        g for g in games_list
+        if (home_team.lower() in g["home_team"].lower() or g["home_team"].lower() in home_team.lower())
+        and (away_team.lower() in g["away_team"].lower() or g["away_team"].lower() in away_team.lower())
+    ]
+    if not candidates:
         return {}
+    if len(candidates) == 1:
+        return candidates[0]
+    # Doubleheader: disambiguate by closest start time
+    if commence_time_hint:
+        try:
+            hint_dt = datetime.fromisoformat(commence_time_hint.replace('Z', '+00:00'))
+            best = min(
+                candidates,
+                key=lambda g: abs((datetime.fromisoformat((g.get('commence_time') or '').replace('Z', '+00:00')) - hint_dt).total_seconds())
+                              if g.get('commence_time') else 999999
+            )
+            print(f"  🎯 DH probable pitcher matched: game #{best.get('game_number')} ({best.get('home_pitcher')} vs {best.get('away_pitcher')})")
+            return best
+        except Exception as e:
+            print(f"  DH probable-pitcher disambig failed ({e}) — using first")
+    return candidates[0]
 
 def get_pitcher_days_rest(pitcher_id, game_date):
     """Calculate days rest for a pitcher based on last appearance"""
@@ -185,7 +225,11 @@ def get_pitcher_days_rest(pitcher_id, game_date):
         return None
 
 def get_umpires(game_date):
-    """Fetch home plate umpires from MLB Stats API"""
+    """Fetch home plate umpires from MLB Stats API.
+
+    DH FIX (2026-04-30): returns LIST of per-game dicts (was keyed by home_team).
+    Use match_umpire() with commence_time hint to disambiguate.
+    """
     try:
         r = requests.get(
             f"https://statsapi.mlb.com/api/v1/schedule",
@@ -196,24 +240,55 @@ def get_umpires(game_date):
             }
         )
         data = r.json()
-        umpires = {}
+        games_list = []
         for date_entry in data.get("dates", []):
             for game in date_entry.get("games", []):
                 home_team = game.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
+                away_team = game.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
                 officials = game.get("officials", [])
                 home_plate_ump = next(
-                    (o.get("official", {}).get("fullName") 
-                    for o in officials 
+                    (o.get("official", {}).get("fullName")
+                    for o in officials
                     if o.get("officialType") == "Home Plate"),
                     None
                 )
                 if home_plate_ump:
-                    umpires[home_team] = home_plate_ump
-        print(f"Found umpires for {len(umpires)} games")
-        return umpires
+                    games_list.append({
+                        "home_team": home_team,
+                        "away_team": away_team,
+                        "commence_time": game.get("gameDate"),
+                        "umpire": home_plate_ump,
+                    })
+        print(f"Found umpires for {len(games_list)} games")
+        return games_list
     except Exception as e:
         print(f"Umpire fetch error: {e}")
-        return {}
+        return []
+
+
+def match_umpire(games_list, home_team, away_team, commence_time_hint=None):
+    """DH-aware umpire lookup. Returns ump name or None."""
+    candidates = [
+        g for g in games_list
+        if (home_team.lower() in g["home_team"].lower() or g["home_team"].lower() in home_team.lower())
+        and (away_team.lower() in g["away_team"].lower() or g["away_team"].lower() in away_team.lower())
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0].get("umpire")
+    if commence_time_hint:
+        try:
+            hint_dt = datetime.fromisoformat(commence_time_hint.replace('Z', '+00:00'))
+            best = min(
+                candidates,
+                key=lambda g: abs((datetime.fromisoformat((g.get('commence_time') or '').replace('Z', '+00:00')) - hint_dt).total_seconds())
+                              if g.get('commence_time') else 999999
+            )
+            return best.get("umpire")
+        except Exception:
+            pass
+    return candidates[0].get("umpire")
 
 def get_umpire_stats(ump_name):
     """Look up umpire tendencies from Supabase"""
@@ -414,7 +489,12 @@ def get_catcher_framing(catcher_name):
         return None
 
 def get_confirmed_lineups(game_date):
-    """Fetch confirmed batting lineups from MLB Stats API"""
+    """Fetch confirmed batting lineups from MLB Stats API.
+
+    DH FIX (2026-04-30): returns LIST of per-game dicts (was keyed by home_team
+    which collided on doubleheaders). Use match_lineup() to disambiguate via
+    commence_time when looking up.
+    """
     print(f"Fetching confirmed lineups for {game_date}...")
     try:
         r = requests.get(
@@ -426,7 +506,7 @@ def get_confirmed_lineups(game_date):
             }
         )
         data = r.json()
-        lineups = {}
+        games_list = []
         for date_entry in data.get("dates", []):
             for game in date_entry.get("games", []):
                 home_team = game.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
@@ -437,27 +517,56 @@ def get_confirmed_lineups(game_date):
                 away_batters = [p.get("fullName", "") for p in away_lineup if p.get("primaryPosition", {}).get("abbreviation") != "P"]
                 home_catcher = next((p.get("fullName", "") for p in home_lineup if p.get("primaryPosition", {}).get("abbreviation") == "C"), None)
                 away_catcher = next((p.get("fullName", "") for p in away_lineup if p.get("primaryPosition", {}).get("abbreviation") == "C"), None)
+                entry = {
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "commence_time": game.get("gameDate"),
+                    "game_number": game.get("gameNumber", 1),
+                }
                 if home_batters or away_batters:
-                    lineups[home_team] = {
+                    entry.update({
                         "home_lineup": home_batters[:9],
                         "away_lineup": away_batters[:9],
                         "home_catcher": home_catcher,
                         "away_catcher": away_catcher,
-                        "away_team": away_team,
-                        "lineup_confirmed": True
-                    }
-                    print(f"  ✅ Lineup confirmed: {away_team} @ {home_team}")
+                        "lineup_confirmed": True,
+                    })
+                    print(f"  ✅ Lineup confirmed: {away_team} @ {home_team} (game #{entry['game_number']})")
                 else:
-                    lineups[home_team] = {
+                    entry.update({
                         "home_lineup": [],
                         "away_lineup": [],
-                        "away_team": away_team,
-                        "lineup_confirmed": False
-                    }
-        return lineups
+                        "lineup_confirmed": False,
+                    })
+                games_list.append(entry)
+        return games_list
     except Exception as e:
         print(f"Lineup fetch error: {e}")
+        return []
+
+
+def match_lineup(games_list, home_team, away_team, commence_time_hint=None):
+    """Find matching lineup entry. DH-aware via commence_time disambiguation."""
+    candidates = [
+        g for g in games_list
+        if (home_team.lower() in g["home_team"].lower() or g["home_team"].lower() in home_team.lower())
+        and (away_team.lower() in g["away_team"].lower() or g["away_team"].lower() in away_team.lower())
+    ]
+    if not candidates:
         return {}
+    if len(candidates) == 1:
+        return candidates[0]
+    if commence_time_hint:
+        try:
+            hint_dt = datetime.fromisoformat(commence_time_hint.replace('Z', '+00:00'))
+            return min(
+                candidates,
+                key=lambda g: abs((datetime.fromisoformat((g.get('commence_time') or '').replace('Z', '+00:00')) - hint_dt).total_seconds())
+                              if g.get('commence_time') else 999999
+            )
+        except Exception:
+            pass
+    return candidates[0]
 
 def get_batter_handedness(player_name, season=2026):
     """Look up batter hitting hand from MLB Stats API"""
@@ -1863,7 +1972,7 @@ def run():
     
     # Fetch probable pitchers from MLB Stats API
     probable_pitchers = get_probable_pitchers(today)
-    print(f"Probable pitchers loaded for {len(probable_pitchers)} teams")
+    print(f"Probable pitchers loaded for {len(probable_pitchers)} games")
     umpire_assignments = get_umpires(today)
     print(f"Umpire assignments loaded for {len(umpire_assignments)} games")
     confirmed_lineups = get_confirmed_lineups(today)
@@ -1883,8 +1992,8 @@ def run():
             else:
                 game_date_et = today
             
-            # Get probable pitchers
-            pitcher_info = probable_pitchers.get(home_team, {})
+            # Get probable pitchers — DH-aware lookup using commence_time hint
+            pitcher_info = match_probable_pitcher(probable_pitchers, home_team, away_team, commence_time_hint=commence_time)
             home_pitcher = pitcher_info.get("home_pitcher")
             away_pitcher = pitcher_info.get("away_pitcher")
             home_pitcher_id = pitcher_info.get("home_pitcher_id")
@@ -2220,7 +2329,7 @@ def run():
                 # Only label as NRFI lean when in profitable zone (≥70 = 59% audit).
                 print(f"  NRFI score: {nrfi_score} ({'NRFI lean' if nrfi_score >= 70 else 'YRFI lean' if nrfi_score <= 40 else 'neutral'})")
             # Get confirmed lineup
-            lineup_info = confirmed_lineups.get(home_team, {})
+            lineup_info = match_lineup(confirmed_lineups, home_team, away_team, commence_time_hint=commence_time)
             home_lineup = lineup_info.get("home_lineup", [])
             away_lineup = lineup_info.get("away_lineup", [])
             lineup_confirmed = lineup_info.get("lineup_confirmed", False)
@@ -2278,7 +2387,7 @@ def run():
                 print(f"  {away_team} bullpen ERA: {away_bullpen.get('bullpen_era')} save%: {away_bullpen.get('save_pct')}%")
             
             # Get umpire early — needed for total projection
-            ump_name = umpire_assignments.get(home_team)
+            ump_name = match_umpire(umpire_assignments, home_team, away_team, commence_time_hint=commence_time)
             ump_stats = get_umpire_stats(ump_name) if ump_name else None
 
             # ── PROJECTED TOTAL (calibrated from 170+ game backtesting) ──
