@@ -288,11 +288,34 @@ def run():
                     continue
                 result = 'Win' if hits > line else 'Loss'
                 final_val = hits
+            elif prop_type == 'hits_under':
+                hits = find_player_stat(boxscore, player_name, 'batting', 'hits')
+                if hits is None:
+                    continue
+                # Push when the actual exactly equals the line (rare on 0.5 lines)
+                if hits < line:
+                    result = 'Win'
+                elif hits == line:
+                    result = 'Push'
+                else:
+                    result = 'Loss'
+                final_val = hits
             elif prop_type == 'ks_over':
                 ks = find_player_stat(boxscore, player_name, 'pitching', 'strikeOuts')
                 if ks is None:
                     continue
                 result = 'Win' if ks > line else 'Loss'
+                final_val = ks
+            elif prop_type == 'ks_under':
+                ks = find_player_stat(boxscore, player_name, 'pitching', 'strikeOuts')
+                if ks is None:
+                    continue
+                if ks < line:
+                    result = 'Win'
+                elif ks == line:
+                    result = 'Push'
+                else:
+                    result = 'Loss'
                 final_val = ks
             else:
                 continue
