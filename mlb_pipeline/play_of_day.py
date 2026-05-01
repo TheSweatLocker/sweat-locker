@@ -571,6 +571,32 @@ def run():
     # 'high' = PRIME confluence ML / NBA high conviction.
     # 'solid' = NRFI edge / ML lean / NBA solid.
     # 'standard' = best available fallback.
+    def _new_pick_cohort_healthy(c):
+        """Return False if the candidate's auto_fade cohort has a 7d hit
+        rate below 0.50 with n>=8. Used as a stickiness gate when the 2pm
+        run wants to override the 8am locked pick — don't flip to a cold
+        cohort even if its score outranks. NRFI/NBA picks (no spread_delta
+        cohort) are always considered healthy."""
+        try:
+            from auto_fade import adjust_pick, CALIBRATION
+            res = adjust_pick(
+                c.get('projected_spread'), c.get('close_spread'),
+                c.get('signal_confluence_net'),
+                c.get('home_team'), c.get('away_team'),
+                home_ml=c.get('home_ml_odds'), away_ml=c.get('away_ml_odds'),
+            )
+            cohort = res.get('cohort')
+            if not cohort or cohort not in CALIBRATION:
+                return True  # NRFI / NBA / unmapped pick — no cohort gate
+            cal = CALIBRATION[cohort]
+            n_7d = cal.get('n_7d') or 0
+            hit_7d = cal.get('hit_rate_7d')
+            if hit_7d is None or n_7d < 8:
+                return True  # not enough recent sample to judge
+            return hit_7d >= 0.50
+        except Exception:
+            return True  # fail-open
+
     TIER_RANK = {'elite': 0, 'high': 1, 'solid': 2, 'standard': 3}
     if existing_pick and et_hour >= 14:
         existing_score = existing_pick.get('score', {}).get('total', 0) or 0
@@ -578,17 +604,26 @@ def run():
         new_score = pick.get('score', 0) or 0
         existing_tier = TIER_RANK.get(existing_confidence, 3)
         new_tier = TIER_RANK.get(confidence, 3)
+        # Cohort-health gate for ANY override (tier upgrade or same-tier).
+        # Pulls 7d hit rate of the new pick's cohort from mlb_tier_calibration
+        # — if cohort is in a 7d slump (rate < 0.50, n>=8), refuse to flip
+        # away from the locked morning pick. Stops the 2pm cron from swapping
+        # an already-decent pick to a freshly-eligible cold cohort.
+        new_cohort_healthy = _new_pick_cohort_healthy(pick)
         if new_tier < existing_tier:
-            # Strictly higher tier (lower rank number) — override regardless of score
-            print(f"🔄 TIER UPGRADE OVERRIDE — new pick {confidence} (tier {new_tier}) beats locked {existing_confidence} (tier {existing_tier}) regardless of score")
+            if not new_cohort_healthy:
+                print(f"🔒 Keeping locked pick — new {confidence} pick's cohort in 7d slump (would have upgraded tier)")
+                return
+            print(f"🔄 TIER UPGRADE OVERRIDE — new pick {confidence} (tier {new_tier}) beats locked {existing_confidence} (tier {existing_tier})")
         elif new_tier > existing_tier:
-            # Strictly lower tier — never override even if score is higher
             print(f"🔒 Keeping locked pick — new pick {confidence} is strictly lower tier than locked {existing_confidence}")
             return
         else:
-            # Same tier — score delta rule applies
             if new_score < existing_score + SCORE_OVERRIDE_THRESHOLD:
                 print(f"🔒 Keeping locked pick — new score {new_score} doesn't beat locked {existing_score} + {SCORE_OVERRIDE_THRESHOLD} (same tier)")
+                return
+            if not new_cohort_healthy:
+                print(f"🔒 Keeping locked pick — same-tier override blocked, new pick's cohort in 7d slump")
                 return
             print(f"🔄 OVERRIDE — same tier, new score {new_score} beats locked {existing_score} + {SCORE_OVERRIDE_THRESHOLD}")
 

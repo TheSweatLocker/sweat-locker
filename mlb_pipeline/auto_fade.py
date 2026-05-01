@@ -8,57 +8,97 @@ Three actions per cohort based on hit rate + sample size:
               (we lean on the model's inverse correlation when sample warrants)
 
 Calibration thresholds (conservative — avoid acting on noisy small-sample bias):
-  FADE     when n >= 30 AND hit_rate <= 0.30
-  SUPPRESS when n >= 15 AND hit_rate <= 0.30
+  FADE     when 30d n >= 30 AND 30d hit_rate <= 0.30
+  SUPPRESS when 30d n >= 15 AND 30d hit_rate <= 0.30
+  REGIME   when 7d n >= 8 AND 7d hit_rate <= (30d hit_rate - 0.10)
+           — current cohort is in a regime shift; downgrade to SUPPRESS
   SURFACE  otherwise
 
-Refresh monthly. As resolved sample grows, cohorts may move between buckets.
-
-Cohort buckets currently tracked:
-  ml_dog            — model picks ML underdog (corrected_delta sign disagrees w/ market)
-  ml_dog_high_conv  — model picks ML dog with confluence_net >= 2 (extra unreliable)
-  ml_chalk          — model agrees with market on ML direction
-  ml_chalk_high_mag — model agrees with market AND corrected |delta| >= 1.5 (the gold)
+Cohorts now read live from mlb_tier_calibration (refreshed daily by
+audit_tier_calibration.py). Hard-coded fallback below is used only when
+the live table is unreachable (e.g. local dev without env vars).
 """
 
-# Calibration table. 6 cohorts based on (ML direction agreement, RL direction agreement).
-# Updated 2026-04-25 from April 1-23 backtest, n=56 games.
-# Data is RL-based (we didn't have ML odds historically). The mixed cohorts
-# (ml_fav_rl_dog, ml_dog_rl_fav) are NEW concepts with no calibration data —
-# default SUPPRESS until we accumulate >=15 resolved picks per cohort.
-CALIBRATION = {
-    # CLEAN COHORTS (model agrees with both ML and RL, or disagrees with both)
-    'ml_chalk_high_mag': {
-        'n': 7, 'hit_rate': 0.857,
-        'note': 'Model + ML + RL all agree, corrected |delta| >= 1.5 (Marlins-style). 85.7% Apr.',
-    },
-    'ml_chalk': {
-        'n': 32, 'hit_rate': 0.594,
-        'note': 'Model + market agree on direction (RL-based audit). 59.4% over April.',
-    },
-    'ml_dog': {
-        'n': 24, 'hit_rate': 0.25,
-        'note': 'Model picks against market (RL-based). 25% in April. Below break-even.',
-    },
-    'ml_dog_high_conv': {
-        'n': 6, 'hit_rate': 0.0,
-        'note': 'Model picks against market w/ confluence>=2. 0/6 — tiny sample but consistent.',
-    },
-    # MIXED COHORTS (ML and RL favorites disagree — bookmakers split signal)
-    'ml_fav_rl_dog': {
-        'n': 0, 'hit_rate': None,
-        'note': 'Model picks ML-fav-but-RL-dog team (Orioles today). NO calibration data. SUPPRESS until n>=15.',
-    },
-    'ml_dog_rl_fav': {
-        'n': 0, 'hit_rate': None,
-        'note': 'Model picks RL-fav-but-ML-dog team. NO calibration data. SUPPRESS until n>=15.',
-    },
+import os
+import json
+import urllib.parse
+import urllib.request
+
+# Hard-coded fallback (used only when mlb_tier_calibration is unreachable).
+# Refreshed 2026-04-25 from April 1-23 backtest. Live table supersedes this.
+FALLBACK_CALIBRATION = {
+    'ml_chalk_high_mag': {'n': 7, 'hit_rate': 0.857, 'n_7d': 0, 'hit_rate_7d': None},
+    'ml_chalk':          {'n': 32, 'hit_rate': 0.594, 'n_7d': 0, 'hit_rate_7d': None},
+    'ml_dog':            {'n': 24, 'hit_rate': 0.25,  'n_7d': 0, 'hit_rate_7d': None},
+    'ml_dog_high_conv':  {'n': 6,  'hit_rate': 0.0,   'n_7d': 0, 'hit_rate_7d': None},
+    'ml_fav_rl_dog':     {'n': 0,  'hit_rate': None,  'n_7d': 0, 'hit_rate_7d': None},
+    'ml_dog_rl_fav':     {'n': 0,  'hit_rate': None,  'n_7d': 0, 'hit_rate_7d': None},
 }
 
-FADE_MIN_N = 30        # Need solid sample before betting AGAINST our model
+# Map auto_fade cohort name → tier name in mlb_tier_calibration
+_TIER_MAP = {
+    'ml_chalk_high_mag': 'autofade_chalk_high_mag',
+    'ml_chalk':          'autofade_chalk',
+    'ml_dog':            'autofade_dog',
+    'ml_dog_high_conv':  'autofade_dog_high_conv',
+}
+
+FADE_MIN_N = 30
 FADE_MAX_HIT = 0.30
-SUPPRESS_MIN_N = 5     # SUPPRESS is low-risk (we just don't make a pick) — be permissive
+SUPPRESS_MIN_N = 5
 SUPPRESS_MAX_HIT = 0.30
+# Regime-shift guard: if recent 7d sample drops well below 30d rate, treat
+# as a slump and SUPPRESS even if 30d looks healthy.
+REGIME_MIN_N_7D = 8
+REGIME_DROP = 0.10  # 7d must be at least 10pt below 30d to trigger
+
+
+def _fetch_live_calibration():
+    """Fetch fresh cohort rates from mlb_tier_calibration. Returns dict
+    keyed by auto_fade cohort name with 30d + 7d rates. Falls back to
+    FALLBACK_CALIBRATION on any failure (network, missing env, table
+    not yet seeded for this cohort)."""
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        return dict(FALLBACK_CALIBRATION)
+    tier_names = list(_TIER_MAP.values())
+    try:
+        # Single query for all autofade tiers, both windows
+        params = urllib.parse.urlencode({
+            "tier": f"in.({','.join(tier_names)})",
+            "window_label": "in.(7d,30d)",
+            "select": "tier,window_label,hits,total,hit_rate",
+        }, safe=",.()")
+        req = urllib.request.Request(
+            f"{url}/rest/v1/mlb_tier_calibration?{params}",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            rows = json.loads(r.read())
+    except Exception:
+        return dict(FALLBACK_CALIBRATION)
+
+    # Build reverse map (tier_name → cohort_name)
+    rev = {v: k for k, v in _TIER_MAP.items()}
+    out = {k: dict(v) for k, v in FALLBACK_CALIBRATION.items()}
+    for row in rows:
+        cohort = rev.get(row.get("tier"))
+        if not cohort:
+            continue
+        if cohort not in out:
+            out[cohort] = {'n': 0, 'hit_rate': None, 'n_7d': 0, 'hit_rate_7d': None}
+        if row.get("window_label") == "30d":
+            out[cohort]['n'] = row.get("total") or 0
+            out[cohort]['hit_rate'] = row.get("hit_rate")
+        elif row.get("window_label") == "7d":
+            out[cohort]['n_7d'] = row.get("total") or 0
+            out[cohort]['hit_rate_7d'] = row.get("hit_rate")
+    return out
+
+
+# Live calibration loaded once per process. To force refresh, re-import.
+CALIBRATION = _fetch_live_calibration()
 
 
 def cohort_for_pick(projected_spread, close_spread, confluence_net, home_ml=None, away_ml=None):
@@ -116,20 +156,30 @@ def cohort_for_pick(projected_spread, close_spread, confluence_net, home_ml=None
 
 def action_for_cohort(cohort):
     """Returns one of SURFACE / SUPPRESS / FADE based on calibration thresholds.
-    Cohorts with no data (hit_rate is None or n < SUPPRESS_MIN_N) default to SUPPRESS
-    when they lack calibration entirely (hit_rate=None) — conservative for new buckets.
+
+    Order of checks:
+      1. No data → SUPPRESS (conservative for new buckets)
+      2. 30d FADE band (n>=30, rate<=0.30) → FADE
+      3. 30d SUPPRESS band (n>=15, rate<=0.30) → SUPPRESS
+      4. Regime guard: 7d sample dropped 10pt+ below 30d → SUPPRESS
+         (cohort in a slump even if 30d still looks fine)
+      5. Otherwise → SURFACE
     """
     if cohort is None or cohort not in CALIBRATION:
         return 'SURFACE'
     cal = CALIBRATION[cohort]
     n = cal['n']
     hit = cal['hit_rate']
-    # No data at all — conservative SUPPRESS until calibrated
     if hit is None:
         return 'SUPPRESS'
     if n >= FADE_MIN_N and hit <= FADE_MAX_HIT:
         return 'FADE'
     if n >= SUPPRESS_MIN_N and hit <= SUPPRESS_MAX_HIT:
+        return 'SUPPRESS'
+    # Regime-shift guard
+    n_7d = cal.get('n_7d') or 0
+    hit_7d = cal.get('hit_rate_7d')
+    if hit_7d is not None and n_7d >= REGIME_MIN_N_7D and (hit - hit_7d) >= REGIME_DROP:
         return 'SUPPRESS'
     return 'SURFACE'
 

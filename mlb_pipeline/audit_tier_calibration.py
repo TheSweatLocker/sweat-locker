@@ -144,6 +144,35 @@ def classify_spread_delta_tier(delta):
     return "spread_delta_lt1"
 
 
+def classify_autofade_cohort(spread_delta, close_spread, confluence_net):
+    """Mirrors auto_fade.cohort_for_pick using only fields available in
+    mlb_game_results. Without ml odds we bucket on RL direction agreement
+    only — this matches what auto_fade does when ml_market_home is None.
+
+    spread_delta sign convention (per game_context.py): positive = model
+    favors home; close_spread negative = home is RL favorite.
+    """
+    if spread_delta is None or close_spread is None:
+        return None
+    try:
+        sd = float(spread_delta)
+        cs = float(close_spread)
+    except (TypeError, ValueError):
+        return None
+    cn = int(confluence_net) if confluence_net is not None else 0
+    model_home = sd > 0
+    rl_market_home = cs < 0
+    agrees = model_home == rl_market_home
+    corrected_delta_abs = abs(sd + cs)
+    if not agrees:
+        if cn >= 2:
+            return "autofade_dog_high_conv"
+        return "autofade_dog"
+    if corrected_delta_abs >= 1.5:
+        return "autofade_chalk_high_mag"
+    return "autofade_chalk"
+
+
 def compute_window_rates(rows, days_back, end_date):
     """Compute hit rate per tier within rolling window ending end_date."""
     cutoff = end_date - timedelta(days=days_back)
@@ -193,6 +222,21 @@ def compute_window_rates(rows, days_back, end_date):
             except (TypeError, ValueError):
                 pass
 
+        # Auto-fade cohort (matches auto_fade.cohort_for_pick logic so
+        # auto_fade can read these rates back instead of hard-coding)
+        af_cohort = classify_autofade_cohort(
+            sd, r.get("close_spread"), r.get("signal_confluence_net")
+        )
+        if af_cohort and sd is not None and hw is not None:
+            try:
+                bet_home = float(sd) > 0
+                hit = (bet_home and hw) or (not bet_home and not hw)
+                tier_stats[af_cohort]["total"] += 1
+                if hit:
+                    tier_stats[af_cohort]["hits"] += 1
+            except (TypeError, ValueError):
+                pass
+
     return tier_stats
 
 
@@ -221,6 +265,7 @@ def main():
         "confluence_prime_ge4", "confluence_strong_2_3", "confluence_lean_1",
         "confluence_zero", "confluence_negative",
         "spread_delta_ge2", "spread_delta_1_5_2", "spread_delta_1_1_5", "spread_delta_lt1",
+        "autofade_chalk_high_mag", "autofade_chalk", "autofade_dog", "autofade_dog_high_conv",
     }
 
     window_data = {}
