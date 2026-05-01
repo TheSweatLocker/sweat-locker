@@ -17,6 +17,28 @@ HEADERS = {
     'Content-Type': 'application/json',
 }
 
+def _last_name(full_name):
+    if not full_name:
+        return ''
+    return full_name.strip().split()[-1].lower()
+
+
+def _matches_pitcher_hint(mlb_game, home_sp_name, away_sp_name):
+    """DH disambiguation: True if MLB API game's probable pitcher last names
+    match the row's stored sp_names. Returns True when no hint available so
+    non-DH days behave unchanged."""
+    if not home_sp_name and not away_sp_name:
+        return True
+    teams = mlb_game.get('teams', {})
+    mlb_home_p = teams.get('home', {}).get('probablePitcher', {}).get('fullName', '')
+    mlb_away_p = teams.get('away', {}).get('probablePitcher', {}).get('fullName', '')
+    if not mlb_home_p and not mlb_away_p:
+        return True
+    home_ok = (not home_sp_name) or _last_name(home_sp_name) == _last_name(mlb_home_p)
+    away_ok = (not away_sp_name) or _last_name(away_sp_name) == _last_name(mlb_away_p)
+    return home_ok and away_ok
+
+
 def run():
     print('Resolving game results...')
     # Get games missing scores from last 7 days
@@ -37,23 +59,37 @@ def run():
         game_date = game.get('game_date')
         game_id = game.get('game_id')
         close_total = game.get('close_total')
+        # DH FIX (2026-05-01): row's stored starters disambiguate which DH
+        # gamePk this row corresponds to.
+        row_home_sp = game.get('home_sp_name')
+        row_away_sp = game.get('away_sp_name')
 
         # Find MLB game PK
         try:
             r2 = requests.get(
                 'https://statsapi.mlb.com/api/v1/schedule',
-                params={'sportId': 1, 'date': game_date, 'hydrate': 'linescore,officials'},
+                params={'sportId': 1, 'date': game_date, 'hydrate': 'linescore,officials,probablePitcher'},
                 timeout=15
             )
             dates = r2.json().get('dates', [])
+            done = False
             for d in dates:
+                if done:
+                    break
                 for mlb_game in d.get('games', []):
+                    if done:
+                        break
                     mlb_home = mlb_game.get('teams', {}).get('home', {}).get('team', {}).get('name', '')
                     mlb_away = mlb_game.get('teams', {}).get('away', {}).get('team', {}).get('name', '')
                     home_match = home_team.lower() in mlb_home.lower() or mlb_home.lower() in home_team.lower()
                     away_match = away_team.lower() in mlb_away.lower() or mlb_away.lower() in away_team.lower()
-
-                    if home_match and away_match and mlb_game.get('status', {}).get('abstractGameState') == 'Final':
+                    if not (home_match and away_match):
+                        continue
+                    if mlb_game.get('status', {}).get('abstractGameState') != 'Final':
+                        continue
+                    if not _matches_pitcher_hint(mlb_game, row_home_sp, row_away_sp):
+                        continue  # DH game w/ different starter
+                    if True:
                         linescore = mlb_game.get('linescore', {})
                         home_score = linescore.get('teams', {}).get('home', {}).get('runs')
                         away_score = linescore.get('teams', {}).get('away', {}).get('runs')
@@ -132,6 +168,7 @@ def run():
                                 print(f'  Patch error: {patch_resp.text[:200]}')
                             print(f'  ✅ {away_team} {away_score} @ {home_team} {home_score} | Total {total_runs} → {total_result} | Spread → {spread_result or "no line"} | Ump: {umpire or "already logged"}')
                             resolved += 1
+                            done = True
         except Exception as e:
             print(f'  Error: {e}')
 

@@ -43,6 +43,30 @@ def get_pending_nrfi():
     )
     return r.json()
 
+
+def _last_name(full_name):
+    if not full_name:
+        return ''
+    return full_name.strip().split()[-1].lower()
+
+
+def _matches_pitcher_hint(mlb_game, home_sp_name, away_sp_name):
+    """For DH disambiguation: True if the MLB API game's probable pitcher
+    last names match the row's stored sp_names. Returns True when no hint
+    available so non-DH days behave unchanged."""
+    if not home_sp_name and not away_sp_name:
+        return True
+    teams = mlb_game.get('teams', {})
+    mlb_home_p = teams.get('home', {}).get('probablePitcher', {}).get('fullName', '')
+    mlb_away_p = teams.get('away', {}).get('probablePitcher', {}).get('fullName', '')
+    # Only enforce match when both sides are present in API; if MLB API has
+    # no probablePitcher data fall through to legacy behavior.
+    if not mlb_home_p and not mlb_away_p:
+        return True
+    home_ok = (not home_sp_name) or _last_name(home_sp_name) == _last_name(mlb_home_p)
+    away_ok = (not away_sp_name) or _last_name(away_sp_name) == _last_name(mlb_away_p)
+    return home_ok and away_ok
+
 def update_nrfi_result(game_id, result):
     """Update nrfi_result in both tables"""
     for table in ['mlb_game_results', 'mlb_game_context']:
@@ -64,30 +88,49 @@ def run():
         if not game_id or not nrfi_score:
             continue
 
-        # game_id from Odds API — need MLB game_pk
-        # Try matching via home/away team in MLB Stats API
+        # game_id from Odds API — need MLB game_pk.
+        # DH FIX (2026-05-01): on DH days the team-only match would resolve
+        # twice and the second write clobbered the first. Now we also match
+        # the row's home_sp_name/away_sp_name against MLB API probablePitcher
+        # to pick the correct DH gamePk. After the first resolution we break.
         try:
             game_date = game.get("game_date")
             r = requests.get(
                 "https://statsapi.mlb.com/api/v1/schedule",
-                params={"sportId": 1, "date": game_date, "hydrate": "linescore"},
+                params={"sportId": 1, "date": game_date, "hydrate": "linescore,probablePitcher"},
                 timeout=15
             )
             dates = r.json().get("dates", [])
+            row_home_sp = game.get("home_sp_name")
+            row_away_sp = game.get("away_sp_name")
+            row_home = game.get("home_team", "")
+            row_away = game.get("away_team", "")
+            done = False
             for d in dates:
+                if done:
+                    break
                 for mlb_game in d.get("games", []):
                     mlb_home = mlb_game.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
                     mlb_away = mlb_game.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
-                    if game["home_team"].lower() in mlb_home.lower() or mlb_home.lower() in game["home_team"].lower():
-                        if mlb_game.get("status", {}).get("abstractGameState") == "Final":
-                            game_pk = mlb_game.get("gamePk")
-                            home_r1, away_r1 = get_first_inning_runs(game_pk)
-                            if home_r1 is not None and away_r1 is not None:
-                                total_r1 = home_r1 + away_r1
-                                result = "NRFI" if total_r1 == 0 else "YRFI"
-                                update_nrfi_result(game_id, result)
-                                print(f"  {game['away_team']} @ {game['home_team']}: {away_r1}+{home_r1}={total_r1} → {result} (NRFI score was {nrfi_score})")
-                                resolved += 1
+                    home_match = row_home.lower() in mlb_home.lower() or mlb_home.lower() in row_home.lower()
+                    away_match = row_away.lower() in mlb_away.lower() or mlb_away.lower() in row_away.lower()
+                    if not (home_match and away_match):
+                        continue
+                    if mlb_game.get("status", {}).get("abstractGameState") != "Final":
+                        continue
+                    if not _matches_pitcher_hint(mlb_game, row_home_sp, row_away_sp):
+                        continue  # DH game with different starter — skip
+                    game_pk = mlb_game.get("gamePk")
+                    home_r1, away_r1 = get_first_inning_runs(game_pk)
+                    if home_r1 is None or away_r1 is None:
+                        continue
+                    total_r1 = home_r1 + away_r1
+                    result = "NRFI" if total_r1 == 0 else "YRFI"
+                    update_nrfi_result(game_id, result)
+                    print(f"  {row_away} @ {row_home}: {away_r1}+{home_r1}={total_r1} → {result} (NRFI score was {nrfi_score})")
+                    resolved += 1
+                    done = True
+                    break
         except Exception as e:
             print(f"  Error: {e}")
 
