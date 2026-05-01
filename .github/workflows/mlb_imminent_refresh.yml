@@ -1,0 +1,40 @@
+name: MLB Imminent Game Refresh
+
+# Watchdog: every 30 min from ~12pm to ~10pm ET, refresh lineups + umpires
+# for games starting in the next 30-120 min. Plugs the gap between the fixed
+# 8am/2pm pipeline runs and game-time confirmations.
+
+on:
+  schedule:
+    # 12:00, 12:30 ... 7:30pm ET = 16:00, 16:30 ... 23:30 UTC
+    - cron: '*/30 16-23 * * *'
+    # 8:00, 8:30, 9:00, 9:30, 10:00pm ET = 00:00, 00:30, 01:00, 01:30, 02:00 UTC
+    - cron: '*/30 0-2 * * *'
+  workflow_dispatch:
+
+jobs:
+  refresh-imminent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      - name: Refresh imminent-game lineups + umpires
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refresh_imminent_games.py
