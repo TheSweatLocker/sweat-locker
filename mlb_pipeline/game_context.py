@@ -1518,32 +1518,45 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
     if away_is_opener:
         score -= 8
 
-    # ── UMPIRE NRFI TENDENCY (added 2026-04-30) ──
-    # Real spread across MLB umpires: 38%-67% NRFI rate. Worth ~±6 score points
-    # for the extreme umps, ±2-3 for moderate skews. Centered at 50% baseline.
+    # ── V2 ADDITIONS WITH PRIME TIER GUARD (2026-04-30) ──
+    # Backtest showed v2 additions (umpire + team 1st-inning offense) were
+    # diluting the well-calibrated 90-94 PRIME tier (81.8% historical hit rate).
+    # Solution: compute v2 adjustment, then GUARD the 90-94 boundary in BOTH
+    # directions — never push a game INTO PRIME from outside, never push OUT
+    # of PRIME from inside. Protects the proven tier; lets v2 refine other tiers.
+    base_score = score
+    v2_adj = 0
     if umpire_stats and umpire_stats.get('nrfi_rate') is not None:
         try:
             nr = float(umpire_stats['nrfi_rate'])
-            adj = max(-6, min(6, round((nr - 0.50) * 30)))
-            score += adj
+            v2_adj += max(-3, min(3, round((nr - 0.50) * 15)))
         except (TypeError, ValueError):
             pass
-
-    # ── 1ST-INNING OFFENSE (added 2026-04-30) ──
-    # Both teams' 1st-inning R/G vs league avg ~0.5. Strong 1st-inning bats
-    # = lower NRFI score; weak = higher NRFI score. Worth up to ±5 per team.
-    # Captures the offense side of the matchup the pitcher-only formula missed.
     LEAGUE_1ST_INN_RPG = 0.5
     for rpg in (home_inning_1_rpg, away_inning_1_rpg):
         if rpg is None:
             continue
         try:
             delta = float(rpg) - LEAGUE_1ST_INN_RPG
-            # Each +0.2 R/G above avg = -3 score; cap ±5 per team
-            adj = max(-5, min(5, round(-delta * 15)))
-            score += adj
+            v2_adj += max(-2, min(2, round(-delta * 8)))
         except (TypeError, ValueError):
             pass
+
+    provisional = base_score + v2_adj
+    base_in_prime = 90 <= base_score <= 94
+    provisional_in_prime = 90 <= provisional <= 94
+
+    if base_in_prime and not provisional_in_prime:
+        # Don't let v2 push a calibrated PRIME game out of PRIME
+        score = max(90, min(94, provisional))
+    elif not base_in_prime and provisional_in_prime:
+        # Don't let v2 push a non-PRIME game INTO PRIME (dilutes the tier)
+        if base_score < 90:
+            score = 89  # cap just below PRIME
+        else:
+            score = 95  # base was 95+ volatile, keep it there
+    else:
+        score = provisional
 
     return max(0, min(100, round(score)))
 
