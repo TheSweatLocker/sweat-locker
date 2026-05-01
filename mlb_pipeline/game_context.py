@@ -1333,10 +1333,14 @@ def detect_opener(pitcher_id):
     except:
         return False
 
-def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None, home_is_opener=False, away_is_opener=False, game_month=None):
+def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None, home_is_opener=False, away_is_opener=False, game_month=None, umpire_stats=None):
     """
     Calculate NRFI (No Run First Inning) probability score 0-100.
     Higher = stronger NRFI lean.
+
+    umpire_stats (added 2026-04-30): dict with 'nrfi_rate' field. Adjusts
+    the score based on the home plate umpire's historical NRFI tendency.
+    Range across MLB umpires is ~38%-67% — meaningful spread.
     """
     score = 50  # neutral baseline
 
@@ -1511,6 +1515,18 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
         score -= 8
     if away_is_opener:
         score -= 8
+
+    # ── UMPIRE NRFI TENDENCY (added 2026-04-30) ──
+    # Real spread across MLB umpires: 38%-67% NRFI rate. Worth ~±6 score points
+    # for the extreme umps, ±2-3 for moderate skews. Centered at 50% baseline.
+    if umpire_stats and umpire_stats.get('nrfi_rate') is not None:
+        try:
+            nr = float(umpire_stats['nrfi_rate'])
+            # Convert to delta from 50%, scale to score units (clamp at ±6)
+            adj = max(-6, min(6, round((nr - 0.50) * 30)))
+            score += adj
+        except (TypeError, ValueError):
+            pass
 
     return max(0, min(100, round(score)))
 
@@ -2305,6 +2321,10 @@ def run():
             if away_is_opener:
                 print(f"  ⚠️ {away_pitcher} detected as OPENER/BULLPEN — NRFI penalty applied")
 
+            # Pre-fetch umpire stats so they can feed NRFI calc (added 2026-04-30)
+            _ump_name_for_nrfi = match_umpire(umpire_assignments, home_team, away_team, commence_time_hint=commence_time)
+            _ump_stats_for_nrfi = get_umpire_stats(_ump_name_for_nrfi) if _ump_name_for_nrfi else None
+
             # Calculate NRFI score — use local variables not context dict
             nrfi_score = calc_nrfi_score(
                 home_pitcher_stats,
@@ -2322,6 +2342,7 @@ def run():
                 home_is_opener,
                 away_is_opener,
                 game_month=game_date_et[5:7] if game_date_et else None,
+                umpire_stats=_ump_stats_for_nrfi,
             )
             if nrfi_score:
                 # NRFI lean threshold raised from 60 to 70 (2026-04-29):
