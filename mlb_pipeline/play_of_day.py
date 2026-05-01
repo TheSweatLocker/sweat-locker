@@ -254,68 +254,34 @@ def score_nba_game(game, nba_teams):
 def build_lean(ctx):
     """Determine the lean for an MLB game.
 
-    Priority order (BUG #1 FIX 2026-04-26): PRIME confluence ML beats EDGE NRFI.
-    Yesterday's Braves @ Phillies had NRFI 89 + PRIME confluence +5 — old code
-    returned NRFI first, blocking the stronger ML pick from Tier 1 HIGH CONVICTION
-    selection. Now PRIME confluence ML (>= +4) checked FIRST since multi-signal
-    alignment (~71% backtest) is stronger than NRFI 88-89 dead-edge band (~47%).
+    ML LEANS REMOVED 2026-05-01 pending projection_v2 rebuild.
+
+    Backtest finding (391 games, 30 days): every ML selection rule we tested
+    (PRIME confluence, magnitude ≥3.0, magnitude ≥2.0, xERA gap ≥2.5) hit
+    below 50% on POTD picks. Root cause: the projection layer itself uses
+    only 4 inputs (xERA, wRC+, bullpen, park) when the schema has 70+. The
+    ML formula doesn't beat market efficiency — no filter on top of it will.
+
+    Until projection_v2 is built and backtested at 53%+ on closing-line ML
+    with proper features (2025 prior, inning buckets, OAA, framing, recency
+    Bayes, Poisson), we don't surface ML leans as POTD candidates.
+
+    NRFI 90-94 stays (audited 75% n=16). Total leans stay (small sample but
+    stored against close_total directly, not derived from broken ML formula).
     """
     nrfi = ctx.get('nrfi_score') or 0
-    projected_spread = ctx.get('projected_spread')
-    confluence_net = ctx.get('signal_confluence_net')
 
-    # Helper: try ML lean via auto-fade, return (label, type, is_nrfi) or None if suppressed
-    # Hybrid tier formula 2026-04-29: PRIME requires confluence ≥+4 AND |spread_delta| ≥2.0;
-    # STRONG requires ≥+2 AND |delta| ≥1.5; LEAN requires ≥+1 AND |delta| ≥1.0.
-    # Prevents zero-edge confluence picks (e.g. Dodgers PRIME +6 with delta +0.1).
-    def _try_ml_lean(min_confluence, min_abs_delta):
-        if projected_spread is None or confluence_net is None:
-            return None
-        if int(confluence_net) < min_confluence:
-            return None
-        spread_delta = ctx.get('spread_delta')
-        if spread_delta is None or abs(float(spread_delta)) < min_abs_delta:
-            return None
-        try:
-            from auto_fade import adjust_pick
-            res = adjust_pick(
-                projected_spread, ctx.get('close_spread'), confluence_net,
-                ctx.get('home_team'), ctx.get('away_team'),
-                home_ml=ctx.get('home_ml_odds'), away_ml=ctx.get('away_ml_odds')
-            )
-            if res['action'] == 'SUPPRESS':
-                return None
-            if res['action'] in ('SURFACE', 'FADE'):
-                fav_team = res['pick_team']
-                tier_tag = 'PRIME' if int(confluence_net) >= 4 else 'STRONG'
-                tag_extra = ' [auto-fade]' if res['action'] == 'FADE' else ''
-                return (f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals){tag_extra}", 'ml', False)
-        except Exception:
-            # Fallback if auto_fade unavailable
-            fav_team = ctx.get('home_team') if float(projected_spread) > 0 else ctx.get('away_team')
-            tier_tag = 'PRIME' if int(confluence_net) >= 4 else 'STRONG'
-            return (f"{fav_team} ML ({tier_tag} {int(confluence_net):+d} signals)", 'ml', False)
-        return None
-
-    # PRIORITY 1: PRIME NRFI sweet spot (90-94) — audit 78.9% hit rate (n=19)
+    # 1. PRIME NRFI sweet spot (90-94) — audited 75% over 30d (n=16)
     if 90 <= nrfi <= 94:
         return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
 
-    # PRIORITY 2: PRIME confluence ML (≥+4 AND |delta| ≥2.0) — hybrid threshold
-    prime_ml = _try_ml_lean(4, 2.0)
-    if prime_ml:
-        return prime_ml
-
-    # PRIORITY 3: EDGE NRFI 88-89 — borderline tier, ~47% audit hit rate
+    # 2. NRFI 88-89 edge tier — coin flip historically (3-3) but kept as
+    # secondary when no PRIME tier game exists
     if 88 <= nrfi <= 89:
         return f"NRFI — Score {nrfi}/100 (edge tier)", 'nrfi', True
 
-    # PRIORITY 4: STRONG confluence ML (≥+2 AND |delta| ≥1.5) — hybrid threshold
-    strong_ml = _try_ml_lean(2, 1.5)
-    if strong_ml:
-        return strong_ml
-
-    # Total lean
+    # 3. Total lean — projected total vs market line (post-rebuild, evaluate
+    # whether to keep this branch in POTD or move to props-only display)
     over_lean = ctx.get('over_lean')
     if over_lean is not None:
         total = ctx.get('close_total') or ctx.get('open_total') or ''
@@ -476,54 +442,16 @@ def run():
     pick = None
     confidence = 'standard'
 
-    # Tier 1 — high conviction = SIGNAL CONFLUENCE PRIME tier + AUTO-FADE filter.
-    # Backtest: net confluence >= +4 hit 71% (n=7) over April 10-23 — true PRIME tier.
-    # Auto-fade additionally filters out cohorts in losing buckets or uncalibrated.
-    def _has_pitcher_data(c):
-        return c.get('home_sp_xera') is not None and c.get('away_sp_xera') is not None
-    def _passes_auto_fade(c):
-        try:
-            from auto_fade import adjust_pick
-            res = adjust_pick(
-                c.get('projected_spread'), c.get('close_spread'),
-                c.get('signal_confluence_net'),
-                c.get('home_team'), c.get('away_team'),
-                home_ml=c.get('home_ml_odds'), away_ml=c.get('away_ml_odds'),
-            )
-            return res['action'] != 'SUPPRESS'
-        except Exception:
-            return True  # fail-open if auto_fade unavailable
-    # Hybrid PRIME ML: confluence ≥+4 AND |spread_delta| ≥2.0.
-    # Prevents zero-edge confluence picks (e.g. Dodgers PRIME +6 with delta +0.1)
-    # from outranking true PRIME plays where model disagrees with market.
-    ml_high_conviction = [
-        c for c in ml_candidates
-        if c.get('signal_confluence_net') is not None
-        and int(c['signal_confluence_net']) >= 4
-        and c.get('spread_delta') is not None
-        and abs(float(c['spread_delta'])) >= 2.0
-        and _has_pitcher_data(c)
-        and _passes_auto_fade(c)
-    ]
-    if ml_high_conviction:
-        # Sort by combined signal: confluence_net + |spread_delta| weight
-        ml_high_conviction.sort(
-            key=lambda c: (int(c.get('signal_confluence_net') or 0)
-                           + abs(float(c.get('spread_delta') or 0))),
-            reverse=True,
-        )
-        pick = ml_high_conviction[0]
-        # PRIME confluence ML = 'high' tier. Was briefly 'elite' but reverted
-        # 2026-04-29: 352-game audit shows sweet-spot NRFI hits 78.9% (proven)
-        # while PRIME ML is ~71% from a small backtest (n<30, unproven live).
-        # Sweet-spot NRFI takes the 'elite' slot; PRIME ML stays 'high'.
-        confidence = 'high'
-        print(f"🔒 ML HIGH CONVICTION (PRIME confluence + delta): {pick['away_team']} @ {pick['home_team']} — net {int(pick.get('signal_confluence_net') or 0):+d} signals, delta {float(pick.get('spread_delta') or 0):+.1f}")
-    elif sweet_spot:
+    # ML POTD ELIGIBILITY REMOVED 2026-05-01.
+    # Pending projection_v2 rebuild. Backtest showed every ML selection rule
+    # we've tested hits below 50% (PRIME confluence 0-3 live, magnitude 3-5,
+    # xERA gap 5-7). Until v2 model backtests at 53%+ on closing-line ML, no
+    # ML pick is eligible for POTD. NBA POTDs still fire (separate model).
+
+    # Tier 1 — sweet spot NRFI (90-94) audited 75% n=16, OR NBA high conviction
+    if sweet_spot:
         sweet_spot.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
         pick = sweet_spot[0]
-        # 'elite' tier — sweet-spot NRFI 90-94 has the strongest empirical
-        # track record on the slate (78.9% over 352 audited games).
         confidence = 'elite'
         print(f"🔒 SWEET SPOT pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
     elif best_overall.get('sport') == 'NBA' and best_overall['score'] >= 75:
@@ -531,29 +459,40 @@ def run():
         confidence = 'high'
         print(f"🔒 NBA HIGH CONVICTION: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']}")
 
-    # Tier 2 — solid
-    # NRFI 88-89, or ML lean with big spread delta, or NBA 65+
+    # Tier 2 — NRFI 88-89 edge OR NBA solid
     if not pick:
         if edge_nrfi:
             edge_nrfi.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
             pick = edge_nrfi[0]
             confidence = 'solid'
             print(f"✅ NRFI pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
-        elif ml_candidates:
-            ml_candidates.sort(key=lambda c: c['score'], reverse=True)
-            pick = ml_candidates[0]
-            confidence = 'solid'
-            print(f"✅ ML lean pick: {pick['away_team']} @ {pick['home_team']} — {pick.get('lean_display')}")
         elif best_overall.get('sport') == 'NBA' and best_overall['score'] >= 65:
             pick = best_overall
             confidence = 'solid'
             print(f"✅ NBA pick: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']}")
 
-    # Tier 3 — best available (always fires on a full slate)
+    # NO TIER 3 FALLBACK — if no NRFI sweet/edge tier or NBA solid, post no
+    # POTD. "No play" is honest content; forced picks erode trust faster than
+    # silence does.
     if not pick:
-        pick = best_overall
-        confidence = 'standard'
-        print(f"🎯 Best available: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']} ({pick['sport']})")
+        print("🚫 No PRIME tier play on the board — no POTD posted today.")
+        # Write a no-play marker so app shows transparent "no lock" message
+        try:
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport",
+                headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={
+                    "cache_key": f"best_bet_{today}",
+                    "game_id": f"best_bet_{today}",
+                    "sport": "none",
+                    "narrative": "No PRIME tier play on the board today. The Sweat Locker model only locks NRFI 90-94 sweet-spot games (75% audited). When that doesn't show, we don't force a pick — bucket angles + Dawg of the Day are still in the app.",
+                    "data": {"noPlay": True, "reason": "no_prime_tier"},
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        except Exception as e:
+            print(f"  no-play marker write failed: {e}")
+        return
 
     # Print all candidates
     for c in candidates[:5]:

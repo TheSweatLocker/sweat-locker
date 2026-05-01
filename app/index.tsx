@@ -4051,12 +4051,10 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         } else if(pp && pp.type === 'yrfi') {
           _evidence.push({ emoji: '🔥', label: 'YRFI lean', detail: `NRFI ${nrfi} — first inning runs likely` });
         }
-        const conf = ctx.signal_confluence_net;
-        if(conf != null && conf >= 4) {
-          _evidence.push({ emoji: '⭐', label: 'PRIME signal confluence', detail: `${conf} independent signals stack` });
-        } else if(conf != null && conf >= 2) {
-          _evidence.push({ emoji: '✨', label: 'STRONG signal confluence', detail: `${conf} signals back model` });
-        }
+        // Confluence badges removed 2026-05-01 — vote-count confluence was
+        // shown as PRIME but the cohort hit 0-3 live and ~38-42% in audits.
+        // Pending projection_v2 rebuild before any "model conviction" badge
+        // returns. Jerry now describes the dominant single factor instead.
         if(ctx.over_lean === true) {
           _evidence.push({ emoji: '📊', label: 'OVER lean', detail: 'xERA gap rule fired' });
         }
