@@ -27,8 +27,12 @@ HEADERS = {
 }
 
 TOP_N = 15
-K_CUTOFF = 50
-HITS_CUTOFF = 55
+# Tier cutoffs retuned from 94-game audit (2026-04-30):
+#   - hits_over LEAN 63.2% / STRONG 63.0% — flat differentiation, lift STRONG to 72
+#   - ks_over LEAN 53.8% / STRONG 53.8% / PRIME 66.7% (n=3) — drop K LEAN entirely,
+#     low-conviction Ks barely break even.
+K_CUTOFF = 65    # was 50 — Ks below 65 don't beat coin flip
+HITS_CUTOFF = 55  # unchanged — hits floor still profitable
 
 
 def _f(v):
@@ -71,11 +75,124 @@ def parse_pitcher_k_pct_from_context(pitcher_context, pitcher_name):
     return None
 
 
-def tier_for(conviction):
-    if conviction >= 80: return 'PRIME'
-    if conviction >= 65: return 'STRONG'
-    if conviction >= 50: return 'LEAN'
+def tier_for(conviction, prop_type=None):
+    """Tier thresholds calibrated per prop_type from 94-game audit.
+    Hits beat 60% across the board, so STRONG must clear 72 to actually mean
+    something different from LEAN. Ks barely beat coin flip at conviction <70,
+    so we lift the K bar and skip K LEAN entirely.
+    """
+    if prop_type == 'ks_over':
+        if conviction >= 82: return 'PRIME'
+        if conviction >= 70: return 'STRONG'
+        return 'SKIP'  # K LEAN historically 53.8% — not playable
+    # Default / hits_over
+    if conviction >= 82: return 'PRIME'
+    if conviction >= 72: return 'STRONG'
+    if conviction >= 55: return 'LEAN'
     return 'SKIP'
+
+
+_PITCHER_BUCKET_CACHE = {}
+_BATTER_L7_CACHE = {}
+_BATTER_ID_CACHE = {}
+
+
+def _lookup_player_id(player_name):
+    """Resolve MLB Stats API personId for a player name (cached)."""
+    if not player_name:
+        return None
+    if player_name in _BATTER_ID_CACHE:
+        return _BATTER_ID_CACHE[player_name]
+    try:
+        r = requests.get(
+            "https://statsapi.mlb.com/api/v1/people/search",
+            params={"names": player_name, "sportId": 1},
+            timeout=8,
+        )
+        people = r.json().get("people", []) if r.status_code == 200 else []
+        pid = people[0]["id"] if people else None
+    except Exception:
+        pid = None
+    _BATTER_ID_CACHE[player_name] = pid
+    return pid
+
+
+def fetch_batter_l7(player_name, season=2026):
+    """Last-7-games hitting recency for a batter.
+    Returns dict with games, hits_per_game, got_hit_rate, hitless_streak.
+    Returns None on lookup failure."""
+    if not player_name:
+        return None
+    if player_name in _BATTER_L7_CACHE:
+        return _BATTER_L7_CACHE[player_name]
+    pid = _lookup_player_id(player_name)
+    if not pid:
+        _BATTER_L7_CACHE[player_name] = None
+        return None
+    try:
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/people/{pid}/stats",
+            params={"stats": "gameLog", "group": "hitting", "season": season},
+            timeout=10,
+        )
+        splits = r.json().get("stats", []) if r.status_code == 200 else []
+        games = splits[0].get("splits", []) if splits else []
+    except Exception:
+        games = []
+    if not games:
+        _BATTER_L7_CACHE[player_name] = None
+        return None
+    # Newest first, keep games where batter actually had an AB or PA
+    games.sort(key=lambda g: g.get("date", ""), reverse=True)
+    played = [g for g in games if int(g.get("stat", {}).get("atBats", 0) or 0) > 0]
+    last7 = played[:7]
+    if len(last7) < 3:
+        _BATTER_L7_CACHE[player_name] = None
+        return None
+    total_h = sum(int(g["stat"].get("hits", 0) or 0) for g in last7)
+    total_ab = sum(int(g["stat"].get("atBats", 0) or 0) for g in last7)
+    got_hit = sum(1 for g in last7 if int(g["stat"].get("hits", 0) or 0) >= 1)
+    # Hitless streak from most recent backwards
+    streak = 0
+    for g in last7:
+        if int(g["stat"].get("hits", 0) or 0) == 0:
+            streak += 1
+        else:
+            break
+    out = {
+        "games": len(last7),
+        "avg": round(total_h / total_ab, 3) if total_ab else None,
+        "got_hit_rate": got_hit / len(last7),
+        "got_hit_count": got_hit,
+        "hitless_streak": streak,
+    }
+    _BATTER_L7_CACHE[player_name] = out
+    return out
+
+
+def fetch_pitcher_buckets(pitcher_name):
+    """Lookup early/mid-inning K% from mlb_pitcher_stats. Cached per run."""
+    if not pitcher_name:
+        return None
+    if pitcher_name in _PITCHER_BUCKET_CACHE:
+        return _PITCHER_BUCKET_CACHE[pitcher_name]
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats",
+            params={
+                'player_name': f'eq.{pitcher_name}',
+                'select': 'innings_1_3_k_pct,innings_1_3_ip,innings_4_6_k_pct,innings_4_6_ip',
+                'limit': '1',
+            },
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            timeout=10,
+        )
+        rows = r.json() if r.status_code == 200 else []
+        out = rows[0] if rows else None
+    except Exception:
+        out = None
+    _PITCHER_BUCKET_CACHE[pitcher_name] = out
+    return out
 
 
 def score_pitcher_ks(g, side):
@@ -178,6 +295,31 @@ def score_pitcher_ks(g, side):
     if 'k-friendly' in ump_note:
         conviction += 8
         signals['umpire'] = 'K-friendly umpire'
+
+    # Inning-bucket K% — front-loaded K guys hit Over on lower lines because
+    # they bank K count before getting pulled. Especially powerful when the
+    # season-long K% looks pedestrian but bucket 1-3 is elite (early-game
+    # stuff plays up before the lineup adjusts).
+    buckets = fetch_pitcher_buckets(pitcher)
+    if buckets:
+        b13 = _f(buckets.get('innings_1_3_k_pct'))
+        b13_ip = _f(buckets.get('innings_1_3_ip')) or 0
+        b46 = _f(buckets.get('innings_4_6_k_pct'))
+        # Need ≥10 IP in bucket 1-3 to trust the rate
+        if b13 is not None and b13_ip >= 10:
+            if b13 >= 32:
+                conviction += 12
+                signals['bucket_k'] = f'1st-3rd K% {b13:.0f}% — front-loads strikeouts'
+            elif b13 >= 28:
+                conviction += 7
+                signals['bucket_k'] = f'1st-3rd K% {b13:.0f}% — early-K leaning'
+            elif b13 <= 16:
+                conviction -= 6
+                signals['bucket_k'] = f'1st-3rd K% {b13:.0f}% — slow K start'
+            # Bonus when middle innings sustain (no bucket 4-6 collapse)
+            if b46 is not None and b13 >= 26 and b46 >= 24:
+                conviction += 4
+                signals['bucket_sustain'] = f'4th-6th K% {b46:.0f}% — sustains through order'
 
     conviction = max(0, min(100, conviction))
 
@@ -319,6 +461,33 @@ def score_batter_hits(g, batter, side, lineup_position=None):
             conviction -= 4
             signals['lineup_spot'] = f'Hitting {lineup_position} — bottom of order (3-4 PAs)'
 
+    # L7 recency — got-a-hit rate is the most direct signal for hits 0.5
+    l7 = fetch_batter_l7(batter)
+    if l7:
+        rate = l7['got_hit_rate']
+        n = l7['games']
+        avg = l7.get('avg')
+        streak = l7.get('hitless_streak', 0)
+        if rate >= 0.85:
+            conviction += 12
+            signals['l7_hot'] = f'Hits in {l7["got_hit_count"]} of last {n} ({rate*100:.0f}%)'
+        elif rate >= 0.70:
+            conviction += 7
+            signals['l7_warm'] = f'Hits in {l7["got_hit_count"]} of last {n} ({rate*100:.0f}%)'
+        elif rate <= 0.40:
+            conviction -= 10
+            signals['l7_cold'] = f'Only {l7["got_hit_count"]} of last {n} games with a hit'
+        # L7 batting avg layer (caps recency-spike noise)
+        if avg is not None and avg >= 0.350:
+            conviction += 5
+            signals['l7_avg_hot'] = f'L7 BA .{int(avg*1000):03d}'
+        elif avg is not None and avg <= 0.180:
+            conviction -= 5
+        # Active hitless streak penalty (3+ games without a hit)
+        if streak >= 3:
+            conviction -= 6
+            signals['hitless_streak'] = f'{streak} straight games w/o a hit'
+
     conviction = max(0, min(100, conviction))
     return {
         'conviction': conviction,
@@ -393,7 +562,7 @@ def run():
                 'prop_line': result['prop_line'],
                 'direction': 'over',
                 'conviction': result['conviction'],
-                'tier': tier_for(result['conviction']),
+                'tier': tier_for(result['conviction'], 'ks_over'),
                 'signals': result['signals'],
             })
 
@@ -419,7 +588,7 @@ def run():
                     'prop_line': 0.5,
                     'direction': 'over',
                     'conviction': result['conviction'],
-                    'tier': tier_for(result['conviction']),
+                    'tier': tier_for(result['conviction'], 'hits_over'),
                     'signals': result['signals'],
                 })
 
