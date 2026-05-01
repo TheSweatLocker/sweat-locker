@@ -314,6 +314,13 @@ def run():
             existing_pick = existing[0]['data']
             existing_score = existing_pick.get('score', {}).get('total', 0) or 0
 
+            # Manual-override lock — set when POTD is hand-picked (e.g. user
+            # already posted to social before pipeline shifted). Wins against
+            # all auto-regeneration paths regardless of ET hour.
+            if existing_pick.get('manualOverride'):
+                print(f"🔒 manualOverride=true — POTD hand-locked, skipping all regeneration")
+                return
+
             if et_hour < 11:
                 print(f"⏰ Pre-11am ET ({et_hour}h) — regenerating with fresh data")
                 existing_pick = None  # clear so we overwrite
