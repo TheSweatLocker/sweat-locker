@@ -44,10 +44,15 @@ def get_pending_nrfi():
     return r.json()
 
 
+_NAME_SUFFIXES = {'jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv'}
+
+
 def _last_name(full_name):
+    """Suffix-aware last name (McCullers Jr. → McCullers)."""
     if not full_name:
         return ''
-    return full_name.strip().split()[-1].lower()
+    parts = [p for p in full_name.strip().split() if p.lower().rstrip('.') not in _NAME_SUFFIXES]
+    return parts[-1].lower() if parts else ''
 
 
 def _matches_pitcher_hint(mlb_game, home_sp_name, away_sp_name):

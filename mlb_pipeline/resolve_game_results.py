@@ -17,10 +17,14 @@ HEADERS = {
     'Content-Type': 'application/json',
 }
 
+_NAME_SUFFIXES = {'jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv'}
+
+
 def _last_name(full_name):
     if not full_name:
         return ''
-    return full_name.strip().split()[-1].lower()
+    parts = [p for p in full_name.strip().split() if p.lower().rstrip('.') not in _NAME_SUFFIXES]
+    return parts[-1].lower() if parts else ''
 
 
 def _matches_pitcher_hint(mlb_game, home_sp_name, away_sp_name):
@@ -195,7 +199,7 @@ def run():
         try:
             r = requests.get(
                 'https://statsapi.mlb.com/api/v1/schedule',
-                params={'sportId': 1, 'date': game_date},
+                params={'sportId': 1, 'date': game_date, 'hydrate': 'probablePitcher'},
                 timeout=15
             )
             schedule_cache[game_date] = r.json().get('dates', [])
@@ -203,12 +207,16 @@ def run():
             schedule_cache[game_date] = []
         return schedule_cache[game_date]
 
-    def find_game_pk(game_date, home_team, away_team, commence_time_hint=None):
-        """Find MLB Stats API gamePk by team + date. Doubleheader-aware:
-        when both DH games are Final, disambiguates by closest start time.
+    def find_game_pk(game_date, home_team, away_team, commence_time_hint=None,
+                     home_sp_hint=None, away_sp_hint=None, player_hint=None):
+        """Find MLB Stats API gamePk by team + date. Doubleheader-aware.
 
-        TODO (longer-term): store mlb_gamePk on mlb_game_context at write time
-        so resolvers can read it directly instead of re-resolving via teams+date.
+        DH disambiguation order (most reliable first):
+          1. probable-pitcher last-name match against stored home_sp_hint/away_sp_hint
+             (works for stale audits where mlb_game_context is wiped)
+          2. boxscore contains player_hint (player_name from a prop row)
+          3. closest-start-time vs commence_time_hint
+          4. first match (with warning)
         """
         candidates = []
         for d in get_schedule(game_date):
@@ -223,7 +231,36 @@ def run():
             return None
         if len(candidates) == 1:
             return candidates[0].get('gamePk')
-        # Doubleheader: disambiguate by closest start time
+
+        # 1. Probable-pitcher last-name match (suffix-aware: McCullers Jr. → McCullers)
+        if home_sp_hint or away_sp_hint:
+            _ln = _last_name
+            for g in candidates:
+                teams = g.get('teams', {})
+                mhp = (teams.get('home', {}).get('probablePitcher') or {}).get('fullName', '')
+                map_ = (teams.get('away', {}).get('probablePitcher') or {}).get('fullName', '')
+                if mhp or map_:
+                    home_ok = (not home_sp_hint) or _ln(home_sp_hint) == _ln(mhp)
+                    away_ok = (not away_sp_hint) or _ln(away_sp_hint) == _ln(map_)
+                    if home_ok and away_ok:
+                        return g.get('gamePk')
+
+        # 2. Player-in-boxscore match (suffix-aware)
+        if player_hint:
+            last = _last_name(player_hint)
+            for g in candidates:
+                pk = g.get('gamePk')
+                box = get_boxscore(pk)
+                if not box:
+                    continue
+                for side in ('home', 'away'):
+                    players = box.get('teams', {}).get(side, {}).get('players', {}) or {}
+                    for _pid, p in players.items():
+                        full = (p.get('person') or {}).get('fullName', '').lower()
+                        if last in full:
+                            return pk
+
+        # 3. Closest-start-time fallback
         if commence_time_hint:
             try:
                 from datetime import datetime
@@ -235,7 +272,7 @@ def run():
                 return best.get('gamePk')
             except Exception:
                 pass
-        print(f"  ⚠️ DH detected ({len(candidates)} games {away_team}@{home_team} {game_date}), no commence_time hint — using first")
+        print(f"  ⚠️ DH detected ({len(candidates)} games {away_team}@{home_team} {game_date}), no hint resolved — using first")
         return candidates[0].get('gamePk')
 
     def get_boxscore(game_pk):
@@ -267,8 +304,8 @@ def run():
                         return int(val) if val is not None else 0
                     except (ValueError, TypeError):
                         return 0
-            # Fallback — last-name match if no exact
-            last = player_name.split()[-1].lower()
+            # Fallback — last-name match (suffix-aware: McCullers Jr. → McCullers)
+            last = _last_name(player_name)
             for _pid, p in players.items():
                 full = (p.get('person') or {}).get('fullName', '')
                 if last in full.lower() and full.lower().endswith(last):
@@ -283,10 +320,11 @@ def run():
     props_resolved = 0
     for prop in pending_props:
         try:
-            # Look up matching game result row + game_context for commence_time
-            # (needed for doubleheader disambiguation)
+            # Look up matching game result row — pull starter names for DH disambig
+            # (mlb_game_context is wiped for old dates, so commence_time hint is
+            # unreliable; pitcher-name match works regardless).
             gr = requests.get(
-                f'{SUPABASE_URL}/rest/v1/mlb_game_results?game_id=eq.{prop["game_id"]}&select=home_team,away_team,home_score',
+                f'{SUPABASE_URL}/rest/v1/mlb_game_results?game_id=eq.{prop["game_id"]}&select=home_team,away_team,home_score,home_sp_name,away_sp_name',
                 headers=HEADERS
             )
             gr_data = gr.json()
@@ -294,7 +332,8 @@ def run():
                 continue  # game not finalized yet
             g = gr_data[0]
 
-            # Pull commence_time from game_context for DH disambig
+            # Pull commence_time from game_context for DH disambig (best-effort,
+            # often None for stale games)
             ct_hint = None
             try:
                 ctx_r = requests.get(
@@ -307,7 +346,13 @@ def run():
             except Exception:
                 pass
 
-            game_pk = find_game_pk(prop['game_date'], g['home_team'], g['away_team'], commence_time_hint=ct_hint)
+            game_pk = find_game_pk(
+                prop['game_date'], g['home_team'], g['away_team'],
+                commence_time_hint=ct_hint,
+                home_sp_hint=g.get('home_sp_name'),
+                away_sp_hint=g.get('away_sp_name'),
+                player_hint=prop.get('player_name'),
+            )
             if not game_pk:
                 continue
 
