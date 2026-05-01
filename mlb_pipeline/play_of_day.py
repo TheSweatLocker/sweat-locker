@@ -251,6 +251,99 @@ def score_nba_game(game, nba_teams):
 
     return min(100, score), lean, lean_type
 
+_V2_BUCKET_CACHE = {}
+
+
+def _v2_total_edge(ctx):
+    """v2 Total OVER Edge — fires when projection_v2 model_total ≥ market+1.5.
+    Backtest: 56-34 (62.2%) n=90 over 2807 games. Only durable v2 signal.
+
+    Returns lean label if qualified, otherwise None. Lazy import + module-level
+    caches keep play_of_day startup cost minimal.
+    """
+    close_total = ctx.get('close_total') or ctx.get('open_total')
+    if close_total is None:
+        return None
+    try:
+        import projection_v2 as v2
+    except Exception:
+        return None
+
+    # Lazy-load shared lookup tables once per process (~700 pitchers, 30 teams)
+    cache = _V2_BUCKET_CACHE
+    if 'pitchers' not in cache:
+        try:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?select=player_name,innings_1_3_era,innings_1_3_ip,innings_4_6_era,innings_7_9_era&limit=2000",
+                headers=HEADERS, timeout=15,
+            )
+            cache['pitchers'] = {p['player_name']: p for p in (r.json() or [])}
+        except Exception:
+            cache['pitchers'] = {}
+        try:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_team_offense?select=team,innings_1_3_runs_per_game,innings_4_6_runs_per_game,innings_7_9_runs_per_game,last10_runs_per_game",
+                headers=HEADERS, timeout=15,
+            )
+            cache['teams'] = {t['team']: t for t in (r.json() or [])}
+        except Exception:
+            cache['teams'] = {}
+        try:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_bullpen_stats?select=team,pitching_1_3_era,pitching_4_6_era,pitching_7_9_era",
+                headers=HEADERS, timeout=15,
+            )
+            cache['bullpens'] = {b['team']: b for b in (r.json() or [])}
+        except Exception:
+            cache['bullpens'] = {}
+
+    # Build merged ctx for v2 (mlb_game_context fields + bucket lookups)
+    enriched = dict(ctx)
+    home_p = ctx.get('home_pitcher')
+    away_p = ctx.get('away_pitcher')
+    if home_p and home_p in cache.get('pitchers', {}):
+        pb = cache['pitchers'][home_p]
+        enriched['home_innings_1_3_era'] = pb.get('innings_1_3_era')
+        enriched['home_innings_4_6_era'] = pb.get('innings_4_6_era')
+        enriched['home_innings_7_9_era'] = pb.get('innings_7_9_era')
+        enriched['home_sp_ip'] = pb.get('innings_1_3_ip', 0) or 0
+    if away_p and away_p in cache.get('pitchers', {}):
+        pb = cache['pitchers'][away_p]
+        enriched['away_innings_1_3_era'] = pb.get('innings_1_3_era')
+        enriched['away_innings_4_6_era'] = pb.get('innings_4_6_era')
+        enriched['away_innings_7_9_era'] = pb.get('innings_7_9_era')
+        enriched['away_sp_ip'] = pb.get('innings_1_3_ip', 0) or 0
+    home_team = ctx.get('home_team')
+    away_team = ctx.get('away_team')
+    if home_team in cache.get('teams', {}):
+        tb = cache['teams'][home_team]
+        enriched['home_innings_1_3_runs_per_game'] = tb.get('innings_1_3_runs_per_game')
+        enriched['home_innings_4_6_runs_per_game'] = tb.get('innings_4_6_runs_per_game')
+        enriched['home_innings_7_9_runs_per_game'] = tb.get('innings_7_9_runs_per_game')
+        enriched['home_last10_runs_per_game'] = tb.get('last10_runs_per_game')
+    if away_team in cache.get('teams', {}):
+        tb = cache['teams'][away_team]
+        enriched['away_innings_1_3_runs_per_game'] = tb.get('innings_1_3_runs_per_game')
+        enriched['away_innings_4_6_runs_per_game'] = tb.get('innings_4_6_runs_per_game')
+        enriched['away_innings_7_9_runs_per_game'] = tb.get('innings_7_9_runs_per_game')
+        enriched['away_last10_runs_per_game'] = tb.get('last10_runs_per_game')
+
+    try:
+        proj = v2.project_game(enriched)
+    except Exception:
+        return None
+
+    delta = proj.model_total - float(close_total)
+    if delta >= 1.5 and proj.confidence >= 0.7:
+        return (
+            f"Over {close_total} (v2 edge — model {proj.model_total:.1f} vs market {close_total}, +{delta:.1f} runs)",
+            'total',
+            False,
+            proj,
+        )
+    return None
+
+
 def build_lean(ctx):
     """Determine the lean for an MLB game.
 
@@ -262,12 +355,11 @@ def build_lean(ctx):
     only 4 inputs (xERA, wRC+, bullpen, park) when the schema has 70+. The
     ML formula doesn't beat market efficiency — no filter on top of it will.
 
-    Until projection_v2 is built and backtested at 53%+ on closing-line ML
-    with proper features (2025 prior, inning buckets, OAA, framing, recency
-    Bayes, Poisson), we don't surface ML leans as POTD candidates.
-
-    NRFI 90-94 stays (audited 75% n=16). Total leans stay (small sample but
-    stored against close_total directly, not derived from broken ML formula).
+    PRIORITIES (post-rebuild 2026-05-01):
+      1. NRFI 90-94 PRIME (audited 75% n=16)
+      2. v2 Total Over Edge (audited 62.2% n=90 at delta ≥1.5)
+      3. NRFI 88-89 edge tier (coin flip but kept as secondary)
+      4. v1 over_lean fallback (xERA gap rule etc.)
     """
     nrfi = ctx.get('nrfi_score') or 0
 
@@ -275,12 +367,18 @@ def build_lean(ctx):
     if 90 <= nrfi <= 94:
         return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
 
-    # 2. NRFI 88-89 edge tier — coin flip historically (3-3) but kept as
+    # 2. v2 Total OVER Edge — model_total >= market + 1.5
+    v2_pick = _v2_total_edge(ctx)
+    if v2_pick is not None:
+        # Drop the proj object before returning to keep tuple shape consistent
+        return v2_pick[0], v2_pick[1], v2_pick[2]
+
+    # 3. NRFI 88-89 edge tier — coin flip historically (3-3) but kept as
     # secondary when no PRIME tier game exists
     if 88 <= nrfi <= 89:
         return f"NRFI — Score {nrfi}/100 (edge tier)", 'nrfi', True
 
-    # 3. Total lean — projected total vs market line (post-rebuild, evaluate
+    # 4. Total lean — projected total vs market line (post-rebuild, evaluate
     # whether to keep this branch in POTD or move to props-only display)
     over_lean = ctx.get('over_lean')
     if over_lean is not None:
@@ -436,24 +534,25 @@ def run():
     # Sort by score
     candidates.sort(key=lambda c: c['score'], reverse=True)
 
-    # NRFI candidates — only 88-94 range (77% hit rate proven sweet spot)
-    # 95+ excluded from NRFI POTD — historically volatile (38.5%)
+    # NRFI candidates — only 88-94 range (75% hit rate proven sweet spot)
     sweet_spot = [c for c in candidates if c.get('is_nrfi') and 90 <= (c.get('nrfi_score') or 0) <= 94]
     edge_nrfi = [c for c in candidates if c.get('is_nrfi') and 88 <= (c.get('nrfi_score') or 0) <= 89]
 
-    # ML lean candidates — games with 2+ run spread delta
-    ml_candidates = [c for c in candidates if c.get('lean_bet') == 'ml' and c.get('sport') == 'MLB']
+    # v2 Total OVER Edge candidates — backtest 56-34 (62.2%) at delta ≥1.5
+    v2_total_edge = [
+        c for c in candidates
+        if c.get('lean_bet') == 'total'
+        and c.get('sport') == 'MLB'
+        and 'v2 edge' in (c.get('lean_display') or '').lower()
+    ]
 
     best_overall = candidates[0]
 
     pick = None
     confidence = 'standard'
 
-    # ML POTD ELIGIBILITY REMOVED 2026-05-01.
-    # Pending projection_v2 rebuild. Backtest showed every ML selection rule
-    # we've tested hits below 50% (PRIME confluence 0-3 live, magnitude 3-5,
-    # xERA gap 5-7). Until v2 model backtests at 53%+ on closing-line ML, no
-    # ML pick is eligible for POTD. NBA POTDs still fire (separate model).
+    # ML POTD ELIGIBILITY REMOVED 2026-05-01 pending projection_v2 ML rebuild.
+    # NBA POTDs still fire (separate model).
 
     # Tier 1 — sweet spot NRFI (90-94) audited 75% n=16, OR NBA high conviction
     if sweet_spot:
@@ -465,6 +564,13 @@ def run():
         pick = best_overall
         confidence = 'high'
         print(f"🔒 NBA HIGH CONVICTION: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']}")
+
+    # Tier 1.5 — v2 Total OVER Edge (audited 62.2% n=90 at ≥1.5 run delta)
+    if not pick and v2_total_edge:
+        v2_total_edge.sort(key=lambda c: c['score'], reverse=True)
+        pick = v2_total_edge[0]
+        confidence = 'high'
+        print(f"🔒 v2 TOTAL OVER EDGE: {pick['away_team']} @ {pick['home_team']} — {pick.get('lean_display')}")
 
     # Tier 2 — NRFI 88-89 edge OR NBA solid
     if not pick:
