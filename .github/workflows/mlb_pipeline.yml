@@ -211,6 +211,17 @@ jobs:
           cd mlb_pipeline
           python generate_tonight_card.py
 
+      # Auto tier calibration — runs daily, computes rolling 7d/30d/STD hit rates
+      # per NRFI / confluence / spread_delta tier. Stores to mlb_tier_calibration
+      # so app reads LIVE tier hit rates instead of hardcoded "78.9%" claims.
+      - name: Refresh tier calibration audit
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_tier_calibration.py
+
       # Commit the generated content card so Andy can pull it locally
       - name: Commit content card
         if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'

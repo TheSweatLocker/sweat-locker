@@ -253,6 +253,49 @@ def render_game(game):
                       away_sp, home_sp, away_sp_data, home_sp_data, key)
 
 
+def fetch_tier_rates():
+    """Pull live tier calibration rates from latest computation."""
+    rows = sb_get("mlb_tier_calibration", {
+        "select": "tier,window_label,hits,total,hit_rate",
+        "order": "computed_date.desc",
+        "limit": "200",
+    })
+    if not rows:
+        return {}
+    # Keep most recent computed_date entries per tier+window
+    seen = set()
+    latest = {}
+    for r in rows:
+        key = (r.get("tier"), r.get("window_label"))
+        if key in seen:
+            continue
+        seen.add(key)
+        latest[key] = r
+    return latest
+
+
+def render_calibration_header(rates):
+    """Print live tier calibration banner so we see calibration freshness."""
+    if not rates:
+        return
+    print("\n" + "=" * 78)
+    print(" 📊 LIVE TIER CALIBRATION (last 30 days)")
+    print("=" * 78)
+    spotlight = [
+        ("nrfi_prime_90_94", "NRFI 90-94 PRIME"),
+        ("nrfi_lean_70_79", "NRFI 70-79 mild lean"),
+        ("nrfi_volatile_95plus", "NRFI 95+ volatile (skip)"),
+        ("nrfi_60_69", "NRFI 60-69 (skip)"),
+        ("yrfi_lean_le40", "YRFI lean ≤40"),
+        ("spread_delta_ge2", "Spread Δ ≥2.0"),
+    ]
+    for tier_key, label in spotlight:
+        r = rates.get((tier_key, "30d"))
+        if r and r.get("total"):
+            rate = float(r["hit_rate"]) * 100
+            print(f"  {label:30s} {r['hits']}-{r['total']-r['hits']}  ({rate:.1f}%)")
+
+
 def main():
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("Missing SUPABASE_URL / SUPABASE_KEY env vars. Run from mlb_pipeline/ with .env present.")
@@ -260,11 +303,17 @@ def main():
 
     game_date = sys.argv[1] if len(sys.argv) > 1 else get_today_et()
     print(f"Inning-bucket scout report — {game_date}")
+
+    # Live calibration header — shows audit-validated tier rates current as of
+    # last audit_tier_calibration.py run (cron daily). Replaces stale memory.
+    rates = fetch_tier_rates()
+    render_calibration_header(rates)
+
     games = fetch_games(game_date)
     if not games:
-        print(f"No games found in mlb_game_context for {game_date}.")
+        print(f"\nNo games found in mlb_game_context for {game_date}.")
         return
-    print(f"Found {len(games)} games on slate.\n")
+    print(f"\nFound {len(games)} games on slate.\n")
 
     for g in games:
         render_game(g)

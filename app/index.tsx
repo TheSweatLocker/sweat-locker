@@ -3517,11 +3517,14 @@ if(isPlayoffMode) {
       modelMismatch = Math.min(88, modelMismatch + 3);
     }
 
-    // ── NRFI CONVICTION BOOST (audit-calibrated, 352 games) ──
-    // 90-94: 78.9% (PRIME), 95+: 44.1% (volatile trap), 70-79: 59.0% (mild lean)
-    // 80-89: 50% (dead zone), 60-69: 45.2% (negative EV — no boost)
-    // <=40: high YRFI hit rate. Magnitude-based boosts kept inline since the
-    // boost amount depends on the score itself, not just tier label.
+    // ── NRFI CONVICTION BOOST ──
+    // Tier hit rates auto-refresh in mlb_tier_calibration (daily cron via
+    // audit_tier_calibration.py). For LIVE numbers query that table; comment
+    // references below are last-known-good as of 2026-04-30 audit and may
+    // drift over time:
+    //   90-94 PRIME: ~80% (n>20)  | 70-79 mild lean: ~58%  | <=40 YRFI: ~70%
+    //   95+ VOLATILE: ~47% skip   | 80-89 dead: ~50%       | 60-69: ~45% skip
+    // Magnitude-based boosts kept inline — boost amount depends on score itself.
     if(mlbCtx.nrfi_score) {
       const nrfi = mlbCtx.nrfi_score;
       if(nrfi >= 95) modelMismatch = Math.min(85, modelMismatch + 3);        // volatile — minimal boost
