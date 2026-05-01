@@ -26,13 +26,16 @@ HEADERS = {
     'Prefer': 'return=minimal',
 }
 
-TOP_N = 15
+# TOP_N now scales with slate (computed in run()). Floor 8, ceiling 25.
 # Tier cutoffs retuned from 94-game audit (2026-04-30):
 #   - hits_over LEAN 63.2% / STRONG 63.0% — flat differentiation, lift STRONG to 72
 #   - ks_over LEAN 53.8% / STRONG 53.8% / PRIME 66.7% (n=3) — drop K LEAN entirely,
 #     low-conviction Ks barely break even.
-K_CUTOFF = 65    # was 50 — Ks below 65 don't beat coin flip
-HITS_CUTOFF = 55  # unchanged — hits floor still profitable
+K_CUTOFF = 65       # Ks Over — below 65 doesn't beat coin flip
+HITS_CUTOFF = 55    # Hits Over — floor still profitable
+# Unders bet on rarer outcomes — require higher conviction floors.
+K_UNDER_CUTOFF = 65       # Ks Under — fading aspirational K lines
+HITS_UNDER_CUTOFF = 70    # Hits Under (0-fer) — needs strong evidence
 
 
 def _f(v):
@@ -79,12 +82,22 @@ def tier_for(conviction, prop_type=None):
     """Tier thresholds calibrated per prop_type from 94-game audit.
     Hits beat 60% across the board, so STRONG must clear 72 to actually mean
     something different from LEAN. Ks barely beat coin flip at conviction <70,
-    so we lift the K bar and skip K LEAN entirely.
+    so we lift the K bar and skip K LEAN entirely. Unders need higher floors
+    because they bet on the rarer outcome (0-fer hitter, K-line fade).
     """
     if prop_type == 'ks_over':
         if conviction >= 82: return 'PRIME'
         if conviction >= 70: return 'STRONG'
-        return 'SKIP'  # K LEAN historically 53.8% — not playable
+        return 'SKIP'
+    if prop_type == 'ks_under':
+        if conviction >= 82: return 'PRIME'
+        if conviction >= 70: return 'STRONG'
+        return 'SKIP'
+    if prop_type == 'hits_under':
+        # 0-fer is a long shot — only PRIME/STRONG, no LEAN noise
+        if conviction >= 85: return 'PRIME'
+        if conviction >= 75: return 'STRONG'
+        return 'SKIP'
     # Default / hits_over
     if conviction >= 82: return 'PRIME'
     if conviction >= 72: return 'STRONG'
@@ -351,6 +364,138 @@ def score_pitcher_ks(g, side):
     }
 
 
+def score_pitcher_ks_under(g, side):
+    """Score a Ks Under prop — fading aspirational K lines on contact-heavy
+    matchups. Inverts the K Over signal stack: high opp wRC+ (grinding ABs),
+    low opp K% (puts ball in play), modest pitcher K%, slow-start ERA, soft
+    bucket 1-3 K%, K-suppressing ump."""
+    pitcher = g.get(f'{side}_pitcher')
+    xera = _f(g.get(f'{side}_sp_xera'))
+    if not pitcher or xera is None:
+        return None
+
+    # Don't rate Unders for openers/relievers — book lines for them are already low
+    last_ip = _f(g.get(f'{side}_last_ip'))
+    last_pitches = _f(g.get(f'{side}_last_pitch_count'))
+    if last_ip is not None and last_ip <= 1.5 and (last_pitches is None or last_pitches <= 35):
+        return None
+
+    opp_side = 'away' if side == 'home' else 'home'
+    k_gap = _f(g.get(f'{side}_k_gap'))
+    opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
+    opp_k_pct = _f(g.get(f'{opp_side}_team_k_pct')) or 22
+    l3_era = _f(g.get(f'{side}_pitcher_last_3_era'))
+    l3_k = _f(g.get(f'{side}_pitcher_last_3_k_pct'))
+    first_inn_era = _f(g.get(f'{side}_first_inning_era'))
+    framing = _f(g.get(f'{side}_catcher_framing'))
+    parsed_k_pct = parse_pitcher_k_pct_from_context(g.get('pitcher_context'), pitcher)
+    pitcher_k_pct = parsed_k_pct if parsed_k_pct is not None and 5 <= parsed_k_pct <= 40 else None
+    ump_note = (g.get('umpire_note') or '').lower()
+
+    signals = {}
+    conviction = 30
+
+    # Don't fade strikeout artists — they tend to clear even high lines
+    if pitcher_k_pct is not None and pitcher_k_pct >= 30:
+        return None  # not a fade candidate
+    if pitcher_k_pct is not None and pitcher_k_pct >= 26:
+        conviction -= 12
+
+    # K gap inverted — pitcher LESS K-prone than the opp lineup
+    if k_gap is not None:
+        if k_gap <= -5:
+            conviction += 18
+            signals['k_gap_neg'] = f'Pitcher K% {k_gap:.1f}pt below opp lineup'
+        elif k_gap <= -2:
+            conviction += 10
+            signals['k_gap_neg'] = f'Pitcher K% {k_gap:.1f}pt below opp lineup'
+        elif k_gap >= 6:
+            conviction -= 10  # pitcher actually has the K edge — don't fade
+
+    # Opp wRC+ — elite contact lineup grinds ABs and puts ball in play
+    if opp_wrc >= 115:
+        conviction += 15
+        signals['opp_offense'] = f'Opp wRC+ {opp_wrc:.0f} — grinds ABs, puts ball in play'
+    elif opp_wrc >= 105:
+        conviction += 7
+        signals['opp_offense'] = f'Opp wRC+ {opp_wrc:.0f} — quality ABs'
+    elif opp_wrc <= 85:
+        conviction -= 8  # weak lineup more likely to whiff
+
+    # Opp K% — contact lineup
+    if opp_k_pct <= 18:
+        conviction += 14
+        signals['opp_contact'] = f'Opp K% {opp_k_pct:.1f}% — contact lineup'
+    elif opp_k_pct <= 21:
+        conviction += 7
+        signals['opp_contact'] = f'Opp K% {opp_k_pct:.1f}% — below-avg whiff rate'
+    elif opp_k_pct >= 26:
+        conviction -= 10  # whiff-prone offense supports the Over
+
+    # Pitcher absolute K% — modest K guys are the right fade target
+    if pitcher_k_pct is not None and pitcher_k_pct <= 18:
+        conviction += 12
+        signals['low_k_pitcher'] = f'Season K% {pitcher_k_pct:.1f}% — pitch-to-contact'
+    elif pitcher_k_pct is not None and pitcher_k_pct <= 22:
+        conviction += 6
+
+    # L3 form — K rate fading
+    if l3_k is not None and pitcher_k_pct is not None and pitcher_k_pct - l3_k >= 3:
+        conviction += 8
+        signals['form_cold'] = f'L3 K% {l3_k:.1f}% vs season {pitcher_k_pct:.1f}% — fading'
+
+    # Bad framing catcher = lost called strikes
+    if framing is not None and framing <= -2:
+        conviction += 8
+        signals['framing'] = f'Catcher {framing:.1f} framing runs — costs called strikes'
+    elif framing is not None and framing >= 3:
+        conviction -= 5
+
+    # Slow first inning = pitcher gets pulled early (caps K count)
+    if first_inn_era is not None and first_inn_era >= 5.5:
+        conviction += 10
+        signals['short_outing'] = f'1st inn ERA {first_inn_era:.1f} — gets pulled early'
+
+    # L3 ERA blowout = book may already lower line; but if not, supports short outing
+    if l3_era is not None and l3_era >= 6.0:
+        conviction += 5
+        signals['form_struggling'] = f'L3 ERA {l3_era:.2f} — short leash'
+
+    # Inning bucket — slow K starter who fades through the order
+    buckets = fetch_pitcher_buckets(pitcher)
+    if buckets:
+        b13 = _f(buckets.get('innings_1_3_k_pct'))
+        b13_ip = _f(buckets.get('innings_1_3_ip')) or 0
+        if b13 is not None and b13_ip >= 10 and b13 <= 18:
+            conviction += 10
+            signals['bucket_k'] = f'1st-3rd K% {b13:.0f}% — slow K accumulation'
+
+    # K-friendly ump opposes the fade
+    if 'k-friendly' in ump_note:
+        conviction -= 8
+    elif 'pitcher-friendly' in ump_note and 'k' not in ump_note:
+        # pitcher-friendly but not specifically K-friendly = bigger zone, not more Ks
+        pass
+
+    conviction = max(0, min(100, conviction))
+
+    # Suggested Under line — project conservative Ks then add cushion to the
+    # line we'd take Under. Books often hang lines 1-1.5 above projection on
+    # mid-tier arms, so we suggest a line slightly above our projection that
+    # still has fade value.
+    raw_k = pitcher_k_pct if pitcher_k_pct is not None else 20
+    typical_ip = 4.5  # short-leash assumption when we're fading
+    est_ks = (raw_k / 100) * (typical_ip * 4.0)
+    # Suggest the next half-line above projection (where book likely sits)
+    suggested_line = max(4.0, min(7.0, round(est_ks + 1.0, 0) - 0.5))
+
+    return {
+        'conviction': conviction,
+        'signals': signals,
+        'prop_line': suggested_line,
+    }
+
+
 def score_batter_hits(g, batter, side, lineup_position=None):
     """Score a batter's Hits Over 0.5 prop. side = 'home' or 'away' (batter's side).
     lineup_position: 1-indexed spot in the confirmed lineup (1-9)."""
@@ -496,6 +641,133 @@ def score_batter_hits(g, batter, side, lineup_position=None):
     }
 
 
+def score_batter_hits_under(g, batter, side, lineup_position=None):
+    """Score Hits Under 0.5 — batter goes 0-fer. Inverts hits scorer:
+    elite opp pitcher, K-heavy starter, weak team offense, bottom of order,
+    K-friendly ump, pitcher park, cold L7 with active hitless streak."""
+    opp_side = 'away' if side == 'home' else 'home'
+
+    team_wrc_vs_hand = _f(g.get(f'{side}_wrc_vs_opp_hand'))
+    team_wrc_season = _f(g.get(f'{side}_wrc_plus')) or 100
+    team_wrc = team_wrc_vs_hand if team_wrc_vs_hand is not None else team_wrc_season
+    opp_xera = _f(g.get(f'{opp_side}_sp_xera'))
+    opp_l3 = _f(g.get(f'{opp_side}_pitcher_last_3_era'))
+    opp_throws = g.get(f'{opp_side}_throws') or 'R'
+    opp_pitcher = g.get(f'{opp_side}_pitcher') or 'opposing SP'
+    opp_pitcher_k_pct = parse_pitcher_k_pct_from_context(g.get('pitcher_context'), opp_pitcher)
+    park = _i(g.get('park_run_factor'))
+    ump_note = (g.get('umpire_note') or '').lower()
+
+    signals = {}
+    conviction = 30
+
+    # Need an elite opp pitcher to bet on a 0-fer — opener filter
+    last_ip = _f(g.get(f'{opp_side}_last_ip'))
+    if last_ip is not None and last_ip <= 1.5:
+        return None  # opener — bullpen game spreads ABs across many arms, dilutes fade
+
+    # Elite opposing pitcher
+    opp_quality = opp_xera if opp_xera is not None else opp_l3
+    opp_quality_label = 'xERA' if opp_xera is not None else 'L3 ERA'
+    if opp_quality is None:
+        return None  # no pitcher signal = no fade
+    if opp_quality <= 2.75:
+        conviction += 22
+        signals['opp_starter'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — ace'
+    elif opp_quality <= 3.50:
+        conviction += 12
+        signals['opp_starter'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — quality arm'
+    elif opp_quality >= 5.0:
+        return None  # bad opposing pitcher = wrong side
+
+    # K-heavy opp starter
+    if opp_pitcher_k_pct is not None and opp_pitcher_k_pct >= 30:
+        conviction += 15
+        signals['opp_k_artist'] = f'Opp K% {opp_pitcher_k_pct:.1f}% — strikeout artist'
+    elif opp_pitcher_k_pct is not None and opp_pitcher_k_pct >= 26:
+        conviction += 8
+        signals['opp_k_heavy'] = f'Opp K% {opp_pitcher_k_pct:.1f}% — high whiff'
+    elif opp_pitcher_k_pct is not None and opp_pitcher_k_pct <= 18:
+        conviction -= 8
+
+    # Hot opp form
+    if opp_l3 is not None and opp_l3 <= 2.0:
+        conviction += 8
+        signals['opp_form_hot'] = f'Opp L3 ERA {opp_l3:.2f} — locked in'
+    elif opp_l3 is not None and opp_l3 >= 5.5:
+        conviction -= 8
+
+    # Weak team offense
+    if team_wrc <= 85:
+        conviction += 12
+        signals['team_offense'] = f'Team wRC+ {team_wrc:.0f} vs {opp_throws}HP — weak'
+    elif team_wrc <= 95:
+        conviction += 6
+        signals['team_offense'] = f'Team wRC+ {team_wrc:.0f} vs {opp_throws}HP — below avg'
+    elif team_wrc >= 115:
+        conviction -= 12
+
+    # Pitcher park
+    if park is not None:
+        if park <= 93:
+            conviction += 8
+            signals['park'] = f'Park factor {park} — pitcher park'
+        elif park <= 98:
+            conviction += 3
+        elif park >= 108:
+            conviction -= 8
+
+    # K-friendly ump aids the fade (more punchouts, fewer balls in play)
+    if 'k-friendly' in ump_note:
+        conviction += 5
+        signals['umpire'] = 'K-friendly umpire'
+
+    # Lineup position — bottom of order = fewer PAs = better fade
+    if lineup_position is not None:
+        if lineup_position >= 8:
+            conviction += 8
+            signals['lineup_spot'] = f'Hitting {lineup_position} — only 3 PAs'
+        elif lineup_position == 7:
+            conviction += 4
+        elif lineup_position <= 2:
+            conviction -= 8  # 4-5 PAs gives too many chances
+        elif lineup_position <= 5:
+            conviction -= 4
+
+    # L7 cold + active hitless streak = the strongest fade signal
+    l7 = fetch_batter_l7(batter)
+    if l7:
+        rate = l7['got_hit_rate']
+        n = l7['games']
+        avg = l7.get('avg')
+        streak = l7.get('hitless_streak', 0)
+        if rate <= 0.35:
+            conviction += 14
+            signals['l7_cold'] = f'Only {l7["got_hit_count"]} of last {n} games w/ a hit'
+        elif rate <= 0.50:
+            conviction += 7
+            signals['l7_cool'] = f'Hits in {l7["got_hit_count"]} of last {n} ({rate*100:.0f}%)'
+        elif rate >= 0.80:
+            conviction -= 12  # recent form opposes the fade
+        if avg is not None and avg <= 0.180:
+            conviction += 6
+            signals['l7_avg_cold'] = f'L7 BA .{int(avg*1000):03d}'
+        elif avg is not None and avg >= 0.330:
+            conviction -= 6
+        if streak >= 3:
+            conviction += 8
+            signals['hitless_streak'] = f'{streak} straight games w/o a hit'
+        elif streak >= 2:
+            conviction += 4
+
+    conviction = max(0, min(100, conviction))
+    return {
+        'conviction': conviction,
+        'signals': signals,
+        'prop_line': 0.5,
+    }
+
+
 def wipe_todays_props():
     gd = today_et()
     requests.delete(
@@ -544,27 +816,41 @@ def run():
         away_team = g.get('away_team')
         matchup = f"{away_team} @ {home_team}"
 
-        # Pitcher K props — both starters
+        # Pitcher K props — score Over and Under, only one will clear cutoff
         for side in ('home', 'away'):
             pitcher = g.get(f'{side}_pitcher')
             if not pitcher:
                 continue
-            result = score_pitcher_ks(g, side)
-            if not result or result['conviction'] < K_CUTOFF:
-                continue
-            all_props.append({
-                'game_date': game_date,
-                'game_id': game_id,
-                'player_name': pitcher,
-                'player_team': g.get(f'{side}_team'),
-                'matchup': matchup,
-                'prop_type': 'ks_over',
-                'prop_line': result['prop_line'],
-                'direction': 'over',
-                'conviction': result['conviction'],
-                'tier': tier_for(result['conviction'], 'ks_over'),
-                'signals': result['signals'],
-            })
+            over = score_pitcher_ks(g, side)
+            if over and over['conviction'] >= K_CUTOFF:
+                all_props.append({
+                    'game_date': game_date,
+                    'game_id': game_id,
+                    'player_name': pitcher,
+                    'player_team': g.get(f'{side}_team'),
+                    'matchup': matchup,
+                    'prop_type': 'ks_over',
+                    'prop_line': over['prop_line'],
+                    'direction': 'over',
+                    'conviction': over['conviction'],
+                    'tier': tier_for(over['conviction'], 'ks_over'),
+                    'signals': over['signals'],
+                })
+            under = score_pitcher_ks_under(g, side)
+            if under and under['conviction'] >= K_UNDER_CUTOFF:
+                all_props.append({
+                    'game_date': game_date,
+                    'game_id': game_id,
+                    'player_name': pitcher,
+                    'player_team': g.get(f'{side}_team'),
+                    'matchup': matchup,
+                    'prop_type': 'ks_under',
+                    'prop_line': under['prop_line'],
+                    'direction': 'under',
+                    'conviction': under['conviction'],
+                    'tier': tier_for(under['conviction'], 'ks_under'),
+                    'signals': under['signals'],
+                })
 
         # Batter Hits props — requires confirmed lineup
         if not g.get('lineup_confirmed'):
@@ -574,38 +860,54 @@ def run():
             batters = [b.strip() for b in lineup_str.split(',') if b.strip()][:9]
             team_name = g.get(f'{side}_team')
             for idx, batter in enumerate(batters):
-                lineup_position = idx + 1  # 1-indexed
-                result = score_batter_hits(g, batter, side, lineup_position)
-                if not result or result['conviction'] < HITS_CUTOFF:
-                    continue
-                all_props.append({
-                    'game_date': game_date,
-                    'game_id': game_id,
-                    'player_name': batter,
-                    'player_team': team_name,
-                    'matchup': matchup,
-                    'prop_type': 'hits_over',
-                    'prop_line': 0.5,
-                    'direction': 'over',
-                    'conviction': result['conviction'],
-                    'tier': tier_for(result['conviction'], 'hits_over'),
-                    'signals': result['signals'],
-                })
+                lineup_position = idx + 1
+                over = score_batter_hits(g, batter, side, lineup_position)
+                if over and over['conviction'] >= HITS_CUTOFF:
+                    all_props.append({
+                        'game_date': game_date,
+                        'game_id': game_id,
+                        'player_name': batter,
+                        'player_team': team_name,
+                        'matchup': matchup,
+                        'prop_type': 'hits_over',
+                        'prop_line': 0.5,
+                        'direction': 'over',
+                        'conviction': over['conviction'],
+                        'tier': tier_for(over['conviction'], 'hits_over'),
+                        'signals': over['signals'],
+                    })
+                under = score_batter_hits_under(g, batter, side, lineup_position)
+                if under and under['conviction'] >= HITS_UNDER_CUTOFF:
+                    all_props.append({
+                        'game_date': game_date,
+                        'game_id': game_id,
+                        'player_name': batter,
+                        'player_team': team_name,
+                        'matchup': matchup,
+                        'prop_type': 'hits_under',
+                        'prop_line': 0.5,
+                        'direction': 'under',
+                        'conviction': under['conviction'],
+                        'tier': tier_for(under['conviction'], 'hits_under'),
+                        'signals': under['signals'],
+                    })
 
     all_props.sort(key=lambda p: p['conviction'], reverse=True)
 
     # Cap per game so one juicy matchup doesn't flood the board.
-    # Max 3 hits props per game + 1 K prop per pitcher is implicit (only 2 starters).
+    # Hits props (over+under combined) capped at 3 per game.
+    # Slate-scaling TOP_N: floor 8 (small slate), ceil 25 (full slate).
+    top_n = min(25, max(8, len(games) + 5))
     hits_per_game = {}
     capped = []
     for p in all_props:
-        if p['prop_type'] == 'hits_over':
+        if p['prop_type'] in ('hits_over', 'hits_under'):
             key = p['game_id']
             hits_per_game[key] = hits_per_game.get(key, 0) + 1
             if hits_per_game[key] > 3:
                 continue
         capped.append(p)
-    top = capped[:TOP_N]
+    top = capped[:top_n]
 
     wipe_todays_props()
     saved = upsert_props(top)
