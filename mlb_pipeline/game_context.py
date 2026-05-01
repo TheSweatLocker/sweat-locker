@@ -1333,14 +1333,16 @@ def detect_opener(pitcher_id):
     except:
         return False
 
-def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None, home_is_opener=False, away_is_opener=False, game_month=None, umpire_stats=None):
+def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None, home_is_opener=False, away_is_opener=False, game_month=None, umpire_stats=None, home_inning_1_rpg=None, away_inning_1_rpg=None):
     """
     Calculate NRFI (No Run First Inning) probability score 0-100.
     Higher = stronger NRFI lean.
 
-    umpire_stats (added 2026-04-30): dict with 'nrfi_rate' field. Adjusts
-    the score based on the home plate umpire's historical NRFI tendency.
-    Range across MLB umpires is ~38%-67% — meaningful spread.
+    umpire_stats (added 2026-04-30): dict with 'nrfi_rate' field.
+    home/away_inning_1_rpg (added 2026-04-30): team's per-game runs scored
+        in the 1st inning specifically (from mlb_team_offense). League avg
+        ~0.5 R/G. Captures the offense side of the NRFI matchup that the
+        prior pitcher-only formula missed.
     """
     score = 50  # neutral baseline
 
@@ -1522,8 +1524,23 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
     if umpire_stats and umpire_stats.get('nrfi_rate') is not None:
         try:
             nr = float(umpire_stats['nrfi_rate'])
-            # Convert to delta from 50%, scale to score units (clamp at ±6)
             adj = max(-6, min(6, round((nr - 0.50) * 30)))
+            score += adj
+        except (TypeError, ValueError):
+            pass
+
+    # ── 1ST-INNING OFFENSE (added 2026-04-30) ──
+    # Both teams' 1st-inning R/G vs league avg ~0.5. Strong 1st-inning bats
+    # = lower NRFI score; weak = higher NRFI score. Worth up to ±5 per team.
+    # Captures the offense side of the matchup the pitcher-only formula missed.
+    LEAGUE_1ST_INN_RPG = 0.5
+    for rpg in (home_inning_1_rpg, away_inning_1_rpg):
+        if rpg is None:
+            continue
+        try:
+            delta = float(rpg) - LEAGUE_1ST_INN_RPG
+            # Each +0.2 R/G above avg = -3 score; cap ±5 per team
+            adj = max(-5, min(5, round(-delta * 15)))
             score += adj
         except (TypeError, ValueError):
             pass
@@ -2343,6 +2360,8 @@ def run():
                 away_is_opener,
                 game_month=game_date_et[5:7] if game_date_et else None,
                 umpire_stats=_ump_stats_for_nrfi,
+                home_inning_1_rpg=home_offense.get('inning_1_runs_per_game') if home_offense else None,
+                away_inning_1_rpg=away_offense.get('inning_1_runs_per_game') if away_offense else None,
             )
             if nrfi_score:
                 # NRFI lean threshold raised from 60 to 70 (2026-04-29):
