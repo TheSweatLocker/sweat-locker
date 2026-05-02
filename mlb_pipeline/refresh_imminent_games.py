@@ -40,9 +40,12 @@ HEADERS = {
 }
 PATCH_HEADERS = {**HEADERS, "Content-Type": "application/json", "Prefer": "return=minimal"}
 
-# Refresh window — games whose first pitch is N min away
-WINDOW_MIN_AHEAD = 30   # too close → lineup may already be official
-WINDOW_MAX_AHEAD = 120  # too far → wait for next cycle
+# Refresh window — games whose first pitch is N min away.
+# MLB publishes lineups up to 3.5 hours before first pitch for early-slate
+# games. Window of 30-240 catches the publish moment for every common game
+# start time. Skip-if-already-confirmed makes wider window cheap.
+WINDOW_MIN_AHEAD = 30
+WINDOW_MAX_AHEAD = 240
 
 
 def et_now():
