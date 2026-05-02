@@ -4549,7 +4549,10 @@ const fetchPlayoffSeries = async () => {
 const fetchDawgOfDay = async () => {
   setDawgLoading(true);
   try {
-    const today = new Date().toISOString().split('T')[0];
+    // Use ET date, not UTC. Prior bug: toISOString().split('T')[0] returned
+    // UTC date which rolls to "tomorrow" at 8pm ET, causing the app to query
+    // a game_date that has no row when the slate is still tonight in ET.
+    const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'}); // YYYY-MM-DD in ET
     const { data, error } = await supabase
       .from('daily_dawg')
       .select('*')
@@ -5740,8 +5743,8 @@ if(isLive) {
     setGameNarrative('');
     setGameNarrativeLoading(true);
 
-    // Check Supabase cache first
-    const gameKey = (game.id || (game.away_team + '_' + game.home_team)) + '_' + new Date().toISOString().split('T')[0];
+    // Check Supabase cache first — use ET date so cache key matches server-side
+    const gameKey = (game.id || (game.away_team + '_' + game.home_team)) + '_' + new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
     try {
       const { data: cachedNarrative } = await supabase
         .from('jerry_cache')
@@ -6559,7 +6562,8 @@ if(mkt.key === 'pitcher_props') {
   const fetchPipelineMLBProps = async () => {
     setPipelineMLBLoading(true);
     try {
-      const today = new Date().toISOString().split('T')[0];
+      // ET date — server stores game_date in ET, so client must match
+      const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
       const { data, error } = await supabase
         .from('mlb_pipeline_props')
         .select('*')
@@ -7527,8 +7531,8 @@ const graded = gradedRaw.filter(p => {
 const aGrades = graded.filter(p => p.grade === 'A');
 if(aGrades.length > 0) {
   try {
-    // Dedup — check existing props for today before inserting
-    const today = new Date().toISOString().split('T')[0];
+    // Dedup — check existing props for today before inserting (ET date)
+    const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
     const { data: existing } = await supabase
       .from('prop_grades')
       .select('player, market')
@@ -7693,8 +7697,9 @@ setJerryHistory(prev => {
             t.name?.toLowerCase().includes(teamLast) || t.teamName?.toLowerCase()===teamLast
           );
           if(!mlbTeam) { setScheduleGamesLoading(false); return; }
-          const today = new Date().toISOString().split('T')[0];
-          const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0];
+          // ET date — captures games played tonight in ET when UTC has rolled over
+          const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+          const thirtyAgo = new Date(Date.now()-30*86400000).toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
           const schedResp = await axios.get(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=${mlbTeam.id}&startDate=${thirtyAgo}&endDate=${today}&hydrate=linescore`);
 
           const allGames = (schedResp.data?.dates||[]).flatMap(d => d.games||[])
