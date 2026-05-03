@@ -222,6 +222,19 @@ jobs:
           cd mlb_pipeline
           python audit_tier_calibration.py
 
+      # Build Tonight's Sweat Card — server-generated structured card for
+      # the app's MLB tab. Reads everything upstream wrote (POTD, Dawg,
+      # props, NRFI, tier rates) and emits one JSON row the app reads via
+      # get_todays_sweat_card RPC. Runs every cron so card refreshes as
+      # lineup confirmations / ump landings flow through pipeline data.
+      - name: Generate Sweat Card
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_sweat_card.py
+
       # Commit the generated content card so Andy can pull it locally
       - name: Commit content card
         if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'

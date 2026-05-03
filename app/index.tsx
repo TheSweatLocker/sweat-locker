@@ -1936,6 +1936,8 @@ const [playersSearch, setPlayersSearch] = useState('');
   const [dailyBestBet, setDailyBestBet] = useState(null);
 const [dailyBestBetLoading, setDailyBestBetLoading] = useState(false);
 const [bestBetFetched, setBestBetFetched] = useState(false);
+const [sweatCard, setSweatCard] = useState<any>(null);
+const [sweatCardLoading, setSweatCardLoading] = useState(false);
 const [dailyBestBetError, setDailyBestBetError] = useState('');
 const [modelEdgeData, setModelEdgeData] = useState([]);
 const [mlbGameContext, setMlbGameContext] = useState({});
@@ -2094,6 +2096,7 @@ useEffect(() => {
   if(bestBetFetched) return;
   setBestBetFetched(true);
   fetchDailyBestBet();
+  fetchSweatCard();
 }, []);
 useEffect(() => {
   if(bartData.length) {
@@ -4719,6 +4722,22 @@ const fetchJerryRecord = async () => {
     setModelEdgeData(mapped);
   } catch(e) { setModelEdgeData([]); }
   setModelEdgeLoading(false);
+};
+
+const fetchSweatCard = async () => {
+  setSweatCardLoading(true);
+  try {
+    const { data: rows } = await supabase.rpc('get_todays_sweat_card');
+    const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+    if (row?.data) {
+      setSweatCard(row.data);
+    } else {
+      setSweatCard({ noCard: true });
+    }
+  } catch (e) {
+    setSweatCard({ noCard: true });
+  }
+  setSweatCardLoading(false);
 };
 
 const fetchDailyBestBet = async () => {
@@ -8490,6 +8509,107 @@ setJerryHistory(prev => {
         {activeTab==='home'&&(
           <View>
            <View style={{marginBottom:12}}>
+
+           {/* TONIGHT'S SWEAT CARD — server-generated, all conviction picks in one section */}
+{sweatCard && !sweatCard.noCard && (
+  <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:'#5cb85c',marginBottom:16,shadowColor:'#5cb85c',shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
+    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+      <Text style={{color:'#5cb85c',fontWeight:'800',fontSize:13,letterSpacing:1}}>🔥 TONIGHT'S SWEAT CARD</Text>
+      <Text style={{color:'#7a92a8',fontSize:10}}>{sweatCard.slate_date}</Text>
+    </View>
+
+    {/* 🔒 PRIME LOCK — NRFI 90-94 sweet spot */}
+    {sweatCard.lock && (
+      <View style={{backgroundColor:'rgba(92,184,92,0.1)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#5cb85c'}}>
+        <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
+          <Text style={{color:'#5cb85c',fontWeight:'800',fontSize:11}}>🔒 PRIME LOCK</Text>
+          <Text style={{color:'#5cb85c',fontSize:10,fontWeight:'700'}}>
+            {sweatCard.lock.audited_rate}% audited (n={sweatCard.lock.audited_n})
+          </Text>
+        </View>
+        <Text style={{color:'#fff',fontSize:14,fontWeight:'700'}}>{sweatCard.lock.game} — NRFI {sweatCard.lock.score}</Text>
+        <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>
+          {sweatCard.lock.context?.home_pitcher} vs {sweatCard.lock.context?.away_pitcher}
+        </Text>
+      </View>
+    )}
+
+    {/* 🔒 SECONDARY LOCK — YRFI ≤40 lean */}
+    {sweatCard.secondary_lock && (
+      <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
+        <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
+          <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11}}>🔥 YRFI LEAN</Text>
+          <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700'}}>
+            {sweatCard.secondary_lock.audited_rate}% audited (n={sweatCard.secondary_lock.audited_n})
+          </Text>
+        </View>
+        <Text style={{color:'#fff',fontSize:14,fontWeight:'700'}}>{sweatCard.secondary_lock.game} — NRFI {sweatCard.secondary_lock.score}</Text>
+      </View>
+    )}
+
+    {/* 🐕 DAWG OF THE DAY */}
+    {sweatCard.dawg && (
+      <View style={{backgroundColor:'rgba(120,180,255,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#78b4ff'}}>
+        <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
+          <Text style={{color:'#78b4ff',fontWeight:'800',fontSize:11}}>🐕 DAWG OF THE DAY</Text>
+          <Text style={{color:'#78b4ff',fontSize:10,fontWeight:'700'}}>{sweatCard.dawg.tier} {sweatCard.dawg.conviction}</Text>
+        </View>
+        <Text style={{color:'#fff',fontSize:14,fontWeight:'700'}}>{sweatCard.dawg.team} ML</Text>
+        <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{sweatCard.dawg.matchup}</Text>
+      </View>
+    )}
+
+    {/* ⚡ TOP PROPS */}
+    {(sweatCard.top_ks_over?.length > 0 || sweatCard.top_hits_over?.length > 0) && (
+      <View style={{marginBottom:10}}>
+        <Text style={{color:'#7a92a8',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:6}}>⚡ TOP PROPS</Text>
+        {[...(sweatCard.top_ks_over||[]), ...(sweatCard.top_hits_over||[])].slice(0,3).map((p:any, i:number) => (
+          <View key={i} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:6,borderTopWidth:i>0?0.5:0,borderTopColor:'#1a2530'}}>
+            <View style={{flex:1}}>
+              <Text style={{color:'#fff',fontSize:12,fontWeight:'600'}}>{p.player_name} O{p.prop_line} {p.prop_type==='ks_over'?'Ks':'Hits'}</Text>
+              <Text style={{color:'#7a92a8',fontSize:10}}>{p.matchup}</Text>
+            </View>
+            <Text style={{color:p.tier==='PRIME'?'#5cb85c':'#7a92a8',fontSize:11,fontWeight:'700'}}>{p.tier} {p.conviction}</Text>
+          </View>
+        ))}
+      </View>
+    )}
+
+    {/* 📊 BUCKET ANGLE */}
+    {sweatCard.bucket_angle && (
+      <View style={{backgroundColor:'rgba(180,140,255,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#b48cff'}}>
+        <Text style={{color:'#b48cff',fontWeight:'800',fontSize:11,marginBottom:4}}>📊 BUCKET ANGLE</Text>
+        <Text style={{color:'#fff',fontSize:13,fontWeight:'700'}}>{sweatCard.bucket_angle.headline}</Text>
+        <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{sweatCard.bucket_angle.reason}</Text>
+        {sweatCard.bucket_angle.extra && (
+          <Text style={{color:'#7a92a8',fontSize:11,marginTop:1}}>{sweatCard.bucket_angle.extra}</Text>
+        )}
+      </View>
+    )}
+
+    {/* 🔥 STACK ALERT */}
+    {sweatCard.stack_alerts?.length > 0 && (
+      <View style={{backgroundColor:'rgba(255,140,80,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#ff8c50'}}>
+        <Text style={{color:'#ff8c50',fontWeight:'800',fontSize:11,marginBottom:4}}>🔥 STACK ALERT</Text>
+        {sweatCard.stack_alerts.map((s:any, i:number) => (
+          <Text key={i} style={{color:'#fff',fontSize:12}}>
+            {s.matchup} — {s.prime_count} PRIME hits picks vs the same starter
+          </Text>
+        ))}
+      </View>
+    )}
+
+    {/* 🚫 SKIP ALERTS — volatile NRFI 95+ tier */}
+    {sweatCard.skip_alerts?.length > 0 && (
+      <View style={{borderTopWidth:0.5,borderTopColor:'#1a2530',paddingTop:8,marginTop:4}}>
+        <Text style={{color:'#aa6a6a',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:4}}>🚫 SKIP TIER (NRFI 95+ — 45% audited)</Text>
+        {sweatCard.skip_alerts.map((s:any, i:number) => (
+          <Text key={i} style={{color:'#7a92a8',fontSize:11}}>{s.game} — NRFI {s.nrfi_score}</Text>
+        ))}
+      </View>
+    )}
+  </View>
+)}
 
            {/* DAILY BEST BET */}
 {(dailyBestBetLoading || dailyBestBet) && (

@@ -458,6 +458,15 @@ def run():
             generate_props.run()
         except Exception as e:
             print(f"  ⚠️ prop regen failed: {e}")
+        # Refresh the Sweat Card too so newly-surfaced hits picks (and any
+        # NRFI re-derives that fired with umpire data) flow into the card
+        # before users open the app.
+        print("\n  Refreshing Sweat Card with new data...")
+        try:
+            import generate_sweat_card
+            generate_sweat_card.build_card()
+        except Exception as e:
+            print(f"  ⚠️ sweat card regen failed: {e}")
 
 
 if __name__ == "__main__":
