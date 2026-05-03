@@ -873,12 +873,22 @@ def upsert_props(props):
     )
     if r.status_code in (200, 201, 204):
         return len(props)
-    # Schema-mismatch fallback — strip lineup_state and retry once
-    if r.status_code == 400 and 'lineup_state' in (r.text or ''):
-        print(f"  ⚠️ lineup_state column missing — stripping and retrying. Run:")
-        print(f"      ALTER TABLE mlb_pipeline_props ADD COLUMN lineup_state TEXT;")
+    # Schema-mismatch fallback — strip optional fields and retry once.
+    # New columns the user needs to add:
+    #   ALTER TABLE mlb_pipeline_props ADD COLUMN lineup_state TEXT;
+    #   ALTER TABLE mlb_pipeline_props ADD COLUMN stack_alert BOOLEAN DEFAULT FALSE;
+    optional_cols = ('lineup_state', 'stack_alert')
+    if r.status_code == 400 and any(c in (r.text or '') for c in optional_cols):
+        missing = [c for c in optional_cols if c in (r.text or '')]
+        print(f"  ⚠️ optional columns missing ({', '.join(missing)}) — stripping and retrying. Run:")
+        for c in missing:
+            if c == 'lineup_state':
+                print(f"      ALTER TABLE mlb_pipeline_props ADD COLUMN lineup_state TEXT;")
+            elif c == 'stack_alert':
+                print(f"      ALTER TABLE mlb_pipeline_props ADD COLUMN stack_alert BOOLEAN DEFAULT FALSE;")
         for p in props:
-            p.pop('lineup_state', None)
+            for c in optional_cols:
+                p.pop(c, None)
         r2 = requests.post(
             f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
             headers=HEADERS,
@@ -1011,8 +1021,34 @@ def run():
     all_props.sort(key=lambda p: p['conviction'], reverse=True)
 
     # Cap per game so one juicy matchup doesn't flood the board.
-    # Hits props (over+under combined) capped at 3 per game.
-    # Slate-scaling TOP_N: floor 8 (small slate), ceil 25 (full slate).
+    # STACK ALERT (added 2026-05-03): when 4+ batters in the same game score
+    # PRIME tier (≥82 conviction), the matchup itself is the play (everyone
+    # is teeing off vs a disaster starter — Cubs/Kelly was the trigger case
+    # where Happ + Suzuki + Bregman all PRIME but silently capped). For
+    # those games, lift the cap to 6 so all the stack picks surface and
+    # tag them with stack_alert=True so the app/social can render a
+    # "Stack Alert" badge.
+    PRIME_THRESHOLD = 82
+    prime_per_game = {}
+    game_matchups = {}
+    for p in all_props:
+        if p['prop_type'] in ('hits_over', 'hits_under') and p['conviction'] >= PRIME_THRESHOLD:
+            prime_per_game[p['game_id']] = prime_per_game.get(p['game_id'], 0) + 1
+            game_matchups[p['game_id']] = p.get('matchup', p['game_id'])
+    stack_games = {gid for gid, n in prime_per_game.items() if n >= 4}
+    if stack_games:
+        for gid in stack_games:
+            print(f"  🔥 STACK ALERT: {game_matchups.get(gid)} has {prime_per_game[gid]} PRIME hits picks — lifting cap to 6")
+    if prime_per_game:
+        print(f"  PRIME hits-pick counts per game: {dict((game_matchups[g], n) for g, n in sorted(prime_per_game.items(), key=lambda x: -x[1]))}")
+    # Set stack_alert on EVERY prop so the upsert batch has a uniform shape.
+    # Default False; True only for hits picks in stack matchups.
+    for p in all_props:
+        p['stack_alert'] = (
+            p['game_id'] in stack_games
+            and p['prop_type'] in ('hits_over', 'hits_under')
+        )
+
     top_n = min(25, max(8, len(games) + 5))
     hits_per_game = {}
     capped = []
@@ -1020,7 +1056,10 @@ def run():
         if p['prop_type'] in ('hits_over', 'hits_under'):
             key = p['game_id']
             hits_per_game[key] = hits_per_game.get(key, 0) + 1
-            if hits_per_game[key] > 3:
+            # Stack Alert games get an expanded cap of 6 so all the PRIME
+            # picks against the same matchup surface together as a stack.
+            cap = 6 if key in stack_games else 3
+            if hits_per_game[key] > cap:
                 continue
         capped.append(p)
     top = capped[:top_n]
