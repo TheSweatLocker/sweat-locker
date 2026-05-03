@@ -9457,14 +9457,38 @@ setJerryHistory(prev => {
           </Text>
           {pipelineMLBProps.map((prop, i) => {
             const tierColor = prop.tier === 'PRIME' ? '#00e5a0' : prop.tier === 'STRONG' ? HRB_COLOR : '#7a92a8';
-            const propLabel = prop.prop_type === 'ks_over' ? `Over ${prop.prop_line} Strikeouts` : prop.prop_type === 'hits_over' ? 'Over 0.5 Hits' : prop.prop_type;
+            const propLabel =
+              prop.prop_type === 'ks_over'   ? `Over ${prop.prop_line} Strikeouts` :
+              prop.prop_type === 'ks_under'  ? `Under ${prop.prop_line} Strikeouts` :
+              prop.prop_type === 'hits_over' ? 'Over 0.5 Hits' :
+              prop.prop_type === 'hits_under'? 'Under 0.5 Hits (0-fer)' :
+              prop.prop_type;
             const signals = prop.signals || {};
             const signalEntries = Object.entries(signals);
             return (
               <View key={prop.id || i} style={[styles.card, {marginBottom:10, borderLeftWidth:3, borderLeftColor:tierColor}]}>
                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
                   <View style={{flex:1, marginRight:12}}>
-                    <Text style={{color:'#e8f0f8', fontWeight:'800', fontSize:15}}>{prop.player_name}</Text>
+                    <View style={{flexDirection:'row', alignItems:'center', gap:6, flexWrap:'wrap'}}>
+                      <Text style={{color:'#e8f0f8', fontWeight:'800', fontSize:15}}>{prop.player_name}</Text>
+                      {/* Stack alert badge — fires when 4+ hits picks share matchup */}
+                      {prop.stack_alert && (
+                        <View style={{backgroundColor:'rgba(255,140,80,0.18)', borderRadius:6, paddingHorizontal:6, paddingVertical:2}}>
+                          <Text style={{color:'#ff8c50', fontSize:9, fontWeight:'800', letterSpacing:0.5}}>🔥 STACK</Text>
+                        </View>
+                      )}
+                      {/* Lineup state — projected vs confirmed for hits props */}
+                      {prop.lineup_state === 'projected' && (prop.prop_type === 'hits_over' || prop.prop_type === 'hits_under') && (
+                        <View style={{backgroundColor:'rgba(122,146,168,0.2)', borderRadius:6, paddingHorizontal:6, paddingVertical:2}}>
+                          <Text style={{color:'#7a92a8', fontSize:9, fontWeight:'700', letterSpacing:0.5}}>PROJECTED</Text>
+                        </View>
+                      )}
+                      {prop.lineup_state === 'confirmed' && (prop.prop_type === 'hits_over' || prop.prop_type === 'hits_under') && (
+                        <View style={{backgroundColor:'rgba(0,229,160,0.15)', borderRadius:6, paddingHorizontal:6, paddingVertical:2}}>
+                          <Text style={{color:'#00e5a0', fontSize:9, fontWeight:'700', letterSpacing:0.5}}>✓ CONFIRMED</Text>
+                        </View>
+                      )}
+                    </View>
                     <Text style={{color:tierColor, fontWeight:'700', fontSize:13, marginTop:2}}>{propLabel}</Text>
                     <Text style={{color:'#4a6070', fontSize:11, marginTop:2}}>{prop.matchup}</Text>
                   </View>
