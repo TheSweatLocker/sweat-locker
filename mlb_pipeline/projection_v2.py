@@ -276,19 +276,25 @@ def project_game(ctx: dict, prior_ctx: Optional[dict] = None) -> GameProjection:
         if away_off_bucket is None:
             away_off_bucket = away_rpg_recent * weight
 
-        # Run expectation per bucket = baseline_rpg × (wRC/100) × (opp_pitch_era / league_avg) × park
-        # then weighted by bucket share
+        # Run expectation per bucket = baseline_rpg × (wRC^0.85 × xera^0.85 × park^0.5)
+        # DAMPENING (added 2026-05-02 after backtest): prior compounded wRC ×
+        # xERA × park multiplicatively, inflating lambdas at extremes.
+        # Exponent <1 tempers compounding while preserving direction.
+        # Tested DAMP=0.7 (too aggressive — hurt ML edge) vs DAMP=0.85
+        # (gentler — preserves edge magnitude while improving MAE).
+        DAMP = 0.85
+        PARK_DAMP = 0.5  # park already a small effect, dampen more
+        home_wrc_mult  = (home_wrc_blended / 100.0) ** DAMP
+        away_wrc_mult  = (away_wrc_blended / 100.0) ** DAMP
+        home_pitch_mult = (away_pitch_bucket / LEAGUE_AVG_XERA) ** DAMP
+        away_pitch_mult = (home_pitch_bucket / LEAGUE_AVG_XERA) ** DAMP
+        park_dampened   = park_mult ** PARK_DAMP
+
         home_bucket_lambda = (
-            home_off_bucket
-            * (home_wrc_blended / 100.0)
-            * (away_pitch_bucket / LEAGUE_AVG_XERA)
-            * park_mult
+            home_off_bucket * home_wrc_mult * home_pitch_mult * park_dampened
         )
         away_bucket_lambda = (
-            away_off_bucket
-            * (away_wrc_blended / 100.0)
-            * (home_pitch_bucket / LEAGUE_AVG_XERA)
-            * park_mult
+            away_off_bucket * away_wrc_mult * away_pitch_mult * park_dampened
         )
 
         home_lambda += home_bucket_lambda
