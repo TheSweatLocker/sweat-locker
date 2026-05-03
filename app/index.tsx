@@ -4549,17 +4549,13 @@ const fetchPlayoffSeries = async () => {
 const fetchDawgOfDay = async () => {
   setDawgLoading(true);
   try {
-    // Use ET date, not UTC. Prior bug: toISOString().split('T')[0] returned
-    // UTC date which rolls to "tomorrow" at 8pm ET, causing the app to query
-    // a game_date that has no row when the slate is still tonight in ET.
-    const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'}); // YYYY-MM-DD in ET
-    const { data, error } = await supabase
-      .from('daily_dawg')
-      .select('*')
-      .eq('game_date', today)
-      .single();
-    if (data) {
-      setDawgData(data);
+    // Server-side RPC — Postgres function uses ET timezone internally so the
+    // client never has to derive a slate date. Killed the UTC-vs-ET bug
+    // class. See supabase/migrations/20260502_slate_date_rpcs.sql.
+    const { data, error } = await supabase.rpc('get_todays_dawg');
+    const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
+    if (row) {
+      setDawgData(row);
     } else {
       setDawgData({ noPick: true });
     }
@@ -4729,21 +4725,18 @@ const fetchDailyBestBet = async () => {
   // Bumped CACHE_KEY to v5 to invalidate any stale local entries from the
   // pre-fix v4 cache (legacy client-side scanner could have written wrong-date rows).
   const CACHE_KEY = 'sweatlocker_daily_best_bet_v5';
-  // Use ET-derived date so 'today' matches the server's date logic regardless
-  // of the user's device timezone. Prior bug: _now.getDate() used local time,
-  // which rolled to tomorrow before ET did, querying a non-existent server POTD.
+  // ET-derived date kept ONLY for downstream cache key + Jerry-narrative
+  // prompts. The actual POTD row fetch goes through the get_todays_potd RPC
+  // which derives the date in Postgres (TZ-immune).
   const etDateStr = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'}); // YYYY-MM-DD
   const today = etDateStr;
   const etHour = parseInt(new Date().toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
 
   // Play of the Day is now computed server-side by play_of_day.py
-  // App just reads from jerry_cache and generates Jerry narrative if missing
+  // App just reads via RPC and generates Jerry narrative if missing
   try {
-    const { data: supabaseCache } = await supabase
-      .from('jerry_cache')
-      .select('data, fetched_at')
-      .eq('game_id', `best_bet_${today}`)
-      .single();
+    const { data: rpcRows } = await supabase.rpc('get_todays_potd');
+    const supabaseCache = Array.isArray(rpcRows) && rpcRows.length > 0 ? rpcRows[0] : null;
 
     if(supabaseCache?.data) {
       if(supabaseCache.data.noGames) {
@@ -6562,12 +6555,10 @@ if(mkt.key === 'pitcher_props') {
   const fetchPipelineMLBProps = async () => {
     setPipelineMLBLoading(true);
     try {
-      // ET date — server stores game_date in ET, so client must match
-      const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+      // Server-side RPC — Postgres function returns props for ET-today.
+      // Client never derives a slate date.
       const { data, error } = await supabase
-        .from('mlb_pipeline_props')
-        .select('*')
-        .eq('game_date', today)
+        .rpc('get_todays_pipeline_props')
         .order('conviction', { ascending: false });
       if (error) {
         console.log('Pipeline MLB props fetch error:', error.message);
