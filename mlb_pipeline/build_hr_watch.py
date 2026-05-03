@@ -60,6 +60,50 @@ def get_today_et():
     return et_now.strftime('%Y-%m-%d')
 
 
+# Park HR factors — diverge meaningfully from park run factors.
+# Sources: FanGraphs / Statcast park HR factor data (3-year averages).
+# Higher = HRs more frequent at this venue. League average = 100.
+PARK_HR_FACTOR = {
+    'Coors Field':                123,  # extreme HR park (altitude)
+    'Great American Ball Park':   118,
+    'Yankee Stadium':             115,  # short porch (LH bias not modeled here)
+    'Citizens Bank Park':         112,
+    'Wrigley Field':              108,  # wind-dependent but HR-friendly when out
+    'Globe Life Field':           107,
+    'Camden Yards':               104,  # post-2022 LF wall changes
+    'Rogers Centre':              104,
+    'Truist Park':                103,
+    'Chase Field':                102,
+    'Comerica Park':              102,
+    'American Family Field':      102,
+    'Target Field':               101,
+    'Citi Field':                 100,
+    'Angel Stadium':              100,
+    'Nationals Park':             100,
+    'Fenway Park':                 99,  # high run factor but Green Monster suppresses HR
+    'PNC Park':                    98,
+    'Kauffman Stadium':            98,
+    'Daikin Park':                 97,  # Astros (renamed from Minute Maid)
+    'Minute Maid Park':            97,
+    'Progressive Field':           96,
+    'Busch Stadium':               96,
+    'loanDepot Park':              94,  # deep gaps + retractable roof
+    'Sutter Health Park':          93,  # A's temp Sacramento home
+    'T-Mobile Park':               92,  # marine layer suppresses HR
+    'George M. Steinbrenner Field':92,  # Rays temp Tampa home
+    'Dodger Stadium':              91,
+    'Oracle Park':                 88,  # cold + deep gaps
+    'Petco Park':                  88,  # spacious + marine layer
+}
+
+
+def park_hr_factor(venue):
+    """Return park HR factor (100 = league avg). Falls back to 100."""
+    if not venue:
+        return 100
+    return PARK_HR_FACTOR.get(venue, 100)
+
+
 def strip_accents(s):
     if not s:
         return s
@@ -67,7 +111,8 @@ def strip_accents(s):
 
 
 def fetch_batter_stats(name):
-    """Fetch season hitting stats from MLB Stats API"""
+    """Fetch season hitting stats from MLB Stats API.
+    Adds slg + iso (process signals more stable than HR/PA in small samples)."""
     if not name:
         return None
     try:
@@ -91,11 +136,16 @@ def fetch_batter_stats(name):
         if not splits:
             return None
         s = splits[0].get('stat', {})
+        ba = float(s.get('avg', 0) or 0)
+        slg = float(s.get('slg', 0) or 0)
+        iso = max(0.0, slg - ba)
         return {
             'name': name,
             'pa': int(s.get('plateAppearances', 0) or 0),
             'hr': int(s.get('homeRuns', 0) or 0),
-            'ba': float(s.get('avg', 0) or 0),
+            'ba': ba,
+            'slg': slg,
+            'iso': round(iso, 3),
         }
     except Exception as e:
         print(f'  Error fetching {name}: {e}')
@@ -139,16 +189,39 @@ def get_team_fallback(team_name):
     return []
 
 
-def score_batter(stats, opp_xera, opp_contact, park_factor, temp, wind_speed, wind_dir):
-    """Apply the same scoring logic as the app-side HR Watch"""
-    if not stats or stats['pa'] < 15:
+def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_speed, wind_dir):
+    """Apply the same scoring logic as the app-side HR Watch.
+
+    BAYESIAN REGRESSION on HR rate (added 2026-05-02): raw HR/PA over <100
+    PA samples wildly inflates power_score for hot small-sample hitters
+    (e.g. Rushing 7 HR / 52 PA = 13.5% rate → power 67 dwarfed legitimate
+    HR threats like Judge 12/140 at 8.6% → power 43). Regress toward the
+    MLB-avg HR rate (~3%) with PRIOR_PA mass so small samples pull toward
+    league norm, large samples pass through nearly unchanged.
+    """
+    # Bumped PA threshold from 15 to 40 — anything under is small-sample noise.
+    if not stats or stats['pa'] < 40:
         return None
 
-    hr_rate = stats['hr'] / stats['pa'] if stats['pa'] > 0 else 0
-    if hr_rate < 0.02:
+    raw_hr_rate = stats['hr'] / stats['pa'] if stats['pa'] > 0 else 0
+    if raw_hr_rate < 0.02:
         return None
 
-    power_score = round(hr_rate * 500)
+    # Bayesian-regress BOTH HR rate AND ISO. Small samples with extreme HR
+    # totals inflate both stats — must regress both or one becomes a backdoor
+    # for the noise. Without ISO regression, Rushing's 13.5% HR rate also
+    # gives him ~.350 ISO that pumps the alt power signal.
+    PRIOR_HR_RATE = 0.03
+    PRIOR_ISO     = 0.155
+    PRIOR_PA      = 200
+    hr_rate = (stats['hr'] + PRIOR_HR_RATE * PRIOR_PA) / (stats['pa'] + PRIOR_PA)
+    raw_iso = stats.get('iso', PRIOR_ISO)
+    iso = (raw_iso * stats['pa'] + PRIOR_ISO * PRIOR_PA) / (stats['pa'] + PRIOR_PA)
+
+    # Power score blends regressed HR rate + regressed ISO.
+    power_from_rate = hr_rate * 250
+    power_from_iso  = iso * 150
+    power_score = round(power_from_rate + power_from_iso)
     hr_bonus = 10 if stats['hr'] >= 4 else 0
     opp_score = 15 if opp_xera and opp_xera > 4.5 else (5 if opp_xera and opp_xera > 3.5 else 0)
 
@@ -163,8 +236,13 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, temp, wind_speed, wi
         elif barrel >= 7: contact_score += 5
 
     env_score = 0
-    if park_factor >= 108: env_score += 15
-    elif park_factor >= 103: env_score += 8
+    # Park HR factor — replaces park_run_factor for HR-specific scoring.
+    # Coors 123 / Petco 88 spans much wider than run factor.
+    if hr_park >= 115: env_score += 18      # extreme HR park
+    elif hr_park >= 108: env_score += 12    # plus HR park
+    elif hr_park >= 103: env_score += 6
+    elif hr_park <= 92:  env_score -= 8     # pitcher park penalty
+    elif hr_park <= 95:  env_score -= 4
     if temp >= 80: env_score += 10
     elif temp >= 70: env_score += 5
     wind_out = wind_speed > 10 and any(d in (wind_dir or '').upper() for d in ['S', 'SW', 'SE', 'OUT'])
@@ -173,7 +251,10 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, temp, wind_speed, wi
     total_score = power_score + hr_bonus + opp_score + contact_score + env_score
 
     return {
-        'hr_rate': round(hr_rate, 4),
+        'hr_rate': round(raw_hr_rate, 4),  # display raw, scoring uses regressed
+        'hr_rate_regressed': round(hr_rate, 4),
+        'iso': round(raw_iso, 3),
+        'iso_regressed': round(iso, 3),
         'score': total_score,
         'power_score': power_score,
         'hr_bonus': hr_bonus,
@@ -210,6 +291,7 @@ def run():
         away_team = ctx.get('away_team')
         venue = ctx.get('venue')
         park_factor = float(ctx.get('park_run_factor') or 100)
+        hr_park = park_hr_factor(venue)
         temp = float(ctx.get('temperature') or 70)
         wind_speed = float(ctx.get('wind_speed') or 0)
         wind_dir = ctx.get('wind_direction') or ''
@@ -249,7 +331,7 @@ def run():
                 if not stats:
                     continue
 
-                scoring = score_batter(stats, opp_xera, opp_contact, park_factor, temp, wind_speed, wind_dir)
+                scoring = score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_speed, wind_dir)
                 if not scoring or scoring['score'] < 20:
                     continue
 
