@@ -183,6 +183,86 @@ def fetch_batter_l7(player_name, season=2026):
     return out
 
 
+_PROJECTED_LINEUP_CACHE = {}
+
+
+def fetch_projected_lineup(team_name, season=2026):
+    """Pull the team's MOST RECENT confirmed batting order from MLB Stats
+    API box score. Used as a fallback when today's lineup hasn't been
+    posted yet (props can still surface in the morning with a PROJECTED
+    tag, refreshed to CONFIRMED once today's lineup lands).
+
+    Returns list of full names in batting order (1-9), or [] on failure.
+    Cached per-run.
+    """
+    if not team_name:
+        return []
+    if team_name in _PROJECTED_LINEUP_CACHE:
+        return _PROJECTED_LINEUP_CACHE[team_name]
+    try:
+        # Find team_id
+        ts = requests.get(
+            "https://statsapi.mlb.com/api/v1/teams",
+            params={"sportId": 1},
+            timeout=8,
+        )
+        teams = ts.json().get("teams", []) if ts.status_code == 200 else []
+        last = team_name.split()[-1].lower()
+        team = next(
+            (t for t in teams if last in (t.get("name") or "").lower() or last == (t.get("teamName") or "").lower()),
+            None,
+        )
+        if not team:
+            _PROJECTED_LINEUP_CACHE[team_name] = []
+            return []
+        team_id = team["id"]
+        # Last 7 days schedule, find most recent Final game for this team
+        from datetime import datetime, timedelta, timezone
+        end = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
+        start = end - timedelta(days=7)
+        sr = requests.get(
+            "https://statsapi.mlb.com/api/v1/schedule",
+            params={"sportId": 1, "teamId": team_id, "startDate": start.isoformat(), "endDate": end.isoformat()},
+            timeout=8,
+        )
+        games = []
+        for d in sr.json().get("dates", []):
+            for g in d.get("games", []):
+                if g.get("status", {}).get("abstractGameState") == "Final":
+                    games.append(g)
+        if not games:
+            _PROJECTED_LINEUP_CACHE[team_name] = []
+            return []
+        # Most recent
+        games.sort(key=lambda g: g.get("gameDate", ""), reverse=True)
+        last_game_pk = games[0].get("gamePk")
+        bx = requests.get(
+            f"https://statsapi.mlb.com/api/v1/game/{last_game_pk}/boxscore",
+            timeout=10,
+        )
+        box = bx.json() if bx.status_code == 200 else {}
+        # Determine which side this team batted on
+        for side in ("home", "away"):
+            t = box.get("teams", {}).get(side, {})
+            t_name = t.get("team", {}).get("name", "")
+            if last in t_name.lower():
+                # `batters` is the batting order array of player IDs
+                batter_ids = t.get("batters", [])[:9]
+                players = t.get("players", {}) or {}
+                names = []
+                for pid in batter_ids:
+                    p = players.get(f"ID{pid}", {})
+                    fn = (p.get("person") or {}).get("fullName")
+                    if fn:
+                        names.append(fn)
+                _PROJECTED_LINEUP_CACHE[team_name] = names
+                return names
+    except Exception:
+        pass
+    _PROJECTED_LINEUP_CACHE[team_name] = []
+    return []
+
+
 def fetch_pitcher_buckets(pitcher_name):
     """Lookup early/mid-inning K% from mlb_pitcher_stats. Cached per run."""
     if not pitcher_name:
@@ -778,6 +858,11 @@ def wipe_todays_props():
 
 
 def upsert_props(props):
+    """Upsert prop rows. Falls back to stripping the lineup_state field if
+    Supabase rejects it (column doesn't exist yet — user needs to run:
+      ALTER TABLE mlb_pipeline_props ADD COLUMN lineup_state TEXT;
+    Once added, the field flows through and the app can render PROJECTED
+    vs CONFIRMED tags on hits props.)"""
     if not props:
         return 0
     r = requests.post(
@@ -786,10 +871,26 @@ def upsert_props(props):
         json=props,
         timeout=20
     )
-    if r.status_code not in (200, 201, 204):
-        print(f"  ⚠️ upsert failed {r.status_code}: {r.text[:300]}")
+    if r.status_code in (200, 201, 204):
+        return len(props)
+    # Schema-mismatch fallback — strip lineup_state and retry once
+    if r.status_code == 400 and 'lineup_state' in (r.text or ''):
+        print(f"  ⚠️ lineup_state column missing — stripping and retrying. Run:")
+        print(f"      ALTER TABLE mlb_pipeline_props ADD COLUMN lineup_state TEXT;")
+        for p in props:
+            p.pop('lineup_state', None)
+        r2 = requests.post(
+            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
+            headers=HEADERS,
+            json=props,
+            timeout=20,
+        )
+        if r2.status_code in (200, 201, 204):
+            return len(props)
+        print(f"  ⚠️ retry also failed {r2.status_code}: {r2.text[:300]}")
         return 0
-    return len(props)
+    print(f"  ⚠️ upsert failed {r.status_code}: {r.text[:300]}")
+    return 0
 
 
 def run():
@@ -835,6 +936,7 @@ def run():
                     'conviction': over['conviction'],
                     'tier': tier_for(over['conviction'], 'ks_over'),
                     'signals': over['signals'],
+                    'lineup_state': 'confirmed',
                 })
             under = score_pitcher_ks_under(g, side)
             if under and under['conviction'] >= K_UNDER_CUTOFF:
@@ -850,15 +952,27 @@ def run():
                     'conviction': under['conviction'],
                     'tier': tier_for(under['conviction'], 'ks_under'),
                     'signals': under['signals'],
+                    'lineup_state': 'confirmed',
                 })
 
-        # Batter Hits props — requires confirmed lineup
-        if not g.get('lineup_confirmed'):
-            continue
+        # Batter Hits props — confirmed lineup preferred, projected as fallback.
+        # Hybrid lineup approach (added 2026-05-02): if today's lineup not yet
+        # posted by MLB, fall back to the team's most recent batting order from
+        # box score. Mark the prop with lineup_state=projected so the app can
+        # show a PROJECTED tag (and the next pipeline run with confirmed
+        # lineups overwrites the row with state=confirmed).
+        confirmed = bool(g.get('lineup_confirmed'))
         for side, lineup_field in (('home', 'home_lineup'), ('away', 'away_lineup')):
-            lineup_str = g.get(lineup_field) or ''
-            batters = [b.strip() for b in lineup_str.split(',') if b.strip()][:9]
             team_name = g.get(f'{side}_team')
+            if confirmed:
+                lineup_str = g.get(lineup_field) or ''
+                batters = [b.strip() for b in lineup_str.split(',') if b.strip()][:9]
+                lineup_state = 'confirmed'
+            else:
+                batters = fetch_projected_lineup(team_name)
+                lineup_state = 'projected'
+            if not batters:
+                continue
             for idx, batter in enumerate(batters):
                 lineup_position = idx + 1
                 over = score_batter_hits(g, batter, side, lineup_position)
@@ -875,6 +989,7 @@ def run():
                         'conviction': over['conviction'],
                         'tier': tier_for(over['conviction'], 'hits_over'),
                         'signals': over['signals'],
+                        'lineup_state': lineup_state,
                     })
                 under = score_batter_hits_under(g, batter, side, lineup_position)
                 if under and under['conviction'] >= HITS_UNDER_CUTOFF:
@@ -890,6 +1005,7 @@ def run():
                         'conviction': under['conviction'],
                         'tier': tier_for(under['conviction'], 'hits_under'),
                         'signals': under['signals'],
+                        'lineup_state': lineup_state,
                     })
 
     all_props.sort(key=lambda p: p['conviction'], reverse=True)
