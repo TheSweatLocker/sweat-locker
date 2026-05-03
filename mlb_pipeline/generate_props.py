@@ -186,27 +186,119 @@ def fetch_batter_l7(player_name, season=2026):
 _PROJECTED_LINEUP_CACHE = {}
 
 
+_TEAMS_LOOKUP_CACHE = None  # MLB API teams list cached once per process
+
+
+def _get_with_retry(url, params=None, timeout=10, retries=2):
+    """GET with exponential-backoff retries on timeout/network errors.
+    MLB Stats API occasionally hiccups under load — retrying recovers
+    instead of silently dropping the call (which was today's bug — 0 hits
+    props in the morning pipeline because per-team lineup fetches all
+    timed out simultaneously)."""
+    import time
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            if r.status_code == 200:
+                return r
+        except requests.exceptions.Timeout as e:
+            last_exc = e
+        except Exception as e:
+            last_exc = e
+        if attempt < retries:
+            time.sleep(0.5 * (attempt + 1))  # 0.5s, 1.0s
+    return None
+
+
+def _read_lineup_cache(team_name):
+    """Read persistent projected-lineup cache from jerry_cache (24hr TTL).
+    Survives process boundaries so multiple cron fires don't re-fetch."""
+    if not team_name:
+        return None
+    try:
+        from datetime import datetime, timezone, timedelta
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jerry_cache",
+            params={
+                "cache_key": f"eq.projected_lineup_{team_name.replace(' ', '_')}",
+                "select": "data,fetched_at",
+            },
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            timeout=5,
+        )
+        rows = r.json() if r.status_code == 200 else []
+        if not rows:
+            return None
+        fetched = rows[0].get("fetched_at")
+        if fetched:
+            ft = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+            if (datetime.now(timezone.utc) - ft) > timedelta(hours=24):
+                return None
+        names = (rows[0].get("data") or {}).get("lineup")
+        return names if isinstance(names, list) and names else None
+    except Exception:
+        return None
+
+
+def _write_lineup_cache(team_name, names):
+    if not team_name or not names:
+        return
+    try:
+        from datetime import datetime, timezone
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/jerry_cache",
+            headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
+            params={"on_conflict": "cache_key"},
+            json={
+                "cache_key": f"projected_lineup_{team_name.replace(' ', '_')}",
+                "game_id": f"projected_lineup_{team_name.replace(' ', '_')}",
+                "sport": "MLB",
+                "narrative": f"Projected lineup for {team_name}",
+                "data": {"lineup": names, "team": team_name},
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            },
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
 def fetch_projected_lineup(team_name, season=2026):
     """Pull the team's MOST RECENT confirmed batting order from MLB Stats
     API box score. Used as a fallback when today's lineup hasn't been
     posted yet (props can still surface in the morning with a PROJECTED
     tag, refreshed to CONFIRMED once today's lineup lands).
 
+    Hardened 2026-05-03: retry on MLB API timeouts + persistent Supabase
+    cache (24hr TTL) so morning pipeline doesn't return 0 hits props
+    when the API hiccups (today's bug). Cache lives across runs.
+
     Returns list of full names in batting order (1-9), or [] on failure.
-    Cached per-run.
     """
     if not team_name:
         return []
     if team_name in _PROJECTED_LINEUP_CACHE:
         return _PROJECTED_LINEUP_CACHE[team_name]
+
+    # Try persistent cache first (24hr TTL — yesterday's lineup is fine
+    # for today's projection; gets refreshed once today's confirms)
+    cached = _read_lineup_cache(team_name)
+    if cached:
+        _PROJECTED_LINEUP_CACHE[team_name] = cached
+        return cached
+
+    # Live MLB API path with retries
+    global _TEAMS_LOOKUP_CACHE
     try:
-        # Find team_id
-        ts = requests.get(
-            "https://statsapi.mlb.com/api/v1/teams",
-            params={"sportId": 1},
-            timeout=8,
-        )
-        teams = ts.json().get("teams", []) if ts.status_code == 200 else []
+        if _TEAMS_LOOKUP_CACHE is None:
+            tr = _get_with_retry(
+                "https://statsapi.mlb.com/api/v1/teams",
+                params={"sportId": 1},
+                timeout=10,
+            )
+            _TEAMS_LOOKUP_CACHE = tr.json().get("teams", []) if tr else []
+        teams = _TEAMS_LOOKUP_CACHE
         last = team_name.split()[-1].lower()
         team = next(
             (t for t in teams if last in (t.get("name") or "").lower() or last == (t.get("teamName") or "").lower()),
@@ -216,37 +308,34 @@ def fetch_projected_lineup(team_name, season=2026):
             _PROJECTED_LINEUP_CACHE[team_name] = []
             return []
         team_id = team["id"]
-        # Last 7 days schedule, find most recent Final game for this team
+
         from datetime import datetime, timedelta, timezone
         end = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
         start = end - timedelta(days=7)
-        sr = requests.get(
+        sr = _get_with_retry(
             "https://statsapi.mlb.com/api/v1/schedule",
             params={"sportId": 1, "teamId": team_id, "startDate": start.isoformat(), "endDate": end.isoformat()},
-            timeout=8,
+            timeout=10,
         )
         games = []
-        for d in sr.json().get("dates", []):
+        for d in (sr.json().get("dates", []) if sr else []):
             for g in d.get("games", []):
                 if g.get("status", {}).get("abstractGameState") == "Final":
                     games.append(g)
         if not games:
             _PROJECTED_LINEUP_CACHE[team_name] = []
             return []
-        # Most recent
         games.sort(key=lambda g: g.get("gameDate", ""), reverse=True)
         last_game_pk = games[0].get("gamePk")
-        bx = requests.get(
+        bx = _get_with_retry(
             f"https://statsapi.mlb.com/api/v1/game/{last_game_pk}/boxscore",
-            timeout=10,
+            timeout=12,
         )
-        box = bx.json() if bx.status_code == 200 else {}
-        # Determine which side this team batted on
+        box = bx.json() if bx else {}
         for side in ("home", "away"):
             t = box.get("teams", {}).get(side, {})
             t_name = t.get("team", {}).get("name", "")
             if last in t_name.lower():
-                # `batters` is the batting order array of player IDs
                 batter_ids = t.get("batters", [])[:9]
                 players = t.get("players", {}) or {}
                 names = []
@@ -256,6 +345,8 @@ def fetch_projected_lineup(team_name, season=2026):
                     if fn:
                         names.append(fn)
                 _PROJECTED_LINEUP_CACHE[team_name] = names
+                if names:
+                    _write_lineup_cache(team_name, names)
                 return names
     except Exception:
         pass
