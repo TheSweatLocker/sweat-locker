@@ -247,6 +247,118 @@ def patch_row(row_id, payload):
     return r.status_code in (200, 204)
 
 
+def recompute_nrfi_score(game_id):
+    """Recompute nrfi_score for a row whose umpire just got patched in.
+    The 8am/2pm pipeline computes NRFI without umpire data when the API
+    hasn't published assignments yet — once the watchdog patches umpire,
+    the stored nrfi_score is stale by ±3 (the umpire NRFI-rate adjustment).
+    We re-import calc_nrfi_score from game_context to keep a single source
+    of truth. Best-effort: failures log and leave the existing score.
+    """
+    try:
+        from datetime import date
+        import importlib
+        gc = importlib.import_module("game_context")
+
+        # Fetch the now-current row
+        rr = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_context",
+            params={"game_id": f"eq.{game_id}", "select": "*"},
+            headers=HEADERS,
+            timeout=10,
+        )
+        rows = rr.json() if rr.status_code == 200 else []
+        if not rows:
+            return False
+        ctx = rows[0]
+
+        # Pull pitcher stats from mlb_pitcher_stats
+        def _pitcher(name):
+            if not name:
+                return None
+            try:
+                pr = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats",
+                    params={"player_name": f"eq.{name}", "select": "xera,k_pct,gb_pct,whiff_rate,first_inning_era,first_inning_whip"},
+                    headers=HEADERS, timeout=8,
+                )
+                d = pr.json() if pr.status_code == 200 else []
+                return d[0] if d else None
+            except Exception:
+                return None
+        home_p = _pitcher(ctx.get("home_pitcher"))
+        away_p = _pitcher(ctx.get("away_pitcher"))
+
+        # Umpire stats — look up by name now that it's populated
+        ump_stats = fetch_umpire_stats(ctx.get("umpire"))
+
+        # Team 1st-inning offense
+        def _team_inn1(team):
+            if not team:
+                return None
+            try:
+                tr = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/mlb_team_offense",
+                    params={"team": f"eq.{team}", "select": "inning_1_runs_per_game"},
+                    headers=HEADERS, timeout=8,
+                )
+                d = tr.json() if tr.status_code == 200 else []
+                return d[0].get("inning_1_runs_per_game") if d else None
+            except Exception:
+                return None
+        home_inn1 = _team_inn1(ctx.get("home_team"))
+        away_inn1 = _team_inn1(ctx.get("away_team"))
+
+        # First-inning splits dicts (calc_nrfi_score expects dict per side)
+        home_first = (
+            {"first_inning_era": ctx.get("home_first_inning_era"),
+             "first_inning_whip": ctx.get("home_first_inning_whip")}
+            if ctx.get("home_first_inning_era") is not None else None
+        )
+        away_first = (
+            {"first_inning_era": ctx.get("away_first_inning_era"),
+             "first_inning_whip": ctx.get("away_first_inning_whip")}
+            if ctx.get("away_first_inning_era") is not None else None
+        )
+
+        new_score = gc.calc_nrfi_score(
+            home_pitcher_stats=home_p,
+            away_pitcher_stats=away_p,
+            home_days_rest=ctx.get("home_days_rest"),
+            away_days_rest=ctx.get("away_days_rest"),
+            temperature=ctx.get("temperature"),
+            wind_speed=ctx.get("wind_speed"),
+            wind_direction=ctx.get("wind_direction"),
+            park_run_factor=ctx.get("park_run_factor"),
+            home_wrc_plus=ctx.get("home_wrc_plus"),
+            away_wrc_plus=ctx.get("away_wrc_plus"),
+            home_first_inn=home_first,
+            away_first_inn=away_first,
+            game_month=date.fromisoformat(ctx["game_date"]).month if ctx.get("game_date") else None,
+            umpire_stats=ump_stats,
+            home_inning_1_rpg=home_inn1,
+            away_inning_1_rpg=away_inn1,
+        )
+
+        old = ctx.get("nrfi_score")
+        if new_score is None or new_score == old:
+            return False
+
+        rp = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_context",
+            params={"game_id": f"eq.{game_id}"},
+            headers=PATCH_HEADERS,
+            json={"nrfi_score": new_score},
+            timeout=10,
+        )
+        if rp.status_code in (200, 204):
+            print(f"      🔄 NRFI re-scored: {old} → {new_score}")
+            return True
+    except Exception as e:
+        print(f"      ⚠️ NRFI re-score failed: {e}")
+    return False
+
+
 def run():
     now = et_now()
     print(f"Imminent-games refresh — {now.strftime('%Y-%m-%d %H:%M ET')}")
@@ -324,6 +436,11 @@ def run():
         if payload:
             if patch_row(row["id"], payload):
                 refreshed += 1
+                # If umpire just confirmed, recompute NRFI score so the
+                # umpire's NRFI-rate signal flows into the stored score
+                # (otherwise it stays stale at the 8am/2pm pipeline value).
+                if "umpire" in payload:
+                    recompute_nrfi_score(row["game_id"])
             else:
                 print(f"    ⚠️ patch failed for {row['away_team']} @ {row['home_team']}")
         else:
