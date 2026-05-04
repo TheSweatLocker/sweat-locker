@@ -54,17 +54,25 @@ def strip_accents(s):
 
 
 def get_player_hitting_stats(player_id, season=2026):
-    """Fetch season hitting stats for a single player"""
+    """Fetch season hitting stats for a single player.
+    sportId=1 filters to MLB-only (prevents MiLB rehab/option contamination
+    that was inflating Drew Romo's WSox row to 3 HR/16 PA on 2026-05-04)."""
     try:
         r = requests.get(
             f'https://statsapi.mlb.com/api/v1/people/{player_id}/stats',
-            params={'stats': 'season', 'group': 'hitting', 'season': season},
+            params={'stats': 'season', 'group': 'hitting', 'season': season, 'sportId': 1},
             timeout=10
         )
         splits = r.json().get('stats', [{}])[0].get('splits', [])
         if not splits:
             return None
-        s = splits[0].get('stat', {})
+        # Defensively pick the MLB split if multiple levels are returned
+        mlb_split = next(
+            (sp for sp in splits if sp.get('sport', {}).get('id') == 1
+             or sp.get('league', {}).get('sport', {}).get('id') == 1),
+            splits[0]
+        )
+        s = mlb_split.get('stat', {})
         pa = int(s.get('plateAppearances', 0) or 0)
         hr = int(s.get('homeRuns', 0) or 0)
         ba = float(s.get('avg', 0) or 0)
@@ -97,10 +105,18 @@ def get_team_top_hitters(team_id, team_name, top_n=6):
                 continue
 
             stats = get_player_hitting_stats(pid)
-            if not stats or stats['pa'] < 10:
+            # Bumped PA threshold 10 → 40 (matches HR Watch). Small-sample
+            # callups with 3/16 HR rates were dominating ranking by raw HR%.
+            if not stats or stats['pa'] < 40:
                 continue
 
             hr_rate = stats['hr'] / stats['pa'] if stats['pa'] > 0 else 0
+            # Bayesian-regressed HR rate for sorting (matches HR Watch model).
+            # PRIOR_PA=400 forces meaningful evidence before a hot small sample
+            # can outrank a full-season threat.
+            PRIOR_HR_RATE = 0.03
+            PRIOR_PA      = 400
+            hr_rate_reg = (stats['hr'] + PRIOR_HR_RATE * PRIOR_PA) / (stats['pa'] + PRIOR_PA)
             candidates.append({
                 'name': strip_accents(name),
                 'position': position,
@@ -109,11 +125,12 @@ def get_team_top_hitters(team_id, team_name, top_n=6):
                 'ba': round(stats['ba'], 3),
                 'ops': round(stats['ops'], 3),
                 'hr_rate': round(hr_rate, 4),
+                'hr_rate_regressed': round(hr_rate_reg, 4),
             })
             time.sleep(0.1)  # be polite to the API
 
-        # Sort by HR rate descending, take top N
-        candidates.sort(key=lambda x: -x['hr_rate'])
+        # Sort by regressed HR rate so small samples can't dominate
+        candidates.sort(key=lambda x: -x['hr_rate_regressed'])
         return candidates[:top_n]
     except Exception as e:
         print(f'  {team_name}: error — {e}')

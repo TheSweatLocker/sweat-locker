@@ -111,8 +111,10 @@ def strip_accents(s):
 
 
 def fetch_batter_stats(name):
-    """Fetch season hitting stats from MLB Stats API.
-    Adds slg + iso (process signals more stable than HR/PA in small samples)."""
+    """Fetch season hitting stats + bat side + last-7 game pace from MLB Stats API.
+    Adds slg + iso (process signals more stable than HR/PA in small samples).
+    Adds bat_side (L/R/S) for platoon scoring.
+    Adds last_7_hr / last_7_pa to penalize cold streaks (season totals miss recent slumps)."""
     if not name:
         return None
     try:
@@ -125,20 +127,54 @@ def fetch_batter_stats(name):
         people = r.json().get('people', [])
         if not people:
             return None
-        pid = people[0]['id']
+        person = people[0]
+        pid = person['id']
+        bat_side = person.get('batSide', {}).get('code')  # 'L' / 'R' / 'S'
 
         sr = requests.get(
             f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',
-            params={'stats': 'season', 'group': 'hitting', 'season': 2026},
+            params={'stats': 'season', 'group': 'hitting', 'season': 2026, 'sportId': 1},
             timeout=10
         )
         splits = sr.json().get('stats', [{}])[0].get('splits', [])
         if not splits:
             return None
-        s = splits[0].get('stat', {})
+        # Filter to MLB-only splits (sportId=1 is the param but some responses still
+        # include MiLB rows — defensively pick the MLB split if multiple exist).
+        mlb_split = next(
+            (sp for sp in splits if sp.get('sport', {}).get('id') == 1
+             or sp.get('league', {}).get('sport', {}).get('id') == 1),
+            splits[0]
+        )
+        s = mlb_split.get('stat', {})
         ba = float(s.get('avg', 0) or 0)
         slg = float(s.get('slg', 0) or 0)
         iso = max(0.0, slg - ba)
+
+        # Last-7 games pace — gameLog stats sorted by date desc, take last 7
+        last_7_hr = 0
+        last_7_pa = 0
+        try:
+            gl = requests.get(
+                f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',
+                params={'stats': 'gameLog', 'group': 'hitting', 'season': 2026, 'sportId': 1},
+                timeout=10
+            )
+            gsplits = gl.json().get('stats', [{}])[0].get('splits', [])
+            # Filter to MLB games only — guards against MiLB rehab/option stints
+            mlb_games = [g for g in gsplits
+                         if g.get('sport', {}).get('id') == 1
+                         or g.get('league', {}).get('sport', {}).get('id') == 1]
+            # If response was already MLB-only, mlb_games may be empty due to
+            # missing nested fields; fall back to all splits.
+            recent = (mlb_games or gsplits)[-7:]
+            for g in recent:
+                gs = g.get('stat', {})
+                last_7_hr += int(gs.get('homeRuns', 0) or 0)
+                last_7_pa += int(gs.get('plateAppearances', 0) or 0)
+        except Exception:
+            pass
+
         return {
             'name': name,
             'pa': int(s.get('plateAppearances', 0) or 0),
@@ -146,6 +182,9 @@ def fetch_batter_stats(name):
             'ba': ba,
             'slg': slg,
             'iso': round(iso, 3),
+            'bat_side': bat_side,
+            'last_7_hr': last_7_hr,
+            'last_7_pa': last_7_pa,
         }
     except Exception as e:
         print(f'  Error fetching {name}: {e}')
@@ -153,7 +192,11 @@ def fetch_batter_stats(name):
 
 
 def get_pitcher_contact(pitcher_name):
-    """Fetch pitcher contact profile from mlb_pitcher_stats"""
+    """Fetch pitcher contact profile from mlb_pitcher_stats.
+
+    Now also returns fb_pct (HR risk proxy — flyball pitchers give up
+    more HRs than groundball pitchers for the same xERA) and throws
+    (handedness for platoon scoring)."""
     if not pitcher_name:
         return None
     try:
@@ -161,7 +204,7 @@ def get_pitcher_contact(pitcher_name):
         r = requests.get(
             f'{SUPABASE_URL}/rest/v1/mlb_pitcher_stats'
             f'?player_name=ilike.*{requests.utils.quote(last_name)}*'
-            f'&select=player_name,hard_hit_pct_allowed,barrel_pct'
+            f'&select=player_name,hard_hit_pct_allowed,barrel_pct,fb_pct,gb_pct,throws'
             f'&limit=1',
             headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
         )
@@ -190,14 +233,22 @@ def get_team_fallback(team_name):
 
 
 def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_speed, wind_dir):
-    """Apply the same scoring logic as the app-side HR Watch.
+    """HR Watch scoring with stronger small-sample regression + recency, platoon, FB-rate signals.
 
-    BAYESIAN REGRESSION on HR rate (added 2026-05-02): raw HR/PA over <100
-    PA samples wildly inflates power_score for hot small-sample hitters
-    (e.g. Rushing 7 HR / 52 PA = 13.5% rate → power 67 dwarfed legitimate
-    HR threats like Judge 12/140 at 8.6% → power 43). Regress toward the
-    MLB-avg HR rate (~3%) with PRIOR_PA mass so small samples pull toward
-    league norm, large samples pass through nearly unchanged.
+    BAYESIAN REGRESSION on HR rate (added 2026-05-02, prior strengthened
+    2026-05-04): raw HR/PA over small samples wildly inflates power_score
+    for hot small-sample hitters (e.g. Rushing 7 HR / 52 PA = 13.5%).
+    PRIOR_PA bumped 200 → 400 because Rushing kept ranking #1 even after
+    his sample grew — at 200 prior, mid-sample hot hitters still beat
+    full-season legitimate threats. 400 forces meaningful evidence.
+
+    NEW SIGNALS (2026-05-04):
+      - FB-rate score: flyball pitchers (fb_pct ≥ .40) give up more HRs
+        than groundballers at the same xERA. Direct HR-risk signal.
+      - L7 cold-streak penalty: 0 HR over last 25+ PA = -10. Catches
+        slumps that season totals miss.
+      - Platoon score: opp-handed matchup gets +5, same-handed -3.
+        Switch-hitters always opp-handed (treated as +5).
     """
     # Bumped PA threshold from 15 to 40 — anything under is small-sample noise.
     if not stats or stats['pa'] < 40:
@@ -207,13 +258,11 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
     if raw_hr_rate < 0.02:
         return None
 
-    # Bayesian-regress BOTH HR rate AND ISO. Small samples with extreme HR
-    # totals inflate both stats — must regress both or one becomes a backdoor
-    # for the noise. Without ISO regression, Rushing's 13.5% HR rate also
-    # gives him ~.350 ISO that pumps the alt power signal.
+    # Bayesian-regress BOTH HR rate AND ISO. Stronger PRIOR_PA (400) so
+    # mid-sample hot hitters can't dominate full-season legit threats.
     PRIOR_HR_RATE = 0.03
     PRIOR_ISO     = 0.155
-    PRIOR_PA      = 200
+    PRIOR_PA      = 400
     hr_rate = (stats['hr'] + PRIOR_HR_RATE * PRIOR_PA) / (stats['pa'] + PRIOR_PA)
     raw_iso = stats.get('iso', PRIOR_ISO)
     iso = (raw_iso * stats['pa'] + PRIOR_ISO * PRIOR_PA) / (stats['pa'] + PRIOR_PA)
@@ -226,6 +275,8 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
     opp_score = 15 if opp_xera and opp_xera > 4.5 else (5 if opp_xera and opp_xera > 3.5 else 0)
 
     contact_score = 0
+    fb_score = 0
+    pitcher_throws = None
     if opp_contact:
         hard_hit = float(opp_contact.get('hard_hit_pct_allowed') or 0)
         barrel = float(opp_contact.get('barrel_pct') or 0)
@@ -234,6 +285,22 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
         elif 0 < hard_hit <= 30: contact_score -= 5
         if barrel >= 10: contact_score += 10
         elif barrel >= 7: contact_score += 5
+
+        # FB-rate HR risk — flyball pitchers allow far more HRs.
+        # mlb_pitcher_stats.fb_pct is sometimes stored as fraction (0.35) and
+        # sometimes as percent (35.0) depending on data source path. Normalize.
+        fb_pct = opp_contact.get('fb_pct')
+        if fb_pct is not None:
+            try:
+                fb = float(fb_pct)
+                if fb > 1.0: fb = fb / 100.0  # normalize percent → fraction
+                if fb >= 0.40: fb_score += 8     # extreme flyball pitcher
+                elif fb >= 0.35: fb_score += 4
+                elif 0 < fb <= 0.30: fb_score -= 5  # heavy GB pitcher suppresses HR
+            except:
+                pass
+
+        pitcher_throws = (opp_contact.get('throws') or '').upper() or None
 
     env_score = 0
     # Park HR factor — replaces park_run_factor for HR-specific scoring.
@@ -248,7 +315,29 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
     wind_out = wind_speed > 10 and any(d in (wind_dir or '').upper() for d in ['S', 'SW', 'SE', 'OUT'])
     if wind_out: env_score += 12
 
-    total_score = power_score + hr_bonus + opp_score + contact_score + env_score
+    # Platoon score — switch hitters always count as opp-handed.
+    bat_side = (stats.get('bat_side') or '').upper()
+    platoon_score = 0
+    if bat_side and pitcher_throws:
+        if bat_side == 'S':
+            platoon_score = 5
+        elif bat_side != pitcher_throws:
+            platoon_score = 5
+        else:
+            platoon_score = -3
+
+    # Recency cold-streak penalty — slumps that season totals don't show.
+    # Need a meaningful recent sample (≥25 PA) to call it cold.
+    last_7_pa = int(stats.get('last_7_pa') or 0)
+    last_7_hr = int(stats.get('last_7_hr') or 0)
+    recency_score = 0
+    if last_7_pa >= 25 and last_7_hr == 0:
+        recency_score = -10
+    elif last_7_pa >= 20 and last_7_hr >= 2:
+        recency_score = 5  # heating up
+
+    total_score = (power_score + hr_bonus + opp_score + contact_score
+                   + fb_score + env_score + platoon_score + recency_score)
 
     return {
         'hr_rate': round(raw_hr_rate, 4),  # display raw, scoring uses regressed
@@ -260,7 +349,10 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
         'hr_bonus': hr_bonus,
         'opp_score': opp_score,
         'contact_score': contact_score,
+        'fb_score': fb_score,
         'env_score': env_score,
+        'platoon_score': platoon_score,
+        'recency_score': recency_score,
         'wind_out': wind_out,
     }
 

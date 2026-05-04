@@ -1,8 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Linking, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, AppState, KeyboardAvoidingView, Linking, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Circle, Defs, G, LinearGradient, Path, Rect, Stop, Svg, Line as SvgLine, Text as SvgText } from 'react-native-svg';
 
 const ODDS_API_KEY = process.env.EXPO_PUBLIC_ODDS_API_KEY;
@@ -1984,6 +1984,7 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [propOfDayLoading, setPropOfDayLoading] = useState(false);
   const [hrWatch, setHrWatch] = useState<any[]>([]);
   const [hrWatchLoading, setHrWatchLoading] = useState(false);
+  const [hrWatchOpen, setHrWatchOpen] = useState(false);
   const [expandedPropJerry, setExpandedPropJerry] = useState(null);
   const [roiChartTab, setRoiChartTab] = useState('cumulative');
   const [roiTimeRange, setRoiTimeRange] = useState('all');
@@ -2098,6 +2099,22 @@ useEffect(() => {
   fetchDailyBestBet();
   fetchSweatCard();
 }, []);
+// Refetch MLB tab data when app foregrounds — pipeline watchdog updates DB
+// every 30 min as lineups confirm + umpires land. Throttled to 5 min so a
+// quick tab-out + tab-back doesn't hammer Supabase.
+const lastMLBRefreshAt = useRef(Date.now());
+useEffect(() => {
+  const sub = AppState.addEventListener('change', (next) => {
+    if (next !== 'active') return;
+    if (Date.now() - lastMLBRefreshAt.current < 5 * 60 * 1000) return;
+    lastMLBRefreshAt.current = Date.now();
+    fetchSweatCard();
+    fetchDailyBestBet();
+    fetchDawgOfDay();
+    if (propJerrySport === 'MLB') fetchPipelineMLBProps();
+  });
+  return () => sub.remove();
+}, [propJerrySport]);
 useEffect(() => {
   if(bartData.length) {
     fetchNBATeamContext();
@@ -9016,100 +9033,66 @@ setJerryHistory(prev => {
   return new Date(mg.commence_time) > new Date();
 }).length > 0 && (
   <View style={{backgroundColor:'rgba(255,77,109,0.06)',borderRadius:14,padding:14,marginBottom:14,borderWidth:1,borderColor:'rgba(255,77,109,0.25)'}}>
-    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-      <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:13}}>💣 HR WATCH</Text>
-      <Text style={{color:'#4a6070',fontSize:10}}>Power + Pitcher + Environment</Text>
-    </View>
-    {hrWatch.filter((h:any) => {
-      const mg = gamesData.find((g:any) => g.home_team === h.homeTeam);
-      return !mg || new Date(mg.commence_time) > new Date();
-    }).map((h: any, i: number) => (
-      <View key={i} style={{paddingVertical:10,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
-        {/* Top row — player name + HR/PA badge */}
-        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
-          <View style={{flexDirection:'row',alignItems:'center',gap:6,flex:1,marginRight:10}}>
-            <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}} numberOfLines={1}>{h.player}</Text>
-            {h.isFallback && <Text style={{color:'#7a92a8',fontSize:9,fontStyle:'italic'}}>est.</Text>}
-          </View>
-          <View style={{backgroundColor:'rgba(255,77,109,0.15)',borderRadius:6,paddingHorizontal:7,paddingVertical:2}}>
-            <Text style={{color:'#ff4d6d',fontSize:10,fontWeight:'800'}}>{h.hr} HR / {h.pa} PA</Text>
-          </View>
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={() => setHrWatchOpen(o => !o)}
+      style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}
+    >
+      <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+        <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:13}}>💣 HR WATCH</Text>
+        <View style={{backgroundColor:'rgba(255,77,109,0.15)',borderRadius:5,paddingHorizontal:6,paddingVertical:1}}>
+          <Text style={{color:'#ff4d6d',fontSize:10,fontWeight:'700'}}>{hrWatch.filter((h:any)=>{const mg=gamesData.find((g:any)=>g.home_team===h.homeTeam);return !mg||new Date(mg.commence_time)>new Date();}).length}</Text>
         </View>
-        {/* Context line — matchup + venue + temp */}
-        <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6}} numberOfLines={1}>
-          {h.game} • vs {h.oppPitcher?.split(' ').pop() || 'TBD'} • {h.temp}°F
-        </Text>
-        {/* Badges row — only show non-empty; wraps cleanly on its own line */}
-        {(h.parkFactor >= 105 || h.windOut || (h.oppXera && h.oppXera > 4.0)) && (
-          <View style={{flexDirection:'row',gap:5,flexWrap:'wrap'}}>
-            {h.parkFactor >= 105 && (
-              <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
-                <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700'}}>🏟 Park {h.parkFactor}</Text>
+      </View>
+      <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+        <Text style={{color:'#4a6070',fontSize:10}}>Power + Pitcher + Env</Text>
+        <Text style={{color:'#7a92a8',fontSize:13}}>{hrWatchOpen ? '▾' : '▸'}</Text>
+      </View>
+    </TouchableOpacity>
+    {hrWatchOpen && (
+      <View style={{marginTop:10}}>
+        {hrWatch.filter((h:any) => {
+          const mg = gamesData.find((g:any) => g.home_team === h.homeTeam);
+          return !mg || new Date(mg.commence_time) > new Date();
+        }).map((h: any, i: number) => (
+          <View key={i} style={{paddingVertical:10,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
+            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4,gap:8}}>
+              <View style={{flexDirection:'row',alignItems:'center',gap:6,flex:1,flexWrap:'wrap'}}>
+                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{h.player}</Text>
+                {h.isFallback && <Text style={{color:'#7a92a8',fontSize:9,fontStyle:'italic'}}>est.</Text>}
               </View>
-            )}
-            {h.windOut && (
-              <View style={{backgroundColor:'rgba(0,229,160,0.12)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
-                <Text style={{color:'#00e5a0',fontSize:10,fontWeight:'700'}}>💨 {h.windSpeed}mph OUT</Text>
+              <View style={{backgroundColor:'rgba(255,77,109,0.15)',borderRadius:6,paddingHorizontal:7,paddingVertical:2}}>
+                <Text style={{color:'#ff4d6d',fontSize:10,fontWeight:'800'}}>{h.hr} HR / {h.pa} PA</Text>
               </View>
-            )}
-            {h.oppXera && h.oppXera > 4.0 && (
-              <View style={{backgroundColor:'rgba(0,153,255,0.12)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
-                <Text style={{color:'#0099ff',fontSize:10,fontWeight:'700'}}>⚾ {h.oppXera.toFixed(2)} xERA</Text>
+            </View>
+            <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6,lineHeight:16}}>
+              {h.game} • vs {h.oppPitcher?.split(' ').pop() || 'TBD'} • {h.temp}°F
+            </Text>
+            {(h.parkFactor >= 105 || h.windOut || (h.oppXera && h.oppXera > 4.0)) && (
+              <View style={{flexDirection:'row',gap:5,flexWrap:'wrap'}}>
+                {h.parkFactor >= 105 && (
+                  <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
+                    <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700'}}>🏟 Park {h.parkFactor}</Text>
+                  </View>
+                )}
+                {h.windOut && (
+                  <View style={{backgroundColor:'rgba(0,229,160,0.12)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
+                    <Text style={{color:'#00e5a0',fontSize:10,fontWeight:'700'}}>💨 {h.windSpeed}mph OUT</Text>
+                  </View>
+                )}
+                {h.oppXera && h.oppXera > 4.0 && (
+                  <View style={{backgroundColor:'rgba(0,153,255,0.12)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
+                    <Text style={{color:'#0099ff',fontSize:10,fontWeight:'700'}}>⚾ {h.oppXera.toFixed(2)} xERA</Text>
+                  </View>
+                )}
               </View>
             )}
           </View>
-        )}
+        ))}
       </View>
-    ))}
+    )}
   </View>
 )}
-{gamesSport==='MLB' && (()=>{
-  const now = new Date();
-  // Dedupe by game_id (mlbGameContext keyed by both home and away team, so each game appears twice)
-  const seenGames = new Set<string>();
-  const mlLeans = Object.values(mlbGameContext as Record<string, any>)
-    .filter((ctx:any) => {
-      if(!ctx.game_id || seenGames.has(ctx.game_id)) return false;
-      if(!ctx.spread_delta || Math.abs(parseFloat(ctx.spread_delta)) < 3.0) return false;
-      const mg = gamesData.find((g:any) => g.home_team === ctx.home_team || g.away_team === ctx.away_team);
-      if(!mg) return false;
-      if(new Date(mg.commence_time) <= now) return false;
-      seenGames.add(ctx.game_id);
-      return true;
-    })
-    .sort((a:any, b:any) => Math.abs(parseFloat(b.spread_delta)) - Math.abs(parseFloat(a.spread_delta)))
-    .slice(0, 5);
-  if(mlLeans.length === 0) return null;
-  return (
-    <View style={{backgroundColor:'rgba(0,229,160,0.06)',borderRadius:14,padding:14,marginBottom:14,borderWidth:1,borderColor:'rgba(0,229,160,0.25)'}}>
-      <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-        <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:13}}>💰 ML LEANS</Text>
-        <Text style={{color:'#4a6070',fontSize:10}}>Model disagrees with market</Text>
-      </View>
-      {mlLeans.map((ctx:any, i:number) => {
-        const delta = parseFloat(ctx.spread_delta);
-        const absDelta = Math.abs(delta);
-        const favTeam = delta > 0 ? ctx.home_team : ctx.away_team;
-        const tierColor = absDelta >= 5 ? '#00e5a0' : absDelta >= 4 ? '#00e5a0' : '#4a9eff';
-        const tierLabel = absDelta >= 5 ? 'ELITE' : absDelta >= 4 ? 'PRIME' : 'LEAN';
-        return (
-          <View key={i} style={{flexDirection:'row',alignItems:'center',paddingVertical:8,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
-            <View style={{flex:1}}>
-              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{favTeam.split(' ').pop()} ML</Text>
-              <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>{ctx.away_team.split(' ').pop()} @ {ctx.home_team.split(' ').pop()}</Text>
-            </View>
-            <View style={{alignItems:'flex-end',gap:3}}>
-              <View style={{backgroundColor:tierColor+'20',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:tierColor+'44'}}>
-                <Text style={{color:tierColor,fontWeight:'800',fontSize:10}}>{tierLabel} {delta > 0 ? '+' : ''}{delta.toFixed(1)}</Text>
-              </View>
-              <Text style={{color:'#4a6070',fontSize:9}}>vs market</Text>
-            </View>
-          </View>
-        );
-      })}
-    </View>
-  );
-})()}
             {gamesLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:'#7a92a8',marginTop:12}}>Loading games...</Text></View>):
             gamesData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:40}}>{SPORT_EMOJI[gamesSport]}</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No {gamesSport} games {gamesDay}.{'\n'}Try a different sport or day.</Text></View>):(
               <>
