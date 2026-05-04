@@ -9,6 +9,8 @@ on:
 jobs:
   run-mlb-pipeline:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required for the auto-commit step to push content/*.md
 
     steps:
       - name: Checkout repo
@@ -235,13 +237,26 @@ jobs:
           cd mlb_pipeline
           python generate_sweat_card.py
 
-      # Commit the generated content card so Andy can pull it locally
+      # Commit the generated content card so Andy can pull it locally.
+      # Stripped the `|| true` chain that was hiding failures for 4 days
+      # (5/1 - 5/4 ran with no auto-commit and no error surface). Now:
+      #   - git add only fails loud if content/ doesn't exist (it should)
+      #   - empty diff is the only path that exits early without a commit
+      #   - rebase before push handles race with manual local commits
       - name: Commit content card
         if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'
         run: |
           cd ${{ github.workspace }}
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
-          git add content/*.md || true
-          git diff --cached --quiet || git commit -m "Auto-generated tonight's card $(date +%Y-%m-%d)" || true
-          git push || true
+          git add content/*.md
+          if git diff --cached --quiet; then
+            echo "No content card changes to commit"
+            exit 0
+          fi
+          git commit -m "Auto-generated tonight's card $(date +%Y-%m-%d)"
+          # Rebase against the remote in case a manual push landed between
+          # this job's checkout and now. Surface conflicts loudly instead
+          # of swallowing them.
+          git pull --rebase origin main
+          git push

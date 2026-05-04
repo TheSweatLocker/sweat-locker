@@ -277,7 +277,7 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(md)
     print(f"\n✅ Card written to: {out_path}")
-    print(f"\n--- Preview ---\n{md[:1500]}")
+    print(f"\n--- Full card ---\n{md}")
 
 
 if __name__ == "__main__":
