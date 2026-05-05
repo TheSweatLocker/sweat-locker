@@ -8539,7 +8539,7 @@ setJerryHistory(prev => {
 {sweatCard && !sweatCard.noCard && (
   <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:'#5cb85c',marginBottom:16,shadowColor:'#5cb85c',shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-      <Text style={{color:'#5cb85c',fontWeight:'800',fontSize:13,letterSpacing:1}}>🔥 TONIGHT'S SWEAT CARD</Text>
+      <Text style={{color:'#5cb85c',fontWeight:'800',fontSize:13,letterSpacing:1}}>🔥 TODAY'S SWEAT CARD</Text>
       <Text style={{color:'#7a92a8',fontSize:10}}>{sweatCard.slate_date}</Text>
     </View>
 
