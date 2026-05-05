@@ -1542,6 +1542,21 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
         except (TypeError, ValueError):
             pass
 
+    # Pitcher historical NRFI rate (added 2026-05-05). Each starter with
+    # >=10 starts contributes ±3, capped. Sequencing + lineup-context
+    # independence that 1st-inning ERA misses. update_pitcher_nrfi_rates()
+    # populates mlb_pitcher_stats.nrfi_rate weekly.
+    for pstats in (home_pitcher_stats, away_pitcher_stats):
+        if not pstats:
+            continue
+        nrfi_rate = pstats.get('nrfi_rate')
+        if nrfi_rate is None:
+            continue
+        try:
+            v2_adj += max(-3, min(3, round((float(nrfi_rate) - 0.50) * 15)))
+        except (TypeError, ValueError):
+            pass
+
     provisional = base_score + v2_adj
     base_in_prime = 90 <= base_score <= 94
     provisional_in_prime = 90 <= provisional <= 94
