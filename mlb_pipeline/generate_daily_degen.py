@@ -116,6 +116,7 @@ def cohort_key_for(candidate, raw_score=None, sport='mlb'):
     if ctype == 'ML':
         # raw_score for ML candidates is the confluence_net
         net = raw_score or 0
+        if net >= 6:  return 'confluence_extreme_ge6'  # rare elite stack
         if net >= 4:  return 'confluence_prime_ge4'
         if net >= 2:  return 'confluence_strong_2_3'
         if net == 1:  return 'confluence_lean_1'
@@ -164,6 +165,14 @@ def extract_leg_candidates(games, props):
             prop_label = f"Over {line} Strikeouts"
         elif ptype == 'ks_under':
             prop_label = f"Under {line} Strikeouts"
+        elif ptype == 'outs_over':
+            prop_label = f"Over {line} Outs Recorded"
+        elif ptype == 'outs_under':
+            prop_label = f"Under {line} Outs Recorded"
+        elif ptype == 'er_over':
+            prop_label = f"Over {line} Earned Runs"
+        elif ptype == 'er_under':
+            prop_label = f"Under {line} Earned Runs"
         else:
             prop_label = f"{ptype} {line}"  # fallback for unknown types
         candidates.append({

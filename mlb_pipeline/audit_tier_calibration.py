@@ -117,6 +117,12 @@ def classify_confluence_tier(net):
     if net is None:
         return None
     n = int(net)
+    # Track the rare extreme-confluence band separately. The +4-5 PRIME
+    # cohort hits 27% live (fade tier), but +6+ may behave differently
+    # — first-ever +7 (Yankees 5/4) cashed by 10 runs in a 12-1 blowout,
+    # n=1. Splitting so the cohort can calibrate independently.
+    if n >= 6:
+        return "confluence_extreme_ge6"
     if n >= 4:
         return "confluence_prime_ge4"
     if n >= 2:
@@ -342,8 +348,8 @@ def main():
     all_tiers = {
         "nrfi_volatile_95plus", "nrfi_prime_90_94", "nrfi_dead_80_89",
         "nrfi_lean_70_79", "nrfi_60_69", "nrfi_neutral_50_59", "yrfi_lean_le40",
-        "confluence_prime_ge4", "confluence_strong_2_3", "confluence_lean_1",
-        "confluence_zero", "confluence_negative",
+        "confluence_extreme_ge6", "confluence_prime_ge4", "confluence_strong_2_3",
+        "confluence_lean_1", "confluence_zero", "confluence_negative",
         "spread_delta_ge2", "spread_delta_1_5_2", "spread_delta_1_1_5", "spread_delta_lt1",
         "autofade_chalk_high_mag", "autofade_chalk", "autofade_dog", "autofade_dog_high_conv",
         "recency_normal", "recency_extreme",

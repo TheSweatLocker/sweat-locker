@@ -37,6 +37,13 @@ HITS_CUTOFF = 55    # Hits Over — floor still profitable
 K_UNDER_CUTOFF = 65       # Ks Under — fading aspirational K lines
 HITS_UNDER_CUTOFF = 70    # Hits Under (0-fer) — needs strong evidence
 
+# New 2026-05-05 — Total Outs and Earned Runs props. Floor at 65 until we
+# have audit data. Recalibrate once n=20+ resolved per cohort.
+OUTS_CUTOFF = 65
+OUTS_UNDER_CUTOFF = 70
+ER_CUTOFF = 65
+ER_UNDER_CUTOFF = 70
+
 
 def _f(v):
     try: return float(v)
@@ -97,6 +104,13 @@ def tier_for(conviction, prop_type=None):
         # 0-fer is a long shot — only PRIME/STRONG, no LEAN noise
         if conviction >= 85: return 'PRIME'
         if conviction >= 75: return 'STRONG'
+        return 'SKIP'
+    if prop_type in ('outs_over', 'outs_under', 'er_over', 'er_under'):
+        # New 2026-05-05 — no audit data yet, mirror Ks tier thresholds
+        # since outs/ER are similarly pitcher-driven props. Recalibrate
+        # once n=20+ resolved props per cohort.
+        if conviction >= 82: return 'PRIME'
+        if conviction >= 70: return 'STRONG'
         return 'SKIP'
     # Default / hits_over
     if conviction >= 82: return 'PRIME'
@@ -667,6 +681,373 @@ def score_pitcher_ks_under(g, side):
     }
 
 
+def score_pitcher_outs(g, side):
+    """Score a starter's Total Outs Over prop. side = 'home' or 'away'.
+    Markets typically post 13.5 / 14.5 / 15.5 / 16.5 / 17.5 outs. We score
+    Over when the pitcher profile says he goes deep (low xERA, durable last
+    outing, weak opp lineup, manager won't quick-hook)."""
+    pitcher = g.get(f'{side}_pitcher')
+    xera = _f(g.get(f'{side}_sp_xera'))
+    if not pitcher or xera is None:
+        return None
+    last_ip = _f(g.get(f'{side}_last_ip'))
+    last_pitches = _f(g.get(f'{side}_last_pitch_count'))
+    # Opener filter — relievers don't go 14+ outs
+    if last_ip is not None and last_ip <= 1.5 and (last_pitches is None or last_pitches <= 35):
+        return None
+
+    opp_side = 'away' if side == 'home' else 'home'
+    opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
+    own_bp_era = _f(g.get(f'{side}_bullpen_era'))
+    park_run = _f(g.get('park_run_factor')) or 100
+    days_rest = _f(g.get(f'{side}_days_rest'))
+    l3_era = _f(g.get(f'{side}_pitcher_last_3_era'))
+    first_inn_era = _f(g.get(f'{side}_first_inning_era'))
+
+    signals = {}
+    conviction = 35  # baseline — Over outs needs decent quality to hit
+
+    # xERA — primary durability signal
+    if xera <= 3.0:
+        conviction += 18
+        signals['xera'] = f'Elite xERA {xera:.2f} — goes deep'
+    elif xera <= 3.75:
+        conviction += 10
+        signals['xera'] = f'Above-avg xERA {xera:.2f}'
+    elif xera >= 5.0:
+        conviction -= 14
+        signals['xera_high'] = f'xERA {xera:.2f} — likely short outing'
+
+    # Last outing pitch count + IP — recent durability proof
+    if last_ip is not None and last_ip >= 6.0 and (last_pitches or 0) >= 90:
+        conviction += 10
+        signals['durable'] = f'Last outing: {last_pitches:.0f}p / {last_ip:.1f} IP — stretched out'
+    elif last_ip is not None and last_ip <= 4.5:
+        conviction -= 8
+        signals['short_last'] = f'Last outing: {last_ip:.1f} IP — short leash'
+
+    # L3 form
+    if l3_era is not None:
+        if l3_era <= 2.5:
+            conviction += 8
+            signals['l3'] = f'L3 ERA {l3_era:.2f} — locked in'
+        elif l3_era >= 6.0:
+            conviction -= 10
+            signals['l3_bad'] = f'L3 ERA {l3_era:.2f} — short hook risk'
+
+    # Opp offense quality — strong lineups force quicker exits
+    if opp_wrc >= 115:
+        conviction -= 12
+        signals['opp_wrc'] = f'Opp wRC+ {opp_wrc:.0f} — grinds, forces high pitch count'
+    elif opp_wrc <= 90:
+        conviction += 8
+        signals['opp_weak'] = f'Opp wRC+ {opp_wrc:.0f} — soft lineup, longer outing'
+
+    # Bullpen workload — gassed pen = manager keeps starter in (good for Over outs)
+    own_bp_used = _f(g.get(f'{side}_bp_relievers_3d')) or 0
+    if own_bp_used >= 11:
+        conviction += 7
+        signals['pen_gassed'] = f'Own pen used {int(own_bp_used)} relievers L3d — manager rides starter'
+
+    # Park — high-run parks force more pitches
+    if park_run >= 110:
+        conviction -= 5
+    elif park_run <= 92:
+        conviction += 4
+
+    # Days rest — extra rest helps depth
+    if days_rest is not None and days_rest >= 6:
+        conviction += 3
+
+    # 1st-inning trouble bleeds into pitch count
+    if first_inn_era is not None and first_inn_era >= 5.0:
+        conviction -= 7
+        signals['slow_start'] = f'1st inn ERA {first_inn_era:.1f} — burns pitches early'
+
+    conviction = max(0, min(100, conviction))
+
+    # Suggested line: most starters target 5-6 IP = 15-18 outs.
+    # Elite + healthy + weak opp → 17.5; mediocre → 14.5.
+    if xera <= 3.0 and last_ip is not None and last_ip >= 6.0:
+        suggested_line = 17.5
+    elif xera <= 3.75:
+        suggested_line = 16.5
+    elif xera <= 4.5:
+        suggested_line = 15.5
+    else:
+        suggested_line = 14.5
+
+    return {
+        'conviction': conviction,
+        'signals': signals,
+        'prop_line': suggested_line,
+    }
+
+
+def score_pitcher_outs_under(g, side):
+    """Score a starter's Total Outs Under prop — fade durability. Hits when
+    the pitcher is shaky, opp lineup is strong, or the manager has a quick
+    hook (gassed bullpen rested). Mirrors score_pitcher_outs in inputs."""
+    pitcher = g.get(f'{side}_pitcher')
+    xera = _f(g.get(f'{side}_sp_xera'))
+    if not pitcher or xera is None:
+        return None
+    last_ip = _f(g.get(f'{side}_last_ip'))
+    last_pitches = _f(g.get(f'{side}_last_pitch_count'))
+    # Openers ARE candidates for Under (they only go 1-3 IP) — don't skip them here
+    opp_side = 'away' if side == 'home' else 'home'
+    opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
+    park_run = _f(g.get('park_run_factor')) or 100
+    l3_era = _f(g.get(f'{side}_pitcher_last_3_era'))
+    first_inn_era = _f(g.get(f'{side}_first_inning_era'))
+
+    signals = {}
+    conviction = 30
+
+    # Mark obvious openers — should hit Under almost trivially
+    if last_ip is not None and last_ip <= 2.0 and (last_pitches or 0) <= 40:
+        conviction += 35
+        signals['opener'] = f'Last outing {last_ip:.1f} IP / {last_pitches or 0:.0f}p — opener'
+
+    # xERA — bad pitchers go shorter
+    if xera >= 5.0:
+        conviction += 16
+        signals['xera_high'] = f'xERA {xera:.2f} — short outing risk'
+    elif xera >= 4.25:
+        conviction += 8
+    elif xera <= 3.0:
+        conviction -= 12
+
+    # Recent struggles
+    if l3_era is not None and l3_era >= 6.0:
+        conviction += 12
+        signals['l3_bad'] = f'L3 ERA {l3_era:.2f} — getting hooked early'
+    elif l3_era is not None and l3_era <= 2.5:
+        conviction -= 8
+
+    # 1st-inning trouble
+    if first_inn_era is not None and first_inn_era >= 5.0:
+        conviction += 10
+        signals['slow_start'] = f'1st inn ERA {first_inn_era:.1f} — burns pitches'
+
+    # Strong opp lineup forces quick exit
+    if opp_wrc >= 115:
+        conviction += 12
+        signals['opp_wrc'] = f'Opp wRC+ {opp_wrc:.0f} — grinds early'
+    elif opp_wrc <= 88:
+        conviction -= 10
+
+    # High-run park
+    if park_run >= 110:
+        conviction += 6
+        signals['park'] = f'Park factor {park_run:.0f} — runs come, pen called'
+
+    # Last outing short — momentum signal
+    if last_ip is not None and 2.0 < last_ip <= 4.5:
+        conviction += 8
+        signals['short_last'] = f'Last outing {last_ip:.1f} IP — fragile'
+
+    conviction = max(0, min(100, conviction))
+
+    # Suggested line: market rarely posts under 12.5; pick the line where
+    # the pitcher's projection is most likely to be on the wrong side.
+    if last_ip is not None and last_ip <= 2.0:
+        suggested_line = 12.5  # opener - very low line
+    elif xera >= 5.0:
+        suggested_line = 14.5
+    else:
+        suggested_line = 15.5
+
+    return {
+        'conviction': conviction,
+        'signals': signals,
+        'prop_line': suggested_line,
+    }
+
+
+def score_pitcher_er(g, side):
+    """Score a starter's Earned Runs Allowed Over prop. Most lines: 1.5-3.5.
+    Hits when the pitcher gives up runs (bad xERA, soft contact profile,
+    HR-friendly env, strong opp). Common Over angle for starters with
+    elevated xERA in hitter parks."""
+    pitcher = g.get(f'{side}_pitcher')
+    xera = _f(g.get(f'{side}_sp_xera'))
+    if not pitcher or xera is None:
+        return None
+    last_ip = _f(g.get(f'{side}_last_ip'))
+    last_pitches = _f(g.get(f'{side}_last_pitch_count'))
+    # Openers don't pitch enough innings to give up 2.5+ ER cleanly — skip
+    if last_ip is not None and last_ip <= 1.5 and (last_pitches or 0) <= 35:
+        return None
+
+    opp_side = 'away' if side == 'home' else 'home'
+    opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
+    park_run = _f(g.get('park_run_factor')) or 100
+    park_hr = _f(g.get('park_hr_factor')) or 100
+    temp = _f(g.get('temperature')) or 70
+    wind_speed = _f(g.get('wind_speed')) or 0
+    wind_dir = (g.get('wind_direction') or '').upper()
+    framing = _f(g.get(f'{side}_catcher_framing'))
+    l3_era = _f(g.get(f'{side}_pitcher_last_3_era'))
+    first_inn_era = _f(g.get(f'{side}_first_inning_era'))
+
+    signals = {}
+    conviction = 30
+
+    # xERA is the headline signal for ER
+    if xera >= 5.0:
+        conviction += 22
+        signals['xera_high'] = f'xERA {xera:.2f} — bleeds runs'
+    elif xera >= 4.25:
+        conviction += 12
+        signals['xera_avg'] = f'xERA {xera:.2f} — above avg run risk'
+    elif xera <= 3.0:
+        conviction -= 18
+
+    # L3 form
+    if l3_era is not None:
+        if l3_era >= 6.0:
+            conviction += 14
+            signals['l3'] = f'L3 ERA {l3_era:.2f} — getting tagged'
+        elif l3_era <= 2.5:
+            conviction -= 12
+
+    # 1st-inning ERA — ER often happens early
+    if first_inn_era is not None and first_inn_era >= 5.0:
+        conviction += 8
+        signals['1st_inn'] = f'1st inn ERA {first_inn_era:.1f} — opens shaky'
+
+    # Opp lineup quality
+    if opp_wrc >= 115:
+        conviction += 14
+        signals['opp_offense'] = f'Opp wRC+ {opp_wrc:.0f} — top tier offense'
+    elif opp_wrc <= 88:
+        conviction -= 10
+
+    # Park run factor
+    if park_run >= 110:
+        conviction += 8
+        signals['park'] = f'Park factor {park_run:.0f} — hitter friendly'
+    elif park_run <= 92:
+        conviction -= 6
+
+    # Park HR + warm wind out — combined HR risk lifts ER
+    wind_out = wind_speed > 10 and any(d in wind_dir for d in ('S', 'SW', 'SE', 'OUT'))
+    if park_hr >= 108 and (temp >= 75 or wind_out):
+        conviction += 8
+        signals['env'] = f'Park HR {park_hr:.0f}, {int(temp)}°F{" / wind out" if wind_out else ""} — HR-friendly'
+
+    # Catcher framing — bad framing = more pitches in zone, more contact
+    if framing is not None and framing <= -2:
+        conviction += 6
+        signals['framing_bad'] = f'Catcher {framing:.1f} framing — squeezed strikes'
+    elif framing is not None and framing >= 2:
+        conviction -= 5
+
+    conviction = max(0, min(100, conviction))
+
+    # Suggested line: most common is 2.5. Use 1.5 only for elite arms (rare
+    # — book usually doesn't price a 1.5 ER Over with edge for the bettor).
+    if xera <= 3.0:
+        suggested_line = 1.5
+    elif xera <= 4.0:
+        suggested_line = 2.5
+    else:
+        suggested_line = 2.5  # most-common market line — keep simple
+
+    return {
+        'conviction': conviction,
+        'signals': signals,
+        'prop_line': suggested_line,
+    }
+
+
+def score_pitcher_er_under(g, side):
+    """Score a starter's Earned Runs Allowed Under prop — fade run scoring.
+    Cleanest setups: ace pitcher (low xERA), pitcher park, weak opp lineup,
+    cold weather + wind in. Common 2.5 ER Under PRIME play vs offensively
+    weak teams."""
+    pitcher = g.get(f'{side}_pitcher')
+    xera = _f(g.get(f'{side}_sp_xera'))
+    if not pitcher or xera is None:
+        return None
+    last_ip = _f(g.get(f'{side}_last_ip'))
+    last_pitches = _f(g.get(f'{side}_last_pitch_count'))
+    if last_ip is not None and last_ip <= 1.5 and (last_pitches or 0) <= 35:
+        return None  # opener
+
+    opp_side = 'away' if side == 'home' else 'home'
+    opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
+    park_run = _f(g.get('park_run_factor')) or 100
+    park_hr = _f(g.get('park_hr_factor')) or 100
+    temp = _f(g.get('temperature')) or 70
+    wind_speed = _f(g.get('wind_speed')) or 0
+    wind_dir = (g.get('wind_direction') or '').upper()
+    framing = _f(g.get(f'{side}_catcher_framing'))
+    l3_era = _f(g.get(f'{side}_pitcher_last_3_era'))
+
+    signals = {}
+    conviction = 30
+
+    # xERA — primary signal
+    if xera <= 2.5:
+        conviction += 25
+        signals['xera_elite'] = f'Elite xERA {xera:.2f} — ace'
+    elif xera <= 3.0:
+        conviction += 18
+        signals['xera'] = f'Strong xERA {xera:.2f}'
+    elif xera <= 3.5:
+        conviction += 10
+    elif xera >= 4.5:
+        conviction -= 15
+
+    # L3 form
+    if l3_era is not None:
+        if l3_era <= 2.0:
+            conviction += 10
+            signals['l3_hot'] = f'L3 ERA {l3_era:.2f} — locked in'
+        elif l3_era >= 5.5:
+            conviction -= 10
+
+    # Opp lineup weakness
+    if opp_wrc <= 90:
+        conviction += 14
+        signals['opp_weak'] = f'Opp wRC+ {opp_wrc:.0f} — soft lineup'
+    elif opp_wrc >= 115:
+        conviction -= 12
+
+    # Pitcher park
+    if park_run <= 95:
+        conviction += 8
+        signals['park'] = f'Park factor {park_run:.0f} — pitcher friendly'
+    elif park_run >= 108:
+        conviction -= 8
+
+    # Cold + wind in suppresses runs
+    wind_in = wind_speed > 8 and any(d in wind_dir for d in ('N', 'NW', 'NE', 'IN'))
+    if park_hr <= 95 and (temp <= 60 or wind_in):
+        conviction += 8
+        signals['env'] = f'Park HR {park_hr:.0f}, {int(temp)}°F{" / wind in" if wind_in else ""} — run suppressing'
+
+    # Catcher framing helps zone control = fewer balls = less traffic
+    if framing is not None and framing >= 2:
+        conviction += 6
+        signals['framing'] = f'Catcher +{framing:.1f} framing — expands zone'
+
+    conviction = max(0, min(100, conviction))
+
+    # Most common Under line is 2.5
+    suggested_line = 2.5
+    if xera <= 2.5:
+        suggested_line = 1.5  # only for true aces
+
+    return {
+        'conviction': conviction,
+        'signals': signals,
+        'prop_line': suggested_line,
+    }
+
+
 def score_batter_hits(g, batter, side, lineup_position=None):
     """Score a batter's Hits Over 0.5 prop. side = 'home' or 'away' (batter's side).
     lineup_position: 1-indexed spot in the confirmed lineup (1-9)."""
@@ -1053,6 +1434,76 @@ def run():
                     'conviction': under['conviction'],
                     'tier': tier_for(under['conviction'], 'ks_under'),
                     'signals': under['signals'],
+                    'lineup_state': 'confirmed',
+                })
+
+            # Total Outs O/U (new 2026-05-05) — score both sides, only the
+            # winner clears cutoff. Same opener-skip applies to Over but not
+            # Under (openers naturally bust Over and confirm Under).
+            outs_over = score_pitcher_outs(g, side)
+            if outs_over and outs_over['conviction'] >= OUTS_CUTOFF:
+                all_props.append({
+                    'game_date': game_date,
+                    'game_id': game_id,
+                    'player_name': pitcher,
+                    'player_team': g.get(f'{side}_team'),
+                    'matchup': matchup,
+                    'prop_type': 'outs_over',
+                    'prop_line': outs_over['prop_line'],
+                    'direction': 'over',
+                    'conviction': outs_over['conviction'],
+                    'tier': tier_for(outs_over['conviction'], 'outs_over'),
+                    'signals': outs_over['signals'],
+                    'lineup_state': 'confirmed',
+                })
+            outs_under = score_pitcher_outs_under(g, side)
+            if outs_under and outs_under['conviction'] >= OUTS_UNDER_CUTOFF:
+                all_props.append({
+                    'game_date': game_date,
+                    'game_id': game_id,
+                    'player_name': pitcher,
+                    'player_team': g.get(f'{side}_team'),
+                    'matchup': matchup,
+                    'prop_type': 'outs_under',
+                    'prop_line': outs_under['prop_line'],
+                    'direction': 'under',
+                    'conviction': outs_under['conviction'],
+                    'tier': tier_for(outs_under['conviction'], 'outs_under'),
+                    'signals': outs_under['signals'],
+                    'lineup_state': 'confirmed',
+                })
+
+            # Earned Runs O/U
+            er_over = score_pitcher_er(g, side)
+            if er_over and er_over['conviction'] >= ER_CUTOFF:
+                all_props.append({
+                    'game_date': game_date,
+                    'game_id': game_id,
+                    'player_name': pitcher,
+                    'player_team': g.get(f'{side}_team'),
+                    'matchup': matchup,
+                    'prop_type': 'er_over',
+                    'prop_line': er_over['prop_line'],
+                    'direction': 'over',
+                    'conviction': er_over['conviction'],
+                    'tier': tier_for(er_over['conviction'], 'er_over'),
+                    'signals': er_over['signals'],
+                    'lineup_state': 'confirmed',
+                })
+            er_under = score_pitcher_er_under(g, side)
+            if er_under and er_under['conviction'] >= ER_UNDER_CUTOFF:
+                all_props.append({
+                    'game_date': game_date,
+                    'game_id': game_id,
+                    'player_name': pitcher,
+                    'player_team': g.get(f'{side}_team'),
+                    'matchup': matchup,
+                    'prop_type': 'er_under',
+                    'prop_line': er_under['prop_line'],
+                    'direction': 'under',
+                    'conviction': er_under['conviction'],
+                    'tier': tier_for(er_under['conviction'], 'er_under'),
+                    'signals': er_under['signals'],
                     'lineup_state': 'confirmed',
                 })
 

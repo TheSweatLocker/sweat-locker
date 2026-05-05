@@ -110,6 +110,110 @@ def strip_accents(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
 
 
+def fetch_savant_batter_quality(year=2026):
+    """Pull season-long Statcast quality-of-contact + xHR/xSLG for all
+    qualified batters in one CSV call. Returns {name_lower: {...stats}}.
+
+    Why this matters for HR Watch: raw HR/PA over small samples is high-
+    variance — Bayesian regression mitigates but doesn't replace the
+    underlying *process* signal. xHR (HR over expected based on launch
+    angle + exit velo) and barrel% are sticky over small samples and
+    predictive of future HR rate. A batter at 12% barrel rate / .250
+    xSLG-over-SLG is a HR threat regardless of whether his HR/PA caught
+    up yet."""
+    try:
+        import io
+        import pandas as pd
+        url = (
+            f"https://baseballsavant.mlb.com/leaderboard/expected_statistics"
+            f"?type=batter&year={year}&position=&team=&min=q&csv=true"
+        )
+        r = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }, timeout=30)
+        if r.status_code != 200:
+            print(f"  ⚠️ Savant batter quality fetch returned {r.status_code} — skipping xHR signal")
+            return {}
+        df = pd.read_csv(io.StringIO(r.text))
+
+        # Pull a second CSV for barrel% / hard_hit% (different endpoint)
+        contact_url = (
+            f"https://baseballsavant.mlb.com/leaderboard/statcast"
+            f"?type=batter&year={year}&position=&team=&min=q&csv=true"
+        )
+        contact = {}
+        try:
+            cr = requests.get(contact_url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }, timeout=30)
+            if cr.status_code == 200:
+                cdf = pd.read_csv(io.StringIO(cr.text))
+                for _, row in cdf.iterrows():
+                    nm = str(row.get("last_name, first_name", "") or "")
+                    if "," in nm:
+                        last, first = [p.strip() for p in nm.split(",", 1)]
+                        key = f"{first} {last}".lower()
+                        contact[key] = {
+                            "barrel_pct": float(row.get("barrel_batted_rate") or 0) or None,
+                            "hard_hit_pct": float(row.get("hard_hit_percent") or 0) or None,
+                        }
+        except Exception:
+            pass
+
+        out = {}
+        for _, row in df.iterrows():
+            nm = str(row.get("last_name, first_name", "") or "")
+            if "," not in nm:
+                continue
+            last, first = [p.strip() for p in nm.split(",", 1)]
+            key = f"{first} {last}".lower()
+            stats = {}
+            for col in ("est_ba", "est_slg", "est_woba"):
+                v = row.get(col)
+                if v is not None and str(v) != "nan":
+                    try:
+                        stats[col] = float(v)
+                    except Exception:
+                        pass
+            # xHR isn't a direct column — we approximate using
+            # est_slg minus actual slg (positive = batter hits harder than
+            # results suggest). Same logic Savant uses for "xHR over HR".
+            actual_slg = row.get("slg")
+            if actual_slg is not None and "est_slg" in stats:
+                try:
+                    stats["xslg_diff"] = round(stats["est_slg"] - float(actual_slg), 3)
+                except Exception:
+                    pass
+            stats.update(contact.get(key, {}))
+            if stats:
+                out[key] = stats
+        print(f"  Built Savant batter quality lookup for {len(out)} batters")
+        return out
+    except Exception as e:
+        print(f"  ⚠️ Savant batter quality fetch failed: {e}")
+        return {}
+
+
+# Module-level cache — populated once per pipeline run via run() below.
+_SAVANT_BATTER_CACHE = {}
+
+
+def get_batter_quality(name):
+    """Look up a batter in the Savant cache. Tries lowercase exact match
+    then last-name match."""
+    if not name or not _SAVANT_BATTER_CACHE:
+        return {}
+    key = strip_accents(name).lower().strip()
+    if key in _SAVANT_BATTER_CACHE:
+        return _SAVANT_BATTER_CACHE[key]
+    # Last-name fallback for accent / diacritic mismatches we missed
+    last = key.split(" ")[-1]
+    for k, v in _SAVANT_BATTER_CACHE.items():
+        if k.endswith(" " + last):
+            return v
+    return {}
+
+
 def fetch_batter_stats(name):
     """Fetch season hitting stats + bat side + last-7 game pace from MLB Stats API.
     Adds slg + iso (process signals more stable than HR/PA in small samples).
@@ -175,6 +279,9 @@ def fetch_batter_stats(name):
         except Exception:
             pass
 
+        # Savant quality of contact (barrel%, xSLG, xHR signal)
+        sav = get_batter_quality(name)
+
         return {
             'name': name,
             'pa': int(s.get('plateAppearances', 0) or 0),
@@ -185,6 +292,11 @@ def fetch_batter_stats(name):
             'bat_side': bat_side,
             'last_7_hr': last_7_hr,
             'last_7_pa': last_7_pa,
+            # Savant signals — keys may be missing if not in the leaderboard
+            'savant_barrel_pct': sav.get('barrel_pct'),
+            'savant_hard_hit_pct': sav.get('hard_hit_pct'),
+            'savant_xslg_diff': sav.get('xslg_diff'),  # xSLG - SLG, positive = batter hits harder than results
+            'savant_est_slg': sav.get('est_slg'),
         }
     except Exception as e:
         print(f'  Error fetching {name}: {e}')
@@ -336,8 +448,37 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
     elif last_7_pa >= 20 and last_7_hr >= 2:
         recency_score = 5  # heating up
 
+    # Savant quality-of-contact (added 2026-05-05) — barrel% and xSLG-SLG
+    # diff are sticky predictors of HR rate that survive small samples.
+    # A 12% barrel rate is HR-threat tier regardless of whether the season
+    # HR/PA caught up yet.
+    savant_score = 0
+    barrel = stats.get('savant_barrel_pct')
+    if barrel is not None:
+        try:
+            b = float(barrel)
+            if b >= 14:    savant_score += 14   # elite — top 5% of MLB
+            elif b >= 11:  savant_score += 9    # plus barrel rate
+            elif b >= 8:   savant_score += 4
+            elif b <= 4:   savant_score -= 6    # contact hitter, low HR upside
+        except Exception:
+            pass
+    # xSLG-SLG diff — when batter is hitting harder than results show,
+    # they're due for HR regression UPWARD (positive diff). Negative diff
+    # means season HR rate may overstate true power.
+    xslg_diff = stats.get('savant_xslg_diff')
+    if xslg_diff is not None:
+        try:
+            xd = float(xslg_diff)
+            if xd >= 0.040:    savant_score += 6   # under-performing power, due
+            elif xd >= 0.020:  savant_score += 3
+            elif xd <= -0.040: savant_score -= 6   # over-performing, regression risk
+        except Exception:
+            pass
+
     total_score = (power_score + hr_bonus + opp_score + contact_score
-                   + fb_score + env_score + platoon_score + recency_score)
+                   + fb_score + env_score + platoon_score + recency_score
+                   + savant_score)
 
     return {
         'hr_rate': round(raw_hr_rate, 4),  # display raw, scoring uses regressed
@@ -353,6 +494,7 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
         'env_score': env_score,
         'platoon_score': platoon_score,
         'recency_score': recency_score,
+        'savant_score': savant_score,
         'wind_out': wind_out,
     }
 
@@ -360,6 +502,12 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
 def run():
     today = get_today_et()
     print(f'Building HR Watch for {today}')
+
+    # Bootstrap Savant batter quality cache once per run (single CSV pull
+    # instead of per-batter API hits). Used by score_batter for xHR + barrel
+    # signals.
+    global _SAVANT_BATTER_CACHE
+    _SAVANT_BATTER_CACHE = fetch_savant_batter_quality(year=2026)
 
     # Clear today's previous entries
     requests.delete(
