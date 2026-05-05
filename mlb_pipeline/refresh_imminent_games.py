@@ -437,10 +437,16 @@ def run():
             if patch_row(row["id"], payload):
                 refreshed += 1
                 # If umpire just confirmed, recompute NRFI score so the
-                # umpire's NRFI-rate signal flows into the stored score
-                # (otherwise it stays stale at the 8am/2pm pipeline value).
-                if "umpire" in payload:
-                    recompute_nrfi_score(row["game_id"])
+                # NOTE: previously called recompute_nrfi_score here so the
+                # umpire NRFI-rate signal would flow in. Disabled 2026-05-04
+                # because the recompute does a FULL calc_nrfi_score re-derive
+                # (not just an umpire delta), and any other refreshed inputs
+                # — pitcher stats, lineup splits — caused 10-13pt swings on
+                # tonight's slate (Padres 93 -> 80, WSox 90 -> 83). The bounded
+                # ±3 umpire adjustment isn't worth that destabilization. The
+                # 2pm baseline NRFI stands; umpire data is still saved to the
+                # row for downstream display. Tomorrow's 8am cron re-derives
+                # cleanly with all fresh data at once.
             else:
                 print(f"    ⚠️ patch failed for {row['away_team']} @ {row['home_team']}")
         else:
