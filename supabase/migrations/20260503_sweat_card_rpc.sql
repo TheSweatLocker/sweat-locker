@@ -13,7 +13,7 @@ LANGUAGE SQL
 STABLE
 AS $$
   SELECT * FROM jerry_cache
-  WHERE game_id = 'sweat_card_' || mlb_slate_date_et()::TEXT
+  WHERE game_id = 'sweat_card_' || slate_date_et()::TEXT
   LIMIT 1;
 $$;
 

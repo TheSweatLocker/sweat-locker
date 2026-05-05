@@ -256,6 +256,7 @@ def render_game(game):
 def fetch_tier_rates():
     """Pull live tier calibration rates from latest computation."""
     rows = sb_get("mlb_tier_calibration", {
+        "sport": "eq.mlb",
         "select": "tier,window_label,hits,total,hit_rate",
         "order": "computed_date.desc",
         "limit": "200",

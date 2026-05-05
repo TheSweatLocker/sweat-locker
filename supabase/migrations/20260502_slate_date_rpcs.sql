@@ -15,7 +15,7 @@
 
 -- Helper: return today's date in America/New_York timezone (YYYY-MM-DD).
 -- Single source of truth for "what is today's slate date" across all RPCs.
-CREATE OR REPLACE FUNCTION mlb_slate_date_et()
+CREATE OR REPLACE FUNCTION slate_date_et()
 RETURNS DATE
 LANGUAGE SQL
 STABLE
@@ -29,7 +29,7 @@ RETURNS SETOF daily_dawg
 LANGUAGE SQL
 STABLE
 AS $$
-  SELECT * FROM daily_dawg WHERE game_date = mlb_slate_date_et() LIMIT 1;
+  SELECT * FROM daily_dawg WHERE game_date = slate_date_et() LIMIT 1;
 $$;
 
 -- Returns today's POTD entry from jerry_cache.
@@ -39,7 +39,7 @@ LANGUAGE SQL
 STABLE
 AS $$
   SELECT * FROM jerry_cache
-  WHERE game_id = 'best_bet_' || mlb_slate_date_et()::TEXT
+  WHERE game_id = 'best_bet_' || slate_date_et()::TEXT
   LIMIT 1;
 $$;
 
@@ -50,7 +50,7 @@ LANGUAGE SQL
 STABLE
 AS $$
   SELECT * FROM mlb_pipeline_props
-  WHERE game_date = mlb_slate_date_et()
+  WHERE game_date = slate_date_et()
   ORDER BY conviction DESC;
 $$;
 
@@ -61,7 +61,7 @@ LANGUAGE SQL
 STABLE
 AS $$
   SELECT * FROM mlb_hr_watch
-  WHERE game_date = mlb_slate_date_et()
+  WHERE game_date = slate_date_et()
   ORDER BY score DESC;
 $$;
 
@@ -72,7 +72,7 @@ RETURNS SETOF daily_degen
 LANGUAGE SQL
 STABLE
 AS $$
-  SELECT * FROM daily_degen WHERE game_date = mlb_slate_date_et() LIMIT 1;
+  SELECT * FROM daily_degen WHERE game_date = slate_date_et() LIMIT 1;
 $$;
 
 -- Convenience: bare slate date string (for any client that needs it).
@@ -83,12 +83,12 @@ RETURNS TEXT
 LANGUAGE SQL
 STABLE
 AS $$
-  SELECT mlb_slate_date_et()::TEXT;
+  SELECT slate_date_et()::TEXT;
 $$;
 
 -- Permissions: allow anon role (used by Supabase JS client) to call.
 -- These are read-only RPCs over already-public tables, so anon access is fine.
-GRANT EXECUTE ON FUNCTION mlb_slate_date_et()           TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION slate_date_et()           TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION get_todays_dawg()             TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION get_todays_potd()             TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION get_todays_pipeline_props()   TO anon, authenticated;

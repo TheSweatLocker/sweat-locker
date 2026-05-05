@@ -61,14 +61,16 @@ def _f(v):
     except: return None
 
 
-def fetch_tier_rates():
-    """Return {tier_name: hit_rate} from latest 30d window in
-    mlb_tier_calibration. Falls back to empty dict on error so the rest
-    of the Degen still runs (just skips audit weighting)."""
+def fetch_tier_rates(sport='mlb'):
+    """Return {tier_name: hit_rate} from latest 30d window in the
+    tier_calibration table for the given sport. Falls back to empty
+    dict on error so the rest of the Degen still runs (just skips
+    audit weighting). Defaults to 'mlb' so existing callers keep working."""
     try:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/mlb_tier_calibration"
-            f"?window_label=eq.30d&select=tier,hit_rate,computed_date,total"
+            f"?window_label=eq.30d&sport=eq.{sport}"
+            f"&select=tier,hit_rate,computed_date,total"
             f"&order=computed_date.desc",
             headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
             timeout=15,
@@ -90,9 +92,13 @@ def fetch_tier_rates():
     return rates
 
 
-def cohort_key_for(candidate, raw_score=None):
+def cohort_key_for(candidate, raw_score=None, sport='mlb'):
     """Map a Degen candidate to its audit cohort key. Returns None when
-    no calibrated cohort applies (props use a default rate)."""
+    no calibrated cohort applies (props use a default rate).
+
+    `sport` is plumbed through so future NBA/NFL candidates can map to
+    sport-specific cohort names. Currently only MLB cohorts are defined;
+    when NBA pipeline launches, add an `if sport == 'nba'` branch."""
     ctype = candidate.get('type')
     sub = candidate.get('sub_type')
     if ctype == 'NRFI':

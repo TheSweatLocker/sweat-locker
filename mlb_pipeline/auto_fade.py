@@ -64,10 +64,13 @@ def _fetch_live_calibration():
         return dict(FALLBACK_CALIBRATION)
     tier_names = list(_TIER_MAP.values())
     try:
-        # Single query for all autofade tiers, both windows
+        # Single query for all autofade tiers, both windows.
+        # Filter to sport='mlb' so a future NBA/NFL row in the same table
+        # doesn't pollute MLB auto-fade calibration.
         params = urllib.parse.urlencode({
             "tier": f"in.({','.join(tier_names)})",
             "window_label": "in.(7d,30d)",
+            "sport": "eq.mlb",
             "select": "tier,window_label,hits,total,hit_rate",
         }, safe=",.()")
         req = urllib.request.Request(

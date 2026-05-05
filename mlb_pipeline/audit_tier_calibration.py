@@ -296,6 +296,7 @@ def main():
                 "hits": stats["hits"],
                 "total": total,
                 "hit_rate": round(stats["hits"] / total, 4),
+                "sport": "mlb",  # multi-sport column added 2026-05-04 — set explicitly
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
 

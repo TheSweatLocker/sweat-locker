@@ -53,7 +53,11 @@ def sb_get(path, params=None):
 
 def fetch_tier_rates():
     """Pull live audited tier rates from mlb_tier_calibration (30d window)."""
-    rows = sb_get("mlb_tier_calibration", {"window_label": "eq.30d", "select": "tier,hits,total,hit_rate"})
+    rows = sb_get("mlb_tier_calibration", {
+        "window_label": "eq.30d",
+        "sport": "eq.mlb",
+        "select": "tier,hits,total,hit_rate",
+    })
     return {r["tier"]: r for r in rows}
 
 
