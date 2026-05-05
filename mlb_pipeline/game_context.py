@@ -1998,7 +1998,18 @@ def run():
     et_now = datetime.now(timezone.utc) - timedelta(hours=4)
     today = et_now.strftime('%Y-%m-%d')
     print(f"  (ET date: {today})")
-    for d in range(3):
+    # CHANGED 2026-05-04: do NOT pre-delete today's rows. Previously we
+    # cleared today + 2 days back at the start of every run, then re-uploaded
+    # each game in a per-game try/except. Any single-game error (MLB API
+    # timeout, parse failure, etc.) caught by the per-game handler would
+    # leave that game's row permanently deleted until the next successful
+    # run touched it. Tonight's slate dropped Mets/COL on one rebuild and
+    # Toronto/Tampa on the next.
+    #
+    # The upload_game_context POST uses on_conflict=game_id, so re-running
+    # naturally upserts existing rows. Skip today's clear; only clear rows
+    # 2+ days old (housekeeping for stale entries).
+    for d in range(2, 4):
         past_date = (et_now - timedelta(days=d)).strftime('%Y-%m-%d')
         delete_resp = requests.delete(
             f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_date=eq.{past_date}",
