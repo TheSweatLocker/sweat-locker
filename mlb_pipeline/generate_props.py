@@ -1140,7 +1140,11 @@ def run():
             and p['prop_type'] in ('hits_over', 'hits_under')
         )
 
-    top_n = min(25, max(8, len(games) + 5))
+    # Bumped cap from min(25, len(games)+5) → min(40, len(games)*2) so a
+    # 12-game slate has 24 slots instead of 17. Tighter cap was suppressing
+    # late-game props (West Coast 9-10pm starters got cut before their
+    # confirmed lineups even landed).
+    top_n = min(40, max(12, len(games) * 2))
     hits_per_game = {}
     capped = []
     for p in all_props:
@@ -1154,6 +1158,28 @@ def run():
                 continue
         capped.append(p)
     top = capped[:top_n]
+
+    # Per-game floor: every scheduled game gets at least one prop on the
+    # board. Without this, late-night West Coast games show zero picks
+    # because their PRIMEs get squeezed out by early-slate confluence.
+    # Take the highest-conviction prop from each missing game (must clear
+    # conviction ≥ 60 — don't force garbage onto the board just to fill).
+    represented_games = {p['game_id'] for p in top}
+    all_game_ids = {p['game_id'] for p in all_props}
+    missing_games = all_game_ids - represented_games
+    if missing_games:
+        cut_props = [p for p in capped if p not in top]
+        # capped maintains conviction-desc order, so first match per game = best
+        added = 0
+        for p in cut_props:
+            if p['game_id'] in missing_games and p['conviction'] >= 60:
+                top.append(p)
+                missing_games.discard(p['game_id'])
+                added += 1
+                if not missing_games:
+                    break
+        if added:
+            print(f"  📋 Per-game floor: added {added} prop(s) to surface late-slate games")
 
     wipe_todays_props()
     saved = upsert_props(top)

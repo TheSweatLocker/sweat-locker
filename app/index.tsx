@@ -9269,13 +9269,11 @@ setJerryHistory(prev => {
   if(!nrfiCtx) return null;
   const nScore = nrfiCtx.nrfi_score;
   const pf = nrfiCtx.park_run_factor ? parseFloat(nrfiCtx.park_run_factor) : 100;
-  const spreadDelta = nrfiCtx.spread_delta != null ? parseFloat(nrfiCtx.spread_delta) : null;
   // Show badge only for tiers with proven edge (audit-backed): 90+ NRFI, 70-79 mild lean, <=40 YRFI
   // 80-89 tier is 42.5% hit rate — hide | Coors-type parks (116+) = 12.5% NRFI — suppress NRFI badge
   const suppressNrfiAtExtremePark = pf >= 116 && nScore >= 70;
   const hasNrfiBadge = !suppressNrfiAtExtremePark && nScore && (nScore >= 90 || (nScore >= 70 && nScore <= 79) || nScore <= 40);
-  const hasMlBadge = spreadDelta != null && Math.abs(spreadDelta) >= 3.0;
-  if(!hasNrfiBadge && !hasMlBadge) return null;
+  if(!hasNrfiBadge) return null;
 
   const nColor = nScore >= 90 && nScore <= 94 ? '#00e5a0' : nScore >= 95 ? '#ffb800' : nScore >= 70 && nScore <= 79 ? '#4a9eff' : nScore <= 40 ? '#ff4d6d' : '#7a92a8';
   // Tier labels based on 235-game audit:
@@ -9284,23 +9282,12 @@ setJerryHistory(prev => {
   // <=40: 77.8% YRFI hit rate
   const nLabel = nScore >= 95 ? 'NRFI ⚠️' : nScore >= 90 ? 'PRIME NRFI' : nScore >= 70 && nScore <= 79 ? 'NRFI lean' : nScore <= 35 ? 'YRFI' : nScore <= 40 ? 'YRFI lean' : null;
 
-  // ML lean badge — 3+ spread delta is 70% historical, 5+ is 100%
-  const mlTeam = spreadDelta != null ? (spreadDelta > 0 ? nrfiCtx.home_team : nrfiCtx.away_team) : null;
-  const mlColor = Math.abs(spreadDelta || 0) >= 5 ? '#00e5a0' : Math.abs(spreadDelta || 0) >= 4 ? '#00e5a0' : '#4a9eff';
-  const mlLabel = Math.abs(spreadDelta || 0) >= 5 ? 'ELITE ML' : Math.abs(spreadDelta || 0) >= 4 ? 'PRIME ML' : 'ML LEAN';
-
   return(
     <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8,flexWrap:'wrap'}}>
       {hasNrfiBadge && nLabel && (
         <View style={{backgroundColor:nColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:nColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
           <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>⚾ {nLabel}</Text>
           <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>{nScore}</Text>
-        </View>
-      )}
-      {hasMlBadge && mlTeam && (
-        <View style={{backgroundColor:mlColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:mlColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
-          <Text style={{color:mlColor,fontWeight:'800',fontSize:12}}>💰 {mlLabel}</Text>
-          <Text style={{color:mlColor,fontWeight:'800',fontSize:12}}>{mlTeam.split(' ').pop()} {spreadDelta > 0 ? '+' : ''}{spreadDelta.toFixed(1)}</Text>
         </View>
       )}
       {nrfiCtx.home_pitcher && <Text style={{color:'#4a6070',fontSize:10}}>{nrfiCtx.home_pitcher?.split(' ').pop()} vs {nrfiCtx.away_pitcher?.split(' ').pop()}</Text>}
