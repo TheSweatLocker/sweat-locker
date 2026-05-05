@@ -9435,9 +9435,9 @@ setJerryHistory(prev => {
           } else if (etHour < 14) {
             message = "Early-slate edges loading.\nHits picks fill in after 2pm ET when lineups confirm.";
           } else if (etHour >= 23) {
-            message = "Tonight's slate is closed.\nTomorrow's picks land at 8am ET — pull to refresh in the morning.";
+            message = "Tonight's slate is closed.\nTomorrow's picks land at 8am ET — tap 🔄 above in the morning.";
           } else {
-            message = "No props cleared our conviction threshold tonight.\nLate-slate lineups still landing — pull to refresh in 30 min.";
+            message = "No props cleared our conviction threshold tonight.\nLate-slate lineups still landing — tap 🔄 above in ~30 min.";
           }
           return (
             <View style={{alignItems:'center',paddingTop:40}}>
@@ -9520,7 +9520,7 @@ setJerryHistory(prev => {
     ):propJerryData.length===0?(
       <View style={{alignItems:'center',paddingTop:40}}>
         <Text style={{fontSize:32}}>🎤</Text>
-        <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No props available.{'\n'}Pull to refresh or try another sport.</Text>
+        <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No props available.{'\n'}Tap 🔄 above or try another sport.</Text>
       </View>
     ):(
       <>
