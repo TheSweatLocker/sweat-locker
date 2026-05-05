@@ -1597,13 +1597,21 @@ Write 2-3 sentences MAX. Reference the specific data signals. Sound like a sharp
     </View>
   );
 
-  if(!degenData || degenData.noPlays) return (
-    <View style={{alignItems:'center',paddingTop:60,paddingHorizontal:40}}>
-      <Text style={{fontSize:32}}>🎲</Text>
-      <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18,marginTop:16}}>No Degen Plays Today</Text>
-      <Text style={{color:'#7a92a8',marginTop:8,fontSize:14,textAlign:'center'}}>Jerry didn't find enough edges for a parlay today. Check back after the 2pm pipeline update.</Text>
-    </View>
-  );
+  if(!degenData || degenData.noPlays) {
+    const etHour = parseInt(new Date().toLocaleTimeString('en-US', {timeZone: 'America/New_York', hour: 'numeric', hour12: false}));
+    let degenMsg;
+    if (etHour < 8) degenMsg = "Today's degen card hasn't been built yet. First pipeline run is at 8am ET.";
+    else if (etHour < 14) degenMsg = "Jerry's still scouting today's slate. Final degen card lands after 2pm ET when lineups confirm.";
+    else if (etHour >= 23) degenMsg = "Tonight's degen card is closed. Tomorrow's parlay drops at 8am ET.";
+    else degenMsg = "Jerry didn't find enough conviction edges for a parlay tonight — sometimes a card just doesn't have it.";
+    return (
+      <View style={{alignItems:'center',paddingTop:60,paddingHorizontal:40}}>
+        <Text style={{fontSize:32}}>🎲</Text>
+        <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18,marginTop:16}}>No Degen Plays Today</Text>
+        <Text style={{color:'#7a92a8',marginTop:8,fontSize:14,textAlign:'center',lineHeight:20}}>{degenMsg}</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={{padding:16}}>
@@ -9416,10 +9424,27 @@ setJerryHistory(prev => {
           <Text style={{color:'#7a92a8',marginTop:12}}>Loading pipeline matchup edges...</Text>
         </View>
       ) : pipelineMLBProps.length === 0 ? (
-        <View style={{alignItems:'center',paddingTop:40}}>
-          <Text style={{fontSize:32}}>🎤</Text>
-          <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No pipeline props yet today.{'\n'}Generated after 2pm ET when lineups confirm.</Text>
-        </View>
+        (() => {
+          // Time-aware empty state. Pipeline runs 8am + 2pm ET; watchdog
+          // refreshes every 30 min from 12pm-10pm ET as lineups confirm.
+          const etHour = parseInt(new Date().toLocaleTimeString('en-US', {timeZone: 'America/New_York', hour: 'numeric', hour12: false}));
+          let message;
+          if (etHour < 8) {
+            message = "Today's slate hasn't been built yet.\nFirst pipeline run is at 8am ET.";
+          } else if (etHour < 14) {
+            message = "Early-slate edges loading.\nHits picks fill in after 2pm ET when lineups confirm.";
+          } else if (etHour >= 23) {
+            message = "Tonight's slate is closed.\nTomorrow's picks land at 8am ET — pull to refresh in the morning.";
+          } else {
+            message = "No props cleared our conviction threshold tonight.\nLate-slate lineups still landing — pull to refresh in 30 min.";
+          }
+          return (
+            <View style={{alignItems:'center',paddingTop:40}}>
+              <Text style={{fontSize:32}}>🎤</Text>
+              <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center',lineHeight:20}}>{message}</Text>
+            </View>
+          );
+        })()
       ) : (
         <>
           <Text style={{color:'#4a6070',fontSize:11,marginBottom:12,textAlign:'center'}}>
