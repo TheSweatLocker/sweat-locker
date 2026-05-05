@@ -79,7 +79,18 @@ def extract_leg_candidates(games, props):
 
     # Pipeline props — use conviction as rank
     for p in props:
-        prop_label = 'Over 0.5 Hits' if p.get('prop_type') == 'hits_over' else f"Over {p.get('prop_line')} Strikeouts"
+        ptype = p.get('prop_type')
+        line = p.get('prop_line')
+        if ptype == 'hits_over':
+            prop_label = 'Over 0.5 Hits'
+        elif ptype == 'hits_under':
+            prop_label = 'Under 0.5 Hits'
+        elif ptype == 'ks_over':
+            prop_label = f"Over {line} Strikeouts"
+        elif ptype == 'ks_under':
+            prop_label = f"Under {line} Strikeouts"
+        else:
+            prop_label = f"{ptype} {line}"  # fallback for unknown types
         candidates.append({
             'type': 'PROP',
             'sub_type': p.get('prop_type'),

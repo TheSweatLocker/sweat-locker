@@ -458,6 +458,16 @@ def run():
             generate_props.run()
         except Exception as e:
             print(f"  ⚠️ prop regen failed: {e}")
+        # Refresh Daily Degen too — the watchdog used to regen props but
+        # leave Degen frozen at the 2pm pipeline scores, so users saw a
+        # stale parlay built from outdated conviction values. Now Degen
+        # rebuilds against the freshly-rescored prop board.
+        print("\n  Regenerating Daily Degen with refreshed props...")
+        try:
+            import generate_daily_degen
+            generate_daily_degen.run()
+        except Exception as e:
+            print(f"  ⚠️ daily degen regen failed: {e}")
         # Refresh the Sweat Card too so newly-surfaced hits picks (and any
         # NRFI re-derives that fired with umpire data) flow into the card
         # before users open the app.
