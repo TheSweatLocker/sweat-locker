@@ -78,7 +78,7 @@ def fetch_all_resolved():
     while True:
         rows = sb_get("mlb_game_results", {
             "nrfi_result": "not.is.null",
-            "select": "game_date,nrfi_score,nrfi_result,signal_confluence_net,spread_delta,home_win,close_spread,home_spread_covered",
+            "select": "game_date,nrfi_score,nrfi_result,signal_confluence_net,spread_delta,home_win,close_spread,home_spread_covered,game_id,home_team,away_team",
             "order": "game_date.asc",
             "limit": "1000",
             "offset": str(offset),
@@ -144,6 +144,24 @@ def classify_spread_delta_tier(delta):
     return "spread_delta_lt1"
 
 
+def classify_recency_cohort(breakdown):
+    """Read signal_confluence_breakdown for recency votes.
+
+    Returns a (cohort_name, recency_side) tuple where recency_side is
+    'home' or 'away' indicating the side recency favors. Returns
+    (None, None) when neither recency nor recency_extreme fired.
+
+    Two cohorts: recency_normal (|net| ≥ 0.8) and recency_extreme
+    (one team HOT, opposite COLD). Extreme is a stronger signal."""
+    if not breakdown or not isinstance(breakdown, dict):
+        return None, None
+    if breakdown.get("recency_extreme") in ("home", "away"):
+        return "recency_extreme", breakdown["recency_extreme"]
+    if breakdown.get("recency") in ("home", "away"):
+        return "recency_normal", breakdown["recency"]
+    return None, None
+
+
 def classify_autofade_cohort(spread_delta, close_spread, confluence_net):
     """Mirrors auto_fade.cohort_for_pick using only fields available in
     mlb_game_results. Without ml odds we bucket on RL direction agreement
@@ -173,8 +191,52 @@ def classify_autofade_cohort(spread_delta, close_spread, confluence_net):
     return "autofade_chalk"
 
 
-def compute_window_rates(rows, days_back, end_date):
-    """Compute hit rate per tier within rolling window ending end_date."""
+def _gkey(date_str, home, away):
+    """Composite key (game_date, home_team, away_team) for joining
+    mlb_game_results to mlb_game_context. game_id columns use different
+    hash inputs across tables so direct ID matching doesn't work."""
+    return (date_str, (home or "").strip(), (away or "").strip())
+
+
+def fetch_breakdowns_for_games(rows):
+    """Pull signal_confluence_breakdown from mlb_game_context for each
+    resolved game. Returns {(game_date, home_team, away_team): breakdown_dict}.
+
+    Joins on (date, home, away) since game_id schemes differ across tables.
+    Page through context rows in big batches by date range to keep URLs
+    manageable."""
+    if not rows:
+        return {}
+    dates = sorted({r.get("game_date") for r in rows if r.get("game_date")})
+    if not dates:
+        return {}
+    out = {}
+    # Pull all context rows from earliest result date forward
+    earliest = dates[0]
+    offset = 0
+    while True:
+        ctx_rows = sb_get("mlb_game_context", {
+            "game_date": f"gte.{earliest}",
+            "select": "game_date,home_team,away_team,signal_confluence_breakdown",
+            "limit": "1000",
+            "offset": str(offset),
+        })
+        if not ctx_rows:
+            break
+        for c in ctx_rows:
+            key = _gkey(c.get("game_date"), c.get("home_team"), c.get("away_team"))
+            if c.get("signal_confluence_breakdown") is not None:
+                out[key] = c["signal_confluence_breakdown"]
+        if len(ctx_rows) < 1000:
+            break
+        offset += 1000
+    return out
+
+
+def compute_window_rates(rows, days_back, end_date, breakdowns=None):
+    """Compute hit rate per tier within rolling window ending end_date.
+    breakdowns is {game_id: confluence_breakdown_dict} for recency lookup."""
+    breakdowns = breakdowns or {}
     cutoff = end_date - timedelta(days=days_back)
     in_window = [
         r for r in rows
@@ -222,6 +284,20 @@ def compute_window_rates(rows, days_back, end_date):
             except (TypeError, ValueError):
                 pass
 
+        # Recency cohort — does the recency vote actually predict winners?
+        # Read from signal_confluence_breakdown JSON. recency_normal fires
+        # when |L10 R/G - season R/G| differential ≥ 0.8 between teams;
+        # recency_extreme fires when one team genuinely HOT and other COLD.
+        rec_cohort, rec_side = classify_recency_cohort(
+            breakdowns.get(_gkey(r.get("game_date"), r.get("home_team"), r.get("away_team")))
+        )
+        if rec_cohort and rec_side and hw is not None:
+            tier_stats[rec_cohort]["total"] += 1
+            # recency favored 'home' → hit if home won
+            hit = (rec_side == "home" and hw) or (rec_side == "away" and not hw)
+            if hit:
+                tier_stats[rec_cohort]["hits"] += 1
+
         # Auto-fade cohort (matches auto_fade.cohort_for_pick logic so
         # auto_fade can read these rates back instead of hard-coding)
         af_cohort = classify_autofade_cohort(
@@ -251,6 +327,10 @@ def main():
     if not rows:
         return
 
+    print("Pulling confluence breakdowns for recency audit...")
+    breakdowns = fetch_breakdowns_for_games(rows)
+    print(f"Breakdowns fetched: {len(breakdowns)}")
+
     et_today = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
 
     upsert_rows = []
@@ -266,11 +346,12 @@ def main():
         "confluence_zero", "confluence_negative",
         "spread_delta_ge2", "spread_delta_1_5_2", "spread_delta_1_1_5", "spread_delta_lt1",
         "autofade_chalk_high_mag", "autofade_chalk", "autofade_dog", "autofade_dog_high_conv",
+        "recency_normal", "recency_extreme",
     }
 
     window_data = {}
     for label, days in windows:
-        window_data[label] = compute_window_rates(rows, days, et_today)
+        window_data[label] = compute_window_rates(rows, days, et_today, breakdowns)
 
     for tier in sorted(all_tiers):
         cells = []
