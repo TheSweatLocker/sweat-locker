@@ -139,6 +139,30 @@ jobs:
           else
             echo "Not Thursday (day=$DAY) — skipping UFC scraper"
           fi
+
+      - name: Score UFC card (Thursdays only, post-scraper)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          DAY=$(date -u -d '-4 hours' +%u)
+          if [ "$DAY" = "4" ]; then
+            echo "Thursday — scoring UFC card via v1 model"
+            cd mlb_pipeline
+            python ufc_score_card.py
+          fi
+
+      - name: Resolve UFC fights (Sundays/Mondays after weekend cards)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          DAY=$(date -u -d '-4 hours' +%u)
+          if [ "$DAY" = "7" ] || [ "$DAY" = "1" ]; then
+            echo "Sun/Mon — resolving completed UFC fights"
+            cd mlb_pipeline
+            python ufc_resolve_fights.py
+          fi
       
       - name: Resolve prop grades
         env:

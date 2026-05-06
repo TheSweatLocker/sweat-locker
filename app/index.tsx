@@ -1994,6 +1994,7 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [hrWatchLoading, setHrWatchLoading] = useState(false);
   const [hrWatchOpen, setHrWatchOpen] = useState(false);
   const [ufcEvent, setUfcEvent] = useState<any>(null);
+  const [ufcPicks, setUfcPicks] = useState<any[]>([]);
   const [expandedPropJerry, setExpandedPropJerry] = useState(null);
   const [roiChartTab, setRoiChartTab] = useState('cumulative');
   const [roiTimeRange, setRoiTimeRange] = useState('all');
@@ -6216,6 +6217,13 @@ if(mkt.key === 'pitcher_props') {
     } catch {
       setUfcEvent(null);
     }
+    // Pull v1 model picks for the same card
+    try {
+      const { data: picks } = await supabase.rpc('get_todays_ufc_picks');
+      setUfcPicks(picks || []);
+    } catch {
+      setUfcPicks([]);
+    }
   };
 
   const fetchPropOfDay = async () => {
@@ -9212,10 +9220,20 @@ setJerryHistory(prev => {
                   const summary=getGameSummary(game);
                   const gameTime=new Date(game.commence_time);
                   const isLive=game.gameState==='Live'||(new Date()>gameTime&&new Date()<new Date(gameTime.getTime()+4*60*60*1000));
-                  //console.log('HRB search - bookmaker keys:', game.bookmakers.map(bm=>bm.key));
                   const hrbLine=getHRBLine(game);
                   const hrbSpread=hrbLine&&hrbLine.spread?hrbLine.spread[0]:null;
                   const hrbTotal=hrbLine&&hrbLine.total?hrbLine.total[0]:null;
+                  // UFC v1 model pick lookup — match by fighter names (last-name fallback for spelling variants)
+                  let ufcPick:any = null;
+                  if (gamesSport === 'UFC' && ufcPicks.length > 0) {
+                    const aLast = (game.away_team || '').split(' ').pop()?.toLowerCase();
+                    const hLast = (game.home_team || '').split(' ').pop()?.toLowerCase();
+                    ufcPick = ufcPicks.find((p:any) => {
+                      const paLast = (p.fighter_a || '').split(' ').pop()?.toLowerCase();
+                      const pbLast = (p.fighter_b || '').split(' ').pop()?.toLowerCase();
+                      return (paLast === aLast && pbLast === hLast) || (paLast === hLast && pbLast === aLast);
+                    });
+                  }
                   return(
                     <TouchableOpacity key={i} style={styles.gameCard} onPress={()=>openGameDetail(game)} activeOpacity={0.8}>
                       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
@@ -9338,6 +9356,36 @@ setJerryHistory(prev => {
   return(
     <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:8,paddingHorizontal:10,paddingVertical:4,marginBottom:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)',alignSelf:'flex-start'}}>
       <Text style={{color:'#FFB800',fontSize:11,fontWeight:'800'}}>🏆 {series.series_label} — Game {series.game_number}</Text>
+    </View>
+  );
+})()}
+{gamesSport === 'UFC' && ufcPick && (()=>{
+  // Map model 'a'/'b' side back to fighter names matching the tile's away/home
+  const aLast = (game.away_team || '').split(' ').pop()?.toLowerCase();
+  const paLast = (ufcPick.fighter_a || '').split(' ').pop()?.toLowerCase();
+  const tileMatchesModelA = aLast === paLast;
+  const pickedSide = ufcPick.recommended_side; // 'a' or 'b'
+  const pickedFighter = pickedSide === 'a' ? ufcPick.fighter_a : ufcPick.fighter_b;
+  const conv = ufcPick.conviction_winner || 0;
+  const tier = ufcPick.tier_winner;
+  if (!tier) return null; // hide if model has no conviction
+  const tierColor = tier === 'PRIME' ? '#00e5a0' : tier === 'STRONG' ? '#4a9eff' : '#7a92a8';
+  return(
+    <View style={{flexDirection:'row',gap:6,marginBottom:8,flexWrap:'wrap'}}>
+      <View style={{backgroundColor:tierColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:tierColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
+        <Text style={{color:tierColor,fontWeight:'800',fontSize:11}}>🤖 {tier}</Text>
+        <Text style={{color:tierColor,fontWeight:'800',fontSize:11}}>{pickedFighter.split(' ').pop()} {Math.round(((pickedSide==='a'?ufcPick.p_winner_a:1-ufcPick.p_winner_a)*100))}%</Text>
+      </View>
+      {ufcPick.edge_method && (
+        <View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:'rgba(255,184,0,0.4)'}}>
+          <Text style={{color:'#FFB800',fontWeight:'800',fontSize:11}}>{ufcPick.edge_method}</Text>
+        </View>
+      )}
+      {ufcPick.edge_distance && (
+        <View style={{backgroundColor:'rgba(180,140,255,0.15)',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:'rgba(180,140,255,0.4)'}}>
+          <Text style={{color:'#b48cff',fontWeight:'800',fontSize:11}}>{ufcPick.edge_distance} DIST</Text>
+        </View>
+      )}
     </View>
   );
 })()}
