@@ -8347,7 +8347,7 @@ setJerryHistory(prev => {
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🔒</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:34,textAlign:'center',marginBottom:12,letterSpacing:1}}>THE SWEAT LOCKER</Text>
-              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Bet Smarter, Sweat Less.</Text>
+              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>More Data, Sweat Less.</Text>
               <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>A real sports analytics engine — not picks, not vibes. Proprietary models updated twice daily.</Text>
             </View>
           )}
@@ -8364,7 +8364,7 @@ setJerryHistory(prev => {
               <Text style={{fontSize:64,marginBottom:24}}>🏟</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Games Tab</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your daily command center</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Every game card shows its Sweat Score and top model signals at a glance.{'\n\n'}Tap any game for the full breakdown:{'\n'}📚 Book consensus across 7+ sportsbooks{'\n'}🎤 Jerry's AI-powered game read{'\n'}📊 Real team stats and pitcher matchups{'\n'}📈 Line movement with opening vs current{'\n'}⚾ NRFI score and first inning prediction{'\n\n'}Add any line to Parlay Builder with one tap.</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Every game card shows its Sweat Score and top model signals at a glance.{'\n\n'}Tap any game for the full breakdown:{'\n'}📚 Book consensus across 7+ sportsbooks{'\n'}🎤 Jerry's pipeline-driven game read{'\n'}📊 Real team stats and pitcher matchups{'\n'}📈 Line movement with opening vs current{'\n'}⚾ NRFI score and first inning prediction{'\n\n'}Add any line to Parlay Builder with one tap.</Text>
             </View>
           )}
           {onboardingStep===3&&(
@@ -11187,7 +11187,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                 <Text style={{color:'#7a92a8',fontSize:12,lineHeight:20,marginTop:12}}>
                   Note: "Hard Rock Bet" and the guitar logo are trademarks of the Seminole Tribe of Florida/Hard Rock Digital. Referenced for informational purposes only.{'\n\n'}
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>WHO WE ARE{'\n'}</Text>
-                  The Sweat Locker is an AI powered, model driven, sports analytics application owned and operated by The Sweat Locker LLC, a veteran-owned business. Contact us at: support@thesweatlocker.com{'\n\n'}
+                  The Sweat Locker is a pipeline-driven sports analytics application owned and operated by The Sweat Locker LLC, a veteran-owned business. Every result logged. Every miss explained. Contact us at: support@thesweatlocker.com{'\n\n'}
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>DATA WE COLLECT{'\n'}</Text>
                   Data you provide:{'\n'}
                   - Bet logs, picks, and parlay history you manually enter{'\n'}
