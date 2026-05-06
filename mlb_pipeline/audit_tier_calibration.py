@@ -288,14 +288,19 @@ def compute_window_rates(rows, days_back, end_date, breakdowns=None):
                 if res == expected:
                     tier_stats[nrfi_tier]["hits"] += 1
 
-        # Confluence tier (ML — direction inferred from spread_delta sign)
-        conf_tier = classify_confluence_tier(r.get("signal_confluence_net"))
+        # Confluence tier — direction inferred from signal_confluence_net
+        # sign (positive = model favors home, negative = away). spread_delta
+        # in mlb_game_results sometimes stores opposite-sign values from
+        # mlb_game_context (e.g. Yankees 5/4 confluence +7 game logged with
+        # sd=-2.89 in results vs +1.11 in context). Confluence_net is more
+        # reliable since it reflects vote counts directly.
+        conf_net = r.get("signal_confluence_net")
+        conf_tier = classify_confluence_tier(conf_net)
         sd = r.get("spread_delta")
         hw = r.get("home_win")
-        if conf_tier and sd is not None and hw is not None:
+        if conf_tier and conf_net is not None and hw is not None:
             try:
-                # Positive delta = bet HOME, negative = bet AWAY
-                bet_home = float(sd) > 0
+                bet_home = int(conf_net) > 0
                 hit = (bet_home and hw) or (not bet_home and not hw)
                 tier_stats[conf_tier]["total"] += 1
                 if hit:
