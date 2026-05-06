@@ -1993,6 +1993,7 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [hrWatch, setHrWatch] = useState<any[]>([]);
   const [hrWatchLoading, setHrWatchLoading] = useState(false);
   const [hrWatchOpen, setHrWatchOpen] = useState(false);
+  const [ufcEvent, setUfcEvent] = useState<any>(null);
   const [expandedPropJerry, setExpandedPropJerry] = useState(null);
   const [roiChartTab, setRoiChartTab] = useState('cumulative');
   const [roiTimeRange, setRoiTimeRange] = useState('all');
@@ -6195,6 +6196,28 @@ if(mkt.key === 'pitcher_props') {
     setHrWatchLoading(false);
   };
 
+  const fetchUfcEvent = async () => {
+    try {
+      const { data } = await supabase
+        .from('ufc_upcoming_event')
+        .select('event_name,event_date,fight_card,updated_at')
+        .order('updated_at', { ascending: false })
+        .limit(1);
+      if (data && data.length > 0) {
+        const row = data[0];
+        let card: any[] = [];
+        try {
+          card = typeof row.fight_card === 'string' ? JSON.parse(row.fight_card) : (row.fight_card || []);
+        } catch { card = []; }
+        setUfcEvent({ ...row, fight_card: card });
+      } else {
+        setUfcEvent(null);
+      }
+    } catch {
+      setUfcEvent(null);
+    }
+  };
+
   const fetchPropOfDay = async () => {
     const _now = new Date();
     const today = _now.getFullYear() + '-' + String(_now.getMonth()+1).padStart(2,'0') + '-' + String(_now.getDate()).padStart(2,'0');
@@ -7393,6 +7416,7 @@ setJerryHistory(prev => {
   if(activeTab==='games') {
     fetchGames(gamesSport,gamesDay);
     if(gamesSport==='MLB') { fetchMLBGameContext(); fetchHRWatch(); }
+    if(gamesSport==='UFC') { fetchUfcEvent(); }
   }
 },[activeTab,gamesSport,gamesDay,bartData.length]);
   useEffect(()=>{
@@ -9051,6 +9075,25 @@ setJerryHistory(prev => {
       <Text style={{color:'#4a6070',fontSize:10}}>🔄 8am + 2pm ET</Text>
     </View>
     <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back at 2pm for full confirmed slate.</Text>
+  </View>
+)}
+{gamesSport==='UFC' && ufcEvent && (
+  <View style={{backgroundColor:'rgba(255,77,109,0.08)',borderRadius:14,padding:14,marginBottom:14,borderWidth:1.5,borderColor:'rgba(255,77,109,0.35)'}}>
+    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+      <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:13,letterSpacing:0.5}}>🥊 {ufcEvent.event_name}</Text>
+      <Text style={{color:'#7a92a8',fontSize:10}}>{ufcEvent.event_date}</Text>
+    </View>
+    {ufcEvent.fight_card && ufcEvent.fight_card[0] && (
+      <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'700',marginTop:2}}>
+        Main Event — {ufcEvent.fight_card[0].fighter1} vs {ufcEvent.fight_card[0].fighter2}
+      </Text>
+    )}
+    {ufcEvent.fight_card && ufcEvent.fight_card[1] && (
+      <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>
+        Co-Main — {ufcEvent.fight_card[1].fighter1} vs {ufcEvent.fight_card[1].fighter2}
+      </Text>
+    )}
+    <Text style={{color:'#4a6070',fontSize:10,marginTop:6}}>{ufcEvent.fight_card?.length || 0}-fight card • Tap a fight below for stats + edges</Text>
   </View>
 )}
 {gamesSport==='MLB' && hrWatch.filter((h:any) => {
