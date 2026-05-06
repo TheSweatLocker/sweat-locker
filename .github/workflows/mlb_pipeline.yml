@@ -112,6 +112,25 @@ jobs:
           cd mlb_pipeline
           python generate_dawg_of_day.py
 
+      # NCAAB Phase 1 prep — server-side KenPom puller (Mondays only).
+      # Once season starts (Nov 2026), bump cadence to daily by removing
+      # the day gate. Until then KenPom is mostly static offseason and
+      # weekly is plenty.
+      - name: Pull NCAAB KenPom snapshot (Mondays only)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          KENPOM_KEY: ${{ secrets.KENPOM_KEY }}
+        run: |
+          DAY=$(date -u -d '-4 hours' +%u)
+          if [ "$DAY" = "1" ]; then
+            echo "Monday — pulling KenPom snapshot"
+            cd mlb_pipeline
+            python ncaab_pipeline.py
+          else
+            echo "Not Monday (day=$DAY) — skipping NCAAB pull"
+          fi
+
       - name: Update umpire database (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

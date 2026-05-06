@@ -71,6 +71,103 @@ def sb_upsert(table, rows, on_conflict):
         return False
 
 
+def fetch_all_resolved_nba():
+    """Pull all resolved NBA games from nba_game_results."""
+    all_rows = []
+    offset = 0
+    while True:
+        rows = sb_get("nba_game_results", {
+            "home_score": "not.is.null",
+            "select": "game_date,home_team,away_team,home_score,away_score,home_win,total_points,net_rating_gap,close_spread,open_spread,close_total,open_total",
+            "order": "game_date.asc",
+            "limit": "1000",
+            "offset": str(offset),
+        })
+        if not rows:
+            break
+        all_rows.extend(rows)
+        if len(rows) < 1000:
+            break
+        offset += 1000
+    return all_rows
+
+
+def classify_nba_nr_tier(nr_gap):
+    """Net rating gap cohort (absolute magnitude). Bet direction is the
+    team with higher net rating (positive gap = home better)."""
+    if nr_gap is None:
+        return None
+    try:
+        g = abs(float(nr_gap))
+    except (TypeError, ValueError):
+        return None
+    if g >= 8:
+        return "nba_nr_gap_ge8"
+    if g >= 5:
+        return "nba_nr_gap_5_8"
+    return None
+
+
+def compute_nba_window_rates(rows, days_back, end_date):
+    """Compute hit rate per NBA cohort within rolling window."""
+    cutoff = end_date - timedelta(days=days_back)
+    in_window = [
+        r for r in rows
+        if r.get("game_date") and datetime.strptime(r["game_date"], "%Y-%m-%d").date() >= cutoff
+    ]
+    tier_stats = defaultdict(lambda: {"hits": 0, "total": 0})
+
+    for r in in_window:
+        nr = r.get("net_rating_gap")
+        sp = r.get("close_spread") if r.get("close_spread") is not None else r.get("open_spread")
+        hw = r.get("home_win")
+        hs = r.get("home_score")
+        as_ = r.get("away_score")
+
+        # NR gap cohort — ML hit (direction = team with higher NR)
+        nr_tier = classify_nba_nr_tier(nr)
+        if nr_tier and nr is not None and hw is not None:
+            try:
+                pick_home = float(nr) > 0
+                hit_ml = (pick_home and hw) or (not pick_home and not hw)
+                ml_key = nr_tier + "_ml"
+                tier_stats[ml_key]["total"] += 1
+                if hit_ml:
+                    tier_stats[ml_key]["hits"] += 1
+
+                # Same cohort, ATS hit — pick the higher-NR team against spread
+                if sp is not None and hs is not None and as_ is not None:
+                    margin = float(hs) - float(as_)
+                    home_covered = margin > -float(sp)
+                    if margin == -float(sp):
+                        pass  # push, exclude
+                    else:
+                        hit_ats = home_covered if pick_home else (not home_covered)
+                        ats_key = nr_tier + "_ats"
+                        tier_stats[ats_key]["total"] += 1
+                        if hit_ats:
+                            tier_stats[ats_key]["hits"] += 1
+            except (TypeError, ValueError):
+                pass
+
+        # Home favorite ATS cohort
+        if sp is not None and hs is not None and as_ is not None:
+            try:
+                margin = float(hs) - float(as_)
+                line = float(sp)
+                if margin == -line:
+                    continue  # push
+                home_covered = margin > -line
+                key = "nba_home_fav_ats" if line < 0 else "nba_home_dog_ats"
+                tier_stats[key]["total"] += 1
+                if home_covered:
+                    tier_stats[key]["hits"] += 1
+            except (TypeError, ValueError):
+                pass
+
+    return tier_stats
+
+
 def fetch_all_resolved():
     """Pull all resolved games with NRFI + ML + confluence + spread fields."""
     all_rows = []
@@ -444,6 +541,46 @@ def main():
                 "sport": "mlb",  # multi-sport column added 2026-05-04 — set explicitly
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
+
+    # ── NBA cohorts (added 2026-05-06) ─────────────────────────────────
+    # Audit-driven downgrade trigger: if nba_nr_gap_ge8_ats hit rate stays
+    # below 45%, the app's NR-gap LEAN should be suppressed entirely.
+    print("\nPulling resolved NBA games...")
+    nba_rows = fetch_all_resolved_nba()
+    print(f"Total resolved NBA games: {len(nba_rows)}")
+    nba_tiers = {
+        "nba_nr_gap_ge8_ml", "nba_nr_gap_ge8_ats",
+        "nba_nr_gap_5_8_ml", "nba_nr_gap_5_8_ats",
+        "nba_home_fav_ats", "nba_home_dog_ats",
+    }
+    if nba_rows:
+        nba_window_data = {label: compute_nba_window_rates(nba_rows, days, et_today) for label, days in windows}
+        print(f"\n{'NBA TIER':35s} {'7d':>14s} {'30d':>14s} {'STD':>14s}")
+        print("-" * 80)
+        for tier in sorted(nba_tiers):
+            cells = []
+            for label, _ in windows:
+                stats = nba_window_data[label].get(tier, {"hits": 0, "total": 0})
+                if stats["total"] == 0:
+                    cells.append("—".rjust(14))
+                else:
+                    rate = stats["hits"] / stats["total"] * 100
+                    cells.append(f"{stats['hits']}-{stats['total']-stats['hits']} ({rate:.1f}%)".rjust(14))
+            print(f"{tier:35s} {cells[0]} {cells[1]} {cells[2]}")
+            for label, _ in windows:
+                stats = nba_window_data[label].get(tier, {"hits": 0, "total": 0})
+                if stats["total"] == 0:
+                    continue
+                upsert_rows.append({
+                    "tier": tier,
+                    "window_label": label,
+                    "computed_date": et_today.isoformat(),
+                    "hits": stats["hits"],
+                    "total": stats["total"],
+                    "hit_rate": round(stats["hits"] / stats["total"], 4),
+                    "sport": "nba",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
 
     if upsert_rows:
         print(f"\nUpserting {len(upsert_rows)} tier-window rows to mlb_tier_calibration...")

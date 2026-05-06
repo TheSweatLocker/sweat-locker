@@ -1044,37 +1044,51 @@ def get_pitcher_last_outing(pitcher_id):
         return None
 
 def get_pitcher_vs_team(pitcher_id, opponent_team_id):
-    """Fetch pitcher's career stats vs a specific team"""
+    """Aggregate pitcher's per-game logs vs a specific team across recent seasons.
+
+    The MLB Stats API `vsTeam`/`vsTeamTotal` splits return BATTER stats from the
+    opposing team's perspective (avg, ops, obp) — they do NOT include era or
+    inningsPitched fields. Prior implementation always returned None because
+    of the `ip < 3` filter on a missing field. Fix: pull per-game pitching log
+    via `stats=gameLog`, filter to games where opponent.id matches, sum ER/IP/K
+    across 2025-2026 to compute opponent-specific ERA.
+    """
     if not pitcher_id or not opponent_team_id:
         return None
     try:
-        r = requests.get(
-            f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
-            params={"stats": "vsTeam", "group": "pitching", "season": 2026, "opposingTeamId": opponent_team_id},
-            timeout=10
-        )
-        splits = r.json().get("stats", [])
-        if not splits or not splits[0].get("splits"):
-            # Try career stats
-            r2 = requests.get(
+        agg = {"er": 0, "ip": 0.0, "k": 0, "ab": 0, "hits": 0, "g": 0}
+        for season in (2026, 2025):
+            r = requests.get(
                 f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
-                params={"stats": "vsTeamTotal", "group": "pitching", "opposingTeamId": opponent_team_id},
-                timeout=10
+                params={"stats": "gameLog", "group": "pitching", "season": season},
+                timeout=10,
             )
-            splits = r2.json().get("stats", [])
-            if not splits or not splits[0].get("splits"):
-                return None
-        s = splits[0]["splits"][0]["stat"]
-        ip = float(s.get("inningsPitched", "0").replace('.1','.33').replace('.2','.67') or "0")
-        if ip < 3:
-            return None  # too small sample
+            stats_block = r.json().get("stats", [])
+            splits = stats_block[0].get("splits", []) if stats_block else []
+            for sp in splits:
+                if sp.get("opponent", {}).get("id") != opponent_team_id:
+                    continue
+                stat = sp.get("stat", {})
+                ip_str = str(stat.get("inningsPitched", "0"))
+                # MLB encodes 6.1 IP as 6.333, 6.2 IP as 6.667
+                ip = float((ip_str.replace(".1", ".333").replace(".2", ".667")) or "0")
+                agg["ip"] += ip
+                agg["er"] += int(stat.get("earnedRuns", 0) or 0)
+                agg["k"] += int(stat.get("strikeOuts", 0) or 0)
+                agg["ab"] += int(stat.get("atBats", 0) or 0)
+                agg["hits"] += int(stat.get("hits", 0) or 0)
+                agg["g"] += 1
+        if agg["ip"] < 3:
+            return None
+        era = round((agg["er"] * 9.0) / agg["ip"], 2)
+        avg = round(agg["hits"] / agg["ab"], 3) if agg["ab"] > 0 else 0.0
         return {
-            "era_vs_team": float(s.get("era", "0") or "0"),
-            "avg_vs_team": float(s.get("avg", "0") or "0"),
-            "ip_vs_team": round(ip, 1),
-            "k_vs_team": int(s.get("strikeOuts", 0) or 0),
+            "era_vs_team": era,
+            "avg_vs_team": avg,
+            "ip_vs_team": round(agg["ip"], 1),
+            "k_vs_team": agg["k"],
         }
-    except:
+    except Exception:
         return None
 
 def get_mlb_injuries(team_name):

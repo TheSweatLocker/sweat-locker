@@ -4006,10 +4006,13 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         const directionAgrees = marketHomeFav == null || modelHomeFav === marketHomeFav;
         const fav = nrGap > 0 ? homeName : awayName;
         if(!homeOut && !awayOut && directionAgrees) {
+          // Audit (5/6/2026, 26 playoff games): NR_gap>=8 ATS hit 36.4%,
+          // ML hit 54.5% — break-even with juice. Downgraded STRONG → LEAN
+          // until regular season sample (Nov+) recalibrates the cohort.
           if(Math.abs(nrGap) >= 8) {
-            primaryPlay = { type: 'ml', tier: 'STRONG', label: `${fav} ML lean`,
-              sub: `Net rating gap +${Math.abs(nrGap).toFixed(1)}` };
-            signalFloor = 68;
+            primaryPlay = { type: 'ml', tier: 'LEAN', label: `${fav} ML lean`,
+              sub: `Net rating gap +${Math.abs(nrGap).toFixed(1)} (small sample, monitor)` };
+            signalFloor = 58;
           } else if(Math.abs(nrGap) >= 5) {
             primaryPlay = { type: 'ml', tier: 'LIGHT', label: `${fav} lean`,
               sub: `Net rating gap +${Math.abs(nrGap).toFixed(1)}` };
@@ -11310,7 +11313,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                   <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>🔒 Privacy Policy</Text>
                   <Text style={{color:'#4a6070',fontSize:12}}>{showPrivacy?'Hide ▲':'View ▼'}</Text>
                 </View>
-                <Text style={{color:'#7a92a8',fontSize:12,marginTop:8,lineHeight:18}}>Your data stays yours. We never sell or share it with advertisers. Last updated April 2026.</Text>
+                <Text style={{color:'#7a92a8',fontSize:12,marginTop:8,lineHeight:18}}>Your data stays yours. We never sell or share it with advertisers. Last updated May 2026.</Text>
                 {showPrivacy&&(
                 <Text style={{color:'#7a92a8',fontSize:12,lineHeight:20,marginTop:12}}>
                   Note: "Hard Rock Bet" and the guitar logo are trademarks of the Seminole Tribe of Florida/Hard Rock Digital. Referenced for informational purposes only.{'\n\n'}
@@ -11333,16 +11336,12 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                   - To improve app performance and fix bugs{'\n\n'}
                   We never sell your data. We never share your data with advertisers.{'\n\n'}
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>THIRD PARTY SERVICES{'\n'}</Text>
-                  The Sweat Locker uses the following third party services to operate:{'\n\n'}
+                  The Sweat Locker uses the following third party services that may process your data:{'\n\n'}
                   Apple App Store — handles all payment processing. We never see or store your card information.{'\n'}
                   RevenueCat — manages subscription status and trial periods. Privacy policy at revenuecat.com/privacy{'\n'}
                   Supabase — secure cloud database for app analytics data. Privacy policy at supabase.com/privacy{'\n'}
-                  Anthropic (Claude AI) — powers Jerry AI game analysis. Prompts are not stored or used for training. Privacy policy at anthropic.com/privacy{'\n'}
-                  The Odds API — provides live sportsbook odds data{'\n'}
-                  Ball Don't Lie (BDL) — provides NBA statistics{'\n'}
-                  MLB Stats API — provides MLB statistics{'\n'}
-                  Barttorvik — provides NCAAB analytics data{'\n'}
-                  Open-Meteo — provides weather data for game context{'\n\n'}
+                  Anthropic (Claude AI) — powers Jerry AI game analysis. Prompts are not stored or used for training. Privacy policy at anthropic.com/privacy{'\n\n'}
+                  We also aggregate publicly available sports statistics, odds data, and weather data from various public APIs and data providers to power our analytics. These providers do not receive any of your personal data.{'\n\n'}
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>YOUR DATA RIGHTS{'\n'}</Text>
                   - You can delete all manually entered bet history anytime within the app{'\n'}
                   - You can request complete deletion of your account data by emailing support@thesweatlocker.com{'\n'}
@@ -11374,7 +11373,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                   <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>📋 Terms of Service</Text>
                   <Text style={{color:'#4a6070',fontSize:12}}>{showTerms?'Hide ▲':'View ▼'}</Text>
                 </View>
-                <Text style={{color:'#7a92a8',fontSize:12,marginTop:8,lineHeight:18}}>Entertainment and analytics only. Not gambling advice. Must be 18+. Last updated April 2026.</Text>
+                <Text style={{color:'#7a92a8',fontSize:12,marginTop:8,lineHeight:18}}>Entertainment and analytics only. Not gambling advice. Must be 18+. Last updated May 2026.</Text>
                 {showTerms&&(
                 <Text style={{color:'#7a92a8',fontSize:12,lineHeight:20,marginTop:12}}>
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>1. ACCEPTANCE OF TERMS{'\n'}</Text>
@@ -11394,7 +11393,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                   - Refunds are handled by Apple per their standard refund policy — we do not process refunds directly{'\n'}
                   - Prices are in USD and subject to change with reasonable notice{'\n\n'}
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>6. DATA ACCURACY{'\n'}</Text>
-                  We source data from The Odds API, MLB Stats API, Ball Don't Lie, Barttorvik, Baseball Savant, and other public sports data providers. We make no warranty that data is complete, accurate, or current at all times. Pipeline data is updated twice daily. Always verify odds and lines with your sportsbook before placing any wager.{'\n\n'}
+                  We aggregate data from various public sports statistics providers, odds APIs, and weather services. We make no warranty that data is complete, accurate, or current at all times. Pipeline data is updated twice daily. Always verify odds and lines with your sportsbook before placing any wager.{'\n\n'}
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>7. AI-GENERATED CONTENT{'\n'}</Text>
                   Jerry AI is powered by Anthropic's Claude AI model. AI-generated analysis may contain errors, omissions, or outdated information. We are not responsible for decisions made based on AI-generated content. Jerry AI analysis is clearly labeled as AI-generated throughout the App.{'\n\n'}
                   <Text style={{color:'#e8f0f8',fontWeight:'700'}}>8. RESPONSIBLE GAMBLING{'\n'}</Text>
