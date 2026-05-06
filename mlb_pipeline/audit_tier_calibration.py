@@ -78,7 +78,7 @@ def fetch_all_resolved():
     while True:
         rows = sb_get("mlb_game_results", {
             "nrfi_result": "not.is.null",
-            "select": "game_date,nrfi_score,nrfi_result,signal_confluence_net,spread_delta,home_win,close_spread,home_spread_covered,game_id,home_team,away_team,projected_total,close_total,total_runs,total_result",
+            "select": "game_date,nrfi_score,nrfi_result,signal_confluence_net,spread_delta,projected_spread,home_win,close_spread,home_spread_covered,game_id,home_team,away_team,projected_total,close_total,total_runs,total_result",
             "order": "game_date.asc",
             "limit": "1000",
             "offset": str(offset),
@@ -288,19 +288,24 @@ def compute_window_rates(rows, days_back, end_date, breakdowns=None):
                 if res == expected:
                     tier_stats[nrfi_tier]["hits"] += 1
 
-        # Confluence tier — direction inferred from signal_confluence_net
-        # sign (positive = model favors home, negative = away). spread_delta
-        # in mlb_game_results sometimes stores opposite-sign values from
-        # mlb_game_context (e.g. Yankees 5/4 confluence +7 game logged with
-        # sd=-2.89 in results vs +1.11 in context). Confluence_net is more
-        # reliable since it reflects vote counts directly.
+        # Confluence tier — direction must come from projected_spread, NOT
+        # spread_delta or signal_confluence_net.
+        #   - signal_confluence_net is computed as (support - against) where
+        #     "support" counts signals aligning with model_pick. So net is
+        #     always non-negative for the model's preferred side, regardless
+        #     of whether that side is home or away. Cannot infer direction.
+        #   - spread_delta in mlb_game_results stores values that diverge
+        #     from mlb_game_context (e.g. Yankees 5/4: context +1.11, results
+        #     -2.89). Unreliable as a direction source.
+        #   - projected_spread is in run-differential terms (positive = home
+        #     wins by X) and is consistent across context + results.
         conf_net = r.get("signal_confluence_net")
         conf_tier = classify_confluence_tier(conf_net)
-        sd = r.get("spread_delta")
+        ps = r.get("projected_spread")
         hw = r.get("home_win")
-        if conf_tier and conf_net is not None and hw is not None:
+        if conf_tier and ps is not None and hw is not None:
             try:
-                bet_home = int(conf_net) > 0
+                bet_home = float(ps) > 0
                 hit = (bet_home and hw) or (not bet_home and not hw)
                 tier_stats[conf_tier]["total"] += 1
                 if hit:
@@ -308,11 +313,13 @@ def compute_window_rates(rows, days_back, end_date, breakdowns=None):
             except (TypeError, ValueError):
                 pass
 
-        # Spread delta tier (independent of confluence)
+        # Spread delta tier — magnitude bucket from sd, but direction MUST
+        # come from projected_spread (sd unreliable in resolved rows).
+        sd = r.get("spread_delta")
         sd_tier = classify_spread_delta_tier(sd)
-        if sd_tier and sd is not None and hw is not None:
+        if sd_tier and sd is not None and ps is not None and hw is not None:
             try:
-                bet_home = float(sd) > 0
+                bet_home = float(ps) > 0
                 hit = (bet_home and hw) or (not bet_home and not hw)
                 tier_stats[sd_tier]["total"] += 1
                 if hit:
@@ -353,14 +360,14 @@ def compute_window_rates(rows, days_back, end_date, breakdowns=None):
             if hit:
                 tier_stats[rec_cohort]["hits"] += 1
 
-        # Auto-fade cohort (matches auto_fade.cohort_for_pick logic so
-        # auto_fade can read these rates back instead of hard-coding)
+        # Auto-fade cohort — direction from projected_spread (same fix
+        # as confluence + spread_delta cohorts above).
         af_cohort = classify_autofade_cohort(
             sd, r.get("close_spread"), r.get("signal_confluence_net")
         )
-        if af_cohort and sd is not None and hw is not None:
+        if af_cohort and ps is not None and hw is not None:
             try:
-                bet_home = float(sd) > 0
+                bet_home = float(ps) > 0
                 hit = (bet_home and hw) or (not bet_home and not hw)
                 tier_stats[af_cohort]["total"] += 1
                 if hit:
