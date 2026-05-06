@@ -8613,6 +8613,23 @@ setJerryHistory(prev => {
       </View>
     )}
 
+    {/* 📈 TOTAL EDGE — model vs market deltas >= 1.5 */}
+    {sweatCard.total_edges?.length > 0 && (
+      <View style={{backgroundColor:'rgba(80,180,255,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#50b4ff'}}>
+        <Text style={{color:'#50b4ff',fontWeight:'800',fontSize:11,marginBottom:4}}>📈 TOTAL EDGE</Text>
+        {sweatCard.total_edges.map((t:any, i:number) => (
+          <View key={i} style={{marginTop:i>0?6:0}}>
+            <Text style={{color:'#fff',fontSize:13,fontWeight:'700'}}>
+              {t.game} — {t.direction} {t.close_total}
+            </Text>
+            <Text style={{color:'#7a92a8',fontSize:11,marginTop:1}}>
+              Model {t.projected_total} vs market {t.close_total} ({t.delta > 0 ? '+' : ''}{t.delta})
+            </Text>
+          </View>
+        ))}
+      </View>
+    )}
+
     {/* 🔥 STACK ALERT */}
     {sweatCard.stack_alerts?.length > 0 && (
       <View style={{backgroundColor:'rgba(255,140,80,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#ff8c50'}}>

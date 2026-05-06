@@ -182,6 +182,36 @@ def find_yrfi_lock(games, tier_rates):
     }
 
 
+def find_total_edges(games, min_delta=1.5):
+    """Find games where the model projects a total meaningfully different
+    from the market line. |projected_total - close_total| >= min_delta.
+    Returns top 2 by absolute delta. No calibrated cohort yet — these go
+    in the Sweat Card with a neutral 60% prior.
+
+    Direction follows model: model > market => OVER lean, < market => UNDER."""
+    candidates = []
+    for g in games:
+        pt = g.get("projected_total")
+        ct = g.get("close_total")
+        if pt is None or ct is None:
+            continue
+        try:
+            delta = float(pt) - float(ct)
+        except (TypeError, ValueError):
+            continue
+        if abs(delta) < min_delta:
+            continue
+        candidates.append({
+            "game": f"{g.get('away_team')} @ {g.get('home_team')}",
+            "projected_total": round(float(pt), 1),
+            "close_total": round(float(ct), 1),
+            "delta": round(delta, 2),
+            "direction": "OVER" if delta > 0 else "UNDER",
+        })
+    candidates.sort(key=lambda c: -abs(c["delta"]))
+    return candidates[:2]
+
+
 def collect_skip_alerts(games):
     """Surface games in skip-tier (NRFI 95+) so card can warn against them."""
     volatile = [g for g in games if (g.get("nrfi_score") or 0) >= 95]
@@ -211,6 +241,7 @@ def build_card():
     nrfi_lock = find_nrfi_lock(games, tier_rates)
     yrfi_lock = find_yrfi_lock(games, tier_rates)
     bucket = find_bucket_angle(games)
+    total_edges = find_total_edges(games, min_delta=1.5)
     skip_alerts = collect_skip_alerts(games)
 
     top_hits = top_props_by_type(props, "hits_over", 2)
@@ -249,6 +280,7 @@ def build_card():
         "top_hits_under": top_under_hits,
         "top_ks_under": top_under_ks,
         "bucket_angle": bucket,
+        "total_edges": total_edges,           # 📈 model vs market total deltas >= 1.5
         "stack_alerts": stack_alerts,
         "skip_alerts": skip_alerts,
         "tier_rates_30d": {
@@ -280,7 +312,7 @@ def build_card():
         print(f"✅ Sweat Card stored: lock={nrfi_lock['game'] if nrfi_lock else '—'}, "
               f"yrfi={yrfi_lock['game'] if yrfi_lock else '—'}, "
               f"bucket={'yes' if bucket else 'none'}, "
-              f"stacks={len(stack_alerts)}, skips={len(skip_alerts)}")
+              f"total_edges={len(total_edges)}, stacks={len(stack_alerts)}, skips={len(skip_alerts)}")
     else:
         print(f"❌ Sweat Card upsert failed {r.status_code}: {r.text[:200]}")
 
