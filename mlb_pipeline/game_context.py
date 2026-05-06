@@ -1819,8 +1819,28 @@ def upload_game_context(context, commence_time=None):
     return r.status_code in [200, 201, 204]
 
 def log_game_result(context):
-    """Log pre-game data to mlb_game_results for XGBoost training"""
+    """Log pre-game data to mlb_game_results for XGBoost training.
+
+    spread_delta hardening (2026-05-06): always re-derive from
+    projected_spread + close_spread at write time. Earlier path trusted
+    context.get('spread_delta') which could go stale relative to
+    projected_spread when recalc_spreads.py rewrote one column without
+    the other. Yankees 5/4 audit grade was wrong because of this mismatch
+    (results row had spread_delta=-2.89 with projected_spread=+2.61 — math
+    inconsistent). Deriving on every write keeps both columns coherent.
+    """
     try:
+        # Derive spread_delta consistently with projected_spread + close_spread
+        _ps = context.get("projected_spread")
+        _cs = context.get("close_spread") or context.get("open_spread")
+        derived_spread_delta = None
+        if _ps is not None and _cs is not None:
+            try:
+                derived_spread_delta = round(float(_ps) + float(_cs), 2)
+            except (TypeError, ValueError):
+                derived_spread_delta = context.get("spread_delta")
+        else:
+            derived_spread_delta = context.get("spread_delta")
         record = {
             "game_id": context.get("game_id"),
             "game_date": context.get("game_date"),
@@ -1900,8 +1920,15 @@ def log_game_result(context):
             "over_lean": context.get("over_lean"),
             "projected_spread": context.get("projected_spread"),
             "spread_lean": context.get("spread_lean"),
-            "spread_delta": context.get("spread_delta"),
+            "spread_delta": derived_spread_delta,
             "signal_confluence_net": context.get("signal_confluence_net"),
+            # XGBoost predictions (added 2026-05-06) — context dict had these
+            # but log_game_result was missing them so resolved rows had NULL.
+            # Required for v2/v3 backtesting + audit calibration.
+            "model_pred_home_runs": context.get("model_pred_home_runs"),
+            "model_pred_away_runs": context.get("model_pred_away_runs"),
+            "model_pred_spread": context.get("model_pred_spread"),
+            "model_pred_total": context.get("model_pred_total"),
             "open_spread": context.get("open_spread"),
             "close_spread": context.get("close_spread"),
             "confidence": context.get("confidence"),
@@ -1924,7 +1951,7 @@ def log_game_result(context):
             "away_first_inning_whip": context.get("away_first_inning_whip"),
             "projected_spread": context.get("projected_spread"),
             "spread_lean": context.get("spread_lean"),
-            "spread_delta": context.get("spread_delta"),
+            "spread_delta": derived_spread_delta,
             "open_spread": context.get("open_spread"),
             "close_spread": context.get("close_spread"),
             # ML open/close for line movement audit
