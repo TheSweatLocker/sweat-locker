@@ -4083,11 +4083,10 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         }
         // Confluence badges removed 2026-05-01 — vote-count confluence was
         // shown as PRIME but the cohort hit 0-3 live and ~38-42% in audits.
-        // Pending projection_v2 rebuild before any "model conviction" badge
-        // returns. Jerry now describes the dominant single factor instead.
-        if(ctx.over_lean === true) {
-          _evidence.push({ emoji: '📊', label: 'OVER lean', detail: 'xERA gap rule fired' });
-        }
+        // OVER-lean (xERA gap) badge removed 2026-05-06 — audit shows 0-10
+        // hit rate (claimed 59.3%, actual 0% on resolved sample). Don't
+        // surface as conviction badge. Total Edge tier on Sweat Card now
+        // covers the same lane via projected_total - close_total delta.
         const park = ctx.park_run_factor;
         if(park != null && (park >= 108 || park <= 92)) {
           _evidence.push({
@@ -5642,17 +5641,22 @@ if(sport === 'MLB') {
     } else if(nrfi <= 40) {
       visibleBadges.push(`YRFI lean badge (${nrfi}/100)`);
     }
-    if(ctx.over_lean === true) {
-      const projT = ctx.projected_total;
-      const closeT = ctx.close_total || ctx.open_total;
-      const projAgrees = projT && closeT && projT >= closeT - 0.5;
-      visibleBadges.push(`OVER lean badge (xERA gap rule fired — ${projAgrees ? 'projection ALSO points OVER, signals agree' : `BUT run projection ${projT} is below market ${closeT} — these conflict, explain BOTH and lean toward the projection unless xERA gap is overwhelming`}`);
+    // OVER-lean badge removed 2026-05-06 (audit 0-10 historical, claimed
+    // 59.3%). xERA gap is still a useful matchup descriptor but does NOT
+    // reliably predict OVERS — strong pitcher dominance often produces
+    // UNDERS. Don't tell Jerry to surface it as a directional signal.
+    // Total direction comes from projected_total vs close_total instead.
+    const projT = ctx.projected_total;
+    const closeT = ctx.close_total || ctx.open_total;
+    if(projT != null && closeT != null) {
+      const totalDelta = projT - closeT;
+      if(Math.abs(totalDelta) >= 1.5) {
+        visibleBadges.push(`Total Edge badge (model ${projT.toFixed(1)} vs market ${closeT} = ${totalDelta > 0 ? '+' : ''}${totalDelta.toFixed(1)} → ${totalDelta > 0 ? 'OVER' : 'UNDER'} lean)`);
+      }
     }
-    if(ctx.signal_confluence_net != null && ctx.signal_confluence_net >= 4) {
-      visibleBadges.push(`PRIME CONFLUENCE badge (+${ctx.signal_confluence_net} signals stack on model's pick)`);
-    } else if(ctx.signal_confluence_net != null && ctx.signal_confluence_net >= 2) {
-      visibleBadges.push(`STRONG CONFLUENCE badge (+${ctx.signal_confluence_net} signals)`);
-    }
+    // Confluence badges suppressed in user-facing UI per 5/1 audit; do not
+    // describe to Jerry as conviction signal. Use projected_total + NRFI
+    // tier as the primary directional cues instead.
     if(ctx.park_run_factor >= 110) visibleBadges.push(`Hitter park badge (factor ${ctx.park_run_factor})`);
     else if(ctx.park_run_factor <= 92) visibleBadges.push(`Pitcher park badge (factor ${ctx.park_run_factor})`);
   }
