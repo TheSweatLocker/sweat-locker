@@ -78,7 +78,7 @@ def fetch_all_resolved():
     while True:
         rows = sb_get("mlb_game_results", {
             "nrfi_result": "not.is.null",
-            "select": "game_date,nrfi_score,nrfi_result,signal_confluence_net,spread_delta,home_win,close_spread,home_spread_covered,game_id,home_team,away_team",
+            "select": "game_date,nrfi_score,nrfi_result,signal_confluence_net,spread_delta,home_win,close_spread,home_spread_covered,game_id,home_team,away_team,projected_total,close_total,total_runs,total_result",
             "order": "game_date.asc",
             "limit": "1000",
             "offset": str(offset),
@@ -148,6 +148,31 @@ def classify_spread_delta_tier(delta):
     if d >= 1.0:
         return "spread_delta_1_1_5"
     return "spread_delta_lt1"
+
+
+def classify_total_cohort(projected_total, close_total):
+    """Total-edge cohort by model-vs-market delta. Returns (cohort_name, bet_dir)
+    where bet_dir is 'over' or 'under'. None when within ±1.5 of market.
+
+    Tracks the user's question from 5/3: when v1 stats model projects 3.1
+    runs vs market 7.5, does that extreme Under signal actually pay out?
+    Earlier sample (Reds/Pirates 3.1 → actual 1, Astros/RedSox 3.8 → actual 4)
+    suggests yes but n was tiny."""
+    if projected_total is None or close_total is None:
+        return None, None
+    try:
+        pt = float(projected_total)
+        ct = float(close_total)
+    except (TypeError, ValueError):
+        return None, None
+    delta = pt - ct
+    abs_d = abs(delta)
+    if abs_d < 1.5:
+        return None, None
+    bet_dir = 'over' if delta > 0 else 'under'
+    if abs_d >= 3.0:
+        return f"total_extreme_{bet_dir}_ge3", bet_dir
+    return f"total_edge_{bet_dir}_1_5_to_3", bet_dir
 
 
 def classify_recency_cohort(breakdown):
@@ -290,6 +315,25 @@ def compute_window_rates(rows, days_back, end_date, breakdowns=None):
             except (TypeError, ValueError):
                 pass
 
+        # Total-edge cohort — when model and market disagree on total by
+        # 1.5+ runs, does the model side cash? Two bands per direction.
+        total_cohort, bet_dir = classify_total_cohort(r.get("projected_total"), r.get("close_total"))
+        if total_cohort and bet_dir:
+            tr = r.get("total_runs")
+            ct = r.get("close_total")
+            if tr is not None and ct is not None:
+                try:
+                    actual = float(tr)
+                    line = float(ct)
+                    if actual != line:  # exclude pushes
+                        tier_stats[total_cohort]["total"] += 1
+                        went_over = actual > line
+                        hit = (bet_dir == 'over' and went_over) or (bet_dir == 'under' and not went_over)
+                        if hit:
+                            tier_stats[total_cohort]["hits"] += 1
+                except (TypeError, ValueError):
+                    pass
+
         # Recency cohort — does the recency vote actually predict winners?
         # Read from signal_confluence_breakdown JSON. recency_normal fires
         # when |L10 R/G - season R/G| differential ≥ 0.8 between teams;
@@ -353,6 +397,8 @@ def main():
         "spread_delta_ge2", "spread_delta_1_5_2", "spread_delta_1_1_5", "spread_delta_lt1",
         "autofade_chalk_high_mag", "autofade_chalk", "autofade_dog", "autofade_dog_high_conv",
         "recency_normal", "recency_extreme",
+        "total_extreme_under_ge3", "total_extreme_over_ge3",
+        "total_edge_under_1_5_to_3", "total_edge_over_1_5_to_3",
     }
 
     window_data = {}
