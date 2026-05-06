@@ -4259,7 +4259,43 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         leg.matchup?.includes(ctx.away_team?.split(' ').pop())
       ) as any;
       if(mlbCtx) {
-        return `MLB Pipeline: ${mlbCtx.home_pitcher || 'TBD'} xERA ${mlbCtx.home_sp_xera || 'N/A'} vs ${mlbCtx.away_pitcher || 'TBD'} xERA ${mlbCtx.away_sp_xera || 'N/A'}. K gap: home ${mlbCtx.home_k_gap || 'N/A'}, away ${mlbCtx.away_k_gap || 'N/A'}. wRC+: ${mlbCtx.home_wrc_plus || 'N/A'} vs ${mlbCtx.away_wrc_plus || 'N/A'}. Park: ${mlbCtx.park_run_factor || 'N/A'}. Weather: ${mlbCtx.temperature || '?'}°F, ${mlbCtx.wind_speed || 0}mph ${mlbCtx.wind_direction || ''}. NRFI score: ${mlbCtx.nrfi_score || 'N/A'}. Total lean: ${mlbCtx.over_lean === true ? 'OVER' : mlbCtx.over_lean === false ? 'UNDER' : 'NEUTRAL'}. Spread lean: ${mlbCtx.spread_lean === 'home' ? mlbCtx.home_team + ' favored' : mlbCtx.spread_lean === 'away' ? mlbCtx.away_team + ' favored' : 'neutral'}. Spread delta: ${mlbCtx.spread_delta != null ? mlbCtx.spread_delta.toFixed(1) + ' runs' : 'N/A'}.`;
+        // Total direction: projected_total vs close_total (replaces deprecated over_lean / xERA gap)
+        const projT = mlbCtx.projected_total;
+        const closeT = mlbCtx.close_total || mlbCtx.open_total;
+        const totalDelta = (projT != null && closeT != null) ? (projT - closeT) : null;
+        const totalLean = totalDelta == null ? 'NEUTRAL'
+          : totalDelta >= 1.5 ? `OVER (model ${projT.toFixed(1)} vs market ${closeT.toFixed(1)} = +${totalDelta.toFixed(1)})`
+          : totalDelta <= -1.5 ? `UNDER (model ${projT.toFixed(1)} vs market ${closeT.toFixed(1)} = ${totalDelta.toFixed(1)})`
+          : `NEUTRAL (model ${projT?.toFixed(1) || 'N/A'} vs market ${closeT?.toFixed(1) || 'N/A'})`;
+
+        // 1st-inning fragility (relevant for NRFI/YRFI legs)
+        const firstInn = `1st-inn ERA: home ${mlbCtx.home_first_inning_era ?? 'N/A'} / away ${mlbCtx.away_first_inning_era ?? 'N/A'}`;
+
+        // Bullpen workload — gassed pen = late-game runs
+        const bpWorkload = `BP relievers L3d: home ${mlbCtx.home_bp_relievers_3d ?? '?'} / away ${mlbCtx.away_bp_relievers_3d ?? '?'}${(mlbCtx.home_bp_relievers_3d ?? 0) >= 12 || (mlbCtx.away_bp_relievers_3d ?? 0) >= 12 ? ' [GASSED]' : ''}`;
+
+        // L10 recency
+        const recency = `L10 R/G: home ${mlbCtx.home_last10_runs_per_game ?? '?'} / away ${mlbCtx.away_last10_runs_per_game ?? '?'} | streaks ${mlbCtx.home_streak || 'N/A'} / ${mlbCtx.away_streak || 'N/A'}`;
+
+        // L3 pitcher ERA — form drift
+        const l3Form = `Pitcher L3 ERA: home ${mlbCtx.home_pitcher_last_3_era ?? 'N/A'} / away ${mlbCtx.away_pitcher_last_3_era ?? 'N/A'}`;
+
+        // NRFI tier label
+        const nrfi = mlbCtx.nrfi_score;
+        const nrfiTier = nrfi == null ? 'N/A'
+          : nrfi >= 95 ? `${nrfi} (volatile 95+ band — below baseline)`
+          : nrfi >= 90 ? `${nrfi} (PRIME 90-94 band — ~69% audited 30d)`
+          : nrfi >= 70 ? `${nrfi} (mild lean 70-79 — ~58% audited)`
+          : nrfi <= 40 ? `${nrfi} (YRFI ≤40 — ~69% audited)`
+          : `${nrfi} (neutral)`;
+
+        // Confluence (DON'T tell Jerry to lean on it — audit corrected to 75%
+        // PRIME but cohort still small)
+        const confluence = mlbCtx.signal_confluence_net != null
+          ? `Confluence net ${mlbCtx.signal_confluence_net > 0 ? '+' : ''}${mlbCtx.signal_confluence_net} (model ${mlbCtx.spread_lean === 'home' ? 'favors home' : mlbCtx.spread_lean === 'away' ? 'favors away' : 'neutral'})`
+          : 'no confluence';
+
+        return `MLB Pipeline: ${mlbCtx.home_pitcher || 'TBD'} xERA ${mlbCtx.home_sp_xera || 'N/A'} vs ${mlbCtx.away_pitcher || 'TBD'} xERA ${mlbCtx.away_sp_xera || 'N/A'}. K gap: home ${mlbCtx.home_k_gap || 'N/A'}, away ${mlbCtx.away_k_gap || 'N/A'}. wRC+: ${mlbCtx.home_wrc_plus || 'N/A'} vs ${mlbCtx.away_wrc_plus || 'N/A'}. Park: ${mlbCtx.park_run_factor || 'N/A'}. Weather: ${mlbCtx.temperature || '?'}°F, ${mlbCtx.wind_speed || 0}mph ${mlbCtx.wind_direction || ''}. NRFI: ${nrfiTier}. Total lean: ${totalLean}. Spread delta: ${mlbCtx.spread_delta != null ? mlbCtx.spread_delta.toFixed(1) + ' runs' : 'N/A'}. ${confluence}. ${firstInn}. ${l3Form}. ${bpWorkload}. ${recency}.`;
       }
       const homeNBA = Object.values(nbaTeamData).find((t: any) =>
         leg.matchup?.includes(t.team?.split(' ').pop())
