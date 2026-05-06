@@ -9073,12 +9073,22 @@ setJerryHistory(prev => {
           <View>
             <Text style={styles.pageTitle}>Games</Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
-              {['yesterday','today','tomorrow'].map(d=>(
+              {/* 'yesterday' removed 2026-05-06 — pipeline doesn't backfill resolved
+                  games into the games view; tab rendered blank. Future work: repurpose
+                  into 'Yesterday's Audit' showing W/L grades on prior-day picks. */}
+              {['today','tomorrow'].map(d=>(
                 <TouchableOpacity key={d} style={[styles.chipBtn,gamesDay===d&&styles.chipBtnActive,{flex:1,alignItems:'center'}]} onPress={()=>setGamesDay(d)}>
                   <Text style={[styles.chipTxt,gamesDay===d&&styles.chipTxtActive]}>{d.charAt(0).toUpperCase()+d.slice(1)}</Text>
                 </TouchableOpacity>
               ))}
             </View>
+            {gamesDay==='tomorrow' && (
+              <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:10,padding:10,marginBottom:12,borderLeftWidth:3,borderLeftColor:'#7a92a8'}}>
+                <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>
+                  Showing market lines only. Pipeline model data (NRFI, props, conviction tiers) lands at 8am ET tomorrow.
+                </Text>
+              </View>
+            )}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
               <View style={{flexDirection:'row',gap:6}}>
                 {SPORTS.map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,gamesSport===s&&styles.chipBtnActive]} onPress={()=>setGamesSport(s)}><Text style={[styles.chipTxt,gamesSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text></TouchableOpacity>))}
