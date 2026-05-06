@@ -1333,7 +1333,7 @@ def detect_opener(pitcher_id):
     except:
         return False
 
-def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None, home_is_opener=False, away_is_opener=False, game_month=None, umpire_stats=None, home_inning_1_rpg=None, away_inning_1_rpg=None):
+def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away_days_rest, temperature, wind_speed, wind_direction, park_run_factor, home_wrc_plus, away_wrc_plus, home_first_inn=None, away_first_inn=None, home_is_opener=False, away_is_opener=False, game_month=None, umpire_stats=None, home_inning_1_rpg=None, away_inning_1_rpg=None, home_pitcher_splits=None, away_pitcher_splits=None):
     """
     Calculate NRFI (No Run First Inning) probability score 0-100.
     Higher = stronger NRFI lean.
@@ -1554,6 +1554,29 @@ def calc_nrfi_score(home_pitcher_stats, away_pitcher_stats, home_days_rest, away
             continue
         try:
             v2_adj += max(-3, min(3, round((float(nrfi_rate) - 0.50) * 15)))
+        except (TypeError, ValueError):
+            pass
+
+    # Home/away split (added 2026-05-05). Pitcher in favorable venue split
+    # → push NRFI; unfavorable → push YRFI. Each pitcher capped at ±2;
+    # both can combine to ±4. Splits live on get_pitcher_splits() dict
+    # (home_era / away_era), passed in separately from pitcher_stats.
+    for pstats, splits, is_home in (
+        (home_pitcher_stats, home_pitcher_splits, True),
+        (away_pitcher_stats, away_pitcher_splits, False),
+    ):
+        if not pstats or not splits:
+            continue
+        season = pstats.get('era')
+        split_era = splits.get('home_era') if is_home else splits.get('away_era')
+        if season is None or split_era is None:
+            continue
+        try:
+            delta = float(split_era) - float(season)
+            if delta <= -1.0:
+                v2_adj += 2
+            elif delta >= 1.0:
+                v2_adj -= 2
         except (TypeError, ValueError):
             pass
 
@@ -2401,6 +2424,8 @@ def run():
                 umpire_stats=_ump_stats_for_nrfi,
                 home_inning_1_rpg=home_offense.get('inning_1_runs_per_game') if home_offense else None,
                 away_inning_1_rpg=away_offense.get('inning_1_runs_per_game') if away_offense else None,
+                home_pitcher_splits=home_pitcher_splits,
+                away_pitcher_splits=away_pitcher_splits,
             )
             if nrfi_score:
                 # NRFI lean threshold raised from 60 to 70 (2026-04-29):

@@ -55,6 +55,24 @@ def _i(v):
     except: return None
 
 
+def pitcher_split_delta(g, side):
+    """Returns (split_era - season_era) for the pitcher tonight.
+    Positive = pitcher is in WORSE split today (fade-favorable).
+    Negative = pitcher is in BETTER split today (Over-K / Under-ER favorable).
+
+    Side='home' means pitcher pitches at home → use home_era split.
+    Side='away' means pitcher is on the road → use away_era split.
+    Returns None when split data is missing."""
+    if side == 'home':
+        split_era = _f(g.get('home_pitcher_home_era'))
+    else:
+        split_era = _f(g.get('away_pitcher_away_era'))
+    season_era = _f(g.get(f'{side}_sp_era'))
+    if split_era is None or season_era is None:
+        return None
+    return split_era - season_era
+
+
 def today_et():
     et = datetime.now(timezone.utc) - timedelta(hours=4)
     return et.strftime('%Y-%m-%d')
@@ -519,6 +537,16 @@ def score_pitcher_ks(g, side):
                 conviction += 4
                 signals['bucket_sustain'] = f'4th-6th K% {b46:.0f}% — sustains through order'
 
+    # Home/away split — pitcher in favorable split = more Ks expected
+    split = pitcher_split_delta(g, side)
+    if split is not None:
+        if split <= -1.0:
+            conviction += 5
+            signals['split'] = f'In favored split ({split:+.2f} ERA vs season)'
+        elif split >= 1.0:
+            conviction -= 5
+            signals['split_neg'] = f'In worse split ({split:+.2f} ERA vs season)'
+
     conviction = max(0, min(100, conviction))
 
     # Suggested line: conservative projection with realistic caps.
@@ -662,6 +690,15 @@ def score_pitcher_ks_under(g, side):
         # pitcher-friendly but not specifically K-friendly = bigger zone, not more Ks
         pass
 
+    # Home/away split — pitcher in WORSE split = fewer Ks → boost K Under
+    split = pitcher_split_delta(g, side)
+    if split is not None:
+        if split >= 1.0:
+            conviction += 5
+            signals['split'] = f'In worse split ({split:+.2f} ERA vs season)'
+        elif split <= -1.0:
+            conviction -= 5
+
     conviction = max(0, min(100, conviction))
 
     # Suggested Under line — project conservative Ks then add cushion to the
@@ -764,6 +801,15 @@ def score_pitcher_outs(g, side):
         conviction -= 7
         signals['slow_start'] = f'1st inn ERA {first_inn_era:.1f} — burns pitches early'
 
+    # Home/away split — favorable split → pitcher goes deeper
+    split = pitcher_split_delta(g, side)
+    if split is not None:
+        if split <= -1.0:
+            conviction += 5
+            signals['split'] = f'In favored split ({split:+.2f} ERA vs season)'
+        elif split >= 1.0:
+            conviction -= 5
+
     conviction = max(0, min(100, conviction))
 
     # Suggested line: most starters target 5-6 IP = 15-18 outs.
@@ -846,6 +892,15 @@ def score_pitcher_outs_under(g, side):
     if last_ip is not None and 2.0 < last_ip <= 4.5:
         conviction += 8
         signals['short_last'] = f'Last outing {last_ip:.1f} IP — fragile'
+
+    # Home/away split — worse split = quicker hook
+    split = pitcher_split_delta(g, side)
+    if split is not None:
+        if split >= 1.0:
+            conviction += 5
+            signals['split'] = f'In worse split ({split:+.2f} ERA vs season)'
+        elif split <= -1.0:
+            conviction -= 5
 
     conviction = max(0, min(100, conviction))
 
@@ -944,6 +999,15 @@ def score_pitcher_er(g, side):
     elif framing is not None and framing >= 2:
         conviction -= 5
 
+    # Home/away split — worse split = more ER expected
+    split = pitcher_split_delta(g, side)
+    if split is not None:
+        if split >= 1.0:
+            conviction += 5
+            signals['split'] = f'In worse split ({split:+.2f} ERA vs season)'
+        elif split <= -1.0:
+            conviction -= 5
+
     conviction = max(0, min(100, conviction))
 
     # Suggested line: most common is 2.5. Use 1.5 only for elite arms (rare
@@ -1033,6 +1097,15 @@ def score_pitcher_er_under(g, side):
     if framing is not None and framing >= 2:
         conviction += 6
         signals['framing'] = f'Catcher +{framing:.1f} framing — expands zone'
+
+    # Home/away split — favorable split = lower ER risk
+    split = pitcher_split_delta(g, side)
+    if split is not None:
+        if split <= -1.0:
+            conviction += 5
+            signals['split'] = f'In favored split ({split:+.2f} ERA vs season)'
+        elif split >= 1.0:
+            conviction -= 5
 
     conviction = max(0, min(100, conviction))
 
