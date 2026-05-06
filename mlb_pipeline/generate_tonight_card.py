@@ -88,6 +88,33 @@ def fetch_games(date):
     })
 
 
+def fetch_tier_rates():
+    """Pull live 30d audited rates from mlb_tier_calibration. Returns
+    {tier: (rate_pct, total_n)} so card copy reflects the *current*
+    cohort performance instead of stale hardcoded numbers."""
+    rows = sb_get("mlb_tier_calibration", {
+        "window_label": "eq.30d",
+        "sport": "eq.mlb",
+        "select": "tier,hit_rate,total",
+    })
+    out = {}
+    for r in rows or []:
+        tier = r.get("tier")
+        rate = r.get("hit_rate")
+        total = r.get("total")
+        if tier and rate is not None and total:
+            out[tier] = (round(float(rate) * 100, 1), int(total))
+    return out
+
+
+def fmt_rate(tier_rates, key, fallback="N/A"):
+    """Format a tier as 'XX.X% on N games', or fallback when missing."""
+    if key not in tier_rates:
+        return fallback
+    pct, n = tier_rates[key]
+    return f"{pct}% on {n} games (30d)"
+
+
 def format_potd(potd):
     if not potd:
         return "_(POTD not yet locked — check after 8am ET pipeline run)_"
@@ -142,8 +169,10 @@ def format_dawg(dawg):
     return f"**{dawg.get('team', '?')}** ({dawg.get('tier', '?')} {dawg.get('conviction', '?')}) — {dawg.get('matchup', '?')}"
 
 
-def detect_bucket_plays(games):
+def detect_bucket_plays(games, tier_rates):
     """Surface the biggest bucket-bet edges from game_context data."""
+    prime_rate = fmt_rate(tier_rates, "nrfi_prime_90_94", "audit pending")
+    yrfi_rate = fmt_rate(tier_rates, "yrfi_lean_le40", "audit pending")
     plays = []
     for g in games:
         away = g.get("away_team", "")
@@ -151,10 +180,10 @@ def detect_bucket_plays(games):
         nrfi = g.get("nrfi_score") or 0
         # PRIME NRFI sweet spot
         if 90 <= nrfi <= 94:
-            plays.append(f"- **{away} @ {home} NRFI** — score {nrfi}, audit-validated 90-94 PRIME tier (78.9% historical)")
+            plays.append(f"- **{away} @ {home} NRFI** — score {nrfi}, audit-validated 90-94 PRIME tier ({prime_rate})")
         # YRFI strong lean
-        elif nrfi <= 25 and nrfi != 0:
-            plays.append(f"- **{away} @ {home} YRFI / 1-3 OVER** — NRFI score {nrfi}, both starters bleed early")
+        elif nrfi <= 40 and nrfi != 0:
+            plays.append(f"- **{away} @ {home} YRFI lean** — NRFI score {nrfi}, ≤40 cohort {yrfi_rate}")
         # Gassed bullpen flag
         h3d = g.get("home_bp_relievers_3d") or 0
         a3d = g.get("away_bp_relievers_3d") or 0
@@ -165,15 +194,16 @@ def detect_bucket_plays(games):
     return plays[:5] or ["_(no high-conviction bucket plays surfaced — run scout_report.py for full bucket breakdown)_"]
 
 
-def detect_skips(games):
+def detect_skips(games, tier_rates):
     """Plays we DON'T recommend even though they look juicy — audit transparency."""
+    volatile_rate = fmt_rate(tier_rates, "nrfi_volatile_95plus", "below baseline")
     skips = []
     for g in games:
         away = g.get("away_team", "")
         home = g.get("home_team", "")
         nrfi = g.get("nrfi_score") or 0
         if nrfi >= 95:
-            skips.append(f"- **{away} @ {home} NRFI {nrfi}** — 95+ band hits 44.1% historically (volatile zone). Take the 1-3 inning bucket version of the same read instead.")
+            skips.append(f"- **{away} @ {home} NRFI {nrfi}** — 95+ volatile band, {volatile_rate}. Take the 1-3 inning bucket version of the same read instead.")
         # PRIME confluence with zero spread edge (chalk trap)
         conf = g.get("signal_confluence_net") or 0
         sd = g.get("spread_delta") or 0
@@ -192,9 +222,10 @@ def render_card(date):
     dawg = fetch_dawg(date)
     props = fetch_props(date)
     games = fetch_games(date)
+    tier_rates = fetch_tier_rates()
 
-    bucket_plays = detect_bucket_plays(games)
-    skips = detect_skips(games)
+    bucket_plays = detect_bucket_plays(games, tier_rates)
+    skips = detect_skips(games, tier_rates)
 
     # Pretty date for display
     try:
@@ -258,7 +289,7 @@ _Auto-generated from {date} pipeline output. Edit prose to taste before posting.
 > 🚫 **WHAT WE'RE NOT BETTING (and why):**
 {chr(10).join('> ' + s for s in skips)}
 >
-> Posting transparently. Tracking every play. Audited tier hit rates: PRIME NRFI 90-94 = 78.9% (352 games), PRIME confluence ML = ~71% backtest.
+> Posting transparently. Tracking every play. Live audit (rolling 30d): PRIME NRFI 90-94 = {fmt_rate(tier_rates, 'nrfi_prime_90_94', 'pending')} | YRFI ≤40 = {fmt_rate(tier_rates, 'yrfi_lean_le40', 'pending')} | PRIME confluence ML = {fmt_rate(tier_rates, 'confluence_prime_ge4', 'pending')}.
 """
     return md
 

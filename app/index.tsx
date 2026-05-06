@@ -1324,7 +1324,7 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
     try {
       const legs = [];
 
-      // 1. Scan MLB for NRFI plays — only 88-94 sweet spot (77% hit rate)
+      // 1. Scan MLB for NRFI plays — only 88-94 sweet spot (~70% audited 30d)
 const seen = new Set();
 const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
   if(!ctx.game_id || seen.has(ctx.game_id)) return false;
@@ -1359,9 +1359,16 @@ const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
         });
       }
 
-      // 2. Scan MLB totals — over leans only (55.9% hit rate), unders excluded (46.2%)
+      // 2. Scan MLB totals — model_total - close_total >= 1.5 surfaces a
+      // genuine OVER edge. over_lean (xERA gap) deprecated 2026-05-06 — audit
+      // showed 0-10 hit rate vs claimed 59.3%. Use projection delta instead.
       const topTotals = mlbCtxValues
-        .filter((ctx: any) => ctx.over_lean === true && ctx.projected_total && ctx.game_date === today)
+        .filter((ctx: any) => {
+          if (!ctx.projected_total || !ctx.game_date || ctx.game_date !== today) return false;
+          const closeT = ctx.close_total || ctx.open_total;
+          if (closeT == null) return false;
+          return (ctx.projected_total - closeT) >= 1.5;
+        })
         .map((ctx: any) => {
           const game = gamesData.find((g: any) => g.home_team === ctx.home_team);
           if(!game) return null;
@@ -1486,15 +1493,21 @@ const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
         }
       }
 
-      // Validate legs against model signals — drop legs that conflict
+      // Validate legs against model signals — drop legs that conflict.
+      // Switched 2026-05-06 from over_lean (xERA gap, audit 0-10) to
+      // projected_total vs close_total delta (same logic as Total Edge tier).
       const validatedLegs = legs.filter(leg => {
         if(leg.type === 'NRFI') return true;
-        if(leg.type === 'UNDER' && leg.ctx) {
-          if(leg.ctx.over_lean === true) return false;
-          return true;
-        }
-        if(leg.type === 'OVER' && leg.ctx) {
-          if(leg.ctx.over_lean === false) return false;
+        const ctx = leg.ctx;
+        if((leg.type === 'UNDER' || leg.type === 'OVER') && ctx) {
+          const projT = ctx.projected_total;
+          const closeT = ctx.close_total || ctx.open_total;
+          if (projT == null || closeT == null) return true;
+          const delta = projT - closeT;
+          // UNDER leg rejected when model strongly favors OVER (delta >= 1.5)
+          if(leg.type === 'UNDER' && delta >= 1.5) return false;
+          // OVER leg rejected when model strongly favors UNDER (delta <= -1.5)
+          if(leg.type === 'OVER' && delta <= -1.5) return false;
           return true;
         }
         if(leg.type === 'MLB') return true; // pitcher edge already validated
@@ -1697,10 +1710,10 @@ const FadesScanner = ({ gamesData, mlbGameContext, nbaTeamData, nbaInjuryData, g
           ctx.home_team === game.home_team || ctx.away_team === game.away_team
         );
         if(mlbCtx) {
-          // NRFI 95+ — historically volatile (38.5% hit rate)
+          // NRFI 95+ — historically volatile (~43.5% audited 30d, below baseline)
           const nrfi = mlbCtx.nrfi_score;
           if(nrfi >= 95) {
-            reasons.push(`NRFI score ${nrfi} looks elite but 95+ scores hit just 38% historically — model says step aside on NRFI`);
+            reasons.push(`NRFI score ${nrfi} looks elite but 95+ scores hit below baseline historically — model says step aside on NRFI`);
           }
 
           // Both pitchers xERA sanitized or missing
@@ -3577,10 +3590,21 @@ if(isPlayoffMode) {
       leanSide = delta > 0 ? stripMascot(game.home_team) + ' ML' : stripMascot(game.away_team) + ' ML';
       leanBet = 'ml';
     }
-    // Secondary: over lean (55.9% hit rate)
-    if(!leanSide && mlbCtx.over_lean === true) {
-      leanBet = 'total';
-      leanSide = `Over ${avgTotal.toFixed(1)}`;
+    // Secondary: total edge from projected vs market (replaces deprecated
+    // over_lean / xERA gap rule which audited 0-10).
+    if(!leanSide) {
+      const projT = mlbCtx.projected_total;
+      const closeT = mlbCtx.close_total || mlbCtx.open_total || avgTotal;
+      if (projT != null && closeT != null) {
+        const totalDelta = projT - closeT;
+        if (totalDelta >= 1.5) {
+          leanBet = 'total';
+          leanSide = `Over ${closeT.toFixed(1)}`;
+        } else if (totalDelta <= -1.5) {
+          leanBet = 'total';
+          leanSide = `Under ${closeT.toFixed(1)}`;
+        }
+      }
     }
     // Tertiary: NRFI sweet spot — read from server-computed primary_play tier.
     // Backend (compute_primary_play in game_context.py) owns the threshold band.
@@ -8679,14 +8703,20 @@ setJerryHistory(prev => {
     )}
 
     {/* 🚫 SKIP ALERTS — volatile NRFI 95+ tier */}
-    {sweatCard.skip_alerts?.length > 0 && (
-      <View style={{borderTopWidth:0.5,borderTopColor:'#1a2530',paddingTop:8,marginTop:4}}>
-        <Text style={{color:'#aa6a6a',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:4}}>🚫 SKIP TIER (NRFI 95+ — 45% audited)</Text>
-        {sweatCard.skip_alerts.map((s:any, i:number) => (
-          <Text key={i} style={{color:'#7a92a8',fontSize:11}}>{s.game} — NRFI {s.nrfi_score}</Text>
-        ))}
-      </View>
-    )}
+    {sweatCard.skip_alerts?.length > 0 && (() => {
+      const volatile = sweatCard.tier_rates_30d?.nrfi_volatile_95plus;
+      const rateStr = volatile?.hit_rate != null
+        ? `${Math.round(volatile.hit_rate * 100)}% audited`
+        : 'audit pending';
+      return (
+        <View style={{borderTopWidth:0.5,borderTopColor:'#1a2530',paddingTop:8,marginTop:4}}>
+          <Text style={{color:'#aa6a6a',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:4}}>🚫 SKIP TIER (NRFI 95+ — {rateStr})</Text>
+          {sweatCard.skip_alerts.map((s:any, i:number) => (
+            <Text key={i} style={{color:'#7a92a8',fontSize:11}}>{s.game} — NRFI {s.nrfi_score}</Text>
+          ))}
+        </View>
+      );
+    })()}
   </View>
 )}
 
