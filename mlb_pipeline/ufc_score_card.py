@@ -189,7 +189,8 @@ def run():
             if ed: extra.append(f"distance={ed}")
             extra_str = " | ".join(extra)
             tier_str = f"({tier})" if tier else ""
-            print(f"  ✅ {a_name} vs {b_name} → {picked_name} {conv}% {tier_str} {extra_str}")
+            win_prob = p_winner_a if side == "a" else (1 - p_winner_a)
+            print(f"  ✅ {a_name} vs {b_name} → {picked_name} win {win_prob:.1%} (conv {conv}) {tier_str} {extra_str}")
         else:
             skipped += 1
             print(f"  ❌ Upload failed: {a_name} vs {b_name}")
