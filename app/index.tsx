@@ -9077,7 +9077,16 @@ setJerryHistory(prev => {
     <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back at 2pm for full confirmed slate.</Text>
   </View>
 )}
-{gamesSport==='UFC' && ufcEvent && (
+{gamesSport==='UFC' && ufcEvent && (() => {
+  // Hide the header once the event date has passed (between events,
+  // before the Thursday scraper writes the next card).
+  const eventDate = new Date(ufcEvent.event_date);
+  const now = new Date();
+  // Compare at day granularity — keep showing through the day of the event.
+  const eventDay = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return eventDay >= today;
+})() && (
   <View style={{backgroundColor:'rgba(255,77,109,0.08)',borderRadius:14,padding:14,marginBottom:14,borderWidth:1.5,borderColor:'rgba(255,77,109,0.35)'}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
       <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:13,letterSpacing:0.5}}>🥊 {ufcEvent.event_name}</Text>
