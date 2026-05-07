@@ -2910,6 +2910,46 @@ def run():
                             if ax - hx >= 0.5: breakdown['park'] = 'home'
                             elif hx - ax >= 0.5: breakdown['park'] = 'away'
 
+                # Signal: pitcher vs team mastery (added 2026-05-07).
+                # Catches Eovaldi-shape blind spots — a pitcher with mediocre
+                # general numbers who has historically dominated this specific
+                # lineup (e.g. Eovaldi 0.36 ERA / 25 IP vs NYY despite 4.38 xERA).
+                #
+                # Threshold lessons:
+                #   - 15 IP minimum sample (Lorenzen vs NYM at 7 IP was a mirage that
+                #     blew up 5/6, total went 15 vs UNDER 9.5 line). 15 IP = ~3-4 starts.
+                #   - 1.5 ERA delta minimum vs pitcher's overall xera, so we only fire
+                #     on demonstrated mastery, not garden-variety good outings.
+                #
+                # Vote rule: which TEAM benefits when their pitcher has mastery?
+                # The pitcher's TEAM. So home_vs_away mastery = vote home (away
+                # lineup will struggle). away_vs_home mastery = vote away.
+                # If both pitchers have mastery flags, signal cancels (no vote).
+                try:
+                    home_pvt = home_vs_away  # in scope from earlier in build
+                    away_pvt = away_vs_home
+                    home_mastery = (
+                        home_pvt and home_pvt.get('ip_vs_team', 0) >= 15
+                        and hx is not None
+                        and home_pvt.get('era_vs_team') is not None
+                        and (hx - home_pvt['era_vs_team']) >= 1.5
+                    )
+                    away_mastery = (
+                        away_pvt and away_pvt.get('ip_vs_team', 0) >= 15
+                        and ax is not None
+                        and away_pvt.get('era_vs_team') is not None
+                        and (ax - away_pvt['era_vs_team']) >= 1.5
+                    )
+                    if home_mastery and not away_mastery:
+                        breakdown['pitcher_vs_team'] = 'home'
+                    elif away_mastery and not home_mastery:
+                        breakdown['pitcher_vs_team'] = 'away'
+                    # both-mastery and neither-mastery cases: no vote
+                except (NameError, TypeError, KeyError):
+                    # home_vs_away / away_vs_home not in scope or malformed —
+                    # signal silently doesn't fire, no penalty
+                    pass
+
                 support = sum(1 for v in breakdown.values() if v == model_pick)
                 against = sum(1 for v in breakdown.values() if v != model_pick)
                 confluence_net = support - against
@@ -3124,6 +3164,22 @@ def run():
                 "away_last5_run_diff": away_offense.get('last5_run_diff') if away_offense else None,
                 "away_last10_run_diff": away_offense.get('last10_run_diff') if away_offense else None,
                 "away_last20_run_diff": away_offense.get('last20_run_diff') if away_offense else None,
+                # Offense drift = L10 R/G - season R/G. Negative = currently
+                # cold relative to season baseline. Added 2026-05-07 to flag the
+                # "good season offense, cold bats currently" trap (Twins 5/6 case).
+                # Read by generate_props.py to fade hits-OVER PRIME when drift < -1.0.
+                "home_offense_drift": (
+                    round(float(home_offense.get('last10_runs_per_game')) - float(home_rpg), 2)
+                    if home_offense and home_offense.get('last10_runs_per_game') is not None
+                       and home_rpg is not None
+                    else None
+                ),
+                "away_offense_drift": (
+                    round(float(away_offense.get('last10_runs_per_game')) - float(away_rpg), 2)
+                    if away_offense and away_offense.get('last10_runs_per_game') is not None
+                       and away_rpg is not None
+                    else None
+                ),
                 "home_catcher_framing": home_catcher_framing,
                 "away_catcher_framing": away_catcher_framing,
                 "stats_snapshot_date": (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d'),

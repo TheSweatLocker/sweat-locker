@@ -112,6 +112,27 @@ jobs:
           cd mlb_pipeline
           python generate_dawg_of_day.py
 
+      # NFL Phase 1 prep — team-stats puller (Tuesdays during NFL season).
+      # NFL season runs Aug-Feb (preseason starts Aug, regular season Sept,
+      # playoffs Jan-Feb). Outside that window, no fresh data so we no-op.
+      # Tuesday cadence picks up Sun/Mon games in nflverse without missing
+      # latency for the Thursday slate-card drop (Phase 2).
+      - name: Pull NFL team stats (Tuesdays during season)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          DAY=$(date -u -d '-4 hours' +%u)
+          MONTH=$(date -u -d '-4 hours' +%m)
+          # Tuesday = 2; in-season = Aug (08) - Feb (02)
+          if [ "$DAY" = "2" ] && { [ "$MONTH" -ge 08 ] || [ "$MONTH" -le 02 ]; }; then
+            echo "Tuesday in NFL season — pulling team stats"
+            cd mlb_pipeline
+            python nfl_pipeline.py
+          else
+            echo "Not Tuesday or out of NFL season (day=$DAY month=$MONTH) — skipping"
+          fi
+
       # NCAAB Phase 1 prep — server-side KenPom puller (Mondays only).
       # Once season starts (Nov 2026), bump cadence to daily by removing
       # the day gate. Until then KenPom is mostly static offseason and

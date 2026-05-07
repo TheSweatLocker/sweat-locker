@@ -23,6 +23,14 @@ Table schema:
 """
 import os
 import sys
+
+# Reconfigure stdout for UTF-8 on Windows (cp1252 default crashes on emoji
+# in print statements when run locally; cron runs on Linux so no-op there).
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv

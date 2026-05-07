@@ -71,6 +71,52 @@ def sb_upsert(table, rows, on_conflict):
         return False
 
 
+def fetch_all_resolved_ks_under_props():
+    """Pull resolved K-Under props from mlb_pipeline_props for cohort audit.
+
+    K-Under fired three losses 5/3-5/6 (McCullers, Woo, Singer) and Andy flagged
+    the cohort as suspect 5/6 night. This audit grades it. PRIME tier hit rate
+    is the load-bearing metric — if it falls below 60%, may need to add a
+    season K% gate or tighter L3 fade requirement."""
+    rows = []
+    offset = 0
+    while True:
+        page = sb_get("mlb_pipeline_props", {
+            "prop_type": "eq.ks_under",
+            "result": "in.(Win,Loss)",
+            "select": "tier,result,conviction,game_date",
+            "order": "game_date.asc",
+            "limit": "1000",
+            "offset": str(offset),
+        })
+        if not page:
+            break
+        rows.extend(page)
+        if len(page) < 1000:
+            break
+        offset += 1000
+    return rows
+
+
+def compute_k_under_window_rates(rows, days_back, end_date):
+    """Compute K-Under hit rates per tier within rolling window."""
+    cutoff = end_date - timedelta(days=days_back)
+    in_window = [
+        r for r in rows
+        if r.get("game_date") and datetime.strptime(r["game_date"], "%Y-%m-%d").date() >= cutoff
+    ]
+    tier_stats = defaultdict(lambda: {"hits": 0, "total": 0})
+    for r in in_window:
+        tier = (r.get("tier") or "").upper()
+        if tier not in ("PRIME", "STRONG", "LEAN"):
+            continue
+        key = f"k_under_{tier.lower()}"
+        tier_stats[key]["total"] += 1
+        if r.get("result") == "Win":
+            tier_stats[key]["hits"] += 1
+    return tier_stats
+
+
 def fetch_all_resolved_nba():
     """Pull all resolved NBA games from nba_game_results."""
     all_rows = []
@@ -175,7 +221,7 @@ def fetch_all_resolved():
     while True:
         rows = sb_get("mlb_game_results", {
             "nrfi_result": "not.is.null",
-            "select": "game_date,nrfi_score,nrfi_result,signal_confluence_net,spread_delta,projected_spread,home_win,close_spread,home_spread_covered,game_id,home_team,away_team,projected_total,close_total,total_runs,total_result",
+            "select": "game_date,nrfi_score,nrfi_result,signal_confluence_net,spread_delta,projected_spread,home_win,close_spread,home_spread_covered,game_id,home_team,away_team,projected_total,close_total,total_runs,total_result,home_bp_relievers_3d,away_bp_relievers_3d",
             "order": "game_date.asc",
             "limit": "1000",
             "offset": str(offset),
@@ -457,6 +503,33 @@ def compute_window_rates(rows, days_back, end_date, breakdowns=None):
             if hit:
                 tier_stats[rec_cohort]["hits"] += 1
 
+        # Bullpen-gassed cohort (added 2026-05-07).
+        # When EITHER team's bp_relievers_3d >= 12, late-inning bullpen quality
+        # craters. Hypothesis: gassed pen → more late runs → game total OVER.
+        # Surfaces in Sweat Card / content cards as "bucket angle" signal but
+        # was firing without audit data — pulled 5/7 pending cohort validation.
+        # Direction: bet OVER on game total. Hit: total_runs > close_total.
+        h3d = r.get("home_bp_relievers_3d")
+        a3d = r.get("away_bp_relievers_3d")
+        try:
+            h_gassed = h3d is not None and int(h3d) >= 12
+            a_gassed = a3d is not None and int(a3d) >= 12
+        except (TypeError, ValueError):
+            h_gassed = a_gassed = False
+        if h_gassed or a_gassed:
+            tr = r.get("total_runs")
+            ct = r.get("close_total")
+            if tr is not None and ct is not None:
+                try:
+                    actual = float(tr)
+                    line = float(ct)
+                    if actual != line:  # exclude pushes
+                        tier_stats["bullpen_gassed_game_over"]["total"] += 1
+                        if actual > line:
+                            tier_stats["bullpen_gassed_game_over"]["hits"] += 1
+                except (TypeError, ValueError):
+                    pass
+
         # Auto-fade cohort — direction from projected_spread (same fix
         # as confluence + spread_delta cohorts above).
         af_cohort = classify_autofade_cohort(
@@ -508,6 +581,7 @@ def main():
         "recency_normal", "recency_extreme",
         "total_extreme_under_ge3", "total_extreme_over_ge3",
         "total_edge_under_1_5_to_3", "total_edge_over_1_5_to_3",
+        "bullpen_gassed_game_over",
     }
 
     window_data = {}
@@ -541,6 +615,42 @@ def main():
                 "sport": "mlb",  # multi-sport column added 2026-05-04 — set explicitly
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
+
+    # ── K-Under prop cohorts (added 2026-05-07) ────────────────────────
+    # Andy flagged K-Unders as "sus" 5/6 night after Woo + Singer losses
+    # on top of McCullers earlier. Cohort audit grades it.
+    print("\nPulling resolved K-Under props...")
+    ks_rows = fetch_all_resolved_ks_under_props()
+    print(f"Total resolved K-Under props: {len(ks_rows)}")
+    ks_tiers = {"k_under_prime", "k_under_strong", "k_under_lean"}
+    if ks_rows:
+        ks_window_data = {label: compute_k_under_window_rates(ks_rows, days, et_today) for label, days in windows}
+        print(f"\n{'K-UNDER TIER':35s} {'7d':>14s} {'30d':>14s} {'STD':>14s}")
+        print("-" * 80)
+        for tier in sorted(ks_tiers):
+            cells = []
+            for label, _ in windows:
+                stats = ks_window_data[label].get(tier, {"hits": 0, "total": 0})
+                if stats["total"] == 0:
+                    cells.append("—".rjust(14))
+                else:
+                    rate = stats["hits"] / stats["total"] * 100
+                    cells.append(f"{stats['hits']}-{stats['total']-stats['hits']} ({rate:.1f}%)".rjust(14))
+            print(f"{tier:35s} {cells[0]} {cells[1]} {cells[2]}")
+            for label, _ in windows:
+                stats = ks_window_data[label].get(tier, {"hits": 0, "total": 0})
+                if stats["total"] == 0:
+                    continue
+                upsert_rows.append({
+                    "tier": tier,
+                    "window_label": label,
+                    "computed_date": et_today.isoformat(),
+                    "hits": stats["hits"],
+                    "total": stats["total"],
+                    "hit_rate": round(stats["hits"] / stats["total"], 4),
+                    "sport": "mlb",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
 
     # ── NBA cohorts (added 2026-05-06) ─────────────────────────────────
     # Audit-driven downgrade trigger: if nba_nr_gap_ge8_ats hit rate stays

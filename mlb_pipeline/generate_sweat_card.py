@@ -486,7 +486,14 @@ def build_card():
         "top_ks_over": top_ks,
         "top_hits_under": top_under_hits,
         "top_ks_under": top_under_ks,
-        "bucket_angle": bucket,
+        # Bucket angle pulled from user-facing payload 2026-05-07 pending audit.
+        # The signal (starter weak in innings 4-6 + opposing pen rested) hasn't
+        # been cohort-tracked, so we don't know its actual hit rate. Same
+        # discipline that just caught K-Under PRIME at 55.6% and OVER-lean at
+        # 0-10 — don't surface unaudited PRIME-style flags. Keep computing
+        # internally (find_bucket_angle still runs for logging) but null in
+        # the public field until cohort matures.
+        "bucket_angle": None,
         "total_edges": total_edges,           # 📈 model vs market total deltas >= 1.5
         "stack_alerts": stack_alerts,
         "skip_alerts": skip_alerts,

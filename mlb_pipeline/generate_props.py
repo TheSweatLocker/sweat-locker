@@ -19,6 +19,14 @@ from dotenv import load_dotenv
 load_dotenv()
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+
+# Reconfigure stdout for UTF-8 on Windows (cp1252 default crashes on emoji
+# in print statements when run locally; cron runs on Linux so no-op there).
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 HEADERS = {
     'apikey': SUPABASE_KEY,
     'Authorization': f'Bearer {SUPABASE_KEY}',
@@ -699,6 +707,28 @@ def score_pitcher_ks_under(g, side):
         elif split <= -1.0:
             conviction -= 5
 
+    # K-Under PRIME gate (added 2026-05-07).
+    # Audit shows k_under_prime hits 55.6% (5-4) while k_under_strong hits
+    # 85.7% (6-1) — PRIME is over-confident on small sample. Multi-signal
+    # gate required to clear PRIME tier:
+    #   - pitcher season K% ≤ 22 (low-K pitcher, fade is appropriate)
+    #   - opposing lineup K% ≤ 22 (contact lineup supports the fade)
+    #   - L3 K% < season K% (declining form, not just consistently low)
+    # If any missing or above threshold, cap at STRONG (conviction 81).
+    # Hypothesis from project_under_props_calibration.md (4/30) — confirmed
+    # by 5/7 audit landing K-Under PRIME at coin-flip territory.
+    prime_gate_pass = (
+        pitcher_k_pct is not None and pitcher_k_pct <= 22
+        and opp_k_pct is not None and opp_k_pct <= 22
+        and l3_k is not None and pitcher_k_pct is not None and l3_k < pitcher_k_pct
+    )
+    if not prime_gate_pass and conviction >= 82:
+        conviction = 81  # cap at STRONG
+        signals['prime_gate'] = (
+            'PRIME tier capped — multi-signal gate not met '
+            '(k_under_prime audit 55.6%, n=9)'
+        )
+
     conviction = max(0, min(100, conviction))
 
     # Suggested Under line — project conservative Ks then add cushion to the
@@ -1257,6 +1287,23 @@ def score_batter_hits(g, batter, side, lineup_position=None):
         if streak >= 3:
             conviction -= 6
             signals['hitless_streak'] = f'{streak} straight games w/o a hit'
+
+    # Offense drift fade gate (added 2026-05-07).
+    # Catches the "good season offense, cold bats currently" trap. Twins 5/6
+    # are the canonical case — 105 wRC+ season-long but in a cold L10 stretch,
+    # then went 2-runs-flat in a 15-2 loss with 4 hits-OVER PRIMEs on the
+    # lineup that all missed.
+    #
+    # Drift = L10 R/G - season R/G. When drift <= -1.0 R/G, the lineup is
+    # currently cold relative to its baseline. Apply a hard -15 conviction
+    # penalty so PRIME-tier picks downgrade to STRONG/LEAN. Doesn't kill the
+    # play — just stops PRIME on a cold lineup.
+    drift = _f(g.get(f'{side}_offense_drift'))
+    if drift is not None and drift <= -1.0:
+        conviction -= 15
+        signals['offense_drift_cold'] = (
+            f'Team L10 R/G drift {drift:+.1f} vs season — cold bats fade'
+        )
 
     conviction = max(0, min(100, conviction))
     return {

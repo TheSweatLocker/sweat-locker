@@ -184,13 +184,11 @@ def detect_bucket_plays(games, tier_rates):
         # YRFI strong lean
         elif nrfi <= 40 and nrfi != 0:
             plays.append(f"- **{away} @ {home} YRFI lean** — NRFI score {nrfi}, ≤40 cohort {yrfi_rate}")
-        # Gassed bullpen flag
-        h3d = g.get("home_bp_relievers_3d") or 0
-        a3d = g.get("away_bp_relievers_3d") or 0
-        if int(h3d or 0) >= 12:
-            plays.append(f"- **{away} 7-9 winner / +0.5 in 7-9** — {home} bullpen GASSED ({h3d} relievers used last 3d)")
-        if int(a3d or 0) >= 12:
-            plays.append(f"- **{home} 7-9 winner / +0.5 in 7-9** — {away} bullpen GASSED ({a3d} relievers used last 3d)")
+        # Gassed bullpen flag was surfacing as "X 7-9 winner / +0.5 in 7-9"
+        # but (1) that market isn't widely offered and (2) we don't have
+        # cohort audit data on whether gassed-pen actually predicts late-
+        # inning run scoring. Pulled 2026-05-07 pending audit.
+        # See bullpen_gassed_game_over cohort in audit_tier_calibration.py.
     return plays[:5] or ["_(no high-conviction bucket plays surfaced — run scout_report.py for full bucket breakdown)_"]
 
 
