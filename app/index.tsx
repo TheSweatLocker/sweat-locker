@@ -1316,266 +1316,6 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
     setDegenLoading(false);
     return;
 
-    // --- Legacy client-side generation retained below (unreachable) for reference ---
-    /* eslint-disable */
-    // @ts-nocheck-begin
-    const _unreachable = async () => {
-
-    try {
-      const legs = [];
-
-      // 1. Scan MLB for NRFI plays — only 88-94 sweet spot (~70% audited 30d)
-const seen = new Set();
-const mlbCtxValues = Object.values(mlbGameContext).filter((ctx: any) => {
-  if(!ctx.game_id || seen.has(ctx.game_id)) return false;
-  seen.add(ctx.game_id);
-  const game = gamesData.find((g: any) =>
-    g.home_team === ctx.home_team || g.away_team === ctx.away_team
-  );
-  if(game) {
-    const gameTime = new Date(game.commence_time);
-    if(gameTime <= new Date()) return false;
-  }
-  return true;
-});
-      const topNRFI = mlbCtxValues
-        .filter((ctx: any) => ctx.nrfi_score >= 88 && ctx.nrfi_score <= 94 && ctx.game_date === today)
-        .sort((a: any, b: any) => b.nrfi_score - a.nrfi_score)
-        .slice(0, 2);
-
-      for(const ctx of topNRFI) {
-        const game = gamesData.find((g: any) =>
-          g.home_team === ctx.home_team || g.away_team === ctx.away_team
-        );
-        const odds = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'h2h')?.outcomes?.[0]?.price || -110;
-        legs.push({
-          type: 'NRFI',
-          matchup: `${ctx.away_team} @ ${ctx.home_team}`,
-          pick: `NRFI`,
-          odds: -120,
-          signal: `NRFI Score ${ctx.nrfi_score} — ${ctx.home_pitcher} xERA ${ctx.home_sp_xera} + ${ctx.away_pitcher} xERA ${ctx.away_sp_xera}`,
-          game,
-          ctx,
-        });
-      }
-
-      // 2. Scan MLB totals — model_total - close_total >= 1.5 surfaces a
-      // genuine OVER edge. over_lean (xERA gap) deprecated 2026-05-06 — audit
-      // showed 0-10 hit rate vs claimed 59.3%. Use projection delta instead.
-      const topTotals = mlbCtxValues
-        .filter((ctx: any) => {
-          if (!ctx.projected_total || !ctx.game_date || ctx.game_date !== today) return false;
-          const closeT = ctx.close_total || ctx.open_total;
-          if (closeT == null) return false;
-          return (ctx.projected_total - closeT) >= 1.5;
-        })
-        .map((ctx: any) => {
-          const game = gamesData.find((g: any) => g.home_team === ctx.home_team);
-          if(!game) return null;
-          const totalMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals');
-          const totalLine = totalMkt?.outcomes?.[0]?.point;
-          if(!totalLine) return null;
-          const delta = ctx.projected_total - totalLine;
-          if(delta < 0.5) return null;
-          return { ctx, game, totalLine, delta, isOver: true };
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.delta - a.delta)
-        .slice(0, 1);
-
-      for(const item of topTotals) {
-        const odds = item.game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals')?.outcomes?.find((o: any) => o.name === 'Over')?.price || -110;
-        legs.push({
-          type: 'OVER',
-          matchup: `${item.ctx.away_team} @ ${item.ctx.home_team}`,
-          pick: `Over ${item.totalLine}`,
-          odds,
-          signal: `Model projects ${item.ctx.projected_total} runs — ${item.delta.toFixed(1)} run gap vs market (55.9% over lean hit rate)`,
-          game: item.game,
-          ctx: item.ctx,
-        });
-      }
-
-      // 3. Scan MLB moneyline — spread delta 3+ (60% win rate proven)
-      const mlEdges = mlbCtxValues
-        .filter((ctx: any) => ctx.spread_delta != null && ctx.game_date === today)
-        .map((ctx: any) => {
-          const delta = parseFloat(ctx.spread_delta);
-          if(Math.abs(delta) < 3.0) return null;
-          const game = gamesData.find((g: any) => g.home_team === ctx.home_team);
-          if(!game) return null;
-          const favTeam = delta > 0 ? ctx.home_team : ctx.away_team;
-          const mlMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'h2h');
-          const mlOdds = mlMkt?.outcomes?.find((o: any) => o.name === favTeam)?.price;
-          if(!mlOdds || mlOdds < -200) return null;
-          return { ctx, game, delta, favTeam, mlOdds };
-        })
-        .filter(Boolean)
-        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
-        .slice(0, 1);
-
-      for(const item of mlEdges) {
-        if(legs.some(l => l.matchup === `${item.ctx.away_team} @ ${item.ctx.home_team}`)) continue;
-        legs.push({
-          type: 'MLB',
-          matchup: `${item.ctx.away_team} @ ${item.ctx.home_team}`,
-          pick: `${item.favTeam} ML`,
-          odds: item.mlOdds,
-          signal: `Spread delta ${item.delta > 0 ? '+' : ''}${item.delta.toFixed(1)} runs vs market — high-conviction ML lean`,
-          game: item.game,
-          ctx: item.ctx,
-        });
-      }
-
-      // 4. Scan NBA for strong spread leans (up to 2 legs)
-      const nbaGames = gamesData.filter((g: any) => g.sport_key === 'basketball_nba' || g.sport_title === 'NBA');
-      let nbaLegsAdded = 0;
-      for(const game of nbaGames.slice(0, 8)) {
-        if(nbaLegsAdded >= 2) break;
-        const homeNBA = Object.values(nbaTeamData).find((t: any) => t.team && game.home_team.includes(t.team.split(' ').pop()));
-        const awayNBA = Object.values(nbaTeamData).find((t: any) => t.team && game.away_team.includes(t.team.split(' ').pop()));
-        if(!homeNBA || !awayNBA) continue;
-        const netGap = Math.abs((homeNBA as any).net_rating - (awayNBA as any).net_rating);
-        if(netGap >= 4) {
-          const favTeam = (homeNBA as any).net_rating > (awayNBA as any).net_rating ? game.home_team : game.away_team;
-          const spreadMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'spreads');
-          const favSpread = spreadMkt?.outcomes?.find((o: any) => o.name === favTeam);
-          if(favSpread) {
-            legs.push({
-              type: 'NBA',
-              matchup: `${game.away_team} @ ${game.home_team}`,
-              pick: `${favTeam} ${favSpread.point > 0 ? '+' : ''}${favSpread.point}`,
-              odds: favSpread.price,
-              signal: `Net rating gap ${netGap.toFixed(1)} pts — model favors ${favTeam.split(' ').pop()}`,
-              game,
-            });
-            nbaLegsAdded++;
-          }
-        }
-      }
-
-      // 5. Scan NBA totals using projected total model
-      for(const game of nbaGames.slice(0, 8)) {
-        const homeNBA = Object.values(nbaTeamData).find((t: any) => t.team && game.home_team.includes(t.team.split(' ').pop())) as any;
-        const awayNBA = Object.values(nbaTeamData).find((t: any) => t.team && game.away_team.includes(t.team.split(' ').pop())) as any;
-        if(!homeNBA || !awayNBA || !homeNBA.pace || !homeNBA.offensive_rating) continue;
-        // Already has a side leg from this game? skip to avoid correlation
-        if(legs.some(l => l.matchup === `${game.away_team} @ ${game.home_team}`)) continue;
-        const projPoss = (homeNBA.pace + awayNBA.pace) / 2 - 3;
-        const homeExp = projPoss * ((homeNBA.offensive_rating + awayNBA.defensive_rating) / 2) / 100;
-        const awayExp = projPoss * ((awayNBA.offensive_rating + homeNBA.defensive_rating) / 2) / 100;
-        let projTotal = homeExp + awayExp;
-        // eFG adjustment
-        const homeOppEFG = parseFloat(homeNBA.opp_efg_pct) || 0;
-        const awayOppEFG = parseFloat(awayNBA.opp_efg_pct) || 0;
-        if(homeOppEFG > 0 && awayOppEFG > 0) {
-          projTotal += ((homeNBA.efg_pct - awayOppEFG) + (awayNBA.efg_pct - homeOppEFG)) * 0.8;
-        }
-        // Injury adjustment
-        if(homeNBA.injury_note?.includes('OUT')) projTotal -= 3;
-        if(awayNBA.injury_note?.includes('OUT')) projTotal -= 3;
-        const totalMkt = game?.bookmakers?.[0]?.markets?.find((m: any) => m.key === 'totals');
-        const postedLine = totalMkt?.outcomes?.[0]?.point;
-        if(!postedLine) continue;
-        const delta = projTotal - postedLine;
-        if(Math.abs(delta) >= 4) {
-          const side = delta > 0 ? 'Over' : 'Under';
-          const totalOdds = totalMkt?.outcomes?.find((o: any) => o.name === side)?.price || -110;
-          legs.push({
-            type: 'NBA',
-            matchup: `${game.away_team} @ ${game.home_team}`,
-            pick: `${side} ${postedLine}`,
-            odds: totalOdds,
-            signal: `Model projects ${projTotal.toFixed(1)} pts — ${Math.abs(delta).toFixed(1)} pt gap vs posted ${postedLine}`,
-            game,
-          });
-          break; // max 1 NBA total leg
-        }
-      }
-
-      // Validate legs against model signals — drop legs that conflict.
-      // Switched 2026-05-06 from over_lean (xERA gap, audit 0-10) to
-      // projected_total vs close_total delta (same logic as Total Edge tier).
-      const validatedLegs = legs.filter(leg => {
-        if(leg.type === 'NRFI') return true;
-        const ctx = leg.ctx;
-        if((leg.type === 'UNDER' || leg.type === 'OVER') && ctx) {
-          const projT = ctx.projected_total;
-          const closeT = ctx.close_total || ctx.open_total;
-          if (projT == null || closeT == null) return true;
-          const delta = projT - closeT;
-          // UNDER leg rejected when model strongly favors OVER (delta >= 1.5)
-          if(leg.type === 'UNDER' && delta >= 1.5) return false;
-          // OVER leg rejected when model strongly favors UNDER (delta <= -1.5)
-          if(leg.type === 'OVER' && delta <= -1.5) return false;
-          return true;
-        }
-        if(leg.type === 'MLB') return true; // pitcher edge already validated
-        if(leg.type === 'NBA' && leg.game) {
-          const homeNBA = Object.values(nbaTeamData).find((t: any) => t.team && leg.game.home_team.includes(t.team.split(' ').pop()));
-          const awayNBA = Object.values(nbaTeamData).find((t: any) => t.team && leg.game.away_team.includes(t.team.split(' ').pop()));
-          if(homeNBA && awayNBA) {
-            const netGap = Math.abs((homeNBA as any).net_rating - (awayNBA as any).net_rating);
-            if(netGap < 3) return false;
-            const betterTeam = (homeNBA as any).net_rating > (awayNBA as any).net_rating ? leg.game.home_team : leg.game.away_team;
-            if(!leg.pick.includes(betterTeam.split(' ').pop())) return false;
-          }
-        }
-        return true;
-      });
-
-      // Limit to 3-4 legs, pick best non-correlated
-      const finalLegs = validatedLegs.slice(0, 4);
-
-      if(finalLegs.length < 2) {
-        setDegenData({ noPlays: true });
-        setDegenLoading(false);
-        return;
-      }
-
-      // Generate Jerry narrative
-      const legsDesc = finalLegs.map((l, i) => `Leg ${i+1}: ${l.pick} (${l.matchup}) — ${l.signal}`).join('\n');
-      const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 200,
-          messages: [{
-            role: 'user',
-            content: `You are Jerry — sharp, energetic, slightly degenerate but always analytically grounded. Build a narrative for today's Degen Parlay.
-
-Legs:
-${legsDesc}
-
-Write 2-3 sentences MAX. Reference the specific data signals. Sound like a sharp friend who found edges today. End with something like "Jerry's riding all of these." or "That's the Degen Parlay." Never say "bet" or "must play". High energy but data-backed.`
-          }]
-        })
-      });
-      const aiData = await aiResp.json();
-      const narrative = aiData?.content?.[0]?.text || "Model found edges across the slate today. Jerry's playing all of these.";
-
-      const result = { legs: finalLegs, narrative, generatedAt: today };
-
-      // Cache in Supabase
-      try {
-        await supabase.from('jerry_cache').upsert({
-          cache_key: `daily_degen_${today}`,
-          data: result,
-          fetched_at: new Date().toISOString(),
-        }, { onConflict: 'cache_key' });
-      } catch(e) {}
-
-      setDegenData(result);
-    } catch(e) {
-      setDegenData({ noPlays: true });
-    }
-    setDegenLoading(false);
-    };
     // @ts-nocheck-end
     /* eslint-enable */
   };
@@ -8507,6 +8247,99 @@ setJerryHistory(prev => {
         </View>
       );
     })()}
+
+    {/* ─── THIN-DAY PADDING — only renders when slate is light (July MLB-only,
+         offseason gaps, etc). Standard / overload days skip entirely.
+         Backend (generate_sweat_card.py) only populates these fields when
+         slate_density is 'thin' or 'empty', so the conditional check on the
+         field itself is the gate — no need to read slate_density directly. */}
+    {(sweatCard.audit_roll_up || sweatCard.yesterday_recap || sweatCard.upcoming_events) && (
+      <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:'#1a2530'}}>
+        {/* Banner explaining the mode */}
+        <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:8,padding:10,marginBottom:10,borderLeftWidth:2,borderLeftColor:'#7a92a8'}}>
+          <Text style={{color:'#7a92a8',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:2}}>
+            ☀️ LIGHT SLATE — {sweatCard.total_games || 0} game{sweatCard.total_games === 1 ? '' : 's'} today
+          </Text>
+          <Text style={{color:'#7a92a8',fontSize:11,fontStyle:'italic'}}>
+            Quiet day. Surfacing track record + upcoming events instead of forcing picks.
+          </Text>
+        </View>
+
+        {/* Yesterday recap */}
+        {sweatCard.yesterday_recap && (sweatCard.yesterday_recap.potd || sweatCard.yesterday_recap.dawg) && (
+          <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:10,padding:10,marginBottom:10,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
+            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11,marginBottom:6}}>📋 YESTERDAY'S CARD ({sweatCard.yesterday_recap.date})</Text>
+            {sweatCard.yesterday_recap.potd && (
+              <Text style={{color:'#fff',fontSize:12,marginBottom:2}}>
+                🎯 POTD: <Text style={{color:'#7a92a8'}}>{sweatCard.yesterday_recap.potd.matchup?.away_team || sweatCard.yesterday_recap.potd.matchup} @ {sweatCard.yesterday_recap.potd.matchup?.home_team || ''}</Text>
+                {sweatCard.yesterday_recap.potd.result && <Text style={{color:sweatCard.yesterday_recap.potd.result === 'Win' ? '#5cb85c' : '#ff4d6d',fontWeight:'700'}}> — {sweatCard.yesterday_recap.potd.result}</Text>}
+              </Text>
+            )}
+            {sweatCard.yesterday_recap.dawg && (
+              <Text style={{color:'#fff',fontSize:12}}>
+                🐕 Dawg: <Text style={{color:'#78b4ff',fontWeight:'700'}}>{sweatCard.yesterday_recap.dawg.team}</Text>
+                {sweatCard.yesterday_recap.dawg.result_status && (
+                  <Text style={{color:sweatCard.yesterday_recap.dawg.result_status === 'Win' ? '#5cb85c' : '#ff4d6d',fontWeight:'700'}}> — {sweatCard.yesterday_recap.dawg.result_status}</Text>
+                )}
+              </Text>
+            )}
+          </View>
+        )}
+
+        {/* Audit roll-up — most-bettable cohorts */}
+        {sweatCard.audit_roll_up && Object.keys(sweatCard.audit_roll_up).length > 0 && (
+          <View style={{backgroundColor:'rgba(92,184,92,0.06)',borderRadius:10,padding:10,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#5cb85c'}}>
+            <Text style={{color:'#5cb85c',fontWeight:'800',fontSize:11,marginBottom:6}}>📊 LIVE AUDIT (rolling 30d)</Text>
+            {Object.entries(sweatCard.audit_roll_up).slice(0,5).map(([tier, windows]:[string, any], i:number) => {
+              const w = windows['30d'] || windows['std'] || windows['7d'];
+              if (!w || !w.total) return null;
+              const rate = Math.round(w.hit_rate * 100);
+              const tierLabel = tier.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+              return (
+                <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:3}}>
+                  <Text style={{color:'#7a92a8',fontSize:11,flex:1}}>{tierLabel}</Text>
+                  <Text style={{color:rate >= 60 ? '#5cb85c' : rate >= 50 ? '#fff' : '#aa6a6a',fontSize:11,fontWeight:'700'}}>
+                    {w.hits}-{w.total - w.hits} ({rate}% on {w.total})
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* Upcoming events — UFC card + tomorrow MLB preview */}
+        {sweatCard.upcoming_events?.length > 0 && (
+          <View style={{backgroundColor:'rgba(120,180,255,0.06)',borderRadius:10,padding:10,borderLeftWidth:3,borderLeftColor:'#78b4ff'}}>
+            <Text style={{color:'#78b4ff',fontWeight:'800',fontSize:11,marginBottom:6}}>🔭 UPCOMING</Text>
+            {sweatCard.upcoming_events.map((ev:any, i:number) => {
+              if (ev.type === 'ufc_card') {
+                return (
+                  <View key={i} style={{marginTop:i>0?6:0}}>
+                    <Text style={{color:'#fff',fontSize:12,fontWeight:'700'}}>🥊 {ev.event_name}</Text>
+                    <Text style={{color:'#7a92a8',fontSize:11,marginTop:1}}>
+                      {ev.event_date} • {ev.fight_count} fights{ev.prime_picks?.length > 0 ? ` • ${ev.prime_picks.length} PRIME pick${ev.prime_picks.length === 1 ? '' : 's'}` : ''}
+                    </Text>
+                  </View>
+                );
+              }
+              if (ev.type === 'mlb_preview' && ev.matchups?.length > 0) {
+                return (
+                  <View key={i} style={{marginTop:i>0?6:0}}>
+                    <Text style={{color:'#fff',fontSize:12,fontWeight:'700'}}>⚾ Tomorrow ({ev.date}) — {ev.game_count} games</Text>
+                    {ev.matchups.slice(0,3).map((m:any, j:number) => (
+                      <Text key={j} style={{color:'#7a92a8',fontSize:10,marginTop:1}}>
+                        {m.game} — {m.home_sp || 'TBD'} ({m.home_xera || '—'}) vs {m.away_sp || 'TBD'} ({m.away_xera || '—'})
+                      </Text>
+                    ))}
+                  </View>
+                );
+              }
+              return null;
+            })}
+          </View>
+        )}
+      </View>
+    )}
   </View>
 )}
 
