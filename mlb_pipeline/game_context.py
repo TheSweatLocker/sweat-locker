@@ -2961,6 +2961,27 @@ def run():
                 if confluence_net >= 4: tier = 'PRIME'
                 elif confluence_net >= 2: tier = 'STRONG'
                 elif confluence_net >= 1: tier = 'LEAN'
+
+                # Mastery gate hardening (added 2026-05-07).
+                # Audit on backfilled data found PRIME confluence with mastery
+                # *disagreeing* hits 3-4 (42.9% — fade tier), while PRIME with
+                # mastery *agreeing* hits 7-0 (100%). The vote alone (1 against)
+                # only drops PRIME +8 to +7, which is still PRIME — but the
+                # cohort behavior says it shouldn't be. Explicit tier downgrade:
+                # when mastery disagrees with model_pick at PRIME or STRONG
+                # tier, drop one tier step. Sample is small (n=7 PRIME-disagree)
+                # so the rule is conservative — still LEAN at minimum, not full
+                # suppression.
+                pvt_vote = breakdown.get('pitcher_vs_team')
+                if pvt_vote and pvt_vote != model_pick and tier in ('PRIME', 'STRONG'):
+                    pre_tier = tier
+                    if tier == 'PRIME':
+                        tier = 'STRONG'
+                    elif tier == 'STRONG':
+                        tier = 'LEAN'
+                    print(f"  ⚠️ Mastery disagree gate fired: {pre_tier} → {tier} "
+                          f"(pitcher_vs_team votes {pvt_vote.upper()}, model_pick is {model_pick.upper()})")
+
                 sig_str = ', '.join(f"{k}:{v[0].upper()}" for k,v in breakdown.items()) or 'no signals'
                 print(f"  Signal confluence: {tier} (net {confluence_net:+d}, support {support}, against {against}) — {sig_str}")
 

@@ -341,7 +341,69 @@ def _v2_total_edge(ctx):
             False,
             proj,
         )
+    # UNDER edge added 2026-05-07. Symmetric threshold to OVER (|delta| >= 1.5,
+    # confidence >= 0.7). Audit cohort total_edge_under_1_5_to_3 is currently
+    # 2-0 (small sample) — flag as informational lean, not PRIME.
+    if delta <= -1.5 and proj.confidence >= 0.7:
+        return (
+            f"Under {close_total} (v2 edge — model {proj.model_total:.1f} vs market {close_total}, {delta:.1f} runs)",
+            'total',
+            False,
+            proj,
+        )
     return None
+
+
+def _rl_alt_for_juiced_chalk(ctx):
+    """When confluence is PRIME (+4 net) but ML is chalk-juiced (≤-180),
+    suggest the run line -1.5 alt instead of the unattractive ML.
+
+    The Cubs 5/7 case was the trigger — model PRIME +8 with reverse-mastery
+    on Lowder, but Cubs ML at -207 made the ML EV nearly nil. Cubs RL -1.5
+    was the actual play (model projected +2.68 margin). This function
+    surfaces that scenario as a POTD candidate.
+
+    Threshold logic:
+      - confluence_net ≥ +4 (PRIME)
+      - |projected_spread| ≥ 1.5 (RL cover plausible per model)
+      - home_ml ≤ -180 OR away_ml ≤ -180 on the favored side
+      - direction matches confluence model_pick
+
+    Audit cohort spread_delta_ge2 hits 55% historically — RL covers correlate
+    with that signal. Confluence PRIME tier hits 70.6% on direction.
+    Combined effect should be net positive at the better RL price (+130-150).
+    """
+    confluence_net = ctx.get('signal_confluence_net') or 0
+    projected_spread = ctx.get('projected_spread')
+    home_ml = ctx.get('home_ml_close') or ctx.get('home_ml_open')
+    away_ml = ctx.get('away_ml_close') or ctx.get('away_ml_open')
+    if confluence_net is None or projected_spread is None:
+        return None
+    try:
+        cn = int(confluence_net)
+        ps = float(projected_spread)
+    except (TypeError, ValueError):
+        return None
+    if cn < 4 or abs(ps) < 1.5:
+        return None
+    # Determine favored side per model
+    home_favored = ps > 0
+    fav_ml = home_ml if home_favored else away_ml
+    fav_team = ctx.get('home_team') if home_favored else ctx.get('away_team')
+    if fav_ml is None:
+        return None
+    try:
+        fav_ml_i = int(fav_ml)
+    except (TypeError, ValueError):
+        return None
+    # Only fires when ML is chalk-juiced (eats most of the model edge)
+    if fav_ml_i > -180:
+        return None
+    return (
+        f"{fav_team} -1.5 (chalk ML alt — model projects +{abs(ps):.1f} margin, ML {fav_ml_i:+d} too juiced)",
+        'runline',
+        False,
+    )
 
 
 def build_lean(ctx):
@@ -367,13 +429,21 @@ def build_lean(ctx):
     if 90 <= nrfi <= 94:
         return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
 
-    # 2. v2 Total OVER Edge — model_total >= market + 1.5
+    # 2. v2 Total OVER/UNDER Edge — model_total vs market + 1.5
     v2_pick = _v2_total_edge(ctx)
     if v2_pick is not None:
         # Drop the proj object before returning to keep tuple shape consistent
         return v2_pick[0], v2_pick[1], v2_pick[2]
 
-    # 3. NRFI 88-89 edge tier — coin flip historically (3-3) but kept as
+    # 3. RL alt for juiced chalk (added 2026-05-07 after Cubs 5/7 lesson —
+    # PRIME confluence with chalk ML at -200+ surfaces nothing under old logic
+    # because ML EV is too thin; RL -1.5 at +130-150 is the actual play when
+    # model projects 1.5+ run margin).
+    rl_pick = _rl_alt_for_juiced_chalk(ctx)
+    if rl_pick is not None:
+        return rl_pick
+
+    # 4. NRFI 88-89 edge tier — coin flip historically (3-3) but kept as
     # secondary when no PRIME tier game exists
     if 88 <= nrfi <= 89:
         return f"NRFI — Score {nrfi}/100 (edge tier)", 'nrfi', True

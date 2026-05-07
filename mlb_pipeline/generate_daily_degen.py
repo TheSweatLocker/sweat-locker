@@ -293,19 +293,45 @@ def extract_leg_candidates(games, props):
         conviction = min(90, 60 + confluence_net * 6 + min(int(abs_delta * 3), 12))
         breakdown = g.get('signal_confluence_breakdown') or {}
         sig_str = ', '.join(f"{k}" for k in breakdown.keys()) or 'multiple signals'
+
+        # Chalk ML alt-line check (added 2026-05-07 after Cubs 5/7 lesson).
+        # When confluence agrees with model AND favorite ML is heavily juiced
+        # (≤-180), the ML EV becomes thin even at PRIME hit rate. Swap pick
+        # to RL -1.5 which prices at +130-150 historically — better EV at
+        # similar projected outcome when model projects 1.5+ run margin.
+        home_ml_val = g.get('home_ml_close') or g.get('home_ml_open')
+        away_ml_val = g.get('away_ml_close') or g.get('away_ml_open')
+        fav_ml = home_ml_val if ps > 0 else away_ml_val
+        pick_label = f"{fav_team} ML"
+        sub_type = 'moneyline'
+        rl_alt_signal = None
+        if fav_ml is not None and abs_delta >= 1.5:
+            try:
+                fav_ml_i = int(fav_ml)
+                if fav_ml_i <= -180:
+                    pick_label = f"{fav_team} -1.5"
+                    sub_type = 'runline'
+                    rl_alt_signal = f"ML at {fav_ml_i:+d} too juiced — RL -1.5 better priced at projected +{abs_delta:.1f} margin"
+            except (TypeError, ValueError):
+                pass
+
+        signals_list = [
+            f"Signal confluence {tier} (net {confluence_net:+d})",
+            f"{sig_str} all favor {fav_team.split()[-1]}",
+            f"Spread delta {sd:+.1f} runs" if sd is not None else f"Model projects {fav_team} favored",
+        ]
+        if rl_alt_signal:
+            signals_list.append(rl_alt_signal)
+
         candidates.append({
             'type': 'ML',
-            'sub_type': 'moneyline',
+            'sub_type': sub_type,
             'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
             'game_id': g.get('game_id'),
-            'pick': f"{fav_team} ML",
+            'pick': pick_label,
             'conviction': conviction,
             'tier': tier,
-            'signals': [
-                f"Signal confluence {tier} (net {confluence_net:+d})",
-                f"{sig_str} all favor {fav_team.split()[-1]}",
-                f"Spread delta {sd:+.1f} runs" if sd is not None else f"Model projects {fav_team} favored",
-            ],
+            'signals': signals_list,
             'odds_suggestion': -130,
             'raw_score': confluence_net,  # cohort key uses confluence_net to pick the bucket
         })
