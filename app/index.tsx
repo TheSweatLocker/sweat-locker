@@ -1382,12 +1382,12 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
       {/* Legs */}
       {degenData.legs?.map((leg: any, i: number) => (
         <View key={i} style={{backgroundColor:'#111820',borderRadius:12,padding:12,marginBottom:10,borderWidth:1,borderColor:'#1f2d3d'}}>
-          <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-            <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+          <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6,gap:8}}>
+            <View style={{flexDirection:'row',alignItems:'flex-start',gap:6,flex:1,flexWrap:'wrap'}}>
               <View style={{backgroundColor:leg.type==='NRFI'?'rgba(0,229,160,0.15)':leg.type==='NBA'?'rgba(0,153,255,0.15)':'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2}}>
                 <Text style={{color:leg.type==='NRFI'?'#00e5a0':leg.type==='NBA'?'#0099ff':'#FFB800',fontSize:10,fontWeight:'800'}}>{leg.type}</Text>
               </View>
-              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{leg.pick}</Text>
+              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,flexShrink:1}}>{leg.pick}</Text>
             </View>
             <Text style={{color:leg.odds<0?'#e8f0f8':'#00e5a0',fontWeight:'800',fontSize:13}}>{leg.odds>0?'+':''}{leg.odds}</Text>
           </View>
@@ -5138,6 +5138,33 @@ if(scoreData) {
         const mlFav = mlbData.spread_delta > 0 ? game.home_team : game.away_team;
         const mlDelta = Math.abs(mlbData.spread_delta).toFixed(1);
         sweatSignals.push(`ML lean: ${mlFav} (${mlDelta} run spread delta vs market${Math.abs(mlbData.spread_delta) >= 3.0 ? ' — HIGH conviction' : ''})`);
+      }
+      // Pitcher vs team historical (added 2026-05-07 after backfill on 2,835 games).
+      // Audit-validated: PRIME confluence with mastery agreeing hit 7-0; with mastery
+      // disagreeing hit 3-4 (42.9%, fade tier). Surface when |era_vs_team - xera| ≥ 1.5
+      // since smaller deltas are within normal pitcher variance.
+      const homePvt = mlbData.home_pitcher_vs_team_era != null ? parseFloat(mlbData.home_pitcher_vs_team_era) : null;
+      const awayPvt = mlbData.away_pitcher_vs_team_era != null ? parseFloat(mlbData.away_pitcher_vs_team_era) : null;
+      const homeXera = mlbData.home_sp_xera != null ? parseFloat(mlbData.home_sp_xera) : null;
+      const awayXera = mlbData.away_sp_xera != null ? parseFloat(mlbData.away_sp_xera) : null;
+      if(homePvt != null && homeXera != null && Math.abs(homeXera - homePvt) >= 1.5) {
+        const dominating = homePvt < homeXera;
+        sweatSignals.push(`Pitcher matchup history: ${mlbData.home_pitcher} ${dominating ? 'DOMINATES' : 'STRUGGLES vs'} ${game.away_team} (${homePvt.toFixed(2)} ERA vs season xera ${homeXera.toFixed(2)})`);
+      }
+      if(awayPvt != null && awayXera != null && Math.abs(awayXera - awayPvt) >= 1.5) {
+        const dominating = awayPvt < awayXera;
+        sweatSignals.push(`Pitcher matchup history: ${mlbData.away_pitcher} ${dominating ? 'DOMINATES' : 'STRUGGLES vs'} ${game.home_team} (${awayPvt.toFixed(2)} ERA vs season xera ${awayXera.toFixed(2)})`);
+      }
+      // Offense drift (added 2026-05-07). L10 R/G - season R/G. Negative = currently
+      // cold relative to baseline. Catches the "good season, bad bats lately" trap that
+      // bombed 4 Twins props on 5/6. Surface when |drift| ≥ 1.0 R/G.
+      const homeDrift = mlbData.home_offense_drift != null ? parseFloat(mlbData.home_offense_drift) : null;
+      const awayDrift = mlbData.away_offense_drift != null ? parseFloat(mlbData.away_offense_drift) : null;
+      if(homeDrift != null && Math.abs(homeDrift) >= 1.0) {
+        sweatSignals.push(`Offense drift: ${game.home_team} L10 R/G ${homeDrift > 0 ? '+' : ''}${homeDrift.toFixed(1)} vs season (${homeDrift < 0 ? 'cold bats — fade hits-OVER PRIMEs on this side' : 'hot bats'})`);
+      }
+      if(awayDrift != null && Math.abs(awayDrift) >= 1.0) {
+        sweatSignals.push(`Offense drift: ${game.away_team} L10 R/G ${awayDrift > 0 ? '+' : ''}${awayDrift.toFixed(1)} vs season (${awayDrift < 0 ? 'cold bats — fade hits-OVER PRIMEs on this side' : 'hot bats'})`);
       }
     }
   }
