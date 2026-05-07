@@ -117,6 +117,124 @@ def compute_k_under_window_rates(rows, days_back, end_date):
     return tier_stats
 
 
+def fetch_all_resolved_nfl():
+    """Pull all resolved NFL games from nfl_game_results.
+
+    nflverse spread_line convention: POSITIVE = home favored (opposite of
+    standard sportsbook display). spread_result classification matches:
+    home_covered when margin > close_spread.
+    """
+    all_rows = []
+    offset = 0
+    while True:
+        rows = sb_get("nfl_game_results", {
+            "home_score": "not.is.null",
+            "select": "season,game_date,home_team,away_team,home_score,away_score,home_win,total_points,close_spread,close_total,spread_result,total_result,div_game,roof,home_rest,away_rest",
+            "order": "game_date.asc",
+            "limit": "1000",
+            "offset": str(offset),
+        })
+        if not rows:
+            break
+        all_rows.extend(rows)
+        if len(rows) < 1000:
+            break
+        offset += 1000
+    return all_rows
+
+
+def compute_nfl_window_rates(rows, days_back, end_date):
+    """Compute hit rate per NFL cohort within rolling window.
+
+    Cohorts (audit-verified baselines on 1139 games 2022-2025):
+      - nfl_home_fav_cover    — close_spread > 0 → home covers? ~51%
+      - nfl_home_dog_cover    — close_spread < 0 → home covers? ~50%
+      - nfl_heavy_home_fav    — close_spread >= 7 → home covers? ~47% (chalk fades slightly)
+      - nfl_heavy_home_dog    — close_spread <= -7 → home covers? ~50%
+      - nfl_div_home_cover    — div_game=true → home covers? ~59% (interesting baseline)
+      - nfl_dome_over         — roof in dome/closed → total OVER? ~50%
+      - nfl_outdoor_over      — roof=outdoors → total OVER? ~47% (weather suppresses)
+      - nfl_rest_advantage    — |home_rest - away_rest| >= 5 → rested side covers? ~38% (counterintuitive)
+
+    These are descriptive baselines, not betting tiers yet. Phase 2 builds
+    actual conviction tiers on top of these audit-validated signals.
+    """
+    cutoff = end_date - timedelta(days=days_back)
+    in_window = [
+        r for r in rows
+        if r.get("game_date") and datetime.strptime(r["game_date"], "%Y-%m-%d").date() >= cutoff
+    ]
+    tier_stats = defaultdict(lambda: {"hits": 0, "total": 0})
+
+    for r in in_window:
+        cs = r.get("close_spread")
+        sr = r.get("spread_result")
+        ct = r.get("close_total")
+        tr = r.get("total_result")
+        roof = (r.get("roof") or "").lower()
+        div = r.get("div_game")
+        h_rest = r.get("home_rest")
+        a_rest = r.get("away_rest")
+
+        # Spread cohorts (exclude pushes — only count home_covered / away_covered)
+        if cs is not None and sr in ("home_covered", "away_covered"):
+            try:
+                cs_f = float(cs)
+                hit_home = sr == "home_covered"
+                # Home favored cohorts (positive close_spread = home favored)
+                if cs_f > 0:
+                    tier_stats["nfl_home_fav_cover"]["total"] += 1
+                    if hit_home:
+                        tier_stats["nfl_home_fav_cover"]["hits"] += 1
+                    if cs_f >= 7:
+                        tier_stats["nfl_heavy_home_fav"]["total"] += 1
+                        if hit_home:
+                            tier_stats["nfl_heavy_home_fav"]["hits"] += 1
+                # Home dog cohorts (negative close_spread = home underdog)
+                elif cs_f < 0:
+                    tier_stats["nfl_home_dog_cover"]["total"] += 1
+                    if hit_home:
+                        tier_stats["nfl_home_dog_cover"]["hits"] += 1
+                    if cs_f <= -7:
+                        tier_stats["nfl_heavy_home_dog"]["total"] += 1
+                        if hit_home:
+                            tier_stats["nfl_heavy_home_dog"]["hits"] += 1
+                # Division-game home cover (notable signal in baseline)
+                if div is True:
+                    tier_stats["nfl_div_home_cover"]["total"] += 1
+                    if hit_home:
+                        tier_stats["nfl_div_home_cover"]["hits"] += 1
+                # Rest advantage — direction = side with more rest
+                if h_rest is not None and a_rest is not None:
+                    try:
+                        gap = int(h_rest) - int(a_rest)
+                        if abs(gap) >= 5:
+                            rested_home = gap > 0
+                            tier_stats["nfl_rest_advantage_cover"]["total"] += 1
+                            # Hit if the rested side covered
+                            rested_covered = (rested_home and hit_home) or (not rested_home and not hit_home)
+                            if rested_covered:
+                                tier_stats["nfl_rest_advantage_cover"]["hits"] += 1
+                    except (TypeError, ValueError):
+                        pass
+            except (TypeError, ValueError):
+                pass
+
+        # Total cohorts (exclude pushes)
+        if ct is not None and tr in ("over", "under"):
+            went_over = tr == "over"
+            if "dome" in roof or "closed" in roof:
+                tier_stats["nfl_dome_over"]["total"] += 1
+                if went_over:
+                    tier_stats["nfl_dome_over"]["hits"] += 1
+            elif "outdoor" in roof:
+                tier_stats["nfl_outdoor_over"]["total"] += 1
+                if went_over:
+                    tier_stats["nfl_outdoor_over"]["hits"] += 1
+
+    return tier_stats
+
+
 def fetch_all_resolved_nba():
     """Pull all resolved NBA games from nba_game_results."""
     all_rows = []
@@ -689,6 +807,49 @@ def main():
                     "total": stats["total"],
                     "hit_rate": round(stats["hits"] / stats["total"], 4),
                     "sport": "nba",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+
+    # ── NFL cohorts (added 2026-05-07) ─────────────────────────────────
+    # Phase 1 foundation cohorts. With 1139 games backfilled (2022-2025),
+    # baselines are stable enough to track. Phase 2 builds picks on top.
+    print("\nPulling resolved NFL games...")
+    nfl_rows = fetch_all_resolved_nfl()
+    print(f"Total resolved NFL games: {len(nfl_rows)}")
+    nfl_tiers = {
+        "nfl_home_fav_cover", "nfl_home_dog_cover",
+        "nfl_heavy_home_fav", "nfl_heavy_home_dog",
+        "nfl_div_home_cover", "nfl_rest_advantage_cover",
+        "nfl_dome_over", "nfl_outdoor_over",
+    }
+    if nfl_rows:
+        # NFL is weekly so 7d/30d windows are usually empty mid-season; std is the
+        # load-bearing window. Compute all three for consistency with other sports.
+        nfl_window_data = {label: compute_nfl_window_rates(nfl_rows, days, et_today) for label, days in windows}
+        print(f"\n{'NFL TIER':35s} {'7d':>14s} {'30d':>14s} {'STD':>14s}")
+        print("-" * 80)
+        for tier in sorted(nfl_tiers):
+            cells = []
+            for label, _ in windows:
+                stats = nfl_window_data[label].get(tier, {"hits": 0, "total": 0})
+                if stats["total"] == 0:
+                    cells.append("—".rjust(14))
+                else:
+                    rate = stats["hits"] / stats["total"] * 100
+                    cells.append(f"{stats['hits']}-{stats['total']-stats['hits']} ({rate:.1f}%)".rjust(14))
+            print(f"{tier:35s} {cells[0]} {cells[1]} {cells[2]}")
+            for label, _ in windows:
+                stats = nfl_window_data[label].get(tier, {"hits": 0, "total": 0})
+                if stats["total"] == 0:
+                    continue
+                upsert_rows.append({
+                    "tier": tier,
+                    "window_label": label,
+                    "computed_date": et_today.isoformat(),
+                    "hits": stats["hits"],
+                    "total": stats["total"],
+                    "hit_rate": round(stats["hits"] / stats["total"], 4),
+                    "sport": "nfl",
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 })
 
