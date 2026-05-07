@@ -104,13 +104,18 @@ def transform(row):
     if home_score is not None and away_score is not None:
         home_win = home_score > away_score
         total_points = home_score + away_score
-        # Spread result: spread_line is home spread (negative = favored)
+        # Spread result — nflverse spread_line convention is OPPOSITE of standard
+        # sportsbook display. nflverse stores POSITIVE = home favored (e.g. PHI
+        # home spread_line=+8.5 means PHI is the -8.5 favorite). Verified against
+        # 2023 SB (SF favored, spread_line=-1.5, KC home → home underdog),
+        # 2024 W1 BUF home (ML -310, spread_line=+6.5 → home favored), and
+        # 2025 W1 PHI (ML favorite, spread_line=+8.5 → home favored).
+        # So home covers when margin > close_spread (margin must exceed home spread).
         if close_spread is not None:
             margin = home_score - away_score  # positive = home wins
-            home_cover_threshold = -close_spread  # home spread of -3 means need to win by > 3
-            if margin > home_cover_threshold:
+            if margin > close_spread:
                 spread_result = "home_covered"
-            elif margin < home_cover_threshold:
+            elif margin < close_spread:
                 spread_result = "away_covered"
             else:
                 spread_result = "push"

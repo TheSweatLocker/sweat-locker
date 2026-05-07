@@ -107,7 +107,13 @@ CREATE TABLE IF NOT EXISTS nfl_game_results (
   home_team            TEXT,                       -- canonical abbrev
   away_team            TEXT,
   -- Market lines (pre-game capture)
-  open_spread          NUMERIC,                    -- home spread (negative = home favored)
+  -- nflverse spread_line convention: POSITIVE = home favored, NEGATIVE = home
+  -- underdog. This is OPPOSITE of standard sportsbook display where the favorite
+  -- is shown with a negative number. Source: empirical verification against
+  -- 2023 SB / 2024 W1 BUF / 2025 W1 PHI ML+spread cross-checks. Beware when
+  -- ingesting from Odds API (during in-season Phase 2) — Odds API uses the
+  -- standard convention so a sign flip will be needed at ingestion.
+  open_spread          NUMERIC,
   close_spread         NUMERIC,
   open_total           NUMERIC,
   close_total          NUMERIC,
