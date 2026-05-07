@@ -8137,7 +8137,7 @@ setJerryHistory(prev => {
       <View style={styles.header}>
         <View>
           <Text style={styles.logo}>🔒 THE SWEAT LOCKER</Text>
-          <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700',letterSpacing:1}}>BET SMARTER, SWEAT LESS.</Text>
+          <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700',letterSpacing:1}}>MORE DATA. SWEAT LESS.</Text>
         </View>
         <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
           {parlayLegs.length>0&&(<TouchableOpacity style={styles.parlayBadge} onPress={()=>setActiveTab('parlay')}><Text style={styles.parlayBadgeText}>{parlayLegs.length} 🎰</Text></TouchableOpacity>)}
