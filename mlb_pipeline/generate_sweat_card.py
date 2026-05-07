@@ -61,6 +61,189 @@ def fetch_tier_rates():
     return {r["tier"]: r for r in rows}
 
 
+def count_mlb_games_today():
+    """Count MLB games on today's slate via mlb_game_context."""
+    today = today_et()
+    rows = sb_get("mlb_game_context", {"game_date": f"eq.{today}", "select": "game_id"})
+    return len(rows)
+
+
+def count_nba_games_today():
+    """Count NBA games today via nba_game_results (unresolved = today's slate)."""
+    today = today_et()
+    rows = sb_get("nba_game_results", {
+        "game_date": f"eq.{today}",
+        "home_score": "is.null",
+        "select": "game_id",
+    })
+    return len(rows)
+
+
+def count_ufc_events_within(days=3):
+    """Count UFC events with cards within the next `days` days."""
+    today = today_et()
+    horizon = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = sb_get("ufc_picks", {
+        "event_date": f"gte.{today}",
+        "select": "event_date",
+        "order": "event_date.asc",
+        "limit": "5",
+    })
+    # Filter horizon client-side since sb_get's dict-based query string
+    # collapses duplicate keys.
+    within = [r for r in rows if r.get("event_date") and r["event_date"] <= horizon]
+    return 1 if within else 0
+
+
+def compute_slate_density():
+    """Determine which content branch the Sweat Card should render.
+
+    Returns a dict with:
+      mode: 'empty' | 'thin' | 'standard' | 'overload'
+      active_sports: list[str]
+      total_games: int
+      counts: dict[sport, int]
+
+    The mode drives content padding decisions in build_card():
+      - empty: no slate at all → audit roll-up + next event preview
+      - thin: 1 sport active, ≤8 games → existing content + audit padding
+      - standard: 2-3 sports OR 9-24 games → current behavior, no padding needed
+      - overload: 4+ sports OR 25+ games → cap N picks per sport, sport-filter UI hint
+
+    NCAAB, NFL, NCAAF, NHL not yet wired — added when those pipelines ship.
+    """
+    counts = {
+        "MLB": count_mlb_games_today(),
+        "NBA": count_nba_games_today(),
+    }
+    ufc_pending = count_ufc_events_within(days=3)
+    active = [s for s, n in counts.items() if n > 0]
+    if ufc_pending:
+        active.append("UFC")
+    total = sum(counts.values())
+
+    if total == 0 and not ufc_pending:
+        mode = "empty"
+    elif len(active) <= 1 and total <= 8:
+        mode = "thin"
+    elif len(active) >= 4 or total >= 25:
+        mode = "overload"
+    else:
+        mode = "standard"
+
+    return {
+        "mode": mode,
+        "active_sports": active,
+        "total_games": total,
+        "counts": counts,
+    }
+
+
+def fetch_audit_roll_up():
+    """Pull a roll-up of the most-bettable audited cohorts across windows.
+
+    Returns the cohort summaries the app can lead with on thin/empty days.
+    Filters to cohorts with n >= 10 (enough sample to be meaningful)."""
+    rows = sb_get("mlb_tier_calibration", {
+        "window_label": "in.(7d,30d,std)",
+        "sport": "eq.mlb",
+        "tier": "in.(nrfi_prime_90_94,yrfi_lean_le40,confluence_prime_ge4,autofade_dog_high_conv,total_extreme_under_ge3)",
+        "select": "tier,window_label,hits,total,hit_rate",
+    })
+    by_tier = {}
+    for r in rows:
+        if (r.get("total") or 0) < 10:
+            continue
+        by_tier.setdefault(r["tier"], {})[r["window_label"]] = {
+            "hits": r["hits"],
+            "total": r["total"],
+            "hit_rate": r["hit_rate"],
+        }
+    return by_tier
+
+
+def fetch_yesterday_recap():
+    """Yesterday's POTD + Dawg results for thin/empty-day track-record content."""
+    today = today_et()
+    yesterday = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    recap = {"date": yesterday}
+
+    # Dawg result (daily_dawg keeps result_status after resolve)
+    dawg_rows = sb_get("daily_dawg", {
+        "game_date": f"eq.{yesterday}",
+        "select": "team,matchup,result_status,tier",
+    })
+    if dawg_rows:
+        recap["dawg"] = dawg_rows[0]
+
+    # POTD result via best_bet cache row
+    potd_rows = sb_get("jerry_cache", {
+        "game_id": f"eq.best_bet_{yesterday}",
+        "select": "data,narrative",
+    })
+    if potd_rows:
+        d = potd_rows[0].get("data") or {}
+        recap["potd"] = {
+            "matchup": d.get("matchup") or d.get("game"),
+            "pick": d.get("pick") or d.get("recommended"),
+            "result": d.get("result_status") or d.get("result"),
+        }
+
+    return recap
+
+
+def fetch_upcoming_events():
+    """Next 7 days of high-signal events the app can preview on quiet days.
+
+    Currently UFC card + tomorrow's MLB pitcher matchups. Extends naturally
+    as NFL / NCAAB / NHL pipelines come online — each gets its own probe."""
+    today = today_et()
+    horizon = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+    events = []
+
+    # Upcoming UFC card
+    ufc_rows = sb_get("ufc_picks", {
+        "event_date": f"gte.{today}",
+        "select": "event_name,event_date,fight_order,fighter_a,fighter_b,tier_winner,recommended_side",
+        "order": "event_date.asc,fight_order.asc",
+        "limit": "12",
+    })
+    if ufc_rows:
+        events.append({
+            "type": "ufc_card",
+            "event_name": ufc_rows[0]["event_name"],
+            "event_date": ufc_rows[0]["event_date"],
+            "fight_count": len(ufc_rows),
+            "prime_picks": [r for r in ufc_rows if r.get("tier_winner") == "PRIME"],
+        })
+
+    # Tomorrow's MLB pitcher matchups (preview during slate gaps)
+    tomorrow = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    mlb_tomorrow = sb_get("mlb_game_context", {
+        "game_date": f"eq.{tomorrow}",
+        "select": "home_team,away_team,home_pitcher,away_pitcher,home_sp_xera,away_sp_xera",
+        "limit": "20",
+    })
+    if mlb_tomorrow:
+        events.append({
+            "type": "mlb_preview",
+            "date": tomorrow,
+            "game_count": len(mlb_tomorrow),
+            "matchups": [
+                {
+                    "game": f"{g.get('away_team')} @ {g.get('home_team')}",
+                    "home_sp": g.get("home_pitcher"),
+                    "away_sp": g.get("away_pitcher"),
+                    "home_xera": g.get("home_sp_xera"),
+                    "away_xera": g.get("away_sp_xera"),
+                }
+                for g in mlb_tomorrow[:5]
+            ],
+        })
+
+    return events
+
+
 def fetch_potd():
     today = today_et()
     rows = sb_get("jerry_cache", {"game_id": f"eq.best_bet_{today}", "select": "data,narrative"})
@@ -230,8 +413,16 @@ def build_card():
     today = today_et()
     print(f"Building Sweat Card for {today}...")
 
+    # Slate density check — drives content padding decisions below.
+    # Standard MLB-season days (most days) hit `standard` mode and render
+    # exactly as before. Thin / empty days pull in audit roll-up + recap +
+    # upcoming events so the card never feels empty when slate is light.
+    density = compute_slate_density()
+    print(f"  Slate density: {density['mode']} | active={density['active_sports']} | "
+          f"games={density['total_games']} | counts={density['counts']}")
+
     games = fetch_game_context()
-    print(f"  {len(games)} games on slate")
+    print(f"  {len(games)} MLB games on slate")
 
     tier_rates = fetch_tier_rates()
     potd = fetch_potd()
@@ -257,9 +448,25 @@ def build_card():
             stack_games[mu] = stack_games.get(mu, 0) + 1
     stack_alerts = [{"matchup": mu, "prime_count": n} for mu, n in stack_games.items() if n >= 4]
 
+    # Padding for thin / empty days — keeps the card useful when slate is
+    # MLB-only-July-Tuesday or post-season-only-MLB. Standard days skip these
+    # fetches to avoid wasted Supabase reads.
+    audit_roll_up = None
+    yesterday_recap = None
+    upcoming_events = None
+    if density["mode"] in ("thin", "empty"):
+        audit_roll_up = fetch_audit_roll_up()
+        yesterday_recap = fetch_yesterday_recap()
+        upcoming_events = fetch_upcoming_events()
+
     card = {
         "slate_date": today,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        # Density metadata — app reads this to pick render mode
+        "slate_density": density["mode"],
+        "active_sports": density["active_sports"],
+        "total_games": density["total_games"],
+        "sport_counts": density["counts"],
         "lock": nrfi_lock,                    # 🔒 the highest-audited play
         "secondary_lock": yrfi_lock,          # 🔒 second-tier audited play
         "potd": potd.get("data") if potd else None,
@@ -289,6 +496,10 @@ def build_card():
             "nrfi_volatile_95plus": tier_rates.get("nrfi_volatile_95plus"),
             "spread_delta_ge2": tier_rates.get("spread_delta_ge2"),
         },
+        # Thin / empty day padding — null on standard / overload days
+        "audit_roll_up": audit_roll_up,
+        "yesterday_recap": yesterday_recap,
+        "upcoming_events": upcoming_events,
     }
 
     # Upsert to jerry_cache
