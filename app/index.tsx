@@ -7940,7 +7940,7 @@ setJerryHistory(prev => {
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🔒</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:34,textAlign:'center',marginBottom:12,letterSpacing:1}}>THE SWEAT LOCKER</Text>
-              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>More Data, Sweat Less.</Text>
+              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>More Data, Less Sweat.</Text>
               <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>A real sports analytics engine — not picks, not vibes. Proprietary models updated twice daily.</Text>
             </View>
           )}
@@ -8137,7 +8137,7 @@ setJerryHistory(prev => {
       <View style={styles.header}>
         <View>
           <Text style={styles.logo}>🔒 THE SWEAT LOCKER</Text>
-          <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700',letterSpacing:1}}>MORE DATA. SWEAT LESS.</Text>
+          <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700',letterSpacing:1}}>MORE DATA. LESS SWEAT.</Text>
         </View>
         <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
           {parlayLegs.length>0&&(<TouchableOpacity style={styles.parlayBadge} onPress={()=>setActiveTab('parlay')}><Text style={styles.parlayBadgeText}>{parlayLegs.length} 🎰</Text></TouchableOpacity>)}
