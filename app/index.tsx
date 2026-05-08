@@ -3526,6 +3526,10 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
             label: `Star OUT — skip lean`,
             sub: `${outTeam}: ${outNote.replace('OUT: ','')}` };
           signalFloor = 50;
+          // Override legacy leanSide — no lean fires when star is out, so
+          // the top "Model Lean" label should not contradict the badge.
+          leanSide = null;
+          leanBet = null;
         } else {
           // Pull market spread + total
           let marketSpread = null;
@@ -3577,10 +3581,20 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
                 sub: `Model implies ${nrGap > 0 ? '-' : '+'}${Math.abs(nrGap).toFixed(1)} vs market ${marketSpread > 0 ? '+' : ''}${marketSpread} → ${modelEdge > 0 ? '+' : ''}${modelEdge.toFixed(1)} pt edge${driftNote}`
               };
               signalFloor = edgeAbs >= 4 ? 65 : 58;
+              // Override legacy leanSide so the top "Model Lean" label
+              // reflects the side with the edge (not the favored-by-NR-gap
+              // team). This is what fixes the Thunder/Lakers contradiction
+              // where the badge said "Lakers dog cover" but legacy lean
+              // said "Oklahoma City" (better-team-by-composite).
+              leanSide = stripMascot(valueSide);
+              leanBet = 'spread';
+            } else {
+              // Chalk consensus (model agrees with market, no edge ≥ 2).
+              // Old behavior fired ML lean on the favorite. New behavior
+              // says no lean — better than firing a useless badge.
+              leanSide = null;
+              leanBet = null;
             }
-            // edgeAbs < 2: chalk consensus, no lean — intentionally suppressed.
-            // Old behavior fired ML lean here (Thunder -15 type chalk). New
-            // behavior says "model agrees with market, no edge" and stays silent.
           }
 
           // Pace-adjusted total edge — separate primary path when no spread edge fires.
@@ -3604,6 +3618,9 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
                 sub: `Pace-adj projection ${projectedTotal.toFixed(0)} vs market ${marketTotal} (${totalDelta > 0 ? '+' : ''}${totalDelta.toFixed(1)} pts)`
               };
               signalFloor = 55;
+              // Override leanSide for total edge play
+              leanSide = `${totalDelta > 0 ? 'Over' : 'Under'} ${marketTotal}`;
+              leanBet = 'total';
             }
           }
         }
@@ -5270,7 +5287,34 @@ if(scoreData) {
     const awayNBA = Object.values(nbaTeamData).find(t => t.team && game.away_team.includes(t.team.split(' ').pop()));
     if(homeNBA && awayNBA) {
       const netGap = homeNBA.net_rating - awayNBA.net_rating;
-      if(Math.abs(netGap) >= 3) sweatSignals.push(`Net rating gap: ${netGap > 0 ? game.home_team : game.away_team} +${Math.abs(netGap).toFixed(1)} pts advantage`);
+
+      // Chalk-trap analysis (added 2026-05-07). Pull market spread and
+      // compute model-vs-market edge so Jerry doesn't recommend a "Thunder
+      // ML" lean on a chalk -15 game where the model AGREES with the
+      // market price. Model edge = nrGap + market_spread (home perspective).
+      let marketNbaSpread = null;
+      const _spMkt = (game.bookmakers || [])[0]?.markets?.find(m => m.key === 'spreads');
+      if(_spMkt?.outcomes) {
+        const _h = _spMkt.outcomes.find(o => o.name === game.home_team);
+        if(_h && _h.point != null) marketNbaSpread = _h.point;
+      }
+
+      if(marketNbaSpread != null) {
+        const modelEdge = netGap + marketNbaSpread;
+        const edgeAbs = Math.abs(modelEdge);
+        if(edgeAbs >= 2) {
+          const valueIsHome = modelEdge > 0;
+          const valueSide = valueIsHome ? game.home_team : game.away_team;
+          const valueIsDog = (valueIsHome && marketNbaSpread > 0) || (!valueIsHome && marketNbaSpread < 0);
+          sweatSignals.push(`Model edge: ${valueSide} ${valueIsDog ? 'as dog cover' : 'ATS'} (${modelEdge > 0 ? '+' : ''}${modelEdge.toFixed(1)} pt model edge vs market spread ${marketNbaSpread > 0 ? '+' : ''}${marketNbaSpread})`);
+        } else {
+          sweatSignals.push(`Chalk consensus: model agrees with market (${marketNbaSpread > 0 ? '+' : ''}${marketNbaSpread} spread, NR gap ${netGap > 0 ? '+' : ''}${netGap.toFixed(1)} — no edge to bet)`);
+        }
+      } else if(Math.abs(netGap) >= 3) {
+        // Fallback when no market spread available
+        sweatSignals.push(`Net rating gap: ${netGap > 0 ? game.home_team : game.away_team} +${Math.abs(netGap).toFixed(1)} pts (no market price to compare against)`);
+      }
+
       if(homeNBA.defensive_rating && awayNBA.defensive_rating) {
         const defGap = awayNBA.defensive_rating - homeNBA.defensive_rating;
         if(Math.abs(defGap) >= 3) sweatSignals.push(`Defensive edge: ${defGap > 0 ? game.home_team : game.away_team} ${Math.abs(defGap).toFixed(1)} pts better DefRtg`);
