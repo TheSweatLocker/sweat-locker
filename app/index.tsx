@@ -2748,6 +2748,7 @@ modelMismatch = Math.min(85, modelMismatch);
     // New logic: boost only when model implied margin disagrees with market
     // by ≥2 pts. NR gap alone is no edge — disagreement with market IS edge.
     const nrGapSigned = homeNBA.net_rating - awayNBA.net_rating;  // home perspective
+    const netRatingGap = Math.abs(nrGapSigned);  // exposed for downstream efgMismatch label
     let nbaMarketSpread = null;
     const _spreadMkt = bookmakers[0]?.markets?.find(m => m.key === 'spreads');
     if(_spreadMkt?.outcomes) {
@@ -2766,7 +2767,6 @@ modelMismatch = Math.min(85, modelMismatch);
     } else {
       // No market spread available — fall back to legacy NR-gap behavior
       // but at half weight (chalk risk acknowledged).
-      const netRatingGap = Math.abs(nrGapSigned);
       const netRatingBoost = Math.min(10, Math.round(netRatingGap * 0.75));
       modelMismatch = Math.min(85, modelMismatch + netRatingBoost);
     }
