@@ -5139,11 +5139,18 @@ if(sport === 'UFC') {
       itdAngle = `\n- DISTANCE / ITD prop angle: ${fighterAStats.fighter_name} finishes ${fA}% (decision ${decA}%), ${fighterBStats.fighter_name} finishes ${fB}% (decision ${decB}%). Combined finish profile: ${combinedFinish.toFixed(0)}%. ${itdLean}`;
     }
 
+    // Pull MLs by NAME-MATCH instead of index (outcomes[0]/[1] order is
+    // not deterministic — index-matching caused Strickland/Khamzat price
+    // swaps in render). 2026-05-08 fix.
+    const ufcMlMkt = game.bookmakers?.[0]?.markets?.find(m=>m.key==='h2h');
+    const fighterAMl = ufcMlMkt?.outcomes?.find(o => o.name === fighterA)?.price;
+    const fighterBMl = ufcMlMkt?.outcomes?.find(o => o.name === fighterB)?.price;
+
     ufcContextStr = `
 UFC FIGHT CONTEXT:
 - Fighter A: ${formatFighter(fighterA, fighterAStats)}
 - Fighter B: ${formatFighter(fighterB, fighterBStats)}
-- Moneyline: ${fighterA} ${game.bookmakers?.[0]?.markets?.find(m=>m.key==='h2h')?.outcomes?.[0]?.price || 'N/A'} / ${fighterB} ${game.bookmakers?.[0]?.markets?.find(m=>m.key==='h2h')?.outcomes?.[1]?.price || 'N/A'}
+- Moneyline: ${fighterA} ${fighterAMl ?? 'N/A'} / ${fighterB} ${fighterBMl ?? 'N/A'}
 ${fighterAStats && fighterBStats ? `- Striking gap: SLpM diff ${((fighterAStats.slpm||0) - (fighterBStats.slpm||0)).toFixed(1)}, accuracy gap ${((fighterAStats.str_acc||0) - (fighterBStats.str_acc||0)).toFixed(1)}%. Striking defense: ${fighterAStats.fighter_name} ${fighterAStats.str_def||'?'}% vs ${fighterBStats.fighter_name} ${fighterBStats.str_def||'?'}%
 - Grappling: ${fighterAStats.fighter_name} TD avg ${fighterAStats.td_avg||0}/15min, TD def ${fighterAStats.td_def||'?'}% | ${fighterBStats.fighter_name} TD avg ${fighterBStats.td_avg||0}/15min, TD def ${fighterBStats.td_def||'?'}%
 - Finishing: ${fighterAStats.fighter_name} ${fighterAStats.finishing_rate||0}% vs ${fighterBStats.fighter_name} ${fighterBStats.finishing_rate||0}%
@@ -10607,24 +10614,68 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       {/* Best Bets */}
                       <View style={{backgroundColor:'#151c24',borderRadius:12,padding:12,marginBottom:12}}>
                         <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:8}}>
-                          {ss.spreadBet?.book===HRB && ss.totalBet?.book===HRB && ss.mlBet?.book===HRB
-                            ? '🎸 BEST BETS ON HARD ROCK'
-                            : '🎯 BEST AVAILABLE LINES'}
+                          {gamesSport==='UFC'
+                            ? '🎯 BEST FIGHT MONEYLINES'
+                            : (ss.spreadBet?.book===HRB && ss.totalBet?.book===HRB && ss.mlBet?.book===HRB
+                              ? '🎸 BEST BETS ON HARD ROCK'
+                              : '🎯 BEST AVAILABLE LINES')}
                         </Text>
                         <View style={{flexDirection:'row',gap:6}}>
-                          {ss.spreadBet&&<TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:ss.spreadBet.pick,sport:gamesSport,type:'Spread',odds:String(ss.spreadBet.odds),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
+                          {/* Spread + Total hidden for UFC — Odds API "spreads"
+                              for MMA returns round-line / method props that
+                              look like nonsense -13.5 etc. to a normal user.
+                              UFC only renders both fighters' moneylines below. */}
+                          {gamesSport!=='UFC' && ss.spreadBet&&<TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:ss.spreadBet.pick,sport:gamesSport,type:'Spread',odds:String(ss.spreadBet.odds),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
                             <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>SPREAD</Text>
                             <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13,marginTop:3}}>{ss.spreadBet.pick}</Text>
                             <Text style={{color:'#7a92a8',fontSize:11}}>{ss.spreadBet.odds>0?'+':''}{ss.spreadBet.odds}</Text>
                            <Text style={{color:ss.spreadBet.book===HRB?HRB_COLOR:'#4a6070',fontSize:9,fontWeight:'700',marginTop:2}}>{ss.spreadBet.book===HRB?'🎸 HRB':ss.spreadBet.book}</Text>
                           </TouchableOpacity>}
-                          {ss.totalBet&&<TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:ss.totalBet.pick,sport:gamesSport,type:'Total (O/U)',odds:String(ss.totalBet.odds),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
+                          {gamesSport!=='UFC' && ss.totalBet&&<TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:ss.totalBet.pick,sport:gamesSport,type:'Total (O/U)',odds:String(ss.totalBet.odds),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
                             <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>TOTAL</Text>
                             <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13,marginTop:3}}>{ss.totalBet.pick}</Text>
                             <Text style={{color:'#7a92a8',fontSize:11}}>{ss.totalBet.odds>0?'+':''}{ss.totalBet.odds}</Text>
                           <Text style={{color:ss.totalBet.book===HRB?HRB_COLOR:'#4a6070',fontSize:9,fontWeight:'700',marginTop:2}}>{ss.totalBet.book===HRB?'🎸 HRB':ss.totalBet.book}</Text>
                           </TouchableOpacity>}
-                          {ss.mlBet&&<TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:ss.mlBet.pick,sport:gamesSport,type:'Moneyline',odds:String(ss.mlBet.odds),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
+                          {/* UFC: render BOTH fighters' MLs side by side using
+                              name-matched outcome lookup so price always matches
+                              the correct fighter (outcomes[0]/[1] order is
+                              non-deterministic across bookmakers). */}
+                          {gamesSport==='UFC' && (() => {
+                            const allBookmakers = selectedGame.bookmakers || [];
+                            const findFighterMl = (fighterName: string) => {
+                              let best = null;
+                              let bestBook = null;
+                              for (const bm of allBookmakers) {
+                                const mlMkt = bm.markets?.find(m => m.key === 'h2h');
+                                const outcome = mlMkt?.outcomes?.find(o => o.name === fighterName);
+                                if (outcome && (best === null || outcome.price > best)) {
+                                  best = outcome.price;
+                                  bestBook = BOOKMAKER_MAP[bm.key] || bm.key;
+                                }
+                              }
+                              return best != null ? { price: best, book: bestBook } : null;
+                            };
+                            const fighterA = selectedGame.away_team;
+                            const fighterB = selectedGame.home_team;
+                            const mlA = findFighterMl(fighterA);
+                            const mlB = findFighterMl(fighterB);
+                            return (
+                              <>
+                                {mlA && <TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:fighterA+' vs '+fighterB,pick:fighterA+' ML',sport:'UFC',type:'Moneyline',odds:String(mlA.price),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
+                                  <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>{fighterA.split(' ').pop().toUpperCase()}</Text>
+                                  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginTop:3}}>{mlA.price>0?'+':''}{mlA.price}</Text>
+                                  <Text style={{color:mlA.book===HRB?HRB_COLOR:'#4a6070',fontSize:9,fontWeight:'700',marginTop:2}}>{mlA.book===HRB?'🎸 HRB':mlA.book}</Text>
+                                </TouchableOpacity>}
+                                {mlB && <TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:fighterA+' vs '+fighterB,pick:fighterB+' ML',sport:'UFC',type:'Moneyline',odds:String(mlB.price),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
+                                  <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>{fighterB.split(' ').pop().toUpperCase()}</Text>
+                                  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginTop:3}}>{mlB.price>0?'+':''}{mlB.price}</Text>
+                                  <Text style={{color:mlB.book===HRB?HRB_COLOR:'#4a6070',fontSize:9,fontWeight:'700',marginTop:2}}>{mlB.book===HRB?'🎸 HRB':mlB.book}</Text>
+                                </TouchableOpacity>}
+                              </>
+                            );
+                          })()}
+                          {gamesSport!=='UFC' && ss.mlBet&&<TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:ss.mlBet.pick,sport:gamesSport,type:'Moneyline',odds:String(ss.mlBet.odds),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
                             <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>ML</Text>
                             <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13,marginTop:3}}>{ss.mlBet.pick}</Text>
                             <Text style={{color:'#7a92a8',fontSize:11}}>{ss.mlBet.odds>0?'+':''}{ss.mlBet.odds}</Text>
@@ -10680,9 +10731,24 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         <View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:8,paddingVertical:3}}><Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700'}}>YOUR BOOK</Text></View>
                       </View>
                       <View style={{flexDirection:'row',gap:8,marginBottom:10}}>
-                        {hrbLine.spread&&hrbLine.spread[0]&&gamesSport!=='UFC'&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.spread[0].name.split(' ').pop()} {hrbLine.spread[0].point>0?'+':''}{hrbLine.spread[0].point}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{hrbLine.spread[0].price>0?'+':''}{hrbLine.spread[0].price}</Text></View>}
-                        {hrbLine.total&&hrbLine.total[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>O/U {hrbLine.total[0].point}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{hrbLine.total[0].price>0?'+':''}{hrbLine.total[0].price}</Text></View>}
-                        {hrbLine.ml&&hrbLine.ml[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>ML</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.ml[0].price>0?'+':''}{hrbLine.ml[0].price}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{selectedGame.away_team.split(' ').pop()}</Text></View>}
+                        {gamesSport!=='UFC' && hrbLine.spread&&hrbLine.spread[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.spread[0].name.split(' ').pop()} {hrbLine.spread[0].point>0?'+':''}{hrbLine.spread[0].point}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{hrbLine.spread[0].price>0?'+':''}{hrbLine.spread[0].price}</Text></View>}
+                        {gamesSport!=='UFC' && hrbLine.total&&hrbLine.total[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>O/U {hrbLine.total[0].point}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{hrbLine.total[0].price>0?'+':''}{hrbLine.total[0].price}</Text></View>}
+                        {/* UFC: render BOTH fighter MLs from HRB book using
+                            name-match so price stays attached to the right
+                            fighter regardless of outcomes[] order. */}
+                        {gamesSport==='UFC' && hrbLine.ml && (() => {
+                          const fighterA = selectedGame.away_team;
+                          const fighterB = selectedGame.home_team;
+                          const mlA = hrbLine.ml.find(o => o.name === fighterA);
+                          const mlB = hrbLine.ml.find(o => o.name === fighterB);
+                          return (
+                            <>
+                              {mlA && <View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>{fighterA.split(' ').pop().toUpperCase()}</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{mlA.price>0?'+':''}{mlA.price}</Text></View>}
+                              {mlB && <View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>{fighterB.split(' ').pop().toUpperCase()}</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{mlB.price>0?'+':''}{mlB.price}</Text></View>}
+                            </>
+                          );
+                        })()}
+                        {gamesSport!=='UFC' && hrbLine.ml&&hrbLine.ml[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>ML</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.ml[0].price>0?'+':''}{hrbLine.ml[0].price}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{selectedGame.away_team.split(' ').pop()}</Text></View>}
                       </View>
                       {hrbEV&&hrbEV.length>0&&(
                         <View>
