@@ -7339,6 +7339,20 @@ setJerryHistory(prev => {
     const awayShort=md.away.split(' ').pop();
     const homeShort=md.home.split(' ').pop();
 
+    // Match this UFC game to our v1 model pick (added 2026-05-08).
+    // Used by the Model Fight Breakdown section below — surfaces method
+    // probabilities, distance %, round predictions, and market-model
+    // divergence warnings on top of the basic moneyline display.
+    const ufcMatchPick: any = sport === 'UFC' && ufcPicks?.length > 0
+      ? ufcPicks.find((p:any) => {
+          const aLast = (game.away_team || '').split(' ').pop()?.toLowerCase();
+          const bLast = (game.home_team || '').split(' ').pop()?.toLowerCase();
+          const paLast = (p.fighter_a || '').split(' ').pop()?.toLowerCase();
+          const pbLast = (p.fighter_b || '').split(' ').pop()?.toLowerCase();
+          return (aLast === paLast || aLast === pbLast) && (bLast === paLast || bLast === pbLast);
+        })
+      : null;
+
     return(
       <View style={{marginBottom:16}}>
         {/* Tab bar */}
@@ -7398,6 +7412,130 @@ setJerryHistory(prev => {
               );
             })()}
           </View>
+
+          {/* UFC Model Fight Breakdown (added 2026-05-08).
+              Surfaces full v1 model output: winner %, method (KO/SUB/DEC)
+              probabilities, goes-distance %, per-round probabilities, and a
+              market-model divergence warning when implied prob from ML
+              diverges from model by 10+ points. Standard moneyline display
+              stays in the BOOK CONSENSUS tab — this adds depth on top. */}
+          {sport === 'UFC' && ufcMatchPick && (() => {
+            const p = ufcMatchPick;
+            const pickedSide = p.recommended_side; // 'a' or 'b'
+            const pickedFighter = pickedSide === 'a' ? p.fighter_a : p.fighter_b;
+            const winProb = pickedSide === 'a' ? p.p_winner_a : 1 - p.p_winner_a;
+            const tier = p.tier_winner;
+            const tierColor = tier === 'PRIME' ? '#00e5a0' : tier === 'STRONG' ? '#4a9eff' : '#7a92a8';
+
+            const methods = [
+              { label: 'KO/TKO', val: p.p_method_ko || 0 },
+              { label: 'Submission', val: p.p_method_sub || 0 },
+              { label: 'Decision', val: p.p_method_dec || 0 },
+            ].sort((a, b) => b.val - a.val);
+
+            // Market-model divergence detection. ML implied prob vs model prob.
+            const ufcMlMkt = (game.bookmakers?.[0])?.markets?.find((m:any) => m.key === 'h2h');
+            const fighterAName = p.fighter_a;
+            const fighterAMlOdds = ufcMlMkt?.outcomes?.find((o:any) => o.name === fighterAName)?.price;
+            let divergenceNote: string | null = null;
+            if (fighterAMlOdds != null) {
+              const marketProbA = fighterAMlOdds > 0
+                ? 100 / (fighterAMlOdds + 100)
+                : Math.abs(fighterAMlOdds) / (Math.abs(fighterAMlOdds) + 100);
+              const modelProbA = p.p_winner_a;
+              const gap = modelProbA - marketProbA;
+              if (Math.abs(gap) >= 0.10) {
+                const valueSide = gap > 0 ? p.fighter_a.split(' ').pop() : p.fighter_b.split(' ').pop();
+                const valueGap = Math.round(Math.abs(gap) * 100);
+                divergenceNote = `Model gives ${valueSide} ${valueGap}% more probability than market implies. Plus-money value if you trust the model over Vegas.`;
+              }
+            }
+
+            return (
+              <View style={{marginHorizontal:16,marginBottom:12,backgroundColor:'rgba(74,158,255,0.08)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(74,158,255,0.3)'}}>
+                <Text style={{color:'#4a9eff',fontWeight:'800',fontSize:12,marginBottom:10}}>🤖 MODEL FIGHT BREAKDOWN</Text>
+
+                {/* Winner row */}
+                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10,paddingBottom:10,borderBottomWidth:1,borderBottomColor:'rgba(74,158,255,0.2)'}}>
+                  <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',letterSpacing:0.5}}>WINNER PICK</Text>
+                  <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+                    <Text style={{color:'#fff',fontWeight:'700',fontSize:13}}>{pickedFighter.split(' ').pop()}</Text>
+                    <Text style={{color:'#4a9eff',fontWeight:'800',fontSize:14}}>{Math.round(winProb * 100)}%</Text>
+                    {tier && <View style={{backgroundColor:tierColor+'20',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:tierColor+'44'}}><Text style={{color:tierColor,fontWeight:'800',fontSize:10}}>{tier}</Text></View>}
+                  </View>
+                </View>
+
+                {/* Method probabilities */}
+                <View style={{marginBottom:10}}>
+                  <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>METHOD OF VICTORY</Text>
+                  {methods.map((m, i) => (
+                    <View key={i} style={{flexDirection:'row',alignItems:'center',marginBottom:4}}>
+                      <Text style={{color: i === 0 ? '#fff' : '#7a92a8', fontSize:12, fontWeight: i === 0 ? '700' : '400', width:90}}>{m.label}</Text>
+                      <View style={{flex:1,marginRight:8}}>
+                        <View style={{height:5,backgroundColor:'rgba(74,158,255,0.15)',borderRadius:2,overflow:'hidden'}}>
+                          <View style={{height:5,width:`${m.val*100}%`,backgroundColor: i === 0 ? '#4a9eff' : 'rgba(74,158,255,0.4)',borderRadius:2}}/>
+                        </View>
+                      </View>
+                      <Text style={{color: i === 0 ? '#4a9eff' : '#7a92a8', fontSize:12, fontWeight: i === 0 ? '700' : '400', width:36, textAlign:'right'}}>{Math.round(m.val * 100)}%</Text>
+                    </View>
+                  ))}
+                  {p.edge_method && (
+                    <View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2,marginTop:4,alignSelf:'flex-start'}}>
+                      <Text style={{color:'#FFB800',fontSize:10,fontWeight:'800'}}>⚡ {p.edge_method} EDGE</Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* Distance */}
+                <View style={{marginBottom:10,paddingTop:10,borderTopWidth:1,borderTopColor:'rgba(74,158,255,0.2)'}}>
+                  <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>FIGHT GOES THE DISTANCE</Text>
+                  <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:3}}>
+                    <Text style={{color:p.p_distance >= 0.5 ? '#fff' : '#7a92a8',fontSize:12,fontWeight:p.p_distance >= 0.5 ? '700' : '400'}}>YES (decision)</Text>
+                    <Text style={{color:p.p_distance >= 0.5 ? '#4a9eff' : '#7a92a8',fontSize:12,fontWeight:p.p_distance >= 0.5 ? '700' : '400'}}>{Math.round((p.p_distance || 0) * 100)}%</Text>
+                  </View>
+                  <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                    <Text style={{color:p.p_distance < 0.5 ? '#fff' : '#7a92a8',fontSize:12,fontWeight:p.p_distance < 0.5 ? '700' : '400'}}>NO (finish before R5)</Text>
+                    <Text style={{color:p.p_distance < 0.5 ? '#4a9eff' : '#7a92a8',fontSize:12,fontWeight:p.p_distance < 0.5 ? '700' : '400'}}>{Math.round((1 - (p.p_distance || 0)) * 100)}%</Text>
+                  </View>
+                  {p.edge_distance && (
+                    <View style={{backgroundColor:'rgba(180,140,255,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2,marginTop:4,alignSelf:'flex-start'}}>
+                      <Text style={{color:'#b48cff',fontSize:10,fontWeight:'800'}}>⚡ {p.edge_distance} DIST EDGE</Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* Per-round probabilities */}
+                <View style={{paddingTop:10,borderTopWidth:1,borderTopColor:'rgba(74,158,255,0.2)'}}>
+                  <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>WHEN FIGHT ENDS (ROUND)</Text>
+                  {[1, 2, 3, 4, 5].map(r => {
+                    const val = p[`p_round_${r}`];
+                    if (val == null || val < 0.03) return null;
+                    return (
+                      <View key={r} style={{flexDirection:'row',alignItems:'center',marginBottom:4}}>
+                        <Text style={{color:'#7a92a8',fontSize:12,width:60}}>Round {r}</Text>
+                        <View style={{flex:1,marginRight:8}}>
+                          <View style={{height:4,backgroundColor:'rgba(74,158,255,0.15)',borderRadius:2,overflow:'hidden'}}>
+                            <View style={{height:4,width:`${val*100}%`,backgroundColor:'#4a9eff',borderRadius:2}}/>
+                          </View>
+                        </View>
+                        <Text style={{color:'#7a92a8',fontSize:12,width:36,textAlign:'right'}}>{Math.round(val*100)}%</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                {/* Market-model divergence warning */}
+                {divergenceNote && (
+                  <View style={{marginTop:10,paddingTop:10,borderTopWidth:1,borderTopColor:'rgba(74,158,255,0.2)'}}>
+                    <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:8,padding:10,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
+                      <Text style={{color:'#FFB800',fontSize:11,fontWeight:'800',marginBottom:4}}>⚡ MARKET-MODEL DIVERGENCE</Text>
+                      <Text style={{color:'#c8d8e8',fontSize:11,lineHeight:16}}>{divergenceNote}</Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+            );
+          })()}
 
            {matchupTab==='money'&&(
                   <View style={{padding:16}}>
@@ -9900,92 +10038,14 @@ setJerryHistory(prev => {
                     );
                   })()}
 
-                  {/* Prop Jerry — Historical Record (legacy EV scanner data) */}
-                  <View style={[styles.card,{marginBottom:16}]}>
-                    <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8,letterSpacing:0.5}}>🎯 PROP JERRY — TRACKED PICKS</Text>
-                    {propTotal >= 15 ? (
-                      <>
-                        <View style={{flexDirection:'row',justifyContent:'space-around',marginBottom:8}}>
-                          <View style={{alignItems:'center'}}>
-                            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:28}}>{p.pending + propTotal}</Text>
-                            <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>TRACKED</Text>
-                          </View>
-                          <View style={{alignItems:'center'}}>
-                            <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:28}}>{p.wins}</Text>
-                            <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>WINS</Text>
-                          </View>
-                          <View style={{alignItems:'center'}}>
-                            <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:28}}>{p.losses}</Text>
-                            <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>LOSSES</Text>
-                          </View>
-                        </View>
-                        <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}>
-                          <Text style={{color:parseFloat(propWinRate)>=55?'#00e5a0':parseFloat(propWinRate)>=50?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:20}}>{propWinRate}% hit rate</Text>
-                          <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{propTotal} resolved • {p.pending} pending</Text>
-                        </View>
-                      </>
-                    ) : (
-                      <Text style={{color:'#7a92a8',fontSize:13,textAlign:'center',paddingHorizontal:20,lineHeight:20}}>
-                        Prop results calibrating — tracking {p.pending + propTotal} props this season. Results auto-resolve daily via box score data.
-                      </Text>
-                    )}
-                  </View>
-
-                  {/* By Sport breakdown — only show with 25+ resolved */}
-                  {propTotal >= 15 && Object.keys(p.bySport).length > 0 && (
-                    <View style={[styles.card,{marginBottom:12}]}>
-                      <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',letterSpacing:1,marginBottom:10}}>HIT RATE BY SPORT</Text>
-                      {Object.entries(p.bySport).map(([sport, rec], i) => {
-                        const total = rec.wins + rec.losses;
-                        const pct = total > 0 ? ((rec.wins/total)*100).toFixed(0) : '—';
-                        return(
-                          <View key={i} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
-                            <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{SPORT_EMOJI[sport]||'🎯'} {sport}</Text>
-                              <Text style={{color:'#7a92a8',fontSize:12}}>{rec.wins}W - {rec.losses}L</Text>
-                            </View>
-                            <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                              <View style={{width:60,height:4,backgroundColor:'#1f2d3d',borderRadius:2,overflow:'hidden'}}>
-                                <View style={{height:'100%',width:`${pct}%`,backgroundColor:parseFloat(pct)>=55?'#00e5a0':parseFloat(pct)>=50?HRB_COLOR:'#ff4d6d',borderRadius:2}}/>
-                              </View>
-                              <Text style={{color:parseFloat(pct)>=55?'#00e5a0':parseFloat(pct)>=50?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:14,width:36,textAlign:'right'}}>{pct}%</Text>
-                            </View>
-                          </View>
-                        );
-                      })}
-                    </View>
-                  )}
-
-                  {/* Recent A-Grade Picks — always show */}
-                  {p.recent.length > 0 && (
-                    <>
-                      <Text style={styles.sectionLabel}>RECENT PROP PICKS</Text>
-                      {p.recent.map((prop, i) => {
-                        const isPending = prop.result === 'Pending';
-                        const isWin = prop.result === 'Win';
-                        const isLoss = prop.result === 'Loss';
-                        const borderColor = isPending ? '#4a6070' : isWin ? '#00e5a0' : '#ff4d6d';
-                        const statusLabel = isPending ? 'PENDING' : isWin ? 'WIN' : 'LOSS';
-                        const statusColor = isPending ? '#7a92a8' : isWin ? '#00e5a0' : '#ff4d6d';
-                        return(
-                          <View key={i} style={[styles.betCard,{borderLeftColor:borderColor,marginBottom:8}]}>
-                            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'}}>
-                              <View style={{flex:1}}>
-                                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{prop.player}</Text>
-                                <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{prop.market} • {prop.game}</Text>
-                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{prop.best_side} {prop.best_odds>0?'+':''}{prop.best_odds} @ {prop.book}</Text>
-                              </View>
-                              <View style={{alignItems:'center'}}>
-                                <View style={{backgroundColor:borderColor+'22',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor}}>
-                                  <Text style={{color:statusColor,fontWeight:'800',fontSize:10}}>{statusLabel}</Text>
-                                </View>
-                              </View>
-                            </View>
-                          </View>
-                        );
-                      })}
-                    </>
-                  )}
+                  {/* Legacy "Prop Jerry — Tracked Picks" + "Recent Prop Picks"
+                      sections removed 2026-05-08. Both pulled from the
+                      pre-pivot EV scanner / A-grade data store. The
+                      pipelineProps card above (jerryRecord.pipelineProps)
+                      now carries Track Record duty using PRIME/STRONG/LEAN
+                      conviction tiers from the post-pivot architecture.
+                      jerryRecord.props field still populates via legacy
+                      DB writes but isn't surfaced in the UI anymore. */}
 
                   {/* Best Bet History */}
                   {jerryRecord.bestBets.length > 0 && (
