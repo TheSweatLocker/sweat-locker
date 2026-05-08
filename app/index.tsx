@@ -2741,9 +2741,35 @@ modelMismatch = Math.min(85, modelMismatch);
     Object.values(nbaContext).find(t => t.team && (t.team.includes(stripMascot(game.away_team)) || stripMascot(game.away_team).includes(t.team.split(' ').pop())));
 
   if(homeNBA && awayNBA) {
-    const netRatingGap = Math.abs(homeNBA.net_rating - awayNBA.net_rating);
-    const netRatingBoost = Math.min(20, Math.round(netRatingGap * 1.5));
-    modelMismatch = Math.min(85, modelMismatch + netRatingBoost);
+    // CHALK-TRAP CORRECTION (added 2026-05-07).
+    // Old logic boosted modelMismatch by net rating gap alone — fired on
+    // every chalk game (Thunder -15 etc.) and inflated Sweat Score for
+    // matchups the market had already correctly priced.
+    // New logic: boost only when model implied margin disagrees with market
+    // by ≥2 pts. NR gap alone is no edge — disagreement with market IS edge.
+    const nrGapSigned = homeNBA.net_rating - awayNBA.net_rating;  // home perspective
+    let nbaMarketSpread = null;
+    const _spreadMkt = bookmakers[0]?.markets?.find(m => m.key === 'spreads');
+    if(_spreadMkt?.outcomes) {
+      const _home = _spreadMkt.outcomes.find(o => o.name === game.home_team);
+      if(_home && _home.point != null) nbaMarketSpread = _home.point;
+    }
+    if(nbaMarketSpread != null) {
+      // model_edge = nrGap + marketSpread (sign convention: home perspective)
+      const modelEdge = Math.abs(nrGapSigned + nbaMarketSpread);
+      // Boost up to +20 when model and market disagree by 5+ points.
+      // Below 2pt edge = chalk consensus, no boost (modelMismatch stays at base).
+      if(modelEdge >= 2) {
+        const edgeBoost = Math.min(20, Math.round((modelEdge - 1) * 4));
+        modelMismatch = Math.min(85, modelMismatch + edgeBoost);
+      }
+    } else {
+      // No market spread available — fall back to legacy NR-gap behavior
+      // but at half weight (chalk risk acknowledged).
+      const netRatingGap = Math.abs(nrGapSigned);
+      const netRatingBoost = Math.min(10, Math.round(netRatingGap * 0.75));
+      modelMismatch = Math.min(85, modelMismatch + netRatingBoost);
+    }
 
     // eFG% mismatch boost
     const efgGap = Math.abs(homeNBA.efg_pct - awayNBA.efg_pct);
@@ -3472,11 +3498,15 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         sub: `${Math.abs(spreadEdge).toFixed(1)}-pt edge vs spread` };
       signalFloor = Math.abs(spreadEdge) >= 3 ? 80 : 68;
     } else if(sport === 'NBA' && nbaContext) {
-      // Conservative NBA primary play (added 2026-04-25):
-      // - spread/ML only, no totals (no validation data on NBA totals delta)
-      // - STRONG tier max (no PRIME) until we have nba_game_results audit data
-      // - auto-fade gate: skip if model picks the market underdog
-      // - star player OUT flag suppresses (uncalibrated impact)
+      // NBA primary play — full rewrite 2026-05-07. Old logic fired ML lean
+      // on net rating gap alone, which fired on every chalk game (Thunder
+      // -15 etc.) without comparing to market spread. New logic:
+      //   1. Pull market spread + total from bookmakers
+      //   2. Compute model_edge vs market (chalk-trap detector)
+      //   3. Suppress lean entirely when |edge| < 2 (chalk consensus)
+      //   4. Star OUT → hard skip (no lean fires)
+      //   5. Pace × efficiency total edge as separate primary path
+      //   6. Recency drift surfaced as label modifier when significant
       const _hNBA = nbaContext[game.home_team] ||
         Object.values(nbaContext).find(t => t && t.team && game.home_team.includes(t.team.split(' ').pop()));
       const _aNBA = nbaContext[game.away_team] ||
@@ -3485,29 +3515,96 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         const nrGap = _hNBA.net_rating - _aNBA.net_rating;  // positive = home better
         const homeOut = _hNBA.injury_note && _hNBA.injury_note.includes('OUT');
         const awayOut = _aNBA.injury_note && _aNBA.injury_note.includes('OUT');
-        // Read market direction from bookmakers — pick lower ML as favorite
-        let marketHomeFav = null;
-        const mlMkt = bookmakers[0]?.markets?.find(m => m.key === 'h2h');
-        if(mlMkt && mlMkt.outcomes) {
-          const homeMl = mlMkt.outcomes.find(o => o.name === game.home_team)?.price;
-          const awayMl = mlMkt.outcomes.find(o => o.name === game.away_team)?.price;
-          if(homeMl != null && awayMl != null) marketHomeFav = homeMl < awayMl;
-        }
-        const modelHomeFav = nrGap > 0;
-        const directionAgrees = marketHomeFav == null || modelHomeFav === marketHomeFav;
-        const fav = nrGap > 0 ? homeName : awayName;
-        if(!homeOut && !awayOut && directionAgrees) {
-          // Audit (5/6/2026, 26 playoff games): NR_gap>=8 ATS hit 36.4%,
-          // ML hit 54.5% — break-even with juice. Downgraded STRONG → LEAN
-          // until regular season sample (Nov+) recalibrates the cohort.
-          if(Math.abs(nrGap) >= 8) {
-            primaryPlay = { type: 'ml', tier: 'LEAN', label: `${fav} ML lean`,
-              sub: `Net rating gap +${Math.abs(nrGap).toFixed(1)} (small sample, monitor)` };
-            signalFloor = 58;
-          } else if(Math.abs(nrGap) >= 5) {
-            primaryPlay = { type: 'ml', tier: 'LIGHT', label: `${fav} lean`,
-              sub: `Net rating gap +${Math.abs(nrGap).toFixed(1)}` };
-            signalFloor = 55;
+
+        // Star OUT — hard suppression. When a starter is ruled OUT (not
+        // questionable), the impact on the game is too uncalibrated to bet.
+        // Don't fire any lean; flag the situation so user knows why.
+        if(homeOut || awayOut) {
+          const outTeam = homeOut ? homeName : awayName;
+          const outNote = (homeOut ? _hNBA.injury_note : _aNBA.injury_note) || '';
+          primaryPlay = { type: 'note', tier: 'SKIP',
+            label: `Star OUT — skip lean`,
+            sub: `${outTeam}: ${outNote.replace('OUT: ','')}` };
+          signalFloor = 50;
+        } else {
+          // Pull market spread + total
+          let marketSpread = null;
+          let marketTotal = null;
+          const spreadMkt = bookmakers[0]?.markets?.find(m => m.key === 'spreads');
+          const totalMkt = bookmakers[0]?.markets?.find(m => m.key === 'totals');
+          if(spreadMkt?.outcomes) {
+            const home = spreadMkt.outcomes.find(o => o.name === game.home_team);
+            if(home && home.point != null) marketSpread = home.point;
+          }
+          if(totalMkt?.outcomes?.[0] && totalMkt.outcomes[0].point != null) {
+            marketTotal = totalMkt.outcomes[0].point;
+          }
+
+          // Recency drift: L10 net rating - season net rating per team.
+          // When |home_drift - away_drift| ≥ 2, one team is meaningfully
+          // hotter/colder than the other. Surfaces as label modifier.
+          const homeRecencyNet = _hNBA.last_10_net_rating != null
+            ? parseFloat(_hNBA.last_10_net_rating) : _hNBA.net_rating;
+          const awayRecencyNet = _aNBA.last_10_net_rating != null
+            ? parseFloat(_aNBA.last_10_net_rating) : _aNBA.net_rating;
+          const homeDrift = homeRecencyNet - _hNBA.net_rating;
+          const awayDrift = awayRecencyNet - _aNBA.net_rating;
+          const netDrift = homeDrift - awayDrift;  // positive = home trending up vs away
+
+          if(marketSpread != null) {
+            // Chalk-trap detector: model_edge = nrGap + marketSpread
+            // (marketSpread is home spread; negative if home favored, so
+            //  -marketSpread = home's expected margin from market perspective)
+            // edge > 0 → model more bullish on home than market (home covers)
+            // edge < 0 → model more bullish on away than market (away covers)
+            // |edge| < 2 → chalk consensus, no lean
+            const modelEdge = nrGap + marketSpread;
+            const edgeAbs = Math.abs(modelEdge);
+
+            if(edgeAbs >= 2) {
+              const valueIsHome = modelEdge > 0;
+              const valueSide = valueIsHome ? homeName : awayName;
+              const valueIsDog = (valueIsHome && marketSpread > 0) || (!valueIsHome && marketSpread < 0);
+              const tier = edgeAbs >= 4 ? 'STRONG' : 'LEAN';
+              const baseLabel = valueIsDog ? `${valueSide} dog cover` : `${valueSide} ATS edge`;
+              const driftNote = Math.abs(netDrift) >= 2
+                ? ` • L10 ${(valueIsHome ? netDrift : -netDrift) > 0 ? 'trending up' : 'trending down'}`
+                : '';
+              primaryPlay = {
+                type: 'spread',
+                tier,
+                label: baseLabel,
+                sub: `Model implies ${nrGap > 0 ? '-' : '+'}${Math.abs(nrGap).toFixed(1)} vs market ${marketSpread > 0 ? '+' : ''}${marketSpread} → ${modelEdge > 0 ? '+' : ''}${modelEdge.toFixed(1)} pt edge${driftNote}`
+              };
+              signalFloor = edgeAbs >= 4 ? 65 : 58;
+            }
+            // edgeAbs < 2: chalk consensus, no lean — intentionally suppressed.
+            // Old behavior fired ML lean here (Thunder -15 type chalk). New
+            // behavior says "model agrees with market, no edge" and stays silent.
+          }
+
+          // Pace-adjusted total edge — separate primary path when no spread edge fires.
+          // projection = (off_rtg avg of attacker × def_rtg avg of defender) / 100 × pace
+          // Threshold ≥5 pts (NBA equivalent of ~1.5 runs in MLB).
+          if(!primaryPlay && marketTotal != null && _hNBA.pace != null && _aNBA.pace != null) {
+            const avgPace = (parseFloat(_hNBA.pace) + parseFloat(_aNBA.pace)) / 2;
+            const hOff = parseFloat(_hNBA.offensive_rating) || 112;
+            const aOff = parseFloat(_aNBA.offensive_rating) || 112;
+            const hDef = parseFloat(_hNBA.defensive_rating) || 112;
+            const aDef = parseFloat(_aNBA.defensive_rating) || 112;
+            const homeExpected = ((hOff + aDef) / 2) / 100 * avgPace;
+            const awayExpected = ((aOff + hDef) / 2) / 100 * avgPace;
+            const projectedTotal = homeExpected + awayExpected;
+            const totalDelta = projectedTotal - marketTotal;
+            if(Math.abs(totalDelta) >= 5) {
+              primaryPlay = {
+                type: 'total',
+                tier: 'LEAN',
+                label: `${totalDelta > 0 ? 'OVER' : 'UNDER'} ${marketTotal} lean`,
+                sub: `Pace-adj projection ${projectedTotal.toFixed(0)} vs market ${marketTotal} (${totalDelta > 0 ? '+' : ''}${totalDelta.toFixed(1)} pts)`
+              };
+              signalFloor = 55;
+            }
           }
         }
       }
