@@ -71,14 +71,154 @@ def get_today_et():
     return et_now.strftime("%Y-%m-%d")
 
 
+def load_class_projections():
+    """Load pitcher offense-class projections cache (built by
+    compute_pitcher_class_projections.py). Keyed by pitcher name."""
+    import json
+    from pathlib import Path
+    cache_path = Path(__file__).parent / 'data' / 'pitcher_class_projections.json'
+    if not cache_path.exists():
+        return {}
+    try:
+        with open(cache_path, 'r') as f:
+            data = json.load(f)
+        # Re-key by pitcher name (case-insensitive) for lookup by name
+        return {v['name'].lower(): v for v in data.values() if v.get('name')}
+    except Exception:
+        return {}
+
+
+def pitcher_prop_board(name, proj):
+    """Return list of strings — lean analysis at common book lines for BB,
+    Outs, and K props using L7 rolling averages. Skips openers (avg IP < 3).
+
+    Common lines:
+      BB: 1.5, 2.5
+      Outs: 11.5, 14.5, 16.5, 17.5
+      K: 4.5, 5.5, 6.5, 7.5, 8.5
+    """
+    if not proj or not proj.get('l7_rolling'):
+        return []
+    l7 = proj['l7_rolling']
+    avg_ip = l7.get('avg_ip', 0)
+    if avg_ip < 3.0:
+        return [f"⚠️ Opener/relief profile (avg {avg_ip} IP) — skip starter props"]
+
+    bb_avg = l7['avg_bb']; outs_avg = round(avg_ip * 3, 1); k_avg = l7['avg_k']
+    BB_LINES = [1.5, 2.5]
+    OUTS_LINES = [11.5, 14.5, 16.5, 17.5]
+    K_LINES = [4.5, 5.5, 6.5, 7.5, 8.5]
+
+    def leans_for(avg_val, lines, threshold):
+        """Return list of strong leans (mean is ≥threshold above or below the line)."""
+        out = []
+        for line in lines:
+            diff = avg_val - line
+            if diff >= threshold:
+                out.append(f"O{line} (+{diff:.1f})")
+            elif diff <= -threshold:
+                out.append(f"U{line} ({diff:.1f})")
+        return out
+
+    bb_leans = leans_for(bb_avg, BB_LINES, 0.5)
+    outs_leans = leans_for(outs_avg, OUTS_LINES, 1.5)
+    k_leans = leans_for(k_avg, K_LINES, 1.0)
+
+    lines = [f"L7 ({l7['n_starts']} starts): {bb_avg} BB / {l7['avg_hits']} H / {k_avg} K / {avg_ip} IP per start ({l7.get('whip', '—')} WHIP)"]
+    lines.append(f"BB: " + (", ".join(bb_leans) if bb_leans else "no clean lean"))
+    lines.append(f"Outs: " + (", ".join(outs_leans) if outs_leans else "middle of lines"))
+    lines.append(f"K: " + (", ".join(k_leans) if k_leans else "middle of lines"))
+    return lines
+
+
+def opp_wrc_to_bucket(wrc):
+    """Match opponent wRC+ to projection class bucket label."""
+    if wrc is None:
+        return None
+    try:
+        w = float(wrc)
+    except (TypeError, ValueError):
+        return None
+    if w <= 90: return 'le_90'
+    if w <= 100: return '91_100'
+    if w <= 110: return '101_110'
+    if w <= 120: return '111_120'
+    return 'ge_121'
+
+
 def fetch_games(game_date):
     return sb_get(
         "mlb_game_context",
         {
             "game_date": f"eq.{game_date}",
-            "select": "away_team,home_team,home_pitcher,away_pitcher,venue,close_spread,close_total,projected_spread,projected_total,signal_confluence_net,nrfi_score,home_bp_relievers_3d,away_bp_relievers_3d",
+            "select": "away_team,home_team,home_pitcher,away_pitcher,venue,close_spread,close_total,projected_spread,projected_total,signal_confluence_net,nrfi_score,home_bp_relievers_3d,away_bp_relievers_3d,home_lineup_ops,away_lineup_ops,home_wrc_plus,away_wrc_plus,lineup_confirmed,umpire",
         },
     )
+
+
+_UMP_LOOKUP = None
+
+
+def get_ump_stats(name):
+    """Lazy-load mlb_umpires lookup; return stats for a name or None."""
+    global _UMP_LOOKUP
+    if _UMP_LOOKUP is None:
+        rows = sb_get("mlb_umpires", {"select": "ump_name,k_rate_above_avg,over_rate,nrfi_rate,games_sampled"})
+        _UMP_LOOKUP = {r["ump_name"].lower(): r for r in (rows or []) if r.get("ump_name")}
+    return _UMP_LOOKUP.get((name or '').strip().lower())
+
+
+def ump_signal_summary(ump):
+    """Return concise audit-anchored signal flags for an umpire."""
+    if not ump or ump.get('games_sampled', 0) < 30:
+        return None
+    over = ump.get('over_rate')
+    k = ump.get('k_rate_above_avg')
+    nrfi = ump.get('nrfi_rate')
+    flags = []
+    if over is not None:
+        if over <= 0.45:
+            flags.append(f"🚫 OVER fade (audit: 20% OVER w/ ≤0.45 ump, n=15)")
+        elif over >= 0.55:
+            flags.append(f"📈 OVER-friendly ({over:.2f}, audit 56%)")
+    if k is not None:
+        if k >= 0.2:
+            flags.append(f"🔥 K-friendly ({k:+.1f}, K Overs 100% n=9)")
+        elif k <= -0.2:
+            flags.append(f"❄️ K-hostile ({k:+.1f}, K Overs 60% n=15)")
+    if nrfi is not None:
+        if nrfi >= 0.55:
+            flags.append(f"🔒 NRFI-friendly ({nrfi:.2f}, audit 60.7% NRFI)")
+        elif nrfi <= 0.45:
+            flags.append(f"🌋 YRFI-friendly ({nrfi:.2f}, NRFI 40.8%)")
+    return flags
+
+
+def lineup_degradation_flag(lineup_ops, team_wrc):
+    """Compare confirmed lineup OPS to season team wRC+ (proxy as wrc/0.720*100).
+    Returns (delta_pts, flag_label) where flag fires when starting 9 is
+    materially weaker than season-average team (key bats sitting).
+
+    Why: pipeline currently bets like the regular lineup is in. When 2+
+    regulars are scratched/rested, lineup quality drops 5-10 wRC+ pts and
+    OVER probability shifts. Audit cohort can't backfill (lineup_ops is
+    transient on game_context) but live signal is actionable today.
+    """
+    if lineup_ops is None or team_wrc is None:
+        return None, None
+    try:
+        lineup_wrc_proxy = (float(lineup_ops) / 0.720) * 100
+        team_wrc_f = float(team_wrc)
+        delta = round(lineup_wrc_proxy - team_wrc_f, 1)
+    except (TypeError, ValueError):
+        return None, None
+    if delta <= -10:
+        return delta, "🚨 LINEUP DEGRADED 10+ pts (key bats sitting)"
+    if delta <= -5:
+        return delta, "⚠️ Lineup softer than season (regulars resting?)"
+    if delta >= +10:
+        return delta, "🔥 Stacked lineup (above season baseline)"
+    return delta, None
 
 
 def fetch_pitcher(name):
@@ -238,6 +378,95 @@ def render_game(game):
     home_rec = _recency_line(home_team, home_off)
     if away_rec: print(away_rec)
     if home_rec: print(home_rec)
+
+    # Umpire signal (added 2026-05-10) — audit-anchored flags from mlb_umpires
+    ump_name = game.get("umpire")
+    if ump_name:
+        ump_data = get_ump_stats(ump_name)
+        if ump_data:
+            ump_flags = ump_signal_summary(ump_data)
+            if ump_flags:
+                n = ump_data.get('games_sampled', 0)
+                print(f"  ── UMPIRE: {ump_name} (n={n}) ──")
+                for f in ump_flags:
+                    print(f"    {f}")
+
+    # Lineup degradation signal (added 2026-05-10) — confirmed starting 9
+    # OPS vs season team wRC+. Flags when key bats are sitting and lineup
+    # quality dropped meaningfully. Only fires when lineup_confirmed=True.
+    if game.get("lineup_confirmed"):
+        h_lineup_ops = game.get("home_lineup_ops")
+        a_lineup_ops = game.get("away_lineup_ops")
+        h_team_wrc = game.get("home_wrc_plus")
+        a_team_wrc = game.get("away_wrc_plus")
+        h_delta, h_flag = lineup_degradation_flag(h_lineup_ops, h_team_wrc)
+        a_delta, a_flag = lineup_degradation_flag(a_lineup_ops, a_team_wrc)
+        if (h_delta is not None and abs(h_delta) >= 5) or (a_delta is not None and abs(a_delta) >= 5):
+            print(f"  ── LINEUP vs SEASON BASELINE ──")
+            if a_delta is not None:
+                sign = '+' if a_delta >= 0 else ''
+                print(f"    {away_team}: starting 9 ≈ {sign}{a_delta} wRC+ pts vs season{(' — ' + a_flag) if a_flag else ''}")
+            if h_delta is not None:
+                sign = '+' if h_delta >= 0 else ''
+                print(f"    {home_team}: starting 9 ≈ {sign}{h_delta} wRC+ pts vs season{(' — ' + h_flag) if h_flag else ''}")
+
+    # Pitcher class projections (Phase A — 2026-05-10)
+    # Each starter's expected IP/ER/Outs vs offenses similar in wRC+ to tonight's
+    # opponent. Pulled from compute_pitcher_class_projections.py JSON cache.
+    class_proj = getattr(render_game, '_class_proj_cache', None)
+    if class_proj is None:
+        class_proj = load_class_projections()
+        render_game._class_proj_cache = class_proj
+    if class_proj:
+        away_proj = class_proj.get((away_sp or '').lower())
+        home_proj = class_proj.get((home_sp or '').lower())
+        away_opp_wrc = (home_off or {}).get('wrc_plus')
+        home_opp_wrc = (away_off or {}).get('wrc_plus')
+        away_bucket = opp_wrc_to_bucket(away_opp_wrc)
+        home_bucket = opp_wrc_to_bucket(home_opp_wrc)
+
+        def proj_line(label, sp, proj, opp_wrc, bucket):
+            if not proj or not bucket:
+                return f"    {label} ({sp}): no class projection available"
+            classes = proj.get('classes', {})
+            cls = classes.get(bucket)
+            l7 = proj.get('l7_rolling')
+            l7_str = ''
+            if l7:
+                l7_str = (f"\n      L7 rolling ({l7['n_starts']} starts): "
+                          f"{l7['avg_bb']} BB / {l7['avg_hits']} H / {l7['avg_k']} K per start "
+                          f"({l7['era']} ERA, {l7.get('whip', '—')} WHIP, {l7['bb_per_9']} BB/9, {l7['hits_per_9']} H/9)")
+            if not cls:
+                # Fall back to nearest bucket with data
+                fallback = None
+                for b in ('101_110', '91_100', '111_120', '111_120', 'le_90', 'ge_121'):
+                    if b in classes:
+                        fallback = (b, classes[b]); break
+                if fallback:
+                    fb_label, fc = fallback
+                    return (f"    {label} ({sp}): no n≥2 sample at opp wRC+ {opp_wrc} "
+                            f"({bucket}) — nearest class {fb_label}: {fc['avg_ip']} IP / "
+                            f"{fc['avg_er']} ER / {fc['avg_bb']} BB / {fc.get('avg_hits', '—')} H (n={fc['n']})"
+                            + l7_str)
+                return f"    {label} ({sp}): no class data" + l7_str
+            return (f"    {label} ({sp}) vs ~{opp_wrc} wRC+ class ({bucket}): "
+                    f"{cls['avg_ip']} IP / {cls['avg_er']} ER / {cls['avg_bb']} BB / "
+                    f"{cls.get('avg_hits', '—')} H / {cls['avg_k']} K "
+                    f"(n={cls['n']} historical, ERA-in-class {cls.get('era_in_class', '—')})"
+                    + l7_str)
+
+        print(f"  ── PITCHER CLASS PROJECTIONS (vs offenses similar to tonight's opp) ──")
+        print(proj_line(away_team, away_sp, away_proj, away_opp_wrc, away_bucket))
+        print(proj_line(home_team, home_sp, home_proj, home_opp_wrc, home_bucket))
+
+        # Pitcher prop board — line-by-line BB/Outs/K lean analysis from L7
+        print(f"  ── PITCHER PROP BOARD (L7 lean at common book lines) ──")
+        for team_label, sp, proj in [(away_team, away_sp, away_proj), (home_team, home_sp, home_proj)]:
+            board = pitcher_prop_board(sp, proj)
+            if board:
+                print(f"    {team_label} ({sp}):")
+                for line in board:
+                    print(f"      {line}")
 
     # 1st inning specifically (NRFI-relevant — leadoff hitters skew bucket avg)
     if (away_off and away_off.get('inning_1_runs_per_game') is not None) or \

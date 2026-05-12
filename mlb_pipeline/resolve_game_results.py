@@ -399,6 +399,51 @@ def run():
                 else:
                     result = 'Loss'
                 final_val = ks
+            elif prop_type == 'bb_over':
+                bb = find_player_stat(boxscore, player_name, 'pitching', 'baseOnBalls')
+                if bb is None:
+                    continue
+                result = 'Win' if bb > line else ('Push' if bb == line else 'Loss')
+                final_val = bb
+            elif prop_type == 'bb_under':
+                bb = find_player_stat(boxscore, player_name, 'pitching', 'baseOnBalls')
+                if bb is None:
+                    continue
+                result = 'Win' if bb < line else ('Push' if bb == line else 'Loss')
+                final_val = bb
+            elif prop_type in ('outs_over', 'outs_under'):
+                ip_str = find_player_stat(boxscore, player_name, 'pitching', 'inningsPitched')
+                if ip_str is None:
+                    continue
+                # MLB encodes 6.1 IP as 6.1 (= 6⅓), 6.2 as 6.2 (= 6⅔). Convert to outs.
+                try:
+                    whole, _, frac = str(ip_str).partition('.')
+                    outs = int(whole) * 3 + (int(frac) if frac else 0)
+                except (ValueError, TypeError):
+                    continue
+                if prop_type == 'outs_over':
+                    result = 'Win' if outs > line else ('Push' if outs == line else 'Loss')
+                else:
+                    result = 'Win' if outs < line else ('Push' if outs == line else 'Loss')
+                final_val = outs
+            elif prop_type in ('er_over', 'er_under'):
+                er = find_player_stat(boxscore, player_name, 'pitching', 'earnedRuns')
+                if er is None:
+                    continue
+                if prop_type == 'er_over':
+                    result = 'Win' if er > line else ('Push' if er == line else 'Loss')
+                else:
+                    result = 'Win' if er < line else ('Push' if er == line else 'Loss')
+                final_val = er
+            elif prop_type in ('ha_over', 'ha_under'):
+                ha = find_player_stat(boxscore, player_name, 'pitching', 'hits')
+                if ha is None:
+                    continue
+                if prop_type == 'ha_over':
+                    result = 'Win' if ha > line else ('Push' if ha == line else 'Loss')
+                else:
+                    result = 'Win' if ha < line else ('Push' if ha == line else 'Loss')
+                final_val = ha
             else:
                 continue
 

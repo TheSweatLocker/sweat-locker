@@ -165,14 +165,18 @@ def extract_leg_candidates(games, props):
     for p in props:
         ptype = p.get('prop_type')
         line = p.get('prop_line')
+        # K props now display the model's expected-Ks point estimate (lives
+        # in signals._projected_ks). Decoupled from the audit threshold so
+        # users can shop their book's line/juice instead of seeing "Over 5.1".
+        proj_ks = (p.get('signals') or {}).get('_projected_ks')
         if ptype == 'hits_over':
             prop_label = 'Over 0.5 Hits'
         elif ptype == 'hits_under':
             prop_label = 'Under 0.5 Hits'
         elif ptype == 'ks_over':
-            prop_label = f"Over {line} Strikeouts"
+            prop_label = f"{proj_ks} expected Ks (over)" if proj_ks is not None else f"Over {line} Strikeouts"
         elif ptype == 'ks_under':
-            prop_label = f"Under {line} Strikeouts"
+            prop_label = f"{proj_ks} expected Ks (under)" if proj_ks is not None else f"Under {line} Strikeouts"
         elif ptype == 'outs_over':
             prop_label = f"Over {line} Outs Recorded"
         elif ptype == 'outs_under':

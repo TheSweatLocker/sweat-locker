@@ -1435,7 +1435,8 @@ const [playersSearch, setPlayersSearch] = useState('');
   const [parlayLegs, setParlayLegs] = useState([]);
   const [parlayWager, setParlayWager] = useState('10');
   const [addLegModal, setAddLegModal] = useState(false);
-  const [legForm, setLegForm] = useState({matchup:'',pick:'',odds:'',oddsSign:'-'});
+  const [legForm, setLegForm] = useState({matchup:'',pick:'',odds:'',oddsSign:'-',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});
+  const [legMode, setLegMode] = useState('parlay');  // 'parlay' = add to parlayLegs[], 'single' = log directly to bets[]
   const [gamesDay, setGamesDay] = useState('today');
   const [gamesSport, setGamesSport] = useState('NBA');
   const [gamesData, setGamesData] = useState([]);
@@ -1453,6 +1454,8 @@ const [sweatCardLoading, setSweatCardLoading] = useState(false);
 const [dailyBestBetError, setDailyBestBetError] = useState('');
 const [modelEdgeData, setModelEdgeData] = useState([]);
 const [mlbGameContext, setMlbGameContext] = useState({});
+const [pitcherProjections, setPitcherProjections] = useState({});  // name(lower) -> {l7_rolling, classes, ...}
+const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
   const [pickRecap, setPickRecap] = useState('');
@@ -3861,7 +3864,20 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
   setParlayAnalysisLoading(true);
   try {
     // Build context for each leg from pipeline data
-    const buildLegContext = (leg) => {
+    const buildLegContext = (leg: any) => {
+      // Prop legs — surface the player-level signals the model used to score
+      // the pick. This grounds Jerry in real data instead of pushing him to
+      // web-search for player info (which is where the Mitchell-out-due-to-
+      // illness hallucination came from).
+      if (leg.type === 'Prop' && leg.signals) {
+        const sigEntries = Object.entries(leg.signals)
+          .filter(([k]) => !k.startsWith('_'))  // skip metadata like _projected_ks
+          .map(([_, v]) => `• ${String(v)}`)
+          .join('\n  ');
+        const projKs = leg.signals._projected_ks;
+        const projLine = projKs != null ? `Model expected Ks: ${projKs}. ` : '';
+        return `Prop pick (model tier: ${leg.tier || 'N/A'} / conviction ${leg.conviction || 0}). ${projLine}${leg.player_name || 'Player'} is in the confirmed lineup for this game (do not assume otherwise). Model signals supporting this pick:\n  ${sigEntries}`;
+      }
       const mlbCtx = Object.values(mlbGameContext).find((ctx: any) =>
         leg.matchup?.includes(ctx.home_team?.split(' ').pop()) ||
         leg.matchup?.includes(ctx.away_team?.split(' ').pop())
@@ -3942,6 +3958,13 @@ Implied probability: ${parlayProb}%
 Total legs: ${parlayLegs.length}
 ${correlationNote}
 Search the web for current injury reports, recent form, and line movement for each team or player. Combine web findings with the pipeline data above. Do NOT write any preamble — go straight to JSON output after searching.
+
+CRITICAL — anti-hallucination rules:
+- NEVER invent or assume player absences, injuries, illnesses, or scratches. If you cannot find a SPECIFIC, dated, verifiable web source for an injury or scratch, do not mention one.
+- If a player appears as a prop in this parlay, they are in the starting lineup unless web search returns a same-day confirmed scratch with a source. Default assumption: in lineup.
+- Never use phrases like "out due to illness", "scratched", "absent", "DNP" unless you have a verifiable same-day source.
+- Do NOT invent batting order positions, recent stats, or injury recovery timelines that are not in the pipeline data above.
+- When uncertain, omit the claim. Stick to pipeline data + verifiable web findings only.
 
 Return ONLY a JSON object:
 {
@@ -4173,6 +4196,34 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
       });
       setMlbGameContext(contextMap);
     }
+    // Pitcher projections (L7 rolling + per-class) for the Pitcher Scouting panel
+    try {
+      const projResult = await supabase
+        .from('pitcher_projections')
+        .select('pitcher_name,l7_rolling,classes,total_starts_analyzed')
+        .limit(200);
+      if(projResult?.data && projResult.data.length > 0) {
+        const projMap = {};
+        projResult.data.forEach(p => {
+          if(p.pitcher_name) projMap[p.pitcher_name.toLowerCase()] = p;
+        });
+        setPitcherProjections(projMap);
+      }
+    } catch(pe) { /* table may not exist yet — non-fatal */ }
+    // Umpire stats for the MLB Situational tab (audit-anchored cohort flags)
+    try {
+      const umpResult = await supabase
+        .from('mlb_umpires')
+        .select('ump_name,over_rate,k_rate_above_avg,nrfi_rate,games_sampled,run_factor')
+        .limit(300);
+      if(umpResult?.data && umpResult.data.length > 0) {
+        const umpMap = {};
+        umpResult.data.forEach(u => {
+          if(u.ump_name) umpMap[u.ump_name.toLowerCase()] = u;
+        });
+        setUmpireStats(umpMap);
+      }
+    } catch(ue) { /* non-fatal */ }
   } catch(e) {
     //console.log('MLB context fetch error:', e.message);
   }
@@ -7358,7 +7409,7 @@ setJerryHistory(prev => {
         {/* Tab bar */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>
           <View style={{flexDirection:'row',gap:6}}>
-            {[{id:'money',label:'📚 BOOK CONSENSUS'},{id:'schedule',label:'📅 Schedule'},{id:'stats',label:'📊 Team Stats'},{id:'situational',label:'📋 Situational'}].map(t=>(
+            {[{id:'money',label:'📚 Book Consensus'},{id:'schedule',label:'📅 Schedule'},{id:'stats',label:'📊 Team Stats'},{id:'situational',label:'📋 Situational'}].map(t=>(
               <TouchableOpacity key={t.id} style={[styles.chipBtn,matchupTab===t.id&&{backgroundColor:'rgba(255,184,0,0.12)',borderColor:HRB_COLOR}]} onPress={()=>setMatchupTab(t.id)}>
                 <Text style={[styles.chipTxt,matchupTab===t.id&&{color:HRB_COLOR,fontWeight:'700'}]}>{t.label}</Text>
               </TouchableOpacity>
@@ -7788,6 +7839,42 @@ setJerryHistory(prev => {
                         </View>
                       </View>
                     </View>
+                    {/* Pitcher Scouting panel — L7 rolling + per-class projections */}
+                    {(() => {
+                      const awaySP = (mlbCtx.away_pitcher || selectedGame?.away_pitcher || '').toLowerCase();
+                      const homeSP = (mlbCtx.home_pitcher || selectedGame?.home_pitcher || '').toLowerCase();
+                      const awayProj = pitcherProjections[awaySP];
+                      const homeProj = pitcherProjections[homeSP];
+                      if(!awayProj && !homeProj) return null;
+                      const renderProj = (label: string, proj: any) => {
+                        if(!proj) return null;
+                        const l7 = proj.l7_rolling;
+                        if(!l7) return (
+                          <View style={{marginBottom:8}}>
+                            <Text style={{color:'#7a92a8',fontSize:11}}>{label}: no L7 data</Text>
+                          </View>
+                        );
+                        return (
+                          <View style={{marginBottom:10,backgroundColor:'#0d1419',borderRadius:8,padding:8}}>
+                            <Text style={{color:'#e8f0f8',fontSize:11,fontWeight:'700',marginBottom:3}}>{label}</Text>
+                            <Text style={{color:'#c8d8e8',fontSize:11}}>
+                              L7 ({l7.n_starts} starts): {l7.avg_k} K · {l7.avg_bb} BB · {l7.avg_hits} H · {l7.avg_ip} IP/start
+                            </Text>
+                            <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>
+                              {l7.whip != null ? `${l7.whip} WHIP · ` : ''}{l7.k_per_9} K/9 · {l7.bb_per_9} BB/9 · {l7.hits_per_9} H/9 · {l7.era} ERA
+                            </Text>
+                          </View>
+                        );
+                      };
+                      return (
+                        <View style={{marginBottom:14,backgroundColor:'rgba(0,153,255,0.06)',borderRadius:10,padding:10,borderWidth:1,borderColor:'rgba(0,153,255,0.2)'}}>
+                          <Text style={{color:'#0099ff',fontWeight:'700',fontSize:11,marginBottom:6,letterSpacing:0.5}}>📋 PITCHER SCOUTING — last 7 starts</Text>
+                          {renderProj(mlbCtx.away_pitcher || selectedGame?.away_pitcher || 'Away SP', awayProj)}
+                          {renderProj(mlbCtx.home_pitcher || selectedGame?.home_pitcher || 'Home SP', homeProj)}
+                          <Text style={{color:'#4a6070',fontSize:9,marginTop:2,fontStyle:'italic'}}>Per-start averages from gameLog. Use to shop pitcher prop lines (K / walks / hits / outs) at your book.</Text>
+                        </View>
+                      );
+                    })()}
                     {/* Stat comparison table */}
                     {mlbRows.map((row,i)=>{
                       const awayNum = parseFloat(row.away);
@@ -7960,6 +8047,160 @@ setJerryHistory(prev => {
                   );
                 }
               }
+              // ── MLB SITUATIONAL ──
+              if(gamesSport==='MLB') {
+                const c = mlbGameContext[selectedGame?.home_team] ||
+                  mlbGameContext[selectedGame?.away_team] ||
+                  Object.values(mlbGameContext).find((x: any) =>
+                    x.home_team === selectedGame?.home_team || x.away_team === selectedGame?.away_team ||
+                    x.home_team === selectedGame?.away_team || x.away_team === selectedGame?.home_team);
+                if(!c) {
+                  return (
+                    <View style={{alignItems:'center',paddingVertical:30}}>
+                      <Text style={{fontSize:32}}>📊</Text>
+                      <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>Situational Data</Text>
+                      <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center'}}>No context loaded for this matchup yet — check back closer to game time.</Text>
+                    </View>
+                  );
+                }
+                const f = (v, d=2) => { const n = parseFloat(v); return isNaN(n) ? '—' : n.toFixed(d); };
+                const fi = (v) => { const n = parseInt(v); return isNaN(n) ? '—' : String(n); };
+                const Section = ({title, children}) => (
+                  <View style={{marginBottom:14}}>
+                    <Text style={{color:HRB_COLOR,fontSize:11,fontWeight:'700',letterSpacing:0.5,marginBottom:8}}>{title}</Text>
+                    {children}
+                  </View>
+                );
+                const Row = ({label, away, home, awayGood=null}) => (
+                  <View style={{flexDirection:'row',alignItems:'center',marginBottom:8}}>
+                    <Text style={{color:'#7a92a8',fontSize:11,flex:1.4}}>{label}</Text>
+                    <View style={{flex:1,alignItems:'center'}}>
+                      <View style={{paddingHorizontal:8,paddingVertical:4,borderRadius:6,backgroundColor:(awayGood===true?'#00e5a0':awayGood===false?'#ff4d6d':'#7a92a8')+'1f'}}>
+                        <Text style={{color:awayGood===true?'#00e5a0':awayGood===false?'#ff4d6d':'#c8d8e8',fontSize:11,fontWeight:'700'}}>{away}</Text>
+                      </View>
+                    </View>
+                    <View style={{flex:1,alignItems:'center'}}>
+                      <View style={{paddingHorizontal:8,paddingVertical:4,borderRadius:6,backgroundColor:(awayGood===false?'#00e5a0':awayGood===true?'#ff4d6d':'#7a92a8')+'1f'}}>
+                        <Text style={{color:awayGood===false?'#00e5a0':awayGood===true?'#ff4d6d':'#c8d8e8',fontSize:11,fontWeight:'700'}}>{home}</Text>
+                      </View>
+                    </View>
+                  </View>
+                );
+
+                // Derived: NRFI band label
+                const nrfi = c.nrfi_score;
+                const nrfiBand = nrfi == null ? '—'
+                  : nrfi >= 95 ? `${nrfi} — volatile 95+ band (model skips this zone)`
+                  : nrfi >= 90 ? `${nrfi} — PRIME band (90-94)`
+                  : nrfi >= 80 ? `${nrfi} — dead zone (80-89)`
+                  : nrfi >= 70 ? `${nrfi} — mild NRFI lean (70-79)`
+                  : nrfi <= 40 ? `${nrfi} — YRFI lean (≤40)`
+                  : `${nrfi} — neutral`;
+
+                // Bullpen workload flags
+                const penFlag = (n) => { const v = parseInt(n); if(isNaN(v)) return ''; return v >= 12 ? ' 🚨 gassed' : v <= 6 ? ' ✅ rested' : ''; };
+
+                // Recency drift
+                const driftLine = (l10, season) => {
+                  const a = parseFloat(l10), b = parseFloat(season);
+                  if(isNaN(a) || isNaN(b)) return null;
+                  const d = a - b;
+                  const flag = Math.abs(d) >= 1.0 ? (d > 0 ? ' 🔥 HOT' : ' ❄️ COLD') : Math.abs(d) >= 0.5 ? (d > 0 ? ' (mild hot)' : ' (mild cold)') : '';
+                  return `${b.toFixed(2)} R/G season → ${a.toFixed(2)} L10 (${d>=0?'+':''}${d.toFixed(2)})${flag}`;
+                };
+
+                // Umpire
+                const umpName = c.umpire;
+                const ump = umpName ? umpireStats[(umpName||'').toLowerCase()] : null;
+                const umpFlags = [];
+                if(ump && (ump.games_sampled||0) >= 30) {
+                  const orate = parseFloat(ump.over_rate), k = parseFloat(ump.k_rate_above_avg), nr = parseFloat(ump.nrfi_rate);
+                  if(!isNaN(orate)){ if(orate>=0.55) umpFlags.push(`📈 OVER-friendly zone (${orate.toFixed(2)} over rate)`); else if(orate<=0.45) umpFlags.push(`🚫 UNDER-friendly zone (${orate.toFixed(2)} over rate)`); }
+                  if(!isNaN(k)){ if(k>=0.2) umpFlags.push(`🔥 K-friendly zone (${k>=0?'+':''}${k} K rate)`); else if(k<=-0.2) umpFlags.push(`❄️ K-hostile zone (${k} K rate)`); }
+                  if(!isNaN(nr)){ if(nr>=0.55) umpFlags.push(`🔒 NRFI-friendly (${nr.toFixed(2)} NRFI rate)`); else if(nr<=0.45) umpFlags.push(`🌋 YRFI-friendly (${nr.toFixed(2)} NRFI rate)`); }
+                }
+
+                // Pitcher splits + vs-team mastery
+                const awayP = c.away_pitcher || selectedGame?.away_pitcher || 'Away SP';
+                const homeP = c.home_pitcher || selectedGame?.home_pitcher || 'Home SP';
+
+                return (
+                  <View>
+                    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                      <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:12}}>{awayShort}</Text>
+                      <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 LIVE</Text></View>
+                      <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:12}}>{homeShort}</Text>
+                    </View>
+
+                    <Section title="🔒 NRFI LENS">
+                      <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:8}}>{nrfiBand}</Text>
+                      <Row label="1st-inn R/G" away={f(c.away_first_inning_runs_per_game ?? c.away_inning_1_runs_per_game)} home={f(c.home_first_inning_runs_per_game ?? c.home_inning_1_runs_per_game)} awayGood={null}/>
+                      <Row label="1st-inn pitcher ERA" away={f(c.away_first_inning_era)} home={f(c.home_first_inning_era)} awayGood={null}/>
+                    </Section>
+
+                    {(c.temperature != null || c.wind_speed != null || c.wind_mph != null) && (
+                      <Section title="🌤 WEATHER · PARK">
+                        <Text style={{color:'#c8d8e8',fontSize:12}}>
+                          {c.temperature != null ? `${fi(c.temperature)}°F` : 'temp —'}
+                          {(c.wind_speed != null || c.wind_mph != null) ? ` · wind ${fi(c.wind_speed ?? c.wind_mph)} mph ${c.wind_direction || c.wind_dir || ''}` : ''}
+                          {c.park_run_factor != null ? ` · park factor ${fi(c.park_run_factor)}${parseInt(c.park_run_factor)>=108?' (hitter-friendly)':parseInt(c.park_run_factor)<=92?' (pitcher-friendly)':''}` : ''}
+                        </Text>
+                      </Section>
+                    )}
+
+                    {umpName && (
+                      <Section title={`🦓 UMPIRE — ${umpName}${ump && ump.games_sampled ? ` (n=${ump.games_sampled})` : ''}`}>
+                        {umpFlags.length ? umpFlags.map((fl,idx)=>(
+                          <Text key={idx} style={{color:'#c8d8e8',fontSize:11,marginBottom:3}}>• {fl}</Text>
+                        )) : <Text style={{color:'#7a92a8',fontSize:11}}>All audit bands neutral (or sample too small)</Text>}
+                      </Section>
+                    )}
+
+                    <Section title="🔁 BULLPEN WORKLOAD (last 3 days)">
+                      <Text style={{color:'#c8d8e8',fontSize:12}}>
+                        {awayShort}: {fi(c.away_bp_relievers_3d)} relievers{penFlag(c.away_bp_relievers_3d)}  ·  {homeShort}: {fi(c.home_bp_relievers_3d)} relievers{penFlag(c.home_bp_relievers_3d)}
+                      </Text>
+                      {(c.away_bullpen_era != null || c.home_bullpen_era != null) && (
+                        <Text style={{color:'#7a92a8',fontSize:11,marginTop:4}}>Season pen ERA: {awayShort} {f(c.away_bullpen_era)} · {homeShort} {f(c.home_bullpen_era)}</Text>
+                      )}
+                    </Section>
+
+                    {(c.away_last10_runs_per_game != null || c.home_last10_runs_per_game != null) && (
+                      <Section title="📉 RECENCY DRIFT (L10 vs season offense)">
+                        {driftLine(c.away_last10_runs_per_game, c.away_runs_per_game) && <Text style={{color:'#c8d8e8',fontSize:11,marginBottom:4}}>{awayShort}: {driftLine(c.away_last10_runs_per_game, c.away_runs_per_game)}</Text>}
+                        {driftLine(c.home_last10_runs_per_game, c.home_runs_per_game) && <Text style={{color:'#c8d8e8',fontSize:11}}>{homeShort}: {driftLine(c.home_last10_runs_per_game, c.home_runs_per_game)}</Text>}
+                      </Section>
+                    )}
+
+                    <Section title="⚾ PITCHER SITUATIONAL">
+                      <Text style={{color:'#c8d8e8',fontSize:11,marginBottom:4}}>
+                        {awayP}: {c.away_sp_days_rest != null ? `${fi(c.away_sp_days_rest)} days rest` : 'rest —'}
+                        {c.away_pitcher_away_era != null && c.away_pitcher_home_era != null ? ` · split ${f(c.away_pitcher_home_era)}H / ${f(c.away_pitcher_away_era)}A` : ''}
+                        {c.away_pitcher_vs_team_era != null && parseFloat(c.away_pitcher_vs_team_era) > 0 ? ` · vs ${homeShort}: ${f(c.away_pitcher_vs_team_era)} ERA` : ''}
+                      </Text>
+                      <Text style={{color:'#c8d8e8',fontSize:11}}>
+                        {homeP}: {c.home_sp_days_rest != null ? `${fi(c.home_sp_days_rest)} days rest` : 'rest —'}
+                        {c.home_pitcher_away_era != null && c.home_pitcher_home_era != null ? ` · split ${f(c.home_pitcher_home_era)}H / ${f(c.home_pitcher_away_era)}A` : ''}
+                        {c.home_pitcher_vs_team_era != null && parseFloat(c.home_pitcher_vs_team_era) > 0 ? ` · vs ${awayShort}: ${f(c.home_pitcher_vs_team_era)} ERA` : ''}
+                      </Text>
+                    </Section>
+
+                    {(c.signal_confluence_net != null || c.spread_delta != null) && (
+                      <Section title="🎯 MODEL EDGE SNAPSHOT">
+                        <Text style={{color:'#c8d8e8',fontSize:11}}>
+                          {c.signal_confluence_net != null ? `Confluence net ${c.signal_confluence_net > 0 ? '+' : ''}${c.signal_confluence_net}` : ''}
+                          {c.signal_confluence_net != null && c.spread_delta != null ? '  ·  ' : ''}
+                          {c.spread_delta != null ? `Spread Δ ${parseFloat(c.spread_delta) >= 0 ? '+' : ''}${f(c.spread_delta, 1)} runs (model vs market)` : ''}
+                          {c.projected_total != null ? `  ·  proj total ${f(c.projected_total, 1)}` : ''}
+                        </Text>
+                      </Section>
+                    )}
+
+                    <Text style={{color:'#4a6070',fontSize:9,fontStyle:'italic',marginTop:4}}>Situational signals from the daily pipeline. Tendencies, not guarantees — single-game variance applies.</Text>
+                  </View>
+                );
+              }
+
               return(
                 <View style={{alignItems:'center',paddingVertical:30}}>
                   <Text style={{fontSize:32}}>📊</Text>
@@ -8182,8 +8423,28 @@ setJerryHistory(prev => {
   };
   const addLeg=()=>{
     if(!legForm.matchup||!legForm.pick||!legForm.odds){Alert.alert('Missing Info','Fill in all fields.');return;}
-    setParlayLegs(prev=>[...prev,{id:Date.now(),...legForm}]);
-    setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-'});setAddLegModal(false);
+    if(legMode === 'single'){
+      // Log as standalone bet — goes directly to bets[] for tracking, not parlay
+      const americanOdds = legForm.oddsSign + legForm.odds;
+      setBets(prev=>[{
+        id: Date.now(),
+        matchup: legForm.matchup,
+        pick: legForm.pick,
+        sport: 'MLB',
+        type: legForm.type || 'Prop',
+        odds: americanOdds,
+        units: '1',
+        book: 'Hard Rock',
+        result: 'Pending',
+        date: new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'}),
+      },...prev]);
+      showToast('📝 Logged: '+legForm.pick);
+    } else {
+      setParlayLegs(prev=>[...prev,{id:Date.now(),...legForm}]);
+    }
+    setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});
+    setLegMode('parlay');
+    setAddLegModal(false);
   };
   const removeLeg=(id)=>setParlayLegs(prev=>prev.filter(l=>l.id!==id));
   const parlayDecimal=calcParlayOdds(parlayLegs);
@@ -8495,7 +8756,7 @@ setJerryHistory(prev => {
         {[...(sweatCard.top_ks_over||[]), ...(sweatCard.top_hits_over||[])].slice(0,3).map((p:any, i:number) => (
           <View key={i} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:6,borderTopWidth:i>0?0.5:0,borderTopColor:'#1a2530'}}>
             <View style={{flex:1}}>
-              <Text style={{color:'#fff',fontSize:12,fontWeight:'600'}}>{p.player_name} O{p.prop_line} {p.prop_type==='ks_over'?'Ks':'Hits'}</Text>
+              <Text style={{color:'#fff',fontSize:12,fontWeight:'600'}}>{p.player_name} {p.prop_type==='ks_over' ? (p.signals?._projected_ks != null ? `${p.signals._projected_ks} expected Ks` : `O${p.prop_line} Ks`) : `O${p.prop_line} Hits`}</Text>
               <Text style={{color:'#7a92a8',fontSize:10}}>{p.matchup}</Text>
             </View>
             <Text style={{color:p.tier==='PRIME'?'#5cb85c':'#7a92a8',fontSize:11,fontWeight:'700'}}>{p.tier} {p.conviction}</Text>
@@ -8971,6 +9232,35 @@ setJerryHistory(prev => {
               <View style={[styles.statBox,styles.statRed]}><Text style={[styles.statVal,{color:'#ff4d6d'}]}>{losses}L</Text><Text style={styles.statKey}>Losses</Text></View>
               <View style={[styles.statBox,styles.statBlue]}><Text style={[styles.statVal,{color:'#0099ff',fontSize:trackingMode==='dollars'?15:20}]}>{trackingMode==='units'?(totalUnits>=0?'+':'')+totalUnits.toFixed(1)+'u':(totalDollars>=0?'+':'-')+'$'+Math.abs(totalDollars).toFixed(0)}</Text><Text style={styles.statKey}>{trackingMode==='units'?'UNITS':'Profit'}</Text></View>
             </View>
+            {/* Per-type split — Games / Props / Parlays. Diagnostic under the overall headline. */}
+            {(() => {
+              const wlRate = (arr) => {
+                const w = arr.filter(b=>b.result==='Win').length;
+                const l = arr.filter(b=>b.result==='Loss').length;
+                const rate = w+l>0 ? Math.round((w/(w+l))*100) : null;
+                return {w, l, rate};
+              };
+              const gameTypes = ['Spread','Total','ML','RL'];
+              const games = wlRate(bets.filter(b => gameTypes.includes(b.type)));
+              const props = wlRate(bets.filter(b => b.type === 'Prop'));
+              const parlays = wlRate(bets.filter(b => b.type === 'Parlay'));
+              const Cell = ({label, s}) => (
+                <View style={{flex:1, paddingVertical:8, paddingHorizontal:6, backgroundColor:'#0d1419', borderRadius:8, alignItems:'center'}}>
+                  <Text style={{color:'#7a92a8', fontSize:9, fontWeight:'700', letterSpacing:0.5, marginBottom:2}}>{label}</Text>
+                  <Text style={{color:'#e8f0f8', fontSize:13, fontWeight:'700'}}>{s.w}-{s.l}</Text>
+                  <Text style={{color: s.rate==null?'#4a6070':s.rate>=55?'#00e5a0':s.rate<=45?'#ff4d6d':'#7a92a8', fontSize:10, fontWeight:'600', marginTop:1}}>
+                    {s.rate==null?'—':s.rate+'%'}
+                  </Text>
+                </View>
+              );
+              return (
+                <View style={{flexDirection:'row', gap:6, marginTop:8, marginBottom:4}}>
+                  <Cell label="GAMES" s={games}/>
+                  <Cell label="PROPS" s={props}/>
+                  <Cell label="PARLAYS" s={parlays}/>
+                </View>
+              );
+            })()}
             <Text style={styles.sectionLabel}>ALL BETS — {bets.length} total</Text>
             {bets.map(bet=>(
               <View key={bet.id} style={[styles.betCard,{borderLeftColor:resultColor(bet.result)}]}>
@@ -9550,14 +9840,29 @@ setJerryHistory(prev => {
           </Text>
           {pipelineMLBProps.map((prop, i) => {
             const tierColor = prop.tier === 'PRIME' ? '#00e5a0' : prop.tier === 'STRONG' ? HRB_COLOR : '#7a92a8';
+            const signals = prop.signals || {};
+            // Projected Ks (server-computed, lives in signals as _projected_ks).
+            // Decoupled from "Over X.X" framing — book lines/juice vary, so we
+            // surface the model's point estimate and let user shop their book.
+            const projKs = signals._projected_ks;
+            const projBB = signals._projected_bb;
+            const projHA = signals._projected_hits;
             const propLabel =
-              prop.prop_type === 'ks_over'   ? `Over ${prop.prop_line} Strikeouts` :
-              prop.prop_type === 'ks_under'  ? `Under ${prop.prop_line} Strikeouts` :
+              prop.prop_type === 'ks_over'   ? (projKs != null ? `${projKs} expected Ks (over)` : `Over ${prop.prop_line} Strikeouts`) :
+              prop.prop_type === 'ks_under'  ? (projKs != null ? `${projKs} expected Ks (under)` : `Under ${prop.prop_line} Strikeouts`) :
+              prop.prop_type === 'bb_over'   ? (projBB != null ? `${projBB} expected walks (over ${prop.prop_line})` : `Over ${prop.prop_line} Walks`) :
+              prop.prop_type === 'bb_under'  ? (projBB != null ? `${projBB} expected walks (under ${prop.prop_line})` : `Under ${prop.prop_line} Walks`) :
+              prop.prop_type === 'ha_over'   ? (projHA != null ? `${projHA} expected hits allowed (over ${prop.prop_line})` : `Over ${prop.prop_line} Hits Allowed`) :
+              prop.prop_type === 'ha_under'  ? (projHA != null ? `${projHA} expected hits allowed (under ${prop.prop_line})` : `Under ${prop.prop_line} Hits Allowed`) :
+              prop.prop_type === 'outs_over' ? `Over ${prop.prop_line} Outs Recorded` :
+              prop.prop_type === 'outs_under'? `Under ${prop.prop_line} Outs Recorded` :
+              prop.prop_type === 'er_over'   ? `Over ${prop.prop_line} Earned Runs` :
+              prop.prop_type === 'er_under'  ? `Under ${prop.prop_line} Earned Runs` :
               prop.prop_type === 'hits_over' ? 'Over 0.5 Hits' :
               prop.prop_type === 'hits_under'? 'Under 0.5 Hits (0-fer)' :
               prop.prop_type;
-            const signals = prop.signals || {};
-            const signalEntries = Object.entries(signals);
+            // Filter underscore-prefixed keys (metadata, not display bullets)
+            const signalEntries = Object.entries(signals).filter(([k]) => !k.startsWith('_'));
             return (
               <View key={prop.id || i} style={[styles.card, {marginBottom:10, borderLeftWidth:3, borderLeftColor:tierColor}]}>
                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
@@ -9604,6 +9909,54 @@ setJerryHistory(prev => {
                     ))}
                   </View>
                 )}
+
+                {/* Pick actions — Log Pick (single bet) + Add to Parlay */}
+                {(() => {
+                  const sameGameLegs = parlayLegs.filter(l => l.matchup === prop.matchup).length;
+                  const prefill = () => ({
+                    matchup: prop.matchup,
+                    pick: (prop.player_name ? prop.player_name + ' — ' : '') + propLabel,
+                    odds: '110',
+                    oddsSign: '-',
+                    type: 'Prop',
+                    game_id: prop.game_id || '',
+                    signals: prop.signals || null,
+                    player_name: prop.player_name || '',
+                    tier: prop.tier || '',
+                    conviction: prop.conviction || 0,
+                  });
+                  return (
+                    <View style={{marginTop:10}}>
+                      {sameGameLegs > 0 && (
+                        <Text style={{color:'#ff8c50', fontSize:10, fontWeight:'700', marginBottom:6}}>
+                          ⚠ {sameGameLegs} leg{sameGameLegs>1?'s':''} already in this game
+                        </Text>
+                      )}
+                      <View style={{flexDirection:'row', gap:8, justifyContent:'flex-end'}}>
+                        <TouchableOpacity
+                          style={[styles.addParlayBtn, {borderColor:'#0099ff', backgroundColor:'rgba(0,153,255,0.12)'}]}
+                          onPress={() => {
+                            setLegForm(prefill());
+                            setLegMode('single');
+                            setAddLegModal(true);
+                          }}
+                        >
+                          <Text style={[styles.addParlayBtnText, {color:'#0099ff'}]}>📝 Log Pick</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.addParlayBtn}
+                          onPress={() => {
+                            setLegForm(prefill());
+                            setLegMode('parlay');
+                            setAddLegModal(true);
+                          }}
+                        >
+                          <Text style={styles.addParlayBtnText}>+ Parlay</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })()}
               </View>
             );
           })}
@@ -11674,7 +12027,7 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{flex:1,justifyContent:'flex-end'}}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHandle}/>
-            <Text style={styles.modalTitle}>Add Parlay Leg</Text>
+            <Text style={styles.modalTitle}>{legMode === 'single' ? '📝 Log Pick' : 'Add Parlay Leg'}</Text>
             <Text style={styles.fieldLabel}>Matchup</Text>
             <TextInput style={styles.input} placeholder="e.g. Lakers vs Warriors" placeholderTextColor="#4a6070" value={legForm.matchup} onChangeText={t=>setLegForm({...legForm,matchup:t})}/>
             <Text style={styles.fieldLabel}>Your Pick</Text>
@@ -11692,8 +12045,8 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
                 <Text style={{color:'#00e5a0',fontSize:13,fontWeight:'600'}}>{legForm.oddsSign}{legForm.odds} → Implied: {impliedProb(americanToDecimal(legForm.oddsSign+legForm.odds))}%</Text>
               </View>
             )}
-            <TouchableOpacity style={styles.btnPrimary} onPress={addLeg}><Text style={styles.btnPrimaryText}>Add to Parlay ✓</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>{setAddLegModal(false);setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-'});}}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.btnPrimary} onPress={addLeg}><Text style={styles.btnPrimaryText}>{legMode === 'single' ? 'Log Pick ✓' : 'Add to Parlay ✓'}</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>{setAddLegModal(false);setLegMode('parlay');setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});}}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
           </View>
           </KeyboardAvoidingView>
         </View>

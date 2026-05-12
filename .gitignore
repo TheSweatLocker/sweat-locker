@@ -42,3 +42,11 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Python
+__pycache__/
+*.pyc
+
+# Local agent / generated data
+.claude/
+mlb_pipeline/data/

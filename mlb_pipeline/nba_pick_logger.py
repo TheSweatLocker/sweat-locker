@@ -259,6 +259,106 @@ def resolve_results():
         except Exception as e:
             print(f'  ⚠️ {p["game_id"]}: {e}')
 
+    # Phase 2: grade nba_game_picks from the scores we just filled in.
+    resolve_picks()
+
+
+def resolve_picks():
+    """Grade nba_game_picks rows using nba_game_results scores.
+
+    Pick types:
+      - ml          → win when picked side won outright
+      - ats         → win when picked side covered market_spread (home perspective)
+      - total       → win when total over/under hit market_total
+      - star_out_skip → never graded (informational row)
+    """
+    r = requests.get(
+        f'{SUPABASE_URL}/rest/v1/nba_game_picks?result=is.null&select=*',
+        headers=HEADERS, timeout=15
+    )
+    pending = r.json() if r.status_code == 200 else []
+    if not pending:
+        print('No NBA picks to grade')
+        return
+    print(f'Grading {len(pending)} pending NBA picks...')
+
+    # Pull scored games once, key by game_id
+    r2 = requests.get(
+        f'{SUPABASE_URL}/rest/v1/nba_game_results?home_score=not.is.null&select=game_id,home_score,away_score',
+        headers=HEADERS, timeout=15
+    )
+    scores = {row['game_id']: row for row in (r2.json() if r2.status_code == 200 else [])}
+
+    graded = 0
+    for p in pending:
+        gid = p['game_id']
+        if gid not in scores:
+            continue  # game not scored yet
+        if p['pick_type'] == 'star_out_skip':
+            continue  # informational, no grade
+        s = scores[gid]
+        hs, as_ = s['home_score'], s['away_score']
+        margin = hs - as_  # home perspective
+        total_pts = hs + as_
+        result = None
+        final_value = None
+
+        if p['pick_type'] == 'ml':
+            if p['pick_side'] == 'home':
+                result = 'Win' if margin > 0 else 'Loss'
+            elif p['pick_side'] == 'away':
+                result = 'Win' if margin < 0 else 'Loss'
+            final_value = margin
+        elif p['pick_type'] == 'ats':
+            spread = p.get('market_spread')
+            if spread is None:
+                continue
+            # margin > -spread → home covered. Push when equal.
+            cover_margin = margin + spread  # home covers when this > 0
+            if abs(cover_margin) < 1e-6:
+                result = 'Push'
+            elif p['pick_side'] == 'home':
+                result = 'Win' if cover_margin > 0 else 'Loss'
+            else:
+                result = 'Win' if cover_margin < 0 else 'Loss'
+            final_value = cover_margin
+        elif p['pick_type'] == 'total':
+            total_line = p.get('market_total')
+            if total_line is None:
+                continue
+            delta = total_pts - total_line
+            if abs(delta) < 1e-6:
+                result = 'Push'
+            elif p['pick_side'] == 'over':
+                result = 'Win' if delta > 0 else 'Loss'
+            else:
+                result = 'Win' if delta < 0 else 'Loss'
+            final_value = delta
+
+        if result is None:
+            continue
+        update = {
+            'result': result,
+            'final_value': final_value,
+            'resolved_at': datetime.now(timezone.utc).isoformat(),
+        }
+        # Compose URL filter — pick_side may be NULL for some rows but ml/ats/total always have it.
+        url = (f'{SUPABASE_URL}/rest/v1/nba_game_picks'
+               f'?game_id=eq.{gid}&pick_type=eq.{p["pick_type"]}'
+               f'&pick_side=eq.{p["pick_side"]}')
+        r3 = requests.patch(
+            url, headers={**HEADERS, 'Content-Type': 'application/json',
+                          'Prefer': 'return=minimal'},
+            json=update, timeout=15
+        )
+        if r3.status_code in (200, 204):
+            graded += 1
+            print(f'  ✅ {p["away_team"]} @ {p["home_team"]} — [{p["tier"]}] {p["pick_label"]} → {result}')
+        else:
+            print(f'  ❌ grade failed {gid} {p["pick_type"]}/{p["pick_side"]}: {r3.status_code}')
+
+    print(f'Graded {graded} picks')
+
 
 if __name__ == '__main__':
     if '--resolve' in sys.argv:

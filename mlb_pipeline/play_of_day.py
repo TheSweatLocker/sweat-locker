@@ -254,6 +254,60 @@ def score_nba_game(game, nba_teams):
 _V2_BUCKET_CACHE = {}
 
 
+_UMP_CACHE = {}
+
+
+def _get_ump_total_signal(umpire_name, lean_side):
+    """Look up ump's over_rate and return cohort-based signal for total picks.
+
+    Audit cohort (2026-05-10) showed:
+      total_over × ump_over_hostile (over_rate ≤ 0.45): 20% OVER (n=15) — strong fade
+      total_over × ump_over_friendly (over_rate ≥ 0.55): 56% OVER (n=114) — confirm
+
+    Returns dict: {'action': 'suppress'|'confirm'|'neutral', 'note': str, 'over_rate': float}
+    """
+    if not umpire_name:
+        return {'action': 'neutral', 'note': '', 'over_rate': None}
+    if 'ump_map' not in _UMP_CACHE:
+        try:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_umpires?select=ump_name,over_rate,games_sampled",
+                headers=HEADERS, timeout=10,
+            )
+            rows = r.json() or []
+            _UMP_CACHE['ump_map'] = {row['ump_name'].lower(): row for row in rows if row.get('ump_name')}
+        except Exception:
+            _UMP_CACHE['ump_map'] = {}
+    ump = _UMP_CACHE['ump_map'].get((umpire_name or '').strip().lower())
+    if not ump or ump.get('over_rate') is None:
+        return {'action': 'neutral', 'note': '', 'over_rate': None}
+    try:
+        over_rate = float(ump['over_rate'])
+        n = ump.get('games_sampled') or 0
+    except (TypeError, ValueError):
+        return {'action': 'neutral', 'note': '', 'over_rate': None}
+    # Require minimum sample to act on ump signal
+    if n < 30:
+        return {'action': 'neutral', 'note': '', 'over_rate': over_rate}
+    # OVER lean: ump under-friendly fades it, ump over-friendly confirms
+    if lean_side == 'over':
+        if over_rate <= 0.45:
+            return {'action': 'suppress', 'over_rate': over_rate,
+                    'note': f'ump {umpire_name} under-friendly ({over_rate:.2f} over rate, audit: 20% OVER hits) — suppressed'}
+        if over_rate >= 0.55:
+            return {'action': 'confirm', 'over_rate': over_rate,
+                    'note': f'ump {umpire_name} over-friendly ({over_rate:.2f}) confirms'}
+    # UNDER lean: ump over-friendly fades it, ump under-friendly confirms
+    elif lean_side == 'under':
+        if over_rate >= 0.55:
+            return {'action': 'suppress', 'over_rate': over_rate,
+                    'note': f'ump {umpire_name} over-friendly ({over_rate:.2f}) — UNDER suppressed'}
+        if over_rate <= 0.45:
+            return {'action': 'confirm', 'over_rate': over_rate,
+                    'note': f'ump {umpire_name} under-friendly ({over_rate:.2f}) confirms UNDER'}
+    return {'action': 'neutral', 'note': '', 'over_rate': over_rate}
+
+
 def _v2_total_edge(ctx):
     """v2 Total OVER Edge — fires when projection_v2 model_total ≥ market+1.5.
     Backtest: 56-34 (62.2%) n=90 over 2807 games. Only durable v2 signal.
@@ -335,18 +389,28 @@ def _v2_total_edge(ctx):
 
     delta = proj.model_total - float(close_total)
     if delta >= 1.5 and proj.confidence >= 0.7:
+        # Umpire-aware filter (added 2026-05-10): suppress OVER picks when
+        # ump cohort strongly opposes (under-friendly with n≥30), append
+        # confirmation note when ump supports.
+        ump_sig = _get_ump_total_signal(ctx.get('umpire'), 'over')
+        if ump_sig['action'] == 'suppress':
+            print(f"  🚫 v2 OVER suppressed by ump filter: {ump_sig['note']}")
+            return None
+        suffix = f" • {ump_sig['note']}" if ump_sig['action'] == 'confirm' else ''
         return (
-            f"Over {close_total} (v2 edge — model {proj.model_total:.1f} vs market {close_total}, +{delta:.1f} runs)",
+            f"Over {close_total} (v2 edge — model {proj.model_total:.1f} vs market {close_total}, +{delta:.1f} runs){suffix}",
             'total',
             False,
             proj,
         )
-    # UNDER edge added 2026-05-07. Symmetric threshold to OVER (|delta| >= 1.5,
-    # confidence >= 0.7). Audit cohort total_edge_under_1_5_to_3 is currently
-    # 2-0 (small sample) — flag as informational lean, not PRIME.
     if delta <= -1.5 and proj.confidence >= 0.7:
+        ump_sig = _get_ump_total_signal(ctx.get('umpire'), 'under')
+        if ump_sig['action'] == 'suppress':
+            print(f"  🚫 v2 UNDER suppressed by ump filter: {ump_sig['note']}")
+            return None
+        suffix = f" • {ump_sig['note']}" if ump_sig['action'] == 'confirm' else ''
         return (
-            f"Under {close_total} (v2 edge — model {proj.model_total:.1f} vs market {close_total}, {delta:.1f} runs)",
+            f"Under {close_total} (v2 edge — model {proj.model_total:.1f} vs market {close_total}, {delta:.1f} runs){suffix}",
             'total',
             False,
             proj,

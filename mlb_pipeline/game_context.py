@@ -2661,18 +2661,22 @@ def run():
                 print(f"  Team stats not available yet — market line fallback: {projected_total}")
 
             # ── xERA GAP OVER BOOST ──
-            # Heuristic: big xERA gap (2.0+) historically correlates with overs.
-            # Reverted projection-agreement gate (2026-04-26) — the right fix is
-            # to have Jerry discuss/reconcile contradicting badges in his read,
-            # not to silently suppress signals. Information preserved, Jerry synthesizes.
+            # Heuristic: a moderate xERA gap correlates with overs. Audit
+            # (2026-05-12, 2900+ games): gap 2.0-3.0 → 58.2% OVER (n=67),
+            # gap ≥3.0 → only 52.0% OVER (n=25, ~coin flip — the extreme-gap
+            # games tend to be blowouts, not shootouts). So we only fire the
+            # lean in the 2.0-3.0 band now. Combined ≥2.0 was 56.5% (overstated
+            # vs the old hardcoded "59.3%"). Information preserved, Jerry synthesizes.
             if home_xera_val and away_xera_val:
                 xera_gap = abs(float(home_xera_val) - float(away_xera_val))
-                if xera_gap >= 2.0 and over_lean is None:
+                if 2.0 <= xera_gap < 3.0 and over_lean is None:
                     over_lean = True
-                    print(f"  xERA gap {xera_gap:.1f} → Over lean (59.3% hit rate on 2.0+ gaps)")
-                elif xera_gap >= 2.0 and over_lean == False:
+                    print(f"  xERA gap {xera_gap:.1f} → Over lean (audit: 58.2% OVER on 2.0-3.0 gaps)")
+                elif 2.0 <= xera_gap < 3.0 and over_lean == False:
                     over_lean = None
                     print(f"  xERA gap {xera_gap:.1f} conflicts with Under lean → neutral")
+                elif xera_gap >= 3.0:
+                    print(f"  xERA gap {xera_gap:.1f} ≥3.0 — not firing lean (audit: only 52% OVER on extreme gaps)")
 
             # ── PROJECTED SPREAD (v3: starter + bullpen weighted run expectation) ──
             # Starter throws ~5.5 IP (60% of 9-inning game), bullpen throws ~3.5 IP (40%)

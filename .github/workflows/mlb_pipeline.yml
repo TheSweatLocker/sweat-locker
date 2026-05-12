@@ -77,6 +77,14 @@ jobs:
           cd mlb_pipeline
           python team_hr_threats.py
 
+      - name: Compute pitcher offense-class projections (before props — props read this)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_pitcher_class_projections.py
+
       - name: Build HR Watch
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -246,6 +254,15 @@ jobs:
         run: |
           cd mlb_pipeline
           python nba_pick_logger.py
+
+      - name: Generate NBA conviction-tier picks
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_picks_generator.py
 
       - name: Resolve NBA results (BDL boxscores)
         env:

@@ -51,6 +51,15 @@ OUTS_CUTOFF = 65
 OUTS_UNDER_CUTOFF = 70
 ER_CUTOFF = 65
 ER_UNDER_CUTOFF = 70
+# New 2026-05-11 — Pitcher Walks Allowed Over/Under. Walks are higher-variance
+# than Ks. Scoring scale tops ~56-60 for strong cases (base 30 + conservative
+# increments), so cutoff is 55. No audit data yet — recalibrate at n=20+.
+BB_CUTOFF = 55
+BB_UNDER_CUTOFF = 55
+# New 2026-05-11 — Pitcher Hits Allowed Over/Under. Same projection-first
+# design as BB props, line typically 5.5. Cutoff 55, recalibrate at n=20+.
+HA_CUTOFF = 55
+HA_UNDER_CUTOFF = 55
 
 
 def _f(v):
@@ -138,6 +147,12 @@ def tier_for(conviction, prop_type=None):
         if conviction >= 82: return 'PRIME'
         if conviction >= 70: return 'STRONG'
         return 'SKIP'
+    if prop_type in ('bb_over', 'bb_under', 'ha_over', 'ha_under'):
+        # New 2026-05-11 — walks + hits-allowed are higher-variance pitcher
+        # props. Scoring tops ~60 for strong cases so thresholds scaled down.
+        if conviction >= 70: return 'PRIME'
+        if conviction >= 55: return 'STRONG'
+        return 'SKIP'
     # Default / hits_over
     if conviction >= 82: return 'PRIME'
     if conviction >= 72: return 'STRONG'
@@ -148,6 +163,7 @@ def tier_for(conviction, prop_type=None):
 _PITCHER_BUCKET_CACHE = {}
 _BATTER_L7_CACHE = {}
 _BATTER_ID_CACHE = {}
+_BATTER_QUALITY_CACHE = None  # one-time leaderboard fetch, keyed by name lower
 
 
 def _lookup_player_id(player_name):
@@ -168,6 +184,370 @@ def _lookup_player_id(player_name):
         pid = None
     _BATTER_ID_CACHE[player_name] = pid
     return pid
+
+
+def fetch_batter_quality(player_name, season=2026):
+    """Per-batter Statcast quality-of-contact lookup.
+    Returns dict {barrel_pct, hard_hit_pct} or None.
+
+    Used by hits Over/Under scoring as a luck-vs-skill differentiator:
+    a batter on a 0-fer streak with high barrel% is hitting the ball hard
+    but unlucky (due for regression) — fade the hits-UNDER, boost the
+    hits-OVER. A batter with no barrels and a cold streak is genuinely
+    slumping — the hits-UNDER fade is real.
+
+    Hits Savant's batter leaderboard once per process and caches the full
+    table. Same source build_hr_watch.py uses (single CSV fetch)."""
+    global _BATTER_QUALITY_CACHE
+    if _BATTER_QUALITY_CACHE is None:
+        try:
+            import io
+            import pandas as pd
+            url = (
+                f"https://baseballsavant.mlb.com/leaderboard/statcast"
+                f"?type=batter&year={season}&position=&team=&min=q&csv=true"
+            )
+            r = requests.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }, timeout=30)
+            if r.status_code != 200:
+                _BATTER_QUALITY_CACHE = {}
+                return None
+            df = pd.read_csv(io.StringIO(r.text))
+            lookup = {}
+            for _, row in df.iterrows():
+                nm = str(row.get("last_name, first_name", "") or "")
+                if "," not in nm:
+                    continue
+                last, first = [p.strip() for p in nm.split(",", 1)]
+                key = f"{first} {last}".lower()
+                try:
+                    barrel = float(row.get("barrel_batted_rate") or 0) or None
+                except (TypeError, ValueError):
+                    barrel = None
+                try:
+                    hard = float(row.get("hard_hit_percent") or 0) or None
+                except (TypeError, ValueError):
+                    hard = None
+                lookup[key] = {"barrel_pct": barrel, "hard_hit_pct": hard}
+            _BATTER_QUALITY_CACHE = lookup
+            print(f"  Loaded Statcast barrel%/hard hit% for {len(lookup)} batters")
+        except Exception as e:
+            print(f"  ⚠️  Savant batter quality fetch failed: {e}")
+            _BATTER_QUALITY_CACHE = {}
+    return _BATTER_QUALITY_CACHE.get((player_name or '').lower())
+
+
+_PITCHER_PROJ_CACHE = None  # loaded from data/pitcher_class_projections.json
+
+
+def get_pitcher_projection(name):
+    """Load the pitcher class-projection JSON cache (built by
+    compute_pitcher_class_projections.py) and return this pitcher's entry
+    (with l7_rolling + classes) keyed by lowercased name. Returns None if
+    not found or cache missing."""
+    global _PITCHER_PROJ_CACHE
+    if _PITCHER_PROJ_CACHE is None:
+        try:
+            import json
+            from pathlib import Path
+            cache_path = Path(__file__).parent / 'data' / 'pitcher_class_projections.json'
+            if cache_path.exists():
+                with open(cache_path, 'r') as f:
+                    data = json.load(f)
+                _PITCHER_PROJ_CACHE = {v['name'].lower(): v for v in data.values() if v.get('name')}
+            else:
+                _PITCHER_PROJ_CACHE = {}
+        except Exception:
+            _PITCHER_PROJ_CACHE = {}
+    return _PITCHER_PROJ_CACHE.get((name or '').lower())
+
+
+def score_pitcher_bb_over(g, side):
+    """Score a starter's Total Walks Allowed OVER prop. Markets typically
+    post O/U 1.5 (sometimes 2.5). We project from L7 rolling avg_bb when
+    available (the strongest recency signal), then adjust for opp lineup
+    patience, first-inning control, days rest.
+
+    The projection (`_projected_bb` in signals) is the headline number the
+    app surfaces — 'expected ~2.1 walks' — so the user can shop their book."""
+    pitcher = g.get(f'{side}_pitcher')
+    if not pitcher:
+        return None
+    last_ip = _f(g.get(f'{side}_last_ip'))
+    last_pitches = _f(g.get(f'{side}_last_pitch_count'))
+    # Opener filter
+    if last_ip is not None and last_ip <= 1.5 and (last_pitches is None or last_pitches <= 35):
+        return None
+
+    proj = get_pitcher_projection(pitcher)
+    l7 = (proj or {}).get('l7_rolling') if proj else None
+    if not l7 or l7.get('avg_bb') is None:
+        return None  # no projection basis = no walks prop
+    proj_bb = l7['avg_bb']
+    if l7.get('avg_ip', 0) < 3.0:
+        return None  # opener / short-relief profile
+
+    opp_side = 'away' if side == 'home' else 'home'
+    opp_k_pct = _f(g.get(f'{opp_side}_team_k_pct')) or 22  # patient-vs-aggressive proxy (lower K = more contact-y)
+    first_inn_whip = _f(g.get(f'{side}_first_inning_whip'))
+    days_rest = _f(g.get(f'{side}_days_rest'))
+
+    signals = {}
+    signals['_projected_bb'] = round(proj_bb, 1)
+    conviction = 30
+
+    # Primary: how far is L7 walk rate above the 1.5 line?
+    over_margin = proj_bb - 1.5
+    if over_margin >= 1.0:
+        conviction += 28
+        signals['l7_walks'] = f'L7 avg {proj_bb:.1f} BB/start — {over_margin:+.1f} vs 1.5 line'
+    elif over_margin >= 0.5:
+        conviction += 16
+        signals['l7_walks'] = f'L7 avg {proj_bb:.1f} BB/start — {over_margin:+.1f} vs 1.5 line'
+    elif over_margin >= 0.2:
+        conviction += 6
+        signals['l7_walks'] = f'L7 avg {proj_bb:.1f} BB/start — slim edge over 1.5'
+    else:
+        return None  # not enough walk volume to bet the over
+
+    # BB/9 layer — corroborates the per-start average
+    bb9 = l7.get('bb_per_9')
+    if bb9 is not None:
+        if bb9 >= 4.0:
+            conviction += 10
+            signals['bb_rate'] = f'{bb9:.1f} BB/9 L7 — elevated walk rate'
+        elif bb9 <= 2.0:
+            conviction -= 8
+
+    # First-inning control — wild starts inflate walk totals
+    if first_inn_whip is not None and first_inn_whip >= 1.6:
+        conviction += 6
+        signals['wild_start'] = f'1st-inn WHIP {first_inn_whip:.2f} — shaky control early'
+
+    # Opp lineup patience proxy — lower team K% ≈ more pitches seen ≈ more walk chances
+    if opp_k_pct <= 20:
+        conviction += 5
+        signals['patient_opp'] = f'Opp K% {opp_k_pct:.1f}% — works counts'
+    elif opp_k_pct >= 27:
+        conviction -= 4  # aggressive lineup, fewer walks drawn
+
+    # Rust — extra rest can mean shakier command first time back
+    if days_rest is not None and days_rest >= 7:
+        conviction += 3
+        signals['rest_rust'] = f'{int(days_rest)} days rest — possible command rust'
+
+    conviction = max(0, min(100, conviction))
+    # Suggested line: 1.5 unless the projection is well above 2.5
+    suggested_line = 2.5 if proj_bb >= 3.0 else 1.5
+
+    return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
+
+
+def score_pitcher_bb_under(g, side):
+    """Score a starter's Total Walks Allowed UNDER prop — bet on elite
+    control. Hits when L7 walk rate is comfortably below the line and the
+    pitcher has a low BB/9 with no recent command wobble."""
+    pitcher = g.get(f'{side}_pitcher')
+    if not pitcher:
+        return None
+    last_ip = _f(g.get(f'{side}_last_ip'))
+    last_pitches = _f(g.get(f'{side}_last_pitch_count'))
+    if last_ip is not None and last_ip <= 1.5 and (last_pitches is None or last_pitches <= 35):
+        return None
+
+    proj = get_pitcher_projection(pitcher)
+    l7 = (proj or {}).get('l7_rolling') if proj else None
+    if not l7 or l7.get('avg_bb') is None:
+        return None
+    proj_bb = l7['avg_bb']
+    if l7.get('avg_ip', 0) < 4.0:
+        return None  # need a real innings load to bet UNDER on walks
+
+    opp_side = 'away' if side == 'home' else 'home'
+    opp_k_pct = _f(g.get(f'{opp_side}_team_k_pct')) or 22
+    first_inn_whip = _f(g.get(f'{side}_first_inning_whip'))
+
+    signals = {}
+    signals['_projected_bb'] = round(proj_bb, 1)
+    conviction = 30
+
+    # Primary: how far is L7 walk rate below the 1.5 line?
+    under_margin = 1.5 - proj_bb
+    if under_margin >= 0.7:
+        conviction += 28
+        signals['l7_control'] = f'L7 avg {proj_bb:.1f} BB/start — elite control, {under_margin:.1f} under 1.5'
+    elif under_margin >= 0.4:
+        conviction += 16
+        signals['l7_control'] = f'L7 avg {proj_bb:.1f} BB/start — {under_margin:.1f} under 1.5'
+    elif under_margin >= 0.2:
+        conviction += 6
+        signals['l7_control'] = f'L7 avg {proj_bb:.1f} BB/start — slim edge under 1.5'
+    else:
+        return None  # walks too high to bet the under
+
+    bb9 = l7.get('bb_per_9')
+    if bb9 is not None:
+        if bb9 <= 2.0:
+            conviction += 12
+            signals['bb_rate'] = f'{bb9:.1f} BB/9 L7 — elite command'
+        elif bb9 >= 4.0:
+            conviction -= 10
+
+    # Clean first-inning control corroborates
+    if first_inn_whip is not None and first_inn_whip <= 1.0:
+        conviction += 6
+        signals['clean_start'] = f'1st-inn WHIP {first_inn_whip:.2f} — pounds the zone'
+
+    # Aggressive opp lineup helps the under (chase more, walk less)
+    if opp_k_pct >= 25:
+        conviction += 5
+        signals['aggressive_opp'] = f'Opp K% {opp_k_pct:.1f}% — aggressive, low walk draw'
+    elif opp_k_pct <= 18:
+        conviction -= 5  # patient lineup, more walk risk
+
+    conviction = max(0, min(100, conviction))
+    suggested_line = 1.5  # under-1.5 is the standard book line
+
+    return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
+
+
+def score_pitcher_ha_over(g, side):
+    """Score a starter's Hits Allowed OVER prop. Markets typically post O/U
+    5.5 (sometimes 4.5 / 6.5). Projects from L7 rolling avg_hits, adjusts for
+    opp lineup quality, park factor, recent hard-contact trend (L3 ERA)."""
+    pitcher = g.get(f'{side}_pitcher')
+    if not pitcher:
+        return None
+    last_ip = _f(g.get(f'{side}_last_ip'))
+    last_pitches = _f(g.get(f'{side}_last_pitch_count'))
+    if last_ip is not None and last_ip <= 1.5 and (last_pitches is None or last_pitches <= 35):
+        return None
+    proj = get_pitcher_projection(pitcher)
+    l7 = (proj or {}).get('l7_rolling') if proj else None
+    if not l7 or l7.get('avg_hits') is None:
+        return None
+    proj_h = l7['avg_hits']
+    if l7.get('avg_ip', 0) < 4.0:
+        return None  # short profile — hits-over unreliable
+
+    opp_side = 'away' if side == 'home' else 'home'
+    opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
+    park_run = _f(g.get('park_run_factor')) or 100
+    l3_era = _f(g.get(f'{side}_pitcher_last_3_era'))
+
+    signals = {}
+    signals['_projected_hits'] = round(proj_h, 1)
+    conviction = 30
+    LINE = 5.5
+    over_margin = proj_h - LINE
+    if over_margin >= 1.5:
+        conviction += 28
+        signals['l7_hits'] = f'L7 avg {proj_h:.1f} H/start — {over_margin:+.1f} vs 5.5 line'
+    elif over_margin >= 0.7:
+        conviction += 16
+        signals['l7_hits'] = f'L7 avg {proj_h:.1f} H/start — {over_margin:+.1f} vs 5.5 line'
+    elif over_margin >= 0.3:
+        conviction += 6
+        signals['l7_hits'] = f'L7 avg {proj_h:.1f} H/start — slim edge over 5.5'
+    else:
+        return None
+
+    h9 = l7.get('hits_per_9')
+    if h9 is not None:
+        if h9 >= 10.0:
+            conviction += 10
+            signals['hits_rate'] = f'{h9:.1f} H/9 L7 — getting squared up'
+        elif h9 <= 7.0:
+            conviction -= 8
+
+    if opp_wrc >= 110:
+        conviction += 6
+        signals['opp_offense'] = f'Opp wRC+ {opp_wrc:.0f} — quality lineup'
+    elif opp_wrc <= 90:
+        conviction -= 5
+
+    if l3_era is not None and l3_era >= 5.0:
+        conviction += 5
+        signals['l3_hard'] = f'L3 ERA {l3_era:.2f} — hit hard lately'
+
+    if park_run >= 108:
+        conviction += 4
+    elif park_run <= 92:
+        conviction -= 3
+
+    conviction = max(0, min(100, conviction))
+    suggested_line = 6.5 if proj_h >= 7.0 else 5.5
+    return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
+
+
+def score_pitcher_ha_under(g, side):
+    """Score a starter's Hits Allowed UNDER prop — bet on a pitcher limiting
+    contact. Hits when L7 hit rate is comfortably below 5.5 and the matchup
+    (soft lineup, pitcher park) supports it."""
+    pitcher = g.get(f'{side}_pitcher')
+    if not pitcher:
+        return None
+    last_ip = _f(g.get(f'{side}_last_ip'))
+    last_pitches = _f(g.get(f'{side}_last_pitch_count'))
+    if last_ip is not None and last_ip <= 1.5 and (last_pitches is None or last_pitches <= 35):
+        return None
+    proj = get_pitcher_projection(pitcher)
+    l7 = (proj or {}).get('l7_rolling') if proj else None
+    if not l7 or l7.get('avg_hits') is None:
+        return None
+    proj_h = l7['avg_hits']
+    if l7.get('avg_ip', 0) < 4.5:
+        return None  # need real innings load for hits-under
+
+    opp_side = 'away' if side == 'home' else 'home'
+    opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
+    park_run = _f(g.get('park_run_factor')) or 100
+    l3_era = _f(g.get(f'{side}_pitcher_last_3_era'))
+
+    signals = {}
+    signals['_projected_hits'] = round(proj_h, 1)
+    conviction = 30
+    LINE = 5.5
+    under_margin = LINE - proj_h
+    if under_margin >= 1.5:
+        conviction += 28
+        signals['l7_limit'] = f'L7 avg {proj_h:.1f} H/start — {under_margin:.1f} under 5.5'
+    elif under_margin >= 0.7:
+        conviction += 16
+        signals['l7_limit'] = f'L7 avg {proj_h:.1f} H/start — {under_margin:.1f} under 5.5'
+    elif under_margin >= 0.3:
+        conviction += 6
+        signals['l7_limit'] = f'L7 avg {proj_h:.1f} H/start — slim edge under 5.5'
+    else:
+        return None
+
+    h9 = l7.get('hits_per_9')
+    if h9 is not None:
+        if h9 <= 7.0:
+            conviction += 12
+            signals['hits_rate'] = f'{h9:.1f} H/9 L7 — limits hard contact'
+        elif h9 >= 10.0:
+            conviction -= 10
+
+    if opp_wrc <= 90:
+        conviction += 6
+        signals['opp_weak'] = f'Opp wRC+ {opp_wrc:.0f} — soft lineup'
+    elif opp_wrc >= 115:
+        conviction -= 6
+
+    if l3_era is not None and l3_era <= 2.5:
+        conviction += 5
+        signals['l3_locked'] = f'L3 ERA {l3_era:.2f} — locked in'
+
+    if park_run <= 92:
+        conviction += 4
+    elif park_run >= 108:
+        conviction -= 3
+
+    conviction = max(0, min(100, conviction))
+    suggested_line = 5.5
+    return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
 
 
 def fetch_batter_l7(player_name, season=2026):
@@ -577,6 +957,26 @@ def score_pitcher_ks(g, side):
         line_cap = 5.0
     suggested_line = max(3.5, min(line_cap, round(est_ks - 0.5, 1)))
 
+    # Realistic K projection (uncapped, for app display) — book lines vary
+    # widely in juice, so we surface the model's actual point estimate rather
+    # than a juiced "Over X.X" framing. Prefer the L7 rolling avg_k from the
+    # pitcher class-projection cache (more current + survives K%-parse failures
+    # like Skenes/Sánchez where the pitcher_context name match misses). Fall
+    # back to season K% × 22 BF (~5.5 IP) if no L7 data.
+    proj = get_pitcher_projection(pitcher)
+    l7_k = (proj or {}).get('l7_rolling', {}).get('avg_k') if proj else None
+    if l7_k is not None:
+        signals['_projected_ks'] = round(float(l7_k), 1)
+    elif pitcher_k_pct is not None:
+        signals['_projected_ks'] = round(pitcher_k_pct / 100 * 22, 1)
+
+    # Snapshot bullpen state for the audit cohort (added 2026-05-10).
+    # mlb_game_context is transient, so without snapshotting at pick time
+    # the K-Over × bullpen correlation cohort can't read history.
+    own_pen = _i(g.get(f'{side}_bp_relievers_3d'))
+    if own_pen is not None:
+        signals['_starter_pen_relievers_3d'] = own_pen
+
     return {
         'conviction': conviction,
         'signals': signals,
@@ -740,6 +1140,16 @@ def score_pitcher_ks_under(g, side):
     est_ks = (raw_k / 100) * (typical_ip * 4.0)
     # Suggest the next half-line above projection (where book likely sits)
     suggested_line = max(4.0, min(7.0, round(est_ks + 1.0, 0) - 0.5))
+
+    # Realistic K projection for app display — prefer L7 rolling avg_k from
+    # the class-projection cache (most current; survives K%-parse failures),
+    # fall back to season K% × 18 BF (short-leash fade assumption).
+    proj = get_pitcher_projection(pitcher)
+    l7_k = (proj or {}).get('l7_rolling', {}).get('avg_k') if proj else None
+    if l7_k is not None:
+        signals['_projected_ks'] = round(float(l7_k), 1)
+    elif pitcher_k_pct is not None:
+        signals['_projected_ks'] = round(pitcher_k_pct / 100 * 18, 1)
 
     return {
         'conviction': conviction,
@@ -1288,6 +1698,22 @@ def score_batter_hits(g, batter, side, lineup_position=None):
             conviction -= 6
             signals['hitless_streak'] = f'{streak} straight games w/o a hit'
 
+    # Barrel% regression catcher (added 2026-05-11). Inverse of the
+    # hits-UNDER barrel detector: a cold batter with high barrel% is
+    # hitting it hard but unlucky — boost the OVER as a regression play.
+    quality = fetch_batter_quality(batter)
+    if quality and quality.get('barrel_pct') is not None and l7:
+        barrel = quality['barrel_pct']
+        l7_rate = l7.get('got_hit_rate', 1.0)
+        if barrel >= 10.0 and l7_rate <= 0.40:
+            conviction += 6
+            signals['barrel_due'] = (
+                f'Barrel% {barrel:.1f}% elite despite L7 cold — due for regression'
+            )
+        elif barrel >= 8.0 and l7_rate <= 0.50:
+            conviction += 3
+            signals['barrel_underlying'] = f'Barrel% {barrel:.1f}% above avg — underlying quality contact'
+
     # Offense drift fade gate (added 2026-05-07).
     # Catches the "good season offense, cold bats currently" trap. Twins 5/6
     # are the canonical case — 105 wRC+ season-long but in a cold L10 stretch,
@@ -1432,7 +1858,52 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
         elif streak >= 2:
             conviction += 4
 
+    # Barrel% slump detector (added 2026-05-11). Audit identified
+    # hits-UNDER PRIME at 55.3% — half those misses are likely "unlucky
+    # cold" batters (high barrel%, low BABIP — quality contact but no hits)
+    # who are due for regression. Fade the fade signal when this fires.
+    quality = fetch_batter_quality(batter)
+    if quality and quality.get('barrel_pct') is not None and l7:
+        barrel = quality['barrel_pct']
+        l7_rate = l7.get('got_hit_rate', 1.0)
+        # MLB avg barrel% is ~7.5%. Threshold ≥9% = above-average contact quality.
+        # When cold L7 (rate ≤0.40) AND barreling = unlucky, due for regression.
+        if barrel >= 9.0 and l7_rate <= 0.40:
+            conviction -= 6
+            signals['barrel_regression'] = (
+                f'Barrel% {barrel:.1f}% (above avg) despite L7 cold — '
+                'quality contact, due for regression'
+            )
+        elif barrel <= 4.0 and l7_rate <= 0.40:
+            # Genuinely cold — no hard contact + no hits = real slump
+            conviction += 4
+            signals['barrel_genuinely_cold'] = f'Barrel% {barrel:.1f}% confirms cold (no quality contact)'
+
     conviction = max(0, min(100, conviction))
+
+    # PRIME multi-signal gate (added 2026-05-11). Audit: hits_under PRIME
+    # (conviction ≥85) hit only 55.3% vs STRONG (75-84) at 67.4% on n=102.
+    # The score stacks team-level + noise signals (weak offense, pitcher
+    # park, K-friendly ump) to reach PRIME without an individual reason
+    # THIS batter goes 0-fer. Require: genuinely elite opp pitcher (xERA
+    # ≤3.0) AND an individual factor — bats bottom of order (≤3 PAs), or
+    # personally ice-cold L7 (≤30% games w/ hit), or active hitless streak
+    # ≥3. Else cap at STRONG (84) — which is the better-performing tier.
+    if conviction >= 85:
+        gate_ace = opp_quality is not None and opp_quality <= 3.0
+        gate_individual = (
+            (lineup_position is not None and lineup_position >= 7) or
+            (l7 and l7.get('got_hit_rate', 1.0) <= 0.30) or
+            (l7 and l7.get('hitless_streak', 0) >= 3)
+        )
+        if not (gate_ace and gate_individual):
+            conviction = 84  # cap at STRONG
+            signals['prime_gate'] = (
+                f'PRIME capped — gate not met (elite_opp={bool(gate_ace)}, '
+                f'individual_signal={bool(gate_individual)}). '
+                'hits_under PRIME audit 55.3% vs STRONG 67.4% (n=102)'
+            )
+
     return {
         'conviction': conviction,
         'signals': signals,
@@ -1624,6 +2095,76 @@ def run():
                     'conviction': er_under['conviction'],
                     'tier': tier_for(er_under['conviction'], 'er_under'),
                     'signals': er_under['signals'],
+                    'lineup_state': 'confirmed',
+                })
+
+            # Walks Allowed O/U (added 2026-05-11) — projection-first prop
+            # using L7 rolling avg_bb. _projected_bb in signals is the
+            # headline number the app surfaces.
+            bb_over = score_pitcher_bb_over(g, side)
+            if bb_over and bb_over['conviction'] >= BB_CUTOFF:
+                all_props.append({
+                    'game_date': game_date,
+                    'game_id': game_id,
+                    'player_name': pitcher,
+                    'player_team': g.get(f'{side}_team'),
+                    'matchup': matchup,
+                    'prop_type': 'bb_over',
+                    'prop_line': bb_over['prop_line'],
+                    'direction': 'over',
+                    'conviction': bb_over['conviction'],
+                    'tier': tier_for(bb_over['conviction'], 'bb_over'),
+                    'signals': bb_over['signals'],
+                    'lineup_state': 'confirmed',
+                })
+            bb_under = score_pitcher_bb_under(g, side)
+            if bb_under and bb_under['conviction'] >= BB_UNDER_CUTOFF:
+                all_props.append({
+                    'game_date': game_date,
+                    'game_id': game_id,
+                    'player_name': pitcher,
+                    'player_team': g.get(f'{side}_team'),
+                    'matchup': matchup,
+                    'prop_type': 'bb_under',
+                    'prop_line': bb_under['prop_line'],
+                    'direction': 'under',
+                    'conviction': bb_under['conviction'],
+                    'tier': tier_for(bb_under['conviction'], 'bb_under'),
+                    'signals': bb_under['signals'],
+                    'lineup_state': 'confirmed',
+                })
+
+            # Hits Allowed O/U (added 2026-05-11) — projection-first from L7 avg_hits
+            ha_over = score_pitcher_ha_over(g, side)
+            if ha_over and ha_over['conviction'] >= HA_CUTOFF:
+                all_props.append({
+                    'game_date': game_date,
+                    'game_id': game_id,
+                    'player_name': pitcher,
+                    'player_team': g.get(f'{side}_team'),
+                    'matchup': matchup,
+                    'prop_type': 'ha_over',
+                    'prop_line': ha_over['prop_line'],
+                    'direction': 'over',
+                    'conviction': ha_over['conviction'],
+                    'tier': tier_for(ha_over['conviction'], 'ha_over'),
+                    'signals': ha_over['signals'],
+                    'lineup_state': 'confirmed',
+                })
+            ha_under = score_pitcher_ha_under(g, side)
+            if ha_under and ha_under['conviction'] >= HA_UNDER_CUTOFF:
+                all_props.append({
+                    'game_date': game_date,
+                    'game_id': game_id,
+                    'player_name': pitcher,
+                    'player_team': g.get(f'{side}_team'),
+                    'matchup': matchup,
+                    'prop_type': 'ha_under',
+                    'prop_line': ha_under['prop_line'],
+                    'direction': 'under',
+                    'conviction': ha_under['conviction'],
+                    'tier': tier_for(ha_under['conviction'], 'ha_under'),
+                    'signals': ha_under['signals'],
                     'lineup_state': 'confirmed',
                 })
 
