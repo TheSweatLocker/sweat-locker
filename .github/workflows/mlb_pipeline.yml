@@ -282,6 +282,20 @@ jobs:
           cd mlb_pipeline
           python play_of_day.py
 
+      # Server-side Jerry game reads — one structured read per game written to
+      # jerry_cache (narrative + the pipeline-edge struct the app renders as a
+      # "The Numbers" panel). Prompts come from the prompt_templates table so
+      # rules can be edited without an app build. Runs after Play of the Day so
+      # the POTD flag is available.
+      - name: Generate MLB game reads
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_mlb_game_reads.py
+
       # Auto-generate tonight's content card after the 2pm ET pipeline run
       # (skip on 8am run since lineups/lines aren't locked yet — content
       # would just be replaced anyway)
