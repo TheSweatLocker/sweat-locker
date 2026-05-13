@@ -1444,6 +1444,10 @@ const [playersSearch, setPlayersSearch] = useState('');
   const [selectedGame, setSelectedGame] = useState(null);
   const [gameNarrative, setGameNarrative] = useState('');
   const [gameNarrativeLoading, setGameNarrativeLoading] = useState(false);
+  // Pipeline-edge struct that accompanies a server-generated game read
+  // (model-vs-market deltas, confluence breakdown, ump tendency, pitcher
+  // fragility flags, best plays). Rendered as the "The Numbers" panel.
+  const [gameReadStruct, setGameReadStruct] = useState<any>(null);
   const [dailyBriefing, setDailyBriefing] = useState('');
   const [dailyBriefingLoading, setDailyBriefingLoading] = useState(false);
   const [dailyBestBet, setDailyBestBet] = useState(null);
@@ -3857,6 +3861,29 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
     const matches = words1.filter(w => words2.some(w2 => w2.includes(w) || w.includes(w2)));
     return matches.length / Math.max(words1.length, words2.length);
   };
+  // Fetch a server-stored prompt template by name (sport-specific row falls
+  // back to the 'ALL' row). Returns the template string or null — callers
+  // keep a hardcoded fallback so behavior is unchanged if the fetch fails.
+  const fetchPromptTemplate = async (name: string, sport: string = 'ALL') => {
+    try {
+      const { data } = await supabase
+        .from('prompt_templates')
+        .select('template, sport')
+        .eq('name', name)
+        .in('sport', sport === 'ALL' ? ['ALL'] : [sport, 'ALL'])
+        .eq('is_active', true);
+      if(!data || data.length === 0) return null;
+      const exact = data.find((r:any) => r.sport === sport);
+      return (exact || data[0]).template || null;
+    } catch(e) { return null; }
+  };
+
+  const fillTemplate = (tpl: string, vars: Record<string, any>) => {
+    let out = tpl;
+    for(const [k, v] of Object.entries(vars)) out = out.split(`{${k}}`).join(String(v ?? ''));
+    return out;
+  };
+
   const fetchParlayAnalysis = async () => {
   if(parlayLegs.length < 2) return;
   setParlayAnalysis('');
@@ -3949,7 +3976,7 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
       ? `\n\nCORRELATION ALERT: Legs ${correlatedPairs.map(p => p.join(' & ')).join(', ')} are from the same game — flag as HIGH correlation.\n`
       : '';
 
-    const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker sports betting app.
+    const _fallbackParlayPrompt = `You are Jerry, sharp AI analyst for The Sweat Locker sports betting app.
 
 Parlay legs with pipeline data:
 ${legsWithContext}
@@ -4010,6 +4037,20 @@ gradeColor: A=#00e5a0, B=#FFB800, C=#0099ff, D=#ff8c00, F=#ff4d6d
 Never say "bet" or "must play". Be sharp and direct.
 CRITICAL: Your entire response must be valid JSON starting with { and ending with }. No text before or after.`;
 
+    // Prefer the server-stored template (editable without an app build); fall
+    // back to the bundled copy above. Placeholders: {legs_with_context}
+    // {parlay_american} {parlay_prob} {leg_count} {correlation_note}.
+    const _serverParlayTpl = await fetchPromptTemplate('parlay_analysis');
+    const prompt = _serverParlayTpl
+      ? fillTemplate(_serverParlayTpl, {
+          legs_with_context: legsWithContext,
+          parlay_american: parlayAmerican,
+          parlay_prob: parlayProb,
+          leg_count: parlayLegs.length,
+          correlation_note: correlationNote,
+        })
+      : _fallbackParlayPrompt;
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -4067,13 +4108,17 @@ if(parsed) {
     try {
       const wins = bets.filter(b=>b.result==='Win').length + (result==='Win'?1:0);
       const losses = bets.filter(b=>b.result==='Loss').length + (result==='Loss'?1:0);
-      const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker. One sentence only — no more.
+      const _fallbackRecapPrompt = `You are Jerry, sharp AI analyst for The Sweat Locker. One sentence only — no more.
 
 Bet: ${bet.pick} (${bet.sport})
 Result: ${result}
 Season record after this: ${wins}-${losses}
 
 Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If Loss — stay composed and confident. Reference the pick specifically. End with 🔒 if Win, no emoji if Loss. No disclaimers. Just Jerry being Jerry.`;
+      const _serverRecapTpl = await fetchPromptTemplate('pick_recap');
+      const prompt = _serverRecapTpl
+        ? fillTemplate(_serverRecapTpl, { pick: bet.pick, sport: bet.sport, result, wins, losses })
+        : _fallbackRecapPrompt;
 
       const response = await fetch('https://api.anthropic.com/v1/messages',{
         method:'POST',
@@ -5249,7 +5294,36 @@ if(isLive) {
 }
 
     setGameNarrative('');
+    setGameReadStruct(null);
     setGameNarrativeLoading(true);
+
+    // Server-generated game read (preferred). Built by generate_<sport>_game_reads.py
+    // in the pipeline: a structured pipeline-edge struct + Jerry prose, written to
+    // jerry_cache keyed game_read_<game_id>_<ET date>. If present, use it and skip
+    // the in-app LLM call entirely (so prompt rules live in the prompt_templates
+    // table, editable without an app build). Falls through to the legacy path if no
+    // server read exists yet (e.g. cron hasn't run for a late-confirmed game).
+    if(sport === 'MLB') {
+      try {
+        const _ctxRow = await fetchMLBContext(game);
+        if(_ctxRow?.game_id) {
+          const _d = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+          const { data: serverRead } = await supabase
+            .from('jerry_cache')
+            .select('narrative, data')
+            .eq('cache_key', `game_read_${_ctxRow.game_id}_${_d}`)
+            .maybeSingle();
+          if(serverRead?.narrative) {
+            setGameNarrative(serverRead.narrative);
+            let _s = serverRead.data;
+            if(typeof _s === 'string') { try { _s = JSON.parse(_s); } catch(e) { _s = null; } }
+            setGameReadStruct(_s || null);
+            setGameNarrativeLoading(false);
+            return;
+          }
+        }
+      } catch(e) {}
+    }
 
     // Check Supabase cache first — use ET date so cache key matches server-side
     const gameKey = (game.id || (game.away_team + '_' + game.home_team)) + '_' + new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
@@ -7463,6 +7537,72 @@ setJerryHistory(prev => {
               );
             })()}
           </View>
+
+          {/* The Numbers — deterministic pipeline-edge panel that accompanies
+              the server-generated game read. Renders the struct Jerry was given,
+              so prose and numbers can't diverge. Only present when a server read
+              loaded (currently MLB). */}
+          {gameReadStruct && (() => {
+            const s = gameReadStruct;
+            const Row = ({label, value}: {label: string, value: any}) => (value === null || value === undefined || value === '' || value === 'neutral') ? null : (
+              <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
+                <Text style={{color:'#7a92a8',fontSize:12}}>{label}</Text>
+                <Text style={{color:'#c8d8e8',fontSize:12,fontWeight:'600',flexShrink:1,textAlign:'right',marginLeft:8}}>{String(value)}</Text>
+              </View>
+            );
+            const m = s.market || {}, c = s.confluence || {}, sit = s.situational || {}, ph = (s.pitchers||{}).home || {}, pa = (s.pitchers||{}).away || {};
+            const totalLine = (m.model_total != null && m.close_total != null)
+              ? `${m.model_total} vs ${m.close_total} → ${m.total_lean === 'OVER' ? 'OVER' : m.total_lean === 'UNDER' ? 'UNDER' : 'no edge'}${m.total_delta != null && m.total_lean !== 'neutral' ? ` (${m.total_delta > 0 ? '+' : ''}${m.total_delta})` : ''}` : null;
+            const spreadLine = (m.model_spread != null && m.close_spread != null) ? `model ${m.model_spread > 0 ? '+' : ''}${m.model_spread} vs market ${m.close_spread}` : null;
+            const conflKeys = c.breakdown && typeof c.breakdown === 'object' ? Object.keys(c.breakdown) : [];
+            const conflLine = c.net != null ? `${c.net > 0 ? '+' : ''}${c.net}${conflKeys.length ? ` (${conflKeys.join(', ')})` : ''}` : null;
+            const bp = (h: any, a: any) => (h == null && a == null) ? null : `home ${h ?? '?'} / away ${a ?? '?'}${(Number(h)>=12||Number(a)>=12)?' ⚠ gassed':''}`;
+            const drift = (h: any, a: any) => (h == null && a == null) ? null : `home ${h ?? '?'} / away ${a ?? '?'} R/G`;
+            const pitcherText = (p: any) => {
+              if(!p || !p.name) return null;
+              const bits: string[] = [];
+              if(p.xera != null) bits.push(`${p.xera} xERA`);
+              if(p.l3_era != null) bits.push(`${p.l3_era} L3 ERA`);
+              if(p.first_inning_era != null) bits.push(`${p.first_inning_era} 1st-inn`);
+              if(p.vs_team_era != null) bits.push(`${p.vs_team_era} career vs opp`);
+              return `${p.name} — ${bits.join(' · ')}`;
+            };
+            return (
+              <View style={{marginHorizontal:16,marginBottom:12,backgroundColor:'rgba(74,158,255,0.05)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(74,158,255,0.18)'}}>
+                <Text style={{color:'#4a9eff',fontWeight:'800',fontSize:12,marginBottom:10}}>📊 THE NUMBERS{s.is_potd ? '  ·  ⭐ PLAY OF THE DAY' : ''}</Text>
+                <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>MODEL vs MARKET</Text>
+                <Row label="Total" value={totalLine}/>
+                <Row label="Spread" value={spreadLine}/>
+                <Row label="Confluence" value={conflLine}/>
+                <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginTop:8,marginBottom:6,letterSpacing:0.5}}>SITUATIONAL</Text>
+                <Row label="Umpire" value={sit.umpire_note || sit.umpire}/>
+                <Row label="Park factor" value={sit.park_run_factor}/>
+                <Row label="NRFI" value={sit.nrfi_tier}/>
+                <Row label="Bullpen L3d" value={bp(sit.home_bp_relievers_3d, sit.away_bp_relievers_3d)}/>
+                <Row label="L10 offense" value={drift(sit.home_l10_rpg, sit.away_l10_rpg)}/>
+                <Row label="wRC+" value={(sit.home_wrc_plus!=null||sit.away_wrc_plus!=null) ? `home ${sit.home_wrc_plus ?? '?'} / away ${sit.away_wrc_plus ?? '?'}` : null}/>
+                <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginTop:8,marginBottom:6,letterSpacing:0.5}}>STARTERS</Text>
+                {pitcherText(pa) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(pa)}</Text>}
+                {(pa.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(pa.flags||[]).join(' · ')}</Text>}
+                {pitcherText(ph) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(ph)}</Text>}
+                {(ph.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(ph.flags||[]).join(' · ')}</Text>}
+                {Array.isArray(s.best_plays) && s.best_plays.length > 0 && (
+                  <>
+                    <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginTop:8,marginBottom:6,letterSpacing:0.5}}>BEST PLAYS THIS GAME</Text>
+                    {s.best_plays.slice(0,5).map((b: any, i: number) => (
+                      <View key={i} style={{marginBottom:6}}>
+                        <Text style={{color:'#c8d8e8',fontSize:12,fontWeight:'600'}}>
+                          {b.tier ? `[${b.tier}${b.conviction!=null?` ${b.conviction}`:''}] ` : ''}{b.player} {String(b.prop_type||'').replace(/_/g,' ')}{b.line!=null?` ${b.line}`:''}{b.projection!=null?`  ·  proj ${b.projection}`:''}
+                        </Text>
+                        {Array.isArray(b.why) && b.why[0] ? <Text style={{color:'#7a92a8',fontSize:11}}>{b.why[0]}</Text> : null}
+                      </View>
+                    ))}
+                  </>
+                )}
+                <Text style={{color:'#4a6070',fontSize:10,marginTop:8,fontStyle:'italic'}}>Pre-game model snapshot — tendencies, not predictions. Single-game variance applies.</Text>
+              </View>
+            );
+          })()}
 
           {/* UFC Model Fight Breakdown (added 2026-05-08).
               Surfaces full v1 model output: winner %, method (KO/SUB/DEC)
