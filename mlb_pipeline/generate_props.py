@@ -54,8 +54,8 @@ ER_UNDER_CUTOFF = 70
 # New 2026-05-11 — Pitcher Walks Allowed Over/Under. Walks are higher-variance
 # than Ks. Scoring scale tops ~56-60 for strong cases (base 30 + conservative
 # increments), so cutoff is 55. No audit data yet — recalibrate at n=20+.
-BB_CUTOFF = 55
-BB_UNDER_CUTOFF = 55
+BB_CUTOFF = 48  # lowered from 55 (2026-05-13) — BB OVER props were systemically under-surfacing
+BB_UNDER_CUTOFF = 48  # lowered from 55 (2026-05-13) — BB props were systemically under-surfacing
 # New 2026-05-11 — Pitcher Hits Allowed Over/Under. Same projection-first
 # design as BB props, line typically 5.5. Cutoff 55, recalibrate at n=20+.
 HA_CUTOFF = 55
@@ -298,15 +298,19 @@ def score_pitcher_bb_over(g, side):
     conviction = 30
 
     # Primary: how far is L7 walk rate above the 1.5 line?
+    # Thresholds widened 2026-05-13 — pre-patch only Schultz-style outliers
+    # (L7 BB ≥3.0) cleared the +28 bonus; middling walks-prone arms like
+    # McCullers (2.86) and Bradish (2.71) got stuck at slim-edge tier and
+    # never cleared cutoff 55. New tiers: 0.7/0.4/0.15 (was 1.0/0.5/0.2).
     over_margin = proj_bb - 1.5
-    if over_margin >= 1.0:
+    if over_margin >= 0.7:
         conviction += 28
         signals['l7_walks'] = f'L7 avg {proj_bb:.1f} BB/start — {over_margin:+.1f} vs 1.5 line'
-    elif over_margin >= 0.5:
-        conviction += 16
+    elif over_margin >= 0.4:
+        conviction += 18
         signals['l7_walks'] = f'L7 avg {proj_bb:.1f} BB/start — {over_margin:+.1f} vs 1.5 line'
-    elif over_margin >= 0.2:
-        conviction += 6
+    elif over_margin >= 0.15:
+        conviction += 8
         signals['l7_walks'] = f'L7 avg {proj_bb:.1f} BB/start — slim edge over 1.5'
     else:
         return None  # not enough walk volume to bet the over
@@ -373,15 +377,21 @@ def score_pitcher_bb_under(g, side):
     conviction = 30
 
     # Primary: how far is L7 walk rate below the 1.5 line?
+    # Thresholds widened 2026-05-13 — pre-patch most pitchers projecting
+    # 1.1-1.4 BB/start (clean BB-Unders) got stuck at +6 and never cleared
+    # cutoff 55. New tiers: 0.4/0.2/0.1 (was 0.7/0.4/0.2). This surfaces
+    # the natural cohort of low-walk arms (Lodolo 1.14, Gray 1.29, Ohtani
+    # 1.29, B. Miller 1.29, Imanaga 1.57, Messick 1.57) which all clearly
+    # project under the standard 1.5 BB line.
     under_margin = 1.5 - proj_bb
-    if under_margin >= 0.7:
+    if under_margin >= 0.4:
         conviction += 28
         signals['l7_control'] = f'L7 avg {proj_bb:.1f} BB/start — elite control, {under_margin:.1f} under 1.5'
-    elif under_margin >= 0.4:
-        conviction += 16
-        signals['l7_control'] = f'L7 avg {proj_bb:.1f} BB/start — {under_margin:.1f} under 1.5'
     elif under_margin >= 0.2:
-        conviction += 6
+        conviction += 18
+        signals['l7_control'] = f'L7 avg {proj_bb:.1f} BB/start — {under_margin:.1f} under 1.5'
+    elif under_margin >= 0.05:
+        conviction += 8
         signals['l7_control'] = f'L7 avg {proj_bb:.1f} BB/start — slim edge under 1.5'
     else:
         return None  # walks too high to bet the under

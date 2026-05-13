@@ -1501,7 +1501,10 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [propJerryLoading, setPropJerryLoading] = useState(false);
   // Pipeline-driven MLB props (replaces EV scanner for MLB sport)
   const [pipelineMLBProps, setPipelineMLBProps] = useState([]);
-  const [pipelineMLBLoading, setPipelineMLBLoading] = useState(false);
+  // Default TRUE so the spinner is the first thing rendered when the prop
+  // Jerry tab opens — fixes the brief flash of the misleading "tap 🔄 in 30
+  // min" empty state that users were seeing before the first fetch resolved.
+  const [pipelineMLBLoading, setPipelineMLBLoading] = useState(true);
   const [propOfDay, setPropOfDay] = useState(null);
   const [propOfDayLoading, setPropOfDayLoading] = useState(false);
   const [hrWatch, setHrWatch] = useState<any[]>([]);
