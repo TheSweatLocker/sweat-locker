@@ -97,6 +97,59 @@ def fetch_recent_form(fighter_name, limit=3):
     })
 
 
+def _build_casual_summary(struct):
+    """Plain-English UFC headlines + bottom line."""
+    headlines = []
+    mo = struct.get("model") or {}
+    methods = struct.get("method_probs") or {}
+    rounds = struct.get("round_probs") or {}
+    a, b = (struct.get("matchup") or " vs ").split(" vs ")
+    pick = mo.get("winner_pick")
+
+    if pick and mo.get("winner_prob"):
+        wp = int(float(mo["winner_prob"]) * 100)
+        tier = mo.get("tier") or ""
+        headlines.append((15, f"✓ Model favors {pick} to win ({wp}% — {tier})" if tier else f"✓ Model favors {pick} ({wp}% win prob)"))
+
+    # Method
+    if methods:
+        top_m = max(methods, key=methods.get)
+        top_v = methods[top_m]
+        if top_v >= 0.4:
+            name = {"ko": "KO/TKO", "sub": "Submission", "dec": "Decision"}.get(top_m, top_m.upper())
+            headlines.append((10, f"✓ Most likely method: {name} ({int(top_v*100)}%)"))
+
+    # Edges vs market
+    if mo.get("edge_method"):
+        headlines.append((8, f"✓ Method-prop edge vs market: {mo['edge_method']}"))
+    if mo.get("edge_distance"):
+        headlines.append((8, f"✓ Goes-distance edge vs market: {mo['edge_distance']}"))
+
+    # Recent form (3+ in a row)
+    for name, hist in (struct.get("recent") or {}).items():
+        if not hist:
+            continue
+        results = [str(h.get("result") or "").lower() for h in hist[:3]]
+        if all(r.startswith("w") for r in results) and len(results) == 3:
+            headlines.append((6, f"✓ {name} on a 3-fight win streak"))
+        elif all(r.startswith("l") for r in results) and len(results) == 3:
+            headlines.append((7, f"⚠ {name} dropped 3 of last 3"))
+
+    headlines.sort(key=lambda x: -x[0])
+    top = [h[1] for h in headlines[:4]]
+
+    bottom = None
+    if pick and mo.get("tier"):
+        wp = int(float(mo.get("winner_prob") or 0) * 100)
+        bottom = f"Model pick: {pick} to win ({wp}%, {mo['tier']})"
+    elif pick:
+        bottom = f"Model leans: {pick}"
+    if not bottom:
+        bottom = "Pick'em fight — no strong model edge"
+
+    return {"headlines": top, "bottom_line": bottom}
+
+
 def build_struct(p):
     a, b = p["fighter_a"], p["fighter_b"]
     pwa = float(p.get("p_winner_a") or 0.5)
@@ -111,7 +164,7 @@ def build_struct(p):
     }
     rounds = {f"r{i}": float(p.get(f"p_round_{i}") or 0) for i in range(1, 6)}
 
-    return {
+    struct = {
         "matchup": f"{a} vs {b}",
         "event": p.get("event_name"),
         "event_date": p.get("event_date"),
@@ -138,6 +191,8 @@ def build_struct(p):
             "generated_at": datetime.now(timezone.utc).isoformat(),
         },
     }
+    struct["casual_summary"] = _build_casual_summary(struct)
+    return struct
 
 
 def render_prompt(templates, struct):

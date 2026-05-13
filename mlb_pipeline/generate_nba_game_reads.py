@@ -99,6 +99,81 @@ def _team(stats, name):
     return next((v for k, v in stats.items() if k.split()[-1] == last), {}) or {}
 
 
+def _build_casual_summary(struct):
+    """Plain-English headlines + bottom line for NBA. Same pattern as MLB —
+    rank signals by strength, surface top 3-4."""
+    headlines = []
+    m = struct.get("market") or {}
+    mo = struct.get("model") or {}
+    eh = (struct.get("efficiency") or {}).get("home") or {}
+    ea = (struct.get("efficiency") or {}).get("away") or {}
+    inj = struct.get("injuries") or {}
+    away, home = (struct.get("matchup") or "").split(" @ ")[0], (struct.get("matchup") or "").split(" @ ")[-1]
+
+    # 1. Star OUT — pre-empts everything
+    if inj.get("star_out"):
+        note = inj.get("star_out_note") or "key player out"
+        headlines.append((20, f"⚠ {note} — model leans suppressed; line already adjusted"))
+
+    # 2. ATS edge
+    edge = mo.get("model_edge_vs_spread")
+    if edge is not None and abs(float(edge)) >= 3.0:
+        team = home if float(edge) > 0 else away
+        headlines.append((10 + min(8, abs(float(edge))), f"✓ Model has {team} {abs(float(edge)):.1f} points stronger than the line"))
+
+    # 3. Net rating gap
+    nh, na = eh.get("net_rating"), ea.get("net_rating")
+    if nh is not None and na is not None:
+        gap = float(nh) - float(na)
+        if abs(gap) >= 4:
+            team = home if gap > 0 else away
+            headlines.append((6 + min(5, abs(gap) / 2), f"✓ {team} is {abs(gap):.1f} points better in net efficiency this season"))
+
+    # 4. Recency drift
+    hd, ad = mo.get("home_drift"), mo.get("away_drift")
+    for team, drift in [(home, hd), (away, ad)]:
+        if drift is not None and float(drift) <= -3:
+            headlines.append((5, f"⚠ {team} has cooled (L10 net rating dropped {drift:.1f})"))
+        elif drift is not None and float(drift) >= 3:
+            headlines.append((5, f"✓ {team} trending up (L10 net rating up {drift:+.1f})"))
+
+    # 5. Total lean
+    if mo.get("total_lean"):
+        lean = str(mo["total_lean"]).upper()
+        tot_tier = mo.get("total_tier")
+        tier_suffix = f" ({tot_tier})" if tot_tier else ""
+        headlines.append((6, f"✓ {lean} lean on the total{tier_suffix}"))
+
+    # 6. Home/away record asymmetry
+    if eh.get("home_record") and ea.get("away_record"):
+        try:
+            h_w, h_l = map(int, str(eh["home_record"]).split("-"))
+            a_w, a_l = map(int, str(ea["away_record"]).split("-"))
+            h_pct = h_w / max(1, h_w + h_l)
+            a_pct = a_w / max(1, a_w + a_l)
+            if h_pct >= 0.70 and a_pct <= 0.40:
+                headlines.append((6, f"✓ Home dominance: {home} {eh['home_record']} home / {away} {ea['away_record']} road"))
+        except Exception:
+            pass
+
+    headlines.sort(key=lambda x: -x[0])
+    top = [h[1] for h in headlines[:4]]
+
+    # Bottom line
+    bottom = None
+    if mo.get("ats_lean") and mo.get("ats_tier"):
+        team = home if mo["ats_lean"] == "home" else away
+        bottom = f"Model's ATS lean: {team} ({mo['ats_tier']})"
+    elif mo.get("total_lean") and mo.get("total_tier"):
+        bottom = f"Model's total lean: {str(mo['total_lean']).upper()} ({mo['total_tier']})"
+    elif inj.get("star_out"):
+        bottom = "Star OUT — model is sidelining this game"
+    if not bottom:
+        bottom = "Mixed signals — no strong directional edge"
+
+    return {"headlines": top, "bottom_line": bottom}
+
+
 def build_struct(game_id, picks, stats):
     if not picks:
         return None
@@ -141,7 +216,7 @@ def build_struct(game_id, picks, stats):
             "why": [f"{k}: {v}" for k, v in sig.items() if not str(k).startswith("_")][:4],
         })
 
-    return {
+    struct = {
         "matchup": f"{away} @ {home}",
         "game_id": game_id,
         "market": {
@@ -175,6 +250,8 @@ def build_struct(game_id, picks, stats):
             "generated_at": datetime.now(timezone.utc).isoformat(),
         },
     }
+    struct["casual_summary"] = _build_casual_summary(struct)
+    return struct
 
 
 def render_prompt(templates, struct):

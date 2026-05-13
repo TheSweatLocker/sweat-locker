@@ -129,6 +129,44 @@ def _team(stats, name):
     return next((v for k, v in stats.items() if (k or "").split()[-1] == last), {}) or {}
 
 
+def _build_casual_summary(struct):
+    """NFL casual summary — lean since Phase 2 (per-game picks) hasn't shipped.
+    Mostly market context + season EPA snapshot until then."""
+    headlines = []
+    m = struct.get("market") or {}
+    eh = (struct.get("efficiency") or {}).get("home") or {}
+    ea = (struct.get("efficiency") or {}).get("away") or {}
+    away, home = (struct.get("matchup") or " @ ").split(" @ ")[0], (struct.get("matchup") or " @ ").split(" @ ")[-1]
+
+    headlines.append((1, "ℹ Working from season EPA only — per-game model coming Phase 2"))
+
+    # Pass EPA gap
+    for label, val_h, val_a in [
+        ("pass offense", eh.get("pass_epa"), ea.get("pass_epa")),
+        ("rush offense", eh.get("rush_epa"), ea.get("rush_epa")),
+    ]:
+        if val_h is not None and val_a is not None:
+            gap = float(val_h) - float(val_a)
+            if abs(gap) >= 0.10:
+                team = home if gap > 0 else away
+                headlines.append((6, f"✓ {team} has the edge in {label} (EPA gap {abs(gap):.2f})"))
+
+    # Defensive sacks / INTs
+    for label, side, t in [("home", eh, home), ("away", ea, away)]:
+        if side.get("def_ints") and int(side["def_ints"]) >= 12:
+            headlines.append((4, f"✓ {t} defense forces turnovers ({side['def_ints']} INTs)"))
+
+    # Market snapshot
+    if m.get("spread") is not None:
+        headlines.append((3, f"📊 Market: {home} {'+' if m['spread']>0 else ''}{m['spread']}, total {m.get('total','N/A')}"))
+
+    headlines.sort(key=lambda x: -x[0])
+    top = [h[1] for h in headlines[:4]]
+
+    bottom = "Phase 2 NFL game model not active — market + season EPA only"
+    return {"headlines": top, "bottom_line": bottom}
+
+
 def build_struct(game, stats):
     home, away = game.get("home_team"), game.get("away_team")
     h, a = _team(stats, home), _team(stats, away)
@@ -146,7 +184,7 @@ def build_struct(game, stats):
             "fg_pct": _f(t.get("fg_pct")),
         }
 
-    return {
+    struct = {
         "matchup": f"{away} @ {home}",
         "game_id": game.get("id"),
         "commence_time": game.get("commence_time"),
@@ -159,6 +197,8 @@ def build_struct(game, stats):
             "phase": "Phase 1 — market + season EPA only; per-game model picks pending Phase 2",
         },
     }
+    struct["casual_summary"] = _build_casual_summary(struct)
+    return struct
 
 
 def render_prompt(templates, struct):

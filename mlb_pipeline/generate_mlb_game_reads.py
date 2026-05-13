@@ -162,6 +162,139 @@ def _pitcher_block(g, side):
     }
 
 
+def _build_casual_summary(struct):
+    """Rank signals from the struct by 'deviation from norm' and surface the
+    3-4 strongest as plain-English bullets, plus a one-line bottom_line.
+    Deterministic (no LLM) so it's always available + free + predictable."""
+    headlines = []
+    m = struct.get("market") or {}
+    c = struct.get("confluence") or {}
+    sit = struct.get("situational") or {}
+    ph = (struct.get("pitchers") or {}).get("home") or {}
+    pa = (struct.get("pitchers") or {}).get("away") or {}
+    home = (struct.get("matchup") or "").split(" @ ")[-1]
+    away = (struct.get("matchup") or "").split(" @ ")[0]
+
+    # 1. Total edge — strongest game-level signal when present
+    td = m.get("total_delta")
+    if td is not None and abs(td) >= 1.5:
+        lean = "OVER" if td > 0 else "UNDER"
+        headlines.append((
+            10 + min(5, abs(td)),
+            f"✓ Model expects ~{m.get('model_total')} total runs vs the market's {m.get('close_total')} — {lean} lean ({td:+.1f} runs)"
+        ))
+
+    # 2. Confluence — multi-signal agreement on the side
+    if c.get("net") is not None and abs(int(c["net"])) >= 4:
+        net = int(c["net"])
+        bd = c.get("breakdown") or {}
+        if isinstance(bd, dict) and bd:
+            # majority side
+            sides = [v for v in bd.values() if v in ("home", "away")]
+            tally = {"home": sides.count("home"), "away": sides.count("away")}
+            top = max(tally, key=tally.get) if any(tally.values()) else None
+            team = home if top == "home" else away if top == "away" else None
+            if team:
+                headlines.append((
+                    9 + min(5, abs(net)),
+                    f"✓ {tally[top]} of {len(sides)} model signals point to {team} — strong stack on this side"
+                ))
+
+    # 3. Pitcher fragility flags — already derived in struct
+    for side, pdata, team in [("away", pa, away), ("home", ph, home)]:
+        flags = pdata.get("flags") or []
+        if flags:
+            # one bundled bullet per pitcher
+            nm = pdata.get("name") or f"{team} starter"
+            headlines.append((
+                8,
+                f"⚠ {nm}: {flags[0]}"
+            ))
+
+    # 4. Mastery (favorable history)
+    for side, pdata, team, opp in [("away", pa, away, home), ("home", ph, home, away)]:
+        vsera = pdata.get("vs_team_era")
+        if vsera is not None:
+            if float(vsera) <= 3.0:
+                headlines.append((7, f"✓ {pdata.get('name') or f'{team} starter'} owns this lineup (career {vsera:.2f} ERA vs {opp})"))
+            elif float(vsera) >= 7.0:
+                headlines.append((9, f"⚠ {pdata.get('name') or f'{team} starter'} has been torched by this lineup historically ({vsera:.2f} ERA)"))
+
+    # 5. Bullpen workload — gassed pens
+    h_bp = sit.get("home_bp_relievers_3d")
+    a_bp = sit.get("away_bp_relievers_3d")
+    for team, n in [(home, h_bp), (away, a_bp)]:
+        try:
+            if n is not None and int(n) >= 12:
+                headlines.append((6, f"⚠ {team}'s bullpen is gassed ({n} relievers used in last 3 days)"))
+        except Exception:
+            pass
+
+    # 6. NRFI / YRFI lean
+    nrfi = sit.get("nrfi_score")
+    try:
+        if nrfi is not None:
+            s = float(nrfi)
+            if s >= 90:
+                headlines.append((7, f"✓ Both starters have elite first-inning history — strong no-runs-in-the-1st signal"))
+            elif s <= 30:
+                headlines.append((7, f"⚠ Both starters get tagged in the 1st — runs likely early"))
+    except Exception:
+        pass
+
+    # 7. Umpire signal
+    ump_note = sit.get("umpire_note")
+    if ump_note and isinstance(ump_note, str):
+        if "k-friendly" in ump_note.lower() or "over-friendly" in ump_note.lower():
+            headlines.append((4, f"✓ Umpire {sit.get('umpire','')}: {ump_note.split('—')[-1].strip()}"))
+
+    # 8. Park factor — only if extreme
+    park = sit.get("park_run_factor")
+    try:
+        if park is not None and float(park) >= 110:
+            headlines.append((4, f"✓ Hitter-friendly park (factor {park}) — runs come easier"))
+        elif park is not None and float(park) <= 92:
+            headlines.append((4, f"✓ Pitcher-friendly park (factor {park}) — runs harder to come by"))
+    except Exception:
+        pass
+
+    # POTD gets a top-of-list star (highest priority headline)
+    if struct.get("is_potd") and struct.get("potd_lean"):
+        headlines.append((100, f"⭐ This is today's Play of the Day — {struct['potd_lean']}"))
+
+    # Take top 4 by score, drop the scores
+    headlines.sort(key=lambda x: -x[0])
+    top = [h[1] for h in headlines[:4]]
+
+    # Bottom line — derive from strongest signal hierarchy.
+    # POTD > total edge > confluence stack > primary_play (lowest — sometimes
+    # stale from the xERA-gap rule which v2 may override).
+    bottom = None
+    if struct.get("is_potd") and struct.get("potd_lean"):
+        bottom = f"Today's Play of the Day — {struct['potd_lean']}"
+    elif td is not None and abs(td) >= 1.5:
+        lean = "OVER" if td > 0 else "UNDER"
+        bottom = f"Model's lean: {lean} {m.get('close_total')} (model {m.get('model_total')} vs market {m.get('close_total')})"
+    elif c.get("net") is not None and abs(int(c["net"])) >= 4:
+        bd = c.get("breakdown") or {}
+        if isinstance(bd, dict):
+            sides = [v for v in bd.values() if v in ("home", "away")]
+            tally = {"home": sides.count("home"), "away": sides.count("away")}
+            top_side = max(tally, key=tally.get) if any(tally.values()) else None
+            team = home if top_side == "home" else away if top_side == "away" else None
+            if team:
+                bottom = f"Model's lean: {team} side (confluence {c['net']:+d})"
+    else:
+        pp = c.get("primary_play")
+        if isinstance(pp, dict) and pp.get("label"):
+            tier = pp.get("tier") or ""
+            bottom = f"Model's lean: {pp['label']}" + (f" ({tier})" if tier else "")
+    if not bottom:
+        bottom = "Mixed signals — no strong directional edge"
+
+    return {"headlines": top, "bottom_line": bottom}
+
+
 def build_struct(g, props, potd):
     home, away = g.get("home_team"), g.get("away_team")
     close_t = _f(g.get("close_total")) or _f(g.get("open_total"))
@@ -186,12 +319,20 @@ def build_struct(g, props, potd):
         })
 
     potd_game = ""
+    potd_lean = None
     if isinstance(potd, dict):
         gv = potd.get("game") or potd.get("matchup") or ""
         potd_game = gv if isinstance(gv, str) else json.dumps(gv, default=str)
+        # POTD lean can live under a few different keys depending on the
+        # play_of_day.py version — try the common ones.
+        potd_lean = (
+            potd.get("lean")
+            or potd.get("label")
+            or (potd.get("pick") or {}).get("label") if isinstance(potd.get("pick"), dict) else None
+        )
     is_potd = bool(home and away and home in potd_game and away in potd_game)
 
-    return {
+    struct = {
         "matchup": f"{away} @ {home}",
         "game_id": g.get("game_id"),
         "venue": g.get("venue"),
@@ -236,12 +377,15 @@ def build_struct(g, props, potd):
         "pitchers": {"home": _pitcher_block(g, "home"), "away": _pitcher_block(g, "away")},
         "best_plays": best,
         "is_potd": is_potd,
+        "potd_lean": potd_lean if is_potd else None,
         "meta": {
             "game_date": today_et(),
             "game_has_not_been_played": True,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         },
     }
+    struct["casual_summary"] = _build_casual_summary(struct)
+    return struct
 
 
 # ---------------------------------------------------------------- prompt

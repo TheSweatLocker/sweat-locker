@@ -1448,6 +1448,9 @@ const [playersSearch, setPlayersSearch] = useState('');
   // (model-vs-market deltas, confluence breakdown, ump tendency, pitcher
   // fragility flags, best plays). Rendered as the "The Numbers" panel.
   const [gameReadStruct, setGameReadStruct] = useState<any>(null);
+  // Show dense numbers (advanced view) — default collapsed; casual summary
+  // shows by default. Sharp users tap to expand.
+  const [numbersExpanded, setNumbersExpanded] = useState<boolean>(false);
   const [dailyBriefing, setDailyBriefing] = useState('');
   const [dailyBriefingLoading, setDailyBriefingLoading] = useState(false);
   const [dailyBestBet, setDailyBestBet] = useState(null);
@@ -7557,13 +7560,17 @@ setJerryHistory(prev => {
           </View>
 
           {/* The Numbers — deterministic pipeline-edge panel that accompanies
-              the server-generated game read. Renders the struct Jerry was given,
-              so prose and numbers can't diverge. Sport-aware: MLB shows pitcher
-              blocks + player props; NBA shows efficiency splits + ATS/total
-              edges (no props pipeline). Same component, sport-appropriate data. */}
+              the server-generated game read. Casual summary (plain-English
+              headlines + bottom line) shows by default; dense data view is
+              opt-in via the expander. Sport-aware: MLB pitcher blocks + props,
+              NBA efficiency + ATS/total picks, UFC method/round struct, NFL
+              market + EPA. */}
           {gameReadStruct && (() => {
             const s = gameReadStruct;
             const isNBA = !!s.efficiency && !s.pitchers;
+            const cs = s.casual_summary || {};
+            const headlines: string[] = Array.isArray(cs.headlines) ? cs.headlines : [];
+            const bottomLine: string = cs.bottom_line || '';
             const Row = ({label, value}: {label: string, value: any}) => (value === null || value === undefined || value === '' || value === 'neutral') ? null : (
               <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
                 <Text style={{color:'#7a92a8',fontSize:12}}>{label}</Text>
@@ -7588,6 +7595,9 @@ setJerryHistory(prev => {
               </>
             ) : null;
 
+            // Compute dense view content (sport-specific). Hidden by default,
+            // revealed when the user taps "Show all the numbers".
+            let denseContent: any = null;
             if(isNBA) {
               const mo = s.model || {}, eh = (s.efficiency||{}).home || {}, ea = (s.efficiency||{}).away || {}, inj = s.injuries || {};
               const away = (s.matchup||'').split(' @ ')[0], home = (s.matchup||'').split(' @ ')[1];
@@ -7602,9 +7612,8 @@ setJerryHistory(prev => {
                 if(t.l10_net_rating!=null) bits.push(`L10 Net ${t.l10_net_rating>0?'+':''}${t.l10_net_rating}`);
                 return `${label}: ${bits.join(' · ')}`;
               };
-              return (
-                <View style={{marginHorizontal:16,marginBottom:12,backgroundColor:'rgba(74,158,255,0.05)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(74,158,255,0.18)'}}>
-                  <Text style={{color:'#4a9eff',fontWeight:'800',fontSize:12,marginBottom:10}}>📊 THE NUMBERS</Text>
+              denseContent = (
+                <>
                   <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>MODEL vs MARKET</Text>
                   <Row label="Spread edge" value={edgeLine}/>
                   <Row label="Total" value={m.total!=null ? `${m.total}${m.pace_avg!=null?`  ·  pace ${m.pace_avg}`:''}${mo.total_lean?`  ·  ${String(mo.total_lean).toUpperCase()} lean${mo.total_tier?` (${mo.total_tier})`:''}`:''}` : null}/>
@@ -7615,59 +7624,96 @@ setJerryHistory(prev => {
                   {ea.home_record||ea.away_record ? <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6}}>{away} home {ea.home_record||'?'} / away {ea.away_record||'?'}</Text> : null}
                   {effText(eh, home) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{effText(eh, home)}</Text>}
                   {eh.home_record||eh.away_record ? <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6}}>{home} home {eh.home_record||'?'} / away {eh.away_record||'?'}</Text> : null}
-                  {(inj.home || inj.away || inj.star_out) && (
+                  {(inj.home || inj.away || inj.star_out) ? (
                     <>
                       <Section title="INJURIES"/>
                       {inj.star_out ? <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:4}}>⚠ Star OUT — leans suppressed{inj.star_out_note?`: ${inj.star_out_note}`:''}</Text> : null}
                       <Row label={home} value={inj.home}/>
                       <Row label={away} value={inj.away}/>
                     </>
-                  )}
+                  ) : null}
                   {playRows}
-                  <Text style={{color:'#4a6070',fontSize:10,marginTop:8,fontStyle:'italic'}}>Pre-game model snapshot — tendencies, not predictions. Single-game variance applies.</Text>
-                </View>
+                </>
+              );
+            } else {
+              // MLB layout
+              const c = s.confluence || {}, sit = s.situational || {}, ph = (s.pitchers||{}).home || {}, pa = (s.pitchers||{}).away || {};
+              const totalLine = (m.model_total != null && m.close_total != null)
+                ? `${m.model_total} vs ${m.close_total} → ${m.total_lean === 'OVER' ? 'OVER' : m.total_lean === 'UNDER' ? 'UNDER' : 'no edge'}${m.total_delta != null && m.total_lean !== 'neutral' ? ` (${m.total_delta > 0 ? '+' : ''}${m.total_delta})` : ''}` : null;
+              const spreadLine = (m.model_spread != null && m.close_spread != null) ? `model ${m.model_spread > 0 ? '+' : ''}${m.model_spread} vs market ${m.close_spread}` : null;
+              const conflKeys = c.breakdown && typeof c.breakdown === 'object' ? Object.keys(c.breakdown) : [];
+              const conflLine = c.net != null ? `${c.net > 0 ? '+' : ''}${c.net}${conflKeys.length ? ` (${conflKeys.join(', ')})` : ''}` : null;
+              const bp = (h: any, a: any) => (h == null && a == null) ? null : `home ${h ?? '?'} / away ${a ?? '?'}${(Number(h)>=12||Number(a)>=12)?' ⚠ gassed':''}`;
+              const drift = (h: any, a: any) => (h == null && a == null) ? null : `home ${h ?? '?'} / away ${a ?? '?'} R/G`;
+              const pitcherText = (p: any) => {
+                if(!p || !p.name) return null;
+                const bits: string[] = [];
+                if(p.xera != null) bits.push(`${p.xera} xERA`);
+                if(p.l3_era != null) bits.push(`${p.l3_era} L3 ERA`);
+                if(p.first_inning_era != null) bits.push(`${p.first_inning_era} 1st-inn`);
+                if(p.vs_team_era != null) bits.push(`${p.vs_team_era} career vs opp`);
+                return `${p.name} — ${bits.join(' · ')}`;
+              };
+              denseContent = (
+                <>
+                  <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>MODEL vs MARKET</Text>
+                  <Row label="Total" value={totalLine}/>
+                  <Row label="Spread" value={spreadLine}/>
+                  <Row label="Confluence" value={conflLine}/>
+                  <Section title="SITUATIONAL"/>
+                  <Row label="Umpire" value={sit.umpire_note || sit.umpire}/>
+                  <Row label="Park factor" value={sit.park_run_factor}/>
+                  <Row label="NRFI" value={sit.nrfi_tier}/>
+                  <Row label="Bullpen L3d" value={bp(sit.home_bp_relievers_3d, sit.away_bp_relievers_3d)}/>
+                  <Row label="L10 offense" value={drift(sit.home_l10_rpg, sit.away_l10_rpg)}/>
+                  <Row label="wRC+" value={(sit.home_wrc_plus!=null||sit.away_wrc_plus!=null) ? `home ${sit.home_wrc_plus ?? '?'} / away ${sit.away_wrc_plus ?? '?'}` : null}/>
+                  <Section title="STARTERS"/>
+                  {pitcherText(pa) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(pa)}</Text>}
+                  {(pa.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(pa.flags||[]).join(' · ')}</Text>}
+                  {pitcherText(ph) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(ph)}</Text>}
+                  {(ph.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(ph.flags||[]).join(' · ')}</Text>}
+                  {playRows}
+                </>
               );
             }
 
-            // MLB layout
-            const c = s.confluence || {}, sit = s.situational || {}, ph = (s.pitchers||{}).home || {}, pa = (s.pitchers||{}).away || {};
-            const totalLine = (m.model_total != null && m.close_total != null)
-              ? `${m.model_total} vs ${m.close_total} → ${m.total_lean === 'OVER' ? 'OVER' : m.total_lean === 'UNDER' ? 'UNDER' : 'no edge'}${m.total_delta != null && m.total_lean !== 'neutral' ? ` (${m.total_delta > 0 ? '+' : ''}${m.total_delta})` : ''}` : null;
-            const spreadLine = (m.model_spread != null && m.close_spread != null) ? `model ${m.model_spread > 0 ? '+' : ''}${m.model_spread} vs market ${m.close_spread}` : null;
-            const conflKeys = c.breakdown && typeof c.breakdown === 'object' ? Object.keys(c.breakdown) : [];
-            const conflLine = c.net != null ? `${c.net > 0 ? '+' : ''}${c.net}${conflKeys.length ? ` (${conflKeys.join(', ')})` : ''}` : null;
-            const bp = (h: any, a: any) => (h == null && a == null) ? null : `home ${h ?? '?'} / away ${a ?? '?'}${(Number(h)>=12||Number(a)>=12)?' ⚠ gassed':''}`;
-            const drift = (h: any, a: any) => (h == null && a == null) ? null : `home ${h ?? '?'} / away ${a ?? '?'} R/G`;
-            const pitcherText = (p: any) => {
-              if(!p || !p.name) return null;
-              const bits: string[] = [];
-              if(p.xera != null) bits.push(`${p.xera} xERA`);
-              if(p.l3_era != null) bits.push(`${p.l3_era} L3 ERA`);
-              if(p.first_inning_era != null) bits.push(`${p.first_inning_era} 1st-inn`);
-              if(p.vs_team_era != null) bits.push(`${p.vs_team_era} career vs opp`);
-              return `${p.name} — ${bits.join(' · ')}`;
-            };
             return (
               <View style={{marginHorizontal:16,marginBottom:12,backgroundColor:'rgba(74,158,255,0.05)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(74,158,255,0.18)'}}>
                 <Text style={{color:'#4a9eff',fontWeight:'800',fontSize:12,marginBottom:10}}>📊 THE NUMBERS{s.is_potd ? '  ·  ⭐ PLAY OF THE DAY' : ''}</Text>
-                <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>MODEL vs MARKET</Text>
-                <Row label="Total" value={totalLine}/>
-                <Row label="Spread" value={spreadLine}/>
-                <Row label="Confluence" value={conflLine}/>
-                <Section title="SITUATIONAL"/>
-                <Row label="Umpire" value={sit.umpire_note || sit.umpire}/>
-                <Row label="Park factor" value={sit.park_run_factor}/>
-                <Row label="NRFI" value={sit.nrfi_tier}/>
-                <Row label="Bullpen L3d" value={bp(sit.home_bp_relievers_3d, sit.away_bp_relievers_3d)}/>
-                <Row label="L10 offense" value={drift(sit.home_l10_rpg, sit.away_l10_rpg)}/>
-                <Row label="wRC+" value={(sit.home_wrc_plus!=null||sit.away_wrc_plus!=null) ? `home ${sit.home_wrc_plus ?? '?'} / away ${sit.away_wrc_plus ?? '?'}` : null}/>
-                <Section title="STARTERS"/>
-                {pitcherText(pa) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(pa)}</Text>}
-                {(pa.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(pa.flags||[]).join(' · ')}</Text>}
-                {pitcherText(ph) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(ph)}</Text>}
-                {(ph.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(ph.flags||[]).join(' · ')}</Text>}
-                {playRows}
-                <Text style={{color:'#4a6070',fontSize:10,marginTop:8,fontStyle:'italic'}}>Pre-game model snapshot — tendencies, not predictions. Single-game variance applies.</Text>
+
+                {/* Casual summary — always visible, plain-English headlines + bottom line.
+                    Derived server-side in generate_<sport>_game_reads.py so the tone is
+                    editable from the prompt_templates table later if needed. */}
+                {headlines.length > 0 && (
+                  <View style={{marginBottom:8}}>
+                    {headlines.map((h, i) => (
+                      <Text key={i} style={{color:'#c8d8e8',fontSize:13,lineHeight:19,marginBottom:4}}>{h}</Text>
+                    ))}
+                  </View>
+                )}
+                {bottomLine ? (
+                  <View style={{paddingTop:8,marginBottom:numbersExpanded?10:6,borderTopWidth:1,borderTopColor:'rgba(74,158,255,0.15)'}}>
+                    <Text style={{color:'#4a9eff',fontSize:13,fontWeight:'700',lineHeight:18}}>{bottomLine}</Text>
+                  </View>
+                ) : null}
+
+                {/* Toggle — reveals the full dense numbers view */}
+                <TouchableOpacity
+                  onPress={() => setNumbersExpanded(!numbersExpanded)}
+                  style={{alignSelf:'flex-start',paddingVertical:4}}
+                  activeOpacity={0.7}
+                >
+                  <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'600'}}>
+                    {numbersExpanded ? 'Hide the numbers ▴' : 'Show all the numbers ▾'}
+                  </Text>
+                </TouchableOpacity>
+
+                {numbersExpanded && (
+                  <View style={{marginTop:10,paddingTop:10,borderTopWidth:1,borderTopColor:'rgba(74,158,255,0.15)'}}>
+                    {denseContent}
+                    <Text style={{color:'#4a6070',fontSize:10,marginTop:8,fontStyle:'italic'}}>Pre-game model snapshot — tendencies, not predictions. Single-game variance applies.</Text>
+                  </View>
+                )}
               </View>
             );
           })()}
