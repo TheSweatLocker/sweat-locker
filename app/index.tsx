@@ -5303,19 +5303,33 @@ if(isLive) {
     // the in-app LLM call entirely (so prompt rules live in the prompt_templates
     // table, editable without an app build). Falls through to the legacy path if no
     // server read exists yet (e.g. cron hasn't run for a late-confirmed game).
-    if(sport === 'MLB' || sport === 'NBA') {
+    if(sport === 'MLB' || sport === 'NBA' || sport === 'NFL' || sport === 'UFC') {
       try {
-        // MLB game reads are keyed by mlb_game_context.game_id; NBA reads are
-        // keyed by the Odds API event id (which is also nba_game_picks.game_id).
-        let _gid: any = null;
-        if(sport === 'MLB') { const _ctxRow = await fetchMLBContext(game); _gid = _ctxRow?.game_id; }
-        else { _gid = game?.id; }
-        if(_gid) {
-          const _d = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+        // Per-sport cache-key scheme:
+        //   MLB: game_read_<mlb_game_context.game_id>_<ET date>
+        //   NBA/NFL: game_read_<Odds API event id>_<ET date>
+        //   UFC: game_read_ufc_<slug(fighter_a)>_<slug(fighter_b)>_<event_date>
+        const slugify = (s: string) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        let _key: string | null = null;
+        const _d = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+        if(sport === 'MLB') {
+          const _ctxRow = await fetchMLBContext(game);
+          if(_ctxRow?.game_id) _key = `game_read_${_ctxRow.game_id}_${_d}`;
+        } else if(sport === 'UFC') {
+          // game.home_team / away_team carry fighter names for UFC; event date
+          // is game.commence_time (ISO) — extract YYYY-MM-DD.
+          const a = slugify(game?.away_team), b = slugify(game?.home_team);
+          const evDate = (game?.commence_time || '').slice(0, 10) || _d;
+          if(a && b) _key = `game_read_ufc_${a}_${b}_${evDate}`;
+        } else if(game?.id) {
+          // NBA + NFL
+          _key = `game_read_${game.id}_${_d}`;
+        }
+        if(_key) {
           const { data: serverRead } = await supabase
             .from('jerry_cache')
             .select('narrative, data')
-            .eq('cache_key', `game_read_${_gid}_${_d}`)
+            .eq('cache_key', _key)
             .maybeSingle();
           if(serverRead?.narrative) {
             setGameNarrative(serverRead.narrative);

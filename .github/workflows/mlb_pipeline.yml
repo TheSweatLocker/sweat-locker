@@ -211,7 +211,31 @@ jobs:
             cd mlb_pipeline
             python ufc_resolve_fights.py
           fi
-      
+
+      # Server-side Jerry UFC fight reads — runs every cron, self-no-ops when
+      # there's no upcoming card. Pulls ufc_picks + recent fighter form into a
+      # struct, narrates with the UFC prompt template, writes to jerry_cache.
+      - name: Generate UFC fight reads
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_ufc_game_reads.py
+
+      # Server-side Jerry NFL game reads — Phase 1 (market + season EPA only;
+      # gets richer when Phase 2 picks pipeline ships). Self-no-ops in offseason.
+      - name: Generate NFL game reads
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_nfl_game_reads.py
+
       - name: Resolve prop grades
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
