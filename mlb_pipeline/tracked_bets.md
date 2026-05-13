@@ -5,6 +5,43 @@ Grade the previous day's open entries at the start of each session.
 
 ---
 
+## 2026-05-13 — Best bets + sleepers — STATUS: OPEN
+
+Grade vs 5/14 box scores. Top-10 anchored picks + the L7-rolling sleepers the standard scorer didn't surface (the model is under-surfacing ER-over and long-outs sides today).
+
+| # | Game | Leg | Tier/Conv | Thesis | Result |
+|---|------|-----|-----------|--------|--------|
+| 1 | SF @ LAD | Total UNDER 8.0 (POTD) | POTD v2 -2.1 | model 5.9 vs 8.0; NRFI 100; Ohtani xERA 2.17 vs SF wRC+ 82 | TBD |
+| 2 | SD @ MIL | Misiorowski Ks OVER 5.1 | PRIME 93 | proj 8.4; K gap +13.8 vs SD 25.7% K%; xERA 2.72 | TBD |
+| 3 | WSH @ CIN | Nationals ML +134 | DAWG PRIME 89 | plus money on the side model rates straight-up favored; PRIME +5 WSH | TBD |
+| 4 | TB @ TOR | Cease Ks OVER 5.1 | PRIME 93 | proj 7.7; K gap +13.6 vs TOR depleted lineup (Kirk/Santander/Barger out) | TBD |
+| 5 | SF @ LAD | Ohtani Ks OVER 5.1 | PRIME 91 | proj 7.1; 0.00 ERA/.182 BAA career vs SF; xERA 2.17 | TBD |
+| 6 | ARI @ TEX | YRFI | NRFI 27 | Rocker 1st-inn ERA 12.86, Nelson 11.05 — slate's loudest YRFI signal | TBD |
+| 7 | WSH @ CIN | James Wood hits OVER 0.5 | PRIME 100 | park 108, wind 16mph SW out, Lodolo L3 6.75 ERA, Wood in 6/7 L7 | TBD |
+| 8 | WSH @ CIN | Game total OVER 9.5 | v2 +2.2 | model 10.9; Lodolo torched; GABP park 108; wind out | TBD |
+| 9 | NYY @ BAL | Max Fried outs OVER 17.5 | L7 sleeper | proj 19.4 (6.48 IP L7); owns BAL (2.95 ERA, .229); biggest L7-to-line outs cushion on board | TBD |
+| 10 | PHI @ BOS | YRFI | NRFI 26 | Sonny Gray career vs PHI 17.18 ERA/.421 BAA; Painter 1st-inn 6.0; double-fragile | TBD |
+
+**L7-rolling sleepers (not in PRIME prop list but data is loud):**
+| # | Game | Leg | Type | Thesis | Result |
+|---|------|-----|------|--------|--------|
+| S1 | MIA @ MIN | Simeon Woods Richardson ER OVER 2.5 | sleeper | L7 4.0 ER, K gap -14.1 vs MIA contact, 1st-inn fragile — model under-surfaced | TBD |
+| S2 | SEA @ HOU | Lance McCullers ER OVER 2.5 | sleeper | L7 4.0 ER, career vs SEA 9.53 ERA/.312 BAA, 1st-inn ERA 6.43 | TBD |
+| S3 | PHI @ BOS | Sonny Gray ER OVER 2.5 | matchup-history | L7 only 1.86 but career vs PHI 17.18/.421 — matchup override; half-unit | TBD |
+| S4 | KC @ CWS | Seth Lugo outs OVER 14.5 | sleeper | L7 5.9 IP = ~17.7 outs; UNDER-environment game means he goes deep | TBD |
+| S5 | CHC @ ATL | Imanaga BB UNDER 2.5 + HA UNDER 5.5 stack | sleeper | proj 1.57 BB / 3.57 H; elite command but road-split concern (1.74H/3.31A) — half-unit | TBD |
+
+**Correlated alternates (paired with main legs):**
+- Ohtani ER UNDER 1.5 (PRIME 87) + Ohtani HA UNDER 5.5 (PRIME 81) — same start as #1+#5
+- Misiorowski HA UNDER 5.5 (PRIME 81) — same start as #2
+- Brady House / Daylen Lile hits OVER (PRIME 100 each) — same game as #7+#8 (WSH stack)
+- Painter Ks UNDER 4.5 (STRONG 81) + Gray Ks UNDER 4.0 (STRONG 78) — same game as #10
+- Rocker Ks UNDER 4.0 (STRONG 81) — same game as #6
+- Matt Chapman hits UNDER 0.5 (PRIME 100) + Bader UNDER (PRIME 96) — SF fade stack, same game as #1
+- Laureano/Machado/France/Castellanos/Sheets/Andujar hits UNDER (PRIME/STRONG 81-100) — SD fade stack, same game as #2
+
+---
+
 ## 2026-05-12 — Lotto Parlay ("for fun" build) — STATUS: GRADED — DEAD (1-7, one unknown)
 
 8-leg lotto. Variance bombs flagged. Grade vs final box scores on 2026-05-13.
