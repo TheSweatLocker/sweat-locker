@@ -1501,10 +1501,14 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [propJerryLoading, setPropJerryLoading] = useState(false);
   // Pipeline-driven MLB props (replaces EV scanner for MLB sport)
   const [pipelineMLBProps, setPipelineMLBProps] = useState([]);
-  // Default TRUE so the spinner is the first thing rendered when the prop
-  // Jerry tab opens — fixes the brief flash of the misleading "tap 🔄 in 30
-  // min" empty state that users were seeing before the first fetch resolved.
-  const [pipelineMLBLoading, setPipelineMLBLoading] = useState(true);
+  const [pipelineMLBLoading, setPipelineMLBLoading] = useState(false);
+  // First-mount latch — true on initial render so the spinner shows while the
+  // *first* fetch is en route, false once any fetch has completed (success or
+  // empty). Decouples "no fetch attempted yet" from "fetch returned empty" so
+  // the empty-state copy doesn't lie. Reverted from init=true (2026-05-13) —
+  // that caused spinner-stuck-forever when the useEffect-driven fetch didn't
+  // fire (race / Expo Fast Refresh / etc.) with no way to recover.
+  const [pipelineMLBFetched, setPipelineMLBFetched] = useState(false);
   const [propOfDay, setPropOfDay] = useState(null);
   const [propOfDayLoading, setPropOfDayLoading] = useState(false);
   const [hrWatch, setHrWatch] = useState<any[]>([]);
@@ -6272,6 +6276,7 @@ if(mkt.key === 'pitcher_props') {
       setPipelineMLBProps([]);
     }
     setPipelineMLBLoading(false);
+    setPipelineMLBFetched(true);
   };
 
   const fetchPropJerry = async (sport=propJerrySport) => {
@@ -7321,6 +7326,20 @@ setJerryHistory(prev => {
       if(trendsTab==='sharp')fetchSharp(sharpSport);
     }
   },[activeTab,trendsTab,evSport,sharpSport,propJerrySport]);
+
+  // Mount-only safety net for pipeline MLB props — guarantees the first
+  // fetch fires even if the user lands directly on the prop Jerry tab
+  // (where the activeTab/trendsTab useEffect above doesn't observe a
+  // transition because the values are already at their targets on init).
+  // Without this, Expo / Fast Refresh / direct-link scenarios could leave
+  // the tab in pre-fetch state until a manual refresh. Idempotent — the
+  // effect-above-this still fires on subsequent tab transitions.
+  useEffect(()=>{
+    if(propJerrySport === 'MLB' && !pipelineMLBFetched) {
+      fetchPipelineMLBProps();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
     useEffect(()=>{
     if(!gameDetailModal||!selectedGame) return;
     setScheduleGamesLoading(true);
@@ -10063,7 +10082,7 @@ setJerryHistory(prev => {
 
     {/* MLB: pipeline-driven props */}
     {propJerrySport === 'MLB' ? (
-      pipelineMLBLoading ? (
+      (pipelineMLBLoading || !pipelineMLBFetched) ? (
         <View style={{alignItems:'center',paddingTop:40}}>
           <ActivityIndicator size="large" color={HRB_COLOR}/>
           <Text style={{color:'#7a92a8',marginTop:12}}>Loading pipeline matchup edges...</Text>
