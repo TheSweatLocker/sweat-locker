@@ -5303,15 +5303,19 @@ if(isLive) {
     // the in-app LLM call entirely (so prompt rules live in the prompt_templates
     // table, editable without an app build). Falls through to the legacy path if no
     // server read exists yet (e.g. cron hasn't run for a late-confirmed game).
-    if(sport === 'MLB') {
+    if(sport === 'MLB' || sport === 'NBA') {
       try {
-        const _ctxRow = await fetchMLBContext(game);
-        if(_ctxRow?.game_id) {
+        // MLB game reads are keyed by mlb_game_context.game_id; NBA reads are
+        // keyed by the Odds API event id (which is also nba_game_picks.game_id).
+        let _gid: any = null;
+        if(sport === 'MLB') { const _ctxRow = await fetchMLBContext(game); _gid = _ctxRow?.game_id; }
+        else { _gid = game?.id; }
+        if(_gid) {
           const _d = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
           const { data: serverRead } = await supabase
             .from('jerry_cache')
             .select('narrative, data')
-            .eq('cache_key', `game_read_${_ctxRow.game_id}_${_d}`)
+            .eq('cache_key', `game_read_${_gid}_${_d}`)
             .maybeSingle();
           if(serverRead?.narrative) {
             setGameNarrative(serverRead.narrative);
@@ -7540,17 +7544,79 @@ setJerryHistory(prev => {
 
           {/* The Numbers — deterministic pipeline-edge panel that accompanies
               the server-generated game read. Renders the struct Jerry was given,
-              so prose and numbers can't diverge. Only present when a server read
-              loaded (currently MLB). */}
+              so prose and numbers can't diverge. Sport-aware: MLB shows pitcher
+              blocks + player props; NBA shows efficiency splits + ATS/total
+              edges (no props pipeline). Same component, sport-appropriate data. */}
           {gameReadStruct && (() => {
             const s = gameReadStruct;
+            const isNBA = !!s.efficiency && !s.pitchers;
             const Row = ({label, value}: {label: string, value: any}) => (value === null || value === undefined || value === '' || value === 'neutral') ? null : (
               <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
                 <Text style={{color:'#7a92a8',fontSize:12}}>{label}</Text>
                 <Text style={{color:'#c8d8e8',fontSize:12,fontWeight:'600',flexShrink:1,textAlign:'right',marginLeft:8}}>{String(value)}</Text>
               </View>
             );
-            const m = s.market || {}, c = s.confluence || {}, sit = s.situational || {}, ph = (s.pitchers||{}).home || {}, pa = (s.pitchers||{}).away || {};
+            const Section = ({title}: {title: string}) => <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginTop:8,marginBottom:6,letterSpacing:0.5}}>{title}</Text>;
+            const m = s.market || {};
+            const playRows = (Array.isArray(s.best_plays) && s.best_plays.length > 0) ? (
+              <>
+                <Section title={isNBA ? 'MODEL PICKS THIS GAME' : 'BEST PLAYS THIS GAME'}/>
+                {s.best_plays.slice(0,5).map((b: any, i: number) => (
+                  <View key={i} style={{marginBottom:6}}>
+                    <Text style={{color:'#c8d8e8',fontSize:12,fontWeight:'600'}}>
+                      {b.tier ? `[${b.tier}${b.conviction!=null?` ${b.conviction}`:''}] ` : ''}
+                      {b.player ? `${b.player} ${String(b.prop_type||'').replace(/_/g,' ')}${b.line!=null?` ${b.line}`:''}${b.projection!=null?`  ·  proj ${b.projection}`:''}`
+                                : `${b.label || String(b.pick_type||'').toUpperCase()}${b.model_edge!=null?`  ·  ${b.model_edge>0?'+':''}${b.model_edge} edge`:''}`}
+                    </Text>
+                    {Array.isArray(b.why) && b.why[0] ? <Text style={{color:'#7a92a8',fontSize:11}}>{b.why[0]}</Text> : null}
+                  </View>
+                ))}
+              </>
+            ) : null;
+
+            if(isNBA) {
+              const mo = s.model || {}, eh = (s.efficiency||{}).home || {}, ea = (s.efficiency||{}).away || {}, inj = s.injuries || {};
+              const away = (s.matchup||'').split(' @ ')[0], home = (s.matchup||'').split(' @ ')[1];
+              const edgeLine = mo.model_edge_vs_spread != null ? `${mo.model_edge_vs_spread>0?'+':''}${mo.model_edge_vs_spread} toward ${mo.model_edge_vs_spread>0?home:away} (NR gap ${mo.net_rating_gap!=null?(mo.net_rating_gap>0?'+':'')+mo.net_rating_gap:'?'}${m.spread!=null?`, mkt ${m.spread>0?'+':''}${m.spread}`:''})` : null;
+              const effText = (t: any, label: string) => {
+                if(!t || (t.net_rating==null && t.def_rating==null)) return null;
+                const bits: string[] = [];
+                if(t.net_rating!=null) bits.push(`Net ${t.net_rating>0?'+':''}${t.net_rating}`);
+                if(t.def_rating!=null) bits.push(`DefRtg ${t.def_rating}`);
+                if(t.efg_pct!=null) bits.push(`eFG% ${t.efg_pct}`);
+                if(t.pace!=null) bits.push(`Pace ${t.pace}`);
+                if(t.l10_net_rating!=null) bits.push(`L10 Net ${t.l10_net_rating>0?'+':''}${t.l10_net_rating}`);
+                return `${label}: ${bits.join(' · ')}`;
+              };
+              return (
+                <View style={{marginHorizontal:16,marginBottom:12,backgroundColor:'rgba(74,158,255,0.05)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(74,158,255,0.18)'}}>
+                  <Text style={{color:'#4a9eff',fontWeight:'800',fontSize:12,marginBottom:10}}>📊 THE NUMBERS</Text>
+                  <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>MODEL vs MARKET</Text>
+                  <Row label="Spread edge" value={edgeLine}/>
+                  <Row label="Total" value={m.total!=null ? `${m.total}${m.pace_avg!=null?`  ·  pace ${m.pace_avg}`:''}${mo.total_lean?`  ·  ${String(mo.total_lean).toUpperCase()} lean${mo.total_tier?` (${mo.total_tier})`:''}`:''}` : null}/>
+                  <Row label="ML" value={(m.home_ml!=null||m.away_ml!=null) ? `home ${m.home_ml ?? '?'} / away ${m.away_ml ?? '?'}` : null}/>
+                  <Row label="L10 drift" value={(mo.home_drift!=null||mo.away_drift!=null) ? `home ${mo.home_drift ?? '?'} / away ${mo.away_drift ?? '?'}` : null}/>
+                  <Section title="EFFICIENCY"/>
+                  {effText(ea, away) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{effText(ea, away)}</Text>}
+                  {ea.home_record||ea.away_record ? <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6}}>{away} home {ea.home_record||'?'} / away {ea.away_record||'?'}</Text> : null}
+                  {effText(eh, home) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{effText(eh, home)}</Text>}
+                  {eh.home_record||eh.away_record ? <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6}}>{home} home {eh.home_record||'?'} / away {eh.away_record||'?'}</Text> : null}
+                  {(inj.home || inj.away || inj.star_out) && (
+                    <>
+                      <Section title="INJURIES"/>
+                      {inj.star_out ? <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:4}}>⚠ Star OUT — leans suppressed{inj.star_out_note?`: ${inj.star_out_note}`:''}</Text> : null}
+                      <Row label={home} value={inj.home}/>
+                      <Row label={away} value={inj.away}/>
+                    </>
+                  )}
+                  {playRows}
+                  <Text style={{color:'#4a6070',fontSize:10,marginTop:8,fontStyle:'italic'}}>Pre-game model snapshot — tendencies, not predictions. Single-game variance applies.</Text>
+                </View>
+              );
+            }
+
+            // MLB layout
+            const c = s.confluence || {}, sit = s.situational || {}, ph = (s.pitchers||{}).home || {}, pa = (s.pitchers||{}).away || {};
             const totalLine = (m.model_total != null && m.close_total != null)
               ? `${m.model_total} vs ${m.close_total} → ${m.total_lean === 'OVER' ? 'OVER' : m.total_lean === 'UNDER' ? 'UNDER' : 'no edge'}${m.total_delta != null && m.total_lean !== 'neutral' ? ` (${m.total_delta > 0 ? '+' : ''}${m.total_delta})` : ''}` : null;
             const spreadLine = (m.model_spread != null && m.close_spread != null) ? `model ${m.model_spread > 0 ? '+' : ''}${m.model_spread} vs market ${m.close_spread}` : null;
@@ -7574,31 +7640,19 @@ setJerryHistory(prev => {
                 <Row label="Total" value={totalLine}/>
                 <Row label="Spread" value={spreadLine}/>
                 <Row label="Confluence" value={conflLine}/>
-                <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginTop:8,marginBottom:6,letterSpacing:0.5}}>SITUATIONAL</Text>
+                <Section title="SITUATIONAL"/>
                 <Row label="Umpire" value={sit.umpire_note || sit.umpire}/>
                 <Row label="Park factor" value={sit.park_run_factor}/>
                 <Row label="NRFI" value={sit.nrfi_tier}/>
                 <Row label="Bullpen L3d" value={bp(sit.home_bp_relievers_3d, sit.away_bp_relievers_3d)}/>
                 <Row label="L10 offense" value={drift(sit.home_l10_rpg, sit.away_l10_rpg)}/>
                 <Row label="wRC+" value={(sit.home_wrc_plus!=null||sit.away_wrc_plus!=null) ? `home ${sit.home_wrc_plus ?? '?'} / away ${sit.away_wrc_plus ?? '?'}` : null}/>
-                <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginTop:8,marginBottom:6,letterSpacing:0.5}}>STARTERS</Text>
+                <Section title="STARTERS"/>
                 {pitcherText(pa) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(pa)}</Text>}
                 {(pa.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(pa.flags||[]).join(' · ')}</Text>}
                 {pitcherText(ph) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(ph)}</Text>}
                 {(ph.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(ph.flags||[]).join(' · ')}</Text>}
-                {Array.isArray(s.best_plays) && s.best_plays.length > 0 && (
-                  <>
-                    <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginTop:8,marginBottom:6,letterSpacing:0.5}}>BEST PLAYS THIS GAME</Text>
-                    {s.best_plays.slice(0,5).map((b: any, i: number) => (
-                      <View key={i} style={{marginBottom:6}}>
-                        <Text style={{color:'#c8d8e8',fontSize:12,fontWeight:'600'}}>
-                          {b.tier ? `[${b.tier}${b.conviction!=null?` ${b.conviction}`:''}] ` : ''}{b.player} {String(b.prop_type||'').replace(/_/g,' ')}{b.line!=null?` ${b.line}`:''}{b.projection!=null?`  ·  proj ${b.projection}`:''}
-                        </Text>
-                        {Array.isArray(b.why) && b.why[0] ? <Text style={{color:'#7a92a8',fontSize:11}}>{b.why[0]}</Text> : null}
-                      </View>
-                    ))}
-                  </>
-                )}
+                {playRows}
                 <Text style={{color:'#4a6070',fontSize:10,marginTop:8,fontStyle:'italic'}}>Pre-game model snapshot — tendencies, not predictions. Single-game variance applies.</Text>
               </View>
             );

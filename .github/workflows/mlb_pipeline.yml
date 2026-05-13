@@ -264,6 +264,18 @@ jobs:
           cd mlb_pipeline
           python nba_picks_generator.py
 
+      # Server-side Jerry NBA game reads — one structured read per game (model
+      # spread/total edge, efficiency splits, recency drift, injuries, picks)
+      # written to jerry_cache. Prompts come from the prompt_templates table.
+      - name: Generate NBA game reads
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_nba_game_reads.py
+
       - name: Resolve NBA results (BDL boxscores)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
