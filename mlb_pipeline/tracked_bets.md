@@ -5,6 +5,39 @@ Grade the previous day's open entries at the start of each session.
 
 ---
 
+## 2026-05-13 — ALL MODEL LEANS (every game, audit-grade) — STATUS: OPEN
+
+Full per-game tracking of where the model sits on Total + ML/side + NRFI. Grade against tomorrow's box scores. This is the "where is the model right now" pulse — separate from the curated top-10 plays below.
+
+| Game | Total lean | ML / side lean | NRFI | Conf | Notes | Result |
+|---|---|---|---|---|---|---|
+| STL @ ATH | no edge (-1.1) | Athletics slight (conf +2) | neutral (56) | +2 | | TBD |
+| CHC @ ATL | no edge (+1.1) | no edge | neutral (46) | +0 | xERA gap fires OVER lean alt | TBD |
+| NYY @ BAL | no market (model 6.48) | **NYY** (conf +4) | NRFI (83) | +4 | NYY -1.5 RL alt; Fried owns BAL | TBD |
+| PHI @ BOS | no edge (-0.5) | **PHI** (conf +4) | YRFI (26) | +4 | Gray vs PHI career 17.18 ERA | TBD |
+| KC @ CWS | no edge (-0.4) | CWS slight (conf +2) | neutral (53) | +2 | Wind in 9mph E | TBD |
+| WSH @ CIN | borderline (+1.4) | **WSH** (conf +5) | YRFI (24) | +5 | **DAWG: WSH PRIME 89** · wind 24mph SE | TBD |
+| LAA @ CLE | no market (model 6.6) | **CLE** (conf -5) | NRFI (100) | -5 | Pitcher duel — Messick vs Detmers | TBD |
+| SEA @ HOU | **OVER 9.0** (+1.7) | no edge | YRFI (32) | -1 | HOU pen 5.61 ERA gassed | TBD |
+| SF @ LAD | no edge (+0.9) | **LAD** (conf +4) | NRFI (100) | +4 | **POTD UNDER 7.5 (v2 -1.6)** — v3 disagrees w/ v2 here | TBD |
+| SD @ MIL | **OVER 7.0** (+1.5) | **MIL** (conf +5) | NRFI (100) | +5 | Misiorowski PRIME K-over | TBD |
+| MIA @ MIN | **OVER 9.0** (+2.5) | MIA slight (conf +3) | neutral (58) | +3 | Biggest total edge on slate | TBD |
+| DET @ NYM | no edge (+0.1) | NYM slight (conf -3) | neutral (57) | -3 | Citi Field wind 37mph S — anomaly flag | TBD |
+| COL @ PIT | no edge (-0.2) | **PIT** (conf +4) | YRFI (36) | +4 | Keller home edge | TBD |
+| ARI @ TEX | no edge (-0.5) | no edge | YRFI (27) | +0 | Rocker/Nelson 1st-inn 11+/12+ | TBD |
+| TB @ TOR | **OVER 7.5** (+1.7) | no edge | NRFI (100) | -1 | Cease PRIME K-over | TBD |
+
+**Lean counts:**
+- TOTAL leans fired: 4 OVERs (SEA/HOU, SD/MIL, MIA/MIN, TB/TOR), 0 UNDERs from v3 — but **v2 says UNDER 7.5 on SF/LAD (POTD)**. v3/v2 conflict on SF/LAD is the one to watch.
+- ML / side leans (PRIME conf ≥4): NYY, PHI, WSH, CLE, LAD, MIL, PIT (7 of 15)
+- NRFI / YRFI lean firing: 10 of 15 games at extremes (5 NRFI ≥70, 5 YRFI ≤40)
+
+**Data oddities to flag:**
+- NYY/BAL + LAA/CLE: `close_total` returned null — probably odds-API hiccup on these two, worth checking
+- DET/NYM wind 37mph S at Citi Field — like yesterday's data anomaly, may be inflating any total signal
+
+---
+
 ## 2026-05-13 — Best bets + sleepers — STATUS: OPEN
 
 Grade vs 5/14 box scores. Top-10 anchored picks + the L7-rolling sleepers the standard scorer didn't surface (the model is under-surfacing ER-over and long-outs sides today).
