@@ -245,8 +245,14 @@ def get_pitcher_projection(name):
     """Load the pitcher class-projection JSON cache (built by
     compute_pitcher_class_projections.py) and return this pitcher's entry
     (with l7_rolling + classes) keyed by lowercased name. Returns None if
-    not found or cache missing."""
-    global _PITCHER_PROJ_CACHE
+    not found or cache missing.
+
+    Falls back to Supabase `pitcher_projections` table when the JSON misses
+    (e.g., late-confirmed starter not yet in this morning's JSON build).
+    Painter ER-over miss on 5/13 highlighted this gap — JSON had 29 entries,
+    Painter wasn't one of them, but his row was in Supabase from the more
+    recent compute step. Supabase fallback closes the loop."""
+    global _PITCHER_PROJ_CACHE, _PITCHER_PROJ_SB_MISSES
     if _PITCHER_PROJ_CACHE is None:
         try:
             import json
@@ -260,7 +266,44 @@ def get_pitcher_projection(name):
                 _PITCHER_PROJ_CACHE = {}
         except Exception:
             _PITCHER_PROJ_CACHE = {}
-    return _PITCHER_PROJ_CACHE.get((name or '').lower())
+    try:
+        _PITCHER_PROJ_SB_MISSES  # type: ignore[name-defined]
+    except NameError:
+        _PITCHER_PROJ_SB_MISSES = set()  # cache misses we've already tried Supabase for
+
+    key = (name or '').lower()
+    hit = _PITCHER_PROJ_CACHE.get(key)
+    if hit is not None:
+        return hit
+    # Supabase fallback — only attempted once per pitcher per run
+    if not name or key in _PITCHER_PROJ_SB_MISSES:
+        return None
+    _PITCHER_PROJ_SB_MISSES.add(key)
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    try:
+        import urllib.parse, urllib.request, json as _json
+        qs = urllib.parse.urlencode({
+            'select': 'pitcher_name,l7_rolling,classes',
+            'pitcher_name': f'eq.{name}',
+        })
+        req = urllib.request.Request(
+            f"{SUPABASE_URL}/rest/v1/pitcher_projections?{qs}",
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+        )
+        rows = _json.load(urllib.request.urlopen(req, timeout=8))
+        if rows:
+            row = rows[0]
+            entry = {
+                'name': row.get('pitcher_name'),
+                'l7_rolling': row.get('l7_rolling') or {},
+                'classes': row.get('classes') or {},
+            }
+            _PITCHER_PROJ_CACHE[key] = entry  # cache for the rest of this run
+            return entry
+    except Exception:
+        pass
+    return None
 
 
 def score_pitcher_bb_over(g, side):
