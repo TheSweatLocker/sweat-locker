@@ -876,12 +876,35 @@ def score_pitcher_ks(g, side):
         conviction += 8
         signals['opp_offense'] = f'Opp wRC+ {opp_wrc:.0f} — weak lineup'
 
-    # Opposing team swing-and-miss tendency
+    # Opposing team swing-and-miss tendency (season)
     if opp_k_pct >= 26:
         conviction += 10
         signals['opp_k_rate'] = f'Opp K% {opp_k_pct:.1f}% — whiff-prone'
     elif opp_k_pct <= 18:
         conviction -= 6
+
+    # Opp recency: a hot, contact-trending lineup suppresses K-overs more than
+    # the season K% suggests. Without per-team L5 K% stored we proxy via
+    # offense_drift (L10 R/G vs season). Hot + already-low-K opp = downgrade.
+    # Added 2026-05-13 after Cease PRIME 100 vs Tampa highlighted the gap —
+    # Tampa season K% 21 but 9-1 L10 with .313 wOBA (contact-hot, not whiffing).
+    opp_drift = _f(g.get(f'{opp_side}_offense_drift'))
+    if opp_drift is not None and opp_drift >= 0.5 and opp_k_pct <= 22:
+        conviction -= 6
+        signals['opp_contact_hot'] = f'Opp on a heater (+{opp_drift:.1f} R/G L10) — contact-trending, not whiffing'
+    elif opp_drift is not None and opp_drift <= -1.0 and opp_k_pct <= 22:
+        conviction += 4
+        signals['opp_contact_cold'] = f'Opp cold ({opp_drift:.1f} R/G L10) — chasing, more whiffs likely'
+
+    # 1st-inning fragility compound signal — when a starter's L3 form is bad
+    # AND his season 1st-inn ERA is elevated, the K-over upside is capped
+    # because he gets pulled before reaching K volume. Stacks with the L3-ERA
+    # penalty above (cumulative is intentional — short outings really do
+    # suppress K totals more than the linear model captures).
+    if (l3_era is not None and l3_era >= 6.0
+            and first_inn_era is not None and first_inn_era >= 4.5):
+        conviction -= 5
+        signals['short_outing_risk'] = f'L3 ERA {l3_era:.2f} + 1st-inn ERA {first_inn_era:.1f} — short start risk caps K volume'
 
     # Catcher framing behind the plate helps the pitcher
     if framing is not None and framing >= 2:
@@ -1052,6 +1075,17 @@ def score_pitcher_ks_under(g, side):
         signals['opp_contact'] = f'Opp K% {opp_k_pct:.1f}% — below-avg whiff rate'
     elif opp_k_pct >= 26:
         conviction -= 10  # whiff-prone offense supports the Over
+
+    # Opp recency boost — a low-K lineup that's also hot lately is reinforcing
+    # the K-Under thesis (they're making good contact AND in form). Inverse of
+    # the K-Over patch added the same day. Without true L5 K% we proxy via
+    # offense_drift.
+    opp_drift = _f(g.get(f'{opp_side}_offense_drift'))
+    if opp_drift is not None and opp_drift >= 0.5 and opp_k_pct <= 22:
+        conviction += 5
+        signals['opp_contact_hot'] = f'Opp on a heater (+{opp_drift:.1f} R/G L10) — contact-trending, K-Under reinforced'
+    elif opp_drift is not None and opp_drift <= -1.0 and opp_k_pct <= 22:
+        conviction -= 4  # cold contact lineup more likely to chase = some whiffs after all
 
     # Pitcher absolute K% — modest K guys are the right fade target
     if pitcher_k_pct is not None and pitcher_k_pct <= 18:
