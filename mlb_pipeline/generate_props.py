@@ -1195,10 +1195,20 @@ def score_pitcher_outs(g, side):
         conviction -= 14
         signals['xera_high'] = f'xERA {xera:.2f} — likely short outing'
 
-    # Last outing pitch count + IP — recent durability proof
-    if last_ip is not None and last_ip >= 6.0 and (last_pitches or 0) >= 90:
+    # Last outing pitch count + IP — recent durability proof.
+    # Softened 2026-05-13: 85-pitch threshold (was 90) so efficient deep starts
+    # like Fried 86p/6.33 IP register. Also pull L7 avg_ip from pitcher_projections
+    # — a starter with 6+ IP L7 avg is durable regardless of a single short last
+    # outing (rain, blowout, etc.). Fixes Fried-style outs-over misses.
+    proj = get_pitcher_projection(pitcher)
+    l7 = (proj or {}).get('l7_rolling') if proj else None
+    l7_ip = (l7 or {}).get('avg_ip') if l7 else None
+    if last_ip is not None and last_ip >= 6.0 and (last_pitches or 0) >= 85:
         conviction += 10
         signals['durable'] = f'Last outing: {last_pitches:.0f}p / {last_ip:.1f} IP — stretched out'
+    elif l7_ip is not None and float(l7_ip) >= 6.0:
+        conviction += 8
+        signals['l7_durable'] = f'L7 avg {l7_ip:.1f} IP/start — sustained deep starter'
     elif last_ip is not None and last_ip <= 4.5:
         conviction -= 8
         signals['short_last'] = f'Last outing: {last_ip:.1f} IP — short leash'
@@ -1447,6 +1457,35 @@ def score_pitcher_er(g, side):
             signals['split'] = f'In worse split ({split:+.2f} ERA vs season)'
         elif split <= -1.0:
             conviction -= 5
+
+    # L7 rolling avg ER — direct signal the model previously ignored. Added
+    # 2026-05-13 after 5/13 surfaced Woods Richardson (L7 4.0 ER) / McCullers
+    # (L7 4.0 ER) projecting clean ER-overs that didn't clear the xERA-anchored
+    # scorer. L7 captures what xERA misses (mechanical issues, command slumps).
+    proj = get_pitcher_projection(pitcher)
+    l7 = (proj or {}).get('l7_rolling') if proj else None
+    l7_er = (l7 or {}).get('avg_er') if l7 else None
+    if l7_er is not None:
+        if float(l7_er) >= 3.5:
+            conviction += 12
+            signals['l7_er'] = f'L7 avg {l7_er:.1f} ER/start — getting tagged'
+        elif float(l7_er) <= 1.5:
+            conviction -= 8
+
+    # Vs-team ERA history override — when a starter has historically been
+    # torched by this opponent (≥7.00 ERA on n≥5 IP), prioritize that over
+    # the model's L3 / xERA read. Added 2026-05-13 after Sonny Gray (career
+    # 17.18 ERA vs PHI on 3.7 IP) cleared no standard gate but is a clear
+    # matchup-history ER-over candidate.
+    vs_team_era = _f(g.get(f'{side}_pitcher_vs_team_era'))
+    # Innings of history not stored, but the print line shows "X.X IP" — we
+    # treat any vs_team_era with extreme value as signal-worthy (book usually
+    # weights this too).
+    if vs_team_era is not None and vs_team_era >= 7.0:
+        conviction += 14
+        signals['vs_team'] = f'Career vs opp: {vs_team_era:.2f} ERA — historically pummeled'
+    elif vs_team_era is not None and vs_team_era <= 2.5:
+        conviction -= 8
 
     conviction = max(0, min(100, conviction))
 
