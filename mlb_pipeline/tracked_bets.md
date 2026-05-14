@@ -5,6 +5,39 @@ Grade the previous day's open entries at the start of each session.
 
 ---
 
+## 2026-05-14 — Public data cards (6 total) — STATUS: 3-0 early, 3 pending
+
+Six "Model lean" cards published to social. Wave 1 (early slate) graded ✓; Wave 2 (late slate) + Bubic bonus open. Grade vs final box scores on 2026-05-15.
+
+### Wave 1 — Early slate (GRADED 3-0)
+| # | Game | Lean | Tier/Basis | Result |
+|---|------|------|------------|--------|
+| 1 | DET @ NYM | McLean Ks OVER 5.5 (proj 7.0) | PRIME 83 | ✅ WIN |
+| 2 | SD @ MIL | Brewers side (Canning 10.39 ERA vs MIL career; confluence +4 home; model spread MIL +3.05) | matchup-edge | ✅ WIN |
+| 3 | SEA @ HOU (POTD) | OVER 9.0 (v2 +1.9 edge) | POTD · Castillo 5.75 xERA · HOU pen 12 L3d | ✅ WIN |
+
+### Wave 2 — Late slate (OPEN)
+| # | Game | Lean | Basis | Result |
+|---|------|------|-------|--------|
+| 4 | PHI @ BOS | Luzardo Ks OVER 5.5 (proj 7.1) + Boston bats fade | PRIME 93 · BOS wRC+ 91 · 5 Boston bats in PRIME/STRONG hits-UNDER cohort | TBD |
+| 5 | CHC @ ATL | Sale Ks OVER 5.5 (proj 7.1) | PRIME 84 · Sale L3 ERA 0.00 · Brown xERA 2.57 counter-elite arm · NRFI 100 | TBD |
+
+### Bonus card (OPEN)
+| # | Game | Lean | Basis | Result |
+|---|------|------|-------|--------|
+| 6 | KC @ CWS | Kris Bubic BB OVER 1.5 | STRONG 64 · L7 avg 2.86 BB/start · BB/9 4.46 vs MLB starter avg ~3.0 · Poisson hit rate ~78% theoretical, realistic 65-72% | TBD |
+
+**Notes / audit context:**
+- Card 4 (PHI/BOS) was re-drafted after a 5/14 attribution error — original draft incorrectly featured a Suarez 10.8 ERA "mastery fade" that was actually Luzardo's career vs BOS. Card now leans on Luzardo's xERA + the 5-PRIME-hits-UNDER Boston bats stack instead. See [[feedback_verify_pitcher_attribution]].
+- Card 5 (CHC/ATL) intentionally drops the NRFI 100 "play" framing — audit shows `nrfi_volatile_95plus` cohort at 44.6% (trap zone). Sale K-Over is the actual edge; NRFI 100 was supporting context, not the bet.
+- Card 6 (Bubic) is the only bonus prop without a multi-signal stack. Single-signal play — added because the math holds on its own merit (~7-12pt edge at -150 to -180 pricing).
+
+**Posted day after a 2-7 day (5/12) and a 4-1 day (5/13).** If late slate goes 3-0, full day is 6-0 and tomorrow's receipts post writes itself. If late slate is mixed, hold the receipts.
+
+---
+
+---
+
 ## 2026-05-13 — ALL MODEL LEANS (every game, audit-grade) — STATUS: OPEN
 
 Full per-game tracking of where the model sits on Total + ML/side + NRFI. Grade against tomorrow's box scores. This is the "where is the model right now" pulse — separate from the curated top-10 plays below.
