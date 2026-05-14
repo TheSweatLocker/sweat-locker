@@ -211,14 +211,30 @@ def _build_casual_summary(struct):
                 f"⚠ {nm}: {flags[0]}"
             ))
 
-    # 4. Mastery (favorable history)
+    # 4. Mastery (favorable history) — tightened 2026-05-13 after Liberatore
+    # fired "owns this lineup" at 0.0 ERA / 5.3 IP vs ATH (a 2-start sample).
+    # We don't store vs-team IP in the struct, so we proxy sample-size
+    # robustness by: (a) tightening the "owns" threshold from ≤3.0 to ≤2.0
+    # (a 2.0 career ERA across the typical 1-3 starts we see is still loud
+    # enough to surface), and (b) suppressing the "owns" headline entirely
+    # when other signals contradict it — i.e., the starter's xERA / L3 ERA
+    # is materially worse than the vs-team number, which is the noise pattern
+    # we're worried about. Torched-by-lineup side stays at ≥7.0 — that's a
+    # red flag worth showing even on tiny sample.
     for side, pdata, team, opp in [("away", pa, away, home), ("home", ph, home, away)]:
         vsera = pdata.get("vs_team_era")
-        if vsera is not None:
-            if float(vsera) <= 3.0:
-                headlines.append((7, f"✓ {pdata.get('name') or f'{team} starter'} owns this lineup (career {vsera:.2f} ERA vs {opp})"))
-            elif float(vsera) >= 7.0:
-                headlines.append((9, f"⚠ {pdata.get('name') or f'{team} starter'} has been torched by this lineup historically ({vsera:.2f} ERA)"))
+        if vsera is None:
+            continue
+        xera = pdata.get("xera")
+        l3_era = pdata.get("l3_era")
+        # signal-conflict suppression — if season form is much worse than the
+        # vs-team history, the history is probably small-sample noise.
+        season_form = max(float(xera) if xera is not None else 0.0,
+                          float(l3_era) if l3_era is not None else 0.0)
+        if float(vsera) <= 2.0 and season_form <= 5.0:
+            headlines.append((7, f"✓ {pdata.get('name') or f'{team} starter'} owns this lineup (career {vsera:.2f} ERA vs {opp})"))
+        elif float(vsera) >= 7.0:
+            headlines.append((9, f"⚠ {pdata.get('name') or f'{team} starter'} has been torched by this lineup historically ({vsera:.2f} ERA)"))
 
     # 5. Bullpen workload — gassed pens
     h_bp = sit.get("home_bp_relievers_3d")
@@ -324,11 +340,15 @@ def build_struct(g, props, potd):
         gv = potd.get("game") or potd.get("matchup") or ""
         potd_game = gv if isinstance(gv, str) else json.dumps(gv, default=str)
         # POTD lean can live under a few different keys depending on the
-        # play_of_day.py version — try the common ones.
+        # play_of_day.py version — try the common ones. Added `leanDisplay`
+        # 2026-05-13 after SF/LAD POTD's UNDER lean wasn't flowing through
+        # to the casual summary (that's the actual key play_of_day writes).
+        pick_obj = potd.get("pick") if isinstance(potd.get("pick"), dict) else None
         potd_lean = (
-            potd.get("lean")
+            potd.get("leanDisplay")
+            or potd.get("lean")
             or potd.get("label")
-            or (potd.get("pick") or {}).get("label") if isinstance(potd.get("pick"), dict) else None
+            or (pick_obj.get("label") if pick_obj else None)
         )
     is_potd = bool(home and away and home in potd_game and away in potd_game)
 
