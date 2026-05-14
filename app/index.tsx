@@ -3749,8 +3749,29 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
 
     const sweatScoreSignals = { contributions: _contribs.slice(0, 5), evidence: _evidence.slice(0, 4) };
 
+    // Server-authoritative Sweat Score override (MLB only, 2026-05-13).
+    // The cron's play_of_day.py writes sweat_score + sweat_tier back to
+    // mlb_game_context. When present, we trust the server value over the
+    // client formula — the two computations were diverging by 8-12 points
+    // and users effectively never saw PRIME (68+) because the client formula
+    // capped earlier. Single source of truth lives server-side now; the
+    // client retains everything else (leanSide, projectedTotal, signals,
+    // etc.) from the existing calc so the rest of the UI keeps working.
+    let serverSweat: { score: number; tier: string } | null = null;
+    if (sport === 'MLB' && mlbContext) {
+      const mctx = Object.values(mlbContext).find((c: any) =>
+        c?.home_team === game.home_team || c?.away_team === game.away_team
+      ) as any;
+      if (mctx && mctx.sweat_score != null) {
+        serverSweat = { score: Number(mctx.sweat_score), tier: mctx.sweat_tier || '' };
+      }
+    }
+    const finalTotal = serverSweat ? serverSweat.score : total;
+    const finalTier = serverSweat ? serverSweat.tier : (total >= 68 ? 'PRIME' : total >= 62 ? 'STRONG' : 'BEST_AVAILABLE');
+
     return {
-  total,
+  total: finalTotal,
+  tier: finalTier,
   leanSide, leanBet,
   totalIsPrimary,
   lineMoveDirection, lineMoveTeam, lineMovePoints,

@@ -96,6 +96,37 @@ def get_nba_games():
         print(f"NBA games fetch error: {e}")
         return []
 
+def sweat_tier_for(score):
+    """Tier thresholds match app/index.tsx (line ~5718). Single source of
+    truth lives in this function now — app reads tier from mlb_game_context."""
+    if score is None:
+        return None
+    if score >= 68:
+        return 'PRIME'
+    if score >= 62:
+        return 'STRONG'
+    return 'BEST_AVAILABLE'
+
+
+def write_sweat_score(ctx, score, tier):
+    """Write the score + tier back to mlb_game_context so the app reads the
+    same number the server computed. Eliminates the client/server drift that
+    made PRIME (68+) effectively invisible in-app (client formula was topping
+    out ~65 even when the server said 72)."""
+    game_id = ctx.get('game_id')
+    if not game_id:
+        return
+    try:
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_id=eq.{game_id}&game_date=eq.{ctx.get('game_date')}",
+            headers={**HEADERS, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'},
+            json={'sweat_score': int(score), 'sweat_tier': tier},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"  ⚠️ sweat_score writeback failed for {game_id}: {e}")
+
+
 def score_mlb_game(ctx):
     """Score an MLB game for Play of the Day candidacy"""
     score = 30  # base
@@ -606,6 +637,10 @@ def run():
 
     for ctx in mlb_games:
         game_score = score_mlb_game(ctx)
+        # Write the score + tier back to mlb_game_context so the app reads
+        # the server-authoritative value (instead of computing its own with
+        # a different formula that systematically under-reports PRIME).
+        write_sweat_score(ctx, game_score, sweat_tier_for(game_score))
         lean_display, lean_bet, is_nrfi = build_lean(ctx)
         candidates.append({
             'sport': 'MLB',
