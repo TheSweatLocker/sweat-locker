@@ -476,6 +476,41 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
         except Exception:
             pass
 
+    # Batter's own hard-hit % — added 2026-05-15. Was being pulled in
+    # build_savant_lookup() but never scored. Hard-hit (95+mph) % is a
+    # sticky power indicator independent of barrel% — elite barrel guys
+    # who also crush hard contact rate are the highest-HR-upside profile.
+    hh_pct = stats.get('savant_hard_hit_pct')
+    if hh_pct is not None:
+        try:
+            hh = float(hh_pct)
+            if hh >= 50:   savant_score += 6   # elite hard contact (top ~5%)
+            elif hh >= 45: savant_score += 4
+            elif hh >= 40: savant_score += 2
+            elif hh <= 30: savant_score -= 3   # weak contact, low HR upside
+        except Exception:
+            pass
+
+    # "Due for HR" interaction signal — added 2026-05-15. Catches the spot
+    # where a batter LOOKS cold on the surface (0 HR in 25+ recent PA) but
+    # Statcast says he's been hitting balls hard with bad luck (positive
+    # xSLG_diff + plus barrel%). This is the most fan-shareable HR Watch
+    # angle ("0-for-12 but his xSLG is .520 — turning into homers fast").
+    # Boost is intentionally additive to the existing cold-streak penalty
+    # so a "due" hitter recovers the -10 and ends up with net positive lean.
+    try:
+        is_cold_surface = last_7_pa >= 25 and last_7_hr == 0
+        statcast_due = (
+            xslg_diff is not None and float(xslg_diff) >= 0.040
+            and barrel is not None and float(barrel) >= 9
+        )
+        if is_cold_surface and statcast_due:
+            savant_score += 12   # net flips cold-penalty from -10 to +2 boost
+            # Mark for display/narrative — gets surfaced in the row metadata
+            stats['_due_signal'] = True
+    except Exception:
+        pass
+
     total_score = (power_score + hr_bonus + opp_score + contact_score
                    + fb_score + env_score + platoon_score + recency_score
                    + savant_score)
