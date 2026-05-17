@@ -97,15 +97,19 @@ def get_nba_games():
         return []
 
 def sweat_tier_for(score):
-    """Tier thresholds match app/index.tsx (line ~5718). Single source of
-    truth lives in this function now — app reads tier from mlb_game_context."""
+    """Tier thresholds aligned with app/index.tsx getSweatTier (line ~2497).
+    Both server and app now use the same 4-tier system: PRIME/STRONG/LIGHT_LEAN/PASS.
+    Recalibrated 2026-05-16 with rewritten score_mlb_game so games actually
+    distribute across tiers instead of clustering at 42-45 PASS."""
     if score is None:
         return None
-    if score >= 68:
+    if score >= 80:
         return 'PRIME'
-    if score >= 62:
+    if score >= 65:
         return 'STRONG'
-    return 'BEST_AVAILABLE'
+    if score >= 50:
+        return 'LIGHT_LEAN'
+    return 'PASS'
 
 
 def write_sweat_score(ctx, score, tier):
@@ -127,71 +131,155 @@ def write_sweat_score(ctx, score, tier):
         print(f"  ⚠️ sweat_score writeback failed for {game_id}: {e}")
 
 
-def score_mlb_game(ctx):
-    """Score an MLB game for Play of the Day candidacy"""
+def score_mlb_game(ctx, game_props=None):
+    """Score an MLB game's overall sweat heat.
+
+    Rewritten 2026-05-16. Previous formula clustered most games at 42-45 PASS
+    because base 30 + small bonuses couldn't stack high enough on a single
+    NRFI / xERA signal. New formula adds confluence, 1st-inn extremes, mastery,
+    and PRIME-prop-stack bonuses so a game's heat reflects what the app
+    actually surfaces.
+
+    Target distribution per slate:
+      ~1-3 PRIME  (≥80) — POTD + stack-alert games
+      ~3-6 STRONG (65-79) — confluence + DOD + multi-PRIME-prop games
+      ~4-7 LIGHT_LEAN (50-64) — single-PRIME-prop or one-signal games
+      ~1-3 PASS   (<50) — no edges
+    """
     score = 30  # base
 
-    # NRFI signal — 88-94 sweet spot is highest conviction (77% hit rate)
+    # ---- NRFI band (audit-calibrated) ----
     nrfi = ctx.get('nrfi_score') or 0
     if 90 <= nrfi <= 94:
-        score += 30    # prime sweet spot
+        score += 30    # PRIME band, audit 71.4% n=28
     elif 88 <= nrfi <= 89:
-        score += 22    # edge of sweet spot
+        score += 22
     elif nrfi >= 95:
-        score += 10    # historically volatile — reduced boost
-    elif nrfi >= 75:
-        score += 15
-    elif nrfi >= 70:
-        score += 10
+        score += 12    # volatile/trap zone, audit 47.8% — still some heat
+    elif 80 <= nrfi <= 89:
+        score += 14    # lean band
+    elif 70 <= nrfi <= 79:
+        score += 10    # lean band, audit 56.7%
+    elif nrfi <= 30:
+        score += 14    # YRFI extreme
+    elif nrfi <= 40:
+        score += 8
 
-    # Pitcher quality — xERA gap
+    # ---- Pitcher xERA mismatch ----
     home_xera = float(ctx.get('home_sp_xera') or 4.5)
     away_xera = float(ctx.get('away_sp_xera') or 4.5)
     xera_gap = abs(home_xera - away_xera)
     if xera_gap >= 2.0:
-        score += 15
+        score += 14
+    elif xera_gap >= 1.5:
+        score += 9
     elif xera_gap >= 1.0:
-        score += 8
+        score += 6
+    elif xera_gap >= 0.5:
+        score += 3
 
-    # Both pitchers elite
+    # ---- Both pitchers elite (ace duel) ----
     if home_xera <= 3.0 and away_xera <= 3.0:
         score += 10
+    elif home_xera <= 3.5 and away_xera <= 3.5:
+        score += 5
 
-    # Spread delta — retuned 2026-04-24 after sign-bug fix.
-    # OLD (buggy 2x-inflated): 4.0+ HIGH, 3.0+ STRONG, 2.0+ LEAN
-    # NEW (corrected): 1.5+ HIGH, 1.0+ STRONG, 0.5+ LEAN — same hit-rate buckets, real magnitudes
+    # ---- 1st-inning extremes (NRFI lock or YRFI fade) ----
+    h1 = float(ctx.get('home_first_inning_era') or 4.5)
+    a1 = float(ctx.get('away_first_inning_era') or 4.5)
+    if h1 >= 7.0 or a1 >= 7.0:
+        score += 8     # fragile starter, YRFI candidate
+    elif h1 >= 6.0 or a1 >= 6.0:
+        score += 5
+    if h1 <= 1.5 and a1 <= 1.5:
+        score += 6     # mutual NRFI lock
+    elif h1 <= 1.5 or a1 <= 1.5:
+        score += 3
+
+    # ---- Signal confluence (strongest single side indicator) ----
+    conf_net = ctx.get('signal_confluence_net')
+    try:
+        conf_mag = abs(int(conf_net)) if conf_net is not None else 0
+    except (TypeError, ValueError):
+        conf_mag = 0
+    if conf_mag >= 5:
+        score += 14    # PRIME confluence — multi-signal stacking
+    elif conf_mag >= 4:
+        score += 10
+    elif conf_mag >= 3:
+        score += 6
+    elif conf_mag >= 2:
+        score += 3
+
+    # ---- Spread delta (market disagreement) ----
     spread_delta = abs(float(ctx.get('spread_delta') or 0))
-    if spread_delta >= 1.5:
-        score += 18    # massive market disagreement (was old 4.0)
+    if spread_delta >= 2.0:
+        score += 13
+    elif spread_delta >= 1.5:
+        score += 9
     elif spread_delta >= 1.0:
-        score += 12    # proven 60-70% threshold (was old 3.0)
+        score += 6
     elif spread_delta >= 0.5:
-        score += 4     # marginal lean (was old 2.0)
+        score += 3
 
-    # Total delta
+    # ---- Total model vs market disagreement ----
     proj_total = float(ctx.get('projected_total') or 0)
     close_total = float(ctx.get('close_total') or ctx.get('open_total') or 0)
     if proj_total > 0 and close_total > 0:
         total_delta = abs(proj_total - close_total)
         if total_delta >= 2.0:
-            score += 12
-        elif total_delta >= 1.0:
+            score += 9
+        elif total_delta >= 1.5:
             score += 6
+        elif total_delta >= 1.0:
+            score += 4
 
-    # K gap signal
+    # ---- K gap ----
     home_k_gap = abs(float(ctx.get('home_k_gap') or 0))
     away_k_gap = abs(float(ctx.get('away_k_gap') or 0))
-    if home_k_gap >= 10 or away_k_gap >= 10:
-        score += 8
+    k_gap = max(home_k_gap, away_k_gap)
+    if k_gap >= 12:
+        score += 6
+    elif k_gap >= 8:
+        score += 3
 
-    # Park + weather
+    # ---- Pitcher mastery / anti-mastery vs current opp ----
+    for vt_key in ('home_pitcher_vs_team_era', 'away_pitcher_vs_team_era'):
+        v = ctx.get(vt_key)
+        if v is None:
+            continue
+        try:
+            vt = float(v)
+            if vt <= 2.5 or vt >= 7.0:
+                score += 5    # strong mastery / anti-mastery
+            elif vt <= 3.0 or vt >= 6.0:
+                score += 3    # moderate
+        except (TypeError, ValueError):
+            pass
+
+    # ---- Park + weather extremes ----
     park = float(ctx.get('park_run_factor') or 100)
-    if park >= 108 or park <= 93:
-        score += 5
-
+    if park >= 110 or park <= 92:
+        score += 4
     temp = float(ctx.get('temperature') or 70)
     if temp <= 45:
-        score += 3  # cold = pitcher advantage = more predictable
+        score += 3
+    wind = float(ctx.get('wind_speed') or 0)
+    if wind >= 18:
+        score += 3
+
+    # ---- Prop stack (game contains high-conviction props) ----
+    game_props = game_props or []
+    prime_props = [p for p in game_props if p.get('tier') == 'PRIME']
+    strong_props = [p for p in game_props if p.get('tier') == 'STRONG']
+    if len(prime_props) >= 4:
+        score += 20    # stack alert (e.g. BOS/ATL 4 PRIME hits-unders + Tolle K + Elder HA)
+    elif len(prime_props) >= 2:
+        score += 11
+    elif len(prime_props) == 1:
+        score += 6
+    elif len(strong_props) >= 3:
+        score += 5
 
     return min(100, score)
 
@@ -632,11 +720,30 @@ def run():
     nba_games = get_nba_games()
     print(f"NBA games: {len(nba_games)}, teams: {len(nba_teams)}")
 
+    # Pre-fetch today's pipeline props so score_mlb_game can factor in
+    # stack alerts + PRIME prop count (added 2026-05-16 — sweat_score now
+    # reflects what the app actually surfaces).
+    props_by_game = {}
+    try:
+        pr = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{today}&select=game_id,tier,conviction",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            timeout=15,
+        )
+        for p in (pr.json() or []):
+            gid = p.get('game_id')
+            if gid:
+                props_by_game.setdefault(gid, []).append(p)
+        print(f"  Loaded props for {len(props_by_game)} games (sweat-score stack signal)")
+    except Exception as e:
+        print(f"  ⚠️ prop fetch for sweat-score failed: {e}")
+
     # Score all candidates
     candidates = []
 
     for ctx in mlb_games:
-        game_score = score_mlb_game(ctx)
+        gid = ctx.get('game_id')
+        game_score = score_mlb_game(ctx, game_props=props_by_game.get(gid, []))
         # Write the score + tier back to mlb_game_context so the app reads
         # the server-authoritative value (instead of computing its own with
         # a different formula that systematically under-reports PRIME).

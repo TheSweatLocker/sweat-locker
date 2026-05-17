@@ -259,18 +259,52 @@ def score_dawg(g, diag=None, ml_map=None):
         conviction += 5
         signals['venue'] = f"Home dog advantage ({g.get('venue')})"
 
-    # Signal confluence bump (added 2026-04-25) — when multiple independent signals
-    # back the model's pick (= the dog, since model picked the dog), that's stronger
-    # evidence than dog_edge alone. Each net confluence point worth ~3 conviction.
-    if confluence_net >= 4:
-        conviction += 12
-        signals['confluence'] = f"PRIME confluence (+{confluence_net} signals stack on {team.split()[-1]})"
-    elif confluence_net >= 2:
-        conviction += 8
-        signals['confluence'] = f"STRONG confluence (+{confluence_net} signals stack on {team.split()[-1]})"
-    elif confluence_net >= 1:
-        conviction += 3
-        signals['confluence'] = f"LEAN confluence (+{confluence_net} signal edge on {team.split()[-1]})"
+    # Signal confluence — must be DIRECTION-aware (bugfix 2026-05-16).
+    # `signal_confluence_net` was always positive when signals favored `model_pick`,
+    # which could be home OR away. Reading net > 0 as "stacks on dog" was wrong
+    # whenever model_pick was the favorite side (e.g. 5/16 ARI/COL — net +4 favored
+    # ARI, but DOD picked COL home dog and incorrectly claimed PRIME confluence on it).
+    # Fix: parse breakdown directly to determine which side the signals support, then
+    # bonus only when aligned with the dog, penalty when opposed.
+    breakdown = g.get('signal_confluence_breakdown') or {}
+    if isinstance(breakdown, str):
+        import json as _json
+        try:
+            breakdown = _json.loads(breakdown)
+        except Exception:
+            breakdown = {}
+    h_count = sum(1 for v in breakdown.values() if v == 'home')
+    a_count = sum(1 for v in breakdown.values() if v == 'away')
+    if h_count > a_count:
+        conf_side, conf_mag = 'home', h_count - a_count
+    elif a_count > h_count:
+        conf_side, conf_mag = 'away', a_count - h_count
+    else:
+        conf_side, conf_mag = None, 0
+
+    dawg_side = 'home' if is_home_dawg else 'away'
+    opp_label = opp_team.split()[-1]
+    team_label = team.split()[-1]
+
+    if conf_side == dawg_side and conf_mag >= 1:
+        if conf_mag >= 4:
+            conviction += 12
+            signals['confluence'] = f"PRIME confluence (+{conf_mag} signals stack on {team_label})"
+        elif conf_mag >= 2:
+            conviction += 8
+            signals['confluence'] = f"STRONG confluence (+{conf_mag} signals stack on {team_label})"
+        else:
+            conviction += 3
+            signals['confluence'] = f"LEAN confluence (+{conf_mag} signal edge on {team_label})"
+    elif conf_side and conf_side != dawg_side and conf_mag >= 2:
+        # Signals oppose the dog — penalize. Don't reject outright (dog_edge math may
+        # still justify the play), but the conviction floor drops materially.
+        if conf_mag >= 4:
+            conviction -= 15
+            signals['confluence_warn'] = f"⚠ PRIME confluence AGAINST (+{conf_mag} signals on {opp_label}) — fade risk"
+        else:
+            conviction -= 8
+            signals['confluence_warn'] = f"⚠ STRONG confluence AGAINST (+{conf_mag} signals on {opp_label})"
 
     conviction = max(0, min(100, conviction))
     tier = 'PRIME' if conviction >= 80 else 'STRONG' if conviction >= 65 else 'LEAN'

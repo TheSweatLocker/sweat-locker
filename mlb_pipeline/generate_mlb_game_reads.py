@@ -136,11 +136,29 @@ def _nrfi_tier(score):
 
 
 def _pitcher_block(g, side):
+    """Build per-pitcher block with EXPLICIT opp-lineup attribution baked in.
+
+    Reformulated 2026-05-16 to fix the cross-team mixup bug — Claude was reading
+    raw home_wrc_plus/away_wrc_plus and occasionally writing sentences like
+    "Boston's 90 wRC+, a soft lineup Tolle will punish" when Tolle pitches FOR
+    Boston (vs Atlanta's 118 wRC+). Same attribution-error family as the Suarez
+    5/14 Luzardo mixup. Fix: pre-compute pitcher.opp_* fields so the model
+    doesn't have to do the home/away → faces-which-lineup mapping itself.
+    """
     name = g.get(f"{side}_pitcher")
+    opp_side = "away" if side == "home" else "home"
+    own_team = g.get("home_team") if side == "home" else g.get("away_team")
+    opp_team = g.get("home_team") if opp_side == "home" else g.get("away_team")
     xera = _f(g.get(f"{side}_sp_xera"))
     l3 = _f(g.get(f"{side}_pitcher_last_3_era"))
     fi = _f(g.get(f"{side}_first_inning_era"))
     last_ip = _f(g.get(f"{side}_last_ip"))
+    # K gap stored on pitcher's own side: e.g. away_k_gap = away pitcher's K%
+    # advantage over the home team lineup (the opp lineup). Same prefix pairs
+    # always — see [[feedback_verify_pitcher_attribution]].
+    k_gap_vs_opp = _f(g.get(f"{side}_k_gap"))
+    opp_lineup_wrc = _f(g.get(f"{opp_side}_wrc_plus"))
+    opp_lineup_k_pct = _f(g.get(f"{opp_side}_team_k_pct"))
     flags = []
     if l3 is not None and xera is not None and l3 - xera >= 1.5:
         flags.append(f"form drift: L3 ERA {l3:.2f} vs xERA {xera:.2f} (+{l3 - xera:.1f})")
@@ -152,6 +170,11 @@ def _pitcher_block(g, side):
         flags.append(f"getting tagged lately (L3 ERA {l3:.2f}) — pull-early risk")
     return {
         "name": name,
+        "own_team": own_team,
+        "opp_team": opp_team,
+        "opp_lineup_wrc": opp_lineup_wrc,
+        "opp_lineup_k_pct": opp_lineup_k_pct,
+        "k_gap_vs_opp": k_gap_vs_opp,
         "xera": xera,
         "l3_era": l3,
         "first_inning_era": fi,
