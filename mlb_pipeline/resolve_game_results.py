@@ -463,6 +463,36 @@ def run():
 
     print(f'Done! {props_resolved} pipeline props resolved')
 
+    # --- Void sweep: anything still unresolved >2 days post-game gets
+    # marked Void. These are props where the player never appeared in the
+    # boxscore (scratched, unused bench, postponed, or alias-match failure).
+    # Previously these sat as NULL forever, polluting the record display
+    # and the audit cohorts. (Added 2026-05-17.)
+    void_cutoff = (et_today - timedelta(days=2)).strftime('%Y-%m-%d')
+    vp = requests.get(
+        f'{SUPABASE_URL}/rest/v1/mlb_pipeline_props'
+        f'?result=is.null&game_date=lt.{void_cutoff}'
+        f'&select=id,game_date,player_name,prop_type',
+        headers=HEADERS
+    )
+    void_targets = vp.json() if vp.status_code == 200 else []
+    voided = 0
+    for vt in void_targets:
+        try:
+            r = requests.patch(
+                f'{SUPABASE_URL}/rest/v1/mlb_pipeline_props?id=eq.{vt["id"]}',
+                headers=HEADERS,
+                json={'result': 'Void', 'resolved_at': datetime.utcnow().isoformat()}
+            )
+            if r.status_code in (200, 204):
+                voided += 1
+        except Exception as e:
+            print(f'  Void error on prop {vt.get("id")}: {e}')
+    if voided:
+        print(f'Voided {voided} stale unresolved props (player did not appear in boxscore, >2d old)')
+    elif void_targets:
+        print(f'Found {len(void_targets)} stale unresolved but all PATCH calls failed')
+
     # --- Resolve Dawg of the Day results ---
     print('\nResolving Dawg of the Day picks...')
     r_dawg = requests.get(
