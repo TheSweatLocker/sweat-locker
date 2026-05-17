@@ -8810,15 +8810,15 @@ setJerryHistory(prev => {
               <Text style={{fontSize:64,marginBottom:24}}>🔥</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Sweat Score</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Every game graded 0–100</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Built on deep pipeline signals no retail tool tracks at once:{'\n\n'}⚾ Pitcher xERA, K rate gap, first inning ERA, L3 form{'\n'}🧤 Team defense (OAA) + catcher framing runs{'\n'}📊 Expected vs actual wOBA (regression signal){'\n'}🎯 Platoon-adjusted wRC+ vs opposing pitcher hand{'\n'}💨 Park factor, weather, umpire tendencies{'\n'}💰 Market efficiency + sharp money movement{'\n\n'}Higher scores = stronger model conviction. Updates 8am and 2pm ET.</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>A layered conviction score built from signals that actually move predictions — not public consensus:{'\n\n'}🏟️ Matchup quality — pitching, lineups, fighter profiles{'\n'}📊 Recency vs season-long form{'\n'}🎯 Platoon and handedness edges{'\n'}💨 Park, weather, venue factors{'\n'}🐕 Market efficiency and sharp line movement{'\n'}📋 Situational + audit-validated rules{'\n\n'}Higher scores reflect stronger multi-signal alignment. Pipeline refreshes throughout the day as new data lands.</Text>
             </View>
           )}
           {onboardingStep===2&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🏟</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Games Tab</Text>
-              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your daily command center</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Every game card shows its Sweat Score and top model signals at a glance.{'\n\n'}Tap any game for the full breakdown:{'\n'}📚 Book consensus across 7+ sportsbooks{'\n'}🎤 Jerry's pipeline-driven game read{'\n'}📊 Real team stats and pitcher matchups{'\n'}📈 Line movement with opening vs current{'\n'}⚾ NRFI score and first inning prediction{'\n\n'}Add any line to Parlay Builder with one tap.</Text>
+              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Your Daily Slate</Text>
+              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>MLB · NBA · UFC · NHL · NCAAB — and more</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Every game card shows its Sweat Score and top model signals at a glance.{'\n\n'}Tap any game for the deep breakdown:{'\n'}📚 Book consensus across multiple sportsbooks{'\n'}🎤 Jerry's pipeline-driven game read{'\n'}📊 The Numbers — deterministic data behind every read; sport-aware (pitcher blocks for MLB, efficiency for NBA, fight matchup for UFC, more landing as we expand){'\n'}📈 Line movement with opening vs current{'\n'}⚾ Sport-specific signals layered in (NRFI for baseball, method probabilities for UFC, more){'\n\n'}Add any line to Parlay Builder with one tap.{'\n\n'}🏈 NFL & NCAAF arrive for football season.</Text>
             </View>
           )}
           {onboardingStep===3&&(
@@ -8826,23 +8826,23 @@ setJerryHistory(prev => {
               <Text style={{fontSize:64,marginBottom:24}}>🧠</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Meet Jerry</Text>
               <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your AI sports analyst</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Jerry lives in the Jerry tab. Four tools:{'\n\n'}🧠 Prop Jerry — Top 15 prop edges from our pipeline daily. Conviction-tiered (PRIME / STRONG / LEAN) with labeled signals.{'\n\n'}🎲 Daily Degen — 3-5 leg parlay built from the slate's best pipeline signals. Generated once, same pick for everyone.{'\n\n'}🐕 Dawg of the Day — The one underdog ML where our model sharply disagrees with the market.{'\n\n'}📋 Record — Verified performance: NRFI lean tiers, Prop Jerry A-grades, Play of the Day, Dawg record.</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Jerry lives in the Jerry tab. Four tools:{'\n\n'}🧠 Prop Jerry — Daily prop edges from our pipeline, conviction-tiered (PRIME / STRONG / LEAN) with labeled signals so you see why each pick made the board.{'\n\n'}🎲 Daily Degen — A multi-leg parlay built from the slate's strongest pipeline signals. One pick for everyone.{'\n\n'}🐕 Dawg of the Day — The underdog moneyline where our model sharply disagrees with the market.{'\n\n'}📋 Record — Verified performance across all four tools, tier-stratified.</Text>
             </View>
           )}
           {onboardingStep===4&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>⚾</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>NRFI Model</Text>
-              <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>No Run First Inning — our flagship</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Built on pitcher xERA, strikeout gap vs lineup K%, ground ball rate, first inning splits, days rest, weather, park factor, umpires, and offensive quality.{'\n\n'}Calibrated on 2,700+ games of real outcome data. Tier-based leans:{'\n\n'}🟢 90-94 PRIME — highest conviction zone{'\n'}🟡 70-79 Mild — edge-of-lean territory{'\n'}⚪ 80-89 — neutral, Jerry doesn't lean here{'\n'}🔴 95+ — historically volatile, flagged not leaned</Text>
+              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>MLB Flagship — NRFI</Text>
+              <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Where our pipeline goes deepest</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>No Run First Inning (NRFI) is our most-developed model. Built from pitcher xERA, strikeout-gap vs lineup K%, ground-ball rate, first-inning splits, days rest, weather, park factor, umpires, and offensive quality.{'\n\n'}Each game gets a 0–100 NRFI score that maps to audit-validated tiers:{'\n\n'}🟢 PRIME sweet spot — highest conviction band{'\n'}🟡 Mild lean — edge-of-lean territory{'\n'}⚪ Neutral — Jerry doesn't lean here{'\n'}🔴 Trap zone — high scores historically volatile, flagged not leaned{'\n\n'}Baseball is where we ship the deepest stack today. Other sports get the same multi-signal treatment scaled to their data shape.</Text>
             </View>
           )}
           {onboardingStep===5&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>⏰</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Best Times to Check</Text>
+              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>When to Check</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Pipeline runs twice daily</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>8am ET — NRFI scores, game context, pitchers confirmed{'\n\n'}2pm ET — Lineups confirmed, umpires assigned, Prop Jerry most accurate, Play of the Day locked in{'\n\n'}After 2pm — All data locked in. Best time for full analysis.</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>⏰ 8am ET — Early run{'\n'}Initial Sweat Scores, opening matchup data, NRFI baselines (MLB).{'\n\n'}⏰ 2pm ET — Late run{'\n'}Confirmed lineups, Prop Jerry refresh with sharpest reads, Play of the Day locks in.{'\n\n'}After 2pm, all data is locked in. Best time for full slate analysis.</Text>
             </View>
           )}
           {onboardingStep===6&&(
