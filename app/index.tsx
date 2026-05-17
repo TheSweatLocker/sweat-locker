@@ -7547,11 +7547,24 @@ setJerryHistory(prev => {
         {/* Tab bar */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>
           <View style={{flexDirection:'row',gap:6}}>
-            {[{id:'money',label:'📚 Book Consensus'},{id:'schedule',label:'📅 Schedule'},{id:'stats',label:'📊 Team Stats'},{id:'situational',label:'📋 Situational'}].map(t=>(
-              <TouchableOpacity key={t.id} style={[styles.chipBtn,matchupTab===t.id&&{backgroundColor:'rgba(255,184,0,0.12)',borderColor:HRB_COLOR}]} onPress={()=>setMatchupTab(t.id)}>
-                <Text style={[styles.chipTxt,matchupTab===t.id&&{color:HRB_COLOR,fontWeight:'700'}]}>{t.label}</Text>
-              </TouchableOpacity>
-            ))}
+            {(() => {
+              // UFC has fighters, not teams — Schedule + Team Stats tabs
+              // pull empty / mismatched data. Hide them for UFC games.
+              const allTabs = [
+                {id:'money',label:'📚 Book Consensus'},
+                {id:'schedule',label:'📅 Schedule'},
+                {id:'stats',label:'📊 Team Stats'},
+                {id:'situational',label:'📋 Situational'},
+              ];
+              const tabs = sport === 'UFC'
+                ? allTabs.filter(t => t.id !== 'schedule' && t.id !== 'stats')
+                : allTabs;
+              return tabs.map(t=>(
+                <TouchableOpacity key={t.id} style={[styles.chipBtn,matchupTab===t.id&&{backgroundColor:'rgba(255,184,0,0.12)',borderColor:HRB_COLOR}]} onPress={()=>setMatchupTab(t.id)}>
+                  <Text style={[styles.chipTxt,matchupTab===t.id&&{color:HRB_COLOR,fontWeight:'700'}]}>{t.label}</Text>
+                </TouchableOpacity>
+              ));
+            })()}
           </View>
         </ScrollView>
 

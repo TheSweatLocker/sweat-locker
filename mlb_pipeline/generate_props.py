@@ -1619,25 +1619,57 @@ def score_pitcher_er_under(g, side):
     signals = {}
     conviction = 30
 
-    # xERA — primary signal
+    # xERA — primary signal (smoothed band 2026-05-17 — added 3.3 middle bucket
+    # to avoid the 3.0 cliff that left Ryan 3.27 underscored on 5/15).
     if xera <= 2.5:
         conviction += 25
         signals['xera_elite'] = f'Elite xERA {xera:.2f} — ace'
     elif xera <= 3.0:
         conviction += 18
         signals['xera'] = f'Strong xERA {xera:.2f}'
+    elif xera <= 3.3:
+        conviction += 13
+        signals['xera'] = f'Sharp xERA {xera:.2f}'
     elif xera <= 3.5:
         conviction += 10
     elif xera >= 4.5:
         conviction -= 15
 
-    # L3 form
+    # L3 form — added 2.5 and 3.0 bands 2026-05-17 to remove the 2.0 cliff.
     if l3_era is not None:
         if l3_era <= 2.0:
-            conviction += 10
+            conviction += 12
             signals['l3_hot'] = f'L3 ERA {l3_era:.2f} — locked in'
+        elif l3_era <= 2.5:
+            conviction += 7
+            signals['l3_sharp'] = f'L3 ERA {l3_era:.2f} — sharp'
+        elif l3_era <= 3.0:
+            conviction += 3
         elif l3_era >= 5.5:
             conviction -= 10
+
+    # Pitcher career mastery vs current opp lineup (added 2026-05-17 — was
+    # entirely missing from ER UNDER scorer; cost Ryan's 5/15 prop a +10
+    # bump despite 2.38 ERA / 12.3 IP vs MIL career).
+    vt_era = _f(g.get(f'{side}_pitcher_vs_team_era'))
+    if vt_era is not None and xera is not None:
+        if vt_era <= 2.5 and (vt_era < xera - 1.0):
+            conviction += 10
+            signals['vs_team'] = f'Career vs opp: {vt_era:.2f} ERA — mastery'
+        elif vt_era >= 6.0 and (vt_era > xera + 1.5):
+            conviction -= 10  # anti-mastery signal goes the other way
+            signals['vs_team_anti'] = f'Career vs opp: {vt_era:.2f} ERA — gets tagged'
+
+    # NRFI score assist (added 2026-05-17) — if game projects to scoreless
+    # 1st, that supports ER UNDER thesis on the starter going clean
+    # through 5+ innings.
+    nrfi = _f(g.get('nrfi_score'))
+    if nrfi is not None:
+        if nrfi >= 75:
+            conviction += 4
+            signals['nrfi_assist'] = f'NRFI {int(nrfi)} — clean 1st projects'
+        elif nrfi <= 40:
+            conviction -= 4
 
     # Opp lineup weakness
     if opp_wrc <= 90:
@@ -1665,11 +1697,16 @@ def score_pitcher_er_under(g, side):
         signals['framing'] = f'Catcher +{framing:.1f} framing — expands zone'
 
     # Home/away split — favorable split = lower ER risk
+    # Smoothed bands 2026-05-17 — added the -0.5 mid-tier to capture clean
+    # splits like Ryan's -0.67 home advantage.
     split = pitcher_split_delta(g, side)
     if split is not None:
         if split <= -1.0:
-            conviction += 5
+            conviction += 7
             signals['split'] = f'In favored split ({split:+.2f} ERA vs season)'
+        elif split <= -0.5:
+            conviction += 4
+            signals['split'] = f'Favored split lean ({split:+.2f} ERA vs season)'
         elif split >= 1.0:
             conviction -= 5
 
