@@ -1435,7 +1435,7 @@ const [playersSearch, setPlayersSearch] = useState('');
   const [parlayLegs, setParlayLegs] = useState([]);
   const [parlayWager, setParlayWager] = useState('10');
   const [addLegModal, setAddLegModal] = useState(false);
-  const [legForm, setLegForm] = useState({matchup:'',pick:'',odds:'',oddsSign:'-',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});
+  const [legForm, setLegForm] = useState({matchup:'',pick:'',odds:'',oddsSign:'-',units:'',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});
   const [legMode, setLegMode] = useState('parlay');  // 'parlay' = add to parlayLegs[], 'single' = log directly to bets[]
   const [gamesDay, setGamesDay] = useState('today');
   const [gamesSport, setGamesSport] = useState('NBA');
@@ -8660,37 +8660,55 @@ setJerryHistory(prev => {
   const deleteBet=(id)=>Alert.alert('Delete Pick','Are you sure?',[
     {text:'Cancel',style:'cancel'},{text:'Delete',style:'destructive',onPress:()=>setBets(prev=>prev.filter(b=>b.id!==id))}
   ]);
-  const openEditModal=(bet)=>{setEditingBet({...bet});setEditModalVisible(true);};
+  const openEditModal=(bet)=>{
+    // Parse odds string (e.g. "+150" / "-110" / "110") into sign + magnitude
+    // so the edit form can use the same +/- toggle pattern as Log New Pick.
+    const oddsRaw = String(bet.odds || '').trim();
+    let oddsSign = '-';
+    let oddsVal = oddsRaw.replace(/[^0-9]/g, '');
+    if (oddsRaw.startsWith('+')) oddsSign = '+';
+    else if (oddsRaw.startsWith('-')) oddsSign = '-';
+    else if (oddsVal && !oddsRaw.startsWith('-')) oddsSign = '+'; // bare number defaults to plus
+    setEditingBet({...bet, oddsSign, odds: oddsVal});
+    setEditModalVisible(true);
+  };
   const saveEdit = async () => {
   if(!editingBet.matchup||!editingBet.pick){Alert.alert('Missing Info','Please enter details.');return;}
+  // Reconstruct the full odds string from the sign toggle + magnitude
+  // so editingBet.odds matches the format the rest of the app expects.
+  const sign = editingBet.oddsSign || '-';
+  const mag = String(editingBet.odds || '').replace(/[^0-9]/g, '');
+  const fullOdds = mag ? `${sign}${mag}` : '';
+  const merged = {...editingBet, odds: fullOdds};
+  delete merged.oddsSign;
   const prev = bets.find(b => b.id === editingBet.id);
-  const resultChanged = prev && prev.result !== editingBet.result && editingBet.result !== 'Pending';
-  
-  setBets(p => p.map(b => b.id === editingBet.id ? editingBet : b));
+  const resultChanged = prev && prev.result !== merged.result && merged.result !== 'Pending';
+
+  setBets(p => p.map(b => b.id === merged.id ? merged : b));
   setEditModalVisible(false);
   setEditingBet(null);
 
   if(resultChanged) {
-    fetchPickRecap(editingBet, editingBet.result);
-    const units = parseFloat(editingBet.units) || 1;
-    const odds = parseFloat(editingBet.odds) || -110;
-    const profitLoss = editingBet.result === 'Win'
+    fetchPickRecap(merged, merged.result);
+    const units = parseFloat(merged.units) || 1;
+    const odds = parseFloat(fullOdds) || -110;
+    const profitLoss = merged.result === 'Win'
       ? odds > 0 ? units * (odds/100) : units * (100/Math.abs(odds))
-      : editingBet.result === 'Loss' ? -units : 0;
+      : merged.result === 'Loss' ? -units : 0;
     try {
       await supabase.from('outcomes').insert({
-        sport: editingBet.sport,
-        bet_type: editingBet.type,
-        matchup: editingBet.matchup,
-        pick: editingBet.pick,
+        sport: merged.sport,
+        bet_type: merged.type,
+        matchup: merged.matchup,
+        pick: merged.pick,
         odds: odds,
         units: units,
-        result: editingBet.result,
+        result: merged.result,
         profit_loss: profitLoss,
-        sweat_score: editingBet.sweatScore || null,
-        model_lean: editingBet.modelLean || null,
-        book: editingBet.book || null,
-        is_parlay: editingBet.type === 'Parlay',
+        sweat_score: merged.sweatScore || null,
+        model_lean: merged.modelLean || null,
+        book: merged.book || null,
+        is_parlay: merged.type === 'Parlay',
         user_id: 'beta_user',
       });
     } catch(e) { console.log('Supabase log error:', e.message); }
@@ -8747,7 +8765,7 @@ setJerryHistory(prev => {
         sport: 'MLB',
         type: legForm.type || 'Prop',
         odds: americanOdds,
-        units: '1',
+        units: legForm.units || '1',
         book: 'Hard Rock',
         result: 'Pending',
         date: new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'}),
@@ -8756,7 +8774,7 @@ setJerryHistory(prev => {
     } else {
       setParlayLegs(prev=>[...prev,{id:Date.now(),...legForm}]);
     }
-    setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});
+    setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-',units:'',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});
     setLegMode('parlay');
     setAddLegModal(false);
   };
@@ -12314,24 +12332,34 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
       {editingBet&&(
         <Modal visible={editModalVisible} animationType="slide" transparent>
           <View style={styles.modalOverlay}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{flex:1,justifyContent:'flex-end'}}>
             <View style={styles.modalSheet}>
               <View style={styles.modalHandle}/>
               <Text style={styles.modalTitle}>Edit Pick</Text>
+              <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <Text style={styles.fieldLabel}>Matchup</Text>
               <TextInput style={styles.input} placeholderTextColor="#4a6070" value={editingBet.matchup} onChangeText={t=>setEditingBet({...editingBet,matchup:t})}/>
               <Text style={styles.fieldLabel}>Pick</Text>
               <TextInput style={styles.input} placeholderTextColor="#4a6070" value={editingBet.pick} onChangeText={t=>setEditingBet({...editingBet,pick:t})}/>
               <Text style={styles.fieldLabel}>Odds</Text>
-              <TextInput style={styles.input} placeholderTextColor="#4a6070" value={editingBet.odds} onChangeText={t=>setEditingBet({...editingBet,odds:t})} keyboardType="numeric" returnKeyType="done"/>
+              <View style={{flexDirection:'row',gap:8,marginBottom:12}}>
+                <View style={{flexDirection:'row',borderRadius:10,overflow:'hidden',borderWidth:1,borderColor:'#1f2d3d'}}>
+                  <TouchableOpacity style={{paddingHorizontal:20,paddingVertical:12,backgroundColor:editingBet.oddsSign==='+'?'rgba(0,229,160,0.15)':'#151c24'}} onPress={()=>setEditingBet({...editingBet,oddsSign:'+'})}><Text style={{color:editingBet.oddsSign==='+'?'#00e5a0':'#7a92a8',fontWeight:'800',fontSize:18}}>+</Text></TouchableOpacity>
+                  <TouchableOpacity style={{paddingHorizontal:20,paddingVertical:12,backgroundColor:editingBet.oddsSign==='-'?'rgba(255,77,109,0.15)':'#151c24'}} onPress={()=>setEditingBet({...editingBet,oddsSign:'-'})}><Text style={{color:editingBet.oddsSign==='-'?'#ff4d6d':'#7a92a8',fontWeight:'800',fontSize:18}}>−</Text></TouchableOpacity>
+                </View>
+                <TextInput style={[styles.input,{flex:1,marginBottom:0}]} placeholder="110" placeholderTextColor="#4a6070" value={String(editingBet.odds||'')} onChangeText={t=>setEditingBet({...editingBet,odds:t.replace(/[^0-9]/g,'')})} keyboardType="numeric" returnKeyType="done"/>
+              </View>
               <Text style={styles.fieldLabel}>Units</Text>
-              <TextInput style={styles.input} placeholderTextColor="#4a6070" value={editingBet.units} onChangeText={t=>setEditingBet({...editingBet,units:t})} keyboardType="numeric" returnKeyType="done"/>
+              <TextInput style={styles.input} placeholderTextColor="#4a6070" value={String(editingBet.units||'')} onChangeText={t=>setEditingBet({...editingBet,units:t})} keyboardType="numeric" returnKeyType="done"/>
               <Text style={styles.fieldLabel}>Update Result</Text>
               <View style={{flexDirection:'row',gap:6,marginBottom:16,flexWrap:'wrap'}}>
                 {RESULTS.map(r=>(<TouchableOpacity key={r} style={[styles.chipBtn,editingBet.result===r&&{backgroundColor:resultColor(r)+'22',borderColor:resultColor(r)}]} onPress={()=>setEditingBet({...editingBet,result:r})}><Text style={[styles.chipTxt,editingBet.result===r&&{color:resultColor(r),fontWeight:'800'}]}>{r}</Text></TouchableOpacity>))}
               </View>
               <TouchableOpacity style={styles.btnPrimary} onPress={saveEdit}><Text style={styles.btnPrimaryText}>Save Changes ✓</Text></TouchableOpacity>
               <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>{setEditModalVisible(false);setEditingBet(null);}}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
+              </ScrollView>
             </View>
+            </KeyboardAvoidingView>
           </View>
         </Modal>
       )}
@@ -12342,6 +12370,7 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
           <View style={styles.modalSheet}>
             <View style={styles.modalHandle}/>
             <Text style={styles.modalTitle}>{legMode === 'single' ? '📝 Log Pick' : 'Add Parlay Leg'}</Text>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             <Text style={styles.fieldLabel}>Matchup</Text>
             <TextInput style={styles.input} placeholder="e.g. Lakers vs Warriors" placeholderTextColor="#4a6070" value={legForm.matchup} onChangeText={t=>setLegForm({...legForm,matchup:t})}/>
             <Text style={styles.fieldLabel}>Your Pick</Text>
@@ -12354,13 +12383,20 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
               </View>
               <TextInput style={[styles.input,{flex:1,marginBottom:0}]} placeholder="110" placeholderTextColor="#4a6070" value={legForm.odds} onChangeText={t=>setLegForm({...legForm,odds:t.replace(/[^0-9]/g,'')})} keyboardType="numeric" returnKeyType="done"/>
             </View>
+            {legMode === 'single' && (
+              <>
+                <Text style={styles.fieldLabel}>Units</Text>
+                <TextInput style={styles.input} placeholder="1" placeholderTextColor="#4a6070" value={legForm.units} onChangeText={t=>setLegForm({...legForm,units:t})} keyboardType="numeric" returnKeyType="done"/>
+              </>
+            )}
             {legForm.odds.length>0&&(
               <View style={{backgroundColor:'rgba(0,229,160,0.07)',borderRadius:10,padding:12,marginBottom:12}}>
                 <Text style={{color:'#00e5a0',fontSize:13,fontWeight:'600'}}>{legForm.oddsSign}{legForm.odds} → Implied: {impliedProb(americanToDecimal(legForm.oddsSign+legForm.odds))}%</Text>
               </View>
             )}
             <TouchableOpacity style={styles.btnPrimary} onPress={addLeg}><Text style={styles.btnPrimaryText}>{legMode === 'single' ? 'Log Pick ✓' : 'Add to Parlay ✓'}</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>{setAddLegModal(false);setLegMode('parlay');setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});}}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>{setAddLegModal(false);setLegMode('parlay');setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-',units:'',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});}}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
+            </ScrollView>
           </View>
           </KeyboardAvoidingView>
         </View>
