@@ -7556,8 +7556,12 @@ setJerryHistory(prev => {
                 {id:'stats',label:'📊 Team Stats'},
                 {id:'situational',label:'📋 Situational'},
               ];
+              // UFC: only Book Consensus is meaningful — Schedule (team
+              // calendar), Team Stats (team rolling stats), and Situational
+              // (lineup/platoon/park) all pull data that doesn't exist for
+              // fighters. Hide them all for UFC.
               const tabs = sport === 'UFC'
-                ? allTabs.filter(t => t.id !== 'schedule' && t.id !== 'stats')
+                ? allTabs.filter(t => t.id === 'money')
                 : allTabs;
               return tabs.map(t=>(
                 <TouchableOpacity key={t.id} style={[styles.chipBtn,matchupTab===t.id&&{backgroundColor:'rgba(255,184,0,0.12)',borderColor:HRB_COLOR}]} onPress={()=>setMatchupTab(t.id)}>
