@@ -161,7 +161,17 @@ def score_mlb_game(ctx, game_props=None):
     elif 70 <= nrfi <= 79:
         score += 10    # lean band, audit 56.7%
     elif nrfi <= 30:
-        score += 14    # YRFI extreme
+        # YRFI fragility gate (2026-05-18): only award full 14pt when
+        # max(1st-inn ERA) sits in the audit sweet spot 6.0-7.9. Outside
+        # that band the YRFI signal is small-sample noise and shouldn't
+        # drive the sweat score into PRIME tier (30d audit ≥8 ERA = 29%).
+        _h1 = float(ctx.get('home_first_inning_era') or 4.5)
+        _a1 = float(ctx.get('away_first_inning_era') or 4.5)
+        _max_fi = max(_h1, _a1)
+        if 6.0 <= _max_fi < 8.0:
+            score += 14    # YRFI sweet-spot fragility (audit ~63%)
+        else:
+            score += 4     # small-sample noise — don't drive sweat to PRIME
     elif nrfi <= 40:
         score += 8
 
@@ -187,8 +197,12 @@ def score_mlb_game(ctx, game_props=None):
     # ---- 1st-inning extremes (NRFI lock or YRFI fade) ----
     h1 = float(ctx.get('home_first_inning_era') or 4.5)
     a1 = float(ctx.get('away_first_inning_era') or 4.5)
-    if h1 >= 7.0 or a1 >= 7.0:
-        score += 8     # fragile starter, YRFI candidate
+    # Extreme fragility (≥8 ERA) is small-sample noise per 5/18 audit
+    # — fragile starter bonus only applies in 6.0-7.9 sweet spot
+    if 6.0 <= max(h1, a1) < 8.0:
+        score += 8     # fragile starter sweet spot
+    elif 8.0 <= max(h1, a1):
+        score += 2     # high but noisy
     elif h1 >= 6.0 or a1 >= 6.0:
         score += 5
     if h1 <= 1.5 and a1 <= 1.5:
@@ -895,7 +909,7 @@ def run():
     # of score; same-tier override still requires +20 score delta.
     # Tier ranking: 'high' = 1 (HIGH CONVICTION), 'solid' = 2 (NRFI/ML lean/NBA solid),
     #               'standard' = 3 (best available)
-    # 'elite' = sweet-spot NRFI 90-94 — proven 78.9% over 352 audited games.
+    # 'elite' = sweet-spot NRFI 90-94 — 70.0% lifetime, 68.8% L30d (n=30) per 5/18 DB audit.
     # 'high' = PRIME confluence ML / NBA high conviction.
     # 'solid' = NRFI edge / ML lean / NBA solid.
     # 'standard' = best available fallback.

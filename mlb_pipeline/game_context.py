@@ -1704,7 +1704,9 @@ def compute_primary_play(ctx):
             "sub": f"PRIME confluence ({int(conf)} signals, {abs_delta:.1f} delta)",
             "signal_floor": 85,
         }
-    # PRIME NRFI sweet spot: 90-94 (78.9% audit hit rate per 352 games)
+    # PRIME NRFI sweet spot: 90-94 (70.0% lifetime, 68.8% L30d on n=30)
+    # Earlier claim of "78.9% on 352 games" was inflated/stale — corrected
+    # against actual DB-resolved sample 2026-05-18.
     if nrfi is not None and 90 <= int(nrfi) <= 94:
         return {
             "type": "nrfi",
