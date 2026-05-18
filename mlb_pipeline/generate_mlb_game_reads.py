@@ -130,8 +130,10 @@ def _nrfi_tier(score):
         return f"{score} — PRIME 90-94 band (~69% audited 30d)"
     if s >= 70:
         return f"{score} — mild NRFI lean 70-79 (~58% audited)"
+    if s <= 25:
+        return f"{score} — YRFI lean (≤25, 30d audit ~48%; sweet spot is 1st-inn ERA 6-8 → 63%)"
     if s <= 40:
-        return f"{score} — strong YRFI lean (≤40, ~62-69% audited)"
+        return f"{score} — soft YRFI lean (≤40, 30d audit ~48% — gate on 1st-inn ERA)"
     return f"{score} — neutral"
 
 

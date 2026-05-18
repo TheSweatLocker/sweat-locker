@@ -181,9 +181,16 @@ def detect_bucket_plays(games, tier_rates):
         # PRIME NRFI sweet spot
         if 90 <= nrfi <= 94:
             plays.append(f"- **{away} @ {home} NRFI** — score {nrfi}, audit-validated 90-94 PRIME tier ({prime_rate})")
-        # YRFI strong lean
-        elif nrfi <= 40 and nrfi != 0:
-            plays.append(f"- **{away} @ {home} YRFI lean** — NRFI score {nrfi}, ≤40 cohort {yrfi_rate}")
+        # YRFI lean (gated 2026-05-18: only post when 1st-inn ERA in 6-8 sweet
+        # spot; extreme fragility ≥8 is small-sample noise at 29% YRFI rate)
+        elif nrfi <= 25 and nrfi != 0:
+            h1 = g.get("home_first_inning_era") or 0
+            a1 = g.get("away_first_inning_era") or 0
+            max_fi = max(float(h1), float(a1))
+            if 6.0 <= max_fi < 8.0:
+                plays.append(f"- **{away} @ {home} YRFI** — NRFI {nrfi} + 1st-inn ERA {max_fi:.1f} (audit sweet spot, 30d ~63%)")
+            else:
+                plays.append(f"- **{away} @ {home} YRFI lean** — NRFI {nrfi}, but 1st-inn ERA {max_fi:.1f} outside audit sweet spot — small sample")
         # Gassed bullpen flag was surfacing as "X 7-9 winner / +0.5 in 7-9"
         # but (1) that market isn't widely offered and (2) we don't have
         # cohort audit data on whether gassed-pen actually predicts late-

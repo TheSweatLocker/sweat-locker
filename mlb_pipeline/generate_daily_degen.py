@@ -201,16 +201,23 @@ def extract_leg_candidates(games, props):
 
     # Emit NRFI/YRFI candidates broadly — let the audit weighting decide
     # which cohorts survive. Old behavior was to pre-gate at 90-94 only,
-    # which silently hid YRFI ≤40 (68.6% audited) and mild-lean 70-79
-    # (57% audited) signals on nights when no PRIME-band score existed.
+    # which silently hid the lean bands on nights when no PRIME score existed.
+    # YRFI gate retuned 2026-05-18: 7d hit rate was 27%, 30d was 48% (well
+    # below the 68% the old copy claimed). Stratifying by max(1st-inn ERA)
+    # found extreme fragility ≥8.0 hits only 29% — small-sample noise from
+    # starters with 1-2 starts. Real edge sits in 6.0-7.9 ERA band (63% n=19).
     seen_nrfi_games = set()
     for g in games:
         nrfi = g.get('nrfi_score')
         gid = g.get('game_id')
         if nrfi is None or gid in seen_nrfi_games:
             continue
-        # Categorize and pick a static conviction; cohort_key_for + audit
-        # weighting will rerank these accordingly.
+        h1 = _f(g.get('home_first_inning_era'))
+        a1 = _f(g.get('away_first_inning_era'))
+        try:
+            max_fi = max(h1 or 0, a1 or 0)
+        except (TypeError, ValueError):
+            max_fi = 0.0
         if 90 <= nrfi <= 94:
             pick_label, conv, tier_label = 'NRFI (No Run First Inning)', 72, 'PRIME'
             sig_label = f"NRFI Score {nrfi} — PRIME band (90-94)"
@@ -220,9 +227,13 @@ def extract_leg_candidates(games, props):
         elif 70 <= nrfi <= 79:
             pick_label, conv, tier_label = 'NRFI (No Run First Inning)', 60, 'LEAN'
             sig_label = f"NRFI Score {nrfi} — mild lean (70-79)"
-        elif nrfi <= 40:
+        elif nrfi <= 25 and 6.0 <= max_fi < 8.0:
             pick_label, conv, tier_label = 'YRFI (Run in First)', 70, 'STRONG'
-            sig_label = f"NRFI Score {nrfi} — YRFI lean (≤40)"
+            sig_label = f"NRFI {nrfi} + 1st-inn ERA {max_fi:.1f} (audit sweet spot 6-8)"
+        elif nrfi <= 40:
+            # Outside sweet spot → small-sample noise; ship transparently as LEAN
+            pick_label, conv, tier_label = 'YRFI (Run in First)', 55, 'LEAN'
+            sig_label = f"NRFI {nrfi} — outside 1st-inn ERA sweet spot (max={max_fi:.1f})"
         else:
             continue  # 41-69 and 80-89 are audited dead zones
         seen_nrfi_games.add(gid)

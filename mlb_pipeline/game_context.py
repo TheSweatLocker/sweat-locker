@@ -1714,13 +1714,35 @@ def compute_primary_play(ctx):
             "signal_floor": 82,
         }
     # YRFI (first inning runs likely): score very low
-    if nrfi is not None and int(nrfi) <= 25:
+    # Fragility gate (2026-05-18): 7d YRFI hit rate was 27%, 30d was 48% — far
+    # below the 68% the old copy claimed. Stratifying by max(1st-inn ERA) found
+    # extreme fragility (≥8.0) only hits 29% YRFI because those starters have
+    # 1-2 small-sample starts and regress to mean. The real edge sits in
+    # max(1st-inn ERA) 6.0-7.9 (63% n=19 over 30d). Outside that band YRFI is
+    # not playable.
+    h1 = ctx.get('home_first_inning_era')
+    a1 = ctx.get('away_first_inning_era')
+    try:
+        max_fi = max(float(h1 or 0), float(a1 or 0))
+    except (TypeError, ValueError):
+        max_fi = 0.0
+    if nrfi is not None and int(nrfi) <= 25 and 6.0 <= max_fi < 8.0:
         return {
             "type": "yrfi",
             "tier": "STRONG",
             "label": "YRFI",
-            "sub": f"NRFI {int(nrfi)} — first inning runs likely",
+            "sub": f"NRFI {int(nrfi)} + 1st-inn ERA {max_fi:.1f} (audit sweet spot)",
             "signal_floor": 72,
+        }
+    # YRFI LEAN — score ≤25 but fragility outside sweet spot → small-sample
+    # noise, post as transparent LEAN (60 floor) instead of STRONG
+    if nrfi is not None and int(nrfi) <= 25:
+        return {
+            "type": "yrfi",
+            "tier": "LEAN",
+            "label": "YRFI",
+            "sub": f"NRFI {int(nrfi)} — 1st-inn ERA outside 6-8 sweet spot",
+            "signal_floor": 60,
         }
     # STRONG ML: confluence ≥+2 AND |delta| ≥1.5
     if conf is not None and int(conf) >= 2 and abs_delta >= 1.5 and ml_playable:
