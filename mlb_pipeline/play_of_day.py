@@ -96,14 +96,22 @@ def get_nba_games():
         print(f"NBA games fetch error: {e}")
         return []
 
-def sweat_tier_for(score):
+def sweat_tier_for(score, ctx=None):
     """Tier thresholds aligned with app/index.tsx getSweatTier (line ~2497).
     Both server and app now use the same 4-tier system: PRIME/STRONG/LIGHT_LEAN/PASS.
-    Recalibrated 2026-05-16 with rewritten score_mlb_game so games actually
-    distribute across tiers instead of clustering at 42-45 PASS."""
+
+    Playability gate (2026-05-18): a game cannot reach PRIME tier without a
+    qualifying primary_play. Before this gate, games with high confluence +
+    big xERA gap but no actionable lean (spread_delta below ML threshold)
+    were ranking PRIME on the home-screen sweat card with no specific bet
+    to display — confusing UX. Cap at STRONG when there's no primary_play."""
     if score is None:
         return None
     if score >= 80:
+        # PRIME requires an actionable lean — otherwise the card shows a
+        # giant "high data interest" tile with no specific bet.
+        if ctx is not None and not ctx.get('primary_play'):
+            return 'STRONG'
         return 'PRIME'
     if score >= 65:
         return 'STRONG'
@@ -761,7 +769,7 @@ def run():
         # Write the score + tier back to mlb_game_context so the app reads
         # the server-authoritative value (instead of computing its own with
         # a different formula that systematically under-reports PRIME).
-        write_sweat_score(ctx, game_score, sweat_tier_for(game_score))
+        write_sweat_score(ctx, game_score, sweat_tier_for(game_score, ctx))
         lean_display, lean_bet, is_nrfi = build_lean(ctx)
         candidates.append({
             'sport': 'MLB',
