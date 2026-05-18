@@ -2738,43 +2738,106 @@ def run():
             try:
                 from predict_runs import predict_runs, MODELS_LOADED, build_feature_dict
                 if MODELS_LOADED and projected_spread is not None:
+                    # v4 model schema (2026-05-18) — kitchen-sink 82-feature
+                    # set. Pass everything we have; build_feature_dict reads
+                    # what it needs and leaves missing values as None
+                    # (XGBoost handles NaN natively).
+                    # Pull from dicts that exist at this point in the build.
+                    # Some features (is_dome, signal_confluence_net,
+                    # last10_*, offense_drift, etc.) are set LATER in the
+                    # function; for those we leave None and the model
+                    # handles missing values natively (XGBoost trained
+                    # with NaN routes).
+                    _hofs = home_offense or {}
+                    _aofs = away_offense or {}
+                    _hps = home_pitcher_stats or {}
+                    _aps = away_pitcher_stats or {}
+                    _hfi = home_first_inn or {}
+                    _afi = away_first_inn or {}
+                    _hvs = home_vs_away or {}
+                    _avs = away_vs_home or {}
                     _ctx_for_model = {
+                        # Pitcher quality (multi-window)
                         'home_sp_xera': home_xera_val,
                         'away_sp_xera': away_xera_val,
-                        'home_sp_whiff_rate': home_pitcher_stats.get('whiff_rate') if home_pitcher_stats else None,
-                        'away_sp_whiff_rate': away_pitcher_stats.get('whiff_rate') if away_pitcher_stats else None,
+                        'home_sp_k_pct': _hps.get('k_pct'),
+                        'away_sp_k_pct': _aps.get('k_pct'),
+                        'home_sp_gb_pct': _hps.get('gb_pct'),
+                        'away_sp_gb_pct': _aps.get('gb_pct'),
                         'home_pitcher_last_3_era': home_pitcher_last_3_era,
                         'away_pitcher_last_3_era': away_pitcher_last_3_era,
+                        'home_pitcher_last_3_k_pct': home_pitcher_last_3_k_pct,
+                        'away_pitcher_last_3_k_pct': away_pitcher_last_3_k_pct,
+                        'home_first_inning_era': _hfi.get('first_inning_era'),
+                        'away_first_inning_era': _afi.get('first_inning_era'),
+                        'home_first_inning_whip': _hfi.get('first_inning_whip'),
+                        'away_first_inning_whip': _afi.get('first_inning_whip'),
+                        'home_sp_days_rest': home_days_rest,
+                        'away_sp_days_rest': away_days_rest,
+                        # Mastery (TOP feature by importance)
+                        'home_pitcher_vs_team_era': _hvs.get('era_vs_team'),
+                        'away_pitcher_vs_team_era': _avs.get('era_vs_team'),
+                        'home_pitcher_vs_team_avg': _hvs.get('avg_vs_team'),
+                        'away_pitcher_vs_team_avg': _avs.get('avg_vs_team'),
+                        # Offense
+                        'home_wrc_plus': _hofs.get('wrc_plus'),
+                        'away_wrc_plus': _aofs.get('wrc_plus'),
                         'home_wrc_vs_opp_hand': home_wrc_vs_opp_hand,
                         'away_wrc_vs_opp_hand': away_wrc_vs_opp_hand,
-                        'home_woba': home_offense.get('woba') if home_offense else None,
-                        'away_woba': away_offense.get('woba') if away_offense else None,
+                        'home_woba': _hofs.get('woba'),
+                        'away_woba': _aofs.get('woba'),
+                        'home_ops': _hofs.get('ops'),
+                        'away_ops': _aofs.get('ops'),
+                        'home_ops_vs_opp_hand': home_ops_vs_opp_hand,
+                        'away_ops_vs_opp_hand': away_ops_vs_opp_hand,
+                        'home_team_xwoba': _hofs.get('xwoba'),
+                        'away_team_xwoba': _aofs.get('xwoba'),
+                        'home_team_barrel_pct': _hofs.get('barrel_pct'),
+                        'away_team_barrel_pct': _aofs.get('barrel_pct'),
                         'home_runs_per_game': home_rpg,
                         'away_runs_per_game': away_rpg,
+                        # Recency (from offense dict where available)
+                        'home_last10_runs_per_game': _hofs.get('last10_runs_per_game'),
+                        'away_last10_runs_per_game': _aofs.get('last10_runs_per_game'),
+                        'home_last10_runs_allowed': _hofs.get('last10_runs_allowed'),
+                        'away_last10_runs_allowed': _aofs.get('last10_runs_allowed'),
+                        'home_last10_run_diff': _hofs.get('last10_run_diff'),
+                        'away_last10_run_diff': _aofs.get('last10_run_diff'),
+                        'home_last5_runs_per_game': _hofs.get('last5_runs_per_game'),
+                        'away_last5_runs_per_game': _aofs.get('last5_runs_per_game'),
+                        'home_offense_drift': _hofs.get('offense_drift'),
+                        'away_offense_drift': _aofs.get('offense_drift'),
+                        # K matchup
+                        'home_team_k_pct': _hofs.get('k_pct'),
+                        'away_team_k_pct': _aofs.get('k_pct'),
                         'home_k_gap': home_k_gap,
                         'away_k_gap': away_k_gap,
-                        'home_lineup_weight': home_lineup_weight,
-                        'away_lineup_weight': away_lineup_weight,
+                        # Defense
+                        'home_team_oaa': _hofs.get('oaa'),
+                        'away_team_oaa': _aofs.get('oaa'),
+                        'home_catcher_framing': home_catcher_framing,
+                        'away_catcher_framing': away_catcher_framing,
+                        # Environment
                         'park_run_factor': park_run_factor,
-                        'wind_mph': weather.get('wind_speed'),
+                        'wind_mph': weather.get('wind_speed') if weather else None,
+                        'temperature': weather.get('temperature') if weather else None,
+                        # Market
                         'close_total': total_line if not is_open_run else None,
                         'close_spread': spread_line if not is_open_run else None,
-                        'nrfi_score': nrfi_score,
+                        'open_total': total_line if is_open_run else None,
+                        'open_spread': spread_line if is_open_run else None,
+                        # v3 anchors
                         'projected_spread': projected_spread,
                         'projected_total': projected_total,
                     }
-                    # Input-quality guards (added 2026-05-18) — block XGBoost
-                    # output when inputs are too sparse or extreme to trust.
-                    # The 4/25 model was trained on 619 games of mostly normal
-                    # data; fragile-starter games (Lodolo null xERA, L3 8+ ERA)
-                    # produce nonsense outputs that mislead users.
+                    # v4 model (2026-05-18) handles 1st-inn fragility and
+                    # pitcher mastery natively as features — the old L3 ≥ 7.5
+                    # guard is no longer needed. Keep ONLY the null-xERA
+                    # guard (xgb can't reason about missing primary features)
+                    # and the disagreement guard (catches blind spots).
                     skip_xgb_reason = None
                     if home_xera_val is None or away_xera_val is None:
                         skip_xgb_reason = "missing xERA"
-                    elif home_pitcher_last_3_era is not None and home_pitcher_last_3_era >= 7.5:
-                        skip_xgb_reason = f"home L3 ERA extreme ({home_pitcher_last_3_era})"
-                    elif away_pitcher_last_3_era is not None and away_pitcher_last_3_era >= 7.5:
-                        skip_xgb_reason = f"away L3 ERA extreme ({away_pitcher_last_3_era})"
 
                     if skip_xgb_reason:
                         print(f"  XGBoost suppressed: {skip_xgb_reason} — using v3 projected_total only")

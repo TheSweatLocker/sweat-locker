@@ -40,42 +40,71 @@ HEADERS = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
 MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-# Features used as inputs. v3 (2026-05-18) feature set — investigation
-# of XGBoost direction degradation found three problem features were
-# noise/circular and three high-signal features were missing:
-#   DROPPED:
-#   - home/away_sp_whiff_rate: stored values like 1000.0% — data quality bug
-#   - home/away_lineup_weight: often null, thin coverage
-#   - nrfi_score: circular dependency (NRFI is built from same inputs
-#     used to predict run total — model just learns to echo it)
-#   ADDED:
-#   - 1st-inning ERA: captures fragile-starter blind spot (Irvin 12.0,
-#     Painter 5.14 etc. that produced absurd UNDERs)
-#   - L3 K% (recency K rate, complements L3 ERA)
-#   - bullpen ERA + relievers L3d (bullpen state matters for high-scoring)
-#   - days rest (pitcher fatigue / freshness)
-#   - temperature (run environment correlation)
+# Features used as inputs. v4 (2026-05-18) kitchen-sink feature set after
+# comprehensive backtest showed massive improvement from 28 → 82 features:
+#   v3 formula direction:    51.8% (500 games)
+#   28-feature XGBoost:      51.1% (321 games — barely better than coin)
+#   82-feature XGBoost:      57.3% (321 games)
+#   82-feature + recency:   58.3% (321 games) — beats formula by +6.5pt
+#
+# Critical features previously missing from training:
+#   - home/away_pitcher_vs_team_era (TOP feature by importance, 5.2%)
+#   - home/away_injury_count (top 8)
+#   - home/away_first_inning_era + whip (top 15)
+#   - home/away_team_oaa (defense — top 12)
+#   - home/away_team_xwoba + barrel_pct (Statcast quality)
+#   - home/away_last10_run_diff (recency)
+#   - home/away_offense_drift (recency vs season)
+#   - home/away_ops + ops_vs_opp_hand (vs-hand offense)
 RAW_FEATURES = [
-    # Pitcher quality (xERA + L3 + 1st-inn = three-layer view of "how is he pitching")
+    # Pitcher quality — three-window view + Statcast
     'home_sp_xera', 'away_sp_xera',
+    'home_sp_k_pct', 'away_sp_k_pct',
+    'home_sp_gb_pct', 'away_sp_gb_pct',
     'home_pitcher_last_3_era', 'away_pitcher_last_3_era',
     'home_pitcher_last_3_k_pct', 'away_pitcher_last_3_k_pct',
     'home_first_inning_era', 'away_first_inning_era',
-    # Pitcher rest / freshness
+    'home_first_inning_whip', 'away_first_inning_whip',
     'home_sp_days_rest', 'away_sp_days_rest',
-    # Offense — vs-hand wins over season wRC+ in importance
+    'home_last_pitch_count', 'away_last_pitch_count',
+    'home_last_ip', 'away_last_ip',
+    # Pitcher mastery vs current opp lineup (TOP importance feature)
+    'home_pitcher_vs_team_era', 'away_pitcher_vs_team_era',
+    'home_pitcher_vs_team_avg', 'away_pitcher_vs_team_avg',
+    # Offense — multiple windows + Statcast
+    'home_wrc_plus', 'away_wrc_plus',
     'home_wrc_vs_opp_hand', 'away_wrc_vs_opp_hand',
     'home_woba', 'away_woba',
+    'home_ops', 'away_ops',
+    'home_ops_vs_opp_hand', 'away_ops_vs_opp_hand',
+    'home_team_xwoba', 'away_team_xwoba',
+    'home_team_barrel_pct', 'away_team_barrel_pct',
     'home_runs_per_game', 'away_runs_per_game',
+    # Recency (multi-window)
+    'home_last10_runs_per_game', 'away_last10_runs_per_game',
+    'home_last10_runs_allowed', 'away_last10_runs_allowed',
+    'home_last10_run_diff', 'away_last10_run_diff',
+    'home_last5_runs_per_game', 'away_last5_runs_per_game',
+    'home_offense_drift', 'away_offense_drift',
     # K matchups
+    'home_team_k_pct', 'away_team_k_pct',
     'home_k_gap', 'away_k_gap',
-    # Bullpen state (high-scoring games hinge on relief)
+    # Defense
+    'home_team_oaa', 'away_team_oaa',
+    'home_catcher_framing', 'away_catcher_framing',
+    # Bullpen state
     'home_bullpen_era', 'away_bullpen_era',
     'home_bp_relievers_3d', 'away_bp_relievers_3d',
+    # Injuries (high importance)
+    'home_injury_count', 'away_injury_count',
     # Environment
-    'park_run_factor', 'wind_mph', 'temperature',
-    # Market lines — strong anchors
+    'park_run_factor', 'wind_mph', 'temperature', 'is_dome',
+    # Market lines
     'close_total', 'close_spread',
+    'open_total', 'open_spread',
+    'home_ml_close', 'away_ml_close',
+    # Built signal
+    'signal_confluence_net',
 ]
 
 
@@ -111,38 +140,46 @@ def engineer_features(g):
     """Add derived features the model can't easily learn from raw inputs alone."""
     feat = {f: _f(g.get(f)) for f in RAW_FEATURES}
 
-    # xERA gap (absolute) — captures pitching matchup magnitude
-    hx, ax = feat['home_sp_xera'], feat['away_sp_xera']
-    feat['xera_gap'] = abs(hx - ax) if hx is not None and ax is not None else None
+    # is_dome boolean → numeric
+    if g.get('is_dome') is not None:
+        feat['is_dome'] = 1.0 if g.get('is_dome') else 0.0
+    elif g.get('dome_game_flag') is not None:
+        feat['is_dome'] = 1.0 if g.get('dome_game_flag') else 0.0
 
-    # wRC+ vs hand differential (positive = home offense edge)
-    hw = feat.get('home_wrc_vs_opp_hand')
-    aw = feat.get('away_wrc_vs_opp_hand')
-    feat['wrc_hand_diff'] = (hw - aw) if hw is not None and aw is not None else None
+    # xERA gap + sum (gap = matchup magnitude; sum = total run environment)
+    hx, ax = feat.get('home_sp_xera'), feat.get('away_sp_xera')
+    feat['xera_gap'] = abs(hx - ax) if hx is not None and ax is not None else None
+    feat['xera_sum'] = (hx + ax) if hx is not None and ax is not None else None
+
+    # wRC+ diff + sum (favored side + total offense strength)
+    hw = feat.get('home_wrc_vs_opp_hand') or feat.get('home_wrc_plus')
+    aw = feat.get('away_wrc_vs_opp_hand') or feat.get('away_wrc_plus')
+    feat['wrc_diff'] = (hw - aw) if hw is not None and aw is not None else None
+    feat['wrc_sum'] = (hw + aw) if hw is not None and aw is not None else None
 
     # Recent form gap (negative = home pitcher hotter)
-    h3, a3 = feat['home_pitcher_last_3_era'], feat['away_pitcher_last_3_era']
+    h3, a3 = feat.get('home_pitcher_last_3_era'), feat.get('away_pitcher_last_3_era')
     feat['l3_era_diff'] = (h3 - a3) if h3 is not None and a3 is not None else None
 
-    # CORRECTED spread delta (model + close — sign-fix from 2026-04-24)
-    ps = _f(g.get('projected_spread'))
-    cs = _f(g.get('close_spread'))
-    feat['corrected_spread_delta'] = (ps + cs) if ps is not None and cs is not None else None
+    # Recency-vs-season drift (positive = team scoring more lately)
+    hr_l10, hr_szn = feat.get('home_last10_runs_per_game'), feat.get('home_runs_per_game')
+    if hr_l10 is not None and hr_szn is not None:
+        feat['home_recency_drift'] = hr_l10 - hr_szn
+    ar_l10, ar_szn = feat.get('away_last10_runs_per_game'), feat.get('away_runs_per_game')
+    if ar_l10 is not None and ar_szn is not None:
+        feat['away_recency_drift'] = ar_l10 - ar_szn
 
-    # ML direction agreement: model picks home iff ps > 0; market favors home iff cs < 0
-    if ps is not None and cs is not None:
-        model_home = ps > 0
-        market_home = cs < 0
-        feat['model_market_agree'] = 1 if model_home == market_home else 0
-    else:
-        feat['model_market_agree'] = None
+    # Max 1st-inn fragility (catches the Irvin/Painter cases)
+    h1, a1 = feat.get('home_first_inning_era'), feat.get('away_first_inning_era')
+    if h1 is not None and a1 is not None:
+        feat['max_1st_inn_era'] = max(h1, a1)
 
-    # Total delta
-    pt = _f(g.get('projected_total'))
-    ct = feat['close_total']
-    feat['total_delta'] = (pt - ct) if pt is not None and ct is not None else None
+    # Bullpen fatigue (combined relievers used L3d)
+    h_bp, a_bp = feat.get('home_bp_relievers_3d'), feat.get('away_bp_relievers_3d')
+    if h_bp is not None and a_bp is not None:
+        feat['bp_fatigue'] = h_bp + a_bp
 
-    # Park × wind interaction (rough proxy for ball-flight conditions)
+    # Park × wind interaction
     park, wind = feat.get('park_run_factor'), feat.get('wind_mph')
     feat['park_wind'] = (park * wind) if park is not None and wind is not None else None
 
@@ -157,20 +194,28 @@ def build_matrix(games):
     import numpy as np
     global FEATURE_NAMES
 
-    rows = []
-    y_home, y_away = [], []
+    # First pass: collect union of all engineered-feature keys across the
+    # dataset (some keys like home_recency_drift only appear when inputs
+    # are non-null per row; we need a stable schema).
+    all_keys = set()
+    engineered = []
     for g in games:
         hs, as_ = g.get('home_score'), g.get('away_score')
         if hs is None or as_ is None: continue
-        feat = engineer_features(g)
-        if FEATURE_NAMES is None:
-            FEATURE_NAMES = list(feat.keys())
-        rows.append([feat[k] for k in FEATURE_NAMES])
-        y_home.append(int(hs))
-        y_away.append(int(as_))
+        f = engineer_features(g)
+        all_keys.update(f.keys())
+        engineered.append((f, int(hs), int(as_)))
+    FEATURE_NAMES = sorted(all_keys)
 
-    # Convert to float arrays — XGBoost takes np.nan for missing
-    X = np.array([[float('nan') if v is None else float(v) for v in row] for row in rows], dtype=np.float32)
+    # Build rows with consistent schema (NaN for missing keys per game)
+    rows = []
+    y_home, y_away = [], []
+    for f, hs, as_ in engineered:
+        rows.append([float('nan') if f.get(k) is None else float(f[k]) for k in FEATURE_NAMES])
+        y_home.append(hs)
+        y_away.append(as_)
+
+    X = np.array(rows, dtype=np.float32)
     return X, np.array(y_home, dtype=np.float32), np.array(y_away, dtype=np.float32), FEATURE_NAMES
 
 
@@ -193,13 +238,15 @@ def current_formula_projection(g):
 
 
 def _make_xgb():
-    """Tighter regularization for small-N: shallow trees, fewer estimators, L1+L2."""
+    """v4 (2026-05-18): retuned for 82-feature kitchen-sink schema.
+    Slightly deeper trees + more estimators + heavier regularization to
+    handle the larger feature space without overfitting."""
     import xgboost as xgb
     return xgb.XGBRegressor(
-        n_estimators=120, max_depth=3, learning_rate=0.04,
-        subsample=0.8, colsample_bytree=0.8,
-        reg_alpha=0.5, reg_lambda=1.0,
-        min_child_weight=4,
+        n_estimators=200, max_depth=4, learning_rate=0.03,
+        subsample=0.8, colsample_bytree=0.7,
+        reg_alpha=1.0, reg_lambda=2.0,
+        min_child_weight=5,
         random_state=42, verbosity=0, tree_method='hist',
     )
 
@@ -248,11 +295,17 @@ def train_and_validate(games, save=True, debug=False):
             X_train = X_all[:i]
             y_train_h = y_home_all[:i]
             y_train_a = y_away_all[:i]
+            # Recency weights (2026-05-18) — backtest showed +1pt direction
+            # accuracy when last 30% of training data gets 2.5x weight.
+            # Captures shifting conditions (warmer weather, lineup settle, etc.)
+            sample_w = np.ones(i, dtype=np.float32)
+            recent_cut = int(i * 0.7)
+            sample_w[recent_cut:] = 2.5
             # XGBoost (regularized)
             model_h_xgb = _make_xgb()
             model_a_xgb = _make_xgb()
-            model_h_xgb.fit(X_train, y_train_h)
-            model_a_xgb.fit(X_train, y_train_a)
+            model_h_xgb.fit(X_train, y_train_h, sample_weight=sample_w)
+            model_a_xgb.fit(X_train, y_train_a, sample_weight=sample_w)
             # Ridge
             model_h_ridge = _make_ridge()
             model_a_ridge = _make_ridge()

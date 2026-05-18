@@ -104,42 +104,78 @@ def build_feature_dict(ctx):
         except (ValueError, TypeError):
             return None
 
+    # v4 kitchen-sink feature schema (2026-05-18) — matches train_runs_model
     raw_keys = [
         'home_sp_xera', 'away_sp_xera',
-        'home_sp_whiff_rate', 'away_sp_whiff_rate',
+        'home_sp_k_pct', 'away_sp_k_pct',
+        'home_sp_gb_pct', 'away_sp_gb_pct',
         'home_pitcher_last_3_era', 'away_pitcher_last_3_era',
+        'home_pitcher_last_3_k_pct', 'away_pitcher_last_3_k_pct',
+        'home_first_inning_era', 'away_first_inning_era',
+        'home_first_inning_whip', 'away_first_inning_whip',
+        'home_sp_days_rest', 'away_sp_days_rest',
+        'home_last_pitch_count', 'away_last_pitch_count',
+        'home_last_ip', 'away_last_ip',
+        'home_pitcher_vs_team_era', 'away_pitcher_vs_team_era',
+        'home_pitcher_vs_team_avg', 'away_pitcher_vs_team_avg',
+        'home_wrc_plus', 'away_wrc_plus',
         'home_wrc_vs_opp_hand', 'away_wrc_vs_opp_hand',
         'home_woba', 'away_woba',
+        'home_ops', 'away_ops',
+        'home_ops_vs_opp_hand', 'away_ops_vs_opp_hand',
+        'home_team_xwoba', 'away_team_xwoba',
+        'home_team_barrel_pct', 'away_team_barrel_pct',
         'home_runs_per_game', 'away_runs_per_game',
+        'home_last10_runs_per_game', 'away_last10_runs_per_game',
+        'home_last10_runs_allowed', 'away_last10_runs_allowed',
+        'home_last10_run_diff', 'away_last10_run_diff',
+        'home_last5_runs_per_game', 'away_last5_runs_per_game',
+        'home_offense_drift', 'away_offense_drift',
+        'home_team_k_pct', 'away_team_k_pct',
         'home_k_gap', 'away_k_gap',
-        'home_lineup_weight', 'away_lineup_weight',
-        'park_run_factor', 'wind_mph',
+        'home_team_oaa', 'away_team_oaa',
+        'home_catcher_framing', 'away_catcher_framing',
+        'home_bullpen_era', 'away_bullpen_era',
+        'home_bp_relievers_3d', 'away_bp_relievers_3d',
+        'home_injury_count', 'away_injury_count',
+        'park_run_factor', 'wind_mph', 'temperature', 'is_dome',
         'close_total', 'close_spread',
-        'nrfi_score',
+        'open_total', 'open_spread',
+        'home_ml_close', 'away_ml_close',
+        'signal_confluence_net',
     ]
     feat = {k: _f(ctx.get(k)) for k in raw_keys}
 
-    hx, ax = feat['home_sp_xera'], feat['away_sp_xera']
+    # is_dome boolean → numeric
+    if ctx.get('is_dome') is not None:
+        feat['is_dome'] = 1.0 if ctx.get('is_dome') else 0.0
+
+    hx, ax = feat.get('home_sp_xera'), feat.get('away_sp_xera')
     feat['xera_gap'] = abs(hx - ax) if hx is not None and ax is not None else None
+    feat['xera_sum'] = (hx + ax) if hx is not None and ax is not None else None
 
-    hw = feat.get('home_wrc_vs_opp_hand')
-    aw = feat.get('away_wrc_vs_opp_hand')
-    feat['wrc_hand_diff'] = (hw - aw) if hw is not None and aw is not None else None
+    hw = feat.get('home_wrc_vs_opp_hand') or feat.get('home_wrc_plus')
+    aw = feat.get('away_wrc_vs_opp_hand') or feat.get('away_wrc_plus')
+    feat['wrc_diff'] = (hw - aw) if hw is not None and aw is not None else None
+    feat['wrc_sum'] = (hw + aw) if hw is not None and aw is not None else None
 
-    h3, a3 = feat['home_pitcher_last_3_era'], feat['away_pitcher_last_3_era']
+    h3, a3 = feat.get('home_pitcher_last_3_era'), feat.get('away_pitcher_last_3_era')
     feat['l3_era_diff'] = (h3 - a3) if h3 is not None and a3 is not None else None
 
-    ps = _f(ctx.get('projected_spread'))
-    cs = _f(ctx.get('close_spread'))
-    feat['corrected_spread_delta'] = (ps + cs) if ps is not None and cs is not None else None
-    if ps is not None and cs is not None:
-        feat['model_market_agree'] = 1 if (ps > 0) == (cs < 0) else 0
-    else:
-        feat['model_market_agree'] = None
+    hr_l10, hr_szn = feat.get('home_last10_runs_per_game'), feat.get('home_runs_per_game')
+    if hr_l10 is not None and hr_szn is not None:
+        feat['home_recency_drift'] = hr_l10 - hr_szn
+    ar_l10, ar_szn = feat.get('away_last10_runs_per_game'), feat.get('away_runs_per_game')
+    if ar_l10 is not None and ar_szn is not None:
+        feat['away_recency_drift'] = ar_l10 - ar_szn
 
-    pt = _f(ctx.get('projected_total'))
-    ct = feat['close_total']
-    feat['total_delta'] = (pt - ct) if pt is not None and ct is not None else None
+    h1, a1 = feat.get('home_first_inning_era'), feat.get('away_first_inning_era')
+    if h1 is not None and a1 is not None:
+        feat['max_1st_inn_era'] = max(h1, a1)
+
+    h_bp, a_bp = feat.get('home_bp_relievers_3d'), feat.get('away_bp_relievers_3d')
+    if h_bp is not None and a_bp is not None:
+        feat['bp_fatigue'] = h_bp + a_bp
 
     park, wind = feat.get('park_run_factor'), feat.get('wind_mph')
     feat['park_wind'] = (park * wind) if park is not None and wind is not None else None
