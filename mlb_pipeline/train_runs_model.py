@@ -40,29 +40,42 @@ HEADERS = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
 MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-# Features used as inputs. v2 (2026-04-25): trimmed from 45 to ~18 raw +
-# engineered ones based on first-run feature importance. Reduced features
-# combat overfit at our N=200 training games.
+# Features used as inputs. v3 (2026-05-18) feature set — investigation
+# of XGBoost direction degradation found three problem features were
+# noise/circular and three high-signal features were missing:
+#   DROPPED:
+#   - home/away_sp_whiff_rate: stored values like 1000.0% — data quality bug
+#   - home/away_lineup_weight: often null, thin coverage
+#   - nrfi_score: circular dependency (NRFI is built from same inputs
+#     used to predict run total — model just learns to echo it)
+#   ADDED:
+#   - 1st-inning ERA: captures fragile-starter blind spot (Irvin 12.0,
+#     Painter 5.14 etc. that produced absurd UNDERs)
+#   - L3 K% (recency K rate, complements L3 ERA)
+#   - bullpen ERA + relievers L3d (bullpen state matters for high-scoring)
+#   - days rest (pitcher fatigue / freshness)
+#   - temperature (run environment correlation)
 RAW_FEATURES = [
-    # Pitcher quality (top features by importance)
+    # Pitcher quality (xERA + L3 + 1st-inn = three-layer view of "how is he pitching")
     'home_sp_xera', 'away_sp_xera',
-    'home_sp_whiff_rate', 'away_sp_whiff_rate',
-    # Recent pitcher form
     'home_pitcher_last_3_era', 'away_pitcher_last_3_era',
+    'home_pitcher_last_3_k_pct', 'away_pitcher_last_3_k_pct',
+    'home_first_inning_era', 'away_first_inning_era',
+    # Pitcher rest / freshness
+    'home_sp_days_rest', 'away_sp_days_rest',
     # Offense — vs-hand wins over season wRC+ in importance
     'home_wrc_vs_opp_hand', 'away_wrc_vs_opp_hand',
     'home_woba', 'away_woba',
     'home_runs_per_game', 'away_runs_per_game',
-    # Pre-computed signals
+    # K matchups
     'home_k_gap', 'away_k_gap',
-    # Lineup (thin coverage but important when present)
-    'home_lineup_weight', 'away_lineup_weight',
+    # Bullpen state (high-scoring games hinge on relief)
+    'home_bullpen_era', 'away_bullpen_era',
+    'home_bp_relievers_3d', 'away_bp_relievers_3d',
     # Environment
-    'park_run_factor', 'wind_mph',
+    'park_run_factor', 'wind_mph', 'temperature',
     # Market lines — strong anchors
     'close_total', 'close_spread',
-    # NRFI (opening-inning compression)
-    'nrfi_score',
 ]
 
 

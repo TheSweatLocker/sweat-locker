@@ -13,16 +13,22 @@ ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY")
 
 def sanitize_xera(xera, pitcher_name=''):
-    """Cap xERA at 6.5 — values above this are bad early season data"""
+    """Validate xERA. Originally capped at 6.5 to filter April small-sample
+    noise, but that was nulling out genuinely struggling pitchers (Lodolo,
+    Imai, etc.) by mid-May once samples grew. Reformulated 2026-05-18:
+      - Cap at 9.5 (truly absurd values only — likely a parse error)
+      - Floor at 1.5 (sub-1.5 xERA over a season is implausible)
+    Real-world MLB xERA range is ~1.8 to 8.5; we accept that whole range
+    and let the downstream model handle the signal."""
     if xera is None:
         return None
     try:
         val = float(xera)
-        if val > 6.5:
-            print(f'  ⚠️ Suspicious xERA {val} for {pitcher_name} — bad early season data, treating as None')
+        if val > 9.5 or val < 1.5:
+            print(f'  ⚠️ xERA {val:.2f} for {pitcher_name} outside MLB realistic range (1.5-9.5) — treating as None')
             return None
         return round(val, 2)
-    except:
+    except (TypeError, ValueError):
         return None
 
 def sanitize_k_pct(k_pct, pitcher_name=''):
@@ -2757,14 +2763,37 @@ def run():
                         'projected_spread': projected_spread,
                         'projected_total': projected_total,
                     }
-                    feat = build_feature_dict(_ctx_for_model)
-                    pred_h, pred_a = predict_runs(feat)
-                    if pred_h is not None and pred_a is not None:
-                        model_pred_home_runs = round(pred_h, 2)
-                        model_pred_away_runs = round(pred_a, 2)
-                        model_pred_spread = round(pred_h - pred_a, 2)
-                        model_pred_total = round(pred_h + pred_a, 2)
-                        print(f"  XGBoost (informational): spread {model_pred_spread:+.2f} (v3 {projected_spread:+.2f}), total {model_pred_total:.1f} (v3 {projected_total:.1f})")
+                    # Input-quality guards (added 2026-05-18) — block XGBoost
+                    # output when inputs are too sparse or extreme to trust.
+                    # The 4/25 model was trained on 619 games of mostly normal
+                    # data; fragile-starter games (Lodolo null xERA, L3 8+ ERA)
+                    # produce nonsense outputs that mislead users.
+                    skip_xgb_reason = None
+                    if home_xera_val is None or away_xera_val is None:
+                        skip_xgb_reason = "missing xERA"
+                    elif home_pitcher_last_3_era is not None and home_pitcher_last_3_era >= 7.5:
+                        skip_xgb_reason = f"home L3 ERA extreme ({home_pitcher_last_3_era})"
+                    elif away_pitcher_last_3_era is not None and away_pitcher_last_3_era >= 7.5:
+                        skip_xgb_reason = f"away L3 ERA extreme ({away_pitcher_last_3_era})"
+
+                    if skip_xgb_reason:
+                        print(f"  XGBoost suppressed: {skip_xgb_reason} — using v3 projected_total only")
+                    else:
+                        feat = build_feature_dict(_ctx_for_model)
+                        pred_h, pred_a = predict_runs(feat)
+                        if pred_h is not None and pred_a is not None:
+                            xgb_total = pred_h + pred_a
+                            # Disagreement guard: if XGBoost is more than 2.5 runs
+                            # below the v3 formula projection, the input set has
+                            # likely tripped a training blind spot. Suppress.
+                            if projected_total is not None and abs(xgb_total - projected_total) >= 2.5:
+                                print(f"  XGBoost suppressed: disagrees with v3 by {abs(xgb_total - projected_total):.1f} runs (xgb {xgb_total:.1f} vs v3 {projected_total:.1f}) — model blind spot, falling back to v3")
+                            else:
+                                model_pred_home_runs = round(pred_h, 2)
+                                model_pred_away_runs = round(pred_a, 2)
+                                model_pred_spread = round(pred_h - pred_a, 2)
+                                model_pred_total = round(xgb_total, 2)
+                                print(f"  XGBoost (informational): spread {model_pred_spread:+.2f} (v3 {projected_spread:+.2f}), total {model_pred_total:.1f} (v3 {projected_total:.1f})")
             except Exception as e:
                 print(f"  XGBoost predict failed: {e}")
 

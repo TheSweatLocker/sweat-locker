@@ -3766,8 +3766,16 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         serverSweat = { score: Number(mctx.sweat_score), tier: mctx.sweat_tier || '' };
       }
     }
-    const finalTotal = serverSweat ? serverSweat.score : total;
-    const finalTier = serverSweat ? serverSweat.tier : (total >= 68 ? 'PRIME' : total >= 62 ? 'STRONG' : 'BEST_AVAILABLE');
+    // 2026-05-18 — for MLB, show "Pending" rather than the client-side
+    // fallback when the server hasn't written the sweat score yet. The
+    // client-side calc uses different bands + missing newer signals
+    // (confluence, prop-stack), so it can land 20+ points off the server
+    // value. Better to hold blank than show a misleading number.
+    const mlbPendingServer = sport === 'MLB' && !serverSweat;
+    const finalTotal = serverSweat ? serverSweat.score : (mlbPendingServer ? null : total);
+    const finalTier = serverSweat
+      ? serverSweat.tier
+      : (mlbPendingServer ? 'PENDING' : (total >= 80 ? 'PRIME' : total >= 65 ? 'STRONG' : total >= 50 ? 'LIGHT_LEAN' : 'PASS'));
 
     return {
   total: finalTotal,
