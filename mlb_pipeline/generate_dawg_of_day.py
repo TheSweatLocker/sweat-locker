@@ -191,10 +191,30 @@ def score_dawg(g, diag=None, ml_map=None):
     # If model says dog loses by 0.8 (dog_diff=-0.8), dog_edge = -0.8 + 1.5 = 0.7
     dog_edge = dog_differential + 1.5
 
-    MIN_EDGE = 1.3  # loosened so a Dawg surfaces most days; conviction score picks winner
+    # v4 mastery-aware override (2026-05-19): v3 spread misses mastery
+    # signals like Cease (1.35 ERA vs NYY) and Warren (18.00 ERA vs TOR).
+    # When v4 disagrees with v3 by ≥2.0 in the dog's favor, relax the
+    # MIN_EDGE threshold so mastery-driven dawgs surface as candidates.
+    # Conviction scoring still has to put them on top — this is a gating
+    # change, not an auto-win. The 5/19 TOR vs NYY game was the trigger
+    # case: v3 said NYY by 0.97 (TOR edge 0.53), v4 said TOR by 4.85
+    # (edge 6.35). v3-only gate rejected TOR; with this fix TOR surfaces
+    # as a candidate.
+    v4_ps = _f(g.get('model_pred_spread'))
+    v4_disagrees_for_dog = False
+    if v4_ps is not None:
+        v4_dog_diff = v4_ps if is_home_dawg else -v4_ps
+        v4_dog_edge = v4_dog_diff + 1.5
+        # v4 must (a) point at dog winning, (b) disagree with v3 by ≥2.0
+        # in the dog's direction
+        if v4_dog_diff > dog_differential + 2.0 and v4_dog_diff > 0:
+            v4_disagrees_for_dog = True
+
+    MIN_EDGE = 0.5 if v4_disagrees_for_dog else 1.3
     if dog_edge < MIN_EDGE:
         if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: {team.split()[-1]} dog_edge={dog_edge:+.2f} (ps={ps:+.1f}, ML {team_ml:+d}) — model agrees")
+            gate_note = " (v4 relaxed gate from 1.3)" if v4_disagrees_for_dog else ""
+            diag.append(f"  ✗ {matchup_label}: {team.split()[-1]} dog_edge={dog_edge:+.2f} (ps={ps:+.1f}, ML {team_ml:+d}) — model agrees{gate_note}")
         return None
 
     # close_spread for display only — may be wrong sign but we'll show it
@@ -227,6 +247,19 @@ def score_dawg(g, diag=None, ml_map=None):
     conviction += edge_bump
     dog_fate = "winning outright" if dog_differential > 0 else f"losing by only {abs(dog_differential):.1f}"
     signals['model_view'] = f"{team.split()[-1]} ML {team_ml:+d} — model sees them {dog_fate} ({dog_edge:+.1f} runs vs +1.5 RL)"
+
+    # v4 mastery-aware conviction bump (2026-05-19)
+    if v4_disagrees_for_dog:
+        # v4_dog_edge is meaningfully bigger than v3 — add proportional bump
+        # capped at +15 so small-sample mastery doesn't dominate. The actual
+        # v4 number drives a transparent signal note so user sees the basis.
+        v4_bump = min(15, int((v4_dog_edge - dog_edge) * 3))
+        conviction += v4_bump
+        signals['v4_mastery'] = (
+            f"v4 model spread sees {team.split()[-1]} winning by "
+            f"{v4_dog_diff:+.1f} (vs v3 {dog_differential:+.1f}) — mastery-aware "
+            f"signal, +{v4_bump} conviction"
+        )
 
     # Team offense vs opposing hand
     if team_wrc >= 110:
