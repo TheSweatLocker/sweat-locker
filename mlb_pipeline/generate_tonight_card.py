@@ -209,15 +209,28 @@ def detect_skips(games, tier_rates):
         nrfi = g.get("nrfi_score") or 0
         if nrfi >= 95:
             skips.append(f"- **{away} @ {home} NRFI {nrfi}** — 95+ volatile band, {volatile_rate}. Take the 1-3 inning bucket version of the same read instead.")
-        # PRIME confluence with zero spread edge (chalk trap)
+        # PRIME confluence ML "trap" filter — retuned 2026-05-19 after audit.
+        # OLD threshold flagged abs(sd) < 1.0 as a chalk trap. Wrong — that
+        # band audits 70.8% on n=24 (winners, not traps). The real losing
+        # zone is the 1.0-1.5 delta band at 46.2% (n=13).
+        # Audit data via _audit_chalk_trap.py on 250 resolved games:
+        #   PRIME conf + delta <1.0   → 70.8% (17-7)   was being mislabeled
+        #   PRIME conf + delta 1.0-1.5 → 46.2% (6-7)   actual trap
+        #   PRIME conf + delta ≥3.0   → 72.7% (8-3)
+        # Net effect: card now correctly recommends PRIME + tiny-delta ML
+        # plays (they hit) and skips PRIME + 1.0-1.5 delta plays (they don't).
         conf = g.get("signal_confluence_net") or 0
         sd = g.get("spread_delta") or 0
         try:
             sd = float(sd)
         except (TypeError, ValueError):
             sd = 0
-        if int(conf) >= 4 and abs(sd) < 1.0:
-            skips.append(f"- **{away} @ {home} ML** — confluence +{conf} but spread_delta only {sd:.2f}, no real model edge over market. Chalk trap.")
+        if int(conf) >= 4 and 1.0 <= abs(sd) < 1.5:
+            skips.append(
+                f"- **{away} @ {home} ML** — confluence +{conf} but spread_delta "
+                f"{abs(sd):.2f} sits in the 1.0-1.5 audit dead-zone (46% lifetime "
+                f"on n=13). Take a different angle on this game."
+            )
     return skips[:3] or ["_(nothing flagged as a skip tonight)_"]
 
 
