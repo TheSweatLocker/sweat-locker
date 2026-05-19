@@ -1377,7 +1377,13 @@ def score_pitcher_outs_under(g, side):
         return None
     last_ip = _f(g.get(f'{side}_last_ip'))
     last_pitches = _f(g.get(f'{side}_last_pitch_count'))
-    # Openers ARE candidates for Under (they only go 1-3 IP) — don't skip them here
+    # Openers SKIPPED (2026-05-19 patch): the math says they cash Under
+    # trivially, but books don't post outs lines on openers — the prop is
+    # unbettable. Today's Rojas case: pipeline surfaced him at 91.7% audit
+    # cohort, user couldn't find the line on any sportsbook. Better to not
+    # surface than to surface an unbettable lock.
+    if last_ip is not None and last_ip <= 2.0 and (last_pitches or 0) <= 40:
+        return None  # opener — books don't post outs line
     opp_side = 'away' if side == 'home' else 'home'
     opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
     park_run = _f(g.get('park_run_factor')) or 100
@@ -1386,11 +1392,6 @@ def score_pitcher_outs_under(g, side):
 
     signals = {}
     conviction = 30
-
-    # Mark obvious openers — should hit Under almost trivially
-    if last_ip is not None and last_ip <= 2.0 and (last_pitches or 0) <= 40:
-        conviction += 35
-        signals['opener'] = f'Last outing {last_ip:.1f} IP / {last_pitches or 0:.0f}p — opener'
 
     # xERA — bad pitchers go shorter
     if xera >= 5.0:
