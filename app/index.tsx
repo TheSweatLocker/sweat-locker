@@ -4246,25 +4246,12 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
       .eq('game_date', etStr)
       .limit(30);
     let data = result?.data;
-    // If no games for today (pipeline hasn't run yet), fall back to most recent
-    if(!data || data.length === 0) {
-      const fallback = await supabase
-        .from('mlb_game_context')
-        .select('*')
-        .order('game_date', {ascending: false})
-        .limit(30);
-      data = fallback?.data;
-      // Only use if from the last 2 days — dedupe by keeping newest per team
-      if(data && data.length > 0) {
-        const seen = {};
-        data = data.filter(g => {
-          const key = g.home_team + '_' + g.away_team;
-          if(seen[key]) return false;
-          seen[key] = true;
-          return true;
-        });
-      }
-    }
+    // If no games for today (pipeline hasn't run yet), leave context empty
+    // and let the pre-pipeline banner explain. Removed the "fall back to most
+    // recent" path 2026-05-19 — it was showing yesterday's pitchers as
+    // today's matchups during the 6am-11am pre-pipeline window, making the
+    // app look broken. Empty state + clear "morning pipeline running"
+    // banner beats stale-data-pretending-to-be-current.
     if(data && data.length > 0) {
       const contextMap = {};
       data.forEach(game => {
@@ -9687,6 +9674,25 @@ setJerryHistory(prev => {
   ))}
 </View>
 
+           {/* L1 pre-pipeline banner (2026-05-19): shows during the
+                6am-11am ET window OR whenever today's mlb_game_context
+                is empty. Replaces the silent "yesterday's pitchers shown
+                as today's" failure mode by being explicit about state. */}
+           {gamesSport==='MLB' && gamesDay==='today' && (() => {
+             const etHour = parseInt(new Date().toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',hour12:false}));
+             const preWindow = etHour < 11;
+             const noContext = Object.keys(mlbGameContext || {}).length === 0;
+             if (!preWindow && !noContext) return null;
+             return (
+               <View style={{backgroundColor:'rgba(255,184,0,0.10)',borderRadius:12,padding:12,marginBottom:10,borderWidth:1,borderColor:'rgba(255,184,0,0.30)'}}>
+                 <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:6}}>
+                   <Text style={{fontSize:14}}>🔄</Text>
+                   <Text style={{color:'#FFB800',fontWeight:'800',fontSize:12}}>MORNING PIPELINE RUNNING</Text>
+                 </View>
+                 <Text style={{color:'#c8d8e8',fontSize:12,lineHeight:17}}>Pitcher matchups, NRFI scores, and Sweat Scores landing by 11 AM ET. Market lines below are live; model-derived fields refresh once today's pipeline completes.</Text>
+               </View>
+             );
+           })()}
            {gamesSport==='MLB'&&(
   <View style={{backgroundColor:'rgba(0,153,255,0.06)',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:'rgba(0,153,255,0.2)'}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
