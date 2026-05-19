@@ -713,11 +713,14 @@ def run():
     # Get MLB game times to populate commence_time (also used below for late-slate detection)
     mlb_times = get_mlb_game_times(today)
 
-    # LATE-SLATE DEFER (added 2026-04-29):
-    # If no game starts before 4pm ET on this date, defer POTD generation to the
-    # 2pm pipeline run. Avoids locking a stale 8am pick on weeknight slates that
-    # don't need an early-locked POTD. Weekend slates with 1pm games still get
-    # POTD locked at 8am as before.
+    # LATE-SLATE DEFER (added 2026-04-29, narrowed 2026-05-19):
+    # If no game starts before 4pm ET on this date, defer the POTD *selection*
+    # to the 2pm pipeline run. Per-game sweat scores still get written so the
+    # app's home-screen MLB tab has fresh tier data in the morning.
+    # Before 5/19: this used to `return` early, leaving every game's
+    # sweat_score = null and forcing the app into client-side fallback
+    # (showed weird 40s-50s scores from outdated formula).
+    defer_potd = False
     if et_hour < 14 and mlb_times:
         try:
             earliest = None
@@ -729,11 +732,11 @@ def run():
                 if earliest is None or t_et < earliest:
                     earliest = t_et
             if earliest is not None:
-                # 4pm ET cutoff — anything later = weeknight slate, defer
+                # 4pm ET cutoff — anything later = weeknight slate, defer POTD
                 cutoff_hour = 16
                 if earliest.hour >= cutoff_hour:
-                    print(f"⏰ Late-slate detected — earliest game {earliest.strftime('%H:%M')} ET, deferring POTD to 2pm run for fresher data")
-                    return
+                    print(f"⏰ Late-slate detected — earliest game {earliest.strftime('%H:%M')} ET, deferring POTD selection to 2pm run (sweat scores still being written)")
+                    defer_potd = True
         except Exception as e:
             print(f"  late-slate detect failed (continuing normally): {e}")
 
@@ -831,6 +834,12 @@ def run():
 
     # Sort by score
     candidates.sort(key=lambda c: c['score'], reverse=True)
+
+    # Late-slate POTD defer — sweat scores are already written above; just
+    # skip the POTD lock/selection logic until the 2pm run.
+    if defer_potd:
+        print(f"  ✓ Wrote sweat scores for {len(candidates)} games. POTD selection deferred to 2pm run.")
+        return
 
     # NRFI candidates — only 88-94 range (75% hit rate proven sweet spot)
     sweet_spot = [c for c in candidates if c.get('is_nrfi') and 90 <= (c.get('nrfi_score') or 0) <= 94]
