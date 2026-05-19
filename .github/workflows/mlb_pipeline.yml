@@ -2,7 +2,12 @@ name: MLB Pipeline Daily
 
 on:
   schedule:
-    - cron: '0 12 * * *'  # 8:00am EDT (12:00 UTC)
+    # Cron times pulled 2 hrs earlier than the user-facing "ready by"
+    # commitments (11am ET morning lock / 4pm ET afternoon refresh) to
+    # absorb GitHub Actions queue delays, which historically run 30-90
+    # min late and occasionally 2-3 hrs late. Earlier trigger = larger
+    # buffer to hit the in-app ready-by promise.
+    - cron: '0 10 * * *'  # 6:00am EDT (10:00 UTC) — was 8:00am
     - cron: '0 18 * * *'  # 2:00pm EDT (18:00 UTC)
   workflow_dispatch:
 

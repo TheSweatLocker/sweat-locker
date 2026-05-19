@@ -1353,9 +1353,9 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
   if(!degenData || degenData.noPlays) {
     const etHour = parseInt(new Date().toLocaleTimeString('en-US', {timeZone: 'America/New_York', hour: 'numeric', hour12: false}));
     let degenMsg;
-    if (etHour < 8) degenMsg = "Today's degen card hasn't been built yet. First pipeline run is at 8am ET.";
-    else if (etHour < 14) degenMsg = "Jerry's still scouting today's slate. Final degen card lands after 2pm ET when lineups confirm.";
-    else if (etHour >= 23) degenMsg = "Tonight's degen card is closed. Tomorrow's parlay drops at 8am ET.";
+    if (etHour < 8) degenMsg = "Today's degen card hasn't been built yet. First model data lands by 11am ET.";
+    else if (etHour < 14) degenMsg = "Jerry's still scouting today's slate. Final degen card lands by 4pm ET when lineups confirm.";
+    else if (etHour >= 23) degenMsg = "Tonight's degen card is closed. Tomorrow's parlay drops by 11am ET.";
     else degenMsg = "Jerry didn't find enough conviction edges for a parlay tonight — sometimes a card just doesn't have it.";
     return (
       <View style={{alignItems:'center',paddingTop:60,paddingHorizontal:40}}>
@@ -1404,7 +1404,7 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
         <Text style={{color:'#fff',fontWeight:'800',fontSize:15}}>🎰 Add All to Parlay Builder</Text>
       </TouchableOpacity>
 
-      <Text style={{color:'#4a6070',fontSize:11,textAlign:'center',marginTop:12}}>Updated twice daily • 8am + 2pm ET</Text>
+      <Text style={{color:'#4a6070',fontSize:11,textAlign:'center',marginTop:12}}>Updated twice daily • by 11am + 4pm ET</Text>
       <Text style={{color:'#4a6070',fontSize:10,textAlign:'center',marginTop:6,paddingHorizontal:20,lineHeight:14}}>Daily Degen uses model signals only. Jerry's full game read may weigh additional situational factors differently.</Text>
     </View>
   );
@@ -4678,8 +4678,9 @@ Rules:
     }
   } catch(e) {}
 
-  // No pipeline pick yet — show waiting message before 10am, try local cache after
-  if(etHour < 10) {
+  // No pipeline pick yet — show waiting message before 11am (real ready-by
+  // time based on GitHub Actions cron queue delays), try local cache after.
+  if(etHour < 11) {
     setDailyBestBet({noGames: false, waiting: true});
     return;
   }
@@ -8868,7 +8869,7 @@ setJerryHistory(prev => {
               <Text style={{fontSize:64,marginBottom:24}}>⏰</Text>
               <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>When to Check</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Pipeline runs twice daily</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>⏰ 8am ET — Early run{'\n'}Initial Sweat Scores, opening matchup data, NRFI baselines (MLB).{'\n\n'}⏰ 2pm ET — Late run{'\n'}Confirmed lineups, Prop Jerry refresh with sharpest reads, Play of the Day locks in.{'\n\n'}After 2pm, all data is locked in. Best time for full slate analysis.</Text>
+              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>⏰ Morning lock by 11am ET{'\n'}Initial Sweat Scores, opening matchup data, NRFI baselines (MLB).{'\n\n'}⏰ Afternoon refresh by 4pm ET{'\n'}Confirmed lineups, Prop Jerry sharpens, Play of the Day locks in.{'\n\n'}After 4pm, all data is locked in. Best time for full slate analysis.</Text>
             </View>
           )}
           {onboardingStep===6&&(
@@ -9287,7 +9288,7 @@ setJerryHistory(prev => {
         <Text style={{color:'#4a6070',fontSize:13}}>Jerry is finding today's best play...</Text>
       </View>
     ) : dailyBestBet?.waiting ? (
-      <Text style={{color:'#7a92a8',fontSize:13,lineHeight:20}}>Jerry's Play of the Day generates after the morning pipeline runs. Data locks in at 10am ET with pitcher matchups and NRFI scores, then refreshes at 2pm ET with confirmed lineups and umpires.</Text>
+      <Text style={{color:'#7a92a8',fontSize:13,lineHeight:20}}>Jerry's Play of the Day generates after the morning pipeline runs. Data locks in by 11am ET with pitcher matchups and NRFI scores, then refreshes by 4pm ET with confirmed lineups and umpires.</Text>
     ) : dailyBestBet?.noGames ? (
       <Text style={{color:'#7a92a8',fontSize:13}}>No games on the slate today. Check back tomorrow.</Text>
     ) : dailyBestBet?.noPrime ? (
@@ -9651,7 +9652,7 @@ setJerryHistory(prev => {
             {gamesDay==='tomorrow' && (
               <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:10,padding:10,marginBottom:12,borderLeftWidth:3,borderLeftColor:'#7a92a8'}}>
                 <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>
-                  Showing market lines only. Pipeline model data (NRFI, props, conviction tiers) lands at 8am ET tomorrow.
+                  Showing market lines only. Pipeline model data (NRFI, props, conviction tiers) lands by 11am ET tomorrow.
                 </Text>
               </View>
             )}
@@ -9690,9 +9691,9 @@ setJerryHistory(prev => {
   <View style={{backgroundColor:'rgba(0,153,255,0.06)',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:'rgba(0,153,255,0.2)'}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
       <Text style={{color:'#0099ff',fontWeight:'800',fontSize:12}}>⚾ MLB MODEL ACTIVE</Text>
-      <Text style={{color:'#4a6070',fontSize:10}}>🔄 8am + 2pm ET</Text>
+      <Text style={{color:'#4a6070',fontSize:10}}>🔄 by 11am + 4pm ET</Text>
     </View>
-    <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back at 2pm for full confirmed slate.</Text>
+    <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back after 4pm for full confirmed slate.</Text>
   </View>
 )}
 {gamesSport==='UFC' && ufcEvent && (() => {
@@ -10153,16 +10154,17 @@ setJerryHistory(prev => {
         </View>
       ) : pipelineMLBProps.length === 0 ? (
         (() => {
-          // Time-aware empty state. Pipeline runs 8am + 2pm ET; watchdog
-          // refreshes every 30 min from 12pm-10pm ET as lineups confirm.
+          // Time-aware empty state. Pipeline triggers 8am + 2pm ET (data
+          // ready by 11am + 4pm ET after GitHub Actions queue delays);
+          // watchdog refreshes every 30 min from 12pm-10pm ET as lineups confirm.
           const etHour = parseInt(new Date().toLocaleTimeString('en-US', {timeZone: 'America/New_York', hour: 'numeric', hour12: false}));
           let message;
           if (etHour < 8) {
-            message = "Today's slate hasn't been built yet.\nFirst pipeline run is at 8am ET.";
+            message = "Today's slate hasn't been built yet.\nFirst model data lands by 11am ET.";
           } else if (etHour < 14) {
-            message = "Early-slate edges loading.\nHits picks fill in after 2pm ET when lineups confirm.";
+            message = "Early-slate edges loading.\nHits picks fill in after 4pm ET when lineups confirm.";
           } else if (etHour >= 23) {
-            message = "Tonight's slate is closed.\nTomorrow's picks land at 8am ET — tap 🔄 above in the morning.";
+            message = "Tonight's slate is closed.\nTomorrow's picks land by 11am ET — tap 🔄 above in the morning.";
           } else {
             message = "No props cleared our conviction threshold tonight.\nLate-slate lineups still landing — tap 🔄 above in ~30 min.";
           }
@@ -11831,7 +11833,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                 <View style={{gap:12}}>
                   <View style={{borderLeftWidth:3,borderLeftColor:HRB_COLOR,paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🔥 Sweat Score</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Every game graded 0-100. Built on pitcher xERA, K rate gap, L3 form, platoon-adjusted wRC+, team defense (OAA), catcher framing, expected wOBA, park, weather, and umpire tendencies. 68+ is Prime Sweat — multiple strong signals aligning. Updates 8am and 2pm ET.</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Every game graded 0-100. Built on pitcher xERA, K rate gap, L3 form, platoon-adjusted wRC+, team defense (OAA), catcher framing, expected wOBA, park, weather, and umpire tendencies. 68+ is Prime Sweat — multiple strong signals aligning. Updates by 11am and 4pm ET.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#00e5a0',paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>⚾ NRFI Model</Text>
@@ -11855,7 +11857,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#4a6070',paddingLeft:10}}>
                     <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>⏰ Pipeline Schedule</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>8am ET — Pitcher stats, team splits, Savant enrichment, game context, NRFI scores, POTD, Dawg of the Day{'\n'}2pm ET — Confirmed lineups, umpire assignments, final weather, Prop Jerry, Daily Degen, HR Watch{'\n'}After 2pm — All pipeline data locked in. Best time for full analysis.</Text>
+                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>By 11am ET — Pitcher stats, team splits, Savant enrichment, game context, NRFI scores, POTD, Dawg of the Day{'\n'}By 4pm ET — Confirmed lineups, umpire assignments, final weather, Prop Jerry, Daily Degen, HR Watch{'\n'}After 4pm — All pipeline data locked in. Best time for full analysis.</Text>
                   </View>
                 </View>
               </View>

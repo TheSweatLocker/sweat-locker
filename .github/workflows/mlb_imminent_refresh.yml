@@ -2,7 +2,7 @@ name: MLB Imminent Game Refresh
 
 # Watchdog: every 30 min from ~12pm to ~10pm ET, refresh lineups + umpires
 # for games starting in the next 30-120 min. Plugs the gap between the fixed
-# 8am/2pm pipeline runs and game-time confirmations.
+# 6am/2pm pipeline runs and game-time confirmations.
 
 on:
   schedule:
