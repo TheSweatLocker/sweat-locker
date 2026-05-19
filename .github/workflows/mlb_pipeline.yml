@@ -106,6 +106,23 @@ jobs:
           cd mlb_pipeline
           python generate_props.py
 
+      # Prop-signal override (added 2026-05-19): when v4 says OVER big
+      # (>=+1.5 vs market) but PRIME/STRONG props concentrate UNDER, props
+      # win the head-to-head 64.7% (backtested on n=17). Patches
+      # model_pred_total in mlb_game_context so downstream consumers
+      # (Daily Degen total lean, Jerry reads, social card, app totals
+      # display) all see the corrected lean.
+      # Runs AFTER generate_props.py (needs the prop concentrations) and
+      # BEFORE generate_daily_degen.py + play_of_day.py + generate_mlb_game_reads.py
+      # so they read the post-override totals.
+      - name: Apply prop-signal override to v4 totals
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python apply_prop_signal_override.py
+
       - name: Generate Daily Degen
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
