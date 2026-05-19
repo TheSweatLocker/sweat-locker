@@ -378,6 +378,19 @@ jobs:
           cd mlb_pipeline
           python generate_sweat_card.py
 
+      # Pipeline health check — catches silent skips like the 5/19 case
+      # where play_of_day.py's late-slate defer was returning before the
+      # sweat-score write loop, leaving every game with sweat_score = null.
+      # Non-zero exit on critical field misses fails this workflow step so
+      # the red status surfaces in the Actions run list.
+      - name: Pipeline health check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python check_pipeline_health.py
+
       # Commit the generated content card so Andy can pull it locally.
       # Stripped the `|| true` chain that was hiding failures for 4 days
       # (5/1 - 5/4 ran with no auto-commit and no error surface). Now:
