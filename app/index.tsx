@@ -9029,19 +9029,19 @@ setJerryHistory(prev => {
 
            {/* TONIGHT'S SWEAT CARD — server-generated, all conviction picks in one section */}
 {sweatCard && !sweatCard.noCard && (
-  <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:'#5cb85c',marginBottom:16,shadowColor:'#5cb85c',shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
+  <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:'#00e5a0',marginBottom:16,shadowColor:'#00e5a0',shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
-      <Text style={{color:'#5cb85c',fontWeight:'800',fontSize:13,letterSpacing:1}}>🔥 TODAY'S SWEAT CARD</Text>
+      <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:13,letterSpacing:1}}>🔥 TODAY'S SWEAT CARD</Text>
       <Text style={{color:'#7a92a8',fontSize:10}}>{sweatCard.slate_date}</Text>
     </View>
     <Text style={{color:'#4a6070',fontSize:10,marginBottom:12,fontStyle:'italic'}}>Live — picks update as lineups confirm + umpires land throughout the day</Text>
 
     {/* 🔒 PRIME LOCK — NRFI 90-94 sweet spot */}
     {sweatCard.lock && (
-      <View style={{backgroundColor:'rgba(92,184,92,0.1)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#5cb85c'}}>
+      <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#00e5a0'}}>
         <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
-          <Text style={{color:'#5cb85c',fontWeight:'800',fontSize:11}}>🔒 PRIME LOCK</Text>
-          <Text style={{color:'#5cb85c',fontSize:10,fontWeight:'700'}}>
+          <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:11}}>🔒 PRIME LOCK</Text>
+          <Text style={{color:'#00e5a0',fontSize:10,fontWeight:'700'}}>
             {sweatCard.lock.audited_rate}% audited (n={sweatCard.lock.audited_n})
           </Text>
         </View>
@@ -9087,7 +9087,7 @@ setJerryHistory(prev => {
               <Text style={{color:'#fff',fontSize:12,fontWeight:'600'}}>{p.player_name} {p.prop_type==='ks_over' ? (p.signals?._projected_ks != null ? `${p.signals._projected_ks} expected Ks` : `O${p.prop_line} Ks`) : `O${p.prop_line} Hits`}</Text>
               <Text style={{color:'#7a92a8',fontSize:10}}>{p.matchup}</Text>
             </View>
-            <Text style={{color:p.tier==='PRIME'?'#5cb85c':'#7a92a8',fontSize:11,fontWeight:'700'}}>{p.tier} {p.conviction}</Text>
+            <Text style={{color:p.tier==='PRIME'?'#00e5a0':'#7a92a8',fontSize:11,fontWeight:'700'}}>{p.tier} {p.conviction}</Text>
           </View>
         ))}
       </View>
@@ -9174,14 +9174,14 @@ setJerryHistory(prev => {
             {sweatCard.yesterday_recap.potd && (
               <Text style={{color:'#fff',fontSize:12,marginBottom:2}}>
                 🎯 POTD: <Text style={{color:'#7a92a8'}}>{sweatCard.yesterday_recap.potd.matchup?.away_team || sweatCard.yesterday_recap.potd.matchup} @ {sweatCard.yesterday_recap.potd.matchup?.home_team || ''}</Text>
-                {sweatCard.yesterday_recap.potd.result && <Text style={{color:sweatCard.yesterday_recap.potd.result === 'Win' ? '#5cb85c' : '#ff4d6d',fontWeight:'700'}}> — {sweatCard.yesterday_recap.potd.result}</Text>}
+                {sweatCard.yesterday_recap.potd.result && <Text style={{color:sweatCard.yesterday_recap.potd.result === 'Win' ? '#00e5a0' : '#ff4d6d',fontWeight:'700'}}> — {sweatCard.yesterday_recap.potd.result}</Text>}
               </Text>
             )}
             {sweatCard.yesterday_recap.dawg && (
               <Text style={{color:'#fff',fontSize:12}}>
                 🐕 Dawg: <Text style={{color:'#78b4ff',fontWeight:'700'}}>{sweatCard.yesterday_recap.dawg.team}</Text>
                 {sweatCard.yesterday_recap.dawg.result_status && (
-                  <Text style={{color:sweatCard.yesterday_recap.dawg.result_status === 'Win' ? '#5cb85c' : '#ff4d6d',fontWeight:'700'}}> — {sweatCard.yesterday_recap.dawg.result_status}</Text>
+                  <Text style={{color:sweatCard.yesterday_recap.dawg.result_status === 'Win' ? '#00e5a0' : '#ff4d6d',fontWeight:'700'}}> — {sweatCard.yesterday_recap.dawg.result_status}</Text>
                 )}
               </Text>
             )}
@@ -9190,8 +9190,8 @@ setJerryHistory(prev => {
 
         {/* Audit roll-up — most-bettable cohorts */}
         {sweatCard.audit_roll_up && Object.keys(sweatCard.audit_roll_up).length > 0 && (
-          <View style={{backgroundColor:'rgba(92,184,92,0.06)',borderRadius:10,padding:10,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#5cb85c'}}>
-            <Text style={{color:'#5cb85c',fontWeight:'800',fontSize:11,marginBottom:6}}>📊 LIVE AUDIT (rolling 30d)</Text>
+          <View style={{backgroundColor:'rgba(0,229,160,0.06)',borderRadius:10,padding:10,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#00e5a0'}}>
+            <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:11,marginBottom:6}}>📊 LIVE AUDIT (rolling 30d)</Text>
             {Object.entries(sweatCard.audit_roll_up).slice(0,5).map(([tier, windows]:[string, any], i:number) => {
               const w = windows['30d'] || windows['std'] || windows['7d'];
               if (!w || !w.total) return null;
@@ -9200,7 +9200,7 @@ setJerryHistory(prev => {
               return (
                 <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:3}}>
                   <Text style={{color:'#7a92a8',fontSize:11,flex:1}}>{tierLabel}</Text>
-                  <Text style={{color:rate >= 60 ? '#5cb85c' : rate >= 50 ? '#fff' : '#aa6a6a',fontSize:11,fontWeight:'700'}}>
+                  <Text style={{color:rate >= 60 ? '#00e5a0' : rate >= 50 ? '#fff' : '#aa6a6a',fontSize:11,fontWeight:'700'}}>
                     {w.hits}-{w.total - w.hits} ({rate}% on {w.total})
                   </Text>
                 </View>
