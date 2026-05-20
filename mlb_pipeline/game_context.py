@@ -1633,6 +1633,48 @@ def get_park_factors(home_team):
     except:
         return None
 
+_AUDIT_CACHE = {}
+
+
+def _audit_note_for(cohort_key):
+    """Pull the latest 30d hit-rate string for a cohort from mlb_tier_calibration.
+
+    Returns a short human-readable string like '68.8% on 16 games (30d)' or
+    None if the cohort isn't yet calibrated. App renders this directly under
+    'THE PLAY' so audit numbers stay server-driven (no hardcoded copy in
+    app/index.tsx — added 2026-05-19 after user flagged stale '352 games'
+    inflated audit copy).
+    """
+    if not cohort_key:
+        return None
+    if cohort_key in _AUDIT_CACHE:
+        return _AUDIT_CACHE[cohort_key]
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_tier_calibration",
+            params={
+                'tier': f'eq.{cohort_key}',
+                'window_label': 'eq.30d',
+                'select': 'hit_rate,total,computed_date',
+                'order': 'computed_date.desc',
+                'limit': '1',
+            },
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            timeout=10,
+        )
+        rows = r.json() if r.status_code == 200 else []
+        if rows and (rows[0].get('total') or 0) >= 5:
+            rate = float(rows[0].get('hit_rate') or 0)
+            n = int(rows[0].get('total') or 0)
+            note = f"{rate*100:.1f}% on {n} games (30d)"
+            _AUDIT_CACHE[cohort_key] = note
+            return note
+    except Exception:
+        pass
+    _AUDIT_CACHE[cohort_key] = None
+    return None
+
+
 def compute_primary_play(ctx):
     """Compute the headline primary-play recommendation for a game, server-side.
 
@@ -1641,10 +1683,13 @@ def compute_primary_play(ctx):
     submission. App reads ctx.primary_play directly; no threshold logic in JS.
 
     Returns a dict (jsonb-friendly) or None if no qualifying play.
-    Schema: {type, tier, label, sub, signal_floor}
+    Schema: {type, tier, label, sub, signal_floor, audit_note?}
       type: 'ml' | 'nrfi' | 'yrfi' | 'over' | None
       tier: 'PRIME' | 'STRONG' | 'LEAN' | None
       signal_floor: int — used for app's calcGameSweatScore floor
+      audit_note: optional string — current 30d cohort hit rate for the
+                  app to render. Sourced from mlb_tier_calibration so the
+                  number stays fresh without app rebuilds.
 
     Mirrors prior in-app logic (now removed): hybrid PRIME ML requires both
     confluence ≥+4 AND |spread_delta| ≥2.0; STRONG requires ≥+2 AND ≥1.5.
@@ -1703,6 +1748,7 @@ def compute_primary_play(ctx):
             "label": f"{fav} ML",
             "sub": f"PRIME confluence ({int(conf)} signals, {abs_delta:.1f} delta)",
             "signal_floor": 85,
+            "audit_note": _audit_note_for('confluence_prime_ge4'),
         }
     # PRIME NRFI sweet spot: 90-94 (70.0% lifetime, 68.8% L30d on n=30)
     # Earlier claim of "78.9% on 352 games" was inflated/stale — corrected
@@ -1714,6 +1760,7 @@ def compute_primary_play(ctx):
             "label": "NRFI",
             "sub": f"Score {int(nrfi)}/100 — sweet spot tier",
             "signal_floor": 82,
+            "audit_note": _audit_note_for('nrfi_prime_90_94'),
         }
     # YRFI (first inning runs likely): score very low
     # Fragility gate (2026-05-18): 7d YRFI hit rate was 27%, 30d was 48% — far
@@ -1735,6 +1782,7 @@ def compute_primary_play(ctx):
             "label": "YRFI",
             "sub": f"NRFI {int(nrfi)} + 1st-inn ERA {max_fi:.1f} (audit sweet spot)",
             "signal_floor": 72,
+            "audit_note": _audit_note_for('yrfi_lean_le40'),
         }
     # YRFI LEAN — score ≤25 but fragility outside sweet spot → small-sample
     # noise, post as transparent LEAN (60 floor) instead of STRONG
@@ -1745,6 +1793,7 @@ def compute_primary_play(ctx):
             "label": "YRFI",
             "sub": f"NRFI {int(nrfi)} — 1st-inn ERA outside 6-8 sweet spot",
             "signal_floor": 60,
+            "audit_note": _audit_note_for('yrfi_lean_le40'),
         }
     # STRONG ML: confluence ≥+2 AND |delta| ≥1.5
     if conf is not None and int(conf) >= 2 and abs_delta >= 1.5 and ml_playable:
@@ -1754,6 +1803,7 @@ def compute_primary_play(ctx):
             "label": f"{fav} ML lean",
             "sub": f"STRONG confluence ({int(conf)} signals, {abs_delta:.1f} delta)",
             "signal_floor": 70,
+            "audit_note": _audit_note_for('confluence_strong_2_3'),
         }
     # OVER lean (xERA gap rule fired)
     if ctx.get('over_lean') is True:
@@ -1764,6 +1814,7 @@ def compute_primary_play(ctx):
             "label": f"Over {ct}" if ct else "Over",
             "sub": "xERA gap rule fired",
             "signal_floor": 60,
+            "audit_note": _audit_note_for('xera_gap_2_3_over'),
         }
     return None
 

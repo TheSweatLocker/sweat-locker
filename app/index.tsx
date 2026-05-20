@@ -7607,13 +7607,10 @@ setJerryHistory(prev => {
               pp?.tier === 'LEAN' ? 'rgba(255,184,0,0.30)' :
               'rgba(122,146,168,0.20)';
 
-            // Reference audit hit rates per primary_play type (lifetime baselines)
-            const auditNote = pp?.type === 'nrfi' && pp?.tier === 'PRIME' ? '71% lifetime on n=30, 68.8% L30d' :
-              pp?.type === 'yrfi' && pp?.tier === 'STRONG' ? '~63% in audit sweet spot (1st-inn ERA 6-8)' :
-              pp?.type === 'ml' && pp?.tier === 'PRIME' ? '70.8% on tiny-delta cohort, 71.4% on bigger-delta' :
-              pp?.type === 'ml' && pp?.tier === 'STRONG' ? '52.3% on n=65 — borderline, shop the price' :
-              pp?.type === 'over' && pp?.tier === 'LIGHT' ? 'v3 xERA gap rule (~58% on 2.0-3.0 gaps)' :
-              null;
+            // Audit hit rate — server-driven (mlb_tier_calibration → primary_play.audit_note)
+            // No hardcoded numbers; if the cohort isn't calibrated yet, the
+            // server returns null and we just don't render the AUDIT row.
+            const auditNote = pp?.audit_note || null;
 
             if (pp) {
               return (
@@ -11553,33 +11550,23 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           </TouchableOpacity>}
                         </View>
                       </View>
-                      {/* Score breakdown */}
-                      <TouchableOpacity onPress={()=>setExpandedSweatScore(isExpanded?null:'main')} style={{flexDirection:'row',alignItems:'center',gap:4,marginBottom:isExpanded?10:0}}>
-                        <Text style={{color:'#4a6070',fontSize:11}}>{isExpanded?'▲ Hide':'▼ Show'} score breakdown</Text>
-                      </TouchableOpacity>
-                      {isExpanded&&(
-                        <View style={{gap:6}}>
-                          {[
-                            {label:'📊 Market Efficiency',val:ss.marketEfficiency,weight:'20%'},
-                            {label:'🔬 Model Mismatch',val:ss.modelMismatch,weight:'25%'},
-                            {label:'📈 Line Trajectory',val:ss.lineTrajectory,weight:'20%'},
-                            {label:'🔪 Sharp Signal',val:ss.sharpSignal,weight:'20%'},
-                            {label:'🎯 Situational Edge',val:ss.situationalEdge,weight:'15%'},
-                          ].map((row,j)=>(
-                            <View key={j} style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                              <Text style={{flex:2.5,color:'#7a92a8',fontSize:11}}>{row.label}</Text>
-                              <Text style={{color:'#4a6070',fontSize:10,width:28,textAlign:'right'}}>{row.weight}</Text>
-                              <View style={{flex:2,height:6,backgroundColor:'#1f2d3d',borderRadius:3,overflow:'hidden'}}>
-                                <View style={{height:'100%',width:row.val+'%',backgroundColor:row.val>=70?'#00e5a0':row.val>=40?'#ffd166':'#ff4d6d',borderRadius:3}}/>
-                              </View>
-                              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:12,width:28,textAlign:'right'}}>{row.val}</Text>
-                            </View>
-                          ))}
-                          <Text style={{color:'#4a6070',fontSize:10,marginTop:4}}>
-                            {gamesSport==='NCAAB'?'📡 Live efficiency data':gamesSport==='NBA'?'📡 BDL team data':'⚡ Market analysis'}
-                          </Text>
-                        </View>
-                      )}
+                      {/* Score breakdown REMOVED 2026-05-19.
+                          The 5-row "Market Efficiency / Model Mismatch /
+                          Line Trajectory / Sharp Signal / Situational Edge"
+                          breakdown was from the OLD client-side sweat
+                          formula. After moving to server-authoritative
+                          sweat scores (commit ea5722a) + primary_play
+                          gating + YRFI fragility gate, those sub-scores
+                          no longer correlate with the actual displayed
+                          score. The breakdown showed authoritative-looking
+                          progress bars with stale math.
+
+                          THE PLAY hero banner (above) + WHY THIS SCORE
+                          contributions list now surface what the score is
+                          backing. If we want a real server-driven
+                          breakdown, that's a JSONB column on
+                          mlb_game_context (sweat_contributions) populated
+                          by play_of_day.py — backside work, deferred. */}
                     </View>
                   );
                 })()}
