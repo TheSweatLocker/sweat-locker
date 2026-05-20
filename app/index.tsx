@@ -1451,6 +1451,7 @@ const [playersSearch, setPlayersSearch] = useState('');
   // Show dense numbers (advanced view) — default collapsed; casual summary
   // shows by default. Sharp users tap to expand.
   const [numbersExpanded, setNumbersExpanded] = useState<boolean>(false);
+  const [jerryExpanded, setJerryExpanded] = useState<boolean>(false);
   const [dailyBriefing, setDailyBriefing] = useState('');
   const [dailyBriefingLoading, setDailyBriefingLoading] = useState(false);
   const [dailyBestBet, setDailyBestBet] = useState(null);
@@ -7571,10 +7572,104 @@ setJerryHistory(prev => {
           </View>
         </ScrollView>
 
-           {/* Jerry Game Narrative */}
+          {/* THE PLAY — hero banner (2026-05-19 Option C rewrite).
+              Moves the actionable bet front-and-center instead of burying it
+              in Jerry's narrative or the best-plays list. Reads server-
+              computed primary_play from mlb_game_context. Falls back to
+              sweat tier display when no primary_play attached. */}
+          {(() => {
+            const mlbCtx = (mlbGameContext && (
+              mlbGameContext[selectedGame?.home_team] ||
+              mlbGameContext[selectedGame?.away_team] ||
+              Object.values(mlbGameContext).find((c: any) =>
+                c.home_team === selectedGame?.home_team ||
+                c.away_team === selectedGame?.away_team
+              )
+            )) || null;
+            const pp = mlbCtx?.primary_play;
+            const sweat = mlbCtx?.sweat_score;
+            const sweatTier = mlbCtx?.sweat_tier;
+            // Only show for MLB games — other sports don't have primary_play yet
+            const isMLBSelected = selectedGame?.sport_key === 'baseball_mlb' || gamesSport === 'MLB';
+            if (!isMLBSelected) return null;
+
+            // Tier-driven palette
+            const tierColor = pp?.tier === 'PRIME' ? '#ff4d6d' :
+              pp?.tier === 'STRONG' ? '#00e5a0' :
+              pp?.tier === 'LEAN' ? HRB_COLOR :
+              pp?.tier === 'LIGHT' ? '#7a92a8' : '#7a92a8';
+            const tierBg = pp?.tier === 'PRIME' ? 'rgba(255,77,109,0.10)' :
+              pp?.tier === 'STRONG' ? 'rgba(0,229,160,0.10)' :
+              pp?.tier === 'LEAN' ? 'rgba(255,184,0,0.10)' :
+              'rgba(122,146,168,0.08)';
+            const tierBorder = pp?.tier === 'PRIME' ? 'rgba(255,77,109,0.30)' :
+              pp?.tier === 'STRONG' ? 'rgba(0,229,160,0.30)' :
+              pp?.tier === 'LEAN' ? 'rgba(255,184,0,0.30)' :
+              'rgba(122,146,168,0.20)';
+
+            // Reference audit hit rates per primary_play type (lifetime baselines)
+            const auditNote = pp?.type === 'nrfi' && pp?.tier === 'PRIME' ? '71% lifetime on n=30, 68.8% L30d' :
+              pp?.type === 'yrfi' && pp?.tier === 'STRONG' ? '~63% in audit sweet spot (1st-inn ERA 6-8)' :
+              pp?.type === 'ml' && pp?.tier === 'PRIME' ? '70.8% on tiny-delta cohort, 71.4% on bigger-delta' :
+              pp?.type === 'ml' && pp?.tier === 'STRONG' ? '52.3% on n=65 — borderline, shop the price' :
+              pp?.type === 'over' && pp?.tier === 'LIGHT' ? 'v3 xERA gap rule (~58% on 2.0-3.0 gaps)' :
+              null;
+
+            if (pp) {
+              return (
+                <View style={{marginHorizontal:16,marginTop:4,marginBottom:12,backgroundColor:tierBg,borderRadius:14,padding:16,borderWidth:1.5,borderColor:tierBorder}}>
+                  <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                    <Text style={{color:tierColor,fontSize:11,fontWeight:'800',letterSpacing:1}}>🔒 THE PLAY</Text>
+                    <View style={{backgroundColor:tierColor,borderRadius:10,paddingHorizontal:8,paddingVertical:3}}>
+                      <Text style={{color:'#0a1520',fontSize:10,fontWeight:'800'}}>{pp.tier}</Text>
+                    </View>
+                  </View>
+                  <Text style={{color:'#e8f0f8',fontSize:22,fontWeight:'800',marginBottom:6,letterSpacing:0.3}}>{pp.label}</Text>
+                  {pp.sub ? (
+                    <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:18,marginBottom:auditNote?8:0}}>{pp.sub}</Text>
+                  ) : null}
+                  {auditNote ? (
+                    <View style={{paddingTop:8,borderTopWidth:1,borderTopColor:tierBorder}}>
+                      <Text style={{color:tierColor,fontSize:11,fontWeight:'700'}}>📊 AUDIT</Text>
+                      <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{auditNote}</Text>
+                    </View>
+                  ) : null}
+                  {sweat != null ? (
+                    <View style={{flexDirection:'row',justifyContent:'space-between',marginTop:10,paddingTop:8,borderTopWidth:1,borderTopColor:tierBorder}}>
+                      <Text style={{color:'#7a92a8',fontSize:11}}>Sweat Score</Text>
+                      <Text style={{color:'#c8d8e8',fontSize:11,fontWeight:'700'}}>{sweat}/100 — {sweatTier || ''}</Text>
+                    </View>
+                  ) : null}
+                </View>
+              );
+            }
+            // No primary_play but sweat tier worth surfacing — minimal banner
+            if (sweat != null && (sweatTier === 'STRONG' || sweatTier === 'LIGHT_LEAN')) {
+              return (
+                <View style={{marginHorizontal:16,marginTop:4,marginBottom:12,backgroundColor:'rgba(122,146,168,0.06)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(122,146,168,0.15)'}}>
+                  <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:4,letterSpacing:0.5}}>NO SPECIFIC PLAY</Text>
+                  <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:18}}>
+                    Sweat Score {sweat}/100 — high data interest but no actionable lean (model edge below conviction threshold). See best plays below.
+                  </Text>
+                </View>
+              );
+            }
+            return null;
+          })()}
+
+           {/* Jerry Game Narrative — collapsible (2026-05-19). Default
+              collapsed since THE PLAY banner now surfaces the actionable
+              take. Users who want full Jerry breakdown can expand. */}
           <View style={{marginHorizontal:16,marginBottom:12,backgroundColor:'rgba(255,184,0,0.06)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
-            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,marginBottom:10}}>🎤 JERRY'S READ</Text>
-            {gameNarrativeLoading?(
+            <TouchableOpacity
+              onPress={() => setJerryExpanded(!jerryExpanded)}
+              style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:jerryExpanded?10:0}}
+              activeOpacity={0.7}
+            >
+              <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>🎤 JERRY'S FULL READ</Text>
+              <Text style={{color:HRB_COLOR,fontSize:11,fontWeight:'700'}}>{jerryExpanded ? 'Hide ▴' : 'Show ▾'}</Text>
+            </TouchableOpacity>
+            {jerryExpanded && (gameNarrativeLoading?(
               <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
                 <ActivityIndicator size='small' color={HRB_COLOR}/>
                 <Text style={{color:'#4a6070',fontSize:13}}>Jerry is breaking down the tape...</Text>
@@ -7615,7 +7710,7 @@ setJerryHistory(prev => {
                   ))}
                 </View>
               );
-            })()}
+            })())}
           </View>
 
           {/* The Numbers — deterministic pipeline-edge panel that accompanies
