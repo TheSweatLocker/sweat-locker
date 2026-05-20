@@ -5313,7 +5313,10 @@ ${scoreData?.efgMismatch && sport === 'NBA' ? `- Back-to-back: ${scoreData.efgMi
 ` : '';
 
 const gameTime = new Date(game.commence_time);
-const isLive = new Date() > gameTime && new Date() < new Date(gameTime.getTime() + 3*60*60*1000);
+// Lock Jerry pre-game read once game starts; honor MLB Stats API state
+// when present (extra-inning games), 5h fallback otherwise (matches
+// the LIVE badge logic at line 9850 for consistency).
+const isLive = game.gameState === 'Live' || (game.gameState !== 'Final' && new Date() > gameTime && new Date() < new Date(gameTime.getTime() + 5*60*60*1000));
 if(isLive) {
   setGameNarrative('⚡ Game in progress — Jerry\'s pre-game analysis is locked. Check live lines for current action.');
   setGameNarrativeLoading(false);
