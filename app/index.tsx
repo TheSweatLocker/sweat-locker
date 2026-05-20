@@ -3677,10 +3677,26 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
       let mDetail = null;
       if(sport === 'MLB' && mlbContext) {
         const ctx = (mlbContext[game.home_team]) || mlbContext;
+        // BUG FIX 2026-05-19: use projected_spread (model's actual prediction
+        // of who wins) NOT spread_delta (which is model-vs-market relative
+        // direction — those are different things). Today's SF/ARI example:
+        // projected_spread = -0.44 (SF wins by 0.44) but spread_delta = +1.06
+        // because market is even MORE bullish on SF (-1.5). Old code said
+        // 'Model favors Arizona' which is wrong — model picks SF, just less
+        // confidently than market.
+        // Prefer v4 (model_pred_spread) when available, fall back to v3.
+        const ps = ctx?.model_pred_spread ?? ctx?.projected_spread;
         const sd = ctx?.spread_delta;
-        if(sd != null && Math.abs(sd) >= 0.5) {
-          mLabel = `Model favors ${sd > 0 ? homeName : awayName}`;
-          mDetail = `Spread delta ${sd > 0 ? '+' : ''}${Number(sd).toFixed(1)} runs vs market`;
+        if(ps != null && Math.abs(Number(ps)) >= 0.5) {
+          const psF = Number(ps);
+          const modelPick = psF > 0 ? homeName : awayName;
+          const margin = Math.abs(psF).toFixed(1);
+          mLabel = `Model picks ${modelPick}`;
+          // Detail: include both model margin and the market-edge delta so
+          // user sees both 'who model picks' and 'how much that beats market'
+          mDetail = sd != null
+            ? `Wins by ${margin}; ${Math.abs(Number(sd)).toFixed(1)}-run ${Number(sd) >= 0 ? 'edge vs market on home' : 'edge vs market on away'}`
+            : `Projected margin ${margin} runs`;
         }
       } else if(sport === 'NCAAB' && Math.abs(spreadEdge) >= 1) {
         mLabel = `Model favors ${spreadEdge > 0 ? homeName : awayName}`;
@@ -7796,7 +7812,30 @@ setJerryHistory(prev => {
               const c = s.confluence || {}, sit = s.situational || {}, ph = (s.pitchers||{}).home || {}, pa = (s.pitchers||{}).away || {};
               const totalLine = (m.model_total != null && m.close_total != null)
                 ? `${m.model_total} vs ${m.close_total} → ${m.total_lean === 'OVER' ? 'OVER' : m.total_lean === 'UNDER' ? 'UNDER' : 'no edge'}${m.total_delta != null && m.total_lean !== 'neutral' ? ` (${m.total_delta > 0 ? '+' : ''}${m.total_delta})` : ''}` : null;
-              const spreadLine = (m.model_spread != null && m.close_spread != null) ? `model ${m.model_spread > 0 ? '+' : ''}${m.model_spread} vs market ${m.close_spread}` : null;
+              // Spread display rewrite (2026-05-19): the old format
+              // 'model -0.62 vs market 1.5' was unreadable because
+              // model_spread + close_spread use OPPOSITE sign conventions:
+              //   model_spread: positive = home favored, negative = away favored
+              //   close_spread: negative = home favored, positive = away favored
+              // (close_spread is stored as the AWAY team's spread number — so
+              // SF +1.5 stores as 1.5 even though SF is the road favorite)
+              // New display normalizes to team names + margin so user sees
+              // who each model picks without sign math.
+              const spreadLine = (() => {
+                if (m.model_spread == null || m.close_spread == null) return null;
+                const ms = Number(m.model_spread);
+                const cs = Number(m.close_spread);
+                const homeT = stripMascot((s.matchup || '').split(' @ ')[1] || '');
+                const awayT = stripMascot((s.matchup || '').split(' @ ')[0] || '');
+                const modelPick = ms > 0 ? homeT : awayT;
+                const marketPick = cs < 0 ? homeT : awayT;
+                const modelMargin = Math.abs(ms).toFixed(1);
+                const marketMargin = Math.abs(cs).toFixed(1);
+                if (modelPick === marketPick) {
+                  return `${modelPick} — Model by ${modelMargin} / Market by ${marketMargin}`;
+                }
+                return `Model: ${modelPick} by ${modelMargin} / Market: ${marketPick} by ${marketMargin}`;
+              })();
               const conflKeys = c.breakdown && typeof c.breakdown === 'object' ? Object.keys(c.breakdown) : [];
               const conflLine = c.net != null ? `${c.net > 0 ? '+' : ''}${c.net}${conflKeys.length ? ` (${conflKeys.join(', ')})` : ''}` : null;
               const bp = (h: any, a: any) => (h == null && a == null) ? null : `home ${h ?? '?'} / away ${a ?? '?'}${(Number(h)>=12||Number(a)>=12)?' ⚠ gassed':''}`;
