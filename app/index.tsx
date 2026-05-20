@@ -4482,33 +4482,65 @@ const fetchJerryRecord = async () => {
       .order('bet_date', {ascending: false})
       .limit(14);
 
-    // Pipeline Props record — new conviction-tiered picks (post-pivot)
+    // Pipeline Props record — TWO views (2026-05-20):
+    //   lifetime: every resolved prop in DB (true model track record)
+    //   last30:   rolling 30-day window (recent form indicator)
+    // Old query was limit(500) by game_date desc, which caused the
+    // displayed record to DROP each day as fresh pending props pushed
+    // resolved older props out of the window. User flagged this — the
+    // record was going 305-141 → 285-156 even as model kept winning.
+    // Now pulling all resolved + computing both views client-side.
     let pipelineProps = {
-      total: {wins: 0, losses: 0, pending: 0},
+      total: {wins: 0, losses: 0, pending: 0},      // lifetime (resolved)
+      last30: {wins: 0, losses: 0, pending: 0},     // rolling 30D
       byTier: {PRIME: {wins:0, losses:0}, STRONG: {wins:0, losses:0}, LEAN: {wins:0, losses:0}},
       byType: {hits_over: {wins:0, losses:0}, ks_over: {wins:0, losses:0}},
     };
     try {
-      const { data: ppRows } = await supabase
+      // Pull all resolved props (Win/Loss/Push). Push request limit to 2000
+      // — at ~30 resolved props/day for MLB season that's ~9 weeks of data,
+      // plenty for headline record. Pending props excluded from this query
+      // since they don't affect lifetime/30D resolved counts.
+      const { data: resolvedRows } = await supabase
         .from('mlb_pipeline_props')
-        .select('result,tier,prop_type')
+        .select('result,tier,prop_type,game_date')
+        .in('result', ['Win', 'Loss', 'Push'])
         .order('game_date', {ascending: false})
-        .limit(500);
-      if (ppRows) {
-        for (const r of ppRows as any[]) {
-          if (r.result === 'Win') {
-            pipelineProps.total.wins++;
+        .limit(2000);
+      // Separate pending count
+      const { data: pendingRows } = await supabase
+        .from('mlb_pipeline_props')
+        .select('id')
+        .eq('result', 'Pending')
+        .order('game_date', {ascending: false})
+        .limit(200);
+
+      const _30dCutoff = new Date();
+      _30dCutoff.setDate(_30dCutoff.getDate() - 30);
+      const _30dCutoffStr = _30dCutoff.toISOString().slice(0,10);
+
+      if (resolvedRows) {
+        for (const r of resolvedRows as any[]) {
+          const isWin = r.result === 'Win';
+          const isLoss = r.result === 'Loss';
+          if (isWin) pipelineProps.total.wins++;
+          else if (isLoss) pipelineProps.total.losses++;
+          // 30D window
+          if (r.game_date && r.game_date >= _30dCutoffStr) {
+            if (isWin) pipelineProps.last30.wins++;
+            else if (isLoss) pipelineProps.last30.losses++;
+          }
+          // Per-tier breakdown (lifetime)
+          if (isWin) {
             if (r.tier && pipelineProps.byTier[r.tier]) pipelineProps.byTier[r.tier].wins++;
             if (r.prop_type && pipelineProps.byType[r.prop_type]) pipelineProps.byType[r.prop_type].wins++;
-          } else if (r.result === 'Loss') {
-            pipelineProps.total.losses++;
+          } else if (isLoss) {
             if (r.tier && pipelineProps.byTier[r.tier]) pipelineProps.byTier[r.tier].losses++;
             if (r.prop_type && pipelineProps.byType[r.prop_type]) pipelineProps.byType[r.prop_type].losses++;
-          } else {
-            pipelineProps.total.pending++;
           }
         }
       }
+      pipelineProps.total.pending = pendingRows?.length || 0;
     } catch (e) {}
 
     // Dawg of the Day record — only resolved rows count
@@ -10833,12 +10865,19 @@ setJerryHistory(prev => {
                     );
                   })()}
 
-                  {/* Pipeline Props — conviction-tiered new-architecture record */}
+                  {/* Pipeline Props — conviction-tiered record.
+                      Now shows BOTH lifetime and rolling 30D (added 2026-05-20
+                      after user spotted record dropping 305→285 day-over-day
+                      due to old 500-row rolling window. Lifetime = true model
+                      track record; 30D = recent form indicator). */}
                   {(() => {
-                    const pp = jerryRecord.pipelineProps || {total: {wins:0, losses:0, pending:0}, byTier: {}, byType: {}};
+                    const pp = jerryRecord.pipelineProps || {total: {wins:0, losses:0, pending:0}, last30: {wins:0, losses:0}, byTier: {}, byType: {}};
                     const t = pp.total;
+                    const t30 = pp.last30 || {wins:0, losses:0};
                     const resolved = t.wins + t.losses;
                     const pct = resolved > 0 ? Math.round((t.wins / resolved) * 100) : 0;
+                    const resolved30 = t30.wins + t30.losses;
+                    const pct30 = resolved30 > 0 ? Math.round((t30.wins / resolved30) * 100) : 0;
                     const tierRow = (label: string, tier: {wins:number, losses:number}, color: string) => {
                       const tTotal = tier.wins + tier.losses;
                       const tPct = tTotal > 0 ? Math.round((tier.wins / tTotal) * 100) : 0;
@@ -10861,13 +10900,14 @@ setJerryHistory(prev => {
                           <Text style={{color:'#7a92a8',fontSize:13,lineHeight:18}}>Tracking begins once picks resolve.{'\n'}{t.pending > 0 ? `${t.pending} pending result${t.pending === 1 ? '' : 's'}.` : 'First picks generated today.'}</Text>
                         ) : (
                           <>
-                            <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:10}}>
+                            {/* Lifetime row */}
+                            <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:12,paddingBottom:12,borderBottomWidth:1,borderBottomColor:'#1f2d3d'}}>
                               <View style={{alignItems:'center'}}>
-                                <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30}}>{t.wins}-{t.losses}</Text>
-                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>OVERALL</Text>
+                                <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:28}}>{t.wins}-{t.losses}</Text>
+                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>LIFETIME</Text>
                               </View>
                               <View style={{alignItems:'center'}}>
-                                <Text style={{color:pct>=55?'#00e5a0':pct>=45?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:24}}>{pct}%</Text>
+                                <Text style={{color:pct>=55?'#00e5a0':pct>=45?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:22}}>{pct}%</Text>
                                 <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
                               </View>
                               {t.pending > 0 && (
@@ -10877,8 +10917,25 @@ setJerryHistory(prev => {
                                 </View>
                               )}
                             </View>
+                            {/* Rolling 30D row */}
+                            {resolved30 > 0 && (
+                              <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:10}}>
+                                <View style={{alignItems:'center'}}>
+                                  <Text style={{color:'#c8d8e8',fontWeight:'800',fontSize:18}}>{t30.wins}-{t30.losses}</Text>
+                                  <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>LAST 30 DAYS</Text>
+                                </View>
+                                <View style={{alignItems:'center'}}>
+                                  <Text style={{color:pct30>=55?'#00e5a0':pct30>=45?HRB_COLOR:'#ff4d6d',fontWeight:'700',fontSize:16}}>{pct30}%</Text>
+                                  <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>RECENT FORM</Text>
+                                </View>
+                                <View style={{alignItems:'center'}}>
+                                  <Text style={{color:pct30>pct?'#00e5a0':pct30<pct?'#ff8c5a':'#7a92a8',fontWeight:'700',fontSize:16}}>{pct30>pct?'↑':pct30<pct?'↓':'→'}{Math.abs(pct30-pct)}pt</Text>
+                                  <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>VS LIFETIME</Text>
+                                </View>
+                              </View>
+                            )}
                             <View style={{backgroundColor:'#0d1419',borderRadius:10,padding:10,marginTop:4}}>
-                              <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:4,letterSpacing:0.5}}>BY TIER</Text>
+                              <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:4,letterSpacing:0.5}}>BY TIER (LIFETIME)</Text>
                               {tierRow('🔒 PRIME (80+)', pp.byTier.PRIME || {wins:0,losses:0}, '#00e5a0')}
                               {tierRow('⚡ STRONG (65-79)', pp.byTier.STRONG || {wins:0,losses:0}, HRB_COLOR)}
                               {tierRow('📊 LEAN (50-64)', pp.byTier.LEAN || {wins:0,losses:0}, '#7a92a8')}
