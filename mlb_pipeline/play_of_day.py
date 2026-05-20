@@ -841,52 +841,135 @@ def run():
         print(f"  ✓ Wrote sweat scores for {len(candidates)} games. POTD selection deferred to 2pm run.")
         return
 
-    # NRFI candidates — only 88-94 range (75% hit rate proven sweet spot)
-    sweet_spot = [c for c in candidates if c.get('is_nrfi') and 90 <= (c.get('nrfi_score') or 0) <= 94]
-    edge_nrfi = [c for c in candidates if c.get('is_nrfi') and 88 <= (c.get('nrfi_score') or 0) <= 89]
+    # ── AUDIT-DRIVEN POTD SELECTION (2026-05-19 rewrite) ──
+    # Replaces hardcoded Tier 1/1.5/2 ordering. For each candidate, look up
+    # the live 30d hit rate from mlb_tier_calibration. Only candidates from
+    # cohorts that ACTUALLY audit above the break-even threshold (and have
+    # enough sample size to trust) make the pool. Top by audit rate wins.
+    #
+    # Why: tier-based selection was hardcoding the OVER v2 Edge tier above
+    # NRFI 88-89 edge based on a backtest claim of 62.2% — live POTD
+    # outcomes on that bucket showed 50% (n=6), basically coin flip. The
+    # self-calibrating version drops anything below MIN_AUDIT_RATE and
+    # promotes whatever's actually hitting in production right now.
+    #
+    # When NO candidate clears the bar → no-play day (honest content beats
+    # forced picks). Same skip-day design as before.
+    MIN_AUDIT_RATE = 0.58  # need to beat -135 ML break-even to lock as POTD
+    MIN_SAMPLE_SIZE = 10   # below this, can't trust the rate
 
-    # v2 Total OVER Edge candidates — backtest 56-34 (62.2%) at delta ≥1.5
-    v2_total_edge = [
-        c for c in candidates
-        if c.get('lean_bet') == 'total'
-        and c.get('sport') == 'MLB'
-        and 'v2 edge' in (c.get('lean_display') or '').lower()
-    ]
+    _cohort_cache = {}
+    def _cohort_rate(cohort_key):
+        """Pull latest 30d hit rate for the cohort from mlb_tier_calibration.
+        Cached per-run. Returns (rate, n) or (None, 0) if cohort isn't
+        calibrated yet."""
+        if not cohort_key:
+            return (None, 0)
+        if cohort_key in _cohort_cache:
+            return _cohort_cache[cohort_key]
+        try:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_tier_calibration",
+                params={
+                    'tier': f'eq.{cohort_key}',
+                    'window_label': 'eq.30d',
+                    'select': 'hit_rate,total,computed_date',
+                    'order': 'computed_date.desc',
+                    'limit': '1',
+                },
+                headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+                timeout=10,
+            )
+            rows = r.json() if r.status_code == 200 else []
+            if rows:
+                result = (float(rows[0].get('hit_rate') or 0), int(rows[0].get('total') or 0))
+                _cohort_cache[cohort_key] = result
+                return result
+        except Exception as e:
+            print(f"  ⚠️ cohort rate lookup failed for {cohort_key}: {e}")
+        _cohort_cache[cohort_key] = (None, 0)
+        return _cohort_cache[cohort_key]
 
-    best_overall = candidates[0]
+    def _derive_cohort(c):
+        """Map a candidate to its calibration cohort key. Returns None if
+        the candidate doesn't have a calibrated cohort (will be filtered)."""
+        if c.get('is_nrfi'):
+            n = c.get('nrfi_score') or 0
+            if 90 <= n <= 94: return 'nrfi_prime_90_94'
+            if 88 <= n <= 89: return 'nrfi_dead_80_89'
+            if 70 <= n <= 79: return 'nrfi_lean_70_79'
+            if n >= 95:        return 'nrfi_volatile_95plus'
+            if n <= 25:        return 'yrfi_lean_le40'
+            return None
+        if c.get('lean_bet') == 'ml':
+            # ML lean comes from spread_delta ≥3 or PRIME confluence — use
+            # confluence_prime_ge4 cohort as the proxy (most strict gate).
+            return 'confluence_prime_ge4'
+        # v2 Total OVER/UNDER edge — no calibrated cohort yet. Spread_delta_ge2
+        # is the closest proxy but it audits in the low-50s, won't clear
+        # MIN_AUDIT_RATE. Dropping these from POTD eligibility until a
+        # dedicated cohort accumulates.
+        return None
+
+    # Build audit-validated candidate pool
+    audit_pool = []
+    audit_log = []
+    for c in candidates:
+        if c.get('sport') != 'MLB':
+            continue  # NBA + other sports handled below
+        cohort = _derive_cohort(c)
+        if not cohort:
+            audit_log.append(f"  ⊘ {c['away_team']} @ {c['home_team']}: no calibrated cohort")
+            continue
+        rate, n = _cohort_rate(cohort)
+        if rate is None:
+            audit_log.append(f"  ⊘ {c['away_team']} @ {c['home_team']} ({cohort}): no calibration data")
+            continue
+        if n < MIN_SAMPLE_SIZE:
+            audit_log.append(f"  ⊘ {c['away_team']} @ {c['home_team']} ({cohort}): n={n} below min {MIN_SAMPLE_SIZE}")
+            continue
+        if rate < MIN_AUDIT_RATE:
+            audit_log.append(f"  ⊘ {c['away_team']} @ {c['home_team']} ({cohort}): audit {rate*100:.1f}% below threshold {MIN_AUDIT_RATE*100:.0f}%")
+            continue
+        c['_cohort'] = cohort
+        c['_audit_rate'] = rate
+        c['_audit_n'] = n
+        audit_pool.append(c)
+
+    # Sort: highest audit rate first, then in-game signal strength (sweat score)
+    audit_pool.sort(key=lambda c: (-c['_audit_rate'], -c.get('score', 0)))
+
+    if audit_log:
+        print("AUDIT-DRIVEN POTD FILTER:")
+        for line in audit_log:
+            print(line)
 
     pick = None
     confidence = 'standard'
+    best_overall = candidates[0] if candidates else None
 
-    # ML POTD ELIGIBILITY REMOVED 2026-05-01 pending projection_v2 ML rebuild.
-    # NBA POTDs still fire (separate model).
+    if audit_pool:
+        pick = audit_pool[0]
+        # Tier label from audit rate (used by app for visual styling)
+        r = pick['_audit_rate']
+        if r >= 0.68: confidence = 'elite'
+        elif r >= 0.62: confidence = 'high'
+        else: confidence = 'solid'
+        print(f"🔒 AUDIT-DRIVEN PICK: {pick['away_team']} @ {pick['home_team']} — "
+              f"cohort {pick['_cohort']} hit {pick['_audit_rate']*100:.1f}% (n={pick['_audit_n']})")
+        if len(audit_pool) > 1:
+            print(f"   Runners-up:")
+            for c in audit_pool[1:4]:
+                print(f"     {c['away_team']} @ {c['home_team']} ({c['_cohort']}: {c['_audit_rate']*100:.1f}% n={c['_audit_n']})")
 
-    # Tier 1 — sweet spot NRFI (90-94) audited 75% n=16, OR NBA high conviction
-    if sweet_spot:
-        sweet_spot.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
-        pick = sweet_spot[0]
-        confidence = 'elite'
-        print(f"🔒 SWEET SPOT pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
-    elif best_overall.get('sport') == 'NBA' and best_overall['score'] >= 75:
-        pick = best_overall
-        confidence = 'high'
-        print(f"🔒 NBA HIGH CONVICTION: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']}")
-
-    # Tier 1.5 — v2 Total OVER Edge (audited 62.2% n=90 at ≥1.5 run delta)
-    if not pick and v2_total_edge:
-        v2_total_edge.sort(key=lambda c: c['score'], reverse=True)
-        pick = v2_total_edge[0]
-        confidence = 'high'
-        print(f"🔒 v2 TOTAL OVER EDGE: {pick['away_team']} @ {pick['home_team']} — {pick.get('lean_display')}")
-
-    # Tier 2 — NRFI 88-89 edge OR NBA solid
-    if not pick:
-        if edge_nrfi:
-            edge_nrfi.sort(key=lambda c: c.get('nrfi_score', 0), reverse=True)
-            pick = edge_nrfi[0]
-            confidence = 'solid'
-            print(f"✅ NRFI pick: {pick['away_team']} @ {pick['home_team']} — NRFI {pick['nrfi_score']}")
-        elif best_overall.get('sport') == 'NBA' and best_overall['score'] >= 65:
+    # NBA fallback path (separate cohort calibration not yet wired into
+    # mlb_tier_calibration — preserve the legacy score-based gate).
+    if not pick and best_overall and best_overall.get('sport') == 'NBA':
+        if best_overall['score'] >= 75:
+            pick = best_overall
+            confidence = 'high'
+            print(f"🔒 NBA HIGH CONVICTION: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']}")
+        elif best_overall['score'] >= 65:
             pick = best_overall
             confidence = 'solid'
             print(f"✅ NBA pick: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']}")
@@ -905,8 +988,14 @@ def run():
                     "cache_key": f"best_bet_{today}",
                     "game_id": f"best_bet_{today}",
                     "sport": "none",
-                    "narrative": "No PRIME tier play on the board today. The Sweat Locker model only locks NRFI 90-94 sweet-spot games (75% audited). When that doesn't show, we don't force a pick — bucket angles + Dawg of the Day are still in the app.",
-                    "data": {"noPlay": True, "reason": "no_prime_tier"},
+                    "narrative": (
+                        "No play on the board today. The Sweat Locker model only locks "
+                        "POTDs from cohorts that audit above break-even (currently 58%+ "
+                        "30d hit rate, n≥10). When nothing on tonight's slate clears that "
+                        "bar, we skip — forced picks erode trust faster than honest silence. "
+                        "Bucket angles + Dawg of the Day are still in the app."
+                    ),
+                    "data": {"noPlay": True, "reason": "no_audit_qualified_cohort"},
                     "fetched_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
