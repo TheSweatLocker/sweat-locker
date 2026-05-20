@@ -283,6 +283,18 @@ jobs:
           cd mlb_pipeline
           python resolve_game_results.py
 
+      # POTD auto-resolver — reads jerry_cache best_bet_* entries, looks
+      # up game outcomes via mlb_game_results, writes Win/Loss/Push back
+      # to data.result. Idempotent + backfills any unresolved historic
+      # POTDs. Added 2026-05-19 so we stop manually tracking POTD record.
+      - name: Resolve Play of the Day
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python resolve_potd.py
+
       - name: Run NBA team stats update
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
