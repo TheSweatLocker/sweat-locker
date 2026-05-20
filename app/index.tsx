@@ -3971,13 +3971,18 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         // L3 pitcher ERA — form drift
         const l3Form = `Pitcher L3 ERA: home ${mlbCtx.home_pitcher_last_3_era ?? 'N/A'} / away ${mlbCtx.away_pitcher_last_3_era ?? 'N/A'}`;
 
-        // NRFI tier label
+        // NRFI tier label — append server-driven audit note when available
+        // (primary_play.audit_note is populated by compute_primary_play from
+        // mlb_tier_calibration). No hardcoded percentages here per the
+        // "no hard numbers in index" rule (2026-05-19).
         const nrfi = mlbCtx.nrfi_score;
+        const _ppAudit = mlbCtx.primary_play?.audit_note;
+        const _auditSuffix = _ppAudit ? ` — ${_ppAudit}` : '';
         const nrfiTier = nrfi == null ? 'N/A'
-          : nrfi >= 95 ? `${nrfi} (volatile 95+ band — below baseline)`
-          : nrfi >= 90 ? `${nrfi} (PRIME 90-94 band — ~69% audited 30d)`
-          : nrfi >= 70 ? `${nrfi} (mild lean 70-79 — ~58% audited)`
-          : nrfi <= 40 ? `${nrfi} (YRFI ≤40 — ~69% audited)`
+          : nrfi >= 95 ? `${nrfi} (volatile 95+ band)`
+          : nrfi >= 90 ? `${nrfi} (PRIME 90-94 band${_auditSuffix})`
+          : nrfi >= 70 ? `${nrfi} (mild lean 70-79)`
+          : nrfi <= 40 ? `${nrfi} (YRFI ≤40 lean${_auditSuffix})`
           : `${nrfi} (neutral)`;
 
         // Confluence (DON'T tell Jerry to lean on it — audit corrected to 75%
