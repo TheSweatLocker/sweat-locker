@@ -9811,9 +9811,16 @@ setJerryHistory(prev => {
                 {gamesData.filter((game) => {
   // Hide completed games
   if(game.gameState === 'Final') return false;
-  const gameTime = new Date(game.commence_time);
-  const fourHoursAgo = new Date(Date.now() - 4*60*60*1000);
-  if(gameTime < fourHoursAgo) return false;
+  // Always keep games that MLB Stats API says are still live, even if
+  // commence_time was >4hrs ago (extra-inning games, rain delays).
+  // Without this, a 6:40pm game in the 11th inning at 11:15pm gets
+  // filtered out as "stale" when it's still being played.
+  if(game.gameState !== 'Live') {
+    const gameTime = new Date(game.commence_time);
+    // Bumped 4h → 5h fallback for the no-state-available case
+    const fiveHoursAgo = new Date(Date.now() - 5*60*60*1000);
+    if(gameTime < fiveHoursAgo) return false;
+  }
   // Search filter
   if(gamesSearch === '') return true;
   return game.away_team.toLowerCase().includes(gamesSearch.toLowerCase()) ||
@@ -9836,7 +9843,11 @@ setJerryHistory(prev => {
 }).map((game, i) => {
                   const summary=getGameSummary(game);
                   const gameTime=new Date(game.commence_time);
-                  const isLive=game.gameState==='Live'||(new Date()>gameTime&&new Date()<new Date(gameTime.getTime()+4*60*60*1000));
+                  // LIVE badge: trust MLB Stats API state when available
+                  // (extra-inning games can run >4hrs, badge needs to track
+                  // through end of game). Time-based fallback bumped 4h → 5h
+                  // to cover long games when state hasn't refreshed.
+                  const isLive=game.gameState==='Live'||(game.gameState!=='Final'&&new Date()>gameTime&&new Date()<new Date(gameTime.getTime()+5*60*60*1000));
                   const hrbLine=getHRBLine(game);
                   const hrbSpread=hrbLine&&hrbLine.spread?hrbLine.spread[0]:null;
                   const hrbTotal=hrbLine&&hrbLine.total?hrbLine.total[0]:null;
