@@ -2492,13 +2492,30 @@ if(r.data && r.data.data) {
     };
   };
 
-  const getSweatTier = (score) => {
-    // v2 (2026-04-25): tiers calibrated to mean "model's confidence in this game's strongest play"
-    // 80+ requires a PRIME signal (NRFI 88-94, confluence net >=4, etc) to fire.
-    if(score >= 80) return {label:'🔥 PRIME PLAY', color:'#ff4d6d'};
-    if(score >= 65) return {label:'✅ STRONG LEAN', color:'#00e5a0'};
-    if(score >= 50) return {label:'👀 LIGHT LEAN', color:'#ffd166'};
-    return {label:'❌ PASS', color:'#4a6070'};
+  // Canonical tier labels. Backend (game_context.py + play_of_day.py) is
+  // the source of truth — passes serverTier explicitly when available.
+  // Fallback cutoffs match the server thresholds in play_of_day._sweat_tier
+  // (PRIME ≥80 / STRONG ≥65 / LIGHT ≥50). Keep these in sync if you change
+  // them — but prefer reading sweat_tier from mlb_game_context directly.
+  const SWEAT_TIER_DISPLAY = {
+    PRIME:      {label:'🔥 PRIME PLAY',  color:'#ff4d6d'},
+    STRONG:     {label:'✅ STRONG LEAN', color:'#00e5a0'},
+    LIGHT_LEAN: {label:'👀 LIGHT LEAN',  color:'#ffd166'},
+    LIGHT:      {label:'👀 LIGHT LEAN',  color:'#ffd166'},
+    PASS:       {label:'❌ PASS',        color:'#4a6070'},
+  } as const;
+  const getSweatTier = (score, serverTier?: string) => {
+    // Prefer server tier when provided — MLB games ship sweat_tier in
+    // mlb_game_context (computed by play_of_day._sweat_tier with full
+    // audit-driven gating). Client cutoffs are fallback for sports where
+    // backend doesn't compute the tier yet.
+    if(serverTier && SWEAT_TIER_DISPLAY[serverTier]) {
+      return SWEAT_TIER_DISPLAY[serverTier];
+    }
+    if(score >= 80) return SWEAT_TIER_DISPLAY.PRIME;
+    if(score >= 65) return SWEAT_TIER_DISPLAY.STRONG;
+    if(score >= 50) return SWEAT_TIER_DISPLAY.LIGHT;
+    return SWEAT_TIER_DISPLAY.PASS;
   };
 
     const calcGameSweatScore = (game, sport, fanmatchData = {}, mlbContext = {}, nbaContext = {}) => {
@@ -2981,7 +2998,29 @@ if(isPlayoffMode) {
     }
   }
 } else if(sport==='MLB') {
-  // Base market signals
+  // MLB scoring is server-side (mlb_game_context.sweat_score / sweat_tier).
+  // getSweatScoreForGame bypasses this branch when the pipeline has populated
+  // those fields — which is the normal production path. This fallback only
+  // fires if mlbCtx is missing the server fields entirely (pipeline didn't
+  // run, brand-new game added mid-day, or context fetch failed).
+  //
+  // 2026-05-21 refactor: ripped 170+ lines of legacy client-side scoring
+  // (NRFI band boosts, spread_delta thresholds, situational stat cutoffs)
+  // because they competed with the server's audit-driven tier and could
+  // surface contradictory values to users. Now we return a safe PASS
+  // placeholder and log so the team can investigate pipeline misses.
+  if (typeof console !== 'undefined') {
+    console.warn('[calcGameSweatScore] MLB fallback fired — server sweat_score missing for', game?.away_team, '@', game?.home_team, '— pipeline may not have run');
+  }
+  modelMismatch = 45;
+  situationalEdge = 50;
+  leanSide = null;
+  leanBet = null;
+} else if(sport==='MLB_LEGACY_DO_NOT_USE') {
+  // ── BEGIN LEGACY DEAD CODE (kept as comment for archaeology only) ──
+  // The following block was the original MLB scoring path. Replaced 5/21
+  // with the server-driven path above. Do not re-enable without coordinating
+  // with backend (play_of_day.py + game_context.py own these computations).
   const spreadGap = spreads.length > 1 ? Math.max(...spreads) - Math.min(...spreads) : 0;
   const totals = bookmakers.map(bm => {
     const t = bm.markets && bm.markets.find(m => m.key==='totals');
@@ -3897,6 +3936,38 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
     try {
       const key = game.id || (game.away_team + game.home_team);
       if(sweatScores[key]) return sweatScores[key];
+      // MLB: prefer server-side sweat_score + sweat_tier (computed in
+      // play_of_day.py with full audit-driven gating). The legacy
+      // calcGameSweatScore client computation is bypassed when server
+      // ships these fields — eliminates the "two competing scoring
+      // systems" risk that surfaced different picks on the same game.
+      if (sport === 'MLB') {
+        const mlbCtx = mlbGameContext?.[game.home_team] || mlbGameContext?.[game.away_team] ||
+          Object.values(mlbGameContext || {}).find((c: any) =>
+            c?.home_team === game.home_team || c?.away_team === game.away_team) as any;
+        if (mlbCtx && mlbCtx.sweat_score != null) {
+          // Build the same shape downstream consumers expect, sourced from server.
+          const score = {
+            total: mlbCtx.sweat_score,
+            tier: mlbCtx.sweat_tier,
+            primaryPlay: mlbCtx.primary_play || null,
+            // Pull lean from primary_play instead of recomputing client-side.
+            leanSide: mlbCtx.primary_play?.label || null,
+            leanBet: mlbCtx.primary_play?.type || null,
+            // Carry the model fields so other consumers (Jerry narrative,
+            // numbers panel) can read them without re-querying context.
+            projectedTotal: mlbCtx.projected_total,
+            modelTotal: mlbCtx.model_pred_total,
+            postedTotal: mlbCtx.close_total || mlbCtx.open_total,
+            modelSpread: mlbCtx.model_pred_spread,
+            projectedSpread: mlbCtx.projected_spread,
+            confluenceNet: mlbCtx.signal_confluence_net,
+            isServerScored: true,
+          };
+          setSweatScores(prev => ({...prev, [key]: score}));
+          return score;
+        }
+      }
       const score = calcGameSweatScore(game, sport, fanmatchData, mlbGameContext, nbaTeamData);
       if(score) setSweatScores(prev => ({...prev, [key]: score}));
       return score;
@@ -5448,7 +5519,7 @@ if(isLive) {
 
     try {
       const dataQualityNote = sport === 'NCAAB'
-  ? `NOTE: Full KenPom efficiency model active — four factors, tempo, efficiency gaps all available.`
+  ? `NOTE: Full proprietary efficiency model active — four factors, tempo, efficiency gaps all available.`
   : sport === 'MLB'
   ? `NOTE: Sweat Locker MLB model active — pitcher xERA, wOBA/wRC+, K rate gap, platoon advantage, bullpen ERA, park factor, weather, umpire tendencies all feeding the model. Use these signals specifically.`
   : sport === 'NBA'
@@ -6995,7 +7066,7 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                   if(sport === 'NCAAB' && bartData.length) {
                     const gameTeam = fuzzyMatchTeam(stripMascot(prop.gameName?.split(' vs ')?.[0] || ''), bartData, 'team');
                     if(gameTeam) {
-                      kenpomContext = ` Team KenPom: Rank #${gameTeam.rank||'N/A'}, AdjOE: ${gameTeam.adjOE||'N/A'}, AdjDE: ${gameTeam.adjDE||'N/A'}, SOS: ${gameTeam.sos||'N/A'}.`;
+                      kenpomContext = ` Team Efficiency: Rank #${gameTeam.rank||'N/A'}, AdjOE: ${gameTeam.adjOE||'N/A'}, AdjDE: ${gameTeam.adjDE||'N/A'}, SOS: ${gameTeam.sos||'N/A'}.`;
                     }
                   }
                   if(sport === 'NBA' || sport === 'NFL') {
@@ -9248,21 +9319,44 @@ setJerryHistory(prev => {
       </View>
     )}
 
-    {/* ⚡ TOP PROPS */}
-    {(sweatCard.top_ks_over?.length > 0 || sweatCard.top_hits_over?.length > 0) && (
-      <View style={{marginBottom:10}}>
-        <Text style={{color:'#7a92a8',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:6}}>⚡ TOP PROPS</Text>
-        {[...(sweatCard.top_ks_over||[]), ...(sweatCard.top_hits_over||[])].slice(0,3).map((p:any, i:number) => (
-          <View key={i} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:6,borderTopWidth:i>0?0.5:0,borderTopColor:'#1a2530'}}>
-            <View style={{flex:1}}>
-              <Text style={{color:'#fff',fontSize:12,fontWeight:'600'}}>{p.player_name} {p.prop_type==='ks_over' ? (p.signals?._projected_ks != null ? `${p.signals._projected_ks} expected Ks` : `O${p.prop_line} Ks`) : `O${p.prop_line} Hits`}</Text>
-              <Text style={{color:'#7a92a8',fontSize:10}}>{p.matchup}</Text>
+    {/* ⚡ TOP PROPS — unified surface from sweat_card.top_props (server-driven,
+        any PRIME/STRONG prop type, ranked by conviction). No client-side
+        filtering or grading — backend is canonical. Falls back to legacy
+        top_ks_over/top_hits_over for pre-fix payloads. */}
+    {(() => {
+      const propsToShow = sweatCard.top_props?.length > 0
+        ? sweatCard.top_props.slice(0, 5)
+        : [...(sweatCard.top_ks_over||[]), ...(sweatCard.top_hits_over||[])].slice(0, 3);
+      if (!propsToShow.length) return null;
+      const renderLine = (p: any) => {
+        const t = p.prop_type;
+        const dir = p.direction === 'under' ? 'U' : 'O';
+        const proj = p.signals?._projected_ks ?? p.signals?._projected_bb ?? p.signals?._projected_hits;
+        if (t === 'ks_over' && proj != null) return `${proj} expected Ks`;
+        if (t === 'ks_under' && proj != null) return `Under ${p.prop_line} Ks (proj ${proj})`;
+        if (t === 'hits_over') return `O${p.prop_line} Hits`;
+        if (t === 'hits_under') return `U${p.prop_line} Hits`;
+        if (t === 'ha_over' || t === 'ha_under') return `${dir}${p.prop_line} H+A`;
+        if (t === 'er_over' || t === 'er_under') return `${dir}${p.prop_line} ER`;
+        if (t === 'outs_over' || t === 'outs_under') return `${dir}${p.prop_line} Outs`;
+        if (t === 'bb_over' || t === 'bb_under') return `${dir}${p.prop_line} BB`;
+        return `${dir}${p.prop_line} ${(t || '').replace(/_/g, ' ')}`;
+      };
+      return (
+        <View style={{marginBottom:10}}>
+          <Text style={{color:'#7a92a8',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:6}}>⚡ TOP PROPS</Text>
+          {propsToShow.map((p:any, i:number) => (
+            <View key={i} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:6,borderTopWidth:i>0?0.5:0,borderTopColor:'#1a2530'}}>
+              <View style={{flex:1}}>
+                <Text style={{color:'#fff',fontSize:12,fontWeight:'600'}}>{p.player_name} {renderLine(p)}</Text>
+                <Text style={{color:'#7a92a8',fontSize:10}}>{p.matchup}</Text>
+              </View>
+              <Text style={{color:p.tier==='PRIME'?'#00e5a0':'#7a92a8',fontSize:11,fontWeight:'700'}}>{p.tier} {p.conviction}</Text>
             </View>
-            <Text style={{color:p.tier==='PRIME'?'#00e5a0':'#7a92a8',fontSize:11,fontWeight:'700'}}>{p.tier} {p.conviction}</Text>
-          </View>
-        ))}
-      </View>
-    )}
+          ))}
+        </View>
+      );
+    })()}
 
     {/* 📊 BUCKET ANGLE */}
     {sweatCard.bucket_angle && (
@@ -9968,6 +10062,29 @@ setJerryHistory(prev => {
   </View>
 )}
             {gamesLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:'#7a92a8',marginTop:12}}>Loading games...</Text></View>):
+            gamesData.length===0 && gamesSport==='NCAAB'?(
+              <View style={{alignItems:'center',paddingTop:50,paddingHorizontal:24}}>
+                <Text style={{fontSize:48}}>🏀</Text>
+                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18,marginTop:16,textAlign:'center'}}>NCAAB Returns November 2026</Text>
+                <Text style={{color:'#7a92a8',fontSize:13,marginTop:10,textAlign:'center',lineHeight:20}}>
+                  College basketball season is in recess. Our proprietary efficiency model is ready to go when November tips off.
+                </Text>
+                <View style={{marginTop:20,backgroundColor:'rgba(0,229,160,0.08)',borderRadius:12,padding:14,borderWidth:1,borderColor:'rgba(0,229,160,0.25)',width:'100%'}}>
+                  <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:11,letterSpacing:1,marginBottom:8}}>🎯 WHAT TO EXPECT IN NOVEMBER</Text>
+                  <Text style={{color:'#c8d8e8',fontSize:12,lineHeight:18}}>
+                    • Adjusted efficiency model (full D1 coverage){'\n'}
+                    • Four-factors deep dive (eFG%, TO%, OR%, FTR){'\n'}
+                    • Spreads / totals / ML with audit-driven cohorts{'\n'}
+                    • Conference / tournament situational layers
+                  </Text>
+                </View>
+                <View style={{marginTop:14,backgroundColor:'rgba(122,146,168,0.06)',borderRadius:10,padding:12,width:'100%'}}>
+                  <Text style={{color:'#7a92a8',fontSize:11,fontStyle:'italic',textAlign:'center'}}>
+                    Your subscription stays active year-round — MLB carries through summer, NCAAB joins in November.
+                  </Text>
+                </View>
+              </View>
+            ):
             gamesData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:40}}>{SPORT_EMOJI[gamesSport]}</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No {gamesSport} games {gamesDay}.{'\n'}Try a different sport or day.</Text></View>):(
               <>
                 {gamesSport==='NHL' && (
@@ -10045,7 +10162,7 @@ setJerryHistory(prev => {
   
                   const ss = getSweatScoreForGame(game, gamesSport);
                   if(!ss) return null;
-                        const tier = getSweatTier(ss.total);
+                        const tier = getSweatTier(ss.total, ss.tier);
                         // Build top signals for display
                         const signals = [];
                         if(gamesSport === 'MLB') {
@@ -11095,9 +11212,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       ) : (
         topGames.map((item, i) => {
           const ss = item.score;
-          const tier = ss.total >= 68 ? {label:'🔒 PRIME', color:'#FFB800'} :
-                       ss.total >= 62 ? {label:'✅ LEAN', color:'#00e5a0'} :
-                       {label:'👀 WATCH', color:'#0099ff'};
+          const tier = getSweatTier(ss.total, ss.tier);
           const gameTime = new Date(item.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
           return(
             <TouchableOpacity key={i} onPress={()=>{setActiveTab('games');setGamesSport('NCAAB');openGameDetail(item.game);}}
@@ -11121,7 +11236,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   </View>
                   {ss.hasFanmatch&&(
                     <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}>
-                      <Text style={{color:'#00e5a0',fontSize:11,fontWeight:'700'}}>📡 KenPom Model</Text>
+                      <Text style={{color:'#00e5a0',fontSize:11,fontWeight:'700'}}>📡 Sweat Locker Model</Text>
                     </View>
                   )}
                 </View>
@@ -11313,9 +11428,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       ) : (
         scored.map((item, i) => {
           const ss = item.score;
-          const tier = ss.total >= 68 ? {label:'🔒 PRIME', color:'#FFB800'} :
-                       ss.total >= 55 ? {label:'✅ LEAN', color:'#00e5a0'} :
-                       {label:'👀 WATCH', color:'#0099ff'};
+          const tier = getSweatTier(ss.total, ss.tier);
           const gameTime = new Date(item.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
           return(
             <TouchableOpacity key={i} onPress={()=>openGameDetail(item.game)}
@@ -11453,7 +11566,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   const isLive = new Date(selectedGame.commence_time) <= new Date();
                   const ss = getSweatScoreForGame(selectedGame, gamesSport);
                   if(!ss) return null;
-                  const tier = getSweatTier(ss.total);
+                  const tier = getSweatTier(ss.total, ss.tier);
                   const isExpanded = expandedSweatScore==='main';
                   return(
                     <View style={{backgroundColor:'#0a1018',borderRadius:16,padding:16,marginBottom:16,borderWidth:1.5,borderColor:tier.color+'66'}}>
