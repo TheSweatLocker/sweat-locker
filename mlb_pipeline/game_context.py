@@ -1,3 +1,34 @@
+"""MLB game context pipeline.
+
+SIGN CONVENTIONS (load-bearing — verified empirically 2026-05-20):
+Two spread fields use OPPOSITE signs. Read carefully before adding logic.
+
+  projected_spread / model_pred_spread (v3 / v4):
+    POSITIVE = home favored by X runs
+    NEGATIVE = away favored by X runs
+
+  close_spread / open_spread:
+    NEGATIVE = home favored (home runline -1.5)
+    POSITIVE = home is dog (home runline +1.5)
+
+  spread_delta = projected_spread + close_spread
+    SIGN = "model leans more home than market does"
+    MAGNITUDE = strength of model-vs-market disagreement (in runs)
+
+  home_ml_odds / away_ml_odds / *_ml_close / *_ml_open:
+    Standard ML — NEGATIVE = favorite, POSITIVE = dog
+
+  model_pred_total / projected_total: straight runs, no sign convention
+  over_lean: True = over, False = under, None = neutral (v3-derived from
+             projected_total ≥ close_total + 1.5)
+
+PREFERRED MODEL FIELDS (v4 over v3):
+  Consumers should prefer `model_pred_spread` / `model_pred_total`
+  (XGBoost v4) and fall back to `projected_spread` / `projected_total`
+  (v3) only when v4 is suppressed (missing xERA, opp data, etc.).
+  See compute_primary_play (this file) and play_of_day.build_lean for
+  the canonical pattern.
+"""
 import requests
 from datetime import datetime, date, timedelta, timezone
 import time
@@ -1696,14 +1727,31 @@ def compute_primary_play(ctx):
     """
     nrfi = ctx.get('nrfi_score')
     conf = ctx.get('signal_confluence_net')
-    proj_spread = ctx.get('projected_spread')
+    # Prefer v4 (model_pred_spread) over v3 (projected_spread). v4 is the
+    # XGBoost runs model; when present it beats v3 on direction. v3 stays as
+    # fallback when v4 is suppressed (missing xERA, opp data, etc.). Audited
+    # 2026-05-20 — prior v3-only logic would mis-fire when v4 disagreed.
+    v4_spread = ctx.get('model_pred_spread')
+    v3_spread = ctx.get('projected_spread')
+    proj_spread = v4_spread if v4_spread is not None else v3_spread
     close_spread = ctx.get('close_spread')
     home_ml = ctx.get('home_ml_odds')
     away_ml = ctx.get('away_ml_odds')
-    sd = ctx.get('spread_delta')
     home_team = ctx.get('home_team') or 'Home'
     away_team = ctx.get('away_team') or 'Away'
 
+    # Recompute spread_delta from the preferred spread so |delta| gate is
+    # consistent with the direction we're using. Stored ctx.spread_delta is
+    # always v3-derived (set in upload_game_context line 1934) so we can't
+    # trust it when v4 is the active spread.
+    sd = None
+    if proj_spread is not None and close_spread is not None:
+        try:
+            sd = round(float(proj_spread) + float(close_spread), 2)
+        except (TypeError, ValueError):
+            sd = ctx.get('spread_delta')
+    else:
+        sd = ctx.get('spread_delta')
     abs_delta = abs(float(sd)) if sd is not None else 0.0
 
     # ML auto-fade gate: only surface ML primary play when model agrees with
@@ -1795,8 +1843,13 @@ def compute_primary_play(ctx):
             "signal_floor": 60,
             "audit_note": _audit_note_for('yrfi_lean_le40'),
         }
-    # STRONG ML: confluence ≥+2 AND |delta| ≥1.5
-    if conf is not None and int(conf) >= 2 and abs_delta >= 1.5 and ml_playable:
+    # STRONG ML: confluence ≥+2 AND |delta| ≥2.0
+    # Raised from 1.5 to 2.0 on 2026-05-21 audit. spread_delta_1_5_2 cohort
+    # (delta in 1.5-2.0 band) hits only 40-43% lifetime — a trap zone where
+    # the model's pick LOSES more than it wins. spread_delta_ge2 cohort
+    # hits 55-58%. Old threshold put STRONG picks square in the trap; new
+    # threshold matches the cohort cliff. See project_spread_delta_trap_zone.
+    if conf is not None and int(conf) >= 2 and abs_delta >= 2.0 and ml_playable:
         return {
             "type": "ml",
             "tier": "STRONG",
@@ -1805,9 +1858,32 @@ def compute_primary_play(ctx):
             "signal_floor": 70,
             "audit_note": _audit_note_for('confluence_strong_2_3'),
         }
-    # OVER lean (xERA gap rule fired)
+    # OVER lean — prefer v4 model_pred_total when present. v4 went 7-1 on
+    # totals 5/19 but sample is small, so use a conservative threshold
+    # (≥2.5 LIGHT / ≥3.5 STRONG) until we have a dedicated v4-OVER cohort
+    # audit. The prop-signal override layer already flips model_pred_total
+    # downstream when PRIME/STRONG prop concentration disagrees, so this
+    # path inherits that correction. Audited 2026-05-20: prior path only
+    # read ctx.over_lean (v3-derived) — missed v4 PRIME edges entirely.
+    ct = ctx.get('close_total') or ctx.get('open_total')
+    v4_total = ctx.get('model_pred_total')
+    if v4_total is not None and ct is not None:
+        try:
+            v4_delta = float(v4_total) - float(ct)
+        except (TypeError, ValueError):
+            v4_delta = None
+        if v4_delta is not None and v4_delta >= 2.5:
+            return {
+                "type": "over",
+                "tier": "STRONG" if v4_delta >= 3.5 else "LIGHT",
+                "label": f"Over {ct}",
+                "sub": f"v4 model {v4_total:.1f} vs line {ct} (+{v4_delta:.1f})",
+                "signal_floor": 72 if v4_delta >= 3.5 else 62,
+                "audit_note": "v4 model edge (cohort audit pending)",
+            }
+    # Legacy OVER path — v3 xERA gap rule fired (fallback when v4 missing
+    # OR v4 edge is in 1.5-2.5 soft zone — v3 confirmation required)
     if ctx.get('over_lean') is True:
-        ct = ctx.get('close_total')
         return {
             "type": "over",
             "tier": "LIGHT",

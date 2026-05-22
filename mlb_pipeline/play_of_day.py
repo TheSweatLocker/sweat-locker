@@ -568,9 +568,9 @@ def _rl_alt_for_juiced_chalk(ctx):
     was the actual play (model projected +2.68 margin). This function
     surfaces that scenario as a POTD candidate.
 
-    Threshold logic:
+    Threshold logic (updated 2026-05-21 — see project_spread_delta_trap_zone):
       - confluence_net ≥ +4 (PRIME)
-      - |projected_spread| ≥ 1.5 (RL cover plausible per model)
+      - |projected_spread| ≥ 2.0 (cohort cliff — 1.5-2.0 is trap zone at 40%)
       - home_ml ≤ -180 OR away_ml ≤ -180 on the favored side
       - direction matches confluence model_pick
 
@@ -579,7 +579,11 @@ def _rl_alt_for_juiced_chalk(ctx):
     Combined effect should be net positive at the better RL price (+130-150).
     """
     confluence_net = ctx.get('signal_confluence_net') or 0
-    projected_spread = ctx.get('projected_spread')
+    # Prefer v4 (model_pred_spread) over v3 (projected_spread). Sign
+    # convention: POSITIVE = home favored (opposite of close_spread).
+    # Mirrors the v4-aware fix in game_context.compute_primary_play
+    # (2026-05-20 audit). Falls back to v3 when v4 is suppressed.
+    projected_spread = ctx.get('model_pred_spread') or ctx.get('projected_spread')
     home_ml = ctx.get('home_ml_close') or ctx.get('home_ml_open')
     away_ml = ctx.get('away_ml_close') or ctx.get('away_ml_open')
     if confluence_net is None or projected_spread is None:
@@ -589,7 +593,7 @@ def _rl_alt_for_juiced_chalk(ctx):
         ps = float(projected_spread)
     except (TypeError, ValueError):
         return None
-    if cn < 4 or abs(ps) < 1.5:
+    if cn < 4 or abs(ps) < 2.0:
         return None
     # Determine favored side per model
     home_favored = ps > 0
@@ -653,13 +657,25 @@ def build_lean(ctx):
     if 88 <= nrfi <= 89:
         return f"NRFI — Score {nrfi}/100 (edge tier)", 'nrfi', True
 
-    # 4. Total lean — projected total vs market line (post-rebuild, evaluate
-    # whether to keep this branch in POTD or move to props-only display)
+    # 4. Total lean — prefer v4 (model_pred_total) edge against the line.
+    # 2026-05-20 audit: prior path only read v3-derived over_lean which
+    # missed v4-driven edges entirely. Conservative threshold ≥2.5 matches
+    # compute_primary_play (v4-OVER cohort audit pending). Falls back to
+    # v3 over_lean when v4 is suppressed.
+    ct = ctx.get('close_total') or ctx.get('open_total')
+    v4_total = ctx.get('model_pred_total')
+    if v4_total is not None and ct is not None:
+        try:
+            v4_delta = float(v4_total) - float(ct)
+        except (TypeError, ValueError):
+            v4_delta = None
+        if v4_delta is not None and abs(v4_delta) >= 2.5:
+            side = 'Over' if v4_delta > 0 else 'Under'
+            return f"{side} {ct}", 'total', False
     over_lean = ctx.get('over_lean')
-    if over_lean is not None:
-        total = ctx.get('close_total') or ctx.get('open_total') or ''
+    if over_lean is not None and ct:
         side = 'Over' if over_lean else 'Under'
-        return f"{side} {total}", 'total', False
+        return f"{side} {ct}", 'total', False
 
     return None, None, False
 
