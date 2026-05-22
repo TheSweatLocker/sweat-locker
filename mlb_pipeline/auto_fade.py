@@ -63,6 +63,12 @@ def _fetch_live_calibration():
     if not url or not key:
         return dict(FALLBACK_CALIBRATION)
     tier_names = list(_TIER_MAP.values())
+    # 2026-05-22 fix: filter to TODAY's computed_date so we don't hit
+    # PostgREST's 1000-row default when historical calibration data
+    # accumulates over a full season. Same bug as the sweat_card YRFI
+    # truncation. One row per cohort per window per date = bounded.
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    _today = (_dt.now(_tz.utc) - _td(hours=4)).strftime("%Y-%m-%d")
     try:
         # Single query for all autofade tiers, both windows.
         # Filter to sport='mlb' so a future NBA/NFL row in the same table
@@ -71,6 +77,7 @@ def _fetch_live_calibration():
             "tier": f"in.({','.join(tier_names)})",
             "window_label": "in.(7d,30d)",
             "sport": "eq.mlb",
+            "computed_date": f"eq.{_today}",
             "select": "tier,window_label,hits,total,hit_rate",
         }, safe=",.()")
         req = urllib.request.Request(

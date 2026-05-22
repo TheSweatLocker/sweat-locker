@@ -52,13 +52,42 @@ def sb_get(path, params=None):
 
 
 def fetch_tier_rates():
-    """Pull live audited tier rates from mlb_tier_calibration (30d window)."""
+    """Pull live audited tier rates from mlb_tier_calibration (30d window).
+
+    2026-05-22 fix: previously this query hit PostgREST's 1000-row default
+    limit (1,337 active 30d rows across all cohorts × dates), randomly
+    truncating cohorts like yrfi_lean_le40 from the result. The sweat card
+    then shipped `secondary_lock.audited_rate=0, audited_n=null` because
+    the dict lookup returned None, surfacing as "0% audited (n=)" in the
+    YRFI LEAN card section.
+
+    Fix: filter to TODAY's computed_date (audit_tier_calibration.py runs
+    daily and writes one row per cohort per window per date — so today's
+    rows are exactly N cohorts × 3 windows = well under any limit).
+    """
+    today = today_et()
     rows = sb_get("mlb_tier_calibration", {
         "window_label": "eq.30d",
         "sport": "eq.mlb",
+        "computed_date": f"eq.{today}",
         "select": "tier,hits,total,hit_rate",
     })
-    return {r["tier"]: r for r in rows}
+    # Fallback to most-recent rows if today's calibration hasn't run yet
+    # (e.g. cron hasn't fired). Order by computed_date desc + dedupe by tier.
+    if not rows:
+        rows = sb_get("mlb_tier_calibration", {
+            "window_label": "eq.30d",
+            "sport": "eq.mlb",
+            "select": "tier,hits,total,hit_rate,computed_date",
+            "order": "computed_date.desc",
+            "limit": "500",  # bounded so we don't hit the pagination wall again
+        })
+    seen = {}
+    for r in rows:
+        # First row wins (already sorted desc by date when in fallback path;
+        # in primary path all rows share the same date so order doesn't matter)
+        seen.setdefault(r["tier"], r)
+    return seen
 
 
 def count_mlb_games_today():
@@ -440,6 +469,17 @@ def build_card():
     top_under_hits = top_props_by_type(props, "hits_under", 1)
     top_under_ks = top_props_by_type(props, "ks_under", 1)
 
+    # Unified TOP PROPS — any type that grades PRIME/STRONG, ranked by
+    # conviction. Replaces the limited hardcoded type buckets the frontend
+    # was rendering. Now Mize H+A Under, Strider ER Under, etc. surface
+    # alongside hits/Ks instead of being silently dropped (2026-05-21).
+    # Frontend reads sweat_card.top_props directly — no client-side
+    # filtering or grading, this is the canonical surface.
+    top_props_all = [
+        p for p in props
+        if p.get("tier") in ("PRIME", "STRONG")
+    ][:8]
+
     # Stack alert detection — find games where 4+ hits picks are PRIME
     stack_games = {}
     for p in props:
@@ -486,6 +526,7 @@ def build_card():
         "top_ks_over": top_ks,
         "top_hits_under": top_under_hits,
         "top_ks_under": top_under_ks,
+        "top_props": top_props_all,  # unified surface — see comment above
         # Bucket angle pulled from user-facing payload 2026-05-07 pending audit.
         # The signal (starter weak in innings 4-6 + opposing pen rested) hasn't
         # been cohort-tracked, so we don't know its actual hit rate. Same

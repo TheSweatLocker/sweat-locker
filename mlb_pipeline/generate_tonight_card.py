@@ -91,11 +91,24 @@ def fetch_games(date):
 def fetch_tier_rates():
     """Pull live 30d audited rates from mlb_tier_calibration. Returns
     {tier: (rate_pct, total_n)} so card copy reflects the *current*
-    cohort performance instead of stale hardcoded numbers."""
+    cohort performance instead of stale hardcoded numbers.
+
+    2026-05-22 fix: previously unbounded; 1300+ historical rows exceeded
+    PostgREST's 1000-row default, randomly dropping cohorts. Filter to
+    today's computed_date (one row per cohort = well under any limit).
+    Same bug class as the YRFI '0% audited' issue in generate_sweat_card."""
+    today = today_et()
     rows = sb_get("mlb_tier_calibration", {
         "window_label": "eq.30d",
         "sport": "eq.mlb",
+        "computed_date": f"eq.{today}",
         "select": "tier,hit_rate,total",
+    }) or sb_get("mlb_tier_calibration", {
+        "window_label": "eq.30d",
+        "sport": "eq.mlb",
+        "select": "tier,hit_rate,total,computed_date",
+        "order": "computed_date.desc",
+        "limit": "500",
     })
     out = {}
     for r in rows or []:
@@ -142,15 +155,26 @@ def format_top_legs(degen):
     return "\n".join(out)
 
 
+def _prop_label(p):
+    """Render the prop line. K props show expected Ks from signals (the
+    point estimate) instead of the raw audit threshold (always 5.1)."""
+    name = p.get("player_name", "?")
+    ptype = p.get("prop_type", "")
+    direction = (p.get("direction") or "over").title()
+    sig_obj = p.get("signals") or {}
+    if isinstance(sig_obj, dict) and ptype in ("ks_over", "ks_under"):
+        proj = sig_obj.get("_projected_ks")
+        if proj is not None:
+            return f"{name} — {proj} expected Ks ({direction.lower()})"
+    line = p.get("prop_line", "")
+    return f"{name} {direction} {line} {ptype.replace('_',' ')}"
+
+
 def format_props(props):
     if not props:
         return "_(no qualifying props)_"
     out = []
     for p in props[:3]:
-        name = p.get("player_name", "?")
-        ptype = p.get("prop_type", "")
-        line = p.get("prop_line", "")
-        direction = p.get("direction", "over")
         tier = "PRIME" if (p.get("conviction") or 0) >= 80 else "STRONG" if (p.get("conviction") or 0) >= 70 else "LEAN"
         sig_obj = p.get("signals") or {}
         if isinstance(sig_obj, dict):
@@ -159,7 +183,7 @@ def format_props(props):
             first_sig = sig_obj[0] if sig_obj else ""
         else:
             first_sig = ""
-        out.append(f"- **[{tier}] {name} {direction.title()} {line} {ptype.replace('_',' ')}** — _{first_sig}_")
+        out.append(f"- **[{tier}] {_prop_label(p)}** — _{first_sig}_")
     return "\n".join(out)
 
 
@@ -283,7 +307,7 @@ _Auto-generated from {date} pipeline output. Edit prose to taste before posting.
 > Tonight's Sweat Locker card.
 >
 > 🏆 **POTD:** {format_potd(potd).split(chr(10))[1].replace('**Pick:**', '').strip() if potd else 'TBA'}
-> 📊 **Top Prop:** {(props[0].get('player_name') if props else 'TBA')} {(props[0].get('direction', 'over') if props else '')} {(props[0].get('prop_line') if props else '')} {(props[0].get('prop_type', '').replace('_',' ') if props else '')}
+> 📊 **Top Prop:** {_prop_label(props[0]) if props else 'TBA'}
 > 🐕 **Dawg:** {dawg.get('team') if dawg else 'TBA'}
 >
 > Skipping NRFI 95+ tonight (volatile zone, hits 44%). {skips[0].split(' — ')[0].replace('- **', '').replace('**', '') if skips and 'NRFI' in (skips[0] if skips else '') else ''}
