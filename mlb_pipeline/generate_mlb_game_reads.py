@@ -96,7 +96,7 @@ def fetch_props_by_game():
     """Map matchup-string -> list of props (top conviction first)."""
     rows = sb_get("mlb_pipeline_props", {
         "game_date": f"eq.{today_et()}",
-        "select": "player_name,prop_type,prop_line,tier,conviction,signals,matchup",
+        "select": "player_name,player_team,prop_type,prop_line,tier,conviction,signals,matchup",
         "order": "conviction.desc",
     })
     by_game = {}
@@ -351,6 +351,7 @@ def build_struct(g, props, potd):
         reasons = [str(v) for k, v in sig.items() if not k.startswith("_")][:4]
         best.append({
             "player": p.get("player_name"),
+            "team": p.get("player_team"),
             "prop_type": p.get("prop_type"),
             "line": p.get("prop_line"),
             "tier": p.get("tier"),
