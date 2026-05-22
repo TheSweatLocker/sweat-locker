@@ -191,17 +191,16 @@ def score_dawg(g, diag=None, ml_map=None):
     # If model says dog loses by 0.8 (dog_diff=-0.8), dog_edge = -0.8 + 1.5 = 0.7
     dog_edge = dog_differential + 1.5
 
-    # v4 mastery-aware override (2026-05-19): v3 spread misses mastery
-    # signals like Cease (1.35 ERA vs NYY) and Warren (18.00 ERA vs TOR).
-    # When v4 disagrees with v3 by ≥2.0 in the dog's favor, relax the
-    # MIN_EDGE threshold so mastery-driven dawgs surface as candidates.
-    # Conviction scoring still has to put them on top — this is a gating
-    # change, not an auto-win. The 5/19 TOR vs NYY game was the trigger
-    # case: v3 said NYY by 0.97 (TOR edge 0.53), v4 said TOR by 4.85
-    # (edge 6.35). v3-only gate rejected TOR; with this fix TOR surfaces
-    # as a candidate.
+    # v4 mastery-aware edge (updated 2026-05-21): when v4 disagrees with
+    # v3 in the dog's favor, USE v4's edge directly for the gate (not just
+    # a relaxed threshold). This surfaces mastery-driven dawgs that v3
+    # alone would mis-classify. Backed by autofade_dog_high_conv cohort
+    # (58-65% hit rate lifetime) and the 5/19 TOR vs NYY trigger case:
+    # v3 said NYY by 0.97 (TOR edge 0.53), v4 said TOR by 4.85
+    # (edge 6.35) — now TOR surfaces as candidate via v4 edge directly.
     v4_ps = _f(g.get('model_pred_spread'))
     v4_disagrees_for_dog = False
+    v4_dog_edge = None
     if v4_ps is not None:
         v4_dog_diff = v4_ps if is_home_dawg else -v4_ps
         v4_dog_edge = v4_dog_diff + 1.5
@@ -210,11 +209,15 @@ def score_dawg(g, diag=None, ml_map=None):
         if v4_dog_diff > dog_differential + 2.0 and v4_dog_diff > 0:
             v4_disagrees_for_dog = True
 
-    MIN_EDGE = 0.5 if v4_disagrees_for_dog else 1.3
-    if dog_edge < MIN_EDGE:
+    # When v4 unlocks the dog, use its edge for gating. Otherwise stay
+    # on v3. Threshold stays 1.3 in both paths — v4's stronger edge
+    # naturally passes when it should.
+    effective_dog_edge = v4_dog_edge if v4_disagrees_for_dog else dog_edge
+    MIN_EDGE = 1.3
+    if effective_dog_edge < MIN_EDGE:
         if diag is not None:
-            gate_note = " (v4 relaxed gate from 1.3)" if v4_disagrees_for_dog else ""
-            diag.append(f"  ✗ {matchup_label}: {team.split()[-1]} dog_edge={dog_edge:+.2f} (ps={ps:+.1f}, ML {team_ml:+d}) — model agrees{gate_note}")
+            src = "v4" if v4_disagrees_for_dog else "v3"
+            diag.append(f"  ✗ {matchup_label}: {team.split()[-1]} dog_edge={effective_dog_edge:+.2f} ({src}, ps={ps:+.1f}, ML {team_ml:+d}) — model agrees")
         return None
 
     # close_spread for display only — may be wrong sign but we'll show it
@@ -261,13 +264,33 @@ def score_dawg(g, diag=None, ml_map=None):
             f"signal, +{v4_bump} conviction"
         )
 
-    # Team offense vs opposing hand
+    # Team offense vs opposing hand (absolute level)
     if team_wrc >= 110:
         conviction += 8
         signals['offense'] = f"{team.split()[-1]} wRC+ {team_wrc:.0f} vs opp hand — elite bat"
     elif team_wrc >= 100:
         conviction += 4
         signals['offense'] = f"{team.split()[-1]} wRC+ {team_wrc:.0f} vs opp hand — above avg"
+
+    # wRC+ DIFFERENTIAL — dog has hitter advantage over opponent. This is the
+    # wrc_diff_away_adv_ml / wrc_diff_home_adv_ml cohort (audit 2026-05-21:
+    # 58% lifetime n=130+ when dog has wRC+ advantage). Real cohort signal,
+    # not just absolute level. Added after spread_delta trap zone audit.
+    opp_wrc_vs_hand = _f(g.get(f'{opp_prefix}_wrc_vs_opp_hand'))
+    opp_wrc_season = _f(g.get(f'{opp_prefix}_wrc_plus')) or 100
+    opp_wrc = opp_wrc_vs_hand if opp_wrc_vs_hand is not None else opp_wrc_season
+    if team_wrc >= opp_wrc + 10:
+        conviction += 6
+        signals['wrc_diff'] = (
+            f"{team_label} wRC+ {team_wrc:.0f} vs {opp_label} wRC+ {opp_wrc:.0f} "
+            f"(+{team_wrc - opp_wrc:.0f} dog hitter edge — 58% cohort)"
+        )
+    elif team_wrc >= opp_wrc + 5:
+        conviction += 3
+        signals['wrc_diff'] = (
+            f"{team_label} wRC+ {team_wrc:.0f} vs {opp_label} wRC+ {opp_wrc:.0f} "
+            f"(+{team_wrc - opp_wrc:.0f} hitter edge)"
+        )
 
     # Starter edge — Dawg's pitcher having a better matchup than expected
     if xera is not None and opp_xera is not None and opp_xera - xera >= 1.0:
