@@ -11004,7 +11004,7 @@ setJerryHistory(prev => {
                     );
                     return(
                       <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12,marginBottom:12}}>⚾ NRFI MODEL — LEAN TIERS</Text>
+                        <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12,marginBottom:12}}>⚾ NRFI MODEL — LEAN TIERS  ·  MLB</Text>
                         {/* PRIME tier — gold standard */}
                         <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8,borderBottomWidth:1,borderBottomColor:'#1f2d3d'}}>
                           <View style={{flex:1}}>
@@ -11038,7 +11038,7 @@ setJerryHistory(prev => {
                     const pct = total > 0 ? Math.round((d.wins / total) * 100) : 0;
                     return (
                       <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🐕 DAWG OF THE DAY</Text>
+                        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🐕 DAWG OF THE DAY  ·  MLB</Text>
                         {total === 0 ? (
                           <Text style={{color:'#7a92a8',fontSize:13,lineHeight:18}}>Tracking begins once picks resolve.{'\n'}{d.pending > 0 ? `${d.pending} pending result${d.pending === 1 ? '' : 's'}.` : ''}</Text>
                         ) : (
@@ -11093,7 +11093,7 @@ setJerryHistory(prev => {
                     };
                     return (
                       <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🧠 PIPELINE PROPS — CONVICTION TIERS</Text>
+                        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🧠 PIPELINE PROPS — CONVICTION TIERS  ·  MLB</Text>
                         {resolved === 0 ? (
                           <Text style={{color:'#7a92a8',fontSize:13,lineHeight:18}}>Tracking begins once picks resolve.{'\n'}{t.pending > 0 ? `${t.pending} pending result${t.pending === 1 ? '' : 's'}.` : 'First picks generated today.'}</Text>
                         ) : (
@@ -11144,15 +11144,15 @@ setJerryHistory(prev => {
                     );
                   })()}
 
-                  {/* 🧠 COHORT AUDIT DASHBOARD — sport-aware live audit table.
-                      Surfaces the cohort hit rates (NRFI sweet spot, confluence
-                      bands, prop tiers, spread_delta, etc.) that drive every
-                      pick. The transparency moat: Dimer and competitors don't
-                      publish this. We do. Component is multi-sport from day
-                      one — auto-switches when active sport changes.
-                      Free tier sees percentages only; Pro tier sees sample
-                      sizes (hideSamples toggled via useSubscription).  */}
-                  <CohortDashboard sport={(gamesSport as Sport) || 'MLB'} />
+                  {/* 🧠 COHORT AUDIT DASHBOARD — multi-sport audit table.
+                      Defaults to MLB (only sport with data right now). Has
+                      its own internal sport-selector chips so users can
+                      switch to NBA/NCAAB/NFL when those sports have data
+                      — NOT tied to gamesSport (that's the games-tab
+                      selection, irrelevant to the receipts surface and
+                      previously caused "How We Pick — NBA" to render when
+                      user was looking at NBA games tab earlier).  */}
+                  <CohortDashboard />
 
                   {/* Legacy "Prop Jerry — Tracked Picks" + "Recent Prop Picks"
                       sections removed 2026-05-08. Both pulled from the

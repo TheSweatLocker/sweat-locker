@@ -81,12 +81,23 @@ const COHORT_LABELS: Record<string, { label: string; group: string; desc?: strin
 const GROUP_ORDER = ['NRFI', 'Signal Stack', 'Spread Edge', 'Lineup Edge', 'Prop Tiers', 'Dawg'];
 
 type Props = {
-  sport: Sport;
+  /** Initial sport — user can switch via in-card chip selector. Defaults to MLB. */
+  sport?: Sport;
   /** When true, hide sample size (n) — for free-tier paywall gating */
   hideSamples?: boolean;
 };
 
-export const CohortDashboard: React.FC<Props> = ({ sport, hideSamples = false }) => {
+// Sports we expose in the receipts cohort selector. Order = chip order.
+// `disabledLabel` appears when the sport is offseason (isSportLive false).
+const SPORTS_AVAILABLE: { sport: Sport; label: string; disabledLabel: string }[] = [
+  { sport: 'MLB', label: 'MLB', disabledLabel: 'Returns Mar' },
+  { sport: 'NBA', label: 'NBA', disabledLabel: 'Returns Oct' },
+  { sport: 'NCAAB', label: 'NCAAB', disabledLabel: 'Returns Nov' },
+  { sport: 'NFL', label: 'NFL', disabledLabel: 'Returns Sep' },
+];
+
+export const CohortDashboard: React.FC<Props> = ({ sport: initialSport = 'MLB', hideSamples = false }) => {
+  const [sport, setSport] = useState<Sport>(initialSport);
   const [rows, setRows] = useState<CohortRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [window, setWindow] = useState<'7d' | '30d' | 'std'>('30d');
@@ -94,6 +105,7 @@ export const CohortDashboard: React.FC<Props> = ({ sport, hideSamples = false })
   useEffect(() => {
     if (!isSportLive(sport)) {
       setLoading(false);
+      setRows([]);
       return;
     }
     fetchCohorts();
@@ -150,12 +162,46 @@ export const CohortDashboard: React.FC<Props> = ({ sport, hideSamples = false })
     grouped[meta.group].push({ ...row, meta });
   }
 
+  // Sport selector chips — always rendered so users can switch even when
+  // current sport is offseason. Live sports are tappable; offseason ones
+  // are disabled w/ "Returns Mar" style hint.
+  const SportChips = (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScroll} contentContainerStyle={styles.chipScrollContent}>
+      {SPORTS_AVAILABLE.map(opt => {
+        const isActive = sport === opt.sport;
+        const isLive = isSportLive(opt.sport);
+        return (
+          <TouchableOpacity
+            key={opt.sport}
+            onPress={() => isLive && setSport(opt.sport)}
+            disabled={!isLive}
+            style={[
+              styles.chip,
+              isActive && styles.chipActive,
+              !isLive && styles.chipDisabled,
+            ]}
+          >
+            <Text style={[styles.chipText, isActive && styles.chipTextActive, !isLive && styles.chipTextDisabled]}>
+              {opt.label}{!isLive ? ` · ${opt.disabledLabel}` : ''}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
+  );
+
   if (!isSportLive(sport)) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>How We Pick — {sport}</Text>
+        <View style={styles.headerRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>How We Pick</Text>
+            <Text style={styles.subtitle}>Live audited hit rates per signal cohort.</Text>
+          </View>
+        </View>
+        {SportChips}
         <Text style={styles.offseasonText}>
-          Cohort tracking activates when {sport} season starts.
+          {sport} is offseason — cohort tracking activates when the season starts.
         </Text>
       </View>
     );
@@ -165,12 +211,15 @@ export const CohortDashboard: React.FC<Props> = ({ sport, hideSamples = false })
     <View style={styles.container}>
       <View style={styles.headerRow}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.title}>How We Pick — {sport}</Text>
+          <Text style={styles.title}>How We Pick</Text>
           <Text style={styles.subtitle}>
             Live audited hit rates per signal cohort. {hideSamples ? 'Upgrade to Pro to see sample sizes.' : 'Sample sizes shown.'}
           </Text>
         </View>
       </View>
+
+      {/* Sport selector */}
+      {SportChips}
 
       {/* Window selector */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScroll} contentContainerStyle={styles.chipScrollContent}>
@@ -239,8 +288,10 @@ const styles = StyleSheet.create({
   chipScrollContent: { gap: 6 },
   chip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(122,146,168,0.10)', borderWidth: 1, borderColor: 'transparent' },
   chipActive: { backgroundColor: 'rgba(0,229,160,0.10)', borderColor: BRAND_GREEN },
+  chipDisabled: { opacity: 0.4 },
   chipText: { color: TEXT_MUTED, fontSize: 11, fontWeight: '600' },
   chipTextActive: { color: BRAND_GREEN, fontWeight: '700' },
+  chipTextDisabled: { fontSize: 10 },
   groupBox: { marginBottom: 14 },
   groupHeader: { color: TEXT_MUTED, fontSize: 10, fontWeight: '800', letterSpacing: 1.2, marginBottom: 6 },
   cohortRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },

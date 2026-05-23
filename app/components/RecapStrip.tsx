@@ -53,71 +53,85 @@ type StripData = {
   last30Wins: number;
   last30Losses: number;
   last30Days: number;
+  effectiveSport: Sport;  // What sport was actually loaded (may differ from requested)
 };
+
+// Fallback chain — when the requested sport has no resolved data yet,
+// try the next sport. MLB has the most data and ships first, so it's
+// the final fallback. Order roughly matches "most data → least data".
+const SPORT_FALLBACK_ORDER: Sport[] = ['MLB', 'NBA', 'NCAAB', 'NFL'];
 
 export const RecapStrip: React.FC<Props> = ({ sport, onTap }) => {
   const [data, setData] = useState<StripData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!isSportLive(sport)) {
-      setLoading(false);
-      return;
-    }
     fetchStripData();
   }, [sport]);
+
+  // Helper: fetch one sport's 30d recap data. Returns the strip shape
+  // (without effectiveSport) or null if no resolved data exists.
+  const fetchOneSport = async (s: Sport): Promise<Omit<StripData, 'effectiveSport'> | null> => {
+    if (!isSportLive(s)) return null;
+    const { data: rows, error } = await supabase
+      .from('jerry_cache')
+      .select('cache_key, data')
+      .ilike('cache_key', 'sweat_card_%')
+      .eq('sport', s.toUpperCase())
+      .order('cache_key', { ascending: false })
+      .limit(30);
+    if (error) {
+      console.warn(`[RecapStrip] ${s} fetch error:`, error.message);
+      return null;
+    }
+    let yWins = 0, yLosses = 0, yPushes = 0, yPending = 0;
+    let l30Wins = 0, l30Losses = 0;
+    let daysWithResults = 0;
+    const yesterdayKey = `sweat_card_${getYesterdayET()}`;
+    for (const row of (rows || [])) {
+      const d: any = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+      const summary = d?.top_8_summary;
+      if (!summary) continue;
+      if (row.cache_key === yesterdayKey) {
+        yWins = summary.wins || 0;
+        yLosses = summary.losses || 0;
+        yPushes = summary.pushes || 0;
+        yPending = summary.pending || 0;
+      }
+      if (summary.resolved > 0) {
+        l30Wins += summary.wins || 0;
+        l30Losses += summary.losses || 0;
+        daysWithResults++;
+      }
+    }
+    if (l30Wins + l30Losses === 0) return null;  // no resolved data
+    return {
+      yesterdayWins: yWins,
+      yesterdayLosses: yLosses,
+      yesterdayPushes: yPushes,
+      yesterdayPending: yPending,
+      last30Wins: l30Wins,
+      last30Losses: l30Losses,
+      last30Days: daysWithResults,
+    };
+  };
 
   const fetchStripData = async () => {
     setLoading(true);
     try {
-      // Pull last 30 days of sweat_card cache entries — they hold
-      // top_8 + top_8_summary (resolver writes summary nightly).
-      const { data: rows, error } = await supabase
-        .from('jerry_cache')
-        .select('cache_key, data')
-        .ilike('cache_key', 'sweat_card_%')
-        .eq('sport', sport.toUpperCase())
-        .order('cache_key', { ascending: false })
-        .limit(30);
-      if (error) {
-        console.warn('[RecapStrip] fetch error:', error.message);
-        setData(null);
-        return;
-      }
-
-      let yWins = 0, yLosses = 0, yPushes = 0, yPending = 0;
-      let l30Wins = 0, l30Losses = 0;
-      let daysWithResults = 0;
-
-      const yesterdayKey = `sweat_card_${getYesterdayET()}`;
-
-      for (const row of (rows || [])) {
-        const d: any = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
-        const summary = d?.top_8_summary;
-        if (!summary) continue;
-        const isYesterday = row.cache_key === yesterdayKey;
-        if (isYesterday) {
-          yWins = summary.wins || 0;
-          yLosses = summary.losses || 0;
-          yPushes = summary.pushes || 0;
-          yPending = summary.pending || 0;
-        }
-        if (summary.resolved > 0) {
-          l30Wins += summary.wins || 0;
-          l30Losses += summary.losses || 0;
-          daysWithResults++;
+      // Try the requested sport first; fall back to other live sports in
+      // priority order. Avoids the bug where games-tab=NBA but no NBA
+      // sweat-card data exists yet, so the strip went silent. Now it'll
+      // show whatever sport HAS receipts (typically MLB during summer).
+      const tryOrder = [sport, ...SPORT_FALLBACK_ORDER.filter(s => s !== sport)];
+      for (const s of tryOrder) {
+        const result = await fetchOneSport(s);
+        if (result) {
+          setData({ ...result, effectiveSport: s });
+          return;
         }
       }
-
-      setData({
-        yesterdayWins: yWins,
-        yesterdayLosses: yLosses,
-        yesterdayPushes: yPushes,
-        yesterdayPending: yPending,
-        last30Wins: l30Wins,
-        last30Losses: l30Losses,
-        last30Days: daysWithResults,
-      });
+      setData(null);
     } catch (e: any) {
       console.warn('[RecapStrip] exception:', e?.message);
       setData(null);
@@ -125,8 +139,6 @@ export const RecapStrip: React.FC<Props> = ({ sport, onTap }) => {
       setLoading(false);
     }
   };
-
-  if (!isSportLive(sport)) return null;
 
   if (loading) {
     return (
@@ -167,7 +179,9 @@ export const RecapStrip: React.FC<Props> = ({ sport, onTap }) => {
         {showYesterday && <View style={styles.divider} />}
 
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>LAST 30D</Text>
+          <Text style={styles.sectionLabel}>
+            {data.effectiveSport !== sport ? `${data.effectiveSport} ` : ''}LAST 30D
+          </Text>
           <View style={styles.statRow}>
             <Text style={styles.statValue}>
               {data.last30Wins}-{data.last30Losses}
