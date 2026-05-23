@@ -264,6 +264,13 @@ def score_dawg(g, diag=None, ml_map=None):
             f"signal, +{v4_bump} conviction"
         )
 
+    # Pre-compute display labels here so all signal strings below can use them.
+    # (Previously defined later in the confluence block; moved up because the
+    # wRC+ diff cohort signal added 2026-05-21 references team_label/opp_label
+    # before the confluence block — caused UnboundLocalError on first run.)
+    team_label = team.split()[-1]
+    opp_label = opp_team.split()[-1]
+
     # Team offense vs opposing hand (absolute level)
     if team_wrc >= 110:
         conviction += 8
@@ -339,8 +346,7 @@ def score_dawg(g, diag=None, ml_map=None):
         conf_side, conf_mag = None, 0
 
     dawg_side = 'home' if is_home_dawg else 'away'
-    opp_label = opp_team.split()[-1]
-    team_label = team.split()[-1]
+    # team_label / opp_label defined earlier (above the wRC+ diff cohort signal)
 
     if conf_side == dawg_side and conf_mag >= 1:
         if conf_mag >= 4:
