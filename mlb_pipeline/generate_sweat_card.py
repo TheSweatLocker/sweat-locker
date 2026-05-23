@@ -438,6 +438,36 @@ def top_props_by_type(props, target_type, n=2):
     return filtered[:n]
 
 
+def _is_high_juice_hits_over(prop):
+    """Heuristic: hits_over 0.5 lines are nearly always priced -250 to -400
+    because 70-80% of MLB starters get a hit. At -300+ juice, a 75-77% hit
+    rate is barely break-even; at -350+ it's -EV. We don't pull prop prices
+    yet, so use the line-based heuristic — hits_over @ 0.5 = high juice.
+    Higher hits_over lines (1.5, 2.5) are +money and unaffected.
+
+    Why: 30d audit (2026-05-23) showed hits_over PRIME at 77.1% (n=96), which
+    sounds great but at -350 juice you need 77.8% to break even — the apparent
+    edge evaporates once you factor in price. Card-surface gate: require
+    conviction ≥ 95 to publish a PRIME hits_over @ 0.5 (vs 82 elsewhere).
+    """
+    if prop.get('prop_type') != 'hits_over':
+        return False
+    try:
+        return float(prop.get('prop_line') or 0) <= 0.5
+    except (TypeError, ValueError):
+        return False
+
+
+# 30d audit (2026-05-23): outs_OVER STRONG is 0-3 lifetime — three pieces of
+# board ammo for anyone screenshotting the card. Hard skip from public
+# surfacing. Internal scoring still surfaces it for personal-use review.
+PROP_TYPES_SUPPRESSED_FROM_CARD = {'outs_over'}
+
+# Conviction floor for hits_over 0.5 when promoting to a public card slot.
+# See _is_high_juice_hits_over docstring.
+HITS_OVER_05_CARD_CONV_FLOOR = 95
+
+
 def curate_top_8(games, props, potd, dawg, total_edges):
     """Pick the 8 highest-conviction plays for tonight's social card.
 
@@ -447,13 +477,28 @@ def curate_top_8(games, props, potd, dawg, total_edges):
 
     Curation order (priority high -> low, dedupe so same game doesn't
     appear twice unless props are different players):
-      1. POTD (always include if present)
+      1. POTD (always include if present, unless noPlay)
       2. DotD (always include if present)
       3. PRIME confluence ML primary plays (sweat_tier == PRIME)
       4. v4 total edges >= 1.5 OR STRONG total leans from primary_play
-      5. PRIME mastery props (highest conviction, diversified by player)
-      6. STRONG mastery props as fill
+      5. CATEGORY LOCKS (2026-05-23): if a ks_over PRIME or outs_under
+         STRONG candidate exists, reserve a slot for it. Both cohorts
+         crush their juice (ks_over PRIME 76.5%, outs_under STRONG 93.3%
+         30d) but get crowded out by the higher-volume hits_over slot.
+      6. PRIME mastery props (highest conviction, diversified by player)
+      7. STRONG mastery props as fill
+
+    Juice + audit gates (2026-05-23):
+      - outs_over hard-skipped from surfacing (STRONG 0-3 lifetime)
+      - hits_over @ 0.5 requires conviction >= 95 to be card-eligible
+        (audit math: 77.1% hit rate is -EV at typical -350 juice)
     """
+    # Pre-filter: drop the always-skip cohorts before any logic touches them
+    props = [
+        p for p in (props or [])
+        if p.get('prop_type') not in PROP_TYPES_SUPPRESSED_FROM_CARD
+    ]
+
     picks = []
     seen_keys = set()  # dedupe ("type:identifier")
 
@@ -590,55 +635,84 @@ def curate_top_8(games, props, potd, dawg, total_edges):
         if add(cand):
             added_game_side += 1
 
-    # 5. PRIME mastery props — highest conviction, diversify by player so the
-    # 8-set doesn't end up 4-player-Hedges-related-bets-stacked.
     seen_players = {p["source_key"].split("|")[0] if "|" in str(p.get("source_key", "")) else None for p in picks if p.get("type", "").startswith("prop")}
+
+    def _build_prop_pick(prop, force_tier=None):
+        """Shared shape for prop entries — used by category locks + fill."""
+        player = prop.get("player_name")
+        proj = (prop.get("signals") or {}).get("_projected_ks") if isinstance(prop.get("signals"), dict) else None
+        narrative_hint = None
+        if proj is not None:
+            narrative_hint = f"proj {proj}"
+        elif isinstance(prop.get("signals"), dict) and prop.get("signals"):
+            try:
+                narrative_hint = next(iter(prop["signals"].values()))
+            except StopIteration:
+                narrative_hint = None
+        return {
+            "type": f"prop_{prop.get('prop_type')}",
+            "icon": "🎯",
+            "label": f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}",
+            "game": prop.get("matchup"),
+            "conviction": prop.get("conviction"),
+            "tier": force_tier or prop.get("tier"),
+            "source_table": "mlb_pipeline_props",
+            "source_key": f"{player}|{prop.get('prop_type')}|{prop.get('prop_line')}",
+            "narrative_hint": narrative_hint,
+        }
+
+    # 5. CATEGORY LOCKS — reserve a slot for the two highest-edge cohorts
+    # in the 30d audit (2026-05-23): ks_over PRIME hits 76.5% (+24pt edge
+    # over -110 break-even) and outs_under STRONG hits 93.3% (+38.8pt edge
+    # over -120 break-even). Both get crowded out by the much higher-volume
+    # hits_over slot in the normal PRIME fill — explicit reservation fixes
+    # that. Picks the highest-conviction qualifier of each type, if any.
+    def _reserve_category(pred):
+        if len(picks) >= 8:
+            return
+        candidates = [p for p in props if pred(p) and p.get("player_name") not in seen_players]
+        if not candidates:
+            return
+        candidates.sort(key=lambda p: -(p.get("conviction") or 0))
+        chosen = candidates[0]
+        seen_players.add(chosen.get("player_name"))
+        add(_build_prop_pick(chosen))
+
+    _reserve_category(lambda p: p.get("tier") == "PRIME" and p.get("prop_type") == "ks_over")
+    _reserve_category(lambda p: p.get("tier") == "STRONG" and p.get("prop_type") == "outs_under")
+
+    # 6. PRIME mastery props — highest conviction, diversify by player so the
+    # 8-set doesn't end up 4-player-Hedges-related-bets-stacked.
     for prop in props:
         if len(picks) >= 8:
             break
         if prop.get("tier") != "PRIME":
             continue
+        # Juice gate: hits_over @ 0.5 needs conv >= 95 to make a public card
+        # slot (otherwise the 77% hit rate is -EV at typical -350 price).
+        if _is_high_juice_hits_over(prop) and (prop.get("conviction") or 0) < HITS_OVER_05_CARD_CONV_FLOOR:
+            continue
         player = prop.get("player_name")
         if player in seen_players:
             continue
         seen_players.add(player)
-        proj = (prop.get("signals") or {}).get("_projected_ks") if isinstance(prop.get("signals"), dict) else None
-        add({
-            "type": f"prop_{prop.get('prop_type')}",
-            "icon": "🎯",
-            "label": f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}",
-            "game": prop.get("matchup"),
-            "conviction": prop.get("conviction"),
-            "tier": "PRIME",
-            "source_table": "mlb_pipeline_props",
-            # Composite key — we re-lookup by (game_date, player_name, prop_type) at resolution
-            "source_key": f"{player}|{prop.get('prop_type')}|{prop.get('prop_line')}",
-            "narrative_hint": (
-                f"proj {proj}" if proj is not None
-                else (prop.get("signals", {}) if isinstance(prop.get("signals"), dict) else {}).values().__iter__().__next__() if isinstance(prop.get("signals"), dict) and prop.get("signals") else None
-            ),
-        })
+        add(_build_prop_pick(prop))
 
-    # 6. STRONG mastery props as fill if we still have room
+    # 7. STRONG mastery props as fill if we still have room
     for prop in props:
         if len(picks) >= 8:
             break
         if prop.get("tier") != "STRONG":
             continue
+        # Same juice gate on STRONG hits_over @ 0.5 (lower bar at -300 juice
+        # ~75% break-even; STRONG hit rate is 71.3% which is -EV outright).
+        if _is_high_juice_hits_over(prop) and (prop.get("conviction") or 0) < HITS_OVER_05_CARD_CONV_FLOOR:
+            continue
         player = prop.get("player_name")
         if player in seen_players:
             continue
         seen_players.add(player)
-        add({
-            "type": f"prop_{prop.get('prop_type')}",
-            "icon": "🎯",
-            "label": f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}",
-            "game": prop.get("matchup"),
-            "conviction": prop.get("conviction"),
-            "tier": "STRONG",
-            "source_table": "mlb_pipeline_props",
-            "source_key": f"{player}|{prop.get('prop_type')}|{prop.get('prop_line')}",
-        })
+        add(_build_prop_pick(prop))
 
     return picks[:8]
 
