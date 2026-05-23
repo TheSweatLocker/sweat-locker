@@ -1760,6 +1760,26 @@ def score_batter_hits(g, batter, side, lineup_position=None):
         conviction -= 10
         signals['team_offense'] = f'Team wRC+ {team_wrc:.0f} vs {opp_throws}HP — weak'
 
+    # Team offense_heat — L10 R/G vs season delta. Catches the Angels-hot
+    # case (season wRC+ 99 but L10 cooking) and the inverse: good-season
+    # offense currently slumping. Wired 2026-05-23.
+    # TODO v1.1: replace with true L7/L14 wRC+ from FanGraphs (currently
+    # using runs/game delta which has BABIP/cluster-luck noise).
+    team_drift = _f(g.get(f'{side}_offense_drift'))
+    if team_drift is not None:
+        if team_drift >= 1.0:
+            conviction += 6
+            signals['team_heat'] = f'🔥 Team L10 +{team_drift:.1f} R/G vs season — hot bats'
+        elif team_drift >= 0.5:
+            conviction += 3
+            signals['team_heat'] = f'Team L10 +{team_drift:.1f} R/G — trending warm'
+        elif team_drift <= -1.0:
+            conviction -= 6
+            signals['team_cold'] = f'❄️  Team L10 {team_drift:.1f} R/G vs season — cold bats'
+        elif team_drift <= -0.5:
+            conviction -= 3
+            signals['team_cold'] = f'Team L10 {team_drift:.1f} R/G — trending cool'
+
     # Opposing starter quality — fall back to L3 ERA when xERA is null (early season, suspicious values capped upstream)
     opp_quality = opp_xera if opp_xera is not None else opp_l3
     opp_quality_label = 'xERA' if opp_xera is not None else 'L3 ERA'
@@ -1968,6 +1988,25 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
         signals['team_offense'] = f'Team wRC+ {team_wrc:.0f} vs {opp_throws}HP — below avg'
     elif team_wrc >= 115:
         conviction -= 12
+
+    # Team offense_heat (L10 R/G vs season) — inverted for hits-UNDER. Hot
+    # team = more contact = harder to land the 0-fer; fade conviction.
+    # Cold team = more outs in the offense = boost conviction. Same data
+    # path as the hits_OVER scorer (wired 2026-05-23).
+    team_drift = _f(g.get(f'{side}_offense_drift'))
+    if team_drift is not None:
+        if team_drift <= -1.0:
+            conviction += 6
+            signals['team_cold'] = f'❄️  Team L10 {team_drift:.1f} R/G vs season — cold bats'
+        elif team_drift <= -0.5:
+            conviction += 3
+            signals['team_cold'] = f'Team L10 {team_drift:.1f} R/G — trending cool'
+        elif team_drift >= 1.0:
+            conviction -= 6
+            signals['team_heat'] = f'🔥 Team L10 +{team_drift:.1f} R/G vs season — hot bats, fade caution'
+        elif team_drift >= 0.5:
+            conviction -= 3
+            signals['team_heat'] = f'Team L10 +{team_drift:.1f} R/G — trending warm, fade caution'
 
     # Pitcher park
     if park is not None:

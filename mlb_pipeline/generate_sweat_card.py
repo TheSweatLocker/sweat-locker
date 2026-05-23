@@ -461,14 +461,181 @@ def _is_high_juice_hits_over(prop):
 # 30d audit (2026-05-23): outs_OVER STRONG is 0-3 lifetime — three pieces of
 # board ammo for anyone screenshotting the card. Hard skip from public
 # surfacing. Internal scoring still surfaces it for personal-use review.
+#
+# Note: This is now a FALLBACK / override on top of the data-driven gate
+# below — the calibration-driven path auto-suppresses any cohort that
+# falls below break-even. This set stays for cases where we want
+# editorial control regardless of recent hit rate (e.g. known broken
+# cohorts that haven't accumulated enough sample to auto-skip yet).
 PROP_TYPES_SUPPRESSED_FROM_CARD = {'outs_over'}
 
 # Conviction floor for hits_over 0.5 when promoting to a public card slot.
 # See _is_high_juice_hits_over docstring.
 HITS_OVER_05_CARD_CONV_FLOOR = 95
 
+# Per-prop-type break-even hit rates at typical juice. Used by the
+# data-driven auto-suppression gate (2026-05-23). Values come from the
+# typical-juice context cited in the 30d prop audit:
+#   hits_over @ 0.5  -> -300 typical → 75%
+#   hits_over @ 1.5+ -> +130 typical → ~43.5% (use 50% safety margin)
+#   hits_under @ 0.5 -> -120 typical → 54.5%
+#   ks_over/under    -> -110 typical → 52.4%
+#   ha_under         -> -120 → 54.5%
+#   ha_over          -> +110 → 47.6%
+#   bb_under         -> -120 → 54.5%
+#   bb_over          -> +110 → 47.6%
+#   er_over          -> -130 typical → 56.5%
+#   er_under         -> +110 → 47.6%
+#   outs_under       -> -120 → 54.5%
+#   outs_over        -> +100 typical (often +money) → 50%
+#
+# Cohorts hitting BELOW these thresholds on the 30d window are
+# auto-suppressed from the card unless 60d also clears. See
+# _cohort_eligibility below.
+COHORT_BREAK_EVEN_PCT = {
+    "hits_over":   {"high_juice": 75.0, "low_juice": 50.0},  # split by line in code
+    "hits_under":  54.5,
+    "ks_over":     52.4,
+    "ks_under":    52.4,
+    "ha_under":    54.5,
+    "ha_over":     47.6,
+    "bb_under":    54.5,
+    "bb_over":     47.6,
+    "er_over":     56.5,
+    "er_under":    47.6,
+    "outs_under":  54.5,
+    "outs_over":   50.0,
+}
 
-def curate_top_8(games, props, potd, dawg, total_edges):
+# Minimum graded sample per cohort before we trust the rate enough to
+# auto-suppress. Below this, default to "eligible" (insufficient data
+# is not evidence of failure).
+COHORT_MIN_N = 10
+
+# Card must always fill to at least this many picks. If suppression
+# drops the count below this, the gate auto-loosens to 60d-only
+# eligibility, then 90d, then no-gate.
+MIN_CARD_PICKS = 5
+
+
+def _break_even_for(prop):
+    """Return the break-even hit_rate (0..100) for a given prop.
+    Splits hits_over by line since 0.5 is heavily juiced vs 1.5+ which
+    is typically plus-money."""
+    pt = prop.get("prop_type")
+    if pt == "hits_over":
+        try:
+            line = float(prop.get("prop_line") or 0)
+            return COHORT_BREAK_EVEN_PCT["hits_over"]["high_juice"] if line <= 0.5 \
+                else COHORT_BREAK_EVEN_PCT["hits_over"]["low_juice"]
+        except (TypeError, ValueError):
+            return 75.0
+    return COHORT_BREAK_EVEN_PCT.get(pt)
+
+
+def _fetch_cohort_rates(days_back):
+    """Pull (prop_type, direction, tier) hit rates over the last N days.
+    Returns dict keyed by (prop_type, direction, tier) -> (rate_pct, n).
+
+    Computes on the fly from mlb_pipeline_props (rather than reading
+    mlb_tier_calibration) because the calibration table doesn't yet
+    have this granular slice. Backfill writer queued separately.
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    rows = sb_get("mlb_pipeline_props", {
+        "game_date": f"gte.{cutoff}",
+        "result": "not.is.null",
+        "select": "prop_type,direction,tier,result",
+        "limit": "5000",
+    }) or []
+    from collections import defaultdict
+    agg = defaultdict(lambda: {"W": 0, "L": 0, "P": 0})
+    for r in rows:
+        pt = r.get("prop_type") or "?"
+        d = (r.get("direction") or "").lower() or "?"
+        t = (r.get("tier") or "").upper() or "(none)"
+        res = (r.get("result") or "").upper()
+        if res == "WIN": agg[(pt, d, t)]["W"] += 1
+        elif res == "LOSS": agg[(pt, d, t)]["L"] += 1
+        elif res == "PUSH": agg[(pt, d, t)]["P"] += 1
+    out = {}
+    for key, s in agg.items():
+        n = s["W"] + s["L"]  # pushes don't count
+        out[key] = ((s["W"] / n * 100.0) if n > 0 else None, n)
+    return out
+
+
+# Module-level cache so we don't re-query for every prop. Reset per build.
+_COHORT_RATES_30D = None
+_COHORT_RATES_60D = None
+_COHORT_RATES_90D = None
+
+
+def _cohort_eligibility(prop, gate_window="30d"):
+    """Return one of: 'eligible', 'demote', 'suppress'.
+
+    Rules:
+      - 30d hit_rate >= break_even (n>=10) -> 'eligible'
+      - 30d below but 60d >= break_even (n>=10) -> 'demote' (drop tier one level)
+      - 60d also below (n>=10) -> 'suppress'
+      - Insufficient sample anywhere -> 'eligible' (no data is not failure)
+
+    `gate_window` lets the caller loosen the gate when the card has
+    been over-suppressed (graceful-degradation fallback).
+    """
+    global _COHORT_RATES_30D, _COHORT_RATES_60D, _COHORT_RATES_90D
+    if _COHORT_RATES_30D is None:
+        _COHORT_RATES_30D = _fetch_cohort_rates(30)
+
+    pt = prop.get("prop_type")
+    direction = (prop.get("direction") or "").lower()
+    tier = (prop.get("tier") or "").upper()
+    break_even = _break_even_for(prop)
+    if break_even is None:
+        return "eligible"  # unknown prop type — don't suppress
+
+    def _check(rates):
+        r = rates.get((pt, direction, tier))
+        if r is None: return None
+        rate, n = r
+        if rate is None or n < COHORT_MIN_N:
+            return None  # insufficient sample
+        return rate >= break_even
+
+    pass_30 = _check(_COHORT_RATES_30D)
+
+    if gate_window == "30d":
+        if pass_30 is True: return "eligible"
+        if pass_30 is None: return "eligible"  # sample too small to suppress
+        # 30d says fail — check 60d
+        if _COHORT_RATES_60D is None:
+            _COHORT_RATES_60D = _fetch_cohort_rates(60)
+        pass_60 = _check(_COHORT_RATES_60D)
+        if pass_60 is True: return "demote"
+        if pass_60 is None: return "eligible"  # 60d sample too small either
+        return "suppress"
+
+    # gate_window in {"60d", "90d", "off"} — used by degradation fallback
+    if gate_window == "60d":
+        if _COHORT_RATES_60D is None:
+            _COHORT_RATES_60D = _fetch_cohort_rates(60)
+        pass_60 = _check(_COHORT_RATES_60D)
+        if pass_60 is False: return "suppress"
+        return "eligible"
+    if gate_window == "90d":
+        if _COHORT_RATES_90D is None:
+            _COHORT_RATES_90D = _fetch_cohort_rates(90)
+        pass_90 = _check(_COHORT_RATES_90D)
+        if pass_90 is False: return "suppress"
+        return "eligible"
+    return "eligible"  # "off"
+
+
+_DEMOTE_MAP = {"PRIME": "STRONG", "STRONG": "LEAN", "LEAN": "LEAN"}
+
+
+def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
     """Pick the 8 highest-conviction plays for tonight's social card.
 
     The 8 set IS the receipts unit. Each pick records source_table +
@@ -488,16 +655,41 @@ def curate_top_8(games, props, potd, dawg, total_edges):
       6. PRIME mastery props (highest conviction, diversified by player)
       7. STRONG mastery props as fill
 
-    Juice + audit gates (2026-05-23):
-      - outs_over hard-skipped from surfacing (STRONG 0-3 lifetime)
-      - hits_over @ 0.5 requires conviction >= 95 to be card-eligible
-        (audit math: 77.1% hit rate is -EV at typical -350 juice)
+    Auto-suppression (2026-05-23): every prop's (prop_type, direction,
+    tier) cohort is checked against its break-even hit rate on the
+    `gate_window`. Failing-30d-but-passing-60d cohorts are demoted one
+    tier (PRIME->STRONG, STRONG->LEAN). Failing both are suppressed.
+    `build_card` orchestrates the fallback if suppression drops the
+    card below MIN_CARD_PICKS (loosens to 60d, then 90d, then off).
+
+    Editorial gates (kept as final-pass overrides):
+      - outs_over hard-skipped (legacy ban; the calibration-driven
+        gate would also catch it on current data)
+      - hits_over @ 0.5 requires conviction >= 95 (price-aware floor)
     """
     # Pre-filter: drop the always-skip cohorts before any logic touches them
     props = [
         p for p in (props or [])
         if p.get('prop_type') not in PROP_TYPES_SUPPRESSED_FROM_CARD
     ]
+
+    # Auto-suppression: annotate each prop with eligibility under the
+    # current gate, drop the suppressed ones, demote the rest in place.
+    annotated_props = []
+    for p in props:
+        eligibility = _cohort_eligibility(p, gate_window=gate_window)
+        if eligibility == "suppress":
+            continue
+        if eligibility == "demote":
+            # Modify a copy so we don't mutate caller's data
+            p = dict(p)
+            original_tier = (p.get("tier") or "").upper()
+            new_tier = _DEMOTE_MAP.get(original_tier, original_tier)
+            if new_tier != original_tier:
+                p["tier"] = new_tier
+                p["_demoted_from"] = original_tier  # audit trail
+        annotated_props.append(p)
+    props = annotated_props
 
     picks = []
     seen_keys = set()  # dedupe ("type:identifier")
@@ -769,7 +961,25 @@ def build_card():
     # night" is now a real, queryable number, not a manual count).
     # Built 2026-05-22 to close the gap between social card receipts and
     # in-app receipts.
-    top_8_curated = curate_top_8(games, props, potd, dawg, total_edges)
+    # Graceful-degradation fallback: try 30d gate first; if auto-suppression
+    # drops the card below MIN_CARD_PICKS (5), loosen to 60d, then 90d,
+    # then off. Prevents empty cards on cold weeks while still respecting
+    # the calibration data when it has signal. Returns the picks list +
+    # which gate ended up being used (logged for transparency).
+    top_8_curated = []
+    gate_used = "30d"
+    for window in ("30d", "60d", "90d", "off"):
+        # Reset module-level cache so each window query is independent
+        # (otherwise cached 30d rates would short-circuit the looser checks)
+        global _COHORT_RATES_30D, _COHORT_RATES_60D, _COHORT_RATES_90D
+        _COHORT_RATES_30D = _COHORT_RATES_60D = _COHORT_RATES_90D = None
+        top_8_curated = curate_top_8(games, props, potd, dawg, total_edges, gate_window=window)
+        gate_used = window
+        if len(top_8_curated) >= MIN_CARD_PICKS:
+            break
+    if gate_used != "30d":
+        print(f"  ⚠️  Card auto-loosened to gate_window={gate_used} "
+              f"(strict 30d gate left only {len(top_8_curated)} picks)")
 
     # Stack alert detection — find games where 4+ hits picks are PRIME
     stack_games = {}
