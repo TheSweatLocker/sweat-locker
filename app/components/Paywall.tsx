@@ -1,0 +1,259 @@
+/**
+ * Paywall — custom-styled subscription screen.
+ *
+ * Reads offerings from SubscriptionContext (which pulls from RevenueCat).
+ * Shows monthly + annual options with savings call-out, restore button,
+ * Terms + Privacy links (Apple requires both visible before subscribe).
+ *
+ * Triggered when a free user hits gated content (POTD, picks, sweat
+ * card data, etc.). The gating logic lives in the calling component:
+ *   const { isPro } = useSubscription();
+ *   if (!isPro) return <Paywall onDismiss={...} />;
+ *   return <PremiumContent ... />;
+ *
+ * Apple App Store requirements implemented:
+ *   - Restore Purchases button (visible, not buried)
+ *   - Subscription terms clearly disclosed (length, renewal, price)
+ *   - Terms + Privacy links (required for review approval)
+ *   - Cancel-anytime language (reduces buyer's remorse complaints)
+ */
+import React, { useState } from 'react';
+import {
+  View, Text, TouchableOpacity, ActivityIndicator, ScrollView,
+  Modal, Linking, Alert, StyleSheet, Platform,
+} from 'react-native';
+import { useSubscription } from '../contexts/SubscriptionContext';
+
+const BRAND_GREEN = '#00e5a0';
+const BRAND_AMBER = '#ffb800';
+const BG_DARK = '#080c10';
+const CARD_BG = '#0d1419';
+const TEXT_PRIMARY = '#e8f0f8';
+const TEXT_MUTED = '#7a92a8';
+const BORDER = '#1f2d3d';
+
+// Match what's configured in RevenueCat dashboard + App Store Connect.
+// User decision (2026-05-22): $14.99/mo, $99/yr (45% off), 3-day free trial.
+const PACKAGE_MONTHLY = '$rc_monthly';   // RevenueCat standard identifier
+const PACKAGE_ANNUAL = '$rc_annual';
+
+// Legal links — must be live URLs by App Store submission.
+const TERMS_URL = 'https://thesweatlocker.app/terms';
+const PRIVACY_URL = 'https://thesweatlocker.app/privacy';
+
+type Props = {
+  visible: boolean;
+  onDismiss: () => void;
+  // Optional: feature name that triggered the paywall (for analytics + copy)
+  triggerFeature?: string;
+};
+
+export const Paywall: React.FC<Props> = ({ visible, onDismiss, triggerFeature }) => {
+  const { currentOffering, purchase, restore, isLoading } = useSubscription();
+  const [selected, setSelected] = useState<'monthly' | 'annual'>('annual');
+  const [busy, setBusy] = useState(false);
+
+  const monthlyPkg = currentOffering?.availablePackages.find(p => p.packageType === 'MONTHLY');
+  const annualPkg = currentOffering?.availablePackages.find(p => p.packageType === 'ANNUAL');
+
+  const monthlyPrice = monthlyPkg?.product?.priceString || '$14.99';
+  const annualPrice = annualPkg?.product?.priceString || '$99.00';
+  const annualPerMonth = annualPkg?.product?.price ? `$${(annualPkg.product.price / 12).toFixed(2)}/mo` : '$8.25/mo';
+
+  // 3-day free trial is configured as an introductoryPrice in App Store Connect
+  const hasTrial = monthlyPkg?.product?.introPrice || annualPkg?.product?.introPrice;
+
+  const handlePurchase = async () => {
+    if (busy) return;
+    const pkg = selected === 'monthly' ? monthlyPkg : annualPkg;
+    if (!pkg) {
+      Alert.alert('Unavailable', 'Subscription not available right now. Please try again.');
+      return;
+    }
+    setBusy(true);
+    const result = await purchase(pkg.identifier);
+    setBusy(false);
+    if (result.success) {
+      onDismiss();
+    } else if (result.error && result.error !== 'cancelled') {
+      Alert.alert('Purchase failed', result.error);
+    }
+  };
+
+  const handleRestore = async () => {
+    if (busy) return;
+    setBusy(true);
+    const result = await restore();
+    setBusy(false);
+    if (result.success) {
+      Alert.alert('Restored', 'Welcome back to Sweat Locker Pro.');
+      onDismiss();
+    } else {
+      Alert.alert('Nothing to restore', 'No active subscription found on this Apple ID.');
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onDismiss}>
+      <View style={styles.container}>
+        <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+          {/* Close button */}
+          <View style={styles.closeRow}>
+            <TouchableOpacity onPress={onDismiss} style={styles.closeBtn}>
+              <Text style={styles.closeText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Hero */}
+          <Text style={styles.brand}>THE SWEAT LOCKER</Text>
+          <Text style={styles.headline}>Unlock Sweat Locker Pro</Text>
+          <Text style={styles.subhead}>
+            More data, less sweat. Audited cohort hit rates, mastery layer, and the picks
+            that took our public card 20-4 over 5/20–5/21.
+          </Text>
+
+          {/* Feature list */}
+          <View style={styles.featuresBox}>
+            <Feature icon="🏆" title="Play of the Day" desc="Audit-driven daily best bet" />
+            <Feature icon="🐕" title="Dawg of the Day" desc="Model-identified plus-money dog" />
+            <Feature icon="🎯" title="Full Sweat Card" desc="Locks, props, total edges, skip alerts" />
+            <Feature icon="🧠" title="Jerry game reads" desc="Per-game narrative w/ mastery context" />
+            <Feature icon="📊" title="Audit history" desc="Live W-L tracking by tier" />
+            <Feature icon="⚾" title="MLB-first depth" desc="NCAAB joins in November" />
+          </View>
+
+          {/* Plan selectors */}
+          <PlanCard
+            selected={selected === 'annual'}
+            onPress={() => setSelected('annual')}
+            badge="BEST VALUE • SAVE 45%"
+            title="Annual"
+            price={annualPrice}
+            sub={`${annualPerMonth} • billed yearly`}
+          />
+          <PlanCard
+            selected={selected === 'monthly'}
+            onPress={() => setSelected('monthly')}
+            title="Monthly"
+            price={`${monthlyPrice}/mo`}
+            sub={hasTrial ? '3-day free trial' : 'Cancel anytime'}
+          />
+
+          {/* CTA */}
+          <TouchableOpacity
+            style={[styles.cta, busy && styles.ctaDisabled]}
+            onPress={handlePurchase}
+            disabled={busy || isLoading || !currentOffering}
+            activeOpacity={0.85}
+          >
+            {busy ? (
+              <ActivityIndicator color="#000" />
+            ) : (
+              <Text style={styles.ctaText}>
+                {hasTrial ? 'Start 3-Day Free Trial' : 'Subscribe'}
+              </Text>
+            )}
+          </TouchableOpacity>
+
+          {/* Cancellation copy + legal */}
+          <Text style={styles.cancelCopy}>
+            {hasTrial
+              ? `Free for 3 days, then ${selected === 'annual' ? annualPrice + '/year' : monthlyPrice + '/month'}. Cancel anytime in Settings.`
+              : 'Cancel anytime in Settings.'}
+          </Text>
+
+          {/* Restore + legal links */}
+          <View style={styles.linksRow}>
+            <TouchableOpacity onPress={handleRestore} disabled={busy}>
+              <Text style={styles.linkText}>Restore Purchases</Text>
+            </TouchableOpacity>
+            <Text style={styles.dot}>·</Text>
+            <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL)}>
+              <Text style={styles.linkText}>Terms</Text>
+            </TouchableOpacity>
+            <Text style={styles.dot}>·</Text>
+            <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_URL)}>
+              <Text style={styles.linkText}>Privacy</Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.disclaimer}>
+            Picks are for informational purposes only. Sweat Locker is not affiliated
+            with any sportsbook. If you or someone you know has a gambling problem,
+            call 1-800-GAMBLER.
+          </Text>
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+};
+
+const Feature: React.FC<{ icon: string; title: string; desc: string }> = ({ icon, title, desc }) => (
+  <View style={styles.featureRow}>
+    <Text style={styles.featureIcon}>{icon}</Text>
+    <View style={{ flex: 1 }}>
+      <Text style={styles.featureTitle}>{title}</Text>
+      <Text style={styles.featureDesc}>{desc}</Text>
+    </View>
+  </View>
+);
+
+const PlanCard: React.FC<{
+  selected: boolean;
+  onPress: () => void;
+  badge?: string;
+  title: string;
+  price: string;
+  sub: string;
+}> = ({ selected, onPress, badge, title, price, sub }) => (
+  <TouchableOpacity
+    onPress={onPress}
+    activeOpacity={0.85}
+    style={[styles.planCard, selected && styles.planCardSelected]}
+  >
+    {badge && (
+      <View style={styles.badge}>
+        <Text style={styles.badgeText}>{badge}</Text>
+      </View>
+    )}
+    <View style={styles.planRow}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.planTitle}>{title}</Text>
+        <Text style={styles.planSub}>{sub}</Text>
+      </View>
+      <Text style={styles.planPrice}>{price}</Text>
+    </View>
+  </TouchableOpacity>
+);
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: BG_DARK },
+  scroll: { padding: 24, paddingBottom: 48 },
+  closeRow: { alignItems: 'flex-end', marginBottom: 8 },
+  closeBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  closeText: { color: TEXT_MUTED, fontSize: 20 },
+  brand: { color: TEXT_MUTED, fontSize: 11, fontWeight: '700', letterSpacing: 2, marginBottom: 8 },
+  headline: { color: TEXT_PRIMARY, fontSize: 28, fontWeight: '800', marginBottom: 10 },
+  subhead: { color: TEXT_MUTED, fontSize: 14, lineHeight: 20, marginBottom: 24 },
+  featuresBox: { backgroundColor: CARD_BG, borderRadius: 14, padding: 16, marginBottom: 24, borderWidth: 1, borderColor: BORDER },
+  featureRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  featureIcon: { fontSize: 20, marginRight: 12, width: 28 },
+  featureTitle: { color: TEXT_PRIMARY, fontWeight: '700', fontSize: 14, marginBottom: 2 },
+  featureDesc: { color: TEXT_MUTED, fontSize: 12 },
+  planCard: { backgroundColor: CARD_BG, borderRadius: 12, padding: 16, marginBottom: 10, borderWidth: 2, borderColor: BORDER },
+  planCardSelected: { borderColor: BRAND_GREEN, backgroundColor: 'rgba(0,229,160,0.06)' },
+  badge: { backgroundColor: BRAND_AMBER, alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, marginBottom: 8 },
+  badgeText: { color: '#000', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  planRow: { flexDirection: 'row', alignItems: 'center' },
+  planTitle: { color: TEXT_PRIMARY, fontWeight: '700', fontSize: 16 },
+  planSub: { color: TEXT_MUTED, fontSize: 12, marginTop: 2 },
+  planPrice: { color: TEXT_PRIMARY, fontWeight: '800', fontSize: 18 },
+  cta: { backgroundColor: BRAND_GREEN, borderRadius: 12, paddingVertical: 16, alignItems: 'center', marginTop: 16, marginBottom: 12 },
+  ctaDisabled: { opacity: 0.5 },
+  ctaText: { color: '#000', fontWeight: '800', fontSize: 16 },
+  cancelCopy: { color: TEXT_MUTED, fontSize: 11, textAlign: 'center', marginBottom: 16, lineHeight: 16 },
+  linksRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' },
+  linkText: { color: TEXT_MUTED, fontSize: 12, textDecorationLine: 'underline' },
+  dot: { color: TEXT_MUTED, marginHorizontal: 8 },
+  disclaimer: { color: '#4a6070', fontSize: 10, lineHeight: 14, textAlign: 'center', marginTop: 8 },
+});

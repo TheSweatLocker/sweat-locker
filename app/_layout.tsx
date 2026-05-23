@@ -1,6 +1,7 @@
 import { Stack } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Image, StyleSheet } from 'react-native';
+import { SubscriptionProvider } from './contexts/SubscriptionContext';
 
 const logo = require('../assets/images/splash-logo.png');
 
@@ -20,7 +21,7 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <>
+    <SubscriptionProvider>
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />
       </Stack>
@@ -34,7 +35,7 @@ export default function RootLayout() {
           />
         </Animated.View>
       )}
-    </>
+    </SubscriptionProvider>
   );
 }
 
