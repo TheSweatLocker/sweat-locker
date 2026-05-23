@@ -9303,7 +9303,8 @@ setJerryHistory(prev => {
         {sweatCard.top_8.map((pick: any, i: number) => {
           const tierColor =
             pick.tier === 'PRIME' ? '#00e5a0' :
-            pick.tier === 'STRONG' ? '#ffb800' : '#7a92a8';
+            pick.tier === 'STRONG' ? '#ffb800' :
+            pick.tier === 'VALUE' ? '#5b8def' : '#7a92a8';
           const resultIcon =
             pick.result === 'Win' ? '✓' :
             pick.result === 'Loss' ? '✗' :

@@ -990,12 +990,39 @@ def run():
             confidence = 'solid'
             print(f"✅ NBA pick: {pick['away_team']} @ {pick['home_team']} — Score {pick['score']}")
 
-    # NO TIER 3 FALLBACK — if no NRFI sweet/edge tier or NBA solid, post no
-    # POTD. "No play" is honest content; forced picks erode trust faster than
-    # silence does.
+    # VALUE TIER FALLBACK (2026-05-23): when no audit-qualified cohort fires,
+    # surface the model's strongest model-supported lean rather than skipping.
+    # Prior design ("no-play day" preserves trust) was correct in principle but
+    # produced empty POTD slots that propagated as placeholder rows in the
+    # sweat card top_8 — worse UX than a clearly-labeled sub-audit pick.
+    #
+    # Rules for value pick:
+    #   - Must have a computed lean_display (build_lean returned a side)
+    #   - Sort by composite of |signal_confluence_net| + score
+    #   - Confidence tag 'value' so app can style it softer than audit-locked
+    #   - Narrative explicitly labels it Model Lean, not audit-qualified
     if not pick:
-        print("🚫 No PRIME tier play on the board — no POTD posted today.")
-        # Write a no-play marker so app shows transparent "no lock" message
+        value_pool = [
+            c for c in candidates
+            if c.get('sport') == 'MLB'
+            and c.get('lean_display')
+            and (c.get('score') or 0) >= 50
+        ]
+        # Composite rank: confluence magnitude (most predictive single signal)
+        # tie-broken by sweat score
+        value_pool.sort(key=lambda c: (
+            -abs(c.get('signal_confluence_net') or 0),
+            -(c.get('score') or 0),
+        ))
+        if value_pool:
+            pick = value_pool[0]
+            confidence = 'value'
+            conf_net = pick.get('signal_confluence_net') or 0
+            print(f"📌 VALUE POTD (sub-audit fallback): {pick['away_team']} @ {pick['home_team']} — "
+                  f"{pick.get('lean_display')} | confluence={conf_net:+d} | sweat={pick.get('score')}")
+
+    if not pick:
+        print("🚫 No model-supported lean anywhere on the board — no POTD posted today.")
         try:
             requests.post(
                 f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport",
@@ -1005,13 +1032,11 @@ def run():
                     "game_id": f"best_bet_{today}",
                     "sport": "none",
                     "narrative": (
-                        "No play on the board today. The Sweat Locker model only locks "
-                        "POTDs from cohorts that audit above break-even (currently 58%+ "
-                        "30d hit rate, n≥10). When nothing on tonight's slate clears that "
-                        "bar, we skip — forced picks erode trust faster than honest silence. "
-                        "Bucket angles + Dawg of the Day are still in the app."
+                        "No play on the board today. The slate didn't generate any "
+                        "leans the model has conviction on. Bucket angles + Dawg of "
+                        "the Day are still in the app."
                     ),
-                    "data": {"noPlay": True, "reason": "no_audit_qualified_cohort"},
+                    "data": {"noPlay": True, "reason": "no_model_supported_lean"},
                     "fetched_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -1061,7 +1086,7 @@ def run():
         except Exception:
             return True  # fail-open
 
-    TIER_RANK = {'elite': 0, 'high': 1, 'solid': 2, 'standard': 3}
+    TIER_RANK = {'elite': 0, 'high': 1, 'solid': 2, 'standard': 3, 'value': 4}
     if existing_pick and et_hour >= 14:
         existing_score = existing_pick.get('score', {}).get('total', 0) or 0
         existing_confidence = existing_pick.get('confidence', 'standard')

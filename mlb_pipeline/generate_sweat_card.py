@@ -468,18 +468,24 @@ def curate_top_8(games, props, potd, dawg, total_edges):
         picks.append(pick)
         return True
 
-    # 1. POTD (highest priority — always included if we have one)
-    if potd and isinstance(potd.get("data"), dict):
+    # 1. POTD (highest priority — included only when we have a real play)
+    # Skip when POTD wrote a noPlay marker (no audit-qualified cohort + no
+    # value fallback) — placeholder slots in top_8 produce a permanent
+    # "rank #1 Pending" row that never resolves.
+    if potd and isinstance(potd.get("data"), dict) and not potd["data"].get("noPlay"):
         pd = potd["data"]
         pick = pd.get("pick") or {}
-        # POTD result is tracked in daily_best_bet_history
+        confidence = pd.get("confidence")
+        # 'value' tier = sub-audit model lean fallback (2026-05-23). Style softer
+        # than PRIME but still included as the day's anchor pick.
+        potd_tier = "VALUE" if confidence == "value" else "PRIME"
         add({
             "type": "POTD",
             "icon": "🏆",
             "label": (pick.get("label") or pd.get("leanDisplay") or "POTD"),
             "game": pd.get("matchup") or pd.get("game", {}).get("matchup"),
             "conviction": pd.get("score", {}).get("total"),
-            "tier": "PRIME",
+            "tier": potd_tier,
             "source_table": "daily_best_bet_history",
             "source_key": today_et(),  # bet_date is the lookup key
             "narrative_hint": (potd.get("narrative") or "")[:200],
