@@ -5807,7 +5807,7 @@ LEAD SIGNALS:
 - If FanMatch not active: lead with season efficiency, note you're working from season-long data.
 
 RULES:
-- Never name KenPom — call it the "Sweat Locker model".
+- Never name the external data provider — call it the "Sweat Locker model".
 - Tournament games are neutral site — do NOT mention home court.
 - No web search — model-only analysis.
 
