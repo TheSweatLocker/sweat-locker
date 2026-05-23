@@ -436,6 +436,20 @@ jobs:
           cd mlb_pipeline
           python audit_signal_attribution.py
 
+      # Team recency enrichment (2026-05-23) — self-aggregates L7/L14 team OPS
+      # from MLB Stats API gameLog and writes back to mlb_team_offense. Built
+      # because Savant doesn't expose date-filtered leaderboards (verified —
+      # all variants silently return season-wide). Self-aggregation is more
+      # durable anyway: we own the rollup, official MLB data source.
+      - name: Team recency enrichment (L7/L14 OPS)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_team_recency.py
+
       # Build Tonight's Sweat Card — server-generated structured card for
       # the app's MLB tab. Reads everything upstream wrote (POTD, Dawg,
       # props, NRFI, tier rates) and emits one JSON row the app reads via
