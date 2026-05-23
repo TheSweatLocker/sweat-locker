@@ -187,7 +187,9 @@ def main():
         return 0
 
     try:
-        upsert("mlb_team_offense", rows_to_upsert, on_conflict="team,season")
+        # mlb_team_offense has UNIQUE on `team` only (not team+season as
+        # initially assumed). Use bare team for the conflict resolver.
+        upsert("mlb_team_offense", rows_to_upsert, on_conflict="team")
         print(f"\n  ✅ Upserted recency stats for {len(rows_to_upsert)} teams")
     except Exception as e:
         print(f"\n  ❌ Upsert failed: {e}")

@@ -3130,6 +3130,22 @@ def run():
                 except (NameError, AttributeError):
                     pass  # bp_usage not in scope on this build path
 
+                # Signal: L14 OPS proxy delta (2026-05-23). Self-aggregated
+                # team-level recency-of-quality-contact. Cleaner than the
+                # runs/game delta because OPS strips BABIP cluster luck.
+                # When wrc_proxy_l14 differs by ≥15 between teams (≈ "one
+                # team has been clearly hotter the last two weeks"), vote
+                # for the hotter offense's side.
+                try:
+                    h_wrc_l14 = _f((home_offense or {}).get('wrc_proxy_l14'))
+                    a_wrc_l14 = _f((away_offense or {}).get('wrc_proxy_l14'))
+                    if h_wrc_l14 is not None and a_wrc_l14 is not None:
+                        wrc_delta = h_wrc_l14 - a_wrc_l14
+                        if abs(wrc_delta) >= 15:
+                            breakdown['ops_l14_heat'] = 'home' if wrc_delta > 0 else 'away'
+                except (NameError, AttributeError, TypeError):
+                    pass  # missing recency data — silent skip
+
                 # Signal: recency (last 10 games) — added 2026-04-29.
                 # Catches hot/cold streaks the season-long stats hide. Conservative
                 # single-vote integration; projection blend weight pending backtest.
@@ -3485,6 +3501,15 @@ def run():
                 "away_last5_run_diff": away_offense.get('last5_run_diff') if away_offense else None,
                 "away_last10_run_diff": away_offense.get('last10_run_diff') if away_offense else None,
                 "away_last20_run_diff": away_offense.get('last20_run_diff') if away_offense else None,
+                # L7/L14 OPS self-aggregated (2026-05-23 — enrich_team_recency.py)
+                # Cleaner recency signal than runs/game which has BABIP noise.
+                # wrc_proxy_l14 is OPS-derived ~wRC+ scale, 100 = avg.
+                "home_ops_last7": home_offense.get('ops_last7') if home_offense else None,
+                "home_ops_last14": home_offense.get('ops_last14') if home_offense else None,
+                "home_wrc_proxy_l14": home_offense.get('wrc_proxy_l14') if home_offense else None,
+                "away_ops_last7": away_offense.get('ops_last7') if away_offense else None,
+                "away_ops_last14": away_offense.get('ops_last14') if away_offense else None,
+                "away_wrc_proxy_l14": away_offense.get('wrc_proxy_l14') if away_offense else None,
                 # Offense drift = L10 R/G - season R/G. Negative = currently
                 # cold relative to season baseline. Added 2026-05-07 to flag the
                 # "good season offense, cold bats currently" trap (Twins 5/6 case).

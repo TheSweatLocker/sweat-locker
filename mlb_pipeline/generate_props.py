@@ -1795,8 +1795,6 @@ def score_batter_hits(g, batter, side, lineup_position=None):
     # Team offense_heat — L10 R/G vs season delta. Catches the Angels-hot
     # case (season wRC+ 99 but L10 cooking) and the inverse: good-season
     # offense currently slumping. Wired 2026-05-23.
-    # TODO v1.1: replace with true L7/L14 wRC+ from FanGraphs (currently
-    # using runs/game delta which has BABIP/cluster-luck noise).
     team_drift = _f(g.get(f'{side}_offense_drift'))
     if team_drift is not None:
         if team_drift >= 1.0:
@@ -1811,6 +1809,29 @@ def score_batter_hits(g, batter, side, lineup_position=None):
         elif team_drift <= -0.5:
             conviction -= 3
             signals['team_cold'] = f'Team L10 {team_drift:.1f} R/G — trending cool'
+
+    # L14 OPS-proxy heat (2026-05-23 — enrich_team_recency.py).
+    # Cleaner version of team_drift: OPS strips BABIP cluster luck so a
+    # team that's been BARRELING the ball but unlucky on hits lands HOT
+    # here even if their runs/game looks flat. Stacks with drift signal
+    # for direction-aligned cases (both hot OR both cold = louder vote);
+    # when they disagree the OPS proxy wins as the cleaner measurement.
+    team_wrc_l14 = _f(g.get(f'{side}_wrc_proxy_l14'))
+    season_wrc = _f(g.get(f'{side}_wrc_plus')) or 100
+    if team_wrc_l14 is not None:
+        l14_delta = team_wrc_l14 - season_wrc
+        if l14_delta >= 15:
+            conviction += 5
+            signals['l14_heat'] = f'🔥 L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} (+{l14_delta:.0f}) — quality contact up'
+        elif l14_delta >= 8:
+            conviction += 2
+            signals['l14_heat'] = f'L14 wRC+ {team_wrc_l14:.0f} (+{l14_delta:.0f}) — trending up'
+        elif l14_delta <= -15:
+            conviction -= 5
+            signals['l14_cold'] = f'❄️  L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} ({l14_delta:.0f}) — quality contact down'
+        elif l14_delta <= -8:
+            conviction -= 2
+            signals['l14_cold'] = f'L14 wRC+ {team_wrc_l14:.0f} ({l14_delta:.0f}) — trending down'
 
     # Opposing starter quality — fall back to L3 ERA when xERA is null (early season, suspicious values capped upstream)
     opp_quality = opp_xera if opp_xera is not None else opp_l3
@@ -2039,6 +2060,25 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
         elif team_drift >= 0.5:
             conviction -= 3
             signals['team_heat'] = f'Team L10 +{team_drift:.1f} R/G — trending warm, fade caution'
+
+    # L14 OPS-proxy heat (inverted for under). Cleaner than drift — strips
+    # BABIP noise. Same paired-signal logic as hits_OVER scorer.
+    team_wrc_l14 = _f(g.get(f'{side}_wrc_proxy_l14'))
+    season_wrc = _f(g.get(f'{side}_wrc_plus')) or 100
+    if team_wrc_l14 is not None:
+        l14_delta = team_wrc_l14 - season_wrc
+        if l14_delta <= -15:
+            conviction += 5
+            signals['l14_cold'] = f'❄️  L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} ({l14_delta:.0f}) — quality contact down, under reinforced'
+        elif l14_delta <= -8:
+            conviction += 2
+            signals['l14_cold'] = f'L14 wRC+ {team_wrc_l14:.0f} ({l14_delta:.0f}) — trending down'
+        elif l14_delta >= 15:
+            conviction -= 5
+            signals['l14_heat'] = f'🔥 L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} (+{l14_delta:.0f}) — hot bats, fade caution'
+        elif l14_delta >= 8:
+            conviction -= 2
+            signals['l14_heat'] = f'L14 wRC+ {team_wrc_l14:.0f} (+{l14_delta:.0f}) — trending up, fade caution'
 
     # Pitcher park
     if park is not None:
