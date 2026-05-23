@@ -97,7 +97,7 @@ def fetch_tier_rates():
     PostgREST's 1000-row default, randomly dropping cohorts. Filter to
     today's computed_date (one row per cohort = well under any limit).
     Same bug class as the YRFI '0% audited' issue in generate_sweat_card."""
-    today = today_et()
+    today = get_today_et()
     rows = sb_get("mlb_tier_calibration", {
         "window_label": "eq.30d",
         "sport": "eq.mlb",
