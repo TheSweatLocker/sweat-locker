@@ -4,6 +4,11 @@ import axios from 'axios';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, KeyboardAvoidingView, Linking, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Circle, Defs, G, LinearGradient, Path, Rect, Stop, Svg, Line as SvgLine, Text as SvgText } from 'react-native-svg';
+import { RecapCard } from './components/RecapCard';
+import { RecapStrip } from './components/RecapStrip';
+import { CohortDashboard } from './components/CohortDashboard';
+import { useSubscription } from './contexts/SubscriptionContext';
+import { Sport } from './lib/sportPeriods';
 
 const ODDS_API_KEY = process.env.EXPO_PUBLIC_ODDS_API_KEY;
 const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
@@ -9269,14 +9274,89 @@ setJerryHistory(prev => {
           <View>
            <View style={{marginBottom:12}}>
 
-           {/* TONIGHT'S SWEAT CARD — server-generated, all conviction picks in one section */}
+           {/* RECEIPTS STRIP — compact, conditional surfacing.
+               Default: 30D rolling hit rate (stable, smooths variance).
+               When yesterday was a win day (>=60% hit, n>=5), surfaces it alongside.
+               Tap → Jerry → Receipts sub-tab for full breakdown.
+               Protects against cold-week churn while preserving hot-streak marketing. */}
+           <RecapStrip
+             sport={(gamesSport as Sport) || 'MLB'}
+             onTap={() => { setActiveTab('jerry'); setJerryTab('mytrends'); }}
+           />
+
+           {/* TONIGHT'S SWEAT CARD — server-generated, curated 8 picks lead,
+               intel sections (bucket, skips, total edges, stack alerts) follow.
+               top_8 array is the auditable receipts unit — every pick has a
+               source_table + source_key the resolver uses to mark Win/Loss
+               nightly. Same set we post on social. */}
 {sweatCard && !sweatCard.noCard && (
   <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:'#00e5a0',marginBottom:16,shadowColor:'#00e5a0',shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
       <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:13,letterSpacing:1}}>🔥 TODAY'S SWEAT CARD</Text>
-      <Text style={{color:'#7a92a8',fontSize:10}}>{sweatCard.slate_date}</Text>
+      <Text style={{color:'#7a92a8',fontSize:10}}>{sweatCard.slate_date} • {sweatCard.top_8?.length || 8} picks</Text>
     </View>
-    <Text style={{color:'#4a6070',fontSize:10,marginBottom:12,fontStyle:'italic'}}>Live — picks update as lineups confirm + umpires land throughout the day</Text>
+    <Text style={{color:'#4a6070',fontSize:10,marginBottom:12,fontStyle:'italic'}}>Curated • backed by audit-driven cohorts • updates as lineups confirm</Text>
+
+    {/* 🎯 THE CURATED 8 — lead picks, server-driven from sweatCard.top_8 */}
+    {Array.isArray(sweatCard.top_8) && sweatCard.top_8.length > 0 && (
+      <View style={{marginBottom:14}}>
+        {sweatCard.top_8.map((pick: any, i: number) => {
+          const tierColor =
+            pick.tier === 'PRIME' ? '#00e5a0' :
+            pick.tier === 'STRONG' ? '#ffb800' : '#7a92a8';
+          const resultIcon =
+            pick.result === 'Win' ? '✓' :
+            pick.result === 'Loss' ? '✗' :
+            pick.result === 'Push' ? '=' : '';
+          const resultColor =
+            pick.result === 'Win' ? '#00e5a0' :
+            pick.result === 'Loss' ? '#ff4d6d' :
+            pick.result === 'Push' ? '#7a92a8' : null;
+          return (
+            <View key={`top8-${i}`} style={{flexDirection:'row',alignItems:'flex-start',paddingVertical:7,borderTopWidth:i>0?0.5:0,borderTopColor:'#1a2530'}}>
+              <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',width:18,marginTop:1}}>{pick.rank}.</Text>
+              <Text style={{fontSize:14,marginRight:8}}>{pick.icon}</Text>
+              <View style={{flex:1}}>
+                <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'600'}} numberOfLines={2}>{pick.label}</Text>
+                {pick.game && <Text style={{color:'#7a92a8',fontSize:10,marginTop:1}} numberOfLines={1}>{pick.game}</Text>}
+                {pick.narrative_hint && (
+                  <Text style={{color:'#4a6070',fontSize:10,marginTop:2,fontStyle:'italic'}} numberOfLines={1}>{pick.narrative_hint}</Text>
+                )}
+              </View>
+              <View style={{alignItems:'flex-end',marginLeft:8}}>
+                <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+                  {pick.tier && (
+                    <Text style={{color:tierColor,fontSize:10,fontWeight:'800'}}>{pick.tier}</Text>
+                  )}
+                  {resultColor && (
+                    <Text style={{color:resultColor,fontSize:11,fontWeight:'900'}}>{resultIcon}</Text>
+                  )}
+                </View>
+                {pick.conviction != null && (
+                  <Text style={{color:'#4a6070',fontSize:9,marginTop:1}}>{pick.conviction}</Text>
+                )}
+              </View>
+            </View>
+          );
+        })}
+        {/* Summary line if resolved */}
+        {sweatCard.top_8_summary && sweatCard.top_8_summary.resolved > 0 && (
+          <View style={{marginTop:8,paddingTop:8,borderTopWidth:0.5,borderTopColor:'#1a2530',flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+            <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',letterSpacing:0.5}}>CARD RESULT</Text>
+            <Text style={{color:'#e8f0f8',fontSize:12,fontWeight:'800'}}>
+              {sweatCard.top_8_summary.wins}-{sweatCard.top_8_summary.losses}
+              {sweatCard.top_8_summary.pushes ? ` (${sweatCard.top_8_summary.pushes}P)` : ''}
+              {sweatCard.top_8_summary.pending ? ` • ${sweatCard.top_8_summary.pending} pending` : ''}
+            </Text>
+          </View>
+        )}
+      </View>
+    )}
+
+    {/* ━━━ ADDITIONAL INTEL ━━━ */}
+    {(sweatCard.lock || sweatCard.secondary_lock || sweatCard.dawg || (sweatCard.total_edges?.length > 0) || (sweatCard.stack_alerts?.length > 0) || (sweatCard.skip_alerts?.length > 0)) && (
+      <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',letterSpacing:1,marginBottom:8,marginTop:4}}>━━━ ADDITIONAL INTEL ━━━</Text>
+    )}
 
     {/* 🔒 PRIME LOCK — NRFI 90-94 sweet spot */}
     {sweatCard.lock && (
@@ -10366,7 +10446,7 @@ setJerryHistory(prev => {
           <View>
             <Text style={styles.pageTitle}>🧠 Jerry 🎤</Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
-                {[{id:'propjerry',label:'🧠 Prop Jerry'},{id:'dailydegen',label:'🎲 Daily Degen'},{id:'dawg',label:'🐕 Dawg of the Day'},{id:'mytrends',label:'📋 Record'}].map(t=>(
+                {[{id:'propjerry',label:'🧠 Prop Jerry'},{id:'dailydegen',label:'🎲 Daily Degen'},{id:'dawg',label:'🐕 Dawg of the Day'},{id:'mytrends',label:'📊 Receipts'}].map(t=>(
                   <TouchableOpacity key={t.id} style={[styles.chipBtn,{flex:1,justifyContent:'center',alignItems:'center'},trendsTab===t.id&&styles.chipBtnActive]} onPress={()=>setTrendsTab(t.id)}>
                     <Text style={[styles.chipTxt,trendsTab===t.id&&styles.chipTxtActive,{textAlign:'center'}]}>{t.label}</Text>
                   </TouchableOpacity>
@@ -11062,6 +11142,16 @@ setJerryHistory(prev => {
                       </View>
                     );
                   })()}
+
+                  {/* 🧠 COHORT AUDIT DASHBOARD — sport-aware live audit table.
+                      Surfaces the cohort hit rates (NRFI sweet spot, confluence
+                      bands, prop tiers, spread_delta, etc.) that drive every
+                      pick. The transparency moat: Dimer and competitors don't
+                      publish this. We do. Component is multi-sport from day
+                      one — auto-switches when active sport changes.
+                      Free tier sees percentages only; Pro tier sees sample
+                      sizes (hideSamples toggled via useSubscription).  */}
+                  <CohortDashboard sport={(gamesSport as Sport) || 'MLB'} />
 
                   {/* Legacy "Prop Jerry — Tracked Picks" + "Recent Prop Picks"
                       sections removed 2026-05-08. Both pulled from the

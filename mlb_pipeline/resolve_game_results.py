@@ -1,5 +1,6 @@
 import requests
 import os
+import json
 from dotenv import load_dotenv
 from datetime import datetime, date, timedelta, timezone
 
@@ -535,6 +536,213 @@ def run():
             print(f'  Dawg error: {e}')
 
     print(f'Done! {dawg_resolved} Dawg picks resolved')
+
+    # ─── Resolve Sweat Card top_8 curated picks ──────────────────────────
+    # Walks the curated 8-pick set on each pending sweat_card_YYYY-MM-DD
+    # jerry_cache entry, looks up each pick's result from its source table,
+    # and writes back to the JSON. This makes the 8-pick set a single
+    # auditable unit — the "Sweat Card: 7-1" number is now computable
+    # directly from these cached rows.
+    print('\nResolving Sweat Card top_8 picks...')
+    sc_resolved = _resolve_sweat_card_top8(week_ago, yesterday)
+    print(f'Done! {sc_resolved} sweat card sets walked')
+
+
+def _resolve_sweat_card_top8(start_date, end_date):
+    """Walk daily sweat_card cache entries with pending top_8 picks and
+    resolve each pick from its source table."""
+    # Pull pending sweat card entries
+    rows = requests.get(
+        f'{SUPABASE_URL}/rest/v1/jerry_cache',
+        params={
+            'cache_key': f'like.sweat_card_%',
+            'sport': 'eq.MLB',
+            'select': 'cache_key,data',
+            'limit': '14',
+        },
+        headers=HEADERS,
+    ).json() or []
+
+    resolved_count = 0
+    for row in rows:
+        cache_key = row.get('cache_key', '')
+        if not cache_key.startswith('sweat_card_'):
+            continue
+        slate_date = cache_key.replace('sweat_card_', '')
+        if slate_date < start_date or slate_date > end_date:
+            continue
+
+        data = row.get('data') or {}
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                continue
+        top_8 = data.get('top_8') or []
+        if not top_8:
+            continue
+
+        # Only re-process if any pick is still Pending
+        if all(p.get('result') and p.get('result') != 'Pending' for p in top_8):
+            continue
+
+        changed = False
+        for pick in top_8:
+            if pick.get('result') and pick['result'] != 'Pending':
+                continue
+            result = _resolve_single_pick(pick, slate_date)
+            if result and result != 'Pending':
+                pick['result'] = result
+                changed = True
+
+        if changed:
+            # Compute summary
+            wins = sum(1 for p in top_8 if p.get('result') == 'Win')
+            losses = sum(1 for p in top_8 if p.get('result') == 'Loss')
+            pushes = sum(1 for p in top_8 if p.get('result') == 'Push')
+            pending = sum(1 for p in top_8 if p.get('result') == 'Pending')
+            data['top_8'] = top_8
+            data['top_8_summary'] = {
+                'wins': wins,
+                'losses': losses,
+                'pushes': pushes,
+                'pending': pending,
+                'resolved': wins + losses + pushes,
+            }
+            data['top_8_resolved_at'] = datetime.now(timezone.utc).isoformat()
+
+            requests.patch(
+                f'{SUPABASE_URL}/rest/v1/jerry_cache',
+                params={'cache_key': f'eq.{cache_key}'},
+                headers={**HEADERS, 'Prefer': 'return=minimal'},
+                json={'data': data},
+            )
+            print(f'  📋 {slate_date} Sweat Card: {wins}-{losses}{" ("+str(pushes)+"P)" if pushes else ""} ({pending} pending)')
+            resolved_count += 1
+
+    return resolved_count
+
+
+def _resolve_single_pick(pick, slate_date):
+    """Look up a single top_8 pick's result based on its source_table.
+    Returns 'Win' | 'Loss' | 'Push' | 'Pending'."""
+    source = pick.get('source_table')
+    key = pick.get('source_key')
+
+    if source == 'daily_best_bet_history':
+        # POTD lookup: bet_date + sport
+        r = requests.get(
+            f'{SUPABASE_URL}/rest/v1/daily_best_bet_history',
+            params={'bet_date': f'eq.{slate_date}', 'sport': 'eq.MLB', 'select': 'result'},
+            headers=HEADERS, timeout=10,
+        ).json()
+        if r and r[0].get('result') in ('Win', 'Loss', 'Push'):
+            return r[0]['result']
+        return 'Pending'
+
+    if source == 'daily_dawg':
+        r = requests.get(
+            f'{SUPABASE_URL}/rest/v1/daily_dawg',
+            params={'game_date': f'eq.{slate_date}', 'select': 'result'},
+            headers=HEADERS, timeout=10,
+        ).json()
+        if r and r[0].get('result') in ('Win', 'Loss', 'Push'):
+            return r[0]['result']
+        return 'Pending'
+
+    if source == 'mlb_pipeline_props':
+        # Composite key: "PlayerName|prop_type|prop_line"
+        try:
+            player, ptype, pline = (key or '').split('|', 2)
+        except ValueError:
+            return 'Pending'
+        r = requests.get(
+            f'{SUPABASE_URL}/rest/v1/mlb_pipeline_props',
+            params={
+                'game_date': f'eq.{slate_date}',
+                'player_name': f'eq.{player}',
+                'prop_type': f'eq.{ptype}',
+                'prop_line': f'eq.{pline}',
+                'select': 'result',
+            },
+            headers=HEADERS, timeout=10,
+        ).json()
+        if r and r[0].get('result') in ('Win', 'Loss', 'Push'):
+            return r[0]['result']
+        return 'Pending'
+
+    if source == 'mlb_game_results':
+        # Evaluate game-side picks (ML / RL / total) against final scores
+        if not key:
+            return 'Pending'
+        r = requests.get(
+            f'{SUPABASE_URL}/rest/v1/mlb_game_results',
+            params={'game_id': f'eq.{key}', 'select': 'home_team,away_team,home_score,away_score,home_win'},
+            headers=HEADERS, timeout=10,
+        ).json()
+        if not r or r[0].get('home_score') is None:
+            return 'Pending'
+        g = r[0]
+        ev = pick.get('eval') or {}
+        etype = ev.get('type')
+        try:
+            if etype == 'ml':
+                # 'side' contains the label e.g. "Atlanta Braves ML"
+                # Determine which team is the pick by matching prefix to home/away
+                side = (ev.get('side') or '').lower()
+                home_in_side = (g['home_team'] or '').lower() in side
+                away_in_side = (g['away_team'] or '').lower() in side
+                if home_in_side and not away_in_side:
+                    return 'Win' if g['home_win'] else 'Loss'
+                if away_in_side and not home_in_side:
+                    return 'Win' if not g['home_win'] else 'Loss'
+                # Last-name match fallback
+                home_last = (g['home_team'] or '').split()[-1].lower()
+                away_last = (g['away_team'] or '').split()[-1].lower()
+                if home_last in side and away_last not in side:
+                    return 'Win' if g['home_win'] else 'Loss'
+                if away_last in side and home_last not in side:
+                    return 'Win' if not g['home_win'] else 'Loss'
+                return 'Pending'
+
+            if etype == 'over':
+                line = float(ev.get('line') or 0)
+                total = (g['home_score'] or 0) + (g['away_score'] or 0)
+                if total > line: return 'Win'
+                if total < line: return 'Loss'
+                return 'Push'
+            if etype == 'under':
+                line = float(ev.get('line') or 0)
+                total = (g['home_score'] or 0) + (g['away_score'] or 0)
+                if total < line: return 'Win'
+                if total > line: return 'Loss'
+                return 'Push'
+
+            if etype == 'nrfi':
+                # Need nrfi_result on the game row
+                rg = requests.get(
+                    f'{SUPABASE_URL}/rest/v1/mlb_game_results',
+                    params={'game_id': f'eq.{key}', 'select': 'nrfi_result'},
+                    headers=HEADERS, timeout=10,
+                ).json()
+                if not rg or not rg[0].get('nrfi_result'):
+                    return 'Pending'
+                return 'Win' if rg[0]['nrfi_result'] == 'NRFI' else 'Loss'
+            if etype == 'yrfi':
+                rg = requests.get(
+                    f'{SUPABASE_URL}/rest/v1/mlb_game_results',
+                    params={'game_id': f'eq.{key}', 'select': 'nrfi_result'},
+                    headers=HEADERS, timeout=10,
+                ).json()
+                if not rg or not rg[0].get('nrfi_result'):
+                    return 'Pending'
+                return 'Win' if rg[0]['nrfi_result'] == 'YRFI' else 'Loss'
+        except Exception as e:
+            print(f'  Sweat Card pick eval error: {e}')
+            return 'Pending'
+
+    return 'Pending'
+
 
 if __name__ == '__main__':
     run()

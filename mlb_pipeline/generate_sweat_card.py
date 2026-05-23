@@ -438,6 +438,205 @@ def top_props_by_type(props, target_type, n=2):
     return filtered[:n]
 
 
+def curate_top_8(games, props, potd, dawg, total_edges):
+    """Pick the 8 highest-conviction plays for tonight's social card.
+
+    The 8 set IS the receipts unit. Each pick records source_table +
+    source_key so the resolver can walk it later and mark Win/Loss.
+    Returns ordered list of 8 dicts ready for the sweat_card payload.
+
+    Curation order (priority high -> low, dedupe so same game doesn't
+    appear twice unless props are different players):
+      1. POTD (always include if present)
+      2. DotD (always include if present)
+      3. PRIME confluence ML primary plays (sweat_tier == PRIME)
+      4. v4 total edges >= 1.5 OR STRONG total leans from primary_play
+      5. PRIME mastery props (highest conviction, diversified by player)
+      6. STRONG mastery props as fill
+    """
+    picks = []
+    seen_keys = set()  # dedupe ("type:identifier")
+
+    def add(pick):
+        # Dedupe by a stable identifier
+        key = f"{pick['source_table']}:{pick['source_key']}"
+        if key in seen_keys:
+            return False
+        seen_keys.add(key)
+        pick["rank"] = len(picks) + 1
+        pick["result"] = "Pending"
+        picks.append(pick)
+        return True
+
+    # 1. POTD (highest priority — always included if we have one)
+    if potd and isinstance(potd.get("data"), dict):
+        pd = potd["data"]
+        pick = pd.get("pick") or {}
+        # POTD result is tracked in daily_best_bet_history
+        add({
+            "type": "POTD",
+            "icon": "🏆",
+            "label": (pick.get("label") or pd.get("leanDisplay") or "POTD"),
+            "game": pd.get("matchup") or pd.get("game", {}).get("matchup"),
+            "conviction": pd.get("score", {}).get("total"),
+            "tier": "PRIME",
+            "source_table": "daily_best_bet_history",
+            "source_key": today_et(),  # bet_date is the lookup key
+            "narrative_hint": (potd.get("narrative") or "")[:200],
+        })
+
+    # 2. DotD
+    if dawg:
+        add({
+            "type": "DotD",
+            "icon": "🐕",
+            "label": f"{dawg.get('team')} ML",
+            "game": dawg.get("matchup"),
+            "conviction": dawg.get("conviction"),
+            "tier": dawg.get("tier"),
+            "source_table": "daily_dawg",
+            "source_key": today_et(),  # game_date is the lookup key
+            "narrative_hint": (dawg.get("narrative") or "")[:200],
+        })
+
+    # 3. PRIME confluence ML/RL primary plays from game contexts
+    # We pull sorted by sweat_score so the strongest game-side plays go first.
+    game_side_candidates = []
+    for g in sorted(games, key=lambda x: -(x.get("sweat_score") or 0)):
+        pp = g.get("primary_play")
+        if not pp or not isinstance(pp, dict):
+            continue
+        tier = pp.get("tier")
+        if tier not in ("PRIME", "STRONG"):
+            continue
+        # Skip the type that's already POTD (NRFI typically) — POTD already in list
+        ptype = pp.get("type")
+        if ptype == "nrfi" and any(p["type"] == "POTD" for p in picks):
+            continue
+        game_side_candidates.append({
+            "type": (
+                "ML" if ptype == "ml"
+                else "Over/Under" if ptype == "over"
+                else "NRFI" if ptype == "nrfi"
+                else "YRFI" if ptype == "yrfi"
+                else ptype
+            ),
+            "icon": (
+                "📈" if ptype == "ml"
+                else "📊" if ptype == "over"
+                else "🔒" if ptype == "nrfi"
+                else "🔥" if ptype == "yrfi"
+                else "📊"
+            ),
+            "label": pp.get("label"),
+            "game": f"{g.get('away_team')} @ {g.get('home_team')}",
+            "conviction": g.get("sweat_score"),
+            "tier": tier,
+            "source_table": "mlb_game_results",
+            "source_key": g.get("game_id"),
+            # The resolver needs to know how to evaluate this — for ML we
+            # check home_win, for total we compare actual_total vs line, etc.
+            "eval": {
+                "type": ptype,
+                "side": pp.get("label"),
+                "line": g.get("close_total") if ptype == "over" else g.get("close_spread"),
+                "home_team": g.get("home_team"),
+                "away_team": g.get("away_team"),
+            },
+            "narrative_hint": pp.get("sub"),
+        })
+
+    # 4. Total edges from v4 (already filtered to >=1.5 delta by find_total_edges).
+    # Convert into the same shape so they can compete in conviction ranking.
+    for te in (total_edges or []):
+        # Find the game_id from games list by matching matchup
+        match = next(
+            (g for g in games if f"{g.get('away_team')} @ {g.get('home_team')}" == te.get("game")),
+            None,
+        )
+        if not match:
+            continue
+        game_side_candidates.append({
+            "type": "Over/Under",
+            "icon": "📊",
+            "label": f"{te['direction']} {te['close_total']}",
+            "game": te["game"],
+            "conviction": int(60 + min(20, abs(te["delta"]) * 6)),  # synthetic conviction
+            "tier": "STRONG" if abs(te["delta"]) >= 2.0 else "LIGHT",
+            "source_table": "mlb_game_results",
+            "source_key": match.get("game_id"),
+            "eval": {
+                "type": "over" if te["direction"] == "OVER" else "under",
+                "side": te["direction"],
+                "line": te["close_total"],
+                "home_team": match.get("home_team"),
+                "away_team": match.get("away_team"),
+            },
+            "narrative_hint": f"v4 model {te['projected_total']} vs line {te['close_total']} ({te['delta']:+.1f})",
+        })
+
+    # Add game-side candidates in conviction order; cap at 3 game-side picks
+    game_side_candidates.sort(key=lambda c: -(c.get("conviction") or 0))
+    added_game_side = 0
+    for cand in game_side_candidates:
+        if len(picks) >= 8 or added_game_side >= 3:
+            break
+        if add(cand):
+            added_game_side += 1
+
+    # 5. PRIME mastery props — highest conviction, diversify by player so the
+    # 8-set doesn't end up 4-player-Hedges-related-bets-stacked.
+    seen_players = {p["source_key"].split("|")[0] if "|" in str(p.get("source_key", "")) else None for p in picks if p.get("type", "").startswith("prop")}
+    for prop in props:
+        if len(picks) >= 8:
+            break
+        if prop.get("tier") != "PRIME":
+            continue
+        player = prop.get("player_name")
+        if player in seen_players:
+            continue
+        seen_players.add(player)
+        proj = (prop.get("signals") or {}).get("_projected_ks") if isinstance(prop.get("signals"), dict) else None
+        add({
+            "type": f"prop_{prop.get('prop_type')}",
+            "icon": "🎯",
+            "label": f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}",
+            "game": prop.get("matchup"),
+            "conviction": prop.get("conviction"),
+            "tier": "PRIME",
+            "source_table": "mlb_pipeline_props",
+            # Composite key — we re-lookup by (game_date, player_name, prop_type) at resolution
+            "source_key": f"{player}|{prop.get('prop_type')}|{prop.get('prop_line')}",
+            "narrative_hint": (
+                f"proj {proj}" if proj is not None
+                else (prop.get("signals", {}) if isinstance(prop.get("signals"), dict) else {}).values().__iter__().__next__() if isinstance(prop.get("signals"), dict) and prop.get("signals") else None
+            ),
+        })
+
+    # 6. STRONG mastery props as fill if we still have room
+    for prop in props:
+        if len(picks) >= 8:
+            break
+        if prop.get("tier") != "STRONG":
+            continue
+        player = prop.get("player_name")
+        if player in seen_players:
+            continue
+        seen_players.add(player)
+        add({
+            "type": f"prop_{prop.get('prop_type')}",
+            "icon": "🎯",
+            "label": f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}",
+            "game": prop.get("matchup"),
+            "conviction": prop.get("conviction"),
+            "tier": "STRONG",
+            "source_table": "mlb_pipeline_props",
+            "source_key": f"{player}|{prop.get('prop_type')}|{prop.get('prop_line')}",
+        })
+
+    return picks[:8]
+
+
 def build_card():
     today = today_et()
     print(f"Building Sweat Card for {today}...")
@@ -479,6 +678,18 @@ def build_card():
         p for p in props
         if p.get("tier") in ("PRIME", "STRONG")
     ][:8]
+
+    # ─── CURATED TOP 8 (Jerry's Best / Sweat Card lead picks) ────────────
+    # The single source of truth for "what would we publish to social
+    # tonight." Combines POTD + DotD + top game-side primary plays + top
+    # mastery props, capped at 8. Every pick records source_table +
+    # source_key so the nightly resolver can walk this list, look up each
+    # pick's outcome from its source, and mark Win/Loss/Push — making the
+    # 8-pick set a SINGLE auditable unit (e.g., "Sweat Card went 7-1 last
+    # night" is now a real, queryable number, not a manual count).
+    # Built 2026-05-22 to close the gap between social card receipts and
+    # in-app receipts.
+    top_8_curated = curate_top_8(games, props, potd, dawg, total_edges)
 
     # Stack alert detection — find games where 4+ hits picks are PRIME
     stack_games = {}
@@ -522,6 +733,7 @@ def build_card():
             }
             if dawg else None
         ),
+        "top_8": top_8_curated,               # 🎯 Jerry's Best — the curated 8-pick set
         "top_hits_over": top_hits,
         "top_ks_over": top_ks,
         "top_hits_under": top_under_hits,
