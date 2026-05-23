@@ -1300,11 +1300,19 @@ def score_pitcher_outs(g, side):
         conviction -= 8
         signals['short_last'] = f'Last outing: {last_ip:.1f} IP — short leash'
 
-    # L3 form
+    # L3 form — gated 2026-05-23. Standalone `l3` signal hits 43.5% on n=23
+    # per audit_signal_attribution scan; lifting it from a noise predictor
+    # to a confirming signal. Only boost when xERA also confirms (genuinely
+    # good arm, not just a lucky 3-start stretch). Same fix applied to ER
+    # scorer below.
     if l3_era is not None:
-        if l3_era <= 2.5:
+        l3_confirmed = xera is not None and xera <= 3.75
+        if l3_era <= 2.5 and l3_confirmed:
             conviction += 8
-            signals['l3'] = f'L3 ERA {l3_era:.2f} — locked in'
+            signals['l3'] = f'L3 ERA {l3_era:.2f} — locked in (xERA {xera:.2f} confirms)'
+        elif l3_era <= 2.5:
+            # Soft mention only, no conviction boost
+            signals['l3_unconfirmed'] = f'L3 ERA {l3_era:.2f} — recent good starts (xERA {xera:.2f} unconfirmed)'
         elif l3_era >= 6.0:
             conviction -= 10
             signals['l3_bad'] = f'L3 ERA {l3_era:.2f} — short hook risk'
@@ -1497,11 +1505,26 @@ def score_pitcher_er(g, side):
     elif xera <= 3.0:
         conviction -= 18
 
-    # L3 form
+    # L3 form — gated 2026-05-23. Audit pair `l3 + xera_high` hit 50% on
+    # n=10 vs xera_high alone at 79.3%. Adding L3 boost on top of an
+    # already-bad xERA was poisoning the pick. Now: drop L3 boost from
+    # +14 → +6 when xera_high is already firing (don't double-count "bad
+    # pitcher" via two signals). Standalone L3 with average xera also
+    # demoted since standalone L3 underperforms (43.5% on n=23).
     if l3_era is not None:
         if l3_era >= 6.0:
-            conviction += 14
-            signals['l3'] = f'L3 ERA {l3_era:.2f} — getting tagged'
+            if xera >= 5.0:
+                # xera_high already fired — soften the L3 add to avoid
+                # double-counting. Pair audit: pair 50% vs xera-only 79.3%.
+                conviction += 6
+                signals['l3'] = f'L3 ERA {l3_era:.2f} (xera already flagged — softened)'
+            elif xera <= 4.0:
+                # Decent season xERA with bad L3 — likely variance, soft add only
+                conviction += 6
+                signals['l3'] = f'L3 ERA {l3_era:.2f} — recent regression (xera {xera:.2f} suggests bounce-back risk)'
+            else:
+                conviction += 14
+                signals['l3'] = f'L3 ERA {l3_era:.2f} — getting tagged'
         elif l3_era <= 2.5:
             conviction -= 12
 
@@ -2082,6 +2105,26 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
             conviction += 4
             signals['barrel_genuinely_cold'] = f'Barrel% {barrel:.1f}% confirms cold (no quality contact)'
 
+    # Anti-correlation gate (added 2026-05-23 from audit_signal_attribution).
+    # When a cold-individual signal (hitless_streak / l7_cold / l7_cool) fires
+    # AND the opp-team-offense signal also fires (i.e. "we're betting under on
+    # cold batter facing weak team-context"), the pick loses badly:
+    #   team_offense + hitless_streak -> 42.9% (vs 66.9% / 64.7% alone)
+    #   l7_cold + team_offense        -> 44.0% (vs 66.9% / 61.2% alone)
+    # Translation: weak team-context masks that the individual is due to
+    # regress to mean. Two signals "saying yes" produces fewer wins than
+    # either alone — classic anti-correlation. Strip conviction here so the
+    # combined pick lands at LEAN instead of getting stacked into PRIME.
+    has_team_offense_signal = 'team_offense' in signals
+    individual_cold_signals = ('hitless_streak', 'l7_cold', 'l7_cool')
+    has_individual_cold = any(s in signals for s in individual_cold_signals)
+    if has_team_offense_signal and has_individual_cold:
+        conviction -= 9
+        signals['anticorr_team_individual'] = (
+            'Anti-correlation gate: team-context + individual-cold combo '
+            'audits 43-44% (n=14-25) per 5/23 attribution scan'
+        )
+
     conviction = max(0, min(100, conviction))
 
     # PRIME multi-signal gate (added 2026-05-11, retuned 2026-05-23).
@@ -2114,6 +2157,20 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
             and (l7 and l7.get('got_hit_rate', 1.0) <= 0.30)
         )
         gate_individual = opp_k_artist or active_ice or bottom_and_cold
+
+        # 2026-05-23 hitless_streak-only cap: scanner found hitless_streak
+        # hits 56.1% in PRIME (n=41) vs 77.8% in STRONG (n=27) — a 21.7pt
+        # over-promotion gap. When active_ice is the ONLY individual gate
+        # passer (no opp_k_artist, no bottom_and_cold), cap at STRONG. Lets
+        # the signal carry its own picks at the tier it actually works at.
+        hitless_only = active_ice and not (opp_k_artist or bottom_and_cold)
+        if gate_ace and gate_individual and hitless_only:
+            conviction = 84
+            signals['hitless_streak_cap'] = (
+                'Capped at STRONG — hitless_streak alone audits 77.8% at '
+                'STRONG (n=27) but 56.1% at PRIME (n=41). Better tier match.'
+            )
+
         if not (gate_ace and gate_individual):
             conviction = 84  # cap at STRONG
             signals['prime_gate'] = (
