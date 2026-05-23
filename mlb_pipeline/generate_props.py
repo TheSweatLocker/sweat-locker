@@ -959,8 +959,13 @@ def score_pitcher_ks(g, side):
         conviction -= 5
         signals['short_outing_risk'] = f'L3 ERA {l3_era:.2f} + 1st-inn ERA {first_inn_era:.1f} — short start risk caps K volume'
 
-    # Catcher framing behind the plate helps the pitcher
-    if framing is not None and framing >= 2:
+    # Catcher framing behind the plate helps the pitcher. Audit: `framing`
+    # signal hits 72.0% (n=25) on K-over picks — strong standalone, so worth
+    # an elite tier (≥4 runs) for extreme cases. Added 2026-05-23.
+    if framing is not None and framing >= 4:
+        conviction += 12
+        signals['framing'] = f'Catcher +{framing:.1f} framing runs — elite zone-stealer'
+    elif framing is not None and framing >= 2:
         conviction += 8
         signals['framing'] = f'Catcher +{framing:.1f} framing runs — expands zone'
     elif framing is not None and framing <= -2:
@@ -1152,8 +1157,12 @@ def score_pitcher_ks_under(g, side):
         conviction += 8
         signals['form_cold'] = f'L3 K% {l3_k:.1f}% vs season {pitcher_k_pct:.1f}% — fading'
 
-    # Bad framing catcher = lost called strikes
-    if framing is not None and framing <= -2:
+    # Bad framing catcher = lost called strikes. Elite-bad tier added
+    # 2026-05-23 to match the K-over scorer symmetry.
+    if framing is not None and framing <= -4:
+        conviction += 12
+        signals['framing'] = f'Catcher {framing:.1f} framing — elite zone-loss, K-Under boosted'
+    elif framing is not None and framing <= -2:
         conviction += 8
         signals['framing'] = f'Catcher {framing:.1f} framing runs — costs called strikes'
     elif framing is not None and framing >= 3:
@@ -2344,6 +2353,19 @@ def run():
             # Earned Runs O/U
             er_over = score_pitcher_er(g, side)
             if er_over and er_over['conviction'] >= ER_CUTOFF:
+                # 2026-05-23: er_OVER STRONG cohort hits 50% on n=12 — coin
+                # flip. Demote STRONG → LEAN unless L3 ERA is in extreme
+                # regression territory (≥8.0) where the bad-pitcher thesis
+                # is loud enough to be real, not just an above-avg pitcher
+                # with one bad start.
+                er_tier = tier_for(er_over['conviction'], 'er_over')
+                l3_era_val = _f(g.get(f'{side}_pitcher_last_3_era'))
+                if er_tier == 'STRONG' and (l3_era_val is None or l3_era_val < 8.0):
+                    er_tier = 'LEAN'
+                    er_over['signals']['er_strong_demoted'] = (
+                        'STRONG demoted → LEAN: er_OVER STRONG audits 50% on n=12. '
+                        f'L3 ERA {l3_era_val} not in regression territory (≥8.0 required).'
+                    )
                 all_props.append({
                     'game_date': game_date,
                     'game_id': game_id,
@@ -2354,7 +2376,7 @@ def run():
                     'prop_line': er_over['prop_line'],
                     'direction': 'over',
                     'conviction': er_over['conviction'],
-                    'tier': tier_for(er_over['conviction'], 'er_over'),
+                    'tier': er_tier,
                     'signals': er_over['signals'],
                     'lineup_state': 'confirmed',
                 })

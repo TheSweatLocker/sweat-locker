@@ -7,6 +7,7 @@ import { Circle, Defs, G, LinearGradient, Path, Rect, Stop, Svg, Line as SvgLine
 import { RecapCard } from './components/RecapCard';
 import { RecapStrip } from './components/RecapStrip';
 import { CohortDashboard } from './components/CohortDashboard';
+import { TierIntegrityBadge } from './components/TierIntegrityBadge';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Sport } from './lib/sportPeriods';
 
@@ -11143,6 +11144,14 @@ setJerryHistory(prev => {
                       </View>
                     );
                   })()}
+
+                  {/* TIER INTEGRITY BADGE — reads nightly findings from
+                      audit_tier_integrity.py (tier_integrity_findings table).
+                      When a lower-tier cohort outperforms a higher one,
+                      surfaces the warning here. Clean state = "✅ check
+                      passed" reassurance line. Transparency moat: own the
+                      disclosure rather than hide internal pipeline state. */}
+                  <TierIntegrityBadge />
 
                   {/* 🧠 COHORT AUDIT DASHBOARD — multi-sport audit table.
                       Defaults to MLB (only sport with data right now). Has

@@ -3087,6 +3087,22 @@ def run():
                 if hbp is not None and abp is not None and abs(abp - hbp) >= 0.5:
                     breakdown['bullpen'] = 'home' if hbp < abp else 'away'
 
+                # Signal: bullpen taxed (2026-05-23). bp_relievers_3d tracks
+                # how many relievers each team used in the last 3 days. A pen
+                # that's burned 4+ arms is functionally short — gas tank low,
+                # high-leverage guys unavailable. Tracked field was idle in
+                # confluence (only displayed in scout report). When |delta|
+                # ≥ 2 relievers, vote against the more-taxed pen's team.
+                try:
+                    h_bp_used = _f(home_bp_usage.get('relievers_used_3d')) if home_bp_usage else None
+                    a_bp_used = _f(away_bp_usage.get('relievers_used_3d')) if away_bp_usage else None
+                    if h_bp_used is not None and a_bp_used is not None:
+                        bp_delta = h_bp_used - a_bp_used  # +ve = home pen more taxed
+                        if abs(bp_delta) >= 2:
+                            breakdown['bp_taxed'] = 'away' if bp_delta > 0 else 'home'
+                except (NameError, AttributeError):
+                    pass  # bp_usage not in scope on this build path
+
                 # Signal: recency (last 10 games) — added 2026-04-29.
                 # Catches hot/cold streaks the season-long stats hide. Conservative
                 # single-vote integration; projection blend weight pending backtest.
