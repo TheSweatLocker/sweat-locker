@@ -2777,17 +2777,44 @@ def run():
                     lineup_adj = (away_lineup_weight - 6.0) * 0.15
                     projected_total = round(projected_total + lineup_adj, 1)
 
-                # Injury impact — key players missing suppresses offense
-                home_inj_count = home_injuries['count'] if home_injuries else 0
-                away_inj_count = away_injuries['count'] if away_injuries else 0
-                if home_inj_count >= 3:
-                    projected_total = round(projected_total - 0.4, 1)
-                elif home_inj_count >= 1:
-                    projected_total = round(projected_total - 0.15, 1)
-                if away_inj_count >= 3:
-                    projected_total = round(projected_total - 0.4, 1)
-                elif away_inj_count >= 1:
-                    projected_total = round(projected_total - 0.15, 1)
+                # Injury impact — key players missing suppresses offense.
+                # 2026-05-23 retune: prior version used raw count, treating an
+                # extra reliever IL the same as a starting SS out. Now: parse
+                # position from injuries['all'] and weight POSITION PLAYERS
+                # higher than pitchers (pitching depth is deeper than position
+                # depth on most rosters). Star position-player positions
+                # (C/SS/CF/3B/SP) count even more.
+                def _injury_impact(injuries):
+                    if not injuries or not isinstance(injuries.get('all'), list):
+                        return -0.15 if (injuries and injuries.get('count', 0) >= 1) else 0.0
+                    all_inj = injuries['all']
+                    position_players = [p for p in all_inj if p.get('position', '').upper() not in ('P', 'SP', 'RP')]
+                    key_positions = {'C', 'SS', 'CF', '3B', 'SP'}
+                    key_count = sum(1 for p in all_inj if p.get('position', '').upper() in key_positions)
+                    pp_count = len(position_players)
+                    # Weighted adjustment — position players hurt more
+                    weight = (pp_count * 0.10) + (key_count * 0.05)
+                    return -round(min(0.7, weight), 2)
+
+                home_inj_adj = _injury_impact(home_injuries)
+                away_inj_adj = _injury_impact(away_injuries)
+                projected_total = round(projected_total + home_inj_adj + away_inj_adj, 1)
+
+                # Defensive OAA adjustment (2026-05-23). Was a tracked-but-idle
+                # field — Savant Outs Above Average for each team's defense.
+                # Combined OAA captures how much both defenses suppress balls
+                # in play. Coefficient kept conservative (0.04 per OAA point,
+                # capped at ±0.6) since OAA correlation w/ runs is modest
+                # against the other signals already baked in.
+                home_oaa = home_team_oaa if isinstance(home_team_oaa, (int, float)) else None
+                away_oaa = away_team_oaa if isinstance(away_team_oaa, (int, float)) else None
+                if home_oaa is not None and away_oaa is not None:
+                    combined_oaa = float(home_oaa) + float(away_oaa)
+                    # Positive combined OAA = both defenses above avg → suppress total
+                    oaa_adj = -1 * max(-15, min(15, combined_oaa)) * 0.04
+                    oaa_adj = round(max(-0.6, min(0.6, oaa_adj)), 2)
+                    if abs(oaa_adj) >= 0.1:
+                        projected_total = round(projected_total + oaa_adj, 1)
 
                 # ── MARKET-ANCHORED MODEL ──
                 # Start from posted total and only adjust where we have proven edges

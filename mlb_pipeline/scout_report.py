@@ -340,10 +340,23 @@ def render_game(game):
     nrfi = game.get("nrfi_score")
     print(f"  Market: spread {fmt(spread, 1)} / total {fmt(total, 1)} | confluence net {conf if conf is not None else '—'} | NRFI {nrfi if nrfi is not None else '—'}")
 
-    # Bullpen workload flags
+    # Bullpen workload flags + delta callout (2026-05-23 — bp_taxed now votes
+    # in confluence when delta ≥ 2 relievers, surface it here so the scout
+    # report explicitly flags the model-relevant edge, not just absolutes).
     home_3d = game.get("home_bp_relievers_3d")
     away_3d = game.get("away_bp_relievers_3d")
     print(f"  Bullpen workload (last 3d): {away_team} {fmt_int(away_3d)} relievers{gassed_flag(away_3d)} | {home_team} {fmt_int(home_3d)} relievers{gassed_flag(home_3d)}")
+    try:
+        h_n = int(home_3d) if home_3d is not None else None
+        a_n = int(away_3d) if away_3d is not None else None
+        if h_n is not None and a_n is not None:
+            delta = h_n - a_n
+            if abs(delta) >= 2:
+                taxed_team = home_team if delta > 0 else away_team
+                fresher_team = away_team if delta > 0 else home_team
+                print(f"    → 🔻 BP edge: {taxed_team} pen taxed +{abs(delta)} vs {fresher_team} — confluence votes opposing side")
+    except (TypeError, ValueError):
+        pass
 
     away_off = fetch_team_offense(away_team)
     home_off = fetch_team_offense(home_team)
