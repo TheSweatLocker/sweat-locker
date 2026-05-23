@@ -409,6 +409,33 @@ jobs:
           cd mlb_pipeline
           python audit_tier_integrity.py
 
+      # v4 health check (2026-05-23) — tracks v4 ML direction accuracy
+      # across 5d / 7d / 14d / 30d windows. Writes to model_health table.
+      # When 5d ML drops below 48% the script returns cold status so the
+      # workflow can branch on it (today: just warns; later: dynamic
+      # throttling of v4 vote weight in confluence).
+      - name: v4 model health check
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_v4_health.py
+
+      # Signal-attribution scan (2026-05-23) — decomposes losses by signal
+      # and signal-pair to find buried negative correlations. Not gating
+      # anything yet — just logs to stdout for now. Once findings table
+      # ships + sample stabilizes, will recommend specific gate additions.
+      - name: Signal attribution scan
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_signal_attribution.py
+
       # Build Tonight's Sweat Card — server-generated structured card for
       # the app's MLB tab. Reads everything upstream wrote (POTD, Dawg,
       # props, NRFI, tier rates) and emits one JSON row the app reads via
