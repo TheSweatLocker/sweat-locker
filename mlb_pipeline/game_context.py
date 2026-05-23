@@ -1734,9 +1734,14 @@ def compute_primary_play(ctx):
     v4_spread = ctx.get('model_pred_spread')
     v3_spread = ctx.get('projected_spread')
     proj_spread = v4_spread if v4_spread is not None else v3_spread
-    close_spread = ctx.get('close_spread')
-    home_ml = ctx.get('home_ml_odds')
-    away_ml = ctx.get('away_ml_odds')
+    # Fall back to open_spread when close_spread isn't set yet. Lines barely
+    # move during a normal day; using the open line as the comparison anchor
+    # is far better than skipping primary-play computation entirely (the prior
+    # behavior, which left every game with `primary_play = None` whenever the
+    # 2pm cron hadn't run yet — see 2026-05-23 noon-run audit).
+    close_spread = ctx.get('close_spread') or ctx.get('open_spread')
+    home_ml = ctx.get('home_ml_odds') or ctx.get('home_ml_close') or ctx.get('home_ml_open')
+    away_ml = ctx.get('away_ml_odds') or ctx.get('away_ml_close') or ctx.get('away_ml_open')
     home_team = ctx.get('home_team') or 'Home'
     away_team = ctx.get('away_team') or 'Away'
 
@@ -2360,9 +2365,14 @@ def run():
                 print(f"  F5 total line: {f5_total_line}")
 
             # Determine if this is 8am (open) or 2pm (close) run — use ET not local/UTC
+            # 2026-05-23: lowered from 13 → 10 ET. Lines settle within ~2 hours of
+            # market open (~9 ET on a normal MLB slate). Anything from 10 ET on
+            # should populate close_*, otherwise manual noon runs leave close_*
+            # null and downstream consumers (compute_primary_play, sweat card v4
+            # deltas) can't reason about market price.
             et_now = datetime.now(timezone.utc) - timedelta(hours=4)
             current_hour = et_now.hour
-            is_open_run = current_hour < 13  # before 1pm ET = opening line (morning run bucket)
+            is_open_run = current_hour < 10  # before 10am ET = opening line
             
             # Weather adjustment
             # Weather adjustment — calibrated from 170+ game correlation analysis:

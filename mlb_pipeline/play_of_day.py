@@ -810,10 +810,13 @@ def run():
             'signal_confluence_net': ctx.get('signal_confluence_net'),
             'signal_confluence_support': ctx.get('signal_confluence_support'),
             'signal_confluence_breakdown': ctx.get('signal_confluence_breakdown'),
-            'close_spread': ctx.get('close_spread'),
+            # Downstream cohort math expects close_spread; fall back to open
+            # so manual noon runs (close_* still null) don't break candidate
+            # eval. Same fallback pattern used in compute_primary_play.
+            'close_spread': ctx.get('close_spread') or ctx.get('open_spread'),
             'open_spread': ctx.get('open_spread'),
-            'home_ml_odds': ctx.get('home_ml_odds'),
-            'away_ml_odds': ctx.get('away_ml_odds'),
+            'home_ml_odds': ctx.get('home_ml_odds') or ctx.get('home_ml_close') or ctx.get('home_ml_open'),
+            'away_ml_odds': ctx.get('away_ml_odds') or ctx.get('away_ml_close') or ctx.get('away_ml_open'),
             'venue': ctx.get('venue'),
             'temperature': ctx.get('temperature'),
         })
