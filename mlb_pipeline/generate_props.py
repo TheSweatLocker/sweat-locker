@@ -2084,27 +2084,44 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
 
     conviction = max(0, min(100, conviction))
 
-    # PRIME multi-signal gate (added 2026-05-11). Audit: hits_under PRIME
-    # (conviction ≥85) hit only 55.3% vs STRONG (75-84) at 67.4% on n=102.
-    # The score stacks team-level + noise signals (weak offense, pitcher
-    # park, K-friendly ump) to reach PRIME without an individual reason
-    # THIS batter goes 0-fer. Require: genuinely elite opp pitcher (xERA
-    # ≤3.0) AND an individual factor — bats bottom of order (≤3 PAs), or
-    # personally ice-cold L7 (≤30% games w/ hit), or active hitless streak
-    # ≥3. Else cap at STRONG (84) — which is the better-performing tier.
+    # PRIME multi-signal gate (added 2026-05-11, retuned 2026-05-23).
+    #
+    # 2026-05-11 audit: hits_under PRIME hit only 55.3% vs STRONG 67.4%.
+    # Added gate requiring elite_opp + ONE individual factor (lineup_pos,
+    # L7_cold, or hitless_streak).
+    #
+    # 2026-05-23 RE-audit (n=97): PRIME still at 55.7% vs STRONG 58.0%.
+    # Original gate wasn't tight enough — "bottom of order" alone isn't
+    # signal (gets promoted on team stacks even when the batter is hot).
+    # New gate per [[project_may17_hits_under_audit]] memo: opp_k_artist
+    # (k_pct ≥30) is the strongest standalone predictor. Require it as
+    # the headline signal; lineup_position becomes a tie-breaker only.
+    #
+    # Required for PRIME (conviction ≥85):
+    #   - elite opp (xERA ≤ 3.0)
+    #   AND one of:
+    #     - opp_k_artist (opp_pitcher_k_pct ≥ 30)  ← strongest standalone
+    #     - hitless_streak ≥ 3  (real bat ice — not just team-cold proxy)
+    #     - lineup_pos ≥7 AND L7 cold (≤30% games w/ hit)  ← both, not either
     if conviction >= 85:
         gate_ace = opp_quality is not None and opp_quality <= 3.0
-        gate_individual = (
-            (lineup_position is not None and lineup_position >= 7) or
-            (l7 and l7.get('got_hit_rate', 1.0) <= 0.30) or
-            (l7 and l7.get('hitless_streak', 0) >= 3)
+        opp_k_artist = (
+            opp_pitcher_k_pct is not None and opp_pitcher_k_pct >= 30
         )
+        active_ice = l7 and l7.get('hitless_streak', 0) >= 3
+        bottom_and_cold = (
+            (lineup_position is not None and lineup_position >= 7)
+            and (l7 and l7.get('got_hit_rate', 1.0) <= 0.30)
+        )
+        gate_individual = opp_k_artist or active_ice or bottom_and_cold
         if not (gate_ace and gate_individual):
             conviction = 84  # cap at STRONG
             signals['prime_gate'] = (
                 f'PRIME capped — gate not met (elite_opp={bool(gate_ace)}, '
-                f'individual_signal={bool(gate_individual)}). '
-                'hits_under PRIME audit 55.3% vs STRONG 67.4% (n=102)'
+                f'opp_k_artist={bool(opp_k_artist)}, '
+                f'active_ice={bool(active_ice)}, '
+                f'bottom_and_cold={bool(bottom_and_cold)}). '
+                'hits_under PRIME 30d 55.7% — STRONG outperforms (58.0%, n=119)'
             )
 
     return {

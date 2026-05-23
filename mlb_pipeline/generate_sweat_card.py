@@ -494,7 +494,13 @@ HITS_OVER_05_CARD_CONV_FLOOR = 95
 # _cohort_eligibility below.
 COHORT_BREAK_EVEN_PCT = {
     "hits_over":   {"high_juice": 75.0, "low_juice": 50.0},  # split by line in code
-    "hits_under":  54.5,
+    # 2026-05-23 audit: hits_under typical juice is closer to -130 than -110
+    # (sportsbook prices the under at less juice but it's still juiced when
+    # the model agrees with the book). Raised from 54.5% → 56.5% to catch
+    # the PRIME hits_under cohort at 55.7% — which barely clears -110 but
+    # loses money at typical -130 prices. Drives auto-suppression to do
+    # what the manual eye was already seeing in the integrity audit.
+    "hits_under":  56.5,
     "ks_over":     52.4,
     "ks_under":    52.4,
     "ha_under":    54.5,

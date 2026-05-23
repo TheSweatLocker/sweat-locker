@@ -394,6 +394,21 @@ jobs:
           cd mlb_pipeline
           python audit_tier_calibration.py
 
+      # Tier-integrity audit (2026-05-23) — checks whether PRIME hits worse
+      # than STRONG etc. across (prop_type, direction). Writes findings to
+      # tier_integrity_findings table; exits non-zero on `critical` drift
+      # (>=5pt inversion) so the workflow turns red. `continue-on-error`
+      # so a critical finding flags the run but doesn't block downstream
+      # steps (sweat card still generates, we just see the red badge).
+      - name: Tier-integrity drift check
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_tier_integrity.py
+
       # Build Tonight's Sweat Card — server-generated structured card for
       # the app's MLB tab. Reads everything upstream wrote (POTD, Dawg,
       # props, NRFI, tier rates) and emits one JSON row the app reads via
