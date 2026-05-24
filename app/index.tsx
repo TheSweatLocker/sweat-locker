@@ -9334,7 +9334,7 @@ setJerryHistory(prev => {
                Protects against cold-week churn while preserving hot-streak marketing. */}
            <RecapStrip
              sport={(gamesSport as Sport) || 'MLB'}
-             onTap={() => { setActiveTab('jerry'); setJerryTab('mytrends'); }}
+             onTap={() => { setActiveTab('jerry'); setTrendsTab('mytrends'); }}
            />
 
            {/* TONIGHT'S SWEAT CARD — server-generated, curated 8 picks lead,
