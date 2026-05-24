@@ -3130,19 +3130,36 @@ def run():
                 except (NameError, AttributeError):
                     pass  # bp_usage not in scope on this build path
 
-                # Signal: L14 OPS proxy delta (2026-05-23). Self-aggregated
-                # team-level recency-of-quality-contact. Cleaner than the
-                # runs/game delta because OPS strips BABIP cluster luck.
-                # When wrc_proxy_l14 differs by ≥15 between teams (≈ "one
-                # team has been clearly hotter the last two weeks"), vote
-                # for the hotter offense's side.
+                # Signal: L14 OPS proxy delta (2026-05-23; retuned same-day).
+                # Self-aggregated team-level recency-of-quality-contact.
+                #
+                # Initial threshold of ±15 fired on 23 of 30 teams tonight —
+                # that's noise-fitting, not signal. Raised to ±25 (catches
+                # the genuine cases like Cubs -139, ATL -43, Rays +54 while
+                # cutting borderline noise).
+                #
+                # Also added L7 same-direction confirmation: only fire the
+                # vote if L7 OPS delta agrees with L14 (both teams hot OR
+                # both cold). Catches the "team was hot but cooling" trap —
+                # the better play there is fading, not stacking. When L7 and
+                # L14 disagree, we skip the vote and let other signals decide.
                 try:
                     h_wrc_l14 = _f((home_offense or {}).get('wrc_proxy_l14'))
                     a_wrc_l14 = _f((away_offense or {}).get('wrc_proxy_l14'))
+                    h_ops_l7 = _f((home_offense or {}).get('ops_last7'))
+                    a_ops_l7 = _f((away_offense or {}).get('ops_last7'))
                     if h_wrc_l14 is not None and a_wrc_l14 is not None:
                         wrc_delta = h_wrc_l14 - a_wrc_l14
-                        if abs(wrc_delta) >= 15:
-                            breakdown['ops_l14_heat'] = 'home' if wrc_delta > 0 else 'away'
+                        if abs(wrc_delta) >= 25:
+                            # L14 says delta direction. Confirm with L7 sign.
+                            l7_confirms = True  # default if L7 missing
+                            if h_ops_l7 is not None and a_ops_l7 is not None:
+                                l7_delta = h_ops_l7 - a_ops_l7
+                                # Sign must agree (both >0 or both <0).
+                                l7_confirms = (wrc_delta > 0 and l7_delta > 0) or \
+                                              (wrc_delta < 0 and l7_delta < 0)
+                            if l7_confirms:
+                                breakdown['ops_l14_heat'] = 'home' if wrc_delta > 0 else 'away'
                 except (NameError, AttributeError, TypeError):
                     pass  # missing recency data — silent skip
 

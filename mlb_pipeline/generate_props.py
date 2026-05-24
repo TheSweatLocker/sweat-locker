@@ -1810,28 +1810,38 @@ def score_batter_hits(g, batter, side, lineup_position=None):
             conviction -= 3
             signals['team_cold'] = f'Team L10 {team_drift:.1f} R/G — trending cool'
 
-    # L14 OPS-proxy heat (2026-05-23 — enrich_team_recency.py).
-    # Cleaner version of team_drift: OPS strips BABIP cluster luck so a
-    # team that's been BARRELING the ball but unlucky on hits lands HOT
-    # here even if their runs/game looks flat. Stacks with drift signal
-    # for direction-aligned cases (both hot OR both cold = louder vote);
-    # when they disagree the OPS proxy wins as the cleaner measurement.
+    # L14 OPS-proxy heat (2026-05-23, threshold retuned same-day).
+    # Cleaner version of team_drift: OPS strips BABIP cluster luck.
+    # Raised from ±15 → ±25 after the initial threshold flagged 23 of 30
+    # teams (noise-fitting, not signal). ±10 stays as narrative-only.
+    # Also added L7 confirmation: full-conviction signal requires L7
+    # OPS to be on the same side of league avg as L14 (both above or
+    # both below). When L7 disagrees, demote to narrative-mention only —
+    # the team is regressing or rebounding, not in a clean trend.
     team_wrc_l14 = _f(g.get(f'{side}_wrc_proxy_l14'))
+    team_ops_l7 = _f(g.get(f'{side}_ops_last7'))
     season_wrc = _f(g.get(f'{side}_wrc_plus')) or 100
     if team_wrc_l14 is not None:
         l14_delta = team_wrc_l14 - season_wrc
-        if l14_delta >= 15:
+        l7_confirms = True
+        if team_ops_l7 is not None:
+            l7_delta_ops = team_ops_l7 - 0.720  # league-avg OPS
+            l7_confirms = (l14_delta > 0 and l7_delta_ops > 0) or \
+                          (l14_delta < 0 and l7_delta_ops < 0)
+        if l14_delta >= 25 and l7_confirms:
             conviction += 5
-            signals['l14_heat'] = f'🔥 L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} (+{l14_delta:.0f}) — quality contact up'
-        elif l14_delta >= 8:
-            conviction += 2
-            signals['l14_heat'] = f'L14 wRC+ {team_wrc_l14:.0f} (+{l14_delta:.0f}) — trending up'
-        elif l14_delta <= -15:
+            signals['l14_heat'] = f'🔥 L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} (+{l14_delta:.0f}) — quality contact up, L7 confirms'
+        elif l14_delta <= -25 and l7_confirms:
             conviction -= 5
-            signals['l14_cold'] = f'❄️  L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} ({l14_delta:.0f}) — quality contact down'
-        elif l14_delta <= -8:
-            conviction -= 2
-            signals['l14_cold'] = f'L14 wRC+ {team_wrc_l14:.0f} ({l14_delta:.0f}) — trending down'
+            signals['l14_cold'] = f'❄️  L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} ({l14_delta:.0f}) — quality contact down, L7 confirms'
+        elif abs(l14_delta) >= 25 and not l7_confirms:
+            # Real L14 magnitude but L7 disagrees — team is reversing
+            direction = 'cooling' if l14_delta > 0 else 'rebounding'
+            signals['l14_reversing'] = f'L14 wRC+ {team_wrc_l14:.0f} ({l14_delta:+.0f}) but L7 OPS {team_ops_l7:.3f} {direction} — no conviction adj'
+        elif abs(l14_delta) >= 10:
+            # Mid-magnitude — mention only, no conviction adj
+            tag = 'l14_warming' if l14_delta > 0 else 'l14_cooling'
+            signals[tag] = f'L14 wRC+ {team_wrc_l14:.0f} ({l14_delta:+.0f}) — modest drift, narrative only'
 
     # Opposing starter quality — fall back to L3 ERA when xERA is null (early season, suspicious values capped upstream)
     opp_quality = opp_xera if opp_xera is not None else opp_l3
@@ -2061,24 +2071,32 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
             conviction -= 3
             signals['team_heat'] = f'Team L10 +{team_drift:.1f} R/G — trending warm, fade caution'
 
-    # L14 OPS-proxy heat (inverted for under). Cleaner than drift — strips
-    # BABIP noise. Same paired-signal logic as hits_OVER scorer.
+    # L14 OPS-proxy heat (inverted for under). Threshold raised ±15 → ±25
+    # + L7 confirmation gate same as hits_OVER scorer. When L7 disagrees
+    # with L14, the team is reversing (cooling off or rebounding) — fading
+    # is the better play than stacking, so no conviction add either way.
     team_wrc_l14 = _f(g.get(f'{side}_wrc_proxy_l14'))
+    team_ops_l7 = _f(g.get(f'{side}_ops_last7'))
     season_wrc = _f(g.get(f'{side}_wrc_plus')) or 100
     if team_wrc_l14 is not None:
         l14_delta = team_wrc_l14 - season_wrc
-        if l14_delta <= -15:
+        l7_confirms = True
+        if team_ops_l7 is not None:
+            l7_delta_ops = team_ops_l7 - 0.720
+            l7_confirms = (l14_delta > 0 and l7_delta_ops > 0) or \
+                          (l14_delta < 0 and l7_delta_ops < 0)
+        if l14_delta <= -25 and l7_confirms:
             conviction += 5
-            signals['l14_cold'] = f'❄️  L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} ({l14_delta:.0f}) — quality contact down, under reinforced'
-        elif l14_delta <= -8:
-            conviction += 2
-            signals['l14_cold'] = f'L14 wRC+ {team_wrc_l14:.0f} ({l14_delta:.0f}) — trending down'
-        elif l14_delta >= 15:
+            signals['l14_cold'] = f'❄️  L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} ({l14_delta:.0f}) — quality contact down, L7 confirms'
+        elif l14_delta >= 25 and l7_confirms:
             conviction -= 5
             signals['l14_heat'] = f'🔥 L14 wRC+ {team_wrc_l14:.0f} vs season {season_wrc:.0f} (+{l14_delta:.0f}) — hot bats, fade caution'
-        elif l14_delta >= 8:
-            conviction -= 2
-            signals['l14_heat'] = f'L14 wRC+ {team_wrc_l14:.0f} (+{l14_delta:.0f}) — trending up, fade caution'
+        elif abs(l14_delta) >= 25 and not l7_confirms:
+            direction = 'cooling' if l14_delta > 0 else 'rebounding'
+            signals['l14_reversing'] = f'L14 wRC+ {team_wrc_l14:.0f} ({l14_delta:+.0f}) but L7 OPS {team_ops_l7:.3f} {direction} — no conviction adj'
+        elif abs(l14_delta) >= 10:
+            tag = 'l14_warming' if l14_delta > 0 else 'l14_cooling'
+            signals[tag] = f'L14 wRC+ {team_wrc_l14:.0f} ({l14_delta:+.0f}) — modest drift, narrative only'
 
     # Pitcher park
     if park is not None:
