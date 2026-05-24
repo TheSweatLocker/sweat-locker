@@ -9549,14 +9549,14 @@ setJerryHistory(prev => {
       );
     })()}
 
-    {/* ─── THIN-DAY PADDING — only renders when slate is light (July MLB-only,
-         offseason gaps, etc). Standard / overload days skip entirely.
-         Backend (generate_sweat_card.py) only populates these fields when
-         slate_density is 'thin' or 'empty', so the conditional check on the
-         field itself is the gate — no need to read slate_density directly. */}
-    {(sweatCard.audit_roll_up || sweatCard.yesterday_recap || sweatCard.upcoming_events) && (
+    {/* ─── THIN-DAY BANNER — gate on actual slate_density, NOT on field
+         existence. 2026-05-24: yesterday_recap is now always-fetched (it
+         powers the Receipts tab even on standard slates), so the prior
+         "if any padding field exists" gate started firing on full 18-game
+         slates and rendering "LIGHT SLATE — 18 games today" which is
+         clearly wrong. Banner now reads slate_density directly. */}
+    {(sweatCard.slate_density === 'thin' || sweatCard.slate_density === 'empty') && (
       <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:'#1a2530'}}>
-        {/* Banner explaining the mode */}
         <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:8,padding:10,marginBottom:10,borderLeftWidth:2,borderLeftColor:'#7a92a8'}}>
           <Text style={{color:'#7a92a8',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:2}}>
             ☀️ LIGHT SLATE — {sweatCard.total_games || 0} game{sweatCard.total_games === 1 ? '' : 's'} today
@@ -9565,7 +9565,14 @@ setJerryHistory(prev => {
             Quiet day. Surfacing track record + upcoming events instead of forcing picks.
           </Text>
         </View>
+      </View>
+    )}
 
+    {/* ─── YESTERDAY'S RECEIPTS — always shown when we have grade data,
+         regardless of slate density. This is the "show your work" surface,
+         not padding. Lives just below the sweat card top_8.  */}
+    {(sweatCard.audit_roll_up || sweatCard.yesterday_recap || sweatCard.upcoming_events) && (
+      <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:'#1a2530'}}>
         {/* Yesterday recap — POTD/DotD anchors + full top_8 grades when
             available. 2026-05-24: extended from anchors-only to show the
             full receipts unit (resolver populates per-pick W/L overnight).

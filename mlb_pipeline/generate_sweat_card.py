@@ -243,6 +243,17 @@ def fetch_yesterday_recap():
                 }
                 for p in y_data["top_8"]
             ]
+            # Backfill POTD + DotD results from the top_8 entries. The
+            # best_bet cache row doesn't get its result field populated
+            # by the resolver (the resolver writes per-pick into top_8),
+            # so the standalone POTD/DotD lines on the recap previously
+            # showed without a W/L. 2026-05-24: pull from top_8 by type.
+            potd_pk = next((p for p in y_data["top_8"] if p.get("type") == "POTD"), None)
+            if potd_pk and recap.get("potd"):
+                recap["potd"]["result"] = potd_pk.get("result")
+            dawg_pk = next((p for p in y_data["top_8"] if p.get("type") == "DotD"), None)
+            if dawg_pk and recap.get("dawg"):
+                recap["dawg"]["result_status"] = dawg_pk.get("result")
         if y_data.get("top_8_summary"):
             recap["top_8_summary"] = y_data["top_8_summary"]
 
