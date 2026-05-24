@@ -221,17 +221,31 @@ def fetch_batter_quality(player_name, season=2026):
                     continue
                 last, first = [p.strip() for p in nm.split(",", 1)]
                 key = f"{first} {last}".lower()
+                # Savant renamed these fields sometime after 5/11/2026 —
+                # legacy `barrel_batted_rate`/`hard_hit_percent` silently
+                # returned None for 12 days. Use new + legacy fallback.
                 try:
-                    barrel = float(row.get("barrel_batted_rate") or 0) or None
+                    raw_b = row.get("brl_percent")
+                    if raw_b is None or (isinstance(raw_b, float) and raw_b != raw_b):
+                        raw_b = row.get("barrel_batted_rate")
+                    barrel = float(raw_b) if raw_b is not None and str(raw_b) not in ('', 'nan') else None
                 except (TypeError, ValueError):
                     barrel = None
                 try:
-                    hard = float(row.get("hard_hit_percent") or 0) or None
+                    raw_h = row.get("ev95percent")
+                    if raw_h is None or (isinstance(raw_h, float) and raw_h != raw_h):
+                        raw_h = row.get("hard_hit_percent")
+                    hard = float(raw_h) if raw_h is not None and str(raw_h) not in ('', 'nan') else None
                 except (TypeError, ValueError):
                     hard = None
                 lookup[key] = {"barrel_pct": barrel, "hard_hit_pct": hard}
             _BATTER_QUALITY_CACHE = lookup
-            print(f"  Loaded Statcast barrel%/hard hit% for {len(lookup)} batters")
+            with_barrel = sum(1 for v in lookup.values() if v.get("barrel_pct") is not None)
+            print(f"  Loaded Statcast barrel%/hard hit% for {len(lookup)} batters ({with_barrel} with non-null barrel%)")
+            # 5/24 schema-break catch: if barrel_pct is None for the whole
+            # leaderboard, Savant probably renamed the column again.
+            if len(lookup) > 0 and with_barrel == 0:
+                print("  ⚠️  Savant returned 0 batters with barrel_pct — column rename suspected, signals will be dead")
         except Exception as e:
             print(f"  ⚠️  Savant batter quality fetch failed: {e}")
             _BATTER_QUALITY_CACHE = {}
