@@ -1640,6 +1640,9 @@ useEffect(() => {
 // Refetch MLB tab data when app foregrounds — pipeline watchdog updates DB
 // every 30 min as lineups confirm + umpires land. Throttled to 5 min so a
 // quick tab-out + tab-back doesn't hammer Supabase.
+// 2026-05-24 added fetchMLBGameContext to the refresh — the 5/24 morning
+// issue was that game_context was empty when app first loaded, app cached
+// the empty state, and never re-fetched even when DB populated later.
 const lastMLBRefreshAt = useRef(Date.now());
 useEffect(() => {
   const sub = AppState.addEventListener('change', (next) => {
@@ -1649,10 +1652,25 @@ useEffect(() => {
     fetchSweatCard();
     fetchDailyBestBet();
     fetchDawgOfDay();
+    fetchMLBGameContext();  // ← sweat scores per game
     if (propJerrySport === 'MLB') fetchPipelineMLBProps();
   });
   return () => sub.remove();
 }, [propJerrySport]);
+
+// Auto-refresh MLB game context every 90s while user is sitting on the
+// Games tab AND viewing MLB. Catches the silent-cron-update case the
+// 5/24 morning incident exposed (game_context populated after first
+// fetch, user sees stale PASS scores for hours). 90s = balance between
+// "fresh enough to feel live" and "not hammering Supabase".
+useEffect(() => {
+  if (activeTab !== 'games' || gamesSport !== 'MLB') return;
+  const id = setInterval(() => {
+    fetchMLBGameContext();
+    lastMLBRefreshAt.current = Date.now();
+  }, 90 * 1000);
+  return () => clearInterval(id);
+}, [activeTab, gamesSport]);
 useEffect(() => {
   if(bartData.length) {
     fetchNBATeamContext();
@@ -7610,7 +7628,13 @@ setJerryHistory(prev => {
   const onRefresh=()=>{
     setRefreshing(true);
     if(activeTab==='odds')fetchOdds(oddsSport);
-    else if(activeTab==='games') fetchGames(gamesSport,gamesDay,true);
+    else if(activeTab==='games') {
+      fetchGames(gamesSport,gamesDay,true);
+      // 2026-05-24: also refresh MLB game_context so pull-to-refresh
+      // updates the per-game sweat scores, not just the odds payload.
+      // Without this, users see "PASS" stuck for hours when DB updated.
+      if (gamesSport === 'MLB') fetchMLBGameContext();
+    }
     else if(activeTab==='stats'){if(statsTab==='props')fetchProps(propsSport);else fetchPlayerStats();}
     else if(activeTab==='trends'){if(trendsTab==='sharp')fetchSharp(sharpSport);else setRefreshing(false);}
     else setRefreshing(false);
