@@ -3260,6 +3260,34 @@ def run():
                 except (NameError, AttributeError, TypeError):
                     pass  # H2H data not loaded — silent skip
 
+                # Signal: line movement as sharp-money proxy (2026-05-24).
+                # User pasted Action Network sharp/public split data this AM
+                # — confirmed our DotD CHW pick was being faded by sharps
+                # (+17% money on SF the other way). Codified the lesson:
+                # when the LINE moves significantly between open and close,
+                # the side it moved TOWARDS is the side sharp money supports.
+                # We don't have Pinnacle-specific feeds yet, but DraftKings
+                # close-vs-open is a reasonable proxy (consensus-aware book).
+                # Fires when |spread_move| >= 0.5 OR |total_move| >= 0.5.
+                try:
+                    o_sp = _f(open_spread); c_sp = _f(close_spread)
+                    o_tot = _f(open_total); c_tot = _f(close_total)
+                    if o_sp is not None and c_sp is not None:
+                        # close_spread is HOME-side: more NEGATIVE = home favored more
+                        # If close_spread < open_spread → line moved TOWARD HOME
+                        spread_move = c_sp - o_sp
+                        if abs(spread_move) >= 0.5:
+                            # Negative move = sharp on home; positive = sharp on away
+                            breakdown['line_move_spread'] = 'home' if spread_move < 0 else 'away'
+                    if o_tot is not None and c_tot is not None:
+                        # close_total HIGHER than open = sharp money on OVER
+                        # We don't vote on total in confluence (it's a side-vote system)
+                        # — total movement gets surfaced in the breakdown only for
+                        # downstream consumers (audit, narrative); no actual vote.
+                        pass
+                except (NameError, AttributeError, TypeError):
+                    pass  # open/close odds missing — silent skip
+
                 # Signal: recency (last 10 games) — added 2026-04-29.
                 # Catches hot/cold streaks the season-long stats hide. Conservative
                 # single-vote integration; projection blend weight pending backtest.

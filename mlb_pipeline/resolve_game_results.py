@@ -551,13 +551,17 @@ def run():
 def _resolve_sweat_card_top8(start_date, end_date):
     """Walk daily sweat_card cache entries with pending top_8 picks and
     resolve each pick from its source table."""
-    # Pull pending sweat card entries
+    # Pull pending sweat card entries — sorted by cache_key desc so we get
+    # the MOST RECENT 14 cards, not an arbitrary 14. Bug fix 2026-05-24:
+    # without order, Supabase returned 5/3-5/22 and missed yesterday's
+    # card entirely (resolver did nothing for the day that mattered).
     rows = requests.get(
         f'{SUPABASE_URL}/rest/v1/jerry_cache',
         params={
             'cache_key': f'like.sweat_card_%',
             'sport': 'eq.MLB',
             'select': 'cache_key,data',
+            'order': 'cache_key.desc',
             'limit': '14',
         },
         headers=HEADERS,

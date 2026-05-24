@@ -192,7 +192,12 @@ def fetch_audit_roll_up():
 
 
 def fetch_yesterday_recap():
-    """Yesterday's POTD + Dawg results for thin/empty-day track-record content."""
+    """Yesterday's POTD + Dawg + full top_8 results for the Receipts tab.
+
+    2026-05-24 extended to include the full top_8 grade (was POTD+DotD
+    only). Receipts tab now shows the actual W/L breakdown not just the
+    two anchor picks. Pulls from yesterday's sweat_card cache which the
+    resolver writes top_8 results into nightly."""
     today = today_et()
     yesterday = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     recap = {"date": yesterday}
@@ -217,6 +222,29 @@ def fetch_yesterday_recap():
             "pick": d.get("pick") or d.get("recommended"),
             "result": d.get("result_status") or d.get("result"),
         }
+
+    # Full top_8 graded list — populated by resolve_game_results.py nightly.
+    # Lets the app show the full receipts unit (W/L per pick) not just
+    # the two anchor picks (POTD + DotD).
+    y_card_rows = sb_get("jerry_cache", {
+        "cache_key": f"eq.sweat_card_{yesterday}",
+        "select": "data",
+    })
+    if y_card_rows:
+        y_data = y_card_rows[0].get("data") or {}
+        if isinstance(y_data.get("top_8"), list) and y_data["top_8"]:
+            recap["top_8"] = [
+                {
+                    "rank": p.get("rank"),
+                    "tier": p.get("tier"),
+                    "label": p.get("label"),
+                    "result": p.get("result"),
+                    "game": p.get("game"),
+                }
+                for p in y_data["top_8"]
+            ]
+        if y_data.get("top_8_summary"):
+            recap["top_8_summary"] = y_data["top_8_summary"]
 
     return recap
 
@@ -1079,14 +1107,15 @@ def build_card():
     stack_alerts = [{"matchup": mu, "prime_count": n} for mu, n in stack_games.items() if n >= 4]
 
     # Padding for thin / empty days — keeps the card useful when slate is
-    # MLB-only-July-Tuesday or post-season-only-MLB. Standard days skip these
-    # fetches to avoid wasted Supabase reads.
+    # MLB-only-July-Tuesday or post-season-only-MLB. Standard days still
+    # fetch yesterday_recap (it powers the Receipts tab regardless of
+    # density). Skipping it 2026-05-24 caused the Receipts tab to show
+    # only POTD/DotD on standard slate days, missing the full top_8.
     audit_roll_up = None
-    yesterday_recap = None
+    yesterday_recap = fetch_yesterday_recap()
     upcoming_events = None
     if density["mode"] in ("thin", "empty"):
         audit_roll_up = fetch_audit_roll_up()
-        yesterday_recap = fetch_yesterday_recap()
         upcoming_events = fetch_upcoming_events()
 
     card = {

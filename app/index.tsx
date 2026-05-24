@@ -9538,10 +9538,22 @@ setJerryHistory(prev => {
           </Text>
         </View>
 
-        {/* Yesterday recap */}
-        {sweatCard.yesterday_recap && (sweatCard.yesterday_recap.potd || sweatCard.yesterday_recap.dawg) && (
+        {/* Yesterday recap — POTD/DotD anchors + full top_8 grades when
+            available. 2026-05-24: extended from anchors-only to show the
+            full receipts unit (resolver populates per-pick W/L overnight).
+            Shows the headline W-L summary on top, then the per-pick grade
+            list collapsed by default (tap to expand). */}
+        {sweatCard.yesterday_recap && (sweatCard.yesterday_recap.potd || sweatCard.yesterday_recap.dawg || sweatCard.yesterday_recap.top_8) && (
           <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:10,padding:10,marginBottom:10,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
-            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11,marginBottom:6}}>📋 YESTERDAY'S CARD ({sweatCard.yesterday_recap.date})</Text>
+            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:6}}>
+              <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11}}>📋 YESTERDAY'S CARD ({sweatCard.yesterday_recap.date})</Text>
+              {sweatCard.yesterday_recap.top_8_summary && (
+                <Text style={{color:'#fff',fontSize:13,fontWeight:'800'}}>
+                  {sweatCard.yesterday_recap.top_8_summary.wins}-{sweatCard.yesterday_recap.top_8_summary.losses}
+                  {sweatCard.yesterday_recap.top_8_summary.pushes ? ` (${sweatCard.yesterday_recap.top_8_summary.pushes}P)` : ''}
+                </Text>
+              )}
+            </View>
             {sweatCard.yesterday_recap.potd && (
               <Text style={{color:'#fff',fontSize:12,marginBottom:2}}>
                 🎯 POTD: <Text style={{color:'#7a92a8'}}>{sweatCard.yesterday_recap.potd.matchup?.away_team || sweatCard.yesterday_recap.potd.matchup} @ {sweatCard.yesterday_recap.potd.matchup?.home_team || ''}</Text>
@@ -9549,12 +9561,28 @@ setJerryHistory(prev => {
               </Text>
             )}
             {sweatCard.yesterday_recap.dawg && (
-              <Text style={{color:'#fff',fontSize:12}}>
+              <Text style={{color:'#fff',fontSize:12,marginBottom:6}}>
                 🐕 Dawg: <Text style={{color:'#78b4ff',fontWeight:'700'}}>{sweatCard.yesterday_recap.dawg.team}</Text>
                 {sweatCard.yesterday_recap.dawg.result_status && (
                   <Text style={{color:sweatCard.yesterday_recap.dawg.result_status === 'Win' ? '#00e5a0' : '#ff4d6d',fontWeight:'700'}}> — {sweatCard.yesterday_recap.dawg.result_status}</Text>
                 )}
               </Text>
+            )}
+            {/* Full top_8 per-pick grades */}
+            {Array.isArray(sweatCard.yesterday_recap.top_8) && sweatCard.yesterday_recap.top_8.length > 0 && (
+              <View style={{marginTop:4,paddingTop:6,borderTopWidth:0.5,borderTopColor:'rgba(255,184,0,0.2)'}}>
+                {sweatCard.yesterday_recap.top_8.map((pk:any, i:number) => {
+                  const resColor = pk.result === 'Win' ? '#00e5a0' : pk.result === 'Loss' ? '#ff4d6d' : '#7a92a8';
+                  const resIcon = pk.result === 'Win' ? '✓' : pk.result === 'Loss' ? '✗' : (pk.result === 'Push' ? '=' : '·');
+                  return (
+                    <View key={`yrecap-${i}`} style={{flexDirection:'row',alignItems:'center',paddingVertical:2}}>
+                      <Text style={{color:'#7a92a8',fontSize:10,width:18,fontWeight:'700'}}>{pk.rank}.</Text>
+                      <Text style={{color:'#c8d8e8',fontSize:11,flex:1}} numberOfLines={1}>{pk.label}</Text>
+                      <Text style={{color:resColor,fontSize:13,fontWeight:'900',marginLeft:6}}>{resIcon}</Text>
+                    </View>
+                  );
+                })}
+              </View>
             )}
           </View>
         )}
