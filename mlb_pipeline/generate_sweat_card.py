@@ -847,10 +847,25 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
                 narrative_hint = next(iter(prop["signals"].values()))
             except StopIteration:
                 narrative_hint = None
+
+        # Label: K-prop picks display the EXPECTED K count rather than the
+        # juiced audit-threshold line (e.g. "Expected 8.3 Ks" instead of
+        # "Over 5.1 ks over" — which is correct math but reads as the
+        # heavily-juiced -700 book line). Per project_expected_ks_display:
+        # the 5.1 line on the score card is the model's audit threshold,
+        # not the price-marker the user should bet through.
+        ptype = prop.get("prop_type", "")
+        direction = prop.get("direction", "").lower()
+        if ptype in ("ks_over", "ks_under") and proj is not None:
+            verb = "Expected" if direction == "over" else "Expected"
+            label = f"{player} {verb} {proj} Ks ({direction.title()})"
+        else:
+            label = f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}"
+
         return {
             "type": f"prop_{prop.get('prop_type')}",
             "icon": "🎯",
-            "label": f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}",
+            "label": label,
             "game": prop.get("matchup"),
             "conviction": prop.get("conviction"),
             "tier": force_tier or prop.get("tier"),
