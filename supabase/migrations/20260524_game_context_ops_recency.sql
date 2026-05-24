@@ -15,3 +15,7 @@ comment on column mlb_game_context.home_ops_last7
     is 'Home team L7 OPS (self-aggregated by enrich_team_recency.py)';
 comment on column mlb_game_context.home_wrc_proxy_l14
     is 'Home team wRC+ proxy from L14 OPS — 100=avg, no park adjustment';
+
+-- Force PostgREST schema cache reload — without this, PGRST204 errors
+-- on writes for up to 10 minutes while cache catches up.
+NOTIFY pgrst, 'reload schema';

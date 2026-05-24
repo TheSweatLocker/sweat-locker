@@ -20,3 +20,7 @@ comment on column mlb_team_offense.ops_last14
     is 'Self-aggregated OPS over last 14 calendar days. Updated nightly.';
 comment on column mlb_team_offense.wrc_proxy_l14
     is 'wRC+ proxy derived from ops_last14 vs league avg. Crude (no park adjustment). 100 = avg.';
+
+-- Force PostgREST schema cache reload — without this, PGRST204 errors
+-- on writes for up to 10 minutes while cache catches up.
+NOTIFY pgrst, 'reload schema';

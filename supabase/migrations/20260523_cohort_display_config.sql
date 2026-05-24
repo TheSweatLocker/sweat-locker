@@ -59,3 +59,7 @@ values
     ('wrc_diff_away_adv_ml', 'Away wRC+ advantage',      'Road team has hitter edge',                   'Lineup Edge', 4, 1, 'mlb'),
     ('wrc_diff_home_adv_ml', 'Home wRC+ advantage',       null,                                          'Lineup Edge', 4, 2, 'mlb')
 on conflict (tier) do nothing;
+
+-- Force PostgREST schema cache reload — without this, PGRST204 errors
+-- on writes for up to 10 minutes while cache catches up.
+NOTIFY pgrst, 'reload schema';

@@ -29,3 +29,7 @@ create index if not exists model_health_status_idx
 
 create index if not exists model_health_recent_idx
   on model_health (computed_date desc);
+
+-- Force PostgREST schema cache reload — without this, PGRST204 errors
+-- on writes for up to 10 minutes while cache catches up.
+NOTIFY pgrst, 'reload schema';

@@ -30,3 +30,7 @@ create index if not exists tier_integrity_findings_date_idx
 
 create index if not exists tier_integrity_findings_severity_idx
   on tier_integrity_findings (severity, computed_date desc);
+
+-- Force PostgREST schema cache reload — without this, PGRST204 errors
+-- on writes for up to 10 minutes while cache catches up.
+NOTIFY pgrst, 'reload schema';
