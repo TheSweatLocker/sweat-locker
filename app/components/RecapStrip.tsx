@@ -148,9 +148,21 @@ export const RecapStrip: React.FC<Props> = ({ sport, onTap }) => {
     );
   }
 
-  if (!data || (data.last30Wins + data.last30Losses === 0)) {
-    return null; // No resolved data yet — don't show empty strip
-  }
+  // Minimum sample gates added 2026-05-24 after user (correctly) flagged
+  // that "MLB Last 30D 5-11" reading was misleading. Backstory: top_8
+  // curation only shipped 5/22, so by 5/24 we had 2 days × 8 picks = 16
+  // graded — both of which happened to be bad days (3-5 + 2-6). Labeling
+  // 16 picks over 2 days as "30D" is mathematically true but
+  // presentationally a lie. Below these thresholds we'd rather show
+  // NOTHING than mislead with a small-sample number.
+  const MIN_RESOLVED = 30;   // need at least 30 graded picks to show a rate
+  const MIN_DAYS = 5;        // and at least 5 different days of data
+
+  if (!data) return null;
+  const l30TotalCheck = data.last30Wins + data.last30Losses;
+  if (l30TotalCheck === 0) return null;          // no resolved data
+  if (l30TotalCheck < MIN_RESOLVED) return null; // sample too small to claim a rate
+  if (data.last30Days < MIN_DAYS) return null;   // too few days to call it "30D"
 
   const l30Total = data.last30Wins + data.last30Losses;
   const l30Pct = l30Total > 0 ? Math.round((data.last30Wins / l30Total) * 100) : 0;
