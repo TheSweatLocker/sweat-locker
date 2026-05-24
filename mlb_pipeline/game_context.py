@@ -1288,6 +1288,40 @@ def get_team_woba_wrc(team_name):
         return None
 
 
+_V4_OVER_SUPPRESSED_CACHE = None
+
+
+def is_v4_over_suppressed():
+    """Read the latest v4 over_suppressed flag from model_health.
+    Cached per-run so we don't hit the DB once per game. Defaults to True
+    (safe) if model_health table missing or read fails.
+
+    Built 2026-05-24 to replace the hardcoded V4_OVER_SUPPRESSED constant
+    with an auto-throttle. audit_v4_health.py flips this nightly based on
+    the rolling 7d OVER hit rate (with hysteresis to avoid 50%-boundary
+    flapping).
+    """
+    global _V4_OVER_SUPPRESSED_CACHE
+    if _V4_OVER_SUPPRESSED_CACHE is not None:
+        return _V4_OVER_SUPPRESSED_CACHE
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/model_health"
+            f"?model_version=eq.v4&order=computed_date.desc&limit=1"
+            f"&select=over_suppressed,computed_date",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            timeout=10,
+        )
+        data = r.json() if r.status_code == 200 else None
+        if data and data[0].get("over_suppressed") is not None:
+            _V4_OVER_SUPPRESSED_CACHE = bool(data[0]["over_suppressed"])
+            return _V4_OVER_SUPPRESSED_CACHE
+    except Exception:
+        pass
+    _V4_OVER_SUPPRESSED_CACHE = True  # safe default
+    return True
+
+
 def fetch_h2h_recent(team, opponent):
     """Pull team-vs-opponent rolling H2H stats (populated by
     enrich_team_vs_opp.py). Returns dict with games_played, rpg_vs_opp,
@@ -1895,15 +1929,12 @@ def compute_primary_play(ctx):
     # read ctx.over_lean (v3-derived) — missed v4 PRIME edges entirely.
     ct = ctx.get('close_total') or ctx.get('open_total')
     v4_total = ctx.get('model_pred_total')
-    # v4 OVER suppression (added 2026-05-24 per audit_v4_totals).
-    # v4 OVER picks hit 43.2% on 30d / 40.9% on 7d / 25.0% on 3d — well below
-    # break-even with strong calibration drift toward over-projecting runs.
-    # League-wide L14 OPS shows team offenses cooling; the v4 model was trained
-    # on April data and hasn't seen the May run environment. Suppressing OVER
-    # picks from primary play surface until either (a) v5 retrain or (b) 7d
-    # OVER hit rate climbs back above 50%. v4 UNDER picks still fire (55%
-    # 30d, healthy). Direction asymmetry, not full model kill.
-    V4_OVER_SUPPRESSED = True  # flip to False when 7d v4 OVER >= 50%
+    # v4 OVER suppression — auto-throttle as of 2026-05-24.
+    # Was a hardcoded True; now reads model_health.over_suppressed which
+    # is flipped nightly by audit_v4_health.py based on rolling 7d OVER
+    # hit rate (with hysteresis: only lift when 7d >= 52%, only re-suppress
+    # when 7d < 48%). Falls back to True if model_health unreadable.
+    V4_OVER_SUPPRESSED = is_v4_over_suppressed()
     if v4_total is not None and ct is not None:
         try:
             v4_delta = float(v4_total) - float(ct)

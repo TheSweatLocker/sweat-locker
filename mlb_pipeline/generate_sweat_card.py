@@ -394,6 +394,32 @@ def find_yrfi_lock(games, tier_rates):
     }
 
 
+_V4_OVER_SUPPRESSED_CARD_CACHE = None
+
+
+def _is_v4_over_suppressed_card():
+    """Reads model_health.over_suppressed (auto-flipped nightly by
+    audit_v4_health.py). Cached per-run. Defaults to True (safe) if
+    table unreadable."""
+    global _V4_OVER_SUPPRESSED_CARD_CACHE
+    if _V4_OVER_SUPPRESSED_CARD_CACHE is not None:
+        return _V4_OVER_SUPPRESSED_CARD_CACHE
+    try:
+        rows = sb_get("model_health", {
+            "model_version": "eq.v4",
+            "order": "computed_date.desc",
+            "limit": "1",
+            "select": "over_suppressed",
+        }) or []
+        if rows and rows[0].get("over_suppressed") is not None:
+            _V4_OVER_SUPPRESSED_CARD_CACHE = bool(rows[0]["over_suppressed"])
+            return _V4_OVER_SUPPRESSED_CARD_CACHE
+    except Exception:
+        pass
+    _V4_OVER_SUPPRESSED_CARD_CACHE = True
+    return True
+
+
 def find_total_edges(games, min_delta=1.5):
     """Find games where the model projects a total meaningfully different
     from the market line. |projected_total - close_total| >= min_delta.
@@ -404,11 +430,11 @@ def find_total_edges(games, min_delta=1.5):
 
     2026-05-24: v4 OVER picks audit 43.2% (30d) / 40.9% (7d) / 25% (3d) per
     audit_v4_totals — model has calibration drift toward over-projecting
-    runs in May. UNDER picks audit 55% (30d, healthy). Suppress OVER until
-    7d hit climbs back above 50% or v5 retrain ships. Asymmetric, not full
-    kill — directional bias only.
+    runs in May. UNDER picks audit 55% (30d, healthy). Suppression now
+    AUTO-THROTTLED via model_health.over_suppressed flag (flipped nightly
+    by audit_v4_health.py with hysteresis).
     """
-    OVER_SUPPRESSED = True  # flip when 7d v4 OVER >= 50%
+    OVER_SUPPRESSED = _is_v4_over_suppressed_card()
     candidates = []
     for g in games:
         pt = g.get("projected_total")
