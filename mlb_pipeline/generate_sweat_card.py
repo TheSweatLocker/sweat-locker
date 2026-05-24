@@ -968,17 +968,35 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             except StopIteration:
                 narrative_hint = None
 
-        # Label: K-prop picks display the EXPECTED K count rather than the
-        # juiced audit-threshold line (e.g. "Expected 8.3 Ks" instead of
-        # "Over 5.1 ks over" — which is correct math but reads as the
-        # heavily-juiced -700 book line). Per project_expected_ks_display:
-        # the 5.1 line on the score card is the model's audit threshold,
-        # not the price-marker the user should bet through.
+        # Label: K-prop picks suggest a SAFE LINE under the model projection,
+        # not the raw projected number. Reads as the actual bet to make.
+        #
+        # Backstory: Cease today projected 8.3 Ks. Earlier label said
+        # "Expected 8.3 Ks (Over)" which a casual reader interprets as
+        # "bet Over 8" — but the standard 8.5 line needs 9+ to win. Cease
+        # finished with 8 Ks → would have LOST Over 8.5 / Over 8, but
+        # WON Over 7.5 (which is what our projection actually supports).
+        #
+        # Formula (2026-05-24):
+        #   ks_over   suggested = floor(proj) - 0.5   (needs floor(proj) to win)
+        #   ks_under  suggested = ceil(proj)  + 0.5   (needs <=ceil(proj))
+        # Always cushioned below/above the projection so the bet line
+        # matches the model's actual confidence, not its precision-aware
+        # raw number. Raw projection still shown as supporting context.
         ptype = prop.get("prop_type", "")
         direction = prop.get("direction", "").lower()
         if ptype in ("ks_over", "ks_under") and proj is not None:
-            verb = "Expected" if direction == "over" else "Expected"
-            label = f"{player} {verb} {proj} Ks ({direction.title()})"
+            import math as _m
+            try:
+                pv = float(proj)
+                if direction == "over":
+                    suggested_line = max(0.5, _m.floor(pv) - 0.5)
+                    label = f"{player} Over {suggested_line} Ks  ·  proj {pv:.1f}"
+                else:
+                    suggested_line = _m.ceil(pv) + 0.5
+                    label = f"{player} Under {suggested_line} Ks  ·  proj {pv:.1f}"
+            except (TypeError, ValueError):
+                label = f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}"
         else:
             label = f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}"
 
