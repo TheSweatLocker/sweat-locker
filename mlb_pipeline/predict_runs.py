@@ -16,33 +16,45 @@ import os
 import pickle
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
-HOME_MODEL_PATH = os.path.join(MODELS_DIR, 'home_runs_model.pkl')
-AWAY_MODEL_PATH = os.path.join(MODELS_DIR, 'away_runs_model.pkl')
+# Model search order (2026-05-24): prefer v5 (calendar-recency-weighted +
+# fixed final-fit weight bug), fall back to v4 (unsuffixed) for safety.
+# To roll back: delete the _v5.pkl files and v4 takes over automatically.
+MODEL_PATHS = [
+    ('v5', os.path.join(MODELS_DIR, 'home_runs_model_v5.pkl'),
+           os.path.join(MODELS_DIR, 'away_runs_model_v5.pkl')),
+    ('v4', os.path.join(MODELS_DIR, 'home_runs_model.pkl'),
+           os.path.join(MODELS_DIR, 'away_runs_model.pkl')),
+]
 
 _HOME_BUNDLE = None
 _AWAY_BUNDLE = None
 MODELS_LOADED = False
+LOADED_VERSION = None
 
 
 def _load():
-    global _HOME_BUNDLE, _AWAY_BUNDLE, MODELS_LOADED
-    if not (os.path.exists(HOME_MODEL_PATH) and os.path.exists(AWAY_MODEL_PATH)):
-        MODELS_LOADED = False
-        return
-    try:
-        with open(HOME_MODEL_PATH, 'rb') as f:
-            _HOME_BUNDLE = pickle.load(f)
-        with open(AWAY_MODEL_PATH, 'rb') as f:
-            _AWAY_BUNDLE = pickle.load(f)
-        # Validate same feature schema
-        if _HOME_BUNDLE.get('features') != _AWAY_BUNDLE.get('features'):
-            print('  ⚠️ predict_runs: home/away model feature schemas differ — refusing to load')
-            MODELS_LOADED = False
+    global _HOME_BUNDLE, _AWAY_BUNDLE, MODELS_LOADED, LOADED_VERSION
+    for version, home_path, away_path in MODEL_PATHS:
+        if not (os.path.exists(home_path) and os.path.exists(away_path)):
+            continue
+        try:
+            with open(home_path, 'rb') as f:
+                _HOME_BUNDLE = pickle.load(f)
+            with open(away_path, 'rb') as f:
+                _AWAY_BUNDLE = pickle.load(f)
+            # Validate same feature schema
+            if _HOME_BUNDLE.get('features') != _AWAY_BUNDLE.get('features'):
+                print(f'  ⚠️ predict_runs ({version}): home/away feature schemas differ — trying next')
+                _HOME_BUNDLE = _AWAY_BUNDLE = None
+                continue
+            MODELS_LOADED = True
+            LOADED_VERSION = version
+            print(f'  ✅ predict_runs: loaded {version} model ({_HOME_BUNDLE.get("features", []).__len__()} features)')
             return
-        MODELS_LOADED = True
-    except Exception as e:
-        print(f'  ⚠️ predict_runs: failed to load models: {e}')
-        MODELS_LOADED = False
+        except Exception as e:
+            print(f'  ⚠️ predict_runs ({version}): failed to load: {e}')
+    MODELS_LOADED = False
+    LOADED_VERSION = None
 
 
 _load()
@@ -186,6 +198,7 @@ def build_feature_dict(ctx):
 if __name__ == '__main__':
     # Quick smoke test
     print(f'MODELS_LOADED: {MODELS_LOADED}')
+    print(f'LOADED_VERSION: {LOADED_VERSION}')
     if MODELS_LOADED:
         meta = get_model_meta()
         print(f"Trained: {meta.get('trained_at')}")
