@@ -400,7 +400,15 @@ def find_total_edges(games, min_delta=1.5):
     Returns top 2 by absolute delta. No calibrated cohort yet — these go
     in the Sweat Card with a neutral 60% prior.
 
-    Direction follows model: model > market => OVER lean, < market => UNDER."""
+    Direction follows model: model > market => OVER lean, < market => UNDER.
+
+    2026-05-24: v4 OVER picks audit 43.2% (30d) / 40.9% (7d) / 25% (3d) per
+    audit_v4_totals — model has calibration drift toward over-projecting
+    runs in May. UNDER picks audit 55% (30d, healthy). Suppress OVER until
+    7d hit climbs back above 50% or v5 retrain ships. Asymmetric, not full
+    kill — directional bias only.
+    """
+    OVER_SUPPRESSED = True  # flip when 7d v4 OVER >= 50%
     candidates = []
     for g in games:
         pt = g.get("projected_total")
@@ -413,12 +421,15 @@ def find_total_edges(games, min_delta=1.5):
             continue
         if abs(delta) < min_delta:
             continue
+        direction = "OVER" if delta > 0 else "UNDER"
+        if direction == "OVER" and OVER_SUPPRESSED:
+            continue  # suppressed per audit_v4_totals
         candidates.append({
             "game": f"{g.get('away_team')} @ {g.get('home_team')}",
             "projected_total": round(float(pt), 1),
             "close_total": round(float(ct), 1),
             "delta": round(delta, 2),
-            "direction": "OVER" if delta > 0 else "UNDER",
+            "direction": direction,
         })
     candidates.sort(key=lambda c: -abs(c["delta"]))
     return candidates[:2]
@@ -699,13 +710,44 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
 
     picks = []
     seen_keys = set()  # dedupe ("type:identifier")
+    game_pick_count = {}  # 2026-05-24 — track per-game pick concentration
+
+    # Max picks per single MLB game on the public card.
+    # Yesterday's 5/23 card stacked 3 picks on WSH/ATL (POTD Over 8.5, ATL
+    # ML PRIME, Irvin Outs Under STRONG). When ATL won 2-0, all three lost
+    # in the same result — single-game variance wiped 3/8 of the card. Cap
+    # at 2 picks per game. POTD + DotD are exempt (those are by-definition
+    # the day's anchor selections regardless of game).
+    MAX_PICKS_PER_GAME = 2
+
+    def _game_key(pick):
+        """Normalize a pick to its underlying game key for concentration
+        counting. Returns the matchup string or None when we can't infer one."""
+        g = pick.get("game")
+        if g and isinstance(g, str):
+            return g
+        return None
 
     def add(pick):
         # Dedupe by a stable identifier
         key = f"{pick['source_table']}:{pick['source_key']}"
         if key in seen_keys:
             return False
+        # Concentration cap — block 3rd+ pick on a single game.
+        # POTD + DotD are by-design daily anchors so they bypass the BLOCK,
+        # but their game still increments the counter so subsequent picks
+        # on the same game are gated. Effect: POTD on WSH/ATL → 1 more
+        # WSH/ATL pick allowed (game-side OR prop). Yesterday's POTD +
+        # ATL ML + Irvin Outs stack would have been capped at 2.
+        gkey = _game_key(pick)
+        ptype = pick.get("type", "")
+        is_anchor = ptype in ("POTD", "DotD")
+        if gkey is not None and not is_anchor:
+            if game_pick_count.get(gkey, 0) >= MAX_PICKS_PER_GAME:
+                return False
         seen_keys.add(key)
+        if gkey is not None:
+            game_pick_count[gkey] = game_pick_count.get(gkey, 0) + 1
         pick["rank"] = len(picks) + 1
         pick["result"] = "Pending"
         picks.append(pick)

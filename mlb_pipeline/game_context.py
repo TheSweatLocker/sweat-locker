@@ -1872,12 +1872,21 @@ def compute_primary_play(ctx):
     # read ctx.over_lean (v3-derived) — missed v4 PRIME edges entirely.
     ct = ctx.get('close_total') or ctx.get('open_total')
     v4_total = ctx.get('model_pred_total')
+    # v4 OVER suppression (added 2026-05-24 per audit_v4_totals).
+    # v4 OVER picks hit 43.2% on 30d / 40.9% on 7d / 25.0% on 3d — well below
+    # break-even with strong calibration drift toward over-projecting runs.
+    # League-wide L14 OPS shows team offenses cooling; the v4 model was trained
+    # on April data and hasn't seen the May run environment. Suppressing OVER
+    # picks from primary play surface until either (a) v5 retrain or (b) 7d
+    # OVER hit rate climbs back above 50%. v4 UNDER picks still fire (55%
+    # 30d, healthy). Direction asymmetry, not full model kill.
+    V4_OVER_SUPPRESSED = True  # flip to False when 7d v4 OVER >= 50%
     if v4_total is not None and ct is not None:
         try:
             v4_delta = float(v4_total) - float(ct)
         except (TypeError, ValueError):
             v4_delta = None
-        if v4_delta is not None and v4_delta >= 2.5:
+        if v4_delta is not None and v4_delta >= 2.5 and not V4_OVER_SUPPRESSED:
             return {
                 "type": "over",
                 "tier": "STRONG" if v4_delta >= 3.5 else "LIGHT",
@@ -1885,6 +1894,16 @@ def compute_primary_play(ctx):
                 "sub": f"v4 model {v4_total:.1f} vs line {ct} (+{v4_delta:.1f})",
                 "signal_floor": 72 if v4_delta >= 3.5 else 62,
                 "audit_note": "v4 model edge (cohort audit pending)",
+            }
+        # UNDER side stays active — v4 UNDER picks audit at 55% (30d)
+        if v4_delta is not None and v4_delta <= -2.5:
+            return {
+                "type": "under",
+                "tier": "STRONG" if v4_delta <= -3.5 else "LIGHT",
+                "label": f"Under {ct}",
+                "sub": f"v4 model {v4_total:.1f} vs line {ct} ({v4_delta:+.1f})",
+                "signal_floor": 72 if v4_delta <= -3.5 else 62,
+                "audit_note": "v4 UNDER cohort 55.1% (30d, n=49)",
             }
     # Legacy OVER path — v3 xERA gap rule fired (fallback when v4 missing
     # OR v4 edge is in 1.5-2.5 soft zone — v3 confirmation required)
