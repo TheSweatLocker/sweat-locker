@@ -529,6 +529,18 @@ def score_pitcher_ha_over(g, side):
     elif park_run <= 92:
         conviction -= 3
 
+    # vs-team BAA mastery — added 2026-05-24. When a pitcher has been
+    # historically pummeled by this opponent (BAA >= .290), boost HA-over.
+    # When historically dominant (BAA <= .215), fade.
+    vt_baa = _f(g.get(f'{side}_pitcher_vs_team_avg'))
+    if vt_baa is not None:
+        if vt_baa >= 0.290:
+            conviction += 10
+            signals['vs_team_baa_anti'] = f'Career vs opp: {vt_baa:.3f} BAA — historically hit hard'
+        elif vt_baa <= 0.215:
+            conviction -= 6
+            signals['vs_team_baa'] = f'Career vs opp: {vt_baa:.3f} BAA — opp has trouble making contact'
+
     conviction = max(0, min(100, conviction))
     suggested_line = 6.5 if proj_h >= 7.0 else 5.5
     return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
@@ -597,6 +609,21 @@ def score_pitcher_ha_under(g, side):
         conviction += 4
     elif park_run >= 108:
         conviction -= 3
+
+    # vs-team BAA mastery — added 2026-05-24 per project_mastery_split_by_prop_type.
+    # Previously score_pitcher_ha_under only used vs_team_era which is the
+    # wrong dimension for hits-allowed props. BAA captures opponent-specific
+    # contact suppression directly. Schlittler 5/20 false positive was the
+    # trigger — career vs PHI .145 BAA / 4.50 ERA shouldn't have fired the
+    # ER-under mastery vote (ERA matched xera) but DOES support hits-under.
+    vt_baa = _f(g.get(f'{side}_pitcher_vs_team_avg'))
+    if vt_baa is not None:
+        if vt_baa <= 0.215:
+            conviction += 10
+            signals['vs_team_baa'] = f'Career vs opp: {vt_baa:.3f} BAA — contact-suppression mastery'
+        elif vt_baa >= 0.290:
+            conviction -= 6
+            signals['vs_team_baa_anti'] = f'Career vs opp: {vt_baa:.3f} BAA — gets hit hard'
 
     conviction = max(0, min(100, conviction))
     suggested_line = 5.5
@@ -1870,6 +1897,20 @@ def score_batter_hits(g, batter, side, lineup_position=None):
         conviction -= 6
         signals['opp_form_hot'] = f'Opp L3 ERA {opp_l3:.2f} — locked in'
 
+    # Opp pitcher's career BAA vs this team — mastery dimension specific to
+    # hits props (added 2026-05-24 per project_mastery_split_by_prop_type).
+    # When opp pitcher has historically held this lineup to low BAA, hits
+    # are harder to come by → fade hits_over. Inverse: when this lineup
+    # has historically tagged the opp pitcher (BAA >= .290), boost.
+    opp_vs_team_baa = _f(g.get(f'{opp_side}_pitcher_vs_team_avg'))
+    if opp_vs_team_baa is not None:
+        if opp_vs_team_baa <= 0.215:
+            conviction -= 8
+            signals['opp_vs_team_baa'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA — historical mastery'
+        elif opp_vs_team_baa >= 0.290:
+            conviction += 8
+            signals['opp_vs_team_baa_anti'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA — gets tagged'
+
     # Opposing bullpen — matters for hits 2+ and late-game
     if opp_bp is not None:
         if opp_bp >= 4.5:
@@ -2041,6 +2082,19 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
         signals['opp_form_hot'] = f'Opp L3 ERA {opp_l3:.2f} — locked in'
     elif opp_l3 is not None and opp_l3 >= 5.5:
         conviction -= 8
+
+    # Opp pitcher's career BAA vs this team — INVERSE of hits_over scorer.
+    # Low BAA = pitcher has owned this lineup → BOOST hits_under.
+    # High BAA = pitcher gets tagged by this lineup → FADE hits_under.
+    # Added 2026-05-24 per project_mastery_split_by_prop_type.
+    opp_vs_team_baa = _f(g.get(f'{opp_side}_pitcher_vs_team_avg'))
+    if opp_vs_team_baa is not None:
+        if opp_vs_team_baa <= 0.215:
+            conviction += 8
+            signals['opp_vs_team_baa'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA — mastery, under reinforced'
+        elif opp_vs_team_baa >= 0.290:
+            conviction -= 8
+            signals['opp_vs_team_baa_anti'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA — gets tagged, fade caution'
 
     # Weak team offense
     if team_wrc <= 85:
