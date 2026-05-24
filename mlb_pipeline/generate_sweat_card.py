@@ -250,21 +250,34 @@ def fetch_yesterday_recap():
 
 
 def fetch_upcoming_events():
-    """Next 7 days of high-signal events the app can preview on quiet days.
+    """Next ~5 days of high-signal events the app can preview on quiet days.
 
     Currently UFC card + tomorrow's MLB pitcher matchups. Extends naturally
-    as NFL / NCAAB / NHL pipelines come online — each gets its own probe."""
+    as NFL / NCAAB / NHL pipelines come online — each gets its own probe.
+
+    2026-05-24: tightened UFC window 7d → 5d. Earlier filter just took the
+    next 12 UFC fights with no upper date bound, so a fight 7 days out
+    showed as "upcoming" right next to today's MLB card. 5d catches the
+    typical UFC Sat card from Tuesday onward without surfacing fights
+    that are not user-relevant for several days."""
     today = today_et()
-    horizon = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+    UFC_DAYS_AHEAD = 5
+    ufc_horizon = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=UFC_DAYS_AHEAD)).strftime("%Y-%m-%d")
     events = []
 
-    # Upcoming UFC card
+    # Upcoming UFC card — bounded window so a fight 7+ days out doesn't
+    # render on today's card.
     ufc_rows = sb_get("ufc_picks", {
         "event_date": f"gte.{today}",
         "select": "event_name,event_date,fight_order,fighter_a,fighter_b,tier_winner,recommended_side",
         "order": "event_date.asc,fight_order.asc",
         "limit": "12",
     })
+    # Trim to within UFC_DAYS_AHEAD — Supabase only supports a single
+    # filter per column without and/or chaining via .or; cleaner to slice
+    # client-side post-fetch.
+    if ufc_rows:
+        ufc_rows = [r for r in ufc_rows if (r.get("event_date") or "") <= ufc_horizon]
     if ufc_rows:
         events.append({
             "type": "ufc_card",

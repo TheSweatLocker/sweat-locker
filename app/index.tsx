@@ -22,6 +22,34 @@ const supabase = createClient(
 const HRB = 'Hard Rock';
 const HRB_COLOR = '#FFB800';
 
+// Cohort name → user-facing label. Backend tier names use snake_case
+// (e.g. `yrfi_lean_le40`, `nrfi_prime_90_94`). Title-casing alone produced
+// "Yrfi Lean Le40" which read as broken. This helper knows our domain
+// acronyms and uses '≤' for "le" / '≥' for "ge". Backend-driven labels via
+// cohort_display_config table cover the CohortDashboard surface; this
+// helper covers the inline audit_roll_up on the sweat card.
+const COHORT_ACRONYMS = new Set([
+  'NRFI', 'YRFI', 'ML', 'RL', 'ERA', 'OPS', 'BB', 'K', 'OAA',
+  'WRC', 'XERA', 'XWOBA', 'BAA', 'HR', 'IP', 'SP', 'BP',
+  'PRIME', 'STRONG', 'LEAN', 'D1', 'L7', 'L14', 'L30',
+]);
+const prettyCohort = (raw: string): string => {
+  if (!raw) return '';
+  return raw.split('_').map(tok => {
+    const upper = tok.toUpperCase();
+    if (COHORT_ACRONYMS.has(upper)) return upper;
+    // Range tokens: "le40" -> "≤40", "ge4" -> "≥+4"
+    const leMatch = tok.match(/^le(\d.*)$/i);
+    if (leMatch) return `≤${leMatch[1]}`;
+    const geMatch = tok.match(/^ge(\d.*)$/i);
+    if (geMatch) return `≥+${geMatch[1]}`;
+    // Number range like "90_94" handled as two tokens — keep as-is
+    if (/^\d+$/.test(tok)) return tok;
+    // Default: title-case
+    return tok.charAt(0).toUpperCase() + tok.slice(1);
+  }).join(' ');
+};
+
 const SPORTS = ['NBA', 'NFL', 'NHL', 'MLB', 'NCAAB', 'NCAAF', 'UFC'];
 const BET_TYPES = ['Spread', 'Moneyline', 'Total (O/U)', 'Player Prop', 'Parlay'];
 const BOOKS = ['Hard Rock', 'DraftKings', 'FanDuel', 'ESPN Bet', 'BetMGM', 'Caesars', 'Bet365'];
@@ -9590,12 +9618,18 @@ setJerryHistory(prev => {
         {/* Audit roll-up — most-bettable cohorts */}
         {sweatCard.audit_roll_up && Object.keys(sweatCard.audit_roll_up).length > 0 && (
           <View style={{backgroundColor:'rgba(0,229,160,0.06)',borderRadius:10,padding:10,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#00e5a0'}}>
-            <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:11,marginBottom:6}}>📊 LIVE AUDIT (rolling 30d)</Text>
+            <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:11,marginBottom:6}}>📊 Live Audit (rolling 30D)</Text>
             {Object.entries(sweatCard.audit_roll_up).slice(0,5).map(([tier, windows]:[string, any], i:number) => {
               const w = windows['30d'] || windows['std'] || windows['7d'];
               if (!w || !w.total) return null;
               const rate = Math.round(w.hit_rate * 100);
-              const tierLabel = tier.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+              // 2026-05-24: tier labels were title-casing everything → "Yrfi Lean Le40".
+              // Now uses prettyCohort() which knows our domain acronyms (YRFI, NRFI,
+              // ERA, ML, etc) and uses '≤' for "le" tokens. Mirrors the
+              // cohort_display_config seed labels — eventually we'll fetch from the
+              // table for true backend-driven labels here too, but this string
+              // helper covers the audit_roll_up surface cleanly for now.
+              const tierLabel = prettyCohort(tier);
               return (
                 <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:3}}>
                   <Text style={{color:'#7a92a8',fontSize:11,flex:1}}>{tierLabel}</Text>

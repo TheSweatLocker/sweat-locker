@@ -423,6 +423,22 @@ jobs:
           cd mlb_pipeline
           python audit_v4_health.py
 
+      # v4 totals deep audit (2026-05-24) — quantifies OVER vs UNDER hit
+      # rates per window + edge size + park split. Companion to v4 health
+      # but specifically diagnoses the totals model bias. Output is the
+      # 7d OVER hit % that auto-flips model_health.over_suppressed.
+      # Runs after audit_v4_health which writes the model_health row;
+      # audit_v4_totals just logs (doesn't write) but the visibility is
+      # what triggers manual investigation when things drift.
+      - name: v4 totals deep audit
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_v4_totals.py
+
       # Signal-attribution scan (2026-05-23) — decomposes losses by signal
       # and signal-pair to find buried negative correlations. Not gating
       # anything yet — just logs to stdout for now. Once findings table
