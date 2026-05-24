@@ -1287,6 +1287,29 @@ def get_team_woba_wrc(team_name):
     except:
         return None
 
+
+def fetch_h2h_recent(team, opponent):
+    """Pull team-vs-opponent rolling H2H stats (populated by
+    enrich_team_vs_opp.py). Returns dict with games_played, rpg_vs_opp,
+    rpg_delta_vs_l14, or None if no record.
+
+    Built 2026-05-24 — used by compute_confluence as an OVERRIDE signal
+    when team-level recency contradicts opponent-specific recency.
+    """
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_team_vs_opp_recent"
+            f"?team=eq.{requests.utils.quote(team)}"
+            f"&opponent=eq.{requests.utils.quote(opponent)}"
+            f"&select=games_played,rpg_vs_opp,rpg_delta_vs_l14,ops,last_h2h_date&limit=1",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            timeout=10,
+        )
+        data = r.json() if r.status_code == 200 else None
+        return data[0] if data else None
+    except Exception:
+        return None
+
 def calc_batting_order_weight(lineup_names):
     """
     Fetch individual batter OPS from MLB Stats API and compute
@@ -3181,6 +3204,30 @@ def run():
                                 breakdown['ops_l14_heat'] = 'home' if wrc_delta > 0 else 'away'
                 except (NameError, AttributeError, TypeError):
                     pass  # missing recency data — silent skip
+
+                # Signal: opponent-specific H2H recency OVERRIDE (2026-05-24).
+                # Built after the LAA-vs-TEX miss — LAA L14 wRC+ proxy showed
+                # ice cold (51 vs season 99) but they had put 14 runs on TEX
+                # in 2 H2H games (7.0 R/G — +3.6 vs their L10 baseline). The
+                # team-level recency missed the matchup-specific pattern.
+                #
+                # When |rpg_vs_opp_delta| >= 1.5 R/G on n>=2 H2H games this
+                # season, fire as an OVERRIDE vote (counts double). This
+                # signal specifically catches the case where overall L14
+                # contradicts opponent-specific recency.
+                try:
+                    h_h2h = fetch_h2h_recent(home_team, away_team) if 'fetch_h2h_recent' in globals() else None
+                    a_h2h = fetch_h2h_recent(away_team, home_team) if 'fetch_h2h_recent' in globals() else None
+                    if h_h2h and h_h2h.get('games_played', 0) >= 2:
+                        h_delta = h_h2h.get('rpg_delta_vs_l14')
+                        if h_delta is not None and abs(h_delta) >= 1.5:
+                            breakdown['h2h_recent_home'] = 'home' if h_delta > 0 else 'away'
+                    if a_h2h and a_h2h.get('games_played', 0) >= 2:
+                        a_delta = a_h2h.get('rpg_delta_vs_l14')
+                        if a_delta is not None and abs(a_delta) >= 1.5:
+                            breakdown['h2h_recent_away'] = 'away' if a_delta > 0 else 'home'
+                except (NameError, AttributeError, TypeError):
+                    pass  # H2H data not loaded — silent skip
 
                 # Signal: recency (last 10 games) — added 2026-04-29.
                 # Catches hot/cold streaks the season-long stats hide. Conservative

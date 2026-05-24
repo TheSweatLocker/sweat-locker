@@ -450,6 +450,19 @@ jobs:
           cd mlb_pipeline
           python enrich_team_recency.py
 
+      # Team-vs-opponent H2H recency (2026-05-24) — opponent-specific rolling
+      # stats. Built after the LAA-vs-TEX miss: LAA overall L14 was ice cold
+      # (51 wRC+ proxy) but they had 14 runs in 2 H2H games vs TEX. Wired as
+      # confluence override when |rpg_vs_opp_delta| >= 1.5 R/G with n>=2.
+      - name: Team-vs-opponent H2H enrichment
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_team_vs_opp.py
+
       # Build Tonight's Sweat Card — server-generated structured card for
       # the app's MLB tab. Reads everything upstream wrote (POTD, Dawg,
       # props, NRFI, tier rates) and emits one JSON row the app reads via
