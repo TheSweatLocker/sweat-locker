@@ -3708,6 +3708,23 @@ def run():
                 "away_pitcher_vs_team_era": away_vs_home['era_vs_team'] if away_vs_home else None,
                 "home_pitcher_vs_team_avg": home_vs_away['avg_vs_team'] if home_vs_away else None,
                 "away_pitcher_vs_team_avg": away_vs_home['avg_vs_team'] if away_vs_home else None,
+                # K-rate mastery dimension for K props (added 2026-05-25).
+                # get_pitcher_vs_team already computes k_vs_team + ip_vs_team
+                # from gameLog splits — derive K/9 here and persist alongside
+                # the existing ERA/BAA dims so score_pitcher_ks can read it
+                # without needing a separate lookup.
+                "home_pitcher_vs_team_k_per_9": (
+                    round((home_vs_away['k_vs_team'] * 9.0) / home_vs_away['ip_vs_team'], 2)
+                    if home_vs_away and home_vs_away.get('ip_vs_team') and home_vs_away.get('k_vs_team') is not None
+                    else None
+                ),
+                "away_pitcher_vs_team_k_per_9": (
+                    round((away_vs_home['k_vs_team'] * 9.0) / away_vs_home['ip_vs_team'], 2)
+                    if away_vs_home and away_vs_home.get('ip_vs_team') and away_vs_home.get('k_vs_team') is not None
+                    else None
+                ),
+                "home_pitcher_vs_team_ip": home_vs_away['ip_vs_team'] if home_vs_away else None,
+                "away_pitcher_vs_team_ip": away_vs_home['ip_vs_team'] if away_vs_home else None,
                 "home_bp_relievers_3d": home_bp_usage['relievers_used_3d'] if home_bp_usage else None,
                 "away_bp_relievers_3d": away_bp_usage['relievers_used_3d'] if away_bp_usage else None,
                 "home_injury_count": home_injuries['count'] if home_injuries else 0,

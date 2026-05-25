@@ -990,6 +990,23 @@ def score_pitcher_ks(g, side):
         conviction += 4
         signals['opp_contact_cold'] = f'Opp cold ({opp_drift:.1f} R/G L10) — chasing, more whiffs likely'
 
+    # K-rate mastery dimension vs this opponent (added 2026-05-25, see
+    # project_mastery_split_by_prop_type). ERA-vs-team is the wrong axis for
+    # K props — Schlittler 5/20 had 4.50 ERA vs PHI but K-rate mastery, and
+    # the old scorer missed it. K/9-vs-team needs ≥10 IP sample to trust.
+    vt_k9 = _f(g.get(f'{side}_pitcher_vs_team_k_per_9'))
+    vt_ip = _f(g.get(f'{side}_pitcher_vs_team_ip')) or 0
+    if vt_k9 is not None and vt_ip >= 10:
+        if vt_k9 >= 11.0:
+            conviction += 12
+            signals['vs_team_k'] = f'Career vs opp: {vt_k9:.1f} K/9 ({vt_ip:.0f} IP) — K dominance'
+        elif vt_k9 >= 9.5:
+            conviction += 6
+            signals['vs_team_k'] = f'Career vs opp: {vt_k9:.1f} K/9 ({vt_ip:.0f} IP) — above-avg vs this team'
+        elif vt_k9 <= 6.0:
+            conviction -= 8
+            signals['vs_team_k_anti'] = f'Career vs opp: {vt_k9:.1f} K/9 ({vt_ip:.0f} IP) — they put the ball in play'
+
     # 1st-inning fragility compound signal — when a starter's L3 form is bad
     # AND his season 1st-inn ERA is elevated, the K-over upside is capped
     # because he gets pulled before reaching K volume. Stacks with the L3-ERA
@@ -1185,6 +1202,24 @@ def score_pitcher_ks_under(g, side):
         signals['opp_contact_hot'] = f'Opp on a heater (+{opp_drift:.1f} R/G L10) — contact-trending, K-Under reinforced'
     elif opp_drift is not None and opp_drift <= -1.0 and opp_k_pct <= 22:
         conviction -= 4  # cold contact lineup more likely to chase = some whiffs after all
+
+    # K-rate mastery dimension vs this opponent — INVERSE of K-Over scorer.
+    # Added 2026-05-25 (see project_mastery_split_by_prop_type). When the
+    # pitcher has historically dominated this lineup K-wise, fade the under.
+    # When this lineup has historically put the ball in play against him,
+    # reinforce the under.
+    vt_k9 = _f(g.get(f'{side}_pitcher_vs_team_k_per_9'))
+    vt_ip = _f(g.get(f'{side}_pitcher_vs_team_ip')) or 0
+    if vt_k9 is not None and vt_ip >= 10:
+        if vt_k9 >= 11.0:
+            conviction -= 12
+            signals['vs_team_k_anti'] = f'Career vs opp: {vt_k9:.1f} K/9 ({vt_ip:.0f} IP) — K dominance, fade caution'
+        elif vt_k9 >= 9.5:
+            conviction -= 6
+            signals['vs_team_k_anti'] = f'Career vs opp: {vt_k9:.1f} K/9 ({vt_ip:.0f} IP) — above-avg K rate vs this team'
+        elif vt_k9 <= 6.0:
+            conviction += 8
+            signals['vs_team_k'] = f'Career vs opp: {vt_k9:.1f} K/9 ({vt_ip:.0f} IP) — they put it in play, under reinforced'
 
     # Pitcher absolute K% — modest K guys are the right fade target
     if pitcher_k_pct is not None and pitcher_k_pct <= 18:
