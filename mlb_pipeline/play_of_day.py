@@ -120,26 +120,44 @@ def sweat_tier_for(score, ctx=None):
     return 'PASS'
 
 
-def write_sweat_score(ctx, score, tier):
+def write_sweat_score(ctx, score, tier, breakdown=None):
     """Write the score + tier back to mlb_game_context so the app reads the
     same number the server computed. Eliminates the client/server drift that
     made PRIME (68+) effectively invisible in-app (client formula was topping
-    out ~65 even when the server said 72)."""
+    out ~65 even when the server said 72).
+
+    2026-05-25: also writes sweat_breakdown (JSONB with contributions+evidence)
+    when supplied — feeds the WHY THIS SCORE UI block to achieve parity with
+    NBA. Requires 20260525_sweat_breakdown.sql migration to have been applied;
+    until then the breakdown field is silently dropped by PostgREST.
+    """
     game_id = ctx.get('game_id')
     if not game_id:
         return
+    payload = {'sweat_score': int(score), 'sweat_tier': tier}
+    if breakdown is not None:
+        payload['sweat_breakdown'] = breakdown
     try:
-        requests.patch(
+        r = requests.patch(
             f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_id=eq.{game_id}&game_date=eq.{ctx.get('game_date')}",
             headers={**HEADERS, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'},
-            json={'sweat_score': int(score), 'sweat_tier': tier},
+            json=payload,
             timeout=10,
         )
+        # If the breakdown column doesn't exist yet (migration not applied),
+        # retry without it so sweat_score/tier still land.
+        if r.status_code == 400 and breakdown is not None:
+            requests.patch(
+                f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_id=eq.{game_id}&game_date=eq.{ctx.get('game_date')}",
+                headers={**HEADERS, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'},
+                json={'sweat_score': int(score), 'sweat_tier': tier},
+                timeout=10,
+            )
     except Exception as e:
         print(f"  ⚠️ sweat_score writeback failed for {game_id}: {e}")
 
 
-def score_mlb_game(ctx, game_props=None):
+def score_mlb_game(ctx, game_props=None, track=None):
     """Score an MLB game's overall sweat heat.
 
     Rewritten 2026-05-16. Previous formula clustered most games at 42-45 PASS
@@ -153,35 +171,58 @@ def score_mlb_game(ctx, game_props=None):
       ~3-6 STRONG (65-79) — confluence + DOD + multi-PRIME-prop games
       ~4-7 LIGHT_LEAN (50-64) — single-PRIME-prop or one-signal games
       ~1-3 PASS   (<50) — no edges
+
+    2026-05-25: added optional `track` parameter for the WHY THIS SCORE
+    UI parity work. If a dict is passed (with empty 'contributions' and
+    'evidence' lists), the scorer appends signal entries inline as it
+    scores. Backward-compatible default (None) means no tracking.
     """
     score = 30  # base
+    # Contributions/evidence tracking — local closures avoid threading lists
+    # through every branch. When track is None, the helpers are no-ops.
+    def _contrib(emoji, label, points, detail=None):
+        if track is not None and points > 0:
+            entry = {'emoji': emoji, 'label': label, 'points': points}
+            if detail:
+                entry['detail'] = detail
+            track.setdefault('contributions', []).append(entry)
+
+    def _evidence(emoji, label, detail=None):
+        if track is not None:
+            entry = {'emoji': emoji, 'label': label}
+            if detail:
+                entry['detail'] = detail
+            track.setdefault('evidence', []).append(entry)
 
     # ---- NRFI band (audit-calibrated) ----
     nrfi = ctx.get('nrfi_score') or 0
     if 90 <= nrfi <= 94:
         score += 30    # PRIME band, audit 71.4% n=28
+        _contrib('⚾', 'NRFI sweet spot', 30, f'Score {int(nrfi)}/100 — audit 71.4% (n=28)')
     elif 88 <= nrfi <= 89:
         score += 22
+        _contrib('⚾', 'NRFI edge tier', 22, f'Score {int(nrfi)}/100')
     elif nrfi >= 95:
         score += 12    # volatile/trap zone, audit 47.8% — still some heat
+        _contrib('⚠️', 'NRFI volatile (95+)', 12, f'Score {int(nrfi)}/100 — coin-flip cohort')
     elif 80 <= nrfi <= 89:
         score += 14    # lean band
+        _contrib('⚾', 'NRFI lean band', 14, f'Score {int(nrfi)}/100')
     elif 70 <= nrfi <= 79:
         score += 10    # lean band, audit 56.7%
+        _contrib('⚾', 'NRFI lean', 10, f'Score {int(nrfi)}/100 — audit 56.7%')
     elif nrfi <= 30:
-        # YRFI fragility gate (2026-05-18): only award full 14pt when
-        # max(1st-inn ERA) sits in the audit sweet spot 6.0-7.9. Outside
-        # that band the YRFI signal is small-sample noise and shouldn't
-        # drive the sweat score into PRIME tier (30d audit ≥8 ERA = 29%).
         _h1 = float(ctx.get('home_first_inning_era') or 4.5)
         _a1 = float(ctx.get('away_first_inning_era') or 4.5)
         _max_fi = max(_h1, _a1)
         if 6.0 <= _max_fi < 8.0:
             score += 14    # YRFI sweet-spot fragility (audit ~63%)
+            _contrib('🔥', 'YRFI sweet spot', 14, f'NRFI {int(nrfi)} + 1st-inn ERA {_max_fi:.1f} (audit ~63%)')
         else:
             score += 4     # small-sample noise — don't drive sweat to PRIME
     elif nrfi <= 40:
         score += 8
+        _contrib('🔥', 'YRFI lean', 8, f'NRFI score {int(nrfi)}/100')
 
     # ---- Pitcher xERA mismatch ----
     home_xera = float(ctx.get('home_sp_xera') or 4.5)
@@ -189,18 +230,23 @@ def score_mlb_game(ctx, game_props=None):
     xera_gap = abs(home_xera - away_xera)
     if xera_gap >= 2.0:
         score += 14
+        _contrib('⚖️', 'Major xERA gap', 14, f'{abs(home_xera-away_xera):.2f}-run pitcher mismatch')
     elif xera_gap >= 1.5:
         score += 9
+        _contrib('⚖️', 'xERA gap', 9, f'{xera_gap:.2f}-run pitcher mismatch')
     elif xera_gap >= 1.0:
         score += 6
+        _contrib('⚖️', 'xERA gap', 6, f'{xera_gap:.2f}-run pitcher mismatch')
     elif xera_gap >= 0.5:
         score += 3
 
     # ---- Both pitchers elite (ace duel) ----
     if home_xera <= 3.0 and away_xera <= 3.0:
         score += 10
+        _contrib('🎯', 'Ace duel', 10, f'Both starters ≤3.00 xERA')
     elif home_xera <= 3.5 and away_xera <= 3.5:
         score += 5
+        _contrib('🎯', 'Quality matchup', 5, 'Both starters ≤3.50 xERA')
 
     # ---- 1st-inning extremes (NRFI lock or YRFI fade) ----
     h1 = float(ctx.get('home_first_inning_era') or 4.5)
@@ -226,10 +272,13 @@ def score_mlb_game(ctx, game_props=None):
         conf_mag = 0
     if conf_mag >= 5:
         score += 14    # PRIME confluence — multi-signal stacking
+        _contrib('🎯', 'PRIME confluence', 14, f'{conf_mag} independent signals align')
     elif conf_mag >= 4:
         score += 10
+        _contrib('🎯', 'Strong confluence', 10, f'{conf_mag} signals on one side')
     elif conf_mag >= 3:
         score += 6
+        _contrib('🎯', 'Confluence edge', 6, f'{conf_mag} signals on one side')
     elif conf_mag >= 2:
         score += 3
 
@@ -245,10 +294,12 @@ def score_mlb_game(ctx, game_props=None):
     spread_delta = abs(float(ctx.get('spread_delta') or 0))
     if spread_delta >= 2.0:
         score += 13   # genuine conviction (55-58%)
+        _contrib('📊', 'Market disagreement', 13, f'{spread_delta:.1f}-run spread delta — model fades market')
     elif spread_delta >= 1.5:
         score += 0    # trap zone — no boost
     elif spread_delta >= 1.0:
         score += 8    # sweet spot (55-58%) — bumped from 6 to recognize edge
+        _contrib('📊', 'Spread delta edge', 8, f'{spread_delta:.1f}-run model edge vs market')
     elif spread_delta >= 0.5:
         score += 3
 
@@ -280,36 +331,64 @@ def score_mlb_game(ctx, game_props=None):
             continue
         try:
             vt = float(v)
-            if vt <= 2.5 or vt >= 7.0:
-                score += 5    # strong mastery / anti-mastery
-            elif vt <= 3.0 or vt >= 6.0:
-                score += 3    # moderate
+            side = 'Home' if vt_key.startswith('home') else 'Away'
+            if vt <= 2.5:
+                score += 5
+                _contrib('⚾', f'{side} pitcher mastery vs opp', 5, f'{vt:.2f} ERA career vs this team')
+            elif vt >= 7.0:
+                score += 5
+                _contrib('🚨', f'{side} pitcher tagged by opp', 5, f'{vt:.2f} ERA career vs this team')
+            elif vt <= 3.0:
+                score += 3
+                _evidence('⚾', f'{side} pitcher edge vs opp', f'{vt:.2f} ERA career vs this team')
+            elif vt >= 6.0:
+                score += 3
+                _evidence('🚨', f'{side} pitcher struggles vs opp', f'{vt:.2f} ERA career vs this team')
         except (TypeError, ValueError):
             pass
 
     # ---- Park + weather extremes ----
     park = float(ctx.get('park_run_factor') or 100)
-    if park >= 110 or park <= 92:
+    if park >= 110:
         score += 4
+        _evidence('🏟', 'Hitter-friendly park', f'Park factor {park:.0f}')
+    elif park <= 92:
+        score += 4
+        _evidence('🏟', 'Pitcher-friendly park', f'Park factor {park:.0f}')
     temp = float(ctx.get('temperature') or 70)
     if temp <= 45:
         score += 3
+        _evidence('❄️', 'Cold weather', f'{int(temp)}°F suppresses scoring')
     wind = float(ctx.get('wind_speed') or 0)
     if wind >= 18:
         score += 3
+        _evidence('💨', 'High wind', f'{int(wind)} mph affecting flight')
 
     # ---- Prop stack (game contains high-conviction props) ----
     game_props = game_props or []
     prime_props = [p for p in game_props if p.get('tier') == 'PRIME']
     strong_props = [p for p in game_props if p.get('tier') == 'STRONG']
     if len(prime_props) >= 4:
-        score += 20    # stack alert (e.g. BOS/ATL 4 PRIME hits-unders + Tolle K + Elder HA)
+        score += 20
+        _contrib('🔥', 'PRIME prop stack', 20, f'{len(prime_props)} PRIME props in this game')
     elif len(prime_props) >= 2:
         score += 11
+        _contrib('🔥', 'Multiple PRIME props', 11, f'{len(prime_props)} PRIME props in this game')
     elif len(prime_props) == 1:
         score += 6
+        _contrib('🔥', 'PRIME prop available', 6, '1 PRIME prop in this game')
     elif len(strong_props) >= 3:
         score += 5
+        _contrib('💪', 'STRONG prop cluster', 5, f'{len(strong_props)} STRONG props')
+
+    # ---- Sort contributions by points (biggest drivers first) ----
+    if track is not None and track.get('contributions'):
+        track['contributions'].sort(key=lambda c: -c.get('points', 0))
+        # Cap at top 6 to keep the UI section focused
+        track['contributions'] = track['contributions'][:6]
+    if track is not None and track.get('evidence'):
+        # Cap evidence at 5 items
+        track['evidence'] = track['evidence'][:5]
 
     return min(100, score)
 
@@ -792,11 +871,17 @@ def run():
 
     for ctx in mlb_games:
         gid = ctx.get('game_id')
-        game_score = score_mlb_game(ctx, game_props=props_by_game.get(gid, []))
+        # Track contributions/evidence for the WHY THIS SCORE UI block
+        # (2026-05-25 — Stage 2 of the game-detail parity work).
+        track = {'contributions': [], 'evidence': []}
+        game_score = score_mlb_game(ctx, game_props=props_by_game.get(gid, []), track=track)
         # Write the score + tier back to mlb_game_context so the app reads
         # the server-authoritative value (instead of computing its own with
         # a different formula that systematically under-reports PRIME).
-        write_sweat_score(ctx, game_score, sweat_tier_for(game_score, ctx))
+        breakdown = None
+        if track['contributions'] or track['evidence']:
+            breakdown = {'contributions': track['contributions'], 'evidence': track['evidence']}
+        write_sweat_score(ctx, game_score, sweat_tier_for(game_score, ctx), breakdown=breakdown)
         lean_display, lean_bet, is_nrfi = build_lean(ctx)
         candidates.append({
             'sport': 'MLB',

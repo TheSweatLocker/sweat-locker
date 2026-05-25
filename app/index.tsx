@@ -4026,6 +4026,15 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
               odds: ml.outcome.price,
               book: ml.book || HRB,
             } : null,
+            // Server-computed WHY THIS SCORE breakdown (2026-05-25 Stage 2).
+            // Populated by play_of_day.score_mlb_game via the new
+            // sweat_breakdown JSONB column. Mirrors the NBA client-side
+            // contributions/evidence shape so the modal renders the same
+            // block for both sports.
+            signals: mlbCtx.sweat_breakdown ? {
+              contributions: mlbCtx.sweat_breakdown.contributions || [],
+              evidence: mlbCtx.sweat_breakdown.evidence || [],
+            } : undefined,
           };
           setSweatScores(prev => ({...prev, [key]: score}));
           return score;
