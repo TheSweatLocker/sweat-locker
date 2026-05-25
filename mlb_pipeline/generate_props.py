@@ -1760,21 +1760,31 @@ def score_pitcher_er_under(g, side):
     # Pitcher career mastery vs current opp lineup (added 2026-05-17 — was
     # entirely missing from ER UNDER scorer; cost Ryan's 5/15 prop a +10
     # bump despite 2.38 ERA / 12.3 IP vs MIL career).
+    #
+    # 2026-05-25: loosened the relative-gap threshold (xera-1.0 → xera-0.8)
+    # AND added an absolute-large-sample path. Ryan's 5/15 case re-recompute:
+    # vt_era 2.38 vs xera 3.27 = 0.89 below xera, juuust shy of the old 1.0
+    # cliff. With IP sample of 12.3, mastery is real signal. New rule fires
+    # on either relative gap ≥0.8 OR (vt_era ≤2.5 AND IP ≥10).
     vt_era = _f(g.get(f'{side}_pitcher_vs_team_era'))
+    vt_ip = _f(g.get(f'{side}_pitcher_vs_team_ip')) or 0
     if vt_era is not None and xera is not None:
-        if vt_era <= 2.5 and (vt_era < xera - 1.0):
+        relative_mastery = vt_era <= 2.5 and (vt_era < xera - 0.8)
+        absolute_mastery = vt_era <= 2.5 and vt_ip >= 10
+        if relative_mastery or absolute_mastery:
             conviction += 10
-            signals['vs_team'] = f'Career vs opp: {vt_era:.2f} ERA — mastery'
+            ip_note = f' ({vt_ip:.0f} IP)' if vt_ip >= 10 else ''
+            signals['vs_team'] = f'Career vs opp: {vt_era:.2f} ERA{ip_note} — mastery'
         elif vt_era >= 6.0 and (vt_era > xera + 1.5):
             conviction -= 10  # anti-mastery signal goes the other way
             signals['vs_team_anti'] = f'Career vs opp: {vt_era:.2f} ERA — gets tagged'
 
-    # NRFI score assist (added 2026-05-17) — if game projects to scoreless
-    # 1st, that supports ER UNDER thesis on the starter going clean
-    # through 5+ innings.
+    # NRFI score assist (added 2026-05-17, threshold lowered 5/25) — if game
+    # projects to scoreless 1st, that supports ER UNDER thesis. Lowered floor
+    # from 75 to 73 so Ryan's NRFI 74 (5/15 case) catches the assist.
     nrfi = _f(g.get('nrfi_score'))
     if nrfi is not None:
-        if nrfi >= 75:
+        if nrfi >= 73:
             conviction += 4
             signals['nrfi_assist'] = f'NRFI {int(nrfi)} — clean 1st projects'
         elif nrfi <= 40:
