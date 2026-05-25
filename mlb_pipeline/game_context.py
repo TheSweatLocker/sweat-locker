@@ -2927,6 +2927,25 @@ def run():
                     over_lean = None
                 print(f"  Team stats not available yet — market line fallback: {projected_total}")
 
+            # ── SANITY FLOOR/CEILING (added 2026-05-25) ──
+            # 5/24 TB@NYY produced projected_total=1.5 (root cause unidentified;
+            # likely upstream input corruption — e.g. close_total briefly held
+            # an F5/alt-market value at compute time). No realistic MLB game
+            # totals below 4.0 or above 16.0. Clamp + log loudly so the next
+            # occurrence surfaces in pipeline output instead of silently
+            # poisoning the sweat card.
+            if projected_total is not None and total_line is not None:
+                try:
+                    pt_f = float(projected_total)
+                    tl_f = float(total_line)
+                    if pt_f < 4.0 or pt_f > 16.0:
+                        print(f"  ⚠️  projected_total={pt_f} out of bounds for MLB — "
+                              f"clamping to market line {tl_f}. Investigate upstream.")
+                        projected_total = round(tl_f, 1)
+                        over_lean = None  # no edge claim on a salvaged number
+                except (TypeError, ValueError):
+                    pass
+
             # ── xERA GAP OVER BOOST ──
             # Heuristic: a moderate xERA gap correlates with overs. Audit
             # (2026-05-12, 2900+ games): gap 2.0-3.0 → 58.2% OVER (n=67),
