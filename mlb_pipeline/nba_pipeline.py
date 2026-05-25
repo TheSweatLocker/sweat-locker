@@ -486,8 +486,15 @@ def run():
                 "away_losses": away_losses,
                 "home_record": home_record,
                 "away_record": away_record,
-                # Last 5 net rating
-                "last_10_net_rating": last5_map.get(team_id, float(adv.get('net_rating', 0))),
+                # Last 5 net rating — null-fail instead of falling back to
+                # season net_rating. 2026-05-25 incident: during playoffs the
+                # balldontlie advanced_stats endpoint often returns empty for
+                # recent games, so the fallback was silently substituting the
+                # season rate, then Jerry's NBA reads were narrating "no L5
+                # form drift" based on a stat that was just a copy of season.
+                # Beta tester correctly flagged the writeup as wrong.
+                # Honest null > misleading copy.
+                "last_10_net_rating": last5_map.get(team_id),
                 # Injury note
                 "injury_note": injury_note or None,
                 "season": season_str,
