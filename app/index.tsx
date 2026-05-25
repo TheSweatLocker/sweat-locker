@@ -3922,53 +3922,17 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
   };
 
   const generateSweatNarrative = (game, sport, data) => {
-    const away = game.away_team.split(' ').pop();
-    const home = game.home_team.split(' ').pop();
+    // 2026-05-25: stripped the 3-sentence template-y narrative that fired
+    // for NBA/NFL/NHL/MLB-legacy. The sentences ("X and Y present an NBA
+    // matchup with tight consensus across books. Lines are stable. Overall
+    // model confidence is moderate.") said nothing specific to the game
+    // and made the modal feel like filler. MLB server-scored path was
+    // already bypassing this. Now uniform: every sport returns empty,
+    // and the modal's narrative slot falls back to primaryPlay.sub.
+    //
+    // NCAAB-specific data warnings preserved — they communicate model
+    // confidence on low-major matchups, which IS game-specific signal.
     const sentences = [];
-
-    // Sentence 1 — Model/efficiency insight
-    if(sport==='NCAAB') {
-  const edge = data.spreadEdge || 0;
-  const absDiff = Math.abs(edge).toFixed(1);
-  const side = edge > 0 ? game.home_team.split(' ').pop() : game.away_team.split(' ').pop();
-  if(Math.abs(edge) >= 2) {
-    sentences.push(`Our efficiency model sees a ${absDiff}-point edge favoring ${side} vs the posted spread.`);
-  } else {
-    sentences.push(`Our efficiency model projects this matchup close to the posted spread — market appears fairly priced.`);
-  }
-
-    } else if(sport==='NBA') {
-      sentences.push(`${away} and ${home} present an NBA matchup with ${data.spreadVariance > 1 ? 'notable spread variance across books suggesting market uncertainty' : 'tight consensus across books'}.`);
-    } else if(sport==='NFL') {
-      sentences.push(`NFL lines show ${data.spreadVariance > 1.5 ? 'significant disagreement between books — a potential sharp opportunity' : 'tight consensus suggesting an efficient market'}.`);
-    } else if(sport==='NHL') {
-      sentences.push(`${away} vs ${home} shows ${data.mlVariance > 15 ? 'moneyline variance suggesting sharp action on one side' : 'efficient pricing across books'}.`);
-    } else if(sport==='MLB') {
-      sentences.push(`${away} vs ${home} — MLB lines ${data.spreadVariance > 0.5 ? 'show run line disagreement between books' : 'are tightly priced across the market'}.`);
-    } else {
-      sentences.push(`${away} vs ${home} — market analysis shows ${data.spreadVariance > 1 ? 'inefficiency worth exploiting' : 'efficient pricing with limited edge'}.`);
-    }
-
-    // Sentence 2 — Line movement
-    if(data.lineRange >= 2) {
-      sentences.push(`A ${data.lineRange.toFixed(1)}-point spread between books signals significant sharp money movement — strong reverse line action detected.`);
-    } else if(data.lineRange >= 1) {
-      sentences.push(`${data.lineRange.toFixed(1)}-point line variance across books indicates professional money has moved this line.`);
-    } else if(data.lineRange >= 0.5) {
-      sentences.push(`Moderate line movement of ${data.lineRange.toFixed(1)} points detected — some sharp interest but market remains relatively stable.`);
-    } else {
-      sentences.push(`Lines are stable across books with minimal movement — public betting market with no clear sharp signal.`);
-    }
-
-    // Sentence 3 — Recommendation
-    if(data.total >= 75) {
-      sentences.push(`Overall model confidence is high — this game has multiple edges aligning. Hard Rock has competitive pricing on this matchup.`);
-    } else if(data.total >= 60) {
-      sentences.push(`Moderate edge detected. Worth a play at the right number — shop for the best available line before the market moves.`);
-    } else {
-      sentences.push(`Limited edge on this matchup. Consider waiting for better line value or targeting a different market.`);
-    }
-
     if(sport==='NCAAB') {
       const awayTeamData = fuzzyMatchTeam(stripMascot(game.away_team), bartData, 'team');
       const homeTeamData = fuzzyMatchTeam(stripMascot(game.home_team), bartData, 'team');
@@ -3976,9 +3940,9 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         const avgOE = (awayTeamData.adjOE + homeTeamData.adjOE) / 2;
         if(avgOE < 100) sentences.push('⚠️ Low-major matchup — model confidence reduced due to limited efficiency data on these programs.');
       }
-    }
-    if(sport==='NCAAB' && data.projectedTotal && data.postedTotal && data.mismatchPts > 15) {
-      sentences.push('⚠️ Large model discrepancy detected — exercise caution as this may reflect limited data on lower-tier programs.');
+      if(data.projectedTotal && data.postedTotal && data.mismatchPts > 15) {
+        sentences.push('⚠️ Large model discrepancy detected — exercise caution as this may reflect limited data on lower-tier programs.');
+      }
     }
     return sentences.join(' ');
   };
@@ -11822,12 +11786,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           <Text style={{color:tier.color,fontSize:10,fontWeight:'800'}}>{tier.label}</Text>
                         </View>
                       </View>
-                       {ss.leanSide&&(
-                        <View style={{flexDirection:'row',alignItems:'center',gap:8,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:10,marginBottom:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
-  <Text style={{color:'#4a6070',fontSize:11,fontWeight:'700'}}>MODEL LEAN</Text>
-  <Text adjustsFontSizeToFit numberOfLines={1} minimumFontScale={0.6} style={{color:HRB_COLOR,fontWeight:'800',fontSize:15,flex:1}}>{ss.leanSide}</Text>
-</View>
-                      )}
+                      {/* Gold MODEL LEAN box REMOVED 2026-05-25 — it duplicated
+                          the MODEL'S PLAY card inside Why-This-Score below, and
+                          the redundancy made the modal feel cluttered. Single
+                          surface for the play now: Why-This-Score's primaryPlay
+                          card. Uniform across sports. */}
                       {(()=>{
                          if(gamesSport!=='NCAAB') return null;
                         if(!Object.keys(fanmatchData).length) return null;
@@ -11888,8 +11851,15 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           {ss.narrative || ss.primaryPlay?.sub}
                         </Text>
                       )}
-                      {/* Why This Score — primary play + contributions + evidence */}
-                      {ss.signals && ((ss.signals.contributions && ss.signals.contributions.length > 0) || (ss.signals.evidence && ss.signals.evidence.length > 0)) && (
+                      {/* Why This Score — primary play + contributions + evidence.
+                          2026-05-25: gate loosened to render the MODEL'S PLAY card
+                          even when contributions/evidence are empty (MLB server-
+                          scored games don't populate those arrays yet — Stage 2
+                          backend work pending). Without this loosening, killing
+                          the redundant gold MODEL LEAN box above would leave MLB
+                          games with no surfaced play at all. NBA contributions
+                          still render via the legacy calcGameSweatScore path. */}
+                      {(ss.primaryPlay || (ss.signals && ((ss.signals.contributions && ss.signals.contributions.length > 0) || (ss.signals.evidence && ss.signals.evidence.length > 0)))) && (
                         <View style={{backgroundColor:'#151c24',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'#1f2d3d'}}>
                           <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>
                             WHY THIS SCORE
