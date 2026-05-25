@@ -1166,22 +1166,58 @@ def run():
     else:
         print(f"❌ Cache store failed: {r.status_code} {r.text[:200]}")
 
-    # Also log to history
+    # Also log to history — was silently swallowed pre 2026-05-25; turned
+    # loud after 5/25 incident (home tab showed NRFI, receipts showed v2 OVER
+    # — both writes timestamped within 250ms of each other in same run yet
+    # ended up with different picks). Most likely cause: two concurrent
+    # play_of_day invocations racing on the two upserts. Loud failure surfaces
+    # this in cron logs next time.
+    expected_game = f"{pick['away_team']} @ {pick['home_team']}"
+    expected_lean = pick.get('lean_display')
     try:
-        requests.post(
+        hr = requests.post(
             f"{SUPABASE_URL}/rest/v1/daily_best_bet_history?on_conflict=bet_date",
             headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
             json={
                 "bet_date": today,
                 "sport": pick['sport'],
-                "game": f"{pick['away_team']} @ {pick['home_team']}",
-                "lean": pick.get('lean_display'),
+                "game": expected_game,
+                "lean": expected_lean,
                 "sweat_score": pick['score'],
                 "result": "Pending",
-            }
+            },
+            timeout=15,
         )
-    except:
-        pass
+        if hr.status_code not in (200, 201, 204):
+            print(f"  ⚠️ history write returned {hr.status_code}: {hr.text[:200]}")
+    except Exception as e:
+        print(f"  ⚠️ history write FAILED: {e}")
+
+    # Consistency check: read back both surfaces and warn if they diverge.
+    # When this fires, the next POTD render to users will show mismatched
+    # values across Home and Receipts tabs.
+    try:
+        jc_back = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jerry_cache?game_id=eq.best_bet_{today}&select=data",
+            headers=HEADERS, timeout=10,
+        ).json()
+        hist_back = requests.get(
+            f"{SUPABASE_URL}/rest/v1/daily_best_bet_history?bet_date=eq.{today}&select=game,lean",
+            headers=HEADERS, timeout=10,
+        ).json()
+        jc_lean = (jc_back[0].get('data') or {}).get('leanDisplay') if jc_back else None
+        jc_game_d = (jc_back[0].get('data') or {}).get('game') if jc_back else {}
+        jc_game = f"{jc_game_d.get('away_team')} @ {jc_game_d.get('home_team')}" if jc_game_d else None
+        h_game = hist_back[0].get('game') if hist_back else None
+        h_lean = hist_back[0].get('lean') if hist_back else None
+        if (jc_game and h_game and jc_game != h_game) or (jc_lean and h_lean and jc_lean != h_lean):
+            print(f"  ⚠️ POTD DIVERGENCE DETECTED post-write:")
+            print(f"     jerry_cache: game={jc_game!r}  lean={jc_lean!r}")
+            print(f"     history:     game={h_game!r}  lean={h_lean!r}")
+            print(f"     expected:    game={expected_game!r}  lean={expected_lean!r}")
+            print(f"     Likely cause: concurrent play_of_day invocation overwrote one surface.")
+    except Exception as e:
+        print(f"  ⚠️ post-write consistency check failed: {e}")
 
 if __name__ == '__main__':
     run()

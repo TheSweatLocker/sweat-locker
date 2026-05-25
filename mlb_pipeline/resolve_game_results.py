@@ -20,6 +20,26 @@ HEADERS = {
 
 _NAME_SUFFIXES = {'jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv'}
 
+# Postponement detection threshold: if a game has null scores and its
+# game_date is this many days or more in the past, treat as Postponed (Push).
+# Set to 1 day so a doubleheader scheduled for "tomorrow" doesn't get
+# falsely pushed before it plays.
+_POSTPONEMENT_DAYS_OLD = 1
+
+
+def _is_postponed(game_date_str, has_scores):
+    """Return True when a game's slate date is in the past and the score row
+    still has no final scores. Treats these as postponed → grade as Push so
+    cards/POTD/Dawg don't sit Pending forever (real cause: STL@CIN rain-out
+    on 2026-05-24 sat Pending across the entire resolver cycle)."""
+    if has_scores:
+        return False
+    try:
+        gd = datetime.strptime(game_date_str, '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return False
+    return (_et_today() - gd).days >= _POSTPONEMENT_DAYS_OLD
+
 
 def _last_name(full_name):
     if not full_name:
@@ -512,8 +532,18 @@ def run():
                 headers=HEADERS
             )
             gr_data = gr.json()
-            if not gr_data or gr_data[0].get('home_score') is None:
-                continue  # game not finalized yet
+            has_scores = bool(gr_data) and gr_data[0].get('home_score') is not None
+            # Postponement: dawg game with null scores past slate_date → Push
+            if not has_scores:
+                if _is_postponed(dawg['game_date'], False):
+                    requests.patch(
+                        f'{SUPABASE_URL}/rest/v1/daily_dawg?game_date=eq.{dawg["game_date"]}',
+                        headers=HEADERS,
+                        json={'result': 'Push', 'final_score': 'Postponed'},
+                    )
+                    dawg_resolved += 1
+                    print(f'  🐕 {dawg["game_date"]} {dawg["team"]} ML → Push (postponed)')
+                continue  # not finalized yet (or just pushed)
 
             g = gr_data[0]
             home_win = g.get('home_win')
@@ -685,6 +715,8 @@ def _resolve_single_pick(pick, slate_date):
             headers=HEADERS, timeout=10,
         ).json()
         if not r or r[0].get('home_score') is None:
+            if _is_postponed(slate_date, False):
+                return 'Push'  # postponed game grades as push
             return 'Pending'
         g = r[0]
         ev = pick.get('eval') or {}
@@ -730,6 +762,8 @@ def _resolve_single_pick(pick, slate_date):
                     headers=HEADERS, timeout=10,
                 ).json()
                 if not rg or not rg[0].get('nrfi_result'):
+                    if _is_postponed(slate_date, False):
+                        return 'Push'
                     return 'Pending'
                 return 'Win' if rg[0]['nrfi_result'] == 'NRFI' else 'Loss'
             if etype == 'yrfi':
@@ -739,6 +773,8 @@ def _resolve_single_pick(pick, slate_date):
                     headers=HEADERS, timeout=10,
                 ).json()
                 if not rg or not rg[0].get('nrfi_result'):
+                    if _is_postponed(slate_date, False):
+                        return 'Push'
                     return 'Pending'
                 return 'Win' if rg[0]['nrfi_result'] == 'YRFI' else 'Loss'
         except Exception as e:
