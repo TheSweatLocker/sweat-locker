@@ -234,13 +234,21 @@ def score_mlb_game(ctx, game_props=None):
         score += 3
 
     # ---- Spread delta (market disagreement) ----
+    # Audit (2026-05-21, see project_spread_delta_trap_zone) found the U-shape:
+    #   <1.0:    43-50% (coinflip / noise)
+    #   1.0-1.5: 55-58% (sweet spot — small edge cashes)
+    #   1.5-2.0: 40-43% (TRAP — model's pick LOSES more than wins)
+    #   ≥2.0:    55-58% (real conviction)
+    # Pre-2026-05-25 scoring rewarded the trap zone with +9 points — almost
+    # as much as the genuine ≥2.0 conviction band. New scoring matches the
+    # cohort curve: trap zone gets ZERO, 1.0-1.5 sweet spot gets bumped up.
     spread_delta = abs(float(ctx.get('spread_delta') or 0))
     if spread_delta >= 2.0:
-        score += 13
+        score += 13   # genuine conviction (55-58%)
     elif spread_delta >= 1.5:
-        score += 9
+        score += 0    # trap zone — no boost
     elif spread_delta >= 1.0:
-        score += 6
+        score += 8    # sweet spot (55-58%) — bumped from 6 to recognize edge
     elif spread_delta >= 0.5:
         score += 3
 
@@ -921,8 +929,26 @@ def run():
             if n <= 25:        return 'yrfi_lean_le40'
             return None
         if c.get('lean_bet') == 'ml':
-            # ML lean comes from spread_delta ≥3 or PRIME confluence — use
-            # confluence_prime_ge4 cohort as the proxy (most strict gate).
+            # Check the more-specific autofade cohort first. Per audit
+            # 2026-05-21 (see project_spread_delta_trap_zone), when the model
+            # picks a DOG with high conviction (cn>=2 + market disagrees),
+            # the autofade_dog_high_conv cohort hits 58-65% live. That beats
+            # confluence_prime_ge4 in real outcomes and deserves promotion.
+            # If the candidate doesn't fit autofade_dog_high_conv, fall back
+            # to confluence_prime_ge4 (existing strict gate).
+            try:
+                from auto_fade import cohort_for_pick
+                ml_cohort = cohort_for_pick(
+                    c.get('projected_spread'),
+                    c.get('close_spread'),
+                    c.get('signal_confluence_net'),
+                    home_ml=c.get('home_ml_odds'),
+                    away_ml=c.get('away_ml_odds'),
+                )
+                if ml_cohort == 'ml_dog_high_conv':
+                    return 'autofade_dog_high_conv'
+            except Exception:
+                pass
             return 'confluence_prime_ge4'
         # v2 Total OVER/UNDER edge — no calibrated cohort yet. Spread_delta_ge2
         # is the closest proxy but it audits in the low-50s, won't clear
