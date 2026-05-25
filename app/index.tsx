@@ -3998,6 +3998,38 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
           Object.values(mlbGameContext || {}).find((c: any) =>
             c?.home_team === game.home_team || c?.away_team === game.away_team) as any;
         if (mlbCtx && mlbCtx.sweat_score != null) {
+          // Best-available-lines extraction was missing from the server-scored
+          // path (2026-05-25 fix). Without these fields the game-detail modal
+          // rendered the "BEST AVAILABLE LINES" header with nothing below.
+          // Prefer HRB if available, else best price across surfaced books.
+          const bookmakers = game?.bookmakers || [];
+          const hrbLine = getHRBLine(game);
+          const pickBest = (marketKey: string) => {
+            const hrbKey = marketKey === 'spreads' ? 'spread' : marketKey === 'totals' ? 'total' : 'ml';
+            if (hrbLine && hrbLine[hrbKey]?.[0]) {
+              return { outcome: hrbLine[hrbKey][0], book: HRB };
+            }
+            let best = null as any, bestOdds = -9999, bestBook = '';
+            for (const bm of bookmakers) {
+              const mkt = bm.markets?.find((m: any) => m.key === marketKey);
+              if (!mkt?.outcomes?.[0]) continue;
+              if (mkt.outcomes[0].price > bestOdds) {
+                bestOdds = mkt.outcomes[0].price;
+                best = mkt.outcomes[0];
+                bestBook = (BOOKMAKER_MAP as any)[bm.key] || bm.key;
+              }
+            }
+            return best ? { outcome: best, book: bestBook } : null;
+          };
+          const sp = pickBest('spreads');
+          const tot = pickBest('totals');
+          const ml = pickBest('h2h');
+          const projTot = mlbCtx.projected_total;
+          const postTot = mlbCtx.close_total || mlbCtx.open_total;
+          const totalDir = (projTot != null && postTot != null)
+            ? (parseFloat(projTot) > parseFloat(postTot) ? 'Over' : 'Under')
+            : 'Over';
+
           // Build the same shape downstream consumers expect, sourced from server.
           const score = {
             total: mlbCtx.sweat_score,
@@ -4015,6 +4047,21 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
             projectedSpread: mlbCtx.projected_spread,
             confluenceNet: mlbCtx.signal_confluence_net,
             isServerScored: true,
+            spreadBet: sp ? {
+              pick: sp.outcome.name + ' ' + (sp.outcome.point > 0 ? '+' : '') + sp.outcome.point,
+              odds: sp.outcome.price,
+              book: sp.book || HRB,
+            } : null,
+            totalBet: tot ? {
+              pick: totalDir + ' ' + tot.outcome.point,
+              odds: tot.outcome.price,
+              book: tot.book || HRB,
+            } : null,
+            mlBet: ml ? {
+              pick: ml.outcome.name + ' ML',
+              odds: ml.outcome.price,
+              book: ml.book || HRB,
+            } : null,
           };
           setSweatScores(prev => ({...prev, [key]: score}));
           return score;
@@ -11832,7 +11879,15 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           </View>
                         );
                       })()}
-                      <Text style={{color:'#b0c4d8',fontSize:13,lineHeight:20,marginBottom:12}}>{ss.narrative}</Text>
+                      {/* Narrative — server-scored MLB has no narrative field;
+                          fall back to primary_play.sub when available so the
+                          gap between Sweat Score circle and Best Bets is filled
+                          with something useful rather than empty marginBottom. */}
+                      {(ss.narrative || ss.primaryPlay?.sub) && (
+                        <Text style={{color:'#b0c4d8',fontSize:13,lineHeight:20,marginBottom:12}}>
+                          {ss.narrative || ss.primaryPlay?.sub}
+                        </Text>
+                      )}
                       {/* Why This Score — primary play + contributions + evidence */}
                       {ss.signals && ((ss.signals.contributions && ss.signals.contributions.length > 0) || (ss.signals.evidence && ss.signals.evidence.length > 0)) && (
                         <View style={{backgroundColor:'#151c24',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'#1f2d3d'}}>
@@ -11885,7 +11940,12 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           )}
                         </View>
                       )}
-                      {/* Best Bets */}
+                      {/* Best Bets — hide entire block when there's nothing to render.
+                          MLB server-scored path was missing bet extraction pre-2026-05-25
+                          causing an empty "BEST AVAILABLE LINES" header. Even after the
+                          extraction fix this gate prevents a future regression from
+                          producing the same empty-section UX. */}
+                      {(gamesSport==='UFC' || ss.spreadBet || ss.totalBet || ss.mlBet) && (
                       <View style={{backgroundColor:'#151c24',borderRadius:12,padding:12,marginBottom:12}}>
                         <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:8}}>
                           {gamesSport==='UFC'
@@ -11957,6 +12017,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           </TouchableOpacity>}
                         </View>
                       </View>
+                      )}
                       {/* Score breakdown REMOVED 2026-05-19.
                           The 5-row "Market Efficiency / Model Mismatch /
                           Line Trajectory / Sharp Signal / Situational Edge"
