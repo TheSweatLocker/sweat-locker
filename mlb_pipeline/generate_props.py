@@ -2763,6 +2763,53 @@ def run():
         if added:
             print(f"  📋 Per-game floor: added {added} prop(s) to surface late-slate games")
 
+    # Server-composed display label (added 2026-05-26 per
+    # feedback_backside_dictates_app_renders). The app was deciding K-prop
+    # label format ("Cease Over 7.5 Ks · proj 8.6" vs "8.6 expected Ks (over)"
+    # vs raw "ks_over"), with the sweat-card and Daily-Degen surfaces using
+    # different formats — same data, different render. That caused the
+    # Luzardo 5/25 incident: app showed "6.3 expected Ks (over)" but the
+    # book line was 6.5, defaulting users into a -EV Over bet.
+    #
+    # Single source of truth: server composes _display_label, app reads it
+    # verbatim. Future label changes = pure backend, no TestFlight push.
+    for p in top:
+        sigs = p.get('signals') or {}
+        ptype = p.get('prop_type', '')
+        line = p.get('prop_line')
+        player = p.get('player_name', '')
+        proj_ks = sigs.get('_projected_ks')
+        proj_bb = sigs.get('_projected_bb')
+        proj_ha = sigs.get('_projected_hits')
+        label = None
+        if ptype == 'ks_over' and proj_ks is not None and line is not None:
+            label = f'{player} Over {line} Ks  ·  proj {proj_ks}'
+        elif ptype == 'ks_under' and proj_ks is not None and line is not None:
+            label = f'{player} Under {line} Ks  ·  proj {proj_ks}'
+        elif ptype == 'bb_over' and proj_bb is not None and line is not None:
+            label = f'{player} Over {line} BB  ·  proj {proj_bb}'
+        elif ptype == 'bb_under' and proj_bb is not None and line is not None:
+            label = f'{player} Under {line} BB  ·  proj {proj_bb}'
+        elif ptype == 'ha_over' and proj_ha is not None and line is not None:
+            label = f'{player} Over {line} Hits Allowed  ·  proj {proj_ha}'
+        elif ptype == 'ha_under' and proj_ha is not None and line is not None:
+            label = f'{player} Under {line} Hits Allowed  ·  proj {proj_ha}'
+        elif ptype == 'outs_over' and line is not None:
+            label = f'{player} Over {line} Outs'
+        elif ptype == 'outs_under' and line is not None:
+            label = f'{player} Under {line} Outs'
+        elif ptype == 'er_over' and line is not None:
+            label = f'{player} Over {line} ER'
+        elif ptype == 'er_under' and line is not None:
+            label = f'{player} Under {line} ER'
+        elif ptype == 'hits_over':
+            label = f'{player} Over 0.5 Hits'
+        elif ptype == 'hits_under':
+            label = f'{player} Under 0.5 Hits (0-fer)'
+        if label:
+            sigs['_display_label'] = label
+            p['signals'] = sigs
+
     wipe_todays_props()
     saved = upsert_props(top)
     print(f"\n✅ Stored {saved} top props (of {len(all_props)} passing threshold)")

@@ -10689,20 +10689,27 @@ setJerryHistory(prev => {
             const projKs = signals._projected_ks;
             const projBB = signals._projected_bb;
             const projHA = signals._projected_hits;
+            // Server-composed label is the source of truth (2026-05-26 — moved
+            // formatting decisions off-app per feedback_backside_dictates_app_renders).
+            // Old client-side fallback retained for backward compat with any
+            // pre-fix prop rows still in the DB; can be removed once 7+ days have
+            // passed since the server-side generate_props.py started writing it.
             const propLabel =
-              prop.prop_type === 'ks_over'   ? (projKs != null ? `${projKs} expected Ks (over)` : `Over ${prop.prop_line} Strikeouts`) :
-              prop.prop_type === 'ks_under'  ? (projKs != null ? `${projKs} expected Ks (under)` : `Under ${prop.prop_line} Strikeouts`) :
-              prop.prop_type === 'bb_over'   ? (projBB != null ? `${projBB} expected walks (over ${prop.prop_line})` : `Over ${prop.prop_line} Walks`) :
-              prop.prop_type === 'bb_under'  ? (projBB != null ? `${projBB} expected walks (under ${prop.prop_line})` : `Under ${prop.prop_line} Walks`) :
-              prop.prop_type === 'ha_over'   ? (projHA != null ? `${projHA} expected hits allowed (over ${prop.prop_line})` : `Over ${prop.prop_line} Hits Allowed`) :
-              prop.prop_type === 'ha_under'  ? (projHA != null ? `${projHA} expected hits allowed (under ${prop.prop_line})` : `Under ${prop.prop_line} Hits Allowed`) :
-              prop.prop_type === 'outs_over' ? `Over ${prop.prop_line} Outs Recorded` :
-              prop.prop_type === 'outs_under'? `Under ${prop.prop_line} Outs Recorded` :
-              prop.prop_type === 'er_over'   ? `Over ${prop.prop_line} Earned Runs` :
-              prop.prop_type === 'er_under'  ? `Under ${prop.prop_line} Earned Runs` :
-              prop.prop_type === 'hits_over' ? 'Over 0.5 Hits' :
-              prop.prop_type === 'hits_under'? 'Under 0.5 Hits (0-fer)' :
-              prop.prop_type;
+              signals._display_label || (
+                prop.prop_type === 'ks_over'   ? (projKs != null ? `${prop.player_name} Over ${prop.prop_line} Ks  ·  proj ${projKs}` : `Over ${prop.prop_line} Strikeouts`) :
+                prop.prop_type === 'ks_under'  ? (projKs != null ? `${prop.player_name} Under ${prop.prop_line} Ks  ·  proj ${projKs}` : `Under ${prop.prop_line} Strikeouts`) :
+                prop.prop_type === 'bb_over'   ? (projBB != null ? `${prop.player_name} Over ${prop.prop_line} BB  ·  proj ${projBB}` : `Over ${prop.prop_line} Walks`) :
+                prop.prop_type === 'bb_under'  ? (projBB != null ? `${prop.player_name} Under ${prop.prop_line} BB  ·  proj ${projBB}` : `Under ${prop.prop_line} Walks`) :
+                prop.prop_type === 'ha_over'   ? (projHA != null ? `${prop.player_name} Over ${prop.prop_line} Hits Allowed  ·  proj ${projHA}` : `Over ${prop.prop_line} Hits Allowed`) :
+                prop.prop_type === 'ha_under'  ? (projHA != null ? `${prop.player_name} Under ${prop.prop_line} Hits Allowed  ·  proj ${projHA}` : `Under ${prop.prop_line} Hits Allowed`) :
+                prop.prop_type === 'outs_over' ? `Over ${prop.prop_line} Outs Recorded` :
+                prop.prop_type === 'outs_under'? `Under ${prop.prop_line} Outs Recorded` :
+                prop.prop_type === 'er_over'   ? `Over ${prop.prop_line} Earned Runs` :
+                prop.prop_type === 'er_under'  ? `Under ${prop.prop_line} Earned Runs` :
+                prop.prop_type === 'hits_over' ? 'Over 0.5 Hits' :
+                prop.prop_type === 'hits_under'? 'Under 0.5 Hits (0-fer)' :
+                prop.prop_type
+              );
             // Filter underscore-prefixed keys (metadata, not display bullets)
             const signalEntries = Object.entries(signals).filter(([k]) => !k.startsWith('_'));
             return (
