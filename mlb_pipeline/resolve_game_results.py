@@ -1,5 +1,6 @@
 import requests
 import os
+import sys
 import json
 from dotenv import load_dotenv
 from datetime import datetime, date, timedelta, timezone
@@ -784,5 +785,34 @@ def _resolve_single_pick(pick, slate_date):
     return 'Pending'
 
 
+def run_card_only():
+    """Re-walk just the sweat-card top_8 picks (no game logging / no
+    props or dawg resolution). Intended to run AFTER resolve_potd.py so the
+    POTD result that was just written to daily_best_bet_history propagates
+    into the cached card.
+
+    Background (2026-05-26 incident, recurring for 2 days): the workflow
+    runs resolve_game_results.py BEFORE resolve_potd.py. The card walk
+    inside resolve_game_results.py reads daily_best_bet_history for the
+    POTD row's result — but resolve_potd.py hasn't run yet, so the POTD
+    result is still Pending in history. Card top_8[0] stays Pending until
+    next day's resolver. Same race two nights in a row (NRFI POTD 5/24
+    Loss, NRFI POTD 5/25 Win — both stuck Pending on the card).
+
+    Fix: add this --card-only entry point and call it from a NEW workflow
+    step that runs AFTER resolve_potd.py. The card gets a second walk with
+    the POTD result now graded; the race condition is gone.
+    """
+    et_today = _et_today()
+    week_ago = (et_today - timedelta(days=7)).isoformat()
+    yesterday = (et_today - timedelta(days=1)).isoformat()
+    print('Re-walking Sweat Card top_8 picks (post-POTD pass)...')
+    sc_resolved = _resolve_sweat_card_top8(week_ago, yesterday)
+    print(f'Done! {sc_resolved} sweat card sets walked')
+
+
 if __name__ == '__main__':
-    run()
+    if '--card-only' in sys.argv:
+        run_card_only()
+    else:
+        run()

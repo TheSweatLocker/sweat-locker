@@ -295,6 +295,20 @@ jobs:
           cd mlb_pipeline
           python resolve_potd.py
 
+      # Re-walk the sweat card after POTD is graded (2026-05-26 fix).
+      # The card walk inside resolve_game_results.py reads
+      # daily_best_bet_history for the POTD row's result — but the FIRST
+      # walk happens BEFORE resolve_potd.py writes the Win/Loss/Push,
+      # so the POTD entry stayed Pending on the card for an extra day.
+      # This second pass picks up the POTD result that was just graded.
+      - name: Re-walk Sweat Card (post-POTD)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python resolve_game_results.py --card-only
+
       - name: Run NBA team stats update
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
