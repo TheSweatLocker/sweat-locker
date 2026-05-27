@@ -1763,6 +1763,66 @@ def _audit_note_for(cohort_key):
     return None
 
 
+_COHORT_RATE_CACHE = {}
+
+
+def _cohort_rate_n(cohort_key):
+    """Return (hit_rate, total_n) tuple from mlb_tier_calibration 30d window.
+
+    Same data source as _audit_note_for but exposes the numbers so we can
+    gate primary-play surfacing on live cohort health, not just display the
+    audit note next to a still-firing play.
+
+    Added 2026-05-27 after the xERA-gap rule was surfacing LIGHT Over plays
+    on a 37%-hit-rate cohort (n=32, well below break-even). The audit note
+    said 37% but the play still fired — display contradicted recommendation.
+    Returns (None, 0) on miss / error so callers can default to "no data, no
+    suppression."""
+    if not cohort_key:
+        return (None, 0)
+    if cohort_key in _COHORT_RATE_CACHE:
+        return _COHORT_RATE_CACHE[cohort_key]
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_tier_calibration",
+            params={
+                'tier': f'eq.{cohort_key}',
+                'window_label': 'eq.30d',
+                'select': 'hit_rate,total',
+                'order': 'computed_date.desc',
+                'limit': '1',
+            },
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            timeout=10,
+        )
+        rows = r.json() if r.status_code == 200 else []
+        if rows:
+            rate = float(rows[0].get('hit_rate') or 0)
+            n = int(rows[0].get('total') or 0)
+            _COHORT_RATE_CACHE[cohort_key] = (rate, n)
+            return (rate, n)
+    except Exception:
+        pass
+    _COHORT_RATE_CACHE[cohort_key] = (None, 0)
+    return (None, 0)
+
+
+def _cohort_healthy(cohort_key, min_rate=0.48, min_n=15):
+    """Return True when a cohort is currently firing above the suppress floor.
+
+    Used to gate primary-play surfacing. Default floor 0.48 (slightly under
+    break-even at -110 = 52.4%, giving a small buffer for noise on cohorts
+    that have drifted but might still be marginally playable).
+
+    Returns True when n < min_n — insufficient sample, don't suppress on
+    noise. Returns False when rate is non-null AND below floor AND sample
+    meets min_n. Returns True for unknown cohorts (default-permissive)."""
+    rate, n = _cohort_rate_n(cohort_key)
+    if rate is None or n < min_n:
+        return True
+    return rate >= min_rate
+
+
 def compute_primary_play(ctx):
     """Compute the headline primary-play recommendation for a game, server-side.
 
@@ -1851,27 +1911,28 @@ def compute_primary_play(ctx):
     fav = home_team if (proj_spread is not None and float(proj_spread) > 0) else away_team
 
     # PRIME ML: confluence ≥+4 AND |delta| ≥2.0 (hybrid threshold)
+    # 2026-05-27: gated on cohort health — see _cohort_healthy docstring.
     if conf is not None and int(conf) >= 4 and abs_delta >= 2.0 and ml_playable:
-        return {
-            "type": "ml",
-            "tier": "PRIME",
-            "label": f"{fav} ML",
-            "sub": f"PRIME confluence ({int(conf)} signals, {abs_delta:.1f} delta)",
-            "signal_floor": 85,
-            "audit_note": _audit_note_for('confluence_prime_ge4'),
-        }
+        if _cohort_healthy('confluence_prime_ge4'):
+            return {
+                "type": "ml",
+                "tier": "PRIME",
+                "label": f"{fav} ML",
+                "sub": f"PRIME confluence ({int(conf)} signals, {abs_delta:.1f} delta)",
+                "signal_floor": 85,
+                "audit_note": _audit_note_for('confluence_prime_ge4'),
+            }
     # PRIME NRFI sweet spot: 90-94 (70.0% lifetime, 68.8% L30d on n=30)
-    # Earlier claim of "78.9% on 352 games" was inflated/stale — corrected
-    # against actual DB-resolved sample 2026-05-18.
     if nrfi is not None and 90 <= int(nrfi) <= 94:
-        return {
-            "type": "nrfi",
-            "tier": "PRIME",
-            "label": "NRFI",
-            "sub": f"Score {int(nrfi)}/100 — sweet spot tier",
-            "signal_floor": 82,
-            "audit_note": _audit_note_for('nrfi_prime_90_94'),
-        }
+        if _cohort_healthy('nrfi_prime_90_94'):
+            return {
+                "type": "nrfi",
+                "tier": "PRIME",
+                "label": "NRFI",
+                "sub": f"Score {int(nrfi)}/100 — sweet spot tier",
+                "signal_floor": 82,
+                "audit_note": _audit_note_for('nrfi_prime_90_94'),
+            }
     # YRFI (first inning runs likely): score very low
     # Fragility gate (2026-05-18): 7d YRFI hit rate was 27%, 30d was 48% — far
     # below the 68% the old copy claimed. Stratifying by max(1st-inn ERA) found
@@ -1886,25 +1947,27 @@ def compute_primary_play(ctx):
     except (TypeError, ValueError):
         max_fi = 0.0
     if nrfi is not None and int(nrfi) <= 25 and 6.0 <= max_fi < 8.0:
-        return {
-            "type": "yrfi",
-            "tier": "STRONG",
-            "label": "YRFI",
-            "sub": f"NRFI {int(nrfi)} + 1st-inn ERA {max_fi:.1f} (audit sweet spot)",
-            "signal_floor": 72,
-            "audit_note": _audit_note_for('yrfi_lean_le40'),
-        }
+        if _cohort_healthy('yrfi_lean_le40'):
+            return {
+                "type": "yrfi",
+                "tier": "STRONG",
+                "label": "YRFI",
+                "sub": f"NRFI {int(nrfi)} + 1st-inn ERA {max_fi:.1f} (audit sweet spot)",
+                "signal_floor": 72,
+                "audit_note": _audit_note_for('yrfi_lean_le40'),
+            }
     # YRFI LEAN — score ≤25 but fragility outside sweet spot → small-sample
     # noise, post as transparent LEAN (60 floor) instead of STRONG
     if nrfi is not None and int(nrfi) <= 25:
-        return {
-            "type": "yrfi",
-            "tier": "LEAN",
-            "label": "YRFI",
-            "sub": f"NRFI {int(nrfi)} — 1st-inn ERA outside 6-8 sweet spot",
-            "signal_floor": 60,
-            "audit_note": _audit_note_for('yrfi_lean_le40'),
-        }
+        if _cohort_healthy('yrfi_lean_le40'):
+            return {
+                "type": "yrfi",
+                "tier": "LEAN",
+                "label": "YRFI",
+                "sub": f"NRFI {int(nrfi)} — 1st-inn ERA outside 6-8 sweet spot",
+                "signal_floor": 60,
+                "audit_note": _audit_note_for('yrfi_lean_le40'),
+            }
     # STRONG ML: confluence ≥+2 AND |delta| ≥2.0
     # Raised from 1.5 to 2.0 on 2026-05-21 audit. spread_delta_1_5_2 cohort
     # (delta in 1.5-2.0 band) hits only 40-43% lifetime — a trap zone where
@@ -1912,14 +1975,15 @@ def compute_primary_play(ctx):
     # hits 55-58%. Old threshold put STRONG picks square in the trap; new
     # threshold matches the cohort cliff. See project_spread_delta_trap_zone.
     if conf is not None and int(conf) >= 2 and abs_delta >= 2.0 and ml_playable:
-        return {
-            "type": "ml",
-            "tier": "STRONG",
-            "label": f"{fav} ML lean",
-            "sub": f"STRONG confluence ({int(conf)} signals, {abs_delta:.1f} delta)",
-            "signal_floor": 70,
-            "audit_note": _audit_note_for('confluence_strong_2_3'),
-        }
+        if _cohort_healthy('confluence_strong_2_3'):
+            return {
+                "type": "ml",
+                "tier": "STRONG",
+                "label": f"{fav} ML lean",
+                "sub": f"STRONG confluence ({int(conf)} signals, {abs_delta:.1f} delta)",
+                "signal_floor": 70,
+                "audit_note": _audit_note_for('confluence_strong_2_3'),
+            }
     # OVER lean — prefer v4 model_pred_total when present. v4 went 7-1 on
     # totals 5/19 but sample is small, so use a conservative threshold
     # (≥2.5 LIGHT / ≥3.5 STRONG) until we have a dedicated v4-OVER cohort
@@ -1960,8 +2024,17 @@ def compute_primary_play(ctx):
                 "audit_note": "v4 UNDER cohort 55.1% (30d, n=49)",
             }
     # Legacy OVER path — v3 xERA gap rule fired (fallback when v4 missing
-    # OR v4 edge is in 1.5-2.5 soft zone — v3 confirmation required)
+    # OR v4 edge is in 1.5-2.5 soft zone — v3 confirmation required).
+    #
+    # 2026-05-27: added cohort-health gate. The xera_gap_2_3_over cohort
+    # dropped to 37% on n=32 (vs lifetime 58.2% it was calibrated on);
+    # this play was still firing even though the audit number contradicted
+    # the recommendation. The _cohort_healthy gate suppresses when the
+    # live 30d rate dips below 0.48 with n>=15 — i.e., the rule has been
+    # losing money lately and shouldn't surface as a play.
     if ctx.get('over_lean') is True:
+        if not _cohort_healthy('xera_gap_2_3_over'):
+            return None  # cohort failing live — suppress until it recovers
         return {
             "type": "over",
             "tier": "LIGHT",
