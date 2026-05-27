@@ -1094,7 +1094,15 @@ def get_pitcher_vs_team(pitcher_id, opponent_team_id):
         return None
     try:
         agg = {"er": 0, "ip": 0.0, "k": 0, "ab": 0, "hits": 0, "g": 0}
-        for season in (2026, 2025):
+        # 2026-05-27 INCIDENT: previous lookback was only (2026, 2025) — 2
+        # seasons. Matz had 2 starts vs BAL in that window with one hot
+        # outing → DB stored 0.93 ERA / .200 BAA on 9.7 IP as "mastery."
+        # His actual CAREER vs BAL: 11 starts, 38.3 IP, 4.23 ERA (league
+        # average, NOT mastery). The 2-season window was masquerading
+        # small-sample hot streaks as career trends and we publicly cited
+        # one as a top play. Extended lookback to 5 seasons (2022-2026)
+        # to capture veteran starters' full body of work against opponents.
+        for season in (2026, 2025, 2024, 2023, 2022):
             r = requests.get(
                 f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
                 params={"stats": "gameLog", "group": "pitching", "season": season},

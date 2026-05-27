@@ -546,14 +546,22 @@ def score_pitcher_ha_over(g, side):
     # vs-team BAA mastery — added 2026-05-24. When a pitcher has been
     # historically pummeled by this opponent (BAA >= .290), boost HA-over.
     # When historically dominant (BAA <= .215), fade.
+    #
+    # 2026-05-27 INCIDENT: gate added on minimum sample (≥15 IP). Matz @ BAL
+    # was showing as .200 BAA "mastery" on only 9.7 IP (last 2 seasons) —
+    # full career sample (38.3 IP) is actually .276 BAA / 4.23 ERA, neutral.
+    # We publicly cited the small-sample number as a top play and it burned
+    # us. The 15-IP gate eliminates that whole class of hot-streak false
+    # positive.
     vt_baa = _f(g.get(f'{side}_pitcher_vs_team_avg'))
-    if vt_baa is not None:
+    vt_ip = _f(g.get(f'{side}_pitcher_vs_team_ip')) or 0
+    if vt_baa is not None and vt_ip >= 15:
         if vt_baa >= 0.290:
             conviction += 10
-            signals['vs_team_baa_anti'] = f'Career vs opp: {vt_baa:.3f} BAA — historically hit hard'
+            signals['vs_team_baa_anti'] = f'Career vs opp: {vt_baa:.3f} BAA on {vt_ip:.0f} IP — historically hit hard'
         elif vt_baa <= 0.215:
             conviction -= 6
-            signals['vs_team_baa'] = f'Career vs opp: {vt_baa:.3f} BAA — opp has trouble making contact'
+            signals['vs_team_baa'] = f'Career vs opp: {vt_baa:.3f} BAA on {vt_ip:.0f} IP — opp has trouble making contact'
 
     conviction = max(0, min(100, conviction))
     suggested_line = 6.5 if proj_h >= 7.0 else 5.5
@@ -631,13 +639,14 @@ def score_pitcher_ha_under(g, side):
     # trigger — career vs PHI .145 BAA / 4.50 ERA shouldn't have fired the
     # ER-under mastery vote (ERA matched xera) but DOES support hits-under.
     vt_baa = _f(g.get(f'{side}_pitcher_vs_team_avg'))
-    if vt_baa is not None:
+    vt_ip_under = _f(g.get(f'{side}_pitcher_vs_team_ip')) or 0
+    if vt_baa is not None and vt_ip_under >= 15:
         if vt_baa <= 0.215:
             conviction += 10
-            signals['vs_team_baa'] = f'Career vs opp: {vt_baa:.3f} BAA — contact-suppression mastery'
+            signals['vs_team_baa'] = f'Career vs opp: {vt_baa:.3f} BAA on {vt_ip_under:.0f} IP — contact-suppression mastery'
         elif vt_baa >= 0.290:
             conviction -= 6
-            signals['vs_team_baa_anti'] = f'Career vs opp: {vt_baa:.3f} BAA — gets hit hard'
+            signals['vs_team_baa_anti'] = f'Career vs opp: {vt_baa:.3f} BAA on {vt_ip_under:.0f} IP — gets hit hard'
 
     conviction = max(0, min(100, conviction))
     suggested_line = 5.5
@@ -1674,13 +1683,14 @@ def score_pitcher_er(g, side):
     # 17.18 ERA vs PHI on 3.7 IP) cleared no standard gate but is a clear
     # matchup-history ER-over candidate.
     vs_team_era = _f(g.get(f'{side}_pitcher_vs_team_era'))
-    # Innings of history not stored, but the print line shows "X.X IP" — we
-    # treat any vs_team_era with extreme value as signal-worthy (book usually
-    # weights this too).
-    if vs_team_era is not None and vs_team_era >= 7.0:
+    vs_team_ip_er = _f(g.get(f'{side}_pitcher_vs_team_ip')) or 0
+    # 2026-05-27 INCIDENT: 15-IP gate added. Was firing on 5-IP samples
+    # which is one bad/good start away from being noise. Mastery-tier
+    # boosts need a real career sample, not a 1-game hot/cold streak.
+    if vs_team_era is not None and vs_team_ip_er >= 15 and vs_team_era >= 7.0:
         conviction += 14
-        signals['vs_team'] = f'Career vs opp: {vs_team_era:.2f} ERA — historically pummeled'
-    elif vs_team_era is not None and vs_team_era <= 2.5:
+        signals['vs_team'] = f'Career vs opp: {vs_team_era:.2f} ERA on {vs_team_ip_er:.0f} IP — historically pummeled'
+    elif vs_team_era is not None and vs_team_ip_er >= 15 and vs_team_era <= 2.5:
         conviction -= 8
 
     conviction = max(0, min(100, conviction))
@@ -1768,13 +1778,17 @@ def score_pitcher_er_under(g, side):
     # on either relative gap ≥0.8 OR (vt_era ≤2.5 AND IP ≥10).
     vt_era = _f(g.get(f'{side}_pitcher_vs_team_era'))
     vt_ip = _f(g.get(f'{side}_pitcher_vs_team_ip')) or 0
-    if vt_era is not None and xera is not None:
+    # 2026-05-27 INCIDENT: minimum IP raised from 10 → 15 for absolute
+    # mastery, and relative mastery now also gated on ≥15 IP. The 10-IP
+    # floor was still admitting 2-3 start hot streaks as "mastery" — Matz
+    # @ BAL was the public-facing failure (9.7 IP / .200 BAA in DB vs
+    # 38.3 IP / .276 BAA full career).
+    if vt_era is not None and xera is not None and vt_ip >= 15:
         relative_mastery = vt_era <= 2.5 and (vt_era < xera - 0.8)
-        absolute_mastery = vt_era <= 2.5 and vt_ip >= 10
+        absolute_mastery = vt_era <= 2.5
         if relative_mastery or absolute_mastery:
             conviction += 10
-            ip_note = f' ({vt_ip:.0f} IP)' if vt_ip >= 10 else ''
-            signals['vs_team'] = f'Career vs opp: {vt_era:.2f} ERA{ip_note} — mastery'
+            signals['vs_team'] = f'Career vs opp: {vt_era:.2f} ERA on {vt_ip:.0f} IP — mastery'
         elif vt_era >= 6.0 and (vt_era > xera + 1.5):
             conviction -= 10  # anti-mastery signal goes the other way
             signals['vs_team_anti'] = f'Career vs opp: {vt_era:.2f} ERA — gets tagged'
@@ -1962,13 +1976,15 @@ def score_batter_hits(g, batter, side, lineup_position=None):
     # are harder to come by → fade hits_over. Inverse: when this lineup
     # has historically tagged the opp pitcher (BAA >= .290), boost.
     opp_vs_team_baa = _f(g.get(f'{opp_side}_pitcher_vs_team_avg'))
-    if opp_vs_team_baa is not None:
+    opp_vs_team_ip = _f(g.get(f'{opp_side}_pitcher_vs_team_ip')) or 0
+    # 2026-05-27 INCIDENT: 15-IP gate added. Was firing on any sample size.
+    if opp_vs_team_baa is not None and opp_vs_team_ip >= 15:
         if opp_vs_team_baa <= 0.215:
             conviction -= 8
-            signals['opp_vs_team_baa'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA — historical mastery'
+            signals['opp_vs_team_baa'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA on {opp_vs_team_ip:.0f} IP — historical mastery'
         elif opp_vs_team_baa >= 0.290:
             conviction += 8
-            signals['opp_vs_team_baa_anti'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA — gets tagged'
+            signals['opp_vs_team_baa_anti'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA on {opp_vs_team_ip:.0f} IP — gets tagged'
 
     # Opposing bullpen — matters for hits 2+ and late-game
     if opp_bp is not None:
@@ -2147,13 +2163,15 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
     # High BAA = pitcher gets tagged by this lineup → FADE hits_under.
     # Added 2026-05-24 per project_mastery_split_by_prop_type.
     opp_vs_team_baa = _f(g.get(f'{opp_side}_pitcher_vs_team_avg'))
-    if opp_vs_team_baa is not None:
+    opp_vs_team_ip2 = _f(g.get(f'{opp_side}_pitcher_vs_team_ip')) or 0
+    # 2026-05-27 INCIDENT: 15-IP gate added across all mastery signals.
+    if opp_vs_team_baa is not None and opp_vs_team_ip2 >= 15:
         if opp_vs_team_baa <= 0.215:
             conviction += 8
-            signals['opp_vs_team_baa'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA — mastery, under reinforced'
+            signals['opp_vs_team_baa'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA on {opp_vs_team_ip2:.0f} IP — mastery, under reinforced'
         elif opp_vs_team_baa >= 0.290:
             conviction -= 8
-            signals['opp_vs_team_baa_anti'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA — gets tagged, fade caution'
+            signals['opp_vs_team_baa_anti'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA on {opp_vs_team_ip2:.0f} IP — gets tagged, fade caution'
 
     # Weak team offense
     if team_wrc <= 85:
