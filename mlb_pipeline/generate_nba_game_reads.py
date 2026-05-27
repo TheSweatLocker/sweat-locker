@@ -64,6 +64,173 @@ def _is_nba_playoffs_now():
     return False
 
 
+# Module-level cache for the NBA team-name → balldontlie team_id map.
+# Populated on first call; one balldontlie API hit per process.
+_NBA_TEAM_ID_CACHE = None
+
+
+def _fetch_nba_team_ids():
+    """Lazy-load and cache the full team-name → balldontlie team_id map.
+    Maps e.g. 'New York Knicks' → 20. Used by _fetch_series_state to
+    translate the team names in the struct into the IDs balldontlie wants.
+    Returns {} on failure (caller defaults to series_state=None)."""
+    global _NBA_TEAM_ID_CACHE
+    if _NBA_TEAM_ID_CACHE is not None:
+        return _NBA_TEAM_ID_CACHE
+    bdl_key = os.environ.get("BDL_API_KEY")
+    if not bdl_key:
+        _NBA_TEAM_ID_CACHE = {}
+        return _NBA_TEAM_ID_CACHE
+    try:
+        r = requests.get(
+            "https://api.balldontlie.io/nba/v1/teams",
+            headers={"Authorization": bdl_key},
+            timeout=15,
+        )
+        teams = r.json().get("data", [])
+        _NBA_TEAM_ID_CACHE = {t.get("full_name"): t.get("id") for t in teams if t.get("full_name") and t.get("id")}
+        print(f"  Loaded {len(_NBA_TEAM_ID_CACHE)} NBA team IDs from balldontlie")
+    except Exception as e:
+        print(f"  ⚠️ balldontlie team-id fetch failed: {e}")
+        _NBA_TEAM_ID_CACHE = {}
+    return _NBA_TEAM_ID_CACHE
+
+
+def _fetch_series_state(away_team, home_team):
+    """Pull the current playoff series state between two teams.
+
+    Queries balldontlie for postseason games this season involving the home
+    team, filters to games where the away team was the opponent, then
+    aggregates the W-L record from each side.
+
+    Series detection rules:
+      - Only counts postseason games (postseason=true on balldontlie)
+      - Only counts games in last 21 days (covers max 7-game series window)
+      - Only counts games with status='Final'
+      - Returns None if zero qualifying games (first game of series not yet
+        played, OR no playoff series between these teams)
+
+    Output shape:
+      {
+        'home_wins': int,
+        'away_wins': int,
+        'games_played': int,
+        'next_game_num': int,
+        'leader': str | 'TIED',
+        'lead_margin': int,
+        'elimination_for': str | None,  # team facing elimination (down 3)
+        'series_summary': str,           # human-readable summary
+      }
+    """
+    bdl_key = os.environ.get("BDL_API_KEY")
+    if not bdl_key:
+        return None
+    team_map = _fetch_nba_team_ids()
+    home_id = team_map.get(home_team)
+    away_id = team_map.get(away_team)
+    if not home_id or not away_id:
+        return None
+
+    # Season convention: balldontlie uses the starting year of the season.
+    # NBA 2025-26 season → season=2025. May/June 2026 are the playoffs of
+    # the 2025-26 season → still season=2025.
+    et = datetime.now(timezone.utc) - timedelta(hours=4)
+    season = et.year - 1 if et.month < 10 else et.year
+
+    try:
+        r = requests.get(
+            "https://api.balldontlie.io/nba/v1/games",
+            headers={"Authorization": bdl_key},
+            params={
+                "seasons[]": season,
+                "team_ids[]": home_id,
+                "postseason": "true",
+                "per_page": 100,
+            },
+            timeout=15,
+        )
+        games = r.json().get("data", []) if r.status_code == 200 else []
+    except Exception as e:
+        print(f"  ⚠️ balldontlie series fetch failed for {away_team} @ {home_team}: {e}")
+        return None
+
+    # Filter to games where BOTH teams played (away was the opponent),
+    # game is finalized, and in the last 21 days (a current series).
+    today = et.date()
+    qualifying = []
+    for g in games:
+        gh = (g.get("home_team") or {}).get("id")
+        gv = (g.get("visitor_team") or {}).get("id")
+        if not (
+            (gh == home_id and gv == away_id) or (gh == away_id and gv == home_id)
+        ):
+            continue
+        if (g.get("status") or "").lower() not in ("final", "final/ot"):
+            continue
+        date_str = (g.get("date") or "").split("T")[0]
+        try:
+            game_date = datetime.fromisoformat(date_str).date()
+        except Exception:
+            continue
+        if (today - game_date).days > 21:
+            continue
+        qualifying.append(g)
+
+    if not qualifying:
+        return None  # first game of series tonight OR no series
+
+    # Count W-L from each side's perspective.
+    home_wins = 0
+    away_wins = 0
+    for g in qualifying:
+        h_score = g.get("home_team_score") or 0
+        v_score = g.get("visitor_team_score") or 0
+        if h_score == v_score:
+            continue
+        gh = (g.get("home_team") or {}).get("id")
+        winner_id = gh if h_score > v_score else (g.get("visitor_team") or {}).get("id")
+        if winner_id == home_id:
+            home_wins += 1
+        elif winner_id == away_id:
+            away_wins += 1
+
+    games_played = home_wins + away_wins
+    if games_played == 0:
+        return None
+
+    if home_wins > away_wins:
+        leader = home_team
+        lead_margin = home_wins - away_wins
+    elif away_wins > home_wins:
+        leader = away_team
+        lead_margin = away_wins - home_wins
+    else:
+        leader = "TIED"
+        lead_margin = 0
+
+    elimination_team = None
+    if home_wins == 3:
+        elimination_team = away_team
+    elif away_wins == 3:
+        elimination_team = home_team
+
+    if leader == "TIED":
+        summary = f"Series tied {home_wins}-{away_wins}"
+    else:
+        summary = f"{leader} leads {max(home_wins, away_wins)}-{min(home_wins, away_wins)}"
+
+    return {
+        "home_wins": home_wins,
+        "away_wins": away_wins,
+        "games_played": games_played,
+        "next_game_num": games_played + 1,
+        "leader": leader,
+        "lead_margin": lead_margin,
+        "elimination_for": elimination_team,
+        "series_summary": summary,
+    }
+
+
 def _f(v):
     try:
         return float(v)
@@ -235,21 +402,22 @@ def build_struct(game_id, picks, stats):
             "why": [f"{k}: {v}" for k, v in sig.items() if not str(k).startswith("_")][:4],
         })
 
-    # Playoff context (added 2026-05-27).
+    # Playoff context (added 2026-05-27, series_state wired 2026-05-27).
     # The efficiency block carries home_record/away_record/net_rating fields
     # populated by nba_pipeline.py from balldontlie — these are REGULAR-SEASON
     # totals. During playoffs, presenting them in present tense ("Cleveland
     # 34-7 at home this year") is misleading; they're a historical baseline,
-    # not current-state data. The previous Jerry prompt had a PLAYOFFS rules
-    # block but the `playoffs` flag was never set in the struct — so the
-    # rule never fired.
+    # not current-state data.
     #
-    # Full fix (series record, game-in-series number, elimination flag) needs
-    # a games-API integration we don't have yet — queued as v1.1. Until then,
-    # this minimal flag prevents Jerry from confidently citing regular-season
-    # records as if they were current-playoff-series records.
+    # _fetch_series_state pulls the actual W-L record from balldontlie's
+    # postseason games endpoint. Returns None when no qualifying postseason
+    # games found in the last 21 days (first game of series, or these two
+    # teams aren't in a series). Jerry's prompt handles both states:
+    #   - playoffs=true + series_state populated → lead with series context
+    #   - playoffs=true + series_state=null      → no series cite, regular-
+    #                                              season records as baseline
     playoffs = _is_nba_playoffs_now()
-    series_state = None  # placeholder — populated in v1.1 when we wire a games feed
+    series_state = _fetch_series_state(away, home) if playoffs else None
 
     struct = {
         "matchup": f"{away} @ {home}",
