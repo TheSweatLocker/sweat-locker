@@ -74,6 +74,21 @@ jobs:
           cd mlb_pipeline
           python game_context.py
 
+      # Verify starters against MLB Stats API probablePitcher feed (2026-05-27).
+      # Catches late lineup changes / surprise debuts / scratched starters that
+      # the game_context.py upsert missed. Three attribution slips in 4 days
+      # (Yesavage 5/26 → was Fisher, Davis Martin 5/27 → was Sandlin debut,
+      # Lodolo conflated 5/27) all traced to stale probables in the DB.
+      # Runs RIGHT AFTER game_context.py so corrections land before props /
+      # sweat card / Jerry reads pull pitcher-dependent data.
+      - name: Verify starting pitchers vs MLB API
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python verify_starters.py
+
       - name: Update team HR threats
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

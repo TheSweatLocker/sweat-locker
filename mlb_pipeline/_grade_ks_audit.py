@@ -89,6 +89,16 @@ def grade(date_str):
 
     text = open(path, encoding="utf-8").read()
 
+    # Strip bold markdown wrappers (** **) from the table before parsing.
+    # Earlier bug (Schlittler/Harrison missed grading on 5/26): rows where
+    # the pitcher name AND numeric columns were both wrapped in **bold**
+    # broke the numeric character classes in the row regex. We can't fix
+    # that with optional-asterisk groups without making the regex unreadable.
+    # Cleanest fix: collapse `**Cam Schlittler**` → `Cam Schlittler` and
+    # `**6.43**` → `6.43` before the regex runs. Pure cosmetic strip; the
+    # underlying data values are untouched.
+    parse_text = re.sub(r"\*\*([^*\n]+?)\*\*", r"\1", text)
+
     # Parse the table rows: | Pitcher | Team | Opp | L7 K proj | Our line | Tier | Book guess | Actual Ks |
     row_re = re.compile(
         r"^\|\s*([^|]+?)\s*\|\s*([A-Z]+)\s*\|\s*([A-Z]+)\s*\|\s*([\d.]+|—|None)\s*\|"
@@ -96,8 +106,8 @@ def grade(date_str):
         re.MULTILINE,
     )
     rows = []
-    for m in row_re.finditer(text):
-        name = m.group(1).strip().lstrip("*").rstrip("*")
+    for m in row_re.finditer(parse_text):
+        name = m.group(1).strip()
         team = m.group(2)
         proj = m.group(4)
         line = m.group(5)
