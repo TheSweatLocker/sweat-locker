@@ -45,6 +45,25 @@ def now_et_human():
     return f"{d.strftime('%A, %B')} {d.day}, {d.year}"
 
 
+def _is_nba_playoffs_now():
+    """NBA playoffs run roughly mid-April through late June.
+    Date-based heuristic — simple and good enough for the playoff flag
+    until we have a real "is_playoff_game" field from a games API.
+
+    Returns True when the current ET date is in the playoff window.
+    Stays True well past Finals to avoid false-negative tail edge cases;
+    regular-season starts late October, so any May/June/July date is
+    safely classified as 'not regular season.'"""
+    et = datetime.now(timezone.utc) - timedelta(hours=4)
+    m = et.month
+    d = et.day
+    if m in (5, 6, 7):
+        return True
+    if m == 4 and d >= 13:
+        return True
+    return False
+
+
 def _f(v):
     try:
         return float(v)
@@ -216,6 +235,22 @@ def build_struct(game_id, picks, stats):
             "why": [f"{k}: {v}" for k, v in sig.items() if not str(k).startswith("_")][:4],
         })
 
+    # Playoff context (added 2026-05-27).
+    # The efficiency block carries home_record/away_record/net_rating fields
+    # populated by nba_pipeline.py from balldontlie — these are REGULAR-SEASON
+    # totals. During playoffs, presenting them in present tense ("Cleveland
+    # 34-7 at home this year") is misleading; they're a historical baseline,
+    # not current-state data. The previous Jerry prompt had a PLAYOFFS rules
+    # block but the `playoffs` flag was never set in the struct — so the
+    # rule never fired.
+    #
+    # Full fix (series record, game-in-series number, elimination flag) needs
+    # a games-API integration we don't have yet — queued as v1.1. Until then,
+    # this minimal flag prevents Jerry from confidently citing regular-season
+    # records as if they were current-playoff-series records.
+    playoffs = _is_nba_playoffs_now()
+    series_state = None  # placeholder — populated in v1.1 when we wire a games feed
+
     struct = {
         "matchup": f"{away} @ {home}",
         "game_id": game_id,
@@ -242,6 +277,11 @@ def build_struct(game_id, picks, stats):
             "away": p0.get("away_injury_note") or (a.get("injury_note")),
             "star_out": bool(star_out),
             "star_out_note": (star_out.get("signals", {}) or {}).get("note") if star_out else None,
+        },
+        "context": {
+            "playoffs": playoffs,
+            "series_state": series_state,
+            "records_are": "regular-season baseline (playoffs in progress)" if playoffs else "current season",
         },
         "best_plays": best,
         "meta": {
