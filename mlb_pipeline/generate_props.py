@@ -1452,16 +1452,32 @@ def score_pitcher_outs(g, side):
 
     conviction = max(0, min(100, conviction))
 
-    # Suggested line: most starters target 5-6 IP = 15-18 outs.
-    # Elite + healthy + weak opp → 17.5; mediocre → 14.5.
-    if xera <= 3.0 and last_ip is not None and last_ip >= 6.0:
-        suggested_line = 17.5
-    elif xera <= 3.75:
-        suggested_line = 16.5
-    elif xera <= 4.5:
-        suggested_line = 15.5
+    # Pull projected_outs (set by patch_projected_ks.py from L7 actual avg_ip)
+    # so the suggested line tracks real recent durability instead of a fixed
+    # xERA-tier formula. Falls back to old tier formula when projection missing.
+    projected_outs = _f(g.get(f'{side}_pitcher_projected_outs'))
+    if projected_outs is not None:
+        # Over scorer: target line ~2 outs BELOW projection for a clear Over edge.
+        # Snap to standard book grid (books post 14.5 / 15.5 / 16.5 / 17.5).
+        target = projected_outs - 2.0
+        if target >= 17.5:
+            suggested_line = 17.5
+        elif target >= 16.5:
+            suggested_line = 16.5
+        elif target >= 15.5:
+            suggested_line = 15.5
+        else:
+            suggested_line = 14.5
     else:
-        suggested_line = 14.5
+        # Legacy tier formula — only fires when projection is unavailable.
+        if xera <= 3.0 and last_ip is not None and last_ip >= 6.0:
+            suggested_line = 17.5
+        elif xera <= 3.75:
+            suggested_line = 16.5
+        elif xera <= 4.5:
+            suggested_line = 15.5
+        else:
+            suggested_line = 14.5
 
     return {
         'conviction': conviction,
@@ -1545,14 +1561,38 @@ def score_pitcher_outs_under(g, side):
 
     conviction = max(0, min(100, conviction))
 
-    # Suggested line: market rarely posts under 12.5; pick the line where
-    # the pitcher's projection is most likely to be on the wrong side.
+    # Pull projected_outs (L7 actual avg_ip × 3) to drive the Under line
+    # toward what books actually post. 5/28 trigger: Flaherty xERA 5.04
+    # got the old "shaky pitcher" formula's 14.5 line, but the actual
+    # book posted 16.5. With projected_outs of 11.6 and a book line of
+    # 16.5, the real Under cushion was 4.9 outs (a huge edge we wrote up
+    # as a modest 2.9-out Under). Now we snap to the book grid with a
+    # 4-out cushion target so the suggested line tracks reality.
+    projected_outs = _f(g.get(f'{side}_pitcher_projected_outs'))
     if last_ip is not None and last_ip <= 2.0:
-        suggested_line = 12.5  # opener - very low line
-    elif xera >= 5.0:
-        suggested_line = 14.5
+        # Opener case — books rarely post outs lines for openers but when
+        # they do it's typically 12.5 or 13.5. Keep the existing handling.
+        suggested_line = 12.5
+    elif projected_outs is not None:
+        # Under scorer: target line ~4 outs ABOVE projection. Books tend
+        # to overshoot "shaky starter" projections by 3-5 outs because
+        # the daily volume of starts averages to a default line bracket.
+        # Snap to the book grid (14.5 / 15.5 / 16.5 / 17.5).
+        target = projected_outs + 4.0
+        if target <= 14.5:
+            suggested_line = 14.5
+        elif target <= 15.5:
+            suggested_line = 15.5
+        elif target <= 16.5:
+            suggested_line = 16.5
+        else:
+            suggested_line = 17.5
     else:
-        suggested_line = 15.5
+        # Legacy formula fallback when projection unavailable.
+        if xera >= 5.0:
+            suggested_line = 15.5  # bumped from 14.5 to match book reality
+        else:
+            suggested_line = 16.5  # bumped from 15.5 to match book reality
 
     return {
         'conviction': conviction,
