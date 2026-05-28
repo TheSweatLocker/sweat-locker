@@ -4146,8 +4146,11 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
 
         // Confluence (DON'T tell Jerry to lean on it — audit corrected to 75%
         // PRIME but cohort still small)
+        const conflVoted = mlbCtx.signal_confluence_signals_voted;
+        const conflTotal = mlbCtx.signal_confluence_signals_total;
+        const conflDenom = conflVoted != null && conflTotal != null ? ` (${conflVoted}/${conflTotal} signals voted)` : '';
         const confluence = mlbCtx.signal_confluence_net != null
-          ? `Confluence net ${mlbCtx.signal_confluence_net > 0 ? '+' : ''}${mlbCtx.signal_confluence_net} (model ${mlbCtx.spread_lean === 'home' ? 'favors home' : mlbCtx.spread_lean === 'away' ? 'favors away' : 'neutral'})`
+          ? `Confluence net ${mlbCtx.signal_confluence_net > 0 ? '+' : ''}${mlbCtx.signal_confluence_net}${conflDenom} (model ${mlbCtx.spread_lean === 'home' ? 'favors home' : mlbCtx.spread_lean === 'away' ? 'favors away' : 'neutral'})`
           : 'no confluence';
 
         return `MLB Pipeline: ${mlbCtx.home_pitcher || 'TBD'} xERA ${mlbCtx.home_sp_xera || 'N/A'} vs ${mlbCtx.away_pitcher || 'TBD'} xERA ${mlbCtx.away_sp_xera || 'N/A'}. K gap: home ${mlbCtx.home_k_gap || 'N/A'}, away ${mlbCtx.away_k_gap || 'N/A'}. wRC+: ${mlbCtx.home_wrc_plus || 'N/A'} vs ${mlbCtx.away_wrc_plus || 'N/A'}. Park: ${mlbCtx.park_run_factor || 'N/A'}. Weather: ${mlbCtx.temperature || '?'}°F, ${mlbCtx.wind_speed || 0}mph ${mlbCtx.wind_direction || ''}. NRFI: ${nrfiTier}. Total lean: ${totalLean}. Spread delta: ${mlbCtx.spread_delta != null ? mlbCtx.spread_delta.toFixed(1) + ' runs' : 'N/A'}. ${confluence}. ${firstInn}. ${l3Form}. ${bpWorkload}. ${recency}.`;
@@ -8021,7 +8024,14 @@ setJerryHistory(prev => {
                 return `Model: ${modelPick} by ${modelMargin} / Market: ${marketPick} by ${marketMargin}`;
               })();
               const conflKeys = c.breakdown && typeof c.breakdown === 'object' ? Object.keys(c.breakdown) : [];
-              const conflLine = c.net != null ? `${c.net > 0 ? '+' : ''}${c.net}${conflKeys.length ? ` (${conflKeys.join(', ')})` : ''}` : null;
+              // Show voted-of-total denominator (e.g. "9/14 signals voted")
+              // alongside the net so users see why the breakdown is short
+              // — added 2026-05-28 after audit found "6/6" vs "9/9" displays
+              // were misleading the "all signals agree" interpretation.
+              const conflDenomStr = c.signals_voted != null && c.signals_total != null
+                ? ` · ${c.signals_voted}/${c.signals_total} signals voted`
+                : '';
+              const conflLine = c.net != null ? `${c.net > 0 ? '+' : ''}${c.net}${conflDenomStr}${conflKeys.length ? ` (${conflKeys.join(', ')})` : ''}` : null;
               const bp = (h: any, a: any) => (h == null && a == null) ? null : `home ${h ?? '?'} / away ${a ?? '?'}${(Number(h)>=12||Number(a)>=12)?' ⚠ gassed':''}`;
               const drift = (h: any, a: any) => (h == null && a == null) ? null : `home ${h ?? '?'} / away ${a ?? '?'} R/G`;
               const pitcherText = (p: any) => {

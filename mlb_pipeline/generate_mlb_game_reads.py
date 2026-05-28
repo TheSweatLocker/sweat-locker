@@ -416,6 +416,12 @@ def build_struct(g, props, potd):
             "net": g.get("signal_confluence_net"),
             "breakdown": g.get("signal_confluence_breakdown"),
             "primary_play": g.get("primary_play"),
+            # Normalized denominators added 2026-05-28. App should render
+            # "{net} of {voted} voted ({total} possible)" rather than just
+            # the breakdown count which varied 5-9 per game and confused
+            # the "all signals agree" message.
+            "signals_voted": g.get("signal_confluence_signals_voted"),
+            "signals_total": g.get("signal_confluence_signals_total"),
         },
         "situational": {
             "park_run_factor": g.get("park_run_factor"),

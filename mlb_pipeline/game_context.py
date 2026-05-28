@@ -3562,6 +3562,17 @@ def run(target_date=None):
                 confluence_net = support - against
                 confluence_support = support
                 confluence_breakdown = breakdown
+                # Total possible signals — the universe that COULD vote when
+                # all data is present. Display denominator. Bump this if you
+                # add a new vote above so X / N display stays accurate.
+                # Current set: xera, wrc_hand, l3_era, l3_k, lineup, bullpen,
+                #              bp_taxed, ops_l14_heat, trend, recency, park,
+                #              h2h_recent_home, h2h_recent_away, pitcher_vs_team
+                #              (14 total — keep this in sync with the votes
+                #              actually computed above).
+                CONFLUENCE_TOTAL_POSSIBLE = 14
+                confluence_voted = len(breakdown)
+                confluence_no_data = CONFLUENCE_TOTAL_POSSIBLE - confluence_voted
 
                 # Tier label for diag
                 tier = 'NONE'
@@ -3714,6 +3725,14 @@ def run(target_date=None):
                 "signal_confluence_net": confluence_net,
                 "signal_confluence_support": confluence_support,
                 "signal_confluence_breakdown": confluence_breakdown if confluence_breakdown else None,
+                # Normalized denominator for the app's "X of Y signals" display.
+                # Voted = how many signals had data + clear-enough delta to vote.
+                # Total = the canonical signal universe (currently 14). Without
+                # these the app rendered "6/6" for one game and "9/9" for another
+                # — same "all signals agree" message, different denominators,
+                # confused users.
+                "signal_confluence_signals_voted": confluence_voted if confluence_breakdown else None,
+                "signal_confluence_signals_total": CONFLUENCE_TOTAL_POSSIBLE if confluence_breakdown else None,
                 "model_pred_home_runs": model_pred_home_runs,
                 "model_pred_away_runs": model_pred_away_runs,
                 "model_pred_spread": model_pred_spread,
