@@ -144,22 +144,35 @@ def project_all_stats(name, json_cache):
 
     # 3. Season-rate fallback for any stat the l7 didn't supply.
     # Assume 22 BF (~5.5 IP × 4 BF/IP) for the fill estimates.
+    #
+    # CREDIBILITY GATE (added 2026-05-27 Cole incident): season fallback only
+    # trustworthy if rates look like a real MLB starter. Gerrit Cole came back
+    # from TJ rehab with 2 starts (6 IP/2K then 6.2/10K) — pitcher_stats stored
+    # k_pct=0.091 from that first start. Patcher projected 2.0 Ks tonight; he
+    # struck out 10. Same thin-sample class as the Matz vs-team incident.
+    # Floors: k_pct 12-40%, bb_pct 0-14%, BAA 0.150-0.350. Anything outside
+    # = thin sample, return None instead of garbage so Jerry shows nothing.
     needs_fallback = any(out[k] is None for k in ("ks", "bb", "hits", "outs", "er"))
     if needs_fallback:
         season = get_pitcher_season_stats(name)
-        if out["ks"] is None and season.get("k_pct") is not None:
-            out["ks"] = round(season["k_pct"] / 100 * 22, 1)
+        k = season.get("k_pct")
+        b = season.get("bb_pct")
+        baa = season.get("baa")
+        k_ok   = k   is not None and 12.0 <= k   <= 40.0
+        bb_ok  = b   is not None and  0.0 <= b   <= 14.0
+        baa_ok = baa is not None and 0.150 <= float(baa) <= 0.350
+        if out["ks"] is None and k_ok:
+            out["ks"] = round(k / 100 * 22, 1)
             if out["source"] == "no_data": out["source"] = "season_fallback"
-        if out["bb"] is None and season.get("bb_pct") is not None:
-            out["bb"] = round(season["bb_pct"] / 100 * 22, 1)
+        if out["bb"] is None and bb_ok:
+            out["bb"] = round(b / 100 * 22, 1)
             if out["source"] == "no_data": out["source"] = "season_fallback"
-        # Hits: BAA × estimated AB (~20 AB at 5.5 IP)
-        if out["hits"] is None and season.get("baa") is not None:
-            try:
-                out["hits"] = round(float(season["baa"]) * 20, 1)
-                if out["source"] == "no_data": out["source"] = "season_fallback"
-            except (ValueError, TypeError):
-                pass
+        if out["hits"] is None and baa_ok:
+            out["hits"] = round(float(baa) * 20, 1)
+            if out["source"] == "no_data": out["source"] = "season_fallback"
+        # Flag the skipped cases so the cron log is readable
+        if k is not None and not k_ok:
+            out["source"] = "thin_sample_skipped"
         # No clean fallback for outs/er without IP history — leave None
 
     return out
