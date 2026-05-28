@@ -655,7 +655,72 @@ def _resolve_sweat_card_top8(start_date, end_date):
             print(f'  📋 {slate_date} Sweat Card: {wins}-{losses}{" ("+str(pushes)+"P)" if pushes else ""} ({pending} pending)')
             resolved_count += 1
 
+            # Self-heal: today's sweat_card has a yesterday_recap snapshot
+            # baked in. When the 6am card-walker grades a row that didn't
+            # resolve before sweat_card built (e.g. resolver bug on a new
+            # bet type), the snapshot stays stale. Whenever we patch ANY
+            # sweat_card, also refresh the *following day's* yesterday_recap
+            # if it points at the date we just patched. 5/28 LAD -1.5 was
+            # the trigger — run-line POTD stayed Pending in the snapshot
+            # all day until manual fix.
+            try:
+                next_day = (datetime.strptime(slate_date, '%Y-%m-%d').date() + timedelta(days=1)).isoformat()
+                _refresh_next_day_yesterday_recap(next_day, slate_date, top_8, data.get('top_8_summary'))
+            except Exception as e:
+                print(f'  ⚠️  self-heal of next-day recap failed for {slate_date}: {e}')
+
     return resolved_count
+
+
+def _refresh_next_day_yesterday_recap(next_day, slate_date, top_8, summary):
+    """Patch the {next_day} sweat_card's yesterday_recap to mirror the
+    freshly-walked picks for slate_date. No-op if the next-day row doesn't
+    exist or its recap points at a different date. Idempotent."""
+    rows = requests.get(
+        f'{SUPABASE_URL}/rest/v1/jerry_cache',
+        params={'cache_key': f'eq.sweat_card_{next_day}', 'select': 'data'},
+        headers=HEADERS,
+        timeout=15,
+    ).json() or []
+    if not rows:
+        return
+    data = rows[0].get('data') or {}
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return
+    y = data.get('yesterday_recap') or {}
+    if y.get('date') != slate_date:
+        # Next-day card is showing a different yesterday — don't clobber.
+        return
+
+    # Mirror the walked top_8 grades (rank/tier/label/result/game)
+    y['top_8'] = [
+        {'rank': p.get('rank'), 'tier': p.get('tier'), 'label': p.get('label'),
+         'result': p.get('result'), 'game': p.get('game'), 'type': p.get('type')}
+        for p in top_8
+    ]
+    if summary:
+        y['top_8_summary'] = summary
+    # Mirror POTD / Dawg result from the type-tagged top_8 entries
+    potd_pk = next((p for p in top_8 if p.get('type') == 'POTD'), None)
+    if potd_pk and y.get('potd'):
+        y['potd']['result'] = potd_pk.get('result')
+    dawg_pk = next((p for p in top_8 if p.get('type') == 'DotD'), None)
+    if dawg_pk and y.get('dawg'):
+        y['dawg']['result_status'] = dawg_pk.get('result')
+
+    data['yesterday_recap'] = y
+    requests.patch(
+        f'{SUPABASE_URL}/rest/v1/jerry_cache',
+        params={'cache_key': f'eq.sweat_card_{next_day}'},
+        headers={**HEADERS, 'Prefer': 'return=minimal'},
+        json={'data': data},
+        timeout=15,
+    )
+    s = y.get('top_8_summary') or {}
+    print(f'  🔁 healed {next_day}.yesterday_recap ← {slate_date} ({s.get("wins","?")}-{s.get("losses","?")})')
 
 
 def _resolve_single_pick(pick, slate_date):
