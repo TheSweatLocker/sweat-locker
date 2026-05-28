@@ -430,7 +430,14 @@ def build_struct(game_id, picks, stats):
             "away_ml": p0.get("away_ml"),
         },
         "model": {
+            # net_rating_gap is the EFFECTIVE gap used for the model edge —
+            # regressed by 0.40x in playoff games to account for line
+            # compression. _raw preserves the regular-season number for
+            # narrative color ("Thunder are 15.5 pts better in regular-season
+            # net rating") without it leaking into spread math.
             "net_rating_gap": nr_gap,
+            "net_rating_gap_raw": _f(p0.get("net_rating_gap_raw")),
+            "playoff_regression_applied": p0.get("playoff_regression_applied"),
             "model_edge_vs_spread": model_edge,
             "ats_lean": (ats.get("pick_side") if ats else None),
             "ats_tier": (ats.get("tier") if ats else None),

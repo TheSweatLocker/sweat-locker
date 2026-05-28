@@ -60,6 +60,20 @@ TOTAL_PRIME = 15.0
 # systematically overshoot during playoffs.
 PLAYOFF_PACE_FACTOR = 0.96
 
+# Playoff spread regression — REGULAR-SEASON net rating gaps don't extrapolate
+# to playoff point spreads 1:1. Playoff lines compress: both teams play their
+# stars heavier minutes, rotations tighten, halfcourt sets dominate, halftime
+# adjustments matter more. Empirically the historic correlation between
+# regular-season nr_gap and actual playoff spread is ~0.35-0.50 (i.e. a
+# regular-season 15-pt nr gap becomes a ~6-pt playoff projection).
+# Added 2026-05-28 after the OKC@SAS 19-pt edge incident: regular-season
+# nr_gap was -15.5, market spread -3.5, model spit out a 19-pt edge claim
+# (Thunder dog cover PRIME conviction 90). Vegas does NOT miss playoff lines
+# by 19. Without this regression we ship absurd PRIME picks every night
+# during the playoffs.
+# 0.40 is conservative — calibrate via post-deploy backtest before tightening.
+PLAYOFF_NR_REGRESSION = 0.40
+
 
 def today_et():
     et = datetime.now(timezone.utc) - timedelta(hours=4)
@@ -127,7 +141,31 @@ def extract_market(game):
     return median(spreads), median(totals), median(hmls), median(amls)
 
 
+# Playoff tier-threshold multipliers — even with the 0.40 regression on
+# nr_gap, edges in playoff games can still come out 8-12 pts because the
+# regular-season net rating gap between elite vs bottom-tier teams is huge
+# (15-20 pts). 9.7-pt edge would still trip PRIME at the regular-season
+# thresholds and ship the same kind of trust-killing call as the OKC@SAS
+# 5/28 incident. Bump the bar for tier qualification in playoffs:
+#   LEAN   2 → 3
+#   STRONG 4 → 6
+#   PRIME  6 → 10
+# Same direction as PLAYOFF_PACE_FACTOR — calibrate via post-deploy backtest
+# before tightening. Conservative for v1.0; better to skip a pick than ship
+# an absurd PRIME claim.
+PLAYOFF_TIER_BUMP = {
+    'LEAN':   3.0,
+    'STRONG': 6.0,
+    'PRIME':  10.0,
+}
+
+
 def tier_from_spread_edge(edge_abs):
+    if is_playoff_time():
+        if edge_abs >= PLAYOFF_TIER_BUMP['PRIME']:  return 'PRIME'
+        if edge_abs >= PLAYOFF_TIER_BUMP['STRONG']: return 'STRONG'
+        if edge_abs >= PLAYOFF_TIER_BUMP['LEAN']:   return 'LEAN'
+        return None
     if edge_abs >= SPREAD_PRIME: return 'PRIME'
     if edge_abs >= SPREAD_STRONG: return 'STRONG'
     if edge_abs >= SPREAD_LEAN: return 'LEAN'
@@ -142,8 +180,12 @@ def tier_from_total_edge(edge_abs):
 
 
 def conviction_from_spread_edge(edge_abs, drift_aligned):
+    # Conviction caps tighter in playoffs — max 85 (was 100) to reflect
+    # uncertainty until we backtest enough playoff picks to recalibrate.
     base = 50 + min(40, edge_abs * 6)
     if drift_aligned: base += 5
+    if is_playoff_time():
+        return min(85, int(round(base)))
     return min(100, int(round(base)))
 
 
@@ -191,7 +233,15 @@ def generate_picks_for_game(game, team_stats):
     home_drift = (h_l10 - h_nr) if h_l10 is not None else 0.0
     away_drift = (a_l10 - a_nr) if a_l10 is not None else 0.0
 
-    nr_gap = h_nr - a_nr
+    nr_gap_raw = h_nr - a_nr
+    # Apply playoff regression to nr_gap for spread predictions. Raw stored
+    # separately for transparency / debugging — downstream surfaces should
+    # use `nr_gap` (effective) for ATS edges, `nr_gap_raw` for narrative
+    # color ("Thunder are 15.5 pts better in net efficiency this season").
+    if is_playoff_time():
+        nr_gap = round(nr_gap_raw * PLAYOFF_NR_REGRESSION, 2)
+    else:
+        nr_gap = nr_gap_raw
     pace_avg = None
     if h.get('pace') is not None and a.get('pace') is not None:
         pace_avg = round((_f(h['pace']) + _f(a['pace'])) / 2, 1)
@@ -202,7 +252,11 @@ def generate_picks_for_game(game, team_stats):
         'season': '2025-26',
         'home_team': home_team,
         'away_team': away_team,
+        # nr_gap is the EFFECTIVE gap used for ATS edge — regressed in playoffs.
+        # nr_gap_raw preserves the regular-season number for narrative color.
         'net_rating_gap': round(nr_gap, 2),
+        'net_rating_gap_raw': round(nr_gap_raw, 2),
+        'playoff_regression_applied': is_playoff_time(),
         'market_spread': spread,
         'pace_avg': pace_avg,
         'market_total': total,
