@@ -515,8 +515,13 @@ def run():
     gd = today_et()
     print(f"=== Dawg of the Day {gd} ===")
 
-    # Overwrite guard — if today's row already exists, don't regenerate unless --force
+    # CLI flags
     force = '--force' in sys.argv
+    dry_run = '--dry-run' in sys.argv
+    if dry_run:
+        print("  [DRY RUN MODE — no writes]")
+
+    # Overwrite guard — if today's row already exists, don't regenerate unless --force
     if not force:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/daily_dawg?game_date=eq.{gd}&select=team,conviction",
@@ -554,6 +559,21 @@ def run():
     dawg_candidates.sort(key=lambda d: d['conviction'], reverse=True)
     top = dawg_candidates[0]
 
+    # Minimum-conviction floor (added 2026-05-28). When the best candidate
+    # is below this, output "no eligible Dawg today" instead of forcing a
+    # publish on a weak signal. Floor calibrated to STRONG-tier — a 65-
+    # conviction Dawg has cleared the v3 edge gate + xERA gate + ML gate
+    # AND has at least one supporting signal beyond raw edge. Below 65,
+    # the upside doesn't justify the social commitment of publishing.
+    MIN_PUBLISH_CONVICTION = 65
+    if top['conviction'] < MIN_PUBLISH_CONVICTION:
+        print(f"\n  ⚠️ Top candidate {top['team']} at conviction {top['conviction']} below publish floor ({MIN_PUBLISH_CONVICTION})")
+        print(f"  No eligible Dawg today — best of {len(dawg_candidates)} candidate(s) wasn't strong enough.")
+        print(f"\n  Candidate ranking:")
+        for d in dawg_candidates[:5]:
+            print(f"    [{d['conviction']}] {d['team']} — {d['matchup']}  (ML {d.get('team_ml', 0):+d})")
+        return
+
     print(f"\n🐕 Dawg of the Day: {top['team']} ({top['tier']} {top['conviction']})")
     print(f"  {top['matchup']}")
     print(f"  ML {top.get('team_ml', 0):+d} | Model delta {top['spread_delta']:+.1f}")
@@ -564,6 +584,15 @@ def run():
         print(f"\n  Runners-up:")
         for d in dawg_candidates[1:4]:
             print(f"    [{d['conviction']}] {d['team']} — {d['matchup']}")
+
+    # --dry-run honored properly now (added 2026-05-28). Previously the flag
+    # was accepted but the upsert ran anyway, so testing the picker against
+    # a live row was destructive. Now --dry-run prints the narrative + would-
+    # be Dawg without persisting.
+    if dry_run:
+        print(f"\n  [DRY RUN] Skipping narrative generation + upsert.")
+        print(f"  Would store: {top['team']} ({top['matchup']}) — conviction {top['conviction']}")
+        return
 
     print(f"\n  Building Jerry narrative...")
     narrative = build_narrative(top)
