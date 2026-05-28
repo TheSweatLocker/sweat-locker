@@ -2434,6 +2434,142 @@ def wipe_todays_props():
     )
 
 
+def fetch_book_lines_for_ks(date_str):
+    """Fetch real sportsbook K-prop lines per pitcher from the Odds API.
+
+    Returns {pitcher_name_lower: {'line': float, 'over': int, 'under': int,
+                                   'source': str}}.
+
+    Architecture (5/28): book lines are REFERENCE DATA, not used for tier
+    selection or which props surface. Our pipeline conviction scoring +
+    projections (projected_ks etc.) remain the source of truth. Users see
+    "Sale Over 6.5 — book line 7.5 — projection 8.0" so they understand
+    both the math and the bettable market. Doesn't run K-Over scoring math
+    against the book line; that would let market noise drive our picks.
+
+    Phase 1: pitcher_strikeouts only. Phase 2 extends to pitcher_walks,
+    pitcher_hits_allowed, pitcher_outs. Cost: ~6 event-level Odds API calls
+    per cron (~$0.006/day at standard rates).
+
+    Returns empty dict when ODDS_API_KEY missing or any call fails — never
+    raises. Downstream consumers should treat None book_line as 'unavailable'.
+    """
+    ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
+    book_map = {}
+    if not ODDS_API_KEY:
+        return book_map
+    try:
+        # Step 1: list MLB events
+        now_utc = datetime.now(timezone.utc)
+        events_r = requests.get(
+            "https://api.the-odds-api.com/v4/sports/baseball_mlb/events",
+            params={
+                'apiKey': ODDS_API_KEY,
+                # Pre-game only — drops anything already in progress.
+                'commenceTimeFrom': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            },
+            timeout=15,
+        )
+        if events_r.status_code != 200:
+            print(f"  ⚠️ events fetch {events_r.status_code}")
+            return book_map
+        events = events_r.json() or []
+        # Step 2: per event, fetch pitcher_strikeouts market
+        for ev in events:
+            ev_id = ev.get('id')
+            if not ev_id:
+                continue
+            try:
+                odds_r = requests.get(
+                    f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{ev_id}/odds",
+                    params={
+                        'apiKey': ODDS_API_KEY,
+                        'regions': 'us',
+                        'markets': 'pitcher_strikeouts',
+                        'oddsFormat': 'american',
+                    },
+                    timeout=15,
+                )
+                if odds_r.status_code != 200:
+                    continue
+                data = odds_r.json()
+                # Each bookmaker has its own line; collect across books and
+                # take the median (Odds API returns multiple — DraftKings,
+                # FanDuel, etc.). For each pitcher we want ONE line.
+                pitcher_books = {}  # name → list of (line, over, under, src)
+                for bm in data.get('bookmakers', []):
+                    book_src = bm.get('title') or bm.get('key')
+                    for mkt in bm.get('markets', []):
+                        if mkt.get('key') != 'pitcher_strikeouts':
+                            continue
+                        # Pair Over/Under by pitcher (description = pitcher name)
+                        by_pitcher = {}  # pitcher_name → {Over: (line, odds), Under: (line, odds)}
+                        for o in mkt.get('outcomes', []):
+                            pname = o.get('description', '').strip()
+                            side = (o.get('name') or '').strip()
+                            point = o.get('point')
+                            price = o.get('price')
+                            if not (pname and side in ('Over', 'Under') and point is not None and price is not None):
+                                continue
+                            by_pitcher.setdefault(pname, {})[side] = (float(point), int(price))
+                        for pname, sides in by_pitcher.items():
+                            if 'Over' not in sides or 'Under' not in sides:
+                                continue
+                            over_line, over_odds = sides['Over']
+                            under_line, under_odds = sides['Under']
+                            # Lines should match O/U pair; if not, skip
+                            if over_line != under_line:
+                                continue
+                            pitcher_books.setdefault(pname, []).append((over_line, over_odds, under_odds, book_src))
+                # Median across books per pitcher
+                for pname, entries in pitcher_books.items():
+                    if not entries:
+                        continue
+                    lines = sorted(e[0] for e in entries)
+                    median_line = lines[len(lines) // 2]
+                    # Use the entry matching the median for odds
+                    match = next((e for e in entries if e[0] == median_line), entries[0])
+                    book_map[pname.lower()] = {
+                        'line': match[0],
+                        'over': match[1],
+                        'under': match[2],
+                        'source': match[3],
+                        'n_books': len(entries),
+                    }
+            except Exception as e:
+                continue
+        print(f"  📖 Loaded book K-lines for {len(book_map)} pitchers")
+    except Exception as e:
+        print(f"  ⚠️ book line fetch failed: {e}")
+    return book_map
+
+
+def attach_book_lines(props):
+    """Attach book_line / book_over_odds / book_under_odds / book_source to
+    pitcher K props in-place. Reference data only — does NOT alter prop_line
+    or tier/conviction. NULL when book line unavailable for that pitcher."""
+    ks_pitchers = {(p.get('player_name') or '').strip() for p in props if p.get('prop_type') in ('ks_over', 'ks_under')}
+    if not ks_pitchers:
+        return
+    book_map = fetch_book_lines_for_ks(today_et())
+    if not book_map:
+        return
+    matched = 0
+    for p in props:
+        if p.get('prop_type') not in ('ks_over', 'ks_under'):
+            continue
+        name = (p.get('player_name') or '').strip().lower()
+        bk = book_map.get(name)
+        if not bk:
+            continue
+        p['book_line'] = bk['line']
+        p['book_over_odds'] = bk['over']
+        p['book_under_odds'] = bk['under']
+        p['book_source'] = f"{bk['source']} (median of {bk['n_books']})"
+        matched += 1
+    print(f"  📖 Attached book lines to {matched} K props (of {len(ks_pitchers)} pitchers with K props)")
+
+
 def upsert_props(props):
     """Upsert prop rows. Falls back to stripping the lineup_state field if
     Supabase rejects it (column doesn't exist yet — user needs to run:
@@ -2454,7 +2590,10 @@ def upsert_props(props):
     # New columns the user needs to add:
     #   ALTER TABLE mlb_pipeline_props ADD COLUMN lineup_state TEXT;
     #   ALTER TABLE mlb_pipeline_props ADD COLUMN stack_alert BOOLEAN DEFAULT FALSE;
-    optional_cols = ('lineup_state', 'stack_alert')
+    #   (5/28) book_line / book_over_odds / book_under_odds / book_source
+    #          per 20260528_book_lines_on_props.sql migration
+    optional_cols = ('lineup_state', 'stack_alert',
+                     'book_line', 'book_over_odds', 'book_under_odds', 'book_source')
     if r.status_code == 400 and any(c in (r.text or '') for c in optional_cols):
         missing = [c for c in optional_cols if c in (r.text or '')]
         print(f"  ⚠️ optional columns missing ({', '.join(missing)}) — stripping and retrying. Run:")
@@ -2866,6 +3005,12 @@ def run():
         if label:
             sigs['_display_label'] = label
             p['signals'] = sigs
+
+    # Attach real sportsbook K-prop lines (reference only — does NOT change
+    # tier/conviction/which props surface). Phase 1: K props only. The
+    # pipeline projections + cohort scoring remain the source of truth for
+    # WHICH props publish; book lines tell users what they can actually bet.
+    attach_book_lines(top)
 
     wipe_todays_props()
     saved = upsert_props(top)
