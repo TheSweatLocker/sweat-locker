@@ -4808,8 +4808,10 @@ Sweat Score: ${supabaseCache.data.score?.total || 'N/A'}/100
 ${supabaseCache.data.sport === 'MLB' ? `
 ${supabaseCache.data.score?.isNRFI ? `PLAY TYPE: NRFI (No Run First Inning)
 NRFI Score: ${supabaseCache.data.score.nrfiScore}/100` : ''}
-${ctx.home_pitcher ? `Home pitcher: ${ctx.home_pitcher} xERA ${ctx.home_sp_xera || 'N/A'}` : ''}
-${ctx.away_pitcher ? `Away pitcher: ${ctx.away_pitcher} xERA ${ctx.away_sp_xera || 'N/A'}` : ''}
+PITCHER ATTRIBUTION (DO NOT GET WRONG):
+${ctx.home_pitcher ? `- ${ctx.home_pitcher} pitches FOR ${supabaseCache.data.game?.home_team} and FACES the ${supabaseCache.data.game?.away_team} lineup. His xERA: ${ctx.home_sp_xera || 'N/A'}.` : ''}
+${ctx.away_pitcher ? `- ${ctx.away_pitcher} pitches FOR ${supabaseCache.data.game?.away_team} and FACES the ${supabaseCache.data.game?.home_team} lineup. His xERA: ${ctx.away_sp_xera || 'N/A'}.` : ''}
+NEVER say a pitcher is "getting torched by his own team's lineup" — each pitcher faces the OPPOSING team's bats only.
 ${ctx.projected_total ? `Projected total: ${ctx.projected_total}` : ''}
 ${ctx.spread_delta != null ? `Spread delta: ${ctx.spread_delta} runs vs market` : ''}
 ${ctx.venue ? `Venue: ${ctx.venue} | Temp: ${ctx.temperature}°F` : ''}
