@@ -3557,6 +3557,49 @@ def run(target_date=None):
                     # signal silently doesn't fire, no penalty
                     pass
 
+                # SHADOW SIGNALS — Tier 1 launch-blocker work, logged but NOT
+                # counted in net/support/against until backtest validates each.
+                # Stored in a parallel `shadow_breakdown` dict with `_shadow_`
+                # prefix on keys so consumers can join historical picks against
+                # the shadow vote pattern.
+                shadow_breakdown = {}
+
+                # Shadow #6 — Travel fatigue. away_consecutive_road_games >= 6
+                # is a real fatigue threshold per public research (~1-2%
+                # offensive dip). Only applies to away team (home always 0).
+                try:
+                    away_road = _f(g_road := g.get('away_consecutive_road_games'))  # type: ignore
+                    if away_road and away_road >= 7:
+                        shadow_breakdown['_shadow_travel_fade'] = 'home'  # fade away offense
+                    elif away_road and away_road >= 5:
+                        shadow_breakdown['_shadow_travel_fade'] = 'home'  # weaker
+                except Exception:
+                    pass
+
+                # Shadow #7 — Long-rest pitcher. >=8 days rest doubles
+                # variance — pitchers come back EITHER dominant or rusty.
+                # Shadow signal "long_rest_volatility" doesn't pick a side,
+                # logged for backtest as a tier-cap candidate (if validated,
+                # PRIME caps to STRONG when either pitcher is long-rest).
+                try:
+                    h_rest = _f(g.get('home_days_rest'))
+                    a_rest = _f(g.get('away_days_rest'))
+                    if (h_rest and h_rest >= 8) or (a_rest and a_rest >= 8):
+                        shadow_breakdown['_shadow_long_rest'] = 'volatile'
+                except Exception:
+                    pass
+
+                # Shadow #8 — Inning-1 team stats into NRFI. Currently NRFI
+                # scoring uses overall opp team K% / wRC+ but not the team's
+                # inning-1 specific runs/game. mlb_team_offense.inning_1_runs_per_game
+                # exists but isn't pulled into game_context yet. Shadow flag
+                # marks games where TEAM inning-1 RPG diverges from overall
+                # baseline (would tighten NRFI predictions). Implementation
+                # blocked on enriching home_offense / away_offense with this
+                # field — adding column read here as a marker for the work.
+                # When _enriched: vote will go on lower inning-1-RPG team.
+                shadow_breakdown['_shadow_inning1_team_stats'] = 'pending_enrichment'
+
                 support = sum(1 for v in breakdown.values() if v == model_pick)
                 against = sum(1 for v in breakdown.values() if v != model_pick)
                 confluence_net = support - against
@@ -3733,6 +3776,11 @@ def run(target_date=None):
                 # confused users.
                 "signal_confluence_signals_voted": confluence_voted if confluence_breakdown else None,
                 "signal_confluence_signals_total": CONFLUENCE_TOTAL_POSSIBLE if confluence_breakdown else None,
+                # Shadow signals (Tier 1 backtest queue) — logged but NOT
+                # counted in net/support/against. After 1-2 weeks of data,
+                # join against resolved game outcomes to validate before
+                # promoting any to live signals.
+                "signal_confluence_shadow_breakdown": shadow_breakdown if shadow_breakdown else None,
                 "model_pred_home_runs": model_pred_home_runs,
                 "model_pred_away_runs": model_pred_away_runs,
                 "model_pred_spread": model_pred_spread,
