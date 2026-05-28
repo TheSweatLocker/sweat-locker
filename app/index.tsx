@@ -5516,6 +5516,7 @@ const gameTime = new Date(game.commence_time);
 const isLive = game.gameState === 'Live' || (game.gameState !== 'Final' && new Date() > gameTime && new Date() < new Date(gameTime.getTime() + 5*60*60*1000));
 if(isLive) {
   setGameNarrative('⚡ Game in progress — Jerry\'s pre-game analysis is locked. Check live lines for current action.');
+  setGameReadStruct(null);
   setGameNarrativeLoading(false);
   return;
 }
