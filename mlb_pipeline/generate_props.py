@@ -1574,19 +1574,17 @@ def score_pitcher_outs_under(g, side):
         # they do it's typically 12.5 or 13.5. Keep the existing handling.
         suggested_line = 12.5
     elif projected_outs is not None:
-        # Under scorer: target line ~4 outs ABOVE projection. Books tend
-        # to overshoot "shaky starter" projections by 3-5 outs because
-        # the daily volume of starts averages to a default line bracket.
-        # Snap to the book grid (14.5 / 15.5 / 16.5 / 17.5).
+        # Under scorer: target line ~4 outs ABOVE projection, snapped to the
+        # nearest X.5 (books only post 14.5 / 15.5 / 16.5 / 17.5). 5/28
+        # Flaherty trigger: projected 12.6, target 16.6 — strict floor-to-
+        # bracket bumped to 17.5 when the actual book line was 16.5. Round
+        # to nearest 0.5 (16.6 → 16.5) instead and clip to bracket bounds.
         target = projected_outs + 4.0
-        if target <= 14.5:
-            suggested_line = 14.5
-        elif target <= 15.5:
-            suggested_line = 15.5
-        elif target <= 16.5:
-            suggested_line = 16.5
-        else:
-            suggested_line = 17.5
+        rounded = round(target * 2) / 2
+        # Force X.5 (drop any .0 to .5 below — books don't post X.0)
+        if rounded == int(rounded):
+            rounded -= 0.5
+        suggested_line = max(14.5, min(17.5, rounded))
     else:
         # Legacy formula fallback when projection unavailable.
         if xera >= 5.0:
