@@ -170,6 +170,15 @@ def _pitcher_block(g, side):
         flags.append(f"last outing only {last_ip:.1f} IP — opener/short")
     if l3 is not None and l3 >= 6.0:
         flags.append(f"getting tagged lately (L3 ERA {l3:.2f}) — pull-early risk")
+    # All five projections + WHIP populated by patch_projected_ks.py from the
+    # same JSON cache the prop scorers use. Lets Jerry cite the EXACT number
+    # downstream surfaces will see, even when no prop of that type is in the
+    # published list. WHIP is descriptive color (≤0.95 elite, ≥1.50 shaky).
+    whip = _f(g.get(f"{side}_pitcher_whip"))
+    whip_flag = None
+    if whip is not None:
+        if whip <= 0.95: whip_flag = "elite"
+        elif whip >= 1.50: whip_flag = "shaky"
     return {
         "name": name,
         "own_team": own_team,
@@ -182,11 +191,13 @@ def _pitcher_block(g, side):
         "first_inning_era": fi,
         "vs_team_era": _f(g.get(f"{side}_pitcher_vs_team_era")),
         "vs_team_avg": _f(g.get(f"{side}_pitcher_vs_team_avg")),
-        # projected_ks lives on the row (populated by patch_projected_ks.py)
-        # so Jerry can cite the same number the K-Over scorer uses, even
-        # when no K-Over prop is published for this starter (the 5/27 DeGrom
-        # gap — BB Under was scored but K projection was invisible).
-        "projected_ks": _f(g.get(f"{side}_pitcher_projected_ks")),
+        "projected_ks":    _f(g.get(f"{side}_pitcher_projected_ks")),
+        "projected_bb":    _f(g.get(f"{side}_pitcher_projected_bb")),
+        "projected_hits":  _f(g.get(f"{side}_pitcher_projected_hits")),
+        "projected_outs":  _f(g.get(f"{side}_pitcher_projected_outs")),
+        "projected_er":    _f(g.get(f"{side}_pitcher_projected_er")),
+        "whip": whip,
+        "whip_flag": whip_flag,
         "last_ip": last_ip,
         "flags": flags,
     }

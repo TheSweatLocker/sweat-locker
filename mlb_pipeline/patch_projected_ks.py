@@ -1,15 +1,21 @@
-"""Patch today's mlb_game_context with projected_ks for each starter.
+"""Patch today's mlb_game_context with projected stats for each starter.
 
-Runs AFTER compute_pitcher_class_projections.py (which writes the JSON cache
-plus pitcher_projections Supabase table) and BEFORE generate_props.py + the
-sweat card + Jerry game reads. Reads the EXACT same source the K scorer
-uses so the published K-Over prop projection and the social-copy projection
-are guaranteed identical.
+Originally projected_ks only (5/27 DeGrom incident). Extended same day to
+cover EVERY pitcher prop (BB / Hits / Outs / ER) plus WHIP for narrative,
+since the same data-quality gap could open on any of them — "Over the
+projected ER" or "Under the projected hits" without a specific number is
+just as unauditable as "Over the projected Ks" was.
 
-Source-of-truth fallback chain (mirrors generate_props.py:get_pitcher_projection):
-  1. data/pitcher_class_projections.json — l7_rolling.avg_k (preferred)
+Runs AFTER compute_pitcher_class_projections.py and BEFORE generate_props.py
++ sweat card + Jerry reads. Reads the SAME source the prop scorers use so
+published prop projections and social-copy projections are guaranteed
+identical.
+
+Source chain (mirrors generate_props.py:get_pitcher_projection):
+  1. data/pitcher_class_projections.json — l7_rolling.{avg_k, avg_bb,
+     avg_hits, avg_er, avg_ip, whip} (preferred)
   2. pitcher_projections Supabase table — same data, more recent rebuild
-  3. mlb_pitcher_stats.k_pct × 22 BF (~5.5 IP × 4 BF/IP) — fallback
+  3. Per-stat fallbacks using mlb_pitcher_stats season rates
 
 Trigger: 2026-05-27 DeGrom social-copy gap. The implied "Over projected"
 recommendation had no number attached; backing it out from K% × IP gave
@@ -73,51 +79,103 @@ def get_supabase_projection(name):
     return None
 
 
-def get_pitcher_k_pct(name):
+def get_pitcher_season_stats(name):
+    """Pull season rates for fallback projections."""
     try:
         q = urllib.parse.quote(name)
         r = urllib.request.urlopen(
             urllib.request.Request(
-                f"{SB}/rest/v1/mlb_pitcher_stats?player_name=eq.{q}&season=eq.2026&select=k_pct&limit=1",
+                f"{SB}/rest/v1/mlb_pitcher_stats?player_name=eq.{q}&season=eq.2026"
+                f"&select=k_pct,bb_pct,baa_allowed&limit=1",
                 headers=H_READ,
             ),
             timeout=10,
         )
         rows = json.loads(r.read())
-        if rows and rows[0].get("k_pct") is not None:
-            k = rows[0]["k_pct"]
-            # mlb_pitcher_stats stores k_pct as a decimal (0.298) for some pitchers
-            # and as integer pct (29.8) for others — normalize both to integer pct
-            return float(k) * 100 if float(k) < 1.0 else float(k)
+        if rows:
+            row = rows[0]
+            # Normalize percent encoding (some columns store 0.298, some 29.8)
+            def _pct(v):
+                if v is None:
+                    return None
+                f = float(v)
+                return f * 100 if f < 1.0 else f
+            return {
+                "k_pct":   _pct(row.get("k_pct")),
+                "bb_pct":  _pct(row.get("bb_pct")),
+                "baa":     row.get("baa_allowed"),
+            }
     except Exception:
         pass
-    return None
+    return {}
 
 
-def project_ks(name, json_cache):
-    """Same chain as generate_props.py get_pitcher_projection."""
-    # 1. JSON cache
+# Maps stat key to the l7_rolling field name + the fallback formula
+# (per-batter rate × 22 BF assumed). Outs = avg_ip × 3.
+def project_all_stats(name, json_cache):
+    """Returns dict with projected_ks / bb / hits / outs / er + whip + source tag.
+    None values for any stat the source chain can't supply."""
+    out = {"ks": None, "bb": None, "hits": None, "outs": None, "er": None, "whip": None, "source": "no_data"}
+
+    # 1. JSON cache (preferred)
     entry = json_cache.get((name or "").lower())
-    if entry:
-        l7 = (entry.get("l7_rolling") or {}).get("avg_k")
-        if l7 is not None:
-            return round(float(l7), 1), "json_l7"
-    # 2. Supabase pitcher_projections
-    sb_l7 = get_supabase_projection(name)
-    if sb_l7 and sb_l7.get("avg_k") is not None:
-        return round(float(sb_l7["avg_k"]), 1), "sb_l7"
-    # 3. Fallback: season K% × 22 BF
-    k_pct = get_pitcher_k_pct(name)
-    if k_pct is not None:
-        return round(k_pct / 100 * 22, 1), "k_pct_22bf"
-    return None, "no_data"
+    l7 = (entry or {}).get("l7_rolling") if entry else None
+    if not l7:
+        # 2. Supabase pitcher_projections fallback
+        l7 = get_supabase_projection(name)
+        if l7:
+            out["source"] = "sb_l7"
+    else:
+        out["source"] = "json_l7"
+
+    if l7:
+        if l7.get("avg_k") is not None:
+            out["ks"] = round(float(l7["avg_k"]), 1)
+        if l7.get("avg_bb") is not None:
+            out["bb"] = round(float(l7["avg_bb"]), 1)
+        if l7.get("avg_hits") is not None:
+            out["hits"] = round(float(l7["avg_hits"]), 1)
+        if l7.get("avg_er") is not None:
+            out["er"] = round(float(l7["avg_er"]), 1)
+        if l7.get("avg_ip") is not None:
+            out["outs"] = round(float(l7["avg_ip"]) * 3.0, 1)
+        if l7.get("whip") is not None:
+            out["whip"] = round(float(l7["whip"]), 2)
+
+    # 3. Season-rate fallback for any stat the l7 didn't supply.
+    # Assume 22 BF (~5.5 IP × 4 BF/IP) for the fill estimates.
+    needs_fallback = any(out[k] is None for k in ("ks", "bb", "hits", "outs", "er"))
+    if needs_fallback:
+        season = get_pitcher_season_stats(name)
+        if out["ks"] is None and season.get("k_pct") is not None:
+            out["ks"] = round(season["k_pct"] / 100 * 22, 1)
+            if out["source"] == "no_data": out["source"] = "season_fallback"
+        if out["bb"] is None and season.get("bb_pct") is not None:
+            out["bb"] = round(season["bb_pct"] / 100 * 22, 1)
+            if out["source"] == "no_data": out["source"] = "season_fallback"
+        # Hits: BAA × estimated AB (~20 AB at 5.5 IP)
+        if out["hits"] is None and season.get("baa") is not None:
+            try:
+                out["hits"] = round(float(season["baa"]) * 20, 1)
+                if out["source"] == "no_data": out["source"] = "season_fallback"
+            except (ValueError, TypeError):
+                pass
+        # No clean fallback for outs/er without IP history — leave None
+
+    return out
 
 
 def fetch_today_games(date_str):
+    # Pull existing projection columns so we only PATCH on actual changes —
+    # keeps the log clean and reduces churn on row updated_at.
+    cols = ["id", "away_pitcher", "home_pitcher"]
+    for side in ("away", "home"):
+        for stat in ("ks", "bb", "hits", "outs", "er"):
+            cols.append(f"{side}_pitcher_projected_{stat}")
+        cols.append(f"{side}_pitcher_whip")
     url = (
         f"{SB}/rest/v1/mlb_game_context?game_date=eq.{date_str}"
-        f"&select=id,away_pitcher,home_pitcher,"
-        f"away_pitcher_projected_ks,home_pitcher_projected_ks"
+        f"&select={','.join(cols)}"
     )
     r = urllib.request.urlopen(urllib.request.Request(url, headers=H_READ), timeout=20)
     return json.loads(r.read())
@@ -154,18 +212,30 @@ def main():
         payload = {}
         for side in ("away", "home"):
             name = g.get(f"{side}_pitcher")
-            old = g.get(f"{side}_pitcher_projected_ks")
             if not name:
                 continue
-            proj, source = project_ks(name, json_cache)
-            if proj is None:
-                if old is not None:
-                    payload[f"{side}_pitcher_projected_ks"] = None
-                    print(f"  {name}: CLEARED (no projection data)")
-                continue
-            if old != proj:
-                payload[f"{side}_pitcher_projected_ks"] = proj
-                print(f"  {name}: projected_ks = {proj} [{source}]  (was {old})")
+            proj = project_all_stats(name, json_cache)
+            changed_bits = []
+            # Stats with dedicated columns
+            for stat_key, col_suffix in (
+                ("ks", "projected_ks"), ("bb", "projected_bb"),
+                ("hits", "projected_hits"), ("outs", "projected_outs"),
+                ("er", "projected_er"),
+            ):
+                col = f"{side}_pitcher_{col_suffix}"
+                new = proj[stat_key]
+                old = g.get(col)
+                if old != new:
+                    payload[col] = new
+                    changed_bits.append(f"{col_suffix}={new}")
+            # WHIP (its own column, not "projected_" prefixed since it's a stat we track not a prop)
+            whip_col = f"{side}_pitcher_whip"
+            if g.get(whip_col) != proj["whip"]:
+                payload[whip_col] = proj["whip"]
+                if proj["whip"] is not None:
+                    changed_bits.append(f"whip={proj['whip']}")
+            if changed_bits:
+                print(f"  {name} [{proj['source']}]: " + ", ".join(changed_bits))
         if payload:
             if patch_row(g["id"], payload):
                 updated += 1

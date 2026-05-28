@@ -8026,11 +8026,21 @@ setJerryHistory(prev => {
                 if(!p || !p.name) return null;
                 const bits: string[] = [];
                 if(p.xera != null) bits.push(`${p.xera} xERA`);
+                if(p.whip != null) bits.push(`${p.whip} WHIP${p.whip_flag ? ` (${p.whip_flag})` : ''}`);
                 if(p.l3_era != null) bits.push(`${p.l3_era} L3 ERA`);
                 if(p.first_inning_era != null) bits.push(`${p.first_inning_era} 1st-inn`);
                 if(p.vs_team_era != null) bits.push(`${p.vs_team_era} career vs opp`);
-                if(p.projected_ks != null) bits.push(`~${p.projected_ks} Ks projected`);
                 return `${p.name} — ${bits.join(' · ')}`;
+              };
+              const projectionText = (p: any) => {
+                if(!p || !p.name) return null;
+                const parts: string[] = [];
+                if(p.projected_ks != null) parts.push(`${p.projected_ks} K`);
+                if(p.projected_bb != null) parts.push(`${p.projected_bb} BB`);
+                if(p.projected_hits != null) parts.push(`${p.projected_hits} H`);
+                if(p.projected_outs != null) parts.push(`${p.projected_outs} outs`);
+                if(p.projected_er != null) parts.push(`${p.projected_er} ER`);
+                return parts.length ? `Projects: ${parts.join(' · ')}` : null;
               };
               denseContent = (
                 <>
@@ -8047,8 +8057,10 @@ setJerryHistory(prev => {
                   <Row label="wRC+" value={(sit.home_wrc_plus!=null||sit.away_wrc_plus!=null) ? `home ${sit.home_wrc_plus ?? '?'} / away ${sit.away_wrc_plus ?? '?'}` : null}/>
                   <Section title="STARTERS"/>
                   {pitcherText(pa) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(pa)}</Text>}
+                  {projectionText(pa) && <Text style={{color:'#7a92a8',fontSize:11,marginBottom:3,marginLeft:8}}>{projectionText(pa)}</Text>}
                   {(pa.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(pa.flags||[]).join(' · ')}</Text>}
                   {pitcherText(ph) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(ph)}</Text>}
+                  {projectionText(ph) && <Text style={{color:'#7a92a8',fontSize:11,marginBottom:3,marginLeft:8}}>{projectionText(ph)}</Text>}
                   {(ph.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(ph.flags||[]).join(' · ')}</Text>}
                   {playRows}
                 </>
