@@ -90,7 +90,11 @@ def get_pitcher_vs_team(pitcher_id, opp_team_id):
                 agg["hits"] += int(stat.get("hits", 0) or 0)
                 agg["g"] += 1
             time.sleep(0.1)
-        if agg["ip"] < 3:
+        # 15-IP gate matches the source-side gate in game_context.get_pitcher_vs_team
+        # (raised from 3 IP after the 5/27 Matz incident). Pitchers with <15 IP
+        # vs opponent across 5 seasons have their fields cleared so no downstream
+        # system can cite noise as mastery.
+        if agg["ip"] < 15:
             return None
         era = round((agg["er"] * 9.0) / agg["ip"], 2)
         avg = round(agg["hits"] / agg["ab"], 3) if agg["ab"] > 0 else 0.0
@@ -169,6 +173,15 @@ def main():
                             f"OLD={old_era} ERA / {old_ip} IP  "
                             f"NEW={vs['era_vs_team']} ERA / {vs['ip_vs_team']} IP"
                         )
+                else:
+                    # New fetch came back insufficient (<15 IP). Clear any stale
+                    # under-sampled data so it can't surface as a signal.
+                    if old_era is not None or old_ip is not None:
+                        payload["away_pitcher_vs_team_era"] = None
+                        payload["away_pitcher_vs_team_avg"] = None
+                        payload["away_pitcher_vs_team_ip"] = None
+                        payload["away_pitcher_vs_team_k_per_9"] = None
+                        print(f"  {ap} vs {home}: CLEARED — only {old_ip} IP across 5 seasons (was {old_era} ERA)")
         # Home pitcher faces away team
         if hp:
             pid = lookup_pitcher_id(hp)
@@ -188,6 +201,13 @@ def main():
                             f"OLD={old_era} ERA / {old_ip} IP  "
                             f"NEW={vs['era_vs_team']} ERA / {vs['ip_vs_team']} IP"
                         )
+                else:
+                    if old_era is not None or old_ip is not None:
+                        payload["home_pitcher_vs_team_era"] = None
+                        payload["home_pitcher_vs_team_avg"] = None
+                        payload["home_pitcher_vs_team_ip"] = None
+                        payload["home_pitcher_vs_team_k_per_9"] = None
+                        print(f"  {hp} vs {away}: CLEARED — only {old_ip} IP across 5 seasons (was {old_era} ERA)")
         if payload:
             if patch(g["id"], payload):
                 updated += 1

@@ -250,7 +250,14 @@ def get_pitcher_handedness(player_name):
         return None
 
 def get_last_3_starts(player_name, season=2026):
-    """Fetch pitcher's last 3 starts ERA + K% from MLB Stats API gameLog"""
+    """Fetch pitcher's last 3 starts ERA + K% from MLB Stats API gameLog.
+
+    If the current season has <3 starts (early-season call-ups, IL returns,
+    rookies), walks back through 2025 + 2024 to fill out the 3-start sample.
+    Without this fallback, a pitcher with 1 start in 2026 would have their
+    L3 ERA calculated off that single line — same thin-sample class of bug
+    as the 5/27 Matz vs-team incident.
+    """
     try:
         search_resp = requests.get(
             "https://statsapi.mlb.com/api/v1/people/search",
@@ -262,22 +269,32 @@ def get_last_3_starts(player_name, season=2026):
             return None
         player_id = people[0]["id"]
 
-        stats_resp = requests.get(
-            f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats",
-            params={"stats": "gameLog", "group": "pitching", "season": season},
-            timeout=10
-        )
-        splits = stats_resp.json().get("stats", [])
-        if not splits or not splits[0].get("splits"):
+        starts = []
+        for yr in (season, season - 1, season - 2):
+            try:
+                stats_resp = requests.get(
+                    f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats",
+                    params={"stats": "gameLog", "group": "pitching", "season": yr},
+                    timeout=10
+                )
+                splits = stats_resp.json().get("stats", [])
+                if splits and splits[0].get("splits"):
+                    games = splits[0]["splits"]
+                    starts.extend([g for g in games if (g.get("stat", {}).get("gamesStarted") or 0) == 1])
+            except Exception:
+                continue
+            # Stop walking back once we have 3 starts
+            if len(starts) >= 3:
+                break
+
+        if len(starts) == 0:
             return None
 
-        games = splits[0]["splits"]
-        # Filter to starts only (gamesStarted = 1), sort by date desc, take last 3
-        starts = [g for g in games if (g.get("stat", {}).get("gamesStarted") or 0) == 1]
         starts.sort(key=lambda g: g.get("date", ""), reverse=True)
         last_3 = starts[:3]
 
-        if len(last_3) == 0:
+        # Sample-size gate: require 3 actual starts before reporting L3
+        if len(last_3) < 3:
             return None
 
         total_er = sum(int(g["stat"].get("earnedRuns", 0) or 0) for g in last_3)

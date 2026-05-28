@@ -89,6 +89,26 @@ jobs:
           cd mlb_pipeline
           python verify_starters.py
 
+      # Data-quality self-audit (2026-05-27). Built after the Matz vs-BAL
+      # incident — we publicly cited 0.93 ERA / .200 BAA on 9.7 IP as
+      # "mastery" (actual career: 4.23 / 38.3 IP). Audit catches:
+      #   - vs-team mastery firing on <15 IP
+      #   - pitcher_stats row missing for a confirmed starter
+      #   - first-inning sample <2 IP (NRFI/YRFI driver)
+      #   - L3 ERA missing
+      # Runs AFTER verify_starters (pitchers locked) and BEFORE props
+      # so any critical surface fails the workflow with a red badge.
+      # continue-on-error: true while we calibrate; flip false once
+      # noise drops to zero so red badges always mean real problems.
+      - name: Data-quality audit
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python _data_quality_audit.py
+
       - name: Update team HR threats
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

@@ -683,49 +683,70 @@ def calc_platoon_advantage(lineup_names, pitcher_hand):
 
     return score, note
 
-def get_pitcher_splits(pitcher_id, season=2026):
-    """Fetch pitcher home/away splits from MLB Stats API via statSplits"""
+def get_pitcher_splits(pitcher_id):
+    """Fetch pitcher home/away ERA splits, aggregating raw ER/IP across 2026 +
+    2025 + 2024 so early-season thin samples don't produce fake splits.
+
+    Trigger: same data-integrity class as the 5/27 Matz vs-team incident — a
+    pitcher with 6 IP at home and 0 ER would have shown a 0.00 home ERA pre-
+    fix and fed split_delta as if it were stable. Now we sum raw earned runs
+    and innings across seasons and hard-gate at 15 IP per side. If a side has
+    <15 IP across the 3-year window, that side returns None and split_delta
+    sees missing data instead of garbage.
+
+    Returns: {home_era, away_era, home_ip, away_ip} or None.
+    """
     if not pitcher_id:
         return None
     try:
-        # statSplits with sitCodes=h,a is the reliable path; homeAndAway has been flaky
-        r = requests.get(
-            f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
-            params={
-                "stats": "statSplits",
-                "group": "pitching",
-                "season": season,
-                "sitCodes": "h,a"
-            },
-            timeout=10
-        )
-        data = r.json()
-        stats = data.get("stats", [])
-        if not stats:
+        agg = {"h": {"er": 0, "ip": 0.0}, "a": {"er": 0, "ip": 0.0}}
+        for season in (2026, 2025, 2024):
+            try:
+                r = requests.get(
+                    f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
+                    params={
+                        "stats": "statSplits",
+                        "group": "pitching",
+                        "season": season,
+                        "sitCodes": "h,a",
+                    },
+                    timeout=10,
+                )
+                stats = r.json().get("stats", [])
+            except Exception:
+                continue
+            for split_group in stats:
+                for split in split_group.get("splits", []):
+                    split_info = split.get("split", {})
+                    code = (split_info.get("code", "") or "").strip().lower()
+                    description = (split_info.get("description", "") or "").strip().lower()
+                    stat_obj = split.get("stat", {})
+                    ip_str = str(stat_obj.get("inningsPitched", "0") or "0")
+                    try:
+                        ip = float(ip_str.replace(".1", ".333").replace(".2", ".667"))
+                        er = int(stat_obj.get("earnedRuns", 0) or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if code == "h" or "home" in description:
+                        agg["h"]["ip"] += ip
+                        agg["h"]["er"] += er
+                    elif code == "a" or "away" in description or "road" in description:
+                        agg["a"]["ip"] += ip
+                        agg["a"]["er"] += er
+            # Stop expanding the window once both sides clear the gate
+            if agg["h"]["ip"] >= 25 and agg["a"]["ip"] >= 25:
+                break
+        # 15-IP hard floor per side (≈3 starts) — same threshold as vs-team mastery
+        home_era = round((agg["h"]["er"] * 9.0) / agg["h"]["ip"], 2) if agg["h"]["ip"] >= 15 else None
+        away_era = round((agg["a"]["er"] * 9.0) / agg["a"]["ip"], 2) if agg["a"]["ip"] >= 15 else None
+        if home_era is None and away_era is None:
             return None
-        home_era = None
-        away_era = None
-        for split_group in stats:
-            for split in split_group.get("splits", []):
-                split_info = split.get("split", {})
-                code = (split_info.get("code", "") or "").strip().lower()
-                description = (split_info.get("description", "") or "").strip().lower()
-                stat_obj = split.get("stat", {})
-                era_raw = stat_obj.get("era")
-                if era_raw is None or era_raw == "-.--":
-                    continue
-                try:
-                    era = float(era_raw)
-                except (ValueError, TypeError):
-                    continue
-                if code == "h" or "home" in description:
-                    home_era = era
-                elif code == "a" or "away" in description or "road" in description:
-                    away_era = era
-        # Fallback to 2025 if current season has no data yet
-        if home_era is None and away_era is None and season == 2026:
-            return get_pitcher_splits(pitcher_id, season=2025)
-        return {"home_era": home_era, "away_era": away_era}
+        return {
+            "home_era": home_era,
+            "away_era": away_era,
+            "home_ip": round(agg["h"]["ip"], 1),
+            "away_ip": round(agg["a"]["ip"], 1),
+        }
     except Exception:
         return None
 
@@ -1123,7 +1144,15 @@ def get_pitcher_vs_team(pitcher_id, opponent_team_id):
                 agg["ab"] += int(stat.get("atBats", 0) or 0)
                 agg["hits"] += int(stat.get("hits", 0) or 0)
                 agg["g"] += 1
-        if agg["ip"] < 3:
+        # 15-IP source-side gate: don't persist undersized vs-team data so no
+        # downstream consumer (scorers, Jerry struct, social card) can cite a
+        # noise sample as "mastery." Was 3 IP — too permissive; let rookies
+        # and infrequent matchups through with single-game hot streaks. The
+        # 5/27 Matz incident showed even 9.7 IP across 2 seasons fed a public
+        # mastery claim that whiffed (4.23 career ERA vs BAL, not 0.93). The
+        # 5-season lookback above (2022-2026) helps build sample; this gate
+        # ensures we never serve numbers that should fail the eye test.
+        if agg["ip"] < 15:
             return None
         era = round((agg["er"] * 9.0) / agg["ip"], 2)
         avg = round(agg["hits"] / agg["ab"], 3) if agg["ab"] > 0 else 0.0
@@ -2467,9 +2496,9 @@ def run():
             home_pitcher_splits = get_pitcher_splits(home_pitcher_id) if home_pitcher_id else None
             away_pitcher_splits = get_pitcher_splits(away_pitcher_id) if away_pitcher_id else None
             if home_pitcher_splits:
-                print(f"  {home_pitcher} splits — Home ERA: {home_pitcher_splits.get('home_era')}, Away ERA: {home_pitcher_splits.get('away_era')}")
+                print(f"  {home_pitcher} splits — Home ERA: {home_pitcher_splits.get('home_era')} ({home_pitcher_splits.get('home_ip')} IP), Away ERA: {home_pitcher_splits.get('away_era')} ({home_pitcher_splits.get('away_ip')} IP)")
             if away_pitcher_splits:
-                print(f"  {away_pitcher} splits — Home ERA: {away_pitcher_splits.get('home_era')}, Away ERA: {away_pitcher_splits.get('away_era')}")
+                print(f"  {away_pitcher} splits — Home ERA: {away_pitcher_splits.get('home_era')} ({away_pitcher_splits.get('home_ip')} IP), Away ERA: {away_pitcher_splits.get('away_era')} ({away_pitcher_splits.get('away_ip')} IP)")
             
             if home_pitcher:
                 print(f"  {home_team} starter: {home_pitcher} — xERA: {home_pitcher_stats.get('xera', 'N/A') if home_pitcher_stats else 'stats not found'}")
