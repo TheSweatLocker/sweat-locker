@@ -8029,6 +8029,7 @@ setJerryHistory(prev => {
                 if(p.l3_era != null) bits.push(`${p.l3_era} L3 ERA`);
                 if(p.first_inning_era != null) bits.push(`${p.first_inning_era} 1st-inn`);
                 if(p.vs_team_era != null) bits.push(`${p.vs_team_era} career vs opp`);
+                if(p.projected_ks != null) bits.push(`~${p.projected_ks} Ks projected`);
                 return `${p.name} — ${bits.join(' · ')}`;
               };
               denseContent = (

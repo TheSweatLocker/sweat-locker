@@ -182,6 +182,11 @@ def _pitcher_block(g, side):
         "first_inning_era": fi,
         "vs_team_era": _f(g.get(f"{side}_pitcher_vs_team_era")),
         "vs_team_avg": _f(g.get(f"{side}_pitcher_vs_team_avg")),
+        # projected_ks lives on the row (populated by patch_projected_ks.py)
+        # so Jerry can cite the same number the K-Over scorer uses, even
+        # when no K-Over prop is published for this starter (the 5/27 DeGrom
+        # gap — BB Under was scored but K projection was invisible).
+        "projected_ks": _f(g.get(f"{side}_pitcher_projected_ks")),
         "last_ip": last_ip,
         "flags": flags,
     }
