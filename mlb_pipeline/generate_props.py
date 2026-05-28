@@ -1085,38 +1085,35 @@ def score_pitcher_ks(g, side):
 
     conviction = max(0, min(100, conviction))
 
-    # Suggested line: conservative projection with realistic caps.
-    # Books rarely post pitcher K lines above 7.5 even for elite arms —
-    # matching that distribution keeps our suggested line credible.
-    # Small-sample noise cap: if K% > 30, use 28 as ceiling for projection
-    # (prevents rookie/tiny-sample pitchers from getting 8+ K lines).
-    raw_k = pitcher_k_pct if pitcher_k_pct is not None else 22
-    k_pct_for_line = min(raw_k, 28)  # cap small-sample spikes
-    typical_ip = 5.0  # realistic average starter IP (not aspirational)
-    est_ks = (k_pct_for_line / 100) * (typical_ip * 4.0)  # 4.0 BF/IP for quality starts
-    # Tier-based line caps — mirrors book distribution
-    if raw_k >= 32:
-        line_cap = 7.0  # elite K guys max out around 7.0 on books
-    elif raw_k >= 28:
-        line_cap = 6.5
-    elif raw_k >= 24:
-        line_cap = 5.5
-    else:
-        line_cap = 5.0
-    suggested_line = max(3.5, min(line_cap, round(est_ks - 0.5, 1)))
-
-    # Realistic K projection (uncapped, for app display) — book lines vary
-    # widely in juice, so we surface the model's actual point estimate rather
-    # than a juiced "Over X.X" framing. Prefer the L7 rolling avg_k from the
-    # pitcher class-projection cache (more current + survives K%-parse failures
-    # like Skenes/Sánchez where the pitcher_context name match misses). Fall
-    # back to season K% × 22 BF (~5.5 IP) if no L7 data.
+    # Realistic K projection from L7 actual avg (or season fallback).
+    # Compute FIRST so suggested_line uses it directly — the old approach
+    # used a separate `est_ks = k_pct × 5IP × 4BF` formula that assumed
+    # every starter goes 5 IP. For workhorses like Sale (real L7 avg ~8 Ks
+    # over 6.5-7 IP), the old formula gave "Over 5.1" while the displayed
+    # projection said 8.0 — a -400-juice trap that violated user trust.
+    # Now suggested_line is derived from projected_ks so what we recommend
+    # matches what we project.
     proj = get_pitcher_projection(pitcher)
     l7_k = (proj or {}).get('l7_rolling', {}).get('avg_k') if proj else None
     if l7_k is not None:
         signals['_projected_ks'] = round(float(l7_k), 1)
     elif pitcher_k_pct is not None:
         signals['_projected_ks'] = round(pitcher_k_pct / 100 * 22, 1)
+
+    # Suggested line — aim for ~1.5 K cushion below projection so the line
+    # we surface is a CLEAR Over edge (not 0.5-juiced). Snap to X.5 because
+    # books only post X.5 K lines. Bounds 3.5-7.5 match book distribution.
+    import math
+    projected_ks_val = signals.get('_projected_ks')
+    if projected_ks_val is not None:
+        # floor(proj - 1.5) + 0.5  → Sale 8.0 → 6.5  ·  Martin 6.0 → 4.5
+        suggested_line = max(3.5, min(7.5, math.floor(projected_ks_val - 1.5) + 0.5))
+    else:
+        # Fallback path — fully conservative when projection missing
+        raw_k = pitcher_k_pct if pitcher_k_pct is not None else 22
+        k_pct_for_line = min(raw_k, 28)
+        est_ks = (k_pct_for_line / 100) * (5.0 * 4.0)
+        suggested_line = max(3.5, min(6.5, round(est_ks - 0.5, 1)))
 
     # Snapshot bullpen state for the audit cohort (added 2026-05-10).
     # mlb_game_context is transient, so without snapshotting at pick time
@@ -1312,25 +1309,29 @@ def score_pitcher_ks_under(g, side):
 
     conviction = max(0, min(100, conviction))
 
-    # Suggested Under line — project conservative Ks then add cushion to the
-    # line we'd take Under. Books often hang lines 1-1.5 above projection on
-    # mid-tier arms, so we suggest a line slightly above our projection that
-    # still has fade value.
-    raw_k = pitcher_k_pct if pitcher_k_pct is not None else 20
-    typical_ip = 4.5  # short-leash assumption when we're fading
-    est_ks = (raw_k / 100) * (typical_ip * 4.0)
-    # Suggest the next half-line above projection (where book likely sits)
-    suggested_line = max(4.0, min(7.0, round(est_ks + 1.0, 0) - 0.5))
-
-    # Realistic K projection for app display — prefer L7 rolling avg_k from
-    # the class-projection cache (most current; survives K%-parse failures),
-    # fall back to season K% × 18 BF (short-leash fade assumption).
+    # Projection from L7 actual avg (or season fallback). Compute FIRST so
+    # suggested_line can use it directly — same unification as K-Over scorer.
     proj = get_pitcher_projection(pitcher)
     l7_k = (proj or {}).get('l7_rolling', {}).get('avg_k') if proj else None
     if l7_k is not None:
         signals['_projected_ks'] = round(float(l7_k), 1)
     elif pitcher_k_pct is not None:
         signals['_projected_ks'] = round(pitcher_k_pct / 100 * 18, 1)
+
+    # Suggested Under line — aim for ~1.5 K cushion ABOVE projection so the
+    # line we surface is a CLEAR Under edge (book line above projection by
+    # enough that fade has real value). Snap to X.5. Bounds 3.5-7.5.
+    # Old formula used a 4.5-IP assumption that under-projected workhorses
+    # and over-projected short-leash guys.
+    import math
+    projected_ks_val = signals.get('_projected_ks')
+    if projected_ks_val is not None:
+        # ceil(proj + 1.5) - 0.5  →  Corbin 3.3 → 4.5  ·  Bassitt 4.1 → 5.5
+        suggested_line = max(3.5, min(7.5, math.ceil(projected_ks_val + 1.5) - 0.5))
+    else:
+        raw_k = pitcher_k_pct if pitcher_k_pct is not None else 20
+        est_ks = (raw_k / 100) * (4.5 * 4.0)
+        suggested_line = max(4.0, min(7.0, round(est_ks + 1.0, 0) - 0.5))
 
     return {
         'conviction': conviction,
