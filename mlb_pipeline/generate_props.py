@@ -1083,6 +1083,33 @@ def score_pitcher_ks(g, side):
             conviction -= 5
             signals['split_neg'] = f'In worse split ({split:+.2f} ERA vs season)'
 
+    # Catcher framing — SHADOW SIGNAL (2026-05-28). Logged but NOT applied
+    # to conviction until we backtest n>=20 K-Over PRIMEs across catchers
+    # with framing scores ≥3 vs ≤-3 to confirm the expected lift.
+    # Hypothesis: pitchers with elite-framing catchers (+3 framing runs/season)
+    # get more strike calls on borderline pitches → more strikeouts. Inverse
+    # for poor framers (-3 or worse). Magnitude calibrated from public
+    # research (~2-3% extra K rate per +5 framing).
+    #
+    # Side mapping: own pitcher uses OWN team's catcher framing. Tonight's
+    # 5/28 ATL@BOS reads: away_catcher_framing=+3.4 (ATL — Sale's catcher),
+    # home_catcher_framing=-3.5 (BOS — Tolle's catcher). If active, Sale's
+    # K-Over conviction would gain +4 from elite framing, Tolle's would
+    # lose 4 from poor framing.
+    own_framing = _f(g.get(f'{side}_catcher_framing'))
+    if own_framing is not None:
+        # Shadow conviction delta — logged for backtest, not added to conviction.
+        if   own_framing >=  5.0: shadow_delta =  7
+        elif own_framing >=  3.0: shadow_delta =  4
+        elif own_framing <= -5.0: shadow_delta = -7
+        elif own_framing <= -3.0: shadow_delta = -4
+        else: shadow_delta = 0
+        signals['_shadow_framing_value'] = round(own_framing, 1)
+        signals['_shadow_framing_delta'] = shadow_delta
+        # _shadow_conviction_if_applied = what conviction would be IF we
+        # consumed this signal. Lets backtests join shadow vs live cleanly.
+        signals['_shadow_conviction_if_applied'] = max(0, min(100, conviction + shadow_delta))
+
     conviction = max(0, min(100, conviction))
 
     # Realistic K projection from L7 actual avg (or season fallback).
