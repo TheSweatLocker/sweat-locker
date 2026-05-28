@@ -10113,7 +10113,7 @@ setJerryHistory(prev => {
             {gamesDay==='tomorrow' && (
               <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:10,padding:10,marginBottom:12,borderLeftWidth:3,borderLeftColor:'#7a92a8'}}>
                 <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>
-                  Showing market lines only. Pipeline model data (NRFI, props, conviction tiers) lands by 11am ET tomorrow.
+                  Preview — probable pitchers, opening lines, weather, and stat projections refresh by 4pm ET today. Confirmed lineups, conviction tiers, and final picks land by 11am ET tomorrow.
                 </Text>
               </View>
             )}

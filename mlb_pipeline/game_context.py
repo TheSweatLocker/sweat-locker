@@ -1020,10 +1020,19 @@ def get_weather(venue, lat, lon):
     except Exception as e:
         print(f"Weather error for {venue}: {e}")
         return {"temperature": 70, "wind_speed": 5, "wind_direction": "N", "precipitation": 0, "is_dome": False}
-def get_mlb_games():
+def get_mlb_games(target_date_et=None):
+    """Pull Odds API games for the target ET date. Defaults to today ET when
+    not provided. Pass an ET YYYY-MM-DD string to build the window around a
+    different date — used by the afternoon `--date tomorrow` preview pass."""
     try:
-        time_from = f"{(datetime.now(timezone.utc) - timedelta(hours=5)).strftime('%Y-%m-%d')}T04:00:00Z"
-        time_to = f"{(datetime.now(timezone.utc) - timedelta(hours=5) + timedelta(days=1)).strftime('%Y-%m-%d')}T03:59:59Z"
+        if target_date_et:
+            # Build a UTC window that covers the entire ET date (4am UTC = 12am ET)
+            day_start = datetime.strptime(target_date_et, '%Y-%m-%d')
+            time_from = f"{day_start.strftime('%Y-%m-%d')}T04:00:00Z"
+            time_to = f"{(day_start + timedelta(days=1)).strftime('%Y-%m-%d')}T03:59:59Z"
+        else:
+            time_from = f"{(datetime.now(timezone.utc) - timedelta(hours=5)).strftime('%Y-%m-%d')}T04:00:00Z"
+            time_to = f"{(datetime.now(timezone.utc) - timedelta(hours=5) + timedelta(days=1)).strftime('%Y-%m-%d')}T03:59:59Z"
         r = requests.get(
             "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds",
             params={
@@ -2416,11 +2425,22 @@ def log_game_result(context):
     except Exception as e:
         print(f"  ⚠️ game_results error: {e}")
 
-def run():
-    print(f"Fetching MLB games for today...")
-    # Use ET not UTC/local — manual runs at 8pm ET shouldn't process tomorrow's games
+def run(target_date=None):
+    # target_date: None → today ET (normal). YYYY-MM-DD or 'tomorrow' → preview
+    # mode for the afternoon cron. Tomorrow rows skip the resolved-game log
+    # since the games haven't happened yet, but populate everything that's
+    # stable a day out (probable pitchers, opening lines, weather forecast,
+    # all projected_* stats). The Tomorrow tab in the app reads these rows.
     et_now = datetime.now(timezone.utc) - timedelta(hours=4)
-    today = et_now.strftime('%Y-%m-%d')
+    if target_date == 'tomorrow':
+        today = (et_now + timedelta(days=1)).strftime('%Y-%m-%d')
+    elif target_date:
+        today = target_date
+    else:
+        today = et_now.strftime('%Y-%m-%d')
+    is_preview = today != et_now.strftime('%Y-%m-%d')
+    label = "TOMORROW PREVIEW" if is_preview else "today"
+    print(f"Fetching MLB games for {label}...")
     print(f"  (ET date: {today})")
     # CHANGED 2026-05-04: do NOT pre-delete today's rows. Previously we
     # cleared today + 2 days back at the start of every run, then re-uploaded
@@ -2443,7 +2463,7 @@ def run():
             }
         )
         print(f"Cleared {past_date}: status {delete_resp.status_code}")
-    games = get_mlb_games()
+    games = get_mlb_games(target_date_et=today)
 
     if not games:
         print("No MLB games found")
@@ -3854,7 +3874,11 @@ def run():
                 lean = "OVER" if context["over_lean"] else "UNDER" if context["over_lean"] is False else "NEUTRAL"
                 print(f"✅ {away_team} @ {home_team} — {venue} — {weather['temperature']}°F, wind {weather['wind_speed']}mph {weather['wind_direction']} — {lean}")
                 processed += 1
-                log_game_result(context)
+                # Skip the training-row log when previewing a future date — those games
+                # haven't been played, no score/result to log, and writing an empty
+                # row to mlb_game_results corrupts the resolved-game audit.
+                if not is_preview:
+                    log_game_result(context)
             else:
                 print(f"❌ Failed: {away_team} @ {home_team}")
                 
@@ -3865,4 +3889,11 @@ def run():
     print(f"\nDone! Processed {processed} games")
 
 if __name__ == "__main__":
-    run()
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--date", default=None,
+                   help="Target ET date (YYYY-MM-DD or 'tomorrow'). "
+                        "Defaults to today. Tomorrow mode is a preview pass — "
+                        "skips game_results training-row log.")
+    args = p.parse_args()
+    run(target_date=args.date)

@@ -447,6 +447,35 @@ jobs:
           cd mlb_pipeline
           python generate_tonight_card.py
 
+      # Tomorrow-preview pass (2pm cron only, added 2026-05-27).
+      # Builds mlb_game_context rows for tomorrow's slate so the app's
+      # "Tomorrow" tab shows real probable pitchers + opening lines +
+      # weather forecast + all projected_* stats. Previously the tab
+      # rendered Odds-API-only data with no pitcher analytics, and the
+      # team→pitcher lookup occasionally surfaced YESTERDAY'S pitcher
+      # next to tomorrow's matchups (cache-leak class).
+      #
+      # Tomorrow rows get the full game_context build minus the
+      # training-row log (no result to log). Conviction tiers / NRFI
+      # scores / sweat scores / Jerry reads do NOT run on tomorrow
+      # rows — those require confirmed lineups + closing lines that
+      # land in the morning cron next day. The 6am ET cron overwrites
+      # the row fresh once today rolls over.
+      - name: Build tomorrow preview slate
+        if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          TOMORROW=$(date -u -d '-4 hours +1 day' +%Y-%m-%d)
+          echo "Tomorrow ET: $TOMORROW"
+          python game_context.py --date "$TOMORROW"
+          python verify_starters.py "$TOMORROW"
+          python patch_projected_ks.py --date "$TOMORROW"
+
       # Auto tier calibration — runs daily, computes rolling 7d/30d/STD hit rates
       # per NRFI / confluence / spread_delta tier. Stores to mlb_tier_calibration
       # so app reads LIVE tier hit rates instead of hardcoded "78.9%" claims.
