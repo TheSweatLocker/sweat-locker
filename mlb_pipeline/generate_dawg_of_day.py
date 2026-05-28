@@ -209,6 +209,29 @@ def score_dawg(g, diag=None, ml_map=None):
         if v4_dog_diff > dog_differential + 2.0 and v4_dog_diff > 0:
             v4_disagrees_for_dog = True
 
+    # Confluence cross-check on v4 unlock (added 2026-05-28).
+    # v4 direction accuracy has dropped to ~53% per the 5/17 audit
+    # ([[project_may17_xgboost_degradation]]), so trusting v4 alone when
+    # confluence strongly disagrees is unreliable. 5/28 trigger: v4 said
+    # Twins win by 3.4 vs CWS, but confluence net was +5 ALL on home
+    # (recency / hand-split / L14 heat / H2H both directions). v4 was
+    # making noise. Require confluence to AT LEAST not meaningfully
+    # disagree (|net| < 2 or net agrees with the dog side) before trusting
+    # v4's unlock. Otherwise v4 is overridden and v3's threshold governs.
+    if v4_disagrees_for_dog:
+        confluence_for_dog = (
+            (is_home_dawg and confluence_net > 0) or
+            (not is_home_dawg and confluence_net < 0)
+        )
+        if not confluence_for_dog and abs(confluence_net) >= 2:
+            if diag is not None:
+                diag.append(
+                    f"  ⚠ {matchup_label}: v4 unlock REJECTED — v4 says dog "
+                    f"wins by {v4_dog_diff:+.1f} but confluence net {confluence_net:+d} "
+                    f"disagrees (v4 unreliable when confluence diverges)"
+                )
+            v4_disagrees_for_dog = False
+
     # When v4 unlocks the dog, use its edge for gating. Otherwise stay
     # on v3. Threshold stays 1.3 in both paths — v4's stronger edge
     # naturally passes when it should.
