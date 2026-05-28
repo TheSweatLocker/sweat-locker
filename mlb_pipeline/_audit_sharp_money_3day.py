@@ -1,16 +1,12 @@
-"""Sharp-money effectiveness audit — multi-day breakdown.
+"""Sharp-money effectiveness audit — multi-day, multi-market.
 
 User explicit ask (2026-05-27): "I am providing the public sharp data for
 personal use not to ahng our hat on... What is the takeaways from it as we
 have seen last couple days, is it effective, how does it breakdown."
 
-This script answers three questions:
-  1. If you blindly bet the sharp side ML every game, what's your record?
-  2. Does the effect strengthen with bigger sharp diffs (≥15%)?
-  3. When OUR model agrees with sharps, do we win more than when it fades?
-
-AN data must be pasted manually below per slate date — Action Network does
-not have a public/free API. Currently we have 5/24 data on hand.
+Audits 5/24 + 5/25 + 5/26 across ML, Total, and Spread (run line) where
+data is on hand. Breaks down by sharp-diff magnitude so we can see whether
+the BIGGER sharp signals are actually more predictive (the test).
 
 Usage:
     python _audit_sharp_money_3day.py
@@ -41,174 +37,213 @@ ABBR = {
     "San Diego Padres": "SD", "Toronto Blue Jays": "TOR", "Pittsburgh Pirates": "PIT",
 }
 
-# AN sharp data — paste manually per slate date.
-# Format: {(away_abbr, home_abbr): {'sharp_ml': team_abbr, 'diff': pct, 'note': str}}
+# AN data per slate.
+# Per game: optional ml / total / spread dicts.
+#   ml.side     = team abbr the sharp money is on
+#   total.side  = 'OVER' or 'UNDER'
+#   spread.side = team abbr the sharp money is on (the run line side: +1.5 or -1.5)
+#   diff        = sharp - public % gap
 AN_DATA = {
     "2026-05-24": {
-        ("WSH", "ATL"): {"sharp_ml": "ATL", "diff": 6,  "note": "consensus heavy fav"},
-        ("TEX", "LAA"): {"sharp_ml": "TEX", "diff": 24, "note": "HUGE sharp on TEX dog"},
-        ("LAD", "MIL"): {"sharp_ml": "LAD", "diff": 1,  "note": "consensus LAD"},
-        ("CLE", "PHI"): {"sharp_ml": "CLE", "diff": 11, "note": "sharp leans CLE harder"},
-        ("COL", "ARI"): {"sharp_ml": "COL", "diff": 2,  "note": "slight sharp on dog COL"},
-        ("DET", "BAL"): {"sharp_ml": "BAL", "diff": 6,  "note": "sharp on BAL"},
-        ("CWS", "SF"):  {"sharp_ml": "SF",  "diff": 17, "note": "sharp money on SF"},
-        ("TB", "NYY"):  {"sharp_ml": "TB",  "diff": 29, "note": "HUGE sharp fading NYY"},
-        ("MIN", "BOS"): {"sharp_ml": "BOS", "diff": 1,  "note": "basically even"},
-        ("NYM", "MIA"): {"sharp_ml": "MIA", "diff": 2,  "note": "slight sharp MIA"},
-        ("SEA", "KC"):  {"sharp_ml": "KC",  "diff": 19, "note": "HEAVY sharp on dog KC"},
-        ("STL", "CIN"): {"sharp_ml": "STL", "diff": 24, "note": "HUGE sharp on STL dog"},
-        ("HOU", "CHC"): {"sharp_ml": "CHC", "diff": 1,  "note": "consensus CHC"},
-        ("ATH", "SD"):  {"sharp_ml": "ATH", "diff": 8,  "note": "sharp on dog ATH"},
+        ("WSH","ATL"): {"ml":{"side":"ATL","diff":6}},
+        ("TEX","LAA"): {"ml":{"side":"TEX","diff":24}},
+        ("LAD","MIL"): {"ml":{"side":"LAD","diff":1}},
+        ("CLE","PHI"): {"ml":{"side":"CLE","diff":11}},
+        ("COL","ARI"): {"ml":{"side":"COL","diff":2}},
+        ("DET","BAL"): {"ml":{"side":"BAL","diff":6}},
+        ("CWS","SF"):  {"ml":{"side":"SF","diff":17}},
+        ("TB","NYY"):  {"ml":{"side":"TB","diff":29}},
+        ("MIN","BOS"): {"ml":{"side":"BOS","diff":1}},
+        ("NYM","MIA"): {"ml":{"side":"MIA","diff":2}},
+        ("SEA","KC"):  {"ml":{"side":"KC","diff":19}},
+        ("STL","CIN"): {"ml":{"side":"STL","diff":24}},
+        ("HOU","CHC"): {"ml":{"side":"CHC","diff":1}},
+        ("ATH","SD"):  {"ml":{"side":"ATH","diff":8}},
     },
-    # "2026-05-25": {},  # paste AN data here when available
-    # "2026-05-26": {},
+    "2026-05-25": {
+        ("TB","BAL"):  {"ml":{"side":"TB","diff":8},  "total":{"side":"OVER","diff":21}, "spread":{"side":"TB","diff":4}},
+        ("MIA","TOR"): {"ml":{"side":"TOR","diff":2}, "total":{"side":"OVER","diff":1}},
+        ("COL","LAD"): {"ml":{"side":"COL","diff":8}, "total":{"side":"OVER","diff":6}},
+        ("PHI","SD"):  {"ml":{"side":"SD","diff":15}, "spread":{"side":"SD","diff":4}},
+        ("HOU","TEX"): {"ml":{"side":"HOU","diff":7}, "total":{"side":"OVER","diff":42}, "spread":{"side":"HOU","diff":23}},
+        ("CHC","PIT"): {"ml":{"side":"PIT","diff":10}, "total":{"side":"OVER","diff":10}},
+        ("ARI","SF"):  {"ml":{"side":"ARI","diff":24}, "total":{"side":"OVER","diff":46}},
+        ("WSH","CLE"): {"ml":{"side":"WSH","diff":9},  "total":{"side":"OVER","diff":38}},
+        ("MIN","CWS"): {"ml":{"side":"MIN","diff":5},  "total":{"side":"OVER","diff":27}},
+        ("SEA","ATH"): {"ml":{"side":"ATH","diff":18}, "spread":{"side":"SEA","diff":12}},
+        ("NYY","KC"):  {"ml":{"side":"KC","diff":3},   "total":{"side":"OVER","diff":5},  "spread":{"side":"NYY","diff":5}},
+        ("STL","MIL"): {"ml":{"side":"STL","diff":4},  "total":{"side":"OVER","diff":29}, "spread":{"side":"MIL","diff":7}},
+        ("CIN","NYM"): {"ml":{"side":"CIN","diff":16}, "total":{"side":"OVER","diff":58}},
+    },
+    "2026-05-26": {
+        ("MIN","CWS"): {"ml":{"side":"MIN","diff":20}, "total":{"side":"OVER","diff":1},  "spread":{"side":"MIN","diff":15}},
+        ("MIA","TOR"): {"ml":{"side":"MIA","diff":19}, "total":{"side":"UNDER","diff":9}, "spread":{"side":"TOR","diff":18}},
+        ("WSH","CLE"): {"ml":{"side":"WSH","diff":18}, "total":{"side":"UNDER","diff":3}, "spread":{"side":"CLE","diff":2}},
+        ("HOU","TEX"): {"ml":{"side":"HOU","diff":16}, "total":{"side":"UNDER","diff":1}, "spread":{"side":"TEX","diff":4}},
+        ("ATL","BOS"): {"ml":{"side":"ATL","diff":14}, "total":{"side":"UNDER","diff":6}, "spread":{"side":"ATL","diff":15}},
+        ("TB","BAL"):  {"ml":{"side":"TB","diff":12},  "spread":{"side":"TB","diff":9}},
+        ("NYY","KC"):  {"ml":{"side":"NYY","diff":3},  "total":{"side":"OVER","diff":5}},
+        ("STL","MIL"): {"ml":{"side":"MIL","diff":3},  "total":{"side":"UNDER","diff":4}},
+        ("PHI","SD"):  {"ml":{"side":"PHI","diff":3},  "total":{"side":"UNDER","diff":1}},
+        ("LAA","DET"): {"spread":{"side":"DET","diff":9}},
+        ("SEA","ATH"): {"ml":{"side":"ATH","diff":9},  "total":{"side":"UNDER","diff":2}, "spread":{"side":"SEA","diff":9}},
+        ("COL","LAD"): {"ml":{"side":"COL","diff":9},  "total":{"side":"OVER","diff":4}},
+        ("CIN","NYM"): {"ml":{"side":"CIN","diff":10}, "total":{"side":"UNDER","diff":2}, "spread":{"side":"CIN","diff":11}},
+        ("ARI","SF"):  {"ml":{"side":"ARI","diff":10}, "total":{"side":"UNDER","diff":1}},
+        ("CHC","PIT"): {"ml":{"side":"CHC","diff":9},  "total":{"side":"UNDER","diff":8}, "spread":{"side":"PIT","diff":19}},
+    },
 }
 
 
-def bucket_size(diff):
-    if diff >= 15: return "HEAVY (>=15%)"
-    if diff >= 6:  return "MEDIUM (6-14%)"
-    return "SMALL (1-5%)"
+def bucket(diff):
+    if diff >= 15: return "HEAVY"
+    if diff >= 6:  return "MEDIUM"
+    return "SMALL"
 
 
-def audit_day(date_str, an):
-    games = get(
+def fetch_results(date_str):
+    return get(
         f"/rest/v1/mlb_game_results?game_date=eq.{date_str}"
-        f"&select=away_team,home_team,away_score,home_score,away_ml_close,home_ml_close,"
-        f"projected_spread,total_result,home_win,nrfi_result"
+        f"&select=away_team,home_team,away_score,home_score,home_win,total_result,"
+        f"spread_result,open_total,close_total,open_spread,close_spread"
         f"&order=away_team.asc&limit=50"
     )
 
-    summary = {
-        "total":   {"w": 0, "l": 0, "no_result": 0},
-        "buckets": {"HEAVY (>=15%)": {"w": 0, "l": 0}, "MEDIUM (6-14%)": {"w": 0, "l": 0}, "SMALL (1-5%)": {"w": 0, "l": 0}},
-        "model_alignment": {"agree": {"w": 0, "l": 0}, "fade": {"w": 0, "l": 0}, "no_model": {"w": 0, "l": 0}},
-        "rows": [],
-    }
 
-    for row in games:
-        a = ABBR.get(row["away_team"], row["away_team"][:3].upper())
-        hm = ABBR.get(row["home_team"], row["home_team"][:3].upper())
-        ankey = (a, hm)
-        anpick = an.get(ankey)
-        if not anpick:
-            continue
+def empty_row():
+    return {"HEAVY": {"w": 0, "l": 0, "p": 0}, "MEDIUM": {"w": 0, "l": 0, "p": 0}, "SMALL": {"w": 0, "l": 0, "p": 0}}
 
-        aw_sc = row.get("away_score")
-        h_sc = row.get("home_score")
-        if aw_sc is None or h_sc is None:
-            summary["total"]["no_result"] += 1
-            summary["rows"].append((a, hm, anpick, "PPD/NR", None))
-            continue
 
-        winner = hm if row.get("home_win") else a
-        sharp_won = winner == anpick["sharp_ml"]
-        bucket = bucket_size(anpick["diff"])
-
-        # Tally sharp-blind record
-        key = "w" if sharp_won else "l"
-        summary["total"][key] += 1
-        summary["buckets"][bucket][key] += 1
-
-        # Tally model-alignment record
-        model_ml = None
-        ps = row.get("projected_spread")
-        if ps is not None:
-            model_ml = hm if ps < 0 else a
-        if model_ml is None:
-            align_bucket = "no_model"
-        elif model_ml == anpick["sharp_ml"]:
-            align_bucket = "agree"
-        else:
-            align_bucket = "fade"
-        summary["model_alignment"][align_bucket][key] += 1
-
-        summary["rows"].append((a, hm, anpick, f"{aw_sc}-{h_sc} ({winner})", "W" if sharp_won else "L"))
-
-    return summary
+def tally(rec, b, outcome):
+    rec[b][outcome] = rec[b].get(outcome, 0) + 1
 
 
 def fmt(rec):
-    w, l = rec["w"], rec["l"]
-    n = w + l
-    pct = f"{100 * w / n:.1f}%" if n else "—"
-    return f"{w}-{l} ({pct}, n={n})"
+    w, l, p = rec.get("w", 0), rec.get("l", 0), rec.get("p", 0)
+    n = w + l + p
+    decisive = w + l
+    pct = f"{100 * w / decisive:.1f}%" if decisive else "—"
+    pstr = f" {p}P" if p else ""
+    return f"{w}-{l}{pstr} ({pct}, n={n})"
 
 
-def print_day(date_str, summary):
-    print("=" * 78)
-    print(f"SHARP MONEY AUDIT — {date_str}")
-    print("=" * 78)
-    print()
-    for a, hm, an, score, result in summary["rows"]:
-        sharp = an["sharp_ml"]
-        diff = an["diff"]
-        bucket = bucket_size(diff)
-        flag = result or "—"
-        print(f"  {a}@{hm}: sharp={sharp} +{diff}% [{bucket}]  →  {score}  [{flag}]")
-    print()
-    print(f"  BLIND SHARP RECORD:  {fmt(summary['total'])}")
-    print(f"    HEAVY (>=15%):     {fmt(summary['buckets']['HEAVY (>=15%)'])}")
-    print(f"    MEDIUM (6-14%):    {fmt(summary['buckets']['MEDIUM (6-14%)'])}")
-    print(f"    SMALL (1-5%):      {fmt(summary['buckets']['SMALL (1-5%)'])}")
-    print()
-    print(f"  MODEL ALIGNMENT:")
-    print(f"    Model AGREES with sharp:  {fmt(summary['model_alignment']['agree'])}")
-    print(f"    Model FADES sharp:        {fmt(summary['model_alignment']['fade'])}")
-    print(f"    No model lean:            {fmt(summary['model_alignment']['no_model'])}")
-    print()
+def fmt_market(market_dict):
+    total = {"w": 0, "l": 0, "p": 0}
+    out_lines = []
+    for b in ("HEAVY", "MEDIUM", "SMALL"):
+        rec = market_dict[b]
+        for k in ("w", "l", "p"):
+            total[k] += rec.get(k, 0)
+        out_lines.append(f"     {b:8s} (Δ {'>=15%' if b == 'HEAVY' else '6-14%' if b == 'MEDIUM' else '1-5%':<7}):  {fmt(rec)}")
+    return total, out_lines
 
 
 def main():
-    print("\n" + "#" * 78)
-    print("# SHARP MONEY EFFECTIVENESS — MULTI-DAY AUDIT")
-    print("#" * 78)
+    print("\n" + "#" * 86)
+    print("# SHARP MONEY EFFECTIVENESS — 3-DAY MULTI-MARKET AUDIT")
+    print("#" * 86)
     print()
 
-    aggregate = {
-        "total":   {"w": 0, "l": 0, "no_result": 0},
-        "buckets": {"HEAVY (>=15%)": {"w": 0, "l": 0}, "MEDIUM (6-14%)": {"w": 0, "l": 0}, "SMALL (1-5%)": {"w": 0, "l": 0}},
-        "model_alignment": {"agree": {"w": 0, "l": 0}, "fade": {"w": 0, "l": 0}, "no_model": {"w": 0, "l": 0}},
-    }
+    grand = {"ml": empty_row(), "total": empty_row(), "spread": empty_row()}
 
     for date_str in sorted(AN_DATA.keys()):
-        an = AN_DATA[date_str]
-        if not an:
-            print(f"[skip {date_str}: no AN data pasted]")
+        an_day = AN_DATA[date_str]
+        try:
+            games = fetch_results(date_str)
+        except Exception as e:
+            print(f"  ⚠️  could not fetch results for {date_str}: {e}")
             continue
-        s = audit_day(date_str, an)
-        print_day(date_str, s)
-        # Roll up
-        for k in ("w", "l", "no_result"):
-            aggregate["total"][k] += s["total"][k]
-        for bk in aggregate["buckets"]:
-            for k in ("w", "l"):
-                aggregate["buckets"][bk][k] += s["buckets"][bk][k]
-        for ak in aggregate["model_alignment"]:
-            for k in ("w", "l"):
-                aggregate["model_alignment"][ak][k] += s["model_alignment"][ak][k]
+        by_match = {(ABBR.get(g["away_team"], g["away_team"][:3].upper()),
+                     ABBR.get(g["home_team"], g["home_team"][:3].upper())): g for g in games}
 
-    print("=" * 78)
-    print("MULTI-DAY ROLLUP")
-    print("=" * 78)
+        print("=" * 86)
+        print(f"SHARP AUDIT — {date_str}  ({len(an_day)} games with AN data)")
+        print("=" * 86)
+        day = {"ml": empty_row(), "total": empty_row(), "spread": empty_row()}
+
+        for (a, hm), picks in sorted(an_day.items()):
+            g = by_match.get((a, hm))
+            if not g:
+                print(f"  {a}@{hm}  → no result row")
+                continue
+            aw = g.get("away_score")
+            hs = g.get("home_score")
+            if aw is None or hs is None:
+                print(f"  {a}@{hm}  → PPD / no score")
+                continue
+            winner = hm if g.get("home_win") else a
+            line_parts = [f"  {a}@{hm}  {aw}-{hs}  ({winner} W)"]
+
+            # ML
+            if "ml" in picks:
+                p = picks["ml"]
+                outcome = "w" if winner == p["side"] else "l"
+                b = bucket(p["diff"])
+                tally(day["ml"], b, outcome)
+                tally(grand["ml"], b, outcome)
+                line_parts.append(f"  ML[{p['side']}+{p['diff']}%/{b}]={outcome.upper()}")
+            # Total
+            if "total" in picks:
+                p = picks["total"]
+                tot_res = (g.get("total_result") or "").upper()
+                if tot_res in ("OVER", "UNDER"):
+                    outcome = "w" if tot_res == p["side"] else "l"
+                elif tot_res == "PUSH":
+                    outcome = "p"
+                else:
+                    outcome = None
+                if outcome:
+                    b = bucket(p["diff"])
+                    tally(day["total"], b, outcome)
+                    tally(grand["total"], b, outcome)
+                    line_parts.append(f"  TOT[{p['side']}+{p['diff']}%/{b}]={outcome.upper()}")
+                else:
+                    line_parts.append(f"  TOT[{p['side']}+{p['diff']}%]=?")
+            # Spread (uses spread_result column: 'home_covered' / 'away_covered' / 'push')
+            if "spread" in picks:
+                p = picks["spread"]
+                spr_res = (g.get("spread_result") or "").lower()
+                if spr_res in ("home_covered", "away_covered"):
+                    sharp_is_home = p["side"] == hm
+                    home_covered = spr_res == "home_covered"
+                    sharp_won = home_covered if sharp_is_home else not home_covered
+                    outcome = "w" if sharp_won else "l"
+                    b = bucket(p["diff"])
+                    tally(day["spread"], b, outcome)
+                    tally(grand["spread"], b, outcome)
+                    line_parts.append(f"  SPR[{p['side']}+{p['diff']}%/{b}]={outcome.upper()}")
+                elif spr_res == "push":
+                    b = bucket(p["diff"])
+                    tally(day["spread"], b, "p")
+                    tally(grand["spread"], b, "p")
+                    line_parts.append(f"  SPR[{p['side']}+{p['diff']}%/{b}]=PUSH")
+                else:
+                    line_parts.append(f"  SPR[{p['side']}+{p['diff']}%]=?")
+
+            print(" ".join(line_parts))
+
+        print()
+        for label, market in (("ML", "ml"), ("TOTAL", "total"), ("SPREAD", "spread")):
+            total_rec, lines = fmt_market(day[market])
+            print(f"  {label:<7}  TOTAL: {fmt(total_rec)}")
+            for line in lines:
+                print(line)
+        print()
+
+    # Grand total
+    print("=" * 86)
+    print("MULTI-DAY ROLLUP (all dates with AN data)")
+    print("=" * 86)
+    for label, market in (("ML", "ml"), ("TOTAL", "total"), ("SPREAD", "spread")):
+        total_rec, lines = fmt_market(grand[market])
+        print(f"  {label:<7}  TOTAL: {fmt(total_rec)}")
+        for line in lines:
+            print(line)
     print()
-    print(f"  BLIND SHARP RECORD:  {fmt(aggregate['total'])}")
-    print(f"    HEAVY (>=15%):     {fmt(aggregate['buckets']['HEAVY (>=15%)'])}")
-    print(f"    MEDIUM (6-14%):    {fmt(aggregate['buckets']['MEDIUM (6-14%)'])}")
-    print(f"    SMALL (1-5%):      {fmt(aggregate['buckets']['SMALL (1-5%)'])}")
-    print()
-    print(f"  MODEL ALIGNMENT:")
-    print(f"    Model AGREES with sharp:  {fmt(aggregate['model_alignment']['agree'])}")
-    print(f"    Model FADES sharp:        {fmt(aggregate['model_alignment']['fade'])}")
-    print(f"    No model lean:            {fmt(aggregate['model_alignment']['no_model'])}")
-    print()
-    # Verdict guidance
     print("VERDICT GUIDANCE:")
-    print("  - Blind sharp record > 55% with healthy n suggests genuine edge.")
-    print("  - HEAVY bucket > MEDIUM > SMALL slope = sharp size is signal.")
-    print("    Flat or inverse slope = sharp diff isn't predictive on this sample.")
-    print("  - Model AGREES > Model FADES means we're best when WE pair the signal.")
-    print()
+    print("  - >55% with healthy n at any bucket = genuine signal worth a card slot")
+    print("  - HEAVY > MEDIUM > SMALL slope = sharp size IS predictive (the test)")
+    print("  - Flat or inverted slope = sharp diff is noise; can't use as primary justification")
 
 
 if __name__ == "__main__":
