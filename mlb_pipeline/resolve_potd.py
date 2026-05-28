@@ -9,10 +9,15 @@ Supported bet types (MLB):
   - NRFI / YRFI → mlb_game_results.nrfi_result
   - Over X.X / Under X.X → mlb_game_results.total_result
   - [Team] ML → home_win + team-name match
+  - [Team] -1.5 / +1.5 (run line) → mlb_game_results.spread_result
+    Added 2026-05-28 after 5/27 LAD -1.5 POTD stayed Pending — the
+    chalk-ML-alt POTD type was unsupported, so every run-line pick
+    silently failed resolution.
 
 Skips:
-  - Rows where mlb_game_results.{nrfi_result/total_result/home_win}
-    isn't logged yet (game pending or game-results pipeline lagging)
+  - Rows where mlb_game_results.{nrfi_result/total_result/home_win/
+    spread_result} isn't logged yet (game pending or game-results
+    pipeline lagging)
   - Future-dated rows (game not played)
   - NBA POTDs (separate resolution path)
 
@@ -72,7 +77,7 @@ def fetch_game_result(date_str, home_team, away_team):
                 'game_date': f'eq.{date_str}',
                 'home_team': f'eq.{home_team}',
                 'away_team': f'eq.{away_team}',
-                'select': 'home_score,away_score,home_win,nrfi_result,total_result,close_total',
+                'select': 'home_score,away_score,home_win,nrfi_result,total_result,close_total,spread_result',
             },
             headers=READ_HEADERS,
             timeout=15,
@@ -121,6 +126,34 @@ def compute_outcome(lean, gr, away_team, home_team):
         if tr == 'Over':
             return 'Loss', f'Under lean → {tr}'
         return 'Push', f'Under lean → {tr}'
+
+    # Run-line / spread MUST be checked before ML because run-line POTDs often
+    # mention "ML" in parentheticals ("LAD -1.5 (chalk ML alt — ML -424 too
+    # juiced)") which would false-match the ML branch and fail name resolution.
+    # spread_result lives on mlb_game_results as 'home_covered'/'away_covered'/'push'.
+    import re
+    rl_match = re.search(r'^(.+?)\s+([+\-]1\.5)\b', lean.strip())
+    if rl_match:
+        sr = (gr.get('spread_result') or '').lower()
+        if sr not in ('home_covered', 'away_covered', 'push'):
+            return None, 'spread_result not logged'
+        if sr == 'push':
+            return 'Push', f'run line → push'
+        picked = rl_match.group(1).strip()
+        sign = rl_match.group(2)  # '-1.5' or '+1.5'
+        picked_lower = picked.lower()
+        is_home = picked_lower in (home_team or '').lower() or (home_team or '').lower().endswith(picked_lower)
+        is_away = picked_lower in (away_team or '').lower() or (away_team or '').lower().endswith(picked_lower)
+        if not (is_home or is_away):
+            return None, f'cannot match {picked!r} to {home_team}/{away_team}'
+        if is_home and is_away:
+            home_score = len(set(picked_lower.split()) & set((home_team or '').lower().split()))
+            away_score = len(set(picked_lower.split()) & set((away_team or '').lower().split()))
+            is_home = home_score >= away_score
+            is_away = not is_home
+        # Did the picked side cover?
+        picked_covered = (sr == 'home_covered') if is_home else (sr == 'away_covered')
+        return ('Win' if picked_covered else 'Loss'), f'{picked} {sign} → {"covered" if picked_covered else "didnt cover"} (spread_result={sr})'
 
     if ' ml' in lean_lower or lean_lower.endswith(' ml'):
         hw = gr.get('home_win')
