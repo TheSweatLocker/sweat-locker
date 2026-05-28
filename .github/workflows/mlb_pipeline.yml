@@ -125,6 +125,21 @@ jobs:
           cd mlb_pipeline
           python compute_pitcher_class_projections.py
 
+      # Patch projected_ks columns on today's mlb_game_context rows from the
+      # JSON cache that compute_pitcher_class_projections.py just wrote. This
+      # gives Jerry reads, sweat card, and social copy a single source of
+      # truth for "projected Ks tonight" — identical to what the K-Over prop
+      # scorer cites. (2026-05-27 DeGrom incident: "Over the projected Ks"
+      # without a number was unauditable because every surface rebuilt its
+      # own ad-hoc estimate.)
+      - name: Patch projected_ks onto mlb_game_context
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python patch_projected_ks.py
+
       - name: Build HR Watch
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
