@@ -65,11 +65,22 @@ def fetch_todays_games():
 
 
 def fetch_ml_odds_map():
-    """Fetch today's MLB moneyline odds from Odds API, return {(home,away): {home_ml,away_ml}}."""
+    """Fetch PRE-GAME MLB moneyline odds. Returns {(home,away): {home_ml,away_ml,commence_time}}.
+
+    PRE-GAME ONLY (added 2026-05-28): without a time filter the Odds API
+    returns games up to 8 days out — including IN-PROGRESS games where
+    the h2h price reflects live in-game state, not the pre-game line we
+    actually used for selection. 5/28 trigger: DET @ LAA was in progress
+    with DET losing, Odds API returned DET ML +400 (live, post-deficit
+    swing) instead of the pre-game DET -180 / LAA +160. Picker selected
+    DET as +400 home dog with model delta +0.6 — completely fake edge.
+    Filter to commenceTimeFrom = now and skip any game already started.
+    """
     ml_map = {}
     if not ODDS_API_KEY:
         return ml_map
     try:
+        now_utc = datetime.now(timezone.utc)
         r = requests.get(
             "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds",
             params={
@@ -77,16 +88,29 @@ def fetch_ml_odds_map():
                 "regions": "us",
                 "markets": "h2h",
                 "oddsFormat": "american",
+                # Only games starting from now forward — drops live in-progress lines.
+                "commenceTimeFrom": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
             timeout=15
         )
         if r.status_code != 200:
             return ml_map
+        skipped_live = 0
         for g in r.json():
             home = g.get("home_team")
             away = g.get("away_team")
+            commence = g.get("commence_time")
             if not home or not away:
                 continue
+            # Defensive double-check: skip anything whose commence_time is in the past.
+            if commence:
+                try:
+                    ct = datetime.fromisoformat(commence.replace("Z", "+00:00"))
+                    if ct < now_utc:
+                        skipped_live += 1
+                        continue
+                except Exception:
+                    pass
             for bm in g.get("bookmakers", []):
                 for mkt in bm.get("markets", []):
                     if mkt.get("key") != "h2h":
@@ -99,10 +123,15 @@ def fetch_ml_odds_map():
                         elif o.get("name") == away:
                             away_ml = o.get("price")
                     if home_ml and away_ml:
-                        ml_map[(home, away)] = {"home_ml": home_ml, "away_ml": away_ml}
+                        ml_map[(home, away)] = {
+                            "home_ml": home_ml, "away_ml": away_ml,
+                            "commence_time": commence,
+                        }
                         break
                 if (home, away) in ml_map:
                     break
+        if skipped_live:
+            print(f"  ⏰ Skipped {skipped_live} in-progress/past games (live odds, not pre-game)")
     except Exception as e:
         print(f"  ⚠️ ML odds fetch failed: {e}")
     return ml_map
