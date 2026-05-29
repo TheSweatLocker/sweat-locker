@@ -2652,10 +2652,18 @@ def recalibrate_k_props_with_book_lines(props):
         old_tier = p.get('tier')
         new_conv = max(0, int(round(old_conv * mult)))
 
-        # Trace fields so user / audit can see the recalibration
+        # Trace fields so user / audit can see the recalibration.
+        # _pre_recal_* preserve what the scorer WOULD have published before
+        # the book-line gate. Powers the 2-week backtest: "Of all props the
+        # recalibration demoted, what would the hit rate have been at the
+        # pre-recal tier?" If that number is high, multipliers are too
+        # aggressive and we tune up.
         sigs['_internal_suggested_line'] = old_line
         sigs['_book_line'] = book_f
         sigs['_edge_at_book'] = round(edge, 2)
+        sigs['_pre_recal_tier'] = old_tier
+        sigs['_pre_recal_conviction'] = old_conv
+        sigs['_recal_multiplier'] = mult
         sigs['book_recalibration'] = (
             f"Book {ptype.split('_')[1].title()} {book_line} vs proj {proj_f} "
             f"= {edge:+.1f} K edge — {note}. "
@@ -3171,8 +3179,20 @@ def run():
     attach_book_lines(top)
     recalibrate_k_props_with_book_lines(top)
     # Re-sort by conviction and re-tier-filter so demoted props drop off
-    # the published list.
-    top = [p for p in top if p.get('tier') in ('PRIME', 'STRONG', 'LEAN')]
+    # the published list — EXCEPT K props that went through recalibration:
+    # those get kept (even at SKIP) so the backtest can query what got
+    # demoted and grade hypothetical outcomes. App / sweat card filter by
+    # tier IN (PRIME, STRONG, LEAN) for display so SKIP'd K props stay
+    # silent in the UI. The _pre_recal_tier trace fields make them
+    # auditable: "Of all K props demoted to SKIP, what was the hit rate
+    # at the bettable book line?"
+    def _keep(p):
+        if p.get('tier') in ('PRIME', 'STRONG', 'LEAN'):
+            return True
+        if p.get('prop_type') in ('ks_over', 'ks_under') and (p.get('signals') or {}).get('_pre_recal_tier'):
+            return True  # SKIP'd K prop with recalibration trace — keep for audit
+        return False
+    top = [p for p in top if _keep(p)]
     top.sort(key=lambda p: -(p.get('conviction') or 0))
 
     wipe_todays_props()
