@@ -7906,11 +7906,16 @@ setJerryHistory(prev => {
                 return <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20}}>{clean}</Text>;
               }
               return (
-                <View style={{gap:12}}>
+                <View style={{gap:12, width: '100%'}}>
                   {sections.map((s, i) => (
-                    <View key={i}>
+                    // width:100% + flexShrink so long sections wrap to the
+                    // container instead of overflowing horizontally. 5/29 fix:
+                    // "Where the Model Sits" section was clipping mid-sentence
+                    // at "...both s" — long paragraph with em-dashes was
+                    // expanding past the parent padding.
+                    <View key={i} style={{width: '100%', flexShrink: 1}}>
                       <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11,marginBottom:4,letterSpacing:0.5}}>{s.title.toUpperCase()}</Text>
-                      <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:19}}>{s.body.replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
+                      <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:19,flexShrink:1}}>{s.body.replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
                     </View>
                   ))}
                 </View>

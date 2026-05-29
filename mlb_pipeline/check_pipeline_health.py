@@ -94,6 +94,21 @@ def main():
                       f'play_of_day.py may have skipped writes (late-slate defer bug). '
                       f'App will fall back to client-side calc.')
 
+    # Close-line refresh check (added 2026-05-29). After 1pm ET / 17 UTC the
+    # afternoon cron should have written close_total / close_spread. If they
+    # are still NULL post-1pm, the 2pm cron either hasn't fired or it skipped
+    # the odds write — surfaces silent afternoon-cron failures that otherwise
+    # appear normal on the dashboard.
+    from datetime import datetime, timezone, timedelta
+    et_hour_now = (datetime.now(timezone.utc) - timedelta(hours=4)).hour
+    if et_hour_now >= 13:
+        null_close_total = sum(1 for g in games if g.get('close_total') is None)
+        if null_close_total > 0:
+            issues.append(
+                f'❌ {pct(null_close_total, len(games))} games missing close_total '
+                f'after {et_hour_now}:00 ET. 2pm cron may have failed to refresh odds.'
+            )
+
     # --- v3/v4 model predictions ---
     null_v3_total = sum(1 for g in games if g.get('projected_total') is None)
     if null_v3_total > 0:

@@ -2484,23 +2484,39 @@ def fetch_book_lines_for_ks(date_str):
     ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
     book_map = {}
     if not ODDS_API_KEY:
+        print("  ⚠️ ODDS_API_KEY missing — skipping book line fetch")
+        return book_map
+
+    # Retry-with-backoff on transient failures (added 2026-05-29 after the
+    # 5/29 6am cron hit a transient 401 and silently swallowed it — book
+    # lines were NULL on all K props for the day until manual re-run).
+    # Three attempts with backoff: 0s, 2s, 6s. Loud logging when each retry
+    # fires + when the final attempt fails so the cron log surfaces it.
+    import time as _time
+    events = None
+    for attempt in range(3):
+        try:
+            now_utc = datetime.now(timezone.utc)
+            events_r = requests.get(
+                "https://api.the-odds-api.com/v4/sports/baseball_mlb/events",
+                params={
+                    'apiKey': ODDS_API_KEY,
+                    'commenceTimeFrom': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                },
+                timeout=15,
+            )
+            if events_r.status_code == 200:
+                events = events_r.json() or []
+                break
+            print(f"  ⚠️ events fetch attempt {attempt+1}/3 → status {events_r.status_code}: {events_r.text[:160]}")
+        except Exception as e:
+            print(f"  ⚠️ events fetch attempt {attempt+1}/3 → {type(e).__name__}: {e}")
+        if attempt < 2:
+            _time.sleep([0, 2, 6][attempt + 1])
+    if events is None:
+        print("  🚨 BOOK LINES: events endpoint failed after 3 attempts — props will have NULL book_line for this run")
         return book_map
     try:
-        # Step 1: list MLB events
-        now_utc = datetime.now(timezone.utc)
-        events_r = requests.get(
-            "https://api.the-odds-api.com/v4/sports/baseball_mlb/events",
-            params={
-                'apiKey': ODDS_API_KEY,
-                # Pre-game only — drops anything already in progress.
-                'commenceTimeFrom': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            },
-            timeout=15,
-        )
-        if events_r.status_code != 200:
-            print(f"  ⚠️ events fetch {events_r.status_code}")
-            return book_map
-        events = events_r.json() or []
         # Step 2: per event, fetch pitcher_strikeouts market
         for ev in events:
             ev_id = ev.get('id')
@@ -2605,6 +2621,19 @@ def upsert_props(props):
     vs CONFIRMED tags on hits props.)"""
     if not props:
         return 0
+    # Normalize keys across the batch — PostgREST rejects mixed schemas with
+    # "All object keys must match" when a column is on some records but not
+    # others. attach_book_lines() only sets book_line on K props, leaving
+    # hits/outs/etc props without those keys; bug surfaced 5/29 when the
+    # whole batch failed and 0 rows landed. Walk all rows, union the keys,
+    # then backfill missing keys as None on each record.
+    all_keys = set()
+    for p in props:
+        all_keys.update(p.keys())
+    for p in props:
+        for k in all_keys:
+            if k not in p:
+                p[k] = None
     r = requests.post(
         f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
         headers=HEADERS,

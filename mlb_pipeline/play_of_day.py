@@ -130,11 +130,26 @@ def write_sweat_score(ctx, score, tier, breakdown=None):
     when supplied — feeds the WHY THIS SCORE UI block to achieve parity with
     NBA. Requires 20260525_sweat_breakdown.sql migration to have been applied;
     until then the breakdown field is silently dropped by PostgREST.
+
+    2026-05-29: cap the displayed sweat_score at 79 when primary_play is None.
+    Trigger — 5/29 SF@COL showed sweat 93 but rendered as STRONG (tier already
+    capped from PRIME because no primary_play met thresholds). User-confusing:
+    the 93 number suggested PRIME, the tier said STRONG. Cap aligns the two:
+    sweat ≥ 80 only when an actionable PRIME bet exists.
+    Raw composite score preserved in breakdown.sweat_score_raw for audit.
     """
     game_id = ctx.get('game_id')
     if not game_id:
         return
-    payload = {'sweat_score': int(score), 'sweat_tier': tier}
+    # Cap score to 79 when no primary_play. Tier should already be capped
+    # to STRONG via sweat_tier_for, but the score itself wasn't aligned.
+    displayed_score = int(score)
+    if displayed_score >= 80 and not ctx.get('primary_play'):
+        if isinstance(breakdown, dict):
+            breakdown.setdefault('sweat_score_raw', displayed_score)
+            breakdown.setdefault('cap_reason', 'no_primary_play')
+        displayed_score = 79
+    payload = {'sweat_score': displayed_score, 'sweat_tier': tier}
     if breakdown is not None:
         payload['sweat_breakdown'] = breakdown
     try:

@@ -343,7 +343,7 @@ def fetch_top_props():
         "mlb_pipeline_props",
         {
             "game_date": f"eq.{today}",
-            "select": "player_name,prop_type,prop_line,direction,tier,conviction,signals,matchup",
+            "select": "player_name,player_team,prop_type,prop_line,direction,tier,conviction,signals,matchup",
             "order": "conviction.desc",
             "limit": "20",
         },
@@ -1147,6 +1147,31 @@ def build_card():
             mu = p.get("matchup", "")
             stack_games[mu] = stack_games.get(mu, 0) + 1
     stack_alerts = [{"matchup": mu, "prime_count": n} for mu, n in stack_games.items() if n >= 4]
+
+    # Team-stack caution tag (added 2026-05-29). When 3+ same-team players have
+    # the SAME high-conviction hits prop in the same matchup (e.g. SF@COL Coors
+    # game — Adames + Arraez + Schmitt + Devers + Gilbert + Eldridge ALL hits
+    # over 0.5 PRIME 100), users were burning juice 6 times on what is really
+    # ONE underlying thesis (Coors + bad opposing pitcher + hot team offense).
+    # We tag each prop with team_stack_caution so the app can render a warning
+    # badge — pick the strongest 2-3 individual edges rather than stacking 6.
+    team_groups = {}  # (matchup, prop_type, team) → list of prop refs
+    for p in props:
+        if p.get("prop_type") not in ("hits_over", "hits_under"):
+            continue
+        if p.get("conviction", 0) < 82:
+            continue
+        key = (p.get("matchup", ""), p.get("prop_type"), p.get("player_team", ""))
+        team_groups.setdefault(key, []).append(p)
+    for (mu, ptype, team), plist in team_groups.items():
+        if len(plist) >= 3:
+            for p in plist:
+                sigs = p.get("signals") or {}
+                sigs["team_stack_caution"] = (
+                    f"⚠️ TEAM STACK: {len(plist)} {team} hitters share this signal set "
+                    f"— consider top 2 individually rather than the full stack (juice multiplies)."
+                )
+                p["signals"] = sigs
 
     # Padding for thin / empty days — keeps the card useful when slate is
     # MLB-only-July-Tuesday or post-season-only-MLB. Standard days still
