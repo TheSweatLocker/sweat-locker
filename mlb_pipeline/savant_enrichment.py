@@ -28,8 +28,16 @@ HEADERS = {
     "Prefer": "resolution=merge-duplicates,return=minimal",
 }
 
-# Savant team name → MLB team name map (Savant uses abbreviations/short names)
+# Savant team name → MLB team name map.
+# 5/28 audit (Tier 1 #10): team-level xwOBA / barrel% / OAA were ALL NULL
+# in mlb_team_offense because Savant's CSV `team` column returns the MASCOT
+# ("Braves", "Red Sox", "Nationals"), not the abbreviation ("ATL", "BOS",
+# "WSH"). The old normalize_team only mapped abbreviations, so mascot
+# values fell through to `return raw` → PATCH targeted "team=eq.Braves"
+# which doesn't match any "Atlanta Braves" row. Adding mascot → full
+# name entries fixes the normalization end-to-end.
 SAVANT_TEAM_MAP = {
+    # Abbreviations
     "ARI": "Arizona Diamondbacks", "ATL": "Atlanta Braves", "BAL": "Baltimore Orioles",
     "BOS": "Boston Red Sox", "CHC": "Chicago Cubs", "CWS": "Chicago White Sox",
     "CHW": "Chicago White Sox", "CIN": "Cincinnati Reds", "CLE": "Cleveland Guardians",
@@ -43,6 +51,23 @@ SAVANT_TEAM_MAP = {
     "STL": "St. Louis Cardinals", "TB":  "Tampa Bay Rays", "TBR": "Tampa Bay Rays",
     "TEX": "Texas Rangers", "TOR": "Toronto Blue Jays", "WSH": "Washington Nationals",
     "WAS": "Washington Nationals",
+    # Mascots — what Savant actually returns in the team CSV column.
+    "Diamondbacks": "Arizona Diamondbacks", "Braves": "Atlanta Braves",
+    "Orioles": "Baltimore Orioles", "Red Sox": "Boston Red Sox",
+    "Cubs": "Chicago Cubs", "White Sox": "Chicago White Sox",
+    "Reds": "Cincinnati Reds", "Guardians": "Cleveland Guardians",
+    "Rockies": "Colorado Rockies", "Tigers": "Detroit Tigers",
+    "Astros": "Houston Astros", "Royals": "Kansas City Royals",
+    "Angels": "Los Angeles Angels", "Dodgers": "Los Angeles Dodgers",
+    "Marlins": "Miami Marlins", "Brewers": "Milwaukee Brewers",
+    "Twins": "Minnesota Twins", "Mets": "New York Mets",
+    "Yankees": "New York Yankees",
+    # "Athletics" already maps to itself — no prefix needed in 2026.
+    "Phillies": "Philadelphia Phillies", "Pirates": "Pittsburgh Pirates",
+    "Padres": "San Diego Padres", "Mariners": "Seattle Mariners",
+    "Giants": "San Francisco Giants", "Cardinals": "St. Louis Cardinals",
+    "Rays": "Tampa Bay Rays", "Rangers": "Texas Rangers",
+    "Blue Jays": "Toronto Blue Jays", "Nationals": "Washington Nationals",
 }
 
 def safe_float(v):
