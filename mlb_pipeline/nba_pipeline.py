@@ -280,8 +280,37 @@ def upload_team(team_data):
         return False
     return True
 
+def _fetch_team_id_name_map():
+    """Build {team_id: full_team_name} map from BDL teams endpoint.
+    Cached per process — only fetched once per script run."""
+    if hasattr(_fetch_team_id_name_map, '_cache'):
+        return _fetch_team_id_name_map._cache
+    try:
+        r = requests.get(
+            'https://api.balldontlie.io/nba/v1/teams',
+            headers=BDL_HEADERS,
+            timeout=15,
+        )
+        teams = r.json().get('data', [])
+        m = {t['id']: t.get('full_name') for t in teams if t.get('id')}
+        _fetch_team_id_name_map._cache = m
+        return m
+    except Exception as e:
+        print(f"  ⚠️ team map fetch failed: {e}")
+        _fetch_team_id_name_map._cache = {}
+        return {}
+
+
 def upload_injuries(injuries):
-    """Store current injuries in Supabase"""
+    """Store current injuries in Supabase, properly linked to teams.
+
+    BUG FIX 2026-05-28: the injury record's player.team field is NOT a nested
+    object — it's just a `player.team_id` integer. Old code did
+    `team = player.get('team', {}); team.get('full_name')` which always
+    returned None. Every nba_injuries row had team_name=NULL, breaking the
+    team→injuries join the spread model needs. Now we resolve team_id to a
+    full team name via a one-time BDL /teams fetch.
+    """
     if not injuries:
         return
     try:
@@ -294,16 +323,18 @@ def upload_injuries(injuries):
                 "Prefer": "return=minimal"
             }
         )
+        # Resolve team_id → team_name once for all injuries
+        team_map = _fetch_team_id_name_map()
         # Insert new injuries
         records = []
         for inj in injuries:
             player = inj.get('player', {})
-            team = player.get('team', {})
+            tid = player.get('team_id')
             records.append({
                 "player_id": player.get('id'),
                 "player_name": f"{player.get('first_name', '')} {player.get('last_name', '')}".strip(),
-                "team_id": team.get('id') if team else None,
-                "team_name": team.get('full_name') if team else None,
+                "team_id": tid,
+                "team_name": team_map.get(tid),  # resolved from /teams endpoint
                 "status": inj.get('status'),
                 "description": inj.get('description'),
                 "return_date": inj.get('return_date'),
