@@ -2587,10 +2587,99 @@ def fetch_book_lines_for_ks(date_str):
     return book_map
 
 
+def recalibrate_k_props_with_book_lines(props):
+    """Replace prop_line with the actual book line and recalibrate conviction
+    on the REAL edge at that line. The signal-based scorer measures cohort
+    quality ("this matchup favors Under") but doesn't know whether the book
+    has already priced that signal in. When the book line is much tighter
+    than our suggested line, our 'edge' collapses — books captured the same
+    signal we did.
+
+    Added 2026-05-29 after user audit found 4/6 K-Under props tonight tagged
+    STRONG 80+ with NO edge at the actual book line:
+
+        Paddack:    proj 3.6 vs book Under 3.5 → -0.1 edge (no margin)
+        Pallante:   proj 5.1 vs book Under 3.5 → -1.6 edge (BAD bet)
+        Lorenzen:   proj 3.7 vs book Under 3.5 → -0.2 edge (no margin)
+        Wrobleski:  proj 4.3 vs book Under 4.5 → +0.2 edge (thin)
+        Gallen:     proj 4.6 vs book Under 4.5 → -0.1 edge (no margin)
+        Fedde:      proj 2.7 vs book Under 3.5 → +0.8 edge (only real Under tonight)
+
+    Recalibration rules per K prop with attached book_line:
+        edge >= 1.5  → keep conviction (real signal + real edge)
+        edge 1.0-1.5 → conviction × 0.9
+        edge 0.5-1.0 → conviction × 0.75
+        edge 0.0-0.5 → conviction × 0.55
+        edge <  0.0  → conviction × 0.30 (book already priced our signal — no edge)
+
+    Tier auto-re-derives from new conviction via tier_for().
+
+    Same logic for Over (sign inverted: edge = projected - book_line).
+    Stores recalibration trace in signals so users see WHY conviction moved.
+    """
+    for p in props:
+        ptype = p.get('prop_type')
+        if ptype not in ('ks_over', 'ks_under'):
+            continue
+        book_line = p.get('book_line')
+        if book_line is None:
+            continue
+        sigs = p.get('signals') or {}
+        proj = sigs.get('_projected_ks')
+        if proj is None:
+            continue
+        try:
+            proj_f = float(proj)
+            book_f = float(book_line)
+        except (TypeError, ValueError):
+            continue
+
+        # Edge for THIS direction. Positive = good for bettor at the book line.
+        if ptype == 'ks_under':
+            edge = book_f - proj_f
+        else:  # ks_over
+            edge = proj_f - book_f
+
+        # Pick conviction multiplier from edge band
+        if edge >= 1.5:    mult, note = 1.00, 'real edge'
+        elif edge >= 1.0:  mult, note = 0.90, 'moderate edge'
+        elif edge >= 0.5:  mult, note = 0.75, 'thin edge'
+        elif edge >= 0.0:  mult, note = 0.55, 'minimal edge'
+        else:              mult, note = 0.30, 'NO EDGE (book priced our signal in)'
+
+        old_conv = int(p.get('conviction', 0))
+        old_line = p.get('prop_line')
+        old_tier = p.get('tier')
+        new_conv = max(0, int(round(old_conv * mult)))
+
+        # Trace fields so user / audit can see the recalibration
+        sigs['_internal_suggested_line'] = old_line
+        sigs['_book_line'] = book_f
+        sigs['_edge_at_book'] = round(edge, 2)
+        sigs['book_recalibration'] = (
+            f"Book {ptype.split('_')[1].title()} {book_line} vs proj {proj_f} "
+            f"= {edge:+.1f} K edge — {note}. "
+            f"Conviction {old_conv} → {new_conv} (×{mult:.2f})."
+        )
+        p['signals'] = sigs
+
+        # Replace the displayed line with the actual book line
+        p['prop_line'] = book_f
+        p['conviction'] = new_conv
+        # Tier auto-re-derives from conviction
+        p['tier'] = tier_for(new_conv, ptype)
+
+
 def attach_book_lines(props):
     """Attach book_line / book_over_odds / book_under_odds / book_source to
     pitcher K props in-place. Reference data only — does NOT alter prop_line
-    or tier/conviction. NULL when book line unavailable for that pitcher."""
+    or tier/conviction. NULL when book line unavailable for that pitcher.
+
+    NOTE: recalibrate_k_props_with_book_lines runs immediately after this in
+    run() to update prop_line + conviction based on the real edge at the
+    book line. Without recalibration, K props can be tagged STRONG with NO
+    edge at the bettable market (the 5/29 user audit found 4/6 K-Under props
+    on the card with effectively zero real edge)."""
     ks_pitchers = {(p.get('player_name') or '').strip() for p in props if p.get('prop_type') in ('ks_over', 'ks_under')}
     if not ks_pitchers:
         return
@@ -3062,11 +3151,18 @@ def run():
             sigs['_display_label'] = label
             p['signals'] = sigs
 
-    # Attach real sportsbook K-prop lines (reference only — does NOT change
-    # tier/conviction/which props surface). Phase 1: K props only. The
-    # pipeline projections + cohort scoring remain the source of truth for
-    # WHICH props publish; book lines tell users what they can actually bet.
+    # Attach real sportsbook K-prop lines + recalibrate against the real
+    # edge at those lines. 5/29 user audit found 4/6 K-Under props tagged
+    # STRONG had zero or negative edge at the actual book line — our
+    # signal-based scorer didn't know the book had already priced our
+    # signals in. The recalibration step replaces prop_line with book_line
+    # and adjusts conviction down when the real edge is thin or negative.
     attach_book_lines(top)
+    recalibrate_k_props_with_book_lines(top)
+    # Re-sort by conviction and re-tier-filter so demoted props drop off
+    # the published list.
+    top = [p for p in top if p.get('tier') in ('PRIME', 'STRONG', 'LEAN')]
+    top.sort(key=lambda p: -(p.get('conviction') or 0))
 
     wipe_todays_props()
     saved = upsert_props(top)
