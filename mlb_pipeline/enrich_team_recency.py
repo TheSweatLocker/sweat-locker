@@ -121,6 +121,38 @@ def aggregate_window(splits, cutoff_date):
     return totals if totals["games"] > 0 else None
 
 
+def aggregate_home_away_splits(splits):
+    """Compute season home and away offensive splits from team gameLog.
+
+    Added 2026-05-28 (Tier 1 #9). Filters per-game splits by isHome flag
+    (true = home game) and aggregates separately. Returns (home_totals,
+    away_totals) — same shape as aggregate_window. Either side may be
+    None when team hasn't played in that venue yet.
+    """
+    home_totals = {"ab": 0, "bb": 0, "h": 0, "tb": 0, "hbp": 0, "sf": 0, "pa": 0, "games": 0}
+    away_totals = {"ab": 0, "bb": 0, "h": 0, "tb": 0, "hbp": 0, "sf": 0, "pa": 0, "games": 0}
+    for sp in splits:
+        is_home = sp.get("isHome")
+        if is_home is None:
+            # Fallback: derive from venue context if available
+            continue
+        bucket = home_totals if is_home else away_totals
+        stat = sp.get("stat", {})
+        try:
+            bucket["ab"] += int(stat.get("atBats", 0) or 0)
+            bucket["bb"] += int(stat.get("baseOnBalls", 0) or 0)
+            bucket["h"] += int(stat.get("hits", 0) or 0)
+            bucket["tb"] += int(stat.get("totalBases", 0) or 0)
+            bucket["hbp"] += int(stat.get("hitByPitch", 0) or 0)
+            bucket["sf"] += int(stat.get("sacFlies", 0) or 0)
+            bucket["pa"] += int(stat.get("plateAppearances", 0) or 0)
+            bucket["games"] += 1
+        except (TypeError, ValueError):
+            continue
+    return (home_totals if home_totals["games"] > 0 else None,
+            away_totals if away_totals["games"] > 0 else None)
+
+
 def derive_ops(totals):
     """OPS = OBP + SLG, where:
       OBP = (H + BB + HBP) / (AB + BB + HBP + SF)
@@ -170,7 +202,14 @@ def main():
         ops_l7 = derive_ops(l7_totals)
         ops_l14 = derive_ops(l14_totals)
         wrc_proxy = wrc_proxy_from_ops(ops_l14)
-        if ops_l7 is None and ops_l14 is None:
+        # Tier 1 #9 (5/28): home/away season splits computed from same
+        # gameLog. Filters splits by isHome flag — zero extra API calls.
+        home_totals, away_totals = aggregate_home_away_splits(splits)
+        home_ops = derive_ops(home_totals)
+        away_ops = derive_ops(away_totals)
+        home_wrc_proxy = wrc_proxy_from_ops(home_ops)
+        away_wrc_proxy = wrc_proxy_from_ops(away_ops)
+        if ops_l7 is None and ops_l14 is None and home_ops is None and away_ops is None:
             print(f"  ⊘ {team['name']}: no games in window")
             continue
         rows_to_upsert.append({
@@ -179,8 +218,18 @@ def main():
             "ops_last7": ops_l7,
             "ops_last14": ops_l14,
             "wrc_proxy_l14": wrc_proxy,
+            # Home/away season splits.
+            "home_ops_split": home_ops,
+            "away_ops_split": away_ops,
+            "home_wrc_proxy_split": home_wrc_proxy,
+            "away_wrc_proxy_split": away_wrc_proxy,
+            "home_games_played": (home_totals or {}).get("games", 0) if home_totals else 0,
+            "away_games_played": (away_totals or {}).get("games", 0) if away_totals else 0,
         })
-        print(f"  {team['name']:28} L7 OPS={ops_l7 or '-':<6}  L14 OPS={ops_l14 or '-':<6}  wrc_proxy={wrc_proxy or '-'}")
+        split_str = ''
+        if home_ops or away_ops:
+            split_str = f"  splits H/A: OPS {home_ops or '-'}/{away_ops or '-'}"
+        print(f"  {team['name']:28} L7 OPS={ops_l7 or '-':<6}  L14 OPS={ops_l14 or '-':<6}  wrc_proxy={wrc_proxy or '-'}{split_str}")
 
     if not rows_to_upsert:
         print("  No team data to upsert.")
