@@ -2667,7 +2667,18 @@ def recalibrate_k_props_with_book_lines(props):
         p['prop_line'] = book_f
         p['conviction'] = new_conv
         # Tier auto-re-derives from conviction
-        p['tier'] = tier_for(new_conv, ptype)
+        recalc_tier = tier_for(new_conv, ptype)
+        # LEAN floor for K props (added 2026-05-29): only when conviction
+        # falls in 55-69 AND there's positive edge at the actual book line.
+        # The historic "K LEAN drops to coin flip" caveat applied to our
+        # internal inflated lines — at real book lines a +0.5-to-1.0 K
+        # cushion is a small but legitimate edge. The positive-edge gate
+        # prevents reintroducing the old thin K plays that had no real edge.
+        if recalc_tier == 'SKIP' and edge > 0.0 and 55 <= new_conv < 70:
+            recalc_tier = 'LEAN'
+            sigs['book_recalibration'] += " · Promoted to LEAN — thin but positive edge at book."
+            p['signals'] = sigs
+        p['tier'] = recalc_tier
 
 
 def attach_book_lines(props):
