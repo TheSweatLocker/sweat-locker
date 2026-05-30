@@ -49,7 +49,20 @@ print()
 print(f'{"GAME":54s}  {"JERRY":>5s} {"V3":>5s} {"V4":>5s} {"MKT":>5s}  {"J-MKT":>6s}  JerrySpread')
 print('-' * 110)
 
+def _parse_l10(s):
+    if not s: return (None, None)
+    try:
+        parts = str(s).split('-')
+        return (int(parts[0]), int(parts[1]))
+    except (ValueError, IndexError):
+        return (None, None)
+
 for g in games:
+    # Inject L10 from mlb_game_context's home_last10 / away_last10 strings
+    h_w, h_l = _parse_l10(g.get('home_last10'))
+    a_w, a_l = _parse_l10(g.get('away_last10'))
+    g['home_l10_wins'] = h_w; g['home_l10_losses'] = h_l
+    g['away_l10_wins'] = a_w; g['away_l10_losses'] = a_l
     enriched = enrich_ctx_for_jerry(g, pitcher_stats, team_offense, bullpen_stats)
     r = compute_jerry_projection(enriched)
     market = g.get('close_total') or g.get('open_total')

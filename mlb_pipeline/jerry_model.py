@@ -44,6 +44,16 @@ JERRY_WEIGHTS = {
     'offense_drift_cap_high': 1.30,
     'offense_drift_cap_low': 0.70,
 
+    # --- L10 win% team momentum (NEW 5/30, per user direction) ---
+    # L10 W-L is a different signal from drift (which is offensive-only):
+    # captures pitching/bullpen momentum + clutch performance + manager
+    # decisions. A team going 7-3 winning low-scoring games is different
+    # from a team going 3-7 with similar R/G. Symmetric around .500:
+    #   momentum_mult = 1.0 + (l10_win_pct - 0.5) * sensitivity
+    # At sensitivity 0.15: 80% → +4.5%, 20% → -4.5%, 100% → +7.5%
+    'team_l10_momentum_sensitivity': 0.15,
+    'team_l10_min_games': 7,  # need at least 7 graded games to apply
+
     # --- Starter component ---
     'starter_xera_weight': 0.55,     # base weight on xERA
     'starter_l3_weight': 0.30,       # L3 form weight
@@ -317,6 +327,19 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
         drift_mult = 1.0 + drift * w['offense_drift_sensitivity']
         drift_mult = max(w['offense_drift_cap_low'], min(w['offense_drift_cap_high'], drift_mult))
 
+    # === L10 team momentum (NEW 5/30) ===
+    # L10 W-L is a different signal from drift — captures pitching, clutch,
+    # team-overall momentum. Read from ctx as wins/losses; computed by
+    # game_context.py from mlb_game_results.
+    l10_wins = _f(ctx.get(f'{team_side}_l10_wins'))
+    l10_losses = _f(ctx.get(f'{team_side}_l10_losses'))
+    momentum_mult = 1.0
+    if l10_wins is not None and l10_losses is not None:
+        l10_n = l10_wins + l10_losses
+        if l10_n >= w['team_l10_min_games']:
+            l10_win_pct = l10_wins / l10_n
+            momentum_mult = 1.0 + (l10_win_pct - 0.5) * w['team_l10_momentum_sensitivity']
+
     # === Compute composites ===
     wrc_blend = _blend_wrc_plus(wrc_plus, wrc_vs_hand, wrc_l14, w)
     offense_mult = _offense_quality_multiplier(wrc_blend, barrel, xwoba, w)
@@ -337,6 +360,9 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
 
     # Apply hot/cold drift multiplier
     offense_mult *= drift_mult
+
+    # Apply L10 team momentum multiplier
+    offense_mult *= momentum_mult
 
     # Mastery + split multipliers (on the opposing pitcher's allowed runs)
     mastery_mult = _mastery_multiplier(opp_mastery_era, opp_mastery_ip, w)
@@ -392,6 +418,9 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
         'offense_split_mult': round(split_mult_offense, 3) if split_mult_offense is not None else None,
         'offense_drift': drift,
         'drift_mult': round(drift_mult, 3),
+        'l10_wins': l10_wins,
+        'l10_losses': l10_losses,
+        'momentum_mult': round(momentum_mult, 3),
         'mastery_mult': round(mastery_mult, 3),
         'starter_split_mult': round(split_mult, 3),
         'opp_starter_rate_1_3': round(rate_1_3, 2) if rate_1_3 else None,

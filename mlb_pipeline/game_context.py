@@ -1318,6 +1318,61 @@ def get_pitcher_first_inning(pitcher_name):
     except:
         return None
 
+_L10_RECORD_CACHE = {}
+
+
+def get_team_l10_record(team_name, as_of_date=None):
+    """Compute team's L10 W-L from mlb_game_results, looking back from
+    as_of_date (defaults to today ET). Per-process cached so a cron pass
+    doesn't re-query for every game.
+
+    Returns dict {'wins': int, 'losses': int, 'games_played': int,
+                  'l10_win_pct': float} or None on failure.
+
+    Built 2026-05-30 per user direction. Different signal from offense_drift:
+    drift is offensive-only (R/G delta), L10 W-L captures pitching + clutch +
+    overall team momentum. Used by Jerry Model's momentum multiplier.
+    """
+    if not team_name:
+        return None
+    if as_of_date is None:
+        as_of_date = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
+    key = (team_name, as_of_date)
+    if key in _L10_RECORD_CACHE:
+        return _L10_RECORD_CACHE[key]
+    try:
+        qt = requests.utils.quote(team_name)
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_results?or=(home_team.eq.{qt},away_team.eq.{qt})"
+            f"&game_date=lt.{as_of_date}&home_score=not.is.null"
+            f"&select=game_date,home_team,away_team,home_score,away_score"
+            f"&order=game_date.desc&limit=10",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            timeout=15,
+        )
+        games = r.json() if r.status_code == 200 else []
+        w = l = 0
+        for g in games:
+            hs, ascore = g.get('home_score'), g.get('away_score')
+            if hs is None or ascore is None or hs == ascore:
+                continue
+            if g.get('home_team') == team_name:
+                if hs > ascore: w += 1
+                else: l += 1
+            elif g.get('away_team') == team_name:
+                if ascore > hs: w += 1
+                else: l += 1
+        total = w + l
+        result = {
+            'wins': w, 'losses': l, 'games_played': total,
+            'l10_win_pct': round(w / total, 3) if total > 0 else None,
+        }
+        _L10_RECORD_CACHE[key] = result
+        return result
+    except Exception:
+        return None
+
+
 def get_team_woba_wrc(team_name):
     """Look up team wOBA and wRC+ from Supabase mlb_team_offense table"""
     try:
@@ -2166,7 +2221,8 @@ def upload_game_context(context, commence_time=None):
     if r.status_code == 400:
         stripped = []
         for k in ('jerry_pred_home_runs', 'jerry_pred_away_runs', 'jerry_pred_spread',
-                  'jerry_pred_total', 'jerry_components', 'jerry_weights_version'):
+                  'jerry_pred_total', 'jerry_components', 'jerry_weights_version',
+                  'home_l10_wins', 'home_l10_losses', 'away_l10_wins', 'away_l10_losses'):
             if k in r.text and k in context:
                 context.pop(k, None)
                 stripped.append(k)
@@ -2356,6 +2412,12 @@ def log_game_result(context):
             "away_last10_runs_per_game": context.get("away_last10_runs_per_game"),
             "home_last5_runs_per_game": context.get("home_last5_runs_per_game"),
             "away_last5_runs_per_game": context.get("away_last5_runs_per_game"),
+            # L10 W-L for Jerry momentum + backtest queries.
+            # Columns added by 20260530_l10_record_columns.sql.
+            "home_l10_wins": context.get("home_l10_wins"),
+            "home_l10_losses": context.get("home_l10_losses"),
+            "away_l10_wins": context.get("away_l10_wins"),
+            "away_l10_losses": context.get("away_l10_losses"),
         }
 
         # Parse away pitcher stats from pitcher_context
@@ -2461,7 +2523,9 @@ def log_game_result(context):
                       'home_ops_last14', 'away_ops_last14',
                       'home_wrc_proxy_l14', 'away_wrc_proxy_l14',
                       'home_last10_runs_per_game', 'away_last10_runs_per_game',
-                      'home_last5_runs_per_game', 'away_last5_runs_per_game'):
+                      'home_last5_runs_per_game', 'away_last5_runs_per_game',
+                      'home_l10_wins', 'home_l10_losses',
+                      'away_l10_wins', 'away_l10_losses'):
                 if k in r.text and k in record:
                     record.pop(k, None)
                     stripped.append(k)
@@ -3806,12 +3870,24 @@ def run(target_date=None):
                 elif home_last_venue not in VENUE_COORDS and home_last_venue:
                     print(f"  ⚠️ Missing VENUE_COORDS for: '{home_last_venue}'")
 
+            # Parse L10 W-L into integers (used by Jerry + persisted to
+            # context dict below). MLB Stats API returns strings like "8-2".
+            def _parse_l10(s):
+                if not s: return (None, None)
+                try:
+                    parts = str(s).split('-')
+                    return (int(parts[0]), int(parts[1]))
+                except (ValueError, IndexError):
+                    return (None, None)
+            _h_l10_w, _h_l10_l = _parse_l10(home_form.get('last10') if home_form else None)
+            _a_l10_w, _a_l10_l = _parse_l10(away_form.get('last10') if away_form else None)
+
             # ── JERRY MODEL — SHADOW MODE (added 2026-05-30) ──
             # Linear-formula projection with inning-bucket simulation,
             # mastery, recency-weighted offense, home/away R/G splits,
-            # bullpen gas, park, weather. Runs alongside v3/v4 for 2-4
-            # weeks of audit before any user-facing surfacing. See
-            # mlb_pipeline/jerry_model.py for the math and
+            # bullpen gas, park, weather, L10 momentum. Runs alongside
+            # v3/v4 for 2-4 weeks of audit before any user-facing surfacing.
+            # See mlb_pipeline/jerry_model.py for the math and
             # _backtest_jerry.py for hit-rate comparison.
             jerry_pred_home_runs = None
             jerry_pred_away_runs = None
@@ -3837,6 +3913,8 @@ def run(target_date=None):
                 _ctx_jerry = {
                     'home_team': home_team, 'away_team': away_team,
                     'home_pitcher': home_pitcher, 'away_pitcher': away_pitcher,
+                    'home_l10_wins': _h_l10_w, 'home_l10_losses': _h_l10_l,
+                    'away_l10_wins': _a_l10_w, 'away_l10_losses': _a_l10_l,
                     'home_sp_xera': home_xera_val, 'away_sp_xera': away_xera_val,
                     'home_pitcher_last_3_era': home_pitcher_last_3_era,
                     'away_pitcher_last_3_era': away_pitcher_last_3_era,
@@ -4072,6 +4150,12 @@ def run(target_date=None):
                 "away_record": f"{away_form['wins']}-{away_form['losses']}" if away_form else None,
                 "home_last10": home_form['last10'] if home_form else None,
                 "away_last10": away_form['last10'] if away_form else None,
+                # Parsed integer L10 W-L for Jerry Model + audit queries.
+                # Columns added by 20260530_l10_record_columns.sql.
+                "home_l10_wins": _h_l10_w,
+                "home_l10_losses": _h_l10_l,
+                "away_l10_wins": _a_l10_w,
+                "away_l10_losses": _a_l10_l,
                 "home_streak": home_form['streak'] if home_form else None,
                 "away_streak": away_form['streak'] if away_form else None,
                 "home_bullpen_era": home_bullpen['bullpen_era'] if home_bullpen else None,
