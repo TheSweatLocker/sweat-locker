@@ -141,13 +141,29 @@ def write_sweat_score(ctx, score, tier, breakdown=None):
     game_id = ctx.get('game_id')
     if not game_id:
         return
-    # Cap score to 79 when no primary_play. Tier should already be capped
-    # to STRONG via sweat_tier_for, but the score itself wasn't aligned.
+    # Cap score to 79 when there's no actionable play on ANY dimension.
+    # 5/29 redesign: cap previously fired on `not ctx.get('primary_play')`
+    # alone, which dropped scores even when a clean TOTAL Over edge was
+    # present (no primary_play set). New gate: cap only if the winning
+    # dimension has no `play` populated. SIDE primary_play missing is
+    # fine if TOTAL or PROP has a play.
     displayed_score = int(score)
-    if displayed_score >= 80 and not ctx.get('primary_play'):
+    has_any_play = False
+    if isinstance(breakdown, dict):
+        dims = breakdown.get('dimensions') or {}
+        winner = dims.get('winning_dimension')
+        if winner:
+            winner_dim = dims.get(winner) or {}
+            has_any_play = winner_dim.get('play') is not None
+        else:
+            # Pre-dimensional callers fall back to the original primary_play check
+            has_any_play = bool(ctx.get('primary_play'))
+    else:
+        has_any_play = bool(ctx.get('primary_play'))
+    if displayed_score >= 80 and not has_any_play:
         if isinstance(breakdown, dict):
             breakdown.setdefault('sweat_score_raw', displayed_score)
-            breakdown.setdefault('cap_reason', 'no_primary_play')
+            breakdown.setdefault('cap_reason', 'no_dimension_play')
         displayed_score = 79
     payload = {'sweat_score': displayed_score, 'sweat_tier': tier}
     if breakdown is not None:
@@ -171,241 +187,656 @@ def write_sweat_score(ctx, score, tier, breakdown=None):
     except Exception as e:
         print(f"  ⚠️ sweat_score writeback failed for {game_id}: {e}")
 
+    # 5/30 — also mirror sweat_dimensions back to mlb_game_results so the
+    # audit can grade SIDE/TOTAL/PROP headline calls forward. log_game_result
+    # runs BEFORE sweat is computed (it captures pre-game training inputs),
+    # so dims have to land via this separate PATCH. Best-effort: missing
+    # column triggers a soft-fail with a one-line nudge to run the migration.
+    dims = (breakdown or {}).get('dimensions') if isinstance(breakdown, dict) else None
+    if dims is not None:
+        try:
+            rr = requests.patch(
+                f"{SUPABASE_URL}/rest/v1/mlb_game_results?game_id=eq.{game_id}",
+                headers={**HEADERS, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'},
+                json={'sweat_dimensions': dims},
+                timeout=10,
+            )
+            if rr.status_code == 400 and 'sweat_dimensions' in rr.text:
+                # column not in results table yet — log once, move on
+                pass
+        except Exception:
+            pass
+
+
+def _compute_supplementary_play(ctx):
+    """NRFI/YRFI surface for the "Also worth a look" tag, computed beside
+    the primary_play but never replacing it. Added 2026-05-30 after MIA/NYM
+    NRFI POTD lost and the audit (PRIME NRFI 90-94 = 50% on n=22 / 30d)
+    confirmed bare NRFI isn't headline-grade. ML/totals now lead; NRFI
+    surfaces here only when (a) the score is in a meaningful band AND
+    (b) a companion signal supports it.
+
+    Companion signals (any one promotes to STRONG supplementary):
+      - Ace duel (both starters ≤3.0 xERA)
+      - Cold weather (≤55°F)
+      - Pitcher park (≤95 run factor)
+      - NRFI-friendly umpire (zone tag or "under" in note)
+
+    Without a companion, NRFI 90-94 is LEAN supplementary — "model sees
+    it but the cohort is coinflip alone." Returns dict or None.
+    """
+    nrfi = ctx.get('nrfi_score')
+    if nrfi is None:
+        return None
+    try:
+        nrfi = int(nrfi)
+    except (TypeError, ValueError):
+        return None
+
+    # YRFI sweet spot — keeps STRONG tier because cohort audit (1st-inn
+    # ERA 6-8 + NRFI ≤25 = ~63%) is independent from NRFI demotion. Still
+    # routed to supplementary (not primary) so the headline is always
+    # ML/total.
+    h1 = ctx.get('home_first_inning_era')
+    a1 = ctx.get('away_first_inning_era')
+    try:
+        max_fi = max(float(h1 or 0), float(a1 or 0))
+    except (TypeError, ValueError):
+        max_fi = 0.0
+    if nrfi <= 25 and 6.0 <= max_fi < 8.0:
+        return {
+            'type': 'YRFI',
+            'label': 'YRFI',
+            'tier': 'STRONG',
+            'sub': f'NRFI {nrfi} + 1st-inn ERA {max_fi:.1f} (audit sweet spot)',
+            'audit_note': '1st-inn fragility 6-8 audits ~63%',
+        }
+
+    # NRFI sweet spot 90-94 — companion-signal gated. Without companion
+    # the surface is LEAN (transparency tag), not STRONG.
+    if 90 <= nrfi <= 94:
+        try:
+            h_xera = float(ctx.get('home_sp_xera') or 4.5)
+            a_xera = float(ctx.get('away_sp_xera') or 4.5)
+        except (TypeError, ValueError):
+            h_xera, a_xera = 4.5, 4.5
+        try:
+            temp = float(ctx.get('temperature') or 70)
+        except (TypeError, ValueError):
+            temp = 70.0
+        try:
+            park = float(ctx.get('park_run_factor') or 100)
+        except (TypeError, ValueError):
+            park = 100.0
+        umpire_note = (ctx.get('umpire_note') or '').lower()
+
+        ace_duel = h_xera <= 3.0 and a_xera <= 3.0
+        cold = temp <= 55
+        pitcher_park = park <= 95
+        nrfi_ump = 'under' in umpire_note and 'over' not in umpire_note.split('under')[0]
+
+        companions = []
+        if ace_duel:
+            companions.append(f'ace duel ({h_xera:.2f}/{a_xera:.2f} xERA)')
+        if cold:
+            companions.append(f'cold {int(temp)}°F')
+        if pitcher_park:
+            companions.append(f'pitcher park {int(park)}')
+        if nrfi_ump:
+            companions.append('NRFI-friendly umpire')
+
+        if companions:
+            return {
+                'type': 'NRFI',
+                'label': 'NRFI',
+                'tier': 'STRONG',
+                'sub': f'Score {nrfi}/100 + ' + ' + '.join(companions),
+                'audit_note': 'NRFI 90-94 audits 50% alone; companion-signal cohort untracked',
+            }
+        return {
+            'type': 'NRFI',
+            'label': 'NRFI',
+            'tier': 'LEAN',
+            'sub': f'Score {nrfi}/100 — no companion signal',
+            'audit_note': 'NRFI 90-94 alone audits 50% (n=22, 30d) — coinflip, surface only',
+        }
+
+    # NRFI lean band 80-89 — supplementary LEAN tag only
+    if 80 <= nrfi <= 89:
+        return {
+            'type': 'NRFI',
+            'label': 'NRFI',
+            'tier': 'LEAN',
+            'sub': f'Score {nrfi}/100 — lean band',
+            'audit_note': 'NRFI 80-89 lower-conviction band',
+        }
+
+    return None
+
+
+def _compute_prop_alignment(game_props):
+    """Identify whether the props on a game collectively point at one TOTAL
+    direction (OVER or UNDER). Power the aligned-prop signal in the TOTAL
+    sub-score.
+
+    Direction map (loose proxy — captures the run-environment lean):
+      OVER total:  hits_over, er_over, ha_over, outs_under
+      UNDER total: hits_under, er_under, ha_under, outs_over
+      Orthogonal:  ks_*, bb_*  (pitcher-strikeout heavy starts can go either way)
+
+    **2026-05-30 dedup fix**: prop counts dedupe by `player_name`. Same-
+    pitcher prop stacks (e.g. 4 Meyer Unders: HA, ER, Outs, etc.) are NOT
+    independent signals — they're one correlated bet on that pitcher
+    suppressing contact. Counting them as 4 inflated prop confluence and
+    triggered a wrong direction-conflict suppression on MIA/NYM 5/29
+    (Meyer got shelled, OVER hit; the would-have-been-UNDER headline
+    from the inflated count would have been a loss). Each PLAYER counts
+    once for its highest-tier directional vote.
+
+    Returns (direction or None, prime_players, strong_players, top_3_props).
+    """
+    if not game_props:
+        return (None, 0, 0, [])
+    over_types = {'hits_over', 'er_over', 'ha_over', 'outs_under'}
+    under_types = {'hits_under', 'er_under', 'ha_under', 'outs_over'}
+    # Per-player highest tier per direction (PRIME beats STRONG)
+    TIER_RANK = {'PRIME': 2, 'STRONG': 1}
+    over_by_player = {}   # player_name -> (tier, conviction, prop)
+    under_by_player = {}
+    for p in game_props:
+        ptype = p.get('prop_type')
+        tier = p.get('tier')
+        if tier not in TIER_RANK:
+            continue
+        player = (p.get('player_name') or '').strip()
+        if not player:
+            continue
+        if ptype in over_types:
+            cur = over_by_player.get(player)
+            if cur is None or TIER_RANK[tier] > TIER_RANK[cur[0]]:
+                over_by_player[player] = (tier, p.get('conviction') or 0, p)
+        elif ptype in under_types:
+            cur = under_by_player.get(player)
+            if cur is None or TIER_RANK[tier] > TIER_RANK[cur[0]]:
+                under_by_player[player] = (tier, p.get('conviction') or 0, p)
+    over_count = len(over_by_player)
+    under_count = len(under_by_player)
+    if over_count == 0 and under_count == 0:
+        return (None, 0, 0, [])
+    if over_count >= under_count:
+        chosen_players, direction = over_by_player, 'OVER'
+        other_count = under_count
+    else:
+        chosen_players, direction = under_by_player, 'UNDER'
+        other_count = over_count
+    # Require a clear directional lean: chosen side at least 2x the other,
+    # OR the other side is empty. Mixed signals (3 Over players + 2 Under
+    # players) are noise.
+    if other_count and len(chosen_players) < 2 * other_count:
+        return (None, over_count, under_count, [])
+    prime_count = sum(1 for t, _, _ in chosen_players.values() if t == 'PRIME')
+    strong_count = sum(1 for t, _, _ in chosen_players.values() if t == 'STRONG')
+    top_3 = [entry[2] for entry in sorted(chosen_players.values(), key=lambda x: -x[1])[:3]]
+    return (direction, prime_count, strong_count, top_3)
+
 
 def score_mlb_game(ctx, game_props=None, track=None):
-    """Score an MLB game's overall sweat heat.
+    """Score an MLB game's overall sweat heat, decomposed across three
+    dimensions: SIDE (ML/spread), TOTAL (Over/Under, NRFI/YRFI), PROP
+    (game has standout props worth posting).
 
-    Rewritten 2026-05-16. Previous formula clustered most games at 42-45 PASS
-    because base 30 + small bonuses couldn't stack high enough on a single
-    NRFI / xERA signal. New formula adds confluence, 1st-inn extremes, mastery,
-    and PRIME-prop-stack bonuses so a game's heat reflects what the app
-    actually surfaces.
+    2026-05-29 redesign — sweat split into 3 sub-scores. Pre-split: one
+    headline number washed total-only edges (ATL/CIN: +0.93 total delta,
+    4 aligned props, scored 38 PASS). Post-split: each dimension scored
+    independently; headline = max(side, total, prop) so total-edge games
+    surface STRONG/PRIME on the TOTAL dimension instead of disappearing.
 
-    Target distribution per slate:
-      ~1-3 PRIME  (≥80) — POTD + stack-alert games
-      ~3-6 STRONG (65-79) — confluence + DOD + multi-PRIME-prop games
-      ~4-7 LIGHT_LEAN (50-64) — single-PRIME-prop or one-signal games
-      ~1-3 PASS   (<50) — no edges
+    Returns (headline_score, dimensions_dict) where dimensions_dict carries
+    per-dimension score / tier / drivers / play. Callers use headline_score
+    as the column value and pass dimensions_dict into write_sweat_score for
+    persistence into the breakdown JSONB.
 
-    2026-05-25: added optional `track` parameter for the WHY THIS SCORE
-    UI parity work. If a dict is passed (with empty 'contributions' and
-    'evidence' lists), the scorer appends signal entries inline as it
-    scores. Backward-compatible default (None) means no tracking.
+    Backward-compat: `track` still gets the OLD contributions/evidence
+    lists populated for the existing app UI block. Dimensions metadata
+    is additional, not a replacement.
+
+    Tier thresholds per dimension (sweat_tier_for): 80/65/50/<50.
+
+    Earlier history (2026-05-16): full rewrite to break out of the 42-45
+    PASS cluster. (2026-05-25): added `track` for WHY-THIS-SCORE UI.
     """
-    score = 30  # base
-    # Contributions/evidence tracking — local closures avoid threading lists
-    # through every branch. When track is None, the helpers are no-ops.
+    if track is None:
+        track = {'contributions': [], 'evidence': []}
+
+    # Per-dimension driver lists (independent of the legacy
+    # contributions/evidence lists). Each driver is {label, points, detail}.
+    side_drivers, total_drivers, prop_drivers = [], [], []
+
     def _contrib(emoji, label, points, detail=None):
-        if track is not None and points > 0:
+        """Legacy contribution tracker — populates the existing UI block."""
+        if points > 0:
             entry = {'emoji': emoji, 'label': label, 'points': points}
             if detail:
                 entry['detail'] = detail
             track.setdefault('contributions', []).append(entry)
 
     def _evidence(emoji, label, detail=None):
-        if track is not None:
-            entry = {'emoji': emoji, 'label': label}
-            if detail:
-                entry['detail'] = detail
-            track.setdefault('evidence', []).append(entry)
+        entry = {'emoji': emoji, 'label': label}
+        if detail:
+            entry['detail'] = detail
+        track.setdefault('evidence', []).append(entry)
 
-    # ---- NRFI band (audit-calibrated) ----
+    def _add(bucket_drivers, points, emoji, label, detail=None):
+        """Routes a contribution to BOTH the legacy track AND the per-
+        dimension drivers list, so sweat_breakdown.dimensions carries the
+        decomposition without duplicating call sites."""
+        if points > 0:
+            _contrib(emoji, label, points, detail)
+            bucket_drivers.append({'emoji': emoji, 'label': label, 'points': points, 'detail': detail})
+
+    # Pre-compute prop alignment once — used by TOTAL sub-score.
+    prop_dir, prop_dir_prime, prop_dir_strong, prop_dir_top = _compute_prop_alignment(game_props)
+
+    # ---- TOTAL: NRFI / YRFI (audit-calibrated, REWEIGHTED 2026-05-30) ----
+    # NRFI/YRFI is an inning total bet — routes entirely to TOTAL bucket.
+    # Weights HALVED from 5/29 levels after MIA/NYM NRFI POTD lost and the
+    # audit (PRIME NRFI 90-94 = 50% on 22 games / 30d) confirmed NRFI is
+    # at coinflip even in the best cohort. Previous +30 sweet-spot weight
+    # was making NRFI the loudest single signal in the system — out of
+    # proportion with its actual hit rate. New weights keep NRFI surfacing
+    # as a real signal but no longer headline-grade on its own. POTD
+    # framing for NRFI is dropped entirely (see compute_primary_play).
     nrfi = ctx.get('nrfi_score') or 0
+    nrfi_band_label = None  # tracked for total_play headline
     if 90 <= nrfi <= 94:
-        score += 30    # PRIME band, audit 71.4% n=28
-        _contrib('⚾', 'NRFI sweet spot', 30, f'Score {int(nrfi)}/100 — audit 71.4% (n=28)')
+        _add(total_drivers, 15, '⚾', 'NRFI sweet spot', f'Score {int(nrfi)}/100 — audit 50% (n=22, coinflip)')
+        nrfi_band_label = 'NRFI'
     elif 88 <= nrfi <= 89:
-        score += 22
-        _contrib('⚾', 'NRFI edge tier', 22, f'Score {int(nrfi)}/100')
+        _add(total_drivers, 11, '⚾', 'NRFI edge tier', f'Score {int(nrfi)}/100')
+        nrfi_band_label = 'NRFI'
     elif nrfi >= 95:
-        score += 12    # volatile/trap zone, audit 47.8% — still some heat
-        _contrib('⚠️', 'NRFI volatile (95+)', 12, f'Score {int(nrfi)}/100 — coin-flip cohort')
+        _add(total_drivers, 6, '⚠️', 'NRFI volatile (95+)', f'Score {int(nrfi)}/100 — fade cohort 47.8%')
     elif 80 <= nrfi <= 89:
-        score += 14    # lean band
-        _contrib('⚾', 'NRFI lean band', 14, f'Score {int(nrfi)}/100')
+        _add(total_drivers, 7, '⚾', 'NRFI lean band', f'Score {int(nrfi)}/100')
+        nrfi_band_label = 'NRFI'
     elif 70 <= nrfi <= 79:
-        score += 10    # lean band, audit 56.7%
-        _contrib('⚾', 'NRFI lean', 10, f'Score {int(nrfi)}/100 — audit 56.7%')
+        _add(total_drivers, 5, '⚾', 'NRFI lean', f'Score {int(nrfi)}/100')
     elif nrfi <= 30:
         _h1 = float(ctx.get('home_first_inning_era') or 4.5)
         _a1 = float(ctx.get('away_first_inning_era') or 4.5)
         _max_fi = max(_h1, _a1)
         if 6.0 <= _max_fi < 8.0:
-            score += 14    # YRFI sweet-spot fragility (audit ~63%)
-            _contrib('🔥', 'YRFI sweet spot', 14, f'NRFI {int(nrfi)} + 1st-inn ERA {_max_fi:.1f} (audit ~63%)')
-        else:
-            score += 4     # small-sample noise — don't drive sweat to PRIME
+            _add(total_drivers, 7, '🔥', 'YRFI sweet spot', f'NRFI {int(nrfi)} + 1st-inn ERA {_max_fi:.1f} — audit ~63%')
+            nrfi_band_label = 'YRFI'
     elif nrfi <= 40:
-        score += 8
-        _contrib('🔥', 'YRFI lean', 8, f'NRFI score {int(nrfi)}/100')
+        _add(total_drivers, 4, '🔥', 'YRFI lean', f'NRFI score {int(nrfi)}/100')
 
-    # ---- Pitcher xERA mismatch ----
+    # ---- TOTAL: Pitcher xERA mismatch ----
+    # Moved from side bucket 2026-05-29 — a 2-run xERA gap is a TOTAL signal
+    # (one side scores, one doesn't) not a side signal (no direct ML edge).
     home_xera = float(ctx.get('home_sp_xera') or 4.5)
     away_xera = float(ctx.get('away_sp_xera') or 4.5)
     xera_gap = abs(home_xera - away_xera)
     if xera_gap >= 2.0:
-        score += 14
-        _contrib('⚖️', 'Major xERA gap', 14, f'{abs(home_xera-away_xera):.2f}-run pitcher mismatch')
+        _add(total_drivers, 14, '⚖️', 'Major xERA gap', f'{xera_gap:.2f}-run pitcher mismatch')
     elif xera_gap >= 1.5:
-        score += 9
-        _contrib('⚖️', 'xERA gap', 9, f'{xera_gap:.2f}-run pitcher mismatch')
+        _add(total_drivers, 9, '⚖️', 'xERA gap', f'{xera_gap:.2f}-run pitcher mismatch')
     elif xera_gap >= 1.0:
-        score += 6
-        _contrib('⚖️', 'xERA gap', 6, f'{xera_gap:.2f}-run pitcher mismatch')
+        _add(total_drivers, 6, '⚖️', 'xERA gap', f'{xera_gap:.2f}-run pitcher mismatch')
     elif xera_gap >= 0.5:
-        score += 3
+        _add(total_drivers, 3, '⚖️', 'xERA gap (slim)', f'{xera_gap:.2f}-run pitcher mismatch')
 
-    # ---- Both pitchers elite (ace duel) ----
+    # ---- TOTAL: Both pitchers elite (ace duel — points at UNDER) ----
     if home_xera <= 3.0 and away_xera <= 3.0:
-        score += 10
-        _contrib('🎯', 'Ace duel', 10, f'Both starters ≤3.00 xERA')
+        _add(total_drivers, 10, '🎯', 'Ace duel', 'Both starters ≤3.00 xERA')
     elif home_xera <= 3.5 and away_xera <= 3.5:
-        score += 5
-        _contrib('🎯', 'Quality matchup', 5, 'Both starters ≤3.50 xERA')
+        _add(total_drivers, 5, '🎯', 'Quality matchup', 'Both starters ≤3.50 xERA')
 
-    # ---- 1st-inning extremes (NRFI lock or YRFI fade) ----
+    # ---- TOTAL: 1st-inning extremes (NRFI lock or YRFI fade) ----
     h1 = float(ctx.get('home_first_inning_era') or 4.5)
     a1 = float(ctx.get('away_first_inning_era') or 4.5)
-    # Extreme fragility (≥8 ERA) is small-sample noise per 5/18 audit
-    # — fragile starter bonus only applies in 6.0-7.9 sweet spot
     if 6.0 <= max(h1, a1) < 8.0:
-        score += 8     # fragile starter sweet spot
+        _add(total_drivers, 8, '🔥', 'Fragile starter sweet spot', f'1st-inn ERA {max(h1,a1):.1f}')
     elif 8.0 <= max(h1, a1):
-        score += 2     # high but noisy
+        _add(total_drivers, 2, '🔥', '1st-inn fragile (8+, noisy)', f'1st-inn ERA {max(h1,a1):.1f}')
     elif h1 >= 6.0 or a1 >= 6.0:
-        score += 5
+        _add(total_drivers, 5, '🔥', 'One fragile starter', '1st-inn ERA ≥6 one side')
     if h1 <= 1.5 and a1 <= 1.5:
-        score += 6     # mutual NRFI lock
+        _add(total_drivers, 6, '🛡️', 'Mutual NRFI lock', 'Both 1st-inn ERA ≤1.5')
     elif h1 <= 1.5 or a1 <= 1.5:
-        score += 3
+        _add(total_drivers, 3, '🛡️', 'One NRFI lock', 'One 1st-inn ERA ≤1.5')
 
-    # ---- Signal confluence (strongest single side indicator) ----
+    # ---- SIDE: Signal confluence (strongest side indicator) ----
     conf_net = ctx.get('signal_confluence_net')
     try:
         conf_mag = abs(int(conf_net)) if conf_net is not None else 0
     except (TypeError, ValueError):
         conf_mag = 0
     if conf_mag >= 5:
-        score += 14    # PRIME confluence — multi-signal stacking
-        _contrib('🎯', 'PRIME confluence', 14, f'{conf_mag} independent signals align')
+        _add(side_drivers, 14, '🎯', 'PRIME confluence', f'{conf_mag} independent signals align')
     elif conf_mag >= 4:
-        score += 10
-        _contrib('🎯', 'Strong confluence', 10, f'{conf_mag} signals on one side')
+        _add(side_drivers, 10, '🎯', 'Strong confluence', f'{conf_mag} signals on one side')
     elif conf_mag >= 3:
-        score += 6
-        _contrib('🎯', 'Confluence edge', 6, f'{conf_mag} signals on one side')
+        _add(side_drivers, 6, '🎯', 'Confluence edge', f'{conf_mag} signals on one side')
     elif conf_mag >= 2:
-        score += 3
+        _add(side_drivers, 3, '🎯', 'Confluence lean', f'{conf_mag} signals on one side')
 
-    # ---- Spread delta (market disagreement) ----
-    # Audit (2026-05-21, see project_spread_delta_trap_zone) found the U-shape:
-    #   <1.0:    43-50% (coinflip / noise)
-    #   1.0-1.5: 55-58% (sweet spot — small edge cashes)
-    #   1.5-2.0: 40-43% (TRAP — model's pick LOSES more than wins)
-    #   ≥2.0:    55-58% (real conviction)
-    # Pre-2026-05-25 scoring rewarded the trap zone with +9 points — almost
-    # as much as the genuine ≥2.0 conviction band. New scoring matches the
-    # cohort curve: trap zone gets ZERO, 1.0-1.5 sweet spot gets bumped up.
+    # ---- SIDE: Spread delta (market disagreement, U-shape audit aware) ----
+    # 5/21 audit: <1.0 noise, 1.0-1.5 sweet spot (55-58%), 1.5-2.0 TRAP
+    # (40-43%), ≥2.0 conviction (55-58%). Trap zone gets zero.
     spread_delta = abs(float(ctx.get('spread_delta') or 0))
     if spread_delta >= 2.0:
-        score += 13   # genuine conviction (55-58%)
-        _contrib('📊', 'Market disagreement', 13, f'{spread_delta:.1f}-run spread delta — model fades market')
+        _add(side_drivers, 13, '📊', 'Market disagreement', f'{spread_delta:.1f}-run spread delta — model fades market')
     elif spread_delta >= 1.5:
-        score += 0    # trap zone — no boost
+        pass  # trap zone — no boost
     elif spread_delta >= 1.0:
-        score += 8    # sweet spot (55-58%) — bumped from 6 to recognize edge
-        _contrib('📊', 'Spread delta edge', 8, f'{spread_delta:.1f}-run model edge vs market')
+        _add(side_drivers, 8, '📊', 'Spread delta edge', f'{spread_delta:.1f}-run model edge vs market')
     elif spread_delta >= 0.5:
-        score += 3
+        _add(side_drivers, 3, '📊', 'Spread delta lean', f'{spread_delta:.1f}-run model edge')
 
-    # ---- Total model vs market disagreement ----
+    # ---- TOTAL: Total model vs market disagreement ----
+    # History:
+    # - 5/29 reband to +18 max (was +9). Old bands capped total-only edges
+    #   too low. Higher bands surface real total edges as PRIME/STRONG.
+    # - 5/30 direction-conflict gate: 4+ aligned distinct players override
+    #   the runs-model direction (correlated same-pitcher stacks dedup to
+    #   1 player so they don't trigger).
+    # - 5/30 OVER skepticism (this block): 30d backfill audit showed
+    #   TOTAL_UNDER hits 61.2% on n=85 but TOTAL_OVER barely beats coinflip
+    #   at 53.7% on n=95. v3/v4 OVER models have documented drift. Two
+    #   gates added so OVER contributions get full weight ONLY when:
+    #     (a) v3 AND v4 BOTH agree on OVER direction (cross-model consensus)
+    #     (b) v4 OVER isn't auto-suppressed by model_health (audit-driven)
+    #   When either fails, OVER contribution is multiplied by 0.6 (drops a
+    #   +18 PRIME signal to +11 STRONG — still meaningful but won't carry
+    #   a game to TOTAL PRIME tier on its own).
     proj_total = float(ctx.get('projected_total') or 0)
     close_total = float(ctx.get('close_total') or ctx.get('open_total') or 0)
+    v4_total = ctx.get('model_pred_total')
+    total_delta_signed = 0.0
+    total_delta_abs = 0.0
+    total_delta_suppressed = False
+    over_skeptic_mult = 1.0  # applied below when signal points OVER
     if proj_total > 0 and close_total > 0:
-        total_delta = abs(proj_total - close_total)
-        if total_delta >= 2.0:
-            score += 9
-        elif total_delta >= 1.5:
-            score += 6
-        elif total_delta >= 1.0:
-            score += 4
+        total_delta_signed = round(proj_total - close_total, 2)
+        total_delta_abs = abs(total_delta_signed)
+        delta_direction = 'OVER' if total_delta_signed > 0 else 'UNDER'
 
-    # ---- K gap ----
+        # OVER skepticism (5/30): compute multiplier if this is an OVER signal.
+        if delta_direction == 'OVER':
+            v3_over = total_delta_signed > 0
+            v4_over_agrees = None
+            try:
+                if v4_total is not None:
+                    v4_over_agrees = (float(v4_total) - close_total) > 0
+            except (TypeError, ValueError):
+                v4_over_agrees = None
+            v4_over_suppressed_flag = False
+            try:
+                from game_context import is_v4_over_suppressed
+                v4_over_suppressed_flag = is_v4_over_suppressed()
+            except Exception:
+                pass
+            # Cross-model disagreement OR v4 OVER suppressed → discount
+            if v4_over_agrees is False or v4_over_suppressed_flag:
+                over_skeptic_mult = 0.6
+                reason = 'cross-model disagree' if v4_over_agrees is False else 'v4 OVER auto-suppressed'
+                _evidence('⚠️', 'OVER skepticism applied',
+                          f'{reason} — total contribution ×0.6')
+
+        # Direction-conflict gate (5/30): if prop alignment points the OPPOSITE
+        # direction of total_delta AND has 4+ aligned PRIME/STRONG distinct
+        # PLAYERS, suppress total_delta entirely.
+        if prop_dir is not None and prop_dir != delta_direction \
+                and (prop_dir_prime + prop_dir_strong) >= 4:
+            total_delta_suppressed = True
+            _evidence('⚠️', 'Total delta vs props conflict',
+                      f'Model {total_delta_signed:+.2f} {delta_direction}, {prop_dir_prime + prop_dir_strong} players point {prop_dir} — suppressed')
+        else:
+            # Resolve band contribution, then apply OVER skepticism multiplier
+            if total_delta_abs >= 2.0:
+                pts = int(round(18 * over_skeptic_mult))
+                _add(total_drivers, pts, '📈', 'Major total disagreement', f'{total_delta_signed:+.2f}-run model vs market')
+            elif total_delta_abs >= 1.5:
+                pts = int(round(14 * over_skeptic_mult))
+                _add(total_drivers, pts, '📈', 'Strong total disagreement', f'{total_delta_signed:+.2f}-run model vs market')
+            elif total_delta_abs >= 1.0:
+                pts = int(round(10 * over_skeptic_mult))
+                _add(total_drivers, pts, '📈', 'Total edge', f'{total_delta_signed:+.2f}-run model vs market')
+            elif total_delta_abs >= 0.5:
+                pts = int(round(6 * over_skeptic_mult))
+                _add(total_drivers, pts, '📈', 'Total lean', f'{total_delta_signed:+.2f}-run model vs market')
+            elif total_delta_abs >= 0.3:
+                pts = int(round(3 * over_skeptic_mult))
+                _add(total_drivers, pts, '📈', 'Total slim edge', f'{total_delta_signed:+.2f}-run')
+
+    # ---- SIDE: K gap ----
     home_k_gap = abs(float(ctx.get('home_k_gap') or 0))
     away_k_gap = abs(float(ctx.get('away_k_gap') or 0))
     k_gap = max(home_k_gap, away_k_gap)
     if k_gap >= 12:
-        score += 6
+        _add(side_drivers, 6, '⚡', 'K-gap large', f'{k_gap:.0f}-pt K% gap')
     elif k_gap >= 8:
-        score += 3
+        _add(side_drivers, 3, '⚡', 'K-gap edge', f'{k_gap:.0f}-pt K% gap')
 
-    # ---- Pitcher mastery / anti-mastery vs current opp ----
+    # ---- SIDE: Pitcher mastery / anti-mastery vs current opp ----
     for vt_key in ('home_pitcher_vs_team_era', 'away_pitcher_vs_team_era'):
         v = ctx.get(vt_key)
         if v is None:
             continue
         try:
             vt = float(v)
-            side = 'Home' if vt_key.startswith('home') else 'Away'
+            side_label = 'Home' if vt_key.startswith('home') else 'Away'
             if vt <= 2.5:
-                score += 5
-                _contrib('⚾', f'{side} pitcher mastery vs opp', 5, f'{vt:.2f} ERA career vs this team')
+                _add(side_drivers, 5, '⚾', f'{side_label} pitcher mastery vs opp', f'{vt:.2f} ERA career vs this team')
             elif vt >= 7.0:
-                score += 5
-                _contrib('🚨', f'{side} pitcher tagged by opp', 5, f'{vt:.2f} ERA career vs this team')
+                _add(side_drivers, 5, '🚨', f'{side_label} pitcher tagged by opp', f'{vt:.2f} ERA career vs this team')
             elif vt <= 3.0:
-                score += 3
-                _evidence('⚾', f'{side} pitcher edge vs opp', f'{vt:.2f} ERA career vs this team')
+                _add(side_drivers, 3, '⚾', f'{side_label} pitcher edge vs opp', f'{vt:.2f} ERA career vs this team')
             elif vt >= 6.0:
-                score += 3
-                _evidence('🚨', f'{side} pitcher struggles vs opp', f'{vt:.2f} ERA career vs this team')
+                _add(side_drivers, 3, '🚨', f'{side_label} pitcher struggles vs opp', f'{vt:.2f} ERA career vs this team')
         except (TypeError, ValueError):
             pass
 
-    # ---- Park + weather extremes ----
+    # ---- TOTAL: Park (REBANDED 2026-05-29 — add 105/95 mid-tier) ----
+    # Old: +4 only at 110/92 thresholds. ATL/CIN's 108 (just below 110) and
+    # MIA/NYM's 95 (just above 92) were rounded down to zero. New 3-tier
+    # banding catches the soft park leans.
     park = float(ctx.get('park_run_factor') or 100)
-    if park >= 110:
-        score += 4
-        _evidence('🏟', 'Hitter-friendly park', f'Park factor {park:.0f}')
+    if park >= 115:
+        _add(total_drivers, 9, '🏟', 'Extreme hitter park', f'Park factor {park:.0f}')
+    elif park >= 110:
+        _add(total_drivers, 6, '🏟', 'Hitter-friendly park', f'Park factor {park:.0f}')
+    elif park >= 105:
+        _add(total_drivers, 3, '🏟', 'Park slight Over lean', f'Park factor {park:.0f}')
+    elif park <= 88:
+        _add(total_drivers, 9, '🏟', 'Extreme pitcher park', f'Park factor {park:.0f}')
     elif park <= 92:
-        score += 4
-        _evidence('🏟', 'Pitcher-friendly park', f'Park factor {park:.0f}')
+        _add(total_drivers, 6, '🏟', 'Pitcher-friendly park', f'Park factor {park:.0f}')
+    elif park <= 95:
+        _add(total_drivers, 3, '🏟', 'Park slight Under lean', f'Park factor {park:.0f}')
+
+    # ---- TOTAL: Weather (cold / wind) ----
     temp = float(ctx.get('temperature') or 70)
     if temp <= 45:
-        score += 3
-        _evidence('❄️', 'Cold weather', f'{int(temp)}°F suppresses scoring')
+        _add(total_drivers, 3, '❄️', 'Cold weather', f'{int(temp)}°F suppresses scoring')
     wind = float(ctx.get('wind_speed') or 0)
     if wind >= 18:
-        score += 3
-        _evidence('💨', 'High wind', f'{int(wind)} mph affecting flight')
+        _add(total_drivers, 3, '💨', 'High wind', f'{int(wind)} mph affecting flight')
 
-    # ---- Prop stack (game contains high-conviction props) ----
+    # ---- TOTAL: Aligned-prop direction (NEW 2026-05-29) ----
+    # 3+ same-game props pointing same Over/Under direction = a total
+    # confluence signal the old scorer missed. ATL/CIN 5/29 trigger:
+    # PRIME 85 Harris II hits-over + STRONG 80 Mateo hits-over + STRONG 76
+    # Acuña hits-over → 3 aligned OVER props on the same game = real total
+    # edge masked by zero side confluence.
+    if prop_dir is not None:
+        total_aligned = prop_dir_prime + prop_dir_strong
+        if total_aligned >= 4:
+            _add(total_drivers, 18, '🎯', 'Prop confluence', f'{total_aligned} aligned props point {prop_dir}')
+        elif total_aligned == 3:
+            _add(total_drivers, 14, '🎯', 'Prop confluence', f'3 aligned props point {prop_dir}')
+        elif total_aligned == 2 and prop_dir_prime >= 1:
+            _add(total_drivers, 6, '🎯', 'Prop alignment', f'2 aligned props ({prop_dir_prime} PRIME) point {prop_dir}')
+
+    # ---- PROP: stack count (game has standout props worth posting) ----
     game_props = game_props or []
     prime_props = [p for p in game_props if p.get('tier') == 'PRIME']
     strong_props = [p for p in game_props if p.get('tier') == 'STRONG']
     if len(prime_props) >= 4:
-        score += 20
-        _contrib('🔥', 'PRIME prop stack', 20, f'{len(prime_props)} PRIME props in this game')
+        _add(prop_drivers, 20, '🔥', 'PRIME prop stack', f'{len(prime_props)} PRIME props in this game')
     elif len(prime_props) >= 2:
-        score += 11
-        _contrib('🔥', 'Multiple PRIME props', 11, f'{len(prime_props)} PRIME props in this game')
+        _add(prop_drivers, 11, '🔥', 'Multiple PRIME props', f'{len(prime_props)} PRIME props in this game')
     elif len(prime_props) == 1:
-        score += 6
-        _contrib('🔥', 'PRIME prop available', 6, '1 PRIME prop in this game')
+        _add(prop_drivers, 6, '🔥', 'PRIME prop available', '1 PRIME prop in this game')
     elif len(strong_props) >= 3:
-        score += 5
-        _contrib('💪', 'STRONG prop cluster', 5, f'{len(strong_props)} STRONG props')
+        _add(prop_drivers, 5, '💪', 'STRONG prop cluster', f'{len(strong_props)} STRONG props')
 
-    # ---- Sort contributions by points (biggest drivers first) ----
-    if track is not None and track.get('contributions'):
+    # ---- primary_play tier bonus (routes to dimension by play type) ----
+    # When the pipeline has already endorsed a specific bet via
+    # compute_primary_play, that meta-signal should boost the relevant
+    # dimension. Without this, a PRIME ML primary_play like Yankees ML
+    # only reaches LIGHT_LEAN on the SIDE dimension because confluence +
+    # spread + mastery cap individually at +14/+13/+5.
+    pp = ctx.get('primary_play')
+    if pp and isinstance(pp, dict):
+        pp_type = (pp.get('type') or '').lower()
+        pp_tier = pp.get('tier')
+        bonus = {'PRIME': 20, 'STRONG': 12, 'LIGHT_LEAN': 6}.get(pp_tier, 0)
+        if bonus > 0:
+            target = side_drivers if pp_type in ('ml', 'spread', 'rl') else (
+                     total_drivers if pp_type in ('nrfi', 'yrfi', 'total') else None)
+            if target is not None:
+                _add(target, bonus, '⭐', f'{pp_tier} primary play', f'{pp.get("label") or pp_type.upper()} — pipeline endorsement')
+
+    # ---- Compute sub-scores ----
+    side_score = min(100, 30 + sum(d['points'] for d in side_drivers))
+    total_score = min(100, 30 + sum(d['points'] for d in total_drivers))
+    prop_score = min(100, 30 + sum(d['points'] for d in prop_drivers))
+
+    # ---- PRIME primary_play floor (5/29, narrowed 5/30) ----
+    # When the pipeline has independently endorsed a play as PRIME, the
+    # corresponding sweat dimension floors at 80. Originally covered all
+    # play types; narrowed 5/30 to ML/spread/RL and `total` (model OVER/
+    # UNDER) only — NRFI/YRFI explicitly excluded because PRIME NRFI 90-94
+    # audits at 50% (n=22, coinflip), not edge. Don't auto-elevate NRFI
+    # to TOTAL PRIME just because the pipeline tagged it. NRFI surfaces
+    # as a supplementary play (see compute_primary_play).
+    if pp and isinstance(pp, dict) and pp.get('tier') == 'PRIME':
+        pp_type = (pp.get('type') or '').lower()
+        if pp_type in ('ml', 'spread', 'rl') and side_score < 80:
+            side_score = 80
+            side_drivers.append({'emoji': '⭐', 'label': 'PRIME play floor', 'points': 80 - sum(d['points'] for d in side_drivers if d['label'] != 'PRIME play floor') - 30, 'detail': f'{pp.get("label") or pp_type.upper()} pipeline-endorsed'})
+        elif pp_type in ('over', 'under', 'total') and total_score < 80:
+            total_score = 80
+            total_drivers.append({'emoji': '⭐', 'label': 'PRIME play floor', 'points': 80 - sum(d['points'] for d in total_drivers if d['label'] != 'PRIME play floor') - 30, 'detail': f'{pp.get("label") or pp_type.upper()} pipeline-endorsed'})
+
+    # ---- Determine each dimension's play (the bet the dimension's
+    # heat actually points at — drives the "model likes X" headline) ----
+    side_play = None
+    if pp and isinstance(pp, dict) and (pp.get('type') or '').lower() in ('ml', 'spread', 'rl'):
+        side_play = {'type': (pp.get('type') or '').upper(), 'label': pp.get('label'), 'tier': pp.get('tier')}
+
+    # TOTAL play preference order (5/30 updated):
+    # 1. primary_play if it's over/under/total — pipeline-endorsed total
+    # 2. prop_dir if 3+ aligned PRIME/STRONG — prop confluence overrides
+    #    drifting runs model when they disagree
+    # 3. total_delta lean — Over/Under from runs model vs market
+    # NRFI / YRFI no longer fill total_play — they go to supplementary_play
+    # exclusively (5/30 demotion).
+    total_play = None
+    if pp and isinstance(pp, dict) and (pp.get('type') or '').lower() in ('over', 'under', 'total'):
+        total_play = {'type': (pp.get('type') or '').upper(), 'label': pp.get('label'), 'tier': pp.get('tier')}
+    elif prop_dir is not None and (prop_dir_prime + prop_dir_strong) >= 4 and close_total > 0:
+        # Prop confluence drives the total play only with 4+ distinct
+        # PLAYERS aligned (raised from 3 on 5/30 after MIA/NYM bug). At 2-3
+        # aligned players, prop_dir still adds to the sub-score but doesn't
+        # override the runs model's direction — that's the right balance:
+        # additive evidence at low n, override at high n.
+        total_play = {
+            'type': f'TOTAL_{prop_dir}',
+            'label': f'{prop_dir.title()} {close_total}',
+            'edge': total_delta_signed if not total_delta_suppressed else None,
+            'source': 'prop_confluence',
+        }
+    elif total_delta_abs >= 0.5 and close_total > 0 and not total_delta_suppressed:
+        direction = 'OVER' if total_delta_signed > 0 else 'UNDER'
+        total_play = {
+            'type': f'TOTAL_{direction}',
+            'label': f'{direction.title()} {close_total}',
+            'edge': total_delta_signed,
+        }
+
+    prop_play = None
+    if prop_dir is not None and (prop_dir_prime + prop_dir_strong) >= 2:
+        top_player = prop_dir_top[0] if prop_dir_top else None
+        prop_play = {
+            'type': f'PROP_{prop_dir}',
+            'label': f'{prop_dir_prime + prop_dir_strong} aligned props point {prop_dir}',
+            'top_player': top_player.get('player_name') if top_player else None,
+            'top_prop_type': top_player.get('prop_type') if top_player else None,
+        }
+    elif len(prime_props) >= 1:
+        top = max(prime_props, key=lambda p: p.get('conviction') or 0)
+        prop_play = {
+            'type': 'PROP_PRIME',
+            'label': 'PRIME prop available',
+            'top_player': top.get('player_name'),
+            'top_prop_type': top.get('prop_type'),
+        }
+
+    # ---- Per-dimension tiers (same 80/65/50/<50 cutoffs, but each tier's
+    # PRIME requires that dimension's play exists — actionability gate) ----
+    def _dim_tier(score, play):
+        if score is None:
+            return None
+        if score >= 80:
+            return 'PRIME' if play is not None else 'STRONG'  # cap at STRONG without actionable play
+        if score >= 65:
+            return 'STRONG'
+        if score >= 50:
+            return 'LIGHT_LEAN'
+        return 'PASS'
+
+    side_tier = _dim_tier(side_score, side_play)
+    total_tier = _dim_tier(total_score, total_play)
+    prop_tier = _dim_tier(prop_score, prop_play)
+
+    # ---- Headline = max(sub-scores); winning dimension drives model_play ----
+    dim_table = [
+        ('side', side_score, side_tier, side_play),
+        ('total', total_score, total_tier, total_play),
+        ('prop', prop_score, prop_tier, prop_play),
+    ]
+    # Sort by score desc; ties favor side > total > prop (most-decisive bet types first)
+    dim_order = {'side': 0, 'total': 1, 'prop': 2}
+    dim_table.sort(key=lambda x: (-x[1], dim_order[x[0]]))
+    winning_dim_name, headline_score, _, winning_play = dim_table[0]
+
+    # ---- Supplementary play (NRFI/YRFI, "also worth a look") ----
+    # 5/30 demotion: NRFI is no longer eligible for primary_play / POTD.
+    # It still surfaces here as a secondary tag so the user sees "model
+    # likes Yankees ML — NRFI also worth a look (companion-gated)".
+    # Returns None when NRFI doesn't qualify under the gates.
+    supplementary_play = _compute_supplementary_play(ctx)
+
+    dimensions = {
+        'side':  {'score': side_score,  'tier': side_tier,  'drivers': sorted(side_drivers,  key=lambda d: -d['points'])[:5], 'play': side_play},
+        'total': {'score': total_score, 'tier': total_tier, 'drivers': sorted(total_drivers, key=lambda d: -d['points'])[:5], 'play': total_play},
+        'prop':  {'score': prop_score,  'tier': prop_tier,  'drivers': sorted(prop_drivers,  key=lambda d: -d['points'])[:5], 'play': prop_play},
+        'winning_dimension': winning_dim_name,
+        'model_play': winning_play,
+        'supplementary_play': supplementary_play,
+    }
+
+    # ---- Backward-compat: sort/cap legacy contributions list ----
+    if track.get('contributions'):
         track['contributions'].sort(key=lambda c: -c.get('points', 0))
-        # Cap at top 6 to keep the UI section focused
         track['contributions'] = track['contributions'][:6]
-    if track is not None and track.get('evidence'):
-        # Cap evidence at 5 items
+    if track.get('evidence'):
         track['evidence'] = track['evidence'][:5]
 
-    return min(100, score)
+    return (headline_score, dimensions)
 
 def score_nba_game(game, nba_teams):
     """Score an NBA game for Play of the Day candidacy — playoff-enhanced"""
@@ -722,31 +1153,28 @@ def build_lean(ctx):
 
     ML LEANS REMOVED 2026-05-01 pending projection_v2 rebuild.
 
-    Backtest finding (391 games, 30 days): every ML selection rule we tested
-    (PRIME confluence, magnitude ≥3.0, magnitude ≥2.0, xERA gap ≥2.5) hit
-    below 50% on POTD picks. Root cause: the projection layer itself uses
-    only 4 inputs (xERA, wRC+, bullpen, park) when the schema has 70+. The
-    ML formula doesn't beat market efficiency — no filter on top of it will.
+    PRIORITIES (NRFI demoted 2026-05-30 — see project_nrfi_demotion):
+      1. v2 Total Over/Under Edge (audited 62.2% n=90 at delta ≥1.5)
+      2. v4 Total Edge (model_pred_total vs market ≥2.5)
+      3. RL alt for juiced chalk (model margin ≥1.5 + ML chalk-juiced)
+      4. v3 over_lean fallback (xERA gap rule)
+      5. NRFI 90-94 — last-resort fallback only. Cohort audits at 50%
+         (n=22 / 30d), well below the POTD selector's 58% threshold, so
+         the downstream gate filters it out. Kept as a lean string so
+         games with NO other model opinion still have something rather
+         than (None, None, False), but it won't reach POTD.
+      6. NRFI 88-89 — same last-resort logic, even softer cohort.
 
-    PRIORITIES (post-rebuild 2026-05-01):
-      1. NRFI 90-94 PRIME (audited 75% n=16)
-      2. v2 Total Over Edge (audited 62.2% n=90 at delta ≥1.5)
-      3. NRFI 88-89 edge tier (coin flip but kept as secondary)
-      4. v1 over_lean fallback (xERA gap rule etc.)
+    The candidate-side POTD selector applies an independent audit-rate
+    gate on top of this — see _derive_cohort + MIN_AUDIT_RATE in run().
+    NRFI demotion stacks: build_lean deprioritizes, POTD audit filters.
     """
-    nrfi = ctx.get('nrfi_score') or 0
-
-    # 1. PRIME NRFI sweet spot (90-94) — audited 75% over 30d (n=16)
-    if 90 <= nrfi <= 94:
-        return f"NRFI — Score {nrfi}/100 (sweet spot)", 'nrfi', True
-
-    # 2. v2 Total OVER/UNDER Edge — model_total vs market + 1.5
+    # 1. v2 Total OVER/UNDER Edge — model_total vs market + 1.5
     v2_pick = _v2_total_edge(ctx)
     if v2_pick is not None:
-        # Drop the proj object before returning to keep tuple shape consistent
         return v2_pick[0], v2_pick[1], v2_pick[2]
 
-    # 3. RL alt for juiced chalk (added 2026-05-07 after Cubs 5/7 lesson —
+    # 2. RL alt for juiced chalk (added 2026-05-07 after Cubs 5/7 lesson —
     # PRIME confluence with chalk ML at -200+ surfaces nothing under old logic
     # because ML EV is too thin; RL -1.5 at +130-150 is the actual play when
     # model projects 1.5+ run margin).
@@ -754,16 +1182,7 @@ def build_lean(ctx):
     if rl_pick is not None:
         return rl_pick
 
-    # 4. NRFI 88-89 edge tier — coin flip historically (3-3) but kept as
-    # secondary when no PRIME tier game exists
-    if 88 <= nrfi <= 89:
-        return f"NRFI — Score {nrfi}/100 (edge tier)", 'nrfi', True
-
-    # 4. Total lean — prefer v4 (model_pred_total) edge against the line.
-    # 2026-05-20 audit: prior path only read v3-derived over_lean which
-    # missed v4-driven edges entirely. Conservative threshold ≥2.5 matches
-    # compute_primary_play (v4-OVER cohort audit pending). Falls back to
-    # v3 over_lean when v4 is suppressed.
+    # 3. Total lean — prefer v4 (model_pred_total) edge against the line.
     ct = ctx.get('close_total') or ctx.get('open_total')
     v4_total = ctx.get('model_pred_total')
     if v4_total is not None and ct is not None:
@@ -778,6 +1197,16 @@ def build_lean(ctx):
     if over_lean is not None and ct:
         side = 'Over' if over_lean else 'Under'
         return f"{side} {ct}", 'total', False
+
+    # 4-5. NRFI last-resort fallbacks (demoted from #1 priority 2026-05-30).
+    # Won't survive the POTD audit gate because cohort hit rate is 50%,
+    # below MIN_AUDIT_RATE (58%). Still set as a lean so the game has a
+    # non-None display rather than silently dropping out of candidates.
+    nrfi = ctx.get('nrfi_score') or 0
+    if 90 <= nrfi <= 94:
+        return f"NRFI — Score {nrfi}/100 (supplementary)", 'nrfi', True
+    if 88 <= nrfi <= 89:
+        return f"NRFI — Score {nrfi}/100 (supplementary)", 'nrfi', True
 
     return None, None, False
 
@@ -889,14 +1318,22 @@ def run():
         # Track contributions/evidence for the WHY THIS SCORE UI block
         # (2026-05-25 — Stage 2 of the game-detail parity work).
         track = {'contributions': [], 'evidence': []}
-        game_score = score_mlb_game(ctx, game_props=props_by_game.get(gid, []), track=track)
+        game_score, dimensions = score_mlb_game(ctx, game_props=props_by_game.get(gid, []), track=track)
         # Write the score + tier back to mlb_game_context so the app reads
         # the server-authoritative value (instead of computing its own with
         # a different formula that systematically under-reports PRIME).
-        breakdown = None
-        if track['contributions'] or track['evidence']:
-            breakdown = {'contributions': track['contributions'], 'evidence': track['evidence']}
-        write_sweat_score(ctx, game_score, sweat_tier_for(game_score, ctx), breakdown=breakdown)
+        breakdown = {'dimensions': dimensions}
+        if track['contributions']:
+            breakdown['contributions'] = track['contributions']
+        if track['evidence']:
+            breakdown['evidence'] = track['evidence']
+        # Headline tier derives from the winning dimension's tier — so a
+        # game with TOTAL PRIME headlines PRIME even when SIDE is PASS.
+        # The legacy sweat_tier_for(score, ctx) primary_play gate still
+        # gates SIDE PRIME via _dim_tier() inside the scorer.
+        headline_tier = (dimensions.get(dimensions.get('winning_dimension') or 'side') or {}).get('tier') \
+                        or sweat_tier_for(game_score, ctx)
+        write_sweat_score(ctx, game_score, headline_tier, breakdown=breakdown)
         lean_display, lean_bet, is_nrfi = build_lean(ctx)
         candidates.append({
             'sport': 'MLB',

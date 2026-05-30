@@ -1968,30 +1968,20 @@ def compute_primary_play(ctx):
                 "signal_floor": 85,
                 "audit_note": _audit_note_for('confluence_prime_ge4'),
             }
-    # PRIME NRFI sweet spot: 90-94 (70.0% lifetime, 68.8% L30d on n=30)
-    if nrfi is not None and 90 <= int(nrfi) <= 94:
-        if _cohort_healthy('nrfi_prime_90_94'):
-            return {
-                "type": "nrfi",
-                "tier": "PRIME",
-                "label": "NRFI",
-                "sub": f"Score {int(nrfi)}/100 — sweet spot tier",
-                "signal_floor": 82,
-                "audit_note": _audit_note_for('nrfi_prime_90_94'),
-            }
-    # YRFI (first inning runs likely): score very low
-    # Fragility gate (2026-05-18): 7d YRFI hit rate was 27%, 30d was 48% — far
-    # below the 68% the old copy claimed. Stratifying by max(1st-inn ERA) found
-    # extreme fragility (≥8.0) only hits 29% YRFI because those starters have
-    # 1-2 small-sample starts and regress to mean. The real edge sits in
-    # max(1st-inn ERA) 6.0-7.9 (63% n=19 over 30d). Outside that band YRFI is
-    # not playable.
+    # NRFI/YRFI demoted 2026-05-30 — see project_nrfi_demotion. Audit
+    # showed PRIME NRFI 90-94 hits 50% on n=22 / 30d (coinflip). ML/totals
+    # now lead the headline; NRFI surfaces as supplementary only. PRIME
+    # NRFI block REMOVED. STRONG NRFI block below requires a companion
+    # signal (ace duel / cold weather / pitcher park / NRFI-friendly ump)
+    # — bare NRFI 90-94 alone is not playable as primary anymore.
     h1 = ctx.get('home_first_inning_era')
     a1 = ctx.get('away_first_inning_era')
     try:
         max_fi = max(float(h1 or 0), float(a1 or 0))
     except (TypeError, ValueError):
         max_fi = 0.0
+    # YRFI sweet spot (6.0-7.9 1st-inn ERA) audit was real — keeps STRONG tier
+    # because it's a different cohort from NRFI sweet spot.
     if nrfi is not None and int(nrfi) <= 25 and 6.0 <= max_fi < 8.0:
         if _cohort_healthy('yrfi_lean_le40'):
             return {
@@ -2000,18 +1990,6 @@ def compute_primary_play(ctx):
                 "label": "YRFI",
                 "sub": f"NRFI {int(nrfi)} + 1st-inn ERA {max_fi:.1f} (audit sweet spot)",
                 "signal_floor": 72,
-                "audit_note": _audit_note_for('yrfi_lean_le40'),
-            }
-    # YRFI LEAN — score ≤25 but fragility outside sweet spot → small-sample
-    # noise, post as transparent LEAN (60 floor) instead of STRONG
-    if nrfi is not None and int(nrfi) <= 25:
-        if _cohort_healthy('yrfi_lean_le40'):
-            return {
-                "type": "yrfi",
-                "tier": "LEAN",
-                "label": "YRFI",
-                "sub": f"NRFI {int(nrfi)} — 1st-inn ERA outside 6-8 sweet spot",
-                "signal_floor": 60,
                 "audit_note": _audit_note_for('yrfi_lean_le40'),
             }
     # STRONG ML: confluence ≥+2 AND |delta| ≥2.0
@@ -2327,6 +2305,13 @@ def log_game_result(context):
             "away_ml_open": context.get("away_ml_open"),
             "home_ml_close": context.get("home_ml_close"),
             "away_ml_close": context.get("away_ml_close"),
+            # 5/30 — snapshot the headline play decision so audit can grade
+            # SIDE/TOTAL/PROP plays against outcomes going forward. Columns
+            # added by migration 20260530_results_primary_play_and_dims.sql;
+            # the field-strip fallback below handles the pre-migration case
+            # so log_game_result doesn't 400 if the migration hasn't run.
+            "primary_play": context.get("primary_play"),
+            "sweat_dimensions": (context.get("sweat_breakdown") or {}).get("dimensions"),
         }
 
         # Parse away pitcher stats from pitcher_context
@@ -2418,6 +2403,20 @@ def log_game_result(context):
             headers=headers,
             json=record
         )
+        # 5/30 — graceful pre-migration retry. If primary_play / sweat_dimensions
+        # columns haven't been added yet (migration not applied), PostgREST
+        # returns 400 with PGRST204 or similar. Strip the new fields and
+        # retry so existing data still lands until the SQL is run.
+        if r.status_code == 400 and ('primary_play' in r.text or 'sweat_dimensions' in r.text):
+            for k in ('primary_play', 'sweat_dimensions'):
+                record.pop(k, None)
+            r = requests.post(
+                f"{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id",
+                headers=headers,
+                json=record
+            )
+            if r.status_code in [200, 201, 204]:
+                print(f"  ⚠️ game_results: primary_play/sweat_dimensions columns missing — apply 20260530_results_primary_play_and_dims.sql")
         if r.status_code not in [200, 201, 204]:
             print(f"  ⚠️ game_results log failed {r.status_code}: {r.text[:100]}")
         else:
