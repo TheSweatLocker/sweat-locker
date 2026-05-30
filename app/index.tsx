@@ -5107,12 +5107,21 @@ Do NOT give a specific bet or pick. End with — Jerry.`;
 
   const fetchMLBContext = async (game) => {
   try {
-    // Primary: exact home+away team name match — use maybeSingle to avoid throwing on 0 rows
+    // Derive the game's ET date from commence_time so we never collide with
+    // the same matchup the next day (5/29: the Tomorrow preview tab seeded
+    // 5/30 rows into mlb_game_context, and a date-less .maybeSingle() threw
+    // on 13/15 matchups — Numbers panel silently disappeared).
+    const gameEtDate = game?.commence_time
+      ? new Date(game.commence_time).toLocaleDateString('en-CA', {timeZone: 'America/New_York'})
+      : new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+
+    // Primary: exact home+away team match scoped to the game's ET date
     const { data } = await supabase
       .from('mlb_game_context')
       .select('*')
       .eq('home_team', game.home_team)
       .eq('away_team', game.away_team)
+      .eq('game_date', gameEtDate)
       .maybeSingle();
     if(data) return data;
 
@@ -5125,18 +5134,18 @@ Do NOT give a specific bet or pick. End with — Jerry.`;
         .select('*')
         .ilike('home_team', `%${homeLast}%`)
         .ilike('away_team', `%${awayLast}%`)
-        .order('game_date', { ascending: false })
+        .eq('game_date', gameEtDate)
         .limit(1);
       if(data2 && data2.length > 0) return data2[0];
     }
 
-    // Fallback 2: match on home team alone, take most recent (user might be viewing wrong-sided game)
+    // Fallback 2: match on home team alone for the same date
     if(homeLast) {
       const { data: data3 } = await supabase
         .from('mlb_game_context')
         .select('*')
         .ilike('home_team', `%${homeLast}%`)
-        .order('game_date', { ascending: false })
+        .eq('game_date', gameEtDate)
         .limit(1);
       if(data3 && data3.length > 0) return data3[0];
     }

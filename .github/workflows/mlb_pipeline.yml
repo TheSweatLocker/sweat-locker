@@ -614,11 +614,13 @@ jobs:
           python check_pipeline_health.py
 
       # Commit the generated content card so Andy can pull it locally.
-      # Stripped the `|| true` chain that was hiding failures for 4 days
-      # (5/1 - 5/4 ran with no auto-commit and no error surface). Now:
-      #   - git add only fails loud if content/ doesn't exist (it should)
-      #   - empty diff is the only path that exits early without a commit
-      #   - rebase before push handles race with manual local commits
+      # 5/29 incident: two parallel runs both generated the same dated
+      # card file; second run hit `CONFLICT (add/add)` on rebase and
+      # the workflow died. Fix: auto-resolve in favor of our freshly-
+      # generated card (it's deterministic from current supabase state).
+      # Rebase's ours/theirs are inverted from merge's: in `git pull
+      # --rebase`, "theirs" means our local commits being replayed —
+      # which is what we want to keep.
       - name: Commit content card
         if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'
         run: |
@@ -631,8 +633,14 @@ jobs:
             exit 0
           fi
           git commit -m "Auto-generated tonight's card $(date +%Y-%m-%d)"
-          # Rebase against the remote in case a manual push landed between
-          # this job's checkout and now. Surface conflicts loudly instead
-          # of swallowing them.
-          git pull --rebase origin main
+          # Auto-resolve add/add conflicts on the content card in favor
+          # of our freshly-generated version. The card is deterministic
+          # from current supabase state — taking the later run's card
+          # is always the safe call.
+          if ! git pull --rebase -X theirs origin main; then
+            echo "::warning::Rebase conflict on content card — taking our version"
+            git checkout --theirs content/*.md
+            git add content/*.md
+            GIT_EDITOR=true git rebase --continue
+          fi
           git push
