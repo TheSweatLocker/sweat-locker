@@ -152,6 +152,15 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # 5/30 fix: this was missing the Odds API key, which silently broke
+          # Phase 1 (K book lines, 5/28) AND Phase 2 (HA/ER/Outs/BB, 5/29)
+          # recalibration for the entire interval. attach_book_lines printed
+          # "ODDS_API_KEY missing — skipping book line fetch" every cron run
+          # but downstream nothing checked. Brandon Young U 5.5 K's shipped
+          # tonight as STRONG 80 at internal line; actual book was 3.5 (no
+          # edge) — recal would have demoted to SKIP 24. Adding the key here
+          # so attach_book_lines actually fires going forward.
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
           python generate_props.py
