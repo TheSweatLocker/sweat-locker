@@ -3080,16 +3080,36 @@ def run(target_date=None):
             # (2026-05-12, 2900+ games): gap 2.0-3.0 → 58.2% OVER (n=67),
             # gap ≥3.0 → only 52.0% OVER (n=25, ~coin flip — the extreme-gap
             # games tend to be blowouts, not shootouts). So we only fire the
-            # lean in the 2.0-3.0 band now. Combined ≥2.0 was 56.5% (overstated
-            # vs the old hardcoded "59.3%"). Information preserved, Jerry synthesizes.
+            # lean in the 2.0-3.0 band now.
+            #
+            # 5/30 BUG FIX: previously the boost fired when `over_lean is None`,
+            # which catches BOTH "v3 truly neutral" AND "v3 soft UNDER lean"
+            # (delta between -1.5 and 1.5 sets over_lean None per line 3044).
+            # 5/30 PHI/LAD: v3 delta -0.6 (soft UNDER), xERA gap 2.26 flipped
+            # over_lean to True → build_lean returned "Over 8.5" → POTD posted
+            # OVER while sweat dimension correctly said UNDER. The xERA gap
+            # audit was measured on games where v3 was neutral or pointing
+            # OVER — applying the boost when v3 actively soft-leans UNDER is
+            # outside the cohort that earned the 58% number. New gate:
+            # require v3's projection to NOT soft-lean UNDER before firing
+            # the OVER boost.
             if home_xera_val and away_xera_val:
                 xera_gap = abs(float(home_xera_val) - float(away_xera_val))
-                if 2.0 <= xera_gap < 3.0 and over_lean is None:
-                    over_lean = True
-                    print(f"  xERA gap {xera_gap:.1f} → Over lean (audit: 58.2% OVER on 2.0-3.0 gaps)")
-                elif 2.0 <= xera_gap < 3.0 and over_lean == False:
-                    over_lean = None
-                    print(f"  xERA gap {xera_gap:.1f} conflicts with Under lean → neutral")
+                if 2.0 <= xera_gap < 3.0:
+                    v3_soft_under = (
+                        projected_total is not None
+                        and total_line is not None
+                        and float(projected_total) < float(total_line) - 0.3
+                    )
+                    if over_lean is None and not v3_soft_under:
+                        over_lean = True
+                        print(f"  xERA gap {xera_gap:.1f} → Over lean (audit: 58.2% OVER on 2.0-3.0 gaps)")
+                    elif over_lean is None and v3_soft_under:
+                        delta_v3 = float(projected_total) - float(total_line)
+                        print(f"  xERA gap {xera_gap:.1f} but v3 soft UNDER ({delta_v3:+.2f}) — not firing OVER boost")
+                    elif over_lean == False:
+                        over_lean = None
+                        print(f"  xERA gap {xera_gap:.1f} conflicts with Under lean → neutral")
                 elif xera_gap >= 3.0:
                     print(f"  xERA gap {xera_gap:.1f} ≥3.0 — not firing lean (audit: only 52% OVER on extreme gaps)")
 
