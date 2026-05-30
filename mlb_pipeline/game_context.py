@@ -2160,6 +2160,24 @@ def upload_game_context(context, commence_time=None):
         headers=headers,
         json=context
     )
+    # Pre-migration fallback (5/30): jerry_* and primary_play/sweat_dimensions
+    # may not exist yet on the table. If PostgREST 400s with one of those
+    # column names, strip them and retry once so the rest of the data lands.
+    if r.status_code == 400:
+        stripped = []
+        for k in ('jerry_pred_home_runs', 'jerry_pred_away_runs', 'jerry_pred_spread',
+                  'jerry_pred_total', 'jerry_components', 'jerry_weights_version'):
+            if k in r.text and k in context:
+                context.pop(k, None)
+                stripped.append(k)
+        if stripped:
+            r = requests.post(
+                f"{SUPABASE_URL}/rest/v1/mlb_game_context?on_conflict=game_id",
+                headers=headers,
+                json=context
+            )
+            if r.status_code in [200, 201, 204]:
+                print(f"  ⚠️ game_context: jerry columns missing — apply 20260530_jerry_model_columns.sql")
     if r.status_code not in [200, 201, 204]:
         print(f"Upload failed {r.status_code}: {r.text}")
     return r.status_code in [200, 201, 204]
@@ -2312,6 +2330,15 @@ def log_game_result(context):
             # so log_game_result doesn't 400 if the migration hasn't run.
             "primary_play": context.get("primary_play"),
             "sweat_dimensions": (context.get("sweat_breakdown") or {}).get("dimensions"),
+            # Jerry Model (shadow mode) — added by 20260530_jerry_model_columns.sql.
+            # Pre-migration retry in the post() block below strips these
+            # if columns aren't there yet.
+            "jerry_pred_home_runs": context.get("jerry_pred_home_runs"),
+            "jerry_pred_away_runs": context.get("jerry_pred_away_runs"),
+            "jerry_pred_spread": context.get("jerry_pred_spread"),
+            "jerry_pred_total": context.get("jerry_pred_total"),
+            "jerry_components": context.get("jerry_components"),
+            "jerry_weights_version": context.get("jerry_weights_version"),
         }
 
         # Parse away pitcher stats from pitcher_context
@@ -2407,16 +2434,22 @@ def log_game_result(context):
         # columns haven't been added yet (migration not applied), PostgREST
         # returns 400 with PGRST204 or similar. Strip the new fields and
         # retry so existing data still lands until the SQL is run.
-        if r.status_code == 400 and ('primary_play' in r.text or 'sweat_dimensions' in r.text):
-            for k in ('primary_play', 'sweat_dimensions'):
-                record.pop(k, None)
-            r = requests.post(
-                f"{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id",
-                headers=headers,
-                json=record
-            )
-            if r.status_code in [200, 201, 204]:
-                print(f"  ⚠️ game_results: primary_play/sweat_dimensions columns missing — apply 20260530_results_primary_play_and_dims.sql")
+        if r.status_code == 400:
+            stripped = []
+            for k in ('primary_play', 'sweat_dimensions',
+                      'jerry_pred_home_runs', 'jerry_pred_away_runs', 'jerry_pred_spread',
+                      'jerry_pred_total', 'jerry_components', 'jerry_weights_version'):
+                if k in r.text and k in record:
+                    record.pop(k, None)
+                    stripped.append(k)
+            if stripped:
+                r = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id",
+                    headers=headers,
+                    json=record
+                )
+                if r.status_code in [200, 201, 204]:
+                    print(f"  ⚠️ game_results: missing cols stripped ({', '.join(stripped[:3])}) — apply 20260530 migrations")
         if r.status_code not in [200, 201, 204]:
             print(f"  ⚠️ game_results log failed {r.status_code}: {r.text[:100]}")
         else:
@@ -3750,6 +3783,103 @@ def run(target_date=None):
                 elif home_last_venue not in VENUE_COORDS and home_last_venue:
                     print(f"  ⚠️ Missing VENUE_COORDS for: '{home_last_venue}'")
 
+            # ── JERRY MODEL — SHADOW MODE (added 2026-05-30) ──
+            # Linear-formula projection with inning-bucket simulation,
+            # mastery, recency-weighted offense, home/away R/G splits,
+            # bullpen gas, park, weather. Runs alongside v3/v4 for 2-4
+            # weeks of audit before any user-facing surfacing. See
+            # mlb_pipeline/jerry_model.py for the math and
+            # _backtest_jerry.py for hit-rate comparison.
+            jerry_pred_home_runs = None
+            jerry_pred_away_runs = None
+            jerry_pred_total = None
+            jerry_pred_spread = None
+            jerry_components = None
+            jerry_weights_version = None
+            try:
+                from jerry_model import compute_jerry_projection
+                # Build minimal ctx for Jerry from local vars + lookup dicts.
+                # Mirrors enrich_ctx_for_jerry but pulls from already-loaded
+                # in-process data instead of re-querying Supabase.
+                _hps_j = home_pitcher_stats or {}
+                _aps_j = away_pitcher_stats or {}
+                _hofs_j = home_offense or {}
+                _aofs_j = away_offense or {}
+                _hbp_j = home_bullpen or {}
+                _abp_j = away_bullpen or {}
+                _hvs_j = home_vs_away or {}
+                _avs_j = away_vs_home or {}
+                _hfi_j = home_first_inn or {}
+                _afi_j = away_first_inn or {}
+                _ctx_jerry = {
+                    'home_team': home_team, 'away_team': away_team,
+                    'home_pitcher': home_pitcher, 'away_pitcher': away_pitcher,
+                    'home_sp_xera': home_xera_val, 'away_sp_xera': away_xera_val,
+                    'home_pitcher_last_3_era': home_pitcher_last_3_era,
+                    'away_pitcher_last_3_era': away_pitcher_last_3_era,
+                    'home_first_inning_era': _hfi_j.get('first_inning_era'),
+                    'away_first_inning_era': _afi_j.get('first_inning_era'),
+                    'home_innings_1_3_era': _hps_j.get('innings_1_3_era'),
+                    'home_innings_4_6_era': _hps_j.get('innings_4_6_era'),
+                    'home_innings_7_9_era': _hps_j.get('innings_7_9_era'),
+                    'away_innings_1_3_era': _aps_j.get('innings_1_3_era'),
+                    'away_innings_4_6_era': _aps_j.get('innings_4_6_era'),
+                    'away_innings_7_9_era': _aps_j.get('innings_7_9_era'),
+                    'home_pitcher_vs_team_era': _hvs_j.get('era_vs_team'),
+                    'away_pitcher_vs_team_era': _avs_j.get('era_vs_team'),
+                    'home_pitcher_vs_team_ip': _hvs_j.get('ip_vs_team'),
+                    'away_pitcher_vs_team_ip': _avs_j.get('ip_vs_team'),
+                    'home_pitcher_split_delta': home_pitcher_splits.get('split_delta') if home_pitcher_splits else None,
+                    'away_pitcher_split_delta': away_pitcher_splits.get('split_delta') if away_pitcher_splits else None,
+                    'home_wrc_plus': home_wrc, 'away_wrc_plus': away_wrc,
+                    'home_wrc_vs_opp_hand': home_wrc_vs_opp_hand,
+                    'away_wrc_vs_opp_hand': away_wrc_vs_opp_hand,
+                    'home_wrc_proxy_l14': _hofs_j.get('wrc_proxy_l14'),
+                    'away_wrc_proxy_l14': _aofs_j.get('wrc_proxy_l14'),
+                    'home_team_barrel_pct': _hofs_j.get('barrel_pct'),
+                    'away_team_barrel_pct': _aofs_j.get('barrel_pct'),
+                    'home_team_xwoba': _hofs_j.get('xwoba'),
+                    'away_team_xwoba': _aofs_j.get('xwoba'),
+                    'home_team_oaa': _hofs_j.get('oaa'),
+                    'away_team_oaa': _aofs_j.get('oaa'),
+                    'home_catcher_framing': home_catcher_framing,
+                    'away_catcher_framing': away_catcher_framing,
+                    'home_innings_1_3_runs_per_game': _hofs_j.get('innings_1_3_runs_per_game'),
+                    'home_innings_4_6_runs_per_game': _hofs_j.get('innings_4_6_runs_per_game'),
+                    'home_innings_7_9_runs_per_game': _hofs_j.get('innings_7_9_runs_per_game'),
+                    'away_innings_1_3_runs_per_game': _aofs_j.get('innings_1_3_runs_per_game'),
+                    'away_innings_4_6_runs_per_game': _aofs_j.get('innings_4_6_runs_per_game'),
+                    'away_innings_7_9_runs_per_game': _aofs_j.get('innings_7_9_runs_per_game'),
+                    'home_runs_per_game_season': _hofs_j.get('runs_per_game'),
+                    'away_runs_per_game_season': _aofs_j.get('runs_per_game'),
+                    'home_runs_per_game_home': _hofs_j.get('runs_per_game_home'),
+                    'away_runs_per_game_away': _aofs_j.get('runs_per_game_away'),
+                    'home_bullpen_era': _hbp_j.get('bullpen_era'),
+                    'away_bullpen_era': _abp_j.get('bullpen_era'),
+                    'home_pitching_7_9_era': _hbp_j.get('pitching_7_9_era'),
+                    'away_pitching_7_9_era': _abp_j.get('pitching_7_9_era'),
+                    'home_bp_relievers_3d': home_bp_relievers_3d,
+                    'away_bp_relievers_3d': away_bp_relievers_3d,
+                    'park_run_factor': park_run_factor,
+                    'temperature': weather.get('temperature') if weather else None,
+                    'wind_speed': weather.get('wind_speed') if weather else None,
+                    'wind_direction': weather.get('wind_direction') if weather else None,
+                }
+                _jr = compute_jerry_projection(_ctx_jerry)
+                jerry_pred_home_runs = _jr.get('jerry_home_runs')
+                jerry_pred_away_runs = _jr.get('jerry_away_runs')
+                jerry_pred_total = _jr.get('jerry_total')
+                jerry_pred_spread = _jr.get('jerry_spread')
+                jerry_components = _jr.get('components')
+                jerry_weights_version = _jr.get('weights_version')
+                missing_n = len(_jr.get('missing_inputs') or [])
+                if missing_n:
+                    print(f"  Jerry projection: total {jerry_pred_total} spread {jerry_pred_spread:+.2f} (missing {missing_n} inputs)")
+                else:
+                    print(f"  Jerry projection: total {jerry_pred_total} spread {jerry_pred_spread:+.2f}")
+            except Exception as e:
+                print(f"  Jerry projection failed (shadow mode — game still ships): {e}")
+
             context = {
                 "game_id": game_id,
                 "home_team": home_team,
@@ -3804,6 +3934,15 @@ def run(target_date=None):
                 "model_pred_away_runs": model_pred_away_runs,
                 "model_pred_spread": model_pred_spread,
                 "model_pred_total": model_pred_total,
+                # Jerry Model — shadow mode, columns added by
+                # 20260530_jerry_model_columns.sql. Pre-migration fallback
+                # in upload_game_context strips these if PostgREST 400s.
+                "jerry_pred_home_runs": jerry_pred_home_runs,
+                "jerry_pred_away_runs": jerry_pred_away_runs,
+                "jerry_pred_spread": jerry_pred_spread,
+                "jerry_pred_total": jerry_pred_total,
+                "jerry_components": jerry_components,
+                "jerry_weights_version": jerry_weights_version,
                 "open_spread": spread_line if is_open_run else None,
                 "close_spread": spread_line if not is_open_run else None,
                 "home_ml_odds": home_ml_odds,
