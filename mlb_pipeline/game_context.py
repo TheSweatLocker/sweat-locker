@@ -2339,6 +2339,23 @@ def log_game_result(context):
             "jerry_pred_total": context.get("jerry_pred_total"),
             "jerry_components": context.get("jerry_components"),
             "jerry_weights_version": context.get("jerry_weights_version"),
+            # 5/30 recency snapshot — added so future backtests can replay
+            # different recency-weight configurations against real drift
+            # data instead of None. Columns added by
+            # 20260530_results_recency_snapshot.sql; pre-migration strip
+            # in the retry block below handles the gap.
+            "home_offense_drift": context.get("home_offense_drift"),
+            "away_offense_drift": context.get("away_offense_drift"),
+            "home_ops_last7": context.get("home_ops_last7"),
+            "away_ops_last7": context.get("away_ops_last7"),
+            "home_ops_last14": context.get("home_ops_last14"),
+            "away_ops_last14": context.get("away_ops_last14"),
+            "home_wrc_proxy_l14": context.get("home_wrc_proxy_l14"),
+            "away_wrc_proxy_l14": context.get("away_wrc_proxy_l14"),
+            "home_last10_runs_per_game": context.get("home_last10_runs_per_game"),
+            "away_last10_runs_per_game": context.get("away_last10_runs_per_game"),
+            "home_last5_runs_per_game": context.get("home_last5_runs_per_game"),
+            "away_last5_runs_per_game": context.get("away_last5_runs_per_game"),
         }
 
         # Parse away pitcher stats from pitcher_context
@@ -2438,7 +2455,13 @@ def log_game_result(context):
             stripped = []
             for k in ('primary_play', 'sweat_dimensions',
                       'jerry_pred_home_runs', 'jerry_pred_away_runs', 'jerry_pred_spread',
-                      'jerry_pred_total', 'jerry_components', 'jerry_weights_version'):
+                      'jerry_pred_total', 'jerry_components', 'jerry_weights_version',
+                      'home_offense_drift', 'away_offense_drift',
+                      'home_ops_last7', 'away_ops_last7',
+                      'home_ops_last14', 'away_ops_last14',
+                      'home_wrc_proxy_l14', 'away_wrc_proxy_l14',
+                      'home_last10_runs_per_game', 'away_last10_runs_per_game',
+                      'home_last5_runs_per_game', 'away_last5_runs_per_game'):
                 if k in r.text and k in record:
                     record.pop(k, None)
                     stripped.append(k)

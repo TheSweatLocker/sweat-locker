@@ -29,9 +29,20 @@ from typing import Any, Dict, Optional, Tuple
 # =============================================================================
 JERRY_WEIGHTS = {
     # --- Recency blends (alpha = weight on recent window vs season baseline) ---
-    'offense_recency_alpha': 0.35,   # 35% L14 wRC+ proxy, 65% season
+    'offense_recency_alpha': 0.50,   # 5/30: raised from 0.35 → 0.50. User flagged
+                                     # hot/cold bats as THE key baseball signal; bumping
+                                     # recency emphasis to catch transitions faster.
     'offense_l7_alpha': 0.20,        # 20% L7 OPS bump on top
     'starter_l3_alpha': 0.30,        # 30% L3 ERA, 70% season xERA
+
+    # --- Hot/cold bats drift (NEW 5/30) ---
+    # Uses offense_drift = L10 R/G - season R/G (precomputed in game_context).
+    # Each +1.0 R/G above season → +sensitivity% runs.
+    # Capped to ±30% to prevent runaway projections on small samples.
+    # Same signal the props pipeline uses for team_heat / team_cold.
+    'offense_drift_sensitivity': 0.15,
+    'offense_drift_cap_high': 1.30,
+    'offense_drift_cap_low': 0.70,
 
     # --- Starter component ---
     'starter_xera_weight': 0.55,     # base weight on xERA
@@ -84,9 +95,12 @@ JERRY_WEIGHTS = {
     'park_sensitivity': 0.6,         # park 110 → +6% runs (not the naive +10%)
 
     # --- Weather ---
+    # 5/30: temp sensitivity reduced from 0.0030 → 0.0020 per user note that
+    # weather is over-weighted in summer (most games 70-85°F, +/-10° = ±2% runs).
+    # Wind unchanged — still material when blowing strongly out/in.
     'temp_baseline': 70,
-    'temp_per_degree': 0.0030,       # each degree above 70 = +0.30% runs
-    'wind_speed_threshold_out': 8,   # mph
+    'temp_per_degree': 0.0020,
+    'wind_speed_threshold_out': 8,
     'wind_speed_threshold_in': 10,
     'wind_out_multiplier': 1.04,
     'wind_in_multiplier': 0.96,
@@ -293,6 +307,16 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
         sw = w['offense_split_weight']
         split_mult_offense = 1.0 + (raw_ratio - 1.0) * sw
 
+    # === Hot/cold bats drift (NEW 5/30) ===
+    # offense_drift = L10 R/G - season R/G. Positive = hot bats, negative = slumping.
+    # User flagged this as THE key baseball-modeling signal — capturing transitions
+    # from hot to cold (and vice versa) is what separates good models from noise.
+    drift = _f(ctx.get(f'{team_side}_offense_drift'))
+    drift_mult = 1.0
+    if drift is not None:
+        drift_mult = 1.0 + drift * w['offense_drift_sensitivity']
+        drift_mult = max(w['offense_drift_cap_low'], min(w['offense_drift_cap_high'], drift_mult))
+
     # === Compute composites ===
     wrc_blend = _blend_wrc_plus(wrc_plus, wrc_vs_hand, wrc_l14, w)
     offense_mult = _offense_quality_multiplier(wrc_blend, barrel, xwoba, w)
@@ -310,6 +334,9 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
         offense_mult *= split_mult_offense
     elif team_side == 'home':
         offense_mult *= w['offense_home_advantage_default']
+
+    # Apply hot/cold drift multiplier
+    offense_mult *= drift_mult
 
     # Mastery + split multipliers (on the opposing pitcher's allowed runs)
     mastery_mult = _mastery_multiplier(opp_mastery_era, opp_mastery_ip, w)
@@ -363,6 +390,8 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
         'team_split_rpg': team_split_rpg,
         'team_season_rpg': team_season_rpg,
         'offense_split_mult': round(split_mult_offense, 3) if split_mult_offense is not None else None,
+        'offense_drift': drift,
+        'drift_mult': round(drift_mult, 3),
         'mastery_mult': round(mastery_mult, 3),
         'starter_split_mult': round(split_mult, 3),
         'opp_starter_rate_1_3': round(rate_1_3, 2) if rate_1_3 else None,
