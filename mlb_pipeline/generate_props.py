@@ -1484,6 +1484,7 @@ def score_pitcher_outs(g, side):
     # xERA-tier formula. Falls back to old tier formula when projection missing.
     projected_outs = _f(g.get(f'{side}_pitcher_projected_outs'))
     if projected_outs is not None:
+        signals['_projected_outs'] = round(projected_outs, 1)
         # Over scorer: target line ~2 outs BELOW projection for a clear Over edge.
         # Snap to standard book grid (books post 14.5 / 15.5 / 16.5 / 17.5).
         target = projected_outs - 2.0
@@ -1596,6 +1597,8 @@ def score_pitcher_outs_under(g, side):
     # as a modest 2.9-out Under). Now we snap to the book grid with a
     # 4-out cushion target so the suggested line tracks reality.
     projected_outs = _f(g.get(f'{side}_pitcher_projected_outs'))
+    if projected_outs is not None:
+        signals['_projected_outs'] = round(projected_outs, 1)
     if last_ip is not None and last_ip <= 2.0:
         # Opener case — books rarely post outs lines for openers but when
         # they do it's typically 12.5 or 13.5. Keep the existing handling.
@@ -1737,6 +1740,7 @@ def score_pitcher_er(g, side):
     l7 = (proj or {}).get('l7_rolling') if proj else None
     l7_er = (l7 or {}).get('avg_er') if l7 else None
     if l7_er is not None:
+        signals['_projected_er'] = round(float(l7_er), 1)
         if float(l7_er) >= 3.5:
             conviction += 12
             signals['l7_er'] = f'L7 avg {l7_er:.1f} ER/start — getting tagged'
@@ -1800,9 +1804,23 @@ def score_pitcher_er_under(g, side):
     wind_dir = (g.get('wind_direction') or '').upper()
     framing = _f(g.get(f'{side}_catcher_framing'))
     l3_era = _f(g.get(f'{side}_pitcher_last_3_era'))
+    projected_outs = _f(g.get(f'{side}_pitcher_projected_outs'))
 
     signals = {}
     conviction = 30
+
+    # Numeric projection used by the book-line recalibration step. Prefer L7
+    # avg_er (matches over-side projection source for symmetry), fall back to
+    # xERA × projected_IP / 9 when L7 sample isn't available. Stored as
+    # `_projected_er` to mirror _projected_ks / _projected_bb / _projected_hits.
+    proj = get_pitcher_projection(pitcher)
+    l7 = (proj or {}).get('l7_rolling') if proj else None
+    _l7_er = (l7 or {}).get('avg_er') if l7 else None
+    if _l7_er is not None:
+        signals['_projected_er'] = round(float(_l7_er), 1)
+    elif projected_outs is not None and xera is not None:
+        # ER = xERA × IP / 9 = xERA × outs / 27
+        signals['_projected_er'] = round(float(xera) * float(projected_outs) / 27.0, 1)
 
     # xERA — primary signal (smoothed band 2026-05-17 — added 3.3 middle bucket
     # to avoid the 3.0 cliff that left Ryan 3.27 underscored on 5/15).
@@ -2461,22 +2479,69 @@ def wipe_todays_props():
     )
 
 
-def fetch_book_lines_for_ks(date_str):
-    """Fetch real sportsbook K-prop lines per pitcher from the Odds API.
+# Phase 2 (2026-05-29) — book-line recalibration maps. Each pitcher prop
+# type maps to (a) the Odds API market key, (b) the signal key holding the
+# numeric projection used to compute edge, (c) edge → conviction-multiplier
+# bands tuned to the natural variance of that prop type, and (d) the
+# conviction range where a SKIP-tier prop with positive edge gets promoted
+# to LEAN. Phase 1 shipped K's only; Phase 2 extends to BB / HA / Outs / ER
+# using the same edge-band recipe scaled per prop.
+PROP_MARKET_MAP = {
+    'ks_over': 'pitcher_strikeouts',     'ks_under': 'pitcher_strikeouts',
+    'bb_over': 'pitcher_walks',          'bb_under': 'pitcher_walks',
+    'ha_over': 'pitcher_hits_allowed',   'ha_under': 'pitcher_hits_allowed',
+    'outs_over': 'pitcher_outs',         'outs_under': 'pitcher_outs',
+    'er_over': 'pitcher_earned_runs',    'er_under': 'pitcher_earned_runs',
+}
+PROP_PROJ_KEY = {
+    'ks_over': '_projected_ks',     'ks_under': '_projected_ks',
+    'bb_over': '_projected_bb',     'bb_under': '_projected_bb',
+    'ha_over': '_projected_hits',   'ha_under': '_projected_hits',
+    'outs_over': '_projected_outs', 'outs_under': '_projected_outs',
+    'er_over': '_projected_er',     'er_under': '_projected_er',
+}
+# Edge bands per prop group — (edge_threshold, multiplier, label). Walked
+# top-down: first row whose threshold is met wins. Anything below the
+# smallest row falls through to NO-EDGE multiplier 0.30. Scales reflect
+# the natural unit-variance of each market — K's swing 1-2 per start, BB
+# swings 0.3-0.5, ER swings 0.3-1.0.
+EDGE_BANDS = {
+    'ks':   [(1.5, 1.00, 'real edge'), (1.0, 0.90, 'moderate edge'), (0.5, 0.75, 'thin edge'), (0.0, 0.55, 'minimal edge')],
+    'ha':   [(1.5, 1.00, 'real edge'), (1.0, 0.90, 'moderate edge'), (0.5, 0.75, 'thin edge'), (0.0, 0.55, 'minimal edge')],
+    'outs': [(3.0, 1.00, 'real edge'), (2.0, 0.90, 'moderate edge'), (1.0, 0.75, 'thin edge'), (0.0, 0.55, 'minimal edge')],
+    'bb':   [(0.5, 1.00, 'real edge'), (0.3, 0.90, 'moderate edge'), (0.1, 0.75, 'thin edge'), (0.0, 0.55, 'minimal edge')],
+    'er':   [(1.0, 1.00, 'real edge'), (0.5, 0.90, 'moderate edge'), (0.3, 0.75, 'thin edge'), (0.0, 0.55, 'minimal edge')],
+}
+# LEAN promotion ranges. After recal-tier comes back SKIP, if edge > 0
+# AND conviction lands in this range, promote SKIP → LEAN. K/Outs/ER use
+# 55-69 (between STRONG and the higher SKIP floor). BB/HA use 40-54
+# because their tier_for thresholds run lower (PRIME 70 / STRONG 55).
+LEAN_PROMOTION_RANGES = {
+    'ks_over': (55, 70), 'ks_under': (55, 70),
+    'outs_over': (55, 70), 'outs_under': (55, 70),
+    'er_over': (55, 70), 'er_under': (55, 70),
+    'bb_over': (40, 55), 'bb_under': (40, 55),
+    'ha_over': (40, 55), 'ha_under': (40, 55),
+}
+_PROP_UNIT = {'ks': 'K', 'bb': 'BB', 'ha': 'H', 'outs': 'outs', 'er': 'ER'}
+_PROP_GROUP_LABEL = {'ks': 'Ks', 'bb': 'BB', 'ha': 'Hits Allowed', 'outs': 'Outs', 'er': 'ER'}
+
+
+def fetch_book_lines_for_market(date_str, market):
+    """Fetch sportsbook lines per pitcher for ANY pitcher-prop market.
+
+    market: Odds API market key — 'pitcher_strikeouts', 'pitcher_walks',
+    'pitcher_hits_allowed', 'pitcher_outs', or 'pitcher_earned_runs'.
 
     Returns {pitcher_name_lower: {'line': float, 'over': int, 'under': int,
-                                   'source': str}}.
+                                   'source': str, 'n_books': int}}.
 
-    Architecture (5/28): book lines are REFERENCE DATA, not used for tier
-    selection or which props surface. Our pipeline conviction scoring +
-    projections (projected_ks etc.) remain the source of truth. Users see
-    "Sale Over 6.5 — book line 7.5 — projection 8.0" so they understand
-    both the math and the bettable market. Doesn't run K-Over scoring math
-    against the book line; that would let market noise drive our picks.
-
-    Phase 1: pitcher_strikeouts only. Phase 2 extends to pitcher_walks,
-    pitcher_hits_allowed, pitcher_outs. Cost: ~6 event-level Odds API calls
-    per cron (~$0.006/day at standard rates).
+    Architecture: book lines are REFERENCE DATA. The pipeline's projections
+    + signal-based scoring stay the source of truth; the book line is what
+    gets *recalibrated against* downstream so we don't ship convictions
+    calibrated to internal suggested lines that don't match the bettable
+    market. Same recipe as Phase 1 K-only (5/28), generalized 5/29 to all
+    pitcher prop types.
 
     Returns empty dict when ODDS_API_KEY missing or any call fails — never
     raises. Downstream consumers should treat None book_line as 'unavailable'.
@@ -2484,7 +2549,7 @@ def fetch_book_lines_for_ks(date_str):
     ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
     book_map = {}
     if not ODDS_API_KEY:
-        print("  ⚠️ ODDS_API_KEY missing — skipping book line fetch")
+        print(f"  ⚠️ ODDS_API_KEY missing — skipping book line fetch ({market})")
         return book_map
 
     # Retry-with-backoff on transient failures (added 2026-05-29 after the
@@ -2517,7 +2582,6 @@ def fetch_book_lines_for_ks(date_str):
         print("  🚨 BOOK LINES: events endpoint failed after 3 attempts — props will have NULL book_line for this run")
         return book_map
     try:
-        # Step 2: per event, fetch pitcher_strikeouts market
         for ev in events:
             ev_id = ev.get('id')
             if not ev_id:
@@ -2528,7 +2592,7 @@ def fetch_book_lines_for_ks(date_str):
                     params={
                         'apiKey': ODDS_API_KEY,
                         'regions': 'us',
-                        'markets': 'pitcher_strikeouts',
+                        'markets': market,
                         'oddsFormat': 'american',
                     },
                     timeout=15,
@@ -2543,7 +2607,7 @@ def fetch_book_lines_for_ks(date_str):
                 for bm in data.get('bookmakers', []):
                     book_src = bm.get('title') or bm.get('key')
                     for mkt in bm.get('markets', []):
-                        if mkt.get('key') != 'pitcher_strikeouts':
+                        if mkt.get('key') != market:
                             continue
                         # Pair Over/Under by pitcher (description = pitcher name)
                         by_pitcher = {}  # pitcher_name → {Over: (line, odds), Under: (line, odds)}
@@ -2581,51 +2645,51 @@ def fetch_book_lines_for_ks(date_str):
                     }
             except Exception as e:
                 continue
-        print(f"  📖 Loaded book K-lines for {len(book_map)} pitchers")
+        print(f"  📖 Loaded book lines for {market}: {len(book_map)} pitchers")
     except Exception as e:
         print(f"  ⚠️ book line fetch failed: {e}")
     return book_map
 
 
-def recalibrate_k_props_with_book_lines(props):
+def fetch_book_lines_for_ks(date_str):
+    """Backwards-compatible alias preserved for any external caller."""
+    return fetch_book_lines_for_market(date_str, 'pitcher_strikeouts')
+
+
+def recalibrate_props_with_book_lines(props):
     """Replace prop_line with the actual book line and recalibrate conviction
-    on the REAL edge at that line. The signal-based scorer measures cohort
-    quality ("this matchup favors Under") but doesn't know whether the book
-    has already priced that signal in. When the book line is much tighter
-    than our suggested line, our 'edge' collapses — books captured the same
-    signal we did.
+    on the REAL edge at that line. Generalized 2026-05-29 from the K-only
+    Phase 1 to cover all pitcher prop markets (K, BB, HA, Outs, ER).
 
-    Added 2026-05-29 after user audit found 4/6 K-Under props tonight tagged
-    STRONG 80+ with NO edge at the actual book line:
+    The signal-based scorer measures cohort quality ("this matchup favors
+    Under") but doesn't know whether the book has already priced that signal
+    in. When the book line is much tighter than our internal suggested line,
+    the 'edge' collapses — the book captured the same signal we did.
 
-        Paddack:    proj 3.6 vs book Under 3.5 → -0.1 edge (no margin)
-        Pallante:   proj 5.1 vs book Under 3.5 → -1.6 edge (BAD bet)
-        Lorenzen:   proj 3.7 vs book Under 3.5 → -0.2 edge (no margin)
-        Wrobleski:  proj 4.3 vs book Under 4.5 → +0.2 edge (thin)
-        Gallen:     proj 4.6 vs book Under 4.5 → -0.1 edge (no margin)
-        Fedde:      proj 2.7 vs book Under 3.5 → +0.8 edge (only real Under tonight)
+    Phase 1 triggers (K's, 2026-05-28) — Paddack/Pallante/Lorenzen/etc K
+    props were tagged STRONG 80+ with zero or negative edge at the book line.
+    Phase 2 triggers (HA/ER, 2026-05-29) — Meyer U5.5 HA PRIME 91 → U4.5
+    book = 0.9 hits cushion (STRONG), Lorenzen O2.5 ER PRIME 86 → O3.5 +110
+    book = +0.5 ER edge (LEAN), Rodón U5.5 HA PRIME 80 → U4.5 book likely
+    a SKIP.
 
-    Recalibration rules per K prop with attached book_line:
-        edge >= 1.5  → keep conviction (real signal + real edge)
-        edge 1.0-1.5 → conviction × 0.9
-        edge 0.5-1.0 → conviction × 0.75
-        edge 0.0-0.5 → conviction × 0.55
-        edge <  0.0  → conviction × 0.30 (book already priced our signal — no edge)
-
-    Tier auto-re-derives from new conviction via tier_for().
-
-    Same logic for Over (sign inverted: edge = projected - book_line).
-    Stores recalibration trace in signals so users see WHY conviction moved.
+    Recalibration: edge → multiplier → tier_for(). LEAN promotion floor
+    when recalc lands at SKIP but edge > 0 (thin but legitimate at the
+    actual bettable price). Trace fields `_internal_suggested_line`,
+    `_book_line`, `_edge_at_book`, `_pre_recal_*`, `_recal_multiplier`,
+    and `book_recalibration` retained so the 2-week backtest can grade:
+    "Of all props recalibration demoted, what was the hit rate at the
+    bettable book line?" If high, multipliers tune up.
     """
     for p in props:
         ptype = p.get('prop_type')
-        if ptype not in ('ks_over', 'ks_under'):
+        if ptype not in PROP_PROJ_KEY:
             continue
         book_line = p.get('book_line')
         if book_line is None:
             continue
         sigs = p.get('signals') or {}
-        proj = sigs.get('_projected_ks')
+        proj = sigs.get(PROP_PROJ_KEY[ptype])
         if proj is None:
             continue
         try:
@@ -2635,17 +2699,19 @@ def recalibrate_k_props_with_book_lines(props):
             continue
 
         # Edge for THIS direction. Positive = good for bettor at the book line.
-        if ptype == 'ks_under':
-            edge = book_f - proj_f
-        else:  # ks_over
-            edge = proj_f - book_f
+        is_under = ptype.endswith('_under')
+        edge = (book_f - proj_f) if is_under else (proj_f - book_f)
 
-        # Pick conviction multiplier from edge band
-        if edge >= 1.5:    mult, note = 1.00, 'real edge'
-        elif edge >= 1.0:  mult, note = 0.90, 'moderate edge'
-        elif edge >= 0.5:  mult, note = 0.75, 'thin edge'
-        elif edge >= 0.0:  mult, note = 0.55, 'minimal edge'
-        else:              mult, note = 0.30, 'NO EDGE (book priced our signal in)'
+        # Pick conviction multiplier from prop-type-specific edge band
+        group = ptype.split('_')[0]  # ks / bb / ha / outs / er
+        bands = EDGE_BANDS.get(group)
+        if not bands:
+            continue
+        mult, note = 0.30, 'NO EDGE (book priced our signal in)'
+        for thr, m, lbl in bands:
+            if edge >= thr:
+                mult, note = m, lbl
+                break
 
         old_conv = int(p.get('conviction', 0))
         old_line = p.get('prop_line')
@@ -2664,9 +2730,12 @@ def recalibrate_k_props_with_book_lines(props):
         sigs['_pre_recal_tier'] = old_tier
         sigs['_pre_recal_conviction'] = old_conv
         sigs['_recal_multiplier'] = mult
+        unit = _PROP_UNIT.get(group, '')
+        market_label = _PROP_GROUP_LABEL.get(group, group.title())
+        direction = 'Under' if is_under else 'Over'
         sigs['book_recalibration'] = (
-            f"Book {ptype.split('_')[1].title()} {book_line} vs proj {proj_f} "
-            f"= {edge:+.1f} K edge — {note}. "
+            f"Book {market_label} {direction} {book_f} vs proj {proj_f} "
+            f"= {edge:+.1f} {unit} edge — {note}. "
             f"Conviction {old_conv} → {new_conv} (×{mult:.2f})."
         )
         p['signals'] = sigs
@@ -2676,49 +2745,64 @@ def recalibrate_k_props_with_book_lines(props):
         p['conviction'] = new_conv
         # Tier auto-re-derives from conviction
         recalc_tier = tier_for(new_conv, ptype)
-        # LEAN floor for K props (added 2026-05-29): only when conviction
-        # falls in 55-69 AND there's positive edge at the actual book line.
-        # The historic "K LEAN drops to coin flip" caveat applied to our
-        # internal inflated lines — at real book lines a +0.5-to-1.0 K
-        # cushion is a small but legitimate edge. The positive-edge gate
-        # prevents reintroducing the old thin K plays that had no real edge.
-        if recalc_tier == 'SKIP' and edge > 0.0 and 55 <= new_conv < 70:
+        # LEAN promotion floor (added 2026-05-29). When recalc lands at
+        # SKIP but the edge is positive AND conviction sits in the prop-
+        # type's promotion range, surface as LEAN — thin but legitimate
+        # edge at the actual book line. The positive-edge gate prevents
+        # reintroducing the old thin plays that had no real edge.
+        lean_lo, lean_hi = LEAN_PROMOTION_RANGES.get(ptype, (None, None))
+        if recalc_tier == 'SKIP' and edge > 0.0 and lean_lo is not None and lean_lo <= new_conv < lean_hi:
             recalc_tier = 'LEAN'
             sigs['book_recalibration'] += " · Promoted to LEAN — thin but positive edge at book."
             p['signals'] = sigs
         p['tier'] = recalc_tier
 
 
+def recalibrate_k_props_with_book_lines(props):
+    """Backwards-compatible alias — runs the generalized recalibration which
+    now covers K + BB + HA + Outs + ER markets."""
+    return recalibrate_props_with_book_lines(props)
+
+
 def attach_book_lines(props):
     """Attach book_line / book_over_odds / book_under_odds / book_source to
-    pitcher K props in-place. Reference data only — does NOT alter prop_line
-    or tier/conviction. NULL when book line unavailable for that pitcher.
+    ALL pitcher props (K, BB, HA, Outs, ER) in-place. Reference data only —
+    `recalibrate_props_with_book_lines` runs immediately after to update
+    prop_line + conviction based on the real edge.
 
-    NOTE: recalibrate_k_props_with_book_lines runs immediately after this in
-    run() to update prop_line + conviction based on the real edge at the
-    book line. Without recalibration, K props can be tagged STRONG with NO
-    edge at the bettable market (the 5/29 user audit found 4/6 K-Under props
-    on the card with effectively zero real edge)."""
-    ks_pitchers = {(p.get('player_name') or '').strip() for p in props if p.get('prop_type') in ('ks_over', 'ks_under')}
-    if not ks_pitchers:
-        return
-    book_map = fetch_book_lines_for_ks(today_et())
-    if not book_map:
-        return
-    matched = 0
+    Phase 2 (2026-05-29) generalized from K-only. Fetches each Odds API
+    market once per cron (events endpoint cached across markets via the
+    underlying retry path). NULL book_line when the market is unavailable
+    for that pitcher — downstream consumers treat that as 'no recal'."""
+    needed_markets = {}  # market → set of pitcher names
     for p in props:
-        if p.get('prop_type') not in ('ks_over', 'ks_under'):
+        market = PROP_MARKET_MAP.get(p.get('prop_type'))
+        if not market:
             continue
-        name = (p.get('player_name') or '').strip().lower()
-        bk = book_map.get(name)
-        if not bk:
+        name = (p.get('player_name') or '').strip()
+        if name:
+            needed_markets.setdefault(market, set()).add(name)
+    if not needed_markets:
+        return
+    date_str = today_et()
+    for market, pitchers in needed_markets.items():
+        book_map = fetch_book_lines_for_market(date_str, market)
+        if not book_map:
             continue
-        p['book_line'] = bk['line']
-        p['book_over_odds'] = bk['over']
-        p['book_under_odds'] = bk['under']
-        p['book_source'] = f"{bk['source']} (median of {bk['n_books']})"
-        matched += 1
-    print(f"  📖 Attached book lines to {matched} K props (of {len(ks_pitchers)} pitchers with K props)")
+        matched = 0
+        for p in props:
+            if PROP_MARKET_MAP.get(p.get('prop_type')) != market:
+                continue
+            name = (p.get('player_name') or '').strip().lower()
+            bk = book_map.get(name)
+            if not bk:
+                continue
+            p['book_line'] = bk['line']
+            p['book_over_odds'] = bk['over']
+            p['book_under_odds'] = bk['under']
+            p['book_source'] = f"{bk['source']} (median of {bk['n_books']})"
+            matched += 1
+        print(f"  📖 Attached {market}: {matched} props (of {len(pitchers)} pitchers in scope)")
 
 
 def upsert_props(props):
@@ -2731,9 +2815,9 @@ def upsert_props(props):
         return 0
     # Normalize keys across the batch — PostgREST rejects mixed schemas with
     # "All object keys must match" when a column is on some records but not
-    # others. attach_book_lines() only sets book_line on K props, leaving
-    # hits/outs/etc props without those keys; bug surfaced 5/29 when the
-    # whole batch failed and 0 rows landed. Walk all rows, union the keys,
+    # others. Pitcher props pick up book_line / book_*_odds via attach_book_lines
+    # but BATTER props (hits_over/under) never do — bug surfaced 5/29 when
+    # the whole batch failed and 0 rows landed. Walk all rows, union the keys,
     # then backfill missing keys as None on each record.
     all_keys = set()
     for p in props:
@@ -3170,27 +3254,29 @@ def run():
             sigs['_display_label'] = label
             p['signals'] = sigs
 
-    # Attach real sportsbook K-prop lines + recalibrate against the real
-    # edge at those lines. 5/29 user audit found 4/6 K-Under props tagged
-    # STRONG had zero or negative edge at the actual book line — our
-    # signal-based scorer didn't know the book had already priced our
-    # signals in. The recalibration step replaces prop_line with book_line
+    # Attach real sportsbook lines for ALL pitcher prop markets (K / BB /
+    # HA / Outs / ER) + recalibrate against the real edge at those lines.
+    # Phase 1 (K-only, 5/28): user audit found 4/6 K-Under props tagged
+    # STRONG had zero or negative edge at the actual book line.
+    # Phase 2 (5/29): same problem confirmed in HA/ER — Meyer U5.5 PRIME 91
+    # vs book U4.5, Lorenzen O2.5 PRIME 86 vs book O3.5 +110, Rodón U5.5
+    # PRIME 80 vs book U4.5. Recalibration replaces prop_line with book_line
     # and adjusts conviction down when the real edge is thin or negative.
     attach_book_lines(top)
-    recalibrate_k_props_with_book_lines(top)
+    recalibrate_props_with_book_lines(top)
     # Re-sort by conviction and re-tier-filter so demoted props drop off
-    # the published list — EXCEPT K props that went through recalibration:
-    # those get kept (even at SKIP) so the backtest can query what got
-    # demoted and grade hypothetical outcomes. App / sweat card filter by
-    # tier IN (PRIME, STRONG, LEAN) for display so SKIP'd K props stay
-    # silent in the UI. The _pre_recal_tier trace fields make them
-    # auditable: "Of all K props demoted to SKIP, what was the hit rate
-    # at the bettable book line?"
+    # the published list — EXCEPT recalibrated props that landed at SKIP:
+    # those get kept so the backtest can query what got demoted and grade
+    # hypothetical outcomes. App / sweat card filter by tier IN (PRIME,
+    # STRONG, LEAN) for display so SKIP'd props stay silent in the UI.
+    # The _pre_recal_tier trace fields make them auditable: "Of all props
+    # demoted to SKIP, what was the hit rate at the bettable book line?"
     def _keep(p):
         if p.get('tier') in ('PRIME', 'STRONG', 'LEAN'):
             return True
-        if p.get('prop_type') in ('ks_over', 'ks_under') and (p.get('signals') or {}).get('_pre_recal_tier'):
-            return True  # SKIP'd K prop with recalibration trace — keep for audit
+        # Any recalibrated pitcher prop with trace — keep for backtest
+        if p.get('prop_type') in PROP_MARKET_MAP and (p.get('signals') or {}).get('_pre_recal_tier'):
+            return True
         return False
     top = [p for p in top if _keep(p)]
     top.sort(key=lambda p: -(p.get('conviction') or 0))
