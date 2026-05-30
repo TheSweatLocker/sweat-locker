@@ -1335,6 +1335,14 @@ def run():
                         or sweat_tier_for(game_score, ctx)
         write_sweat_score(ctx, game_score, headline_tier, breakdown=breakdown)
         lean_display, lean_bet, is_nrfi = build_lean(ctx)
+        # 5/30 add: surface sweat_dimensions.model_play alongside legacy
+        # lean_display so the POTD value-fallback can compare both. The
+        # dimensional scorer often identifies stronger non-NRFI total plays
+        # that build_lean's priority chain misses (5/30 PHI/LAD Under 8.5
+        # was sweat dim STRONG 68 but build_lean fell to NRFI fallback).
+        _winning_dim_name = dimensions.get('winning_dimension')
+        _winning_dim = dimensions.get(_winning_dim_name) if _winning_dim_name else {}
+        _dim_play = dimensions.get('model_play') or {}
         candidates.append({
             'sport': 'MLB',
             'home_team': ctx.get('home_team'),
@@ -1345,6 +1353,17 @@ def run():
             'is_nrfi': is_nrfi,
             'lean_display': lean_display,
             'lean_bet': lean_bet,
+            # Dimensional surface (5/30) — winning dim's tier + score + play
+            # for use in value-fallback POTD selection. dim_score lets the
+            # selector rank by sweat-dimensional tier when lean_display
+            # underweights the play (e.g. when build_lean returns NRFI
+            # fallback but sweat dim says TOTAL STRONG).
+            'dim_winning': _winning_dim_name,
+            'dim_score': _winning_dim.get('score'),
+            'dim_tier': _winning_dim.get('tier'),
+            'dim_play_label': _dim_play.get('label'),
+            'dim_play_type': _dim_play.get('type'),
+            'dim_play_edge': _dim_play.get('edge'),
             'home_pitcher': ctx.get('home_pitcher'),
             'away_pitcher': ctx.get('away_pitcher'),
             'home_sp_xera': ctx.get('home_sp_xera'),
@@ -1574,7 +1593,40 @@ def run():
     # picking NRFI-leaning candidates because they had a lean_display
     # string. Excluding lean_bet in (nrfi, yrfi) closes the loophole so
     # NRFI never reaches POTD even when no other audit cohort qualifies.
+    #
+    # 5/30 architectural fix: if a candidate's sweat_dimensions model_play
+    # (winning_dimension tier >= STRONG with an actionable play that isn't
+    # NRFI) is stronger than the legacy lean_display, promote the
+    # candidate using the dim_play and override its lean fields. The
+    # dimensional scorer often identifies cleaner non-NRFI total plays
+    # (e.g. PHI/LAD Under 8.5 STRONG 68 vs build_lean's NRFI fallback)
+    # that the legacy chain misses. Without this, the 5/30 POTD had to be
+    # manually overridden because the selector couldn't see the sweat
+    # dim's read on PHI/LAD.
     if not pick:
+        # First: promote candidates with strong sweat-dim plays. Mutate
+        # their lean_display/lean_bet so the value_pool selection logic
+        # naturally surfaces them.
+        for c in candidates:
+            if c.get('sport') != 'MLB':
+                continue
+            dim_tier = c.get('dim_tier')
+            dim_play_type = (c.get('dim_play_type') or '').upper()
+            dim_play_label = c.get('dim_play_label')
+            # Only consider STRONG+ dim plays that aren't NRFI/YRFI
+            if dim_tier not in ('STRONG', 'PRIME'):
+                continue
+            if dim_play_type in ('NRFI', 'YRFI') or not dim_play_label:
+                continue
+            # If legacy lean_bet is nrfi or weaker, promote dim's play
+            if c.get('lean_bet') in ('nrfi', 'yrfi', None):
+                c['lean_display'] = dim_play_label
+                c['lean_bet'] = 'total' if 'TOTAL' in dim_play_type else (
+                                'ml' if 'ML' in dim_play_type else (
+                                'spread' if 'SPREAD' in dim_play_type else 'total'))
+                c['is_nrfi'] = False
+                c['_promoted_from_dim'] = True
+
         value_pool = [
             c for c in candidates
             if c.get('sport') == 'MLB'
@@ -1582,17 +1634,22 @@ def run():
             and (c.get('score') or 0) >= 50
             and c.get('lean_bet') not in ('nrfi', 'yrfi')
         ]
-        # Composite rank: confluence magnitude (most predictive single signal)
-        # tie-broken by sweat score
-        value_pool.sort(key=lambda c: (
-            -abs(c.get('signal_confluence_net') or 0),
-            -(c.get('score') or 0),
-        ))
+        # Composite rank: prefer sweat-dim-promoted candidates with STRONG+
+        # dim tier, then by confluence magnitude, then by sweat score.
+        def _rank_key(c):
+            dim_tier_rank = {'PRIME': 2, 'STRONG': 1}.get(c.get('dim_tier'), 0)
+            return (
+                -dim_tier_rank if c.get('_promoted_from_dim') else 0,
+                -abs(c.get('signal_confluence_net') or 0),
+                -(c.get('score') or 0),
+            )
+        value_pool.sort(key=_rank_key)
         if value_pool:
             pick = value_pool[0]
             confidence = 'value'
             conf_net = pick.get('signal_confluence_net') or 0
-            print(f"📌 VALUE POTD (sub-audit fallback): {pick['away_team']} @ {pick['home_team']} — "
+            src = 'dim-promoted' if pick.get('_promoted_from_dim') else 'legacy lean'
+            print(f"📌 VALUE POTD (sub-audit fallback, {src}): {pick['away_team']} @ {pick['home_team']} — "
                   f"{pick.get('lean_display')} | confluence={conf_net:+d} | sweat={pick.get('score')}")
 
     if not pick:
