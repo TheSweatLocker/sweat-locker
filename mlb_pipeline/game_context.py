@@ -2281,29 +2281,40 @@ def upload_game_context(context, commence_time=None):
         headers=headers,
         json=context
     )
-    # Pre-migration fallback (5/30): jerry_* and primary_play/sweat_dimensions
-    # may not exist yet on the table. If PostgREST 400s with one of those
-    # column names, strip them and retry once so the rest of the data lands.
-    if r.status_code == 400:
-        stripped = []
-        for k in ('jerry_pred_home_runs', 'jerry_pred_away_runs', 'jerry_pred_spread',
-                  'jerry_pred_total', 'jerry_components', 'jerry_weights_version',
-                  'home_l10_wins', 'home_l10_losses', 'away_l10_wins', 'away_l10_losses',
-                  'home_pitcher_vs_team_recent_era', 'away_pitcher_vs_team_recent_era',
-                  'home_pitcher_vs_team_recent_ip', 'away_pitcher_vs_team_recent_ip',
-                  'home_pitcher_vs_team_recent_baa', 'away_pitcher_vs_team_recent_baa',
-                  'home_pitcher_vs_team_recent_n_starts', 'away_pitcher_vs_team_recent_n_starts'):
+    # Pre-migration / schema-cache-stale fallback (5/30, looped 5/30 PM).
+    # PostgREST returns 400 with ONLY THE FIRST unknown column per
+    # response. Original code retried once and died on the 2nd missing
+    # column. Loop strip-and-retry up to 8 rounds so multi-column gaps
+    # (e.g. all 8 recent-mastery columns missing on a stale schema cache)
+    # don't leave the entire game un-upserted.
+    candidate_strip_keys = (
+        'jerry_pred_home_runs', 'jerry_pred_away_runs', 'jerry_pred_spread',
+        'jerry_pred_total', 'jerry_components', 'jerry_weights_version',
+        'home_l10_wins', 'home_l10_losses', 'away_l10_wins', 'away_l10_losses',
+        'home_pitcher_vs_team_recent_era', 'away_pitcher_vs_team_recent_era',
+        'home_pitcher_vs_team_recent_ip', 'away_pitcher_vs_team_recent_ip',
+        'home_pitcher_vs_team_recent_baa', 'away_pitcher_vs_team_recent_baa',
+        'home_pitcher_vs_team_recent_n_starts', 'away_pitcher_vs_team_recent_n_starts',
+    )
+    stripped_total = []
+    retry_rounds = 0
+    while r.status_code == 400 and retry_rounds < 8:
+        round_stripped = []
+        for k in candidate_strip_keys:
             if k in r.text and k in context:
                 context.pop(k, None)
-                stripped.append(k)
-        if stripped:
-            r = requests.post(
-                f"{SUPABASE_URL}/rest/v1/mlb_game_context?on_conflict=game_id",
-                headers=headers,
-                json=context
-            )
-            if r.status_code in [200, 201, 204]:
-                print(f"  ⚠️ game_context: jerry columns missing — apply 20260530_jerry_model_columns.sql")
+                round_stripped.append(k)
+                stripped_total.append(k)
+        if not round_stripped:
+            break  # error isn't a missing-column issue we can fix
+        r = requests.post(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_context?on_conflict=game_id",
+            headers=headers,
+            json=context,
+        )
+        retry_rounds += 1
+    if stripped_total and r.status_code in [200, 201, 204]:
+        print(f"  ⚠️ game_context: stripped {len(stripped_total)} cols across {retry_rounds} retries — schema cache may be stale; run NOTIFY pgrst, 'reload schema' in Supabase")
     if r.status_code not in [200, 201, 204]:
         print(f"Upload failed {r.status_code}: {r.text}")
     return r.status_code in [200, 201, 204]
@@ -4039,8 +4050,8 @@ def run(target_date=None):
                     'away_bullpen_era': _abp_j.get('bullpen_era'),
                     'home_pitching_7_9_era': _hbp_j.get('pitching_7_9_era'),
                     'away_pitching_7_9_era': _abp_j.get('pitching_7_9_era'),
-                    'home_bp_relievers_3d': home_bp_relievers_3d,
-                    'away_bp_relievers_3d': away_bp_relievers_3d,
+                    'home_bp_relievers_3d': (home_bp_usage or {}).get('relievers_used_3d') if 'home_bp_usage' in dir() else None,
+                    'away_bp_relievers_3d': (away_bp_usage or {}).get('relievers_used_3d') if 'away_bp_usage' in dir() else None,
                     'park_run_factor': park_run_factor,
                     'temperature': weather.get('temperature') if weather else None,
                     'wind_speed': weather.get('wind_speed') if weather else None,
