@@ -120,6 +120,60 @@ def main():
         warnings.append(f'⚠️  {pct(null_v4_total, len(games))} games missing model_pred_total (v4). '
                         f'High suppression rate — check guards in game_context.py.')
 
+    # --- Props pipeline: book-line attachment rate ---
+    # Phase 1 (5/28) + Phase 2 (5/29) attach real book lines to pitcher
+    # props and recalibrate conviction against the bettable edge. When
+    # ODDS_API_KEY isn't set (or the Odds API is down), attach_book_lines
+    # returns empty silently and every prop ships at the internal suggested
+    # line — exactly the trust-killer those phases were built to prevent.
+    #
+    # 5/30 INCIDENT: ODDS_API_KEY was missing from the generate_props
+    # workflow env block for ~3 days. Brandon Young U 5.5 K's shipped as
+    # STRONG 80 when book was 3.5 (no edge, should have been SKIP 24). No
+    # alarm fired because downstream just sees the prop publish — nothing
+    # aggregated attachment rate. This check closes the loop: if pitcher
+    # props are publishing but <50% have book_line attached, flag critical.
+    try:
+        props = get(f"{URL}/rest/v1/mlb_pipeline_props?game_date=eq.{date}&select=prop_type,book_line,tier")
+        pitcher_types = ('ks_over', 'ks_under', 'bb_over', 'bb_under',
+                         'ha_over', 'ha_under', 'outs_over', 'outs_under',
+                         'er_over', 'er_under')
+        pitcher_props = [p for p in props if p.get('prop_type') in pitcher_types]
+        # Only flag when we have a meaningful sample (>=4 pitcher props). Earlier
+        # in the day there may be 0-1 because the slate isn't fully scored yet.
+        if len(pitcher_props) >= 4:
+            with_book = sum(1 for p in pitcher_props if p.get('book_line') is not None)
+            attach_rate = with_book / len(pitcher_props)
+            if attach_rate < 0.50:
+                # Bucket counts for context
+                by_type = {}
+                for p in pitcher_props:
+                    by_type.setdefault(p.get('prop_type'), {'total': 0, 'with': 0})
+                    by_type[p['prop_type']]['total'] += 1
+                    if p.get('book_line') is not None:
+                        by_type[p['prop_type']]['with'] += 1
+                worst = sorted(by_type.items(), key=lambda kv: kv[1]['with']/max(1, kv[1]['total']))[:3]
+                worst_str = ', '.join(f"{k} {v['with']}/{v['total']}" for k, v in worst)
+                issues.append(
+                    f'❌ Props book-line attach rate {with_book}/{len(pitcher_props)} '
+                    f'({attach_rate*100:.0f}%) — Phase 1+2 recalibration not firing. '
+                    f'Most likely: ODDS_API_KEY missing from generate_props workflow env, '
+                    f'OR Odds API down. Worst categories: {worst_str}. '
+                    f'Props will ship at internal lines with stale tiers until fixed.'
+                )
+            elif attach_rate < 0.80:
+                # Partial coverage is normal — books only post lines for some
+                # starters (fringe arms get skipped). 50-80% range is expected
+                # mid-afternoon; <50% means the integration is broken.
+                warnings.append(
+                    f'⚠️  Props book-line attach rate {with_book}/{len(pitcher_props)} '
+                    f'({attach_rate*100:.0f}%) — partial coverage, monitor.'
+                )
+            else:
+                print(f'  ✓ Props book-line attach rate: {with_book}/{len(pitcher_props)} ({attach_rate*100:.0f}%)')
+    except Exception as e:
+        warnings.append(f'⚠️  Props book-line check failed: {e}')
+
     # --- Afternoon-run-specific checks ---
     if is_afternoon:
         # POTD should be locked by 2pm cron unless no PRIME tier surfaced
