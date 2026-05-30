@@ -1174,6 +1174,72 @@ def get_pitcher_vs_team(pitcher_id, opponent_team_id):
     except Exception:
         return None
 
+def get_pitcher_vs_team_recent(pitcher_id, opponent_team_id, n_starts=3):
+    """Pull pitcher's MOST RECENT n_starts appearances against a specific
+    opponent and compute ERA / BAA / IP across just those starts.
+
+    Different signal from get_pitcher_vs_team (which aggregates 5 seasons of
+    career data with a 15-IP gate). Recent mastery captures whether the
+    pitcher's CURRENT version is dominating or struggling against this opp
+    specifically — useful when career mastery exists but the pitcher has
+    deteriorated (or improved) significantly.
+
+    Pulls same gameLog data, sorts by date descending, takes only the last
+    n_starts vs this opp, returns aggregated stats with a 10-IP minimum
+    gate (n_starts × ~3-5 IP typical → 10 IP floor catches noise).
+
+    Returns dict {era, avg, ip, k, n_starts, latest_date} or None.
+
+    Added 2026-05-30 per user direction: career mastery alone misses cases
+    where a pitcher has faced this team recently and either dominated or
+    been tagged outside their lifetime norm.
+    """
+    if not pitcher_id or not opponent_team_id:
+        return None
+    try:
+        all_starts = []  # list of (date_str, stat_dict)
+        for season in (2026, 2025, 2024):
+            r = requests.get(
+                f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
+                params={"stats": "gameLog", "group": "pitching", "season": season},
+                timeout=10,
+            )
+            stats_block = r.json().get("stats", [])
+            splits = stats_block[0].get("splits", []) if stats_block else []
+            for sp in splits:
+                if sp.get("opponent", {}).get("id") != opponent_team_id:
+                    continue
+                date_str = sp.get("date") or sp.get("game", {}).get("officialDate") or ""
+                all_starts.append((date_str, sp.get("stat", {})))
+        # Sort descending by date, take last n
+        all_starts.sort(key=lambda x: x[0], reverse=True)
+        recent = all_starts[:n_starts]
+        if not recent:
+            return None
+        agg = {"er": 0, "ip": 0.0, "k": 0, "ab": 0, "hits": 0}
+        for _, stat in recent:
+            ip_str = str(stat.get("inningsPitched", "0"))
+            ip = float((ip_str.replace(".1", ".333").replace(".2", ".667")) or "0")
+            agg["ip"] += ip
+            agg["er"] += int(stat.get("earnedRuns", 0) or 0)
+            agg["k"] += int(stat.get("strikeOuts", 0) or 0)
+            agg["ab"] += int(stat.get("atBats", 0) or 0)
+            agg["hits"] += int(stat.get("hits", 0) or 0)
+        # 10-IP minimum gate — 3 starts × 3-5 IP each → 10 IP floor catches noise
+        if agg["ip"] < 10:
+            return None
+        return {
+            "era_vs_team_recent": round((agg["er"] * 9.0) / agg["ip"], 2),
+            "avg_vs_team_recent": round(agg["hits"] / agg["ab"], 3) if agg["ab"] > 0 else 0.0,
+            "ip_vs_team_recent": round(agg["ip"], 1),
+            "k_vs_team_recent": agg["k"],
+            "n_starts_recent": len(recent),
+            "latest_date_recent": recent[0][0] if recent else None,
+        }
+    except Exception:
+        return None
+
+
 def get_mlb_injuries(team_name):
     """Fetch injured players for a team from MLB Stats API"""
     if not team_name:
@@ -2222,7 +2288,11 @@ def upload_game_context(context, commence_time=None):
         stripped = []
         for k in ('jerry_pred_home_runs', 'jerry_pred_away_runs', 'jerry_pred_spread',
                   'jerry_pred_total', 'jerry_components', 'jerry_weights_version',
-                  'home_l10_wins', 'home_l10_losses', 'away_l10_wins', 'away_l10_losses'):
+                  'home_l10_wins', 'home_l10_losses', 'away_l10_wins', 'away_l10_losses',
+                  'home_pitcher_vs_team_recent_era', 'away_pitcher_vs_team_recent_era',
+                  'home_pitcher_vs_team_recent_ip', 'away_pitcher_vs_team_recent_ip',
+                  'home_pitcher_vs_team_recent_baa', 'away_pitcher_vs_team_recent_baa',
+                  'home_pitcher_vs_team_recent_n_starts', 'away_pitcher_vs_team_recent_n_starts'):
             if k in r.text and k in context:
                 context.pop(k, None)
                 stripped.append(k)
@@ -2884,6 +2954,11 @@ def run(target_date=None):
                 pass
             home_vs_away = get_pitcher_vs_team(home_pitcher_id, away_team_id) if home_pitcher_id and away_team_id else None
             away_vs_home = get_pitcher_vs_team(away_pitcher_id, home_team_id) if away_pitcher_id and home_team_id else None
+            # Recent mastery (L3 starts vs opp) — different signal from career.
+            # Added 2026-05-30 per user direction. Captures pitcher's current
+            # form against this specific team.
+            home_vs_away_recent = get_pitcher_vs_team_recent(home_pitcher_id, away_team_id, n_starts=3) if home_pitcher_id and away_team_id else None
+            away_vs_home_recent = get_pitcher_vs_team_recent(away_pitcher_id, home_team_id, n_starts=3) if away_pitcher_id and home_team_id else None
             if home_vs_away:
                 print(f"  {home_pitcher} vs {away_team}: ERA {home_vs_away['era_vs_team']}, AVG {home_vs_away['avg_vs_team']}, {home_vs_away['ip_vs_team']} IP")
             if away_vs_home:
@@ -3930,6 +4005,11 @@ def run(target_date=None):
                     'away_pitcher_vs_team_era': _avs_j.get('era_vs_team'),
                     'home_pitcher_vs_team_ip': _hvs_j.get('ip_vs_team'),
                     'away_pitcher_vs_team_ip': _avs_j.get('ip_vs_team'),
+                    # Recent mastery (5/30 add) — L3-start ERA vs this opp
+                    'home_pitcher_vs_team_recent_era': (home_vs_away_recent or {}).get('era_vs_team_recent'),
+                    'away_pitcher_vs_team_recent_era': (away_vs_home_recent or {}).get('era_vs_team_recent'),
+                    'home_pitcher_vs_team_recent_ip': (home_vs_away_recent or {}).get('ip_vs_team_recent'),
+                    'away_pitcher_vs_team_recent_ip': (away_vs_home_recent or {}).get('ip_vs_team_recent'),
                     'home_pitcher_split_delta': home_pitcher_splits.get('split_delta') if home_pitcher_splits else None,
                     'away_pitcher_split_delta': away_pitcher_splits.get('split_delta') if away_pitcher_splits else None,
                     'home_wrc_plus': home_wrc, 'away_wrc_plus': away_wrc,
@@ -4170,6 +4250,16 @@ def run(target_date=None):
                 "away_pitcher_vs_team_era": away_vs_home['era_vs_team'] if away_vs_home else None,
                 "home_pitcher_vs_team_avg": home_vs_away['avg_vs_team'] if home_vs_away else None,
                 "away_pitcher_vs_team_avg": away_vs_home['avg_vs_team'] if away_vs_home else None,
+                # Recent mastery (L3 starts vs opp) — separate signal from
+                # career. Added 2026-05-30. Columns by 20260530_recent_mastery_columns.sql.
+                "home_pitcher_vs_team_recent_era": home_vs_away_recent.get('era_vs_team_recent') if home_vs_away_recent else None,
+                "away_pitcher_vs_team_recent_era": away_vs_home_recent.get('era_vs_team_recent') if away_vs_home_recent else None,
+                "home_pitcher_vs_team_recent_ip": home_vs_away_recent.get('ip_vs_team_recent') if home_vs_away_recent else None,
+                "away_pitcher_vs_team_recent_ip": away_vs_home_recent.get('ip_vs_team_recent') if away_vs_home_recent else None,
+                "home_pitcher_vs_team_recent_baa": home_vs_away_recent.get('avg_vs_team_recent') if home_vs_away_recent else None,
+                "away_pitcher_vs_team_recent_baa": away_vs_home_recent.get('avg_vs_team_recent') if away_vs_home_recent else None,
+                "home_pitcher_vs_team_recent_n_starts": home_vs_away_recent.get('n_starts_recent') if home_vs_away_recent else None,
+                "away_pitcher_vs_team_recent_n_starts": away_vs_home_recent.get('n_starts_recent') if away_vs_home_recent else None,
                 # K-rate mastery dimension for K props (added 2026-05-25).
                 # get_pitcher_vs_team already computes k_vs_team + ip_vs_team
                 # from gameLog splits — derive K/9 here and persist alongside

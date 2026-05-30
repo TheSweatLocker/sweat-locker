@@ -62,11 +62,20 @@ JERRY_WEIGHTS = {
     'starter_split_sensitivity': 0.10, # each +0.5 ERA worse in this split = +5% runs allowed
 
     # --- Mastery (vs current opp) adjustment ---
-    'mastery_ip_gate': 15,           # below this IP, mastery doesn't fire (small sample)
+    'mastery_ip_gate': 15,           # below this IP, career mastery doesn't fire
     'mastery_strong_era': 2.50,      # mastery threshold
     'mastery_weak_era': 6.00,        # anti-mastery threshold
     'mastery_strong_multiplier': 0.85,  # opp runs × 0.85 when strong mastery
     'mastery_weak_multiplier': 1.18,    # opp runs × 1.18 when anti-mastery
+
+    # Recent mastery (L3 starts vs opp) — added 5/30 per user direction.
+    # When recent ERA differs from career by ≥2.0 AND recent has ≥10 IP,
+    # blend recent into the multiplier so the model captures current form.
+    # Pure recent (100%) when delta is large; pure career when delta small.
+    'mastery_recent_ip_gate': 10,
+    'mastery_recent_delta_threshold': 2.0,  # career - recent ERA difference to flip
+    'mastery_recent_blend_at_threshold': 0.65,  # 65% recent / 35% career when delta = threshold
+    'mastery_recent_max_blend': 0.85,           # max 85% recent weight
 
     # --- Offense component ---
     'offense_wrc_baseline': 100,
@@ -189,18 +198,50 @@ def _starter_composite_rate(xera, l3_era, first_inn_era, w, for_first_inning=Fal
     return _blend(pairs)
 
 
-def _mastery_multiplier(vs_team_era, vs_team_ip, w):
+def _mastery_multiplier(vs_team_era, vs_team_ip, w, recent_era=None, recent_ip=None):
     """Multiplier applied to opposing-runs based on mastery / anti-mastery.
-    Only fires when IP sample >= gate."""
+
+    Default behavior unchanged: only fires when career IP >= gate; linearly
+    interpolates between strong (≤2.50 ERA → 0.85) and weak (≥6.00 ERA → 1.18).
+
+    5/30: when recent_era + recent_ip are provided AND recent has ≥10 IP AND
+    recent ERA differs from career by ≥2.0, blend recent into the multiplier
+    so current form gets weight. The blend is graduated — small disagreement
+    keeps career dominant, large disagreement (≥4.0 ERA delta) flips to
+    mostly recent.
+    """
     if vs_team_era is None or vs_team_ip is None or vs_team_ip < w['mastery_ip_gate']:
+        # Career signal missing — fall back to recent alone if available
+        if recent_era is not None and recent_ip is not None and recent_ip >= w['mastery_recent_ip_gate']:
+            return _era_to_multiplier(recent_era, w)
         return 1.0
-    if vs_team_era <= w['mastery_strong_era']:
+
+    career_mult = _era_to_multiplier(vs_team_era, w)
+    if recent_era is None or recent_ip is None or recent_ip < w['mastery_recent_ip_gate']:
+        return career_mult
+
+    # Both signals present — graduated blend based on disagreement size
+    delta = abs(vs_team_era - recent_era)
+    threshold = w['mastery_recent_delta_threshold']
+    if delta < threshold:
+        return career_mult  # career still dominant when recent agrees
+    # Linear scale: at threshold → blend_at_threshold; at 2x threshold → max_blend
+    recent_weight = w['mastery_recent_blend_at_threshold'] + \
+                    (delta - threshold) / threshold * \
+                    (w['mastery_recent_max_blend'] - w['mastery_recent_blend_at_threshold'])
+    recent_weight = max(0.0, min(w['mastery_recent_max_blend'], recent_weight))
+    recent_mult = _era_to_multiplier(recent_era, w)
+    return career_mult * (1 - recent_weight) + recent_mult * recent_weight
+
+
+def _era_to_multiplier(era, w):
+    """ERA → mastery multiplier on a linear band between strong and weak thresholds."""
+    if era <= w['mastery_strong_era']:
         return w['mastery_strong_multiplier']
-    if vs_team_era >= w['mastery_weak_era']:
+    if era >= w['mastery_weak_era']:
         return w['mastery_weak_multiplier']
-    # Linear interpolation between thresholds
     span = w['mastery_weak_era'] - w['mastery_strong_era']
-    pos = (vs_team_era - w['mastery_strong_era']) / span
+    pos = (era - w['mastery_strong_era']) / span
     mult_span = w['mastery_weak_multiplier'] - w['mastery_strong_multiplier']
     return w['mastery_strong_multiplier'] + pos * mult_span
 
@@ -269,6 +310,9 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
     opp_split_delta = _f(ctx.get(f'{opp_side}_pitcher_split_delta'))
     opp_mastery_era = _f(ctx.get(f'{opp_side}_pitcher_vs_team_era'))
     opp_mastery_ip = _f(ctx.get(f'{opp_side}_pitcher_vs_team_ip'))
+    # Recent mastery (L3 starts vs opp) — added 5/30
+    opp_mastery_recent_era = _f(ctx.get(f'{opp_side}_pitcher_vs_team_recent_era'))
+    opp_mastery_recent_ip = _f(ctx.get(f'{opp_side}_pitcher_vs_team_recent_ip'))
 
     # Inning bucket ERAs (enriched from mlb_pitcher_stats)
     opp_bucket_1_3 = _f(ctx.get(f'{opp_side}_innings_1_3_era'))
@@ -364,8 +408,11 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
     # Apply L10 team momentum multiplier
     offense_mult *= momentum_mult
 
-    # Mastery + split multipliers (on the opposing pitcher's allowed runs)
-    mastery_mult = _mastery_multiplier(opp_mastery_era, opp_mastery_ip, w)
+    # Mastery + split multipliers (on the opposing pitcher's allowed runs).
+    # 5/30: now factors in recent (L3-start) mastery alongside career.
+    mastery_mult = _mastery_multiplier(opp_mastery_era, opp_mastery_ip, w,
+                                       recent_era=opp_mastery_recent_era,
+                                       recent_ip=opp_mastery_recent_ip)
     split_mult = _starter_split_multiplier(opp_split_delta, w)
 
     # === Inning bucket projections ===
@@ -422,6 +469,8 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
         'l10_losses': l10_losses,
         'momentum_mult': round(momentum_mult, 3),
         'mastery_mult': round(mastery_mult, 3),
+        'mastery_recent_era': opp_mastery_recent_era,
+        'mastery_recent_ip': opp_mastery_recent_ip,
         'starter_split_mult': round(split_mult, 3),
         'opp_starter_rate_1_3': round(rate_1_3, 2) if rate_1_3 else None,
         'opp_starter_rate_4_6': round(rate_4_6, 2) if rate_4_6 else None,
