@@ -2212,28 +2212,38 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
         return None  # opener — bullpen game spreads ABs across many arms, dilutes fade
 
     # Elite opposing pitcher
+    # 2026-05-30 REWEIGHT per 324-prop cohort audit: opp_starter PRESENT
+    # audits 58.5% vs 67.6% ABSENT (delta -9.0pt). The "elite opposing
+    # pitcher" signal that the entire scorer was anchored on is actually
+    # SLIGHTLY anti-predictive — the props ship better without it because
+    # the genuinely-cold-bat cases (which DO predict) tend to suppress
+    # the opp_quality requirement. Cutting weights ~45%: keep the signal
+    # as a directional filter (still need ≤3.50 quality opp to play) but
+    # don't let it stack conviction the way it was.
     opp_quality = opp_xera if opp_xera is not None else opp_l3
     opp_quality_label = 'xERA' if opp_xera is not None else 'L3 ERA'
     if opp_quality is None:
         return None  # no pitcher signal = no fade
     if opp_quality <= 2.75:
-        conviction += 22
+        conviction += 12  # was +22 — audit said over-weighted
         signals['opp_starter'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — ace'
     elif opp_quality <= 3.50:
-        conviction += 12
+        conviction += 6   # was +12
         signals['opp_starter'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — quality arm'
     elif opp_quality >= 5.0:
         return None  # bad opposing pitcher = wrong side
 
-    # K-heavy opp starter
+    # K-heavy opp starter — REWEIGHTED 2026-05-30. opp_k_artist (k_pct≥30)
+    # audits at 58.1% PRESENT vs 60.6% ABSENT (delta -2.6pt). Not as bad
+    # as opp_starter but still doesn't earn the +15 it had. Cut to +5.
     if opp_pitcher_k_pct is not None and opp_pitcher_k_pct >= 30:
-        conviction += 15
+        conviction += 5   # was +15 — audit -2.6pt delta
         signals['opp_k_artist'] = f'Opp K% {opp_pitcher_k_pct:.1f}% — strikeout artist'
     elif opp_pitcher_k_pct is not None and opp_pitcher_k_pct >= 26:
-        conviction += 8
+        conviction += 3   # was +8
         signals['opp_k_heavy'] = f'Opp K% {opp_pitcher_k_pct:.1f}% — high whiff'
     elif opp_pitcher_k_pct is not None and opp_pitcher_k_pct <= 18:
-        conviction -= 8
+        conviction -= 4   # was -8
 
     # Hot opp form
     if opp_l3 is not None and opp_l3 <= 2.0:
@@ -2244,17 +2254,20 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
 
     # Opp pitcher's career BAA vs this team — INVERSE of hits_over scorer.
     # Low BAA = pitcher has owned this lineup → BOOST hits_under.
-    # High BAA = pitcher gets tagged by this lineup → FADE hits_under.
-    # Added 2026-05-24 per project_mastery_split_by_prop_type.
+    # 2026-05-30 REWEIGHT: opp_vs_team_baa PRESENT audits 52.0% vs 60.2%
+    # ABSENT (delta -8.2pt on n=25). Cut from ±8 to ±3 — still keep as
+    # narrative signal but stop letting it stack conviction the way it
+    # did. May need full removal if v2 reweight audit confirms; for now
+    # neutering is safer than pulling entirely (n=25 is small enough
+    # that the delta could partly be noise).
     opp_vs_team_baa = _f(g.get(f'{opp_side}_pitcher_vs_team_avg'))
     opp_vs_team_ip2 = _f(g.get(f'{opp_side}_pitcher_vs_team_ip')) or 0
-    # 2026-05-27 INCIDENT: 15-IP gate added across all mastery signals.
     if opp_vs_team_baa is not None and opp_vs_team_ip2 >= 15:
         if opp_vs_team_baa <= 0.215:
-            conviction += 8
-            signals['opp_vs_team_baa'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA on {opp_vs_team_ip2:.0f} IP — mastery, under reinforced'
+            conviction += 3  # was +8 — audit -8.2pt delta when present
+            signals['opp_vs_team_baa'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA on {opp_vs_team_ip2:.0f} IP — mastery (weight reduced per 5/30 audit)'
         elif opp_vs_team_baa >= 0.290:
-            conviction -= 8
+            conviction -= 3  # was -8
             signals['opp_vs_team_baa_anti'] = f'Opp pitcher career vs this team: {opp_vs_team_baa:.3f} BAA on {opp_vs_team_ip2:.0f} IP — gets tagged, fade caution'
 
     # Weak team offense
@@ -2267,17 +2280,17 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
     elif team_wrc >= 115:
         conviction -= 12
 
-    # Team offense_heat (L10 R/G vs season) — inverted for hits-UNDER. Hot
-    # team = more contact = harder to land the 0-fer; fade conviction.
-    # Cold team = more outs in the offense = boost conviction. Same data
-    # path as the hits_OVER scorer (wired 2026-05-23).
+    # Team offense_heat (L10 R/G vs season) — inverted for hits-UNDER.
+    # 2026-05-30 REWEIGHT: team_cold PRESENT audits 68.7% vs 57.2% ABSENT
+    # (delta +11.5pt on n=67) — the 2nd-best single signal in the entire
+    # scorer. Boost the conviction add to reflect that signal strength.
     team_drift = _f(g.get(f'{side}_offense_drift'))
     if team_drift is not None:
         if team_drift <= -1.0:
-            conviction += 6
+            conviction += 10  # was +6 — audit said +11.5pt edge
             signals['team_cold'] = f'❄️  Team L10 {team_drift:.1f} R/G vs season — cold bats'
         elif team_drift <= -0.5:
-            conviction += 3
+            conviction += 5   # was +3
             signals['team_cold'] = f'Team L10 {team_drift:.1f} R/G — trending cool'
         elif team_drift >= 1.0:
             conviction -= 6
@@ -2360,11 +2373,16 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
             signals['l7_avg_cold'] = f'L7 BA .{int(avg*1000):03d}'
         elif avg is not None and avg >= 0.330:
             conviction -= 6
+        # 2026-05-30 REWEIGHT: hitless_streak ≥3 audits 69.0% PRESENT vs
+        # 55.4% ABSENT — delta +13.6pt — the SINGLE STRONGEST predictor
+        # in the entire hits_under cohort (n=100). Boost from +8 to +14.
+        # Streak≥2 also boosted (+4 → +7) because the 2-streak captures
+        # batters about to cross into the 3-streak audit zone.
         if streak >= 3:
-            conviction += 8
+            conviction += 14  # was +8 — strongest single signal in scorer
             signals['hitless_streak'] = f'{streak} straight games w/o a hit'
         elif streak >= 2:
-            conviction += 4
+            conviction += 7   # was +4
 
     # Barrel% slump detector (added 2026-05-11). Audit identified
     # hits-UNDER PRIME at 55.3% — half those misses are likely "unlucky
@@ -2409,58 +2427,46 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
 
     conviction = max(0, min(100, conviction))
 
-    # PRIME multi-signal gate (added 2026-05-11, retuned 2026-05-23).
+    # PRIME multi-signal gate — 2026-05-30 REWRITE based on 324-prop audit.
     #
-    # 2026-05-11 audit: hits_under PRIME hit only 55.3% vs STRONG 67.4%.
-    # Added gate requiring elite_opp + ONE individual factor (lineup_pos,
-    # L7_cold, or hitless_streak).
+    # AUDIT FINDINGS:
+    # - PRIME 59.8% vs STRONG 58.4% on n=127+166 — gate barely differentiates
+    # - prime_gate flag itself audits at 55.2% PRESENT vs 60.0% ABSENT
+    #   (delta -4.8pt) — the gating predicate was anti-predictive
+    # - Strongest single signals: hitless_streak (69.0%), team_cold (68.7%),
+    #   l14_cold (65.5%), park (65.2%), l7_avg_cold (62.1%), l7_cold (62.6%)
+    # - Strongest 2-signal pairs: hitless_streak + l14_cold (84.6% n=13),
+    #   hitless_streak + l7_avg_cold (75.0% n=84), hitless_streak +
+    #   team_cold (80.0% n=15)
     #
-    # 2026-05-23 RE-audit (n=97): PRIME still at 55.7% vs STRONG 58.0%.
-    # Original gate wasn't tight enough — "bottom of order" alone isn't
-    # signal (gets promoted on team stacks even when the batter is hot).
-    # New gate per [[project_may17_hits_under_audit]] memo: opp_k_artist
-    # (k_pct ≥30) is the strongest standalone predictor. Require it as
-    # the headline signal; lineup_position becomes a tie-breaker only.
+    # New PRIME requires:
+    #   - elite opp (xERA ≤ 3.0)  — directional filter, not signal weight
+    #   AND hitless_streak ≥ 3 (the only single signal that hits 65%+ alone)
+    #   AND one of (team_cold drift ≤ -1.0, l14_cold, park ≤ 93)
+    #     — the companion winners that pair with hitless_streak at 80%+
     #
-    # Required for PRIME (conviction ≥85):
-    #   - elite opp (xERA ≤ 3.0)
-    #   AND one of:
-    #     - opp_k_artist (opp_pitcher_k_pct ≥ 30)  ← strongest standalone
-    #     - hitless_streak ≥ 3  (real bat ice — not just team-cold proxy)
-    #     - lineup_pos ≥7 AND L7 cold (≤30% games w/ hit)  ← both, not either
+    # opp_k_artist and bottom_and_cold are REMOVED as PRIME predicates
+    # because they audit at 58.1% and ~59.5% respectively (not PRIME-grade).
     if conviction >= 85:
         gate_ace = opp_quality is not None and opp_quality <= 3.0
-        opp_k_artist = (
-            opp_pitcher_k_pct is not None and opp_pitcher_k_pct >= 30
-        )
         active_ice = l7 and l7.get('hitless_streak', 0) >= 3
-        bottom_and_cold = (
-            (lineup_position is not None and lineup_position >= 7)
-            and (l7 and l7.get('got_hit_rate', 1.0) <= 0.30)
-        )
-        gate_individual = opp_k_artist or active_ice or bottom_and_cold
+        # Companion-signal gate — must pair with hitless_streak. Audit
+        # showed pairs at 75-84% but bare hitless_streak alone at 56.1%
+        # in PRIME (the over-promotion that was killing PRIME hit rate).
+        has_team_cold = team_drift is not None and team_drift <= -1.0
+        has_l14_cold = 'l14_cold' in signals
+        has_pitcher_park = park is not None and park <= 93
+        companion_winner = has_team_cold or has_l14_cold or has_pitcher_park
 
-        # 2026-05-23 hitless_streak-only cap: scanner found hitless_streak
-        # hits 56.1% in PRIME (n=41) vs 77.8% in STRONG (n=27) — a 21.7pt
-        # over-promotion gap. When active_ice is the ONLY individual gate
-        # passer (no opp_k_artist, no bottom_and_cold), cap at STRONG. Lets
-        # the signal carry its own picks at the tier it actually works at.
-        hitless_only = active_ice and not (opp_k_artist or bottom_and_cold)
-        if gate_ace and gate_individual and hitless_only:
-            conviction = 84
-            signals['hitless_streak_cap'] = (
-                'Capped at STRONG — hitless_streak alone audits 77.8% at '
-                'STRONG (n=27) but 56.1% at PRIME (n=41). Better tier match.'
-            )
-
-        if not (gate_ace and gate_individual):
+        if not (gate_ace and active_ice and companion_winner):
             conviction = 84  # cap at STRONG
             signals['prime_gate'] = (
-                f'PRIME capped — gate not met (elite_opp={bool(gate_ace)}, '
-                f'opp_k_artist={bool(opp_k_artist)}, '
-                f'active_ice={bool(active_ice)}, '
-                f'bottom_and_cold={bool(bottom_and_cold)}). '
-                'hits_under PRIME 30d 55.7% — STRONG outperforms (58.0%, n=119)'
+                f'PRIME capped — new 5/30 gate not met '
+                f'(elite_opp={bool(gate_ace)}, hitless_streak≥3={bool(active_ice)}, '
+                f'companion_winner={bool(companion_winner)} '
+                f'[team_cold={has_team_cold}, l14_cold={has_l14_cold}, '
+                f'pitcher_park={has_pitcher_park}]). '
+                'PRIME requires hitless_streak + winning companion per 324-prop audit.'
             )
 
     return {
