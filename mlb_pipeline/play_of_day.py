@@ -1564,15 +1564,23 @@ def run():
     #
     # Rules for value pick:
     #   - Must have a computed lean_display (build_lean returned a side)
+    #   - lean_bet MUST NOT be nrfi/yrfi (5/30 demotion — NRFI never POTD)
     #   - Sort by composite of |signal_confluence_net| + score
     #   - Confidence tag 'value' so app can style it softer than audit-locked
     #   - Narrative explicitly labels it Model Lean, not audit-qualified
+    #
+    # 5/30 NRFI-demotion plug: the audit filter correctly rejects NRFI
+    # cohorts (47.8% < 58% threshold), but the value fallback was still
+    # picking NRFI-leaning candidates because they had a lean_display
+    # string. Excluding lean_bet in (nrfi, yrfi) closes the loophole so
+    # NRFI never reaches POTD even when no other audit cohort qualifies.
     if not pick:
         value_pool = [
             c for c in candidates
             if c.get('sport') == 'MLB'
             and c.get('lean_display')
             and (c.get('score') or 0) >= 50
+            and c.get('lean_bet') not in ('nrfi', 'yrfi')
         ]
         # Composite rank: confluence magnitude (most predictive single signal)
         # tie-broken by sweat score
