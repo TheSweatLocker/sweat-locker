@@ -521,18 +521,88 @@ def score_mlb_game(ctx, game_props=None, track=None):
     elif conf_mag >= 2:
         _add(side_drivers, 3, '🎯', 'Confluence lean', f'{conf_mag} signals on one side')
 
-    # ---- SIDE: Spread delta (market disagreement, U-shape audit aware) ----
-    # 5/21 audit: <1.0 noise, 1.0-1.5 sweet spot (55-58%), 1.5-2.0 TRAP
-    # (40-43%), ≥2.0 conviction (55-58%). Trap zone gets zero.
-    spread_delta = abs(float(ctx.get('spread_delta') or 0))
-    if spread_delta >= 2.0:
-        _add(side_drivers, 13, '📊', 'Market disagreement', f'{spread_delta:.1f}-run spread delta — model fades market')
-    elif spread_delta >= 1.5:
-        pass  # trap zone — no boost
-    elif spread_delta >= 1.0:
-        _add(side_drivers, 8, '📊', 'Spread delta edge', f'{spread_delta:.1f}-run model edge vs market')
-    elif spread_delta >= 0.5:
-        _add(side_drivers, 3, '📊', 'Spread delta lean', f'{spread_delta:.1f}-run model edge')
+    # ---- SIDE: Spread delta — v3 + Jerry (REWORKED 2026-05-31) ----
+    # 5/21 audit: v3 alone in 1.5-2.0 band hits ~40-43% (trap). ≥2.0
+    # conviction band hits ~55-58%. <1.0 noise. So v3 standalone bands hold.
+    # 5/31 add: Jerry (linear deep-factor projection) gets its own band-scored
+    # contribution. Different model, real second opinion — credit it
+    # independently. When Jerry confirms direction with ≥2.0 magnitude, also
+    # rescue v3's trap-zone (1.5-2.0) contribution that the standalone audit
+    # punished. Reason: the audit was on v3 vs market only; v3+Jerry agreement
+    # in the trap zone is a different (likely better) signal than v3 alone.
+    #
+    # Sign convention: projected_spread / jerry_pred_spread POSITIVE = home
+    # favored. close_spread book-side (negative = home laid). Disagreement
+    # magnitude = abs(model_spread + close_spread). Direction sign retained
+    # to detect v3↔Jerry agreement for trap-zone rescue.
+    close_spread_val = ctx.get('close_spread') or ctx.get('open_spread')
+    proj_spread_val = ctx.get('projected_spread')
+    jerry_spread_val = ctx.get('jerry_pred_spread')
+
+    v3_signed = None
+    if proj_spread_val is not None and close_spread_val is not None:
+        try:
+            v3_signed = float(proj_spread_val) + float(close_spread_val)
+        except (TypeError, ValueError):
+            v3_signed = None
+
+    jerry_signed = None
+    if jerry_spread_val is not None and close_spread_val is not None:
+        try:
+            jerry_signed = float(jerry_spread_val) + float(close_spread_val)
+        except (TypeError, ValueError):
+            jerry_signed = None
+
+    v3_abs = abs(v3_signed) if v3_signed is not None else abs(float(ctx.get('spread_delta') or 0))
+    jerry_abs = abs(jerry_signed) if jerry_signed is not None else 0.0
+
+    # v3 contribution (with trap-zone rescue when Jerry confirms direction)
+    v3_trap_rescued = False
+    if v3_abs >= 2.0:
+        _add(side_drivers, 13, '📊', 'v3 market disagreement', f'{v3_abs:.1f}-run v3 vs market')
+    elif v3_abs >= 1.5:
+        # Trap zone — rescued only if Jerry agrees direction with conviction
+        if (v3_signed is not None and jerry_signed is not None
+                and v3_signed * jerry_signed > 0 and jerry_abs >= 2.0):
+            _add(side_drivers, 6, '📊', 'v3 trap-zone rescued by Jerry', f'{v3_abs:.1f} v3 + Jerry confirms {jerry_abs:.1f}')
+            v3_trap_rescued = True
+        # else: silent zero, as before
+    elif v3_abs >= 1.0:
+        _add(side_drivers, 8, '📊', 'v3 spread edge', f'{v3_abs:.1f}-run v3 vs market')
+    elif v3_abs >= 0.5:
+        _add(side_drivers, 3, '📊', 'v3 spread lean', f'{v3_abs:.1f}-run v3 vs market')
+
+    # Jerry contribution (independent — different model architecture)
+    if jerry_signed is not None:
+        if jerry_abs >= 2.0:
+            _add(side_drivers, 13, '🧠', 'Jerry market disagreement', f'{jerry_abs:.1f}-run Jerry vs market')
+        elif jerry_abs >= 1.5:
+            _add(side_drivers, 8, '🧠', 'Jerry spread edge', f'{jerry_abs:.1f}-run Jerry vs market')
+        elif jerry_abs >= 1.0:
+            _add(side_drivers, 5, '🧠', 'Jerry spread edge', f'{jerry_abs:.1f}-run Jerry vs market')
+        elif jerry_abs >= 0.5:
+            _add(side_drivers, 2, '🧠', 'Jerry spread lean', f'{jerry_abs:.1f}-run Jerry vs market')
+
+    # ---- SIDE: Offense drift differential (NEW 2026-05-31) ----
+    # Hot/cold gap between the two lineups is a side signal the system was
+    # ignoring. PHI/LAD case: PHI drift -1.45 (frozen) vs LAD drift +0.44 →
+    # 1.89-run L10-vs-season offensive differential pointing at LAD ML/RL.
+    # Banding mirrors xERA gap thresholds in spirit (>=1.5 strong, >=1.0
+    # edge, >=0.6 lean) and is calibrated to be one driver in the stack,
+    # not a headline mover on its own.
+    home_drift = ctx.get('home_offense_drift')
+    away_drift = ctx.get('away_offense_drift')
+    if home_drift is not None and away_drift is not None:
+        try:
+            drift_gap = abs(float(home_drift) - float(away_drift))
+            if drift_gap >= 1.8:
+                _add(side_drivers, 8, '🔥', 'Offense drift gap', f'{drift_gap:.2f}-run hot/cold split between lineups')
+            elif drift_gap >= 1.2:
+                _add(side_drivers, 5, '🔥', 'Offense drift edge', f'{drift_gap:.2f}-run hot/cold split between lineups')
+            elif drift_gap >= 0.8:
+                _add(side_drivers, 3, '🔥', 'Offense drift lean', f'{drift_gap:.2f}-run hot/cold split between lineups')
+        except (TypeError, ValueError):
+            pass
 
     # ---- TOTAL: Total model vs market disagreement ----
     # History:
@@ -609,6 +679,49 @@ def score_mlb_game(ctx, game_props=None, track=None):
             elif total_delta_abs >= 0.3:
                 pts = int(round(3 * over_skeptic_mult))
                 _add(total_drivers, pts, '📈', 'Total slim edge', f'{total_delta_signed:+.2f}-run')
+
+    # ---- TOTAL: Jerry total disagreement (NEW 2026-05-31) ----
+    # Second-opinion total model. Bands match v3 reduced ~30% — Jerry is
+    # newer and unaudited, so we credit it as a stacking signal rather than
+    # a headline. OVER skepticism multiplier still applies (v4 OVER drift
+    # documented in [[project_v4_over_drift]]).
+    jerry_total = ctx.get('jerry_pred_total')
+    if jerry_total is not None and close_total > 0 and not total_delta_suppressed:
+        try:
+            jerry_total_delta_signed = round(float(jerry_total) - close_total, 2)
+            jerry_total_delta_abs = abs(jerry_total_delta_signed)
+            jerry_dir = 'OVER' if jerry_total_delta_signed > 0 else 'UNDER'
+            jerry_mult = 1.0
+            if jerry_dir == 'OVER':
+                # Reuse same v4-consensus + v4-suppressed rule as v3 OVER
+                v4_over_agrees_j = None
+                try:
+                    if v4_total is not None:
+                        v4_over_agrees_j = (float(v4_total) - close_total) > 0
+                except (TypeError, ValueError):
+                    v4_over_agrees_j = None
+                v4_over_suppressed_j = False
+                try:
+                    from game_context import is_v4_over_suppressed
+                    v4_over_suppressed_j = is_v4_over_suppressed()
+                except Exception:
+                    pass
+                if v4_over_agrees_j is False or v4_over_suppressed_j:
+                    jerry_mult = 0.6
+            if jerry_total_delta_abs >= 2.5:
+                pts = int(round(12 * jerry_mult))
+                _add(total_drivers, pts, '🧠', 'Jerry major total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
+            elif jerry_total_delta_abs >= 1.5:
+                pts = int(round(9 * jerry_mult))
+                _add(total_drivers, pts, '🧠', 'Jerry strong total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
+            elif jerry_total_delta_abs >= 1.0:
+                pts = int(round(6 * jerry_mult))
+                _add(total_drivers, pts, '🧠', 'Jerry total edge', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
+            elif jerry_total_delta_abs >= 0.5:
+                pts = int(round(3 * jerry_mult))
+                _add(total_drivers, pts, '🧠', 'Jerry total lean', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
+        except (TypeError, ValueError):
+            pass
 
     # ---- SIDE: K gap ----
     home_k_gap = abs(float(ctx.get('home_k_gap') or 0))
