@@ -2476,13 +2476,26 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
     }
 
 
-def wipe_todays_props():
+def wipe_todays_props(skip_live_game_ids=None):
+    """Delete today's prop rows so the next upsert is a clean rewrite.
+
+    2026-05-31 — added `skip_live_game_ids`. Games that have already started
+    by cron time don't have fresh pre-game markets at the Odds API; the PM
+    cron was wiping morning book-attached props (Misiorowski K Over ✓book
+    STRONG 75) and re-publishing them at the internal line with inflated
+    PRIME conviction. When `skip_live_game_ids` is passed, those games are
+    excluded from the wipe so the morning state is preserved for the rest
+    of the night.
+    """
     gd = today_et()
-    requests.delete(
-        f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{gd}",
-        headers=HEADERS,
-        timeout=15
-    )
+    base = f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{gd}"
+    if skip_live_game_ids:
+        # PostgREST `not.in.(a,b,c)` — only delete pre-game rows.
+        ids_csv = ','.join(f'"{gid}"' for gid in skip_live_game_ids)
+        url = f"{base}&game_id=not.in.({ids_csv})"
+    else:
+        url = base
+    requests.delete(url, headers=HEADERS, timeout=15)
 
 
 # Phase 2 (2026-05-29) — book-line recalibration maps. Each pitcher prop
@@ -3189,7 +3202,19 @@ def run():
             if hits_per_game[key] > cap:
                 continue
         capped.append(p)
-    top = capped[:top_n]
+    # Tier-aware top-N (2026-05-31 fix): conviction numbers are calibrated
+    # PER prop type — a hits_over at 77 STRONG and a bb_under at 76 PRIME
+    # are not directly comparable. The old top_n slice sorted by raw
+    # conviction and let STRONG hits-overs squeeze out PRIME pitcher props.
+    # Bryce Miller bb_under PRIME 76 ✓book got dropped from PM publish on
+    # 5/31 because 27 hits props at conviction >=77 filled the top 30.
+    # Guarantee: every PRIME/STRONG prop passes regardless of slice index;
+    # the top_n cap applies only to LEAN (and unrated SKIP-w/-trace) tier
+    # rows used as filler at the bottom.
+    guaranteed = [p for p in capped if p.get('tier') in ('PRIME', 'STRONG')]
+    filler = [p for p in capped if p.get('tier') not in ('PRIME', 'STRONG')]
+    remaining_slots = max(0, top_n - len(guaranteed))
+    top = guaranteed + filler[:remaining_slots]
 
     # Per-game floor: every scheduled game gets at least one prop on the
     # board. Without this, late-night West Coast games show zero picks
@@ -3287,7 +3312,48 @@ def run():
     top = [p for p in top if _keep(p)]
     top.sort(key=lambda p: -(p.get('conviction') or 0))
 
-    wipe_todays_props()
+    # Live-game preservation (2026-05-31). Games already underway by cron
+    # time don't have fresh pre-game markets at the Odds API; if we wipe
+    # their AM rows and re-publish, the book line drops, recalibration is
+    # skipped, and conviction inflates against a stale internal line.
+    # Filter out live games from the wipe (preserves AM state) AND from
+    # the upsert payload (don't overwrite the same rows with worse data).
+    # mlb_game_context doesn't store first-pitch time, so pull from MLB
+    # Stats API and match by home team name (same pattern play_of_day uses).
+    live_game_ids = set()
+    try:
+        sched_r = requests.get(
+            "https://statsapi.mlb.com/api/v1/schedule",
+            params={"sportId": 1, "date": gd},
+            timeout=10,
+        )
+        sched_times = {}
+        if sched_r.status_code == 200:
+            for d in sched_r.json().get("dates", []):
+                for sg in d.get("games", []):
+                    home_name = (sg.get("teams") or {}).get("home", {}).get("team", {}).get("name", "")
+                    ts = sg.get("gameDate")
+                    if home_name and ts:
+                        sched_times[home_name] = ts
+        now_utc = datetime.now(timezone.utc)
+        for g in games:
+            ts = sched_times.get(g.get('home_team'))
+            if not ts:
+                continue
+            try:
+                t = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                if t <= now_utc:
+                    live_game_ids.add(g.get('game_id'))
+            except (TypeError, ValueError):
+                pass
+    except Exception as e:
+        print(f"  ⚠️ live-game detect failed (continuing without preservation): {e}")
+    if live_game_ids:
+        before = len(top)
+        top = [p for p in top if p.get('game_id') not in live_game_ids]
+        print(f"  🔒 Live-game preserve: {len(live_game_ids)} game(s) past first pitch — kept AM props, dropped {before - len(top)} re-scored rows for those games from upsert")
+
+    wipe_todays_props(skip_live_game_ids=live_game_ids or None)
     saved = upsert_props(top)
     print(f"\n✅ Stored {saved} top props (of {len(all_props)} passing threshold)")
     for p in top[:8]:
