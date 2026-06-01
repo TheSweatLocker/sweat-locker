@@ -105,6 +105,70 @@ def fetch_todays_games():
     return r.json() if r.status_code == 200 else []
 
 
+def detect_scratched_starters(games, gd):
+    """Compare each game's stored home_pitcher / away_pitcher to MLB Stats
+    API's current probable pitchers, flagging any mismatches.
+
+    2026-06-01 trigger — Chase Burns was listed as the morning probable
+    for CIN @ KC and props were scored against his K-artist profile (PRIME
+    91 K-Over, PRIME 72 HA-Under). By 2pm CT he was scratched and replaced.
+    The props pipeline kept publishing Burns-anchored props because nothing
+    re-checked the probable pitcher. KC hitter unders (Loftin, Marte) were
+    also calibrated against Burns; with a different starter their thesis
+    weakens.
+
+    Returns: set of (game_id, scratched_pitcher_name, replacement_name) tuples.
+    Caller (run) iterates and demotes affected props to SKIP.
+
+    Fails open (returns empty set) on any error so a transient MLB Stats
+    API hiccup doesn't kill the pipeline. The logging still surfaces in
+    cron output so the failure is visible.
+    """
+    try:
+        r = requests.get(
+            "https://statsapi.mlb.com/api/v1/schedule",
+            params={"sportId": 1, "date": gd, "hydrate": "probablePitcher"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            print(f"  ⚠️  Probable-pitcher refetch returned {r.status_code} — skipping scratch detection")
+            return set()
+        schedule = r.json()
+    except Exception as e:
+        print(f"  ⚠️  Probable-pitcher refetch failed: {type(e).__name__}: {e} — skipping scratch detection")
+        return set()
+
+    # Map MLB schedule by (home_team, away_team) -> (home_probable, away_probable)
+    current_starters = {}
+    for d in schedule.get("dates", []):
+        for sg in d.get("games", []):
+            teams = sg.get("teams") or {}
+            home_team = (teams.get("home") or {}).get("team", {}).get("name", "")
+            away_team = (teams.get("away") or {}).get("team", {}).get("name", "")
+            home_pp = ((teams.get("home") or {}).get("probablePitcher") or {}).get("fullName")
+            away_pp = ((teams.get("away") or {}).get("probablePitcher") or {}).get("fullName")
+            if home_team and away_team:
+                current_starters[(home_team, away_team)] = (home_pp, away_pp)
+
+    scratched = set()
+    for g in games:
+        key = (g.get('home_team'), g.get('away_team'))
+        current = current_starters.get(key)
+        if not current:
+            continue
+        cur_home_pp, cur_away_pp = current
+        db_home = g.get('home_pitcher')
+        db_away = g.get('away_pitcher')
+        gid = g.get('game_id')
+        if cur_home_pp and db_home and cur_home_pp.strip() != db_home.strip():
+            scratched.add((gid, db_home, cur_home_pp))
+            print(f"  🚨 STARTER CHANGE: {g.get('away_team')} @ {g.get('home_team')} — home pitcher {db_home} → {cur_home_pp}")
+        if cur_away_pp and db_away and cur_away_pp.strip() != db_away.strip():
+            scratched.add((gid, db_away, cur_away_pp))
+            print(f"  🚨 STARTER CHANGE: {g.get('away_team')} @ {g.get('home_team')} — away pitcher {db_away} → {cur_away_pp}")
+    return scratched
+
+
 def parse_pitcher_k_pct_from_context(pitcher_context, pitcher_name):
     """Parse season K% from the 'pitcher_context' field format:
     'Name1 (RHP): xERA X, K% Y%, ... | Name2 (RHP): xERA Z, K% W%, ...'"""
@@ -3295,18 +3359,168 @@ def run():
     # and adjusts conviction down when the real edge is thin or negative.
     attach_book_lines(top)
     recalibrate_props_with_book_lines(top)
+
+    # Suppress pitcher props that failed book attach (2026-06-01 fix).
+    # The internal scorer suggests its own lines for K/BB/HA/Outs/ER props
+    # (e.g. Freeland outs_under @ 17.5 when books may have 15.5). When
+    # Phase 2 attach succeeds, prop_line gets replaced with the book line
+    # and conviction is recalibrated against the real edge. When attach
+    # FAILS (Odds API doesn't list this pitcher's market, transient outage,
+    # late-confirmed starter), the internal-line tier publishes as if it
+    # were book-verified — beta users see "Freeland over 17.5 outs PRIME"
+    # in the app and shop their book only to find it doesn't exist or has
+    # a much tighter line. Trust killer.
+    #
+    # Fix: demote any pitcher prop with book_line=None to SKIP tier, mark
+    # the reason, and keep in DB for backtest visibility (same pattern as
+    # recalibrated-to-SKIP rows). App filters tier IN (PRIME, STRONG, LEAN)
+    # so these stay silent in UI. Hitter props (hits_over/under) at line
+    # 0.5 are line-agnostic and don't need book attach, so they're exempt.
+    for p in top:
+        if p.get('prop_type') not in PROP_MARKET_MAP:
+            continue  # not a pitcher prop, no book line needed
+        if p.get('book_line') is not None:
+            continue  # attach worked, all good
+        # Pitcher prop with no book line — suppress
+        sigs = p.get('signals') or {}
+        sigs.setdefault('_internal_only', True)
+        sigs.setdefault('_suppression_reason',
+                        f'Phase 2 attach failed: no book line found for {p.get("prop_type")} '
+                        f'on {p.get("player_name")}. Internal scorer line was {p.get("prop_line")}; '
+                        f'unsafe to publish without book verification.')
+        sigs.setdefault('_pre_attach_tier', p.get('tier'))
+        sigs.setdefault('_pre_attach_conviction', p.get('conviction'))
+        p['signals'] = sigs
+        p['tier'] = 'SKIP'
+
+    # Lineup re-confirmation — detect mid-day starter scratches and
+    # invalidate affected props. 2026-06-01 trigger: Chase Burns PRIME 91
+    # K-Over published in the AM cron, scratched by 2pm. Without this
+    # check the morning props stayed in DB as PRIME-tier dead bets and
+    # KC hitter unders (Loftin, Marte) stayed calibrated against a pitcher
+    # who wasn't even pitching. See detect_scratched_starters docstring.
+    #
+    # Also handles the lingering-stale-props case: when DB has caught up
+    # to MLB Stats API (both show Richardson now) BUT the old starter's
+    # props are still in mlb_pipeline_props from a prior cron, compare
+    # against all pitcher_name values currently published — anything that
+    # doesn't match either current starter for its game gets deleted.
+    try:
+        scratched = detect_scratched_starters(games, gd)
+    except Exception as e:
+        print(f"  ⚠️  Scratch detection unexpected failure: {type(e).__name__}: {e}")
+        scratched = set()
+
+    # Cleanup stale published props from earlier crons whose pitchers no
+    # longer match the current home/away. This catches the "Burns props
+    # still in DB even though game_context updated to Richardson" case.
+    try:
+        valid_pitcher_names = set()
+        valid_game_pitchers = {}  # game_id -> set of currently valid pitcher names
+        for g in games:
+            valid_for_this_game = set()
+            for sp in (g.get('home_pitcher'), g.get('away_pitcher')):
+                if sp:
+                    valid_pitcher_names.add(sp.strip().lower())
+                    valid_for_this_game.add(sp.strip().lower())
+            valid_game_pitchers[g.get('game_id')] = valid_for_this_game
+
+        # Pull currently-published pitcher props for today (in DB but not in
+        # our upsert payload yet — these are from earlier crons).
+        from urllib.parse import urlencode
+        qs = urlencode({
+            'game_date': f'eq.{gd}',
+            'prop_type': f'in.({",".join(PROP_MARKET_MAP.keys())})',
+            'select': 'player_name,game_id,prop_type',
+        })
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?{qs}",
+                         headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+                         timeout=15)
+        if r.status_code == 200:
+            existing = r.json() or []
+            stale_to_delete = []
+            for row in existing:
+                gid = row.get('game_id')
+                pname = (row.get('player_name') or '').strip().lower()
+                if gid in valid_game_pitchers and pname and pname not in valid_game_pitchers[gid]:
+                    stale_to_delete.append(row)
+            if stale_to_delete:
+                # Delete each stale row by (player_name, prop_type, game_date) match.
+                # Safer than bulk-IN because some books reuse pitcher names.
+                deleted = 0
+                for row in stale_to_delete:
+                    del_qs = urlencode({
+                        'game_date': f'eq.{gd}',
+                        'game_id': f'eq.{row.get("game_id")}',
+                        'player_name': f'eq.{row.get("player_name")}',
+                        'prop_type': f'eq.{row.get("prop_type")}',
+                    })
+                    dr = requests.delete(
+                        f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?{del_qs}",
+                        headers=HEADERS, timeout=10,
+                    )
+                    if dr.status_code in (200, 204):
+                        deleted += 1
+                if deleted:
+                    print(f"  🧹 Cleaned up {deleted} stale published props from prior-cron scratched starters")
+    except Exception as e:
+        print(f"  ⚠️  Stale-props cleanup failed: {type(e).__name__}: {e}")
+
+    if scratched:
+        pitcher_invalidated = 0
+        hitter_flagged = 0
+        scratched_game_ids = {gid for gid, _old, _new in scratched}
+        scratched_old_names = {old.strip().lower() for _gid, old, _new in scratched}
+        for p in top:
+            ptype = p.get('prop_type')
+            player = (p.get('player_name') or '').strip().lower()
+            gid = p.get('game_id')
+            # Pitcher props anchored to the scratched starter — kill them outright
+            if ptype in PROP_MARKET_MAP and player in scratched_old_names:
+                sigs = p.get('signals') or {}
+                old_match = next(((o, n) for _gid, o, n in scratched
+                                 if _gid == gid and o.strip().lower() == player), None)
+                if old_match:
+                    sigs.setdefault('_suppression_reason',
+                                    f'{old_match[0]} scratched — replaced by {old_match[1]}. Prop invalid.')
+                    sigs.setdefault('_pre_scratch_tier', p.get('tier'))
+                    p['signals'] = sigs
+                    p['tier'] = 'SKIP'
+                    pitcher_invalidated += 1
+            # Hitter props in scratched games — flag and demote one tier.
+            # Their scoring depended on the old starter's K-artist / xERA /
+            # mastery profile which may no longer apply. Don't outright skip
+            # (the broader game-level signals like team_cold, lineup_spot,
+            # hitless_streak still hold), but demote to acknowledge the
+            # uncertainty until we can re-score with the new starter.
+            elif ptype in ('hits_over', 'hits_under') and gid in scratched_game_ids:
+                sigs = p.get('signals') or {}
+                sigs.setdefault('_starter_scratch_flag',
+                                'Game has a scratched starter — opp_starter signals in this score may be stale')
+                # Demote one tier (PRIME → STRONG, STRONG → LEAN, LEAN → SKIP)
+                tier = p.get('tier')
+                if tier == 'PRIME': p['tier'] = 'STRONG'
+                elif tier == 'STRONG': p['tier'] = 'LEAN'
+                elif tier == 'LEAN': p['tier'] = 'SKIP'
+                p['signals'] = sigs
+                hitter_flagged += 1
+        print(f"  🔄 Lineup scratch: invalidated {pitcher_invalidated} pitcher props, demoted {hitter_flagged} hitter props in affected games")
+
     # Re-sort by conviction and re-tier-filter so demoted props drop off
     # the published list — EXCEPT recalibrated props that landed at SKIP:
     # those get kept so the backtest can query what got demoted and grade
     # hypothetical outcomes. App / sweat card filter by tier IN (PRIME,
     # STRONG, LEAN) for display so SKIP'd props stay silent in the UI.
-    # The _pre_recal_tier trace fields make them auditable: "Of all props
-    # demoted to SKIP, what was the hit rate at the bettable book line?"
+    # The _pre_recal_tier and _pre_attach_tier trace fields make them
+    # auditable.
     def _keep(p):
         if p.get('tier') in ('PRIME', 'STRONG', 'LEAN'):
             return True
         # Any recalibrated pitcher prop with trace — keep for backtest
-        if p.get('prop_type') in PROP_MARKET_MAP and (p.get('signals') or {}).get('_pre_recal_tier'):
+        sigs = p.get('signals') or {}
+        if p.get('prop_type') in PROP_MARKET_MAP and (
+            sigs.get('_pre_recal_tier') or sigs.get('_pre_attach_tier')
+        ):
             return True
         return False
     top = [p for p in top if _keep(p)]

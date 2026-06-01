@@ -794,16 +794,60 @@ def score_mlb_game(ctx, game_props=None, track=None):
 
     # ---- PROP: stack count (game has standout props worth posting) ----
     game_props = game_props or []
+    # ---- PROP dim weights — book-aware (REBALANCED 2026-06-01) ----
+    # Old weights were calibrated when PRIMEs were common and many were
+    # ⚠no_book noise. After Phase 2 attach (5/28-5/29) and the morning's
+    # tier integrity audit (hits_under SKIP 64.5% beats STRONG 58.6% —
+    # PRIMEs are now rarer + more meaningful), the old +6 for "1 PRIME"
+    # was leaving games at 36/PASS even with a real book-verified PRIME
+    # prop available (e.g. Joe Ryan U 1.5 BB PRIME 75 ✓book in CHW/MIN
+    # left game at 45/PASS — beta users lost confidence seeing PRIME
+    # props in PASS games).
+    #
+    # New tiers separate book-verified from internal-line PRIMEs since
+    # ⚠no_book PRIMEs are less trustworthy (the 5/30 Brandon Young U 5.5K
+    # PRIME 80 trust-killer pattern). Book PRIME ✓ is what we want to
+    # surface; internal PRIME ⚠ is a softer signal.
     prime_props = [p for p in game_props if p.get('tier') == 'PRIME']
     strong_props = [p for p in game_props if p.get('tier') == 'STRONG']
-    if len(prime_props) >= 4:
-        _add(prop_drivers, 20, '🔥', 'PRIME prop stack', f'{len(prime_props)} PRIME props in this game')
+    prime_book = [p for p in prime_props if p.get('book_line') is not None]
+    prime_nobook = [p for p in prime_props if p.get('book_line') is None]
+    strong_book = [p for p in strong_props if p.get('book_line') is not None]
+
+    # Tiered scoring: book-verified PRIMEs weight strongest; large stacks
+    # of ⚠no_book PRIMEs (like SF/COL Coors hits stacks) get partial credit
+    # but not full weight to avoid the trust-killer pattern.
+    if len(prime_book) >= 3:
+        _add(prop_drivers, 30, '🔥', 'PRIME book stack', f'{len(prime_book)} book-verified PRIME props')
+    elif len(prime_book) >= 2:
+        _add(prop_drivers, 22, '🔥', 'Multiple PRIME ✓book', f'{len(prime_book)} book-verified PRIME props')
+    elif len(prime_book) == 1:
+        # 1 book-verified PRIME should lift a game to at least LIGHT_LEAN.
+        # 30 base + 20 = 50. Game becomes visible / actionable.
+        _add(prop_drivers, 20, '🔥', 'PRIME ✓book available', '1 book-verified PRIME prop')
+    elif len(prime_props) >= 4:
+        # Large no-book stack (e.g. Coors / extreme park hits-overs) —
+        # partial credit. Was +20, kept at +20.
+        _add(prop_drivers, 20, '🔥', 'PRIME stack (no-book)', f'{len(prime_props)} PRIME props')
     elif len(prime_props) >= 2:
-        _add(prop_drivers, 11, '🔥', 'Multiple PRIME props', f'{len(prime_props)} PRIME props in this game')
+        # Multiple ⚠no_book PRIMEs — was +11, raise to +14 so 2+ unverified
+        # PRIMEs at least flag as a TOTAL/PROP dim signal rather than PASS.
+        _add(prop_drivers, 14, '🔥', 'Multiple PRIME props', f'{len(prime_props)} PRIME props (no book)')
     elif len(prime_props) == 1:
-        _add(prop_drivers, 6, '🔥', 'PRIME prop available', '1 PRIME prop in this game')
-    elif len(strong_props) >= 3:
-        _add(prop_drivers, 5, '💪', 'STRONG prop cluster', f'{len(strong_props)} STRONG props')
+        # Single ⚠no_book PRIME — kept at +8 (was +6). Cautious credit.
+        _add(prop_drivers, 8, '🔥', 'PRIME prop available', '1 PRIME prop (no book)')
+
+    # STRONG ✓book additive — was a single +5 cluster gate. Now incremental
+    # because a STRONG ✓book prop is a real edge call.
+    if not prime_props:
+        if len(strong_book) >= 3:
+            _add(prop_drivers, 14, '💪', 'STRONG ✓book cluster', f'{len(strong_book)} book-verified STRONG props')
+        elif len(strong_book) >= 2:
+            _add(prop_drivers, 9, '💪', 'STRONG ✓book pair', f'{len(strong_book)} book-verified STRONG props')
+        elif len(strong_book) == 1:
+            _add(prop_drivers, 5, '💪', 'STRONG ✓book available', '1 book-verified STRONG prop')
+        elif len(strong_props) >= 3:
+            _add(prop_drivers, 5, '💪', 'STRONG prop cluster', f'{len(strong_props)} STRONG props')
 
     # ---- primary_play tier bonus (routes to dimension by play type) ----
     # When the pipeline has already endorsed a specific bet via
