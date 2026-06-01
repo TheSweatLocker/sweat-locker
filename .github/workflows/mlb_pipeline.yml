@@ -241,6 +241,18 @@ jobs:
             echo "Not Monday (day=$DAY) — skipping NCAAB pull"
           fi
 
+      # HR Watch audit (2026-06-01) — resolves prior days' predictions
+      # against MLB Stats API gameLog, computes hit rate by score band,
+      # writes findings to mlb_tier_calibration for the trend dashboard.
+      # Runs daily after evening games finish (this workflow's later runs).
+      - name: HR Watch audit
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_hr_watch.py
+
       - name: Update umpire database (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

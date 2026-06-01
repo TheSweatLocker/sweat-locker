@@ -610,6 +610,15 @@ def run():
                 if not scoring or scoring['score'] < 20:
                     continue
 
+                # Projected HR probability (added 2026-06-01).
+                # P(>=1 HR in game) = 1 - (1 - p_pa)^expected_pa
+                # expected_pa ~ 4.2 for a starter (top-half of order avg).
+                # Use regressed hr rate so small-sample hot hitters don't
+                # inflate the probability; matches what the score uses.
+                regressed_rate = scoring.get('hr_rate_regressed') or 0
+                expected_pa = 4.2
+                projected_hr_prob = round(1 - (1 - regressed_rate) ** expected_pa, 4) if regressed_rate > 0 else 0
+
                 candidates.append({
                     'game_date': today,
                     'player_name': stats['name'],
@@ -631,11 +640,26 @@ def run():
                     'wind_out': scoring['wind_out'],
                     'opp_hard_hit': float(opp_contact.get('hard_hit_pct_allowed')) if opp_contact and opp_contact.get('hard_hit_pct_allowed') else None,
                     'opp_barrel': float(opp_contact.get('barrel_pct')) if opp_contact and opp_contact.get('barrel_pct') else None,
+                    # Core scoring components (already persisted)
                     'contact_score': scoring['contact_score'],
                     'power_score': scoring['power_score'],
                     'env_score': scoring['env_score'],
                     'hr_bonus': scoring['hr_bonus'],
                     'opp_score': scoring['opp_score'],
+                    # Full signal stack — added 2026-06-01 so the app can render
+                    # a transparent breakdown ("Schwarber 62 = power 28 + barrel
+                    # 14 + park 18 + wind 12"). Previously computed but dropped
+                    # on upload, which made the score opaque.
+                    'fb_score': scoring.get('fb_score', 0),
+                    'platoon_score': scoring.get('platoon_score', 0),
+                    'recency_score': scoring.get('recency_score', 0),
+                    'savant_score': scoring.get('savant_score', 0),
+                    # Projection (added 2026-06-01)
+                    'projected_hr_prob': projected_hr_prob,
+                    # "Due for HR" interaction flag — surfaced when batter looks
+                    # cold but Statcast says he's been squaring it up. Set by
+                    # score_batter via the stats dict side-channel.
+                    'due_signal': bool(stats.get('_due_signal')),
                     'is_fallback': is_fallback,
                 })
 
