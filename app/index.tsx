@@ -6196,7 +6196,10 @@ if(mkt.key === 'pitcher_props') {
         .order('score', { ascending: false })
         .limit(10);
       if(error) throw error;
-      // Transform to match expected shape used in UI
+      // Transform to match expected shape used in UI. Now carries the full
+      // signal stack + projected probability + book odds (added 2026-06-01)
+      // so the row can show users a transparent breakdown of WHY this batter
+      // is on the list, not just an opaque "score 62".
       const candidates = (data || []).map((row: any) => ({
         player: row.player_name,
         team: row.team,
@@ -6216,7 +6219,22 @@ if(mkt.key === 'pitcher_props') {
         windSpeed: row.wind_speed,
         windDir: row.wind_dir,
         score: row.score,
+        // Core scoring components
         contactScore: row.contact_score,
+        powerScore: row.power_score,
+        envScore: row.env_score,
+        hrBonus: row.hr_bonus,
+        oppScore: row.opp_score,
+        // Full signal stack (added 6/1)
+        fbScore: row.fb_score,
+        platoonScore: row.platoon_score,
+        recencyScore: row.recency_score,
+        savantScore: row.savant_score,
+        // Projection + odds + due flag (added 6/1)
+        projectedHrProb: row.projected_hr_prob,
+        bookOdds: row.book_odds,
+        bookSource: row.book_source,
+        dueSignal: row.due_signal,
         game: row.matchup,
         isFallback: row.is_fallback,
       }));
@@ -10178,20 +10196,94 @@ setJerryHistory(prev => {
         {hrWatch.filter((h:any) => {
           const mg = gamesData.find((g:any) => g.home_team === h.homeTeam);
           return !mg || new Date(mg.commence_time) > new Date();
-        }).map((h: any, i: number) => (
+        }).map((h: any, i: number) => {
+          // Build top-3 signal contributors so the row shows WHY this batter
+          // ranks high, not just an opaque score. Added 2026-06-01 — user
+          // wanted "Make it easier for user to pick HR guys" + signal-stack
+          // transparency. Same drivers pattern as sweat_breakdown.
+          const drivers: {label: string; pts: number}[] = [
+            {label: 'Power', pts: h.powerScore || 0},
+            {label: 'Park', pts: h.envScore || 0},
+            {label: 'Statcast', pts: h.savantScore || 0},
+            {label: 'Pitcher', pts: h.oppScore || 0},
+            {label: 'Contact', pts: h.contactScore || 0},
+            {label: 'FB tilt', pts: h.fbScore || 0},
+            {label: 'Platoon', pts: h.platoonScore || 0},
+            {label: 'L7 form', pts: h.recencyScore || 0},
+          ].filter(d => d.pts > 0).sort((a, b) => b.pts - a.pts).slice(0, 3);
+          // Book odds → implied probability for the value-vs-model comparison
+          const oddsToImpliedPct = (odds: number | null | undefined): number | null => {
+            if (odds == null) return null;
+            if (odds > 0) return 100 / (odds + 100);
+            return Math.abs(odds) / (Math.abs(odds) + 100);
+          };
+          const implied = oddsToImpliedPct(h.bookOdds);
+          const modelProb = h.projectedHrProb;
+          const valueEdge = (implied != null && modelProb != null) ? modelProb - implied : null;
+          return (
           <View key={i} style={{paddingVertical:10,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
             <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4,gap:8}}>
               <View style={{flexDirection:'row',alignItems:'center',gap:6,flex:1,flexWrap:'wrap'}}>
                 <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{h.player}</Text>
                 {h.isFallback && <Text style={{color:'#7a92a8',fontSize:9,fontStyle:'italic'}}>est.</Text>}
+                {h.dueSignal && (
+                  <View style={{backgroundColor:'rgba(255,184,0,0.18)',borderRadius:5,paddingHorizontal:5,paddingVertical:1}}>
+                    <Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'800'}}>⚡ DUE</Text>
+                  </View>
+                )}
               </View>
-              <View style={{backgroundColor:'rgba(255,77,109,0.15)',borderRadius:6,paddingHorizontal:7,paddingVertical:2}}>
-                <Text style={{color:'#ff4d6d',fontSize:10,fontWeight:'800'}}>{h.hr} HR / {h.pa} PA</Text>
+              {/* Score chip (was hidden) — now visible so users know the
+                  scale and can compare across rows. */}
+              <View style={{flexDirection:'row',gap:4,alignItems:'center'}}>
+                {h.score != null && (
+                  <View style={{backgroundColor:'rgba(255,77,109,0.18)',borderRadius:6,paddingHorizontal:7,paddingVertical:2}}>
+                    <Text style={{color:'#ff4d6d',fontSize:11,fontWeight:'800'}}>{h.score}</Text>
+                  </View>
+                )}
+                <View style={{backgroundColor:'rgba(122,146,168,0.12)',borderRadius:6,paddingHorizontal:7,paddingVertical:2}}>
+                  <Text style={{color:'#9ab0c2',fontSize:10,fontWeight:'700'}}>{h.hr} HR / {h.pa} PA</Text>
+                </View>
               </View>
             </View>
+            {/* Projection + book line side-by-side (the user-facing "how
+                likely + what does it pay" answer). Renders cleanly even
+                when book_odds is unattached. */}
+            {(modelProb != null || h.bookOdds != null) && (
+              <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
+                {modelProb != null && (
+                  <Text style={{color:'#e8f0f8',fontSize:12,fontWeight:'700'}}>
+                    {(modelProb * 100).toFixed(1)}% to go yard
+                  </Text>
+                )}
+                {h.bookOdds != null && (
+                  <Text style={{color:'#9ab0c2',fontSize:11}}>
+                    • book {h.bookOdds > 0 ? '+' : ''}{h.bookOdds}
+                    {implied != null && ` (impl ${(implied * 100).toFixed(1)}%)`}
+                  </Text>
+                )}
+                {valueEdge != null && (
+                  <View style={{backgroundColor: valueEdge > 0.05 ? 'rgba(0,229,160,0.15)' : valueEdge < -0.05 ? 'rgba(255,77,109,0.15)' : 'rgba(122,146,168,0.12)', borderRadius:5, paddingHorizontal:6, paddingVertical:2}}>
+                    <Text style={{color: valueEdge > 0.05 ? '#00e5a0' : valueEdge < -0.05 ? '#ff4d6d' : '#9ab0c2', fontSize:10, fontWeight:'800'}}>
+                      {valueEdge > 0 ? '+' : ''}{(valueEdge * 100).toFixed(1)}pt edge
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
             <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6,lineHeight:16}}>
               {h.game} • vs {h.oppPitcher?.split(' ').pop() || 'TBD'} • {h.temp}°F
             </Text>
+            {/* Top 3 signal contributors — gives the user a one-glance read
+                on what's driving the score. */}
+            {drivers.length > 0 && (
+              <View style={{flexDirection:'row',gap:5,flexWrap:'wrap',marginBottom:5}}>
+                {drivers.map((d, di) => (
+                  <View key={di} style={{backgroundColor:'rgba(0,153,255,0.10)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
+                    <Text style={{color:'#0099ff',fontSize:10,fontWeight:'700'}}>+{d.pts} {d.label}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
             {(h.parkFactor >= 105 || h.windOut || (h.oppXera && h.oppXera > 4.0)) && (
               <View style={{flexDirection:'row',gap:5,flexWrap:'wrap'}}>
                 {h.parkFactor >= 105 && (
@@ -10212,7 +10304,7 @@ setJerryHistory(prev => {
               </View>
             )}
           </View>
-        ))}
+        );})}
       </View>
     )}
   </View>

@@ -534,6 +534,87 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
     }
 
 
+def attach_book_odds(candidates):
+    """Phase 2-style attach for batter_home_runs market — same pattern as
+    pitcher_strikeouts / pitcher_walks in generate_props.py.
+
+    Fetches events for today, then queries the batter_home_runs market for
+    each event. Builds a {batter_name_lower: (line, over_odds_int, source)}
+    map and stamps each candidate with book_odds + book_source. Bestknown
+    line for HR is typically over 0.5, so we only need the over price (e.g.
+    +450). Falls open (no attach) when ODDS_API_KEY missing or events
+    endpoint fails — candidates keep projected_hr_prob but no book column.
+    """
+    api_key = os.environ.get('ODDS_API_KEY')
+    if not api_key:
+        print('  ⚠️  ODDS_API_KEY missing — HR Watch book odds attach skipped')
+        return
+    try:
+        now_utc = datetime.now(timezone.utc)
+        events_r = requests.get(
+            'https://api.the-odds-api.com/v4/sports/baseball_mlb/events',
+            params={'apiKey': api_key,
+                    'commenceTimeFrom': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')},
+            timeout=15,
+        )
+        if events_r.status_code != 200:
+            print(f'  ⚠️  HR market events fetch returned {events_r.status_code}')
+            return
+        events = events_r.json() or []
+    except Exception as e:
+        print(f'  ⚠️  HR market events fetch failed: {e}')
+        return
+
+    book_map = {}  # batter_lower → (over_odds_int, source)
+    for ev in events:
+        ev_id = ev.get('id')
+        if not ev_id:
+            continue
+        try:
+            odds_r = requests.get(
+                f'https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{ev_id}/odds',
+                params={'apiKey': api_key, 'regions': 'us',
+                        'markets': 'batter_home_runs', 'oddsFormat': 'american'},
+                timeout=15,
+            )
+            if odds_r.status_code != 200:
+                continue
+            ev_data = odds_r.json() or {}
+        except Exception:
+            continue
+
+        # Aggregate prices across books (use median of "Over 0.5" odds)
+        by_batter = {}  # name_lower → list of over_odds_int
+        for bk in ev_data.get('bookmakers', []) or []:
+            src = bk.get('key', '?')
+            for mkt in bk.get('markets', []) or []:
+                if mkt.get('key') != 'batter_home_runs':
+                    continue
+                for outcome in mkt.get('outcomes', []) or []:
+                    name = (outcome.get('description') or outcome.get('name') or '').strip().lower()
+                    price = outcome.get('price')
+                    side = (outcome.get('name') or '').lower()
+                    if 'over' not in side or price is None:
+                        continue
+                    by_batter.setdefault(name, []).append((int(price), src))
+        for name, prices in by_batter.items():
+            if not prices:
+                continue
+            prices.sort(key=lambda x: x[0])
+            mid = prices[len(prices) // 2]
+            book_map[name] = mid
+
+    matched = 0
+    for c in candidates:
+        name = (c.get('player_name') or '').strip().lower()
+        hit = book_map.get(name)
+        if hit:
+            c['book_odds'] = hit[0]
+            c['book_source'] = hit[1]
+            matched += 1
+    print(f'  📖 HR book odds attached: {matched}/{len(candidates)} candidates')
+
+
 def run():
     today = get_today_et()
     print(f'Building HR Watch for {today}')
@@ -667,6 +748,12 @@ def run():
 
     candidates.sort(key=lambda c: -c['score'])
     top_n = candidates[:15]  # store more than displayed so app can filter/sort
+
+    # Phase 2-style book odds attach (added 2026-06-01). Same pattern as
+    # generate_props.py for ks/bb/ha — fetch from Odds API batter_home_runs
+    # market and stamp each candidate with book_odds + book_source. App
+    # uses this for the "model 23% vs implied 13% → +EV" value chip.
+    attach_book_odds(top_n)
 
     print(f'\nTop candidates: {len(top_n)}')
     for c in top_n[:5]:
