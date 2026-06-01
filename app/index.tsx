@@ -9522,18 +9522,35 @@ setJerryHistory(prev => {
         ? sweatCard.top_props.slice(0, 5)
         : [...(sweatCard.top_ks_over||[]), ...(sweatCard.top_hits_over||[])].slice(0, 3);
       if (!propsToShow.length) return null;
+      // Use server-composed _display_label (the source of truth — runs
+      // after Phase 2 book-line attach so the line shown matches what
+      // beta users see on their book). Strip the player_name prefix
+      // since the surrounding row already renders {player_name} {label}
+      // separately. Fall back to the old per-type format only for legacy
+      // rows that predate the _display_label field (pre-5/26 backfill).
+      // See feedback_backside_dictates_app_renders.
       const renderLine = (p: any) => {
         const t = p.prop_type;
         const dir = p.direction === 'under' ? 'U' : 'O';
-        const proj = p.signals?._projected_ks ?? p.signals?._projected_bb ?? p.signals?._projected_hits;
-        if (t === 'ks_over' && proj != null) return `${proj} expected Ks`;
-        if (t === 'ks_under' && proj != null) return `Under ${p.prop_line} Ks (proj ${proj})`;
-        if (t === 'hits_over') return `O${p.prop_line} Hits`;
-        if (t === 'hits_under') return `U${p.prop_line} Hits`;
-        if (t === 'ha_over' || t === 'ha_under') return `${dir}${p.prop_line} H+A`;
-        if (t === 'er_over' || t === 'er_under') return `${dir}${p.prop_line} ER`;
-        if (t === 'outs_over' || t === 'outs_under') return `${dir}${p.prop_line} Outs`;
-        if (t === 'bb_over' || t === 'bb_under') return `${dir}${p.prop_line} BB`;
+        const proj = p.signals?._projected_ks ?? p.signals?._projected_bb ?? p.signals?._projected_hits ?? p.signals?._projected_outs ?? p.signals?._projected_er;
+        const serverLabel = p.signals?._display_label;
+        if (serverLabel) {
+          const playerPrefix = (p.player_name || '') + ' ';
+          return serverLabel.startsWith(playerPrefix) ? serverLabel.slice(playerPrefix.length) : serverLabel;
+        }
+        // Legacy fallback (mirror server's unified format)
+        if (t === 'ks_over' && p.prop_line != null) return proj != null ? `Over ${p.prop_line} Ks  ·  proj ${proj}` : `Over ${p.prop_line} Ks`;
+        if (t === 'ks_under' && p.prop_line != null) return proj != null ? `Under ${p.prop_line} Ks  ·  proj ${proj}` : `Under ${p.prop_line} Ks`;
+        if (t === 'bb_over' && p.prop_line != null) return proj != null ? `Over ${p.prop_line} BB  ·  proj ${proj}` : `Over ${p.prop_line} BB`;
+        if (t === 'bb_under' && p.prop_line != null) return proj != null ? `Under ${p.prop_line} BB  ·  proj ${proj}` : `Under ${p.prop_line} BB`;
+        if (t === 'ha_over' && p.prop_line != null) return proj != null ? `Over ${p.prop_line} H+A  ·  proj ${proj}` : `Over ${p.prop_line} H+A`;
+        if (t === 'ha_under' && p.prop_line != null) return proj != null ? `Under ${p.prop_line} H+A  ·  proj ${proj}` : `Under ${p.prop_line} H+A`;
+        if (t === 'outs_over' && p.prop_line != null) return proj != null ? `Over ${p.prop_line} Outs  ·  proj ${proj}` : `Over ${p.prop_line} Outs`;
+        if (t === 'outs_under' && p.prop_line != null) return proj != null ? `Under ${p.prop_line} Outs  ·  proj ${proj}` : `Under ${p.prop_line} Outs`;
+        if (t === 'er_over' && p.prop_line != null) return proj != null ? `Over ${p.prop_line} ER  ·  proj ${proj}` : `Over ${p.prop_line} ER`;
+        if (t === 'er_under' && p.prop_line != null) return proj != null ? `Under ${p.prop_line} ER  ·  proj ${proj}` : `Under ${p.prop_line} ER`;
+        if (t === 'hits_over') return `Over 0.5 Hits`;
+        if (t === 'hits_under') return `Under 0.5 Hits (0-fer)`;
         return `${dir}${p.prop_line} ${(t || '').replace(/_/g, ' ')}`;
       };
       return (

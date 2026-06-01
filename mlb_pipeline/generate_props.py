@@ -3312,42 +3312,13 @@ def run():
     #
     # Single source of truth: server composes _display_label, app reads it
     # verbatim. Future label changes = pure backend, no TestFlight push.
-    for p in top:
-        sigs = p.get('signals') or {}
-        ptype = p.get('prop_type', '')
-        line = p.get('prop_line')
-        player = p.get('player_name', '')
-        proj_ks = sigs.get('_projected_ks')
-        proj_bb = sigs.get('_projected_bb')
-        proj_ha = sigs.get('_projected_hits')
-        label = None
-        if ptype == 'ks_over' and proj_ks is not None and line is not None:
-            label = f'{player} Over {line} Ks  ·  proj {proj_ks}'
-        elif ptype == 'ks_under' and proj_ks is not None and line is not None:
-            label = f'{player} Under {line} Ks  ·  proj {proj_ks}'
-        elif ptype == 'bb_over' and proj_bb is not None and line is not None:
-            label = f'{player} Over {line} BB  ·  proj {proj_bb}'
-        elif ptype == 'bb_under' and proj_bb is not None and line is not None:
-            label = f'{player} Under {line} BB  ·  proj {proj_bb}'
-        elif ptype == 'ha_over' and proj_ha is not None and line is not None:
-            label = f'{player} Over {line} Hits Allowed  ·  proj {proj_ha}'
-        elif ptype == 'ha_under' and proj_ha is not None and line is not None:
-            label = f'{player} Under {line} Hits Allowed  ·  proj {proj_ha}'
-        elif ptype == 'outs_over' and line is not None:
-            label = f'{player} Over {line} Outs'
-        elif ptype == 'outs_under' and line is not None:
-            label = f'{player} Under {line} Outs'
-        elif ptype == 'er_over' and line is not None:
-            label = f'{player} Over {line} ER'
-        elif ptype == 'er_under' and line is not None:
-            label = f'{player} Under {line} ER'
-        elif ptype == 'hits_over':
-            label = f'{player} Over 0.5 Hits'
-        elif ptype == 'hits_under':
-            label = f'{player} Under 0.5 Hits (0-fer)'
-        if label:
-            sigs['_display_label'] = label
-            p['signals'] = sigs
+    # Display-label composition moved BELOW attach_book_lines /
+    # recalibrate_props_with_book_lines (2026-06-01) so labels use the
+    # actual book line, not the internal scorer's suggested line. Pre-fix
+    # bug: server wrote `_display_label = "Joe Ryan Under 1.5 BB · proj 1.0"`
+    # using the internal 1.5, then recalibrate replaced prop_line with the
+    # book's 2.5, leaving the label stale. App showed wrong line. See
+    # the actual composition after attach_book_lines below.
 
     # Attach real sportsbook lines for ALL pitcher prop markets (K / BB /
     # HA / Outs / ER) + recalibrate against the real edge at those lines.
@@ -3359,6 +3330,55 @@ def run():
     # and adjusts conviction down when the real edge is thin or negative.
     attach_book_lines(top)
     recalibrate_props_with_book_lines(top)
+
+    # Display-label composition — runs AFTER recalibrate so labels use the
+    # actual book line. Uniform format across all prop types:
+    #
+    #   "{player} {Over|Under} {line} {market}  ·  proj {proj}"
+    #
+    # Beta-user 6/1 complaint: prop labels were inconsistent — "6.7 expected
+    # K (over)" hid the line entirely (was the line 5.5 or 6.5?), while
+    # "Over 5.5 Hits Allowed · proj 7.1" showed both clearly. Uniformity
+    # restored here. App reads _display_label verbatim; Daily Degen builder
+    # mirrors this format from the same fields.
+    for p in top:
+        sigs = p.get('signals') or {}
+        ptype = p.get('prop_type', '')
+        line = p.get('prop_line')
+        player = p.get('player_name', '')
+        proj_ks = sigs.get('_projected_ks')
+        proj_bb = sigs.get('_projected_bb')
+        proj_ha = sigs.get('_projected_hits')
+        proj_outs = sigs.get('_projected_outs')
+        proj_er = sigs.get('_projected_er')
+        label = None
+        if ptype == 'ks_over' and line is not None:
+            label = f'{player} Over {line} Ks  ·  proj {proj_ks}' if proj_ks is not None else f'{player} Over {line} Ks'
+        elif ptype == 'ks_under' and line is not None:
+            label = f'{player} Under {line} Ks  ·  proj {proj_ks}' if proj_ks is not None else f'{player} Under {line} Ks'
+        elif ptype == 'bb_over' and line is not None:
+            label = f'{player} Over {line} BB  ·  proj {proj_bb}' if proj_bb is not None else f'{player} Over {line} BB'
+        elif ptype == 'bb_under' and line is not None:
+            label = f'{player} Under {line} BB  ·  proj {proj_bb}' if proj_bb is not None else f'{player} Under {line} BB'
+        elif ptype == 'ha_over' and line is not None:
+            label = f'{player} Over {line} Hits Allowed  ·  proj {proj_ha}' if proj_ha is not None else f'{player} Over {line} Hits Allowed'
+        elif ptype == 'ha_under' and line is not None:
+            label = f'{player} Under {line} Hits Allowed  ·  proj {proj_ha}' if proj_ha is not None else f'{player} Under {line} Hits Allowed'
+        elif ptype == 'outs_over' and line is not None:
+            label = f'{player} Over {line} Outs  ·  proj {proj_outs}' if proj_outs is not None else f'{player} Over {line} Outs'
+        elif ptype == 'outs_under' and line is not None:
+            label = f'{player} Under {line} Outs  ·  proj {proj_outs}' if proj_outs is not None else f'{player} Under {line} Outs'
+        elif ptype == 'er_over' and line is not None:
+            label = f'{player} Over {line} ER  ·  proj {proj_er}' if proj_er is not None else f'{player} Over {line} ER'
+        elif ptype == 'er_under' and line is not None:
+            label = f'{player} Under {line} ER  ·  proj {proj_er}' if proj_er is not None else f'{player} Under {line} ER'
+        elif ptype == 'hits_over':
+            label = f'{player} Over 0.5 Hits'
+        elif ptype == 'hits_under':
+            label = f'{player} Under 0.5 Hits (0-fer)'
+        if label:
+            sigs['_display_label'] = label
+            p['signals'] = sigs
 
     # Suppress pitcher props that failed book attach (2026-06-01 fix).
     # The internal scorer suggests its own lines for K/BB/HA/Outs/ER props

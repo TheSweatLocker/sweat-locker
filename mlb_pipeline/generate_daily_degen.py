@@ -216,28 +216,61 @@ def extract_leg_candidates(games, props):
     for p in props:
         ptype = p.get('prop_type')
         line = p.get('prop_line')
-        # K props now display the model's expected-Ks point estimate (lives
-        # in signals._projected_ks). Decoupled from the audit threshold so
-        # users can shop their book's line/juice instead of seeing "Over 5.1".
-        proj_ks = (p.get('signals') or {}).get('_projected_ks')
-        if ptype == 'hits_over':
-            prop_label = 'Over 0.5 Hits'
-        elif ptype == 'hits_under':
-            prop_label = 'Under 0.5 Hits'
-        elif ptype == 'ks_over':
-            prop_label = f"{proj_ks} expected Ks (over)" if proj_ks is not None else f"Over {line} Strikeouts"
-        elif ptype == 'ks_under':
-            prop_label = f"{proj_ks} expected Ks (under)" if proj_ks is not None else f"Under {line} Strikeouts"
-        elif ptype == 'outs_over':
-            prop_label = f"Over {line} Outs Recorded"
-        elif ptype == 'outs_under':
-            prop_label = f"Under {line} Outs Recorded"
-        elif ptype == 'er_over':
-            prop_label = f"Over {line} Earned Runs"
-        elif ptype == 'er_under':
-            prop_label = f"Under {line} Earned Runs"
+        sigs = p.get('signals') or {}
+        # Uniform "{Over|Under} {line} {market}  ·  proj {proj}" format —
+        # matches the server-composed _display_label in generate_props.py
+        # so the Daily Degen surface, Sweat Card, and Prop Jerry all show
+        # the SAME thing. 6/1 beta-user complaint: K props used to render
+        # as "6.7 expected K (over)" hiding the actual book line, while
+        # HA props rendered "Over 5.5 Hits Allowed · proj 7.1" showing
+        # both. Unified to always show line + projection where projection
+        # is available.
+        #
+        # Prefer the server-composed _display_label (already attaches the
+        # player name and runs after Phase 2 recalibrate). Fall back to
+        # legacy in-script composition for backward compat with rows that
+        # predate the _display_label field.
+        existing_label = sigs.get('_display_label')
+        if existing_label:
+            # _display_label includes player name; strip it for Daily Degen
+            # which formats `{player} — {label}` separately.
+            player_prefix = (p.get('player_name') or '') + ' '
+            if existing_label.startswith(player_prefix):
+                prop_label = existing_label[len(player_prefix):]
+            else:
+                prop_label = existing_label
         else:
-            prop_label = f"{ptype} {line}"  # fallback for unknown types
+            proj_ks = sigs.get('_projected_ks')
+            proj_bb = sigs.get('_projected_bb')
+            proj_ha = sigs.get('_projected_hits')
+            proj_outs = sigs.get('_projected_outs')
+            proj_er = sigs.get('_projected_er')
+            if ptype == 'hits_over':
+                prop_label = 'Over 0.5 Hits'
+            elif ptype == 'hits_under':
+                prop_label = 'Under 0.5 Hits'
+            elif ptype == 'ks_over' and line is not None:
+                prop_label = f"Over {line} Ks  ·  proj {proj_ks}" if proj_ks is not None else f"Over {line} Ks"
+            elif ptype == 'ks_under' and line is not None:
+                prop_label = f"Under {line} Ks  ·  proj {proj_ks}" if proj_ks is not None else f"Under {line} Ks"
+            elif ptype == 'bb_over' and line is not None:
+                prop_label = f"Over {line} BB  ·  proj {proj_bb}" if proj_bb is not None else f"Over {line} BB"
+            elif ptype == 'bb_under' and line is not None:
+                prop_label = f"Under {line} BB  ·  proj {proj_bb}" if proj_bb is not None else f"Under {line} BB"
+            elif ptype == 'ha_over' and line is not None:
+                prop_label = f"Over {line} Hits Allowed  ·  proj {proj_ha}" if proj_ha is not None else f"Over {line} Hits Allowed"
+            elif ptype == 'ha_under' and line is not None:
+                prop_label = f"Under {line} Hits Allowed  ·  proj {proj_ha}" if proj_ha is not None else f"Under {line} Hits Allowed"
+            elif ptype == 'outs_over' and line is not None:
+                prop_label = f"Over {line} Outs  ·  proj {proj_outs}" if proj_outs is not None else f"Over {line} Outs"
+            elif ptype == 'outs_under' and line is not None:
+                prop_label = f"Under {line} Outs  ·  proj {proj_outs}" if proj_outs is not None else f"Under {line} Outs"
+            elif ptype == 'er_over' and line is not None:
+                prop_label = f"Over {line} ER  ·  proj {proj_er}" if proj_er is not None else f"Over {line} ER"
+            elif ptype == 'er_under' and line is not None:
+                prop_label = f"Under {line} ER  ·  proj {proj_er}" if proj_er is not None else f"Under {line} ER"
+            else:
+                prop_label = f"{ptype} {line}"
         candidates.append({
             'type': 'PROP',
             'sub_type': p.get('prop_type'),
