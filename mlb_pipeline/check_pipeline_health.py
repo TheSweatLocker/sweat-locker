@@ -52,6 +52,48 @@ def main():
     print(f'PIPELINE HEALTH CHECK — {date} (ET hour: {hour})')
     print('=' * 70)
 
+    # --- Pre-flight schema validation (added 2026-06-01) ---
+    # Source of truth: supabase/migrations/*.sql. If any migration declares
+    # columns that the live DB doesn't have, the pipeline has been writing
+    # into stripped columns for some period (silent data loss). Hard-fail
+    # here so the workflow turns red on the first run after a forgotten
+    # migration instead of slowly bleeding through silent warnings.
+    # 5/30→6/1 incident: recent_mastery columns sat un-applied for 2 days
+    # before being noticed; this check would have failed the 5/31 morning
+    # run and surfaced the gap immediately.
+    try:
+        from pathlib import Path
+        from schema_validator import validate
+        repo_root = Path(__file__).resolve().parent.parent
+        # Scope to tables this pipeline writes to. Other tables (auth,
+        # storage, third-party) are managed elsewhere and would create
+        # noise if validated here.
+        pipeline_tables = {
+            'mlb_game_context', 'mlb_game_results', 'mlb_pipeline_props',
+            'mlb_team_offense', 'mlb_team_vs_opp_recent', 'mlb_tier_calibration',
+            'pitcher_projections', 'model_health', 'cohort_display_config',
+            'tier_integrity_findings', 'prompt_templates',
+        }
+        drift = validate(
+            repo_root / 'supabase' / 'migrations', URL, KEY,
+            tables_to_check=pipeline_tables,
+        )
+        if drift:
+            print('\n❌ SCHEMA DRIFT — migrations declare columns the live DB is missing:')
+            for table, cols in sorted(drift.items()):
+                print(f'   {table}:')
+                for c in cols:
+                    print(f'     - {c}')
+            print('\nFix: apply the corresponding supabase/migrations/*.sql files in the')
+            print('Supabase SQL editor (or via `supabase db push` if CLI configured).')
+            print('Until applied, the pipeline silently strips these columns on write.')
+            return 1
+        print('✓ Schema in sync with migrations.')
+    except Exception as e:
+        # Don't let a validator bug brick the health check — degrade gracefully
+        # but flag the failure so we can fix the validator itself.
+        print(f'⚠️  Schema validator errored (not fatal): {type(e).__name__}: {e}')
+
     games = get(f"{URL}/rest/v1/mlb_game_context?game_date=eq.{date}&select=*") or []
 
     if not games:
