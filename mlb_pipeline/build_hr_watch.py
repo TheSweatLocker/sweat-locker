@@ -60,6 +60,19 @@ def get_today_et():
     return et_now.strftime('%Y-%m-%d')
 
 
+# Jerry per-batter HR allocator. Imported lazily so a jerry_model issue
+# never breaks HR Watch — if the import fails, we still ship the legacy
+# score; jerry_hr_contribution just stays NULL for that run.
+try:
+    from jerry_model import compute_batter_hr_contribution
+    _JERRY_AVAILABLE = True
+except Exception as _e:
+    print(f'  ⚠️  jerry_model import failed: {_e} — Jerry HR contribution will be NULL')
+    _JERRY_AVAILABLE = False
+    def compute_batter_hr_contribution(**kwargs):
+        return {'jerry_hr_contribution': None, 'jerry_allocated_pa': None, 'jerry_signals': None}
+
+
 # Park HR factors — diverge meaningfully from park run factors.
 # Sources: FanGraphs / Statcast park HR factor data (3-year averages).
 # Higher = HRs more frequent at this venue. League average = 100.
@@ -675,7 +688,7 @@ def run():
             if not batters:
                 continue
 
-            for batter_name in batters:
+            for spot_idx, batter_name in enumerate(batters):
                 if len(batter_name) < 3:
                     continue
                 key = f'{team}:{batter_name}'
@@ -690,6 +703,32 @@ def run():
                 scoring = score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_speed, wind_dir)
                 if not scoring or scoring['score'] < 20:
                     continue
+
+                # Jerry per-batter HR contribution (added 2026-06-01). Shadow
+                # mode — runs alongside the legacy score, stored in
+                # jerry_hr_contribution so the audit can compare hit rates
+                # and we can blend in if it shows lift. Uses the same
+                # Bayesian regression prior + situational machinery as
+                # score_batter, but multiplicative instead of additive so
+                # each factor's contribution is auditable.
+                lineup_spot = spot_idx + 1  # 1-indexed
+                pitcher_throws = (opp_contact.get('throws') if opp_contact else None)
+                pitcher_fb_pct = (opp_contact.get('fb_pct') if opp_contact else None)
+                jerry_result = compute_batter_hr_contribution(
+                    season_hr=stats['hr'],
+                    season_pa=stats['pa'],
+                    bat_side=stats.get('bat_side'),
+                    lineup_spot=lineup_spot,
+                    park_hr_factor=hr_park,
+                    temperature=temp,
+                    wind_speed=wind_speed,
+                    wind_direction=wind_dir,
+                    opp_pitcher_xera=opp_xera,
+                    opp_pitcher_fb_pct=pitcher_fb_pct,
+                    opp_pitcher_throws=pitcher_throws,
+                    barrel_pct=stats.get('savant_barrel_pct'),
+                    hard_hit_pct=stats.get('savant_hard_hit_pct'),
+                )
 
                 # Projected HR probability (added 2026-06-01).
                 # P(>=1 HR in game) = 1 - (1 - p_pa)^expected_pa
@@ -741,6 +780,12 @@ def run():
                     # cold but Statcast says he's been squaring it up. Set by
                     # score_batter via the stats dict side-channel.
                     'due_signal': bool(stats.get('_due_signal')),
+                    # Jerry per-batter HR contribution (Phase 1 shadow mode,
+                    # added 2026-06-01). See compute_batter_hr_contribution
+                    # in jerry_model.py for the formula.
+                    'jerry_hr_contribution': jerry_result.get('jerry_hr_contribution'),
+                    'jerry_allocated_pa': jerry_result.get('jerry_allocated_pa'),
+                    'jerry_signals': jerry_result.get('jerry_signals'),
                     'is_fallback': is_fallback,
                 })
 

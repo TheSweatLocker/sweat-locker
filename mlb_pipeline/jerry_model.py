@@ -569,3 +569,276 @@ def enrich_ctx_for_jerry(ctx, pitcher_stats_by_name=None, team_offense_by_team=N
             bs = bullpen_stats_by_team[team]
             enriched[f'{side}_pitching_7_9_era'] = bs.get('pitching_7_9_era')
     return enriched
+
+
+# =============================================================================
+# PER-BATTER HR CONTRIBUTION (added 2026-06-01)
+#
+# User direction: "Like #3" — Jerry per-batter integration. Phase 1 ships
+# a focused HR allocator that reuses Jerry's situational machinery (park,
+# wind, temp, mastery-style multipliers) and applies them to per-batter
+# HR/PA rates. Lives in shadow mode alongside the legacy HR Watch score
+# for 7-14 days; if audit shows lift, blended into final ranking.
+#
+# Design philosophy mirrors team Jerry: transparent linear formula, all
+# tunables in a config dict (JERRY_HR_WEIGHTS below). No black box.
+# =============================================================================
+JERRY_HR_WEIGHTS = {
+    # Lineup-spot PA allocation. League-average PAs per game by batting
+    # order position (1st = most, 9th = least). Source: 5-year MLB
+    # averages — top-of-order gets ~1 extra PA over bottom-of-order
+    # across a 162-game sample.
+    'pa_by_lineup_spot': {
+        1: 4.50, 2: 4.40, 3: 4.30, 4: 4.20, 5: 4.10,
+        6: 3.90, 7: 3.70, 8: 3.50, 9: 3.30,
+    },
+    'pa_fallback': 4.00,  # unknown lineup spot
+
+    # Bayesian regression prior matches build_hr_watch.py (PRIOR_PA=400)
+    # so the per-batter rate is regressed consistently across surfaces.
+    'prior_hr_rate': 0.03,
+    'prior_pa': 400,
+
+    # Park HR factor → multiplier. Coors 123 → 1.23x, Petco 88 → 0.88x.
+    # Directly proportional; cap at 1.30 / 0.85 to prevent extreme parks
+    # from dominating.
+    'park_mult_min': 0.85,
+    'park_mult_max': 1.30,
+
+    # Temperature: 80°F+ → 1.10x, 70°F+ → 1.05x, <50°F → 0.90x.
+    'temp_hot_threshold': 80,
+    'temp_hot_mult': 1.10,
+    'temp_warm_threshold': 70,
+    'temp_warm_mult': 1.05,
+    'temp_cold_threshold': 50,
+    'temp_cold_mult': 0.90,
+
+    # Wind out: blowing out (S/SW/SE) at >10mph → 1.12x.
+    'wind_out_mult': 1.12,
+    'wind_in_mult': 0.92,
+
+    # Pitcher flyball tilt: fb_pct >= .40 → 1.15x (lots of fly balls
+    # become HRs in HR-friendly conditions). fb_pct <= .30 → 0.88x
+    # (groundball pitchers suppress HR).
+    'pitcher_fb_high_threshold': 0.40,
+    'pitcher_fb_high_mult': 1.15,
+    'pitcher_fb_low_threshold': 0.30,
+    'pitcher_fb_low_mult': 0.88,
+
+    # Pitcher xERA: bad pitchers give up more HRs.
+    'pitcher_xera_bad_threshold': 4.50,
+    'pitcher_xera_bad_mult': 1.15,
+    'pitcher_xera_good_threshold': 3.20,
+    'pitcher_xera_good_mult': 0.90,
+
+    # Platoon: opposite hand → 1.07x, same hand → 0.94x, switch → 1.07x.
+    'platoon_opposite_mult': 1.07,
+    'platoon_same_mult': 0.94,
+
+    # Statcast plus: barrel% >= 11 → 1.10x, hard_hit >= 45 → 1.05x.
+    'statcast_barrel_threshold': 0.11,  # or 11 if stored as percent — normalize on read
+    'statcast_barrel_mult': 1.10,
+    'statcast_hardhit_threshold': 0.45,
+    'statcast_hardhit_mult': 1.05,
+}
+
+
+def _hr_lineup_pa(spot):
+    """Allocated PAs for this batting order spot. Falls back to 4.0 PA when
+    the spot is unknown (lineup_state=None / hitter not in our top-5 walk)."""
+    w = JERRY_HR_WEIGHTS
+    if spot is None:
+        return w['pa_fallback']
+    try:
+        return w['pa_by_lineup_spot'].get(int(spot), w['pa_fallback'])
+    except (TypeError, ValueError):
+        return w['pa_fallback']
+
+
+def _hr_park_mult(park_hr_factor):
+    """Linear park HR multiplier, clamped to [pmin, pmax]."""
+    w = JERRY_HR_WEIGHTS
+    try:
+        raw = float(park_hr_factor) / 100.0
+        return max(w['park_mult_min'], min(w['park_mult_max'], raw))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _hr_temp_mult(temp_f):
+    w = JERRY_HR_WEIGHTS
+    if temp_f is None:
+        return 1.0
+    try:
+        t = float(temp_f)
+    except (TypeError, ValueError):
+        return 1.0
+    if t >= w['temp_hot_threshold']:
+        return w['temp_hot_mult']
+    if t >= w['temp_warm_threshold']:
+        return w['temp_warm_mult']
+    if t < w['temp_cold_threshold']:
+        return w['temp_cold_mult']
+    return 1.0
+
+
+def _hr_wind_mult(wind_speed, wind_dir):
+    """Out-blowing wind = HR boost; in-blowing = suppress."""
+    w = JERRY_HR_WEIGHTS
+    if wind_speed is None or wind_dir is None:
+        return 1.0
+    try:
+        ws = float(wind_speed)
+    except (TypeError, ValueError):
+        return 1.0
+    if ws <= 10:
+        return 1.0
+    d = (wind_dir or '').upper()
+    out_dirs = {'S', 'SW', 'SE', 'OUT'}
+    in_dirs = {'N', 'NW', 'NE', 'IN'}
+    if any(o in d for o in out_dirs):
+        return w['wind_out_mult']
+    if any(i in d for i in in_dirs):
+        return w['wind_in_mult']
+    return 1.0
+
+
+def _hr_pitcher_fb_mult(fb_pct):
+    w = JERRY_HR_WEIGHTS
+    if fb_pct is None:
+        return 1.0
+    try:
+        fb = float(fb_pct)
+    except (TypeError, ValueError):
+        return 1.0
+    if fb > 1.0:  # stored as percent (35.0 not 0.35) — normalize
+        fb = fb / 100.0
+    if fb >= w['pitcher_fb_high_threshold']:
+        return w['pitcher_fb_high_mult']
+    if fb <= w['pitcher_fb_low_threshold']:
+        return w['pitcher_fb_low_mult']
+    return 1.0
+
+
+def _hr_pitcher_xera_mult(xera):
+    w = JERRY_HR_WEIGHTS
+    if xera is None:
+        return 1.0
+    try:
+        x = float(xera)
+    except (TypeError, ValueError):
+        return 1.0
+    if x >= w['pitcher_xera_bad_threshold']:
+        return w['pitcher_xera_bad_mult']
+    if x <= w['pitcher_xera_good_threshold']:
+        return w['pitcher_xera_good_mult']
+    return 1.0
+
+
+def _hr_platoon_mult(bat_side, pitcher_throws):
+    w = JERRY_HR_WEIGHTS
+    if not bat_side or not pitcher_throws:
+        return 1.0
+    b = (bat_side or '').upper()
+    p = (pitcher_throws or '').upper()
+    if b == 'S':  # switch — always plays opposite
+        return w['platoon_opposite_mult']
+    if b != p:
+        return w['platoon_opposite_mult']
+    return w['platoon_same_mult']
+
+
+def _hr_statcast_mult(barrel_pct, hard_hit_pct):
+    """Statcast plus multipliers. Normalize percent vs fraction storage."""
+    w = JERRY_HR_WEIGHTS
+    mult = 1.0
+    if barrel_pct is not None:
+        try:
+            b = float(barrel_pct)
+            if b > 1.0:
+                b = b / 100.0  # normalize percent
+            if b >= w['statcast_barrel_threshold']:
+                mult *= w['statcast_barrel_mult']
+        except (TypeError, ValueError):
+            pass
+    if hard_hit_pct is not None:
+        try:
+            h = float(hard_hit_pct)
+            if h > 1.0:
+                h = h / 100.0
+            if h >= w['statcast_hardhit_threshold']:
+                mult *= w['statcast_hardhit_mult']
+        except (TypeError, ValueError):
+            pass
+    return mult
+
+
+def compute_batter_hr_contribution(
+    *,
+    season_hr,
+    season_pa,
+    bat_side=None,
+    lineup_spot=None,
+    park_hr_factor=100,
+    temperature=None,
+    wind_speed=None,
+    wind_direction=None,
+    opp_pitcher_xera=None,
+    opp_pitcher_fb_pct=None,
+    opp_pitcher_throws=None,
+    barrel_pct=None,
+    hard_hit_pct=None,
+) -> Dict[str, Any]:
+    """Jerry's per-batter expected HR contribution for tonight's game.
+
+    Formula (transparent, all weights in JERRY_HR_WEIGHTS above):
+
+        regressed_rate = (HR + 0.03 * 400) / (PA + 400)
+        expected_hr    = regressed_rate * allocated_pa * \\
+                         park_mult * temp_mult * wind_mult * \\
+                         fb_mult * xera_mult * platoon_mult * statcast_mult
+
+    Returns dict with the contribution number AND every component
+    multiplier so the audit + app can render a transparent breakdown
+    instead of an opaque "0.31".
+
+    Edge cases:
+      - season_pa < 40: returns None (insufficient sample, same as score gate)
+      - missing inputs: each multiplier defaults to 1.0 (neutral)
+    """
+    w = JERRY_HR_WEIGHTS
+    if season_pa is None or season_pa < 40 or season_hr is None:
+        return {'jerry_hr_contribution': None,
+                'jerry_signals': {'reason': 'insufficient_sample'},
+                'jerry_allocated_pa': None}
+
+    regressed_rate = (season_hr + w['prior_hr_rate'] * w['prior_pa']) / (season_pa + w['prior_pa'])
+    allocated_pa = _hr_lineup_pa(lineup_spot)
+
+    park_m = _hr_park_mult(park_hr_factor)
+    temp_m = _hr_temp_mult(temperature)
+    wind_m = _hr_wind_mult(wind_speed, wind_direction)
+    fb_m = _hr_pitcher_fb_mult(opp_pitcher_fb_pct)
+    xera_m = _hr_pitcher_xera_mult(opp_pitcher_xera)
+    platoon_m = _hr_platoon_mult(bat_side, opp_pitcher_throws)
+    statcast_m = _hr_statcast_mult(barrel_pct, hard_hit_pct)
+
+    raw_expected = regressed_rate * allocated_pa
+    expected = raw_expected * park_m * temp_m * wind_m * fb_m * xera_m * platoon_m * statcast_m
+
+    return {
+        'jerry_hr_contribution': round(expected, 4),
+        'jerry_allocated_pa': round(allocated_pa, 2),
+        'jerry_signals': {
+            'base_rate': round(regressed_rate, 4),
+            'allocated_pa': round(allocated_pa, 2),
+            'park_mult': round(park_m, 3),
+            'temp_mult': round(temp_m, 3),
+            'wind_mult': round(wind_m, 3),
+            'pitcher_fb_mult': round(fb_m, 3),
+            'pitcher_xera_mult': round(xera_m, 3),
+            'platoon_mult': round(platoon_m, 3),
+            'statcast_mult': round(statcast_m, 3),
+            'raw_contribution': round(raw_expected, 4),
+        },
+    }
