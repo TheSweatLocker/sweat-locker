@@ -850,6 +850,41 @@ def score_mlb_game(ctx, game_props=None, track=None):
     if pp and isinstance(pp, dict) and (pp.get('type') or '').lower() in ('ml', 'spread', 'rl'):
         side_play = {'type': (pp.get('type') or '').upper(), 'label': pp.get('label'), 'tier': pp.get('tier')}
 
+    # Jerry-driven SIDE play fallback (2026-06-01). Sweat dim scorer was
+    # already crediting Jerry's spread + offense drift + confluence as SIDE
+    # drivers (5/31 fix), but the play resolver here only surfaced a side
+    # when compute_primary_play named an ML/RL externally. That left MIA/WSH
+    # SIDE 69/STRONG (Jerry +3.71 / drift gap / confluence +4) with no
+    # actionable label — Sweat Card showed empty even though the math said
+    # play it. 5/31 audit: Jerry ML 13-2 (86.7%), |spread|>=2.0 = 8-1
+    # (88.9%) on day-1 production — strong enough evidence to surface a
+    # side play when the dim itself has cleared STRONG.
+    #
+    # Gate: side_score >= 65 (STRONG floor) AND we can resolve a direction
+    # from Jerry's signed disagreement with market (preferred) or v3's
+    # signed disagreement (fallback) at >=1.0 run magnitude. Tier mirrors
+    # the dim score so PRIME/STRONG/LIGHT_LEAN propagate to UI consistently.
+    if side_play is None and side_score >= 65 and close_spread_val is not None:
+        pick_home = None
+        try:
+            if jerry_signed is not None and abs(float(jerry_signed)) >= 1.0:
+                pick_home = float(jerry_signed) > 0
+            elif v3_signed is not None and abs(float(v3_signed)) >= 1.0:
+                pick_home = float(v3_signed) > 0
+        except (TypeError, ValueError):
+            pick_home = None
+        if pick_home is not None:
+            team = ctx.get('home_team') if pick_home else ctx.get('away_team')
+            if team:
+                play_tier = 'PRIME' if side_score >= 80 else 'STRONG' if side_score >= 65 else 'LIGHT_LEAN'
+                src = 'jerry_consensus' if jerry_signed is not None and abs(float(jerry_signed)) >= 1.0 else 'v3_consensus'
+                side_play = {
+                    'type': 'ML',
+                    'label': f'{team} ML',
+                    'tier': play_tier,
+                    'source': src,
+                }
+
     # TOTAL play preference order (5/30 updated):
     # 1. primary_play if it's over/under/total — pipeline-endorsed total
     # 2. prop_dir if 3+ aligned PRIME/STRONG — prop confluence overrides
