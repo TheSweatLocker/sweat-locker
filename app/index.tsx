@@ -1486,8 +1486,12 @@ const [playersSearch, setPlayersSearch] = useState('');
   // shows by default. Sharp users tap to expand.
   const [numbersExpanded, setNumbersExpanded] = useState<boolean>(false);
   const [jerryExpanded, setJerryExpanded] = useState<boolean>(false);
-  const [dailyBriefing, setDailyBriefing] = useState('');
-  const [dailyBriefingLoading, setDailyBriefingLoading] = useState(false);
+  // Jerry's Morning Read scrapped 2026-06-01 — it pulled today's games
+  // from the Odds API directly (not our pipeline) and prompted an LLM
+  // for a generic narrative. Resulted in hallucinations (6/1: said
+  // Topuria vs Islam when actual fight was Topuria vs Gaethje), and
+  // duplicated work the Card / POTD / Daily Degen already do from
+  // verified pipeline data. Removed entirely.
   const [dailyBestBet, setDailyBestBet] = useState(null);
 const [dailyBestBetLoading, setDailyBestBetLoading] = useState(false);
 const [bestBetFetched, setBestBetFetched] = useState(false);
@@ -1627,7 +1631,6 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
         fetchNBATeamData();
     };
     loadData();
-    fetchDailyBriefing();
   }, []);
 
 
@@ -4901,97 +4904,7 @@ Rules:
   setDailyBestBetLoading(false);
   return;
 };
-  const fetchDailyBriefing = async () => {
-    try {
-      const cached = await AsyncStorage.getItem('sweatlocker_briefing_cache');
-      if(cached) {
-        const parsed = JSON.parse(cached);
-        const now = new Date();
-        const cacheTime = new Date(parsed.timestamp);
-        // Reset at 5am daily — always fresh for morning
-        const fiveAMToday = new Date(now);
-        fiveAMToday.setHours(5,0,0,0);
-        const cacheIsFromToday = cacheTime >= fiveAMToday;
-        const cacheIsYoung = (Date.now() - parsed.timestamp) < 20*60*1000;
-        if(cacheIsYoung || (cacheIsFromToday && (Date.now() - parsed.timestamp) < 4*60*60*1000)) {
-          setDailyBriefing(parsed.text);
-          return;
-        }
-      }
-    } catch(e) {}
-    setDailyBriefingLoading(true);
-    try {
-      const today = new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
-      const wins = bets.filter(b=>b.result==='Win').length;
-      const losses = bets.filter(b=>b.result==='Loss').length;
-      const pending = bets.filter(b=>b.result==='Pending').length;
-     const now = new Date();
-      // Fetch games fresh for briefing — don't rely on gamesData state
-let todayGames = '';
-try {
-  const sportsToCheck = ['basketball_ncaab', 'basketball_nba', 'baseball_mlb', 'icehockey_nhl', 'americanfootball_nfl', 'mma_mixed_martial_arts'];
-const now2 = new Date();
-const todayEnd = new Date(now2); todayEnd.setHours(23,59,59,999);
-
-for(const sportKey of sportsToCheck) {
-  try {
-    const gamesResp = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/odds`, {
-      params: {
-        apiKey: ODDS_API_KEY,
-        regions: 'us',
-        markets: 'h2h',
-        oddsFormat: 'american',
-        bookmakers: 'draftkings'
-      }
-    });
-    const games = (gamesResp.data||[])
-      .filter(g => new Date(g.commence_time) > now2 && new Date(g.commence_time) <= todayEnd)
-      .slice(0, 5)
-      .map(g => `${stripMascot(g.away_team)} vs ${stripMascot(g.home_team)}`);
-   if(games.length > 0) {
-      todayGames += (todayGames ? ', ' : '') + games.join(', ');
-    }
-  } catch(e) {}
-}
-} catch(e) {}
-
-      const prompt = `You are Jerry, sharp AI analyst for The Sweat Locker. Confident, energetic, like a seasoned handicapper. Today is ${today}. User record: ${wins}-${losses}. Pending: ${pending}.
-
-Today's slate: ${todayGames || 'no major games scheduled today'}.
-
-Write exactly 3 sentences in plain conversational text — no markdown, no headers, no asterisks, no hashtags, no bold text. React to what's actually on the slate today. Sport-specific context:
-- NCAAB/NBA: reference efficiency edges, line movement, back-to-backs
-- MLB: reference pitching matchups, weather, park factors if relevant
-- NHL: reference goalie matchups, pace, line movement
-- UFC/MMA: reference fighter styles, finishing rates, sharp money
-- If multiple sports are on the slate mention the best angle across all of them
-- If no games are on the slate, give bettors useful advice about line shopping, bankroll management, or what to watch for this week. Never mention data limitations.
-Do NOT give a specific bet or pick. End with — Jerry.`;
-
-      const response = await fetch('https://api.anthropic.com/v1/messages',{
-        method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'x-api-key':ANTHROPIC_API_KEY,
-          'anthropic-version':'2023-06-01',
-          'anthropic-dangerous-direct-browser-access':'true'
-        },
-        body:JSON.stringify({
-  model:'claude-haiku-4-5-20251001',
-  max_tokens:400,
-  messages:[{role:'user',content:prompt}]
-})
-      });
-      const data = await response.json();
-      const text = data?.content?.filter(b=>b.type==='text').map(b=>b.text).join('') || '';
-      setDailyBriefing(text);
-      await AsyncStorage.setItem('sweatlocker_briefing_cache', JSON.stringify({text, timestamp:Date.now()}));
-    } catch(e) {
-      console.log('BRIEFING ERROR:', e.message);
-      setDailyBriefing("Big slate today — Jerry's got his eyes on the board. Head to the games tab and let's find some edges. — Jerry");
-    }
-    setDailyBriefingLoading(false);
-  };
+  // fetchDailyBriefing removed 2026-06-01 — see comment at state declaration
   const fetchBDLPlayerStats = async (playerName) => {
     try {
       const cacheKey = `sweatlocker_bdl_${playerName.replace(/\s/g,'_')}`;
@@ -9832,18 +9745,9 @@ setJerryHistory(prev => {
   </View>
 )}
 
-  {/* Jerry Daily Briefing */}
-  <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.2)',marginBottom:16}}>
-                <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,marginBottom:8}}>🎤 JERRY'S MORNING READ</Text>
-                {dailyBriefingLoading?(
-                  <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                    <ActivityIndicator size='small' color={HRB_COLOR}/>
-                    <Text style={{color:'#4a6070',fontSize:13}}>Jerry is breaking down today's slate...</Text>
-                  </View>
-                ):(
-                  <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>{dailyBriefing}</Text>
-                )}
-              </View>
+  {/* Jerry's Morning Read panel removed 2026-06-01 — pulled from Odds API
+      not our pipeline, generated LLM hallucinations (UFC matchup error
+      on 6/1), duplicated work the Card/POTD/Degen already do. */}
                 {trackingMode==='dollars'&&(
                 <TouchableOpacity
                   onPress={()=>{setTempUnitSize(unitSize);setUnitSizeModal(true);}}
