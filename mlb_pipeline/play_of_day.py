@@ -1489,8 +1489,17 @@ def run():
     # reflects what the app actually surfaces).
     props_by_game = {}
     try:
+        # 6/2 fix: include book_line in the SELECT. The PROP dim weighting
+        # added 6/1 (commit 64629f1) checks book_line to separate book-
+        # verified PRIMEs from no-book noise — but this pre-fetch was
+        # selecting only game_id/tier/conviction, so book_line was always
+        # None and the book-aware branches never fired. Beta users saw
+        # PASS games that should have been LIGHT/STRONG because MIA/WSH's
+        # Mikolas STRONG ✓book contributed +0 instead of +5, CLE/NYY's
+        # full STRONG ✓book stack would have lifted PROP dim, etc.
+        # Now the scorer sees the same book_line the props pipeline writes.
         pr = requests.get(
-            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{today}&select=game_id,tier,conviction",
+            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{today}&select=game_id,tier,conviction,book_line",
             headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
             timeout=15,
         )
