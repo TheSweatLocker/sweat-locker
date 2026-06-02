@@ -41,7 +41,28 @@ HEADERS = {
     'Prefer': 'resolution=merge-duplicates,return=minimal',
 }
 
-MIN_DELTA = 1.5  # threshold to be considered a Dawg worth surfacing
+MIN_DELTA = 1.5  # legacy threshold — retained for backward refs but not used in new gate
+
+# Jerry-first selection (2026-06-01 redesign).
+#
+# Previous selector was 17-22 (43.6%) — below market-implied for +120 dogs
+# (~45% breakeven). Root cause: relied on v3 spread (mediocre) and v4 mastery
+# unlock (degraded per project_may17_xgboost_degradation). Selected "least
+# bad dog" not "actually strong dog."
+#
+# New gate: Jerry must see the underdog winning by JERRY_DOG_MAGNITUDE_GATE
+# AND at least one co-sign (v3 same direction OR confluence on dog side
+# OR favorite-pitcher anti-mastery vs dog team). 5/31 audit found pure
+# Jerry contrarian = 3-0 WITH co-sign, 0-1 LONELY — this gate is the
+# winning cohort, formalized.
+#
+# Price gate keeps Dawg in the "real dog" zone: market wants +100 to +250.
+# Lottery tickets above +250 historically lose more than the price implies
+# (books know more than the model does at extreme prices). Below +100 isn't
+# really a dog.
+JERRY_DOG_MAGNITUDE_GATE = 1.0   # Jerry must see dog winning by >=this on spread
+MIN_ML_PRICE = 100               # any actual dog (existing)
+MAX_ML_PRICE = 250               # below the "books know something" zone
 
 
 def today_et():
@@ -137,6 +158,93 @@ def fetch_ml_odds_map():
     return ml_map
 
 
+def _jerry_qualifies_dog(g, dog_side, magnitude_gate=JERRY_DOG_MAGNITUDE_GATE):
+    """Returns (eligible_bool, jerry_signed_spread, cosign_reasons).
+
+    Jerry-first eligibility check for the Dawg selector.
+
+    HARD GATE: Jerry must see the dog winning by >= magnitude_gate.
+    SOFT BOOST: co-signs add to conviction downstream but aren't required.
+
+    Why not require co-sign as hard gate: 5/31 audit replay showed
+    CHC/STL (Jerry +1.2, no co-sign) won outright — too aggressive a
+    co-sign requirement misses real wins. The MIN_PUBLISH_CONVICTION 65
+    floor + the Jerry-magnitude conviction bump together prevent forcing
+    weak Jerry-only picks (lonely Jerry at +1.0 magnitude → ~46 conviction,
+    below publish floor → no DAWG).
+
+    Re-evaluate after ~2 weeks of data: if lonely Jerry wins as much as
+    co-signed, the MIN_PUBLISH_CONVICTION can drop; if it loses, restore
+    the co-sign hard gate.
+
+    Args:
+        g: mlb_game_context row
+        dog_side: 'home' or 'away' — which team is the ML dog
+        magnitude_gate: minimum |jerry_spread| in dog's direction
+
+    Returns:
+        (eligible, jerry_spread, cosigns)
+    """
+    jerry_spread = _f(g.get('jerry_pred_spread'))
+    if jerry_spread is None:
+        return False, None, []
+
+    # Jerry sign convention: POSITIVE = home favored.
+    # dog_side wants Jerry pointing AT the dog.
+    jerry_points_at_dog = (
+        (dog_side == 'home' and jerry_spread > 0) or
+        (dog_side == 'away' and jerry_spread < 0)
+    )
+    if not jerry_points_at_dog:
+        return False, jerry_spread, []
+
+    if abs(jerry_spread) < magnitude_gate:
+        return False, jerry_spread, []
+
+    # Collect co-sign list — used by downstream signal/conviction logic.
+    # Not used as a hard eligibility gate; magnitude alone qualifies.
+    cosigns = []
+
+    # Co-sign 1: v3 spread direction agrees with Jerry
+    v3_spread = _f(g.get('projected_spread'))
+    if v3_spread is not None:
+        v3_points_at_dog = (
+            (dog_side == 'home' and v3_spread > 0) or
+            (dog_side == 'away' and v3_spread < 0)
+        )
+        if v3_points_at_dog and abs(v3_spread) >= 0.3:
+            cosigns.append(f'v3 agrees (spread {v3_spread:+.2f})')
+
+    # Co-sign 2: confluence net points at dog's side (per signal_confluence_breakdown)
+    breakdown = g.get('signal_confluence_breakdown') or {}
+    if isinstance(breakdown, str):
+        try:
+            import json as _json
+            breakdown = _json.loads(breakdown)
+        except Exception:
+            breakdown = {}
+    if isinstance(breakdown, dict):
+        h_count = sum(1 for v in breakdown.values() if v == 'home')
+        a_count = sum(1 for v in breakdown.values() if v == 'away')
+        if dog_side == 'home' and (h_count - a_count) >= 2:
+            cosigns.append(f'confluence +{h_count - a_count} on home')
+        elif dog_side == 'away' and (a_count - h_count) >= 2:
+            cosigns.append(f'confluence +{a_count - h_count} on away')
+
+    # Co-sign 3: the favorite's starter has anti-mastery vs the dog's team.
+    # When the favorite's pitcher historically gets tagged by the dog team
+    # (career ERA >=5.5 on >=15 IP), that's a fundamental matchup signal
+    # that the market+v3 often underweight.
+    fav_prefix = 'away' if dog_side == 'home' else 'home'
+    vt_era = _f(g.get(f'{fav_prefix}_pitcher_vs_team_era'))
+    vt_ip = _f(g.get(f'{fav_prefix}_pitcher_vs_team_ip'))
+    if vt_era is not None and vt_ip is not None and vt_ip >= 15 and vt_era >= 5.5:
+        cosigns.append(f'favorite pitcher anti-mastery ({vt_era:.2f} ERA on {vt_ip:.1f} IP)')
+
+    # Eligible on magnitude alone; co-signs surface for conviction boost downstream.
+    return True, jerry_spread, cosigns
+
+
 def score_dawg(g, diag=None, ml_map=None):
     """Evaluate a game for Dawg candidacy. Returns dict or None if not a Dawg.
 
@@ -212,6 +320,34 @@ def score_dawg(g, diag=None, ml_map=None):
     team = g.get('home_team') if is_home_dawg else g.get('away_team')
     opp_team = g.get('away_team') if is_home_dawg else g.get('home_team')
 
+    # Price gate (2026-06-01 redesign). Lottery tickets above +250 lose
+    # more than the price implies — books know more than the model at
+    # extreme prices. Below +100 isn't really a dog (already gated above).
+    if team_ml > MAX_ML_PRICE:
+        if diag is not None:
+            diag.append(f"  ✗ {matchup_label}: {team.split()[-1]} ML {team_ml:+d} above MAX_ML_PRICE +{MAX_ML_PRICE} (lottery zone)")
+        return None
+
+    # Jerry-first eligibility gate (2026-06-01 redesign). Replaces the
+    # v3 MIN_EDGE 1.3 path. See JERRY_DOG_MAGNITUDE_GATE comment at top.
+    dog_side = 'home' if is_home_dawg else 'away'
+    jerry_eligible, jerry_spread_val, jerry_cosigns = _jerry_qualifies_dog(g, dog_side)
+    if not jerry_eligible:
+        if diag is not None:
+            if jerry_spread_val is None:
+                diag.append(f"  ✗ {matchup_label}: Jerry not populated on this row")
+            else:
+                # Either Jerry doesn't point at the dog OR magnitude < gate OR no co-sign
+                jerry_at_dog = (
+                    (dog_side == 'home' and jerry_spread_val > 0) or
+                    (dog_side == 'away' and jerry_spread_val < 0)
+                )
+                if not jerry_at_dog:
+                    diag.append(f"  ✗ {matchup_label}: Jerry disagrees with dog direction (jerry_spread {jerry_spread_val:+.2f})")
+                else:  # magnitude below gate
+                    diag.append(f"  ✗ {matchup_label}: Jerry magnitude {abs(jerry_spread_val):.2f} < gate {JERRY_DOG_MAGNITUDE_GATE} (weak Jerry lean)")
+        return None
+
     # Compute dog's projected differential: positive = dog wins
     dog_differential = ps if is_home_dawg else -ps
 
@@ -261,16 +397,11 @@ def score_dawg(g, diag=None, ml_map=None):
                 )
             v4_disagrees_for_dog = False
 
-    # When v4 unlocks the dog, use its edge for gating. Otherwise stay
-    # on v3. Threshold stays 1.3 in both paths — v4's stronger edge
-    # naturally passes when it should.
+    # MIN_EDGE 1.3 gate removed (2026-06-01 redesign). Jerry-first
+    # eligibility above is now the primary gate — v3 dog_edge is used only
+    # for the legacy conviction math + display. Surface effective_dog_edge
+    # so the existing display logic keeps working.
     effective_dog_edge = v4_dog_edge if v4_disagrees_for_dog else dog_edge
-    MIN_EDGE = 1.3
-    if effective_dog_edge < MIN_EDGE:
-        if diag is not None:
-            src = "v4" if v4_disagrees_for_dog else "v3"
-            diag.append(f"  ✗ {matchup_label}: {team.split()[-1]} dog_edge={effective_dog_edge:+.2f} ({src}, ps={ps:+.1f}, ML {team_ml:+d}) — model agrees")
-        return None
 
     # close_spread for display only — may be wrong sign but we'll show it
     cs = _f(g.get('close_spread'))
@@ -296,6 +427,29 @@ def score_dawg(g, diag=None, ml_map=None):
 
     signals = {}
     conviction = 40  # base for being a model-identified dawg
+
+    # Jerry signal (2026-06-01) — Jerry already qualified the dog earlier.
+    # Magnitude drives the base bump; co-signs add on top so co-signed Jerry
+    # picks naturally rank higher in candidate selection.
+    jerry_magnitude = abs(jerry_spread_val) if jerry_spread_val is not None else 0
+    jerry_bump = min(20, int(jerry_magnitude * 5))  # 1.0 → 5pt, 4.0 → 20pt cap
+    conviction += jerry_bump
+    if jerry_cosigns:
+        # +6 per co-sign, cap at +12 (2 co-signs is the realistic max)
+        cosign_bump = min(12, len(jerry_cosigns) * 6)
+        conviction += cosign_bump
+        cosign_str = ' • '.join(jerry_cosigns)
+        signals['jerry'] = (
+            f"Jerry sees {team.split()[-1]} winning by {jerry_magnitude:.1f} runs "
+            f"+ {len(jerry_cosigns)} co-sign{'s' if len(jerry_cosigns) > 1 else ''}: {cosign_str}"
+        )
+    else:
+        # Lonely Jerry — flagged but not blocked. Conviction stays lower so
+        # the publish-floor naturally filters weak Jerry-only picks.
+        signals['jerry'] = (
+            f"Jerry sees {team.split()[-1]} winning by {jerry_magnitude:.1f} runs "
+            f"(lonely — no v3/confluence/mastery co-sign)"
+        )
 
     # Dog edge — how much better the dog is per model vs market's run line
     edge_bump = min(35, int(dog_edge * 8))
