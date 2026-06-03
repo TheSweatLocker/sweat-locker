@@ -207,13 +207,22 @@ def tier_for(conviction, prop_type=None):
     so we lift the K bar and skip K LEAN entirely. Unders need higher floors
     because they bet on the rarer outcome (0-fer hitter, K-line fade).
     """
+    # 2026-06-03: restored LEAN tier for K props (55-69 conviction). The
+    # original audit said "Ks barely beat coin flip <70" but that was on
+    # n=23 and the side-effect was hiding half the K slate when the prop
+    # exists with a real book line. UX cost (users see less surface area)
+    # exceeded the audit benefit (suppressing a marginal cohort).
+    # The 55-69 LEAN band surfaces as informational/projection-only in the
+    # app — STRONG and PRIME tiers still gate card-grade picks.
     if prop_type == 'ks_over':
         if conviction >= 82: return 'PRIME'
         if conviction >= 70: return 'STRONG'
+        if conviction >= 55: return 'LEAN'
         return 'SKIP'
     if prop_type == 'ks_under':
         if conviction >= 82: return 'PRIME'
         if conviction >= 70: return 'STRONG'
+        if conviction >= 55: return 'LEAN'
         return 'SKIP'
     if prop_type == 'hits_under':
         # 0-fer is a long shot — only PRIME/STRONG, no LEAN noise
