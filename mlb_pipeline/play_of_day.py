@@ -120,6 +120,32 @@ def sweat_tier_for(score, ctx=None):
     return 'PASS'
 
 
+_TIER_RANK = {'PASS': 0, 'LIGHT_LEAN': 1, 'STRONG': 2, 'PRIME': 3}
+
+
+def _fetch_sweat_lock(game_id, game_date):
+    """Return (current_tier_max, current_locked_at) from DB or (None, None) on
+    miss/failure. Best-effort — if the column doesn't exist yet (migration
+    pending) this silently returns (None, None) and the monotonic lock is a
+    no-op."""
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_context"
+            f"?game_id=eq.{game_id}&game_date=eq.{game_date}"
+            f"&select=sweat_tier_max,sweat_tier_locked_at",
+            headers=HEADERS,
+            timeout=8,
+        )
+        if r.status_code != 200:
+            return (None, None)
+        rows = r.json() or []
+        if not rows:
+            return (None, None)
+        return (rows[0].get('sweat_tier_max'), rows[0].get('sweat_tier_locked_at'))
+    except Exception:
+        return (None, None)
+
+
 def write_sweat_score(ctx, score, tier, breakdown=None):
     """Write the score + tier back to mlb_game_context so the app reads the
     same number the server computed. Eliminates the client/server drift that
@@ -137,6 +163,13 @@ def write_sweat_score(ctx, score, tier, breakdown=None):
     the 93 number suggested PRIME, the tier said STRONG. Cap aligns the two:
     sweat ≥ 80 only when an actionable PRIME bet exists.
     Raw composite score preserved in breakdown.sweat_score_raw for audit.
+
+    2026-06-03: TIER-MONOTONIC LOCK. Within a single game_date, the persisted
+    sweat_tier is the MAX tier the scorer has produced so far. Solves the
+    recurring "6 AM STRONG → 2 PM LIGHT_LEAN" intraday regression UX issue
+    documented in [[project_pm_cron_live_game_prop_overwrite]]. The score
+    (numeric) still floats with the live inputs for audit transparency; only
+    the tier is locked. Requires 20260603_sweat_tier_lock.sql migration.
     """
     game_id = ctx.get('game_id')
     if not game_id:
@@ -165,7 +198,40 @@ def write_sweat_score(ctx, score, tier, breakdown=None):
             breakdown.setdefault('sweat_score_raw', displayed_score)
             breakdown.setdefault('cap_reason', 'no_dimension_play')
         displayed_score = 79
-    payload = {'sweat_score': displayed_score, 'sweat_tier': tier}
+
+    # ---- Tier-monotonic lock (2026-06-03) ----
+    # Read the current sweat_tier_max for this row. If we computed a LOWER
+    # tier than what's already on record for today, hold the persisted tier
+    # at the day's high. Score still moves freely (audit transparency) but
+    # the tier the user sees does not regress intraday.
+    game_date = ctx.get('game_date')
+    persisted_tier_max, persisted_locked_at = _fetch_sweat_lock(game_id, game_date)
+    computed_tier = tier
+    new_rank = _TIER_RANK.get(computed_tier, 0)
+    held_rank = _TIER_RANK.get(persisted_tier_max, -1)
+    if persisted_tier_max and new_rank < held_rank:
+        # Demotion blocked — hold previous max tier; surface the held-down
+        # state inside the breakdown so the audit can see what the live
+        # scorer would have emitted.
+        if isinstance(breakdown, dict):
+            breakdown.setdefault('tier_lock', {})
+            breakdown['tier_lock'] = {
+                'held_at': persisted_tier_max,
+                'would_have_been': computed_tier,
+                'reason': 'tier_monotonic_within_day',
+                'locked_at': persisted_locked_at,
+            }
+        persisted_tier = persisted_tier_max
+    else:
+        persisted_tier = computed_tier
+
+    payload = {'sweat_score': displayed_score, 'sweat_tier': persisted_tier}
+    # Promote sweat_tier_max + stamp locked_at when this is the first time
+    # today we've reached this tier (or a higher one).
+    if new_rank > held_rank:
+        payload['sweat_tier_max'] = computed_tier
+        from datetime import datetime as _dt, timezone as _tz
+        payload['sweat_tier_locked_at'] = _dt.now(_tz.utc).isoformat()
     if breakdown is not None:
         payload['sweat_breakdown'] = breakdown
     try:
@@ -175,13 +241,14 @@ def write_sweat_score(ctx, score, tier, breakdown=None):
             json=payload,
             timeout=10,
         )
-        # If the breakdown column doesn't exist yet (migration not applied),
-        # retry without it so sweat_score/tier still land.
-        if r.status_code == 400 and breakdown is not None:
+        # If columns don't exist yet (migration pending), strip optional
+        # fields and retry so the core sweat_score/tier still land.
+        if r.status_code == 400:
+            fallback = {'sweat_score': displayed_score, 'sweat_tier': persisted_tier}
             requests.patch(
                 f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_id=eq.{game_id}&game_date=eq.{ctx.get('game_date')}",
                 headers={**HEADERS, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'},
-                json={'sweat_score': int(score), 'sweat_tier': tier},
+                json=fallback,
                 timeout=10,
             )
     except Exception as e:
