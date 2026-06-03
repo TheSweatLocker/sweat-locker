@@ -465,6 +465,17 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
     opp_l3_era = _f(ctx.get(f'{opp_side}_pitcher_last_3_era'))
     opp_first_inn = _f(ctx.get(f'{opp_side}_first_inning_era'))
     opp_split_delta = _f(ctx.get(f'{opp_side}_pitcher_split_delta'))
+    # 2026-06-03: the legacy {side}_pitcher_split_delta column is always NULL
+    # — get_pitcher_splits() in game_context.py never returns a 'split_delta'
+    # key (only home_era/away_era/IP). Compute the delta directly here from
+    # the venue ERA vs xERA. opp_side is 'home' or 'away' and they're pitching
+    # AT that venue tonight, so the relevant split is e.g. away_pitcher_away_era.
+    # IP gate is already applied in the helper (None when <15 IP per side).
+    if opp_split_delta is None:
+        venue_era = _f(ctx.get(f'{opp_side}_pitcher_{opp_side}_era'))
+        baseline = _f(ctx.get(f'{opp_side}_sp_xera'))
+        if venue_era is not None and baseline is not None:
+            opp_split_delta = round(venue_era - baseline, 2)
     opp_mastery_era = _f(ctx.get(f'{opp_side}_pitcher_vs_team_era'))
     opp_mastery_ip = _f(ctx.get(f'{opp_side}_pitcher_vs_team_ip'))
     # Recent mastery (L3 starts vs opp) — added 5/30
