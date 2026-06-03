@@ -12,9 +12,25 @@ Writes top N props by conviction to mlb_pipeline_props table.
 import os
 import re
 import sys
+import unicodedata
 import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+
+
+def _norm_name(s):
+    """Accent-fold + lowercase a name so 'Cristopher Sánchez' (MLB Stats API)
+    matches 'Cristopher Sanchez' (Odds API). 2026-06-03 fix — Sánchez had 4
+    SKIP-tier props tonight because the book_map lookup was exact-lowercase
+    against an accented MLB-side name, missing the unaccented Odds API key.
+    NFD decomposes accented chars into base + combining mark, then we drop
+    any code point in the Unicode "Mn" (Mark, Nonspacing) category."""
+    if not s:
+        return ''
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', str(s).lower())
+        if unicodedata.category(c) != 'Mn'
+    ).strip()
 
 load_dotenv()
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
@@ -2719,7 +2735,10 @@ def fetch_book_lines_for_market(date_str, market):
                     median_line = lines[len(lines) // 2]
                     # Use the entry matching the median for odds
                     match = next((e for e in entries if e[0] == median_line), entries[0])
-                    book_map[pname.lower()] = {
+                    # Accent-fold the key so MLB-side names with diacritics
+                    # (e.g., "Cristopher Sánchez") still hit even when Odds API
+                    # stores the plain ASCII spelling.
+                    book_map[_norm_name(pname)] = {
                         'line': match[0],
                         'over': match[1],
                         'under': match[2],
@@ -2876,7 +2895,9 @@ def attach_book_lines(props):
         for p in props:
             if PROP_MARKET_MAP.get(p.get('prop_type')) != market:
                 continue
-            name = (p.get('player_name') or '').strip().lower()
+            # Accent-fold the lookup so Sánchez → sanchez matches the book_map
+            # key we built the same way above.
+            name = _norm_name(p.get('player_name'))
             bk = book_map.get(name)
             if not bk:
                 continue

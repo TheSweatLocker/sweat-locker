@@ -6432,7 +6432,16 @@ if(mkt.key === 'pitcher_props') {
         console.log('Pipeline MLB props fetch error:', error.message);
         setPipelineMLBProps([]);
       } else {
-        setPipelineMLBProps(data || []);
+        // SKIP tier = pipeline computed a score but Phase 2 attach failed
+        // (no book line, no recal). Shouldn't surface in the per-game props
+        // panel — these are the "Expected Ks (over)" with no book line that
+        // were eroding trust. RPC currently returns them for downstream
+        // audit consumers; the user-facing surface drops them here.
+        // TODO: move filter into get_todays_pipeline_props RPC once we
+        // confirm no other consumer needs SKIP rows. See
+        // feedback_backside_dictates_app_renders.
+        const filtered = (data || []).filter((p: any) => p?.tier !== 'SKIP');
+        setPipelineMLBProps(filtered);
       }
     } catch (e) {
       console.log('Pipeline MLB props exception:', e?.message);
