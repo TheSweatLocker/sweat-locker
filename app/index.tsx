@@ -8015,15 +8015,31 @@ setJerryHistory(prev => {
                 if(p.vs_team_era != null) bits.push(`${p.vs_team_era} career vs opp`);
                 return `${p.name} — ${bits.join(' · ')}`;
               };
-              const projectionText = (p: any) => {
+              // Renders the projection sub-line under each starter. 2026-06-03
+              // contrast bump: lifted the muted color to the same brightness
+              // as the pitcher stat line and bolded the K count so users
+              // actually catch the projection at a glance. K is the prop
+              // type with the most user traction; the model projection
+              // beside the book line is the read users want most.
+              const projectionLine = (p: any) => {
                 if(!p || !p.name) return null;
-                const parts: string[] = [];
-                if(p.projected_ks != null) parts.push(`${p.projected_ks} K`);
-                if(p.projected_bb != null) parts.push(`${p.projected_bb} BB`);
-                if(p.projected_hits != null) parts.push(`${p.projected_hits} H`);
-                if(p.projected_outs != null) parts.push(`${p.projected_outs} outs`);
-                if(p.projected_er != null) parts.push(`${p.projected_er} ER`);
-                return parts.length ? `Projects: ${parts.join(' · ')}` : null;
+                if(p.projected_ks == null && p.projected_bb == null && p.projected_hits == null
+                   && p.projected_outs == null && p.projected_er == null) return null;
+                const tail: string[] = [];
+                if(p.projected_bb != null) tail.push(`${p.projected_bb} BB`);
+                if(p.projected_hits != null) tail.push(`${p.projected_hits} H`);
+                if(p.projected_outs != null) tail.push(`${p.projected_outs} outs`);
+                if(p.projected_er != null) tail.push(`${p.projected_er} ER`);
+                return (
+                  <Text style={{color:'#c8d8e8',fontSize:11,marginBottom:3,marginLeft:8}}>
+                    <Text style={{color:'#7a92a8'}}>Projects: </Text>
+                    {p.projected_ks != null ? (
+                      <Text style={{fontWeight:'800'}}>{p.projected_ks} K</Text>
+                    ) : null}
+                    {tail.length && p.projected_ks != null ? ' · ' : ''}
+                    {tail.join(' · ')}
+                  </Text>
+                );
               };
               denseContent = (
                 <>
@@ -8040,10 +8056,10 @@ setJerryHistory(prev => {
                   <Row label="wRC+" value={(sit.home_wrc_plus!=null||sit.away_wrc_plus!=null) ? `home ${sit.home_wrc_plus ?? '?'} / away ${sit.away_wrc_plus ?? '?'}` : null}/>
                   <Section title="STARTERS"/>
                   {pitcherText(pa) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(pa)}</Text>}
-                  {projectionText(pa) && <Text style={{color:'#7a92a8',fontSize:11,marginBottom:3,marginLeft:8}}>{projectionText(pa)}</Text>}
+                  {projectionLine(pa)}
                   {(pa.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(pa.flags||[]).join(' · ')}</Text>}
                   {pitcherText(ph) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(ph)}</Text>}
-                  {projectionText(ph) && <Text style={{color:'#7a92a8',fontSize:11,marginBottom:3,marginLeft:8}}>{projectionText(ph)}</Text>}
+                  {projectionLine(ph)}
                   {(ph.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(ph.flags||[]).join(' · ')}</Text>}
                   {playRows}
                 </>
