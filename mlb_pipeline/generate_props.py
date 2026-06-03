@@ -2699,7 +2699,13 @@ def fetch_book_lines_for_market(date_str, market):
                     f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{ev_id}/odds",
                     params={
                         'apiKey': ODDS_API_KEY,
-                        'regions': 'us',
+                        # 2026-06-03: was 'us' only — missed Fliff, theScore Bet,
+                        # Hard Rock Bet, Hard Rock Bet (OH) which Odds API
+                        # classifies under us2. Critical for pitcher_walks
+                        # specifically — main us books often don't post BB
+                        # markets but us2 books do. Williams BB U 1.5 was
+                        # SKIP'd 6/3 because of this.
+                        'regions': 'us,us2',
                         'markets': market,
                         'oddsFormat': 'american',
                     },
