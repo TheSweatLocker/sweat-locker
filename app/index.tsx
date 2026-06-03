@@ -7737,6 +7737,18 @@ setJerryHistory(prev => {
             const pp = mlbCtx?.primary_play;
             const sweat = mlbCtx?.sweat_score;
             const sweatTier = mlbCtx?.sweat_tier;
+            const sweatLockedAt = mlbCtx?.sweat_tier_locked_at;
+            // Format the lock timestamp as local time (e.g., "6:08 AM") so users
+            // see the score is anchored to the morning compute, not drifting
+            // with each cron pass. Solves the recurring "STRONG earlier today,
+            // now LIGHT_LEAN" beta confidence erosion.
+            const lockedAtLabel = (() => {
+              if (!sweatLockedAt) return null;
+              try {
+                const d = new Date(sweatLockedAt);
+                return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+              } catch { return null; }
+            })();
             // Only show for MLB games — other sports don't have primary_play yet
             const isMLBSelected = selectedGame?.sport_key === 'baseball_mlb' || gamesSport === 'MLB';
             if (!isMLBSelected) return null;
@@ -7783,6 +7795,11 @@ setJerryHistory(prev => {
                     <View style={{flexDirection:'row',justifyContent:'space-between',marginTop:10,paddingTop:8,borderTopWidth:1,borderTopColor:tierBorder}}>
                       <Text style={{color:'#7a92a8',fontSize:11}}>Sweat Score</Text>
                       <Text style={{color:'#c8d8e8',fontSize:11,fontWeight:'700'}}>{sweat}/100 — {sweatTier || ''}</Text>
+                    </View>
+                  ) : null}
+                  {lockedAtLabel ? (
+                    <View style={{flexDirection:'row',alignItems:'center',justifyContent:'flex-end',marginTop:4}}>
+                      <Text style={{color:'#5e7388',fontSize:10}}>🔒 Tier locked at {lockedAtLabel}</Text>
                     </View>
                   ) : null}
                 </View>
