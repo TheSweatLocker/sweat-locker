@@ -2881,6 +2881,75 @@ def recalibrate_k_props_with_book_lines(props):
     return recalibrate_props_with_book_lines(props)
 
 
+PRESERVE_STALE_MAX_HOURS = 6  # how long an old attach is trusted on fresh-attach failure
+
+
+def _snapshot_existing_book_lines(date_str):
+    """Read currently-stored book_line + book_*_odds + last_attached_at off
+    today's props BEFORE the wipe. Returns dict keyed
+    (game_id, normalized_player_name, prop_type) → {line, over, under,
+    source, attached_at}. Used by attach_book_lines to preserve recently-
+    confirmed lines when a fresh Odds API call returns empty for that
+    pitcher/market.
+
+    Safe-when-column-missing: if last_attached_at column doesn't exist
+    yet, retries without it and stamps attached_at=None (snapshot still
+    preserves the line, but the recency gate falls open — preserve only
+    when the original DB row had a value). Idempotent on re-run.
+    """
+    if not date_str:
+        return {}
+    select = "game_id,player_name,prop_type,book_line,book_over_odds,book_under_odds,book_source,last_attached_at"
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
+            f"?game_date=eq.{date_str}&book_line=not.is.null&select={select}",
+            headers=HEADERS, timeout=10,
+        )
+        if r.status_code == 400:
+            # last_attached_at column probably not migrated yet — retry without
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
+                f"?game_date=eq.{date_str}&book_line=not.is.null"
+                f"&select=game_id,player_name,prop_type,book_line,book_over_odds,book_under_odds,book_source",
+                headers=HEADERS, timeout=10,
+            )
+        if r.status_code != 200:
+            return {}
+        snap = {}
+        for row in r.json() or []:
+            key = (row.get('game_id'), _norm_name(row.get('player_name')), row.get('prop_type'))
+            snap[key] = {
+                'line': row.get('book_line'),
+                'over': row.get('book_over_odds'),
+                'under': row.get('book_under_odds'),
+                'source': row.get('book_source'),
+                'attached_at': row.get('last_attached_at'),
+            }
+        return snap
+    except Exception as e:
+        print(f"  ⚠️ snapshot existing book lines failed (continuing without preserve): {e}")
+        return {}
+
+
+def _preserve_is_fresh(attached_at_iso):
+    """Is the previous attach recent enough to trust on a fresh-call failure?
+
+    Returns True when last_attached_at is within PRESERVE_STALE_MAX_HOURS.
+    When the column wasn't yet migrated (attached_at None on the row) we
+    fall through to True for backward compat — preserve anything we had,
+    because the alternative is dropping the line and going SKIP."""
+    if not attached_at_iso:
+        return True  # no timestamp on file → assume legacy row from this cron pass
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        t = _dt.fromisoformat(str(attached_at_iso).replace('Z', '+00:00'))
+        age_hours = (_dt.now(_tz.utc) - t).total_seconds() / 3600
+        return age_hours <= PRESERVE_STALE_MAX_HOURS
+    except Exception:
+        return True
+
+
 def attach_book_lines(props):
     """Attach book_line / book_over_odds / book_under_odds / book_source to
     ALL pitcher props (K, BB, HA, Outs, ER) in-place. Reference data only —
@@ -2889,8 +2958,16 @@ def attach_book_lines(props):
 
     Phase 2 (2026-05-29) generalized from K-only. Fetches each Odds API
     market once per cron (events endpoint cached across markets via the
-    underlying retry path). NULL book_line when the market is unavailable
-    for that pitcher — downstream consumers treat that as 'no recal'."""
+    underlying retry path).
+
+    2026-06-03 preserve-on-failure: before the fresh-attach loop, snapshot
+    {line, odds, source, last_attached_at} from currently-stored rows. When
+    a fresh API call returns empty for a pitcher/market AND the snapshot
+    has a value attached within PRESERVE_STALE_MAX_HOURS (6h), restore the
+    snapshot line. This stops the recurring "line vanished" pattern when
+    Odds API throttles, a market hasn't posted yet, or a region scope bug
+    excludes some books (us2 incident, 6/3). Stamps last_attached_at='now'
+    on every successful attach (fresh OR preserved)."""
     needed_markets = {}  # market → set of pitcher names
     for p in props:
         market = PROP_MARKET_MAP.get(p.get('prop_type'))
@@ -2902,26 +2979,51 @@ def attach_book_lines(props):
     if not needed_markets:
         return
     date_str = today_et()
+    # 2026-06-03 preserve snapshot: pull currently-stored book lines BEFORE
+    # we hit the API so we have a fallback for any pitcher/market the fresh
+    # call misses.
+    snapshot = _snapshot_existing_book_lines(date_str)
+    from datetime import datetime as _dt, timezone as _tz
+    now_iso = _dt.now(_tz.utc).isoformat()
+
     for market, pitchers in needed_markets.items():
         book_map = fetch_book_lines_for_market(date_str, market)
-        if not book_map:
-            continue
-        matched = 0
+        fresh = 0
+        preserved = 0
         for p in props:
             if PROP_MARKET_MAP.get(p.get('prop_type')) != market:
                 continue
             # Accent-fold the lookup so Sánchez → sanchez matches the book_map
             # key we built the same way above.
             name = _norm_name(p.get('player_name'))
-            bk = book_map.get(name)
-            if not bk:
+            bk = (book_map or {}).get(name)
+            if bk:
+                # Fresh attach succeeded — use the new line + stamp now.
+                p['book_line'] = bk['line']
+                p['book_over_odds'] = bk['over']
+                p['book_under_odds'] = bk['under']
+                p['book_source'] = f"{bk['source']} (median of {bk['n_books']})"
+                p['last_attached_at'] = now_iso
+                fresh += 1
                 continue
-            p['book_line'] = bk['line']
-            p['book_over_odds'] = bk['over']
-            p['book_under_odds'] = bk['under']
-            p['book_source'] = f"{bk['source']} (median of {bk['n_books']})"
-            matched += 1
-        print(f"  📖 Attached {market}: {matched} props (of {len(pitchers)} pitchers in scope)")
+            # Fresh attach missed — try snapshot.
+            key = (p.get('game_id'), name, p.get('prop_type'))
+            snap = snapshot.get(key)
+            if not snap or snap.get('line') is None:
+                continue
+            if not _preserve_is_fresh(snap.get('attached_at')):
+                continue
+            # Preserve: restore the prior line + odds, keep prior timestamp.
+            p['book_line'] = snap['line']
+            p['book_over_odds'] = snap['over']
+            p['book_under_odds'] = snap['under']
+            p['book_source'] = (snap.get('source') or '') + ' [preserved]'
+            p['last_attached_at'] = snap.get('attached_at')
+            preserved += 1
+        status = f"fresh {fresh}"
+        if preserved:
+            status += f" + preserved {preserved}"
+        print(f"  📖 {market}: {status} (of {len(pitchers)} pitchers in scope)")
 
 
 def upsert_props(props):
@@ -2960,7 +3062,8 @@ def upsert_props(props):
     #   (5/28) book_line / book_over_odds / book_under_odds / book_source
     #          per 20260528_book_lines_on_props.sql migration
     optional_cols = ('lineup_state', 'stack_alert',
-                     'book_line', 'book_over_odds', 'book_under_odds', 'book_source')
+                     'book_line', 'book_over_odds', 'book_under_odds', 'book_source',
+                     'last_attached_at')
     if r.status_code == 400 and any(c in (r.text or '') for c in optional_cols):
         missing = [c for c in optional_cols if c in (r.text or '')]
         print(f"  ⚠️ optional columns missing ({', '.join(missing)}) — stripping and retrying. Run:")
