@@ -96,6 +96,68 @@ def _fetch_nba_team_ids():
     return _NBA_TEAM_ID_CACHE
 
 
+def _fetch_team_playoff_record(team_id, season):
+    """Postseason-to-date W-L + PPG for a team. Fallback for the Finals
+    Game-1 case where _fetch_series_state returns None (no head-to-head
+    games yet). Pulls every postseason game involving this team this
+    season, aggregates wins/losses + average points.
+
+    Returns dict {wins, losses, ppg, papg, games} or None on failure."""
+    bdl_key = os.environ.get("BDL_API_KEY")
+    if not bdl_key or not team_id:
+        return None
+    try:
+        r = requests.get(
+            "https://api.balldontlie.io/nba/v1/games",
+            headers={"Authorization": bdl_key},
+            params={
+                "seasons[]": season,
+                "team_ids[]": team_id,
+                "postseason": "true",
+                "per_page": 100,
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        games = r.json().get("data", []) or []
+    except Exception:
+        return None
+    wins = losses = 0
+    pf = pa = 0
+    counted = 0
+    for g in games:
+        if (g.get("status") or "").lower() not in ("final", "final/ot"):
+            continue
+        h_id = (g.get("home_team") or {}).get("id")
+        v_id = (g.get("visitor_team") or {}).get("id")
+        h_s = g.get("home_team_score") or 0
+        v_s = g.get("visitor_team_score") or 0
+        if h_id == team_id:
+            team_score, opp_score = h_s, v_s
+        elif v_id == team_id:
+            team_score, opp_score = v_s, h_s
+        else:
+            continue
+        if team_score > opp_score:
+            wins += 1
+        elif opp_score > team_score:
+            losses += 1
+        pf += team_score
+        pa += opp_score
+        counted += 1
+    if counted == 0:
+        return None
+    return {
+        "wins": wins,
+        "losses": losses,
+        "games": counted,
+        "ppg": round(pf / counted, 1),
+        "papg": round(pa / counted, 1),
+        "scoring_margin": round((pf - pa) / counted, 1),
+    }
+
+
 def _fetch_series_state(away_team, home_team):
     """Pull the current playoff series state between two teams.
 
@@ -418,6 +480,19 @@ def build_struct(game_id, picks, stats):
     #                                              season records as baseline
     playoffs = _is_nba_playoffs_now()
     series_state = _fetch_series_state(away, home) if playoffs else None
+    # Postseason-to-date records — populated for both teams during playoffs so
+    # Jerry has playoff-specific data to lean on even when the series itself
+    # hasn't started (Finals Game 1 case). Replaces the regular-season-only
+    # baseline that Jerry was previously parroting as "no series data".
+    playoff_records = None
+    if playoffs:
+        team_map = _fetch_nba_team_ids()
+        et_now = datetime.now(timezone.utc) - timedelta(hours=4)
+        season = et_now.year - 1 if et_now.month < 10 else et_now.year
+        home_pr = _fetch_team_playoff_record(team_map.get(home), season)
+        away_pr = _fetch_team_playoff_record(team_map.get(away), season)
+        if home_pr or away_pr:
+            playoff_records = {"home": home_pr, "away": away_pr}
 
     struct = {
         "matchup": f"{away} @ {home}",
@@ -456,7 +531,15 @@ def build_struct(game_id, picks, stats):
         "context": {
             "playoffs": playoffs,
             "series_state": series_state,
-            "records_are": "regular-season baseline (playoffs in progress)" if playoffs else "current season",
+            # 2026-06-03: dropped the apologetic "regular-season baseline" string
+            # Jerry was parroting verbatim. Replaced with playoff_records (each
+            # team's postseason-to-date W-L + scoring) so Jerry has playoff
+            # data to anchor to even when the series itself hasn't started
+            # (Finals Game 1). When playoff_records is None too, the prompt
+            # tells Jerry to lead with regular-season + L10 net rating; no
+            # apologizing in user copy.
+            "playoff_records": playoff_records,
+            "is_finals_game_1": bool(playoffs and series_state is None and playoff_records),
         },
         "best_plays": best,
         "meta": {
@@ -469,11 +552,74 @@ def build_struct(game_id, picks, stats):
     return struct
 
 
+def _playoff_guidance_block(struct):
+    """Inline LLM instructions for handling playoff state. Prepended to the
+    context_block so the model sees them BEFORE the JSON struct.
+
+    The two specific failure modes this addresses:
+      1. Game 1 of a series — series_state is None. Without guidance, Jerry
+         writes "I don't have series data, treating with regular-season
+         baseline" verbatim. Bad brand copy.
+      2. Mid-series — series_state is populated but Jerry sometimes still
+         leans on regular-season totals as if they're current. The "regular
+         season is HISTORICAL" framing forces present-tense to playoff data.
+
+    Output is a short directive section. Empty string in regular season
+    so we don't add noise."""
+    ctx = struct.get("context") or {}
+    if not ctx.get("playoffs"):
+        return ""
+    series = ctx.get("series_state")
+    pr = ctx.get("playoff_records") or {}
+    home_pr, away_pr = pr.get("home"), pr.get("away")
+    is_finals_g1 = ctx.get("is_finals_game_1")
+
+    lines = ["NBA PLAYOFF GUIDANCE (read before the JSON struct):"]
+    if is_finals_g1:
+        lines.append(
+            "- THIS IS GAME 1 OF A NEW SERIES. There is no head-to-head series record yet — "
+            "do NOT write 'no series data' or 'regular-season baseline' as a caveat. "
+            "Lead with each team's POSTSEASON-TO-DATE record and scoring margin (in `context.playoff_records`). "
+            "That is the current-state data; regular-season totals are historical context only."
+        )
+        if home_pr and away_pr:
+            lines.append(
+                f"- Each team's playoff run is the anchor: home {home_pr.get('wins')}-{home_pr.get('losses')} "
+                f"(scoring margin {home_pr.get('scoring_margin'):+.1f}/g), away {away_pr.get('wins')}-{away_pr.get('losses')} "
+                f"(margin {away_pr.get('scoring_margin'):+.1f}/g). Compare these, not regular-season records."
+            )
+        lines.append(
+            "- Home team historically wins Game 1 of NBA Finals at ~70% rate. Worth mentioning if home is a "
+            "real edge per the model; do NOT mention if home is the model fade."
+        )
+    elif series:
+        lines.append(
+            f"- This game is part of an active series: {series.get('series_summary')}. "
+            "Lead with series state, not regular-season records. Regular-season totals are HISTORICAL — "
+            "use present tense only for postseason-to-date data."
+        )
+        if series.get("elimination_for"):
+            lines.append(
+                f"- {series['elimination_for']} faces ELIMINATION tonight (down 3). "
+                "Frame the stakes accordingly without overdramatizing."
+            )
+    else:
+        # Playoffs but no series + no playoff_records (early playoff window
+        # before any postseason games this season). Fall back gracefully.
+        lines.append(
+            "- Playoff window but no postseason data on file. Lead with regular-season + L10 net rating. "
+            "Do NOT verbalize the data gap to the user; just write the read."
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_prompt(templates, struct):
     away, home = struct["matchup"].split(" @ ")
     confidence_tier = "HIGH — NBA model active (net rating, DefRtg, opp eFG%, home/away records, last 5 net rating, injuries, pace)"
     context_block = (
-        "NBA PIPELINE CONTEXT (authoritative — analyze this, do not search for scores):\n"
+        _playoff_guidance_block(struct)
+        + "NBA PIPELINE CONTEXT (authoritative — analyze this, do not search for scores):\n"
         + json.dumps(struct, indent=2, default=str)
     )
     m = struct["model"]
@@ -501,6 +647,50 @@ def render_prompt(templates, struct):
         .replace("{universal_rules}", templates["universal"])
         .replace("{data_quality_note}", "")
     )
+
+
+_DISCLAIMER_PHRASES = (
+    # Each tuple: (lowercase substring to look for, reason for human audit)
+    "regular-season baseline",
+    "regular season baseline",
+    "no series data",
+    "without series data",
+    "without playoff data",
+    "limited playoff data",
+    "no playoff data available",
+    "treating with regular-season",
+    "treating with regular season",
+    "since i don't have",
+    "since we don't have",
+    "i'll lean on regular-season",
+    "i'll lean on regular season",
+)
+
+
+def _scrub_disclaimers(narrative):
+    """Strip sentences that verbalize the model's data gaps to the user.
+    These are brand killers — readers don't want to hear "I don't have
+    data, so..." in a confident pre-game read. Belt-and-suspenders to the
+    inline prompt guidance: if Jerry still slips a disclaimer in, drop it.
+
+    Operates on sentences (split on `. `). Drops any sentence containing
+    a disclaimer phrase from _DISCLAIMER_PHRASES. Preserves paragraph
+    structure since blank lines aren't sentence-split.
+    """
+    if not narrative:
+        return narrative
+    out_paragraphs = []
+    for paragraph in narrative.split("\n"):
+        if not paragraph.strip():
+            out_paragraphs.append(paragraph)
+            continue
+        # Split on sentence boundary; keep delimiter
+        import re as _re
+        sentences = _re.split(r"(?<=[.!?])\s+", paragraph)
+        kept = [s for s in sentences
+                if not any(p in s.lower() for p in _DISCLAIMER_PHRASES)]
+        out_paragraphs.append(" ".join(kept).strip())
+    return "\n".join(out_paragraphs).strip()
 
 
 def call_claude(prompt):
@@ -576,6 +766,13 @@ def run():
                 continue
         prompt = render_prompt(templates, struct)
         narrative = call_claude(prompt)
+        if narrative:
+            # Strip any data-gap disclaimers Jerry slipped past the inline
+            # prompt guidance. Brand voice: don't verbalize what we don't have.
+            scrubbed = _scrub_disclaimers(narrative)
+            if scrubbed != narrative:
+                print(f"  ✂ scrubbed disclaimer from {away} @ {home} read")
+            narrative = scrubbed
         if not narrative:
             print(f"  • {away} @ {home}: no narrative — storing struct only")
         if upsert_read(game_id, narrative or "", struct):
