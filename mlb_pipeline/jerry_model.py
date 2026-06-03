@@ -29,11 +29,61 @@ from typing import Any, Dict, Optional, Tuple
 # =============================================================================
 JERRY_WEIGHTS = {
     # --- Recency blends (alpha = weight on recent window vs season baseline) ---
-    'offense_recency_alpha': 0.50,   # 5/30: raised from 0.35 → 0.50. User flagged
-                                     # hot/cold bats as THE key baseball signal; bumping
-                                     # recency emphasis to catch transitions faster.
-    'offense_l7_alpha': 0.20,        # 20% L7 OPS bump on top
+    # 6/2 (Phase 1 recalibration): switched from fixed-alpha to Bayesian shrinkage
+    # in _blend_wrc_plus. The fixed alpha=0.50 was over-weighting recency on hot
+    # streaks — 6/1 + 6/2 audit showed Jerry's high-conv calls bombing because
+    # multipliers stacked too aggressively when teams were on form streaks that
+    # mean-revert. Bayesian shrinkage automatically dampens recency when recent
+    # sample is small relative to the prior, and weights more toward recency
+    # when sample is large. Tunable via wrc_*_prior_pa keys below.
+    #
+    # NOTE: offense_recency_alpha + offense_l7_alpha kept as fallbacks for any
+    # external caller still using the old API. _blend_wrc_plus ignores them now.
+    'offense_recency_alpha': 0.50,
+    'offense_l7_alpha': 0.20,
     'starter_l3_alpha': 0.30,        # 30% L3 ERA, 70% season xERA
+
+    # --- Bayesian shrinkage priors (NEW 6/2) ---
+    # projected_metric = (season × prior_pa + recent × recent_pa) / (prior_pa + recent_pa)
+    # Larger prior = more shrinkage toward season baseline (less trust in recent).
+    # Per-metric priors because BABIP/OPS regress faster than skill metrics.
+    #
+    # Effective recency weights at these defaults:
+    #   wRC+ L14 (recent_pa ~70) with prior 250 → 22% recent vs 78% season
+    #     (vs old fixed 50/50 — much more conservative on hot streaks)
+    #
+    # Tune downward (smaller prior) when audit shows we're too slow to catch
+    # real form changes; tune upward when high-conv calls keep losing.
+    'wrc_l14_prior_pa': 250,         # Bayesian prior strength for L14 wRC+ shrinkage
+    'wrc_l14_recent_pa': 70,         # implied sample size from 14-day window (~14 games × 5 PA)
+    'wrc_vs_hand_prior_pa': 150,     # vs-hand season slice — smaller prior since often smaller sample
+    'wrc_vs_hand_recent_pa_default': 200,  # rough season-level recent sample for vs-hand
+
+    # Mean reversion gate (NEW 6/2) — last line of defense against runaway
+    # recency multipliers. If |recent - season| / season > threshold, apply
+    # dampener. Catches 1.5+σ outliers that Bayesian alone doesn't fully tame.
+    'mean_reversion_threshold': 0.18,  # 18% deviation from season triggers gate
+    'mean_reversion_dampener': 0.70,   # dampens the recency contribution by this factor
+
+    # --- Pitcher rest + last-outing fatigue (NEW 6/2) ---
+    # Data already present in mlb_game_context as {side}_sp_days_rest and
+    # {side}_last_pitch_count — but Jerry wasn't reading them. Real signal:
+    # pitchers coming off heavy outings on short rest underperform their
+    # xERA, and pitchers off light outings on long rest outperform.
+    #
+    # Multiplier applied to opponent's run rate (higher mult = opponent
+    # scores more = pitcher is fatigued / undermined). Capped tight because
+    # this is a marginal signal, not a primary one.
+    'pitcher_normal_rest_days': 5,         # baseline: 5 days rest is "normal" between starts
+    'pitcher_normal_pitch_count': 90,      # baseline: 90 pitches is "normal" workload
+    'pitcher_fatigued_pitch_count': 105,   # >this on prior outing = heavy workload
+    'pitcher_fresh_pitch_count': 75,       # <this on prior outing = light workload
+    'pitcher_short_rest_days': 4,          # ≤this = short rest
+    'pitcher_long_rest_days': 6,           # ≥this = extra rest
+    'pitcher_fatigue_multiplier_high': 1.05,  # fatigued (heavy + short) → opp scores +5%
+    'pitcher_fatigue_multiplier_mild': 1.03,  # mild fatigue (heavy OR short alone) → +3%
+    'pitcher_freshness_multiplier_high': 0.97, # fresh (light + long) → opp scores -3%
+    'pitcher_freshness_multiplier_mild': 0.985, # mild freshness (light OR long alone) → -1.5%
 
     # --- Hot/cold bats drift (NEW 5/30) ---
     # Uses offense_drift = L10 R/G - season R/G (precomputed in game_context).
@@ -163,20 +213,80 @@ def _blend(weight_value_pairs):
     return sum(w * v for w, v in valid) / total_w
 
 
+def _bayesian_blend(season_value, recent_value, prior_pa, recent_pa, w):
+    """Sample-weighted Bayesian shrinkage of a recent observation toward season.
+
+    Formula:
+        blended = (season × prior_pa + recent × recent_pa) / (prior_pa + recent_pa)
+
+    Larger prior_pa = more shrinkage toward season (less trust in recent).
+    Smaller recent_pa = less weight on the recent value (auto-dampens noisy samples).
+
+    Includes mean-reversion gate (6/2 addition) — when the recent value deviates
+    more than `mean_reversion_threshold` from season, dampen the recent contribution
+    by `mean_reversion_dampener`. Catches the runaway-multiplier failure mode that
+    Bayesian alone doesn't fully tame on 1.5+σ outliers (DET 8-0 over TB despite
+    "TB trending down" signal — Jerry trusted form too much).
+    """
+    if season_value is None:
+        return recent_value
+    if recent_value is None or recent_pa <= 0:
+        return season_value
+
+    # Mean-reversion gate
+    effective_recent_pa = recent_pa
+    if season_value != 0:
+        deviation = abs(recent_value - season_value) / abs(season_value)
+        if deviation > w['mean_reversion_threshold']:
+            effective_recent_pa = recent_pa * w['mean_reversion_dampener']
+
+    denom = prior_pa + effective_recent_pa
+    if denom <= 0:
+        return season_value
+    return (season_value * prior_pa + recent_value * effective_recent_pa) / denom
+
+
 def _blend_wrc_plus(season, vs_hand, l14, w):
-    """Blend wRC+ inputs into a single recency-and-platoon-adjusted number.
-    Season is the baseline. vs_hand mixes in at offense_vs_hand_weight if
-    available. L14 recency adds at offense_recency_alpha if available."""
+    """Blend wRC+ inputs into a recency-and-platoon-adjusted number.
+
+    Uses Bayesian shrinkage (6/2 redesign) — recent samples get weight based on
+    their effective sample size relative to a configurable prior, instead of
+    the old fixed-alpha (alpha=0.50) blend that over-weighted hot streaks.
+
+    Two stages:
+      1. Platoon blend: shrink vs_hand wRC+ toward season using a vs-hand prior
+      2. Recency blend: shrink L14 wRC+ toward the platoon-adjusted season
+
+    A team with L14 wRC+ 145 vs season 100 (45-point hot streak) used to give
+    blended = 122 (50/50). Now with prior 250 / recent 70:
+       (100 × 250 + 145 × 70) / 320 = 109.8 — much more conservative.
+    The mean-reversion gate fires too (45 / 100 = 0.45 > 0.18 threshold),
+    further dampening recent weight by 0.70: blended ~106. Catches the runaway.
+    """
     if season is None:
         return None
-    blended = season
+
+    # Stage 1: vs-hand platoon shrinkage
+    platoon_adjusted = season
     if vs_hand is not None:
-        vsw = w['offense_vs_hand_weight']
-        blended = blended * (1 - vsw) + vs_hand * vsw
+        # vs-hand season slice typically has a partial-season sample; we
+        # approximate it at wrc_vs_hand_recent_pa_default (~200 PA equivalent).
+        platoon_adjusted = _bayesian_blend(
+            season, vs_hand,
+            prior_pa=w['wrc_vs_hand_prior_pa'],
+            recent_pa=w['wrc_vs_hand_recent_pa_default'],
+            w=w,
+        )
+
+    # Stage 2: L14 recency shrinkage on top of platoon-adjusted season
     if l14 is not None:
-        a = w['offense_recency_alpha']
-        blended = blended * (1 - a) + l14 * a
-    return blended
+        return _bayesian_blend(
+            platoon_adjusted, l14,
+            prior_pa=w['wrc_l14_prior_pa'],
+            recent_pa=w['wrc_l14_recent_pa'],
+            w=w,
+        )
+    return platoon_adjusted
 
 
 def _starter_composite_rate(xera, l3_era, first_inn_era, w, for_first_inning=False):
@@ -244,6 +354,53 @@ def _era_to_multiplier(era, w):
     pos = (era - w['mastery_strong_era']) / span
     mult_span = w['mastery_weak_multiplier'] - w['mastery_strong_multiplier']
     return w['mastery_strong_multiplier'] + pos * mult_span
+
+
+def _pitcher_form_multiplier(days_rest, last_pitch_count, w):
+    """Fatigue / freshness multiplier from rest + last-outing pitch count.
+
+    Applied to opponent's run rate (higher multiplier = opp scores more
+    = pitcher is undermined). Reads {side}_sp_days_rest and
+    {side}_last_pitch_count from game_context — data we've had all along
+    but Jerry wasn't using.
+
+    Decision matrix (heavy = pitch count > fatigued_pitch_count,
+                     light = pitch count < fresh_pitch_count,
+                     short = days_rest ≤ short_rest_days,
+                     long  = days_rest ≥ long_rest_days):
+
+      heavy + short → high fatigue (worst case)
+      heavy + long  → mild fatigue (extra rest helps but not enough)
+      light + short → mild freshness
+      light + long  → high freshness (best case — sharp pitcher)
+      one signal alone → mild
+      neither → neutral 1.0
+    """
+    if days_rest is None and last_pitch_count is None:
+        return 1.0
+
+    is_fatigued_workload = (last_pitch_count is not None
+                            and last_pitch_count > w['pitcher_fatigued_pitch_count'])
+    is_fresh_workload = (last_pitch_count is not None
+                         and last_pitch_count < w['pitcher_fresh_pitch_count'])
+    is_short_rest = (days_rest is not None
+                     and days_rest <= w['pitcher_short_rest_days'])
+    is_long_rest = (days_rest is not None
+                    and days_rest >= w['pitcher_long_rest_days'])
+
+    # Worst-case fatigue: heavy workload + short rest
+    if is_fatigued_workload and is_short_rest:
+        return w['pitcher_fatigue_multiplier_high']
+    # Best-case freshness: light workload + long rest
+    if is_fresh_workload and is_long_rest:
+        return w['pitcher_freshness_multiplier_high']
+    # Single-signal fatigue (heavy workload OR short rest alone)
+    if is_fatigued_workload or is_short_rest:
+        return w['pitcher_fatigue_multiplier_mild']
+    # Single-signal freshness
+    if is_fresh_workload or is_long_rest:
+        return w['pitcher_freshness_multiplier_mild']
+    return 1.0
 
 
 def _starter_split_multiplier(split_delta, w):
@@ -415,10 +572,29 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
                                        recent_ip=opp_mastery_recent_ip)
     split_mult = _starter_split_multiplier(opp_split_delta, w)
 
+    # 6/2 (Phase 1): pitcher form (fatigue/freshness) based on rest + last
+    # outing pitch count. Reads {opp_side}_sp_days_rest +
+    # {opp_side}_last_pitch_count from context — both already populated by
+    # game_context.py, never consumed by Jerry until now.
+    # Applied as a multiplier on opp pitcher → higher = opp scores more
+    # against us = our offense benefits (which is what we want when the
+    # opponent's pitcher is tired). Same multiplier flows through both the
+    # 1-3 and 4-6 buckets where the starter is the primary signal.
+    opp_pitcher_days_rest = _f(ctx.get(f'{opp_side}_sp_days_rest'))
+    opp_pitcher_last_pitches = _f(ctx.get(f'{opp_side}_last_pitch_count'))
+    pitcher_form_mult = _pitcher_form_multiplier(
+        opp_pitcher_days_rest, opp_pitcher_last_pitches, w,
+    )
+
     # === Inning bucket projections ===
+    # Pitcher form multiplier (rest + last-outing pitches) folds into the
+    # starter-period split_mult so it applies multiplicatively alongside
+    # mastery + home/away splits without introducing a new bucket param.
+    starter_period_split_mult = split_mult * pitcher_form_mult
+
     # 1-3: starter is fresh, use bucket era if available, else composite with 1st-inn weighted
     rate_1_3 = opp_bucket_1_3 or _starter_composite_rate(opp_xera, opp_l3_era, opp_first_inn, w, for_first_inning=True)
-    runs_1_3 = _bucket_runs(rate_1_3, bucket_offense_1_3, offense_mult, mastery_mult, split_mult, w['bucket_1_3_weight'], w)
+    runs_1_3 = _bucket_runs(rate_1_3, bucket_offense_1_3, offense_mult, mastery_mult, starter_period_split_mult, w['bucket_1_3_weight'], w)
 
     # 4-6: starter fatiguing, blend with bullpen per share weights
     starter_4_6 = opp_bucket_4_6 or _starter_composite_rate(opp_xera, opp_l3_era, opp_first_inn, w)
@@ -427,7 +603,7 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
                     w['bucket_4_6_bullpen_share'] * opp_bullpen_era)
     else:
         rate_4_6 = starter_4_6 or opp_bullpen_era
-    runs_4_6 = _bucket_runs(rate_4_6, bucket_offense_4_6, offense_mult, mastery_mult, split_mult, w['bucket_4_6_weight'], w)
+    runs_4_6 = _bucket_runs(rate_4_6, bucket_offense_4_6, offense_mult, mastery_mult, starter_period_split_mult, w['bucket_4_6_weight'], w)
 
     # 7-9: bullpen only, gas penalty applies
     gas_penalty = _bullpen_gas_penalty(opp_bullpen_gas, w)
@@ -472,6 +648,10 @@ def _project_team_runs(ctx: Dict[str, Any], team_side: str, w: Dict[str, Any]) -
         'mastery_recent_era': opp_mastery_recent_era,
         'mastery_recent_ip': opp_mastery_recent_ip,
         'starter_split_mult': round(split_mult, 3),
+        # Phase 1 (6/2): pitcher form audit trail
+        'opp_pitcher_days_rest': opp_pitcher_days_rest,
+        'opp_pitcher_last_pitches': opp_pitcher_last_pitches,
+        'pitcher_form_mult': round(pitcher_form_mult, 3),
         'opp_starter_rate_1_3': round(rate_1_3, 2) if rate_1_3 else None,
         'opp_starter_rate_4_6': round(rate_4_6, 2) if rate_4_6 else None,
         'opp_bullpen_rate_7_9': round(bullpen_late_adjusted, 2) if bullpen_late_adjusted else None,
