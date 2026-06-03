@@ -806,6 +806,21 @@ def run():
 
     # Batch upload
     if top_n:
+        # Normalize keys across the batch — PostgREST rejects mixed schemas
+        # with "All object keys must match" when a column is on some rows
+        # but not others. Same fix pattern as generate_props.py upsert_props
+        # (5/29 bug). 6/3 trigger: attach_book_odds attached on 14/15 rows
+        # tonight (1 batter didn't have a batter_home_runs market), so 14
+        # rows had `book_odds`+`book_source` and 1 didn't — whole batch
+        # failed, 0 candidates landed. Union keys, backfill missing as None.
+        all_keys = set()
+        for c in top_n:
+            all_keys.update(c.keys())
+        for c in top_n:
+            for k in all_keys:
+                if k not in c:
+                    c[k] = None
+
         r = requests.post(
             f'{SUPABASE_URL}/rest/v1/mlb_hr_watch',
             headers={**HEADERS, 'Prefer': 'return=minimal'},
