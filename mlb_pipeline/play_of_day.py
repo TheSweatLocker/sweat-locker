@@ -512,7 +512,12 @@ def score_mlb_game(ctx, game_props=None, track=None):
         conf_mag = abs(int(conf_net)) if conf_net is not None else 0
     except (TypeError, ValueError):
         conf_mag = 0
-    if conf_mag >= 5:
+    # 2026-06-03: added 6+ rung. 5+ was the ceiling; on 6/3 LAD @ ARI hit
+    # 6-signal confluence with 3.9-run Jerry edge but SIDE capped at 63 because
+    # 6 and 5 paid the same. Real 6+ confluence is rarer and warrants its own tier.
+    if conf_mag >= 6:
+        _add(side_drivers, 18, '🎯', 'Elite confluence', f'{conf_mag} independent signals align')
+    elif conf_mag >= 5:
         _add(side_drivers, 14, '🎯', 'PRIME confluence', f'{conf_mag} independent signals align')
     elif conf_mag >= 4:
         _add(side_drivers, 10, '🎯', 'Strong confluence', f'{conf_mag} signals on one side')
@@ -680,11 +685,13 @@ def score_mlb_game(ctx, game_props=None, track=None):
                 pts = int(round(3 * over_skeptic_mult))
                 _add(total_drivers, pts, '📈', 'Total slim edge', f'{total_delta_signed:+.2f}-run')
 
-    # ---- TOTAL: Jerry total disagreement (NEW 2026-05-31) ----
-    # Second-opinion total model. Bands match v3 reduced ~30% — Jerry is
-    # newer and unaudited, so we credit it as a stacking signal rather than
-    # a headline. OVER skepticism multiplier still applies (v4 OVER drift
-    # documented in [[project_v4_over_drift]]).
+    # ---- TOTAL: Jerry total disagreement (REWEIGHTED 2026-06-03) ----
+    # 6/2 audit: Jerry total MAE 2.29 vs v3 MAE 2.71 — Jerry directionally
+    # accurate 9-2 (81.8%) on the night, v3 was 4-1 (80%). Jerry now best
+    # total model in production. Bumping Jerry's bands roughly to match v3
+    # (was ~67% of v3) so the dim score reflects Jerry's real predictive
+    # weight. OVER skepticism multiplier still applies (v4 OVER drift per
+    # [[project_v4_over_drift]]).
     jerry_total = ctx.get('jerry_pred_total')
     if jerry_total is not None and close_total > 0 and not total_delta_suppressed:
         try:
@@ -709,16 +716,16 @@ def score_mlb_game(ctx, game_props=None, track=None):
                 if v4_over_agrees_j is False or v4_over_suppressed_j:
                     jerry_mult = 0.6
             if jerry_total_delta_abs >= 2.5:
-                pts = int(round(12 * jerry_mult))
+                pts = int(round(17 * jerry_mult))
                 _add(total_drivers, pts, '🧠', 'Jerry major total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
             elif jerry_total_delta_abs >= 1.5:
-                pts = int(round(9 * jerry_mult))
+                pts = int(round(13 * jerry_mult))
                 _add(total_drivers, pts, '🧠', 'Jerry strong total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
             elif jerry_total_delta_abs >= 1.0:
-                pts = int(round(6 * jerry_mult))
+                pts = int(round(9 * jerry_mult))
                 _add(total_drivers, pts, '🧠', 'Jerry total edge', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
             elif jerry_total_delta_abs >= 0.5:
-                pts = int(round(3 * jerry_mult))
+                pts = int(round(5 * jerry_mult))
                 _add(total_drivers, pts, '🧠', 'Jerry total lean', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
         except (TypeError, ValueError):
             pass
@@ -740,12 +747,20 @@ def score_mlb_game(ctx, game_props=None, track=None):
         try:
             vt = float(v)
             side_label = 'Home' if vt_key.startswith('home') else 'Away'
-            if vt <= 2.5:
+            # 2026-06-03: split mastery and anti-mastery into 3 bands each.
+            # Old flat ≥7.0 = +5 missed how extreme 9+ ERA tagging is — TOR/ATL
+            # 6/3 had 9.14 ERA away pitcher vs opp and game stuck at SIDE 47/PASS
+            # despite legit confluence + tagged starter.
+            if vt <= 1.8:
+                _add(side_drivers, 8, '⚾', f'{side_label} elite mastery vs opp', f'{vt:.2f} ERA career vs this team')
+            elif vt <= 2.5:
                 _add(side_drivers, 5, '⚾', f'{side_label} pitcher mastery vs opp', f'{vt:.2f} ERA career vs this team')
-            elif vt >= 7.0:
-                _add(side_drivers, 5, '🚨', f'{side_label} pitcher tagged by opp', f'{vt:.2f} ERA career vs this team')
             elif vt <= 3.0:
                 _add(side_drivers, 3, '⚾', f'{side_label} pitcher edge vs opp', f'{vt:.2f} ERA career vs this team')
+            elif vt >= 8.5:
+                _add(side_drivers, 8, '🚨', f'{side_label} pitcher torched by opp', f'{vt:.2f} ERA career vs this team')
+            elif vt >= 7.0:
+                _add(side_drivers, 5, '🚨', f'{side_label} pitcher tagged by opp', f'{vt:.2f} ERA career vs this team')
             elif vt >= 6.0:
                 _add(side_drivers, 3, '🚨', f'{side_label} pitcher struggles vs opp', f'{vt:.2f} ERA career vs this team')
         except (TypeError, ValueError):
@@ -817,6 +832,15 @@ def score_mlb_game(ctx, game_props=None, track=None):
     # Tiered scoring: book-verified PRIMEs weight strongest; large stacks
     # of ⚠no_book PRIMEs (like SF/COL Coors hits stacks) get partial credit
     # but not full weight to avoid the trust-killer pattern.
+    #
+    # 2026-06-03 calibration: bumped no-book bands so legit conviction
+    # props (single STRONG c=78 no-book, single PRIME c=82 no-book, 4+
+    # PRIME no-book Coors stack) lift games out of PASS. Specific triggers:
+    # SFG @ MIL had STRONG c=78 Perkins hits_under no-book → PROP=30 PASS
+    # because the "1 STRONG no-book" path didn't exist. LAD @ ARI had 4
+    # PRIME no-book hits_over Coors stack → PROP capped at 50 LIGHT_LEAN
+    # while game was clearly the loudest on the slate. Book-verified
+    # weights unchanged (already calibrated correctly 6/1).
     if len(prime_book) >= 3:
         _add(prop_drivers, 30, '🔥', 'PRIME book stack', f'{len(prime_book)} book-verified PRIME props')
     elif len(prime_book) >= 2:
@@ -825,21 +849,31 @@ def score_mlb_game(ctx, game_props=None, track=None):
         # 1 book-verified PRIME should lift a game to at least LIGHT_LEAN.
         # 30 base + 20 = 50. Game becomes visible / actionable.
         _add(prop_drivers, 20, '🔥', 'PRIME ✓book available', '1 book-verified PRIME prop')
+    elif len(prime_props) >= 5:
+        # Extreme no-book mega-stack — Coors/COL hits-over patterns
+        # routinely produce 5+ PRIME no-book. Real conviction event.
+        _add(prop_drivers, 28, '🔥', 'PRIME mega-stack (no-book)', f'{len(prime_props)} PRIME props')
     elif len(prime_props) >= 4:
-        # Large no-book stack (e.g. Coors / extreme park hits-overs) —
-        # partial credit. Was +20, kept at +20.
-        _add(prop_drivers, 20, '🔥', 'PRIME stack (no-book)', f'{len(prime_props)} PRIME props')
+        # Large no-book stack (e.g. Coors / extreme park hits-overs).
+        # Bumped 20 → 24 so 4-PRIME-no-book lifts game from 50 LIGHT_LEAN
+        # to 54 — still LIGHT_LEAN but with room for SIDE/TOTAL stack
+        # to clear STRONG threshold on the game headline.
+        _add(prop_drivers, 24, '🔥', 'PRIME stack (no-book)', f'{len(prime_props)} PRIME props')
     elif len(prime_props) >= 2:
-        # Multiple ⚠no_book PRIMEs — was +11, raise to +14 so 2+ unverified
-        # PRIMEs at least flag as a TOTAL/PROP dim signal rather than PASS.
-        _add(prop_drivers, 14, '🔥', 'Multiple PRIME props', f'{len(prime_props)} PRIME props (no book)')
+        # Multiple ⚠no_book PRIMEs — was +14, bumped to +16. Cautious but
+        # acknowledges 2+ aligned PRIMEs is a real signal even without book.
+        _add(prop_drivers, 16, '🔥', 'Multiple PRIME props', f'{len(prime_props)} PRIME props (no book)')
     elif len(prime_props) == 1:
-        # Single ⚠no_book PRIME — kept at +8 (was +6). Cautious credit.
-        _add(prop_drivers, 8, '🔥', 'PRIME prop available', '1 PRIME prop (no book)')
+        # Single ⚠no_book PRIME — bumped 8 → 14. The PRIME tier already
+        # implies the scorer's strongest conviction band; even unverified,
+        # the game deserves to clear PASS (30 + 14 = 44, still PASS unless
+        # SIDE/TOTAL also contribute). With STRONG add-on can reach 50.
+        _add(prop_drivers, 14, '🔥', 'PRIME prop available', '1 PRIME prop (no book)')
 
-    # STRONG ✓book additive — was a single +5 cluster gate. Now incremental
-    # because a STRONG ✓book prop is a real edge call.
-    if not prime_props:
+    # STRONG add-on — credits STRONG no-book singletons that were silent
+    # under 6/1 rules. Fires whenever no PRIME is present OR alongside a
+    # single PRIME (to avoid stacking with PRIME mega-stacks already at +24+).
+    if not prime_props or len(prime_props) == 1:
         if len(strong_book) >= 3:
             _add(prop_drivers, 14, '💪', 'STRONG ✓book cluster', f'{len(strong_book)} book-verified STRONG props')
         elif len(strong_book) >= 2:
@@ -848,6 +882,14 @@ def score_mlb_game(ctx, game_props=None, track=None):
             _add(prop_drivers, 5, '💪', 'STRONG ✓book available', '1 book-verified STRONG prop')
         elif len(strong_props) >= 3:
             _add(prop_drivers, 5, '💪', 'STRONG prop cluster', f'{len(strong_props)} STRONG props')
+        elif len(strong_props) >= 2:
+            # 2 STRONG no-book — was silent, now +4 so games with 1 PRIME
+            # + 1-2 STRONG no-book reach STRONG band (74+ in some stacks).
+            _add(prop_drivers, 4, '💪', 'STRONG prop pair (no-book)', f'{len(strong_props)} STRONG props')
+        elif len(strong_props) == 1:
+            # 1 STRONG no-book — was silent. SFG @ MIL Perkins case.
+            # +3 minimum so the game is visible as having a real prop.
+            _add(prop_drivers, 3, '💪', 'STRONG prop available', '1 STRONG prop (no book)')
 
     # ---- primary_play tier bonus (routes to dimension by play type) ----
     # When the pipeline has already endorsed a specific bet via
