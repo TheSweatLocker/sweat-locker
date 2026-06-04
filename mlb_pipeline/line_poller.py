@@ -245,6 +245,21 @@ def is_game_starting_soon(event):
         return False
 
 
+def is_pre_game(event):
+    """True when commence_time is in the future. Skip in-progress and
+    finished games — their Odds API "total_line" can include alt lines
+    or live remaining-runs lines that aren't comparable to the pre-game
+    full-game total (SFG @ MIL 6/4: 18.5 line read while game was
+    6-3 in progress)."""
+    ct = event.get("commence_time")
+    if not ct: return False
+    try:
+        t = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+        return (t - datetime.now(timezone.utc)).total_seconds() > 0
+    except Exception:
+        return False
+
+
 def run():
     print(f"=== Line poller {today_et()} {datetime.now(timezone.utc).isoformat()[:19]}Z ===")
     if not ODDS_API_KEY:
@@ -267,9 +282,15 @@ def run():
 
     polled = 0
     closed = 0
+    skipped_inprog = 0
     for ev in events:
         game_id, game_date = map_event_to_game(ev, ctx_rows)
         if not game_id: continue
+        # Skip games that have already started — their Odds API lines may
+        # include live/alt markets that don't match the pre-game total.
+        if not is_pre_game(ev):
+            skipped_inprog += 1
+            continue
         odds = fetch_event_odds(ev["id"])
         if not odds: continue
         snap = median_across_books(odds)
@@ -282,7 +303,7 @@ def run():
         if set_close: closed += 1
         polled += 1
 
-    print(f"  ✓ polled {polled} events, locked close_total on {closed}")
+    print(f"  ✓ polled {polled} events, locked close_total on {closed}, skipped {skipped_inprog} in-progress")
 
 
 if __name__ == "__main__":
