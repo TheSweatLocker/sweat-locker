@@ -750,10 +750,18 @@ def score_mlb_game(ctx, game_props=None, track=None):
         # (b) 2026-06-03 v3-vs-Jerry conflict — both models have material edge
         #     (>=0.5 runs) AND they point opposite directions. Suppressing on
         #     this case stops PRIME tier inflation from stacking opposing-
-        #     model signals (SD/PHI 6/3 incident). Tier caps at STRONG via
-        #     the _dim_tier "PRIME requires play" rule and write_sweat_score's
-        #     79-cap when no play exists. Score, drivers, direction call all
-        #     remain intact for transparency.
+        #     model signals (SD/PHI 6/3 incident).
+        # (c) 2026-06-04 v4-vs-Jerry conflict — mirror of (b) but on the v4
+        #     axis. CLE @ NYY 6/4 ended 2-1 with v3 -3.2 UNDER, v4 -1.4 UNDER,
+        #     Jerry +0.92 OVER. Jerry was alone on the wrong side. The
+        #     existing gate fires on v3-vs-Jerry, but if v3 were silent (as
+        #     it was at the morning compute pass that locked the tier) the
+        #     v4 disagreement is the right signal to gate on. Both Jerry was
+        #     0-3 today on split-direction games — extending this gate is
+        #     the right structural call.
+        # All gates cap PRIME via _dim_tier "PRIME requires play" rule and
+        # write_sweat_score's 79-cap. Score, drivers, direction call all
+        # remain intact for transparency.
         prop_conflict = (prop_dir is not None and prop_dir != delta_direction
                          and (prop_dir_prime + prop_dir_strong) >= 4)
         v3_jerry_conflict = (
@@ -762,6 +770,20 @@ def score_mlb_game(ctx, game_props=None, track=None):
             and total_delta_abs >= 0.5
             and ((total_delta_signed > 0) != (jerry_total_delta_pre > 0))
         )
+        # v4 delta computed independently so this gate fires even when v3
+        # is within the dead band (silent). Same magnitude + opposite-sign
+        # requirements as the v3 gate.
+        v4_jerry_conflict = False
+        if jerry_total_delta_pre is not None and v4_total is not None:
+            try:
+                v4_delta_signed = float(v4_total) - close_total
+                v4_jerry_conflict = (
+                    abs(v4_delta_signed) >= 0.5
+                    and abs(jerry_total_delta_pre) >= 0.5
+                    and ((v4_delta_signed > 0) != (jerry_total_delta_pre > 0))
+                )
+            except (TypeError, ValueError):
+                v4_jerry_conflict = False
         if prop_conflict:
             total_delta_suppressed = True
             _evidence('⚠️', 'Total delta vs props conflict',
@@ -771,6 +793,12 @@ def score_mlb_game(ctx, game_props=None, track=None):
             jerry_dir_pre = 'OVER' if jerry_total_delta_pre > 0 else 'UNDER'
             _evidence('⚠️', 'v3 vs Jerry total conflict',
                       f'v3 {total_delta_signed:+.2f} {delta_direction}, Jerry {jerry_total_delta_pre:+.2f} {jerry_dir_pre} — both total signals suppressed')
+        elif v4_jerry_conflict:
+            total_delta_suppressed = True
+            jerry_dir_pre = 'OVER' if jerry_total_delta_pre > 0 else 'UNDER'
+            v4_dir_pre = 'OVER' if v4_delta_signed > 0 else 'UNDER'
+            _evidence('⚠️', 'v4 vs Jerry total conflict',
+                      f'v4 {v4_delta_signed:+.2f} {v4_dir_pre}, Jerry {jerry_total_delta_pre:+.2f} {jerry_dir_pre} — total signals suppressed (v3 silent)')
         else:
             # Resolve band contribution, then apply OVER skepticism multiplier
             if total_delta_abs >= 2.0:
