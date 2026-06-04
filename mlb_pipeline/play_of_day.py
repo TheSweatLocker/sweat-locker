@@ -699,6 +699,24 @@ def score_mlb_game(ctx, game_props=None, track=None):
     total_delta_abs = 0.0
     total_delta_suppressed = False
     over_skeptic_mult = 1.0  # applied below when signal points OVER
+
+    # Pre-compute Jerry's signed delta for the v3-vs-Jerry direction-conflict
+    # gate below. (Jerry contribution itself is added in a later block; this
+    # is only the direction signal used by the gate.) Added 2026-06-03 after
+    # SD @ PHI 6/3 was scored PRIME 80 OVER 7.5 — v3 said +3.30 OVER,
+    # Jerry said -1.43 UNDER. Both fired as positive contributions despite
+    # opposing directions, inflating TOTAL to PRIME. Actual was 5 runs (U7.5
+    # hit; Jerry's direction was right but v3 was the louder voice). The
+    # principle: when our own models can't agree direction, the system
+    # shouldn't broadcast PRIME conviction regardless of which is louder.
+    jerry_total_raw = ctx.get('jerry_pred_total')
+    jerry_total_delta_pre = None
+    if jerry_total_raw is not None and close_total > 0:
+        try:
+            jerry_total_delta_pre = round(float(jerry_total_raw) - close_total, 2)
+        except (TypeError, ValueError):
+            jerry_total_delta_pre = None
+
     if proj_total > 0 and close_total > 0:
         total_delta_signed = round(proj_total - close_total, 2)
         total_delta_abs = abs(total_delta_signed)
@@ -726,14 +744,33 @@ def score_mlb_game(ctx, game_props=None, track=None):
                 _evidence('⚠️', 'OVER skepticism applied',
                           f'{reason} — total contribution ×0.6')
 
-        # Direction-conflict gate (5/30): if prop alignment points the OPPOSITE
-        # direction of total_delta AND has 4+ aligned PRIME/STRONG distinct
-        # PLAYERS, suppress total_delta entirely.
-        if prop_dir is not None and prop_dir != delta_direction \
-                and (prop_dir_prime + prop_dir_strong) >= 4:
+        # Direction-conflict gates:
+        # (a) 5/30 prop-conflict — prop alignment points opposite direction of
+        #     v3 AND 4+ aligned PRIME/STRONG distinct players.
+        # (b) 2026-06-03 v3-vs-Jerry conflict — both models have material edge
+        #     (>=0.5 runs) AND they point opposite directions. Suppressing on
+        #     this case stops PRIME tier inflation from stacking opposing-
+        #     model signals (SD/PHI 6/3 incident). Tier caps at STRONG via
+        #     the _dim_tier "PRIME requires play" rule and write_sweat_score's
+        #     79-cap when no play exists. Score, drivers, direction call all
+        #     remain intact for transparency.
+        prop_conflict = (prop_dir is not None and prop_dir != delta_direction
+                         and (prop_dir_prime + prop_dir_strong) >= 4)
+        v3_jerry_conflict = (
+            jerry_total_delta_pre is not None
+            and abs(jerry_total_delta_pre) >= 0.5
+            and total_delta_abs >= 0.5
+            and ((total_delta_signed > 0) != (jerry_total_delta_pre > 0))
+        )
+        if prop_conflict:
             total_delta_suppressed = True
             _evidence('⚠️', 'Total delta vs props conflict',
                       f'Model {total_delta_signed:+.2f} {delta_direction}, {prop_dir_prime + prop_dir_strong} players point {prop_dir} — suppressed')
+        elif v3_jerry_conflict:
+            total_delta_suppressed = True
+            jerry_dir_pre = 'OVER' if jerry_total_delta_pre > 0 else 'UNDER'
+            _evidence('⚠️', 'v3 vs Jerry total conflict',
+                      f'v3 {total_delta_signed:+.2f} {delta_direction}, Jerry {jerry_total_delta_pre:+.2f} {jerry_dir_pre} — both total signals suppressed')
         else:
             # Resolve band contribution, then apply OVER skepticism multiplier
             if total_delta_abs >= 2.0:
