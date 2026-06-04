@@ -394,6 +394,68 @@ def build_struct(g, props, potd):
         )
     is_potd = bool(home and away and home in potd_game and away in potd_game)
 
+    # ---- Buy-down play qualifier (2026-06-03 backtest-driven) ----
+    # When v3 + v4 + Jerry have non-trivial directional agreement (>=0.3
+    # runs in the same direction, no opposition), and at least one cohort
+    # entry condition is met, surface a cheated-line recommendation.
+    # Cohorts validated against 683 graded games (6 weeks):
+    #   - all-three agree (n=22): 76.2% buy-down hit rate, +EV up to -300
+    #   - any model >=2.0 edge with no opposition (n=75): 80% OVER / 87.5%
+    #     UNDER buy-down hit rate, +EV up to -400/-700 juice
+    # See mlb_pipeline/_backtest_buy_down_split.py for the methodology.
+    buy_down_play = None
+    if close_t is not None:
+        v3 = _f(g.get("projected_total"))
+        v4 = _f(g.get("model_pred_total"))
+        jr = _f(g.get("jerry_pred_total"))
+        edges = []
+        for v in (v3, v4, jr):
+            edges.append(v - close_t if v is not None else None)
+        # Dead-band (±0.3 runs): smaller than that is model "silent" — too
+        # small to count as agreement or disagreement.
+        DEAD_BAND = 0.3
+        BUY_DOWN_RUNS = 2.0
+        loud_dirs = []
+        for e in edges:
+            if e is not None and abs(e) >= DEAD_BAND:
+                loud_dirs.append("OVER" if e > 0 else "UNDER")
+        all_loud_agree = len(loud_dirs) > 0 and all(d == loud_dirs[0] for d in loud_dirs)
+        # All-three-agree cohort: every model populated, every model loud,
+        # all agree. The 76% consensus cohort.
+        all_three_agree = (
+            v3 is not None and v4 is not None and jr is not None
+            and all(e is not None and abs(e) >= DEAD_BAND for e in edges)
+            and all_loud_agree
+        )
+        loudest = max((abs(e) for e in edges if e is not None), default=0)
+        qualifies = all_loud_agree and (all_three_agree or loudest >= 2.0)
+        if qualifies:
+            direction = loud_dirs[0]
+            cheated_line = close_t - BUY_DOWN_RUNS if direction == "OVER" else close_t + BUY_DOWN_RUNS
+            # Cohort label + hit rate + EV juice ceiling
+            if all_three_agree and loudest >= 2.0:
+                cohort = "consensus + loud edge"
+                hit_rate = "~80%" if direction == "OVER" else "~87%"
+                max_juice = "-400" if direction == "OVER" else "-700"
+            elif loudest >= 2.0:
+                cohort = "model edge >= 2.0"
+                hit_rate = "80%" if direction == "OVER" else "87.5%"
+                max_juice = "-400" if direction == "OVER" else "-700"
+            else:
+                cohort = "all three models agree"
+                hit_rate = "76%"
+                max_juice = "-300"
+            buy_down_play = {
+                "direction": direction,
+                "original_line": close_t,
+                "cheated_line": round(cheated_line, 1),
+                "buy_runs": BUY_DOWN_RUNS,
+                "cohort": cohort,
+                "cohort_hit_rate": hit_rate,
+                "max_juice_ev": max_juice,
+                "cohort_note": f"Cohort: {cohort} · backtest hit rate {hit_rate} · +EV up to {max_juice} juice",
+            }
+
     struct = {
         "matchup": f"{away} @ {home}",
         "game_id": g.get("game_id"),
@@ -446,6 +508,9 @@ def build_struct(g, props, potd):
         "best_plays": best,
         "is_potd": is_potd,
         "potd_lean": potd_lean if is_potd else None,
+        # Buy-down cheat-line recommendation (None when game doesn't
+        # qualify for a backtest cohort). Surfaced in The Numbers panel.
+        "buy_down_play": buy_down_play,
         "meta": {
             "game_date": today_et(),
             "game_has_not_been_played": True,
