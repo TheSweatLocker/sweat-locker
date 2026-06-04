@@ -2217,9 +2217,16 @@ def upload_game_context(context, commence_time=None):
     # an App Store resubmission.
     try:
         context["primary_play"] = compute_primary_play(context)
+        # Stamp computation time so the app can suppress stale renders.
+        # See 20260604_primary_play_computed_at.sql + app stale-check.
+        # When the cron writes a fresh play, this timestamp updates.
+        # When the cron fails or skips a game (e.g., live-game preserve),
+        # the timestamp remains old and the app suppresses display.
+        context["primary_play_computed_at"] = datetime.now(timezone.utc).isoformat()
     except Exception as e:
         print(f"  primary_play compute failed: {e}")
         context["primary_play"] = None
+        context["primary_play_computed_at"] = None
 
     # NRFI score stability: lock after 8am ET run so tier classifications don't drift
     try:
@@ -2466,6 +2473,7 @@ def log_game_result(context):
             # the field-strip fallback below handles the pre-migration case
             # so log_game_result doesn't 400 if the migration hasn't run.
             "primary_play": context.get("primary_play"),
+            "primary_play_computed_at": context.get("primary_play_computed_at"),
             "sweat_dimensions": (context.get("sweat_breakdown") or {}).get("dimensions"),
             # Jerry Model (shadow mode) — added by 20260530_jerry_model_columns.sql.
             # Pre-migration retry in the post() block below strips these

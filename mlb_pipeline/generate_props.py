@@ -229,7 +229,18 @@ def tier_for(conviction, prop_type=None):
         if conviction >= 85: return 'PRIME'
         if conviction >= 75: return 'STRONG'
         return 'SKIP'
-    if prop_type in ('outs_over', 'outs_under', 'er_over', 'er_under'):
+    # 2026-06-04: outs_over hard-capped to SKIP. Lifetime cohort is
+    # **0-15 (0%)** across every tier — PRIME 0-3, STRONG 0-4, LEAN 0-2,
+    # SKIP 0-6. The projection logic for outs_over is fundamentally
+    # broken — the target line calculation (proj - 2.0) systematically
+    # overestimates pitcher depth in modern bullpen-heavy MLB. Until the
+    # projection is rewritten and re-audited, every outs_over prop SKIPs
+    # so it never reaches user surfaces. We continue generating the prop
+    # for audit (so we know when calibration improves), just never
+    # publish it.
+    if prop_type == 'outs_over':
+        return 'SKIP'
+    if prop_type in ('outs_under', 'er_over', 'er_under'):
         # New 2026-05-05 — no audit data yet, mirror Ks tier thresholds
         # since outs/ER are similarly pitcher-driven props. Recalibrate
         # once n=20+ resolved props per cohort.

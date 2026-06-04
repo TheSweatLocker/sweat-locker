@@ -7743,7 +7743,24 @@ setJerryHistory(prev => {
                 c.away_team === selectedGame?.away_team
               )
             )) || null;
-            const pp = mlbCtx?.primary_play;
+            // Primary play render — gated on freshness. The
+            // primary_play_computed_at timestamp from the cron lets us
+            // suppress stale plays that leaked past a cron failure.
+            // Concrete 6/4 bug: CLE @ NYY showed "Over 3.5 vs market 7"
+            // for hours because the stored play was from a write where
+            // close_total briefly read the F5 line. Now: if the computed_at
+            // is older than 4 hours, treat as stale and don't render the
+            // primary_play UI (sweat tier still shows).
+            const ppRaw = mlbCtx?.primary_play;
+            const ppComputedAt = mlbCtx?.primary_play_computed_at;
+            const ppIsFresh = (() => {
+              if (!ppComputedAt) return true; // pre-migration rows: trust legacy
+              try {
+                const ageMs = Date.now() - new Date(ppComputedAt).getTime();
+                return ageMs <= 4 * 60 * 60 * 1000; // 4-hour staleness window
+              } catch { return true; }
+            })();
+            const pp = ppIsFresh ? ppRaw : null;
             const sweat = mlbCtx?.sweat_score;
             const sweatTier = mlbCtx?.sweat_tier;
             const sweatLockedAt = mlbCtx?.sweat_tier_locked_at;
