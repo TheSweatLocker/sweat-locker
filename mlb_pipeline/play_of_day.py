@@ -574,24 +574,52 @@ def score_mlb_game(ctx, game_props=None, track=None):
         _add(total_drivers, 3, '🛡️', 'One NRFI lock', 'One 1st-inn ERA ≤1.5')
 
     # ---- SIDE: Signal confluence (strongest side indicator) ----
+    # 2026-06-05 REWEIGHT (n=640 backtest, _backtest_outside_box.py):
+    #   net=4 + DOG RL: 82.6% (n=23)   ← PEAK
+    #   net=4 + FAV ML: 69.2% (n=13)   ← NEW surface
+    #   net=5 + DOG RL: 50.0% (n=16)   ← deteriorates
+    #   net=6 + DOG RL: 28.6% (n=7)    ← worse than coinflip
+    # Conclusion: peak at net=4, then decay. Old ladder rewarded 5+/6+ MORE
+    # than 4 which is backwards. New ladder caps at net=4 = +12, decays after.
     conf_net = ctx.get('signal_confluence_net')
     try:
         conf_mag = abs(int(conf_net)) if conf_net is not None else 0
     except (TypeError, ValueError):
         conf_mag = 0
-    # 2026-06-03: added 6+ rung. 5+ was the ceiling; on 6/3 LAD @ ARI hit
-    # 6-signal confluence with 3.9-run Jerry edge but SIDE capped at 63 because
-    # 6 and 5 paid the same. Real 6+ confluence is rarer and warrants its own tier.
     if conf_mag >= 6:
-        _add(side_drivers, 18, '🎯', 'Elite confluence', f'{conf_mag} independent signals align')
+        _add(side_drivers, 6, '🎯', 'Over-saturated confluence', f'{conf_mag} signals (too obvious — market priced in)')
     elif conf_mag >= 5:
-        _add(side_drivers, 14, '🎯', 'PRIME confluence', f'{conf_mag} independent signals align')
-    elif conf_mag >= 4:
-        _add(side_drivers, 10, '🎯', 'Strong confluence', f'{conf_mag} signals on one side')
-    elif conf_mag >= 3:
+        _add(side_drivers, 8, '🎯', 'High confluence', f'{conf_mag} independent signals align')
+    elif conf_mag == 4:
+        _add(side_drivers, 12, '🎯', 'PEAK confluence', f'{conf_mag} signals — strongest cohort (82.6% DOG RL lifetime)')
+    elif conf_mag == 3:
         _add(side_drivers, 6, '🎯', 'Confluence edge', f'{conf_mag} signals on one side')
-    elif conf_mag >= 2:
+    elif conf_mag == 2:
         _add(side_drivers, 3, '🎯', 'Confluence lean', f'{conf_mag} signals on one side')
+
+    # ---- SIDE: PEAK confluence + FAV ML surface (NEW 2026-06-05) ----
+    # When confluence net=4 AND it points to the favorite, FAV ML hits 69.2%
+    # (n=13, +0.322 EV at -110). Distinct from DOG RL at same net level.
+    # Bonus: when net=4 points at fav and the ML price isn't a trap band,
+    # add a recognition driver so downstream picker can surface as ML.
+    if conf_mag == 4 and conf_net is not None:
+        try:
+            conf_points_home = int(conf_net) > 0
+            cs_val = ctx.get('close_spread') or ctx.get('open_spread')
+            if cs_val is not None:
+                home_is_fav = float(cs_val) < 0
+                conf_points_fav = (conf_points_home == home_is_fav)
+                home_ml = ctx.get('home_ml_close') or ctx.get('home_ml_open')
+                away_ml = ctx.get('away_ml_close') or ctx.get('away_ml_open')
+                fav_ml = home_ml if home_is_fav else away_ml
+                if conf_points_fav and fav_ml is not None:
+                    try: fm = int(fav_ml)
+                    except (TypeError, ValueError): fm = None
+                    if fm is not None and not (-150 <= fm <= -130):
+                        _add(side_drivers, 8, '⚙️', 'PEAK confluence on FAV ML',
+                             f'net=4 favorite at {fm} (69.2% lifetime cohort)')
+        except (TypeError, ValueError):
+            pass
 
     # ---- SIDE: Spread delta — v3 + v4 (RESHAPED 2026-06-05) ----
     # SIDE backtest n=640 graded games:
@@ -669,6 +697,11 @@ def score_mlb_game(ctx, game_props=None, track=None):
     # v3 + v4 DOG consensus bonus (NEW 2026-06-05) — when both models
     # agree direction AND that direction is the DOG side, +12 points.
     # Backtested 67.2% / n=125 lifetime. Mirrors the TOTAL consensus play.
+    #
+    # FAV ML -130/-150 TRAP FADE (2026-06-05): when v3+v4 consensus picks
+    # the FAVORITE side AND fav ML is in -130 to -150 band, the lifetime
+    # cohort is 80-80 (50% / -0.143 EV at -140). Apply -8 penalty unless
+    # confluence net >= 4 (which validates the fav-side pick separately).
     if v3_signed is not None and v4_signed is not None and close_spread_val is not None:
         if v3_abs >= 0.5 and v4_abs >= 0.5:
             v3_picks_home = v3_signed > 0
@@ -681,6 +714,17 @@ def score_mlb_game(ctx, game_props=None, track=None):
                     if is_dog:
                         _add(side_drivers, 12, '🤝', 'v3+v4 DOG consensus',
                              f'Both models pick the dog side (v3 {v3_signed:+.2f}, v4 {v4_signed:+.2f})')
+                    else:
+                        # Models agree on FAVORITE side — check trap band
+                        home_ml_v = ctx.get('home_ml_close') or ctx.get('home_ml_open')
+                        away_ml_v = ctx.get('away_ml_close') or ctx.get('away_ml_open')
+                        fav_ml_v = home_ml_v if home_is_fav else away_ml_v
+                        if fav_ml_v is not None:
+                            try: fmv = int(fav_ml_v)
+                            except (TypeError, ValueError): fmv = None
+                            if fmv is not None and -150 <= fmv <= -130 and conf_mag < 4:
+                                _add(side_drivers, -8, '⚠️', 'FAV ML trap band',
+                                     f'Fav at {fmv} hits 50% lifetime — no confluence rescue')
                 except (TypeError, ValueError):
                     pass
 
@@ -860,6 +904,27 @@ def score_mlb_game(ctx, game_props=None, track=None):
             consensus_pts = 12 if both_loud else 10
             _add(total_drivers, consensus_pts, '🤝', 'v3+v4 consensus',
                  f'Both math models point {v3v4_consensus_dir} (v3 {total_delta_signed:+.2f}, v4 {v4_total_signed:+.2f})')
+
+    # ---- TOTAL: Confluence-as-volatility-proxy UNDER bias (NEW 2026-06-05) ----
+    # Backtest n=640 (_backtest_outside_box.py) found |signal_confluence_net|=4
+    # predicts UNDER at 58.1% / n=31 (+0.109 EV at -110), regardless of which
+    # SIDE the confluence points to. Interpretation: when many independent
+    # signals all point to one team being structurally better, runs tend to
+    # cluster lower (the matchup itself is decided, fewer back-and-forth
+    # innings, weaker side's offense gets suppressed). Add +6 toward UNDER
+    # specifically when net=4 (peak per cohort scan). Net=5 was 42% UNDER,
+    # net=6 was 58% UNDER on n=19, so we only score net=4 strict.
+    try:
+        cn_abs_total = abs(int(ctx.get('signal_confluence_net') or 0))
+    except (TypeError, ValueError):
+        cn_abs_total = 0
+    if cn_abs_total == 4 and not total_delta_suppressed:
+        # Only fire when v3 or v4 also lean UNDER (avoid contradicting models)
+        v3_under = (total_delta_abs >= 0.5 and total_delta_signed < 0)
+        v4_under = (v4_total_signed is not None and abs(v4_total_signed) >= 0.5 and v4_total_signed < 0)
+        if v3_under or v4_under:
+            _add(total_drivers, 6, '🎯', 'PEAK confluence UNDER bias',
+                 '4-signal confluence games skew UNDER 58.1% lifetime')
 
     # ---- TOTAL: Jerry total — DEMOTED to supporting vote (2026-06-05) ----
     # 6/4 audit was a Jerry disaster: 1-8 on n=9 (11.1% direction accuracy)
@@ -1145,34 +1210,46 @@ def score_mlb_game(ctx, game_props=None, track=None):
     if pp and isinstance(pp, dict) and (pp.get('type') or '').lower() in ('ml', 'spread', 'rl'):
         side_play = {'type': (pp.get('type') or '').upper(), 'label': pp.get('label'), 'tier': pp.get('tier')}
 
-    # Jerry-driven SIDE play fallback (2026-06-01). Sweat dim scorer was
-    # already crediting Jerry's spread + offense drift + confluence as SIDE
-    # drivers (5/31 fix), but the play resolver here only surfaced a side
-    # when compute_primary_play named an ML/RL externally. That left MIA/WSH
-    # SIDE 69/STRONG (Jerry +3.71 / drift gap / confluence +4) with no
-    # actionable label — Sweat Card showed empty even though the math said
-    # play it. 5/31 audit: Jerry ML 13-2 (86.7%), |spread|>=2.0 = 8-1
-    # (88.9%) on day-1 production — strong enough evidence to surface a
-    # side play when the dim itself has cleared STRONG.
-    #
-    # Gate: side_score >= 65 (STRONG floor) AND we can resolve a direction
-    # from Jerry's signed disagreement with market (preferred) or v3's
-    # signed disagreement (fallback) at >=1.0 run magnitude. Tier mirrors
-    # the dim score so PRIME/STRONG/LIGHT_LEAN propagate to UI consistently.
+    # SIDE play direction resolver (RESHAPED 2026-06-05).
+    # Original 6/01 logic used Jerry-signed first to pick direction. The 6/5
+    # n=640 cohort scan revealed Jerry spread direction is 47.8% (coinflip),
+    # so using it as the primary directional source was leaking ~10pt of
+    # accuracy to the picker. New priority order:
+    #   1. v3 + v4 consensus (both same direction, both |edge|>=0.5) — 67.2%
+    #   2. v4 alone at |edge|>=1.0 — 65.9% on DOG RL lifetime
+    #   3. v3 alone at |edge|>=1.0 — 60.7% on DOG RL lifetime
+    #   4. Confluence-net direction at |net|>=4 (peak cohort)
+    #   Jerry-signed fully dropped from direction picking.
     if side_play is None and side_score >= 65 and close_spread_val is not None:
         pick_home = None
+        src = None
         try:
-            if jerry_signed is not None and abs(float(jerry_signed)) >= 1.0:
-                pick_home = float(jerry_signed) > 0
+            # 1. v3+v4 consensus
+            if (v3_signed is not None and v4_signed is not None
+                    and abs(float(v3_signed)) >= 0.5 and abs(float(v4_signed)) >= 0.5
+                    and (float(v3_signed) > 0) == (float(v4_signed) > 0)):
+                pick_home = float(v3_signed) > 0
+                src = 'v3v4_consensus'
+            # 2. v4 alone (math model preferred per disagreement cohort 57.1%)
+            elif v4_signed is not None and abs(float(v4_signed)) >= 1.0:
+                pick_home = float(v4_signed) > 0
+                src = 'v4_alone'
+            # 3. v3 alone
             elif v3_signed is not None and abs(float(v3_signed)) >= 1.0:
                 pick_home = float(v3_signed) > 0
+                src = 'v3_alone'
+            # 4. Confluence net direction (only at peak |net|=4)
+            else:
+                cn_val = ctx.get('signal_confluence_net')
+                if cn_val is not None and abs(int(cn_val)) == 4:
+                    pick_home = int(cn_val) > 0
+                    src = 'confluence_peak'
         except (TypeError, ValueError):
             pick_home = None
         if pick_home is not None:
             team = ctx.get('home_team') if pick_home else ctx.get('away_team')
             if team:
                 play_tier = 'PRIME' if side_score >= 80 else 'STRONG' if side_score >= 65 else 'LIGHT_LEAN'
-                src = 'jerry_consensus' if jerry_signed is not None and abs(float(jerry_signed)) >= 1.0 else 'v3_consensus'
                 side_play = {
                     'type': 'ML',
                     'label': f'{team} ML',
