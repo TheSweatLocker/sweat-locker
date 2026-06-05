@@ -2137,6 +2137,20 @@ def compute_primary_play(ctx):
     # path inherits that correction. Audited 2026-05-20: prior path only
     # read ctx.over_lean (v3-derived) — missed v4 PRIME edges entirely.
     ct = ctx.get('close_total') or ctx.get('open_total')
+    # 2026-06-05 line-sanity guard. Yankees 6/4 incident: primary_play
+    # was written as "Over 3.5 vs market 7" because at some earlier write
+    # the line had been read incorrectly (likely the F5 line of ~3.5 leaked
+    # into close_total). Reject the entire primary_play computation if the
+    # line falls outside the plausible MLB full-game total range (5.5-13.5).
+    # Better to surface no primary_play than a wrong one with a phantom line.
+    if ct is not None:
+        try:
+            ct_f = float(ct)
+            if ct_f < 5.5 or ct_f > 13.5:
+                print(f"  ⚠️ primary_play skipped — line {ct_f} outside plausible range (5.5-13.5)")
+                return None
+        except (TypeError, ValueError):
+            return None
     v4_total = ctx.get('model_pred_total')
     # v4 OVER suppression — auto-throttle as of 2026-05-24.
     # Was a hardcoded True; now reads model_health.over_suppressed which

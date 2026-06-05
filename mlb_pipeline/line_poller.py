@@ -39,25 +39,35 @@ def today_et():
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
 
 
-def fetch_events():
-    """Pull all upcoming + in-progress MLB events. Includes today's slate
-    and any games scheduled for the next 24h (so we capture early-AM games
-    that posted opening lines after midnight)."""
+def fetch_slate_odds():
+    """Pull all upcoming MLB events WITH totals/spreads/h2h markets in ONE
+    API call instead of N per-event calls.
+
+    Returns the full odds response (list of events, each with bookmakers
+    embedded). 6/5 swap: was using events listing + per-event odds calls
+    (~6-8 calls per poll). Slate endpoint returns the same data in 1 call,
+    cutting Odds API cost 6-8x. Same regions / markets / format params.
+    """
     if not ODDS_API_KEY:
         print("  ⚠️ ODDS_API_KEY missing")
         return []
     try:
         r = requests.get(
-            "https://api.the-odds-api.com/v4/sports/baseball_mlb/events",
-            params={"apiKey": ODDS_API_KEY},
-            timeout=15,
+            "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds",
+            params={
+                "apiKey": ODDS_API_KEY,
+                "regions": "us,us2",
+                "markets": "totals,spreads,h2h",
+                "oddsFormat": "american",
+            },
+            timeout=20,
         )
         if r.status_code != 200:
-            print(f"  ⚠️ events fetch HTTP {r.status_code}: {r.text[:200]}")
+            print(f"  ⚠️ slate odds fetch HTTP {r.status_code}: {r.text[:200]}")
             return []
         return r.json() or []
     except Exception as e:
-        print(f"  ⚠️ events fetch failed: {e}")
+        print(f"  ⚠️ slate odds fetch failed: {e}")
         return []
 
 
@@ -277,27 +287,26 @@ def run():
         ctx_rows = []
     print(f"  {len(ctx_rows)} context rows on slate")
 
-    events = fetch_events()
-    print(f"  {len(events)} upcoming events from Odds API")
+    # 6/5: switched from events-list + per-event-odds (N+1 calls per poll)
+    # to single slate-odds endpoint (1 call per poll). Each event in the
+    # response carries its bookmakers/markets inline — same data shape as
+    # the per-event endpoint, just batched.
+    slate = fetch_slate_odds()
+    print(f"  {len(slate)} upcoming events from slate endpoint (1 API call)")
 
     polled = 0
     closed = 0
     skipped_inprog = 0
-    for ev in events:
+    for ev in slate:
         game_id, game_date = map_event_to_game(ev, ctx_rows)
         if not game_id: continue
-        # Skip games that have already started — their Odds API lines may
-        # include live/alt markets that don't match the pre-game total.
         if not is_pre_game(ev):
             skipped_inprog += 1
             continue
-        odds = fetch_event_odds(ev["id"])
-        if not odds: continue
-        snap = median_across_books(odds)
+        # ev is already the odds response — no per-event API call needed
+        snap = median_across_books(ev)
         if not snap: continue
-        # Insert into history
         write_line_history(game_id, game_date, snap)
-        # Update current_* + maybe close_total
         set_close = is_game_starting_soon(ev)
         update_game_context(game_id, game_date, snap, set_close=set_close)
         if set_close: closed += 1
