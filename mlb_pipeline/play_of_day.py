@@ -734,6 +734,55 @@ def score_mlb_game(ctx, game_props=None, track=None):
     # Jerry proves itself on n>=60 graded games with rolling 14-day
     # accuracy >= 60%. Same gating as TOTAL dim Jerry change.
 
+    # ---- SIDE: Long-rest ace as DOG (NEW 2026-06-05) ----
+    # Backtest (_backtest_advanced_605.py) n=158: long-rest (>=5 days)
+    # ace (xERA <= 3.70) as the DOG SP hits 62.0% on DOG RL lifetime
+    # (+0.184 EV at -110). Mechanism: ace dogs get less public action,
+    # extra rest sharpens velocity, dog +1.5 cushion lets you absorb
+    # the matchup-luck variance. Bigger sample than any other cohort
+    # we've shipped today.
+    #
+    # STACKED bonus: when net=4 confluence ALSO points at the dog AND
+    # that dog has the long-rest ace SP, the combined cohort hits 85.0%
+    # on n=20 (+0.623 EV). Compound bonus tier.
+    # Field names: mlb_game_context uses home_days_rest / away_days_rest
+    # (mlb_game_results uses the home_sp_days_rest form — checked both for
+    # forward-compat with future column rename).
+    h_rest = ctx.get('home_days_rest') if ctx.get('home_days_rest') is not None else ctx.get('home_sp_days_rest')
+    a_rest = ctx.get('away_days_rest') if ctx.get('away_days_rest') is not None else ctx.get('away_sp_days_rest')
+    h_xera = ctx.get('home_sp_xera')
+    a_xera = ctx.get('away_sp_xera')
+    try:
+        cs_now = float(close_spread_val) if close_spread_val is not None else None
+    except (TypeError, ValueError):
+        cs_now = None
+    if cs_now is not None:
+        home_is_fav_chk = cs_now < 0
+        for side, pick_home_side in [('home', True), ('away', False)]:
+            rest_v = h_rest if side == 'home' else a_rest
+            xera_v = h_xera if side == 'home' else a_xera
+            try:
+                rest_f = float(rest_v) if rest_v is not None else None
+                xera_f = float(xera_v) if xera_v is not None else None
+            except (TypeError, ValueError):
+                continue
+            if rest_f is None or xera_f is None: continue
+            if rest_f < 5 or xera_f > 3.70: continue
+            # only fire on dog side (cohort edge is dog-flavored)
+            is_dog_side = (pick_home_side != home_is_fav_chk)
+            if not is_dog_side: continue
+            _add(side_drivers, 6, '😴', 'Long-rest ace as DOG',
+                 f'{side.title()} SP: {rest_f:.0f}d rest + {xera_f:.2f} xERA (62.0% DOG RL lifetime)')
+            # Stacked: net=4 confluence ALSO points at this dog → +6 more (total +12)
+            if conf_mag == 4 and conf_net is not None:
+                try:
+                    conf_points_home = int(conf_net) > 0
+                    if conf_points_home == pick_home_side:
+                        _add(side_drivers, 6, '⚡', 'STACKED net=4 + rested ace DOG',
+                             '85% lifetime cohort — compound edge')
+                except (TypeError, ValueError):
+                    pass
+
     # ---- SIDE: Offense drift differential (NEW 2026-05-31) ----
     # Hot/cold gap between the two lineups is a side signal the system was
     # ignoring. PHI/LAD case: PHI drift -1.45 (frozen) vs LAD drift +0.44 →
@@ -1057,6 +1106,24 @@ def score_mlb_game(ctx, game_props=None, track=None):
         _add(total_drivers, 6, '🏟', 'Pitcher-friendly park', f'Park factor {park:.0f}')
     elif park <= 95:
         _add(total_drivers, 3, '🏟', 'Park slight Under lean', f'Park factor {park:.0f}')
+
+    # ---- TOTAL: Extreme hitter park x high-GB pitcher cross (NEW 2026-06-05) ----
+    # Backtest (_backtest_advanced_605.py) n=15: park_run_factor>=115
+    # with average GB% >= 0.50 across both starters STILL hits OVER 66.7%
+    # (+0.273 EV at -110). Lesson: at Coors/extreme parks, high-GB doesn't
+    # save the under because elevation kills sinkers and groundball
+    # contact gets through the synthetic infield. Counter-intuitive — most
+    # bettors think "high-GB + Coors = exception" but the cohort says no.
+    if park >= 115:
+        h_gb = ctx.get('home_sp_gb_pct'); a_gb = ctx.get('away_sp_gb_pct')
+        try:
+            gb_vals = [float(v) for v in (h_gb, a_gb) if v is not None]
+            avg_gb = sum(gb_vals) / len(gb_vals) if gb_vals else None
+        except (TypeError, ValueError):
+            avg_gb = None
+        if avg_gb is not None and avg_gb >= 0.50:
+            _add(total_drivers, 4, '⛰️', 'Coors trap: high-GB doesn\'t save',
+                 f'avg GB% {avg_gb*100:.0f}% at extreme park = 67% OVER lifetime')
 
     # ---- TOTAL: Weather (cold / wind) ----
     temp = float(ctx.get('temperature') or 70)
