@@ -593,22 +593,26 @@ def score_mlb_game(ctx, game_props=None, track=None):
     elif conf_mag >= 2:
         _add(side_drivers, 3, '🎯', 'Confluence lean', f'{conf_mag} signals on one side')
 
-    # ---- SIDE: Spread delta — v3 + Jerry (REWORKED 2026-05-31) ----
-    # 5/21 audit: v3 alone in 1.5-2.0 band hits ~40-43% (trap). ≥2.0
-    # conviction band hits ~55-58%. <1.0 noise. So v3 standalone bands hold.
-    # 5/31 add: Jerry (linear deep-factor projection) gets its own band-scored
-    # contribution. Different model, real second opinion — credit it
-    # independently. When Jerry confirms direction with ≥2.0 magnitude, also
-    # rescue v3's trap-zone (1.5-2.0) contribution that the standalone audit
-    # punished. Reason: the audit was on v3 vs market only; v3+Jerry agreement
-    # in the trap zone is a different (likely better) signal than v3 alone.
+    # ---- SIDE: Spread delta — v3 + v4 (RESHAPED 2026-06-05) ----
+    # SIDE backtest n=640 graded games:
+    #   ML picks: ALL three models at 47-50% (coinflip). Do NOT pick ML.
+    #   DOG RL picks: v3 60.7%, v4 65.9% lifetime. REAL EDGE.
+    #   FAV RL picks: 25-54% across edges. Avoid.
+    #   Jerry spread direction: 47.8% (coinflip across n=67). Benched.
+    #   Confluence net=4 + DOG: 82.6% (n=23) — strongest single signal.
+    #   v3+v4 consensus DOG (>=0.5 each, same direction): 67.2% (n=125).
     #
-    # Sign convention: projected_spread / jerry_pred_spread POSITIVE = home
+    # New scoring: v3 + v4 both contribute (v3 was alone before, but v4
+    # spread audited 65.9% on DOG RL — clear math model worth weighting).
+    # Jerry spread bands zeroed; Jerry stays in DB for transparency.
+    # v3+v4 DOG consensus bonus added (mirror of total consensus play).
+    #
+    # Sign convention: projected_spread / model_pred_spread POSITIVE = home
     # favored. close_spread book-side (negative = home laid). Disagreement
-    # magnitude = abs(model_spread + close_spread). Direction sign retained
-    # to detect v3↔Jerry agreement for trap-zone rescue.
+    # magnitude = abs(model_spread + close_spread).
     close_spread_val = ctx.get('close_spread') or ctx.get('open_spread')
     proj_spread_val = ctx.get('projected_spread')
+    v4_spread_val = ctx.get('model_pred_spread')
     jerry_spread_val = ctx.get('jerry_pred_spread')
 
     v3_signed = None
@@ -618,6 +622,13 @@ def score_mlb_game(ctx, game_props=None, track=None):
         except (TypeError, ValueError):
             v3_signed = None
 
+    v4_signed = None
+    if v4_spread_val is not None and close_spread_val is not None:
+        try:
+            v4_signed = float(v4_spread_val) + float(close_spread_val)
+        except (TypeError, ValueError):
+            v4_signed = None
+
     jerry_signed = None
     if jerry_spread_val is not None and close_spread_val is not None:
         try:
@@ -626,34 +637,58 @@ def score_mlb_game(ctx, game_props=None, track=None):
             jerry_signed = None
 
     v3_abs = abs(v3_signed) if v3_signed is not None else abs(float(ctx.get('spread_delta') or 0))
+    v4_abs = abs(v4_signed) if v4_signed is not None else 0.0
     jerry_abs = abs(jerry_signed) if jerry_signed is not None else 0.0
 
-    # v3 contribution (with trap-zone rescue when Jerry confirms direction)
-    v3_trap_rescued = False
+    # v3 contribution (with trap-zone rescue when v4 confirms direction)
+    # 2026-06-05: trap-zone rescue logic now checks v4 (math-trend model)
+    # instead of Jerry (coinflip).
     if v3_abs >= 2.0:
         _add(side_drivers, 13, '📊', 'v3 market disagreement', f'{v3_abs:.1f}-run v3 vs market')
     elif v3_abs >= 1.5:
-        # Trap zone — rescued only if Jerry agrees direction with conviction
-        if (v3_signed is not None and jerry_signed is not None
-                and v3_signed * jerry_signed > 0 and jerry_abs >= 2.0):
-            _add(side_drivers, 6, '📊', 'v3 trap-zone rescued by Jerry', f'{v3_abs:.1f} v3 + Jerry confirms {jerry_abs:.1f}')
-            v3_trap_rescued = True
-        # else: silent zero, as before
+        if (v3_signed is not None and v4_signed is not None
+                and v3_signed * v4_signed > 0 and v4_abs >= 1.0):
+            _add(side_drivers, 6, '📊', 'v3 trap-zone rescued by v4', f'{v3_abs:.1f} v3 + v4 confirms {v4_abs:.1f}')
     elif v3_abs >= 1.0:
         _add(side_drivers, 8, '📊', 'v3 spread edge', f'{v3_abs:.1f}-run v3 vs market')
     elif v3_abs >= 0.5:
         _add(side_drivers, 3, '📊', 'v3 spread lean', f'{v3_abs:.1f}-run v3 vs market')
 
-    # Jerry contribution (independent — different model architecture)
-    if jerry_signed is not None:
-        if jerry_abs >= 2.0:
-            _add(side_drivers, 13, '🧠', 'Jerry market disagreement', f'{jerry_abs:.1f}-run Jerry vs market')
-        elif jerry_abs >= 1.5:
-            _add(side_drivers, 8, '🧠', 'Jerry spread edge', f'{jerry_abs:.1f}-run Jerry vs market')
-        elif jerry_abs >= 1.0:
-            _add(side_drivers, 5, '🧠', 'Jerry spread edge', f'{jerry_abs:.1f}-run Jerry vs market')
-        elif jerry_abs >= 0.5:
-            _add(side_drivers, 2, '🧠', 'Jerry spread lean', f'{jerry_abs:.1f}-run Jerry vs market')
+    # v4 spread contribution (NEW 2026-06-05) — v4 was previously absent
+    # from SIDE scoring. Audit shows v4 spread predicts DOG RL at 65.9%.
+    if v4_signed is not None:
+        if v4_abs >= 2.0:
+            _add(side_drivers, 13, '🔧', 'v4 market disagreement', f'{v4_abs:.1f}-run v4 vs market')
+        elif v4_abs >= 1.5:
+            _add(side_drivers, 8, '🔧', 'v4 spread edge', f'{v4_abs:.1f}-run v4 vs market')
+        elif v4_abs >= 1.0:
+            _add(side_drivers, 5, '🔧', 'v4 spread edge', f'{v4_abs:.1f}-run v4 vs market')
+        elif v4_abs >= 0.5:
+            _add(side_drivers, 2, '🔧', 'v4 spread lean', f'{v4_abs:.1f}-run v4 vs market')
+
+    # v3 + v4 DOG consensus bonus (NEW 2026-06-05) — when both models
+    # agree direction AND that direction is the DOG side, +12 points.
+    # Backtested 67.2% / n=125 lifetime. Mirrors the TOTAL consensus play.
+    if v3_signed is not None and v4_signed is not None and close_spread_val is not None:
+        if v3_abs >= 0.5 and v4_abs >= 0.5:
+            v3_picks_home = v3_signed > 0
+            v4_picks_home = v4_signed > 0
+            if v3_picks_home == v4_picks_home:
+                try:
+                    cs = float(close_spread_val)
+                    home_is_fav = cs < 0
+                    is_dog = (v3_picks_home != home_is_fav)
+                    if is_dog:
+                        _add(side_drivers, 12, '🤝', 'v3+v4 DOG consensus',
+                             f'Both models pick the dog side (v3 {v3_signed:+.2f}, v4 {v4_signed:+.2f})')
+                except (TypeError, ValueError):
+                    pass
+
+    # Jerry spread contribution BENCHED 2026-06-05. Lifetime spread
+    # direction 47.8% (coinflip on n=67). Keep Jerry projections in DB
+    # for transparency but stop counting them in the dim score until
+    # Jerry proves itself on n>=60 graded games with rolling 14-day
+    # accuracy >= 60%. Same gating as TOTAL dim Jerry change.
 
     # ---- SIDE: Offense drift differential (NEW 2026-05-31) ----
     # Hot/cold gap between the two lineups is a side signal the system was
