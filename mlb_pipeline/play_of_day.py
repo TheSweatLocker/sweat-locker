@@ -883,19 +883,23 @@ def score_mlb_game(ctx, game_props=None, track=None):
                         pass
                     if v4_over_agrees_j is False or v4_over_suppressed_j:
                         jerry_mult = 0.6
-                # Bands kept as-is — full weight when Jerry is confirmed
-                # because confluence makes Jerry's signal trustworthy.
+                # 2026-06-05 backtest sweep: scaled Jerry bands by 1.5x when
+                # confirmed. The original (17/13/9/5) under-surfaced
+                # Jerry-confirmed cases — sweep across n=703 games showed
+                # 1.5x = 7-1 (87.5%, EV +0.670 per unit at -110) vs
+                # baseline 4-1 (80%, +0.527). 2x scaled too aggressively
+                # (9-2 / 81.8%, +0.562) — 1.5x was the sweet spot.
                 if jerry_total_delta_abs >= 2.5:
-                    pts = int(round(17 * jerry_mult))
+                    pts = int(round(26 * jerry_mult))
                     _add(total_drivers, pts, '🧠', 'Jerry major total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
                 elif jerry_total_delta_abs >= 1.5:
-                    pts = int(round(13 * jerry_mult))
+                    pts = int(round(20 * jerry_mult))
                     _add(total_drivers, pts, '🧠', 'Jerry strong total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
                 elif jerry_total_delta_abs >= 1.0:
-                    pts = int(round(9 * jerry_mult))
+                    pts = int(round(14 * jerry_mult))
                     _add(total_drivers, pts, '🧠', 'Jerry total edge', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
                 elif jerry_total_delta_abs >= 0.5:
-                    pts = int(round(5 * jerry_mult))
+                    pts = int(round(8 * jerry_mult))
                     _add(total_drivers, pts, '🧠', 'Jerry total lean', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
         except (TypeError, ValueError):
             pass
