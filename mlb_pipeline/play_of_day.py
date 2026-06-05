@@ -762,43 +762,20 @@ def score_mlb_game(ctx, game_props=None, track=None):
         # All gates cap PRIME via _dim_tier "PRIME requires play" rule and
         # write_sweat_score's 79-cap. Score, drivers, direction call all
         # remain intact for transparency.
+        # 2026-06-05: removed v3-Jerry and v4-Jerry conflict gates. The
+        # new Jerry-confirmation rule in the Jerry contribution block (further
+        # down) subsumes them — Jerry now contributes 0 when v3/v4 don't
+        # agree direction, so there's no "Jerry stacks with opposing model"
+        # failure mode left. The old gates also over-suppressed v3 in the
+        # KCR/MIN-style case (v3+v4 both OVER, Jerry alone UNDER) — v3+v4
+        # should have driven the pick but the gate killed v3 too. prop_conflict
+        # stays because it's about prop alignment vs v3, a different signal.
         prop_conflict = (prop_dir is not None and prop_dir != delta_direction
                          and (prop_dir_prime + prop_dir_strong) >= 4)
-        v3_jerry_conflict = (
-            jerry_total_delta_pre is not None
-            and abs(jerry_total_delta_pre) >= 0.5
-            and total_delta_abs >= 0.5
-            and ((total_delta_signed > 0) != (jerry_total_delta_pre > 0))
-        )
-        # v4 delta computed independently so this gate fires even when v3
-        # is within the dead band (silent). Same magnitude + opposite-sign
-        # requirements as the v3 gate.
-        v4_jerry_conflict = False
-        if jerry_total_delta_pre is not None and v4_total is not None:
-            try:
-                v4_delta_signed = float(v4_total) - close_total
-                v4_jerry_conflict = (
-                    abs(v4_delta_signed) >= 0.5
-                    and abs(jerry_total_delta_pre) >= 0.5
-                    and ((v4_delta_signed > 0) != (jerry_total_delta_pre > 0))
-                )
-            except (TypeError, ValueError):
-                v4_jerry_conflict = False
         if prop_conflict:
             total_delta_suppressed = True
             _evidence('⚠️', 'Total delta vs props conflict',
                       f'Model {total_delta_signed:+.2f} {delta_direction}, {prop_dir_prime + prop_dir_strong} players point {prop_dir} — suppressed')
-        elif v3_jerry_conflict:
-            total_delta_suppressed = True
-            jerry_dir_pre = 'OVER' if jerry_total_delta_pre > 0 else 'UNDER'
-            _evidence('⚠️', 'v3 vs Jerry total conflict',
-                      f'v3 {total_delta_signed:+.2f} {delta_direction}, Jerry {jerry_total_delta_pre:+.2f} {jerry_dir_pre} — both total signals suppressed')
-        elif v4_jerry_conflict:
-            total_delta_suppressed = True
-            jerry_dir_pre = 'OVER' if jerry_total_delta_pre > 0 else 'UNDER'
-            v4_dir_pre = 'OVER' if v4_delta_signed > 0 else 'UNDER'
-            _evidence('⚠️', 'v4 vs Jerry total conflict',
-                      f'v4 {v4_delta_signed:+.2f} {v4_dir_pre}, Jerry {jerry_total_delta_pre:+.2f} {jerry_dir_pre} — total signals suppressed (v3 silent)')
         else:
             # Resolve band contribution, then apply OVER skepticism multiplier
             if total_delta_abs >= 2.0:
@@ -817,48 +794,109 @@ def score_mlb_game(ctx, game_props=None, track=None):
                 pts = int(round(3 * over_skeptic_mult))
                 _add(total_drivers, pts, '📈', 'Total slim edge', f'{total_delta_signed:+.2f}-run')
 
-    # ---- TOTAL: Jerry total disagreement (REWEIGHTED 2026-06-03) ----
-    # 6/2 audit: Jerry total MAE 2.29 vs v3 MAE 2.71 — Jerry directionally
-    # accurate 9-2 (81.8%) on the night, v3 was 4-1 (80%). Jerry now best
-    # total model in production. Bumping Jerry's bands roughly to match v3
-    # (was ~67% of v3) so the dim score reflects Jerry's real predictive
-    # weight. OVER skepticism multiplier still applies (v4 OVER drift per
-    # [[project_v4_over_drift]]).
+    # ---- TOTAL: v3+v4 CONSENSUS BONUS (NEW 2026-06-05) ----
+    # When v3 and v4 BOTH have material edge (>=0.5 runs) AND point the same
+    # direction, that's two independent math-trend models reaching the same
+    # answer. v3 is XGBoost over historical patterns; v4 is the structural
+    # runs model. Independent feature paths, same conclusion = strongest
+    # TOTAL signal we have.
+    #
+    # 6/4 audit validates: v3 + v4 BOTH 7-2 (77.8%) on the same n=9 slate
+    # where Jerry was 1-8. Multi-model agreement = math-trend confluence.
+    v3v4_consensus_dir = None
+    if not total_delta_suppressed:
+        v3_total_dir = None
+        v3_total_abs = total_delta_abs  # already computed above
+        if total_delta_abs >= 0.5:
+            v3_total_dir = 'OVER' if total_delta_signed > 0 else 'UNDER'
+        v4_total_dir = None
+        v4_total_signed = None
+        if v4_total is not None and close_total > 0:
+            try:
+                v4_total_signed = float(v4_total) - close_total
+                if abs(v4_total_signed) >= 0.5:
+                    v4_total_dir = 'OVER' if v4_total_signed > 0 else 'UNDER'
+            except (TypeError, ValueError):
+                pass
+        if v3_total_dir is not None and v3_total_dir == v4_total_dir:
+            v3v4_consensus_dir = v3_total_dir
+            # Magnitude bonus: if BOTH are loud (>=1.5), add more
+            both_loud = total_delta_abs >= 1.5 and abs(v4_total_signed) >= 1.5
+            consensus_pts = 12 if both_loud else 10
+            _add(total_drivers, consensus_pts, '🤝', 'v3+v4 consensus',
+                 f'Both math models point {v3v4_consensus_dir} (v3 {total_delta_signed:+.2f}, v4 {v4_total_signed:+.2f})')
+
+    # ---- TOTAL: Jerry total — DEMOTED to supporting vote (2026-06-05) ----
+    # 6/4 audit was a Jerry disaster: 1-8 on n=9 (11.1% direction accuracy)
+    # vs v3 7-2 and v4 7-2 same night. Jerry's 3-day cumulative dropped from
+    # 70.4% (after 6/3) to 55.6% (after 6/4). Likely cause: Phase 1 Bayesian
+    # shrinkage (shipped 6/2) is over-smoothing recent pitcher form changes.
+    #
+    # Rather than blindly demote weights, gate Jerry on AT LEAST ONE other
+    # model agreeing direction. Jerry-alone-loud no longer gets card-grade
+    # contribution — that was the pattern of every Jerry miss on 6/4
+    # (CLE/NYY, KCR/MIN, BAL/BOS all had Jerry alone vs v3+v4 silent or
+    # opposing). When Jerry is confirmed by v3 or v4, full bands apply.
+    # When Jerry is alone, contribution = 0. Existing conflict gates
+    # (v3-Jerry, v4-Jerry) already kill the "Jerry vs rest" cases.
     jerry_total = ctx.get('jerry_pred_total')
     if jerry_total is not None and close_total > 0 and not total_delta_suppressed:
         try:
             jerry_total_delta_signed = round(float(jerry_total) - close_total, 2)
             jerry_total_delta_abs = abs(jerry_total_delta_signed)
             jerry_dir = 'OVER' if jerry_total_delta_signed > 0 else 'UNDER'
-            jerry_mult = 1.0
-            if jerry_dir == 'OVER':
-                # Reuse same v4-consensus + v4-suppressed rule as v3 OVER
-                v4_over_agrees_j = None
+            # Confirmation gate: at least one of v3/v4 must have >=0.3 in
+            # same direction. Otherwise Jerry is alone and contributes 0.
+            DEAD_BAND_JERRY_CONFIRM = 0.3
+            v3_confirms = (total_delta_abs >= DEAD_BAND_JERRY_CONFIRM and
+                           ((total_delta_signed > 0) == (jerry_total_delta_signed > 0)))
+            v4_confirms = False
+            if v4_total is not None:
                 try:
-                    if v4_total is not None:
-                        v4_over_agrees_j = (float(v4_total) - close_total) > 0
+                    v4_d = float(v4_total) - close_total
+                    v4_confirms = (abs(v4_d) >= DEAD_BAND_JERRY_CONFIRM and
+                                   ((v4_d > 0) == (jerry_total_delta_signed > 0)))
                 except (TypeError, ValueError):
+                    v4_confirms = False
+            jerry_confirmed = v3_confirms or v4_confirms
+            if not jerry_confirmed:
+                # Jerry alone — log as evidence so the audit sees Jerry's
+                # opinion existed but didn't count toward the dim.
+                _evidence('💤', 'Jerry alone (no v3/v4 confirmation)',
+                          f'Jerry {jerry_total_delta_signed:+.2f} but no other model >= 0.3 in same direction — contribution suppressed')
+            else:
+                # Confirmed by at least one math-trend model. Apply existing
+                # OVER skepticism multiplier and the original bands.
+                jerry_mult = 1.0
+                if jerry_dir == 'OVER':
                     v4_over_agrees_j = None
-                v4_over_suppressed_j = False
-                try:
-                    from game_context import is_v4_over_suppressed
-                    v4_over_suppressed_j = is_v4_over_suppressed()
-                except Exception:
-                    pass
-                if v4_over_agrees_j is False or v4_over_suppressed_j:
-                    jerry_mult = 0.6
-            if jerry_total_delta_abs >= 2.5:
-                pts = int(round(17 * jerry_mult))
-                _add(total_drivers, pts, '🧠', 'Jerry major total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
-            elif jerry_total_delta_abs >= 1.5:
-                pts = int(round(13 * jerry_mult))
-                _add(total_drivers, pts, '🧠', 'Jerry strong total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
-            elif jerry_total_delta_abs >= 1.0:
-                pts = int(round(9 * jerry_mult))
-                _add(total_drivers, pts, '🧠', 'Jerry total edge', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
-            elif jerry_total_delta_abs >= 0.5:
-                pts = int(round(5 * jerry_mult))
-                _add(total_drivers, pts, '🧠', 'Jerry total lean', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market')
+                    try:
+                        if v4_total is not None:
+                            v4_over_agrees_j = (float(v4_total) - close_total) > 0
+                    except (TypeError, ValueError):
+                        v4_over_agrees_j = None
+                    v4_over_suppressed_j = False
+                    try:
+                        from game_context import is_v4_over_suppressed
+                        v4_over_suppressed_j = is_v4_over_suppressed()
+                    except Exception:
+                        pass
+                    if v4_over_agrees_j is False or v4_over_suppressed_j:
+                        jerry_mult = 0.6
+                # Bands kept as-is — full weight when Jerry is confirmed
+                # because confluence makes Jerry's signal trustworthy.
+                if jerry_total_delta_abs >= 2.5:
+                    pts = int(round(17 * jerry_mult))
+                    _add(total_drivers, pts, '🧠', 'Jerry major total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
+                elif jerry_total_delta_abs >= 1.5:
+                    pts = int(round(13 * jerry_mult))
+                    _add(total_drivers, pts, '🧠', 'Jerry strong total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
+                elif jerry_total_delta_abs >= 1.0:
+                    pts = int(round(9 * jerry_mult))
+                    _add(total_drivers, pts, '🧠', 'Jerry total edge', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
+                elif jerry_total_delta_abs >= 0.5:
+                    pts = int(round(5 * jerry_mult))
+                    _add(total_drivers, pts, '🧠', 'Jerry total lean', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
         except (TypeError, ValueError):
             pass
 
