@@ -464,6 +464,21 @@ def run():
             generate_props.run()
         except Exception as e:
             print(f"  ⚠️ prop regen failed: {e}")
+        # Re-run sweat scoring so the freshly-promoted PRIME/STRONG props
+        # feed back into sweat_score, sweat_tier, sweat_breakdown, and
+        # primary_play. Added 2026-06-05 — see
+        # [[project_sweat_rescore_timing_gap_605]]. Without this, the
+        # watchdog updates props but sweat freezes at the 6am/2pm cron
+        # values. play_of_day.run() now respects the POTD lock (won't
+        # clobber a manualOverride or 11am-2pm window pick) but always
+        # writes fresh sweat scores. This must run BEFORE Daily Degen
+        # so DD picks see the refreshed sweat tiers.
+        print("\n  Re-running play_of_day for sweat re-score...")
+        try:
+            import play_of_day
+            play_of_day.run()
+        except Exception as e:
+            print(f"  ⚠️ play_of_day sweat re-score failed: {e}")
         # Refresh Daily Degen too — the watchdog used to regen props but
         # leave Degen frozen at the 2pm pipeline scores, so users saw a
         # stale parlay built from outdated conviction values. Now Degen

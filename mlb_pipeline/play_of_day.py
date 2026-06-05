@@ -1809,8 +1809,22 @@ def run():
     # - 11am+ lock: pick locks so early-game users see a pick
     # - 2pm run override: if new pick has Sweat Score 20+ higher than locked pick,
     #                     overwrite (only trigger when 2pm data changes things materially)
+    # 2026-06-05 REFACTOR — separate sweat re-score from POTD selection.
+    # Old behavior: when POTD was locked (manualOverride or 11am-2pm window),
+    # this function returned early. That ALSO skipped the per-game sweat
+    # score writes below — so any caller (watchdog refresh_imminent_games,
+    # manual mid-day trigger) silently failed to refresh sweat_score when
+    # props/lineups/lines updated. The 6/5 PIT@ATL cron divergence was the
+    # poster child: sweat stuck at 52 while live props would have produced
+    # 82. See [[project_sweat_rescore_timing_gap_605]] for the deep dive.
+    #
+    # New behavior: scan POTD lock state into flags but ALWAYS continue to
+    # the sweat-write loop. POTD selection (last block of this function)
+    # respects the flags so we don't clobber a hand-locked or in-window pick.
     SCORE_OVERRIDE_THRESHOLD = 20  # 20-point score delta to override locked pick
     existing_pick = None
+    skip_potd_selection = False
+    potd_lock_reason = None
     try:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/jerry_cache?game_id=eq.best_bet_{today}&select=data",
@@ -1821,19 +1835,17 @@ def run():
             existing_pick = existing[0]['data']
             existing_score = existing_pick.get('score', {}).get('total', 0) or 0
 
-            # Manual-override lock — set when POTD is hand-picked (e.g. user
-            # already posted to social before pipeline shifted). Wins against
-            # all auto-regeneration paths regardless of ET hour.
             if existing_pick.get('manualOverride'):
-                print(f"🔒 manualOverride=true — POTD hand-locked, skipping all regeneration")
-                return
-
-            if et_hour < 11:
+                print(f"🔒 manualOverride=true — POTD hand-locked. Sweat scores will still refresh; POTD selection skipped.")
+                skip_potd_selection = True
+                potd_lock_reason = 'manualOverride'
+            elif et_hour < 11:
                 print(f"⏰ Pre-11am ET ({et_hour}h) — regenerating with fresh data")
                 existing_pick = None  # clear so we overwrite
             elif et_hour < 14:
-                print(f"✅ Today's pick locked (11am-2pm window) — skipping regeneration")
-                return
+                print(f"✅ Today's pick locked (11am-2pm window) — sweat will refresh; POTD selection skipped.")
+                skip_potd_selection = True
+                potd_lock_reason = '11am-2pm lock window'
             else:
                 # 2pm+ run: allow override only if new pick beats locked score significantly
                 print(f"🔄 2pm+ run — will override locked pick only if new Sweat Score > {existing_score} + {SCORE_OVERRIDE_THRESHOLD}")
@@ -2018,6 +2030,13 @@ def run():
     # skip the POTD lock/selection logic until the 2pm run.
     if defer_potd:
         print(f"  ✓ Wrote sweat scores for {len(candidates)} games. POTD selection deferred to 2pm run.")
+        return
+
+    # 2026-06-05: respect the manualOverride / 11am-2pm lock detected at
+    # function entry. Sweat scores are already written above — same defer
+    # pattern as late-slate. POTD selection only runs when the lock allows.
+    if skip_potd_selection:
+        print(f"  ✓ Wrote sweat scores for {len(candidates)} games. POTD selection skipped ({potd_lock_reason}).")
         return
 
     # ── AUDIT-DRIVEN POTD SELECTION (2026-05-19 rewrite) ──
