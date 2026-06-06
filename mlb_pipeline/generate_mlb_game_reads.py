@@ -118,6 +118,113 @@ def fetch_potd():
     return d
 
 
+# ---------------------------------------------------------------- team snapshots (2026-06-05)
+# Per-team season context block — adds Doc-Sports-style depth (full-season
+# batting line, K%/BB%, bullpen save%/holds, league ranks) to Jerry reads.
+# Sources `mlb_team_offense` and `mlb_bullpen_stats` (both refreshed daily
+# by team_stats.py / bullpen_stats.py). League ranks computed in-memory from
+# all 30 teams so we don't need a separate ranks table. Phase B will add
+# full-staff team pitching (ERA/WHIP/FIP) and career SP stats.
+
+_TEAM_SNAPSHOTS_CACHE = {}
+
+def _rank_dict(values_by_team, ascending=False):
+    """Return {team: rank} where rank=1 means top of list. ascending=False
+    treats higher = better (e.g. R/G, OPS); ascending=True for lower=better
+    (e.g. BP ERA, blown saves)."""
+    items = [(t, v) for t, v in values_by_team.items() if v is not None]
+    items.sort(key=lambda x: x[1], reverse=not ascending)
+    return {t: i + 1 for i, (t, _) in enumerate(items)}
+
+
+def fetch_team_snapshots():
+    """Pull team_offense + bullpen_stats for all 30 teams once, compute league
+    ranks, return {team_name: {snapshot_dict}}. Cached for the process."""
+    if _TEAM_SNAPSHOTS_CACHE:
+        return _TEAM_SNAPSHOTS_CACHE
+    offense_rows = sb_get("mlb_team_offense", {
+        "season": "eq.2026",
+        "select": "team,avg,obp,slg,ops,k_pct,bb_pct,runs_per_game,hr_per_game,wrc_plus,woba,xwoba,barrel_pct,oaa,iso,games_played",
+    })
+    bullpen_rows = sb_get("mlb_bullpen_stats", {
+        "season": "eq.2026",
+        "select": "team,bullpen_era,save_pct,saves,blown_saves,holds",
+    })
+    if not offense_rows:
+        return _TEAM_SNAPSHOTS_CACHE
+    by_team = {r["team"]: dict(r) for r in offense_rows}
+    for b in bullpen_rows or []:
+        if b["team"] in by_team:
+            by_team[b["team"]].update({k: v for k, v in b.items() if k != "team"})
+
+    # Compute league ranks across all teams that have data.
+    rank_runs = _rank_dict({t: _f(r.get("runs_per_game")) for t, r in by_team.items()})
+    rank_ops = _rank_dict({t: _f(r.get("ops")) for t, r in by_team.items()})
+    rank_wrc = _rank_dict({t: _f(r.get("wrc_plus")) for t, r in by_team.items()})
+    rank_xwoba = _rank_dict({t: _f(r.get("xwoba")) for t, r in by_team.items()})
+    rank_bp_era = _rank_dict({t: _f(r.get("bullpen_era")) for t, r in by_team.items()}, ascending=True)
+    rank_save_pct = _rank_dict({t: _f(r.get("save_pct")) for t, r in by_team.items()})
+    rank_holds = _rank_dict({t: _f(r.get("holds")) for t, r in by_team.items()})
+    rank_oaa = _rank_dict({t: _f(r.get("oaa")) for t, r in by_team.items()})
+
+    for team, r in by_team.items():
+        r["rank_runs_per_game"] = rank_runs.get(team)
+        r["rank_ops"] = rank_ops.get(team)
+        r["rank_wrc_plus"] = rank_wrc.get(team)
+        r["rank_xwoba"] = rank_xwoba.get(team)
+        r["rank_bullpen_era"] = rank_bp_era.get(team)
+        r["rank_save_pct"] = rank_save_pct.get(team)
+        r["rank_holds"] = rank_holds.get(team)
+        r["rank_oaa"] = rank_oaa.get(team)
+    _TEAM_SNAPSHOTS_CACHE.update(by_team)
+    return _TEAM_SNAPSHOTS_CACHE
+
+
+def _team_snapshot_block(team_name):
+    """Build the per-team snapshot used by the prompt + The Numbers panel.
+    Pulls from fetch_team_snapshots() (cached). Returns None on miss so the
+    prompt can fall back to existing wrc_plus-only context."""
+    snaps = fetch_team_snapshots()
+    r = snaps.get(team_name)
+    if not r:
+        return None
+    return {
+        "team": team_name,
+        "games_played": r.get("games_played"),
+        # Batting line
+        "avg": r.get("avg"),
+        "obp": r.get("obp"),
+        "slg": r.get("slg"),
+        "ops": r.get("ops"),
+        "iso": r.get("iso"),
+        "k_pct": r.get("k_pct"),
+        "bb_pct": r.get("bb_pct"),
+        "wrc_plus": r.get("wrc_plus"),
+        "woba": r.get("woba"),
+        "xwoba": r.get("xwoba"),
+        "barrel_pct": r.get("barrel_pct"),
+        "runs_per_game": r.get("runs_per_game"),
+        "hr_per_game": r.get("hr_per_game"),
+        # Bullpen
+        "bullpen_era": r.get("bullpen_era"),
+        "bullpen_save_pct": r.get("save_pct"),
+        "bullpen_saves": r.get("saves"),
+        "bullpen_blown_saves": r.get("blown_saves"),
+        "bullpen_holds": r.get("holds"),
+        # Defense
+        "oaa": r.get("oaa"),
+        # League ranks (1 = best)
+        "rank_runs_per_game": r.get("rank_runs_per_game"),
+        "rank_ops": r.get("rank_ops"),
+        "rank_wrc_plus": r.get("rank_wrc_plus"),
+        "rank_xwoba": r.get("rank_xwoba"),
+        "rank_bullpen_era": r.get("rank_bullpen_era"),
+        "rank_save_pct": r.get("rank_save_pct"),
+        "rank_holds": r.get("rank_holds"),
+        "rank_oaa": r.get("rank_oaa"),
+    }
+
+
 # ---------------------------------------------------------------- struct
 
 def _nrfi_tier(score):
@@ -505,6 +612,13 @@ def build_struct(g, props, potd):
             "lineup_confirmed": g.get("lineup_confirmed"),
         },
         "pitchers": {"home": _pitcher_block(g, "home"), "away": _pitcher_block(g, "away")},
+        # Team season snapshots (added 2026-06-05) — Doc-Sports-style depth
+        # for the prompt + The Numbers panel. Computed from mlb_team_offense
+        # + mlb_bullpen_stats with league ranks. See fetch_team_snapshots().
+        "team_snapshot": {
+            "home": _team_snapshot_block(g.get("home_team")),
+            "away": _team_snapshot_block(g.get("away_team")),
+        },
         "best_plays": best,
         "is_potd": is_potd,
         "potd_lean": potd_lean if is_potd else None,

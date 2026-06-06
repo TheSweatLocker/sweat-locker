@@ -5911,20 +5911,21 @@ ${dataQualityNote}`;
       //console.log('Jerry response data:', JSON.stringify(data));
       const text = data?.content?.filter(b=>b.type==='text').map(b=>b.text).join('') || '';
       setGameNarrative(text);
-      // Save to Supabase cache — but NEVER cache MLB reads generated without mlb_game_context data.
-      // Those produce "no stats for game" narratives that then poison the cache for 8h, even after
-      // the pipeline finishes filling the row. Let those miss-cache so the next viewer regenerates.
-      const skipMlbNoDataCache = sport === 'MLB' && !mlbDataForCache;
-      if(text && !skipMlbNoDataCache) {
-        try {
-          await supabase.from('jerry_cache').upsert({
-            game_id: gameKey,
-            sport: sport,
-            narrative: text,
-            created_at: new Date().toISOString(),
-          }, {onConflict: 'game_id,sport'});
-        } catch(e) {}
-      };
+      // CLIENT-SIDE WRITEBACK DISABLED 2026-06-05.
+      // The client-side Claude fallback was writing back jerry_cache rows
+      // with broken schema (cache_key=null, data=null) that survived for
+      // 8h via the staleness check. Two failure modes resulted:
+      //   1. Stale + hallucinated pitcher names in narrative (6/5 KCR@MIN
+      //      cached "Avila" / "Ryan" instead of Wacha / Matthews; 7 of
+      //      tonight's 15 games had broken rows).
+      //   2. Numbers panel never renders because data=null on those rows.
+      // Per [[feedback-backside-dictates-app-renders]] all narratives must
+      // come from server-side generate_<sport>_game_reads.py with proper
+      // cache_key and struct. Client falls through to a transient
+      // narrative for display only; we no longer poison the cache.
+      // If the server-side read is missing (cron lag, late-confirmed
+      // lineup), the next pipeline tick will write the correct row;
+      // the user just sees the live Claude reply this once.
     } catch(e) {
       //console.log('Jerry error:', e.message);
       setGameNarrative('Jerry is reviewing the tape on this one. Check back shortly.');
