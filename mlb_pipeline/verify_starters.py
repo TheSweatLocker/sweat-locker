@@ -53,6 +53,19 @@ WRITE_H = {**READ_H, "Content-Type": "application/json", "Prefer": "return=minim
 # Fields tied to a specific pitcher — cleared when we patch a mismatched name.
 # Mastery dims (era / avg / k_per_9 / ip) are critical: keeping them attached
 # to the WRONG pitcher silently poisons every downstream prop scorer.
+#
+# 2026-06-06 SCHEMA AUDIT: the original list was a copy-paste from
+# mlb_game_results column names which has many more SP fields than
+# mlb_game_context. Writing those non-existent columns to game_context
+# triggered PGRST204 errors that aborted the entire row patch and rolled
+# back the new starter name — meaning verify_starters was SILENTLY FAILING
+# on every starter swap since 2026-05-27. Today's symptom: TOR's Braydon
+# Fisher couldn't be filled in for the BAL@TOR home_pitcher column, which
+# kept home_sp_xera NULL, which suppressed v4 model output entirely.
+# Same blackout hit MIL@COL when COL's starter was TBD all morning.
+#
+# This list is now LIMITED to fields verified to exist in mlb_game_context
+# via a live SELECT * inspection.
 _PITCHER_FIELDS = (
     "sp_xera",
     "pitcher_last_3_era",
@@ -63,20 +76,7 @@ _PITCHER_FIELDS = (
     "pitcher_vs_team_ip",
     "first_inning_era",
     "first_inning_whip",
-    "first_inning_k",
-    "first_inning_bb",
-    "first_inning_hr",
-    "first_inning_avg",
-    "first_inning_ip",
-    "last_ip",
-    "last_pitch_count",
-    "sp_days_rest",
-    "sp_hand",
-    "sp_k_pct",
-    "sp_gb_pct",
-    "sp_whiff_rate",
-    "sp_last5_era",
-    "sp_era",
+    "days_rest",
 )
 
 
