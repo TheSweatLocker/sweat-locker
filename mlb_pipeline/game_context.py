@@ -3503,10 +3503,21 @@ def run(target_date=None):
                         pred_h, pred_a = predict_runs(feat)
                         if pred_h is not None and pred_a is not None:
                             xgb_total = pred_h + pred_a
-                            # Disagreement guard: if XGBoost is more than 2.5 runs
-                            # below the v3 formula projection, the input set has
-                            # likely tripped a training blind spot. Suppress.
-                            if projected_total is not None and abs(xgb_total - projected_total) >= 2.5:
+                            # Disagreement guard relaxed 2026-06-06: was 2.5,
+                            # now 4.0. The 2.5 threshold was over-aggressive —
+                            # SF@CHC 6/6 had v3=5.7, v4=9.42 (delta +3.72)
+                            # suppressed despite Jerry independently predicting
+                            # 9.46 (matching v4). v3 was the outlier, not v4,
+                            # but the guard killed the model anyway. Real
+                            # XGBoost blind spots show >4-run swings; 2.5-4.0
+                            # is just legitimate model disagreement.
+                            #
+                            # Jerry can't be a tiebreaker here because the
+                            # Jerry projection isn't computed until after this
+                            # block. If we ever reorder, switch to a 3-way
+                            # vote: trust v4 when Jerry agrees with v4 vs v3.
+                            DISAGREEMENT_THRESHOLD = 4.0
+                            if projected_total is not None and abs(xgb_total - projected_total) >= DISAGREEMENT_THRESHOLD:
                                 print(f"  XGBoost suppressed: disagrees with v3 by {abs(xgb_total - projected_total):.1f} runs (xgb {xgb_total:.1f} vs v3 {projected_total:.1f}) — model blind spot, falling back to v3")
                             else:
                                 model_pred_home_runs = round(pred_h, 2)
