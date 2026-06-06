@@ -523,8 +523,42 @@ def collect_skip_alerts(games):
 
 
 def top_props_by_type(props, target_type, n=2):
+    """Surface top N props of a given type WITH the juice/book gate applied.
+
+    Previously this just returned filtered[:n] — bypassed the
+    HITS_OVER_05_CARD_CONV_FLOOR juice floor defined above. As a result
+    the card was publishing PRIME hits_over 0.5 picks at -300 juice
+    where 72-77% lifetime hit rate is break-even or worse.
+
+    Permanent fix (2026-06-06): apply the juice floor here. Specifically:
+      - hits_over 0.5 line: require conviction >= 95 (lifetime says PRIME
+        is barely +EV after -300 juice; only the top-of-PRIME survives)
+      - all other types: require conviction >= 70 (minimum surface bar)
+      - require non-null book_line (no internal-line-only props on card)
+    """
     filtered = [p for p in props if p.get("prop_type") == target_type]
-    return filtered[:n]
+    out = []
+    for p in filtered:
+        conv = p.get("conviction") or 0
+        # Bar 1: type-specific juice floor
+        if _is_high_juice_hits_over(p):
+            if conv < HITS_OVER_05_CARD_CONV_FLOOR:
+                continue
+        else:
+            if conv < 70:
+                continue
+        # Bar 2: must have a book line attached (rule out internal-only props)
+        # Hits_over 0.5 specifically must have a book line — sportsbooks
+        # always publish that line, so a missing book line means our
+        # Phase 2 attach failed and we don't actually know the price.
+        if target_type == "hits_over":
+            bl = p.get("book_line")
+            if bl is None or (isinstance(bl, (int, float)) and bl == 0):
+                continue
+        out.append(p)
+        if len(out) >= n:
+            break
+    return out
 
 
 def _is_high_juice_hits_over(prop):
@@ -671,10 +705,17 @@ def _cohort_eligibility(prop, gate_window="30d"):
     """Return one of: 'eligible', 'demote', 'suppress'.
 
     Rules:
-      - 30d hit_rate >= break_even (n>=10) -> 'eligible'
+      - 30d hit_rate >= break_even + safety_margin (n>=10) -> 'eligible'
       - 30d below but 60d >= break_even (n>=10) -> 'demote' (drop tier one level)
       - 60d also below (n>=10) -> 'suppress'
       - Insufficient sample anywhere -> 'eligible' (no data is not failure)
+
+    SAFETY_MARGIN (2026-06-06): added 1.5pt buffer above break-even so
+    cohorts hovering within ±1pt of break-even (statistically zero-EV at
+    typical juice) get suppressed instead of slipping through. Was a real
+    issue: hits_under STRONG at 57.2% on n=187 cleared the 56.5% break-even
+    by 0.7pt, but recent 7-day was 52% — variance was reverting it back to
+    break-even. Now requires 58% to clear, forcing a meaningful edge.
 
     `gate_window` lets the caller loosen the gate when the card has
     been over-suppressed (graceful-degradation fallback).
@@ -690,13 +731,16 @@ def _cohort_eligibility(prop, gate_window="30d"):
     if break_even is None:
         return "eligible"  # unknown prop type — don't suppress
 
+    SAFETY_MARGIN = 1.5  # pp above break-even to clear the gate
+    threshold = break_even + SAFETY_MARGIN
+
     def _check(rates):
         r = rates.get((pt, direction, tier))
         if r is None: return None
         rate, n = r
         if rate is None or n < COHORT_MIN_N:
             return None  # insufficient sample
-        return rate >= break_even
+        return rate >= threshold
 
     pass_30 = _check(_COHORT_RATES_30D)
 
@@ -806,6 +850,16 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             return g
         return None
 
+    # PROP-TYPE DIVERSITY CAP (added 2026-06-06). Same prop_type can appear
+    # at most MAX_PROP_TYPE_IN_TOP_8 times in the curated set. Before this,
+    # nights with stale prop calibration would stack 5+ hits_under STRONG
+    # in top_8 — user feedback "spreading love" architecture says the card
+    # should mix hits/Ks/BB/HA/ER/totals/sides instead of doubling down on
+    # one cohort. POTD + DotD bypass the cap (anchors). Game-side ML/RL
+    # don't count toward prop caps.
+    MAX_PROP_TYPE_IN_TOP_8 = 2
+    prop_type_count = {}
+
     def add(pick):
         # Dedupe by a stable identifier
         key = f"{pick['source_table']}:{pick['source_key']}"
@@ -823,6 +877,12 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         if gkey is not None and not is_anchor:
             if game_pick_count.get(gkey, 0) >= MAX_PICKS_PER_GAME:
                 return False
+        # Prop-type diversity cap (skip for anchors and game-side picks)
+        if not is_anchor and ptype.startswith("prop_"):
+            prop_type = ptype.replace("prop_", "")
+            if prop_type_count.get(prop_type, 0) >= MAX_PROP_TYPE_IN_TOP_8:
+                return False
+            prop_type_count[prop_type] = prop_type_count.get(prop_type, 0) + 1
         seen_keys.add(key)
         if gkey is not None:
             game_pick_count[gkey] = game_pick_count.get(gkey, 0) + 1
@@ -1099,16 +1159,47 @@ def build_card():
     top_under_hits = top_props_by_type(props, "hits_under", 1)
     top_under_ks = top_props_by_type(props, "ks_under", 1)
 
-    # Unified TOP PROPS — any type that grades PRIME/STRONG, ranked by
-    # conviction. Replaces the limited hardcoded type buckets the frontend
-    # was rendering. Now Mize H+A Under, Strider ER Under, etc. surface
-    # alongside hits/Ks instead of being silently dropped (2026-05-21).
-    # Frontend reads sweat_card.top_props directly — no client-side
-    # filtering or grading, this is the canonical surface.
-    top_props_all = [
-        p for p in props
-        if p.get("tier") in ("PRIME", "STRONG")
-    ][:8]
+    # Unified TOP PROPS with DIVERSITY CAP (2026-06-06 permanent fix).
+    #
+    # Before: top 8 by conviction, no type cap. Result was hits_under or
+    # hits_over heavy slates (6+ of the same prop type in top_8) which
+    # users called out as "not spreading the love." Same single edge bet
+    # 6 times = juice multiplies + concentration risk.
+    #
+    # Now: max 3 picks per prop_type within top_props, ranked by conviction.
+    # If a type runs out, fall through to next type. Guarantees the surface
+    # mixes hits / Ks / BB / HA / ER / outs / total bases.
+    #
+    # Hits_over 0.5 also runs through _is_high_juice_hits_over gate (conv
+    # ≥ HITS_OVER_05_CARD_CONV_FLOOR) — same juice protection as the
+    # top_props_by_type helper above.
+    MAX_PER_TYPE_IN_TOP_PROPS = 3
+    top_props_all = []
+    type_counts = {}
+    for p in props:
+        if p.get("tier") not in ("PRIME", "STRONG"):
+            continue
+        ptype = p.get("prop_type", "?")
+        # Juice gate for high-juice hits_over 0.5
+        if _is_high_juice_hits_over(p):
+            if (p.get("conviction") or 0) < HITS_OVER_05_CARD_CONV_FLOOR:
+                continue
+        # 30/60d hit-rate gate — same auto-suppression curate_top_8 uses.
+        # Hits_under STRONG is at 53% lifetime (52% 8-day) and was leaking
+        # onto the card via this surface because top_props_all bypassed
+        # eligibility. Routed through _cohort_eligibility to fix.
+        elig = _cohort_eligibility(p, gate_window="30d")
+        if elig == "suppress":
+            continue
+        if elig == "demote" and (p.get("tier") or "").upper() == "STRONG":
+            # demote STRONG to LEAN here would drop them out of the surface anyway
+            continue
+        if type_counts.get(ptype, 0) >= MAX_PER_TYPE_IN_TOP_PROPS:
+            continue
+        top_props_all.append(p)
+        type_counts[ptype] = type_counts.get(ptype, 0) + 1
+        if len(top_props_all) >= 8:
+            break
 
     # ─── CURATED TOP 8 (Jerry's Best / Sweat Card lead picks) ────────────
     # The single source of truth for "what would we publish to social
