@@ -305,15 +305,34 @@ def extract_leg_candidates(games, props):
     # The recent 14-day "decline" the morning audit flagged turned out to be
     # variance dip on n=11 — lifetime is solid. The fix is to read lifetime
     # rates in auto_fade, NOT to remove the band entirely.
+    # Try to use the v2 logistic-regression scorer trained on n=448
+    # held-out NRFI outcomes. Falls back to legacy "PRIME 90-94 only"
+    # bucket if the scorer or weights file is unavailable.
+    try:
+        from nrfi_v2_scorer import score_nrfi, score_yrfi
+        v2_available = True
+    except Exception as _e:
+        v2_available = False
+        print(f"  ⚠️ nrfi_v2_scorer unavailable ({_e}); using legacy NRFI gate")
+
+    # Need offense rows for v2 features. Pull once if available.
+    offense_by_team = {}
+    if v2_available:
+        try:
+            from generate_props import sb_get as _sb_get  # reuse already-imported helper
+            _off = _sb_get('mlb_team_offense', {'season': 'eq.2026', 'select': 'team,inning_1_ops,inning_1_runs_per_game,inning_1_k_pct,inning_1_wrc_plus,inning_1_bb_pct,inning_1_hr_per_game'})
+            offense_by_team = {o['team']: o for o in (_off or [])}
+        except Exception:
+            offense_by_team = {}
+
     seen_nrfi_games = set()
     for g in games:
-        nrfi = g.get('nrfi_score')
         gid = g.get('game_id')
-        if nrfi is None or gid in seen_nrfi_games:
+        if not gid or gid in seen_nrfi_games:
             continue
+        nrfi_legacy = g.get('nrfi_score')
         h1 = _f(g.get('home_first_inning_era'))
         a1 = _f(g.get('away_first_inning_era'))
-        temp = _f(g.get('temperature'))
         try:
             max_fi = max(h1 or 0, a1 or 0)
         except (TypeError, ValueError):
@@ -323,33 +342,56 @@ def extract_leg_candidates(games, props):
         conv = 0
         tier_label = None
         sig_label = None
+        sub_type = None
 
-        # PRIME 90-94 — lifetime 65.3% n=49 +EV cohort
-        if 90 <= nrfi <= 94:
+        v2_nrfi_score = None
+        v2_yrfi_score = None
+        if v2_available:
+            try:
+                v2_nrfi_score = score_nrfi(g,
+                    home_offense=offense_by_team.get(g.get('home_team')),
+                    away_offense=offense_by_team.get(g.get('away_team')))
+                v2_yrfi_score = score_yrfi(g,
+                    home_offense=offense_by_team.get(g.get('home_team')),
+                    away_offense=offense_by_team.get(g.get('away_team')))
+            except Exception as _e:
+                print(f"  ⚠️ v2 score failed for {gid[:8]}: {_e}")
+
+        # v2 NRFI PRIME — top 10% lifetime hit 65.9%, holdout 77.8%
+        if v2_nrfi_score is not None and v2_nrfi_score >= 70:
             pick_label = 'NRFI (No Run First Inning)'
-            conv = 72
+            conv = 75
             tier_label = 'PRIME'
-            sig_label = f"NRFI {nrfi} — PRIME band (65.3% lifetime / n=49)"
+            sig_label = f"NRFI v2 model {v2_nrfi_score} — top 10% lifetime 65.9% (holdout 77.8%)"
             sub_type = 'nrfi'
 
-        # Cold weather + NRFI ≥70 — lifetime 65% n=20
-        elif temp is not None and temp <= 45 and nrfi >= 70:
+        # v2 NRFI STRONG — 60-69 lifetime hit 69.3% n=75
+        elif v2_nrfi_score is not None and v2_nrfi_score >= 60:
             pick_label = 'NRFI (No Run First Inning)'
             conv = 68
             tier_label = 'STRONG'
-            sig_label = f"NRFI {nrfi} + cold weather ({temp:.0f}°F) — 65% lifetime / n=20"
+            sig_label = f"NRFI v2 model {v2_nrfi_score} — 60-69 band 69.3% lifetime"
             sub_type = 'nrfi'
 
-        # YRFI sweet spot (preserved — 63% audit on narrow band)
-        elif nrfi <= 25 and 6.0 <= max_fi < 8.0:
+        # v2 YRFI STRONG — top 20% predicts YRFI at 77.8% holdout
+        # (require also 1st-inn ERA confirmation to avoid pure model-bet)
+        elif v2_yrfi_score is not None and v2_yrfi_score >= 70 and max_fi >= 5.5:
             pick_label = 'YRFI (Run in First)'
-            conv = 70
+            conv = 72
             tier_label = 'STRONG'
-            sig_label = f"NRFI {nrfi} + 1st-inn ERA {max_fi:.1f} (audit sweet spot 6-8)"
+            sig_label = f"YRFI v2 model {v2_yrfi_score} + max 1st-inn ERA {max_fi:.1f} — top 20% lifetime 77.8%"
             sub_type = 'yrfi'
 
+        # Legacy fallback when v2 unavailable: PRIME 90-94 only (65.3% lifetime)
+        elif not v2_available and nrfi_legacy and 90 <= nrfi_legacy <= 94:
+            pick_label = 'NRFI (No Run First Inning)'
+            conv = 72
+            tier_label = 'PRIME'
+            sig_label = f"NRFI {nrfi_legacy} — legacy PRIME (v2 scorer unavailable)"
+            sub_type = 'nrfi'
+
         else:
-            continue  # All other bands suppressed (audited losers)
+            continue  # nothing qualifying
 
         seen_nrfi_games.add(gid)
         candidates.append({
@@ -366,7 +408,9 @@ def extract_leg_candidates(games, props):
                 f"{g.get('away_pitcher')} xERA {g.get('away_sp_xera')}" if g.get('away_sp_xera') else f"{g.get('away_pitcher')}",
             ],
             'odds_suggestion': -130,
-            'raw_score': nrfi,  # cohort_key_for uses this to pick the right tier rate
+            'raw_score': nrfi_legacy or 0,
+            'nrfi_v2_score': v2_nrfi_score,
+            'yrfi_v2_score': v2_yrfi_score,
         })
 
     # ML legs gated by SIGNAL CONFLUENCE + AUTO-FADE calibration (added 2026-04-25).
