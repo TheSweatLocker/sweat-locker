@@ -283,13 +283,28 @@ def extract_leg_candidates(games, props):
             'odds_suggestion': -150,  # typical prop range, app can overlay posted odds
         })
 
-    # Emit NRFI/YRFI candidates broadly — let the audit weighting decide
-    # which cohorts survive. Old behavior was to pre-gate at 90-94 only,
-    # which silently hid the lean bands on nights when no PRIME score existed.
-    # YRFI gate retuned 2026-05-18: 7d hit rate was 27%, 30d was 48% (well
-    # below the 68% the old copy claimed). Stratifying by max(1st-inn ERA)
-    # found extreme fragility ≥8.0 hits only 29% — small-sample noise from
-    # starters with 1-2 starts. Real edge sits in 6.0-7.9 ERA band (63% n=19).
+    # NRFI EMISSION RESHAPED 2026-06-06 after lifetime backtest
+    # (_backtest_nrfi_reweight_606.py, n=855) revealed the right answer
+    # isn't "kill NRFI" — it's "sharpen the gate." Lifetime cohort splits:
+    #
+    #   NRFI 95+ (volatile):    47.3% (n=93)   — losing, KILL
+    #   NRFI 90-94 PRIME:       65.3% (n=49)   — +0.155 EV at -130, KEEP
+    #   NRFI 85-89:             45.2% (n=42)   — losing, KILL
+    #   NRFI 80-84:             50.0% (n=56)   — coinflip, KILL
+    #   NRFI 70-79 mild lean:   53.4% (n=163)  — slight loss, KILL
+    #
+    #   Temp ≤45°F + NRFI ≥70:  65.0% (n=20)   — cold weather edge, KEEP
+    #   Park ≤95 + NRFI ≥80:    58.6% (n=70)   — marginal, gate to PRIME
+    #
+    # New emission logic:
+    #   1. PRIME 90-94 band emits as PRIME (65.3% lifetime, +0.155 EV)
+    #   2. Cold weather (temp ≤45°F) + NRFI ≥70 emits as STRONG (65% n=20)
+    #   3. All other bands suppressed
+    #
+    # YRFI sweet spot (6.0-7.9 1st-inn ERA + nrfi≤25) preserved at 63% audit.
+    # The recent 14-day "decline" the morning audit flagged turned out to be
+    # variance dip on n=11 — lifetime is solid. The fix is to read lifetime
+    # rates in auto_fade, NOT to remove the band entirely.
     seen_nrfi_games = set()
     for g in games:
         nrfi = g.get('nrfi_score')
@@ -298,32 +313,48 @@ def extract_leg_candidates(games, props):
             continue
         h1 = _f(g.get('home_first_inning_era'))
         a1 = _f(g.get('away_first_inning_era'))
+        temp = _f(g.get('temperature'))
         try:
             max_fi = max(h1 or 0, a1 or 0)
         except (TypeError, ValueError):
             max_fi = 0.0
+
+        pick_label = None
+        conv = 0
+        tier_label = None
+        sig_label = None
+
+        # PRIME 90-94 — lifetime 65.3% n=49 +EV cohort
         if 90 <= nrfi <= 94:
-            pick_label, conv, tier_label = 'NRFI (No Run First Inning)', 72, 'PRIME'
-            sig_label = f"NRFI Score {nrfi} — PRIME band (90-94)"
-        elif nrfi >= 95:
-            pick_label, conv, tier_label = 'NRFI (No Run First Inning)', 65, 'LEAN'
-            sig_label = f"NRFI Score {nrfi} — volatile band (95+)"
-        elif 70 <= nrfi <= 79:
-            pick_label, conv, tier_label = 'NRFI (No Run First Inning)', 60, 'LEAN'
-            sig_label = f"NRFI Score {nrfi} — mild lean (70-79)"
+            pick_label = 'NRFI (No Run First Inning)'
+            conv = 72
+            tier_label = 'PRIME'
+            sig_label = f"NRFI {nrfi} — PRIME band (65.3% lifetime / n=49)"
+            sub_type = 'nrfi'
+
+        # Cold weather + NRFI ≥70 — lifetime 65% n=20
+        elif temp is not None and temp <= 45 and nrfi >= 70:
+            pick_label = 'NRFI (No Run First Inning)'
+            conv = 68
+            tier_label = 'STRONG'
+            sig_label = f"NRFI {nrfi} + cold weather ({temp:.0f}°F) — 65% lifetime / n=20"
+            sub_type = 'nrfi'
+
+        # YRFI sweet spot (preserved — 63% audit on narrow band)
         elif nrfi <= 25 and 6.0 <= max_fi < 8.0:
-            pick_label, conv, tier_label = 'YRFI (Run in First)', 70, 'STRONG'
+            pick_label = 'YRFI (Run in First)'
+            conv = 70
+            tier_label = 'STRONG'
             sig_label = f"NRFI {nrfi} + 1st-inn ERA {max_fi:.1f} (audit sweet spot 6-8)"
-        elif nrfi <= 40:
-            # Outside sweet spot → small-sample noise; ship transparently as LEAN
-            pick_label, conv, tier_label = 'YRFI (Run in First)', 55, 'LEAN'
-            sig_label = f"NRFI {nrfi} — outside 1st-inn ERA sweet spot (max={max_fi:.1f})"
+            sub_type = 'yrfi'
+
         else:
-            continue  # 41-69 and 80-89 are audited dead zones
+            continue  # All other bands suppressed (audited losers)
+
         seen_nrfi_games.add(gid)
         candidates.append({
             'type': 'NRFI',
-            'sub_type': 'yrfi' if pick_label.startswith('YRFI') else 'nrfi',
+            'sub_type': sub_type,
             'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
             'game_id': gid,
             'pick': pick_label,
