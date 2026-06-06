@@ -554,16 +554,33 @@ def score_dawg(g, diag=None, ml_map=None):
     dawg_side = 'home' if is_home_dawg else 'away'
     # team_label / opp_label defined earlier (above the wRC+ diff cohort signal)
 
+    # CONFLUENCE LADDER — matches the SIDE dim reweight from commit 813d6ad
+    # (2026-06-05). n=640 cohort scan revealed:
+    #   net=4 + DOG RL: 82.6% (n=23) ← PEAK band
+    #   net=5 + DOG RL: 50.0% (n=16) ← deteriorates
+    #   net=6 + DOG RL: 28.6% (n=7)  ← worse than coinflip
+    # Old DAWG selector treated conf_mag >= 4 as max bonus (+12) regardless
+    # of mag — meant a net=6 over-saturated game got the same +12 as a
+    # legitimate net=4 PEAK. Today's CWS@PHI dawg fired PRIME 100 conv at
+    # net=+5 partly because of this miscalibration. New ladder peaks at
+    # net=4 and decays after, same as SIDE dim.
     if conf_side == dawg_side and conf_mag >= 1:
-        if conf_mag >= 4:
+        if conf_mag == 4:
             conviction += 12
-            signals['confluence'] = f"PRIME confluence (+{conf_mag} signals stack on {team_label})"
-        elif conf_mag >= 2:
-            conviction += 8
-            signals['confluence'] = f"STRONG confluence (+{conf_mag} signals stack on {team_label})"
-        else:
+            signals['confluence'] = f"PEAK confluence (+{conf_mag} — 82.6% lifetime cohort on {team_label})"
+        elif conf_mag >= 5:
+            # Over-saturated band — keep some weight but cap below PEAK
+            conviction += 6
+            signals['confluence'] = f"Over-saturated confluence (+{conf_mag} signals on {team_label} — market priced in)"
+        elif conf_mag == 3:
+            conviction += 6
+            signals['confluence'] = f"Confluence edge (+{conf_mag} signals on {team_label})"
+        elif conf_mag == 2:
             conviction += 3
-            signals['confluence'] = f"LEAN confluence (+{conf_mag} signal edge on {team_label})"
+            signals['confluence'] = f"Confluence lean (+{conf_mag} signals on {team_label})"
+        else:
+            conviction += 1
+            signals['confluence'] = f"Slight confluence (+{conf_mag} on {team_label})"
     elif conf_side and conf_side != dawg_side and conf_mag >= 2:
         # Signals oppose the dog — penalize. Don't reject outright (dog_edge math may
         # still justify the play), but the conviction floor drops materially.

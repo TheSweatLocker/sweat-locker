@@ -2692,7 +2692,13 @@ def run(target_date=None):
         return
 
     processed = 0
-    
+    # Track game_ids that successfully called log_game_result so we can
+    # verify rows actually landed in mlb_game_results at run-end. Added
+    # 2026-06-06 — the 6/5 morning cron had log_game_result silently fail
+    # on all 15 games (zero result rows for the date) and we only found
+    # out the next morning when the resolver had 0 games to grade.
+    logged_game_ids = []
+
     # Fetch probable pitchers from MLB Stats API
     probable_pitchers = get_probable_pitchers(today)
     print(f"Probable pitchers loaded for {len(probable_pitchers)} games")
@@ -4345,6 +4351,14 @@ def run(target_date=None):
                 # row to mlb_game_results corrupts the resolved-game audit.
                 if not is_preview:
                     log_game_result(context)
+                    # Track which game_ids we logged so the post-run sanity
+                    # check at the bottom of run() can verify they actually
+                    # landed. Added 2026-06-06 after the 6/5 silent-blackout
+                    # incident where the morning cron's log_game_result calls
+                    # all failed quietly and zero rows existed for 6/5 in
+                    # mlb_game_results — only caught because the resolver
+                    # found "0 graded games" the next morning.
+                    logged_game_ids.append(context.get('game_id'))
             else:
                 print(f"❌ Failed: {away_team} @ {home_team}")
                 
@@ -4353,6 +4367,46 @@ def run(target_date=None):
             print(f"❌ Error processing {game_label}: {e}")
     
     print(f"\nDone! Processed {processed} games")
+
+    # POST-RUN VERIFICATION (added 2026-06-06)
+    # Confirm every game_id we called log_game_result on actually has a
+    # row in mlb_game_results. If any are missing, retry them once with
+    # explicit failure logging. The 6/5 silent blackout would have
+    # surfaced here as 15 missing rows.
+    if not is_preview and logged_game_ids:
+        try:
+            ids_str = ",".join([f'"{gid}"' for gid in logged_game_ids if gid])
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_game_results"
+                f"?game_id=in.({ids_str})&select=game_id",
+                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                timeout=15,
+            )
+            existing = {row["game_id"] for row in r.json()} if r.status_code == 200 else set()
+            missing = [gid for gid in logged_game_ids if gid and gid not in existing]
+            if missing:
+                print(f"\n🚨 POST-RUN AUDIT FAIL: {len(missing)} game(s) called log_game_result "
+                      f"but no mlb_game_results row exists. Run resolve_game_results "
+                      f"won't grade these tomorrow. Missing game_ids: {missing[:5]}...")
+                # Best-effort retry: write minimal stub rows so the resolver
+                # has something to update later. Preserves audit even if
+                # the original log_game_result POST silently failed.
+                from datetime import datetime as _dt
+                for gid in missing:
+                    requests.post(
+                        f"{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id",
+                        headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+                                 "Content-Type": "application/json",
+                                 "Prefer": "resolution=merge-duplicates,return=minimal"},
+                        json={"game_id": gid, "game_date": today, "season": 2026},
+                        timeout=10,
+                    )
+                print(f"   Stub rows written for {len(missing)} missing game(s). "
+                      f"resolve_game_results.run() will fill scores tomorrow.")
+            else:
+                print(f"✅ POST-RUN AUDIT: all {len(logged_game_ids)} game_results rows confirmed.")
+        except Exception as e:
+            print(f"⚠️ POST-RUN AUDIT failed (non-fatal): {e}")
 
 if __name__ == "__main__":
     import argparse
