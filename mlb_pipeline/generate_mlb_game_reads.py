@@ -126,7 +126,138 @@ def fetch_potd():
 # all 30 teams so we don't need a separate ranks table. Phase B will add
 # full-staff team pitching (ERA/WHIP/FIP) and career SP stats.
 
+# MLB Stats API team IDs (all 30) — used for the full-staff pitching pull
+# in Phase B. Keeps everything in-process (no schema migration, no new table).
+_MLB_TEAM_IDS = {
+    "Arizona Diamondbacks": 109, "Atlanta Braves": 144, "Baltimore Orioles": 110,
+    "Boston Red Sox": 111, "Chicago Cubs": 112, "Chicago White Sox": 145,
+    "Cincinnati Reds": 113, "Cleveland Guardians": 114, "Colorado Rockies": 115,
+    "Detroit Tigers": 116, "Houston Astros": 117, "Kansas City Royals": 118,
+    "Los Angeles Angels": 108, "Los Angeles Dodgers": 119, "Miami Marlins": 146,
+    "Milwaukee Brewers": 158, "Minnesota Twins": 142, "New York Mets": 121,
+    "New York Yankees": 147, "Oakland Athletics": 133, "Athletics": 133,
+    "Philadelphia Phillies": 143, "Pittsburgh Pirates": 134, "San Diego Padres": 135,
+    "San Francisco Giants": 137, "Seattle Mariners": 136, "St. Louis Cardinals": 138,
+    "Tampa Bay Rays": 139, "Texas Rangers": 140, "Toronto Blue Jays": 141,
+    "Washington Nationals": 120,
+}
+
 _TEAM_SNAPSHOTS_CACHE = {}
+_TEAM_PITCHING_CACHE = {}
+_CAREER_SP_CACHE = {}
+
+
+def _f_or_none(v):
+    """Convert MLB Stats API numeric strings to float; None on miss."""
+    if v is None: return None
+    try: return float(v)
+    except (TypeError, ValueError): return None
+
+
+def fetch_team_pitching_snapshots():
+    """Pull season pitching stats for all 30 teams from MLB Stats API,
+    compute league ranks, return {team_name: {era, whip, k_bb, baa, fip_proxy, ranks}}.
+    Cached per-process. Added 2026-06-05 Phase B.
+
+    Why MLB Stats API instead of a Supabase table: full-staff pitching wasn't
+    being stored anywhere (mlb_bullpen_stats covers relievers only). Rather
+    than add a migration + nightly fetcher, we pull live at read-generation
+    time. 30 API calls take ~3s and only run once per cron tick."""
+    if _TEAM_PITCHING_CACHE:
+        return _TEAM_PITCHING_CACHE
+    import urllib.request
+    by_team = {}
+    for team_name, team_id in _MLB_TEAM_IDS.items():
+        try:
+            url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=season&group=pitching&season=2026"
+            with urllib.request.urlopen(url, timeout=10) as r:
+                data = json.loads(r.read())
+            for split in data.get("stats", []):
+                for sp in split.get("splits", []):
+                    st = sp.get("stat", {})
+                    so = _f_or_none(st.get("strikeOuts"))
+                    bb = _f_or_none(st.get("baseOnBalls"))
+                    k_bb = round(so / bb, 2) if (so and bb and bb > 0) else None
+                    by_team[team_name] = {
+                        "team_era": _f_or_none(st.get("era")),
+                        "team_whip": _f_or_none(st.get("whip")),
+                        "team_baa": _f_or_none(st.get("avg")),
+                        "team_k": int(so) if so else None,
+                        "team_bb": int(bb) if bb else None,
+                        "team_k_bb": k_bb,
+                        "team_hr_allowed": int(_f_or_none(st.get("homeRuns")) or 0) or None,
+                        "team_ip": _f_or_none(st.get("inningsPitched")),
+                    }
+        except Exception as e:
+            print(f"  ⚠️ team pitching fetch failed for {team_name}: {e}")
+    # Compute league ranks (lower = better for ERA/WHIP/BAA; higher = better for K/BB ratio)
+    if by_team:
+        ranks_era = _rank_dict({t: r.get("team_era") for t, r in by_team.items()}, ascending=True)
+        ranks_whip = _rank_dict({t: r.get("team_whip") for t, r in by_team.items()}, ascending=True)
+        ranks_baa = _rank_dict({t: r.get("team_baa") for t, r in by_team.items()}, ascending=True)
+        ranks_kbb = _rank_dict({t: r.get("team_k_bb") for t, r in by_team.items()})
+        for t, r in by_team.items():
+            r["rank_team_era"] = ranks_era.get(t)
+            r["rank_team_whip"] = ranks_whip.get(t)
+            r["rank_team_baa"] = ranks_baa.get(t)
+            r["rank_team_k_bb"] = ranks_kbb.get(t)
+    _TEAM_PITCHING_CACHE.update(by_team)
+    return _TEAM_PITCHING_CACHE
+
+
+def fetch_career_sp_stats(pitcher_name):
+    """Look up a starter's career totals via MLB Stats API. Two-call sequence:
+    search-by-name → get playerId → fetch career pitching. Cached per-process
+    so 15 starters × 2 calls = ~30 API hits per cron run.
+
+    Returns dict or None on miss. Added 2026-06-05 Phase B."""
+    if not pitcher_name:
+        return None
+    if pitcher_name in _CAREER_SP_CACHE:
+        return _CAREER_SP_CACHE[pitcher_name]
+    import urllib.request, urllib.parse
+    try:
+        url = f"https://statsapi.mlb.com/api/v1/people/search?names={urllib.parse.quote(pitcher_name)}&sportIds=1"
+        with urllib.request.urlopen(url, timeout=10) as r:
+            data = json.loads(r.read())
+        people = data.get("people", [])
+        if not people:
+            _CAREER_SP_CACHE[pitcher_name] = None
+            return None
+        # Prefer the first active pitcher match
+        pid = None
+        for p in people:
+            if p.get("primaryPosition", {}).get("abbreviation") == "P":
+                pid = p["id"]; break
+        pid = pid or people[0]["id"]
+
+        url2 = f"https://statsapi.mlb.com/api/v1/people/{pid}/stats?stats=career&group=pitching"
+        with urllib.request.urlopen(url2, timeout=10) as r:
+            data2 = json.loads(r.read())
+        for split in data2.get("stats", []):
+            for sp in split.get("splits", []):
+                st = sp.get("stat", {})
+                out = {
+                    "mlb_player_id": pid,
+                    "career_w": int(_f_or_none(st.get("wins")) or 0) or None,
+                    "career_l": int(_f_or_none(st.get("losses")) or 0) or None,
+                    "career_era": _f_or_none(st.get("era")),
+                    "career_whip": _f_or_none(st.get("whip")),
+                    "career_baa": _f_or_none(st.get("avg")),
+                    "career_k": int(_f_or_none(st.get("strikeOuts")) or 0) or None,
+                    "career_bb": int(_f_or_none(st.get("baseOnBalls")) or 0) or None,
+                    "career_ip": _f_or_none(st.get("inningsPitched")),
+                    "career_bf": int(_f_or_none(st.get("battersFaced")) or 0) or None,
+                    "career_er": int(_f_or_none(st.get("earnedRuns")) or 0) or None,
+                    "career_hr_allowed": int(_f_or_none(st.get("homeRuns")) or 0) or None,
+                }
+                _CAREER_SP_CACHE[pitcher_name] = out
+                return out
+    except Exception as e:
+        print(f"  ⚠️ career fetch failed for {pitcher_name}: {e}")
+    _CAREER_SP_CACHE[pitcher_name] = None
+    return None
+
 
 def _rank_dict(values_by_team, ascending=False):
     """Return {team: rank} where rank=1 means top of list. ascending=False
@@ -182,12 +313,15 @@ def fetch_team_snapshots():
 
 def _team_snapshot_block(team_name):
     """Build the per-team snapshot used by the prompt + The Numbers panel.
-    Pulls from fetch_team_snapshots() (cached). Returns None on miss so the
-    prompt can fall back to existing wrc_plus-only context."""
+    Pulls from fetch_team_snapshots() + fetch_team_pitching_snapshots()
+    (both cached). Returns None on miss so the prompt can fall back to
+    existing wrc_plus-only context."""
     snaps = fetch_team_snapshots()
+    pitch = fetch_team_pitching_snapshots()
     r = snaps.get(team_name)
     if not r:
         return None
+    p = pitch.get(team_name) or {}
     return {
         "team": team_name,
         "games_played": r.get("games_played"),
@@ -213,6 +347,15 @@ def _team_snapshot_block(team_name):
         "bullpen_holds": r.get("holds"),
         # Defense
         "oaa": r.get("oaa"),
+        # Full-staff team pitching (Phase B 2026-06-05)
+        "team_era": p.get("team_era"),
+        "team_whip": p.get("team_whip"),
+        "team_baa": p.get("team_baa"),
+        "team_k": p.get("team_k"),
+        "team_bb": p.get("team_bb"),
+        "team_k_bb": p.get("team_k_bb"),
+        "team_hr_allowed": p.get("team_hr_allowed"),
+        "team_ip": p.get("team_ip"),
         # League ranks (1 = best)
         "rank_runs_per_game": r.get("rank_runs_per_game"),
         "rank_ops": r.get("rank_ops"),
@@ -222,6 +365,10 @@ def _team_snapshot_block(team_name):
         "rank_save_pct": r.get("rank_save_pct"),
         "rank_holds": r.get("rank_holds"),
         "rank_oaa": r.get("rank_oaa"),
+        "rank_team_era": p.get("rank_team_era"),
+        "rank_team_whip": p.get("rank_team_whip"),
+        "rank_team_baa": p.get("rank_team_baa"),
+        "rank_team_k_bb": p.get("rank_team_k_bb"),
     }
 
 
@@ -307,6 +454,10 @@ def _pitcher_block(g, side):
         "whip_flag": whip_flag,
         "last_ip": last_ip,
         "flags": flags,
+        # Career SP totals (Phase B 2026-06-05) — fetched live from MLB
+        # Stats API per [[project_jerry_read_phase_b_career_team_pitching]].
+        # None on miss so prompt falls back to season-only context.
+        "career": fetch_career_sp_stats(name),
     }
 
 
