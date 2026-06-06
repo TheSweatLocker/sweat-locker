@@ -836,7 +836,12 @@ def call_claude(prompt):
                 "x-api-key": ANTHROPIC_API_KEY,
                 "anthropic-version": "2023-06-01",
             },
-            json={"model": MODEL, "max_tokens": 1100, "messages": [{"role": "user", "content": prompt}]},
+            # max_tokens raised 1100 -> 1800 on 2026-06-05 after Phase B
+            # added career SP + full-staff team pitching context. Multiple
+            # reads (NYM@SD, MIL@COL) were truncating mid-Play section at
+            # 1100. 1800 absorbs the new density with headroom for varying
+            # game complexity.
+            json={"model": MODEL, "max_tokens": 1800, "messages": [{"role": "user", "content": prompt}]},
             timeout=30,
         )
         data = r.json()
