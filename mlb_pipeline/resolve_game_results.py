@@ -21,20 +21,131 @@ HEADERS = {
 
 _NAME_SUFFIXES = {'jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv'}
 
-# Postponement detection threshold: if a game has null scores and its
-# game_date is this many days or more in the past, treat as Postponed (Push).
-# Set to 1 day so a doubleheader scheduled for "tomorrow" doesn't get
-# falsely pushed before it plays.
-_POSTPONEMENT_DAYS_OLD = 1
+# Postponement detection: how stale a missing-score row can sit before
+# we treat the absence as a real postponement. Raised to 3 days as a
+# fallback safety net only — the canonical detection is now an MLB API
+# round-trip in _is_postponed() (see below). Keep at >=2 so the resolver
+# never auto-Pushes a row whose scores are merely lagging by a few hours.
+_POSTPONEMENT_DAYS_OLD = 3
 
 
-def _is_postponed(game_date_str, has_scores):
-    """Return True when a game's slate date is in the past and the score row
-    still has no final scores. Treats these as postponed → grade as Push so
-    cards/POTD/Dawg don't sit Pending forever (real cause: STL@CIN rain-out
-    on 2026-05-24 sat Pending across the entire resolver cycle)."""
+_MLB_STATE_CACHE = {}  # {(home_team, away_team, game_date): ('postponed'|'final'|'pending', score_dict_or_None)}
+
+
+def _fetch_mlb_game_state(home_team, away_team, game_date_str):
+    """Hit the MLB schedule API for ground-truth game status + final scores.
+
+    Returns one of:
+      ('postponed', None)              — MLB API says game was postponed
+      ('final', {home_score, away_score, home_win})  — game completed, scores fetched
+      ('pending', None)                — scheduled but not final / not postponed / unknown
+
+    Cached per (teams, date) tuple within a single resolver run so we don't
+    re-hit the API for every pick on the same game. On any network/JSON
+    failure returns 'pending' (conservative — never mark as Push when we
+    can't verify)."""
+    if not (home_team and away_team and game_date_str):
+        return ('pending', None)
+    key = (home_team, away_team, game_date_str)
+    if key in _MLB_STATE_CACHE:
+        return _MLB_STATE_CACHE[key]
+    try:
+        r = requests.get(
+            f'https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}',
+            timeout=10,
+        )
+        if r.status_code != 200:
+            _MLB_STATE_CACHE[key] = ('pending', None)
+            return _MLB_STATE_CACHE[key]
+        data = r.json()
+        for date_block in (data.get('dates') or []):
+            for game in (date_block.get('games') or []):
+                teams = game.get('teams') or {}
+                api_home = (teams.get('home') or {}).get('team', {}).get('name', '') or ''
+                api_away = (teams.get('away') or {}).get('team', {}).get('name', '') or ''
+                if api_home != home_team or api_away != away_team:
+                    continue
+                status = (game.get('status') or {}).get('detailedState', '')
+                status_code = (game.get('status') or {}).get('statusCode', '')
+                if status == 'Postponed' or status_code == 'DR':
+                    _MLB_STATE_CACHE[key] = ('postponed', None)
+                    return _MLB_STATE_CACHE[key]
+                if status in ('Final', 'Game Over', 'Completed Early'):
+                    home_sc = (teams.get('home') or {}).get('score')
+                    away_sc = (teams.get('away') or {}).get('score')
+                    if home_sc is not None and away_sc is not None:
+                        _MLB_STATE_CACHE[key] = ('final', {
+                            'home_score': home_sc,
+                            'away_score': away_sc,
+                            'home_win': home_sc > away_sc,
+                            'total_runs': home_sc + away_sc,
+                        })
+                        return _MLB_STATE_CACHE[key]
+                # Anything else (Scheduled, In Progress, Delayed): pending
+                _MLB_STATE_CACHE[key] = ('pending', None)
+                return _MLB_STATE_CACHE[key]
+        # Match not found on the slate
+        _MLB_STATE_CACHE[key] = ('pending', None)
+        return _MLB_STATE_CACHE[key]
+    except Exception:
+        _MLB_STATE_CACHE[key] = ('pending', None)
+        return _MLB_STATE_CACHE[key]
+
+
+def _backfill_score_to_results(game_id, home_team, away_team, game_date_str, score_dict):
+    """When MLB API confirms a final score but mlb_game_results has no row
+    (or no score), upsert a minimal scored row so all later picks referencing
+    the same game grade off the actual outcome instead of falling back to
+    'Pending' or worse, the postponement Push.
+
+    This is the inline self-heal for the silent-fail class of bug that
+    caused the 6/6 recap blackout. Best-effort — failures are non-fatal."""
+    if not (game_id and home_team and away_team and score_dict):
+        return False
+    try:
+        payload = {
+            'game_id': game_id,
+            'game_date': game_date_str,
+            'season': 2026,
+            'home_team': home_team,
+            'away_team': away_team,
+            'home_score': score_dict.get('home_score'),
+            'away_score': score_dict.get('away_score'),
+            'home_win': score_dict.get('home_win'),
+        }
+        r = requests.post(
+            f'{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id',
+            headers={**HEADERS, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+            json=payload, timeout=10,
+        )
+        return r.status_code in (200, 201, 204)
+    except Exception:
+        return False
+
+
+def _is_postponed(game_date_str, has_scores, home_team=None, away_team=None):
+    """Authoritative postponement check.
+
+    PRIMARY path (when home_team + away_team are supplied): asks the MLB
+    schedule API for the actual game status. This is the canonical fix for
+    the 6/6 recap silent blackout: when our internal `mlb_game_results`
+    table was empty due to an upstream pipeline bug, the old heuristic
+    "missing scores + day-old game = Postponed" incorrectly graded every
+    Dawg/POTD as Push. The API knows whether the game actually played.
+
+    FALLBACK path (legacy callers without team names): retains the old
+    date-based heuristic but with the threshold raised to 3 days so a
+    one-day data lag never auto-pushes. Real rain-outs surface in the API
+    within hours, so the fallback should rarely fire.
+
+    Returns True only when we can affirmatively confirm postponement.
+    Unknown / unreachable / lagging → False so the row sits as Pending
+    rather than being misgraded."""
     if has_scores:
         return False
+    if home_team and away_team:
+        state, _ = _fetch_mlb_game_state(home_team, away_team, game_date_str)
+        return state == 'postponed'
     try:
         gd = datetime.strptime(game_date_str, '%Y-%m-%d').date()
     except (TypeError, ValueError):
@@ -534,17 +645,39 @@ def run():
             )
             gr_data = gr.json()
             has_scores = bool(gr_data) and gr_data[0].get('home_score') is not None
-            # Postponement: dawg game with null scores past slate_date → Push
+            # Derive teams for API verification — try existing row, then matchup parse.
+            d_home = d_away = None
+            if gr_data:
+                d_home = gr_data[0].get('home_team')
+                d_away = gr_data[0].get('away_team')
+            if not (d_home and d_away):
+                parts = (dawg.get('matchup') or '').split(' @ ')
+                if len(parts) == 2:
+                    d_away, d_home = parts[0].strip(), parts[1].strip()
+            # Postponement check is now API-authoritative — see _is_postponed.
             if not has_scores:
-                if _is_postponed(dawg['game_date'], False):
+                if _is_postponed(dawg['game_date'], False, home_team=d_home, away_team=d_away):
                     requests.patch(
                         f'{SUPABASE_URL}/rest/v1/daily_dawg?game_date=eq.{dawg["game_date"]}',
                         headers=HEADERS,
                         json={'result': 'Push', 'final_score': 'Postponed'},
                     )
                     dawg_resolved += 1
-                    print(f'  🐕 {dawg["game_date"]} {dawg["team"]} ML → Push (postponed)')
-                continue  # not finalized yet (or just pushed)
+                    print(f'  🐕 {dawg["game_date"]} {dawg["team"]} ML → Push (postponed, API-confirmed)')
+                    continue
+                # Self-heal: if MLB API has a final score but our row doesn't,
+                # backfill mlb_game_results inline and grade off the live data.
+                state, score = _fetch_mlb_game_state(d_home, d_away, dawg['game_date'])
+                if state == 'final' and score:
+                    _backfill_score_to_results(dawg['game_id'], d_home, d_away, dawg['game_date'], score)
+                    gr_data = [{'home_team': d_home, 'away_team': d_away,
+                                'home_score': score['home_score'],
+                                'away_score': score['away_score'],
+                                'home_win': score['home_win']}]
+                    has_scores = True
+                    print(f'  🩹 {dawg["game_date"]} {dawg["team"]}: backfilled score from MLB API ({score["away_score"]}-{score["home_score"]})')
+                else:
+                    continue  # still pending — leave the row as-is
 
             g = gr_data[0]
             home_win = g.get('home_win')
@@ -781,10 +914,36 @@ def _resolve_single_pick(pick, slate_date):
             headers=HEADERS, timeout=10,
         ).json()
         if not r or r[0].get('home_score') is None:
-            if _is_postponed(slate_date, False):
-                return 'Push'  # postponed game grades as push
-            return 'Pending'
-        g = r[0]
+            # Look up team names from mlb_game_context (the row may exist
+            # there even when mlb_game_results doesn't yet) so we can ask
+            # the MLB API for authoritative game state.
+            sg_home = sg_away = None
+            if r:
+                sg_home = r[0].get('home_team')
+                sg_away = r[0].get('away_team')
+            if not (sg_home and sg_away):
+                ctx_r = requests.get(
+                    f'{SUPABASE_URL}/rest/v1/mlb_game_context',
+                    params={'game_id': f'eq.{key}', 'select': 'home_team,away_team'},
+                    headers=HEADERS, timeout=10,
+                ).json()
+                if ctx_r:
+                    sg_home = ctx_r[0].get('home_team')
+                    sg_away = ctx_r[0].get('away_team')
+            if _is_postponed(slate_date, False, home_team=sg_home, away_team=sg_away):
+                return 'Push'
+            # Self-heal: API may have final score even when our DB doesn't.
+            state, score = _fetch_mlb_game_state(sg_home, sg_away, slate_date)
+            if state == 'final' and score and sg_home and sg_away:
+                _backfill_score_to_results(key, sg_home, sg_away, slate_date, score)
+                g = {'home_team': sg_home, 'away_team': sg_away,
+                     'home_score': score['home_score'],
+                     'away_score': score['away_score'],
+                     'home_win': score['home_win']}
+            else:
+                return 'Pending'
+        else:
+            g = r[0]
         ev = pick.get('eval') or {}
         etype = ev.get('type')
         try:
@@ -828,7 +987,22 @@ def _resolve_single_pick(pick, slate_date):
                     headers=HEADERS, timeout=10,
                 ).json()
                 if not rg or not rg[0].get('nrfi_result'):
-                    if _is_postponed(slate_date, False):
+                    # Same team-lookup pattern as the game_results branch above
+                    # so postponement detection has MLB API ground truth.
+                    nrfi_home = nrfi_away = None
+                    if rg:
+                        nrfi_home = (rg[0] or {}).get('home_team')
+                        nrfi_away = (rg[0] or {}).get('away_team')
+                    if not (nrfi_home and nrfi_away):
+                        ctx_r = requests.get(
+                            f'{SUPABASE_URL}/rest/v1/mlb_game_context',
+                            params={'game_id': f'eq.{key}', 'select': 'home_team,away_team'},
+                            headers=HEADERS, timeout=10,
+                        ).json()
+                        if ctx_r:
+                            nrfi_home = ctx_r[0].get('home_team')
+                            nrfi_away = ctx_r[0].get('away_team')
+                    if _is_postponed(slate_date, False, home_team=nrfi_home, away_team=nrfi_away):
                         return 'Push'
                     return 'Pending'
                 return 'Win' if rg[0]['nrfi_result'] == 'NRFI' else 'Loss'
@@ -839,7 +1013,22 @@ def _resolve_single_pick(pick, slate_date):
                     headers=HEADERS, timeout=10,
                 ).json()
                 if not rg or not rg[0].get('nrfi_result'):
-                    if _is_postponed(slate_date, False):
+                    # Same team-lookup pattern as the game_results branch above
+                    # so postponement detection has MLB API ground truth.
+                    nrfi_home = nrfi_away = None
+                    if rg:
+                        nrfi_home = (rg[0] or {}).get('home_team')
+                        nrfi_away = (rg[0] or {}).get('away_team')
+                    if not (nrfi_home and nrfi_away):
+                        ctx_r = requests.get(
+                            f'{SUPABASE_URL}/rest/v1/mlb_game_context',
+                            params={'game_id': f'eq.{key}', 'select': 'home_team,away_team'},
+                            headers=HEADERS, timeout=10,
+                        ).json()
+                        if ctx_r:
+                            nrfi_home = ctx_r[0].get('home_team')
+                            nrfi_away = ctx_r[0].get('away_team')
+                    if _is_postponed(slate_date, False, home_team=nrfi_home, away_team=nrfi_away):
                         return 'Push'
                     return 'Pending'
                 return 'Win' if rg[0]['nrfi_result'] == 'YRFI' else 'Loss'
