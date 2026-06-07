@@ -567,10 +567,12 @@ def score_dawg(g, diag=None, ml_map=None):
     if conf_side == dawg_side and conf_mag >= 1:
         if conf_mag == 4:
             conviction += 12
-            # n=23 surfaced inline so users can see it's a lifetime backtest
-            # number, not a refreshed real-time stat. Replace with dynamic
-            # cohort lookup once we have a nightly recompute job.
-            signals['confluence'] = f"PEAK confluence (+{conf_mag} — 82.6% DOG RL, n=23 lifetime cohort on {team_label})"
+            # Cohort % pulled fresh from cohort_stats.json (recomputed
+            # nightly). Falls back to a generic label if the stats file
+            # is missing or older than 36h — never surfaces a stale number.
+            from cohort_lookup import format_label as _cohort_label
+            _cohort = _cohort_label('conf4_dog_rl', fallback='lifetime cohort')
+            signals['confluence'] = f"PEAK confluence (+{conf_mag} — {_cohort} DOG RL on {team_label})"
         elif conf_mag >= 5:
             # Over-saturated band — keep some weight but cap below PEAK
             conviction += 6

@@ -591,10 +591,13 @@ def score_mlb_game(ctx, game_props=None, track=None):
     elif conf_mag >= 5:
         _add(side_drivers, 8, '🎯', 'High confluence', f'{conf_mag} independent signals align')
     elif conf_mag == 4:
-        # n=23 inline so users see this is a backtest number frozen at the
-        # 6/5 reweight, not a real-time stat. Refresh planned once nightly
-        # cohort recompute job lands.
-        _add(side_drivers, 12, '🎯', 'PEAK confluence', f'{conf_mag} signals — strongest cohort (82.6% DOG RL, n=23 lifetime)')
+        # Cohort percentage pulled fresh from cohort_stats.json (nightly
+        # recompute, see cohort_stats.py). Falls back to generic label if
+        # the stats file is missing or stale — never ships a stale number.
+        from cohort_lookup import format_label as _cohort_label
+        _cohort = _cohort_label('conf4_dog_rl', fallback='lifetime cohort')
+        _add(side_drivers, 12, '🎯', 'PEAK confluence',
+             f'{conf_mag} signals — strongest cohort ({_cohort} DOG RL)')
     elif conf_mag == 3:
         _add(side_drivers, 6, '🎯', 'Confluence edge', f'{conf_mag} signals on one side')
     elif conf_mag == 2:
@@ -619,8 +622,10 @@ def score_mlb_game(ctx, game_props=None, track=None):
                     try: fm = int(fav_ml)
                     except (TypeError, ValueError): fm = None
                     if fm is not None and not (-150 <= fm <= -130):
+                        from cohort_lookup import format_label as _cohort_label
+                        _cohort = _cohort_label('conf4_fav_ml', fallback='lifetime cohort')
                         _add(side_drivers, 8, '⚙️', 'PEAK confluence on FAV ML',
-                             f'net=4 favorite at {fm} (69.2% lifetime cohort)')
+                             f'net=4 favorite at {fm} ({_cohort} cohort)')
         except (TypeError, ValueError):
             pass
 

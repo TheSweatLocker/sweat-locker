@@ -381,6 +381,23 @@ jobs:
           cd mlb_pipeline
           python resolve_game_results.py --card-only
 
+      # Recompute cohort stats (2026-06-07). Reads from the freshly-graded
+      # mlb_game_results above and writes models/cohort_stats.json. Consumed
+      # by play_of_day.py + generate_dawg_of_day.py via cohort_lookup.py
+      # so user-facing cohort percentages reflect live data instead of
+      # frozen backtest snapshots. The lookup has a 36h freshness gate and
+      # min-n filter — a skipped run falls back to a generic label rather
+      # than shipping a stale number. continue-on-error since cohort
+      # surfaces gracefully degrade if the recompute fails.
+      - name: Recompute cohort stats
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python cohort_stats.py
+
       - name: Run NBA team stats update
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
