@@ -2282,8 +2282,53 @@ def upload_game_context(context, commence_time=None):
             del context[k]
 
     # Step 3: If game has started, strip close_* + live ML fields
-    # (preserve last pre-game close values; don't write live in-game odds)
+    # (preserve last pre-game close values; don't write live in-game odds).
+    #
+    # BUT: if close_total/close_spread/home_ml_close were never captured
+    # pre-game (e.g. game started before the 2pm cron ran — common for
+    # 1pm-3pm ET first pitches), promote the morning open_* values to
+    # close_* before stripping. That way downstream consumers (model-vs-
+    # market deltas, recap card, sweat card) get a number to render
+    # instead of perpetual NULL. The morning open IS the canonical
+    # pre-game line for early games. Added 2026-06-07 after 12/15 games
+    # on a 1-3pm ET start slate had NULL close_total post-cron.
     if game_started:
+        # Look up existing DB state first — needed for the close_* backfill
+        # below AND to know which keys we just promoted (so strip doesn't
+        # wipe them).
+        existing = {}
+        try:
+            game_id = context.get('game_id')
+            if game_id:
+                cur = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/mlb_game_context"
+                    f"?game_id=eq.{game_id}"
+                    f"&select=close_total,close_spread,home_ml_close,away_ml_close,open_total,open_spread,home_ml_open,away_ml_open",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                    timeout=10,
+                )
+                if cur.status_code == 200 and cur.json():
+                    existing = cur.json()[0]
+        except Exception as e:
+            print(f"  ⚠️ close_* DB state check skipped: {e}")
+
+        # Promote morning open_* → close_* when close was never captured
+        # pre-game. The morning open IS the canonical pre-game line for
+        # games starting before the 2pm cron runs.
+        promote_map = {
+            'close_total': 'open_total',
+            'close_spread': 'open_spread',
+            'home_ml_close': 'home_ml_open',
+            'away_ml_close': 'away_ml_open',
+        }
+        promoted = set()
+        for close_k, open_k in promote_map.items():
+            if existing.get(close_k) is None and existing.get(open_k) is not None:
+                context[close_k] = existing[open_k]
+                promoted.add(close_k)
+        if promoted:
+            print(f"  ↺ Game started w/ NULL close_* — promoted morning open to: {', '.join(sorted(promoted))}")
+
         live_keys = [
             'close_spread', 'close_total',
             'home_ml_close', 'away_ml_close',
@@ -2291,6 +2336,8 @@ def upload_game_context(context, commence_time=None):
         ]
         stripped = []
         for k in live_keys:
+            if k in promoted:
+                continue  # just promoted from open — let it land
             if k in context:
                 del context[k]
                 stripped.append(k)
