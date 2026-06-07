@@ -750,16 +750,34 @@ def _resolve_sweat_card_top8(start_date, end_date):
         if not top_8:
             continue
 
-        # Only re-process if any pick is still Pending
-        if all(p.get('result') and p.get('result') != 'Pending' for p in top_8):
+        # Re-process when ANY pick is Pending OR Push. The Push re-check is
+        # the recovery mechanism for the 6/6 silent-blackout class of bug:
+        # when log_game_result silently failed, picks landed as Push via the
+        # now-fixed postponement heuristic. Without a Push re-grade, those
+        # rows stay wrong even after upstream data backfills. The single-pick
+        # walker below verifies Pushes against current MLB API ground truth
+        # and only flips them if the game actually played.
+        needs_walk = any(
+            (not p.get('result')) or p.get('result') in ('Pending', 'Push')
+            for p in top_8
+        )
+        if not needs_walk:
             continue
 
         changed = False
         for pick in top_8:
-            if pick.get('result') and pick['result'] != 'Pending':
+            current = pick.get('result')
+            # Skip terminal Win/Loss — those are settled, no re-grade
+            if current in ('Win', 'Loss'):
                 continue
+            # For Push, only overwrite if the new grade is a real outcome
+            # (Win/Loss). Don't downgrade Push → Pending or Push → Push.
             result = _resolve_single_pick(pick, slate_date)
-            if result and result != 'Pending':
+            if not result:
+                continue
+            if current == 'Push' and result not in ('Win', 'Loss'):
+                continue
+            if result != current:
                 pick['result'] = result
                 changed = True
 
