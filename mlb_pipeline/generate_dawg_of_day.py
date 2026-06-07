@@ -567,7 +567,10 @@ def score_dawg(g, diag=None, ml_map=None):
     if conf_side == dawg_side and conf_mag >= 1:
         if conf_mag == 4:
             conviction += 12
-            signals['confluence'] = f"PEAK confluence (+{conf_mag} — 82.6% lifetime cohort on {team_label})"
+            # n=23 surfaced inline so users can see it's a lifetime backtest
+            # number, not a refreshed real-time stat. Replace with dynamic
+            # cohort lookup once we have a nightly recompute job.
+            signals['confluence'] = f"PEAK confluence (+{conf_mag} — 82.6% DOG RL, n=23 lifetime cohort on {team_label})"
         elif conf_mag >= 5:
             # Over-saturated band — keep some weight but cap below PEAK
             conviction += 6

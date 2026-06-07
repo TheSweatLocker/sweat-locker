@@ -872,6 +872,191 @@ def upsert_read(g, narrative, struct):
     return True
 
 
+# -------------------------------------------------- attribution validator
+# Catches the recurring class of bugs where the LLM writes the wrong
+# team for a pitcher or hitter in the narrative despite the struct
+# being correct. Origin: 5/14 Suarez/Luzardo, 5/16 Tolle/Boston, 5/20
+# Benge/Nationals, 6/6 Vazquez/Padres. Prompt rules have been added
+# each time and Claude still occasionally hallucinates — the only
+# permanent fix is post-LLM check + regen-or-discard.
+
+import re as _re
+
+_FACING_VERBS = (
+    "facing", "vs\\.?", "vs ", "against", "matchup with", "matches up with",
+    "takes on", "squares off against", "draws", "battles", "duels",
+    "opposes", "starts against", "starts vs", "going against", "going up against",
+)
+_FACING_RE = "(?:" + "|".join(_FACING_VERBS) + ")"
+
+_OWN_PLURAL_NOUNS = (
+    "lineup", "lineups", "hitters", "offense", "bats", "bullpen", "batters",
+    "rotation", "staff", "pen",
+)
+_OWN_PLURAL_RE = "(?:" + "|".join(_OWN_PLURAL_NOUNS) + ")"
+
+
+_AMBIGUOUS_CITIES = {"Chicago", "New York", "Los Angeles"}
+
+
+def _team_keywords(team_name):
+    """Return the substrings that uniquely identify a team in prose.
+
+    For "San Diego Padres" → ["Padres", "San Diego"]. For "Boston Red Sox"
+    → ["Red Sox", "Sox", "Boston"]. For "Chicago Cubs" → ["Cubs"] (city
+    dropped — Chicago is ambiguous with the White Sox). Athletics has no
+    city since 2026, returns ["Athletics"].
+    """
+    if not team_name:
+        return []
+    parts = team_name.strip().split()
+    if not parts:
+        return []
+    # Detect two-word nicknames: "Red Sox", "White Sox", "Blue Jays",
+    # "Diamondbacks" is one word so not handled here.
+    if len(parts) >= 3 and parts[-2] in ("Red", "White", "Blue") and parts[-1] in ("Sox", "Jays"):
+        nicknames = [" ".join(parts[-2:]), parts[-1]]  # ["Red Sox", "Sox"]
+        city_parts = parts[:-2]
+    else:
+        nicknames = [parts[-1]]
+        city_parts = parts[:-1]
+
+    keywords = list(nicknames)
+    if city_parts:
+        city = " ".join(city_parts)
+        # Don't add ambiguous cities (Chicago = Cubs + White Sox, etc.)
+        if city not in _AMBIGUOUS_CITIES and len(city) >= 4:
+            keywords.append(city)
+    return keywords
+
+
+def _last_name(full_name):
+    if not full_name:
+        return None
+    n = full_name.strip().split()
+    if not n:
+        return None
+    # Drop common suffixes (Jr., II, III)
+    last = n[-1]
+    if last.lower().rstrip(".") in ("jr", "sr", "ii", "iii", "iv") and len(n) >= 2:
+        last = n[-2]
+    return last
+
+
+def _detect_attribution_errors(narrative, struct):
+    """Return list of human-readable error strings. Empty = clean.
+
+    Conservative — only flags patterns that are almost certainly wrong:
+      1) "<pitcher_last> <facing-verb> <own_team_keyword>"
+      2) "<own_team_keyword> <plural_noun> <pitcher_last> will/projects/grades"
+      3) "<hitter_last> (<wrong_team_keyword>)" or "<wrong_team_keyword>'s <hitter_last>"
+    Avoids false positives on possessives where the team is correct
+    (e.g. "Padres' Canning" when Canning IS on the Padres).
+    """
+    if not narrative or not isinstance(narrative, str):
+        return []
+    errors = []
+    text = narrative
+
+    pitchers = (struct.get("pitchers") or {})
+    for side in ("home", "away"):
+        p = pitchers.get(side) or {}
+        last = _last_name(p.get("name"))
+        own_team = p.get("own_team")
+        if not last or not own_team:
+            continue
+        own_keywords = _team_keywords(own_team)
+        for own_kw in own_keywords:
+            # Pattern 1: "<last> ... facing ... <own_team>" within 80 chars
+            pat1 = _re.compile(
+                rf"\b{_re.escape(last)}\b[^.\n]{{0,80}}\b{_FACING_RE}\s+(?:the\s+)?{_re.escape(own_kw)}\b",
+                _re.IGNORECASE,
+            )
+            m = pat1.search(text)
+            if m:
+                errors.append(
+                    f"pitcher attribution: '{m.group(0).strip()}' — {p.get('name')} plays FOR {own_team}, not against them"
+                )
+                continue
+            # Pattern 2: "<own_team>('s)? ... <plural_noun> ... <last> verb"
+            # — the plural_noun anchor (lineup/bats/offense/bullpen) is what
+            # distinguishes "Boston's lineup Tolle will punish" (BAD — Tolle
+            # is on Boston) from "Cubs' Horton owns the Cardinals" (CLEAN,
+            # no plural noun anchor between Cubs and Horton).
+            pat2 = _re.compile(
+                rf"\b{_re.escape(own_kw)}(?:'s)?\b[^.\n]{{0,30}}\b{_OWN_PLURAL_RE}\b[^.\n]{{0,60}}\b{_re.escape(last)}\b\s+(?:will|projects|grades|sees|owns|dominates|punishes|carves|attacks|handles|gets|should|figures|has|carries|leans|sits|brings|shuts|silences|matches|exploits|tortures|punish|dominate|carve|silence|exploit|shut|attack|handle)",
+                _re.IGNORECASE,
+            )
+            m = pat2.search(text)
+            if m:
+                errors.append(
+                    f"pitcher attribution: '{m.group(0).strip()}' — {p.get('name')} pitches FOR {own_team}, can't be facing their own {own_team} lineup"
+                )
+
+    # Hitter attribution from best_plays
+    best = struct.get("best_plays") or []
+    for play in best:
+        name = play.get("player")
+        team = play.get("team")
+        last = _last_name(name)
+        if not last or not team:
+            continue
+        # Find opposing team within the matchup
+        matchup = struct.get("matchup") or ""
+        if " @ " in matchup:
+            away, home = matchup.split(" @ ", 1)
+            opp_team = away if team.strip() == home.strip() else home if team.strip() == away.strip() else None
+        else:
+            opp_team = None
+        if not opp_team:
+            continue
+        for opp_kw in _team_keywords(opp_team):
+            # Pattern 3a: "<opp_team>('s)? <plural_noun-like noun> <last>" — e.g. "Nationals hitter Benge"
+            # but skip when the noun is generic
+            pat = _re.compile(
+                rf"\b{_re.escape(opp_kw)}'?s?\s+(?:hitter|hitters|batter|batters|outfielder|infielder|catcher|slugger|bat|bats|starter|veteran|rookie|lineup)\s+(?:\w+\s+){{0,2}}\b{_re.escape(last)}\b",
+                _re.IGNORECASE,
+            )
+            m = pat.search(text)
+            if m:
+                errors.append(
+                    f"hitter attribution: '{m.group(0).strip()}' — {name} plays for {team}, NOT {opp_team}"
+                )
+                continue
+            # Pattern 3b: "<last> (...<opp_team>...)" — parenthetical team tag wrong
+            pat_b = _re.compile(
+                rf"\b{_re.escape(last)}\b\s*\([^)]{{0,40}}{_re.escape(opp_kw)}[^)]{{0,20}}\)",
+                _re.IGNORECASE,
+            )
+            m = pat_b.search(text)
+            if m:
+                errors.append(
+                    f"hitter attribution: '{m.group(0).strip()}' — {name} plays for {team}, NOT {opp_team}"
+                )
+
+    return errors
+
+
+def _correction_prompt(original_prompt, narrative, errors):
+    """Build the retry prompt: prepend an explicit correction header."""
+    bullets = "\n".join(f"  - {e}" for e in errors)
+    header = (
+        "ATTRIBUTION ERROR DETECTED in your previous narrative. The struct is "
+        "canonical — these mistakes contradict it:\n"
+        f"{bullets}\n\n"
+        "Regenerate the read from scratch. Re-read `pitchers.home.name` / "
+        "`pitchers.home.own_team` and `pitchers.away.name` / `pitchers.away.own_team` "
+        "and verify each pitcher reference. Re-read `best_plays[i].team` for every "
+        "hitter you name. Do not write a pitcher facing their own team. Do not "
+        "label a player with a team they don't play for.\n\n"
+        "Previous (rejected) narrative for reference only — do NOT repeat its "
+        "mistakes:\n---\n"
+        f"{narrative}\n---\n\n"
+        "Now produce the corrected read using the same prompt below:\n\n"
+    )
+    return header + original_prompt
+
+
 # ---------------------------------------------------------------- run
 
 def _matches(matchup_key, home, away):
@@ -918,8 +1103,31 @@ def run():
         struct = build_struct(g, props, potd)
         prompt = render_prompt(templates, g, struct)
         narrative = call_claude(prompt)
+
+        # Attribution validator: up to 2 corrective regen attempts.
+        # If still broken, drop the narrative and store struct only —
+        # better to show no read than a read that confuses pitchers
+        # with their own team. See `_detect_attribution_errors`.
+        MAX_RETRIES = 2
+        for attempt in range(MAX_RETRIES + 1):
+            if not narrative:
+                break
+            errors = _detect_attribution_errors(narrative, struct)
+            if not errors:
+                break
+            if attempt < MAX_RETRIES:
+                print(f"  ⚠️ {away} @ {home}: attribution errors (retry {attempt + 1}/{MAX_RETRIES}):")
+                for e in errors:
+                    print(f"      - {e}")
+                narrative = call_claude(_correction_prompt(prompt, narrative, errors))
+            else:
+                print(f"  ⛔ {away} @ {home}: attribution errors persisted after {MAX_RETRIES} retries — discarding narrative, storing struct only:")
+                for e in errors:
+                    print(f"      - {e}")
+                narrative = None
+
         if not narrative:
-            print(f"  • {away} @ {home}: no narrative (claude failed / no key) — storing struct only")
+            print(f"  • {away} @ {home}: no narrative (claude failed / no key / attribution rejected) — storing struct only")
         if upsert_read(g, narrative or "", struct):
             print(f"  ✓ {away} @ {home} ({len(struct['best_plays'])} plays{', POTD' if struct['is_potd'] else ''})")
             done += 1
