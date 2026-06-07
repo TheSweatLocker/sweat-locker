@@ -2486,8 +2486,12 @@ def log_game_result(context):
             # added by migration 20260530_results_primary_play_and_dims.sql;
             # the field-strip fallback below handles the pre-migration case
             # so log_game_result doesn't 400 if the migration hasn't run.
+            # NOTE 2026-06-07: primary_play_computed_at is a CONTEXT-row
+            # freshness timestamp (migration 20260604) and lives only on
+            # mlb_game_context, not mlb_game_results. Writing it here was
+            # 400ing every record with PGRST204 and silently blacking out
+            # 6/6 + 6/7 grading — do NOT add it back.
             "primary_play": context.get("primary_play"),
-            "primary_play_computed_at": context.get("primary_play_computed_at"),
             "sweat_dimensions": (context.get("sweat_breakdown") or {}).get("dimensions"),
             # Jerry Model (shadow mode) — added by 20260530_jerry_model_columns.sql.
             # Pre-migration retry in the post() block below strips these
@@ -2617,29 +2621,37 @@ def log_game_result(context):
         # returns 400 with PGRST204 or similar. Strip the new fields and
         # retry so existing data still lands until the SQL is run.
         if r.status_code == 400:
+            # Generic PGRST204 strip-retry: parse the column name from the
+            # error message and drop it, loop until 2xx or we've tried 8x.
+            # The 6/6 + 6/7 silent blackout happened because the explicit
+            # strip list was missing `primary_play_computed_at` — easier
+            # to derive dynamically than maintain a list.
             stripped = []
-            for k in ('primary_play', 'sweat_dimensions',
-                      'jerry_pred_home_runs', 'jerry_pred_away_runs', 'jerry_pred_spread',
-                      'jerry_pred_total', 'jerry_components', 'jerry_weights_version',
-                      'home_offense_drift', 'away_offense_drift',
-                      'home_ops_last7', 'away_ops_last7',
-                      'home_ops_last14', 'away_ops_last14',
-                      'home_wrc_proxy_l14', 'away_wrc_proxy_l14',
-                      'home_last10_runs_per_game', 'away_last10_runs_per_game',
-                      'home_last5_runs_per_game', 'away_last5_runs_per_game',
-                      'home_l10_wins', 'home_l10_losses',
-                      'away_l10_wins', 'away_l10_losses'):
-                if k in r.text and k in record:
-                    record.pop(k, None)
-                    stripped.append(k)
-            if stripped:
+            for _attempt in range(8):
+                try:
+                    err = r.json()
+                    msg = err.get("message", "") if isinstance(err, dict) else ""
+                except (ValueError, AttributeError):
+                    msg = r.text
+                # PostgREST PGRST204 format: "Could not find the 'X' column"
+                import re as _re_local
+                m = _re_local.search(r"'([a-z_0-9]+)'", msg)
+                if not m or r.status_code != 400:
+                    break
+                col = m.group(1)
+                if col not in record:
+                    break
+                record.pop(col, None)
+                stripped.append(col)
                 r = requests.post(
                     f"{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id",
                     headers=headers,
                     json=record
                 )
                 if r.status_code in [200, 201, 204]:
-                    print(f"  ⚠️ game_results: missing cols stripped ({', '.join(stripped[:3])}) — apply 20260530 migrations")
+                    break
+            if stripped and r.status_code in [200, 201, 204]:
+                print(f"  ⚠️ game_results: stripped missing cols ({', '.join(stripped[:5])}) — schema lag, apply pending migrations")
         if r.status_code not in [200, 201, 204]:
             print(f"  ⚠️ game_results log failed {r.status_code}: {r.text[:100]}")
         else:
@@ -4391,17 +4403,49 @@ def run(target_date=None):
                 # Best-effort retry: write minimal stub rows so the resolver
                 # has something to update later. Preserves audit even if
                 # the original log_game_result POST silently failed.
-                from datetime import datetime as _dt
+                # mlb_game_results has home_team + away_team as NOT NULL —
+                # the 6/6+6/7 silent blackout was partly caused by this stub
+                # write omitting them and 400ing every row. Look up team
+                # names from context if we have them, else fall back to
+                # mlb_game_context for the same date.
+                ctx_lookup = {}
+                try:
+                    ctx_r = requests.get(
+                        f"{SUPABASE_URL}/rest/v1/mlb_game_context"
+                        f"?game_id=in.({ids_str})&select=game_id,home_team,away_team",
+                        headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                        timeout=15,
+                    )
+                    if ctx_r.status_code == 200:
+                        ctx_lookup = {row["game_id"]: row for row in ctx_r.json()}
+                except Exception:
+                    pass
+                stub_ok = 0
+                stub_fail = 0
                 for gid in missing:
-                    requests.post(
+                    ctx_row = ctx_lookup.get(gid, {})
+                    stub_payload = {
+                        "game_id": gid,
+                        "game_date": today,
+                        "season": 2026,
+                        "home_team": ctx_row.get("home_team") or "UNKNOWN",
+                        "away_team": ctx_row.get("away_team") or "UNKNOWN",
+                    }
+                    sr = requests.post(
                         f"{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id",
                         headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
                                  "Content-Type": "application/json",
                                  "Prefer": "resolution=merge-duplicates,return=minimal"},
-                        json={"game_id": gid, "game_date": today, "season": 2026},
+                        json=stub_payload,
                         timeout=10,
                     )
-                print(f"   Stub rows written for {len(missing)} missing game(s). "
+                    if sr.status_code in (200, 201, 204):
+                        stub_ok += 1
+                    else:
+                        stub_fail += 1
+                        if stub_fail <= 2:
+                            print(f"      stub-write FAILED {sr.status_code}: {sr.text[:200]}")
+                print(f"   Stub rows: {stub_ok} written / {stub_fail} failed. "
                       f"resolve_game_results.run() will fill scores tomorrow.")
             else:
                 print(f"✅ POST-RUN AUDIT: all {len(logged_game_ids)} game_results rows confirmed.")
