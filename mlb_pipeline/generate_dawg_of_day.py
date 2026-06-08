@@ -596,6 +596,45 @@ def score_dawg(g, diag=None, ml_map=None):
             conviction -= 8
             signals['confluence_warn'] = f"⚠ STRONG confluence AGAINST (+{conf_mag} signals on {opp_label})"
 
+    # ── Phase 2 cohort signal adjustment (2026-06-08) ──
+    # DAWG picks an ML on the underdog side. Query cohort_signals for
+    # matching ML cohorts pointing at the dog's direction. Aggregate the
+    # top-5 deltas (capped ±25). Same pattern as play_of_day. No-op when
+    # lookup is unavailable.
+    try:
+        from cohort_signals import evaluate_game_for_play as _cohort_eval
+        dog_dir = 'home' if is_home_dawg else 'away'
+        cohort_matches = []
+        seen = set()
+        for pt in ('v3_ml', 'v4_ml', 'jerry_ml', 'conf_ml',
+                   'v3_rl', 'v4_rl', 'jerry_rl', 'conf_rl'):
+            for r in (_cohort_eval(g, pt, dog_dir) or []):
+                rid = r.get('id')
+                if not rid or rid in seen:
+                    continue
+                seen.add(rid)
+                cohort_matches.append(r)
+        if cohort_matches:
+            cohort_matches.sort(key=lambda r: -abs(r.get('conviction_delta', 0)))
+            top5 = cohort_matches[:5]
+            cohort_delta = sum(r.get('conviction_delta', 0) for r in top5)
+            if cohort_delta > 25: cohort_delta = 25
+            elif cohort_delta < -25: cohort_delta = -25
+            if cohort_delta != 0:
+                conviction += cohort_delta
+                # Cite the strongest match in the dominant direction
+                same_side = [r for r in top5
+                             if (r.get('conviction_delta', 0) > 0) == (cohort_delta > 0)]
+                top = (same_side or top5)[0]
+                tag = 'cohort_confirms' if cohort_delta > 0 else 'cohort_fades'
+                signals[tag] = (
+                    f"{'+'+str(cohort_delta) if cohort_delta > 0 else cohort_delta} from cohort signals — "
+                    f"{top.get('matches_if_raw')} ({top.get('tier')}, "
+                    f"{top.get('shrunken_pct')}% hist, {top.get('raw_wins')}-{top.get('raw_losses')} over {top.get('raw_n')})"
+                )
+    except Exception:
+        pass
+
     conviction = max(0, min(100, conviction))
     tier = 'PRIME' if conviction >= 80 else 'STRONG' if conviction >= 65 else 'LEAN'
 

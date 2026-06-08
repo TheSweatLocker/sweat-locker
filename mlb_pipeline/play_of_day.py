@@ -20,6 +20,124 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
+
+# ── Phase 2 cohort wire-in (2026-06-08) ──
+# Lookup is lazy-imported so a missing/broken cohort_signals module never
+# breaks play_of_day. evaluate_game_for_play returns [] on any failure.
+def _cohort_eval_safe(ctx, play_type, direction):
+    try:
+        from cohort_signals import evaluate_game_for_play
+        return evaluate_game_for_play(ctx, play_type, direction=direction) or []
+    except Exception:
+        return []
+
+
+def _side_direction_from_play(side_play, ctx):
+    """Determine 'home' or 'away' from side_play dict + game context."""
+    if not side_play or not isinstance(side_play, dict):
+        return None
+    label = (side_play.get('label') or '').lower()
+    if not label:
+        return None
+    home_team = (ctx.get('home_team') or '').lower()
+    away_team = (ctx.get('away_team') or '').lower()
+    # Match against the team nickname (last word) to keep label match robust
+    home_nick = home_team.split()[-1] if home_team else ''
+    away_nick = away_team.split()[-1] if away_team else ''
+    if home_nick and home_nick in label:
+        return 'home'
+    if away_nick and away_nick in label:
+        return 'away'
+    return None
+
+
+def _total_direction_from_play(total_play):
+    """Determine 'over' or 'under' from total_play dict."""
+    if not total_play or not isinstance(total_play, dict):
+        return None
+    tp = (total_play.get('type') or '').upper()
+    if 'OVER' in tp:
+        return 'over'
+    if 'UNDER' in tp:
+        return 'under'
+    return None
+
+
+def _cohort_apply_to_dim(ctx, drivers, play_dict, dim_type, track):
+    """Phase 2 wire — apply aggregate cohort delta to a sweat dimension.
+
+    Queries every matching rule across the relevant play_types for the
+    picked direction. Dedupes by rule_id, sums deltas, caps at ±25,
+    appends ONE aggregate driver entry citing the strongest match.
+    """
+    if dim_type == 'side':
+        direction = _side_direction_from_play(play_dict, ctx)
+        play_types = ['v3_ml', 'v4_ml', 'jerry_ml', 'conf_ml',
+                      'v3_rl', 'v4_rl', 'jerry_rl', 'conf_rl']
+    elif dim_type == 'total':
+        direction = _total_direction_from_play(play_dict)
+        play_types = ['v3_tot', 'v4_tot', 'jerry_tot']
+    else:
+        return
+    if not direction:
+        return
+
+    matches = []
+    seen = set()
+    for pt in play_types:
+        for r in _cohort_eval_safe(ctx, pt, direction):
+            rid = r.get('id')
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            matches.append(r)
+    if not matches:
+        return
+
+    # Take only the top 5 by absolute delta — with 600+ rules in the
+    # lookup, ~50 typically match a single game; summing all of them
+    # hits the ±25 cap on most games and washes out the signal. Top 5
+    # captures the densest cohort information without runaway stacking.
+    matches.sort(key=lambda r: -abs(r.get('conviction_delta', 0)))
+    matches = matches[:5]
+
+    total_delta = sum(r.get('conviction_delta', 0) for r in matches)
+    # Cap stacked delta at ±25 per the locked design (safety net)
+    if total_delta > 25: total_delta = 25
+    elif total_delta < -25: total_delta = -25
+    if total_delta == 0:
+        return
+
+    # Cite the strongest match IN THE DOMINANT DIRECTION — avoid
+    # citing a fade rule when the net contribution is positive (or vice
+    # versa) which was confusing in the smoke test.
+    same_direction = [r for r in matches
+                      if (r.get('conviction_delta', 0) > 0) == (total_delta > 0)]
+    top = (same_direction or matches)[0]
+    if total_delta > 0:
+        label = 'Cohort signal confirms'
+        emoji = '📊'
+    else:
+        label = 'Cohort signal fades'
+        emoji = '⚠️'
+    detail = (f"{top.get('matches_if_raw')} ({top.get('tier')}, "
+              f"{top.get('shrunken_pct')}% historical, "
+              f"{top.get('raw_wins')}-{top.get('raw_losses')} over {top.get('raw_n')} games)")
+    if len(matches) > 1:
+        detail += f" — top of {len(matches)} matched"
+
+    drivers.append({
+        'emoji': emoji, 'label': label,
+        'points': total_delta, 'detail': detail,
+    })
+    # Also record in legacy contribution track for audit
+    track.setdefault('contributions', []).append({
+        'emoji': emoji, 'label': label,
+        'points': total_delta, 'detail': detail,
+        'source': 'cohort_signals_v1',
+    })
+
+
 def get_today_et():
     """Get today's date in ET"""
     et_now = datetime.now(timezone.utc) - timedelta(hours=4)
@@ -1379,6 +1497,18 @@ def score_mlb_game(ctx, game_props=None, track=None):
             'top_player': top.get('player_name'),
             'top_prop_type': top.get('prop_type'),
         }
+
+    # ---- Phase 2 cohort signal adjustment (2026-06-08) ----
+    # After plays are determined, query cohort_signals for matches against the
+    # picked direction. Apply aggregate conviction delta (capped ±25) directly
+    # to side_score / total_score, and append a driver entry for transparency.
+    # No-op when cohort_signals returns nothing or import unavailable.
+    # See cohort_signals.evaluate_game_for_play + refresh_cohort_signals.py.
+    _cohort_apply_to_dim(ctx, side_drivers, side_play, 'side', track)
+    _cohort_apply_to_dim(ctx, total_drivers, total_play, 'total', track)
+    # Recompute sub-scores so any cohort drivers we just appended are reflected.
+    side_score = max(0, min(100, 30 + sum(d['points'] for d in side_drivers)))
+    total_score = max(0, min(100, 30 + sum(d['points'] for d in total_drivers)))
 
     # ---- Per-dimension tiers (same 80/65/50/<50 cutoffs, but each tier's
     # PRIME requires that dimension's play exists — actionability gate) ----
