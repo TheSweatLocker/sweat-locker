@@ -417,6 +417,28 @@ jobs:
           cd mlb_pipeline
           python cohort_stats.py
 
+      # Refresh attribution cohort signals (2026-06-08). Re-runs the
+      # full attribution backtest on every graded mlb_game_results row,
+      # applies Bayesian shrinkage (prior_n=30), filters out cohorts
+      # decaying or reversed in last 30d, writes ~600+ surviving rules
+      # to jerry_cache row 'cohort_signals'. Consumed at runtime by
+      # cohort_signals.evaluate_game_for_play() which the Jerry reads
+      # struct now surfaces. Phase 2+ wires conviction deltas in
+      # props/POTD/DAWG.
+      #
+      # Runs after resolve_game_results.py so last night's outcomes are
+      # incorporated. continue-on-error since the lookup degrades to
+      # empty (no rules applied) when refresh fails — production
+      # surfaces never break.
+      - name: Refresh cohort signals
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refresh_cohort_signals.py
+
       - name: Run NBA team stats update
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
