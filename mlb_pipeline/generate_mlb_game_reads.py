@@ -391,6 +391,25 @@ def _nrfi_tier(score):
     return f"{score} — neutral"
 
 
+def _l5_block_for_side(game_date, game_id, side):
+    """Pull the L5 actuals payload for `side` (home/away) from the
+    pitcher_l5 cache row. Returns the per-side dict or None.
+
+    Loaded lazily via pitcher_l5_lookup so missing cache rows degrade
+    gracefully — the read prompt will still render without recency
+    context. Added 2026-06-07 to give Jerry the L5 numbers the user
+    had to pull manually (Baz outs / Flaherty hits / Cameron ER on 6/7).
+    """
+    try:
+        from pitcher_l5_lookup import get_l5
+        l5 = get_l5(game_date, game_id)
+    except Exception:
+        return None
+    if not l5:
+        return None
+    return l5.get(side)
+
+
 def _pitcher_block(g, side):
     """Build per-pitcher block with EXPLICIT opp-lineup attribution baked in.
 
@@ -458,6 +477,11 @@ def _pitcher_block(g, side):
         # Stats API per [[project_jerry_read_phase_b_career_team_pitching]].
         # None on miss so prompt falls back to season-only context.
         "career": fetch_career_sp_stats(name),
+        # L5 starts (added 2026-06-07) — outs/Ks/BB/hits/ER for each of
+        # the last 5 starts + avg. Closes the recency-data gap. Schema:
+        # { name, mlb_id, starts: [{date,outs,ks,bb,hits,er,opp}], avg:{...} }
+        # None on miss so prompt falls back to season + L3 ERA context.
+        "l5": _l5_block_for_side(g.get("game_date"), g.get("game_id"), side),
     }
 
 

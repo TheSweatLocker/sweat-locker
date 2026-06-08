@@ -416,6 +416,57 @@ def get_pitcher_projection(name):
     return None
 
 
+def _apply_l5_signal(g, side, metric, line, direction, conviction, signals):
+    """Apply L5 confirm/fade signal to a prop scorer. Returns the updated
+    conviction; mutates `signals` in place.
+
+    metric: one of 'outs', 'ks', 'bb', 'hits', 'er'
+    line:   the prop line being scored (e.g. 4.5)
+    direction: 'over' or 'under'
+
+    Logic (added 2026-06-07 after 6/7 card where Baz outs O17.5 + Flaherty
+    hits O4.5 + Cameron ER U2.5 all had loud L5 actuals the projection
+    layer wasn't using):
+      - L5 avg strongly confirms direction (>=0.7 vs line on same side):  +12
+      - L5 avg modestly confirms (>=0.3 vs line on same side):            +6
+      - L5 avg disagrees (>=0.5 vs line on OTHER side):                   -8
+      - Bonus: 4-of-5 or 5-of-5 streak on the bet direction:              +4
+      - No data → no change
+
+    Conservative gates prevent L5 from overwhelming the projection layer
+    (which has its own L7 rolling avg). L5 is a CO-SIGNATURE check, not
+    a primary signal.
+    """
+    try:
+        from pitcher_l5_lookup import get_l5, streak_count
+    except ImportError:
+        return conviction
+    l5_payload = get_l5(g.get('game_date'), g.get('game_id'))
+    if not l5_payload:
+        return conviction
+    side_l5 = l5_payload.get(side)
+    if not side_l5:
+        return conviction
+    avg = (side_l5.get('avg') or {}).get(metric)
+    if avg is None or line is None:
+        return conviction
+    margin = avg - line if direction == 'over' else line - avg
+    streak_hits, streak_total = streak_count(side_l5, metric, line, direction)
+    streak_label = f' ({streak_hits}-of-{streak_total} L5)' if streak_total else ''
+    if margin >= 0.7:
+        signals['l5_confirm'] = f'L5 avg {avg} ({direction} {line}, {margin:+.1f}){streak_label}'
+        conviction += 12
+        if streak_total and streak_hits >= 4:
+            conviction += 4  # streak bonus when 4/5+ on the same side
+    elif margin >= 0.3:
+        signals['l5_confirm'] = f'L5 avg {avg} ({direction} {line}, {margin:+.1f}){streak_label}'
+        conviction += 6
+    elif margin <= -0.5:
+        signals['l5_fade'] = f'⚠ L5 avg {avg} opposes (going {direction} {line}, gap {margin:+.1f}){streak_label}'
+        conviction -= 8
+    return conviction
+
+
 def score_pitcher_bb_over(g, side):
     """Score a starter's Total Walks Allowed OVER prop. Markets typically
     post O/U 1.5 (sometimes 2.5). We project from L7 rolling avg_bb when
@@ -497,6 +548,8 @@ def score_pitcher_bb_over(g, side):
     conviction = max(0, min(100, conviction))
     # Suggested line: 1.5 unless the projection is well above 2.5
     suggested_line = 2.5 if proj_bb >= 3.0 else 1.5
+    conviction = _apply_l5_signal(g, side, 'bb', suggested_line, 'over', conviction, signals)
+    conviction = max(0, min(100, conviction))
 
     return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
 
@@ -571,6 +624,8 @@ def score_pitcher_bb_under(g, side):
 
     conviction = max(0, min(100, conviction))
     suggested_line = 1.5  # under-1.5 is the standard book line
+    conviction = _apply_l5_signal(g, side, 'bb', suggested_line, 'under', conviction, signals)
+    conviction = max(0, min(100, conviction))
 
     return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
 
@@ -661,6 +716,8 @@ def score_pitcher_ha_over(g, side):
 
     conviction = max(0, min(100, conviction))
     suggested_line = 6.5 if proj_h >= 7.0 else 5.5
+    conviction = _apply_l5_signal(g, side, 'hits', suggested_line, 'over', conviction, signals)
+    conviction = max(0, min(100, conviction))
     return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
 
 
@@ -746,6 +803,8 @@ def score_pitcher_ha_under(g, side):
 
     conviction = max(0, min(100, conviction))
     suggested_line = 5.5
+    conviction = _apply_l5_signal(g, side, 'hits', suggested_line, 'under', conviction, signals)
+    conviction = max(0, min(100, conviction))
     return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
 
 
@@ -1253,6 +1312,9 @@ def score_pitcher_ks(g, side):
     if own_pen is not None:
         signals['_starter_pen_relievers_3d'] = own_pen
 
+    conviction = _apply_l5_signal(g, side, 'ks', suggested_line, 'over', conviction, signals)
+    conviction = max(0, min(100, conviction))
+
     return {
         'conviction': conviction,
         'signals': signals,
@@ -1467,6 +1529,9 @@ def score_pitcher_ks_under(g, side):
         est_ks = (raw_k / 100) * (4.5 * 4.0)
         suggested_line = max(4.0, min(7.0, round(est_ks + 1.0, 0) - 0.5))
 
+    conviction = _apply_l5_signal(g, side, 'ks', suggested_line, 'under', conviction, signals)
+    conviction = max(0, min(100, conviction))
+
     return {
         'conviction': conviction,
         'signals': signals,
@@ -1614,6 +1679,9 @@ def score_pitcher_outs(g, side):
         else:
             suggested_line = 14.5
 
+    conviction = _apply_l5_signal(g, side, 'outs', suggested_line, 'over', conviction, signals)
+    conviction = max(0, min(100, conviction))
+
     return {
         'conviction': conviction,
         'signals': signals,
@@ -1728,6 +1796,9 @@ def score_pitcher_outs_under(g, side):
             suggested_line = 15.5  # bumped from 14.5 to match book reality
         else:
             suggested_line = 16.5  # bumped from 15.5 to match book reality
+
+    conviction = _apply_l5_signal(g, side, 'outs', suggested_line, 'under', conviction, signals)
+    conviction = max(0, min(100, conviction))
 
     return {
         'conviction': conviction,
@@ -1880,6 +1951,9 @@ def score_pitcher_er(g, side):
         suggested_line = 2.5
     else:
         suggested_line = 2.5  # most-common market line — keep simple
+
+    conviction = _apply_l5_signal(g, side, 'er', suggested_line, 'over', conviction, signals)
+    conviction = max(0, min(100, conviction))
 
     return {
         'conviction': conviction,
@@ -2040,6 +2114,9 @@ def score_pitcher_er_under(g, side):
     suggested_line = 2.5
     if xera <= 2.5:
         suggested_line = 1.5  # only for true aces
+
+    conviction = _apply_l5_signal(g, side, 'er', suggested_line, 'under', conviction, signals)
+    conviction = max(0, min(100, conviction))
 
     return {
         'conviction': conviction,
