@@ -606,26 +606,34 @@ def score_dawg(g, diag=None, ml_map=None):
         dog_dir = 'home' if is_home_dawg else 'away'
         cohort_matches = []
         seen = set()
+        # Phase 2 tightening (2026-06-08 PM): mirror play_of_day.
+        # Only LOCK / STRONG_EDGE / FADE / HARD_FADE tiers contribute;
+        # LEAN and SOFT_FADE are too noisy when stacked. Top-3 by edge,
+        # cap +/-15. Same rationale as the play_of_day wire — common
+        # cohorts (e.g. v3_spread_mid) saturated the wider cap on most
+        # games when initial wire shipped.
+        CONTRIBUTING_TIERS = {'LOCK', 'STRONG_EDGE', 'FADE', 'HARD_FADE'}
         for pt in ('v3_ml', 'v4_ml', 'jerry_ml', 'conf_ml',
                    'v3_rl', 'v4_rl', 'jerry_rl', 'conf_rl'):
             for r in (_cohort_eval(g, pt, dog_dir) or []):
                 rid = r.get('id')
                 if not rid or rid in seen:
                     continue
+                if r.get('tier') not in CONTRIBUTING_TIERS:
+                    continue
                 seen.add(rid)
                 cohort_matches.append(r)
         if cohort_matches:
             cohort_matches.sort(key=lambda r: -abs(r.get('conviction_delta', 0)))
-            top5 = cohort_matches[:5]
-            cohort_delta = sum(r.get('conviction_delta', 0) for r in top5)
-            if cohort_delta > 25: cohort_delta = 25
-            elif cohort_delta < -25: cohort_delta = -25
+            top3 = cohort_matches[:3]
+            cohort_delta = sum(r.get('conviction_delta', 0) for r in top3)
+            if cohort_delta > 15: cohort_delta = 15
+            elif cohort_delta < -15: cohort_delta = -15
             if cohort_delta != 0:
                 conviction += cohort_delta
-                # Cite the strongest match in the dominant direction
-                same_side = [r for r in top5
+                same_side = [r for r in top3
                              if (r.get('conviction_delta', 0) > 0) == (cohort_delta > 0)]
-                top = (same_side or top5)[0]
+                top = (same_side or top3)[0]
                 tag = 'cohort_confirms' if cohort_delta > 0 else 'cohort_fades'
                 signals[tag] = (
                     f"{'+'+str(cohort_delta) if cohort_delta > 0 else cohort_delta} from cohort signals — "

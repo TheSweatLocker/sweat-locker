@@ -84,27 +84,35 @@ def _cohort_apply_to_dim(ctx, drivers, play_dict, dim_type, track):
 
     matches = []
     seen = set()
+    # Phase 2 tightening (2026-06-08 PM): skip LEAN (+4) and SOFT_FADE
+    # (-5) tiers. Initial wire saturated the +/-25 cap on most games
+    # because common cohorts (e.g. v3_spread_mid 73.8% applies to any
+    # game where v3 has 1-2 run spread lean) kept stacking. Only loud
+    # rules contribute now: LOCK, STRONG_EDGE, FADE, HARD_FADE.
+    CONTRIBUTING_TIERS = {'LOCK', 'STRONG_EDGE', 'FADE', 'HARD_FADE'}
     for pt in play_types:
         for r in _cohort_eval_safe(ctx, pt, direction):
             rid = r.get('id')
             if not rid or rid in seen:
+                continue
+            if r.get('tier') not in CONTRIBUTING_TIERS:
                 continue
             seen.add(rid)
             matches.append(r)
     if not matches:
         return
 
-    # Take only the top 5 by absolute delta — with 600+ rules in the
-    # lookup, ~50 typically match a single game; summing all of them
-    # hits the ±25 cap on most games and washes out the signal. Top 5
-    # captures the densest cohort information without runaway stacking.
+    # Take only top 3 strongest by absolute delta (was 5). Combined with
+    # the loud-only tier filter above and the tighter ±15 cap below,
+    # the cohort layer now boosts but doesn't dominate the dimension.
     matches.sort(key=lambda r: -abs(r.get('conviction_delta', 0)))
-    matches = matches[:5]
+    matches = matches[:3]
 
     total_delta = sum(r.get('conviction_delta', 0) for r in matches)
-    # Cap stacked delta at ±25 per the locked design (safety net)
-    if total_delta > 25: total_delta = 25
-    elif total_delta < -25: total_delta = -25
+    # Cap stacked delta at ±15 (was ±25). The cohort wire should
+    # influence ranking, not single-handedly push a 60-score game to 100.
+    if total_delta > 15: total_delta = 15
+    elif total_delta < -15: total_delta = -15
     if total_delta == 0:
         return
 
