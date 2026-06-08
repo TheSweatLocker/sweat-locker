@@ -800,6 +800,13 @@ def build_struct(g, props, potd):
         # Buy-down cheat-line recommendation (None when game doesn't
         # qualify for a backtest cohort). Surfaced in The Numbers panel.
         "buy_down_play": buy_down_play,
+        # Cohort signals (Phase 1 surface — 2026-06-08). Data-discovered
+        # rules from 518-game attribution backtest with Bayesian shrinkage
+        # + recency veto. Read-only — does not affect conviction or card
+        # eligibility yet. Phase 2 wires conviction adjustments. None when
+        # cohort_signals jerry_cache row is missing or stale.
+        # See cohort_signals.summarize_for_struct() for shape.
+        "cohort_signals": _cohort_signals_block(g),
         "meta": {
             "game_date": today_et(),
             "game_has_not_been_played": True,
@@ -808,6 +815,16 @@ def build_struct(g, props, potd):
     }
     struct["casual_summary"] = _build_casual_summary(struct)
     return struct
+
+
+def _cohort_signals_block(g):
+    """Phase 1 read-only surface of matched cohort rules for this game.
+    Gracefully None on any failure — Jerry reads continue to render."""
+    try:
+        from cohort_signals import summarize_for_struct
+        return summarize_for_struct(g)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------- prompt
