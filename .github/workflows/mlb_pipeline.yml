@@ -140,6 +140,25 @@ jobs:
           cd mlb_pipeline
           python patch_projected_ks.py
 
+      # L5 pitcher actuals (2026-06-07). Hits MLB Stats API per starter on
+      # today's slate, pulls last-5 starts (outs/Ks/BB/hits/ER), writes to
+      # jerry_cache rows keyed pitcher_l5_{date}_{game_id}. Consumed by
+      # Jerry reads + props scorer + sweat card via pitcher_l5_lookup.py.
+      # Closes the recency-data gap from 6/7 (Baz outs / Flaherty hits /
+      # Cameron ER all needed L5 data the user pulled manually because
+      # projections weren't using it). Runs AFTER verify_starters +
+      # patch_projected_ks (pitcher names locked) and BEFORE Jerry reads
+      # + props so same-day surfaces get the L5 lift. continue-on-error:
+      # lookup degrades gracefully when missing.
+      - name: Fetch L5 pitcher actuals
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_l5_pitcher_actuals.py
+
       - name: Build HR Watch
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
