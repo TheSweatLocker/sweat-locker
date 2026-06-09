@@ -1562,10 +1562,30 @@ def score_mlb_game(ctx, game_props=None, track=None):
         'supplementary_play': supplementary_play,
     }
 
-    # ---- Backward-compat: sort/cap legacy contributions list ----
+    # ---- Backward-compat: dedupe + sort + cap legacy contributions list ----
+    # Dedupe by label to suppress duplicate rows on the WHY-THIS-SCORE panel
+    # (6/9 incident: "Cohort signal confirms" rendered twice on 3 of 15 games
+    # because side + total dimensions both pushed the same label). Keep the
+    # highest-points instance of each label; if details differ, merge the
+    # losing detail into the kept entry as a one-clause suffix so the user
+    # sees both signals on a single line.
     if track.get('contributions'):
-        track['contributions'].sort(key=lambda c: -c.get('points', 0))
-        track['contributions'] = track['contributions'][:6]
+        contribs = track['contributions']
+        contribs.sort(key=lambda c: -c.get('points', 0))
+        seen_labels = {}
+        deduped = []
+        for c in contribs:
+            label = c.get('label')
+            if label not in seen_labels:
+                seen_labels[label] = c
+                deduped.append(c)
+            else:
+                kept = seen_labels[label]
+                kept_detail = kept.get('detail') or ''
+                new_detail = c.get('detail') or ''
+                if new_detail and new_detail != kept_detail and new_detail not in kept_detail:
+                    kept['detail'] = f"{kept_detail} + {new_detail}" if kept_detail else new_detail
+        track['contributions'] = deduped[:6]
     if track.get('evidence'):
         track['evidence'] = track['evidence'][:5]
 
