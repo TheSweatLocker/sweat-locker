@@ -734,7 +734,13 @@ jobs:
           # of our freshly-generated version. The card is deterministic
           # from current supabase state — taking the later run's card
           # is always the safe call.
-          if ! git pull --rebase -X theirs origin main; then
+          #
+          # --autostash added 2026-06-09 after a workflow run hit
+          # "cannot pull with rebase: You have unstaged changes" when
+          # earlier steps (cohort_signals refresh, model artifacts) left
+          # files dirty. autostash transparently stashes + restores so
+          # the rebase always has a clean tree to work with.
+          if ! git pull --rebase --autostash -X theirs origin main; then
             echo "::warning::Rebase conflict on content card — taking our version"
             git checkout --theirs content/*.md
             git add content/*.md
