@@ -684,12 +684,24 @@ Write 2-3 sentences MAX. Reference specific data signals. Sound like a sharp fri
 
 
 def upsert_daily_degen(game_date, legs, narrative):
-    avg_conv = round(sum(l['conviction'] for l in legs) / len(legs), 1) if legs else None
+    # Normalize each leg so the app gets a canonical `odds` field.
+    # Candidates carry `odds_suggestion` (named for back-compat); the app
+    # reads `leg.odds` and a None there silently corrupts the parlay math
+    # downstream — americanToDecimal returns 1 on NaN, then decimalToAmerican
+    # hits -100/0 = -Infinity. 6/9 incident: every leg shipped with odds=None,
+    # making the "Add all to parlay" CTA produce -Infinity American odds.
+    normalized_legs = []
+    for leg in legs:
+        leg = dict(leg)
+        if leg.get('odds') is None:
+            leg['odds'] = leg.get('odds_suggestion')
+        normalized_legs.append(leg)
+    avg_conv = round(sum(l['conviction'] for l in normalized_legs) / len(normalized_legs), 1) if normalized_legs else None
     payload = {
         'game_date': game_date,
-        'legs': legs,
+        'legs': normalized_legs,
         'narrative': narrative,
-        'leg_count': len(legs),
+        'leg_count': len(normalized_legs),
         'avg_conviction': avg_conv,
     }
     r = requests.post(

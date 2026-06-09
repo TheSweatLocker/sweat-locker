@@ -104,19 +104,31 @@ const SETTINGS_KEY = 'sweatlocker_settings';
 
 const americanToDecimal = (american) => {
   const odds = parseFloat(american);
-  if (isNaN(odds)) return 1;
+  // Sentinel for invalid input — returning 1 silently corrupts parlay math
+  // (decimal=1 then explodes in decimalToAmerican as -100/0 = -Infinity).
+  // Callers MUST check for NaN before multiplying.
+  if (isNaN(odds) || odds === 0) return NaN;
   return odds > 0 ? (odds/100)+1 : (100/Math.abs(odds))+1;
 };
 const decimalToAmerican = (decimal) => {
+  if (!isFinite(decimal) || isNaN(decimal) || decimal <= 1) return '--';
   if (decimal >= 2) return '+'+Math.round((decimal-1)*100);
   return ''+Math.round(-100/(decimal-1));
 };
 const calcParlayOdds = (legs) => {
   if (!legs.length) return 0;
-  return legs.reduce((acc,leg) => acc * americanToDecimal(leg.oddsSign+leg.odds), 1);
+  let product = 1;
+  let validCount = 0;
+  for (const leg of legs) {
+    const dec = americanToDecimal(leg.oddsSign + leg.odds);
+    if (isNaN(dec) || !isFinite(dec)) continue;  // skip invalid legs silently rather than corrupt the product
+    product *= dec;
+    validCount++;
+  }
+  return validCount > 0 ? product : 0;
 };
 const impliedProb = (decimal) => {
-  if (decimal <= 1) return 0;
+  if (!isFinite(decimal) || isNaN(decimal) || decimal <= 1) return '--';
   return ((1/decimal)*100).toFixed(1);
 };
 const impliedProbRaw = (american) => {
@@ -1357,13 +1369,23 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
   const addAllToParlay = () => {
     if(!degenData?.legs) return;
     let added = 0;
+    let skipped = 0;
     degenData.legs.forEach((leg: any) => {
-      const isNeg = leg.odds < 0;
+      // Reject legs without a parseable odds number. 6/9 incident: server
+      // wrote odds=None on every leg, app silently passed NaN through the
+      // parlay product, output shown as "-Infinity". Fixed server-side
+      // (normalize odds_suggestion → odds) + here as defense in depth.
+      const oddsNum = typeof leg.odds === 'number' ? leg.odds : parseFloat(leg.odds);
+      if (oddsNum == null || isNaN(oddsNum) || oddsNum === 0) {
+        skipped++;
+        return;
+      }
+      const isNeg = oddsNum < 0;
       const newLeg = {
         id: Date.now() + Math.random(),
         matchup: leg.matchup,
         pick: leg.pick,
-        odds: String(Math.abs(leg.odds)),
+        odds: String(Math.abs(oddsNum)),
         oddsSign: isNeg ? '-' : '+'
       };
       setParlayLegs((prev: any) => {
@@ -1372,7 +1394,10 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
         return [...prev, newLeg];
       });
     });
-    showToast(`✅ ${degenData.legs.length} legs added to parlay`);
+    const msg = skipped > 0
+      ? `✅ ${degenData.legs.length - skipped} legs added (${skipped} skipped — odds missing)`
+      : `✅ ${degenData.legs.length} legs added to parlay`;
+    showToast(msg);
     setActiveTab('mybets');
     setMybetsTab('parlay_sub');
   };
@@ -7123,11 +7148,20 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                       const homeTeam = gameTeams[1]?.trim()
                       const awayTeam = gameTeams[0]?.trim();
                       if(homeTeam) {
+                        // Date-scope to the prop's game ET date — afternoon Tomorrow seed
+                        // writes next-day rows into mlb_game_context with the same matchup,
+                        // and a date-less .single() will either throw on dupes or grab the
+                        // wrong row (6/9 incident: LAD prop context attributed Ohtani as SP
+                        // because the 2026-06-10 ghost row leaked through).
+                        const propEtDate = prop.commence_time
+                          ? new Date(prop.commence_time).toLocaleDateString('en-CA', {timeZone: 'America/New_York'})
+                          : new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
                         const { data: mlbCtx } = await supabase
                           .from('mlb_game_context')
                           .select('*')
                           .eq('home_team', homeTeam)
-                          .single();
+                          .eq('game_date', propEtDate)
+                          .maybeSingle();
                         if(mlbCtx) {
                           // For strikeout props — pitcher K rate + umpire is key
                           const isKProp = prop.market.toLowerCase().includes('strikeout') || prop.market.toLowerCase().includes('strike');
