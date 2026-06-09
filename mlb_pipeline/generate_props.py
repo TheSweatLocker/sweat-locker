@@ -2511,12 +2511,14 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
             signals[tag] = f'L14 wRC+ {team_wrc_l14:.0f} ({l14_delta:+.0f}) — modest drift, narrative only'
 
     # Pitcher park
+    # 2026-06-09 REWEIGHT (7-day STRONG audit): park-as-fade-signal hit
+    # 12% (1-7) on hits_under. Pitcher park doesn't suppress individual
+    # hits at random the way it does totals. Neutralizing to small penalty
+    # so it stays in narrative without inflating conviction.
     if park is not None:
         if park <= 93:
-            conviction += 8
-            signals['park'] = f'Park factor {park} — pitcher park'
-        elif park <= 98:
-            conviction += 3
+            conviction -= 3  # was +8 — audit showed 12% hit rate when fired
+            signals['park'] = f'Park factor {park} — pitcher park (weight reduced per 6/9 audit)'
         elif park >= 108:
             conviction -= 8
 
@@ -2537,7 +2539,14 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
         elif lineup_position <= 5:
             conviction -= 4
 
-    # L7 cold + active hitless streak = the strongest fade signal
+    # L7 cold + active hitless streak — REWEIGHTED 2026-06-09 after 7-day
+    # STRONG hits_under audit (41% hit rate over 41 plays). The cold-streak
+    # signals were the worst offenders: hitless_streak ≥3 was firing on
+    # losses 58% of the time (15-11), l7_cold 56% (20-16), l7_avg_cold
+    # 58% (22-16), l7_cool 100% (4-0). The 5/30 audit that boosted these
+    # was on a different sample regime; current data shows cold batters
+    # regress UP, not down further. Inverted to small penalty so the
+    # signals stay narrative without driving conviction up.
     l7 = fetch_batter_l7(batter)
     if l7:
         rate = l7['got_hit_rate']
@@ -2545,28 +2554,26 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
         avg = l7.get('avg')
         streak = l7.get('hitless_streak', 0)
         if rate <= 0.35:
-            conviction += 14
-            signals['l7_cold'] = f'Only {l7["got_hit_count"]} of last {n} games w/ a hit'
+            conviction -= 3  # was +14 — 56% loss rate in 6/1-6/8 audit
+            signals['l7_cold'] = f'Only {l7["got_hit_count"]} of last {n} games w/ a hit (weight reduced per 6/9 audit — regression risk)'
         elif rate <= 0.50:
-            conviction += 7
-            signals['l7_cool'] = f'Hits in {l7["got_hit_count"]} of last {n} ({rate*100:.0f}%)'
+            conviction -= 3  # was +7 — 100% loss rate (4-0) in audit
+            signals['l7_cool'] = f'Hits in {l7["got_hit_count"]} of last {n} ({rate*100:.0f}%) (weight reduced per 6/9 audit)'
         elif rate >= 0.80:
-            conviction -= 12  # recent form opposes the fade
+            conviction -= 12  # recent form opposes the fade (unchanged — this is fade-direction signal that works)
         if avg is not None and avg <= 0.180:
-            conviction += 6
-            signals['l7_avg_cold'] = f'L7 BA .{int(avg*1000):03d}'
+            conviction -= 3  # was +6 — 58% loss rate in audit
+            signals['l7_avg_cold'] = f'L7 BA .{int(avg*1000):03d} (weight reduced per 6/9 audit)'
         elif avg is not None and avg >= 0.330:
             conviction -= 6
-        # 2026-05-30 REWEIGHT: hitless_streak ≥3 audits 69.0% PRESENT vs
-        # 55.4% ABSENT — delta +13.6pt — the SINGLE STRONGEST predictor
-        # in the entire hits_under cohort (n=100). Boost from +8 to +14.
-        # Streak≥2 also boosted (+4 → +7) because the 2-streak captures
-        # batters about to cross into the 3-streak audit zone.
+        # hitless_streak — was the 5/30 audit's strongest signal (+14).
+        # Current 7d audit shows it firing on losses 58% of the time
+        # (15-11 over 26 trials). Reversion to mean is winning.
         if streak >= 3:
-            conviction += 14  # was +8 — strongest single signal in scorer
-            signals['hitless_streak'] = f'{streak} straight games w/o a hit'
+            conviction -= 3  # was +14 — most reversed signal
+            signals['hitless_streak'] = f'{streak} straight games w/o a hit (weight reduced per 6/9 audit — regression candidate)'
         elif streak >= 2:
-            conviction += 7   # was +4
+            conviction += 0  # was +7 — neutral now
 
     # Barrel% slump detector (added 2026-05-11). Audit identified
     # hits-UNDER PRIME at 55.3% — half those misses are likely "unlucky
@@ -2652,6 +2659,42 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
                 f'pitcher_park={has_pitcher_park}]). '
                 'PRIME requires hitless_streak + winning companion per 324-prop audit.'
             )
+
+    # ── Fix #3: game-level cohort gate (2026-06-09) ──
+    # If the game's TOTAL has a v3_tot_over_lean or LOCK over-direction
+    # cohort match, this game projects to score runs. Hits_under in a
+    # high-scoring game has structurally worse hit rate (more PAs per
+    # batter, more runs scored = more hits distributed). Penalize.
+    try:
+        from cohort_signals import evaluate_game_for_play as _cohort_eval
+        over_matches = _cohort_eval(g, 'v3_tot', 'over') or []
+        # Look for any LOCK or STRONG_EDGE on the OVER side
+        for m in over_matches:
+            if m.get('tier') in ('LOCK', 'STRONG_EDGE'):
+                conviction -= 10
+                signals['game_over_lean_fade'] = (
+                    f'Game projecting OVER (cohort: {m.get("matches_if_raw")} '
+                    f'{m.get("shrunken_pct")}%) — hits_under unreliable in high-scoring spots '
+                    '(2026-06-09 wire)'
+                )
+                break
+    except Exception:
+        pass
+
+    # ── Fix #1: tier cap (2026-06-09) ──
+    # 7d audit showed STRONG hits_under at 41% (random baseline for
+    # 0.5-hit unders ~ 32-42%). The 75-84 conviction band specifically
+    # is the worst — higher signal stacks underperform due to over-fitting.
+    # Cap conviction at 74 unless multi-signal stack genuinely qualifies
+    # by hitting the 5/30 PRIME gate criteria (which only fires when
+    # conviction was ≥85 pre-cap).
+    if conviction >= 75 and conviction < 85:
+        signals['hits_under_strong_cap'] = (
+            f'STRONG tier capped — 7d audit shows 41% hit rate (random baseline) '
+            f'in this conviction band. Need conviction ≥85 to qualify for STRONG '
+            '(2026-06-09 wire)'
+        )
+        conviction = 74  # drops to LIGHT_LEAN ceiling
 
     return {
         'conviction': conviction,
