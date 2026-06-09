@@ -1,0 +1,2471 @@
+{
+  "computed_at": "2026-06-09T14:15:39.011478+00:00",
+  "date_from": "2026-06-08",
+  "date_to": "2026-06-08",
+  "rows_analyzed": 7,
+  "tier_tallies": {
+    "LEAN": {
+      "w": 135,
+      "l": 26,
+      "p": 42,
+      "n": 203
+    },
+    "STRONG_EDGE": {
+      "w": 86,
+      "l": 3,
+      "p": 4,
+      "n": 93
+    },
+    "SOFT_FADE": {
+      "w": 9,
+      "l": 81,
+      "p": 57,
+      "n": 147
+    },
+    "FADE": {
+      "w": 0,
+      "l": 4,
+      "p": 6,
+      "n": 10
+    }
+  },
+  "play_tallies": {
+    "v3_ml": {
+      "w": 6,
+      "l": 1,
+      "p": 0
+    },
+    "jerry_ml": {
+      "w": 5,
+      "l": 2,
+      "p": 0
+    },
+    "v3_rl": {
+      "w": 4,
+      "l": 1,
+      "p": 2
+    },
+    "v4_rl": {
+      "w": 3,
+      "l": 2,
+      "p": 2
+    },
+    "jerry_rl": {
+      "w": 3,
+      "l": 2,
+      "p": 2
+    },
+    "v3_tot": {
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    "v4_tot": {
+      "w": 1,
+      "l": 2,
+      "p": 1
+    },
+    "jerry_tot": {
+      "w": 1,
+      "l": 2,
+      "p": 2
+    },
+    "v4_ml": {
+      "w": 4,
+      "l": 2,
+      "p": 0
+    },
+    "conf_ml": {
+      "w": 0,
+      "l": 3,
+      "p": 0
+    },
+    "conf_rl": {
+      "w": 0,
+      "l": 1,
+      "p": 2
+    }
+  },
+  "cohort_tallies": [
+    {
+      "cohort": "v4_tot_loud",
+      "play": "v3_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 62.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_offense_hot",
+      "play": "v3_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.8,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_1st_inn_clean",
+      "play": "jerry_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.6,
+      "w": 3,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_1st_inn_clean",
+      "play": "jerry_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.8,
+      "w": 3,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_1st_inn_clean",
+      "play": "v3_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.3,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "jerry_spread_loud",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.5,
+      "w": 1,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "jerry_tot_mid",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 66.1,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "jerry_spread_loud",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 65.9,
+      "w": 1,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "away_sp_1st_inn_clean",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 63.4,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "v3_jerry_agree",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 62.7,
+      "w": 3,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "away_sp_1st_inn_clean",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 62.7,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "v3_jerry_agree",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 62.4,
+      "w": 3,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "jerry_tot_mid",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 63.6,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "conf_mag=1",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 60.6,
+      "w": 2,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_over_lean",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.5,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "temp_extreme_hot",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_mid",
+      "play": "jerry_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.0,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "v3_spread_mid",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 74.5,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v3_jerry_agree",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 71.5,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "wrc_gap_loud",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 70.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v3_spread_mid",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 71.8,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag=1",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 71.9,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_spread_loud",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 72.2,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_reg_rest",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 70.3,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag<=3",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 70.3,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_xera_solid",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 65.0,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_form_hot",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.3,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "wrc_loud_away_better",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag=1",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_over_lean",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 71.1,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_spread_loud",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 71.4,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "wrc_gap_loud",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.8,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_reg_rest",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.3,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_quiet",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 65.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_kpct_mid_k",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_1st_inn_clean",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_xera_solid",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 65.2,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v3_jerry_agree",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.6,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_over_lean",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "temp_extreme_hot",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_tot_over_lean",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_form_hot",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.8,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_high_k",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 66.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_tot_over_lean",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "nrfi_high",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 66.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag<=3",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.4,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_high_k",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_1st_inn_clean",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "temp_extreme_hot",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_tot_loud",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.1,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_mid",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.0,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "wrc_loud_away_better",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.9,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_tot_loud",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_mid",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 66.8,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_kpct_mid_k",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_quiet",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 64.4,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "nrfi_high",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 63.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_tot_loud",
+      "play": "v4_tot",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 64.4,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_tot_loud",
+      "play": "v4_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 61.3,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v3_spread_mid",
+      "play": "v4_tot",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 62.6,
+      "w": 1,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "jerry_tot_mid",
+      "play": "v4_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 60.9,
+      "w": 1,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_mid",
+      "play": "v4_tot",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.9,
+      "w": 1,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "away_kpct_mid_k",
+      "play": "jerry_tot",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 60.0,
+      "w": 1,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_mid",
+      "play": "jerry_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 61.6,
+      "w": 1,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "away_kpct_mid_k",
+      "play": "jerry_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 62.3,
+      "w": 1,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "nrfi_high",
+      "play": "jerry_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 62.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_tot_loud",
+      "play": "jerry_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 62.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_spread_loud",
+      "play": "jerry_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 60.9,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_k_gap_loud_plus",
+      "play": "v3_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 62.9,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_k_gap_loud_plus",
+      "play": "v3_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 62.7,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag>=4",
+      "play": "v3_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.9,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "v3_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.1,
+      "w": 4,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "v3_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 63.4,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "v3_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 62.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "v3_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag=4",
+      "play": "v4_ml",
+      "direction": "away",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 41.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "v4_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 63.2,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "xera_gap_loud",
+      "play": "v4_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.0,
+      "w": 3,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_xera_shaky",
+      "play": "v4_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.2,
+      "w": 3,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_xera_shaky",
+      "play": "v4_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 60.9,
+      "w": 3,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "v4_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 62.0,
+      "w": 2,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_xera_elite",
+      "play": "v4_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.4,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "v4_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 63.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "v4_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 62.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "nrfi_lean",
+      "play": "jerry_ml",
+      "direction": "away",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 42.5,
+      "w": 2,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "jerry_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.2,
+      "w": 4,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "xera_gap_loud",
+      "play": "jerry_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.5,
+      "w": 3,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "jerry_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 60.5,
+      "w": 4,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag=4",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 65.1,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "away_k_gap_loud_plus",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 37.0,
+      "w": 0,
+      "l": 2,
+      "p": 0
+    },
+    {
+      "cohort": "away_k_gap_loud_plus",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 37.9,
+      "w": 0,
+      "l": 2,
+      "p": 0
+    },
+    {
+      "cohort": "away_kpct_high_k",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 41.0,
+      "w": 0,
+      "l": 2,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 38.7,
+      "w": 0,
+      "l": 2,
+      "p": 0
+    },
+    {
+      "cohort": "away_xera_elite",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 41.3,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 43.4,
+      "w": 0,
+      "l": 3,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 38.4,
+      "w": 0,
+      "l": 2,
+      "p": 0
+    },
+    {
+      "cohort": "away_kpct_high_k",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 41.6,
+      "w": 0,
+      "l": 2,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 42.8,
+      "w": 0,
+      "l": 3,
+      "p": 0
+    },
+    {
+      "cohort": "away_xera_elite",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 41.1,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "v3_v4_agree",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.0,
+      "w": 0,
+      "l": 3,
+      "p": 0
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 39.2,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "home_xera_shaky",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 42.6,
+      "w": 0,
+      "l": 2,
+      "p": 0
+    },
+    {
+      "cohort": "home_xera_shaky",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.1,
+      "w": 0,
+      "l": 2,
+      "p": 0
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 40.0,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "v3_v4_agree",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 43.7,
+      "w": 0,
+      "l": 3,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag=4",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.9,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag=4",
+      "play": "v3_rl",
+      "direction": "away",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_k_gap_loud_plus",
+      "play": "v3_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.2,
+      "w": 1,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "away_kpct_high_k",
+      "play": "v3_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.5,
+      "w": 1,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "v4_jerry_agree",
+      "play": "v3_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 60.4,
+      "w": 3,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "v3_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.6,
+      "w": 1,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "v3_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 62.3,
+      "w": 2,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 63.4,
+      "w": 1,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 64.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 60.9,
+      "w": 2,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "home_xera_shaky",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.4,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "home_xera_shaky",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.5,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "v4_tot_mid",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.1,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 64.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_tot_mid",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 60.6,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.9,
+      "w": 1,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "away_kpct_high_k",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.5,
+      "w": 1,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "away_xera_elite",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "nrfi_lean",
+      "play": "jerry_rl",
+      "direction": "away",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 42.9,
+      "w": 1,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "nrfi_lean",
+      "play": "jerry_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.6,
+      "w": 1,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "away_k_gap_loud_plus",
+      "play": "jerry_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.2,
+      "w": 1,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "jerry_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.2,
+      "w": 2,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "home_xera_shaky",
+      "play": "jerry_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.7,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "xera_gap_loud",
+      "play": "jerry_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.2,
+      "w": 2,
+      "l": 0,
+      "p": 1
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "conf_rl",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 40.0,
+      "w": 0,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "away_k_gap_loud_plus",
+      "play": "conf_rl",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 37.6,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "away_kpct_high_k",
+      "play": "conf_rl",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 39.5,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "away_k_gap_loud_plus",
+      "play": "conf_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 38.6,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "conf_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 40.9,
+      "w": 0,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "away_kpct_high_k",
+      "play": "conf_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 40.9,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "away_xera_elite",
+      "play": "conf_rl",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 41.1,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "conf_rl",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 40.0,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "conf_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 39.6,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "conf_points_to_dog",
+      "play": "conf_rl",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 43.5,
+      "w": 0,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "home_k_gap_loud_minus",
+      "play": "conf_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 43.1,
+      "w": 0,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "away_xera_elite",
+      "play": "conf_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 41.8,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "conf_rl",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 39.1,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "home_k_gap_loud_minus",
+      "play": "conf_rl",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.1,
+      "w": 0,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "conf_points_to_dog",
+      "play": "conf_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 43.7,
+      "w": 0,
+      "l": 1,
+      "p": 2
+    },
+    {
+      "cohort": "home_xera_shaky",
+      "play": "conf_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 43.0,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "mismatch_away_elite",
+      "play": "conf_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 40.4,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "home_xera_shaky",
+      "play": "conf_rl",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.9,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "conf_mag=4",
+      "play": "conf_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.2,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag=4",
+      "play": "conf_rl",
+      "direction": "home",
+      "tier": "LEAN",
+      "shrunken_pct": 62.2,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "home_xera_shaky",
+      "play": "v4_tot",
+      "direction": "over",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.5,
+      "w": 0,
+      "l": 2,
+      "p": 1
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "v4_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 60.5,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "v4_tot",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 60.4,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_loud",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 63.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_long_rest",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 62.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v3_spread_loud",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.3,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_long_rest",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_long_rest",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v3_spread_loud",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.3,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_form_hot",
+      "play": "jerry_tot",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 42.5,
+      "w": 0,
+      "l": 2,
+      "p": 1
+    },
+    {
+      "cohort": "v3_v4_agree",
+      "play": "jerry_tot",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.4,
+      "w": 0,
+      "l": 2,
+      "p": 2
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "jerry_tot",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.8,
+      "w": 0,
+      "l": 2,
+      "p": 2
+    },
+    {
+      "cohort": "both_1st_inn_clean",
+      "play": "v4_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 60.9,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_mid",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 43.8,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_mid",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.2,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "away_kpct_low_k",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "LEAN",
+      "shrunken_pct": 60.3,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "away_k_gap_loud_minus",
+      "play": "v3_rl",
+      "direction": "away",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.5,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "jerry_spread_loud",
+      "play": "v4_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 60.8,
+      "w": 1,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_mid_k",
+      "play": "jerry_ml",
+      "direction": "away",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.8,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "v4_jerry_agree",
+      "play": "v3_rl",
+      "direction": "home",
+      "tier": "LEAN",
+      "shrunken_pct": 60.8,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v3_v4_disagree",
+      "play": "jerry_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 41.0,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_mid_k",
+      "play": "jerry_rl",
+      "direction": "away",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.6,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag>=5",
+      "play": "v3_ml",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 64.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag>=5",
+      "play": "v3_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 63.9,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_form_drift_bad",
+      "play": "v3_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag>=5",
+      "play": "v4_ml",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 61.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_form_drift_bad",
+      "play": "conf_ml",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 41.6,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_form_drift_bad",
+      "play": "conf_ml",
+      "direction": "home",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 43.7,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "home_xera_solid",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 72.8,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_form_drift_bad",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 73.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_form_drift_bad",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 74.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_xera_solid",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 73.4,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_1st_inn_shaky",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 71.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_k_gap_loud_plus",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 70.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v3_v4_agree",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag>=5",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.4,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "nrfi_lean",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 65.3,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_k_gap_loud_plus",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 70.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "bullpen_taxed_either",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.4,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.9,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "temp_hot",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag=6",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 70.1,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_sp_1st_inn_shaky",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_spread_extreme",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 70.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "temp_hot",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 70.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.3,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_k_gap_loud_minus",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 69.3,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_jerry_agree",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 65.1,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_kpct_high_k",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 65.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag>=4",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 65.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_k_gap_loud_minus",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 65.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_reg_rest",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 66.6,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_reg_rest",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 66.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "bullpen_taxed_either",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 66.9,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 67.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag>=5",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.5,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "nrfi_lean",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 66.3,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_bp_taxed",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v3_v4_agree",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 68.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_bp_taxed",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "STRONG_EDGE",
+      "shrunken_pct": 66.9,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_points_to_dog",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 61.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_form_hot",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.8,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag>=4",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 62.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "conf_points_to_dog",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 62.7,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_kpct_high_k",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 64.1,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_under_lean",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 62.0,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_sp_form_hot",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 64.3,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "v4_jerry_agree",
+      "play": "v3_tot",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 63.1,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_under_lean",
+      "play": "v3_tot",
+      "direction": "over",
+      "tier": "LEAN",
+      "shrunken_pct": 63.2,
+      "w": 1,
+      "l": 0,
+      "p": 0
+    },
+    {
+      "cohort": "away_bp_taxed",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "FADE",
+      "shrunken_pct": 33.1,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "home_sp_reg_rest",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "FADE",
+      "shrunken_pct": 33.9,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "away_sp_reg_rest",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "FADE",
+      "shrunken_pct": 34.7,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "home_xera_solid",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "FADE",
+      "shrunken_pct": 34.8,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "bullpen_taxed_either",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 35.3,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "nrfi_lean",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 39.6,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "v4_jerry_agree",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 35.6,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "home_kpct_low_k",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 35.6,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "home_k_gap_loud_minus",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 38.7,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "v3_jerry_agree",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 38.3,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "conf_mag>=4",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 38.1,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_mid",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 37.8,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_tot_under_lean",
+      "play": "jerry_tot",
+      "direction": "under",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 37.7,
+      "w": 0,
+      "l": 1,
+      "p": 1
+    },
+    {
+      "cohort": "wrc_gap_loud",
+      "play": "v4_ml",
+      "direction": "away",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.3,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "wrc_loud_away_better",
+      "play": "v4_ml",
+      "direction": "away",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 44.5,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "xera_gap_tight",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.1,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "jerry_spread_mid",
+      "play": "v4_rl",
+      "direction": "any",
+      "tier": "LEAN",
+      "shrunken_pct": 61.3,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "conf_mag=0",
+      "play": "v4_rl",
+      "direction": "away",
+      "tier": "LEAN",
+      "shrunken_pct": 60.4,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    },
+    {
+      "cohort": "xera_gap_tight",
+      "play": "jerry_rl",
+      "direction": "any",
+      "tier": "SOFT_FADE",
+      "shrunken_pct": 38.0,
+      "w": 0,
+      "l": 1,
+      "p": 0
+    }
+  ]
+}

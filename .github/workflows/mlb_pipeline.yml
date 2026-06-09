@@ -439,6 +439,23 @@ jobs:
           cd mlb_pipeline
           python refresh_cohort_signals.py
 
+      # Cohort calibration report (2026-06-09 Phase 1.5). After cohort_signals
+      # refreshes from the freshly-graded games, run a 1-day calibration check
+      # against yesterday's outcomes. Tier-level verdict (DELIVERING /
+      # UNDERPERFORMING / FADE CORRECT / FADE FAILED) tells us at a glance
+      # whether Phase 2's rules predicted what landed. JSON archive in
+      # models/calibration_*.json so we can track drift day-over-day.
+      # continue-on-error so calibration reporting failures never block
+      # the rest of the cron.
+      - name: Cohort calibration report
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python cohort_calibration_report.py
+
       - name: Run NBA team stats update
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
