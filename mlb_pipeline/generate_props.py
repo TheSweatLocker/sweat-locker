@@ -1952,6 +1952,48 @@ def score_pitcher_er(g, side):
     else:
         suggested_line = 2.5  # most-common market line — keep simple
 
+    # 2026-06-09 ER OVER calibration audit (post project_may17_pitcher_prop_cohorts
+    # surfaced ER OVER PRIME at 25% / 1-3 yellow-flag). Root cause: scorer was
+    # stacking signals (xera_high + opp_offense + park) into PRIME tier even
+    # when the projected ER (from L7 avg) was MATERIALLY below the suggested
+    # line. Recommending Over 2.5 when L7 avg is 1.8 ER per start is asking
+    # the pitcher to exceed his recent norm — that's a coinflip at best.
+    #
+    # Gate: compare _projected_er against the suggested line.
+    #   - projection ≥ line by 0.5+: boost (recent form supports the OVER)
+    #   - projection at or near line: no adjustment
+    #   - projection ≤ line by 0.5+: FADE (recent form contradicts the OVER)
+    #   - projection ≤ line by 1.0+: HARD FADE (projection screams UNDER)
+    proj_er = signals.get('_projected_er')
+    if proj_er is not None:
+        try:
+            gap = float(proj_er) - float(suggested_line)
+            if gap >= 0.5:
+                conviction += 10
+                signals['proj_supports'] = f'L7 avg {proj_er:.1f} ER ≥ line {suggested_line} — recent form supports'
+            elif gap <= -1.0:
+                conviction -= 20
+                signals['proj_fade_hard'] = f'L7 avg {proj_er:.1f} ER vs line {suggested_line} — projection points UNDER, scorer over-promoted'
+            elif gap <= -0.5:
+                conviction -= 12
+                signals['proj_fade'] = f'L7 avg {proj_er:.1f} ER below line {suggested_line} — recent form contradicts'
+        except (TypeError, ValueError):
+            pass
+
+    # Outs/IP context — if pitcher projects for <15 outs (5 IP), there's less
+    # opportunity for 2.5+ ER to cluster. Soft fade when projected outs are
+    # low. Conversely, 21+ outs (7 IP, 3x through order) amplifies ER risk.
+    projected_outs = _f(g.get(f'{side}_pitcher_projected_outs'))
+    if projected_outs is not None:
+        if projected_outs <= 12 and suggested_line >= 2.5:
+            # ≤4 IP projection vs 2.5 line — pitcher barely sees the lineup twice
+            conviction -= 8
+            signals['short_start'] = f'Projects ~{projected_outs/3:.1f} IP — limited ER window'
+        elif projected_outs >= 21 and xera >= 4.0:
+            # 7+ IP vs already shaky starter — 3rd-time-through amplifies risk
+            conviction += 5
+            signals['deep_into_order'] = f'Projects ~{projected_outs/3:.1f} IP — 3rd time through risk'
+
     conviction = _apply_l5_signal(g, side, 'er', suggested_line, 'over', conviction, signals)
     conviction = max(0, min(100, conviction))
 
