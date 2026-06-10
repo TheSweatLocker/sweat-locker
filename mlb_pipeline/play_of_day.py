@@ -2648,6 +2648,78 @@ def run():
         if rate < MIN_AUDIT_RATE:
             audit_log.append(f"  ⊘ {c['away_team']} @ {c['home_team']} ({cohort}): audit {rate*100:.1f}% below threshold {MIN_AUDIT_RATE*100:.0f}%")
             continue
+
+        # ────────────────────────────────────────────────────────────────────
+        # RESOLVER GATE (added 2026-06-10 evening).
+        # Retroactive audit n=390 graded games / 30d showed:
+        #   STRONG resolver: 95-53 (64.2%), +$3,345 P&L, +22.6% ROI
+        #   LIGHT  resolver: 75-95 (44.1%), -$2,675 P&L, -15.7% ROI
+        # POTD has been picking LIGHT-tier candidates as value fallback, which
+        # is what's driven the 41.7% hit rate / negative ROI. Gate: for TOTAL
+        # picks, require resolver tier == STRONG or ELITE. LIGHT/LEAN/SKIP
+        # are rejected — better no POTD than a publishing pick that loses
+        # money on average.
+        if c.get('lean_bet') == 'total':
+            try:
+                from signal_resolver import resolve_total
+                from cohort_signals import evaluate_game_for_play as _eval
+
+                eval_target = c.get('_ctx') or c
+                ld = (c.get('lean_display') or '').lower()
+                # Count STRONG_EDGE+ per direction
+                def _ct(direction):
+                    m = _eval(eval_target, 'v3_tot', direction) or []
+                    return len([x for x in m
+                                if x.get('tier') in ('LOCK', 'STRONG_EDGE')
+                                and not x.get('id', '').endswith('|any')])
+
+                # Pull prop_reverse signal for the matchup (best-effort).
+                pr_signal = None
+                try:
+                    today_str = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
+                    pr_row = requests.get(
+                        f"{SUPABASE_URL}/rest/v1/jerry_cache",
+                        params={'select': 'data',
+                                'cache_key': f'eq.prop_reverse_signals_{today_str}'},
+                        headers={'apikey': SUPABASE_KEY,
+                                 'Authorization': f'Bearer {SUPABASE_KEY}'},
+                        timeout=3,
+                    )
+                    rows = pr_row.json() if pr_row.status_code == 200 else []
+                    if rows:
+                        pr_data = rows[0].get('data', {})
+                        if isinstance(pr_data, dict):
+                            matchup_key = f"{c.get('away_team')} @ {c.get('home_team')}"
+                            pr_signal = (pr_data.get('signals') or {}).get(matchup_key)
+                except Exception:
+                    pr_signal = None
+
+                resolved = resolve_total(
+                    close_total=(eval_target.get('close_total') or eval_target.get('open_total')),
+                    v3_total=eval_target.get('projected_total'),
+                    v4_total=eval_target.get('model_pred_total'),
+                    jerry_total=eval_target.get('jerry_pred_total'),
+                    cohort_over_strong_count=_ct('over'),
+                    cohort_under_strong_count=_ct('under'),
+                    prop_reverse=pr_signal,
+                )
+                resolver_tier = resolved.get('tier')
+                if resolver_tier not in ('STRONG', 'ELITE'):
+                    audit_log.append(
+                        f"  ⊘ {c['away_team']} @ {c['home_team']} ({cohort}): "
+                        f"resolver {resolver_tier} (need STRONG+). {resolved.get('reason', '')}")
+                    continue
+                # Store resolver result on candidate so downstream consumers
+                # (Jerry reads, sweat card) can cite the landing call.
+                c['_resolver_tier'] = resolver_tier
+                c['_resolver_reason'] = resolved.get('reason')
+                c['_resolver_direction'] = resolved.get('direction')
+            except Exception as e:
+                # Resolver failure must not block legacy behavior. Log and
+                # continue — the cohort+audit gate still applies.
+                print(f"  ⚠ resolver gate failed for {c.get('away_team')} @ "
+                      f"{c.get('home_team')}: {type(e).__name__}: {e}")
+
         c['_cohort'] = cohort
         c['_audit_rate'] = rate
         c['_audit_n'] = n
