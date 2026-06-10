@@ -335,8 +335,20 @@ def run():
                 params={'sportId': 1, 'date': game_date, 'hydrate': 'probablePitcher'},
                 timeout=15
             )
-            schedule_cache[game_date] = r.json().get('dates', [])
-        except Exception:
+            r.raise_for_status()
+            dates = r.json().get('dates', [])
+            if not dates:
+                # MLB API returned 200 but empty dates array — possible API
+                # quirk; log so future blackouts are visible.
+                print(f"  ⚠️  MLB schedule for {game_date} returned empty dates array — no games to resolve for this date")
+            schedule_cache[game_date] = dates
+        except Exception as e:
+            # 2026-06-09: was a SILENT [] fallback — same missing-data
+            # anti-pattern as the 6/6 log_game_result blackout. Now logs
+            # the actual exception so a cron run that can't reach the
+            # MLB API doesn't silently produce zero resolutions.
+            print(f"  🚨 MLB schedule fetch FAILED for {game_date}: {type(e).__name__}: {e}")
+            print(f"     Any game on {game_date} will be UNRESOLVABLE this pass — re-run after the MLB API recovers")
             schedule_cache[game_date] = []
         return schedule_cache[game_date]
 
@@ -711,6 +723,22 @@ def run():
     sc_resolved = _resolve_sweat_card_top8(week_ago, yesterday)
     print(f'Done! {sc_resolved} sweat card sets walked')
 
+    # ─── End-of-run blackout sanity check (added 2026-06-09) ────────────
+    # If every resolution counter is 0 AND we just attempted multiple
+    # categories, that's a strong signal something went wrong upstream
+    # (MLB API down, network blip, postponement detection failed). The
+    # 6/6 chain reaction started with this kind of silent zero-state.
+    # Print a loud banner so the cron log surfaces the blackout.
+    if props_resolved == 0 and dawg_resolved == 0 and sc_resolved == 0:
+        print('')
+        print('🚨🚨🚨 RESOLVER ZERO-STATE WARNING 🚨🚨🚨')
+        print('   props_resolved=0, dawg_resolved=0, sc_resolved=0')
+        print('   Either yesterday had no graded picks (unusual) OR an upstream')
+        print('   data source (MLB schedule API, mlb_game_results table) is')
+        print('   silently empty. Check schedule fetch logs above — same class')
+        print('   as the 6/6 silent-blackout chain. Investigate before next cron.')
+        print('🚨🚨🚨')
+
 
 def _resolve_sweat_card_top8(start_date, end_date):
     """Walk daily sweat_card cache entries with pending top_8 picks and
@@ -744,7 +772,12 @@ def _resolve_sweat_card_top8(start_date, end_date):
         if isinstance(data, str):
             try:
                 data = json.loads(data)
-            except Exception:
+            except Exception as e:
+                # Was a silent `continue`. Bad JSON in a sweat_card row
+                # silently skips that day's resolution — same anti-pattern
+                # as the 6/6 blackout class. Log so we know which row
+                # couldn't be parsed and someone can fix the data.
+                print(f"  ⚠️  sweat_card {cache_key} has malformed JSON ({type(e).__name__}: {e}) — skipped")
                 continue
         top_8 = data.get('top_8') or []
         if not top_8:
