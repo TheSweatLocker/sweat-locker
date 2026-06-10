@@ -1,0 +1,66 @@
+name: MLB Close-Line Capture
+
+# Intermediate snapshot between the 6am morning lock and the 2pm afternoon
+# refresh. Lines move materially between those two windows; the 2pm cron
+# also runs late enough that 1-3pm ET first-pitch games are already LIVE
+# when it fires, causing live-game odds to overwrite the pre-game close
+# values (see project_pm_cron_live_game_prop_overwrite).
+#
+# This 11am ET pass captures the close-line state pre-game for early
+# matchups and lets the line-movement sharp-money detector see lunchtime
+# action that would otherwise vanish in the 6am→2pm gap.
+#
+# Scope: ODDS REFRESH ONLY. No Jerry reads, no cohort recompute, no
+# props regenerate. Lightweight (~5 min total runtime).
+
+on:
+  schedule:
+    - cron: '0 15 * * *'  # 11:00am EDT (15:00 UTC)
+  workflow_dispatch:
+
+jobs:
+  capture-close-lines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r mlb_pipeline/requirements.txt
+
+      # Refresh odds + recompute primary_play. game_context.py already has
+      # the "preserve pre-game close values once game starts" protection
+      # baked in (see upload_game_context line-lock block) — running this
+      # at 11am ET means most games haven't started yet, so close values
+      # capture the live market state cleanly.
+      - name: Refresh game context (odds capture)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python game_context.py
+
+      # Catch late starter announcements / scratched pitchers that the
+      # morning cron missed (LATE pitcher changes between 6am and 11am ET
+      # do happen — Yesavage 5/26 was a late switch).
+      - name: Verify starting pitchers vs MLB API
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python verify_starters.py
