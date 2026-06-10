@@ -807,6 +807,16 @@ def build_struct(g, props, potd):
         # cohort_signals jerry_cache row is missing or stale.
         # See cohort_signals.summarize_for_struct() for shape.
         "cohort_signals": _cohort_signals_block(g),
+        # Resolver landing call (2026-06-10 evening — founder asked for ONE
+        # call per game instead of a wall of conflicting signals). The
+        # resolver aggregates v3/v4/jerry models + cohort engine net + prop
+        # reverse into a single direction + tier + reason. Jerry MUST lead
+        # with this in `Where the Model Sits` + `The Play` instead of
+        # listing the raw conflicting signals. Retroactive audit (n=148 over
+        # 30d): STRONG-tier picks hit 64.2% / +22.6% ROI. LIGHT and SKIP
+        # tiers should never be cited as "the play" — frame as "no clean
+        # read" instead.
+        "resolver": _resolver_block(g),
         "meta": {
             "game_date": today_et(),
             "game_has_not_been_played": True,
@@ -815,6 +825,56 @@ def build_struct(g, props, potd):
     }
     struct["casual_summary"] = _build_casual_summary(struct)
     return struct
+
+
+def _resolver_block(g):
+    """Compute resolver landing call for the game's total. Returns dict or
+    None on failure. Jerry reads consume this as the primary signal source —
+    `direction` + `tier` + `reason` is the headline; raw signals stay below.
+    """
+    try:
+        from signal_resolver import resolve_total
+        from cohort_signals import evaluate_game_for_play
+
+        def _count(direction):
+            m = evaluate_game_for_play(g, 'v3_tot', direction) or []
+            return len([x for x in m
+                        if x.get('tier') in ('LOCK', 'STRONG_EDGE')
+                        and not x.get('id', '').endswith('|any')])
+
+        # Pull prop_reverse if available
+        pr_signal = None
+        try:
+            import os as _os, requests as _rq
+            today = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
+            r = _rq.get(
+                f"{_os.environ.get('SUPABASE_URL')}/rest/v1/jerry_cache",
+                params={'select': 'data',
+                        'cache_key': f'eq.prop_reverse_signals_{today}'},
+                headers={'apikey': _os.environ.get('SUPABASE_KEY'),
+                         'Authorization': f"Bearer {_os.environ.get('SUPABASE_KEY')}"},
+                timeout=3,
+            )
+            rows = r.json() if r.status_code == 200 else []
+            if rows:
+                data = rows[0].get('data', {})
+                if isinstance(data, dict):
+                    key = f"{g.get('away_team')} @ {g.get('home_team')}"
+                    pr_signal = (data.get('signals') or {}).get(key)
+        except Exception:
+            pass
+
+        return resolve_total(
+            close_total=(g.get('close_total') or g.get('open_total')),
+            v3_total=g.get('projected_total'),
+            v4_total=g.get('model_pred_total'),
+            jerry_total=g.get('jerry_pred_total'),
+            cohort_over_strong_count=_count('over'),
+            cohort_under_strong_count=_count('under'),
+            prop_reverse=pr_signal,
+        )
+    except Exception:
+        return None
 
 
 def _cohort_signals_block(g):
