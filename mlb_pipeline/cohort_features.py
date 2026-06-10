@@ -294,4 +294,75 @@ def get_features(g):
         if "away_sp_form_drift_bad" in out:
             out.add("v3_tot_over_lean+away_sp_form_drift_bad")
 
+    # ═══════════════════════════════════════════════════════════════════
+    # ML/RL-SPECIFIC features (added 2026-06-09, spec project_ml_rl_cohort_expansion_spec).
+    # Closes the 10x cohort coverage gap on side plays (totals fire 10-23
+    # STRONG_EDGE rules/game vs ML/RL 0-3). These features predict win/loss
+    # margin specifically, not run scoring — that's the gap they fill.
+    # ═══════════════════════════════════════════════════════════════════
+
+    # ── Bullpen GAP (differential, predicts late-game ML leverage) ──
+    h_bp = _i(g.get("home_bp_relievers_3d"))
+    a_bp = _i(g.get("away_bp_relievers_3d"))
+    if h_bp is not None and a_bp is not None:
+        bp_gap = h_bp - a_bp
+        if bp_gap >= 4: out.add("bp_gap_home_taxed")  # fade home ML
+        elif bp_gap <= -4: out.add("bp_gap_away_taxed")  # fade away ML
+
+    # ── Lineup vs opp-hand platoon edge (already used in scorer but not in cohorts) ──
+    for side in ("home", "away"):
+        wrc_hand = _f(g.get(f"{side}_wrc_vs_opp_hand"))
+        wrc_season = _f(g.get(f"{side}_wrc_plus"))
+        if wrc_hand is not None and wrc_season is not None:
+            platoon_edge = wrc_hand - wrc_season
+            if platoon_edge >= 10: out.add(f"{side}_platoon_strong")
+            elif platoon_edge <= -10: out.add(f"{side}_platoon_weak")
+
+    # ── Line movement (sharp money signal) ──
+    op = _f(g.get("open_spread"))
+    cp = _f(g.get("close_spread"))
+    if op is not None and cp is not None:
+        move = abs(cp - op)
+        if move >= 1.0: out.add("line_moved_loud")
+        elif move >= 0.5: out.add("line_moved_mid")
+        # Direction: cp < op = spread became more negative = home more favored
+        if cp < op - 0.25: out.add("line_moved_to_home")
+        elif cp > op + 0.25: out.add("line_moved_to_away")
+
+    # ── Travel / consecutive-road exhaustion ──
+    crg = _i(g.get("away_consecutive_road_games"))
+    if crg is not None:
+        if crg >= 7: out.add("away_long_road")  # tired away team
+        elif crg <= 1: out.add("away_fresh_off_home")
+    dh = _i(g.get("days_since_last_home_game"))
+    if dh is not None and dh >= 7: out.add("home_returning_from_road")
+
+    # ── Team defense (OAA gap predicts close games) ──
+    h_oaa = _i(g.get("home_team_oaa"))
+    a_oaa = _i(g.get("away_team_oaa"))
+    if h_oaa is not None and a_oaa is not None:
+        oaa_gap = h_oaa - a_oaa
+        if abs(oaa_gap) >= 15:
+            out.add("oaa_gap_loud")
+            if oaa_gap >= 15: out.add("oaa_loud_home")
+            else: out.add("oaa_loud_away")
+
+    # ── Compound: rested ace as DOG (promote single rule to cohort) ──
+    # Long-rest + sub-3.7 xERA + DOG side. play_of_day already has this as a
+    # +6/+12 driver (62% / 85% lifetime per backtest). Promoting to cohort
+    # so the engine can vote on it via cohort_signals instead of a hardcoded
+    # rule. Verified the existing rule is signal, not noise — making it a
+    # first-class cohort lets future backtests re-validate the edge.
+    cs_val = _f(g.get("close_spread")) or _f(g.get("open_spread"))
+    if cs_val is not None:
+        home_is_fav = cs_val < 0
+        for side in ("home", "away"):
+            rest = _i(g.get(f"{side}_sp_days_rest"))
+            sp_xera = _f(g.get(f"{side}_sp_xera"))
+            if rest is None or sp_xera is None: continue
+            if rest >= 5 and sp_xera <= 3.70:
+                side_is_dog = (side == "home") != home_is_fav
+                if side_is_dog:
+                    out.add(f"{side}_rested_ace_dog")
+
     return out
