@@ -202,6 +202,21 @@ jobs:
           cd mlb_pipeline
           python apply_prop_signal_override.py
 
+      # Prop reverse signal (added 2026-06-10). Reverse-aggregates
+      # PRIME/STRONG/LEAN/LIGHT_LEAN player props into a game-level total
+      # and side vote per game. Stored in jerry_cache row
+      # 'prop_reverse_signals_{date}' so play_of_day / Jerry reads can
+      # consume as an INDEPENDENT signal from cohort engine (cohort is
+      # game-condition driven; prop reverse is lineup-level driven).
+      # Runs AFTER apply_prop_signal_override so it sees the final props.
+      - name: Compute prop-reverse signals
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python write_prop_reverse_signals.py
+
       - name: Generate Daily Degen
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

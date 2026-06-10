@@ -132,6 +132,12 @@ LABEL_TRANSLATIONS = {
     "STRONG prop available": "Strong-conviction prop on this game",
     "PRIME stack (no-book)": "Multiple top-conviction props (book lines unavailable)",
     "STRONG prop cluster": "Cluster of strong-conviction props",
+
+    # Prop reverse signal (2026-06-10) — lineup-level aggregate vote
+    "Prop signals → OVER": "Player props collectively point OVER",
+    "Prop signals → UNDER": "Player props collectively point UNDER",
+    "Prop signals lean → OVER": "Player props lean OVER (low confidence)",
+    "Prop signals lean → UNDER": "Player props lean UNDER (low confidence)",
 }
 
 
@@ -1326,6 +1332,59 @@ def score_mlb_game(ctx, game_props=None, track=None):
                     _add(total_drivers, pts, '🧠', 'Jerry total lean', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
         except (TypeError, ValueError):
             pass
+
+    # ---- TOTAL: Prop reverse signal (NEW 2026-06-10) ----
+    # Pulls the lineup-level prop-pipeline aggregate from jerry_cache. When
+    # multiple PRIME/STRONG player props on the same game point one direction,
+    # that's lineup-level granularity the cohort engine misses. Vote weight
+    # scaled by confidence tier; LOW signals contribute small, HIGH signals
+    # contribute meaningfully but never out-weigh the math model consensus
+    # (capped at ~+10 / -10 so they're a vote, not a primary).
+    # See project_prop_reverse_v1 for spec + signal computation rules.
+    try:
+        from prop_reverse_signal import compute_game_signal
+        # Pull props for this game's matchup directly — cheap query, avoids
+        # depending on jerry_cache row state.
+        import requests as _rq
+        game_date = ctx.get('game_date')
+        home_team = ctx.get('home_team') or ''
+        away_team = ctx.get('away_team') or ''
+        matchup = f'{away_team} @ {home_team}'
+        pr = _rq.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
+            params={'select': '*', 'game_date': f'eq.{game_date}',
+                    'matchup': f'eq.{matchup}'},
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            timeout=5,
+        )
+        if pr.status_code == 200:
+            game_props = pr.json()
+            if game_props:
+                sig = compute_game_signal(game_props, home_team=home_team, away_team=away_team)
+                ts = sig['total_signal']
+                conf = sig['confidence']
+                # Weight by confidence and signal magnitude
+                if conf == 'HIGH' and abs(ts) >= 0.5:
+                    pts = int(round(10 * ts))  # ±5..±10 depending on direction strength
+                    direction = 'OVER' if ts > 0 else 'UNDER'
+                    _add(total_drivers, abs(pts) if ts > 0 else -abs(pts), '🎯',
+                         f'Prop signals → {direction}',
+                         f"{sig['evidence_count']} props, {sig['over_pts']:.0f}/{sig['under_pts']:.0f} O/U pts")
+                elif conf == 'MEDIUM' and abs(ts) >= 0.4:
+                    pts = int(round(6 * ts))
+                    direction = 'OVER' if ts > 0 else 'UNDER'
+                    _add(total_drivers, abs(pts) if ts > 0 else -abs(pts), '🎯',
+                         f'Prop signals → {direction}',
+                         f"{sig['evidence_count']} props, {sig['over_pts']:.0f}/{sig['under_pts']:.0f} O/U pts")
+                elif conf == 'LOW' and abs(ts) >= 0.5:
+                    pts = int(round(3 * ts))
+                    direction = 'OVER' if ts > 0 else 'UNDER'
+                    _add(total_drivers, abs(pts) if ts > 0 else -abs(pts), '🎯',
+                         f'Prop signals lean → {direction}',
+                         f"{sig['evidence_count']} props (low confidence)")
+    except Exception:
+        # Failure here must NEVER block scoring — silently skip the prop reverse vote
+        pass
 
     # ---- SIDE: K gap ----
     home_k_gap = abs(float(ctx.get('home_k_gap') or 0))
