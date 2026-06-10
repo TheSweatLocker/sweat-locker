@@ -2198,6 +2198,47 @@ def build_lean(ctx):
     gate on top of this — see _derive_cohort + MIN_AUDIT_RATE in run().
     NRFI demotion stacks: build_lean deprioritizes, POTD audit filters.
     """
+    # 0. Resolver-driven total lean (added 2026-06-10 evening).
+    # The resolver aggregates all 3 model votes + cohort engine + prop reverse
+    # into a single STRONG/ELITE/LEAN/LIGHT/SKIP call. When resolver says
+    # STRONG or ELITE on the total, we SHOULD return a lean even if no
+    # individual model crosses the v2/v4 threshold. Tonight's WAS@SF was the
+    # first example: v3=8.9, v4=9.45, jerry=9.43 vs line 8.5 — all 3 models
+    # +0.4 to +0.95 OVER, none individually loud enough for v2/v4 path, but
+    # the resolver correctly says ELITE because all 3 agree. Without this
+    # path, build_lean returned None and the candidate never reached POTD.
+    try:
+        from signal_resolver import resolve_total
+        from cohort_signals import evaluate_game_for_play as _eval_bl
+
+        def _bl_count(direction):
+            m = _eval_bl(ctx, 'v3_tot', direction) or []
+            return len([x for x in m
+                        if x.get('tier') in ('LOCK', 'STRONG_EDGE')
+                        and not x.get('id', '').endswith('|any')])
+
+        bl_resolver = resolve_total(
+            close_total=(ctx.get('close_total') or ctx.get('open_total')),
+            v3_total=ctx.get('projected_total'),
+            v4_total=ctx.get('model_pred_total'),
+            jerry_total=ctx.get('jerry_pred_total'),
+            cohort_over_strong_count=_bl_count('over'),
+            cohort_under_strong_count=_bl_count('under'),
+            prop_reverse=None,  # build_lean is fast-path; prop signal applied downstream
+        )
+        if (bl_resolver.get('tier') in ('STRONG', 'ELITE')
+                and bl_resolver.get('direction') in ('OVER', 'UNDER')):
+            bl_line = ctx.get('close_total') or ctx.get('open_total')
+            if bl_line is not None:
+                side = bl_resolver.get('direction').title()  # Over / Under
+                # Cite the resolver tier in the lean_display so downstream
+                # consumers (Jerry, sweat card) see the framework's confidence
+                # source instead of a generic "v2 edge" label.
+                return f"{side} {bl_line} (resolver {bl_resolver['tier']})", 'total', False
+    except Exception:
+        # Never block legacy build_lean on resolver failure
+        pass
+
     # 1. v2 Total OVER/UNDER Edge — model_total vs market + 1.5
     v2_pick = _v2_total_edge(ctx)
     if v2_pick is not None:
