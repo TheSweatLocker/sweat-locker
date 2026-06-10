@@ -1166,23 +1166,38 @@ def score_mlb_game(ctx, game_props=None, track=None):
                         pass
                     if v4_over_agrees_j is False or v4_over_suppressed_j:
                         jerry_mult = 0.6
-                # 2026-06-05 backtest sweep: scaled Jerry bands by 1.5x when
-                # confirmed. The original (17/13/9/5) under-surfaced
-                # Jerry-confirmed cases — sweep across n=703 games showed
-                # 1.5x = 7-1 (87.5%, EV +0.670 per unit at -110) vs
-                # baseline 4-1 (80%, +0.527). 2x scaled too aggressively
-                # (9-2 / 81.8%, +0.562) — 1.5x was the sweet spot.
+                # 2026-06-09 historical-baseline re-weight (post 6/9 audit):
+                # Jerry totals direction-accuracy lifetime baseline is 50.0%
+                # (cohort_signals.play_baselines.jerry_tot = 50.0 — literally a
+                # coinflip). v3_tot baseline is 66.8%, v4_tot is 56.0%. The
+                # 6/5 1.5x boost made Jerry the LOUDEST single contributor to
+                # the TOTAL dim (26 max vs v3's 18 max), which contradicted
+                # what the data encodes. 6/9 audit found 5 of 15 games used
+                # "HIGH conviction" language driven by overweighted Jerry.
+                #
+                # Bands halved (was 26/20/14/8 → now 13/10/7/4). The
+                # confirmation gate above stays — Jerry-alone still contributes
+                # 0. Net effect: Jerry-confirmed cases tighten down so v3 stays
+                # the loudest standalone signal, matching its 16.8-point
+                # baseline edge over coinflip. Old 1.5x backtest was 7-1 / 87.5%
+                # on n=8 — small sample optimistic; live results 6/4-6/9
+                # surfaced the over-weight cost.
+                #
+                # Dry-run on 6/9 slate (n=15): 3 games tier-down (SEA@BAL
+                # LIGHT→PASS, HOU@LAA STRONG→LIGHT, MIL@ATH STRONG→LIGHT) —
+                # all three were Jerry-driven overconfidence per 6/9 audit.
+                # PRIMEs hold (LAD, WAS@SF, STL@NYM). See [[project_re_weight_model_votes_609]].
                 if jerry_total_delta_abs >= 2.5:
-                    pts = int(round(26 * jerry_mult))
+                    pts = int(round(13 * jerry_mult))
                     _add(total_drivers, pts, '🧠', 'Jerry major total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
                 elif jerry_total_delta_abs >= 1.5:
-                    pts = int(round(20 * jerry_mult))
+                    pts = int(round(10 * jerry_mult))
                     _add(total_drivers, pts, '🧠', 'Jerry strong total disagreement', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
                 elif jerry_total_delta_abs >= 1.0:
-                    pts = int(round(14 * jerry_mult))
+                    pts = int(round(7 * jerry_mult))
                     _add(total_drivers, pts, '🧠', 'Jerry total edge', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
                 elif jerry_total_delta_abs >= 0.5:
-                    pts = int(round(8 * jerry_mult))
+                    pts = int(round(4 * jerry_mult))
                     _add(total_drivers, pts, '🧠', 'Jerry total lean', f'{jerry_total_delta_signed:+.2f}-run Jerry vs market (confirmed)')
         except (TypeError, ValueError):
             pass
