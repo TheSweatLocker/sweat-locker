@@ -1808,6 +1808,63 @@ def score_mlb_game(ctx, game_props=None, track=None):
                     if isinstance(d, dict):
                         d['casual_label'] = translate_label(d.get('label'))
 
+    # ── Resolver landing call (added 2026-06-10 evening) ────────────────
+    # Single direction + tier + reason per game. App renders this as the
+    # headline call, replacing the "wall of conflicting signals" UX. See
+    # signal_resolver.resolve_total() for tier rules.
+    try:
+        from signal_resolver import resolve_total
+        from cohort_signals import evaluate_game_for_play as _eval_resolver
+
+        def _cn(direction):
+            m = _eval_resolver(ctx, 'v3_tot', direction) or []
+            return len([x for x in m
+                        if x.get('tier') in ('LOCK', 'STRONG_EDGE')
+                        and not x.get('id', '').endswith('|any')])
+
+        # Pull prop reverse from already-fetched sweat_breakdown drivers (the
+        # prop_reverse driver was added earlier in score_game). Avoids a
+        # second supabase round-trip per game in the hot loop.
+        pr_signal = None
+        try:
+            # Best-effort: pull from jerry_cache
+            import requests as _rq2
+            _today = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
+            _pr_row = _rq2.get(
+                f"{SUPABASE_URL}/rest/v1/jerry_cache",
+                params={'select': 'data', 'cache_key': f'eq.prop_reverse_signals_{_today}'},
+                headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+                timeout=3,
+            )
+            _rows = _pr_row.json() if _pr_row.status_code == 200 else []
+            if _rows:
+                _data = _rows[0].get('data', {})
+                if isinstance(_data, dict):
+                    _key = f"{ctx.get('away_team')} @ {ctx.get('home_team')}"
+                    pr_signal = (_data.get('signals') or {}).get(_key)
+        except Exception:
+            pr_signal = None
+
+        resolver_call = resolve_total(
+            close_total=(ctx.get('close_total') or ctx.get('open_total')),
+            v3_total=ctx.get('projected_total'),
+            v4_total=ctx.get('model_pred_total'),
+            jerry_total=ctx.get('jerry_pred_total'),
+            cohort_over_strong_count=_cn('over'),
+            cohort_under_strong_count=_cn('under'),
+            prop_reverse=pr_signal,
+        )
+        if isinstance(dimensions, dict):
+            dimensions['resolver_total'] = {
+                'direction': resolver_call.get('direction'),
+                'tier': resolver_call.get('tier'),
+                'reason': resolver_call.get('reason'),
+                'dissent': resolver_call.get('dissent', []),
+            }
+    except Exception:
+        # Resolver computation must never block sweat scoring
+        pass
+
     return (headline_score, dimensions)
 
 def score_nba_game(game, nba_teams):
@@ -2725,8 +2782,19 @@ def run():
         c['_audit_n'] = n
         audit_pool.append(c)
 
-    # Sort: highest audit rate first, then in-game signal strength (sweat score)
-    audit_pool.sort(key=lambda c: (-c['_audit_rate'], -c.get('score', 0)))
+    # Sort: ELITE resolver tier > STRONG, then audit rate, then sweat score.
+    # 2026-06-10 evening — added resolver-tier prioritization. Without this,
+    # the selector would tie ELITE (3-way signal agreement) with STRONG
+    # (2-way) and pick by sweat score alone, missing the strongest signal
+    # alignment when multiple games qualify. Tonight's ELITE call (WAS@SF
+    # Over 8.5: all 3 models + cohort +11 + prop pipeline all align) gets
+    # to win against STRONG runners-up.
+    _resolver_rank = {'ELITE': 0, 'STRONG': 1}
+    audit_pool.sort(key=lambda c: (
+        _resolver_rank.get(c.get('_resolver_tier'), 2),
+        -c['_audit_rate'],
+        -c.get('score', 0),
+    ))
 
     if audit_log:
         print("AUDIT-DRIVEN POTD FILTER:")
