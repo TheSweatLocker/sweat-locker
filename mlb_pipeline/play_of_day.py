@@ -21,6 +21,131 @@ HEADERS = {
 }
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Casual-bettor label translation table (added 2026-06-09).
+# Per project_casual_bettor_ux_docket: translate jargon to plain English while
+# keeping all the depth. Each driver contribution gets a `casual_label` field
+# alongside the original `label`. App reads casual_label by default; power
+# users get the original via a tap affordance.
+#
+# Principle: don't simplify the product, translate the language. Sweat Score
+# stays. Tiers stay. Cohort hit rates get LOUDER (currently buried in detail
+# strings — should be the second-most-prominent number on the card).
+# ═══════════════════════════════════════════════════════════════════════════
+LABEL_TRANSLATIONS = {
+    # Model consensus signals
+    "v3+v4 DOG consensus": "Both prediction models pick the underdog",
+    "v3+v4 consensus": "Both math models agree on the direction",
+    "v3 market disagreement": "v3 model sees this far from Vegas",
+    "v4 market disagreement": "v4 model sees this far from Vegas",
+    "v3 spread edge": "v3 model has spread edge",
+    "v4 spread edge": "v4 model has spread edge",
+    "v3 spread lean": "v3 model has slight spread lean",
+    "v4 spread lean": "v4 model has slight spread lean",
+    "v3 trap-zone rescued by v4": "v3 in trap zone but v4 confirms direction",
+    "v3+v4 tot consensus": "Both math models agree on total direction",
+
+    # Jerry signals
+    "Jerry major total disagreement": "Jerry's projection far from Vegas line",
+    "Jerry strong total disagreement": "Jerry projects strong total disagreement",
+    "Jerry total edge": "Jerry projects total edge",
+    "Jerry total lean": "Jerry projects slight total lean",
+
+    # Confluence
+    "PEAK confluence": "Many independent signals align",
+    "PEAK confluence on FAV ML": "Many signals align on the favorite",
+    "PEAK confluence UNDER bias": "Peak-confluence games skew UNDER historically",
+    "High confluence": "Multiple independent signals align",
+    "Confluence edge": "Signals lean one direction",
+    "Confluence lean": "Slight signal lean",
+    "Over-saturated confluence": "Too many signals — likely market-priced in",
+
+    # Cohort (THE big one — already mostly translated but make it pop)
+    "Cohort signal confirms": "Matches a historical pattern",
+
+    # Pitcher signals
+    "Major xERA gap": "Major pitcher mismatch",
+    "xERA gap": "Pitcher quality mismatch",
+    "xERA gap (slim)": "Slight pitcher quality edge",
+    "Ace duel": "Two top-tier starters",
+    "Quality matchup": "Two solid starters",
+    "Fragile starter sweet spot": "Starter vulnerable in 1st inning",
+    "1st-inn fragile (8+, noisy)": "Starter shaky in 1st (noisy signal)",
+    "One fragile starter": "One starter has 1st-inning issues",
+    "Mutual NRFI lock": "Both starters typically clean in 1st",
+    "One NRFI lock": "One starter typically clean in 1st",
+    "Long-rest ace as DOG": "Top starter on extra rest is the underdog",
+    "STACKED net=4 + rested ace DOG": "Compound edge: confluence + rested ace dog",
+
+    # NRFI
+    "NRFI sweet spot": "Clean 1st inning projected (NRFI tier)",
+    "NRFI edge tier": "First-inning suppression projected",
+    "NRFI lean band": "Lean toward clean 1st inning",
+    "NRFI lean": "Slight first-inning suppression lean",
+    "NRFI volatile (95+)": "Extreme NRFI score — historically a trap",
+    "YRFI sweet spot": "Both starters shaky early (runs in 1st)",
+    "YRFI lean": "First-inning run lean",
+
+    # K signals
+    "K-friendly ump": "Umpire calls more strikes",
+    "K-prop friendly umpire": "Strikeout-friendly umpire",
+
+    # Other model signals
+    "Total lean": "Model leans on the total",
+    "Total edge": "Model sees total edge",
+    "Major total disagreement": "Model far from Vegas total",
+    "Strong total disagreement": "Model sees strong total edge",
+    "Total slim edge": "Slight total edge",
+
+    # Trap fades
+    "FAV ML trap band": "Favorite price in historical trap zone",
+
+    # Props
+    "PRIME ✓book available": "Top-conviction prop available with book line",
+    "Multiple PRIME ✓book": "Multiple top-conviction props available",
+    "STRONG ✓book available": "Strong-conviction prop available with book line",
+    "STRONG ✓book cluster": "Multiple strong-conviction props available",
+
+    # Offense
+    "Offense drift gap": "Hot-cold offense split between teams",
+    "Offense drift edge": "Offense form differs from season norm",
+
+    # Specific OAA cohort (new from tonight's expansion)
+    "OAA loud home": "Home team has major defensive edge",
+    "OAA loud away": "Away team has major defensive edge",
+    "OAA gap loud": "Major defensive efficiency gap",
+
+    # 6/9 backfill coverage gaps (audited from live 15-game slate)
+    "Away pitcher edge vs opp": "Away starter has edge vs this lineup",
+    "Home pitcher edge vs opp": "Home starter has edge vs this lineup",
+    "Away pitcher mastery vs opp": "Away starter historically dominates this lineup",
+    "Home pitcher mastery vs opp": "Home starter historically dominates this lineup",
+    "Extreme hitter park": "Park heavily favors hitters",
+    "Pitcher-friendly park": "Park favors pitchers",
+    "Park slight Under lean": "Park slightly favors UNDER",
+    "Jerry alone (no v3/v4 confirmation)": "Jerry projects but math models don't confirm — suppressed",
+    "K-gap edge": "Strikeout-rate edge",
+    "K-gap large": "Major strikeout-rate edge",
+    "OVER skepticism applied": "OVER signal discounted — mixed model agreement",
+    "Offense drift lean": "Offense trending different from season norm",
+    "PRIME prop available": "Top-conviction prop on this game",
+    "STRONG prop available": "Strong-conviction prop on this game",
+    "PRIME stack (no-book)": "Multiple top-conviction props (book lines unavailable)",
+    "STRONG prop cluster": "Cluster of strong-conviction props",
+}
+
+
+def translate_label(label):
+    """Return the casual-English version of a power label, or the label
+    itself if no translation exists. Lookup is exact-match — every driver
+    label in LABEL_TRANSLATIONS becomes readable; any label not in the
+    table renders as-is (which is fine; coverage grows over time as new
+    labels are added)."""
+    if not label:
+        return label
+    return LABEL_TRANSLATIONS.get(label, label)
+
+
 # ── Phase 2 cohort wire-in (2026-06-08) ──
 # Lookup is lazy-imported so a missing/broken cohort_signals module never
 # breaks play_of_day. evaluate_game_for_play returns [] on any failure.
@@ -1600,9 +1725,29 @@ def score_mlb_game(ctx, game_props=None, track=None):
                 new_detail = c.get('detail') or ''
                 if new_detail and new_detail != kept_detail and new_detail not in kept_detail:
                     kept['detail'] = f"{kept_detail} + {new_detail}" if kept_detail else new_detail
+        # Casual-bettor translation: stamp casual_label on every contribution
+        # so the app can render plain English without losing the original
+        # power label (kept on `label` for analyst mode). Per
+        # project_casual_bettor_ux_docket: translate the language, keep the
+        # depth. Server writes; app renders.
+        for c in deduped:
+            c['casual_label'] = translate_label(c.get('label'))
         track['contributions'] = deduped[:6]
     if track.get('evidence'):
+        for e in track['evidence']:
+            if isinstance(e, dict):
+                e['casual_label'] = translate_label(e.get('label'))
         track['evidence'] = track['evidence'][:5]
+    # Stamp casual_label on every dimension's drivers too (side / total / prop)
+    # so the app can render any drill-down with translated text.
+    if isinstance(dimensions, dict):
+        for dim_key in ('side', 'total', 'prop'):
+            dim = dimensions.get(dim_key)
+            if isinstance(dim, dict):
+                drivers = dim.get('drivers', [])
+                for d in drivers:
+                    if isinstance(d, dict):
+                        d['casual_label'] = translate_label(d.get('label'))
 
     return (headline_score, dimensions)
 
