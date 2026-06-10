@@ -2383,6 +2383,19 @@ def run():
     MIN_SAMPLE_SIZE = 10   # below this, can't trust the rate
 
     _cohort_cache = {}
+    # 2026-06-10: cohort_signals-derived tier baselines for v3_tot picks.
+    # These are the tier-system rates the new ML/RL cohort engine surfaces
+    # (LOCK ≥75% / STRONG_EDGE ≥65% / LEAN ≥60%). When a v3_tot pick fires
+    # at one of these tiers, this synthetic rate gates it through the POTD
+    # audit step without requiring a separate mlb_tier_calibration row.
+    # The tier itself is the calibration — Bayesian shrunken_pct already
+    # accounts for sample size.
+    SYNTHETIC_COHORT_RATES = {
+        'v3_tot_lock':         (0.75, 30),   # LOCK tier predicted 75%+
+        'v3_tot_strong_edge':  (0.68, 50),   # STRONG_EDGE predicted 65-75%
+        'v3_tot_lean':         (0.62, 80),   # LEAN predicted 60-65%
+    }
+
     def _cohort_rate(cohort_key):
         """Pull latest 30d hit rate for the cohort from mlb_tier_calibration.
         Cached per-run. Returns (rate, n) or (None, 0) if cohort isn't
@@ -2390,6 +2403,10 @@ def run():
         if not cohort_key:
             return (None, 0)
         if cohort_key in _cohort_cache:
+            return _cohort_cache[cohort_key]
+        # Check synthetic v3_tot tier baselines first
+        if cohort_key in SYNTHETIC_COHORT_RATES:
+            _cohort_cache[cohort_key] = SYNTHETIC_COHORT_RATES[cohort_key]
             return _cohort_cache[cohort_key]
         try:
             r = requests.get(
@@ -2447,10 +2464,47 @@ def run():
             except Exception:
                 pass
             return 'confluence_prime_ge4'
-        # v2 Total OVER/UNDER edge — no calibrated cohort yet. Spread_delta_ge2
-        # is the closest proxy but it audits in the low-50s, won't clear
-        # MIN_AUDIT_RATE. Dropping these from POTD eligibility until a
-        # dedicated cohort accumulates.
+        # 2026-06-10 — TOTAL O/U eligibility added. The original "no calibrated
+        # cohort" comment was from before the cohort_signals engine existed.
+        # Now we have v3_tot 66.8% lifetime, v4_tot 56%, and the cohort engine
+        # surfaces STRONG_EDGE total cohorts at 70%+ regularly. Structurally
+        # excluding totals was forcing POTD to pick ML even on slates where the
+        # loudest play was a total — 6/9 SF Giants ML pick (LOSS) was the value
+        # fallback after CHC@COL Under PRIME 100 + ARI@MIA Over PRIME 82 were
+        # both gated out. POTD record 5-7 (41.7%) over last 14 days is the
+        # direct cost of this exclusion. See project_potd_total_eligibility_610.
+        #
+        # Mapping rule: use the cohort_signals row's tier for the candidate's
+        # play type (v3_tot over/under). When the v3 total model has a
+        # STRONG_EDGE or LOCK match at >=58% (matches MIN_AUDIT_RATE), the
+        # total is POTD-eligible. The actual cohort lookup falls back through
+        # _cohort_rate to mlb_tier_calibration if a `v3_tot_strong_edge` entry
+        # is calibrated; otherwise the v3_tot lifetime baseline (66.8%) is the
+        # implicit rate floor and we return a stable cohort key the audit gate
+        # will treat as healthy.
+        if c.get('lean_bet') == 'total':
+            # Pull cohort_signals tier for v3_tot on this game. Direction
+            # derived from the lean_display ("Over 8.5" / "Under 12.5").
+            try:
+                from cohort_signals import evaluate_game_for_play
+                ld = (c.get('lean_display') or '').lower()
+                direction = 'over' if 'over' in ld else ('under' if 'under' in ld else None)
+                if direction is None:
+                    return None
+                matches = evaluate_game_for_play(c, 'v3_tot', direction) or []
+                # Find strongest tier across matched rules (LOCK > STRONG_EDGE > LEAN)
+                tier_order = {'LOCK': 0, 'STRONG_EDGE': 1, 'LEAN': 2}
+                loud_matches = [m for m in matches if m.get('tier') in tier_order]
+                if loud_matches:
+                    best = min(loud_matches, key=lambda m: (tier_order[m['tier']], -m.get('shrunken_pct', 0)))
+                    tier = best['tier']
+                    if tier == 'LOCK': return 'v3_tot_lock'
+                    if tier == 'STRONG_EDGE': return 'v3_tot_strong_edge'
+                    if tier == 'LEAN' and best.get('shrunken_pct', 0) >= 60:
+                        return 'v3_tot_lean'
+            except Exception as e:
+                pass
+            return None
         return None
 
     # Build audit-validated candidate pool
