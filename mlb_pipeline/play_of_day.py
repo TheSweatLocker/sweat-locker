@@ -2317,6 +2317,14 @@ def run():
             'away_ml_odds': ctx.get('away_ml_odds') or ctx.get('away_ml_close') or ctx.get('away_ml_open'),
             'venue': ctx.get('venue'),
             'temperature': ctx.get('temperature'),
+            # Pass the full mlb_game_context dict through so downstream
+            # cohort_signals.evaluate_game_for_play() can compute the
+            # complete feature set (xERA, BP usage, OAA, platoon, etc.)
+            # not just the handful of fields the candidate carries. Added
+            # 2026-06-10 — the model-cohort conflict gate was silently
+            # under-counting cohorts because the stripped candidate dict
+            # missed close_total / model_pred_total / SP stats.
+            '_ctx': ctx,
         })
 
     for game in nba_games:
@@ -2491,17 +2499,71 @@ def run():
                 direction = 'over' if 'over' in ld else ('under' if 'under' in ld else None)
                 if direction is None:
                     return None
-                matches = evaluate_game_for_play(c, 'v3_tot', direction) or []
-                # Find strongest tier across matched rules (LOCK > STRONG_EDGE > LEAN)
+                opposite = 'under' if direction == 'over' else 'over'
                 tier_order = {'LOCK': 0, 'STRONG_EDGE': 1, 'LEAN': 2}
-                loud_matches = [m for m in matches if m.get('tier') in tier_order]
-                if loud_matches:
-                    best = min(loud_matches, key=lambda m: (tier_order[m['tier']], -m.get('shrunken_pct', 0)))
-                    tier = best['tier']
-                    if tier == 'LOCK': return 'v3_tot_lock'
-                    if tier == 'STRONG_EDGE': return 'v3_tot_strong_edge'
-                    if tier == 'LEAN' and best.get('shrunken_pct', 0) >= 60:
-                        return 'v3_tot_lean'
+
+                # Use full ctx (passed through as _ctx) for evaluate_game_for_play
+                # so it can compute the complete feature set. The thin candidate
+                # dict misses close_total / xERA / SP stats and would silently
+                # under-count cohort matches, causing the conflict gate below to
+                # skip games that ARE materially contested.
+                eval_target = c.get('_ctx') or c
+
+                # Pull strong-edge matches for BOTH directions to evaluate
+                # cohort balance (added 2026-06-10 morning after user audit
+                # surfaced CHC@COL UNDER POTD as a contested play — 3/3
+                # models UNDER but cohort net +11 OVER). The cohort engine
+                # tells us how game conditions historically played; when
+                # the OPPOSITE direction's cohort count materially exceeds
+                # the picked direction's, this is a model-vs-cohort
+                # conflict and shouldn't be POTD-grade.
+                picked_matches = evaluate_game_for_play(eval_target, 'v3_tot', direction) or []
+                opp_matches = evaluate_game_for_play(eval_target, 'v3_tot', opposite) or []
+                picked_loud = [m for m in picked_matches if m.get('tier') in tier_order]
+                opp_loud = [m for m in opp_matches if m.get('tier') in tier_order]
+                # Count STRONG_EDGE+ each side (the user-audit metric)
+                picked_strong = [m for m in picked_loud if m.get('tier') in ('LOCK','STRONG_EDGE')]
+                opp_strong = [m for m in opp_loud if m.get('tier') in ('LOCK','STRONG_EDGE')]
+
+                if not picked_loud:
+                    return None
+
+                # CONFLICT GATE: if opposite-direction STRONG_EDGE count
+                # exceeds picked-direction count by 5+, this is a contested
+                # cohort read. Downgrade tier by one notch (LOCK→STRONG,
+                # STRONG→LEAN, LEAN→reject). Threshold 5 chosen to match
+                # the +5 NET gap I used as the manual "skip" threshold in
+                # the slate audit; below 5 the cohorts are close enough
+                # that model unanimity carries.
+                cohort_gap = len(opp_strong) - len(picked_strong)
+                best = min(picked_loud, key=lambda m: (tier_order[m['tier']], -m.get('shrunken_pct', 0)))
+                tier = best['tier']
+
+                # Conflict-severity tier-down. Cohort engine net materially
+                # against picked direction = signal contested. Severity scaled:
+                #   gap 5-9  → 1 notch (LOCK→STRONG, STRONG→LEAN, LEAN→reject)
+                #   gap 10+  → 2 notches (LOCK→LEAN, STRONG→reject, LEAN→reject)
+                # CHC@COL 6/10 has gap +11 → STRONG_EDGE-side LOCK downgrades
+                # to LEAN, then fails shrunken_pct gate vs runners-up at 0.68.
+                if cohort_gap >= 10:
+                    print(f"  ⚠⚠ {c.get('away_team')} @ {c.get('home_team')} v3_tot {direction.upper()}: "
+                          f"picked {len(picked_strong)} STRONG_EDGE vs opposite {len(opp_strong)} (+{cohort_gap}). "
+                          f"Severe conflict — 2-notch tier-down.")
+                    if tier == 'LOCK': tier = 'LEAN'
+                    elif tier == 'STRONG_EDGE': return None
+                    elif tier == 'LEAN': return None
+                elif cohort_gap >= 5:
+                    print(f"  ⚠ {c.get('away_team')} @ {c.get('home_team')} v3_tot {direction.upper()}: "
+                          f"picked {len(picked_strong)} STRONG_EDGE vs opposite {len(opp_strong)} (+{cohort_gap}). "
+                          f"Conflict — 1-notch tier-down.")
+                    if tier == 'LOCK': tier = 'STRONG_EDGE'
+                    elif tier == 'STRONG_EDGE': tier = 'LEAN'
+                    elif tier == 'LEAN': return None  # reject contested LEAN
+
+                if tier == 'LOCK': return 'v3_tot_lock'
+                if tier == 'STRONG_EDGE': return 'v3_tot_strong_edge'
+                if tier == 'LEAN' and best.get('shrunken_pct', 0) >= 60:
+                    return 'v3_tot_lean'
             except Exception as e:
                 pass
             return None
