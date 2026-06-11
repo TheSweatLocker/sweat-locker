@@ -2971,9 +2971,12 @@ def run():
             if (c.get('score') or 0) < 50: continue
             if c.get('lean_bet') in ('nrfi', 'yrfi'): continue
             tier = _value_resolver_tier(c)
-            # Path B gate: accept LEAN (secondary play tier) and PASSTHROUGH
-            # (side picks not yet resolver-gated). Reject LIGHT/SKIP.
-            if tier in ('STRONG', 'ELITE', 'LEAN', 'PASSTHROUGH'):
+            # Founder choice (Option 2 on 2026-06-10): accept LIGHT into the
+            # value_pool with a clearly-marked tertiary tag. LIGHT hits ~50%
+            # historically (break-even, slight bleed) — published as
+            # "🥉 BEST AVAILABLE" so users know it's not edge-grade, just the
+            # engine's best read on a quiet slate. Only SKIP gets rejected.
+            if tier in ('STRONG', 'ELITE', 'LEAN', 'LIGHT', 'PASSTHROUGH'):
                 value_pool.append(c)
 
         # Composite rank: prefer sweat-dim-promoted candidates with STRONG+
@@ -2996,11 +2999,18 @@ def run():
             picked_tier = pick.get('_value_resolver_tier', 'PASSTHROUGH')
             if picked_tier == 'LEAN':
                 confidence = 'secondary'
+            elif picked_tier == 'LIGHT':
+                confidence = 'tertiary'
             else:
                 confidence = 'value'
             conf_net = pick.get('signal_confluence_net') or 0
             src = 'dim-promoted' if pick.get('_promoted_from_dim') else 'legacy lean'
-            badge = '🥈 SECONDARY' if confidence == 'secondary' else '📌 VALUE'
+            badge_map = {
+                'secondary': '🥈 SECONDARY',
+                'tertiary':  '🥉 BEST AVAILABLE',
+                'value':     '📌 VALUE',
+            }
+            badge = badge_map.get(confidence, '📌 VALUE')
             print(f"{badge} POTD ({picked_tier}, {src}): {pick['away_team']} @ {pick['home_team']} — "
                   f"{pick.get('lean_display')} | confluence={conf_net:+d} | sweat={pick.get('score')}")
             if pick.get('_value_resolver_reason'):
@@ -3071,7 +3081,7 @@ def run():
         except Exception:
             return True  # fail-open
 
-    TIER_RANK = {'elite': 0, 'high': 1, 'solid': 2, 'standard': 3, 'secondary': 4, 'value': 5}
+    TIER_RANK = {'elite': 0, 'high': 1, 'solid': 2, 'standard': 3, 'secondary': 4, 'tertiary': 5, 'value': 6}
     if existing_pick and et_hour >= 14:
         existing_score = existing_pick.get('score', {}).get('total', 0) or 0
         existing_confidence = existing_pick.get('confidence', 'standard')
