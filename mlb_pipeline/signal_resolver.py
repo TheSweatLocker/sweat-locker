@@ -294,11 +294,235 @@ def _build_result(direction, tier, reason, dissent, signals) -> Dict:
     }
 
 
-# Future: resolve_side() with parallel logic for ML/RL once we have:
-#   - confluence_net (current ML signal)
-#   - ML cohort engine (added 6/9 OAA cohorts at 90.9%)
-#   - prop reverse side_signal
-# Same tier hierarchy, same resolver shape.
+# ────────────────────────────────────────────────────────────────────────
+# SIDE RESOLVER (added 2026-06-10 night).
+#
+# ML/RL cohort engine has structural HOME bias — 4 STRONG_EDGE+LOCK home
+# rules vs 0 AWAY rules at the loud tier (per veto audit n=540). The
+# AWAY rules never qualified for STRONG_EDGE, not because recency veto
+# stripped them (only 5 ML/RL rules vetoed total, none at high tier).
+#
+# Fix: include LEAN-tier matches in the count, use baseline-normalized
+# deviation just like the total resolver. Audit on n=383:
+#   ML avg HOME cohorts/game: 2.22 (incl LEAN)
+#   ML avg AWAY cohorts/game: 1.05 (incl LEAN)
+#   baseline home-win rate: 51%
+#
+# Baseline-normalized deviation predicts outcomes:
+#   dev -5 to -2 → 35% home (AWAY hits 65%, n=74)
+#   dev -2 to +2 → 53% home (at baseline)
+#   dev +2 to +5 → 70% home (n=47)
+#
+# Cohort counts on ML are ~7x smaller than totals (avg 2 vs 15 per
+# direction), so thresholds are scaled down.
+
+ML_BASELINE_HOME = 2.22
+ML_BASELINE_AWAY = 1.05
+RL_BASELINE_HOME = 1.5   # to be calibrated similarly when RL audit lands
+RL_BASELINE_AWAY = 1.5
+
+SIDE_DEV_LOUD = 2.0       # |dev| >= 2 (70%/35% hit bands)
+SIDE_DEV_LEAN = 1.0       # |dev| >= 1 (~58%/45% bands)
+
+
+def _classify_side_cohort(home_count: int, away_count: int,
+                          baseline_home: float, baseline_away: float) -> Dict:
+    """Mirror of _classify_cohort_net but for ML/RL HOME vs AWAY counts."""
+    home_dev = home_count - baseline_home
+    away_dev = away_count - baseline_away
+    deviation = home_dev - away_dev  # positive = HOME signal, negative = AWAY
+    gap = home_count - away_count
+
+    if deviation >= SIDE_DEV_LOUD:
+        return {'direction': 'HOME', 'strength': 'LOUD', 'gap': gap,
+                'deviation': round(deviation, 1)}
+    if deviation <= -SIDE_DEV_LOUD:
+        return {'direction': 'AWAY', 'strength': 'LOUD', 'gap': gap,
+                'deviation': round(deviation, 1)}
+    if deviation >= SIDE_DEV_LEAN:
+        return {'direction': 'HOME', 'strength': 'LEAN', 'gap': gap,
+                'deviation': round(deviation, 1)}
+    if deviation <= -SIDE_DEV_LEAN:
+        return {'direction': 'AWAY', 'strength': 'LEAN', 'gap': gap,
+                'deviation': round(deviation, 1)}
+    return {'direction': None, 'strength': 'NEUTRAL', 'gap': gap,
+            'deviation': round(deviation, 1)}
+
+
+def _model_side_direction(model_signed_spread: Optional[float]) -> Optional[str]:
+    """For ML/RL, a model's spread projection where positive = home favored.
+    Returns 'HOME' / 'AWAY' / None based on direction and the 0.5 deadband.
+    """
+    if model_signed_spread is None or abs(model_signed_spread) < 0.5:
+        return None
+    return 'HOME' if model_signed_spread > 0 else 'AWAY'
+
+
+def resolve_side(
+    *,
+    close_spread: Optional[float] = None,
+    v3_spread: Optional[float] = None,
+    v4_spread: Optional[float] = None,
+    jerry_spread: Optional[float] = None,
+    ml_home_cohort_count: int = 0,
+    ml_away_cohort_count: int = 0,
+    rl_home_cohort_count: int = 0,
+    rl_away_cohort_count: int = 0,
+    confluence_net: Optional[int] = None,
+    prop_reverse: Optional[Dict] = None,
+) -> Dict:
+    """Resolve single landing call for the game side (ML / RL direction).
+
+    Direction in the output is 'HOME' or 'AWAY' or None.
+
+    Logic parallels resolve_total: aggregate model spread votes + cohort
+    engine net (baseline-normalized) + confluence + prop_reverse side
+    signal into one tier call.
+    """
+    # Model spread direction votes
+    v3_d = _model_side_direction(v3_spread)
+    v4_d = _model_side_direction(v4_spread)
+    j_d = _model_side_direction(jerry_spread)
+    models = _count_model_agreement([v3_d, v4_d, j_d])
+    # Adjust majority labels (resolve_total uses OVER/UNDER; here HOME/AWAY)
+    # _count_model_agreement returns over/under counts — rebuild:
+    model_votes = [d for d in (v3_d, v4_d, j_d) if d]
+    home_votes = sum(1 for d in model_votes if d == 'HOME')
+    away_votes = sum(1 for d in model_votes if d == 'AWAY')
+    voting = len(model_votes)
+    if home_votes >= 2:
+        majority = 'HOME'
+    elif away_votes >= 2:
+        majority = 'AWAY'
+    else:
+        majority = None
+    unanimous = (home_votes == voting or away_votes == voting) and voting > 0
+    models = {'majority': majority, 'home': home_votes, 'away': away_votes,
+              'unanimous': unanimous, 'voting': voting}
+
+    # ML cohort (primary side signal)
+    ml_cohort = _classify_side_cohort(
+        ml_home_cohort_count, ml_away_cohort_count,
+        ML_BASELINE_HOME, ML_BASELINE_AWAY,
+    )
+    rl_cohort = _classify_side_cohort(
+        rl_home_cohort_count, rl_away_cohort_count,
+        RL_BASELINE_HOME, RL_BASELINE_AWAY,
+    )
+
+    # Confluence: positive = home, negative = away. >= 4 magnitude is loud.
+    confl_dir = None
+    confl_strength = 'NEUTRAL'
+    if confluence_net is not None:
+        try:
+            cn = int(confluence_net)
+            if cn >= 4:
+                confl_dir = 'HOME'
+                confl_strength = 'LOUD'
+            elif cn >= 2:
+                confl_dir = 'HOME'
+                confl_strength = 'LEAN'
+            elif cn <= -4:
+                confl_dir = 'AWAY'
+                confl_strength = 'LOUD'
+            elif cn <= -2:
+                confl_dir = 'AWAY'
+                confl_strength = 'LEAN'
+        except (TypeError, ValueError):
+            pass
+    confluence = {'direction': confl_dir, 'strength': confl_strength}
+
+    # Prop reverse side signal
+    props = {'direction': None, 'strength': 'NEUTRAL'}
+    if prop_reverse:
+        side_s = prop_reverse.get('side_signal') or 0
+        conf_lbl = prop_reverse.get('confidence', 'NONE')
+        if conf_lbl == 'HIGH' and abs(side_s) >= 0.5:
+            props = {'direction': 'HOME' if side_s > 0 else 'AWAY', 'strength': 'LOUD'}
+        elif conf_lbl == 'MEDIUM' and abs(side_s) >= 0.4:
+            props = {'direction': 'HOME' if side_s > 0 else 'AWAY', 'strength': 'LEAN'}
+
+    signals = {'models': models, 'ml_cohort': ml_cohort, 'rl_cohort': rl_cohort,
+               'confluence': confluence, 'props': props}
+
+    # ───── Resolution rules (priority order) ─────
+
+    # SKIP: no signals at all
+    if (not models['majority'] and not ml_cohort['direction']
+            and not confluence['direction'] and not props['direction']):
+        return _build_result(None, 'SKIP',
+                             'No directional signal in models, ML cohort, confluence, or props.',
+                             [], signals)
+
+    # SKIP: model majority + ML cohort LOUD opposite — contested
+    if models['majority'] and ml_cohort['direction']:
+        if models['majority'] != ml_cohort['direction'] and ml_cohort['strength'] == 'LOUD':
+            return _build_result(None, 'SKIP',
+                                 f"Model majority says {models['majority']} but ML cohort engine says "
+                                 f"{ml_cohort['direction']} (+{abs(ml_cohort['deviation'])} above baseline). Contested.",
+                                 [], signals)
+
+    # ELITE: unanimous models + ML cohort LOUD + confluence aligned + props aligned
+    if (models['unanimous'] and models['voting'] >= 3
+            and ml_cohort['direction'] == models['majority']
+            and ml_cohort['strength'] == 'LOUD'
+            and confluence['direction'] == models['majority']
+            and props.get('direction') == models['majority']):
+        return _build_result(
+            models['majority'], 'ELITE',
+            f"All 3 models, ML cohort (+{abs(ml_cohort['deviation'])} dev), confluence, "
+            f"and prop pipeline all point {models['majority']}.",
+            [], signals)
+
+    # STRONG: model majority + ML cohort LOUD same direction
+    if (models['majority'] and ml_cohort['direction'] == models['majority']
+            and ml_cohort['strength'] == 'LOUD'):
+        return _build_result(
+            models['majority'], 'STRONG',
+            f"Model majority ({max(models['home'], models['away'])}/{models['voting']}) "
+            f"+ ML cohort (+{abs(ml_cohort['deviation'])} dev) both point {models['majority']}.",
+            [], signals)
+
+    # LEAN: model majority + ML cohort LEAN same direction
+    if (models['majority'] and ml_cohort['direction'] == models['majority']
+            and ml_cohort['strength'] == 'LEAN'):
+        return _build_result(
+            models['majority'], 'LEAN',
+            f"Model majority + ML cohort lean (+{abs(ml_cohort['deviation'])} dev) "
+            f"both point {models['majority']}.",
+            [], signals)
+
+    # LEAN: model unanimity + confluence LOUD same direction
+    if (models['unanimous'] and models['voting'] >= 3
+            and confluence['direction'] == models['majority']
+            and confluence['strength'] == 'LOUD'):
+        return _build_result(
+            models['majority'], 'LEAN',
+            f"All 3 models point {models['majority']}, confluence (+{confluence_net}) confirms.",
+            [], signals)
+
+    # LIGHT: ML cohort LOUD alone (models silent)
+    if ml_cohort['strength'] == 'LOUD' and not models['majority']:
+        return _build_result(
+            ml_cohort['direction'], 'LIGHT',
+            f"ML cohort engine alone points {ml_cohort['direction']} "
+            f"(+{abs(ml_cohort['deviation'])} dev above baseline).",
+            [], signals)
+
+    # LIGHT: model majority + ML cohort or confluence weakly agrees
+    if models['majority']:
+        if (ml_cohort['direction'] == models['majority']
+                or confluence['direction'] == models['majority']
+                or props.get('direction') == models['majority']):
+            return _build_result(
+                models['majority'], 'LIGHT',
+                f"Model majority + one supporting signal point {models['majority']}.",
+                [], signals)
+
+    # Default SKIP
+    return _build_result(None, 'SKIP',
+                         "Signals don't agree cleanly — no clear landing.",
+                         [], signals)
 
 
 if __name__ == '__main__':
