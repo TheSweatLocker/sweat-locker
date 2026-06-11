@@ -12061,7 +12061,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               <Text style={{fontSize:16}}>{sig.emoji}</Text>
                               <View style={{flex:1}}>
                                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-                                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,flex:1}}>{sig.label}</Text>
+                                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,flex:1}}>{sig.casual_label || sig.label}</Text>
                                   <Text style={{color:tier.color,fontWeight:'800',fontSize:13,marginLeft:8}}>+{sig.points}</Text>
                                 </View>
                                 {sig.detail && (
@@ -12080,7 +12080,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 <View key={`e-${i}`} style={{flexDirection:'row',alignItems:'flex-start',marginBottom: i < ss.signals.evidence.length - 1 ? 6 : 0, gap:10}}>
                                   <Text style={{fontSize:14}}>{ev.emoji}</Text>
                                   <View style={{flex:1}}>
-                                    <Text style={{color:'#b0c4d8',fontWeight:'600',fontSize:12}}>{ev.label}</Text>
+                                    <Text style={{color:'#b0c4d8',fontWeight:'600',fontSize:12}}>{ev.casual_label || ev.label}</Text>
                                     {ev.detail && (
                                       <Text style={{color:'#7a92a8',fontSize:10,marginTop:1}}>{ev.detail}</Text>
                                     )}
