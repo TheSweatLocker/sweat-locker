@@ -2924,13 +2924,58 @@ def run():
                 c['is_nrfi'] = False
                 c['_promoted_from_dim'] = True
 
-        value_pool = [
-            c for c in candidates
-            if c.get('sport') == 'MLB'
-            and c.get('lean_display')
-            and (c.get('score') or 0) >= 50
-            and c.get('lean_bet') not in ('nrfi', 'yrfi')
-        ]
+        # 2026-06-10 night — Path B: filter value_pool to resolver LEAN tier
+        # only. The audit showed value-tier picks (LIGHT/SKIP) lose money
+        # (44-50% hit rate over 30 days). LEAN-tier picks hit 61.7% / +17.8%
+        # ROI — profitable secondary plays. LIGHT/SKIP get rejected entirely.
+        def _value_resolver_tier(c):
+            """Compute resolver tier for a total candidate. Returns tier
+            string or None. Caches result on the candidate to avoid
+            recomputing during sort."""
+            if '_value_resolver_tier' in c:
+                return c['_value_resolver_tier']
+            if c.get('lean_bet') != 'total':
+                # Side picks don't have a total-side resolver — pass through
+                # for now (side resolver is a separate workstream).
+                c['_value_resolver_tier'] = 'PASSTHROUGH'
+                return 'PASSTHROUGH'
+            try:
+                from signal_resolver import resolve_total
+                from cohort_signals import evaluate_game_for_play as _e
+                eval_target = c.get('_ctx') or c
+                def _ct(d):
+                    m = _e(eval_target, 'v3_tot', d) or []
+                    return len([x for x in m if x.get('tier') in ('LOCK','STRONG_EDGE')
+                                and not x.get('id','').endswith('|any')])
+                r = resolve_total(
+                    close_total=(eval_target.get('close_total') or eval_target.get('open_total')),
+                    v3_total=eval_target.get('projected_total'),
+                    v4_total=eval_target.get('model_pred_total'),
+                    jerry_total=eval_target.get('jerry_pred_total'),
+                    cohort_over_strong_count=_ct('over'),
+                    cohort_under_strong_count=_ct('under'),
+                    prop_reverse=None,
+                )
+                tier = r.get('tier', 'SKIP')
+                c['_value_resolver_tier'] = tier
+                c['_value_resolver_reason'] = r.get('reason', '')
+                return tier
+            except Exception:
+                c['_value_resolver_tier'] = 'PASSTHROUGH'
+                return 'PASSTHROUGH'
+
+        value_pool = []
+        for c in candidates:
+            if c.get('sport') != 'MLB': continue
+            if not c.get('lean_display'): continue
+            if (c.get('score') or 0) < 50: continue
+            if c.get('lean_bet') in ('nrfi', 'yrfi'): continue
+            tier = _value_resolver_tier(c)
+            # Path B gate: accept LEAN (secondary play tier) and PASSTHROUGH
+            # (side picks not yet resolver-gated). Reject LIGHT/SKIP.
+            if tier in ('STRONG', 'ELITE', 'LEAN', 'PASSTHROUGH'):
+                value_pool.append(c)
+
         # Composite rank: prefer sweat-dim-promoted candidates with STRONG+
         # dim tier, then by confluence magnitude, then by sweat score.
         def _rank_key(c):
@@ -2943,11 +2988,23 @@ def run():
         value_pool.sort(key=_rank_key)
         if value_pool:
             pick = value_pool[0]
-            confidence = 'value'
+            # Confidence tag now reflects resolver tier:
+            #   STRONG/ELITE → 'value' (HEADLINE) — shouldn't happen here
+            #     (they'd be in audit_pool above) but pass through if so
+            #   LEAN → 'secondary' (SECONDARY badge in app)
+            #   PASSTHROUGH (side picks) → 'value' (legacy behavior preserved)
+            picked_tier = pick.get('_value_resolver_tier', 'PASSTHROUGH')
+            if picked_tier == 'LEAN':
+                confidence = 'secondary'
+            else:
+                confidence = 'value'
             conf_net = pick.get('signal_confluence_net') or 0
             src = 'dim-promoted' if pick.get('_promoted_from_dim') else 'legacy lean'
-            print(f"📌 VALUE POTD (sub-audit fallback, {src}): {pick['away_team']} @ {pick['home_team']} — "
+            badge = '🥈 SECONDARY' if confidence == 'secondary' else '📌 VALUE'
+            print(f"{badge} POTD ({picked_tier}, {src}): {pick['away_team']} @ {pick['home_team']} — "
                   f"{pick.get('lean_display')} | confluence={conf_net:+d} | sweat={pick.get('score')}")
+            if pick.get('_value_resolver_reason'):
+                print(f"   resolver reason: {pick['_value_resolver_reason']}")
 
     if not pick:
         print("🚫 No model-supported lean anywhere on the board — no POTD posted today.")
@@ -3014,7 +3071,7 @@ def run():
         except Exception:
             return True  # fail-open
 
-    TIER_RANK = {'elite': 0, 'high': 1, 'solid': 2, 'standard': 3, 'value': 4}
+    TIER_RANK = {'elite': 0, 'high': 1, 'solid': 2, 'standard': 3, 'secondary': 4, 'value': 5}
     if existing_pick and et_hour >= 14:
         existing_score = existing_pick.get('score', {}).get('total', 0) or 0
         existing_confidence = existing_pick.get('confidence', 'standard')

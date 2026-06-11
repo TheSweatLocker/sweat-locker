@@ -30,8 +30,32 @@ from collections import Counter
 
 # Resolver thresholds — see comments for rationale
 MODEL_DEADBAND = 0.3        # |model - line| < this counts as neutral
-COHORT_NET_LOUD = 5         # |over_count - under_count| >= 5 = loud
-COHORT_NET_LEAN = 3         # 3-4 = lean
+
+# 2026-06-10 night — RECALIBRATED after audit showed raw cohort net is
+# mostly engine bias, not signal. The engine averages ~15.6 OVER cohorts
+# and ~8.1 UNDER cohorts per game = +7.5 baseline tilt every night.
+# Raw net 9-12 hits OVER at 55%; net 12-15 actually drops to 52% — NO
+# monotonic signal in raw counts.
+#
+# What works: BASELINE-NORMALIZED DEVIATION.
+#   deviation = (over_count - ENGINE_BASELINE_OVER) - (under_count - ENGINE_BASELINE_UNDER)
+#   = how far this game's cohort signal sits above/below engine baseline tilt
+#
+# Audit hit rates on n=366 graded games by deviation bin:
+#   dev -10 to -5  → 36% OVER (UNDER hits 64%)
+#   dev -5 to -2   → 48% OVER
+#   dev -2 to +2   → 51% OVER (baseline tilt, no edge)
+#   dev +2 to +5   → 56% OVER
+#   dev +5 to +10  → 74% OVER (real OVER signal)
+#
+# Thresholds chosen to match the 74% / 64% bands as STRONG (clear edge)
+# and 56% as LEAN.
+ENGINE_BASELINE_OVER = 15.6   # avg STRONG_EDGE+LOCK OVER cohorts per game
+ENGINE_BASELINE_UNDER = 8.1   # avg STRONG_EDGE+LOCK UNDER cohorts per game
+
+COHORT_DEV_LOUD = 5           # |deviation| >= 5 = real edge (74%/36% hit bands)
+COHORT_DEV_LEAN = 2           # |deviation| >= 2 = lean (56%/48% bands)
+
 PROP_DEADBAND = 0.4         # |prop_total_signal| < this counts as neutral
 
 
@@ -73,17 +97,29 @@ def _count_model_agreement(directions: List[Optional[str]]) -> Dict:
 
 
 def _classify_cohort_net(over_strong_count: int, under_strong_count: int) -> Dict:
-    """Return direction (or None) and strength label for the cohort net."""
+    """Return direction (or None) and strength using BASELINE-NORMALIZED
+    deviation. Raw count is dominated by engine bias (avg +7.5 OVER per
+    game); deviation from baseline is the actual signal.
+
+    Per 6/10 audit: deviation +5 → 74% OVER; deviation -5 → 36% OVER.
+    """
+    over_dev = over_strong_count - ENGINE_BASELINE_OVER
+    under_dev = under_strong_count - ENGINE_BASELINE_UNDER
+    # Net deviation: positive = more OVER signal than baseline, negative = more UNDER
+    deviation = over_dev - under_dev
+
+    # Also keep the raw gap for backward-compat / display
     gap = over_strong_count - under_strong_count
-    if gap >= COHORT_NET_LOUD:
-        return {'direction': 'OVER', 'strength': 'LOUD', 'gap': gap}
-    if gap <= -COHORT_NET_LOUD:
-        return {'direction': 'UNDER', 'strength': 'LOUD', 'gap': gap}
-    if gap >= COHORT_NET_LEAN:
-        return {'direction': 'OVER', 'strength': 'LEAN', 'gap': gap}
-    if gap <= -COHORT_NET_LEAN:
-        return {'direction': 'UNDER', 'strength': 'LEAN', 'gap': gap}
-    return {'direction': None, 'strength': 'NEUTRAL', 'gap': gap}
+
+    if deviation >= COHORT_DEV_LOUD:
+        return {'direction': 'OVER', 'strength': 'LOUD', 'gap': gap, 'deviation': round(deviation, 1)}
+    if deviation <= -COHORT_DEV_LOUD:
+        return {'direction': 'UNDER', 'strength': 'LOUD', 'gap': gap, 'deviation': round(deviation, 1)}
+    if deviation >= COHORT_DEV_LEAN:
+        return {'direction': 'OVER', 'strength': 'LEAN', 'gap': gap, 'deviation': round(deviation, 1)}
+    if deviation <= -COHORT_DEV_LEAN:
+        return {'direction': 'UNDER', 'strength': 'LEAN', 'gap': gap, 'deviation': round(deviation, 1)}
+    return {'direction': None, 'strength': 'NEUTRAL', 'gap': gap, 'deviation': round(deviation, 1)}
 
 
 def _classify_prop_reverse(pr_signal: Optional[Dict]) -> Dict:
@@ -145,7 +181,7 @@ def resolve_total(
             return _build_result(
                 None, 'SKIP',
                 f"Model majority says {models['majority']} but cohort engine says {cohort['direction']} "
-                f"with {abs(cohort['gap'])}-cohort gap. Contested — no play.",
+                f"with {abs(cohort.get('deviation', 0))}-cohort gap. Contested — no play.",
                 dissent, signals)
 
     # 3. ELITE: all 3 models unanimous + cohort LOUD aligned + props loud aligned
@@ -154,7 +190,7 @@ def resolve_total(
             and props['direction'] == models['majority'] and props['strength'] in ('LOUD', 'LEAN')):
         return _build_result(
             models['majority'], 'ELITE',
-            f"All 3 models, cohort engine (+{abs(cohort['gap'])} net), and prop pipeline "
+            f"All 3 models, cohort engine (+{abs(cohort.get('deviation', 0))} net), and prop pipeline "
             f"all point {models['majority']}.",
             [], signals)
 
@@ -164,14 +200,14 @@ def resolve_total(
         return _build_result(
             models['majority'], 'STRONG',
             f"Model majority ({reason}) + cohort engine "
-            f"(+{abs(cohort['gap'])} net STRONG_EDGE) aligned {models['majority']}.",
+            f"(+{abs(cohort.get('deviation', 0))} net STRONG_EDGE) aligned {models['majority']}.",
             _build_dissent_list(signals, exclude_aligned=True), signals)
 
     # 5. LEAN: model majority + cohort LEAN same direction
     if models['majority'] and cohort['direction'] == models['majority'] and cohort['strength'] == 'LEAN':
         return _build_result(
             models['majority'], 'LEAN',
-            f"Model majority + cohort lean (+{abs(cohort['gap'])} net) "
+            f"Model majority + cohort lean (+{abs(cohort.get('deviation', 0))} net) "
             f"both point {models['majority']}.",
             _build_dissent_list(signals, exclude_aligned=True), signals)
 
@@ -187,7 +223,7 @@ def resolve_total(
         if not props['direction'] or props['direction'] == cohort['direction']:
             return _build_result(
                 cohort['direction'], 'LIGHT',
-                f"Cohort engine decisive (+{abs(cohort['gap'])} net STRONG_EDGE {cohort['direction']}) "
+                f"Cohort engine decisive (+{abs(cohort.get('deviation', 0))} net STRONG_EDGE {cohort['direction']}) "
                 f"with models split.",
                 _build_dissent_list(signals, exclude_aligned=True), signals)
 
@@ -234,7 +270,7 @@ def _build_dissent_list(signals: Dict, exclude_aligned: bool = False) -> List[Di
     if cohort['direction']:
         out.append({
             'signal': 'cohort',
-            'detail': f"net +{abs(cohort['gap'])} {cohort['direction']} ({cohort['strength']})",
+            'detail': f"net +{abs(cohort.get('deviation', 0))} {cohort['direction']} ({cohort['strength']})",
             'direction': cohort['direction'],
         })
 
