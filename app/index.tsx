@@ -9788,28 +9788,45 @@ setJerryHistory(prev => {
 )}
 
            {/* DAILY BEST BET */}
-{(dailyBestBetLoading || dailyBestBet) && (
-  <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:HRB_COLOR,marginBottom:16,shadowColor:HRB_COLOR,shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
-    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+{(dailyBestBetLoading || dailyBestBet) && (() => {
+  // 3-tier POTD render — driven by server-side `confidence` field
+  // (play_of_day.py writes 'elite'/'high'/'solid' for cohort-audit picks,
+  // 'secondary' for resolver LEAN, 'tertiary'/'value' for resolver LIGHT
+  // / passthrough fallback). HEADLINE always exists in audit_pool;
+  // SECONDARY + BEST AVAILABLE come from the value_pool fallback so the
+  // card never goes dark even on no-strong-play days.
+  const conf = (dailyBestBet?.confidence || 'standard').toLowerCase();
+  const potdTier =
+    (conf === 'elite' || conf === 'high' || conf === 'solid' || conf === 'standard')
+      ? { name: 'HEADLINE',       badge: '🔒', color: HRB_COLOR,  bgColor: 'rgba(255,184,0,0.15)', subhead: null }
+    : (conf === 'secondary')
+      ? { name: 'SECONDARY',      badge: '🥈', color: '#00e5a0',  bgColor: 'rgba(0,229,160,0.1)',  subhead: 'No headline conviction — best available secondary lean' }
+      : { name: 'BEST AVAILABLE', badge: '🥉', color: '#0099ff',  bgColor: 'rgba(0,153,255,0.1)',  subhead: 'Below-conviction lean — model edge present but light' };
+  return (
+  <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:potdTier.color,marginBottom:16,shadowColor:potdTier.color,shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
+    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:potdTier.subhead ? 4 : 10}}>
       <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-        <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,letterSpacing:1}}>🔒 JERRY'S PLAY OF THE DAY</Text>
-        <View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2}}>
-          <Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'800'}}>TODAY</Text>
+        <Text style={{color:potdTier.color,fontWeight:'800',fontSize:12,letterSpacing:1}}>{potdTier.badge} JERRY'S PLAY OF THE DAY</Text>
+        <View style={{backgroundColor:potdTier.bgColor,borderRadius:6,paddingHorizontal:6,paddingVertical:2}}>
+          <Text style={{color:potdTier.color,fontSize:9,fontWeight:'800'}}>{potdTier.name}</Text>
         </View>
       </View>
       {dailyBestBet?.score && (
         <View style={{
-  backgroundColor:dailyBestBet.isPrime?'rgba(255,184,0,0.15)':dailyBestBet.label==='STRONG LEAN'?'rgba(0,229,160,0.1)':'rgba(0,153,255,0.1)',
+  backgroundColor:potdTier.bgColor,
   borderRadius:8,paddingHorizontal:8,paddingVertical:3,borderWidth:1,
-  borderColor:dailyBestBet.isPrime?HRB_COLOR:dailyBestBet.label==='STRONG LEAN'?'#00e5a0':'#0099ff'
+  borderColor:potdTier.color
 }}>
   <Text style={{
-    color:dailyBestBet.isPrime?HRB_COLOR:dailyBestBet.label==='STRONG LEAN'?'#00e5a0':'#0099ff',
+    color:potdTier.color,
     fontSize:10,fontWeight:'800'
-  }}>{dailyBestBet.score?.total || dailyBestBet.score} {dailyBestBet.label}</Text>
+  }}>{dailyBestBet.score?.total || dailyBestBet.score}</Text>
 </View>
       )}
     </View>
+    {potdTier.subhead && (
+      <Text style={{color:'#4a6070',fontSize:10,fontStyle:'italic',marginBottom:10}}>{potdTier.subhead}</Text>
+    )}
 
     {dailyBestBetLoading ? (
       <View style={{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:8}}>
@@ -9836,9 +9853,9 @@ setJerryHistory(prev => {
           {dailyBestBet.game.away_team} @ {dailyBestBet.game.home_team}
         </Text>
         <View style={{flexDirection:'row',alignItems:'center',gap:10,marginBottom:12}}>
-          <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:HRB_COLOR,flex:1}}>
+          <View style={{backgroundColor:potdTier.bgColor,borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:potdTier.color,flex:1}}>
             <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>TOP PLAY</Text>
-            <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16}}>
+            <Text style={{color:potdTier.color,fontWeight:'800',fontSize:16}}>
   {dailyBestBet.leanDisplay || 'Top Model Edge'}
 </Text>
           </View>
@@ -9855,7 +9872,8 @@ setJerryHistory(prev => {
       </View>
     ) : null}
   </View>
-)}
+  );
+})()}
 
   {/* Jerry's Morning Read panel removed 2026-06-01 — pulled from Odds API
       not our pipeline, generated LLM hallucinations (UFC matchup error
