@@ -2239,6 +2239,59 @@ def build_lean(ctx):
         # Never block legacy build_lean on resolver failure
         pass
 
+    # 0b. Resolver-driven ML side lean (added 2026-06-11 morning).
+    # ML leans were removed 5/1 pending projection_v2 rebuild — replaced
+    # here by the unified resolve_side() output. Only ELITE/STRONG produce
+    # a publishable ML candidate; LEAN/LIGHT stay informational and reach
+    # the sweat card via the dimensional path, not POTD. The downstream
+    # SIDE RESOLVER GATE in run() will re-validate the resolver direction
+    # against the picked side and stamp _resolver_tier.
+    try:
+        from signal_resolver import resolve_side
+        from cohort_signals import evaluate_game_for_play as _eval_side_bl
+
+        def _side_ct_bl(play, direction):
+            m = _eval_side_bl(ctx, play, direction) or []
+            return len([x for x in m
+                        if x.get('tier') in ('LOCK', 'STRONG_EDGE', 'LEAN')
+                        and not x.get('id', '').endswith('|any')])
+
+        ml_h_bl = sum(_side_ct_bl(p, 'home') for p in ('v3_ml','v4_ml','jerry_ml','conf_ml'))
+        ml_a_bl = sum(_side_ct_bl(p, 'away') for p in ('v3_ml','v4_ml','jerry_ml','conf_ml'))
+        rl_h_bl = sum(_side_ct_bl(p, 'home') for p in ('v3_rl','v4_rl'))
+        rl_a_bl = sum(_side_ct_bl(p, 'away') for p in ('v3_rl','v4_rl'))
+
+        side_bl = resolve_side(
+            close_spread=(ctx.get('close_spread') or ctx.get('open_spread')),
+            v3_spread=ctx.get('projected_spread'),
+            v4_spread=ctx.get('model_pred_spread'),
+            jerry_spread=ctx.get('jerry_pred_spread'),
+            ml_home_cohort_count=ml_h_bl, ml_away_cohort_count=ml_a_bl,
+            rl_home_cohort_count=rl_h_bl, rl_away_cohort_count=rl_a_bl,
+            confluence_net=ctx.get('signal_confluence_net'),
+            prop_reverse=None,
+        )
+        if (side_bl.get('tier') in ('STRONG', 'ELITE')
+                and side_bl.get('direction') in ('HOME', 'AWAY')):
+            picked_team = ctx.get('home_team') if side_bl['direction'] == 'HOME' \
+                          else ctx.get('away_team')
+            if picked_team:
+                # Skip ML lean if it falls into juiced-chalk territory — the
+                # _rl_alt_for_juiced_chalk path (priority 2) handles those
+                # better by surfacing the RL +130-150 alt instead.
+                ml_odds = (ctx.get('home_ml_close') or ctx.get('home_ml_open')
+                           if side_bl['direction'] == 'HOME'
+                           else ctx.get('away_ml_close') or ctx.get('away_ml_open'))
+                try:
+                    ml_int = int(ml_odds) if ml_odds is not None else 0
+                except (TypeError, ValueError):
+                    ml_int = 0
+                if ml_int > -180:
+                    return f"{picked_team} ML (resolver {side_bl['tier']})", 'ml', False
+    except Exception:
+        # Fail-open; legacy priority chain still runs below.
+        pass
+
     # 1. v2 Total OVER/UNDER Edge — model_total vs market + 1.5
     v2_pick = _v2_total_edge(ctx)
     if v2_pick is not None:
@@ -2729,6 +2782,28 @@ def run():
     # Build audit-validated candidate pool
     audit_pool = []
     audit_log = []
+
+    # Hoisted prop_reverse fetch: one DB hit per slate instead of one per
+    # candidate. The resolver gates (total + side) both consume this dict.
+    _pr_signals_by_matchup = {}
+    try:
+        _today_str = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
+        _pr_row = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jerry_cache",
+            params={'select': 'data',
+                    'cache_key': f'eq.prop_reverse_signals_{_today_str}'},
+            headers={'apikey': SUPABASE_KEY,
+                     'Authorization': f'Bearer {SUPABASE_KEY}'},
+            timeout=5,
+        )
+        _pr_rows = _pr_row.json() if _pr_row.status_code == 200 else []
+        if _pr_rows:
+            _pr_data = _pr_rows[0].get('data', {})
+            if isinstance(_pr_data, dict):
+                _pr_signals_by_matchup = _pr_data.get('signals') or {}
+    except Exception:
+        _pr_signals_by_matchup = {}
+
     for c in candidates:
         if c.get('sport') != 'MLB':
             continue  # NBA + other sports handled below
@@ -2771,26 +2846,9 @@ def run():
                                 if x.get('tier') in ('LOCK', 'STRONG_EDGE')
                                 and not x.get('id', '').endswith('|any')])
 
-                # Pull prop_reverse signal for the matchup (best-effort).
-                pr_signal = None
-                try:
-                    today_str = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
-                    pr_row = requests.get(
-                        f"{SUPABASE_URL}/rest/v1/jerry_cache",
-                        params={'select': 'data',
-                                'cache_key': f'eq.prop_reverse_signals_{today_str}'},
-                        headers={'apikey': SUPABASE_KEY,
-                                 'Authorization': f'Bearer {SUPABASE_KEY}'},
-                        timeout=3,
-                    )
-                    rows = pr_row.json() if pr_row.status_code == 200 else []
-                    if rows:
-                        pr_data = rows[0].get('data', {})
-                        if isinstance(pr_data, dict):
-                            matchup_key = f"{c.get('away_team')} @ {c.get('home_team')}"
-                            pr_signal = (pr_data.get('signals') or {}).get(matchup_key)
-                except Exception:
-                    pr_signal = None
+                # Pull prop_reverse signal from the slate-level hoisted dict.
+                _matchup_key = f"{c.get('away_team')} @ {c.get('home_team')}"
+                pr_signal = _pr_signals_by_matchup.get(_matchup_key)
 
                 resolved = resolve_total(
                     close_total=(eval_target.get('close_total') or eval_target.get('open_total')),
@@ -2818,21 +2876,101 @@ def run():
                 print(f"  ⚠ resolver gate failed for {c.get('away_team')} @ "
                       f"{c.get('home_team')}: {type(e).__name__}: {e}")
 
+        # ────────────────────────────────────────────────────────────────────
+        # SIDE RESOLVER GATE (added 2026-06-11 morning).
+        # Retroactive audit n=30d showed (resolve_side):
+        #   STRONG: 78.8% / +51% ROI (small sample)
+        #   LIGHT:  68.2% / +26.9% ROI on n=129 — bulk of value
+        # LIGHT here is PROFITABLE (vs total LIGHT at -15.7% ROI), so the
+        # side gate is permissive: anything non-SKIP passes. The hard reject
+        # is on directional contests — resolver direction must match the
+        # candidate's picked side, else it's a contested call.
+        if c.get('lean_bet') == 'ml':
+            try:
+                from signal_resolver import resolve_side
+                from cohort_signals import evaluate_game_for_play as _eval_side
+
+                eval_target_s = c.get('_ctx') or c
+                _matchup_key_s = f"{c.get('away_team')} @ {c.get('home_team')}"
+                pr_signal_s = _pr_signals_by_matchup.get(_matchup_key_s)
+
+                # Picked direction from lean_display ("Yankees ML" → HOME if
+                # 'yankees' matches home team nickname, else AWAY).
+                ld_s = (c.get('lean_display') or '').lower()
+                home_nick_s = ((c.get('home_team') or '').lower().split() or [''])[-1]
+                away_nick_s = ((c.get('away_team') or '').lower().split() or [''])[-1]
+                picked_side = None
+                if home_nick_s and home_nick_s in ld_s:
+                    picked_side = 'HOME'
+                elif away_nick_s and away_nick_s in ld_s:
+                    picked_side = 'AWAY'
+
+                # Cohort counts (LEAN-inclusive per ML/RL bias audit — pure
+                # STRONG_EDGE counts run too thin on away side). Mirrors
+                # _audit_resolver_side_retroactive.py count_loud().
+                def _side_ct(play, direction):
+                    m = _eval_side(eval_target_s, play, direction) or []
+                    return len([x for x in m
+                                if x.get('tier') in ('LOCK', 'STRONG_EDGE', 'LEAN')
+                                and not x.get('id', '').endswith('|any')])
+
+                ml_h = sum(_side_ct(p, 'home') for p in ('v3_ml','v4_ml','jerry_ml','conf_ml'))
+                ml_a = sum(_side_ct(p, 'away') for p in ('v3_ml','v4_ml','jerry_ml','conf_ml'))
+                rl_h = sum(_side_ct(p, 'home') for p in ('v3_rl','v4_rl'))
+                rl_a = sum(_side_ct(p, 'away') for p in ('v3_rl','v4_rl'))
+
+                side_resolved = resolve_side(
+                    close_spread=(eval_target_s.get('close_spread')
+                                  or eval_target_s.get('open_spread')),
+                    v3_spread=eval_target_s.get('projected_spread'),
+                    v4_spread=eval_target_s.get('model_pred_spread'),
+                    jerry_spread=eval_target_s.get('jerry_pred_spread'),
+                    ml_home_cohort_count=ml_h, ml_away_cohort_count=ml_a,
+                    rl_home_cohort_count=rl_h, rl_away_cohort_count=rl_a,
+                    confluence_net=eval_target_s.get('signal_confluence_net'),
+                    prop_reverse=pr_signal_s,
+                )
+                side_tier = side_resolved.get('tier')
+                side_dir = side_resolved.get('direction')
+
+                if side_tier == 'SKIP':
+                    audit_log.append(
+                        f"  ⊘ {c['away_team']} @ {c['home_team']} ({cohort}): "
+                        f"side resolver SKIP. {side_resolved.get('reason', '')}")
+                    continue
+                if picked_side and side_dir and picked_side != side_dir:
+                    audit_log.append(
+                        f"  ⊘ {c['away_team']} @ {c['home_team']} ({cohort}): "
+                        f"side resolver says {side_dir} but candidate picked "
+                        f"{picked_side}. Contested.")
+                    continue
+
+                c['_resolver_tier'] = side_tier
+                c['_resolver_reason'] = side_resolved.get('reason')
+                c['_resolver_direction'] = side_dir
+            except Exception as e:
+                # Same fail-open semantics as total gate.
+                print(f"  ⚠ side resolver gate failed for {c.get('away_team')} @ "
+                      f"{c.get('home_team')}: {type(e).__name__}: {e}")
+
         c['_cohort'] = cohort
         c['_audit_rate'] = rate
         c['_audit_n'] = n
         audit_pool.append(c)
 
-    # Sort: ELITE resolver tier > STRONG, then audit rate, then sweat score.
+    # Sort: ELITE resolver tier > STRONG > LEAN > LIGHT > untiered, then audit
+    # rate, then sweat score.
     # 2026-06-10 evening — added resolver-tier prioritization. Without this,
     # the selector would tie ELITE (3-way signal agreement) with STRONG
     # (2-way) and pick by sweat score alone, missing the strongest signal
-    # alignment when multiple games qualify. Tonight's ELITE call (WAS@SF
-    # Over 8.5: all 3 models + cohort +11 + prop pipeline all align) gets
-    # to win against STRONG runners-up.
-    _resolver_rank = {'ELITE': 0, 'STRONG': 1}
+    # alignment when multiple games qualify.
+    # 2026-06-11 morning — extended for the side resolver gate. Totals only
+    # ever land STRONG/ELITE (LIGHT loses money), but sides keep all 4 tiers
+    # because side LIGHT was +26.9% ROI in audit. Ordering enforces:
+    # STRONG-resolved total > LIGHT-resolved ML, both > untiered fallback.
+    _resolver_rank = {'ELITE': 0, 'STRONG': 1, 'LEAN': 2, 'LIGHT': 3}
     audit_pool.sort(key=lambda c: (
-        _resolver_rank.get(c.get('_resolver_tier'), 2),
+        _resolver_rank.get(c.get('_resolver_tier'), 4),
         -c['_audit_rate'],
         -c.get('score', 0),
     ))
