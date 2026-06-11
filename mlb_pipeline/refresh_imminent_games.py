@@ -78,7 +78,7 @@ def fetch_today_context_rows():
         f"{SUPABASE_URL}/rest/v1/mlb_game_context",
         params={
             "game_date": f"eq.{today}",
-            "select": "id,game_id,home_team,away_team,umpire,lineup_confirmed",
+            "select": "id,game_id,home_team,away_team,home_pitcher,away_pitcher,umpire,lineup_confirmed",
         },
         headers=HEADERS,
         timeout=15,
@@ -183,6 +183,25 @@ def extract_umpire(mlb_game):
         ),
         None,
     )
+
+
+def extract_probable_pitchers(mlb_game):
+    """Return (home_sp, away_sp) from the MLB API hydrated game.
+    Either may be None if MLB hasn't announced yet (tanking teams + day-of
+    bullpen games push SP announcement deep into the afternoon)."""
+    home_sp = (
+        mlb_game.get("teams", {})
+        .get("home", {})
+        .get("probablePitcher", {})
+        .get("fullName")
+    )
+    away_sp = (
+        mlb_game.get("teams", {})
+        .get("away", {})
+        .get("probablePitcher", {})
+        .get("fullName")
+    )
+    return home_sp, away_sp
 
 
 def fetch_umpire_stats(ump_name):
@@ -407,6 +426,7 @@ def run():
         print(f"    {r['away_team']} @ {r['home_team']} — first pitch {ct} (lineup={r.get('lineup_confirmed')}, ump={'✓' if r.get('umpire') else '—'})")
 
     refreshed = 0
+    pitcher_changes = 0
     for row in imminent:
         mlb_game = find_mlb_game_for_row(schedule_dates, row)
         if not mlb_game:
@@ -423,6 +443,20 @@ def run():
                 payload["away_lineup"] = ", ".join(away_batters)
                 payload["lineup_confirmed"] = True
                 print(f"    ✅ Lineup confirmed: {row['away_team']} @ {row['home_team']}")
+
+        # Starting pitcher fill-in — capture when MLB announces a SP that
+        # we didn't have at 6am/2pm cron time. Triggers downstream re-run
+        # of play_of_day so resolver can re-evaluate (was likely SKIP due
+        # to missing SP feature; can now compute v4 + cohort signals).
+        new_home_sp, new_away_sp = extract_probable_pitchers(mlb_game)
+        if not row.get("home_pitcher") and new_home_sp:
+            payload["home_pitcher"] = new_home_sp
+            pitcher_changes += 1
+            print(f"    ✅ Home SP announced: {new_home_sp} ({row['away_team']} @ {row['home_team']})")
+        if not row.get("away_pitcher") and new_away_sp:
+            payload["away_pitcher"] = new_away_sp
+            pitcher_changes += 1
+            print(f"    ✅ Away SP announced: {new_away_sp} ({row['away_team']} @ {row['home_team']})")
 
         # Umpire refresh — only if not yet populated
         if not row.get("umpire"):
@@ -456,9 +490,14 @@ def run():
 
     # If any lineups got confirmed this run, regenerate props so the new
     # lineup-dependent picks (hits Over/Under) surface for users.
+    # Pitcher fill-ins also trigger the chain: props are SP-dependent and
+    # play_of_day needs the resolver re-run to lift games out of SKIP.
     lineup_changes = sum(1 for r in imminent if not r.get("lineup_confirmed"))
-    if lineup_changes and refreshed:
-        print("\n  Lineups changed — regenerating props...")
+    if (lineup_changes or pitcher_changes) and refreshed:
+        trigger = []
+        if lineup_changes: trigger.append(f"{lineup_changes} lineup(s)")
+        if pitcher_changes: trigger.append(f"{pitcher_changes} SP(s)")
+        print(f"\n  {' + '.join(trigger)} changed — regenerating props...")
         try:
             import generate_props
             generate_props.run()
