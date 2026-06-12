@@ -35,9 +35,12 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
+        # No requirements.txt in the repo — match the inline install used
+        # by mlb_pipeline.yml so this workflow has the same env as the
+        # main morning cron. game_context.py needs all of these.
         run: |
           python -m pip install --upgrade pip
-          pip install -r mlb_pipeline/requirements.txt
+          pip install pybaseball requests python-dotenv beautifulsoup4 scikit-learn numpy xgboost
 
       # Refresh odds + recompute primary_play. game_context.py already has
       # the "preserve pre-game close values once game starts" protection
