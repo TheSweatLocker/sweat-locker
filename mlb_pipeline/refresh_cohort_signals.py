@@ -357,6 +357,17 @@ def run(dryrun=False):
         print(f"\n[refresh_cohort_signals] upsert FAILED {r.status_code}: {r.text[:300]}")
         sys.exit(1)
 
+    # Lifecycle tracking — diff today's rules vs yesterday's snapshot and
+    # log added/promoted/demoted/vetoed events so we don't lose audit
+    # trail when rules silently come and go. Fails open so a tracker bug
+    # never blocks the cohort refresh.
+    try:
+        import track_cohort_lifecycle
+        track_cohort_lifecycle.run(dryrun=False)
+    except Exception as e:
+        print(f"[refresh_cohort_signals] ⚠ lifecycle tracker failed: "
+              f"{type(e).__name__}: {e}")
+
 
 if __name__ == "__main__":
     dryrun = "--dryrun" in sys.argv
