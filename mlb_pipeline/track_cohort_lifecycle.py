@@ -85,8 +85,8 @@ def _fetch_jerry_cache(key):
 
 def _rules_to_snapshot(rules):
     """Reduce a rules list to the minimal dict we diff on. Keeps payload
-    small — we only care about tier + pct movement, not the full feature
-    breakdown which lives in the live cohort_signals row."""
+    small — we only care about tier + state + pct movement, not the full
+    feature breakdown which lives in the live cohort_signals row."""
     snap = {}
     for r in rules or []:
         rid = r.get("id")
@@ -99,6 +99,8 @@ def _rules_to_snapshot(rules):
             "play": r.get("play"),
             "direction": r.get("direction"),
             "recency_status": r.get("recency_status"),
+            "state": r.get("state"),
+            "natural_tier": r.get("natural_tier"),
         }
     return snap
 
@@ -161,13 +163,68 @@ def diff_snapshots(prev, current):
             "reason": reason,
         })
 
-    # 3. PROMOTED / DEMOTED / PCT_DRIFT — present in both
+    # 3. PROMOTED / DEMOTED / PCT_DRIFT / GRADUATED — present in both
     for rid in sorted(curr_ids & prev_ids):
         p = prev[rid]; c = current[rid]
         p_tier = p.get("tier"); c_tier = c.get("tier")
         p_pct = p.get("shrunken_pct") or 0; c_pct = c.get("shrunken_pct") or 0
         p_rank = TIER_ORDER.get(p_tier, -1)
         c_rank = TIER_ORDER.get(c_tier, -1)
+        p_state = p.get("state"); c_state = c.get("state")
+        c_natural = c.get("natural_tier")
+
+        # Cap-migration suppression. When yesterday emitted the rule at
+        # its natural tier (no state field, or state was ACTIVE) but
+        # today it's PROBATIONARY-capped to a different tier, the
+        # apparent tier change is purely the cap kicking in — not a
+        # genuine pct or sample shift. Suppress to avoid polluting the
+        # diff. Tracked elsewhere via the `probationary_capped` count.
+        # Both rank directions matter: LOCK → LEAN cap looks demoted;
+        # FADE → SOFT_FADE cap looks promoted.
+        if (c_state == "PROBATIONARY"
+                and c_natural and c_natural == p_tier
+                and c_natural != c_tier):
+            continue
+
+        # State transition takes priority. Graduations from PROBATIONARY
+        # to ACTIVE often coincide with tier change (LEAN cap lifts to
+        # natural LOCK/STRONG_EDGE) — emit a single graduated event
+        # capturing both the state shift and the tier consequence.
+        if p_state == "PROBATIONARY" and c_state == "ACTIVE":
+            events.append({
+                "event_type": "graduated",
+                "rule_id": rid,
+                "play": c.get("play"),
+                "direction": c.get("direction"),
+                "from_tier": p_tier,
+                "to_tier": c_tier,
+                "from_pct": p_pct,
+                "to_pct": c_pct,
+                "raw_n": c.get("raw_n"),
+                "reason": (
+                    f"PROBATIONARY → ACTIVE (n {p.get('raw_n')} → "
+                    f"{c.get('raw_n')}); cap lifted "
+                    f"{p_tier} → {c_tier}"
+                ),
+            })
+            continue
+        if p_state == "ACTIVE" and c_state == "PROBATIONARY":
+            events.append({
+                "event_type": "regressed_to_probation",
+                "rule_id": rid,
+                "play": c.get("play"),
+                "direction": c.get("direction"),
+                "from_tier": p_tier,
+                "to_tier": c_tier,
+                "from_pct": p_pct,
+                "to_pct": c_pct,
+                "raw_n": c.get("raw_n"),
+                "reason": (
+                    f"ACTIVE → PROBATIONARY (n dropped {p.get('raw_n')} → "
+                    f"{c.get('raw_n')}); rare — investigate result grading"
+                ),
+            })
+            continue
 
         if c_rank > p_rank:
             events.append({
@@ -228,6 +285,8 @@ def write_lifecycle_events(events, date_str):
         "vetoed": sum(1 for e in events if e["event_type"] == "vetoed"),
         "removed": sum(1 for e in events if e["event_type"] == "removed"),
         "pct_drift": sum(1 for e in events if e["event_type"] == "pct_drift"),
+        "graduated": sum(1 for e in events if e["event_type"] == "graduated"),
+        "regressed_to_probation": sum(1 for e in events if e["event_type"] == "regressed_to_probation"),
     }
     payload = {
         "date": date_str,

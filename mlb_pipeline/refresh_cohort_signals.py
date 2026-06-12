@@ -53,6 +53,37 @@ TIER_THRESHOLDS = [
 ]
 RECENCY_VETO_DROP_PP = 15.0
 
+# Phase 1 cohort rotation (see docs/cohort_rotation_policy.md).
+# Probationary rules are capped at LEAN (or SOFT_FADE on the fade side)
+# regardless of shrunken_pct, until they accumulate enough sample to
+# graduate. age_days check defers to Phase 2 once last_fired_date lands.
+PROBATION_N_THRESHOLD = 25
+PROBATION_TIER_CAP_LOUD = ("LEAN", +4)            # caps LOCK/STRONG_EDGE
+PROBATION_TIER_CAP_FADE = ("SOFT_FADE", -5)       # caps FADE/HARD_FADE
+
+
+def classify_state(raw_n):
+    """Phase 1: state derived purely from sample size. Phase 2 will add
+    last_fired_date staleness + age_days check."""
+    if raw_n < PROBATION_N_THRESHOLD:
+        return "PROBATIONARY"
+    return "ACTIVE"
+
+
+def apply_state_cap(tier_name, delta, eligibility, state):
+    """Cap loud tiers for PROBATIONARY rules. Returns the (possibly
+    modified) tier triple. Caller stores the pre-cap values as
+    natural_tier / natural_delta for audit."""
+    if state != "PROBATIONARY":
+        return tier_name, delta, eligibility
+    if tier_name in ("LOCK", "STRONG_EDGE"):
+        capped_tier, capped_delta = PROBATION_TIER_CAP_LOUD
+        return capped_tier, capped_delta, "CARD_OK"
+    if tier_name in ("FADE", "HARD_FADE"):
+        capped_tier, capped_delta = PROBATION_TIER_CAP_FADE
+        return capped_tier, capped_delta, "CARD_OK"
+    return tier_name, delta, eligibility
+
 
 def _f(v):
     try: return float(v)
@@ -248,10 +279,19 @@ def run(dryrun=False):
         else:
             baseline = life_dir_base.get((play, dirn)) or life_play_base.get(play) or 50.0
         shrunken = shrink(raw_pct, n, baseline)
-        tier_name, delta, eligibility = tier_for(shrunken)
+        natural_tier, natural_delta, natural_eligibility = tier_for(shrunken)
         # Only emit rules with material edge (skip NEUTRAL — they don't move conviction)
-        if tier_name == "NEUTRAL":
+        if natural_tier == "NEUTRAL":
             continue
+
+        # Phase 1 cohort rotation: classify state + apply tier cap
+        # for PROBATIONARY rules. Natural tier preserved on the rule
+        # dict for audit ("would have been LOCK, capped to LEAN
+        # pending probation graduation").
+        state = classify_state(n)
+        tier_name, delta, eligibility = apply_state_cap(
+            natural_tier, natural_delta, natural_eligibility, state,
+        )
 
         # Recency veto: 30d hit rate must be within RECENCY_VETO_DROP_PP of lifetime
         # AND not sign-flipped vs baseline.
@@ -291,6 +331,12 @@ def run(dryrun=False):
             "last30_pct": last30_pct,
             "last30_n": last30_n,
             "recency_status": recency_status,
+            # Phase 1 cohort rotation. natural_* show the un-capped values
+            # so downstream audits can answer "would this rule have been
+            # LOCK if it had more sample?"
+            "state": state,
+            "natural_tier": natural_tier,
+            "natural_delta": natural_delta,
         }
         rules.append(rule)
 
@@ -304,6 +350,14 @@ def run(dryrun=False):
         "soft_fade": len([r for r in rules if r["tier"] == "SOFT_FADE"]),
         "fade": len([r for r in rules if r["tier"] == "FADE"]),
         "hard_fade": len([r for r in rules if r["tier"] == "HARD_FADE"]),
+        # Phase 1 cohort rotation visibility
+        "probationary": len([r for r in rules if r.get("state") == "PROBATIONARY"]),
+        "active": len([r for r in rules if r.get("state") == "ACTIVE"]),
+        "probationary_capped": len([
+            r for r in rules
+            if r.get("state") == "PROBATIONARY"
+            and r.get("natural_tier") in ("LOCK", "STRONG_EDGE", "FADE", "HARD_FADE")
+        ]),
     }
 
     print()
