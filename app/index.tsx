@@ -5088,6 +5088,37 @@ Rules:
       if(data3 && data3.length > 0) return data3[0];
     }
 
+    // Fallback 3 (added 2026-06-12 after numbers-panel-missing report):
+    // Try the ET-derived "today" if it differs from gameEtDate. JS timezone
+    // math on commence_time can land on the wrong calendar day for late
+    // games whose UTC time spans midnight — the row exists, but the date
+    // filter excludes it. Also try ILIKE last-name match across both
+    // possible dates as a final safety net.
+    const todayEt = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+    if(todayEt !== gameEtDate) {
+      const { data: data4 } = await supabase
+        .from('mlb_game_context')
+        .select('*')
+        .eq('home_team', game.home_team)
+        .eq('away_team', game.away_team)
+        .eq('game_date', todayEt)
+        .maybeSingle();
+      if(data4) return data4;
+      if(homeLast && awayLast) {
+        const { data: data5 } = await supabase
+          .from('mlb_game_context')
+          .select('*')
+          .ilike('home_team', `%${homeLast}%`)
+          .ilike('away_team', `%${awayLast}%`)
+          .eq('game_date', todayEt)
+          .limit(1);
+        if(data5 && data5.length > 0) return data5[0];
+      }
+    }
+
+    // No match anywhere — log so we can see slate-wide patterns when this
+    // recurs. Without a context row, no Jerry struct, no numbers panel.
+    console.log(`[fetchMLBContext] miss: ${game.away_team} @ ${game.home_team} | tried dates: ${gameEtDate}${todayEt !== gameEtDate ? `, ${todayEt}` : ''}`);
     return null;
   } catch(e) {
     console.log('fetchMLBContext error:', e?.message);
