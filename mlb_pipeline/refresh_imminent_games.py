@@ -488,6 +488,16 @@ def run():
 
     print(f"\n  Refreshed {refreshed} row(s).")
 
+    # Lock immutable receipts for any game whose first pitch falls inside
+    # the capture window. Idempotent — already-locked games are skipped.
+    # Fails open so receipt-tracker bugs never block the watchdog's main
+    # lineup/SP refresh duties.
+    try:
+        import lock_game_receipts
+        lock_game_receipts.run(dryrun=False)
+    except Exception as e:
+        print(f"  ⚠ receipt lock failed: {type(e).__name__}: {e}")
+
     # If any lineups got confirmed this run, regenerate props so the new
     # lineup-dependent picks (hits Over/Under) surface for users.
     # Pitcher fill-ins also trigger the chain: props are SP-dependent and
