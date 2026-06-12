@@ -5508,10 +5508,25 @@ if(isLive) {
         if(_key) {
           const { data: serverRead } = await supabase
             .from('jerry_cache')
-            .select('narrative, data')
+            .select('narrative, data, fetched_at')
             .eq('cache_key', _key)
             .maybeSingle();
-          if(serverRead?.narrative) {
+          // Defensive freshness gate (2026-06-12): if the cached read is more
+          // than 6h old, skip it — the morning cron data is stale by evening
+          // game-time when starters/lineups have confirmed and ML lines have
+          // moved. The narrative MAY reference pitchers/lineups that aren't
+          // playing tonight (e.g. 6/12 DET@CLE pre-validator hallucinated
+          // Skubal). Falling through to the legacy LLM path is safer than
+          // serving a stale narrative with wrong attribution.
+          let _isStale = false;
+          if(serverRead?.fetched_at) {
+            const ageMs = Date.now() - new Date(serverRead.fetched_at).getTime();
+            if(ageMs > 6 * 60 * 60 * 1000) {
+              _isStale = true;
+              console.log(`[GameRead] cached read for ${_key} is ${Math.round(ageMs/60000)}min old — bypassing`);
+            }
+          }
+          if(serverRead?.narrative && !_isStale) {
             setGameNarrative(serverRead.narrative);
             let _s = serverRead.data;
             if(typeof _s === 'string') { try { _s = JSON.parse(_s); } catch(e) { _s = null; } }

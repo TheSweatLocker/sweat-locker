@@ -816,7 +816,13 @@ def build_struct(g, props, potd):
         # 30d): STRONG-tier picks hit 64.2% / +22.6% ROI. LIGHT and SKIP
         # tiers should never be cited as "the play" — frame as "no clean
         # read" instead.
+        # 2026-06-12: added resolver_side so Jerry surfaces BOTH the total
+        # AND side call when both fire STRONG+. Previously only resolver
+        # (total) was in the struct — Jerry never knew when the side
+        # resolver said STRONG, which created public-vs-app contradictions
+        # (we tweeted BAL ML STRONG, Jerry only mentioned Over total).
         "resolver": _resolver_block(g),
+        "resolver_side": _side_resolver_block(g),
         "meta": {
             "game_date": today_et(),
             "game_has_not_been_played": True,
@@ -873,6 +879,79 @@ def _resolver_block(g):
             cohort_under_strong_count=_count('under'),
             prop_reverse=pr_signal,
         )
+    except Exception:
+        return None
+
+
+def _side_resolver_block(g):
+    """Compute resolver landing call for the game's SIDE (ML/RL direction).
+
+    Parallel to _resolver_block but for sides. Jerry consumes this in the
+    `The Play` section — when side fires STRONG+, surface it alongside (or
+    instead of) the total play. Returns dict or None on failure.
+
+    Added 2026-06-12 to fix Jerry surfacing only the total play when both
+    total and side resolvers fire (caused public-vs-app contradiction on
+    SD@BAL — public posted BAL ML STRONG, Jerry only said Over total).
+    """
+    try:
+        from signal_resolver import resolve_side
+        from cohort_signals import evaluate_game_for_play
+
+        def _ct(play, direction):
+            m = evaluate_game_for_play(g, play, direction) or []
+            return len([x for x in m
+                        if x.get('tier') in ('LOCK', 'STRONG_EDGE', 'LEAN')
+                        and not x.get('id', '').endswith('|any')])
+
+        ml_h = sum(_ct(p, 'home') for p in ('v3_ml', 'v4_ml', 'jerry_ml', 'conf_ml'))
+        ml_a = sum(_ct(p, 'away') for p in ('v3_ml', 'v4_ml', 'jerry_ml', 'conf_ml'))
+        rl_h = sum(_ct(p, 'home') for p in ('v3_rl', 'v4_rl'))
+        rl_a = sum(_ct(p, 'away') for p in ('v3_rl', 'v4_rl'))
+
+        # Pull prop_reverse signal (same lookup as _resolver_block)
+        pr_signal = None
+        try:
+            import os as _os, requests as _rq
+            today = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
+            r = _rq.get(
+                f"{_os.environ.get('SUPABASE_URL')}/rest/v1/jerry_cache",
+                params={'select': 'data',
+                        'cache_key': f'eq.prop_reverse_signals_{today}'},
+                headers={'apikey': _os.environ.get('SUPABASE_KEY'),
+                         'Authorization': f"Bearer {_os.environ.get('SUPABASE_KEY')}"},
+                timeout=3,
+            )
+            rows = r.json() if r.status_code == 200 else []
+            if rows:
+                data = rows[0].get('data', {})
+                if isinstance(data, dict):
+                    key = f"{g.get('away_team')} @ {g.get('home_team')}"
+                    pr_signal = (data.get('signals') or {}).get(key)
+        except Exception:
+            pass
+
+        side = resolve_side(
+            close_spread=(g.get('close_spread') or g.get('open_spread')),
+            v3_spread=g.get('projected_spread'),
+            v4_spread=g.get('model_pred_spread'),
+            jerry_spread=g.get('jerry_pred_spread'),
+            ml_home_cohort_count=ml_h, ml_away_cohort_count=ml_a,
+            rl_home_cohort_count=rl_h, rl_away_cohort_count=rl_a,
+            confluence_net=g.get('signal_confluence_net'),
+            prop_reverse=pr_signal,
+        )
+        # Translate HOME/AWAY direction → actual team name for Jerry
+        if side and side.get('direction') in ('HOME', 'AWAY'):
+            side = dict(side)  # don't mutate the resolver's own return
+            picked_team = (g.get('home_team') if side['direction'] == 'HOME'
+                           else g.get('away_team'))
+            side['team'] = picked_team
+            # Stamp ML odds so Jerry can name the price
+            ml_field = 'home_ml_close' if side['direction'] == 'HOME' else 'away_ml_close'
+            ml_open = 'home_ml_open' if side['direction'] == 'HOME' else 'away_ml_open'
+            side['ml_odds'] = g.get(ml_field) or g.get(ml_open)
+        return side
     except Exception:
         return None
 
