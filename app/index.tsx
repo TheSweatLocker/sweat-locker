@@ -5139,7 +5139,20 @@ const fetchMLBPitchers = async (homePitcher, awayPitcher) => {
     return [];
   }
 };
+  // Stale-fetch guard (2026-06-13): every fetchGameNarrative call bumps a
+  // counter and captures its own ID. State setters check the ID before
+  // writing — if another click fired after this one, the older fetch is
+  // a no-op and can't overwrite the newer game's narrative/struct/loading.
+  // Fixes the "click Cubs → correct, back, click Brewers → see Cubs read"
+  // class of bug that race-conditioned even after the freshness gate.
+  const gameReadFetchIdRef = (globalThis as any).__gameReadFetchIdRef ||
+    ((globalThis as any).__gameReadFetchIdRef = { current: 0 });
   const fetchGameNarrative = async (game, scoreData) => {
+  // Increment + capture this fetch's ID. Any setter below that finds
+  // the ref has moved past our ID is from a superseded click — skip.
+  gameReadFetchIdRef.current += 1;
+  const myFetchId = gameReadFetchIdRef.current;
+  const isCurrent = () => myFetchId === gameReadFetchIdRef.current;
   const score = typeof scoreData === 'object' ? (scoreData?.total || 50) : (scoreData || 50);
   const spreadEdge = scoreData?.spreadEdge || 0;
   const sosDelta = scoreData?.sosDelta || 0;
@@ -5558,6 +5571,8 @@ if(isLive) {
             }
           }
           if(serverRead?.narrative && !_isStale) {
+            // Stale-fetch guard: if a later click happened, drop this result.
+            if(!isCurrent()) return;
             setGameNarrative(serverRead.narrative);
             let _s = serverRead.data;
             if(typeof _s === 'string') { try { _s = JSON.parse(_s); } catch(e) { _s = null; } }
@@ -5581,6 +5596,7 @@ if(isLive) {
       if(cachedNarrative) {
         const ageMin = (Date.now() - new Date(cachedNarrative.created_at).getTime()) / 60000;
         if(ageMin < 480) {
+          if(!isCurrent()) return;
           setGameNarrative(cachedNarrative.narrative);
           setGameNarrativeLoading(false);
           return;
@@ -5981,6 +5997,7 @@ ${dataQualityNote}`;
       //console.log('Jerry response status:', response.status);
       //console.log('Jerry response data:', JSON.stringify(data));
       const text = data?.content?.filter(b=>b.type==='text').map(b=>b.text).join('') || '';
+      if(!isCurrent()) return;
       setGameNarrative(text);
       // CLIENT-SIDE WRITEBACK DISABLED 2026-06-05.
       // The client-side Claude fallback was writing back jerry_cache rows
@@ -5999,11 +6016,11 @@ ${dataQualityNote}`;
       // the user just sees the live Claude reply this once.
     } catch(e) {
       //console.log('Jerry error:', e.message);
-      setGameNarrative('Jerry is reviewing the tape on this one. Check back shortly.');
+      if(isCurrent()) setGameNarrative('Jerry is reviewing the tape on this one. Check back shortly.');
     }
-    setGameNarrativeLoading(false);
+    if(isCurrent()) setGameNarrativeLoading(false);
   };
-  
+
   const fetchAltLines = async (game, sport) => {
   if(!game) return;
   const key = game.id || (game.away_team + game.home_team);
