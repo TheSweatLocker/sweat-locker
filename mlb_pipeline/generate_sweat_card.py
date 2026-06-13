@@ -233,12 +233,65 @@ def fetch_yesterday_recap():
     if y_card_rows:
         y_data = y_card_rows[0].get("data") or {}
         if isinstance(y_data.get("top_8"), list) and y_data["top_8"]:
+            # Overlay live prop results so the recap reflects current
+            # grading state. Yesterday's card top_8 was written at
+            # midnight while many late games were still pending; props
+            # graded by the morning resolve cron never flowed back into
+            # the stored card. Without this overlay, the Recap tab
+            # shows "Pending" for picks that actually won/lost hours
+            # ago (6/13 Misiorowski ER Under stuck as Pending on a CG
+            # shutout was the trigger). Match by player_name + prop
+            # parsed from the original label.
+            live_props = sb_get("mlb_pipeline_props", {
+                "game_date": f"eq.{yesterday}",
+                "result": "not.is.null",
+                "select": "player_name,prop_type,prop_line,direction,result",
+            }) or []
+            # Build lookup keyed by (player_name_lower, prop_type_lower)
+            prop_lookup = {}
+            for p in live_props:
+                k = ((p.get("player_name") or "").lower(),
+                     (p.get("prop_type") or "").lower())
+                prop_lookup[k] = p.get("result")
+
+            def _resolved_result(pick):
+                """Return the live-graded result if we can match this top_8
+                pick back to mlb_pipeline_props; else fall through to stored."""
+                stored = pick.get("result")
+                if stored and stored not in ("Pending", "pending", None, ""):
+                    return stored
+                label = (pick.get("label") or "").strip()
+                if not label:
+                    return stored
+                # Labels look like "Jacob Misiorowski Under 1.5 er under"
+                # — try suffix prop_type match.
+                low = label.lower()
+                # Try each known prop_type as suffix
+                for pt in ("er_over", "er_under", "ks_over", "ks_under",
+                           "ha_over", "ha_under", "bb_over", "bb_under",
+                           "outs_over", "outs_under", "hits_over",
+                           "hits_under"):
+                    pt_human = pt.replace("_", " ")  # "er over"
+                    if low.endswith(pt_human):
+                        # Player name is everything before the line + dir tokens.
+                        # Strip trailing "Over/Under N.N <pt_human>" pattern.
+                        name_part = label[: low.rfind(pt_human)].strip()
+                        # Remove trailing "Over 1.5" / "Under 0.5"
+                        toks = name_part.rsplit(" ", 2)
+                        if len(toks) >= 2 and toks[-2] in ("Over", "Under"):
+                            name_part = " ".join(toks[:-2]).strip()
+                        live = prop_lookup.get((name_part.lower(), pt))
+                        if live:
+                            return live
+                        break
+                return stored
+
             recap["top_8"] = [
                 {
                     "rank": p.get("rank"),
                     "tier": p.get("tier"),
                     "label": p.get("label"),
-                    "result": p.get("result"),
+                    "result": _resolved_result(p),
                     "game": p.get("game"),
                 }
                 for p in y_data["top_8"]
