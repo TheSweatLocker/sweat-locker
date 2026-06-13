@@ -178,15 +178,34 @@ def _matches_pitcher_hint(mlb_game, home_sp_name, away_sp_name):
 
 def run():
     print('Resolving game results...')
-    # Get games missing scores from last 7 days
+    # Get games missing scores from last 7 days OR stuck at 0-0 (which is
+    # essentially impossible in modern MLB regular season — last 0-0 final
+    # was 2018, and even those settle in 9 innings with at least 1 run).
+    # 6/12 PHI@MIL graded 6-0 final per MLB API but our row had home_score=0
+    # AND away_score=0 (from a partial earlier write that filled defaults
+    # instead of nulls). The is.null gate skipped it silently and a
+    # 5-pick public card lost grading on two legs (MIL RL + Painter ER
+    # Over) until the morning audit caught it manually.
     et_today = _et_today()
     week_ago = (et_today - timedelta(days=7)).isoformat()
     yesterday = (et_today - timedelta(days=1)).isoformat()
+    # Pull null-score rows
     r = requests.get(
         f'{SUPABASE_URL}/rest/v1/mlb_game_results?home_score=is.null&game_date=gte.{week_ago}&game_date=lte.{yesterday}&select=*',
         headers=HEADERS
     )
-    games = r.json()
+    games_null = r.json()
+    # Pull stale 0-0 rows separately (or.is.null doesn't compose cleanly
+    # across two columns in PostgREST — do as a second query and dedupe)
+    r2 = requests.get(
+        f'{SUPABASE_URL}/rest/v1/mlb_game_results?home_score=eq.0&away_score=eq.0&game_date=gte.{week_ago}&game_date=lte.{yesterday}&select=*',
+        headers=HEADERS
+    )
+    games_zero = r2.json() if r2.status_code == 200 else []
+    seen = {g.get('game_id') for g in games_null}
+    games = games_null + [g for g in games_zero if g.get('game_id') not in seen]
+    if games_zero:
+        print(f'  ⚠ {len(games_zero)} stale 0-0 row(s) re-checked (defensive: covers partial-write defaults)')
     print(f'Found {len(games)} games missing scores')
 
     resolved = 0
