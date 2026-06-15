@@ -742,6 +742,19 @@ def run():
     sc_resolved = _resolve_sweat_card_top8(week_ago, yesterday)
     print(f'Done! {sc_resolved} sweat card sets walked')
 
+    # ─── Live tier × category track record (added 2026-06-14) ────────────
+    # After everything has been graded, walk the resolver tier × category
+    # cross-cut and update jerry_cache.live_tier_records so pick
+    # recommendations can weight by what's actually working forward —
+    # the retroactive audit is the prior, this is the observed posterior.
+    # Fails open so a tracker bug never blocks the main grader.
+    try:
+        print('\nUpdating live tier × category track record...')
+        import track_live_tier_record
+        track_live_tier_record.run(dryrun=False)
+    except Exception as e:
+        print(f'  ⚠ live tier tracker failed: {type(e).__name__}: {e}')
+
     # ─── End-of-run blackout sanity check (added 2026-06-09) ────────────
     # If every resolution counter is 0 AND we just attempted multiple
     # categories, that's a strong signal something went wrong upstream
