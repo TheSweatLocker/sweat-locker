@@ -1227,9 +1227,31 @@ def build_card():
     # ≥ HITS_OVER_05_CARD_CONV_FLOOR) — same juice protection as the
     # top_props_by_type helper above.
     MAX_PER_TYPE_IN_TOP_PROPS = 3
+    # Re-rank by (tier × prop_type) live hit rate — added 2026-06-15 after
+    # the prop_tier_x_type analysis (n=1,213 over 30d) found huge variance:
+    # outs_under 96% vs PRIME bb_under 53% vs outs_over 36%. Conviction
+    # score alone didn't capture this. Now: boost EDGE types, demote
+    # CALIBRATED, fade COINFLIP/FADE — independent of conviction.
+    # See [[project_prop_tier_x_type_615]].
+    try:
+        from read_live_tier_record import prop_score_multiplier, prop_edge_class
+    except Exception:
+        prop_score_multiplier = lambda *a, **k: 1.0
+        prop_edge_class = lambda *a, **k: "INSUFFICIENT"
+
+    def _adjusted_conviction(p):
+        """Return conviction × tier×type multiplier. Drives the re-sort."""
+        base = p.get("conviction") or 0
+        mult = prop_score_multiplier(p.get("prop_type"), tier=p.get("tier"))
+        return base * mult
+
+    # Sort props by adjusted conviction so high-edge tier×type combos
+    # surface first, fade combos drop.
+    props_sorted = sorted(props, key=lambda p: -_adjusted_conviction(p))
+
     top_props_all = []
     type_counts = {}
-    for p in props:
+    for p in props_sorted:
         if p.get("tier") not in ("PRIME", "STRONG"):
             continue
         ptype = p.get("prop_type", "?")
@@ -1247,8 +1269,18 @@ def build_card():
         if elig == "demote" and (p.get("tier") or "").upper() == "STRONG":
             # demote STRONG to LEAN here would drop them out of the surface anyway
             continue
+        # Hard filter: tier×type combos with FADE class (<45% hit rate)
+        # never make the card regardless of conviction. e.g. outs_over
+        # at 36% hit rate over n=14 — engine has been wrong on this combo.
+        edge_class = prop_edge_class(ptype, tier=p.get("tier"))
+        if edge_class == "FADE":
+            continue
         if type_counts.get(ptype, 0) >= MAX_PER_TYPE_IN_TOP_PROPS:
             continue
+        # Stamp the live hit-rate band so downstream consumers (Jerry
+        # reads, app card) can surface "this prop type hits 96% live".
+        p["_tier_type_edge_class"] = edge_class
+        p["_tier_type_multiplier"] = round(prop_score_multiplier(ptype, tier=p.get("tier")), 2)
         top_props_all.append(p)
         type_counts[ptype] = type_counts.get(ptype, 0) + 1
         if len(top_props_all) >= 8:

@@ -68,6 +68,78 @@ def get_record(category, tier, window="30d"):
     return tier_data.get(window)
 
 
+def get_prop_type_record(prop_type, tier=None, window="30d"):
+    """Return hit-rate dict for a prop_type (optionally narrowed by tier).
+    Drives sweat-card filtering — use this to check if a (tier × prop_type)
+    combo is in the EDGE / CALIBRATED / FADE bucket before publishing.
+    Returns None on insufficient data."""
+    payload = _fetch()
+    if not payload:
+        return None
+    breakdown = payload.get("prop_type_breakdown") or {}
+    if tier:
+        tier_dict = (breakdown.get("by_tier") or {}).get(prop_type.lower(), {})
+        tier_rec = tier_dict.get(tier.upper())
+        return tier_rec.get(window) if tier_rec else None
+    overall = (breakdown.get("overall") or {}).get(prop_type.lower())
+    return overall.get(window) if overall else None
+
+
+def prop_edge_class(prop_type, tier=None, window="30d", min_n=10):
+    """Bucket a (prop_type[, tier]) combo into edge classes for filtering.
+    Returns one of: EDGE / CALIBRATED / COINFLIP / FADE / INSUFFICIENT.
+    Thresholds:
+      EDGE        ≥60% hit rate, n≥min_n
+      CALIBRATED  50-59%
+      COINFLIP    45-49% — slight fade
+      FADE        <45% — hard fade
+      INSUFFICIENT n<min_n
+    Use this to filter sweat card picks: skip COINFLIP / FADE combos
+    regardless of conviction score."""
+    rec = get_prop_type_record(prop_type, tier=tier, window=window)
+    if not rec:
+        return "INSUFFICIENT"
+    n = rec.get("actionable") or 0
+    if n < min_n:
+        return "INSUFFICIENT"
+    pct = rec.get("pct") or 0
+    if pct >= 60:
+        return "EDGE"
+    if pct >= 50:
+        return "CALIBRATED"
+    if pct >= 45:
+        return "COINFLIP"
+    return "FADE"
+
+
+def prop_score_multiplier(prop_type, tier=None, window="30d", min_n=10):
+    """Conviction-score multiplier driven by live (prop_type × tier) hit
+    rate. Sweat card uses this to re-rank props — high-edge combos get
+    boosted to the top, fade combos drop to the bottom or get filtered.
+
+    Returns a float multiplier:
+      ≥75% hit rate → 1.30 (huge boost — outs_under territory)
+      65-74%        → 1.15
+      60-64%        → 1.05
+      55-59%        → 1.00 (neutral)
+      50-54%        → 0.90
+      45-49%        → 0.75 (coin flip — discount)
+      <45%          → 0.50 (fade — heavy discount)
+      INSUFFICIENT  → 1.00 (don't penalize new types)
+    """
+    rec = get_prop_type_record(prop_type, tier=tier, window=window)
+    if not rec or (rec.get("actionable") or 0) < min_n:
+        return 1.0
+    pct = rec.get("pct") or 0
+    if pct >= 75: return 1.30
+    if pct >= 65: return 1.15
+    if pct >= 60: return 1.05
+    if pct >= 55: return 1.00
+    if pct >= 50: return 0.90
+    if pct >= 45: return 0.75
+    return 0.50
+
+
 def format_inline(category, tier, window="30d"):
     """Return one-line annotation for use in pick writeups.
     Returns '' if no data yet so callers can append unconditionally."""

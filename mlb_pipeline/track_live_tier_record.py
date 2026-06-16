@@ -207,13 +207,17 @@ def run(dryrun=False):
     results_map = {(r["game_date"], r["away_team"], r["home_team"]): r for r in results}
     print(f"  {len(results)} game results since {RESOLVER_LIVE_DATE}")
 
-    # Props since resolver went live (graded only)
+    # Props for tier×type — use a 30-day window independent of the
+    # resolver-live date because prop_type baseline rates are useful
+    # regardless of when the side/total resolvers were wired. We need
+    # a meaningful sample (200+) to call a type "edge" vs "coinflip".
+    prop_window_floor = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
     props = _fetch_all("mlb_pipeline_props", {
         "select": "game_date,tier,prop_type,result",
-        "game_date": f"gte.{RESOLVER_LIVE_DATE}",
+        "game_date": f"gte.{prop_window_floor}",
         "result": "not.is.null",
     })
-    print(f"  {len(props)} graded props since {RESOLVER_LIVE_DATE}")
+    print(f"  {len(props)} graded props since {prop_window_floor} (30d window)")
 
     # ── Walk each context, grade total + side ──
     total_records = defaultdict(list)  # tier → [(date, W/L/PUSH), ...]
@@ -251,6 +255,8 @@ def run(dryrun=False):
 
     # ── Walk props ──
     prop_records = defaultdict(list)  # tier → [(date, W/L), ...]
+    prop_type_x_tier = defaultdict(lambda: defaultdict(list))  # prop_type → tier → [(date, W/L), ...]
+    prop_type_overall = defaultdict(list)  # prop_type → [(date, W/L), ...] all tiers combined
     for p in props:
         tier = (p.get("tier") or "").upper()
         if tier not in ("PRIME", "STRONG", "LEAN", "LIGHT_LEAN"):
@@ -258,6 +264,10 @@ def run(dryrun=False):
         grade = _grade_prop(p.get("result"))
         if grade:
             prop_records[tier].append((p["game_date"], grade))
+            ptype = (p.get("prop_type") or "").lower()
+            if ptype:
+                prop_type_x_tier[ptype][tier].append((p["game_date"], grade))
+                prop_type_overall[ptype].append((p["game_date"], grade))
 
     # ── Build payload with lifetime / 30d / 7d windows ──
     payload = {
@@ -265,6 +275,14 @@ def run(dryrun=False):
         "resolver_live_since": RESOLVER_LIVE_DATE,
         "lookback_today": today,
         "categories": {},
+        # Prop sub-payload: type-level breakdown (overall + per-tier) so
+        # the prop pipeline can filter coinflip combos (PRIME bb_under
+        # at 53%) and chase real edges (outs_under at 96%). 30d window
+        # was the right horizon for the 6/15 analysis that drove this.
+        "prop_type_breakdown": {
+            "overall": {},        # prop_type → {lifetime, 30d, 7d}
+            "by_tier": {},        # prop_type → tier → {lifetime, 30d, 7d}
+        },
     }
     for category, records in (("TOTAL", total_records),
                               ("SIDE", side_records),
@@ -277,6 +295,22 @@ def run(dryrun=False):
                 "7d": _agg([g for _, g in _window_filter(items, 7, today)]),
             }
         payload["categories"][category] = cat_payload
+
+    # Prop type × tier breakdown
+    for ptype, items in prop_type_overall.items():
+        payload["prop_type_breakdown"]["overall"][ptype] = {
+            "lifetime": _agg([g for _, g in items]),
+            "30d": _agg([g for _, g in _window_filter(items, 30, today)]),
+            "7d": _agg([g for _, g in _window_filter(items, 7, today)]),
+        }
+    for ptype, tier_dict in prop_type_x_tier.items():
+        payload["prop_type_breakdown"]["by_tier"][ptype] = {}
+        for tier, items in tier_dict.items():
+            payload["prop_type_breakdown"]["by_tier"][ptype][tier] = {
+                "lifetime": _agg([g for _, g in items]),
+                "30d": _agg([g for _, g in _window_filter(items, 30, today)]),
+                "7d": _agg([g for _, g in _window_filter(items, 7, today)]),
+            }
 
     # ── Print summary ──
     print()
@@ -297,6 +331,19 @@ def run(dryrun=False):
                   f"({life['pct']}%, n={life['actionable']}) | "
                   f"30d {d30['w']}-{d30['l']} ({d30['pct']}%) | "
                   f"7d {d7['w']}-{d7['l']} ({d7['pct']}%)")
+
+    print()
+    print("PROP TYPE × OVERALL HIT RATE (30d):")
+    overall = payload["prop_type_breakdown"]["overall"]
+    rows = []
+    for ptype, windows in overall.items():
+        d30 = windows["30d"]
+        if (d30["actionable"] or 0) >= 10:
+            rows.append((d30["pct"] or 0, d30["actionable"], ptype, d30["w"], d30["l"]))
+    rows.sort(key=lambda r: -r[0])
+    for pct, n, ptype, w, l in rows:
+        marker = ("EDGE" if pct >= 60 else ("CALIBRATED" if pct >= 50 else "COINFLIP/FADE"))
+        print(f"  {ptype:<14} {w}-{l} ({pct}%, n={n})  {marker}")
 
     if dryrun:
         print("[track_live_tier_record] DRYRUN — not writing.")
