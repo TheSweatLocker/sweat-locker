@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from datetime import datetime, date, timedelta
 import time
 
+from season_calendar import is_in_season
+
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -161,6 +163,8 @@ def resolve_prop(prop):
                 time.sleep(0.3)
 
     elif sport == 'NBA':
+        if not is_in_season('NBA') or not os.environ.get('BDL_API_KEY'):
+            return None
         stat = get_nba_player_stats(player, game_date)
         if stat:
             if 'POINT' in market:

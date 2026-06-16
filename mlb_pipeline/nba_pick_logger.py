@@ -58,6 +58,8 @@ import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
+from season_calendar import is_in_season, season_status
+
 load_dotenv()
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
@@ -360,8 +362,21 @@ def resolve_picks():
     print(f'Graded {graded} picks')
 
 
+def _gate(mode):
+    if not is_in_season("NBA"):
+        print(f"[OFFSEASON]{season_status('NBA')} — skipping nba_pick_logger.py ({mode})")
+        return False
+    # log_picks uses Odds API only; --resolve uses BDL. Gate BDL on key presence.
+    if mode == 'resolve' and not BDL_API_KEY:
+        print("[OFFSEASON]BDL_API_KEY not set — skipping nba_pick_logger.py --resolve")
+        return False
+    return True
+
+
 if __name__ == '__main__':
     if '--resolve' in sys.argv:
-        resolve_results()
+        if _gate('resolve'):
+            resolve_results()
     else:
-        log_picks()
+        if _gate('log'):
+            log_picks()

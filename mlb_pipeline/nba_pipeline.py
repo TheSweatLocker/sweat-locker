@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 import time
 from datetime import datetime, timedelta
 
+from season_calendar import is_in_season, season_status
+
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -356,6 +358,13 @@ def upload_injuries(injuries):
         print(f"Error uploading injuries: {e}")
 
 def run():
+    if not is_in_season("NBA"):
+        print(f"[OFFSEASON]{season_status('NBA')} — skipping nba_pipeline.py")
+        return
+    if not BDL_API_KEY:
+        print("[OFFSEASON]BDL_API_KEY not set — skipping nba_pipeline.py (offseason or sub cancelled)")
+        return
+
     season = 2024
     season_str = '2025-26'
 

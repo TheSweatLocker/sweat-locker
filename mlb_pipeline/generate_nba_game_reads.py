@@ -20,6 +20,8 @@ from datetime import datetime, timedelta, timezone
 import requests
 from dotenv import load_dotenv
 
+from season_calendar import is_in_season, season_status
+
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -732,6 +734,10 @@ def upsert_read(game_id, narrative, struct):
 
 
 def run():
+    if not is_in_season("NBA"):
+        print(f"[OFFSEASON]{season_status('NBA')} — skipping generate_nba_game_reads.py")
+        return
+
     force = "--force" in sys.argv
     limit = None
     if "--limit" in sys.argv:

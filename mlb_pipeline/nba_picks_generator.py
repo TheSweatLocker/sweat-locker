@@ -27,6 +27,8 @@ import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
+from season_calendar import is_in_season, season_status
+
 load_dotenv()
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
@@ -362,6 +364,9 @@ def generate_picks_for_game(game, team_stats):
 
 
 def run():
+    if not is_in_season("NBA"):
+        print(f"[OFFSEASON]{season_status('NBA')} — skipping nba_picks_generator.py")
+        return
     print(f'NBA picks generator — {today_et()}')
     games = fetch_odds_games()
     if not games:
