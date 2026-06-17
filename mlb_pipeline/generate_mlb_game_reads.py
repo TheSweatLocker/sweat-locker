@@ -1392,6 +1392,111 @@ def _scrub_unverified_numbers(narrative, errors):
     return out
 
 
+# -------------------------------------------------- cross-dim narrative validator
+# Catches narrative reasoning that cites WRONG-DIMENSION signals to justify
+# a pick. Origin: 2026-06-17 morning incident where I (Claude) read the
+# sweat card's NRFI lock + ace-duel total signals and recommended HOU ML
+# as POTD, conflating total signals into a side picks rationale. This
+# class of error is structurally invited by Jerry struct mixing all
+# dimensions in one prompt input.
+#
+# Phase 5 of docs/engine_clarity_refactor.md.
+#
+# Scoping: only enforces when the read has an UNAMBIGUOUS POTD lean
+# (struct.is_potd + struct.potd_lean.type ∈ ml/spread/rl/over/under/total).
+# General multi-pick game reads naturally discuss multiple dimensions
+# and shouldn't be flagged. Only POTD-as-side or POTD-as-total reads
+# need rigid dim purity.
+#
+# ADVISORY-FIRST: logs but does not retry. Flip CROSS_DIM_ENFORCE after
+# baseline false-positive audit.
+
+CROSS_DIM_ENFORCE = False  # flip after baseline false-positive audit
+
+# Total-only signal keywords — illegitimate as primary rationale for a side pick.
+# These describe total/inning dynamics, not which team wins.
+_TOTAL_ONLY_PATTERNS = (
+    r"\bboth pitchers (?:elite|in elite form|lights[- ]?out|aces?)\b",
+    r"\bboth starters (?:elite|lights[- ]?out|in elite form|aces?)\b",
+    r"\bace duel\b",
+    r"\bNRFI (?:lock|signal|edge|score|sweet spot)\b",
+    r"\bno runs (?:in the )?first inning\b",
+    r"\b1st[- ]?inning (?:lock|suppression|signal)\b",
+    r"\bxERA gap\b",
+    r"\bpark[- ]?suppressed\b",
+)
+
+# Side-only signal keywords — illegitimate as primary rationale for a total pick.
+_SIDE_ONLY_PATTERNS = (
+    r"\bconfluence (?:net|edge|signals?)\b",
+    # autofade pattern: match the bare word and multi-segment suffixes
+    # like autofade_dog_high_conv. \b after underscore doesn't fire
+    # (underscore is a word char) so we use \w* to cover any suffix.
+    r"\bautofade\w*\b",
+    r"\bhome dog\b",
+    r"\bdawg cohort\b",
+    r"\b(?:home|away)[- ]?favorite signal\b",
+    r"\bspread[- ]?delta cohort\b",
+)
+
+_TOTAL_PATTERNS_RE = [_re.compile(p, _re.IGNORECASE) for p in _TOTAL_ONLY_PATTERNS]
+_SIDE_PATTERNS_RE = [_re.compile(p, _re.IGNORECASE) for p in _SIDE_ONLY_PATTERNS]
+
+
+def _classify_potd_dim(struct):
+    """Return 'side' | 'total' | 'prop' | None for POTD-classified reads.
+    Returns None for non-POTD reads (no cross-dim check applies)."""
+    if not struct.get("is_potd"):
+        return None
+    lean = struct.get("potd_lean") or {}
+    if isinstance(lean, str):
+        lean_type = lean.lower()
+    elif isinstance(lean, dict):
+        lean_type = (lean.get("type") or lean.get("lean_bet") or "").lower()
+    else:
+        return None
+    # Check "prop" FIRST — prop_type strings like "prop_er_over" contain
+    # "over"/"under" substrings that would falsely match the total check.
+    if "prop" in lean_type:
+        return "prop"
+    if any(k in lean_type for k in ("ml", "spread", "rl", "side")):
+        return "side"
+    if any(k in lean_type for k in ("over", "under", "total")):
+        return "total"
+    return None
+
+
+def _detect_cross_dim_leakage(narrative, struct):
+    """Find wrong-dimension signal citations in POTD narratives.
+    Returns list of error strings. Conservative — only flags POTD reads
+    with unambiguous dim classification.
+
+    For SIDE POTDs: flags total-only signal patterns.
+    For TOTAL POTDs: flags side-only signal patterns.
+    PROP POTDs: not enforced yet (props are independent).
+    Non-POTD reads: not enforced (multi-dim by design).
+    """
+    if not narrative or not isinstance(narrative, str):
+        return []
+    dim = _classify_potd_dim(struct)
+    if dim not in ("side", "total"):
+        return []  # only side/total POTDs validated
+
+    errors = []
+    patterns = _TOTAL_PATTERNS_RE if dim == "side" else _SIDE_PATTERNS_RE
+    forbidden_label = "TOTAL" if dim == "side" else "SIDE"
+
+    for p in patterns:
+        m = p.search(narrative)
+        if m:
+            errors.append(
+                f"{dim} POTD narrative cites {forbidden_label}-only signal: "
+                f"'{m.group(0).strip()}' — {forbidden_label} signals don't "
+                f"justify a {dim} pick"
+            )
+    return errors
+
+
 # ---------------------------------------------------------------- run
 
 def _matches(matchup_key, home, away):
@@ -1486,6 +1591,29 @@ def run():
                         else:
                             print(f"  ⛔ {away} @ {home}: numbers still unverified after retry — scrubbing")
                             narrative = _scrub_unverified_numbers(retry, retry_errors)
+
+        # Cross-dimensional narrative validator (Phase 5).
+        # Only enforces on POTD reads with unambiguous side/total classification.
+        # Advisory-first; flip CROSS_DIM_ENFORCE after baseline audit.
+        if narrative:
+            cd_errors = _detect_cross_dim_leakage(narrative, struct)
+            if cd_errors:
+                mode = "ENFORCE" if CROSS_DIM_ENFORCE else "ADVISORY"
+                print(f"  🔀 {away} @ {home}: cross-dim validator [{mode}] flagged {len(cd_errors)}:")
+                for e in cd_errors:
+                    print(f"      - {e}")
+                if CROSS_DIM_ENFORCE:
+                    retry = call_claude(
+                        _correction_prompt(prompt, narrative, cd_errors)
+                        .replace("ATTRIBUTION ERROR DETECTED",
+                                 "CROSS-DIMENSIONAL SIGNAL LEAKAGE DETECTED")
+                    )
+                    if retry:
+                        retry_errors = _detect_cross_dim_leakage(retry, struct)
+                        if not retry_errors:
+                            narrative = retry
+                        else:
+                            print(f"  ⛔ {away} @ {home}: cross-dim still leaking after retry — keeping original (manual review required)")
 
         if not narrative:
             print(f"  • {away} @ {home}: no narrative (claude failed / no key / attribution rejected) — storing struct only")
