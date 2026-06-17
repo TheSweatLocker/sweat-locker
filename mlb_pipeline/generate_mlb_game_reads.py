@@ -634,6 +634,62 @@ def _build_casual_summary(struct):
     return {"headlines": top, "bottom_line": bottom}
 
 
+# -------------------------------------------------- buy-down live calibration
+# Phase 6 of engine_clarity_refactor.md. Replaces the hardcoded buy-down
+# cohort hit rates that were stripped earlier today. Live rates computed
+# nightly by buy_down_calibration.py and stored in jerry_cache row
+# `buy_down_calibration`. Cohort key strings match the buy-down classifier
+# output in this module's buy_down section.
+
+_BUY_DOWN_COHORT_KEY = {
+    "consensus + loud edge": "consensus_loud",
+    "model edge >= 2.0": "model_edge_2",
+    "all three models agree": "consensus",
+}
+
+_BUY_DOWN_CALIB_CACHE = {"loaded": False, "by_key": {}}
+
+
+def _load_buy_down_calibration():
+    """Load buy_down_calibration jerry_cache row into the module cache once."""
+    if _BUY_DOWN_CALIB_CACHE["loaded"]:
+        return _BUY_DOWN_CALIB_CACHE["by_key"]
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jerry_cache",
+            params={"cache_key": "eq.buy_down_calibration", "select": "data"},
+            headers=SB_READ,
+            timeout=5,
+        )
+        rows = r.json() if r.status_code == 200 else []
+        if rows:
+            raw = rows[0].get("data")
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            for rec in (raw.get("records") or []):
+                k = (rec["cohort"], rec["direction"], rec["window"])
+                _BUY_DOWN_CALIB_CACHE["by_key"][k] = rec
+    except Exception:
+        pass
+    _BUY_DOWN_CALIB_CACHE["loaded"] = True
+    return _BUY_DOWN_CALIB_CACHE["by_key"]
+
+
+def _lookup_buy_down_calibration(cohort_key, direction):
+    """Return (hit_rate_pct, n, wins, losses) for the 60d window cell if
+    quotable (n>=30). Returns (None, None, None, None) otherwise."""
+    calib = _load_buy_down_calibration()
+    # Prefer 60d (balances recency vs sample size); fall back to 90d / 30d.
+    for window in ("60d", "90d", "30d"):
+        rec = calib.get((cohort_key, direction, window))
+        if rec and rec.get("quotable"):
+            return (rec["hit_rate"] * 100,
+                    rec["actionable_n"],
+                    rec["wins"],
+                    rec["losses"])
+    return (None, None, None, None)
+
+
 def build_struct(g, props, potd):
     home, away = g.get("home_team"), g.get("away_team")
     close_t = _f(g.get("close_total")) or _f(g.get("open_total"))
@@ -683,13 +739,11 @@ def build_struct(g, props, potd):
     #
     # 2026-06-17 — STRIPPED hardcoded hit-rate / juice claims. The previous
     # numbers ("80% OVER", "76% all-three", "+EV up to -400") were from a
-    # 6-week backtest at the time of original implementation and never
-    # refreshed. mlb_tier_calibration has NO buy_down_* tier rows — there's
-    # no live data source for these claims, so we were feeding stale numbers
-    # to Jerry as if they were live. Cohort structure (which models agree,
-    # how loud) is real and still surfaced. Hit rate / juice claims removed
-    # until a dynamic source is wired (queued: engine_clarity_refactor.md
-    # item 4). Jerry templates updated to omit % framing on this surface.
+    # 6-week backtest at original implementation and never refreshed.
+    # 2026-06-17 (later) — Phase 6 of engine_clarity_refactor wired live
+    # calibration via buy_down_calibration.py (nightly). Hit rates pulled
+    # from jerry_cache.buy_down_calibration row when n >= 30. Below
+    # threshold, cohort_hit_rate stays None and Jerry omits the % claim.
     buy_down_play = None
     if close_t is not None:
         v3 = _f(g.get("projected_total"))
@@ -723,18 +777,26 @@ def build_struct(g, props, potd):
                 cohort = "model edge >= 2.0"
             else:
                 cohort = "all three models agree"
+            # Look up live calibration (Phase 6). Returns (rate_pct, n) when
+            # the (cohort, direction, 60d) cell has n >= 30; None otherwise.
+            live_rate, live_n, live_w, live_l = _lookup_buy_down_calibration(
+                _BUY_DOWN_COHORT_KEY[cohort], direction)
+            if live_rate is not None:
+                cohort_hit_rate = f"{live_rate:.0f}% (live, {live_w}-{live_l} 60d)"
+                cohort_note = (f"Cohort: {cohort} - live hit rate {cohort_hit_rate} "
+                               f"vs cheated line {round(cheated_line, 1)}")
+            else:
+                cohort_hit_rate = None
+                cohort_note = f"Cohort: {cohort} (model agreement signal; calibration n<30 - rate withheld)"
             buy_down_play = {
                 "direction": direction,
                 "original_line": close_t,
                 "cheated_line": round(cheated_line, 1),
                 "buy_runs": BUY_DOWN_RUNS,
                 "cohort": cohort,
-                # cohort_hit_rate / max_juice_ev intentionally absent — no
-                # live data source. Jerry should reference the cohort STRUCTURE
-                # only, not invent a hit rate or juice ceiling.
-                "cohort_hit_rate": None,
-                "max_juice_ev": None,
-                "cohort_note": f"Cohort: {cohort} (model agreement signal; hit-rate calibration pending live wire)",
+                "cohort_hit_rate": cohort_hit_rate,
+                "max_juice_ev": None,  # juice ceiling not yet derived from live data
+                "cohort_note": cohort_note,
             }
 
     struct = {

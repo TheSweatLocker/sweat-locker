@@ -471,6 +471,24 @@ jobs:
           cd mlb_pipeline
           python cohort_calibration_report.py
 
+      # Buy-down calibration (2026-06-17 Phase 6 of engine clarity refactor).
+      # Computes live buy-down cheat-line hit rates from resolved games and
+      # writes to jerry_cache.buy_down_calibration. Consumed by
+      # generate_mlb_game_reads.py so Jerry cites real cohort percentages
+      # instead of the hardcoded numbers stripped earlier today. Runs after
+      # resolve_game_results.py so today's outcomes feed the rolling windows.
+      # continue-on-error so a calibration failure never blocks downstream
+      # surfaces — buy-down hit rate just stays None when stale (Jerry omits
+      # the % claim, doesn't fabricate it).
+      - name: Buy-down calibration
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python buy_down_calibration.py
+
       - name: Run NBA team stats update
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
