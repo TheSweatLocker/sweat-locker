@@ -2865,6 +2865,36 @@ def run():
                         f"  ⊘ {c['away_team']} @ {c['home_team']} ({cohort}): "
                         f"resolver {resolver_tier} (need STRONG+). {resolved.get('reason', '')}")
                     continue
+                # ── PROJECTION-MAGNITUDE GATE (added 2026-06-17) ──
+                # Resolver decides direction via model-DIRECTION classification
+                # (proj vs line as boolean over/under). It doesn't enforce that
+                # the projection MAGNITUDE materially agrees with the line.
+                # 6/17 BAL@SEA Over 7.5 POTD misfire: proj 6.9 vs line 7.5
+                # (proj direction = UNDER by 0.6 runs) but cohort LOUD OVER
+                # flipped the resolver to STRONG OVER. The model is literally
+                # saying "this is an UNDER game" while the cohort engine pushes
+                # OVER. That's a contested read, not a POTD.
+                # Rule: when resolver direction OPPOSES projection direction
+                # AND |projected - close| > 0.4 runs, this is a projection
+                # vs cohort contest. Downgrade for POTD eligibility.
+                proj_total_val = eval_target.get('projected_total')
+                close_total_val = (eval_target.get('close_total')
+                                   or eval_target.get('open_total'))
+                resolver_direction = resolved.get('direction')
+                if (proj_total_val is not None and close_total_val is not None
+                        and resolver_direction in ('OVER', 'UNDER')):
+                    proj_gap = float(proj_total_val) - float(close_total_val)
+                    # proj_gap > 0 = projection says OVER, < 0 = UNDER
+                    proj_dir = 'OVER' if proj_gap > 0 else ('UNDER' if proj_gap < 0 else None)
+                    if (proj_dir is not None and proj_dir != resolver_direction
+                            and abs(proj_gap) > 0.4):
+                        audit_log.append(
+                            f"  ⊘ {c['away_team']} @ {c['home_team']} ({cohort}): "
+                            f"projection gate — resolver picked {resolver_direction} but "
+                            f"projection ({proj_total_val:.1f}) is {abs(proj_gap):.1f} runs "
+                            f"on the {proj_dir} side of line ({close_total_val:.1f}). "
+                            f"Contested — POTD-disqualified.")
+                        continue
                 # Store resolver result on candidate so downstream consumers
                 # (Jerry reads, sweat card) can cite the landing call.
                 c['_resolver_tier'] = resolver_tier
