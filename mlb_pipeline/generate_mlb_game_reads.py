@@ -1236,6 +1236,162 @@ def _correction_prompt(original_prompt, narrative, errors):
     return header + original_prompt
 
 
+# -------------------------------------------------- number-attribution validator
+# Catches LLM-invented percentages and W-L counts in Jerry's narrative.
+# Origin: 2026-06-17 morning audit — buy-down cohort hit rates were
+# hardcoded ("76% / 80% / 87%") and fed to Jerry as if live. Same class
+# of error possible from LLM hallucination (Claude invents a number not
+# in the struct). This validator catches both surfaces by requiring
+# every percentage and W-L count in narrative to be traceable to the
+# struct within tolerance.
+#
+# Phase 4 of docs/engine_clarity_refactor.md.
+#
+# ADVISORY-FIRST MODE: in v1 we LOG violations but do NOT retry on them.
+# Want to measure false-positive rate over ~50 game reads before flipping
+# to retry-on-fail. Set NUMBER_VALIDATOR_ENFORCE = True to enable retry.
+
+NUMBER_VALIDATOR_ENFORCE = False  # flip after baseline false-positive audit
+
+_PCT_RE = _re.compile(r"(?<!\d)(\d{1,3}(?:\.\d{1,2})?)\s*%")
+_WL_RE = _re.compile(r"(?<!\d)(\d{1,3})\s*-\s*(\d{1,3})(?!\d)")
+# Hedging words that signal imprecise quotes — give wider tolerance
+_HEDGED_RE = _re.compile(
+    r"(?:approximately|around|roughly|about|near|~|nearly)\s+\d{1,3}",
+    _re.IGNORECASE,
+)
+
+
+def _walk_struct_numbers(obj, out=None):
+    """Recursively collect all numeric values from struct.
+    Returns a set of floats."""
+    if out is None:
+        out = set()
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _walk_struct_numbers(v, out)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _walk_struct_numbers(v, out)
+    elif isinstance(obj, bool):
+        pass  # bool is subclass of int — skip
+    elif isinstance(obj, (int, float)) and not (isinstance(obj, float) and obj != obj):  # not NaN
+        out.add(float(obj))
+    elif isinstance(obj, str):
+        # Parse percentages and decimals embedded in struct string values
+        # (e.g. "76.2% backtest", "70.4% historical")
+        for m in _re.finditer(r"(\d{1,3}(?:\.\d{1,3})?)\s*%?", obj):
+            try:
+                out.add(float(m.group(1)))
+            except ValueError:
+                pass
+    return out
+
+
+def _walk_struct_wl_pairs(obj, out=None):
+    """Collect W-L pair patterns from struct.
+    Both as structured fields (raw_wins/raw_losses, wins/losses)
+    and as embedded strings ("28-11 lifetime")."""
+    if out is None:
+        out = set()
+    if isinstance(obj, dict):
+        # Structured field shapes the cohort engine uses
+        for w_key, l_key in (("raw_wins", "raw_losses"), ("wins", "losses"), ("w", "l")):
+            w = obj.get(w_key); l = obj.get(l_key)
+            if isinstance(w, int) and isinstance(l, int):
+                out.add((w, l))
+        for v in obj.values():
+            _walk_struct_wl_pairs(v, out)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _walk_struct_wl_pairs(v, out)
+    elif isinstance(obj, str):
+        for m in _re.finditer(r"(?<!\d)(\d{1,3})\s*-\s*(\d{1,3})(?!\d)", obj):
+            try:
+                out.add((int(m.group(1)), int(m.group(2))))
+            except ValueError:
+                pass
+    return out
+
+
+def _detect_number_hallucinations(narrative, struct, pct_tol=2.5):
+    """Find percentages and W-L counts in narrative not traceable to struct.
+    Returns list of human-readable error strings. Conservative — only
+    flags obvious cases to keep false-positive rate low.
+
+    Rules:
+      - Percentages must match a struct number within pct_tol (default 2.5pp)
+      - W-L pairs must appear in struct (either ordering accepted) — only
+        flag pairs where W+L >= 15 (smaller pairs are likely game scores)
+      - Numbers near hedging words (approximately, around, ~) get wider tol
+    """
+    if not narrative or not isinstance(narrative, str):
+        return []
+
+    struct_nums = _walk_struct_numbers(struct)
+    struct_wl = _walk_struct_wl_pairs(struct)
+
+    errors = []
+
+    # ── Percentages ──
+    for m in _PCT_RE.finditer(narrative):
+        try:
+            val = float(m.group(1))
+        except ValueError:
+            continue
+        # Check if context within 30 chars suggests hedging — looser tolerance
+        start = max(0, m.start() - 30)
+        ctx = narrative[start:m.end()]
+        tol = pct_tol * 2 if _HEDGED_RE.search(ctx) else pct_tol
+        # Match val (0-100 form) against struct nums in same range.
+        # Also try val/100 (decimal form) but ONLY against struct nums in
+        # [0,1] — without this guard, 90% → 0.9 falsely matches xERA 4.3
+        # within 5pp tolerance. Decimals representing percentages live in
+        # [0,1]; matching against arbitrary struct floats is unsafe.
+        decimal_form = val / 100.0
+        matched = (
+            any(abs(val - n) <= tol for n in struct_nums)
+            or any(abs(decimal_form - n) <= (tol / 100.0)
+                   for n in struct_nums if 0 <= n <= 1)
+        )
+        if not matched:
+            errors.append(
+                f"unverified percentage: '{m.group(0).strip()}' "
+                f"(no struct value within ±{tol}pp)"
+            )
+
+    # ── W-L pairs ──
+    for m in _WL_RE.finditer(narrative):
+        try:
+            w = int(m.group(1)); l = int(m.group(2))
+        except ValueError:
+            continue
+        # Skip small pairs (game scores like 7-3) — only cohort-sized counts
+        if (w + l) < 15:
+            continue
+        # Both orderings accepted (struct may store loss-wins in some shapes)
+        if (w, l) not in struct_wl and (l, w) not in struct_wl:
+            errors.append(
+                f"unverified W-L count: '{m.group(0).strip()}' "
+                f"(not in struct cohort signals)"
+            )
+
+    return errors
+
+
+def _scrub_unverified_numbers(narrative, errors):
+    """Remove specific numbers flagged by the number validator from
+    narrative text. Used when NUMBER_VALIDATOR_ENFORCE is True and
+    retries exhausted — keeps the narrative but strips the lies."""
+    out = narrative
+    for e in errors:
+        # Extract the original text from error message ('<text>')
+        m = _re.search(r"'([^']+)'", e)
+        if m:
+            out = out.replace(m.group(1), "[unverified]")
+    return out
+
+
 # ---------------------------------------------------------------- run
 
 def _matches(matchup_key, home, away):
@@ -1304,6 +1460,32 @@ def run():
                 for e in errors:
                     print(f"      - {e}")
                 narrative = None
+
+        # Number-attribution validator (Phase 4 of engine clarity refactor).
+        # Advisory-first: log violations, don't retry. Flip NUMBER_VALIDATOR_ENFORCE
+        # to True after the baseline false-positive rate is measured.
+        if narrative:
+            num_errors = _detect_number_hallucinations(narrative, struct)
+            if num_errors:
+                mode = "ENFORCE" if NUMBER_VALIDATOR_ENFORCE else "ADVISORY"
+                print(f"  🔢 {away} @ {home}: number validator [{mode}] flagged {len(num_errors)}:")
+                for e in num_errors:
+                    print(f"      - {e}")
+                if NUMBER_VALIDATOR_ENFORCE:
+                    # One retry attempt with correction prompt asking Claude not
+                    # to invent numbers. Persistent failures get scrubbed.
+                    retry = call_claude(
+                        _correction_prompt(prompt, narrative, num_errors)
+                        .replace("ATTRIBUTION ERROR DETECTED",
+                                 "NUMBER HALLUCINATION DETECTED")
+                    )
+                    if retry:
+                        retry_errors = _detect_number_hallucinations(retry, struct)
+                        if not retry_errors:
+                            narrative = retry
+                        else:
+                            print(f"  ⛔ {away} @ {home}: numbers still unverified after retry — scrubbing")
+                            narrative = _scrub_unverified_numbers(retry, retry_errors)
 
         if not narrative:
             print(f"  • {away} @ {home}: no narrative (claude failed / no key / attribution rejected) — storing struct only")
