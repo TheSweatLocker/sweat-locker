@@ -1316,6 +1316,63 @@ def build_card():
         print(f"  ⚠️  Card auto-loosened to gate_window={gate_used} "
               f"(strict 30d gate left only {len(top_8_curated)} picks)")
 
+    # ─── DEDUP: top_props excludes anything already in top_8 (added 2026-06-18) ─
+    # Same principle as ladder-separate-from-public-5: surfaces shouldn't show
+    # the same pick twice. If a prop is in top_8 (the curated card lead), it
+    # shouldn't also appear in top_props (the "other props worth a look" list).
+    # Backfill top_props from the next-best candidates so the list stays at
+    # ~5-7 picks rather than shrinking when dedup removes overlap.
+    top_8_player_market = set()
+    for pick_8 in top_8_curated:
+        # top_8 entries from props carry player_name + label that encodes prop_type/line
+        if pick_8.get("type", "").startswith("prop_"):
+            pname = pick_8.get("player_name") or pick_8.get("player")
+            label = pick_8.get("label", "")
+            if pname:
+                top_8_player_market.add((pname, label))
+    if top_8_player_market:
+        before_count = len(top_props_all)
+        top_props_all = [
+            p for p in top_props_all
+            if (p.get("player_name"),
+                f"{p.get('player_name')} {p.get('direction','').title()} {p.get('prop_line')} "
+                f"{p.get('prop_type','').replace('_',' ')}") not in top_8_player_market
+            and not any(
+                p.get("player_name") == pname and
+                p.get("prop_type","").replace("_"," ").lower() in label.lower() and
+                str(p.get("prop_line")) in label
+                for pname, label in top_8_player_market
+            )
+        ]
+        # Backfill from props_sorted to maintain ~5-7 picks if dedup shrunk us
+        if len(top_props_all) < 5 and len(top_props_all) < before_count:
+            existing_keys = {(p.get("player_name"), p.get("prop_type"), p.get("prop_line"))
+                             for p in top_props_all}
+            for p in props_sorted:
+                if (p.get("tier") not in ("PRIME", "STRONG")
+                        and (p.get("tier") or "").upper() != "LEAN"):
+                    continue
+                k = (p.get("player_name"), p.get("prop_type"), p.get("prop_line"))
+                if k in existing_keys:
+                    continue
+                # Check it's not in top_8 either
+                if any(p.get("player_name") == pname and
+                       p.get("prop_type","").replace("_"," ").lower() in label.lower() and
+                       str(p.get("prop_line")) in label
+                       for pname, label in top_8_player_market):
+                    continue
+                ptype = p.get("prop_type", "?")
+                edge_class = prop_edge_class(ptype, tier=p.get("tier"))
+                if edge_class == "FADE":
+                    continue
+                p["_tier_type_edge_class"] = edge_class
+                p["_tier_type_multiplier"] = round(prop_score_multiplier(ptype, tier=p.get("tier")), 2)
+                top_props_all.append(p)
+                existing_keys.add(k)
+                if len(top_props_all) >= 7:
+                    break
+        print(f"  ✓ top_props dedup vs top_8: {before_count} → {len(top_props_all)} (excluded {before_count - len(top_props_all)} overlap{'s' if before_count - len(top_props_all) != 1 else ''})")
+
     # Stack alert detection — find games where 4+ hits picks are PRIME
     stack_games = {}
     for p in props:
