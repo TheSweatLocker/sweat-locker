@@ -591,7 +591,7 @@ def _playoff_guidance_block(struct):
                 f"(margin {away_pr.get('scoring_margin'):+.1f}/g). Compare these, not regular-season records."
             )
         lines.append(
-            "- Home team historically wins Game 1 of NBA Finals at ~70% rate. Worth mentioning if home is a "
+            "- Home team historically holds an edge in Game 1 of NBA Finals. Worth mentioning if home is a "
             "real edge per the model; do NOT mention if home is the model fade."
         )
     elif series:

@@ -2732,8 +2732,8 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
     # conviction was ≥85 pre-cap).
     if conviction >= 75 and conviction < 85:
         signals['hits_under_strong_cap'] = (
-            f'STRONG tier capped — 7d audit shows 41% hit rate (random baseline) '
-            f'in this conviction band. Need conviction ≥85 to qualify for STRONG '
+            f'STRONG tier capped — conviction band below the qualifying '
+            f'threshold. Need conviction ≥85 to qualify for STRONG '
             '(2026-06-09 wire)'
         )
         conviction = 74  # drops to LIGHT_LEAN ceiling

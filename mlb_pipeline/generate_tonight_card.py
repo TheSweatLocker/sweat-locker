@@ -212,7 +212,7 @@ def detect_bucket_plays(games, tier_rates):
             a1 = g.get("away_first_inning_era") or 0
             max_fi = max(float(h1), float(a1))
             if 6.0 <= max_fi < 8.0:
-                plays.append(f"- **{away} @ {home} YRFI** — NRFI {nrfi} + 1st-inn ERA {max_fi:.1f} (audit sweet spot, 30d ~63%)")
+                plays.append(f"- **{away} @ {home} YRFI** — NRFI {nrfi} + 1st-inn ERA {max_fi:.1f} (audit sweet spot)")
             else:
                 plays.append(f"- **{away} @ {home} YRFI lean** — NRFI {nrfi}, but 1st-inn ERA {max_fi:.1f} outside audit sweet spot — small sample")
         # Gassed bullpen flag was surfacing as "X 7-9 winner / +0.5 in 7-9"
