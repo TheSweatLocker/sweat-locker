@@ -3144,8 +3144,54 @@ def run():
             # historically (break-even, slight bleed) — published as
             # "🥉 BEST AVAILABLE" so users know it's not edge-grade, just the
             # engine's best read on a quiet slate. Only SKIP gets rejected.
-            if tier in ('STRONG', 'ELITE', 'LEAN', 'LIGHT', 'PASSTHROUGH'):
-                value_pool.append(c)
+            if tier not in ('STRONG', 'ELITE', 'LEAN', 'LIGHT', 'PASSTHROUGH'):
+                continue
+            # ── PROJECTION-MAGNITUDE GATE (added 2026-06-18) ──
+            # Phase 3 of engine_clarity_refactor — extends the same gate
+            # already applied to the audit pool (d27ec97) into the value
+            # fallback path. Without this, a candidate whose projection
+            # disagrees with the resolver's picked direction by >0.4 runs
+            # could still surface as a "secondary" POTD. Same rule:
+            # resolver direction must match projection direction OR
+            # |proj - close| ≤ 0.4 runs.
+            if c.get('lean_bet') == 'total' and tier in ('STRONG','ELITE','LEAN','LIGHT'):
+                eval_target_val = c.get('_ctx') or c
+                proj_v = eval_target_val.get('projected_total')
+                close_v = (eval_target_val.get('close_total')
+                           or eval_target_val.get('open_total'))
+                resolver_dir = None
+                try:
+                    from signal_resolver import resolve_total as _rt
+                    from cohort_signals import evaluate_game_for_play as _evx
+                    def _cct(d):
+                        m = _evx(eval_target_val, 'v3_tot', d) or []
+                        return len([x for x in m if x.get('tier') in ('LOCK','STRONG_EDGE')
+                                    and not x.get('id','').endswith('|any')])
+                    rr = _rt(
+                        close_total=close_v,
+                        v3_total=eval_target_val.get('projected_total'),
+                        v4_total=eval_target_val.get('model_pred_total'),
+                        jerry_total=eval_target_val.get('jerry_pred_total'),
+                        cohort_over_strong_count=_cct('over'),
+                        cohort_under_strong_count=_cct('under'),
+                        prop_reverse=None,
+                    )
+                    resolver_dir = rr.get('direction')
+                except Exception:
+                    pass
+                if (proj_v is not None and close_v is not None
+                        and resolver_dir in ('OVER', 'UNDER')):
+                    gap = float(proj_v) - float(close_v)
+                    proj_dir = ('OVER' if gap > 0 else
+                                ('UNDER' if gap < 0 else None))
+                    if (proj_dir is not None and proj_dir != resolver_dir
+                            and abs(gap) > 0.4):
+                        print(f"  ⊘ value-pool gate: {c['away_team']} @ {c['home_team']} "
+                              f"resolver {resolver_dir} but projection ({proj_v:.1f}) "
+                              f"is {abs(gap):.1f} runs on {proj_dir} side of line "
+                              f"({close_v:.1f}). Contested — value-tier rejected.")
+                        continue
+            value_pool.append(c)
 
         # Composite rank: prefer sweat-dim-promoted candidates with STRONG+
         # dim tier, then by confluence magnitude, then by sweat score.
