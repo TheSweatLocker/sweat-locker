@@ -496,7 +496,7 @@ def score_dawg(g, diag=None, ml_map=None):
         conviction += 6
         signals['wrc_diff'] = (
             f"{team_label} wRC+ {team_wrc:.0f} vs {opp_label} wRC+ {opp_wrc:.0f} "
-            f"(+{team_wrc - opp_wrc:.0f} dog hitter edge — 58% cohort)"
+            f"(+{team_wrc - opp_wrc:.0f} dog hitter edge)"
         )
     elif team_wrc >= opp_wrc + 5:
         conviction += 3

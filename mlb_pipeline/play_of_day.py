@@ -573,7 +573,7 @@ def _compute_supplementary_play(ctx):
             'label': 'YRFI',
             'tier': 'STRONG',
             'sub': f'NRFI {nrfi} + 1st-inn ERA {max_fi:.1f} (audit sweet spot)',
-            'audit_note': '1st-inn fragility 6-8 audits ~63%',
+            'audit_note': '1st-inn fragility 6-8 cohort (live calibration pending wire)',
         }
 
     # NRFI sweet spot 90-94 — companion-signal gated. Without companion
@@ -615,14 +615,14 @@ def _compute_supplementary_play(ctx):
                 'label': 'NRFI',
                 'tier': 'STRONG',
                 'sub': f'Score {nrfi}/100 + ' + ' + '.join(companions),
-                'audit_note': 'NRFI 90-94 audits 50% alone; companion-signal cohort untracked',
+                'audit_note': 'NRFI 90-94 cohort (live calibration pending wire); companion-signal layer required',
             }
         return {
             'type': 'NRFI',
             'label': 'NRFI',
             'tier': 'LEAN',
             'sub': f'Score {nrfi}/100 — no companion signal',
-            'audit_note': 'NRFI 90-94 alone audits 50% (n=22, 30d) — coinflip, surface only',
+            'audit_note': 'NRFI 90-94 alone — coinflip cohort historically, surface only',
         }
 
     # NRFI lean band 80-89 — supplementary LEAN tag only
@@ -773,13 +773,13 @@ def score_mlb_game(ctx, game_props=None, track=None):
     nrfi = ctx.get('nrfi_score') or 0
     nrfi_band_label = None  # tracked for total_play headline
     if 90 <= nrfi <= 94:
-        _add(total_drivers, 15, '⚾', 'NRFI sweet spot', f'Score {int(nrfi)}/100 — audit 50% (n=22, coinflip)')
+        _add(total_drivers, 15, '⚾', 'NRFI sweet spot', f'Score {int(nrfi)}/100 — 90-94 cohort band')
         nrfi_band_label = 'NRFI'
     elif 88 <= nrfi <= 89:
         _add(total_drivers, 11, '⚾', 'NRFI edge tier', f'Score {int(nrfi)}/100')
         nrfi_band_label = 'NRFI'
     elif nrfi >= 95:
-        _add(total_drivers, 6, '⚠️', 'NRFI volatile (95+)', f'Score {int(nrfi)}/100 — fade cohort 47.8%')
+        _add(total_drivers, 6, '⚠️', 'NRFI volatile (95+)', f'Score {int(nrfi)}/100 — fade cohort')
     elif 80 <= nrfi <= 89:
         _add(total_drivers, 7, '⚾', 'NRFI lean band', f'Score {int(nrfi)}/100')
         nrfi_band_label = 'NRFI'
@@ -790,7 +790,7 @@ def score_mlb_game(ctx, game_props=None, track=None):
         _a1 = float(ctx.get('away_first_inning_era') or 4.5)
         _max_fi = max(_h1, _a1)
         if 6.0 <= _max_fi < 8.0:
-            _add(total_drivers, 7, '🔥', 'YRFI sweet spot', f'NRFI {int(nrfi)} + 1st-inn ERA {_max_fi:.1f} — audit ~63%')
+            _add(total_drivers, 7, '🔥', 'YRFI sweet spot', f'NRFI {int(nrfi)} + 1st-inn ERA {_max_fi:.1f}')
             nrfi_band_label = 'YRFI'
     elif nrfi <= 40:
         _add(total_drivers, 4, '🔥', 'YRFI lean', f'NRFI score {int(nrfi)}/100')
@@ -989,7 +989,7 @@ def score_mlb_game(ctx, game_props=None, track=None):
                             except (TypeError, ValueError): fmv = None
                             if fmv is not None and -150 <= fmv <= -130 and conf_mag < 4:
                                 _add(side_drivers, -8, '⚠️', 'FAV ML trap band',
-                                     f'Fav at {fmv} hits 50% lifetime — no confluence rescue')
+                                     f'Fav at {fmv} — coinflip price band, no confluence rescue')
                 except (TypeError, ValueError):
                     pass
 
@@ -1037,14 +1037,14 @@ def score_mlb_game(ctx, game_props=None, track=None):
             is_dog_side = (pick_home_side != home_is_fav_chk)
             if not is_dog_side: continue
             _add(side_drivers, 6, '😴', 'Long-rest ace as DOG',
-                 f'{side.title()} SP: {rest_f:.0f}d rest + {xera_f:.2f} xERA (62.0% DOG RL lifetime)')
+                 f'{side.title()} SP: {rest_f:.0f}d rest + {xera_f:.2f} xERA (rested ace DOG cohort)')
             # Stacked: net=4 confluence ALSO points at this dog → +6 more (total +12)
             if conf_mag == 4 and conf_net is not None:
                 try:
                     conf_points_home = int(conf_net) > 0
                     if conf_points_home == pick_home_side:
                         _add(side_drivers, 6, '⚡', 'STACKED net=4 + rested ace DOG',
-                             '85% lifetime cohort — compound edge')
+                             'STACKED net=4 + rested ace DOG (compound cohort)')
                 except (TypeError, ValueError):
                     pass
 
@@ -1238,7 +1238,7 @@ def score_mlb_game(ctx, game_props=None, track=None):
         v4_under = (v4_total_signed is not None and abs(v4_total_signed) >= 0.5 and v4_total_signed < 0)
         if v3_under or v4_under:
             _add(total_drivers, 6, '🎯', 'PEAK confluence UNDER bias',
-                 '4-signal confluence games skew UNDER 58.1% lifetime')
+                 '4-signal confluence games — cohort skew UNDER')
 
     # ---- TOTAL: Jerry total — DEMOTED to supporting vote (2026-06-05) ----
     # 6/4 audit was a Jerry disaster: 1-8 on n=9 (11.1% direction accuracy)
@@ -1456,7 +1456,7 @@ def score_mlb_game(ctx, game_props=None, track=None):
             avg_gb = None
         if avg_gb is not None and avg_gb >= 0.50:
             _add(total_drivers, 4, '⛰️', 'Coors trap: high-GB doesn\'t save',
-                 f'avg GB% {avg_gb*100:.0f}% at extreme park = 67% OVER lifetime')
+                 f'avg GB% {avg_gb*100:.0f}% at extreme park (Coors high-GB trap cohort)')
 
     # ---- TOTAL: Weather (cold / wind) ----
     temp = float(ctx.get('temperature') or 70)
@@ -1996,7 +1996,7 @@ def _get_ump_total_signal(umpire_name, lean_side):
     if lean_side == 'over':
         if over_rate <= 0.45:
             return {'action': 'suppress', 'over_rate': over_rate,
-                    'note': f'ump {umpire_name} under-friendly ({over_rate:.2f} over rate, audit: 20% OVER hits) — suppressed'}
+                    'note': f'ump {umpire_name} under-friendly ({over_rate:.2f} over rate) — OVER suppressed'}
         if over_rate >= 0.55:
             return {'action': 'confirm', 'over_rate': over_rate,
                     'note': f'ump {umpire_name} over-friendly ({over_rate:.2f}) confirms'}

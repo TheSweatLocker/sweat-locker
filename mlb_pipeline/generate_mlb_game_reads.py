@@ -378,16 +378,21 @@ def _nrfi_tier(score):
     if score is None:
         return None
     s = float(score)
+    # 2026-06-18: stripped hardcoded % strings per feedback_sample_size_with_pct.
+    # Tier band labels remain (informational), but the percentages are removed
+    # until they're wired to live mlb_tier_calibration data (Tier A fix in
+    # hardcoded_percent_audit.md). When wired back in, rate comes with n
+    # alongside, gated at n >= 30.
     if s >= 95:
         return f"{score} — volatile 95+ band (historically a trap zone)"
     if s >= 90:
-        return f"{score} — PRIME 90-94 band (~69% audited 30d)"
+        return f"{score} — PRIME 90-94 band"
     if s >= 70:
-        return f"{score} — mild NRFI lean 70-79 (~58% audited)"
+        return f"{score} — mild NRFI lean 70-79"
     if s <= 25:
-        return f"{score} — YRFI lean (≤25, 30d audit ~48%; sweet spot is 1st-inn ERA 6-8 → 63%)"
+        return f"{score} — YRFI lean (≤25, sweet spot is 1st-inn ERA 6-8)"
     if s <= 40:
-        return f"{score} — soft YRFI lean (≤40, 30d audit ~48% — gate on 1st-inn ERA)"
+        return f"{score} — soft YRFI lean (≤40, gate on 1st-inn ERA)"
     return f"{score} — neutral"
 
 
