@@ -18,14 +18,29 @@ HEADERS = {
 }
 
 def get_pending_props():
-    """Get all pending prop grades from yesterday or earlier"""
+    """Get all pending prop rows from mlb_pipeline_props (the canonical
+    table generate_props.py writes to).
+
+    2026-06-18 fix: previously read from the LEGACY prop_grades table,
+    which generate_props.py stopped writing to ~2026-06-04. Result: no
+    props were being graded for ~2 weeks despite generate_props.py
+    writing 25+ rows/day to mlb_pipeline_props. This restored the
+    grading flow.
+
+    Filters:
+      - game_date <= yesterday (don't grade in-flight games)
+      - result is null (not yet graded)
+      - tier in {PRIME, STRONG, LEAN} (skip SKIP-tier props)
+    """
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/prop_grades?result=eq.Pending&created_at=lt.{yesterday}T23:59:59&select=*",
+        f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
+        f"?game_date=lte.{yesterday}&result=is.null"
+        f"&tier=in.(PRIME,STRONG,LEAN)&select=*",
         headers=HEADERS,
         timeout=30
     )
-    data = r.json()
+    data = r.json() if isinstance(r.json(), list) else []
     print(f"Found {len(data)} pending props to resolve")
     return data
 
@@ -82,6 +97,94 @@ def get_pitcher_strikeouts(game, pitcher_name):
     except Exception as e:
         return None
 
+def _pitcher_stat(game, pitcher_name, stat_key):
+    """Shared helper: pull a pitcher boxscore stat by key.
+    2026-06-18 — added to support hits-allowed, walks, ER, outs props
+    after migrating resolver from prop_grades to mlb_pipeline_props."""
+    try:
+        game_pk = game.get('gamePk')
+        r = requests.get(
+            f'https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore',
+            timeout=15
+        )
+        boxscore = r.json()
+        for team_side in ['home', 'away']:
+            pitchers = boxscore.get('teams', {}).get(team_side, {}).get('pitchers', [])
+            players = boxscore.get('teams', {}).get(team_side, {}).get('players', {})
+            for pitcher_id in pitchers:
+                player_key = f'ID{pitcher_id}'
+                player = players.get(player_key, {})
+                full_name = player.get('person', {}).get('fullName', '')
+                last_name = pitcher_name.split(' ')[-1].lower()
+                if last_name in full_name.lower():
+                    stats = player.get('stats', {}).get('pitching', {})
+                    v = stats.get(stat_key)
+                    if v is None:
+                        return None
+                    try:
+                        return int(v)
+                    except (TypeError, ValueError):
+                        try:
+                            return float(v)
+                        except (TypeError, ValueError):
+                            return None
+        return None
+    except Exception:
+        return None
+
+
+def get_pitcher_hits_allowed(game, pitcher_name):
+    """Hits allowed by pitcher — MLB Stats API boxscore key 'hits'."""
+    return _pitcher_stat(game, pitcher_name, 'hits')
+
+
+def get_pitcher_walks(game, pitcher_name):
+    """Walks (BB) by pitcher — key 'baseOnBalls'."""
+    return _pitcher_stat(game, pitcher_name, 'baseOnBalls')
+
+
+def get_pitcher_earned_runs(game, pitcher_name):
+    """Earned runs by pitcher — key 'earnedRuns'."""
+    return _pitcher_stat(game, pitcher_name, 'earnedRuns')
+
+
+def get_pitcher_outs(game, pitcher_name):
+    """Outs recorded — derive from inningsPitched (string like "5.2").
+    Format: integer.fractional where fractional is # of outs in next inning.
+    So "5.2" = 5 innings + 2 outs = 17 outs total."""
+    try:
+        game_pk = game.get('gamePk')
+        r = requests.get(
+            f'https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore',
+            timeout=15
+        )
+        boxscore = r.json()
+        for team_side in ['home', 'away']:
+            pitchers = boxscore.get('teams', {}).get(team_side, {}).get('pitchers', [])
+            players = boxscore.get('teams', {}).get(team_side, {}).get('players', {})
+            for pitcher_id in pitchers:
+                player_key = f'ID{pitcher_id}'
+                player = players.get(player_key, {})
+                full_name = player.get('person', {}).get('fullName', '')
+                last_name = pitcher_name.split(' ')[-1].lower()
+                if last_name in full_name.lower():
+                    ip = player.get('stats', {}).get('pitching', {}).get('inningsPitched')
+                    if ip is None:
+                        return None
+                    try:
+                        # "5.2" → 5 innings + 2 outs = 17 outs total
+                        s = str(ip)
+                        if '.' in s:
+                            whole, frac = s.split('.', 1)
+                            return int(whole) * 3 + int(frac[0])
+                        return int(s) * 3
+                    except (TypeError, ValueError):
+                        return None
+        return None
+    except Exception:
+        return None
+
+
 def get_batter_hits(game, batter_name):
     """Get batter hit total from MLB boxscore"""
     try:
@@ -133,65 +236,80 @@ def get_nba_player_stats(player_name, game_date):
         return None
 
 def resolve_prop(prop):
-    """Resolve a single prop grade to Win/Loss"""
-    sport = prop.get('sport')
-    market = prop.get('market', '').upper()
-    player = prop.get('player', '')
-    line = float(prop.get('line', 0) or 0)
-    best_side = prop.get('best_side', 'Over')
-    game = prop.get('game', '')
-    created_at = prop.get('created_at', '')
-    game_date = created_at[:10] if created_at else None
+    """Resolve a single mlb_pipeline_props row to Win/Loss/Push.
 
-    if not game_date:
+    2026-06-18 schema migration: column names changed when moving from
+    prop_grades to mlb_pipeline_props:
+      player    -> player_name
+      market    -> prop_type   (e.g. 'ks_over', 'hits_under')
+      line      -> prop_line
+      best_side -> direction   ('over' / 'under', lowercase)
+      sport     -> (always MLB in this table — no sport column)
+      game      -> matchup
+      created_at-> game_date   (used directly, no slicing)
+    """
+    prop_type = (prop.get('prop_type') or '').lower()
+    player = prop.get('player_name', '')
+    line = float(prop.get('prop_line', 0) or 0)
+    direction = (prop.get('direction') or 'over').lower()
+    matchup = prop.get('matchup', '')
+    game_date = prop.get('game_date')
+
+    if not game_date or not matchup:
         return None
 
     actual_value = None
-
-    if sport == 'MLB':
-        # Parse teams from game string "Away @ Home"
-        parts = game.split(' @ ')
-        if len(parts) == 2:
-            away_team = parts[0].strip()
-            home_team = parts[1].strip()
-            mlb_game = get_mlb_game_result(home_team, away_team, game_date)
-            if mlb_game:
-                if 'STRIKEOUT' in market:
-                    actual_value = get_pitcher_strikeouts(mlb_game, player)
-                elif 'HIT' in market or 'BATTER' in market:
-                    actual_value = get_batter_hits(mlb_game, player)
-                time.sleep(0.3)
-
-    elif sport == 'NBA':
-        if not is_in_season('NBA') or not os.environ.get('BDL_API_KEY'):
-            return None
-        stat = get_nba_player_stats(player, game_date)
-        if stat:
-            if 'POINT' in market:
-                actual_value = stat.get('pts')
-            elif 'REBOUND' in market:
-                actual_value = stat.get('reb')
-            elif 'ASSIST' in market:
-                actual_value = stat.get('ast')
+    parts = matchup.split(' @ ')
+    if len(parts) != 2:
+        return None
+    away_team = parts[0].strip()
+    home_team = parts[1].strip()
+    mlb_game = get_mlb_game_result(home_team, away_team, game_date)
+    if not mlb_game:
+        return None
+    # Map prop_type to the actual-value fetcher
+    if prop_type in ('ks_over', 'ks_under') or 'strikeout' in prop_type:
+        actual_value = get_pitcher_strikeouts(mlb_game, player)
+    elif prop_type in ('hits_over', 'hits_under'):
+        actual_value = get_batter_hits(mlb_game, player)
+    elif prop_type in ('ha_over', 'ha_under'):
+        # Pitcher hits allowed — use the same boxscore fetcher;
+        # extend get_pitcher_strikeouts pattern to read hits allowed
+        actual_value = get_pitcher_hits_allowed(mlb_game, player)
+    elif prop_type in ('bb_over', 'bb_under'):
+        actual_value = get_pitcher_walks(mlb_game, player)
+    elif prop_type in ('er_over', 'er_under'):
+        actual_value = get_pitcher_earned_runs(mlb_game, player)
+    elif prop_type in ('outs_over', 'outs_under'):
+        actual_value = get_pitcher_outs(mlb_game, player)
+    time.sleep(0.3)
 
     if actual_value is None:
         return None
 
-    # Determine Win/Loss
-    if best_side == 'Over':
-        result = 'Win' if actual_value > line else 'Loss'
+    # Determine Win/Loss/Push (push when actual equals line, since
+    # lines on most prop markets are integer.5)
+    if direction == 'over':
+        if actual_value > line: result = 'Win'
+        elif actual_value < line: result = 'Loss'
+        else: result = 'Push'
     else:
-        result = 'Win' if actual_value < line else 'Loss'
+        if actual_value < line: result = 'Win'
+        elif actual_value > line: result = 'Loss'
+        else: result = 'Push'
 
-    print(f"  {player} {market} {best_side} {line} → actual: {actual_value} → {result}")
-    return result
+    print(f"  {player} {prop_type} {direction} {line} -> actual {actual_value} -> {result}")
+    return result, actual_value
 
-def update_prop_result(prop_id, result):
-    """Update prop grade result in Supabase"""
+def update_prop_result(prop_id, result, actual_value=None):
+    """Update prop result + final_value on the mlb_pipeline_props row."""
+    payload = {"result": result, "resolved_at": datetime.now().isoformat()}
+    if actual_value is not None:
+        payload["final_value"] = actual_value
     r = requests.patch(
-        f"{SUPABASE_URL}/rest/v1/prop_grades?id=eq.{prop_id}",
+        f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?id=eq.{prop_id}",
         headers=HEADERS,
-        json={"result": result, "resolved_at": datetime.now().isoformat()}
+        json=payload,
     )
     return r.status_code in [200, 201, 204]
 
@@ -209,14 +327,11 @@ def run():
 
     for prop in pending:
         try:
-            sport = prop.get('sport')
-            if sport not in ['MLB', 'NBA']:
-                skipped += 1
-                continue
-
-            result = resolve_prop(prop)
-            if result:
-                if update_prop_result(prop['id'], result):
+            # mlb_pipeline_props has no sport column — all rows are MLB.
+            outcome = resolve_prop(prop)
+            if outcome:
+                result, actual_value = outcome
+                if update_prop_result(prop['id'], result, actual_value):
                     resolved += 1
                 else:
                     failed += 1
@@ -224,10 +339,10 @@ def run():
                 skipped += 1
 
         except Exception as e:
-            print(f"Error resolving {prop.get('player')}: {e}")
+            print(f"Error resolving {prop.get('player_name')}: {e}")
             failed += 1
 
-    print(f"\nDone! ✅ {resolved} resolved, ❌ {failed} errors, ⏭ {skipped} skipped")
+    print(f"\nDone! {resolved} resolved, {failed} errors, {skipped} skipped")
 
 if __name__ == "__main__":
     run()
