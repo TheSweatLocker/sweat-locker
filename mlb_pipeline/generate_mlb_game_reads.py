@@ -1315,8 +1315,22 @@ def _correction_prompt(original_prompt, narrative, errors):
 
 NUMBER_VALIDATOR_ENFORCE = False  # flip after baseline false-positive audit
 
+# Minimum sample size for a quoted percentage to be considered "valid"
+# without requiring an explicit n citation. Below this, the percentage
+# must have n called out in the same sentence (or omitted entirely).
+PCT_QUOTABLE_MIN_N = 30
+
 _PCT_RE = _re.compile(r"(?<!\d)(\d{1,3}(?:\.\d{1,2})?)\s*%")
 _WL_RE = _re.compile(r"(?<!\d)(\d{1,3})\s*-\s*(\d{1,3})(?!\d)")
+# Patterns for sample-size citations that should follow a percentage:
+# "n=42", "over 158 games", "across 50 starts", "based on 28-11",
+# "in 600 attempts" — used to validate that quoted %s are sample-gated.
+_N_PROXIMITY_RE = _re.compile(
+    r"(?:n\s*=\s*\d+|\d+\s*(?:games|starts|attempts|samples|n)|"
+    r"over\s+\d+|across\s+\d+|based\s+on\s+\d+|in\s+\d+|"
+    r"(?:^|\s)\d+-\d+(?:\s+lifetime)?)",
+    _re.IGNORECASE,
+)
 # Hedging words that signal imprecise quotes — give wider tolerance
 _HEDGED_RE = _re.compile(
     r"(?:approximately|around|roughly|about|near|~|nearly)\s+\d{1,3}",
@@ -1421,6 +1435,30 @@ def _detect_number_hallucinations(narrative, struct, pct_tol=2.5):
                 f"unverified percentage: '{m.group(0).strip()}' "
                 f"(no struct value within ±{tol}pp)"
             )
+            continue
+        # ── Sample-size gating check (added 2026-06-18) ──
+        # A percentage that matches a struct value but lacks any nearby
+        # n citation should be flagged as ungated. Window: 50 chars before
+        # AND after the % token. If no n pattern in window AND we can't
+        # find a struct W-L pair that explains the n implicitly, flag.
+        proximity_start = max(0, m.start() - 50)
+        proximity_end = min(len(narrative), m.end() + 50)
+        window = narrative[proximity_start:proximity_end]
+        has_nearby_n = bool(_N_PROXIMITY_RE.search(window))
+        if not has_nearby_n:
+            # Check whether the matched struct value comes from a high-n
+            # source (any W-L pair in struct with W+L >= PCT_QUOTABLE_MIN_N
+            # implicitly backs this %). If no high-n backing exists either,
+            # the % is ungated by sample size.
+            has_high_n_backing = any(
+                (w + l) >= PCT_QUOTABLE_MIN_N for w, l in struct_wl
+            )
+            if not has_high_n_backing:
+                errors.append(
+                    f"ungated percentage: '{m.group(0).strip()}' "
+                    f"cited without nearby sample size and no struct W-L "
+                    f"pair has n >= {PCT_QUOTABLE_MIN_N}"
+                )
 
     # ── W-L pairs ──
     for m in _WL_RE.finditer(narrative):

@@ -98,6 +98,43 @@ errors = ["unverified percentage: '80%' (no struct value)"]
 scrubbed = _scrub_unverified_numbers("Cohort hits 80% historical.", errors)
 check("scrub replaces 80% with [unverified]", "[unverified]" in scrubbed, True)
 
+print("\n[sample-size gating]")
+# Struct with high-n W-L pair
+high_n_struct = {
+    "cohort_signals": {
+        "matched_plays": {"v3_tot": [{"shrunken_pct": 70.4, "raw": "28-11 lifetime (39 games)"}]}
+    },
+}
+# % with explicit n citation nearby — should pass
+gated = "Cohort hits 70% across 39 games."
+check_count("% with 'across 39 games' passes", _detect_number_hallucinations(gated, high_n_struct), 0)
+
+# % with W-L count nearby — should pass (W-L is a proximity n signal)
+wl_gated = "Cohort hits 70% — 28-11 lifetime."
+check_count("% with W-L nearby passes", _detect_number_hallucinations(wl_gated, high_n_struct), 0)
+
+# % WITHOUT any n citation, but struct has high-n backing — should pass
+implicit_backed = "Cohort hits 70%."  # struct has 28-11 = 39 >= 30
+check_count("% with high-n struct backing passes", _detect_number_hallucinations(implicit_backed, high_n_struct), 0)
+
+# Struct WITHOUT any high-n backing
+low_n_struct = {
+    "cohort_signals": {
+        "matched_plays": {"v3_tot": [{"shrunken_pct": 70.4, "raw": "5-2 lifetime (7 games)"}]}
+    },
+}
+# % without nearby n AND no high-n struct backing — should FLAG as ungated
+ungated = "Cohort hits 70%."
+errs = _detect_number_hallucinations(ungated, low_n_struct)
+flagged_ungated = [e for e in errs if "ungated" in e]
+check_count("ungated % with low-n struct flagged", flagged_ungated, 1)
+
+# Same % WITH nearby n — should pass even with low-n struct
+gated_explicit = "Cohort hits 70% based on 7 games."
+errs = _detect_number_hallucinations(gated_explicit, low_n_struct)
+flagged_ungated = [e for e in errs if "ungated" in e]
+check_count("low-n % with explicit n citation passes ungated check", flagged_ungated, 0)
+
 print(f"\n{'='*40}")
 print(f"  {passed} passed, {failed} failed")
 print(f"{'='*40}")
