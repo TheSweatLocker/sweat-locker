@@ -265,15 +265,32 @@ def _cohort_apply_to_dim(ctx, drivers, play_dict, dim_type, track):
     if len(matches) > 1:
         detail += f" — top of {len(matches)} matched"
 
+    # Direction for net-by-direction scoring (Phase 2.5). When cohort
+    # CONFIRMS the picked side, vote for that side. When it FADES, vote
+    # for the opposite. Note total_delta sign already encodes confirm
+    # (positive) vs fade (negative), and the direction variable holds the
+    # picked side (HOME/AWAY for sides, OVER/UNDER for totals).
+    if dim_type == 'side':
+        picked_side = 'HOME' if str(direction).lower() == 'home' else 'AWAY'
+        opp_side = 'AWAY' if picked_side == 'HOME' else 'HOME'
+    else:  # total
+        picked_side = 'OVER' if str(direction).lower() == 'over' else 'UNDER'
+        opp_side = 'UNDER' if picked_side == 'OVER' else 'OVER'
+    drv_direction = picked_side if total_delta > 0 else opp_side
+    # For net scoring, points should always be positive — the direction
+    # field carries the directional vote.
+    drv_points = abs(total_delta)
     drivers.append({
         'emoji': emoji, 'label': label,
-        'points': total_delta, 'detail': detail,
+        'points': drv_points, 'detail': detail,
+        'direction': drv_direction,
     })
     # Also record in legacy contribution track for audit
     track.setdefault('contributions', []).append({
         'emoji': emoji, 'label': label,
-        'points': total_delta, 'detail': detail,
+        'points': drv_points, 'detail': detail,
         'source': 'cohort_signals_v1',
+        'direction': drv_direction,
     })
 
 
@@ -750,13 +767,24 @@ def score_mlb_game(ctx, game_props=None, track=None):
             entry['detail'] = detail
         track.setdefault('evidence', []).append(entry)
 
-    def _add(bucket_drivers, points, emoji, label, detail=None):
+    def _add(bucket_drivers, points, emoji, label, detail=None, direction=None):
         """Routes a contribution to BOTH the legacy track AND the per-
-        dimension drivers list, so sweat_breakdown.dimensions carries the
-        decomposition without duplicating call sites."""
+        dimension drivers list. Direction is the directional vote this
+        driver casts — used by net-by-direction scoring (Phase 2.5 of
+        engine_clarity_refactor.md). Values:
+          For total bucket: 'OVER' | 'UNDER' | None (neutral)
+          For side bucket:  'HOME' | 'AWAY' | None (neutral)
+          For prop bucket:  always aligned with the surfaced pick, so
+                            direction is implicit — pass None.
+        Neutral drivers add to base; directional drivers net against
+        opposing direction so conflicting-signal games don't inflate
+        the score as if they were directionally clean.
+        """
         if points > 0:
             _contrib(emoji, label, points, detail)
-            bucket_drivers.append({'emoji': emoji, 'label': label, 'points': points, 'detail': detail})
+            bucket_drivers.append({'emoji': emoji, 'label': label,
+                                   'points': points, 'detail': detail,
+                                   'direction': direction})
 
     # Pre-compute prop alignment once — used by TOTAL sub-score.
     prop_dir, prop_dir_prime, prop_dir_strong, prop_dir_top = _compute_prop_alignment(game_props)
@@ -773,27 +801,27 @@ def score_mlb_game(ctx, game_props=None, track=None):
     nrfi = ctx.get('nrfi_score') or 0
     nrfi_band_label = None  # tracked for total_play headline
     if 90 <= nrfi <= 94:
-        _add(total_drivers, 15, '⚾', 'NRFI sweet spot', f'Score {int(nrfi)}/100 — 90-94 cohort band')
+        _add(total_drivers, 15, '⚾', 'NRFI sweet spot', f'Score {int(nrfi)}/100 — 90-94 cohort band', direction='UNDER')
         nrfi_band_label = 'NRFI'
     elif 88 <= nrfi <= 89:
-        _add(total_drivers, 11, '⚾', 'NRFI edge tier', f'Score {int(nrfi)}/100')
+        _add(total_drivers, 11, '⚾', 'NRFI edge tier', f'Score {int(nrfi)}/100', direction='UNDER')
         nrfi_band_label = 'NRFI'
     elif nrfi >= 95:
-        _add(total_drivers, 6, '⚠️', 'NRFI volatile (95+)', f'Score {int(nrfi)}/100 — fade cohort')
+        _add(total_drivers, 6, '⚠️', 'NRFI volatile (95+)', f'Score {int(nrfi)}/100 — fade cohort', direction='UNDER')
     elif 80 <= nrfi <= 89:
-        _add(total_drivers, 7, '⚾', 'NRFI lean band', f'Score {int(nrfi)}/100')
+        _add(total_drivers, 7, '⚾', 'NRFI lean band', f'Score {int(nrfi)}/100', direction='UNDER')
         nrfi_band_label = 'NRFI'
     elif 70 <= nrfi <= 79:
-        _add(total_drivers, 5, '⚾', 'NRFI lean', f'Score {int(nrfi)}/100')
+        _add(total_drivers, 5, '⚾', 'NRFI lean', f'Score {int(nrfi)}/100', direction='UNDER')
     elif nrfi <= 30:
         _h1 = float(ctx.get('home_first_inning_era') or 4.5)
         _a1 = float(ctx.get('away_first_inning_era') or 4.5)
         _max_fi = max(_h1, _a1)
         if 6.0 <= _max_fi < 8.0:
-            _add(total_drivers, 7, '🔥', 'YRFI sweet spot', f'NRFI {int(nrfi)} + 1st-inn ERA {_max_fi:.1f}')
+            _add(total_drivers, 7, '🔥', 'YRFI sweet spot', f'NRFI {int(nrfi)} + 1st-inn ERA {_max_fi:.1f}', direction='OVER')
             nrfi_band_label = 'YRFI'
     elif nrfi <= 40:
-        _add(total_drivers, 4, '🔥', 'YRFI lean', f'NRFI score {int(nrfi)}/100')
+        _add(total_drivers, 4, '🔥', 'YRFI lean', f'NRFI score {int(nrfi)}/100', direction='OVER')
 
     # ---- TOTAL: Pitcher xERA mismatch ----
     # Moved from side bucket 2026-05-29 — a 2-run xERA gap is a TOTAL signal
@@ -812,23 +840,23 @@ def score_mlb_game(ctx, game_props=None, track=None):
 
     # ---- TOTAL: Both pitchers elite (ace duel — points at UNDER) ----
     if home_xera <= 3.0 and away_xera <= 3.0:
-        _add(total_drivers, 10, '🎯', 'Ace duel', 'Both starters ≤3.00 xERA')
+        _add(total_drivers, 10, '🎯', 'Ace duel', 'Both starters ≤3.00 xERA', direction='UNDER')
     elif home_xera <= 3.5 and away_xera <= 3.5:
-        _add(total_drivers, 5, '🎯', 'Quality matchup', 'Both starters ≤3.50 xERA')
+        _add(total_drivers, 5, '🎯', 'Quality matchup', 'Both starters ≤3.50 xERA', direction='UNDER')
 
     # ---- TOTAL: 1st-inning extremes (NRFI lock or YRFI fade) ----
     h1 = float(ctx.get('home_first_inning_era') or 4.5)
     a1 = float(ctx.get('away_first_inning_era') or 4.5)
     if 6.0 <= max(h1, a1) < 8.0:
-        _add(total_drivers, 8, '🔥', 'Fragile starter sweet spot', f'1st-inn ERA {max(h1,a1):.1f}')
+        _add(total_drivers, 8, '🔥', 'Fragile starter sweet spot', f'1st-inn ERA {max(h1,a1):.1f}', direction='OVER')
     elif 8.0 <= max(h1, a1):
-        _add(total_drivers, 2, '🔥', '1st-inn fragile (8+, noisy)', f'1st-inn ERA {max(h1,a1):.1f}')
+        _add(total_drivers, 2, '🔥', '1st-inn fragile (8+, noisy)', f'1st-inn ERA {max(h1,a1):.1f}', direction='OVER')
     elif h1 >= 6.0 or a1 >= 6.0:
-        _add(total_drivers, 5, '🔥', 'One fragile starter', '1st-inn ERA ≥6 one side')
+        _add(total_drivers, 5, '🔥', 'One fragile starter', '1st-inn ERA ≥6 one side', direction='OVER')
     if h1 <= 1.5 and a1 <= 1.5:
-        _add(total_drivers, 6, '🛡️', 'Mutual NRFI lock', 'Both 1st-inn ERA ≤1.5')
+        _add(total_drivers, 6, '🛡️', 'Mutual NRFI lock', 'Both 1st-inn ERA ≤1.5', direction='UNDER')
     elif h1 <= 1.5 or a1 <= 1.5:
-        _add(total_drivers, 3, '🛡️', 'One NRFI lock', 'One 1st-inn ERA ≤1.5')
+        _add(total_drivers, 3, '🛡️', 'One NRFI lock', 'One 1st-inn ERA ≤1.5', direction='UNDER')
 
     # ---- SIDE: Signal confluence (strongest side indicator) ----
     # 2026-06-05 REWEIGHT (n=640 backtest, _backtest_outside_box.py):
@@ -841,24 +869,32 @@ def score_mlb_game(ctx, game_props=None, track=None):
     conf_net = ctx.get('signal_confluence_net')
     try:
         conf_mag = abs(int(conf_net)) if conf_net is not None else 0
+        # Confluence direction: positive = HOME, negative = AWAY
+        conf_direction = None
+        if conf_net is not None and int(conf_net) != 0:
+            conf_direction = 'HOME' if int(conf_net) > 0 else 'AWAY'
     except (TypeError, ValueError):
         conf_mag = 0
+        conf_direction = None
     if conf_mag >= 6:
-        _add(side_drivers, 6, '🎯', 'Over-saturated confluence', f'{conf_mag} signals (too obvious — market priced in)')
+        _add(side_drivers, 6, '🎯', 'Over-saturated confluence', f'{conf_mag} signals (too obvious — market priced in)', direction=conf_direction)
     elif conf_mag >= 5:
-        _add(side_drivers, 8, '🎯', 'High confluence', f'{conf_mag} independent signals align')
+        _add(side_drivers, 8, '🎯', 'High confluence', f'{conf_mag} independent signals align', direction=conf_direction)
     elif conf_mag == 4:
         # Cohort percentage pulled fresh from cohort_stats.json (nightly
         # recompute, see cohort_stats.py). Falls back to generic label if
         # the stats file is missing or stale — never ships a stale number.
         from cohort_lookup import format_label as _cohort_label
         _cohort = _cohort_label('conf4_dog_rl', fallback='lifetime cohort')
+        # PEAK confluence on DOG points opposite the favorite — the cohort
+        # is DOG-RL specific. Direction-wise it still aligns with conf_net
+        # sign (whichever side has the signals).
         _add(side_drivers, 12, '🎯', 'PEAK confluence',
-             f'{conf_mag} signals — strongest cohort ({_cohort} DOG RL)')
+             f'{conf_mag} signals — strongest cohort ({_cohort} DOG RL)', direction=conf_direction)
     elif conf_mag == 3:
-        _add(side_drivers, 6, '🎯', 'Confluence edge', f'{conf_mag} signals on one side')
+        _add(side_drivers, 6, '🎯', 'Confluence edge', f'{conf_mag} signals on one side', direction=conf_direction)
     elif conf_mag == 2:
-        _add(side_drivers, 3, '🎯', 'Confluence lean', f'{conf_mag} signals on one side')
+        _add(side_drivers, 3, '🎯', 'Confluence lean', f'{conf_mag} signals on one side', direction=conf_direction)
 
     # ---- SIDE: PEAK confluence + FAV ML surface (NEW 2026-06-05) ----
     # When confluence net=4 AND it points to the favorite, FAV ML hits 69.2%
@@ -1428,17 +1464,17 @@ def score_mlb_game(ctx, game_props=None, track=None):
     # banding catches the soft park leans.
     park = float(ctx.get('park_run_factor') or 100)
     if park >= 115:
-        _add(total_drivers, 9, '🏟', 'Extreme hitter park', f'Park factor {park:.0f}')
+        _add(total_drivers, 9, '🏟', 'Extreme hitter park', f'Park factor {park:.0f}', direction='OVER')
     elif park >= 110:
-        _add(total_drivers, 6, '🏟', 'Hitter-friendly park', f'Park factor {park:.0f}')
+        _add(total_drivers, 6, '🏟', 'Hitter-friendly park', f'Park factor {park:.0f}', direction='OVER')
     elif park >= 105:
-        _add(total_drivers, 3, '🏟', 'Park slight Over lean', f'Park factor {park:.0f}')
+        _add(total_drivers, 3, '🏟', 'Park slight Over lean', f'Park factor {park:.0f}', direction='OVER')
     elif park <= 88:
-        _add(total_drivers, 9, '🏟', 'Extreme pitcher park', f'Park factor {park:.0f}')
+        _add(total_drivers, 9, '🏟', 'Extreme pitcher park', f'Park factor {park:.0f}', direction='UNDER')
     elif park <= 92:
-        _add(total_drivers, 6, '🏟', 'Pitcher-friendly park', f'Park factor {park:.0f}')
+        _add(total_drivers, 6, '🏟', 'Pitcher-friendly park', f'Park factor {park:.0f}', direction='UNDER')
     elif park <= 95:
-        _add(total_drivers, 3, '🏟', 'Park slight Under lean', f'Park factor {park:.0f}')
+        _add(total_drivers, 3, '🏟', 'Park slight Under lean', f'Park factor {park:.0f}', direction='UNDER')
 
     # ---- TOTAL: Extreme hitter park x high-GB pitcher cross (NEW 2026-06-05) ----
     # Backtest (_backtest_advanced_605.py) n=15: park_run_factor>=115
@@ -1456,14 +1492,16 @@ def score_mlb_game(ctx, game_props=None, track=None):
             avg_gb = None
         if avg_gb is not None and avg_gb >= 0.50:
             _add(total_drivers, 4, '⛰️', 'Coors trap: high-GB doesn\'t save',
-                 f'avg GB% {avg_gb*100:.0f}% at extreme park (Coors high-GB trap cohort)')
+                 f'avg GB% {avg_gb*100:.0f}% at extreme park (Coors high-GB trap cohort)', direction='OVER')
 
     # ---- TOTAL: Weather (cold / wind) ----
     temp = float(ctx.get('temperature') or 70)
     if temp <= 45:
-        _add(total_drivers, 3, '❄️', 'Cold weather', f'{int(temp)}°F suppresses scoring')
+        _add(total_drivers, 3, '❄️', 'Cold weather', f'{int(temp)}°F suppresses scoring', direction='UNDER')
     wind = float(ctx.get('wind_speed') or 0)
     if wind >= 18:
+        # Wind direction matters: in = UNDER, out = OVER. Without parsed
+        # direction we leave neutral (no directional vote).
         _add(total_drivers, 3, '💨', 'High wind', f'{int(wind)} mph affecting flight')
 
     # ---- TOTAL: Aligned-prop direction (NEW 2026-05-29) ----
@@ -1582,10 +1620,39 @@ def score_mlb_game(ctx, game_props=None, track=None):
             if target is not None:
                 _add(target, bonus, '⭐', f'{pp_tier} primary play', f'{pp.get("label") or pp_type.upper()} — pipeline endorsement')
 
-    # ---- Compute sub-scores ----
-    side_score = min(100, 30 + sum(d['points'] for d in side_drivers))
-    total_score = min(100, 30 + sum(d['points'] for d in total_drivers))
-    prop_score = min(100, 30 + sum(d['points'] for d in prop_drivers))
+    # ---- Compute sub-scores (NET-BY-DIRECTION, Phase 2.5 2026-06-18) ----
+    # Directional drivers (those with a 'direction' field set) net against
+    # opposing-direction drivers in the same bucket. Neutral drivers add to
+    # the base directly. This prevents conflicting-signal games (NRFI +
+    # ace duel + Coors + hot offense) from scoring as STRONG-tier when
+    # the signals contradict each other directionally.
+    #
+    # Formula per bucket:
+    #   neutral_pts = sum(d.points for d where d.direction is None)
+    #   dir_a_pts   = sum(d.points for d where d.direction in {'OVER','HOME'})
+    #   dir_b_pts   = sum(d.points for d where d.direction in {'UNDER','AWAY'})
+    #   score = base (30) + neutral_pts + abs(dir_a_pts - dir_b_pts)
+    #
+    # Example: ace duel (10 UNDER) + Coors park (9 OVER) + cold (3 UNDER)
+    #   Old way: 30 + (10+9+3) = 52
+    #   New way: 30 + 0 (neutral) + |9 - 13| = 34   ← honestly contested
+    def _net_directional_score(drivers, dir_a_vals, dir_b_vals):
+        """Return min(100, base + neutral + |dir_a - dir_b|).
+        dir_a_vals: tuple of direction strings counted as 'side A' (e.g. ('OVER',))
+        dir_b_vals: tuple of direction strings counted as 'side B' (e.g. ('UNDER',))
+        """
+        neutral_pts = sum(d.get('points', 0) for d in drivers
+                          if not d.get('direction'))
+        a_pts = sum(d.get('points', 0) for d in drivers
+                    if d.get('direction') in dir_a_vals)
+        b_pts = sum(d.get('points', 0) for d in drivers
+                    if d.get('direction') in dir_b_vals)
+        return min(100, max(0, 30 + neutral_pts + abs(a_pts - b_pts)))
+
+    side_score = _net_directional_score(side_drivers, ('HOME',), ('AWAY',))
+    total_score = _net_directional_score(total_drivers, ('OVER',), ('UNDER',))
+    # Props: drivers are aligned with the surfaced pick — net not meaningful
+    prop_score = min(100, 30 + sum(d.get('points', 0) for d in prop_drivers))
 
     # ---- PRIME primary_play floor (5/29, narrowed 5/30) ----
     # When the pipeline has independently endorsed a play as PRIME, the
@@ -1714,8 +1781,9 @@ def score_mlb_game(ctx, game_props=None, track=None):
     _cohort_apply_to_dim(ctx, side_drivers, side_play, 'side', track)
     _cohort_apply_to_dim(ctx, total_drivers, total_play, 'total', track)
     # Recompute sub-scores so any cohort drivers we just appended are reflected.
-    side_score = max(0, min(100, 30 + sum(d['points'] for d in side_drivers)))
-    total_score = max(0, min(100, 30 + sum(d['points'] for d in total_drivers)))
+    # Net-by-direction (Phase 2.5) — see _net_directional_score above.
+    side_score = _net_directional_score(side_drivers, ('HOME',), ('AWAY',))
+    total_score = _net_directional_score(total_drivers, ('OVER',), ('UNDER',))
 
     # ---- Per-dimension tiers (same 80/65/50/<50 cutoffs, but each tier's
     # PRIME requires that dimension's play exists — actionability gate) ----
