@@ -467,10 +467,20 @@ def find_nrfi_lock(games, tier_rates):
     candidates.sort(key=lambda g: -(g.get("nrfi_score") or 0))
     g = candidates[0]
     rate_row = tier_rates.get("nrfi_prime_90_94", {})
+    _nrfi = g.get("nrfi_score")
     return {
         "game": f"{g.get('away_team')} @ {g.get('home_team')}",
-        "score": g.get("nrfi_score"),
+        # Phase 1 of engine_clarity_refactor (2026-06-18): bare `score`
+        # on LOCK was the NRFI 1st-inning signal score (0-100), NOT the
+        # sweat score that appears elsewhere with the same key. Adding
+        # explicit `nrfi_score` field while keeping `score` for back-
+        # compat. Next refactor cycle removes `score` after app rolls
+        # forward to the namespaced key.
+        "score": _nrfi,           # deprecated — back-compat only
+        "nrfi_score": _nrfi,       # canonical field, app should consume this
+        "score_source": "nrfi_score",
         "tier": "PRIME",
+        "tier_source": "nrfi_band",  # explicit attribution
         "audited_rate": round((rate_row.get("hit_rate") or 0) * 100, 1),
         "audited_n": rate_row.get("total"),
         "context": {
@@ -483,17 +493,24 @@ def find_nrfi_lock(games, tier_rates):
 
 
 def find_yrfi_lock(games, tier_rates):
-    """Find YRFI lean (≤40 score) games — also a 70%+ tier."""
+    """Find YRFI lean games."""
     candidates = [g for g in games if (g.get("nrfi_score") or 100) <= 40]
     if not candidates:
         return None
     candidates.sort(key=lambda g: g.get("nrfi_score") or 100)  # lowest = strongest YRFI
     g = candidates[0]
     rate_row = tier_rates.get("yrfi_lean_le40", {})
+    _yrfi = g.get("nrfi_score")
     return {
         "game": f"{g.get('away_team')} @ {g.get('home_team')}",
-        "score": g.get("nrfi_score"),
+        # Phase 1 namespacing (2026-06-18): YRFI uses the same nrfi_score
+        # column (low score = YRFI lean), so `yrfi_score` is added as
+        # the canonical app-side key. `score` retained for back-compat.
+        "score": _yrfi,           # deprecated — back-compat only
+        "yrfi_score": _yrfi,       # canonical field
+        "score_source": "yrfi_score",
         "tier": "YRFI",
+        "tier_source": "yrfi_band",
         "audited_rate": round((rate_row.get("hit_rate") or 0) * 100, 1),
         "audited_n": rate_row.get("total"),
     }
