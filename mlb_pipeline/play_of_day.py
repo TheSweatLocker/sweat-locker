@@ -972,28 +972,37 @@ def score_mlb_game(ctx, game_props=None, track=None):
     # v3 contribution (with trap-zone rescue when v4 confirms direction)
     # 2026-06-05: trap-zone rescue logic now checks v4 (math-trend model)
     # instead of Jerry (coinflip).
+    # Direction (Phase 2.5): v3_signed > 0 means home favored, < 0 means away.
+    v3_direction = None
+    if v3_signed is not None:
+        if v3_signed > 0: v3_direction = 'HOME'
+        elif v3_signed < 0: v3_direction = 'AWAY'
     if v3_abs >= 2.0:
-        _add(side_drivers, 13, '📊', 'v3 market disagreement', f'{v3_abs:.1f}-run v3 vs market')
+        _add(side_drivers, 13, '📊', 'v3 market disagreement', f'{v3_abs:.1f}-run v3 vs market', direction=v3_direction)
     elif v3_abs >= 1.5:
         if (v3_signed is not None and v4_signed is not None
                 and v3_signed * v4_signed > 0 and v4_abs >= 1.0):
-            _add(side_drivers, 6, '📊', 'v3 trap-zone rescued by v4', f'{v3_abs:.1f} v3 + v4 confirms {v4_abs:.1f}')
+            _add(side_drivers, 6, '📊', 'v3 trap-zone rescued by v4', f'{v3_abs:.1f} v3 + v4 confirms {v4_abs:.1f}', direction=v3_direction)
     elif v3_abs >= 1.0:
-        _add(side_drivers, 8, '📊', 'v3 spread edge', f'{v3_abs:.1f}-run v3 vs market')
+        _add(side_drivers, 8, '📊', 'v3 spread edge', f'{v3_abs:.1f}-run v3 vs market', direction=v3_direction)
     elif v3_abs >= 0.5:
-        _add(side_drivers, 3, '📊', 'v3 spread lean', f'{v3_abs:.1f}-run v3 vs market')
+        _add(side_drivers, 3, '📊', 'v3 spread lean', f'{v3_abs:.1f}-run v3 vs market', direction=v3_direction)
 
     # v4 spread contribution (NEW 2026-06-05) — v4 was previously absent
     # from SIDE scoring. Audit shows v4 spread predicts DOG RL at 65.9%.
+    v4_direction = None
+    if v4_signed is not None:
+        if v4_signed > 0: v4_direction = 'HOME'
+        elif v4_signed < 0: v4_direction = 'AWAY'
     if v4_signed is not None:
         if v4_abs >= 2.0:
-            _add(side_drivers, 13, '🔧', 'v4 market disagreement', f'{v4_abs:.1f}-run v4 vs market')
+            _add(side_drivers, 13, '🔧', 'v4 market disagreement', f'{v4_abs:.1f}-run v4 vs market', direction=v4_direction)
         elif v4_abs >= 1.5:
-            _add(side_drivers, 8, '🔧', 'v4 spread edge', f'{v4_abs:.1f}-run v4 vs market')
+            _add(side_drivers, 8, '🔧', 'v4 spread edge', f'{v4_abs:.1f}-run v4 vs market', direction=v4_direction)
         elif v4_abs >= 1.0:
-            _add(side_drivers, 5, '🔧', 'v4 spread edge', f'{v4_abs:.1f}-run v4 vs market')
+            _add(side_drivers, 5, '🔧', 'v4 spread edge', f'{v4_abs:.1f}-run v4 vs market', direction=v4_direction)
         elif v4_abs >= 0.5:
-            _add(side_drivers, 2, '🔧', 'v4 spread lean', f'{v4_abs:.1f}-run v4 vs market')
+            _add(side_drivers, 2, '🔧', 'v4 spread lean', f'{v4_abs:.1f}-run v4 vs market', direction=v4_direction)
 
     # v3 + v4 DOG consensus bonus (NEW 2026-06-05) — when both models
     # agree direction AND that direction is the DOG side, +12 points.
@@ -1012,9 +1021,13 @@ def score_mlb_game(ctx, game_props=None, track=None):
                     cs = float(close_spread_val)
                     home_is_fav = cs < 0
                     is_dog = (v3_picks_home != home_is_fav)
+                    # Direction (Phase 2.5): both models pick the same side,
+                    # so consensus_dir is HOME or AWAY (whichever the models agree on).
+                    consensus_dir = 'HOME' if v3_picks_home else 'AWAY'
                     if is_dog:
                         _add(side_drivers, 12, '🤝', 'v3+v4 DOG consensus',
-                             f'Both models pick the dog side (v3 {v3_signed:+.2f}, v4 {v4_signed:+.2f})')
+                             f'Both models pick the dog side (v3 {v3_signed:+.2f}, v4 {v4_signed:+.2f})',
+                             direction=consensus_dir)
                     else:
                         # Models agree on FAVORITE side — check trap band
                         home_ml_v = ctx.get('home_ml_close') or ctx.get('home_ml_open')
@@ -1100,13 +1113,17 @@ def score_mlb_game(ctx, game_props=None, track=None):
     away_drift = ctx.get('away_offense_drift')
     if home_drift is not None and away_drift is not None:
         try:
-            drift_gap = abs(float(home_drift) - float(away_drift))
+            hd = float(home_drift); ad = float(away_drift)
+            drift_gap = abs(hd - ad)
+            # Direction (Phase 2.5): whichever side is hotter is the side
+            # the drift gap signals. Equal drift = no vote (skip direction).
+            drift_dir = 'HOME' if hd > ad else ('AWAY' if ad > hd else None)
             if drift_gap >= 1.8:
-                _add(side_drivers, 8, '🔥', 'Offense drift gap', f'{drift_gap:.2f}-run hot/cold split between lineups')
+                _add(side_drivers, 8, '🔥', 'Offense drift gap', f'{drift_gap:.2f}-run hot/cold split between lineups', direction=drift_dir)
             elif drift_gap >= 1.2:
-                _add(side_drivers, 5, '🔥', 'Offense drift edge', f'{drift_gap:.2f}-run hot/cold split between lineups')
+                _add(side_drivers, 5, '🔥', 'Offense drift edge', f'{drift_gap:.2f}-run hot/cold split between lineups', direction=drift_dir)
             elif drift_gap >= 0.8:
-                _add(side_drivers, 3, '🔥', 'Offense drift lean', f'{drift_gap:.2f}-run hot/cold split between lineups')
+                _add(side_drivers, 3, '🔥', 'Offense drift lean', f'{drift_gap:.2f}-run hot/cold split between lineups', direction=drift_dir)
         except (TypeError, ValueError):
             pass
 
