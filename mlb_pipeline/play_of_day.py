@@ -1072,15 +1072,20 @@ def score_mlb_game(ctx, game_props=None, track=None):
             # only fire on dog side (cohort edge is dog-flavored)
             is_dog_side = (pick_home_side != home_is_fav_chk)
             if not is_dog_side: continue
+            from cohort_lookup import format_label as _cohort_label
+            _rest_cohort = _cohort_label('away_sp_rest_long_team_ml', fallback='rested ace DOG cohort')
             _add(side_drivers, 6, '😴', 'Long-rest ace as DOG',
-                 f'{side.title()} SP: {rest_f:.0f}d rest + {xera_f:.2f} xERA (rested ace DOG cohort)')
+                 f'{side.title()} SP: {rest_f:.0f}d rest + {xera_f:.2f} xERA ({_rest_cohort})',
+                 direction='AWAY' if side == 'away' else 'HOME')
             # Stacked: net=4 confluence ALSO points at this dog → +6 more (total +12)
             if conf_mag == 4 and conf_net is not None:
                 try:
                     conf_points_home = int(conf_net) > 0
                     if conf_points_home == pick_home_side:
+                        _stacked_cohort = _cohort_label('stacked_conf4_rested_dog', fallback='compound cohort')
                         _add(side_drivers, 6, '⚡', 'STACKED net=4 + rested ace DOG',
-                             'STACKED net=4 + rested ace DOG (compound cohort)')
+                             f'STACKED net=4 + rested ace DOG ({_stacked_cohort})',
+                             direction='AWAY' if side == 'away' else 'HOME')
                 except (TypeError, ValueError):
                     pass
 
@@ -1273,8 +1278,11 @@ def score_mlb_game(ctx, game_props=None, track=None):
         v3_under = (total_delta_abs >= 0.5 and total_delta_signed < 0)
         v4_under = (v4_total_signed is not None and abs(v4_total_signed) >= 0.5 and v4_total_signed < 0)
         if v3_under or v4_under:
+            from cohort_lookup import format_label as _cohort_label
+            _conf_under_cohort = _cohort_label('confluence_prime_ge4', fallback='cohort skew UNDER')
             _add(total_drivers, 6, '🎯', 'PEAK confluence UNDER bias',
-                 '4-signal confluence games — cohort skew UNDER')
+                 f'4-signal confluence games — {_conf_under_cohort}',
+                 direction='UNDER')
 
     # ---- TOTAL: Jerry total — DEMOTED to supporting vote (2026-06-05) ----
     # 6/4 audit was a Jerry disaster: 1-8 on n=9 (11.1% direction accuracy)

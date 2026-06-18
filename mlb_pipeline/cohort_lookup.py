@@ -116,9 +116,14 @@ def get_cohort(name, min_n=10):
     return entry
 
 
-def format_label(name, min_n=10, fallback=""):
-    """Convenience: return a `{pct}% (n={n})` string when fresh, else
-    `fallback`. For inline use in driver strings.
+def format_label(name, min_n=30, fallback=""):
+    """Convenience: return a `{pct}% (n={n})` string when fresh AND n>=min_n.
+    Else `fallback`. For inline use in driver strings.
+
+    2026-06-18: default min_n raised from 10 -> 30 to match the
+    quotability threshold in feedback_sample_size_with_pct. Below 30,
+    the % is omitted entirely so users never see false-precision
+    percentages backed by thin samples.
 
     Example:
         f"PEAK confluence ({format_label('conf4_dog_rl', fallback='lifetime cohort')})"
