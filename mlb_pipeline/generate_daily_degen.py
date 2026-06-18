@@ -463,6 +463,12 @@ def extract_leg_candidates(games, props):
 
         # Hybrid tier: confluence net AND spread_delta both contribute. After the
         # threshold gate above, all picks here are valid; tier reflects strength.
+        # NOTE (Phase 2 of engine_clarity_refactor): this is a DEGEN-SPECIFIC
+        # tier label derived from confluence+spread alignment, NOT the
+        # system-wide PRIME definition (sweat_dim score >= 80 + resolver
+        # STRONG/ELITE). Daily Degen is a higher-volatility surface and
+        # uses its own criteria. Universal taxonomy refactor will unify
+        # these labels at the app render layer with explicit source tags.
         tier = 'PRIME' if confluence_net >= 4 else 'STRONG' if confluence_net >= 2 else 'LEAN'
         conviction = min(90, 60 + confluence_net * 6 + min(int(abs_delta * 3), 12))
         breakdown = g.get('signal_confluence_breakdown') or {}

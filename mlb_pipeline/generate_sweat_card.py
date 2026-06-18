@@ -952,9 +952,29 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         pd = potd["data"]
         pick = pd.get("pick") or {}
         confidence = pd.get("confidence")
-        # 'value' tier = sub-audit model lean fallback (2026-05-23). Style softer
-        # than PRIME but still included as the day's anchor pick.
-        potd_tier = "VALUE" if confidence == "value" else "PRIME"
+        # POTD tier mapping (Phase 2 of engine_clarity_refactor — 2026-06-18):
+        # The `confidence` field is set by play_of_day.py based on which
+        # POTD selection path fired (audit pool vs value fallback). It's
+        # NOT a generic data-availability flag, but it IS heterogeneous:
+        #   'elite'       — audit pool path (STRONG/ELITE resolver)
+        #   'secondary'   — value pool LEAN resolver
+        #   'tertiary'    — value pool LIGHT resolver
+        #   'value'       — value pool PASSTHROUGH (side picks)
+        # Per the unified taxonomy (PRIME/STRONG/LEAN), map by
+        # confidence:
+        #   elite       -> PRIME (passes audit + projection gate)
+        #   secondary   -> STRONG (value pool LEAN — still defensible)
+        #   tertiary    -> LEAN  (LIGHT-tier — informational)
+        #   value       -> STRONG (PASSTHROUGH side — typically STRONG resolver)
+        # This kills the simplistic "elite → PRIME, anything else → VALUE"
+        # split that was misleading users about confidence-level mapping.
+        _potd_tier_map = {
+            'elite': 'PRIME',
+            'secondary': 'STRONG',
+            'tertiary': 'LEAN',
+            'value': 'STRONG',
+        }
+        potd_tier = _potd_tier_map.get(confidence or '', 'STRONG')
         add({
             "type": "POTD",
             "icon": "🏆",
@@ -962,6 +982,7 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             "game": pd.get("matchup") or pd.get("game", {}).get("matchup"),
             "conviction": pd.get("score", {}).get("total"),
             "tier": potd_tier,
+            "tier_source": "potd_confidence_map",  # explicit attribution
             "source_table": "daily_best_bet_history",
             "source_key": today_et(),  # bet_date is the lookup key
             "narrative_hint": (potd.get("narrative") or "")[:200],
