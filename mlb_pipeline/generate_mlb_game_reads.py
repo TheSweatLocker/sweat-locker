@@ -374,25 +374,77 @@ def _team_snapshot_block(team_name):
 
 # ---------------------------------------------------------------- struct
 
+_NRFI_CAL_CACHE = {}  # {(tier_key, window): {hit_rate, total} or None}
+
+
+def _nrfi_calibration_format(tier_key, min_n=30):
+    """Pull live NRFI tier hit rate from mlb_tier_calibration.
+    Returns formatted string ' (X% over W-L 30d)' when n >= min_n,
+    else empty string (per feedback_sample_size_with_pct rule —
+    don't quote a % below quotability threshold).
+
+    Schema columns: tier, window_label, hits, total, hit_rate.
+    Losses derived as total - hits.
+    """
+    if tier_key in _NRFI_CAL_CACHE:
+        cached = _NRFI_CAL_CACHE[tier_key]
+    else:
+        cached = None
+        try:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_tier_calibration",
+                params={'tier': f'eq.{tier_key}',
+                        'window_label': 'eq.30d',
+                        'select': 'hits,total,hit_rate',
+                        'order': 'computed_date.desc',
+                        'limit': '1'},
+                headers=SB_READ, timeout=5,
+            )
+            rows = r.json() if r.status_code == 200 else []
+            cached = rows[0] if rows and isinstance(rows[0], dict) else None
+        except Exception:
+            cached = None
+        _NRFI_CAL_CACHE[tier_key] = cached
+    if not cached:
+        return ""
+    n = cached.get('total') or 0
+    rate = cached.get('hit_rate')
+    hits = cached.get('hits')
+    if n < min_n or rate is None:
+        return ""
+    try:
+        n = int(n); rate = float(rate)
+    except (TypeError, ValueError):
+        return ""
+    pct = rate * 100 if rate <= 1 else rate
+    if hits is not None:
+        losses = n - int(hits)
+        return f" ({pct:.0f}% over {int(hits)}-{losses} 30d)"
+    return f" ({pct:.0f}% over {n} games 30d)"
+
+
 def _nrfi_tier(score):
     if score is None:
         return None
     s = float(score)
-    # 2026-06-18: stripped hardcoded % strings per feedback_sample_size_with_pct.
-    # Tier band labels remain (informational), but the percentages are removed
-    # until they're wired to live mlb_tier_calibration data (Tier A fix in
-    # hardcoded_percent_audit.md). When wired back in, rate comes with n
-    # alongside, gated at n >= 30.
+    # 2026-06-18 Tier A: pull live calibration from mlb_tier_calibration.
+    # When n >= 30 the live rate + record is appended to the band label.
+    # When n < 30 we omit the % entirely (no false-precision).
     if s >= 95:
-        return f"{score} — volatile 95+ band (historically a trap zone)"
+        cal = _nrfi_calibration_format('nrfi_volatile_95plus')
+        return f"{score} — volatile 95+ band{cal}"
     if s >= 90:
-        return f"{score} — PRIME 90-94 band"
+        cal = _nrfi_calibration_format('nrfi_prime_90_94')
+        return f"{score} — PRIME 90-94 band{cal}"
     if s >= 70:
-        return f"{score} — mild NRFI lean 70-79"
+        cal = _nrfi_calibration_format('nrfi_lean_70_79')
+        return f"{score} — mild NRFI lean 70-79{cal}"
     if s <= 25:
-        return f"{score} — YRFI lean (≤25, sweet spot is 1st-inn ERA 6-8)"
+        cal = _nrfi_calibration_format('yrfi_lean_le40')
+        return f"{score} — YRFI lean (≤25, sweet spot is 1st-inn ERA 6-8){cal}"
     if s <= 40:
-        return f"{score} — soft YRFI lean (≤40, gate on 1st-inn ERA)"
+        cal = _nrfi_calibration_format('yrfi_lean_le40')
+        return f"{score} — soft YRFI lean (≤40, gate on 1st-inn ERA){cal}"
     return f"{score} — neutral"
 
 
