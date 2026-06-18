@@ -2601,6 +2601,15 @@ def run():
             'dim_play_label': _dim_play.get('label'),
             'dim_play_type': _dim_play.get('type'),
             'dim_play_edge': _dim_play.get('edge'),
+            # Per-dimension scores so POTD can cite the score matching the
+            # picked bet type (Phase 3 of engine_clarity_refactor — 2026-06-18).
+            # Without this, POTD published with the headline (max sub-score)
+            # which could come from a dimension that doesn't match the picked
+            # play (e.g., a TOTAL POTD citing 87 sweat from a SIDE dim with
+            # score 87 while the TOTAL dim was only 65).
+            'dim_side_score': (dimensions.get('side') or {}).get('score'),
+            'dim_total_score': (dimensions.get('total') or {}).get('score'),
+            'dim_prop_score': (dimensions.get('prop') or {}).get('score'),
             'home_pitcher': ctx.get('home_pitcher'),
             'away_pitcher': ctx.get('away_pitcher'),
             'home_sp_xera': ctx.get('home_sp_xera'),
@@ -3418,6 +3427,23 @@ def run():
                 return
             print(f"🔄 OVERRIDE — same tier, new score {new_score} beats locked {existing_score} + {SCORE_OVERRIDE_THRESHOLD}")
 
+    # Resolve the dimension-matching sweat score for this pick (Phase 3 of
+    # engine_clarity_refactor). The headline `pick['score']` is the max of
+    # side/total/prop sub-scores — but if the picked play is a total and
+    # the headline came from a high side dim, the citation is misleading.
+    # When the matching-dim score is unknown (older candidates), fall back
+    # to headline.
+    _lb = (pick.get('lean_bet') or '').lower()
+    if _lb == 'total':
+        _matching_score = pick.get('dim_total_score')
+    elif _lb in ('ml', 'spread', 'rl', 'side'):
+        _matching_score = pick.get('dim_side_score')
+    elif _lb == 'prop' or 'prop' in _lb:
+        _matching_score = pick.get('dim_prop_score')
+    else:
+        _matching_score = None
+    _published_score = _matching_score if _matching_score is not None else pick['score']
+
     # Build the result — app will generate Jerry narrative on first load
     result = {
         'game': {
@@ -3426,7 +3452,13 @@ def run():
             'commence_time': pick.get('commence_time'),
         },
         'sport': pick['sport'],
-        'score': {'total': pick['score'], 'isNRFI': pick.get('is_nrfi', False), 'nrfiScore': pick.get('nrfi_score')},
+        'score': {
+            'total': _published_score,
+            'headline': pick['score'],  # original max-dim for back-compat / audit
+            'dim_source': _lb if _matching_score is not None else 'headline_fallback',
+            'isNRFI': pick.get('is_nrfi', False),
+            'nrfiScore': pick.get('nrfi_score'),
+        },
         'leanDisplay': pick.get('lean_display') or f"{pick['away_team']} @ {pick['home_team']}",
         'generatedAt': today,
         'pipelineGenerated': True,
