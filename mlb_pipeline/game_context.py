@@ -2363,6 +2363,8 @@ def upload_game_context(context, commence_time=None):
         'home_pitcher_vs_team_recent_ip', 'away_pitcher_vs_team_recent_ip',
         'home_pitcher_vs_team_recent_baa', 'away_pitcher_vs_team_recent_baa',
         'home_pitcher_vs_team_recent_n_starts', 'away_pitcher_vs_team_recent_n_starts',
+        # 2026-06-18 Phase 1 additions — strip if columns not yet migrated
+        'data_completeness', 'model_confidence',
     )
     stripped_total = []
     retry_rounds = 0
@@ -2892,8 +2894,19 @@ def run(target_date=None):
             # Park adjustment
             park_adj = (park_run_factor - 100) / 40  # dampened — 2025 data shows PF overstates real impact
 
-            # Confidence
+            # Data-availability flag (LEGACY field name "confidence" — kept for
+            # back-compat). 2026-06-18 — Phase 1 of engine_clarity_refactor:
+            # this is NOT model confidence. It just signals whether park data
+            # + non-dome conditions exist, which affects how much weight the
+            # downstream consumers should put on park/weather adjustments.
+            # Real model confidence comes from projection-vs-line gap + model
+            # agreement (computed separately further down once projections
+            # exist). When the schema gets a `data_completeness` column,
+            # migrate readers to that.
             confidence = "HIGH" if park and not weather.get("is_dome") else "MEDIUM" if park else "LOW"
+            # Explicit alias for the data-availability semantics so callers
+            # can use the non-misleading name in code:
+            data_completeness = confidence
 
             # Get team offensive stats + home/away splits
             home_stats = get_team_stats(home_team)
@@ -4172,6 +4185,57 @@ def run(target_date=None):
             except Exception as e:
                 print(f"  Jerry projection failed (shadow mode — game still ships): {e}")
 
+            # Model confidence proxy (Phase 1 of engine_clarity_refactor —
+            # 2026-06-18). Distinct from the legacy `confidence` field which
+            # is a data-availability flag. This one is a real conviction
+            # proxy derived from:
+            #   - direction agreement across v3/v4/Jerry total projections
+            #     (3 of 3 agree direction = highest)
+            #   - magnitude of the strongest model edge vs close_total
+            #     (larger edge = more conviction)
+            #
+            # Output: 'STRONG' / 'EDGE' / 'LEAN' / 'NEUTRAL' / 'CONFLICTED'
+            #
+            # When the schema gets a `model_confidence` column, this value
+            # populates it (the strip-unknown fallback in upload_game_context
+            # silently drops it pre-migration). Until then, callers can
+            # derive it themselves from the projection fields already
+            # surfaced in the row.
+            def _dir(v, line):
+                if v is None or line is None: return None
+                if v > line + 0.3: return 'OVER'
+                if v < line - 0.3: return 'UNDER'
+                return None
+            try:
+                _line = close_total if close_total is not None else open_total
+                _v3 = projected_total
+                _v4 = model_pred_total
+                _jr = jerry_pred_total
+                _v3d = _dir(_v3, _line)
+                _v4d = _dir(_v4, _line)
+                _jrd = _dir(_jr, _line)
+                _dirs = [d for d in (_v3d, _v4d, _jrd) if d is not None]
+                _agreement = (
+                    len(_dirs) >= 2
+                    and all(d == _dirs[0] for d in _dirs)
+                )
+                _max_edge = 0.0
+                for v in (_v3, _v4, _jr):
+                    if v is not None and _line is not None:
+                        _max_edge = max(_max_edge, abs(float(v) - float(_line)))
+                if not _dirs:
+                    model_confidence_proxy = 'NEUTRAL'
+                elif not _agreement:
+                    model_confidence_proxy = 'CONFLICTED'
+                elif _max_edge >= 2.0 and len(_dirs) == 3:
+                    model_confidence_proxy = 'STRONG'
+                elif _max_edge >= 1.0:
+                    model_confidence_proxy = 'EDGE'
+                else:
+                    model_confidence_proxy = 'LEAN'
+            except Exception:
+                model_confidence_proxy = None
+
             context = {
                 "game_id": game_id,
                 "home_team": home_team,
@@ -4246,7 +4310,14 @@ def run(target_date=None):
                 "away_ml_open": away_ml_odds if is_open_run else None,
                 "home_ml_close": home_ml_odds if not is_open_run else None,
                 "away_ml_close": away_ml_odds if not is_open_run else None,
-                "confidence": confidence,
+                "confidence": confidence,  # legacy data-availability flag
+                "data_completeness": data_completeness,  # explicit alias (Phase 1)
+                # Real model conviction proxy from projections + agreement.
+                # See computation block above. Pre-migration: column may not
+                # exist yet; upload_game_context's strip-unknown fallback
+                # handles 400s gracefully. Once schema migrates, app reads
+                # this directly for "X% confidence" displays.
+                "model_confidence": model_confidence_proxy,
                 "fetched_at": datetime.now().isoformat(),
                 "home_runs_per_game": home_rpg,
                 "away_runs_per_game": away_rpg,
