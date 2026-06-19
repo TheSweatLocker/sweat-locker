@@ -3321,12 +3321,19 @@ def run():
                 confidence = 'value'
             conf_net = pick.get('signal_confluence_net') or 0
             src = 'dim-promoted' if pick.get('_promoted_from_dim') else 'legacy lean'
+            # Universal taxonomy (project_unified_taxonomy_decision):
+            # public labels unify to PRIME / STRONG / LEAN. The log badges
+            # were using legacy HEADLINE / SECONDARY / BEST AVAILABLE which
+            # don't match the user-facing surfaces. Aligning the log labels
+            # to the unified taxonomy makes cron output match what the
+            # app renders (PRIME/STRONG/LEAN). Confidence keys preserved
+            # for back-compat with sweat_card mapping.
             badge_map = {
-                'secondary': '🥈 SECONDARY',
-                'tertiary':  '🥉 BEST AVAILABLE',
-                'value':     '📌 VALUE',
+                'secondary': '💪 STRONG',
+                'tertiary':  '👀 LEAN',
+                'value':     '📌 STRONG',
             }
-            badge = badge_map.get(confidence, '📌 VALUE')
+            badge = badge_map.get(confidence, '📌 STRONG')
             print(f"{badge} POTD ({picked_tier}, {src}): {pick['away_team']} @ {pick['home_team']} — "
                   f"{pick.get('lean_display')} | confluence={conf_net:+d} | sweat={pick.get('score')}")
             if pick.get('_value_resolver_reason'):
