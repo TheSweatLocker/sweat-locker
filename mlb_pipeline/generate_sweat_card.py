@@ -1052,6 +1052,11 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             "game": f"{g.get('away_team')} @ {g.get('home_team')}",
             "conviction": g.get("sweat_score"),
             "tier": tier,
+            # Phase 1 namespacing (2026-06-18): explicit tier provenance.
+            # primary_play tier is set by compute_primary_play() in
+            # game_context.py and reflects the v3-side resolver's call
+            # for the picked ML/spread/total/NRFI play.
+            "tier_source": "primary_play",
             "source_table": "mlb_game_results",
             "source_key": g.get("game_id"),
             # The resolver needs to know how to evaluate this — for ML we
@@ -1083,6 +1088,11 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             "game": te["game"],
             "conviction": int(60 + min(20, abs(te["delta"]) * 6)),  # synthetic conviction
             "tier": "STRONG" if abs(te["delta"]) >= 2.0 else "LIGHT",
+            # Phase 1: this tier is derived from v4 model edge magnitude
+            # (>=2.0 = STRONG, otherwise LIGHT). NOT the same as resolver
+            # tier — it's a single-model edge classification used as a
+            # secondary candidate source.
+            "tier_source": "v4_total_edge_magnitude",
             "source_table": "mlb_game_results",
             "source_key": match.get("game_id"),
             "eval": {
@@ -1158,6 +1168,11 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             "game": prop.get("matchup"),
             "conviction": prop.get("conviction"),
             "tier": force_tier or prop.get("tier"),
+            # Phase 1: prop tier comes from generate_props.tier_for() which
+            # uses per-prop-type conviction thresholds. Note these are NOT
+            # the same scale as side/total resolver tiers — see
+            # engine_clarity_refactor.md Phase 2 for the unification plan.
+            "tier_source": "prop_pipeline_conviction",
             "source_table": "mlb_pipeline_props",
             "source_key": f"{player}|{prop.get('prop_type')}|{prop.get('prop_line')}",
             "narrative_hint": narrative_hint,
@@ -1474,6 +1489,11 @@ def build_card():
                 "matchup": dawg.get("matchup"),
                 "conviction": dawg.get("conviction"),
                 "tier": dawg.get("tier"),
+                # Phase 1 namespacing (2026-06-18): explicit attribution so
+                # downstream readers don't confuse DAWG-specific conviction
+                # with sweat_dim or prop_pipeline conviction.
+                "tier_source": "dawg_cohort",
+                "score_source": "dawg_conviction",
                 "narrative": dawg.get("narrative"),
                 "signals": dawg.get("signals"),
             }
