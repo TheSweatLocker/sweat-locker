@@ -94,6 +94,92 @@ def _fetch_game_read(date, matchup_substring):
     return None, None
 
 
+def _fetch_props_for_matchup(date, matchup):
+    """Pull all PRIME/STRONG/LEAN props for this game, keyed by player_name."""
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
+        params={"game_date": f"eq.{date}",
+                "matchup": f"eq.{matchup}",
+                "tier": "in.(PRIME,STRONG,LEAN)",
+                "select": "player_name,prop_type,prop_line,direction,tier,conviction",
+                "limit": "100"},
+        headers=H, timeout=10,
+    )
+    rows = r.json() if r.status_code == 200 else []
+    by_player = {}
+    for p in rows:
+        name = (p.get("player_name") or "").lower()
+        if name:
+            by_player.setdefault(name, []).append(p)
+    return by_player
+
+
+# Prop tier scale: PRIME / STRONG / LEAN. ELITE is NOT a prop tier
+# (it's reserved for side/total resolver). Citing ELITE on a prop
+# is automatically an overcall.
+_PROP_TIER_RANK = {"PRIME": 3, "STRONG": 2, "LEAN": 1}
+_PROP_INVALID_TIERS = {"ELITE"}
+
+# Map prop_type to the natural-language keywords that appear in writeups.
+# Used to associate a writeup paragraph with the right prop row.
+_PROP_TYPE_KEYWORDS = {
+    "ks_over":   ["strikeout", "ks", "k's"],
+    "ks_under":  ["strikeout", "ks", "k's"],
+    "ha_over":   ["hits allowed", "hits-allowed", "ha"],
+    "ha_under":  ["hits allowed", "hits-allowed", "ha"],
+    "bb_over":   ["walk", "bb", "base on balls"],
+    "bb_under":  ["walk", "bb", "base on balls"],
+    "er_over":   ["earned run", "er"],
+    "er_under":  ["earned run", "er"],
+    "outs_over": ["outs", "ip", "innings pitched"],
+    "outs_under":["outs", "ip", "innings pitched"],
+    "hits_over": ["hits", "hit"],
+    "hits_under":["hits", "hit"],
+}
+
+
+def _validate_prop_writeup(text, props_by_player):
+    """If the writeup is about a specific player, check that player's
+    prop tier (from mlb_pipeline_props) against the tier language used."""
+    violations = []
+    text_lower = text.lower()
+    for player_lower, plist in props_by_player.items():
+        last_name = player_lower.split()[-1]
+        if len(last_name) < 4: continue
+        if last_name not in text_lower: continue
+
+        for p in plist:
+            ptype_raw = (p.get("prop_type") or "").lower()
+            # Match via natural-language keywords (more robust than splitting
+            # the raw prop_type string — "ha_under" -> "ha" was too short).
+            keywords = _PROP_TYPE_KEYWORDS.get(ptype_raw, [ptype_raw.replace("_", " ")])
+            ptype_present = any(kw in text_lower for kw in keywords)
+            if not ptype_present: continue
+
+            engine_tier = (p.get("tier") or "").upper()
+            engine_rank = _PROP_TIER_RANK.get(engine_tier, 0)
+            for tier_word, pat in _TIER_PATTERNS.items():
+                if pat.search(text):
+                    # ELITE is not a valid prop tier — always a violation
+                    if tier_word in _PROP_INVALID_TIERS:
+                        violations.append(
+                            f"prop writeup on '{p.get('player_name')}' "
+                            f"{p.get('prop_type')} cites '{tier_word}' — ELITE is "
+                            f"not a prop tier (use PRIME, STRONG, or LEAN). "
+                            f"Engine tier: {engine_tier}."
+                        )
+                        continue
+                    cited_rank = _PROP_TIER_RANK.get(tier_word, 0)
+                    if cited_rank > engine_rank:
+                        violations.append(
+                            f"prop writeup on '{p.get('player_name')}' "
+                            f"{p.get('prop_type')} cites '{tier_word}' but engine "
+                            f"tier is {engine_tier}. Downgrade to match."
+                        )
+            break
+    return violations
+
+
 def _classify_writeup_pick_type(text):
     """Heuristically determine what kind of pick the writeup is about.
     Returns one of: 'side', 'total', 'prop', or 'unknown'."""
@@ -105,18 +191,17 @@ def _classify_writeup_pick_type(text):
     # Prop signals: 'props', 'strikeouts', 'hits allowed', 'walks', 'earned runs'
     prop_signals = bool(re.search(r"\b(?:strikeout|hits? allowed|walks?|earned runs?|outs|prop)\b", t))
 
-    # If multiple signals fire, prefer the most explicit/loudest. Side wins
-    # over total when both fire (ML/spread are explicit), prop wins over both
-    # when player-stat language is present.
-    if prop_signals and not (side_signals or total_signals):
+    # Precedence: prop > side > total. Player-stat language (strikeouts,
+    # hits allowed, walks, etc) is the strongest indicator because it
+    # unambiguously points to a player prop. The "Under 5.5" patterns
+    # appear in BOTH total writeups and prop writeups, so total_signals
+    # alone isn't enough to overrule a prop_signal.
+    if prop_signals:
         return "prop"
-    if side_signals and not total_signals:
+    if side_signals:
         return "side"
-    if total_signals and not side_signals:
+    if total_signals:
         return "total"
-    if side_signals and total_signals:
-        # Ambiguous — most writeups primarily about ML/spread; treat as side.
-        return "side"
     return "unknown"
 
 
@@ -136,6 +221,13 @@ def _validate(text, matchup, side_tier, total_tier):
         engine_rank = total_rank
         engine_tier = total_tier
         engine_label = "TOTAL"
+    elif pick_type == "prop":
+        # Prop tier check happens in _validate_prop_writeup against
+        # the player's specific tier. Skip the side/total dim-tier
+        # check here since props are their own surface.
+        engine_rank = None
+        engine_tier = "prop (see prop-specific check)"
+        engine_label = "PROP"
     else:
         engine_rank = max_engine_rank
         engine_tier = f"{side_tier or '-'}/{total_tier or '-'}"
@@ -148,16 +240,19 @@ def _validate(text, matchup, side_tier, total_tier):
         if pat.search(text):
             cited_tiers.add(tier)
 
-    for cited in cited_tiers:
-        cited_rank = _TIER_RANK.get(cited, 0)
-        if cited_rank > engine_rank:
-            violations.append(
-                f"writeup cites '{cited}' but {engine_label} engine tier is "
-                f"{engine_tier or '-'}. Downgrade language to match engine."
-            )
+    # Skip side/total tier word checks if this is a prop writeup —
+    # the prop-specific check handles those.
+    if engine_rank is not None:
+        for cited in cited_tiers:
+            cited_rank = _TIER_RANK.get(cited, 0)
+            if cited_rank > engine_rank:
+                violations.append(
+                    f"writeup cites '{cited}' but {engine_label} engine tier is "
+                    f"{engine_tier or '-'}. Downgrade language to match engine."
+                )
 
     # 2. Hyperbole claims when picked dim doesn't have STRONG+.
-    if engine_rank < _TIER_RANK["STRONG"]:
+    if engine_rank is not None and engine_rank < _TIER_RANK["STRONG"]:
         for pat, descr in _HYPERBOLE_PATTERNS:
             m = pat.search(text)
             if m:
@@ -215,6 +310,13 @@ def main():
     print()
 
     violations = _validate(text, mu, side_tier, total_tier)
+
+    # Additional prop-specific check: if the writeup mentions a player
+    # whose props are in mlb_pipeline_props, verify the prop tier too.
+    props_by_player = _fetch_props_for_matchup(args.date, mu)
+    if props_by_player:
+        violations.extend(_validate_prop_writeup(text, props_by_player))
+
     if not violations:
         print("OK: writeup language consistent with engine tier.")
         return 0
