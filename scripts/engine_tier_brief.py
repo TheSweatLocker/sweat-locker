@@ -169,6 +169,70 @@ def _print_brief_for_read(matchup, read):
     print()
 
 
+def _print_prop_briefs(date, by_matchup):
+    """Print prop tier briefs from mlb_pipeline_props for today's games.
+    Same allow/forbid pattern as side/total resolver."""
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
+        params={"game_date": f"eq.{date}",
+                "select": "player_name,matchup,prop_type,prop_line,direction,tier,conviction",
+                "order": "matchup,conviction.desc",
+                "limit": "200"},
+        headers=H, timeout=15,
+    )
+    rows = r.json() if r.status_code == 200 else []
+    if not rows:
+        return
+    # Group by matchup
+    by_mu = {}
+    for p in rows:
+        mu = p.get("matchup") or ""
+        by_mu.setdefault(mu, []).append(p)
+    # Print prop tier sections after the game blocks
+    for mu in sorted(by_mu.keys()):
+        if by_matchup and mu not in by_matchup:
+            continue
+        props = by_mu[mu]
+        # Only surface PRIME / STRONG / LEAN — skip SKIP/None
+        actionable = [p for p in props if (p.get("tier") or "").upper() in
+                      ("PRIME", "STRONG", "LEAN")]
+        if not actionable:
+            continue
+        print("=" * 92)
+        print(f"  PROPS on {mu}")
+        print("=" * 92)
+        print()
+        for p in actionable:
+            tier = (p.get("tier") or "").upper()
+            allowed = []
+            if tier == "PRIME":
+                allowed = [
+                    f"PRIME {p.get('prop_type', '?')} prop",
+                    "engine conviction PRIME tier",
+                    f"highest conviction in the {p.get('prop_type','prop')} category (only if true vs other PRIMEs)",
+                ]
+            elif tier == "STRONG":
+                allowed = [
+                    f"STRONG {p.get('prop_type', '?')} prop",
+                    "STRONG conviction tier",
+                    "defensible play, second-line conviction",
+                ]
+            elif tier == "LEAN":
+                allowed = [
+                    f"LEAN {p.get('prop_type', '?')} prop",
+                    "supplementary look",
+                    "engine surfaced but below STRONG threshold",
+                ]
+            print(f"  {p.get('player_name','?'):22s} {p.get('direction',''):5s} "
+                  f"{p.get('prop_line','?')!s:>5} {p.get('prop_type',''):10s} "
+                  f"  ENGINE TIER: {tier}   conv {p.get('conviction','?')}")
+            print(f"    ALLOWED writeup language:")
+            for a in allowed:
+                print(f"      - \"{a}\"")
+            print(f"    FORBIDDEN: any tier label STRONGER than what engine emitted.")
+            print()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--date")
@@ -195,6 +259,9 @@ def main():
             return 1
     for mu in matchups:
         _print_brief_for_read(mu, reads[mu])
+
+    # Append prop tier briefs from mlb_pipeline_props
+    _print_prop_briefs(args.date, set(matchups))
     return 0
 
 
