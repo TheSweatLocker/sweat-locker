@@ -1370,7 +1370,12 @@ def _correction_prompt(original_prompt, narrative, errors):
 # Want to measure false-positive rate over ~50 game reads before flipping
 # to retry-on-fail. Set NUMBER_VALIDATOR_ENFORCE = True to enable retry.
 
-NUMBER_VALIDATOR_ENFORCE = False  # flip after baseline false-positive audit
+NUMBER_VALIDATOR_ENFORCE = False  # 2026-06-19 audit (n=9 reads) showed 22%
+# flag rate driven by pitcher-career W-L records (e.g. Nola "112-93 career
+# 3.91 ERA / 1,786 IP") being mis-flagged as cohort hallucinations. The
+# real false-positive rate is ~0% once those are exempted (see _W_L_PITCHER_CONTEXT
+# below). Holding ENFORCE off until pitcher-career exemption proven over a
+# week of reads (~50 narratives).
 
 # Minimum sample size for a quoted percentage to be considered "valid"
 # without requiring an explicit n citation. Below this, the percentage
@@ -1518,6 +1523,16 @@ def _detect_number_hallucinations(narrative, struct, pct_tol=2.5):
                 )
 
     # ── W-L pairs ──
+    # Pitcher career records (e.g. "112-93 career 3.91 ERA / 1,786 IP")
+    # appear in Jerry's full-staff pitching context and are NOT cohort
+    # signals. Skip pairs that show up next to pitcher-career markers.
+    # Markers: ERA, WHIP, IP, "career", "rotation", "starts" within 60
+    # chars on either side. Audit on 2026-06-18 reads identified all
+    # Phase 4 false positives as Nola/E-Rod career records.
+    _PITCHER_CAREER_MARKERS = _re.compile(
+        r"\b(?:ERA|WHIP|career|rotation|starts?|IP)\b",
+        _re.IGNORECASE,
+    )
     for m in _WL_RE.finditer(narrative):
         try:
             w = int(m.group(1)); l = int(m.group(2))
@@ -1525,6 +1540,14 @@ def _detect_number_hallucinations(narrative, struct, pct_tol=2.5):
             continue
         # Skip small pairs (game scores like 7-3) — only cohort-sized counts
         if (w + l) < 15:
+            continue
+        # Pitcher career exemption: scan 60 chars before + 80 chars after.
+        # If a pitcher-stat marker is present, the W-L is a pitcher career
+        # record and shouldn't be validated as a cohort signal.
+        ctx_start = max(0, m.start() - 60)
+        ctx_end = min(len(narrative), m.end() + 80)
+        ctx = narrative[ctx_start:ctx_end]
+        if _PITCHER_CAREER_MARKERS.search(ctx):
             continue
         # Both orderings accepted (struct may store loss-wins in some shapes)
         if (w, l) not in struct_wl and (l, w) not in struct_wl:
@@ -1568,7 +1591,10 @@ def _scrub_unverified_numbers(narrative, errors):
 # ADVISORY-FIRST: logs but does not retry. Flip CROSS_DIM_ENFORCE after
 # baseline false-positive audit.
 
-CROSS_DIM_ENFORCE = False  # flip after baseline false-positive audit
+CROSS_DIM_ENFORCE = True  # 2026-06-19 — audit over n=9 reads showed 0%
+# flag rate. Phase 5 patterns are tight (specific dim-leakage idioms only)
+# and didn't fire any false positives on real narratives. Flipping ENFORCE
+# so any future cross-dim leakage triggers retry + correction.
 
 # Total-only signal keywords — illegitimate as primary rationale for a side pick.
 # These describe total/inning dynamics, not which team wins.
