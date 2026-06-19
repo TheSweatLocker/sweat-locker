@@ -996,6 +996,10 @@ def _resolver_block(g):
             cohort_over_strong_count=_count('over'),
             cohort_under_strong_count=_count('under'),
             prop_reverse=pr_signal,
+            # v4 trust-gate context (2026-06-19 calibration)
+            park_run_factor=g.get('park_run_factor'),
+            temperature=g.get('temperature'),
+            is_dome=bool(g.get('is_dome')),
         )
     except Exception:
         return None

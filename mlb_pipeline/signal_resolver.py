@@ -58,6 +58,51 @@ COHORT_DEV_LEAN = 2           # |deviation| >= 2 = lean (56%/48% bands)
 
 PROP_DEADBAND = 0.4         # |prop_total_signal| < this counts as neutral
 
+# v4 calibration (added 2026-06-19 after 30d/60d/90d audit).
+# Backtest source: mlb_pipeline/_v4_calibration_backtest.py
+# Findings:
+#   - Raw v4 totals: 52% direction (90d, n=349) with +0.31 to +0.60 OVER bias
+#   - -0.3 offset lifts to 53-56% across windows (+1-2pp consistent)
+#   - v4 hit rates by condition (30d, n=232):
+#       park >= 108         : 40% (vs 55-57% at neutral parks)
+#       domes               : 45% (vs 56% outdoor)
+#       temp <  65°F        : 33-44%
+#       close_total <= 8.5  : 47-49%
+#   - PROPOSED A (drop v4, require v3+jerry agree) = 69% on n=51 (+15pp vs baseline)
+# Implementation:
+#   - Apply V4_OFFSET to v4 projection before direction check
+#   - When _v4_trust_gate() returns False, set v4_d = None (v4 vote dropped)
+#   - STRONG tier no longer accepts v4-included majorities; requires v3 + jerry agree
+V4_OFFSET = -0.3
+
+
+def _v4_trust_gate(close_total: Optional[float],
+                    park_run_factor: Optional[float],
+                    temperature: Optional[float],
+                    is_dome: bool) -> bool:
+    """Return False when v4 shouldn't be trusted on this game.
+    Conditions where v4 hits 33-49% (vs 55-57% baseline). Trust gate
+    drops v4 from the resolver vote in those buckets.
+    """
+    if park_run_factor is not None:
+        try:
+            if float(park_run_factor) >= 108: return False
+        except (TypeError, ValueError):
+            pass
+    if is_dome:
+        return False
+    if temperature is not None:
+        try:
+            if float(temperature) < 65: return False
+        except (TypeError, ValueError):
+            pass
+    if close_total is not None:
+        try:
+            if float(close_total) <= 8.5: return False
+        except (TypeError, ValueError):
+            pass
+    return True
+
 
 def _model_direction(model_val: Optional[float], close_total: Optional[float]) -> Optional[str]:
     """Return 'OVER' / 'UNDER' / None given a projection + line."""
@@ -146,6 +191,12 @@ def resolve_total(
     cohort_over_strong_count: int = 0,
     cohort_under_strong_count: int = 0,
     prop_reverse: Optional[Dict] = None,
+    # v4 trust gate inputs (added 2026-06-19). Callers SHOULD pass these
+    # to enable conditional v4 weighting. Existing callers work unchanged
+    # because the gate defaults to "trust v4" when context is missing.
+    park_run_factor: Optional[float] = None,
+    temperature: Optional[float] = None,
+    is_dome: bool = False,
 ) -> Dict:
     """Resolve a single landing call for the game total.
 
@@ -160,13 +211,27 @@ def resolve_total(
     """
     # Per-signal classifications
     v3_d = _model_direction(v3_total, close_total)
-    v4_d = _model_direction(v4_total, close_total)
+    # v4 calibration + trust gate (2026-06-19)
+    v4_trusted = _v4_trust_gate(close_total, park_run_factor, temperature, is_dome)
+    v4_calibrated = (v4_total + V4_OFFSET) if v4_total is not None else None
+    v4_d = _model_direction(v4_calibrated, close_total) if v4_trusted else None
     j_d = _model_direction(jerry_total, close_total)
     models = _count_model_agreement([v3_d, v4_d, j_d])
     cohort = _classify_cohort_net(cohort_over_strong_count, cohort_under_strong_count)
     props = _classify_prop_reverse(prop_reverse)
 
-    signals = {'models': models, 'cohort': cohort, 'props': props}
+    # v3+jerry agreement flag — the new STRONG signal source (2026-06-19
+    # backtest). When v3 and jerry both vote the same direction (regardless
+    # of v4), that's the 69%-hit-rate gate.
+    v3_jerry_agree = (v3_d is not None and j_d is not None and v3_d == j_d)
+
+    signals = {
+        'models': models,
+        'cohort': cohort,
+        'props': props,
+        'v3_jerry_agree': v3_jerry_agree,
+        'v4_trusted': v4_trusted,
+    }
 
     # ───────────── Resolution rules (priority order) ─────────────
 
@@ -194,12 +259,40 @@ def resolve_total(
             f"all point {models['majority']}.",
             [], signals)
 
-    # 4. STRONG: model majority + cohort LOUD same direction
-    if models['majority'] and cohort['direction'] == models['majority'] and cohort['strength'] == 'LOUD':
-        reason = f"{models['voting']}/{models['voting']}" if models['unanimous'] else f"{max(models['over'], models['under'])}/{models['voting']}"
+    # 4. STRONG: v3 AND jerry agree + cohort LOUD same direction (2026-06-19
+    # rebuilt from backtest). Previous rule allowed any 2-of-3 model majority,
+    # which let v4-included majorities (proj+v4 or jerry+v4) dilute the
+    # signal from 64% to 54%. New rule REQUIRES v3 + jerry to agree
+    # specifically — v4 is informational only at this tier.
+    if v3_jerry_agree and cohort['direction'] == v3_d and cohort['strength'] == 'LOUD':
+        v4_note = ""
+        if v4_d == v3_d:
+            v4_note = " (v4 confirms)"
+        elif v4_d and v4_d != v3_d:
+            v4_note = " (v4 dissents — informational)"
+        elif not v4_trusted:
+            v4_note = " (v4 trust-gated)"
+        return _build_result(
+            v3_d, 'STRONG',
+            f"v3 + jerry both lean {v3_d}{v4_note} + cohort engine "
+            f"(+{abs(cohort.get('deviation', 0))} net STRONG_EDGE) aligned {v3_d}.",
+            _build_dissent_list(signals, exclude_aligned=True), signals)
+
+    # 4b. STRONG fallback: when v3 OR jerry is missing (single-model state),
+    # allow the remaining model + cohort LOUD to fire STRONG. This is the
+    # graceful-degradation case for games where one projection isn't
+    # available — not the OLD 2-of-3 majority logic (which let v4 dilute
+    # the signal). Specifically excludes cases where BOTH v3 and jerry vote
+    # but disagree, since those would have already qualified via rule 4 if
+    # they agreed and shouldn't sneak through as STRONG via v4.
+    only_one_present = (v3_d is None) != (j_d is None)  # XOR
+    if (only_one_present and models['majority']
+            and cohort['direction'] == models['majority']
+            and cohort['strength'] == 'LOUD'):
+        live_model = 'v3' if v3_d else 'jerry'
         return _build_result(
             models['majority'], 'STRONG',
-            f"Model majority ({reason}) + cohort engine "
+            f"{live_model} ({models['majority']}) + cohort engine "
             f"(+{abs(cohort.get('deviation', 0))} net STRONG_EDGE) aligned {models['majority']}.",
             _build_dissent_list(signals, exclude_aligned=True), signals)
 

@@ -1946,6 +1946,9 @@ def score_mlb_game(ctx, game_props=None, track=None):
             cohort_over_strong_count=_cn('over'),
             cohort_under_strong_count=_cn('under'),
             prop_reverse=pr_signal,
+            park_run_factor=ctx.get('park_run_factor'),
+            temperature=ctx.get('temperature'),
+            is_dome=bool(ctx.get('is_dome')),
         )
         if isinstance(dimensions, dict):
             dimensions['resolver_total'] = {
@@ -2318,6 +2321,9 @@ def build_lean(ctx):
             cohort_over_strong_count=_bl_count('over'),
             cohort_under_strong_count=_bl_count('under'),
             prop_reverse=None,  # build_lean is fast-path; prop signal applied downstream
+            park_run_factor=ctx.get('park_run_factor'),
+            temperature=ctx.get('temperature'),
+            is_dome=bool(ctx.get('is_dome')),
         )
         if (bl_resolver.get('tier') in ('STRONG', 'ELITE')
                 and bl_resolver.get('direction') in ('OVER', 'UNDER')):
@@ -2960,6 +2966,9 @@ def run():
                     cohort_over_strong_count=_ct('over'),
                     cohort_under_strong_count=_ct('under'),
                     prop_reverse=pr_signal,
+                    park_run_factor=eval_target.get('park_run_factor'),
+                    temperature=eval_target.get('temperature'),
+                    is_dome=bool(eval_target.get('is_dome')),
                 )
                 resolver_tier = resolved.get('tier')
                 if resolver_tier not in ('STRONG', 'ELITE'):
@@ -3225,6 +3234,9 @@ def run():
                     cohort_over_strong_count=_ct('over'),
                     cohort_under_strong_count=_ct('under'),
                     prop_reverse=None,
+                    park_run_factor=eval_target.get('park_run_factor'),
+                    temperature=eval_target.get('temperature'),
+                    is_dome=bool(eval_target.get('is_dome')),
                 )
                 tier = r.get('tier', 'SKIP')
                 c['_value_resolver_tier'] = tier
