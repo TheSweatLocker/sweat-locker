@@ -3502,6 +3502,11 @@ def run():
     _published_score = _matching_score if _matching_score is not None else pick['score']
 
     # Build the result — app will generate Jerry narrative on first load
+    # 2026-06-20: include the per-dim scores so consumers can see why the
+    # picked dim won. Previously only the winning-dim score was exposed,
+    # which made the 6/20 Cubs POTD vs LAD STRONG-resolver disagreement
+    # invisible from the payload. Engine_check lets the app + audit tools
+    # surface "side dim said PRIME but resolver side tier was LIGHT".
     result = {
         'game': {
             'home_team': pick['home_team'],
@@ -3515,6 +3520,14 @@ def run():
             'dim_source': _lb if _matching_score is not None else 'headline_fallback',
             'isNRFI': pick.get('is_nrfi', False),
             'nrfiScore': pick.get('nrfi_score'),
+            'dim_breakdown': {
+                'side_score': pick.get('dim_side_score'),
+                'total_score': pick.get('dim_total_score'),
+                'prop_score': pick.get('dim_prop_score'),
+                'side_tier': pick.get('dim_side_tier'),
+                'total_tier': pick.get('dim_total_tier'),
+                'prop_tier': pick.get('dim_prop_tier'),
+            },
         },
         'leanDisplay': pick.get('lean_display') or f"{pick['away_team']} @ {pick['home_team']}",
         'generatedAt': today,
