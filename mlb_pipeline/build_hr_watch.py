@@ -791,7 +791,22 @@ def run():
 
                 time.sleep(0.1)  # be polite to MLB API
 
-    candidates.sort(key=lambda c: -c['score'])
+    # 2026-06-20 ranking rescore. Audit (_audit_hr_components over n=480 / 60d)
+    # found that current `score` was non-predictive in the 70-89 band
+    # (-2.8 to -4.7pt lift over baseline) — the band most surfaced rows live in.
+    # The two signals that DO carry lift:
+    #   jerry_hr_contribution 0.3+ : 34.3% hit rate (+15.7pt lift, n=35)
+    #   projected_hr_prob 15%+     : 22.7% hit rate (+4.1pt lift, n=119)
+    # Composite ranking weights both well above raw score so guys with
+    # loud Jerry allocation + plus projection rise to the top regardless of
+    # how the legacy `score` shakes out. Score is still rendered in the app
+    # for transparency; this only changes which 15 candidates we surface.
+    def _rank(c):
+        jerry = float(c.get('jerry_hr_contribution') or 0)
+        proj = float(c.get('projected_hr_prob') or 0)
+        s = float(c.get('score') or 0)
+        return -(jerry * 300 + proj * 150 + s * 0.3)
+    candidates.sort(key=_rank)
     top_n = candidates[:15]  # store more than displayed so app can filter/sort
 
     # Phase 2-style book odds attach (added 2026-06-01). Same pattern as
