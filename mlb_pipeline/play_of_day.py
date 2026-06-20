@@ -1028,6 +1028,25 @@ def score_mlb_game(ctx, game_props=None, track=None):
                         _add(side_drivers, 12, '🤝', 'v3+v4 DOG consensus',
                              f'Both models pick the dog side (v3 {v3_signed:+.2f}, v4 {v4_signed:+.2f})',
                              direction=consensus_dir)
+                        # 2026-06-20 ALL-3 unanimous SIDE penalty. Audit found
+                        # ALL-3 unanimous on sides hits only 45.6% (n=252)
+                        # — over-discovered consensus is a fade. When STRONG
+                        # cohort (|confluence_net|>=4) also lines up, hit rate
+                        # drops to 37% (n=27). Penalty scales with confluence.
+                        try:
+                            if jerry_signed is not None and abs(jerry_signed) >= 0.5:
+                                jerry_picks_home = jerry_signed > 0
+                                if jerry_picks_home == v3_picks_home:
+                                    cn = abs(int(ctx.get('signal_confluence_net') or 0))
+                                    penalty = 8 if cn >= 4 else 5
+                                    label = ('ALL-3 unanimous fade (STRONG)'
+                                             if cn >= 4 else 'ALL-3 unanimous fade')
+                                    hist = '37%' if cn >= 4 else '46%'
+                                    _add(side_drivers, -penalty, '⚠️', label,
+                                         f'v3+v4+jerry all agree — {hist} hist cohort (consensus over-priced)',
+                                         direction=consensus_dir)
+                        except (TypeError, ValueError):
+                            pass
                     else:
                         # Models agree on FAVORITE side — check trap band
                         home_ml_v = ctx.get('home_ml_close') or ctx.get('home_ml_open')
@@ -1275,7 +1294,26 @@ def score_mlb_game(ctx, game_props=None, track=None):
             both_loud = total_delta_abs >= 1.5 and abs(v4_total_signed) >= 1.5
             consensus_pts = 12 if both_loud else 10
             _add(total_drivers, consensus_pts, '🤝', 'v3+v4 consensus',
-                 f'Both math models point {v3v4_consensus_dir} (v3 {total_delta_signed:+.2f}, v4 {v4_total_signed:+.2f})')
+                 f'Both math models point {v3v4_consensus_dir} (v3 {total_delta_signed:+.2f}, v4 {v4_total_signed:+.2f})',
+                 direction=v3v4_consensus_dir)
+            # 2026-06-20 ALL-3 unanimous bonus. Audit (_audit_v4_dissent_sides
+            # over 90d / n=982) found: ALL-3 model unanimous on TOTALS hits
+            # 71.1% (n=45) — the loudest single cohort we've measured.
+            # Reward it explicitly so the total dim surfaces the games where
+            # v3+v4+jerry all agree as PRIME instead of LEAN. Additive on
+            # top of the existing v3+v4 consensus + Jerry-band contributions
+            # so unanimous totals get the full lift.
+            try:
+                jerry_t_val = ctx.get('jerry_pred_total')
+                if jerry_t_val is not None:
+                    jerry_t_delta = float(jerry_t_val) - close_total
+                    jerry_t_dir = 'OVER' if jerry_t_delta > 0 else 'UNDER' if jerry_t_delta < 0 else None
+                    if (abs(jerry_t_delta) >= 0.3 and jerry_t_dir == v3v4_consensus_dir):
+                        _add(total_drivers, 6, '🎯', 'ALL-3 model unanimous',
+                             f'v3+v4+jerry all point {v3v4_consensus_dir} — 71% hist cohort (n=45)',
+                             direction=v3v4_consensus_dir)
+            except (TypeError, ValueError):
+                pass
 
     # ---- TOTAL: Confluence-as-volatility-proxy UNDER bias (NEW 2026-06-05) ----
     # Backtest n=640 (_backtest_outside_box.py) found |signal_confluence_net|=4
