@@ -3368,9 +3368,107 @@ def run():
                 if t in _TIER_RANK:
                     ranks.append(_TIER_RANK[t])
             return max(ranks) if ranks else -1
+
+        # 2026-06-21 — v5 confidence gate.
+        # v5_ml + v5_total are stacked ensembles trained on 90d that beat
+        # every individual model on the 14d holdout (v5_ml 58.9% vs v3
+        # 44%/v4 49%/jerry 50%; v5_total confidence-gated hits 95%+ on
+        # |prob-0.5|>=0.10). Used here as a tiebreaker/filter on top of the
+        # existing tier system — DOES NOT replace tier preference, only
+        # boosts picks where v5 confidently agrees and demotes picks where
+        # v5 strongly disagrees.
+        #
+        # v5 disagreement is meaningful because it's the LEARNED ensemble
+        # talking, not a single noisy model. When v5 says PASS but the
+        # existing models all agree (the 37%/45.6% fade cohort), this is
+        # exactly the over-saturated-consensus pattern we want to block.
+        try:
+            from v5_inference import predict_ml, predict_total, confidence_tier as _v5_tier_name
+        except Exception:
+            predict_ml = lambda ctx: None
+            predict_total = lambda ctx: None
+            _v5_tier_name = lambda p: 'UNAVAILABLE'
+
+        _V5_TIER_RANK = {'ELITE': 3, 'STRONG': 2, 'LEAN': 1, 'PASS': 0, 'UNAVAILABLE': 0}
+
+        def _v5_score(c):
+            """Returns (v5_tier_rank, v5_agrees, v5_disagrees_strong).
+            Looks up v5 ML or total based on the candidate's lean_bet, runs
+            the prediction against the candidate's own context, and reports:
+              tier rank: ELITE/STRONG/LEAN/PASS rank
+              agrees: True when v5 confidence aligns with picked direction
+              disagrees_strong: True when v5 STRONG-tier confidence points
+                the OPPOSITE direction from the candidate's pick
+            """
+            ctx = c.get('_ctx') or c
+            lean = (c.get('lean_bet') or '').lower()
+            if lean == 'total':
+                # Need to know direction the candidate picked
+                pick_dir = None
+                disp = (c.get('lean_display') or '').lower()
+                if 'over' in disp: pick_dir = 'O'
+                elif 'under' in disp: pick_dir = 'U'
+                if pick_dir is None:
+                    return (0, False, False)
+                p_over = predict_total(ctx)
+                if p_over is None:
+                    return (0, False, False)
+                tier = _v5_tier_name(p_over)
+                v5_pick = 'O' if p_over >= 0.5 else 'U'
+                agrees = (v5_pick == pick_dir)
+                disagrees_strong = (
+                    tier in ('STRONG', 'ELITE') and v5_pick != pick_dir
+                )
+                return (_V5_TIER_RANK.get(tier, 0), agrees, disagrees_strong)
+            if lean in ('ml', 'spread', 'rl', 'side'):
+                disp = (c.get('lean_display') or '').lower()
+                home_team = (c.get('home_team') or '').lower()
+                away_team = (c.get('away_team') or '').lower()
+                pick_dir = None
+                if home_team and home_team in disp: pick_dir = 'H'
+                elif away_team and away_team in disp: pick_dir = 'A'
+                if pick_dir is None:
+                    return (0, False, False)
+                p_home = predict_ml(ctx)
+                if p_home is None:
+                    return (0, False, False)
+                tier = _v5_tier_name(p_home)
+                v5_pick = 'H' if p_home >= 0.5 else 'A'
+                agrees = (v5_pick == pick_dir)
+                disagrees_strong = (
+                    tier in ('STRONG', 'ELITE') and v5_pick != pick_dir
+                )
+                return (_V5_TIER_RANK.get(tier, 0), agrees, disagrees_strong)
+            return (0, False, False)
+
+        # First-pass v5 filter: drop candidates where v5 STRONGLY disagrees
+        # at STRONG+ tier. Those are the over-saturated-consensus picks we
+        # used to publish blind (Cubs ML 6/20 — STRONG dim tier but v5 was
+        # almost certainly fading). Logs the count so we can see what got
+        # filtered.
+        _v5_blocked = []
+        _v5_filtered_pool = []
+        for c in value_pool:
+            v5_rank, agrees, disagrees_strong = _v5_score(c)
+            c['_v5_tier_rank'] = v5_rank
+            c['_v5_agrees'] = agrees
+            c['_v5_disagrees_strong'] = disagrees_strong
+            if disagrees_strong:
+                _v5_blocked.append(c)
+            else:
+                _v5_filtered_pool.append(c)
+        if _v5_blocked:
+            print(f"  ⚠️  v5 gate blocked {len(_v5_blocked)} pick(s) — STRONG-tier v5 disagreement:")
+            for c in _v5_blocked[:3]:
+                print(f"     {c.get('away_team')} @ {c.get('home_team')} ({c.get('lean_display')})")
+        # Only fall back to the unfiltered pool if v5 blocked EVERY candidate
+        # (defensive — shouldn't happen, but better a noisy pick than no POTD)
+        value_pool = _v5_filtered_pool or value_pool
+
         def _rank_key(c):
             return (
-                -_best_dim_tier(c),  # PRIME > STRONG > LEAN > unknown
+                -c.get('_v5_tier_rank', 0),  # v5 confidence wins ties first
+                -_best_dim_tier(c),          # then PRIME > STRONG > LEAN
                 -abs(c.get('signal_confluence_net') or 0),
                 -(c.get('score') or 0),
             )
@@ -3547,6 +3645,14 @@ def run():
                 'side_tier': pick.get('dim_side_tier'),
                 'total_tier': pick.get('dim_total_tier'),
                 'prop_tier': pick.get('dim_prop_tier'),
+            },
+            # 2026-06-21 v5 attribution — what the stacked ensemble said
+            # about this exact pick. Useful for audit ("did v5 boost or
+            # warn?") and app rendering ("v5 confidence: STRONG").
+            'v5': {
+                'tier_rank': pick.get('_v5_tier_rank'),
+                'agrees': pick.get('_v5_agrees'),
+                'disagrees_strong': pick.get('_v5_disagrees_strong'),
             },
         },
         'leanDisplay': pick.get('lean_display') or f"{pick['away_team']} @ {pick['home_team']}",
