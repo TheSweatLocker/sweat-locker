@@ -288,6 +288,19 @@ jobs:
           cd mlb_pipeline
           python audit_hr_watch.py
 
+      # CLV history logger (2026-06-20) — persists per-tier CLV nightly so
+      # decay/improvement is trackable over time. Reads recent graded games,
+      # writes positivity rate + win rate per (tier × pick_type × window)
+      # into mlb_tier_calibration. Idempotent on (tier, window_label,
+      # computed_date) so re-runs same day overwrite cleanly.
+      - name: CLV history logger
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python log_clv_history.py
+
       - name: Update umpire database (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
