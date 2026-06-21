@@ -301,6 +301,21 @@ jobs:
           cd mlb_pipeline
           python log_clv_history.py
 
+      # Starter-change detection (2026-06-20) — diffs mlb_game_context
+      # pitchers against MLB API probable pitchers. Catches same-day
+      # starter swaps that silently invalidate pitcher-prop picks (6/20
+      # Skenes/Sugano + Connelly Early incidents). Writes findings to
+      # jerry_cache.starter_changes_<date> so downstream tools (morning
+      # audit, engine_tier_brief, validators) can read "data freshness"
+      # before publishing.
+      - name: Starter-change detection
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python check_starter_changes.py
+
       - name: Update umpire database (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

@@ -50,3 +50,45 @@ __pycache__/
 # Local agent / generated data
 .claude/
 mlb_pipeline/data/
+
+# Pre-launch scratch hygiene (2026-06-20). Patterns below cover one-off
+# session scripts and audit-output artifacts that accumulate during daily
+# work. Already-committed files stay tracked (gitignore doesn't untrack);
+# force-add with `git add -f` if a new file matches but should be committed.
+
+# Root-level audit/recipe scratch
+/_*.txt
+/_*.json
+
+# mlb_pipeline scratch outputs
+mlb_pipeline/_*.txt
+mlb_pipeline/_*.csv
+mlb_pipeline/_*.json
+mlb_pipeline/_*_out.txt
+
+# mlb_pipeline daily-session scripts — not persistent infra
+mlb_pipeline/_check_*.py
+mlb_pipeline/_card_*.py
+mlb_pipeline/_morning_*.py
+mlb_pipeline/_eod_*.py
+mlb_pipeline/_deep_*.py
+mlb_pipeline/_full_*.py
+mlb_pipeline/_tonight_*.py
+mlb_pipeline/_today_*.py
+mlb_pipeline/_apply_*.py
+mlb_pipeline/_verify_*.py
+mlb_pipeline/_resolver_*.py
+mlb_pipeline/_model_*.py
+mlb_pipeline/_jerry_*.py
+
+# All underscore-prefixed scratch in mlb_pipeline. Already-committed
+# files (audits we kept, backtests with shipped findings) stay tracked
+# because gitignore doesn't untrack; new scratch is hidden by default.
+# When a new file is keeper-grade, `git add -f` it.
+mlb_pipeline/_*.py
+
+# Content backups / preserve markers + dated scratch
+content/*.local-backup
+content/*.preserve
+content/*_breakdown.md
+content/*_breakdown.txt
