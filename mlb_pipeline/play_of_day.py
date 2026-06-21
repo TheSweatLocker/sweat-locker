@@ -1182,41 +1182,48 @@ def score_mlb_game(ctx, game_props=None, track=None):
     # `conf_ml|*` and `v4_ml|*` families. Same LOCK +10 / STRONG_EDGE +5
     # / +12 cap pattern. Routes through home/away direction so the
     # surfaced driver matches the picked side.
+    # Same fix pattern as TOTAL cohort block — dedup by rule id, skip 'any'
+    # direction rules, NET points instead of max so balanced cohorts cancel.
     try:
         cohort_side_pts_h = 0
         cohort_side_pts_a = 0
         cohort_side_labels = []
+        seen_rule_ids_s = set()
         for play_key in ('v3_ml', 'v4_ml', 'jerry_ml', 'conf_ml',
                           'v3_rl', 'v4_rl', 'jerry_rl', 'conf_rl'):
-            for d_label, d_pretty in (('home', 'HOME'), ('away', 'AWAY')):
-                matches = _cohort_eval_safe(ctx, play_key, direction=d_label)
-                for rule in matches[:2]:
-                    tier = rule.get('tier', '')
-                    if tier not in ('LOCK', 'STRONG_EDGE'):
-                        continue
-                    last30_n = rule.get('last30_n') or 0
-                    if last30_n < 15:
-                        continue
-                    pts = 10 if tier == 'LOCK' else 5
-                    last30_pct = rule.get('last30_pct') or rule.get('shrunken_pct') or 0
-                    rule_id = rule.get('id', '')[:60]
-                    if d_pretty == 'HOME':
-                        cohort_side_pts_h += pts
-                    else:
-                        cohort_side_pts_a += pts
-                    cohort_side_labels.append((tier, last30_pct, last30_n, rule_id, d_pretty))
-                    if cohort_side_pts_h + cohort_side_pts_a >= 12:
-                        break
-            if cohort_side_pts_h + cohort_side_pts_a >= 12:
-                break
-        net_dir_s = 'HOME' if cohort_side_pts_h > cohort_side_pts_a else 'AWAY' if cohort_side_pts_a > cohort_side_pts_h else None
-        net_pts_s = min(12, max(cohort_side_pts_h, cohort_side_pts_a))
+            for rule in _cohort_eval_safe(ctx, play_key, direction=None):
+                rid = rule.get('id', '')
+                if rid in seen_rule_ids_s:
+                    continue
+                tier = rule.get('tier', '')
+                if tier not in ('LOCK', 'STRONG_EDGE'):
+                    continue
+                last30_n = rule.get('last30_n') or 0
+                if last30_n < 15:
+                    continue
+                rule_dir = (rule.get('direction') or '').lower()
+                if rule_dir not in ('home', 'away'):
+                    continue
+                seen_rule_ids_s.add(rid)
+                pts = 10 if tier == 'LOCK' else 5
+                last30_pct = rule.get('last30_pct') or rule.get('shrunken_pct') or 0
+                if rule_dir == 'home':
+                    cohort_side_pts_h += pts
+                else:
+                    cohort_side_pts_a += pts
+                cohort_side_labels.append((tier, last30_pct, last30_n, rid[:60], rule_dir.upper()))
+        # Same /8 differential scaling as TOTAL cohort block.
+        diff_s = cohort_side_pts_h - cohort_side_pts_a
+        net_pts_s = min(10, abs(diff_s) // 8)
+        net_dir_s = 'HOME' if diff_s > 0 else ('AWAY' if diff_s < 0 else None)
         if net_dir_s and net_pts_s > 0 and cohort_side_labels:
-            top_label = max(cohort_side_labels, key=lambda x: x[1] or 0)
-            tier, pct30, n30, rid, _ = top_label
-            _add(side_drivers, net_pts_s, '🧬', f'Cohort {tier} match',
-                 f'{rid} hit {pct30:.0f}% over 30d (n={n30})',
-                 direction=net_dir_s)
+            same_side = [x for x in cohort_side_labels if x[4] == net_dir_s]
+            if same_side:
+                top_label = max(same_side, key=lambda x: x[1] or 0)
+                tier, pct30, n30, rid, _ = top_label
+                _add(side_drivers, net_pts_s, '🧬', f'Cohort {tier} match',
+                     f'{rid} hit {pct30:.0f}% over 30d (n={n30}); net cohort diff {diff_s}',
+                     direction=net_dir_s)
     except Exception:
         pass
 
@@ -1417,45 +1424,64 @@ def score_mlb_game(ctx, game_props=None, track=None):
     # toward whichever direction the rule favors. Capped at +12 net per dim
     # so a single cohort can't single-handedly flip the dim. Limited to v3
     # totals (the loudest-cohort indexed family) for now.
+    # 6/21 evening fix: previous version called evaluate_game_for_play
+    # twice per play (once for 'over', once for 'under') and 'any'-direction
+    # rules returned in BOTH calls, double-counting. Worse, "any" rules are
+    # confidence boosters on the model's own predicted direction — they
+    # don't pick a side themselves. Sanity test showed every game on tonight's
+    # slate hitting the +12 cap, which means the layer added no
+    # differentiation. New logic:
+    #   - Pull each play_key's cohorts ONCE without direction filter
+    #   - DEDUP by rule ID per game (prevents double-count)
+    #   - Skip 'any' direction (these need model-direction routing — fold
+    #     in later when we have time to do it right)
+    #   - Compute NET direction (over_pts - under_pts) so a game with
+    #     balanced cohorts gets 0, not max()
     try:
         cohort_total_pts_o = 0
         cohort_total_pts_u = 0
         cohort_total_labels = []
+        seen_rule_ids = set()
         for play_key in ('v3_tot', 'v4_tot', 'jerry_tot'):
-            for d_label, d_pretty in (('over', 'OVER'), ('under', 'UNDER')):
-                matches = _cohort_eval_safe(ctx, play_key, direction=d_label)
-                for rule in matches[:2]:  # top 2 per (play × dir)
-                    tier = rule.get('tier', '')
-                    if tier not in ('LOCK', 'STRONG_EDGE'):
-                        continue
-                    last30_n = rule.get('last30_n') or 0
-                    if last30_n < 15:  # too thin
-                        continue
-                    pts = 10 if tier == 'LOCK' else 5
-                    rule_dir = rule.get('direction') or d_label
-                    direction_norm = 'OVER' if rule_dir in ('over', 'any') and d_label == 'over' else 'UNDER' if rule_dir in ('under', 'any') and d_label == 'under' else d_pretty
-                    last30_pct = rule.get('last30_pct') or rule.get('shrunken_pct') or 0
-                    rule_id = rule.get('id', '')[:60]
-                    if direction_norm == 'OVER':
-                        cohort_total_pts_o += pts
-                    else:
-                        cohort_total_pts_u += pts
-                    cohort_total_labels.append((tier, last30_pct, last30_n, rule_id, direction_norm))
-                    # cap per dim
-                    if cohort_total_pts_o + cohort_total_pts_u >= 12:
-                        break
-            if cohort_total_pts_o + cohort_total_pts_u >= 12:
-                break
-        # Net direction
-        net_dir = 'OVER' if cohort_total_pts_o > cohort_total_pts_u else 'UNDER' if cohort_total_pts_u > cohort_total_pts_o else None
-        net_pts = min(12, max(cohort_total_pts_o, cohort_total_pts_u))
+            for rule in _cohort_eval_safe(ctx, play_key, direction=None):
+                rid = rule.get('id', '')
+                if rid in seen_rule_ids:
+                    continue
+                tier = rule.get('tier', '')
+                if tier not in ('LOCK', 'STRONG_EDGE'):
+                    continue
+                last30_n = rule.get('last30_n') or 0
+                if last30_n < 15:
+                    continue
+                rule_dir = (rule.get('direction') or '').lower()
+                if rule_dir not in ('over', 'under'):
+                    continue  # 'any' rules deferred — they need model routing
+                seen_rule_ids.add(rid)
+                pts = 10 if tier == 'LOCK' else 5
+                last30_pct = rule.get('last30_pct') or rule.get('shrunken_pct') or 0
+                if rule_dir == 'over':
+                    cohort_total_pts_o += pts
+                else:
+                    cohort_total_pts_u += pts
+                cohort_total_labels.append((tier, last30_pct, last30_n, rid[:60], rule_dir.upper()))
+        # 6/21 evening tightening: even after dedup + direction filter, the
+        # cohort engine has way more OVER-direction rules than UNDER, so
+        # raw NET still caps every game at +12. Sanity test post-fix
+        # showed o-u ranged 25-90 across tonight's slate but capped at 12.
+        # Scale by /8 so the DIFFERENTIAL drives the score: 30→+3, 60→+7,
+        # 90→+11. Now games with louder cohort agreement actually rank
+        # higher than the baseline-y games.
+        diff = cohort_total_pts_o - cohort_total_pts_u
+        net_pts = min(10, abs(diff) // 8)
+        net_dir = 'OVER' if diff > 0 else ('UNDER' if diff < 0 else None)
         if net_dir and net_pts > 0 and cohort_total_labels:
-            # Pick the loudest contributing label for the driver detail
-            top_label = max(cohort_total_labels, key=lambda x: x[1] or 0)
-            tier, pct30, n30, rid, _ = top_label
-            _add(total_drivers, net_pts, '🧬', f'Cohort {tier} match',
-                 f'{rid} hit {pct30:.0f}% over 30d (n={n30})',
-                 direction=net_dir)
+            same_side = [x for x in cohort_total_labels if x[4] == net_dir]
+            if same_side:
+                top_label = max(same_side, key=lambda x: x[1] or 0)
+                tier, pct30, n30, rid, _ = top_label
+                _add(total_drivers, net_pts, '🧬', f'Cohort {tier} match',
+                     f'{rid} hit {pct30:.0f}% over 30d (n={n30}); net cohort diff {diff}',
+                     direction=net_dir)
     except Exception:
         pass
 
