@@ -1176,6 +1176,39 @@ def score_mlb_game(ctx, game_props=None, track=None):
         except (TypeError, ValueError):
             pass
 
+    # ---- SIDE: Away injury depth disadvantage (NEW 2026-06-21) ----
+    # _audit_unused_features.py (n=74 over 120d) found: when away team has
+    # 7+ more injuries than home, HOME ML hits 57% (n=74, +3.5pt over
+    # 53% baseline). Stable signal, decent sample. Modest +4 driver.
+    try:
+        a_inj = float(ctx.get('away_injury_count') or 0)
+        h_inj = float(ctx.get('home_injury_count') or 0)
+        if a_inj - h_inj >= 7:
+            _add(side_drivers, 4, '🏥', 'Away injury depth gap',
+                 f'AWAY {int(a_inj)} injuries vs HOME {int(h_inj)} — 57% HOME ML hist (n=74)',
+                 direction='HOME')
+        elif h_inj - a_inj >= 7:
+            _add(side_drivers, 4, '🏥', 'Home injury depth gap',
+                 f'HOME {int(h_inj)} injuries vs AWAY {int(a_inj)} — symmetric inverse signal',
+                 direction='AWAY')
+    except (TypeError, ValueError):
+        pass
+
+    # ---- TOTAL: OPS-vs-opp-hand combined (NEW 2026-06-21) ----
+    # When BOTH lineups have strong OPS vs the opposing-handed starter
+    # (away_ops_vs_opp_hand + home_ops_vs_opp_hand >= 1.50, avg >= 0.75),
+    # OVER hits 55% on n=84 (+3pt over baseline). Hand-aware offense
+    # signal that vanilla wRC+ misses.
+    try:
+        ao_h = float(ctx.get('away_ops_vs_opp_hand') or 0)
+        ho_h = float(ctx.get('home_ops_vs_opp_hand') or 0)
+        if ao_h > 0 and ho_h > 0 and (ao_h + ho_h) / 2 >= 0.75:
+            _add(total_drivers, 4, '🪑', 'OPS vs opp hand loud',
+                 f'avg OPS vs opp hand {(ao_h+ho_h)/2:.2f} — 55% OVER hist (n=84)',
+                 direction='OVER')
+    except (TypeError, ValueError):
+        pass
+
     # ---- SIDE: cohort-engine LOCK / STRONG_EDGE surfacing (NEW 2026-06-21) ----
     # Companion to the TOTAL cohort driver added below. ML/RL cohorts are
     # less common in the engine than v3_tot cohorts but still exist —
