@@ -61,10 +61,19 @@ HITS_CUTOFF = 55    # Hits Over — floor still profitable
 K_UNDER_CUTOFF = 65       # Ks Under — fading aspirational K lines
 HITS_UNDER_CUTOFF = 70    # Hits Under (0-fer) — needs strong evidence
 
-# New 2026-05-05 — Total Outs and Earned Runs props. Floor at 65 until we
-# have audit data. Recalibrate once n=20+ resolved per cohort.
-OUTS_CUTOFF = 65
-OUTS_UNDER_CUTOFF = 70
+# 2026-06-21 RECAL — fresh 90d audit (n=48 graded outs_under, n=43 graded
+# outs_over) found the threshold structure backwards from where the edge
+# actually lives:
+#   outs_under: 44-4 (92%) across ALL tiers — even SKIP tier (31 picks
+#     below the publish cutoff) hit 30-1 (97%). The scorer was suppressing
+#     the loudest prop cohort in the library. CUTOFF dropped 70→50 so the
+#     LEAN band actually publishes, and per-tier thresholds shifted in
+#     tier_for() so PRIME tier becomes reachable.
+#   outs_over: 2-41 (5%) across all tiers — destroyed. Even PRIME-tier
+#     outs_over was 0-2. CUTOFF raised 65→78 to suppress all but the
+#     loudest setups; better to publish nothing than to publish a 5% trap.
+OUTS_CUTOFF = 78        # was 65 — outs_over has been a 5% fade
+OUTS_UNDER_CUTOFF = 50  # was 70 — outs_under has been a 92% smash, surface it
 ER_CUTOFF = 65
 ER_UNDER_CUTOFF = 70
 # New 2026-05-11 — Pitcher Walks Allowed Over/Under. Walks are higher-variance
@@ -229,17 +238,19 @@ def tier_for(conviction, prop_type=None):
         if conviction >= 85: return 'PRIME'
         if conviction >= 75: return 'STRONG'
         return 'SKIP'
-    # 2026-06-05: outs_over hard-cap REVERTED. The 0-15 lifetime cohort
-    # cited 6/4 was a GRADING BUG, not a scoring failure — the resolver
-    # was writing final_value=0 instead of computed outs from inningsPitched.
-    # Backfilled 15 broken grades via MLB Stats API box scores: the true
-    # outs_over record is 10-6 (62.5%). The scorer is actually performing
-    # fine; the data we audited against was corrupted. outs_over back in
-    # the normal tier ladder.
-    if prop_type in ('outs_over', 'outs_under', 'er_over', 'er_under'):
-        # New 2026-05-05 — no audit data yet, mirror Ks tier thresholds
-        # since outs/ER are similarly pitcher-driven props. Recalibrate
-        # once n=20+ resolved props per cohort.
+    # 2026-06-21 RECAL on n=48 outs_under / n=43 outs_over graded picks
+    # over 90d. outs_under has been a 92% smash across every tier the
+    # scorer surfaced (and 97% on the SKIP tier we never published) —
+    # thresholds shifted down so STRONG/PRIME become reachable from the
+    # actual signal range the scorer produces (base 30, max realistic ~70).
+    # outs_over stayed on the conservative Ks ladder since it's been a
+    # 5% trap across the same window.
+    if prop_type == 'outs_under':
+        if conviction >= 65: return 'PRIME'
+        if conviction >= 55: return 'STRONG'
+        if conviction >= 50: return 'LEAN'
+        return 'SKIP'
+    if prop_type in ('outs_over', 'er_over', 'er_under'):
         if conviction >= 82: return 'PRIME'
         if conviction >= 70: return 'STRONG'
         return 'SKIP'

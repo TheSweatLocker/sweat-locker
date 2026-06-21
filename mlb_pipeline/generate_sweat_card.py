@@ -901,7 +901,13 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
     props = annotated_props
 
     picks = []
-    seen_keys = set()  # dedupe ("type:identifier")
+    seen_keys = set()  # dedupe by (source_table, source_key)
+    seen_play_signatures = set()  # 2026-06-21 dedup: same game-side play
+    # surfacing twice. Yesterday Cubs ML appeared at rank 1 (POTD path,
+    # source_table=daily_best_bet_history) AND rank 4 (ML primary-play path,
+    # source_table=daily_picks_ml) — different source keys but identical
+    # game + bet. seen_play_signatures catches "Cubs ML" no matter which
+    # path surfaces it second.
     game_pick_count = {}  # 2026-05-24 — track per-game pick concentration
 
     # Max picks per single MLB game on the public card.
@@ -930,10 +936,36 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
     MAX_PROP_TYPE_IN_TOP_8 = 2
     prop_type_count = {}
 
+    def _play_signature(pick):
+        """Normalize a pick to its bet-level identity. Same game + same
+        bet (ML/RL/total/prop) collapses to one signature, regardless
+        of which pipeline path surfaced the pick. Returns None when we
+        can't infer a stable signature (and dedup falls through to the
+        legacy source_key check)."""
+        g = pick.get("game") or ""
+        # Game-side bets: label encodes both team + market type
+        # ("Chicago Cubs ML", "Pittsburgh Pirates ML lean", "Over 9.5", etc.)
+        label = (pick.get("label") or "").strip().lower()
+        ptype = (pick.get("type") or "").lower()
+        if not label:
+            return None
+        # Strip trailing " lean" so PRIMARY and "lean" variants collapse
+        norm_label = label.replace(" lean", "").strip()
+        # For props, include the player name (already in label) so two
+        # different players on the same team don't collide.
+        if ptype.startswith("prop_"):
+            return ("prop", norm_label)
+        return (g.lower(), norm_label)
+
     def add(pick):
         # Dedupe by a stable identifier
         key = f"{pick['source_table']}:{pick['source_key']}"
         if key in seen_keys:
+            return False
+        # Play-signature dedup — same bet should never appear twice even
+        # when surfaced by different paths.
+        sig = _play_signature(pick)
+        if sig is not None and sig in seen_play_signatures:
             return False
         # Concentration cap — block 3rd+ pick on a single game.
         # POTD + DotD are by-design daily anchors so they bypass the BLOCK,
@@ -954,6 +986,8 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
                 return False
             prop_type_count[prop_type] = prop_type_count.get(prop_type, 0) + 1
         seen_keys.add(key)
+        if sig is not None:
+            seen_play_signatures.add(sig)
         if gkey is not None:
             game_pick_count[gkey] = game_pick_count.get(gkey, 0) + 1
         pick["rank"] = len(picks) + 1
@@ -1425,6 +1459,29 @@ def build_card():
                 if len(top_props_all) >= 7:
                     break
         print(f"  ✓ top_props dedup vs top_8: {before_count} → {len(top_props_all)} (excluded {before_count - len(top_props_all)} overlap{'s' if before_count - len(top_props_all) != 1 else ''})")
+
+    # 2026-06-21 dedup extended to the per-prop-type top lists
+    # (top_hits_over / top_hits_under / top_ks_over / top_ks_under).
+    # Without this the same Gallen Ks UNDER PRIME pick could appear on
+    # the sweat card top_8 AND in the "Top Ks Under" section below it
+    # — user feedback "redundant, listed twice." Each list is filtered
+    # against the same top_8 player+market signature set.
+    def _filter_against_top_8(plist):
+        if not top_8_player_market:
+            return plist
+        return [
+            p for p in plist
+            if not any(
+                p.get("player_name") == pname
+                and p.get("prop_type", "").replace("_", " ").lower() in label.lower()
+                and str(p.get("prop_line")) in label
+                for pname, label in top_8_player_market
+            )
+        ]
+    top_hits = _filter_against_top_8(top_hits)
+    top_ks = _filter_against_top_8(top_ks)
+    top_under_hits = _filter_against_top_8(top_under_hits)
+    top_under_ks = _filter_against_top_8(top_under_ks)
 
     # Stack alert detection — find games where 4+ hits picks are PRIME
     stack_games = {}

@@ -3345,12 +3345,32 @@ def run():
                         continue
             value_pool.append(c)
 
-        # Composite rank: prefer sweat-dim-promoted candidates with STRONG+
-        # dim tier, then by confluence magnitude, then by sweat score.
+        # Composite rank: prefer PRIME-tier dim plays over STRONG over
+        # LEAN regardless of promotion path. 2026-06-21 fix: previous
+        # rule only honored dim_tier for "_promoted_from_dim" candidates,
+        # which let Cubs ML (STRONG-tier side dim) outrank Twins ML
+        # (PRIME-tier DAWG) on 6/20 because Cubs had a higher sweat
+        # score from cohort-historical-match drivers. POTD went 4-7-3
+        # over last 14 days picking STRONG over PRIME.
+        #
+        # CLV data shipped 6/20 (commit d6cf348) validated: PRIME-tier
+        # side CLV +0.545 pts (loud sharp) vs STRONG-tier side CLV +0.000
+        # (flat). The selector should follow the CLV signal.
+        #
+        # Resolver-driven dim tiers are read from the per-dim breakdown
+        # (dim_side_tier / dim_total_tier) when present, otherwise fall
+        # back to the legacy dim_tier field for backward compat.
+        _TIER_RANK = {'ELITE': 3, 'PRIME': 2, 'STRONG': 1, 'LEAN': 0}
+        def _best_dim_tier(c):
+            ranks = []
+            for k in ('dim_side_tier', 'dim_total_tier', 'dim_tier'):
+                t = (c.get(k) or '').upper()
+                if t in _TIER_RANK:
+                    ranks.append(_TIER_RANK[t])
+            return max(ranks) if ranks else -1
         def _rank_key(c):
-            dim_tier_rank = {'PRIME': 2, 'STRONG': 1}.get(c.get('dim_tier'), 0)
             return (
-                -dim_tier_rank if c.get('_promoted_from_dim') else 0,
+                -_best_dim_tier(c),  # PRIME > STRONG > LEAN > unknown
                 -abs(c.get('signal_confluence_net') or 0),
                 -(c.get('score') or 0),
             )
