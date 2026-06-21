@@ -1176,6 +1176,34 @@ def score_mlb_game(ctx, game_props=None, track=None):
         except (TypeError, ValueError):
             pass
 
+    # ---- SIDE / TOTAL: Thursday day-of-week skew (NEW 2026-06-21) ----
+    # _audit_day_patterns.py over 120d found Thursday games systematically
+    # different from other weekdays:
+    #   Thursday HOME ML: 46% (n=96, -7.4pt vs 53.3% baseline) → fade home
+    #   Thursday OVER:    47% (n=58, -5.2pt vs 51.7% baseline) → fade over
+    #   Thursday + HOME FAV: HOME wins only 41% (n=34) → AWAY DOG cohort
+    #
+    # Likely mechanism: Thursday is often getaway-day / travel-day with
+    # day games, lineup rest, or end-of-series schedules. The pattern is
+    # robust enough to warrant a small per-day adjustment.
+    try:
+        from datetime import datetime as _dt
+        game_date_val = ctx.get('game_date')
+        if game_date_val:
+            try:
+                gd = _dt.fromisoformat(str(game_date_val))
+                if gd.weekday() == 3:  # Thursday
+                    _add(side_drivers, 4, '📅', 'Thursday AWAY skew',
+                         'Thursday HOME ML hits 46% hist (n=96, -7.4pt) — getaway/travel day',
+                         direction='AWAY')
+                    _add(total_drivers, 3, '📅', 'Thursday UNDER skew',
+                         'Thursday OVER hits 47% hist (n=58, -5.2pt) — lower-scoring weekday',
+                         direction='UNDER')
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        pass
+
     # ---- SIDE: Hot away offense vs bad home starter (NEW 2026-06-21) ----
     # _audit_compound_patterns.py (n=27 over 120d) found: when AWAY L7 OPS
     # >= 0.78 AND HOME starter xERA >= 4.5, AWAY ML hits 63% (+16.2pt
