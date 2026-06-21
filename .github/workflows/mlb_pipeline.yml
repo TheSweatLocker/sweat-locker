@@ -316,6 +316,32 @@ jobs:
           cd mlb_pipeline
           python check_starter_changes.py
 
+      # v5 nightly retrain (2026-06-21) — rolling 90d window. v5_ml +
+      # v5_total are stacked ensembles read by play_of_day's POTD
+      # selector via v5_inference.py. Without nightly retrain, the
+      # model decays as recent games shift the feature distribution.
+      # Both training scripts are self-contained, idempotent on (date,
+      # window), and write meta JSON alongside the model file.
+      #
+      # Only runs in the night/morning slot so we don't burn compute
+      # on every mid-day refresh. Failures are non-fatal — the rest
+      # of the pipeline keeps using the prior-day model files.
+      - name: v5 nightly retrain
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          HOUR_UTC=$(date -u +%H)
+          if [ "$HOUR_UTC" -ge 5 ] && [ "$HOUR_UTC" -le 12 ]; then
+            echo "Morning slot — running v5 retrain"
+            python train_v5_ml.py || echo "v5_ml retrain failed (non-fatal)"
+            python train_v5_total.py || echo "v5_total retrain failed (non-fatal)"
+          else
+            echo "Outside morning slot ($HOUR_UTC UTC) — skipping retrain"
+          fi
+        continue-on-error: true
+
       - name: Update umpire database (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

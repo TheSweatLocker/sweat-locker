@@ -1047,6 +1047,36 @@ def score_mlb_game(ctx, game_props=None, track=None):
                                          direction=consensus_dir)
                         except (TypeError, ValueError):
                             pass
+                        # 2026-06-21 — v5 DISSENT fade on ML consensus.
+                        # _audit_cross_model_patterns.py (90d, n=891) found
+                        # the strongest single ML signal we've ever measured:
+                        # when v3+v4 both agree and v5 dissents, the v3+v4
+                        # pick hits only 42% (n=129). At STRONG v5 confidence,
+                        # it drops to 22% (n=27). Pattern is robust across
+                        # subsets — the learned ensemble is fading the
+                        # over-discovered model consensus, and history says
+                        # to listen.
+                        try:
+                            from v5_inference import predict_ml as _v5_predict_ml
+                            v5_p_ml = _v5_predict_ml(ctx)
+                            if v5_p_ml is not None:
+                                v5_picks_home = v5_p_ml >= 0.5
+                                v5_confidence = abs(v5_p_ml - 0.5)
+                                if v5_picks_home != v3_picks_home:
+                                    # v5 disagrees with v3+v4 consensus.
+                                    # Scale penalty by v5 confidence band:
+                                    #   STRONG (|p-.5|>=.10): 22% hit rate → -12
+                                    #   LEAN   (|p-.5|>=.05): 42% hit rate → -7
+                                    if v5_confidence >= 0.10:
+                                        _add(side_drivers, -12, '🤖', 'v5 STRONG fade on consensus',
+                                             f'v5 dissents at STRONG conf — 22% hist cohort (n=27)',
+                                             direction=consensus_dir)
+                                    elif v5_confidence >= 0.05:
+                                        _add(side_drivers, -7, '🤖', 'v5 fade on consensus',
+                                             f'v5 dissents at LEAN conf — 42% hist cohort (n=129)',
+                                             direction=consensus_dir)
+                        except Exception:
+                            pass
                     else:
                         # Models agree on FAVORITE side — check trap band
                         home_ml_v = ctx.get('home_ml_close') or ctx.get('home_ml_open')
@@ -1312,6 +1342,24 @@ def score_mlb_game(ctx, game_props=None, track=None):
                         _add(total_drivers, 6, '🎯', 'ALL-3 model unanimous',
                              f'v3+v4+jerry all point {v3v4_consensus_dir} — 71% hist cohort (n=45)',
                              direction=v3v4_consensus_dir)
+                        # 2026-06-21 — 4-WAY unanimous TOTAL bonus.
+                        # _audit_deep_patterns.py (90d, n=891) confirmed:
+                        # when ALL FOUR (v3+v4+jerry+v5) agree on a total,
+                        # hit rate climbs to 69% with the 4-way overlay
+                        # (vs 71% all-3 / 55% baseline). Adds 4 more pts
+                        # on top of the all-3 bonus — small lift but
+                        # robust signal that crosses the v5 layer too.
+                        try:
+                            from v5_inference import predict_total as _v5_predict_total
+                            v5_p = _v5_predict_total(ctx)
+                            if v5_p is not None:
+                                v5_dir = 'OVER' if v5_p >= 0.5 else 'UNDER'
+                                if v5_dir == v3v4_consensus_dir:
+                                    _add(total_drivers, 4, '🚀', '4-way unanimous (v5 confirms)',
+                                         f'v3+v4+jerry+v5 all point {v3v4_consensus_dir} — 69% hist',
+                                         direction=v3v4_consensus_dir)
+                        except Exception:
+                            pass
             except (TypeError, ValueError):
                 pass
 
