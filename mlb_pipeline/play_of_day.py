@@ -1216,6 +1216,39 @@ def score_mlb_game(ctx, game_props=None, track=None):
     except (TypeError, ValueError):
         pass
 
+    # ---- TOTAL: NRFI smart-band routing (NEW 2026-06-21) ----
+    # _audit_nrfi_counter.py (n=1076 over 120d) found three actionable
+    # NRFI patterns that the existing NRFI logic misses:
+    #
+    # 1. NRFI 80-84 band: OVER hits only 34% (66% UNDER, -17.7pt lift, n=53).
+    #    Market under-prices the line in this band — UNDER overlay.
+    #
+    # 2. NRFI >=85 + BOTH starters elite (xERA <= 3.8): OVER hits 58%
+    #    (+6.1pt, n=102) — COUNTER-INTUITIVE. Mechanism: line already moved
+    #    UNDER, elite SP go deep, bullpens rest, late offense wins.
+    #
+    # 3. NRFI >=85 + pitcher park (PRF <95): OVER hits 39% (61% UNDER,
+    #    -13pt, n=31). Park suppression dominates regardless of NRFI.
+    try:
+        nrfi_s = float(ctx.get('nrfi_score') or 0)
+        axera = float(ctx.get('away_sp_xera') or 99)
+        hxera = float(ctx.get('home_sp_xera') or 99)
+        park = float(ctx.get('park_run_factor') or 100)
+        if 80 <= nrfi_s < 85:
+            _add(total_drivers, 6, '🧐', 'NRFI 80-84 trap band',
+                 f'NRFI {nrfi_s:.0f} — 66% UNDER hist (n=53, market under-prices)',
+                 direction='UNDER')
+        elif nrfi_s >= 85 and axera <= 3.8 and hxera <= 3.8:
+            _add(total_drivers, 5, '🔄', 'NRFI loud + elite SP → OVER (flip)',
+                 f'NRFI {nrfi_s:.0f} + xERA {axera:.1f}/{hxera:.1f} — 58% OVER hist (n=102, counter to NRFI)',
+                 direction='OVER')
+        elif nrfi_s >= 85 and park < 95:
+            _add(total_drivers, 4, '🏟️', 'NRFI loud + pitcher park',
+                 f'NRFI {nrfi_s:.0f} + park {park:.0f} — 61% UNDER hist (n=31)',
+                 direction='UNDER')
+    except (TypeError, ValueError):
+        pass
+
     # ---- TOTAL: Both BPs shaky → OVER (NEW 2026-06-21) ----
     # _audit_compound_patterns.py (n=37 over 120d) found: when BOTH bullpens
     # have ERA >= 4.5, OVER hits 65% (+13.2pt over baseline). Solid sample,
