@@ -1176,6 +1176,50 @@ def score_mlb_game(ctx, game_props=None, track=None):
         except (TypeError, ValueError):
             pass
 
+    # ---- SIDE: cohort-engine LOCK / STRONG_EDGE surfacing (NEW 2026-06-21) ----
+    # Companion to the TOTAL cohort driver added below. ML/RL cohorts are
+    # less common in the engine than v3_tot cohorts but still exist —
+    # `conf_ml|*` and `v4_ml|*` families. Same LOCK +10 / STRONG_EDGE +5
+    # / +12 cap pattern. Routes through home/away direction so the
+    # surfaced driver matches the picked side.
+    try:
+        cohort_side_pts_h = 0
+        cohort_side_pts_a = 0
+        cohort_side_labels = []
+        for play_key in ('v3_ml', 'v4_ml', 'jerry_ml', 'conf_ml',
+                          'v3_rl', 'v4_rl', 'jerry_rl', 'conf_rl'):
+            for d_label, d_pretty in (('home', 'HOME'), ('away', 'AWAY')):
+                matches = _cohort_eval_safe(ctx, play_key, direction=d_label)
+                for rule in matches[:2]:
+                    tier = rule.get('tier', '')
+                    if tier not in ('LOCK', 'STRONG_EDGE'):
+                        continue
+                    last30_n = rule.get('last30_n') or 0
+                    if last30_n < 15:
+                        continue
+                    pts = 10 if tier == 'LOCK' else 5
+                    last30_pct = rule.get('last30_pct') or rule.get('shrunken_pct') or 0
+                    rule_id = rule.get('id', '')[:60]
+                    if d_pretty == 'HOME':
+                        cohort_side_pts_h += pts
+                    else:
+                        cohort_side_pts_a += pts
+                    cohort_side_labels.append((tier, last30_pct, last30_n, rule_id, d_pretty))
+                    if cohort_side_pts_h + cohort_side_pts_a >= 12:
+                        break
+            if cohort_side_pts_h + cohort_side_pts_a >= 12:
+                break
+        net_dir_s = 'HOME' if cohort_side_pts_h > cohort_side_pts_a else 'AWAY' if cohort_side_pts_a > cohort_side_pts_h else None
+        net_pts_s = min(12, max(cohort_side_pts_h, cohort_side_pts_a))
+        if net_dir_s and net_pts_s > 0 and cohort_side_labels:
+            top_label = max(cohort_side_labels, key=lambda x: x[1] or 0)
+            tier, pct30, n30, rid, _ = top_label
+            _add(side_drivers, net_pts_s, '🧬', f'Cohort {tier} match',
+                 f'{rid} hit {pct30:.0f}% over 30d (n={n30})',
+                 direction=net_dir_s)
+    except Exception:
+        pass
+
     # ---- TOTAL: Total model vs market disagreement ----
     # History:
     # - 5/29 reband to +18 max (was +9). Old bands capped total-only edges
@@ -1362,6 +1406,58 @@ def score_mlb_game(ctx, game_props=None, track=None):
                             pass
             except (TypeError, ValueError):
                 pass
+
+    # ---- TOTAL: cohort-engine LOCK / STRONG_EDGE surfacing (NEW 2026-06-21) ----
+    # 6/21 retrospective audit (_audit_deep_patterns + jerry_cache cohort_signals)
+    # found 792 indexed rules with stable hit rates over 30d. Top cohort
+    # `v3_tot|v3_tot_loud|any` hits 82.9% on 30d (n=35) and ~87% lifetime.
+    # These cohorts have always existed but were only routed through the
+    # resolver tier — the sweat dim score never explicitly credited them.
+    # This driver surfaces LOCK + STRONG_EDGE matches as +10 / +5 points
+    # toward whichever direction the rule favors. Capped at +12 net per dim
+    # so a single cohort can't single-handedly flip the dim. Limited to v3
+    # totals (the loudest-cohort indexed family) for now.
+    try:
+        cohort_total_pts_o = 0
+        cohort_total_pts_u = 0
+        cohort_total_labels = []
+        for play_key in ('v3_tot', 'v4_tot', 'jerry_tot'):
+            for d_label, d_pretty in (('over', 'OVER'), ('under', 'UNDER')):
+                matches = _cohort_eval_safe(ctx, play_key, direction=d_label)
+                for rule in matches[:2]:  # top 2 per (play × dir)
+                    tier = rule.get('tier', '')
+                    if tier not in ('LOCK', 'STRONG_EDGE'):
+                        continue
+                    last30_n = rule.get('last30_n') or 0
+                    if last30_n < 15:  # too thin
+                        continue
+                    pts = 10 if tier == 'LOCK' else 5
+                    rule_dir = rule.get('direction') or d_label
+                    direction_norm = 'OVER' if rule_dir in ('over', 'any') and d_label == 'over' else 'UNDER' if rule_dir in ('under', 'any') and d_label == 'under' else d_pretty
+                    last30_pct = rule.get('last30_pct') or rule.get('shrunken_pct') or 0
+                    rule_id = rule.get('id', '')[:60]
+                    if direction_norm == 'OVER':
+                        cohort_total_pts_o += pts
+                    else:
+                        cohort_total_pts_u += pts
+                    cohort_total_labels.append((tier, last30_pct, last30_n, rule_id, direction_norm))
+                    # cap per dim
+                    if cohort_total_pts_o + cohort_total_pts_u >= 12:
+                        break
+            if cohort_total_pts_o + cohort_total_pts_u >= 12:
+                break
+        # Net direction
+        net_dir = 'OVER' if cohort_total_pts_o > cohort_total_pts_u else 'UNDER' if cohort_total_pts_u > cohort_total_pts_o else None
+        net_pts = min(12, max(cohort_total_pts_o, cohort_total_pts_u))
+        if net_dir and net_pts > 0 and cohort_total_labels:
+            # Pick the loudest contributing label for the driver detail
+            top_label = max(cohort_total_labels, key=lambda x: x[1] or 0)
+            tier, pct30, n30, rid, _ = top_label
+            _add(total_drivers, net_pts, '🧬', f'Cohort {tier} match',
+                 f'{rid} hit {pct30:.0f}% over 30d (n={n30})',
+                 direction=net_dir)
+    except Exception:
+        pass
 
     # ---- TOTAL: Confluence-as-volatility-proxy UNDER bias (NEW 2026-06-05) ----
     # Backtest n=640 (_backtest_outside_box.py) found |signal_confluence_net|=4
