@@ -1176,6 +1176,28 @@ def score_mlb_game(ctx, game_props=None, track=None):
         except (TypeError, ValueError):
             pass
 
+    # ---- SIDE: Hot away offense vs bad home starter (NEW 2026-06-21) ----
+    # _audit_compound_patterns.py (n=27 over 120d) found: when AWAY L7 OPS
+    # >= 0.78 AND HOME starter xERA >= 4.5, AWAY ML hits 63% (+16.2pt
+    # over 47% baseline). Sample size thin but lift is loud and the
+    # mechanism is intuitive (hot bats vs gettable starter).
+    try:
+        a_l7_ops = float(ctx.get('away_ops_last7') or 0)
+        h_sp_xera = float(ctx.get('home_sp_xera') or 0)
+        if a_l7_ops >= 0.78 and h_sp_xera >= 4.5:
+            _add(side_drivers, 8, '🌶', 'Hot AWAY vs bad HOME SP',
+                 f'AWAY L7 OPS {a_l7_ops:.3f} + HOME SP xERA {h_sp_xera:.2f} — 63% AWAY ML hist (n=27)',
+                 direction='AWAY')
+        # Mirror for home
+        h_l7_ops = float(ctx.get('home_ops_last7') or 0)
+        a_sp_xera = float(ctx.get('away_sp_xera') or 0)
+        if h_l7_ops >= 0.78 and a_sp_xera >= 4.5:
+            _add(side_drivers, 8, '🌶', 'Hot HOME vs bad AWAY SP',
+                 f'HOME L7 OPS {h_l7_ops:.3f} + AWAY SP xERA {a_sp_xera:.2f} — symmetric inverse signal',
+                 direction='HOME')
+    except (TypeError, ValueError):
+        pass
+
     # ---- SIDE: Away injury depth disadvantage (NEW 2026-06-21) ----
     # _audit_unused_features.py (n=74 over 120d) found: when away team has
     # 7+ more injuries than home, HOME ML hits 57% (n=74, +3.5pt over
@@ -1191,6 +1213,35 @@ def score_mlb_game(ctx, game_props=None, track=None):
             _add(side_drivers, 4, '🏥', 'Home injury depth gap',
                  f'HOME {int(h_inj)} injuries vs AWAY {int(a_inj)} — symmetric inverse signal',
                  direction='AWAY')
+    except (TypeError, ValueError):
+        pass
+
+    # ---- TOTAL: Both BPs shaky → OVER (NEW 2026-06-21) ----
+    # _audit_compound_patterns.py (n=37 over 120d) found: when BOTH bullpens
+    # have ERA >= 4.5, OVER hits 65% (+13.2pt over baseline). Solid sample,
+    # large lift. Mechanism: late-inning innings get blown open.
+    try:
+        abp_era = float(ctx.get('away_bullpen_era') or 0)
+        hbp_era = float(ctx.get('home_bullpen_era') or 0)
+        if abp_era >= 4.5 and hbp_era >= 4.5:
+            _add(total_drivers, 7, '🔥', 'Both BPs shaky',
+                 f'AWAY BP {abp_era:.2f} + HOME BP {hbp_era:.2f} — 65% OVER hist (n=37)',
+                 direction='OVER')
+    except (TypeError, ValueError):
+        pass
+
+    # ---- TOTAL: Hitter park + low line = UNDER trap (NEW 2026-06-21) ----
+    # _audit_compound_patterns.py (n=25 over 120d) found: in a hitter park
+    # with a low total line (<= 7.5), OVER hits only 36% — UNDER cashes 64%
+    # (+15.7pt lift). Counter-intuitive but real. Mechanism: when the book
+    # already prices the park into a low line, the line is already over-low
+    # (i.e. the books know more than the cohort thinks).
+    try:
+        prf = float(ctx.get('park_run_factor') or 100)
+        if prf >= 105 and close_total and close_total <= 7.5:
+            _add(total_drivers, 6, '🪤', 'Hitter park + low line trap',
+                 f'park {prf:.0f} + line {close_total:.1f} — 64% UNDER hist (n=25)',
+                 direction='UNDER')
     except (TypeError, ValueError):
         pass
 
