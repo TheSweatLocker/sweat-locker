@@ -908,6 +908,12 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
     # source_table=daily_picks_ml) — different source keys but identical
     # game + bet. seen_play_signatures catches "Cubs ML" no matter which
     # path surfaces it second.
+    seen_ml_games = set()  # 2026-06-21 conflict — same-game opposite-side
+    # ML picks. Today's run had Cubs ML (DotD PRIME, rank 2) AND Toronto
+    # ML lean (rank 4) — both on TOR @ CHC. Auto-loss on one. When ANY
+    # ML pick lands on a game, no other ML on the same game can be added.
+    # Game-side ML "wins" the game lock; subsequent ML candidates fall
+    # through and let prop/total picks on that game still surface.
     game_pick_count = {}  # 2026-05-24 — track per-game pick concentration
 
     # Max picks per single MLB game on the public card.
@@ -957,6 +963,14 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             return ("prop", norm_label)
         return (g.lower(), norm_label)
 
+    def _is_ml_pick(pick):
+        """True when the pick is a moneyline bet (any path)."""
+        ptype = (pick.get("type") or "").lower()
+        if ptype in ("ml", "potd", "dotd"):
+            label = (pick.get("label") or "").lower()
+            return " ml" in label
+        return False
+
     def add(pick):
         # Dedupe by a stable identifier
         key = f"{pick['source_table']}:{pick['source_key']}"
@@ -966,6 +980,11 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         # when surfaced by different paths.
         sig = _play_signature(pick)
         if sig is not None and sig in seen_play_signatures:
+            return False
+        # Same-game ML conflict — once any ML pick is added on a game,
+        # block opposite-side ML picks on the same game.
+        gkey = _game_key(pick)
+        if gkey is not None and _is_ml_pick(pick) and gkey in seen_ml_games:
             return False
         # Concentration cap — block 3rd+ pick on a single game.
         # POTD + DotD are by-design daily anchors so they bypass the BLOCK,
@@ -988,6 +1007,8 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         seen_keys.add(key)
         if sig is not None:
             seen_play_signatures.add(sig)
+        if gkey is not None and _is_ml_pick(pick):
+            seen_ml_games.add(gkey)
         if gkey is not None:
             game_pick_count[gkey] = game_pick_count.get(gkey, 0) + 1
         pick["rank"] = len(picks) + 1
@@ -1413,7 +1434,17 @@ def build_card():
     for pick_8 in top_8_curated:
         # top_8 entries from props carry player_name + label that encodes prop_type/line
         if pick_8.get("type", "").startswith("prop_"):
+            # 2026-06-21 — top_8 prop entries don't actually have a top-level
+            # `player_name` field (verified post-run: source_key is the
+            # canonical player|prop_type|line tuple). Fall back to parsing
+            # the source_key when player_name is missing; otherwise the
+            # filter silently does nothing and we publish overlaps.
             pname = pick_8.get("player_name") or pick_8.get("player")
+            if not pname:
+                sk = pick_8.get("source_key") or ""
+                parts = sk.split("|")
+                if parts and parts[0]:
+                    pname = parts[0]
             label = pick_8.get("label", "")
             if pname:
                 top_8_player_market.add((pname, label))
