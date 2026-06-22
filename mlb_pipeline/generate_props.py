@@ -250,11 +250,32 @@ def tier_for(conviction, prop_type=None):
         if conviction >= 55: return 'STRONG'
         if conviction >= 50: return 'LEAN'
         return 'SKIP'
-    if prop_type in ('outs_over', 'er_over', 'er_under'):
+    # 2026-06-22 ER threshold tightening. 90d audit found:
+    #   er_over STRONG (conv 70-81): 48% (n=27) — sub-baseline
+    #   er_under STRONG (conv 70-81): 46% (n=13) — sub-baseline
+    # PRIME tiers stay loud (er_over 64% / er_under 73%) so the existing
+    # PRIME 82+ floor is correct. The STRONG band is where the loss is
+    # — raise the STRONG floor from 70 to 76 to filter out the middling
+    # cases that hit at coinflip.
+    if prop_type == 'outs_over':
         if conviction >= 82: return 'PRIME'
         if conviction >= 70: return 'STRONG'
         return 'SKIP'
-    if prop_type in ('bb_over', 'bb_under', 'ha_over', 'ha_under'):
+    if prop_type in ('er_over', 'er_under'):
+        if conviction >= 82: return 'PRIME'
+        if conviction >= 76: return 'STRONG'  # was 70 — removed losing middle band
+        return 'SKIP'
+    # 2026-06-22 ha_under STRONG/LEAN extinction. 90d audit:
+    #   PRIME ha_under: 58% (n=62) — real edge, keep
+    #   STRONG ha_under: 47% (n=38) — LOSING money
+    #   LEAN ha_under: 38% (n=26) — clear FADE
+    #   SKIP ha_under: 50% (n=36) — better than STRONG/LEAN!
+    # The tier ladder is INVERTED. PRIME is the only band with edge.
+    # Collapse STRONG + LEAN into SKIP so only PRIME publishes.
+    if prop_type == 'ha_under':
+        if conviction >= 70: return 'PRIME'
+        return 'SKIP'  # STRONG (47%) + LEAN (38%) tiers were systematically losing
+    if prop_type in ('bb_over', 'bb_under', 'ha_over'):
         # New 2026-05-11 — walks + hits-allowed are higher-variance pitcher
         # props. Scoring tops ~60 for strong cases so thresholds scaled down.
         if conviction >= 70: return 'PRIME'
