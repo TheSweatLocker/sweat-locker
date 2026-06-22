@@ -453,21 +453,32 @@ def _apply_l5_signal(g, side, metric, line, direction, conviction, signals):
     conviction; mutates `signals` in place.
 
     metric: one of 'outs', 'ks', 'bb', 'hits', 'er'
-    line:   the prop line being scored (e.g. 4.5)
-    direction: 'over' or 'under'
 
-    Logic (added 2026-06-07 after 6/7 card where Baz outs O17.5 + Flaherty
-    hits O4.5 + Cameron ER U2.5 all had loud L5 actuals the projection
-    layer wasn't using):
+    2026-06-22 — per-prop l5_confirm gating after Phase 2 backtest.
+    Signal-level audit showed l5_confirm as a -6.7pt fade across most
+    prop types, but TIER-level backtest (_backtest_l5_confirm_removal.py)
+    found that removing the conviction bonus only IMPROVES per-tier hit
+    rates for two prop_types. For all others, removal either demoted
+    winners (ks_over) or made no measurable difference.
+
+    Backtest verdicts (90d, n=40-646 per type):
+      VALIDATED REMOVAL (l5_confirm bonus → 0):
+        bb_over    — PRIME 63%→65%, STRONG 56%→59% (+2.2/+2.6pt)
+        outs_under — PRIME 89%→91% (n=9→44, growth from rightful promotion)
+
+      KEEP (no validated improvement):
+        ks_over, ks_under, ha_under, ha_over, bb_under,
+        outs_over, er_over, er_under, hits_over, hits_under
+
+    Original logic (added 2026-06-07 after 6/7 card where Baz outs O17.5 +
+    Flaherty hits O4.5 + Cameron ER U2.5 all had loud L5 actuals):
       - L5 avg strongly confirms direction (>=0.7 vs line on same side):  +12
       - L5 avg modestly confirms (>=0.3 vs line on same side):            +6
       - L5 avg disagrees (>=0.5 vs line on OTHER side):                   -8
       - Bonus: 4-of-5 or 5-of-5 streak on the bet direction:              +4
       - No data → no change
 
-    Conservative gates prevent L5 from overwhelming the projection layer
-    (which has its own L7 rolling avg). L5 is a CO-SIGNATURE check, not
-    a primary signal.
+    L5 is a CO-SIGNATURE check, not a primary signal.
     """
     try:
         from pitcher_l5_lookup import get_l5, streak_count
@@ -485,14 +496,24 @@ def _apply_l5_signal(g, side, metric, line, direction, conviction, signals):
     margin = avg - line if direction == 'over' else line - avg
     streak_hits, streak_total = streak_count(side_l5, metric, line, direction)
     streak_label = f' ({streak_hits}-of-{streak_total} L5)' if streak_total else ''
+    # Per-prop gate: l5_confirm bonus zero'd for prop types where the
+    # tier-level backtest didn't show improvement. Narrative still surfaces
+    # so the user sees the L5 number — only the conviction-point inflation
+    # is removed.
+    l5_confirm_pays_conviction = (metric, direction) not in {
+        ('bb', 'over'),    # validated removal: bb_over PRIME 63→65%
+        ('outs', 'under'), # validated removal: outs_under PRIME 89→91%
+    }
     if margin >= 0.7:
         signals['l5_confirm'] = f'L5 avg {avg} ({direction} {line}, {margin:+.1f}){streak_label}'
-        conviction += 12
-        if streak_total and streak_hits >= 4:
-            conviction += 4  # streak bonus when 4/5+ on the same side
+        if l5_confirm_pays_conviction:
+            conviction += 12
+            if streak_total and streak_hits >= 4:
+                conviction += 4  # streak bonus when 4/5+ on the same side
     elif margin >= 0.3:
         signals['l5_confirm'] = f'L5 avg {avg} ({direction} {line}, {margin:+.1f}){streak_label}'
-        conviction += 6
+        if l5_confirm_pays_conviction:
+            conviction += 6
     elif margin <= -0.5:
         signals['l5_fade'] = f'⚠ L5 avg {avg} opposes (going {direction} {line}, gap {margin:+.1f}){streak_label}'
         conviction -= 8
