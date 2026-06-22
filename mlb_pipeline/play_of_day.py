@@ -1299,10 +1299,19 @@ def score_mlb_game(ctx, game_props=None, track=None):
     # (i.e. the books know more than the cohort thinks).
     try:
         prf = float(ctx.get('park_run_factor') or 100)
-        if prf >= 105 and close_total and close_total <= 7.5:
-            _add(total_drivers, 6, '🪤', 'Hitter park + low line trap',
-                 f'park {prf:.0f} + line {close_total:.1f} — 64% UNDER hist (n=25)',
-                 direction='UNDER')
+        # 2026-06-22 — pull close_total from ctx directly to avoid the
+        # UnboundLocalError that took down today's morning cron. The
+        # variable name `close_total` IS assigned elsewhere in this
+        # function, but later in scope — Python treats it as local and
+        # this earlier read raises before assignment. Local alias
+        # `close_total_local` sidesteps the scoping trap.
+        close_total_local = ctx.get('close_total') or ctx.get('open_total')
+        if close_total_local is not None:
+            close_total_local = float(close_total_local)
+            if prf >= 105 and close_total_local <= 7.5:
+                _add(total_drivers, 6, '🪤', 'Hitter park + low line trap',
+                     f'park {prf:.0f} + line {close_total_local:.1f} — 64% UNDER hist (n=25)',
+                     direction='UNDER')
     except (TypeError, ValueError):
         pass
 
