@@ -1374,12 +1374,11 @@ def _correction_prompt(original_prompt, narrative, errors):
 # Want to measure false-positive rate over ~50 game reads before flipping
 # to retry-on-fail. Set NUMBER_VALIDATOR_ENFORCE = True to enable retry.
 
-NUMBER_VALIDATOR_ENFORCE = False  # 2026-06-19 audit (n=9 reads) showed 22%
-# flag rate driven by pitcher-career W-L records (e.g. Nola "112-93 career
-# 3.91 ERA / 1,786 IP") being mis-flagged as cohort hallucinations. The
-# real false-positive rate is ~0% once those are exempted (see _W_L_PITCHER_CONTEXT
-# below). Holding ENFORCE off until pitcher-career exemption proven over a
-# week of reads (~50 narratives).
+NUMBER_VALIDATOR_ENFORCE = True  # 2026-06-23 flipped to ENFORCE per user
+# request after sample reads showed duplicate-career-stat bug (Senga/Cabrera
+# both rendered identical career numbers). 4 days of advisory data accumulated
+# since 2026-06-19; pitcher-career exemption proven stable. Flipped to gate
+# narratives that hallucinate percentages/WL pairs not present in struct.
 
 # Minimum sample size for a quoted percentage to be considered "valid"
 # without requiring an explicit n citation. Below this, the percentage
