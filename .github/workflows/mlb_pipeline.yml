@@ -600,6 +600,19 @@ jobs:
           cd mlb_pipeline
           python play_of_day.py
 
+      # v7 total model SHADOW predictions. Logs per-game OVER/UNDER probability
+      # from the retrained GradientBoost model (trained 2026-06-23, 59% holdout,
+      # 64% conf-UNDER) into jerry_cache key v7_total_shadow_<date>. NOT user-
+      # facing. Run audit_v7_shadow.py to compare v7 vs composite over 14d.
+      # Promote to production once v7 sustainably beats composite.
+      - name: v7 total shadow inference
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python shadow_total_inference.py || echo "shadow inference failed, continuing"
+
       # Server-side POTD narrative — replaces the client-side Claude call
       # that used to run on first POTD load. Single source of truth: the
       # row's data.narrative field. Built with proper "pitches FOR / FACES
