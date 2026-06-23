@@ -613,6 +613,18 @@ jobs:
           cd mlb_pipeline
           python shadow_total_inference.py || echo "shadow inference failed, continuing"
 
+      # v1 ML model SHADOW predictions. Logs per-game HOME/AWAY win probability
+      # from XGBoost trained 2026-06-23 (53% holdout, 64% conf-HOME on n=42).
+      # Writes to jerry_cache key ml_v1_shadow_<date>. NOT user-facing.
+      # Same 14d promotion gate via audit_ml_v1_shadow.py.
+      - name: v1 ML shadow inference
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python shadow_ml_inference.py || echo "ML shadow inference failed, continuing"
+
       # Server-side POTD narrative — replaces the client-side Claude call
       # that used to run on first POTD load. Single source of truth: the
       # row's data.narrative field. Built with proper "pitches FOR / FACES
