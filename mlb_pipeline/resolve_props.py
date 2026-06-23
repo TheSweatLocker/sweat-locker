@@ -148,10 +148,50 @@ def get_pitcher_earned_runs(game, pitcher_name):
     return _pitcher_stat(game, pitcher_name, 'earnedRuns')
 
 
+def is_mlb_game_final(game):
+    """Confirm MLB game is finalized before grading any prop.
+
+    Bug fix 2026-06-23: when grader ran before game finalized, boxscore
+    showed inningsPitched='0.0' so get_pitcher_outs returned 0, the prop
+    got marked Win with final_value=0, and was never re-graded. Same bug
+    pattern could affect any pitcher prop (Ks/BB/ER/Hits) — any 0-value
+    could be a premature poll vs an actual zero outing.
+
+    Reads game.status.detailedState from the schedule-style game dict.
+    Falls back to direct gamePk lookup if status not in dict.
+    """
+    status = (game.get('status') or {}).get('detailedState', '') if isinstance(game.get('status'), dict) else ''
+    if status in ('Final', 'Game Over', 'Completed Early'):
+        return True
+    if status:
+        # Status is set but not final → don't grade
+        return False
+    # Status not in dict — do a single lookup
+    game_pk = game.get('gamePk')
+    if not game_pk:
+        return False
+    try:
+        r = requests.get(
+            f'https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live',
+            timeout=10,
+        )
+        feed = r.json() if r.status_code == 200 else {}
+        s = feed.get('gameData', {}).get('status', {}).get('detailedState', '')
+        return s in ('Final', 'Game Over', 'Completed Early')
+    except Exception:
+        return False
+
+
 def get_pitcher_outs(game, pitcher_name):
     """Outs recorded — derive from inningsPitched (string like "5.2").
     Format: integer.fractional where fractional is # of outs in next inning.
-    So "5.2" = 5 innings + 2 outs = 17 outs total."""
+    So "5.2" = 5 innings + 2 outs = 17 outs total.
+
+    Caller MUST confirm game is final via is_mlb_game_final() first.
+    A finalized starter with 0 outs is statistically implausible (~1 in 10K
+    starts), so we return None on IP=0 to be safe — better to skip than
+    grade an artifact.
+    """
     try:
         game_pk = game.get('gamePk')
         r = requests.get(
@@ -176,8 +216,17 @@ def get_pitcher_outs(game, pitcher_name):
                         s = str(ip)
                         if '.' in s:
                             whole, frac = s.split('.', 1)
-                            return int(whole) * 3 + int(frac[0])
-                        return int(s) * 3
+                            outs = int(whole) * 3 + int(frac[0])
+                        else:
+                            outs = int(s) * 3
+                        # A finalized starter with 0 outs is statistically
+                        # implausible (would mean he was pulled before recording
+                        # an out — happens but ~1 in 10K starts). If IP=0 here
+                        # the more likely explanation is still a polling artifact
+                        # despite our final-status check; safer to return None.
+                        if outs == 0:
+                            return None
+                        return outs
                     except (TypeError, ValueError):
                         return None
         return None
@@ -267,6 +316,15 @@ def resolve_prop(prop):
     mlb_game = get_mlb_game_result(home_team, away_team, game_date)
     if not mlb_game:
         return None
+
+    # Bug fix 2026-06-23: refuse to grade pitcher props on a non-final game.
+    # Premature grades polled IP=0 then locked Win/Loss + final_value=0 forever.
+    pitcher_props = ('ks_over', 'ks_under', 'bb_over', 'bb_under',
+                     'er_over', 'er_under', 'ha_over', 'ha_under',
+                     'outs_over', 'outs_under', 'hits_over', 'hits_under')
+    if prop_type in pitcher_props and not is_mlb_game_final(mlb_game):
+        return None
+
     # Map prop_type to the actual-value fetcher
     if prop_type in ('ks_over', 'ks_under') or 'strikeout' in prop_type:
         actual_value = get_pitcher_strikeouts(mlb_game, player)
