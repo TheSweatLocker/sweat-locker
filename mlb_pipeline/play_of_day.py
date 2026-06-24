@@ -3831,6 +3831,70 @@ def run():
             if pick.get('_value_resolver_reason'):
                 print(f"   resolver reason: {pick['_value_resolver_reason']}")
 
+    # ────────────────────────────────────────────────────────────────────
+    # TIER DISCIPLINE GATE (2026-06-24 — POTD selector hardening)
+    # ────────────────────────────────────────────────────────────────────
+    # Context: walk-forward audit on 872 graded games showed composite
+    # picks OVER 72% of the time vs actual 49% OVER rate (heavy over-bias).
+    # POTD inherited this bias from sweat scoring — last 20 picks went
+    # 5W-9L-4P (36% hit rate), with 6 straight losses 6/18-6/24.
+    #
+    # Per walk-forward tier-sliced backtest:
+    #   PRIME-OVER (gap 2-3 + all-3 unanimous): 71% hit (n=24)
+    #   ELITE-UNDER (gap <= -3): 64% (n=25)
+    #   mild OVER (gap 0.3-0.7): 48% loser band
+    #   middle UNDER (gap -1.2 to -3): 42-44% loser band
+    #   2-of-3 model agreement: coinflip (50-53%)
+    #
+    # Gate rejects total picks that fall in losing bands. Pick must clear
+    # the discipline gate OR fall back to REST DAY. ML/RL/prop picks pass
+    # through unchanged (separate gate work queued).
+    if pick and pick.get('sport') == 'MLB' and pick.get('lean_bet') == 'total':
+        try:
+            import tier_discipline_gate as _tdg
+            verdict = _tdg.evaluate_total(
+                line=pick.get('close_total'),
+                proj_total=pick.get('projected_total'),
+                v4_total=pick.get('model_pred_total'),
+                jerry_total=pick.get('jerry_pred_total'),
+            )
+            if verdict.tier == 'SKIP':
+                print(f"⚠️  TIER GATE REJECT: {pick['away_team']} @ {pick['home_team']} — {verdict.reason}")
+                # Look for a replacement total pick that passes the gate
+                replacement = None
+                search_pool = (audit_pool[1:] if audit_pool else []) + (value_pool[1:] if 'value_pool' in dir() and value_pool else [])
+                for c in search_pool:
+                    if c.get('sport') != 'MLB' or c.get('lean_bet') != 'total':
+                        continue
+                    v = _tdg.evaluate_total(
+                        line=c.get('close_total'),
+                        proj_total=c.get('projected_total'),
+                        v4_total=c.get('model_pred_total'),
+                        jerry_total=c.get('jerry_pred_total'),
+                    )
+                    if v.tier != 'SKIP':
+                        replacement = c
+                        replacement['_gate_tier'] = v.tier
+                        replacement['_gate_direction'] = v.direction
+                        replacement['_gate_reason'] = v.reason
+                        break
+                if replacement:
+                    print(f"🔁 GATE OVERRIDE: → {replacement['away_team']} @ {replacement['home_team']} ({replacement['_gate_tier']} {replacement['_gate_direction']}, {replacement['_gate_reason']})")
+                    pick = replacement
+                    confidence = 'value'  # downgrade since this is a recovery pick
+                else:
+                    print("🚫 No total candidate passes tier discipline gate — POTD = REST DAY")
+                    pick = None
+            else:
+                # Stamp the gate verdict onto the picked candidate for audit
+                pick['_gate_tier'] = verdict.tier
+                pick['_gate_direction'] = verdict.direction
+                pick['_gate_reason'] = verdict.reason
+                print(f"✅ TIER GATE PASS: {verdict.tier} {verdict.direction or ''} — {verdict.reason}")
+        except Exception as _e:
+            # Defensive: never let gate failure kill POTD entirely
+            print(f"  tier gate evaluation error (skipping gate): {_e}")
+
     if not pick:
         print("🚫 No model-supported lean anywhere on the board — no POTD posted today.")
         try:
