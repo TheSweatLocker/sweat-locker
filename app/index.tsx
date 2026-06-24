@@ -5053,15 +5053,21 @@ Rules:
       ? new Date(game.commence_time).toLocaleDateString('en-CA', {timeZone: 'America/New_York'})
       : new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
 
-    // Primary: exact home+away team match scoped to the game's ET date
-    const { data } = await supabase
+    // Primary: exact home+away team match scoped to the game's ET date.
+    // 2026-06-24 — switched from .maybeSingle() to .order().limit(1) to handle
+    // doubleheaders (same matchup appears twice in mlb_game_context, one row
+    // per game). maybeSingle() throws on multiple rows → fetcher returned null
+    // → Numbers Panel disappeared. Recency tiebreaker picks the most recent
+    // snapshot, which for doubleheaders ends up being game 2.
+    const { data: dataRows } = await supabase
       .from('mlb_game_context')
       .select('*')
       .eq('home_team', game.home_team)
       .eq('away_team', game.away_team)
       .eq('game_date', gameEtDate)
-      .maybeSingle();
-    if(data) return data;
+      .order('fetched_at', { ascending: false })
+      .limit(1);
+    if(dataRows && dataRows.length > 0) return dataRows[0];
 
     // Fallback 1: ILIKE on team last names (handles "St. Louis Cardinals" vs "St Louis Cardinals" etc)
     const homeLast = (game.home_team || '').split(' ').pop();
@@ -5073,6 +5079,7 @@ Rules:
         .ilike('home_team', `%${homeLast}%`)
         .ilike('away_team', `%${awayLast}%`)
         .eq('game_date', gameEtDate)
+        .order('fetched_at', { ascending: false })
         .limit(1);
       if(data2 && data2.length > 0) return data2[0];
     }
@@ -5084,6 +5091,7 @@ Rules:
         .select('*')
         .ilike('home_team', `%${homeLast}%`)
         .eq('game_date', gameEtDate)
+        .order('fetched_at', { ascending: false })
         .limit(1);
       if(data3 && data3.length > 0) return data3[0];
     }
@@ -5102,8 +5110,9 @@ Rules:
         .eq('home_team', game.home_team)
         .eq('away_team', game.away_team)
         .eq('game_date', todayEt)
-        .maybeSingle();
-      if(data4) return data4;
+        .order('fetched_at', { ascending: false })
+        .limit(1);
+      if(data4 && data4.length > 0) return data4[0];
       if(homeLast && awayLast) {
         const { data: data5 } = await supabase
           .from('mlb_game_context')
@@ -5111,6 +5120,7 @@ Rules:
           .ilike('home_team', `%${homeLast}%`)
           .ilike('away_team', `%${awayLast}%`)
           .eq('game_date', todayEt)
+          .order('fetched_at', { ascending: false })
           .limit(1);
         if(data5 && data5.length > 0) return data5[0];
       }
