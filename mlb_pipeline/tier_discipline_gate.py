@@ -220,6 +220,111 @@ def evaluate_total(
     return TierVerdict('SKIP', None, 'no direction', gap, 0, None)
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# ML / SIDE DISCIPLINE GATE (2026-06-24)
+# ─────────────────────────────────────────────────────────────────────────
+# POTD ML picks were bleeding alongside totals (CHC 6/20, SF 6/9, BAL 6/7,
+# SF 6/6 — multiple resolver STRONG ML losses). Resolver tier alone isn't
+# sufficient — same pattern as composite over-bias for totals.
+#
+# Backtest on 291 jerry_cache games:
+#   Panel ML margin >= 3.0:  75% hit (n=12)
+#   Panel ML margin 2-3:     62% hit (n=29)
+#   Panel ML margin 1-2:     53% hit (n=91)
+#   Panel ML margin 0.5-1:   57% hit (n=70)
+#   Panel ML margin < 0.5:   40% hit (n=89) ← counter-signal, fade
+#
+# Gate rules (parallel structure to total gate):
+#   ELITE: resolver ELITE + Panel margin >= 2.0 + composite spread agrees
+#   STRONG: resolver STRONG + Panel margin >= 1.0 + composite spread agrees
+#   LEAN: resolver STRONG + Panel margin >= 0.5
+#   SKIP: resolver below STRONG, OR Panel margin < 0.5 (counter-signal),
+#         OR Panel direction OPPOSITE resolver direction
+#
+# composite_spread positive = HOME wins by that margin
+
+def evaluate_ml(
+    *,
+    resolver_tier: Optional[str],         # 'ELITE' | 'STRONG' | 'LEAN' | 'LIGHT' | 'SKIP'
+    resolver_direction: Optional[str],    # 'HOME' | 'AWAY'
+    composite_spread: Optional[float],    # avg of v3+v4+jerry spreads (+ = home wins)
+    panel_implied_margin: Optional[float] = None,  # +home runs - away runs (Panel)
+) -> TierVerdict:
+    """Apply tier-discipline rules to decide whether an ML/RL pick publishes.
+
+    Returns SKIP for anything that doesn't pass the resolver + Panel + composite
+    triple check. POTD selector reads tier verdict and rejects pick if SKIP.
+    """
+    if resolver_tier in (None, 'SKIP', 'LIGHT'):
+        return TierVerdict('SKIP', None,
+            f'resolver tier {resolver_tier} below STRONG threshold',
+            None, 0, None)
+    if resolver_direction not in ('HOME', 'AWAY'):
+        return TierVerdict('SKIP', None, 'resolver has no clean direction',
+            None, 0, None)
+
+    # Panel ML margin counter-signal — when margin is tight, Panel ML hits
+    # only 40%. Even with STRONG resolver, that's a coinflip trap.
+    if panel_implied_margin is not None:
+        abs_margin = abs(panel_implied_margin)
+        if abs_margin < 0.5:
+            return TierVerdict('SKIP', None,
+                f'Panel margin {panel_implied_margin:+.1f} too tight (40% hist on <0.5 margin)',
+                None, 0, None)
+        # Panel direction relative to resolver
+        panel_winner = 'HOME' if panel_implied_margin > 0 else 'AWAY'
+        if panel_winner != resolver_direction:
+            return TierVerdict('SKIP', None,
+                f'resolver says {resolver_direction} but Panel margin {panel_implied_margin:+.1f} says {panel_winner}',
+                None, 0, None)
+
+    # Composite spread agreement
+    composite_winner = None
+    if composite_spread is not None:
+        try:
+            cs = float(composite_spread)
+            if cs > 0.3:
+                composite_winner = 'HOME'
+            elif cs < -0.3:
+                composite_winner = 'AWAY'
+        except (TypeError, ValueError):
+            pass
+    if composite_winner and composite_winner != resolver_direction:
+        return TierVerdict('SKIP', None,
+            f'resolver {resolver_direction} but composite spread {composite_spread:+.2f} → {composite_winner}',
+            None, 0, None)
+
+    # ELITE: resolver ELITE + Panel margin >= 2 (when Panel available)
+    if resolver_tier == 'ELITE':
+        if panel_implied_margin is None or abs(panel_implied_margin) >= 2.0:
+            return TierVerdict('ELITE', resolver_direction,
+                f'resolver ELITE + Panel margin {panel_implied_margin or "n/a"}',
+                None, 0, 0.75)
+        return TierVerdict('STRONG', resolver_direction,
+            f'resolver ELITE but Panel margin {panel_implied_margin:+.1f} only mild — downgrade to STRONG',
+            None, 0, 0.62)
+
+    # STRONG: resolver STRONG + Panel margin >= 1.0
+    if resolver_tier == 'STRONG':
+        if panel_implied_margin is None or abs(panel_implied_margin) >= 1.0:
+            return TierVerdict('STRONG', resolver_direction,
+                f'resolver STRONG + Panel margin {panel_implied_margin or "n/a"}',
+                None, 0, 0.62)
+        # Panel margin tight (0.5-1.0) — downgrade to LEAN
+        return TierVerdict('LEAN', resolver_direction,
+            f'resolver STRONG but Panel margin {panel_implied_margin:+.1f} mild — downgrade to LEAN',
+            None, 0, 0.57)
+
+    # LEAN: resolver LEAN passes through if Panel agrees in direction
+    if resolver_tier == 'LEAN':
+        return TierVerdict('LEAN', resolver_direction,
+            f'resolver LEAN + Panel direction match',
+            None, 0, 0.55)
+
+    return TierVerdict('SKIP', None,
+        f'unhandled resolver tier {resolver_tier}', None, 0, None)
+
+
 if __name__ == '__main__':
     # Self-test against today's slate examples
     cases = [

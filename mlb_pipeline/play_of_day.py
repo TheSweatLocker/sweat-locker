@@ -3918,6 +3918,100 @@ def run():
                 pick['_gate_reason'] = verdict.reason
                 print(f"✅ TIER GATE PASS: {verdict.tier} {verdict.direction or ''} — {verdict.reason}")
         except Exception as _e:
+            print(f"  tier gate evaluation error (skipping gate): {_e}")
+
+    # ────────────────────────────────────────────────────────────────────
+    # ML/RL GATE (2026-06-24 — applies to side picks)
+    # ────────────────────────────────────────────────────────────────────
+    # POTD ML picks bled alongside totals (CHC 6/20, SF 6/9, BAL 6/7, SF 6/6).
+    # Resolver tier alone wasn't enough — same coinflip-trap pattern.
+    #
+    # Backtest on 291 jerry_cache games (Panel ML margin by tier):
+    #   margin >= 3.0:  75% hit (n=12)
+    #   margin 2-3:     62% hit (n=29)
+    #   margin 1-2:     53% hit (n=91)
+    #   margin <0.5:    40% hit (n=89) — counter-signal, fade
+    #
+    # Gate: requires resolver STRONG+, Panel margin >= 0.5, Panel direction
+    # matches resolver, composite spread doesn't oppose.
+    if pick and pick.get('sport') == 'MLB' and pick.get('lean_bet') in ('ml', 'spread', 'rl', 'side'):
+        try:
+            import tier_discipline_gate as _tdg
+
+            # Compute Panel-implied margin (positive = HOME wins)
+            def _panel_margin(c):
+                try:
+                    asp_er = c.get('away_pitcher_projected_er')
+                    hsp_er = c.get('home_pitcher_projected_er')
+                    if asp_er is None or hsp_er is None:
+                        return None
+                    asp_outs = float(c.get('away_pitcher_projected_outs') or 15)
+                    hsp_outs = float(c.get('home_pitcher_projected_outs') or 15)
+                    a_bp = float(c.get('away_bullpen_era') or 4.10)
+                    h_bp = float(c.get('home_bullpen_era') or 4.10)
+                    away_bp_ip = max(0, 9 - asp_outs / 3)
+                    home_bp_ip = max(0, 9 - hsp_outs / 3)
+                    home_scores = float(asp_er) + a_bp * away_bp_ip / 9
+                    away_scores = float(hsp_er) + h_bp * home_bp_ip / 9
+                    return home_scores - away_scores  # + = home wins
+                except (TypeError, ValueError):
+                    return None
+
+            # Composite spread (avg of v3+v4+jerry, positive = home wins)
+            def _comp_spread(c):
+                vals = []
+                for k in ('projected_spread', 'model_pred_spread', 'jerry_pred_spread'):
+                    v = c.get(k)
+                    if v is not None:
+                        try: vals.append(float(v))
+                        except (TypeError, ValueError): pass
+                return sum(vals) / len(vals) if vals else None
+
+            # Get resolver tier+direction from candidate's stamped resolver_side
+            resolver_tier = pick.get('_resolver_tier') or pick.get('resolver_side', {}).get('tier')
+            resolver_direction = pick.get('_resolver_direction') or pick.get('resolver_side', {}).get('direction')
+
+            ml_verdict = _tdg.evaluate_ml(
+                resolver_tier=resolver_tier,
+                resolver_direction=resolver_direction,
+                composite_spread=_comp_spread(pick),
+                panel_implied_margin=_panel_margin(pick),
+            )
+            if ml_verdict.tier == 'SKIP':
+                print(f"⚠️  ML GATE REJECT: {pick['away_team']} @ {pick['home_team']} — {ml_verdict.reason}")
+                # Look for a replacement ML pick that passes the gate
+                ml_replacement = None
+                ml_search = (audit_pool[1:] if audit_pool else []) + (value_pool[1:] if 'value_pool' in dir() and value_pool else [])
+                for c in ml_search:
+                    if c.get('sport') != 'MLB' or c.get('lean_bet') not in ('ml', 'spread', 'rl', 'side'):
+                        continue
+                    rt = c.get('_resolver_tier') or c.get('resolver_side', {}).get('tier')
+                    rd = c.get('_resolver_direction') or c.get('resolver_side', {}).get('direction')
+                    v = _tdg.evaluate_ml(
+                        resolver_tier=rt,
+                        resolver_direction=rd,
+                        composite_spread=_comp_spread(c),
+                        panel_implied_margin=_panel_margin(c),
+                    )
+                    if v.tier != 'SKIP':
+                        ml_replacement = c
+                        ml_replacement['_gate_tier'] = v.tier
+                        ml_replacement['_gate_direction'] = v.direction
+                        ml_replacement['_gate_reason'] = v.reason
+                        break
+                if ml_replacement:
+                    print(f"🔁 ML GATE OVERRIDE: → {ml_replacement['away_team']} @ {ml_replacement['home_team']} ({ml_replacement['_gate_tier']} {ml_replacement['_gate_direction']})")
+                    pick = ml_replacement
+                    confidence = 'value'
+                else:
+                    print("🚫 No ML candidate passes ML gate — POTD = REST DAY")
+                    pick = None
+            else:
+                pick['_gate_tier'] = ml_verdict.tier
+                pick['_gate_direction'] = ml_verdict.direction
+                pick['_gate_reason'] = ml_verdict.reason
+                print(f"✅ ML GATE PASS: {ml_verdict.tier} {ml_verdict.direction or ''} — {ml_verdict.reason}")
+        except Exception as _e:
             # Defensive: never let gate failure kill POTD entirely
             print(f"  tier gate evaluation error (skipping gate): {_e}")
 
