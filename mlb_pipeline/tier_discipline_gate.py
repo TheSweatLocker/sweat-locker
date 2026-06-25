@@ -76,8 +76,15 @@ def evaluate_total(
     proj_total: Optional[float],
     v4_total: Optional[float],
     jerry_total: Optional[float],
+    panel_implied_total: Optional[float] = None,
 ) -> TierVerdict:
-    """Apply tier-discipline rules to decide whether a total pick publishes."""
+    """Apply tier-discipline rules to decide whether a total pick publishes.
+
+    2026-06-24 — added Panel-implied total as a 4th vote (optional).
+    Backtest on 291 games showed Panel beats Composite 54-46 when they
+    DISAGREE. Panel ELITE-tier (gap >=3) hits 70%. Panel acts as a
+    tie-breaker when v3/v4/jerry split, and required for 4-WAY ELITE tier.
+    """
     if line is None or proj_total is None:
         return TierVerdict('SKIP', None, 'missing anchor data (line/proj)', None, 0, None)
 
@@ -85,18 +92,58 @@ def evaluate_total(
     proj_total = float(proj_total)
     v4 = float(v4_total) if v4_total is not None else None
     jerry = float(jerry_total) if jerry_total is not None else None
+    panel = float(panel_implied_total) if panel_implied_total is not None else None
 
     overs, unders = _models_direction(proj_total, v4, jerry, line)
     has_v4_jerry = (v4 is not None) and (jerry is not None)
     composite_avg = sum(filter(None, [proj_total, v4, jerry])) / max(1, sum(1 for x in [proj_total, v4, jerry] if x is not None))
     gap = composite_avg - line
 
+    # Panel direction relative to line (2026-06-24)
+    panel_dir = None
+    if panel is not None:
+        if panel > line + 0.3:
+            panel_dir = 'OVER'
+        elif panel < line - 0.3:
+            panel_dir = 'UNDER'
+        else:
+            panel_dir = 'NEU'
+
     # Hard SKIPs first
     if abs(gap) < 0.5:
         return TierVerdict('SKIP', None, f'composite gap |{gap:+.2f}| < 0.5 — no signal', gap, max(overs, unders), None)
 
+    # ===== Panel-aware counter-signal rejection (2026-06-24) =====
+    # Backtest: when Panel ML margin <0.5 runs, Panel ML is wrong 60% of
+    # the time. For totals, a Panel-neutral signal contradicting a loud
+    # composite is a coinflip trap. If composite says OVER/UNDER but Panel
+    # says NEU (basically at line), downgrade the conviction.
+    if panel is not None and panel_dir == 'NEU' and abs(gap) >= 1.5:
+        return TierVerdict('SKIP', None,
+            f'composite says {abs(gap):.1f}-run gap but Panel implied {panel:.1f} is at line — coinflip trap',
+            gap, max(overs, unders), None)
+
+    # Panel-disagrees rejection: if Panel direction is OPPOSITE composite
+    # direction, the historical edge favors Panel 54-46. Skip these.
+    if panel_dir and panel_dir != 'NEU':
+        composite_dir = 'OVER' if gap > 0 else 'UNDER'
+        if panel_dir != composite_dir:
+            return TierVerdict('SKIP', None,
+                f'composite {composite_dir} vs Panel {panel_dir} — Panel wins disagreements 54-46',
+                gap, max(overs, unders), None)
+
     # ===== UNDER side =====
     if gap < 0:
+        # ELITE-4WAY UNDER: all 3 composite UNDER + Panel UNDER + gap <= -3
+        # Highest conviction tier (4-way unanimity at elite magnitude).
+        # Historical Panel ELITE-UNDER hits 71% (n=7) — small sample but
+        # combined with all-3 composite agreement, this is the loudest signal.
+        if (proj_total - line <= -3.0 and unders >= 3 and
+            panel_dir == 'UNDER'):
+            return TierVerdict('ELITE', 'UNDER',
+                f'4-way ELITE UNDER: all-3 + Panel agree, proj gap {proj_total - line:.2f}',
+                gap, unders, 0.71)
+
         # ELITE UNDER: any setup with proj-vs-line gap <= -3.0
         if proj_total - line <= -3.0:
             return TierVerdict('ELITE', 'UNDER',
@@ -127,6 +174,14 @@ def evaluate_total(
 
     # ===== OVER side =====
     if gap > 0:
+        # ELITE-4WAY OVER: all-3 composite OVER + Panel OVER + gap >= 2
+        # Highest conviction OVER tier. Panel ELITE-tier hit 70% in
+        # backtest; combined with all-3 unanimity this is the loudest OVER.
+        if gap >= 2.0 and overs >= 3 and panel_dir == 'OVER':
+            return TierVerdict('ELITE', 'OVER',
+                f'4-way ELITE OVER: all-3 + Panel agree, composite gap {gap:.2f}',
+                gap, overs, 0.75)
+
         # PRIME OVER: gap 2.0-3.0 + all-3 (71% hist)
         if 2.0 <= gap < 3.0 and overs >= 3:
             return TierVerdict('PRIME', 'OVER',

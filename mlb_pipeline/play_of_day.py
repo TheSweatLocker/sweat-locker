@@ -3852,11 +3852,36 @@ def run():
     if pick and pick.get('sport') == 'MLB' and pick.get('lean_bet') == 'total':
         try:
             import tier_discipline_gate as _tdg
+
+            # Compute Panel-implied total from per-pitcher projections.
+            # 2026-06-24: Panel adds 8pp edge when it disagrees with composite
+            # (54% vs 46% backtest n=100). Used as 4th vote in tier gate.
+            # Formula: home_team scores = away SP proj_ER + away BP allowed in
+            # remaining innings (9 - away_outs/3). Mirror for away_team.
+            def _panel_implied(c):
+                try:
+                    asp_er = c.get('away_pitcher_projected_er')
+                    hsp_er = c.get('home_pitcher_projected_er')
+                    if asp_er is None or hsp_er is None:
+                        return None
+                    asp_outs = float(c.get('away_pitcher_projected_outs') or 15)
+                    hsp_outs = float(c.get('home_pitcher_projected_outs') or 15)
+                    a_bp = float(c.get('away_bullpen_era') or 4.10)
+                    h_bp = float(c.get('home_bullpen_era') or 4.10)
+                    away_bp_ip = max(0, 9 - asp_outs / 3)
+                    home_bp_ip = max(0, 9 - hsp_outs / 3)
+                    home_scores = float(asp_er) + a_bp * away_bp_ip / 9
+                    away_scores = float(hsp_er) + h_bp * home_bp_ip / 9
+                    return home_scores + away_scores
+                except (TypeError, ValueError):
+                    return None
+
             verdict = _tdg.evaluate_total(
                 line=pick.get('close_total'),
                 proj_total=pick.get('projected_total'),
                 v4_total=pick.get('model_pred_total'),
                 jerry_total=pick.get('jerry_pred_total'),
+                panel_implied_total=_panel_implied(pick),
             )
             if verdict.tier == 'SKIP':
                 print(f"⚠️  TIER GATE REJECT: {pick['away_team']} @ {pick['home_team']} — {verdict.reason}")
@@ -3871,6 +3896,7 @@ def run():
                         proj_total=c.get('projected_total'),
                         v4_total=c.get('model_pred_total'),
                         jerry_total=c.get('jerry_pred_total'),
+                        panel_implied_total=_panel_implied(c),
                     )
                     if v.tier != 'SKIP':
                         replacement = c
