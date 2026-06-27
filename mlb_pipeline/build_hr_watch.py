@@ -268,9 +268,16 @@ def fetch_batter_stats(name):
         slg = float(s.get('slg', 0) or 0)
         iso = max(0.0, slg - ba)
 
-        # Last-7 games pace — gameLog stats sorted by date desc, take last 7
+        # Last-N games pace — gameLog stats sorted by date desc.
+        # 2026-06-27: expanded to also track L5 + L15 multi-HR games for
+        # hot-streak detection (Caglianone case: 6 HR in 5 games + 3 multi-HR
+        # games since 6/19 was not flagged by the L7-only signal).
+        last_5_hr = 0
+        last_5_pa = 0
         last_7_hr = 0
         last_7_pa = 0
+        last_15_hr = 0
+        last_15_multi_hr_games = 0  # games with 2+ HR in last 15
         try:
             gl = requests.get(
                 f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',
@@ -284,11 +291,24 @@ def fetch_batter_stats(name):
                          or g.get('league', {}).get('sport', {}).get('id') == 1]
             # If response was already MLB-only, mlb_games may be empty due to
             # missing nested fields; fall back to all splits.
-            recent = (mlb_games or gsplits)[-7:]
-            for g in recent:
+            source = mlb_games or gsplits
+            recent_15 = source[-15:]
+            recent_7 = source[-7:]
+            recent_5 = source[-5:]
+            for g in recent_15:
+                gs = g.get('stat', {})
+                hr_g = int(gs.get('homeRuns', 0) or 0)
+                last_15_hr += hr_g
+                if hr_g >= 2:
+                    last_15_multi_hr_games += 1
+            for g in recent_7:
                 gs = g.get('stat', {})
                 last_7_hr += int(gs.get('homeRuns', 0) or 0)
                 last_7_pa += int(gs.get('plateAppearances', 0) or 0)
+            for g in recent_5:
+                gs = g.get('stat', {})
+                last_5_hr += int(gs.get('homeRuns', 0) or 0)
+                last_5_pa += int(gs.get('plateAppearances', 0) or 0)
         except Exception:
             pass
 
@@ -303,8 +323,12 @@ def fetch_batter_stats(name):
             'slg': slg,
             'iso': round(iso, 3),
             'bat_side': bat_side,
+            'last_5_hr': last_5_hr,
+            'last_5_pa': last_5_pa,
             'last_7_hr': last_7_hr,
             'last_7_pa': last_7_pa,
+            'last_15_hr': last_15_hr,
+            'last_15_multi_hr_games': last_15_multi_hr_games,
             # Savant signals — keys may be missing if not in the leaderboard
             'savant_barrel_pct': sav.get('barrel_pct'),
             'savant_hard_hit_pct': sav.get('hard_hit_pct'),
@@ -451,15 +475,50 @@ def score_batter(stats, opp_xera, opp_contact, park_factor, hr_park, temp, wind_
         else:
             platoon_score = -3
 
-    # Recency cold-streak penalty — slumps that season totals don't show.
-    # Need a meaningful recent sample (≥25 PA) to call it cold.
+    # Recency penalty + hot-streak boost. Need a meaningful recent sample
+    # (≥25 PA) to call cold; hot-streak boost uses L5 HR count gated by L5 PA.
+    #
+    # 2026-06-27 — added tiered hot-streak boost. Prior signal was only +5
+    # for "heating up" (≥2 HR in 20+ L7 PA), which under-rated cases like
+    # Caglianone (6 HR in 5 games, 3 multi-HR games since 6/19) who never
+    # surfaced on HR Watch despite being one of the hottest power hitters in
+    # baseball. New tiered logic:
+    #   L5 HR ≥ 5 → +22  (Caglianone band)
+    #   L5 HR = 4 → +18
+    #   L5 HR = 3 → +12
+    #   L15 multi-HR games ≥ 3 → +14 (independent compounding streak signal)
+    #   L15 multi-HR games = 2 → +8
+    # Net effect: a 6-in-5 hitter now gets +22 instead of +5 (+17pp swing).
+    last_5_hr = int(stats.get('last_5_hr') or 0)
+    last_5_pa = int(stats.get('last_5_pa') or 0)
     last_7_pa = int(stats.get('last_7_pa') or 0)
     last_7_hr = int(stats.get('last_7_hr') or 0)
+    last_15_multi_hr = int(stats.get('last_15_multi_hr_games') or 0)
     recency_score = 0
+
+    # Cold streak — unchanged
     if last_7_pa >= 25 and last_7_hr == 0:
         recency_score = -10
-    elif last_7_pa >= 20 and last_7_hr >= 2:
-        recency_score = 5  # heating up
+
+    # Hot streak — L5 HR tier (requires meaningful PA so we don't reward
+    # 5-HR-in-5-PA edge cases from a pinch-hit run)
+    if last_5_pa >= 15:
+        if last_5_hr >= 5:
+            recency_score = max(recency_score, 22)
+        elif last_5_hr >= 4:
+            recency_score = max(recency_score, 18)
+        elif last_5_hr >= 3:
+            recency_score = max(recency_score, 12)
+    # Legacy "heating up" — preserves prior +5 for ≥2 HR in L7 (20+ PA) when
+    # the L5 tiers above don't trigger (e.g., 2 HR L7 but only 1 in L5)
+    if recency_score < 5 and last_7_hr >= 2 and last_7_pa >= 20:
+        recency_score = max(recency_score, 5)
+
+    # Multi-HR games streak — compounds additively
+    if last_15_multi_hr >= 3:
+        recency_score += 14
+    elif last_15_multi_hr == 2:
+        recency_score += 8
 
     # Savant quality-of-contact (added 2026-05-05) — barrel% and xSLG-SLG
     # diff are sticky predictors of HR rate that survive small samples.
