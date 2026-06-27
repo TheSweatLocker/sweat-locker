@@ -69,18 +69,27 @@ def fetch_results(date_filter=None, only_null=True):
     return rows
 
 
-def fetch_context_for_game(game_id):
-    """Pull mlb_game_context row for a given game_id."""
-    r = requests.get(
-        f'{SU}/rest/v1/mlb_game_context?game_id=eq.{game_id}'
-        f'&select=game_id,away_pitcher_projected_er,home_pitcher_projected_er,'
-        f'away_pitcher_projected_outs,home_pitcher_projected_outs,'
-        f'away_bullpen_era,home_bullpen_era&limit=1',
-        headers=H, timeout=15,
-    )
-    if r.status_code != 200: return None
-    rows = r.json()
-    return rows[0] if rows else None
+def fetch_context_index(game_ids):
+    """Pull mlb_game_context rows for many game_ids in one query.
+    Returns {game_id: row_dict}. Chunked to stay under PostgREST URL limit."""
+    idx = {}
+    chunk_size = 100
+    for i in range(0, len(game_ids), chunk_size):
+        chunk = game_ids[i:i + chunk_size]
+        ids = ','.join(chunk)
+        r = requests.get(
+            f'{SU}/rest/v1/mlb_game_context?game_id=in.({ids})'
+            f'&select=game_id,away_pitcher_projected_er,home_pitcher_projected_er,'
+            f'away_pitcher_projected_outs,home_pitcher_projected_outs,'
+            f'away_bullpen_era,home_bullpen_era',
+            headers=H, timeout=30,
+        )
+        if r.status_code != 200:
+            continue
+        for row in r.json():
+            if isinstance(row, dict) and row.get('game_id'):
+                idx[row['game_id']] = row
+    return idx
 
 
 def patch_result(row_id, payload):
@@ -94,27 +103,35 @@ def patch_result(row_id, payload):
     return r.status_code in (200, 204)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--date', help='only backfill a single date (YYYY-MM-DD) or use gte/lte (e.g. gte.2026-06-01)')
-    ap.add_argument('--all', action='store_true',
-                    help='backfill all rows, even ones that already have panel values')
-    ap.add_argument('--dry-run', action='store_true',
-                    help='print computed values but do not PATCH')
-    args = ap.parse_args()
+def run(date_filter=None, only_null=True, dry_run=False, verbose=True):
+    """Backfill panel_implied_total + margin into mlb_game_results.
 
-    date_filter = None
-    if args.date:
-        date_filter = f'eq.{args.date}' if '.' not in args.date else args.date
+    Args:
+        date_filter: PostgREST filter like 'eq.2026-06-26' or 'gte.2026-06-01'.
+                     None scans all dates.
+        only_null: skip rows that already have panel_implied_total populated.
+                   Set False to force re-write (rare — for fixes).
+        dry_run: print but don't PATCH.
+        verbose: print per-row + summary lines.
 
-    rows = fetch_results(date_filter=date_filter, only_null=not args.all)
-    print(f'Found {len(rows)} mlb_game_results rows to consider')
+    Returns: dict with patched / skipped / failed counts.
+    """
+    rows = fetch_results(date_filter=date_filter, only_null=only_null)
+    if verbose:
+        print(f'Found {len(rows)} mlb_game_results rows to consider')
+
+    game_ids = [r['game_id'] for r in rows if r.get('game_id')]
+    if verbose:
+        print(f'Fetching context for {len(game_ids)} game_ids in batches...')
+    ctx_index = fetch_context_index(game_ids)
+    if verbose:
+        print(f'  context index has {len(ctx_index)} rows')
 
     patched = 0
     skipped_no_inputs = 0
     failed = 0
     for r in rows:
-        ctx = fetch_context_for_game(r['game_id'])
+        ctx = ctx_index.get(r['game_id'])
         if not ctx:
             skipped_no_inputs += 1
             continue
@@ -137,8 +154,9 @@ def main():
             'away_pitcher_projected_outs': ctx.get('away_pitcher_projected_outs'),
             'home_pitcher_projected_outs': ctx.get('home_pitcher_projected_outs'),
         }
-        if args.dry_run:
-            print(f"  DRY  {r['game_date']} {r['away_team'][:14]:14s} @ {r['home_team'][:14]:14s} -> total {total}, margin {margin:+}")
+        if dry_run:
+            if verbose:
+                print(f"  DRY  {r['game_date']} {r['away_team'][:14]:14s} @ {r['home_team'][:14]:14s} -> total {total}, margin {margin:+}")
             patched += 1
         else:
             ok = patch_result(r['id'], payload)
@@ -146,11 +164,32 @@ def main():
                 patched += 1
             else:
                 failed += 1
-                print(f"  FAIL {r['game_date']} {r['away_team']} @ {r['home_team']}")
+                if verbose:
+                    print(f"  FAIL {r['game_date']} {r['away_team']} @ {r['home_team']}")
 
-    print(f"\n  Patched: {patched}")
-    print(f"  Skipped (no projection inputs): {skipped_no_inputs}")
-    if failed: print(f"  Failed: {failed}")
+    if verbose:
+        print(f"\n  Patched: {patched}")
+        print(f"  Skipped (no projection inputs): {skipped_no_inputs}")
+        if failed:
+            print(f"  Failed: {failed}")
+
+    return {'patched': patched, 'skipped': skipped_no_inputs, 'failed': failed}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--date', help='only backfill a single date (YYYY-MM-DD) or use gte/lte (e.g. gte.2026-06-01)')
+    ap.add_argument('--all', action='store_true',
+                    help='backfill all rows, even ones that already have panel values')
+    ap.add_argument('--dry-run', action='store_true',
+                    help='print computed values but do not PATCH')
+    args = ap.parse_args()
+
+    date_filter = None
+    if args.date:
+        date_filter = f'eq.{args.date}' if '.' not in args.date else args.date
+
+    run(date_filter=date_filter, only_null=not args.all, dry_run=args.dry_run)
 
 
 if __name__ == '__main__':

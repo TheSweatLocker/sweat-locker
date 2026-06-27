@@ -755,6 +755,22 @@ def run():
     except Exception as e:
         print(f'  ⚠ live tier tracker failed: {type(e).__name__}: {e}')
 
+    # ─── Archive panel-implied snapshot (added 2026-06-27) ────────────────
+    # The tier-discipline gate (commits d5e5552/6ae1426/122ae70) treats the
+    # per-pitcher Numbers Panel as a 4th vote. Snapshot panel_implied_total
+    # + margin per game so future backtests can validate the gate forward
+    # against real outcomes. Without this hook the values would only exist
+    # at runtime in tier_discipline_gate and be unreachable post-grade.
+    # Fails open — never blocks resolver if backfill module/columns missing.
+    try:
+        print('\nArchiving panel-implied to mlb_game_results...')
+        import backfill_panel_implied
+        # Only the day we just graded — keeps the call light (<1s)
+        backfill_panel_implied.run(date_filter=f'eq.{yesterday}',
+                                   only_null=True, verbose=False)
+    except Exception as e:
+        print(f'  ⚠ panel-implied archive failed: {type(e).__name__}: {e}')
+
     # ─── End-of-run blackout sanity check (added 2026-06-09) ────────────
     # If every resolution counter is 0 AND we just attempted multiple
     # categories, that's a strong signal something went wrong upstream
