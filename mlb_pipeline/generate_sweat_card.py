@@ -1424,60 +1424,52 @@ def build_card():
         print(f"  ⚠️  Card auto-loosened to gate_window={gate_used} "
               f"(strict 30d gate left only {len(top_8_curated)} picks)")
 
-    # ─── DEDUP: top_props excludes anything already in top_8 (added 2026-06-18) ─
+    # ─── DEDUP: top_props excludes anything already in top_8 ──────────────
+    # (added 2026-06-18, fixed 2026-06-27)
     # Same principle as ladder-separate-from-public-5: surfaces shouldn't show
     # the same pick twice. If a prop is in top_8 (the curated card lead), it
     # shouldn't also appear in top_props (the "other props worth a look" list).
-    # Backfill top_props from the next-best candidates so the list stays at
-    # ~5-7 picks rather than shrinking when dedup removes overlap.
-    top_8_player_market = set()
+    #
+    # 2026-06-27 fix: the prior label-string matching silently failed —
+    # top_8 stores label="Dylan Cease Over 7.5 Ks  ·  proj 8.6" but the
+    # dedup was building "Dylan Cease Over 7.5 ks over". Neither the tuple
+    # match nor the "ks over" substring contains check hit, so Cease was
+    # published in BOTH surfaces. Now uses canonical source_key tuple
+    # (player_name, prop_type, prop_line as float) which the resolver
+    # already uses for grading — single source of truth.
+    top_8_prop_keys = set()  # set of (player_name, prop_type, float(prop_line))
     for pick_8 in top_8_curated:
-        # top_8 entries from props carry player_name + label that encodes prop_type/line
-        if pick_8.get("type", "").startswith("prop_"):
-            # 2026-06-21 — top_8 prop entries don't actually have a top-level
-            # `player_name` field (verified post-run: source_key is the
-            # canonical player|prop_type|line tuple). Fall back to parsing
-            # the source_key when player_name is missing; otherwise the
-            # filter silently does nothing and we publish overlaps.
-            pname = pick_8.get("player_name") or pick_8.get("player")
-            if not pname:
-                sk = pick_8.get("source_key") or ""
-                parts = sk.split("|")
-                if parts and parts[0]:
-                    pname = parts[0]
-            label = pick_8.get("label", "")
-            if pname:
-                top_8_player_market.add((pname, label))
-    if top_8_player_market:
+        if not pick_8.get("type", "").startswith("prop_"):
+            continue
+        sk = pick_8.get("source_key") or ""
+        parts = sk.split("|")
+        if len(parts) < 3:
+            continue
+        try:
+            top_8_prop_keys.add((parts[0], parts[1], float(parts[2])))
+        except (ValueError, TypeError):
+            continue
+
+    def _prop_key(p):
+        """Canonical (player, prop_type, line) tuple — matches top_8 source_key shape."""
+        try:
+            line = float(p.get("prop_line")) if p.get("prop_line") is not None else None
+        except (TypeError, ValueError):
+            line = p.get("prop_line")
+        return (p.get("player_name"), p.get("prop_type"), line)
+
+    if top_8_prop_keys:
         before_count = len(top_props_all)
-        top_props_all = [
-            p for p in top_props_all
-            if (p.get("player_name"),
-                f"{p.get('player_name')} {p.get('direction','').title()} {p.get('prop_line')} "
-                f"{p.get('prop_type','').replace('_',' ')}") not in top_8_player_market
-            and not any(
-                p.get("player_name") == pname and
-                p.get("prop_type","").replace("_"," ").lower() in label.lower() and
-                str(p.get("prop_line")) in label
-                for pname, label in top_8_player_market
-            )
-        ]
+        top_props_all = [p for p in top_props_all if _prop_key(p) not in top_8_prop_keys]
         # Backfill from props_sorted to maintain ~5-7 picks if dedup shrunk us
         if len(top_props_all) < 5 and len(top_props_all) < before_count:
-            existing_keys = {(p.get("player_name"), p.get("prop_type"), p.get("prop_line"))
-                             for p in top_props_all}
+            existing_keys = {_prop_key(p) for p in top_props_all}
             for p in props_sorted:
                 if (p.get("tier") not in ("PRIME", "STRONG")
                         and (p.get("tier") or "").upper() != "LEAN"):
                     continue
-                k = (p.get("player_name"), p.get("prop_type"), p.get("prop_line"))
-                if k in existing_keys:
-                    continue
-                # Check it's not in top_8 either
-                if any(p.get("player_name") == pname and
-                       p.get("prop_type","").replace("_"," ").lower() in label.lower() and
-                       str(p.get("prop_line")) in label
-                       for pname, label in top_8_player_market):
+                k = _prop_key(p)
+                if k in existing_keys or k in top_8_prop_keys:
                     continue
                 ptype = p.get("prop_type", "?")
                 edge_class = prop_edge_class(ptype, tier=p.get("tier"))
@@ -1496,19 +1488,11 @@ def build_card():
     # Without this the same Gallen Ks UNDER PRIME pick could appear on
     # the sweat card top_8 AND in the "Top Ks Under" section below it
     # — user feedback "redundant, listed twice." Each list is filtered
-    # against the same top_8 player+market signature set.
+    # against the same canonical source_key set.
     def _filter_against_top_8(plist):
-        if not top_8_player_market:
+        if not top_8_prop_keys:
             return plist
-        return [
-            p for p in plist
-            if not any(
-                p.get("player_name") == pname
-                and p.get("prop_type", "").replace("_", " ").lower() in label.lower()
-                and str(p.get("prop_line")) in label
-                for pname, label in top_8_player_market
-            )
-        ]
+        return [p for p in plist if _prop_key(p) not in top_8_prop_keys]
     top_hits = _filter_against_top_8(top_hits)
     top_ks = _filter_against_top_8(top_ks)
     top_under_hits = _filter_against_top_8(top_under_hits)
