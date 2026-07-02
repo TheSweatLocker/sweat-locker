@@ -4807,6 +4807,18 @@ const fetchDailyBestBet = async () => {
         return;
       }
 
+      // noPlay: tier discipline gate rejected every candidate. Render a
+      // REST DAY message using the row-level narrative col (populated by
+      // generate_potd_narrative.py) with a fallback string.
+      if(supabaseCache.data.noPlay) {
+        setDailyBestBet({
+          noPlay: true,
+          narrative: supabaseCache.data.narrative || supabaseCache.narrative || '',
+          reason: supabaseCache.data.reason,
+        });
+        return;
+      }
+
       // Pipeline generated the pick — use it
       if(supabaseCache.data.pipelineGenerated) {
         // Generate Jerry narrative if not already present
@@ -9912,6 +9924,8 @@ setJerryHistory(prev => {
       <Text style={{color:'#7a92a8',fontSize:13}}>No games on the slate today. Check back tomorrow.</Text>
     ) : dailyBestBet?.noPrime ? (
       <Text style={{color:'#7a92a8',fontSize:13}}>No prime plays today — top game scores {dailyBestBet.topScore}/100. Jerry says wait for a better spot.</Text>
+    ) : dailyBestBet?.noPlay ? (
+      <Text style={{color:'#7a92a8',fontSize:13,lineHeight:20}}>{dailyBestBet.narrative || "No play cleared the discipline gate tonight. Model, cohort engine, and Panel didn't converge — we sit out rather than force one. Dawg of the Day + bucket angles are still in the app."}</Text>
     ) : dailyBestBet?.game ? (
       <View>
 {isPlayoffMode && dailyBestBet?.sport === 'NBA' && (
