@@ -209,6 +209,43 @@ def main():
         print("  noGames flag set — skipping")
         return
 
+    # noPlay handling (fixed 2026-07-02).
+    # When POTD selector returns noPlay (all tier-gate candidates rejected),
+    # the game/context/score blocks are empty. Prior behavior sent Claude an
+    # empty template and got back a broken "you didn't fill in the data"
+    # narrative that shipped to production. Now we generate a proper REST DAY
+    # narrative explaining why the gate rejected today's slate.
+    if potd.get("noPlay"):
+        reason = potd.get("reason") or "no_model_supported_lean"
+        reason_text = {
+            "no_model_supported_lean": (
+                "No game on tonight's slate passed the tier discipline gate. "
+                "Every candidate had contested signals across model, cohort, "
+                "and Panel readings — none qualified as a Play of the Day."
+            ),
+        }.get(reason, "No qualified play surfaced on tonight's slate.")
+        narrative = (
+            f"REST DAY — no Play of the Day tonight.\n\n"
+            f"{reason_text} "
+            f"The gate exists to protect against forcing a play when the model, "
+            f"cohort engine, and Panel don't converge. When they don't align, "
+            f"we sit out and wait for a cleaner setup rather than chasing content."
+        )
+        potd["narrative"] = narrative
+        req = urllib.request.Request(
+            f"{SB}/rest/v1/jerry_cache?cache_key=eq.best_bet_{date_str}",
+            data=json.dumps({"narrative": narrative, "data": potd}).encode(),
+            headers=H_WRITE, method="PATCH"
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=15)
+            print(f"  ✅ Wrote noPlay REST DAY narrative ({len(narrative)} chars, status {resp.status})")
+            print()
+            print(narrative)
+        except urllib.error.HTTPError as e:
+            print(f"  ⚠️  PATCH failed {e.code}: {e.read().decode()[:200]}")
+        return
+
     existing_inner = (potd or {}).get("narrative")
     existing_col = row.get("narrative")
     if not args.force and not is_placeholder(existing_inner):
