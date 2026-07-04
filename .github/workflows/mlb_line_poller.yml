@@ -1,0 +1,60 @@
+name: MLB Line Poller
+
+# Continuous line poll — captures Odds API market state every 15 min
+# throughout the active betting window. Writes to mlb_line_history and
+# updates current_total / current_total_at / line_movement /
+# line_movements_count on mlb_game_context.
+#
+# Why this workflow exists: 2026-07-04 audit found current_total NULL for
+# ALL games because line_poller.py existed but was never scheduled. Sharp
+# money / reverse-line-movement detection was blind. This closes that gap.
+#
+# Scope: ODDS POLL ONLY. Single Odds API call per run (uses the batch
+# /odds slate endpoint). ~30 runs per active day = ~30 API calls/day.
+# Skips in-progress games (their live-total lines aren't comparable to
+# pre-game full-game totals).
+#
+# Locks close_total when a game is within 10 min of first pitch — this
+# is the fallback for the 2pm cron's live-game overwrite bug (see
+# project_pm_cron_live_game_prop_overwrite).
+
+on:
+  schedule:
+    # Every 15 minutes from 10:00 UTC (6am ET) through 04:00 UTC (12am ET)
+    # covering all game times + pre-game price movement. Cron '*/15' fires
+    # at :00 :15 :30 :45.
+    - cron: '*/15 10-23 * * *'  # Daytime block: 6am ET → 7pm ET
+    - cron: '*/15 0-3 * * *'    # Evening block: 8pm ET → 11:45pm ET
+  workflow_dispatch:
+
+jobs:
+  poll-lines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        # line_poller needs requests + dotenv only — kept minimal so
+        # the workflow starts in under 30 sec.
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      - name: Poll MLB lines
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python line_poller.py
