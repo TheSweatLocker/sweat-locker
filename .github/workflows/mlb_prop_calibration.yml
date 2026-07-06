@@ -1,0 +1,96 @@
+name: MLB Prop Edge Calibration
+
+# Recomputes (tier, prop_type, direction) allow-list nightly from a
+# rolling 30-day window. Prop scorer will read prop_edge_calibration to
+# downgrade NEUTRAL / skip KILL buckets before writing PRIME/STRONG tiers.
+#
+# Backtest job runs Mondays to validate the current allow list against a
+# 7-day holdout, writes prop_edge_backtest_history for drift tracking.
+#
+# Discovered 2026-07-05: STRONG tier hit 43% on 5-day BUT STRONG bb_under
+# is 74% (n=35) and STRONG er_over is 41%. Bucket-level filter delivers
+# +10.7pp lift over 33-day sample.
+#
+# See project_prop_edge_calibration_july memory.
+
+on:
+  schedule:
+    # 4:30 AM UTC = 12:30 AM ET nightly. Runs AFTER the previous night's
+    # results have been graded by resolve_game_results.py.
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run mode (print only, no write)'
+        type: boolean
+        default: false
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      - name: Recompute prop edge calibration
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            python prop_edge_calibrator.py --dry-run
+          else
+            python prop_edge_calibrator.py
+          fi
+
+  weekly_backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    # Runs Mondays only, via the same 4:30am UTC schedule
+    if: ${{ github.event.schedule == '30 4 * * *' && github.event_name == 'schedule' }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      - name: Run rolling-window backtest
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        # Only run backtest on Mondays (day_of_week check inside script's own gate would be cleaner,
+        # but for now: fire the workflow daily, backtest job only writes on Monday runs).
+        run: |
+          cd mlb_pipeline
+          # Skip if not Monday (0=Sunday, 1=Monday in date +%u it's 1)
+          if [ "$(date -u +%u)" = "1" ]; then
+            python backtest_prop_edge_filter.py
+          else
+            echo "Not Monday — skip backtest write."
+          fi
