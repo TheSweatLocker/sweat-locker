@@ -209,12 +209,77 @@ def parse_pitcher_k_pct_from_context(pitcher_context, pitcher_name):
     return None
 
 
-def tier_for(conviction, prop_type=None):
-    """Tier thresholds calibrated per prop_type from 94-game audit.
-    Hits beat 60% across the board, so STRONG must clear 72 to actually mean
-    something different from LEAN. Ks barely beat coin flip at conviction <70,
-    so we lift the K bar and skip K LEAN entirely. Unders need higher floors
-    because they bet on the rarer outcome (0-fer hitter, K-line fade).
+# ─────────────────────────────────────────────────────────────────────────
+# LIVE CALIBRATION FILTER (2026-07-12)
+# ─────────────────────────────────────────────────────────────────────────
+# Reads prop_edge_calibration table, demotes KILL-bucket (tier,prop_type)
+# picks to SKIP after tier_for() assigns. Table is refreshed nightly by
+# prop_edge_calibrator.py from a rolling 30-day window.
+#
+# Filter is post-tier: tier_for computes the base tier from conviction, then
+# apply_calibration_filter demotes to SKIP if that bucket has < 45% historical
+# hit rate on n >= 10 samples. Fails open (no filter) if table unreachable.
+_CALIBRATION_CACHE = None
+_CALIBRATION_MIN_SAMPLE_FOR_DEMOTE = 10  # don't demote on thin samples
+
+
+def _load_calibration():
+    """Fetch most recent prop_edge_calibration rows. Cached per-run."""
+    global _CALIBRATION_CACHE
+    if _CALIBRATION_CACHE is not None:
+        return _CALIBRATION_CACHE
+    _CALIBRATION_CACHE = {}
+    try:
+        headers = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/prop_edge_calibration"
+            f"?order=computed_at.desc"
+            f"&select=tier,prop_type,category,hit_rate,sample_size,computed_at"
+            f"&limit=200",
+            headers=headers, timeout=10,
+        )
+        if r.status_code != 200:
+            print(f"  ⚠️  Calibration table unreachable ({r.status_code}) — no bucket filter applied")
+            return _CALIBRATION_CACHE
+        rows = r.json() if isinstance(r.json(), list) else []
+        if not rows:
+            print(f"  ⚠️  Calibration table empty — no bucket filter applied")
+            return _CALIBRATION_CACHE
+        latest = rows[0].get('computed_at')
+        for row in rows:
+            if row.get('computed_at') != latest:
+                continue
+            key = (row['tier'], row['prop_type'])
+            _CALIBRATION_CACHE[key] = {
+                'category': row['category'],
+                'hit_rate': float(row['hit_rate']),
+                'sample_size': int(row['sample_size']),
+            }
+        print(f"  ✓ Loaded prop calibration: {len(_CALIBRATION_CACHE)} buckets from {latest}")
+    except Exception as e:
+        print(f"  ⚠️  Calibration load exception: {e} — no bucket filter applied")
+    return _CALIBRATION_CACHE
+
+
+def apply_calibration_filter(tier, prop_type):
+    """Post-tier filter: demote KILL-bucket (tier, prop_type) picks to SKIP.
+    Requires sample_size >= _CALIBRATION_MIN_SAMPLE_FOR_DEMOTE so we don't
+    fade on noise. NEUTRAL and KEEP buckets pass through untouched — KEEP
+    promotion is a separate follow-up (surface flag) rather than a tier bump.
+    """
+    if tier == 'SKIP':
+        return tier
+    cal = _load_calibration()
+    entry = cal.get((tier, prop_type))
+    if entry and entry['category'] == 'KILL' and entry['sample_size'] >= _CALIBRATION_MIN_SAMPLE_FOR_DEMOTE:
+        return 'SKIP'
+    return tier
+
+
+def _tier_for_raw(conviction, prop_type=None):
+    """Raw conviction → tier assignment. Wrapped by tier_for() which applies
+    the live calibration filter. Kept separate so tests + audits can inspect
+    the pre-filter tier if needed.
     """
     # 2026-06-03: restored LEAN tier for K props (55-69 conviction). The
     # original audit said "Ks barely beat coin flip <70" but that was on
@@ -286,6 +351,14 @@ def tier_for(conviction, prop_type=None):
     if conviction >= 72: return 'STRONG'
     if conviction >= 55: return 'LEAN'
     return 'SKIP'
+
+
+def tier_for(conviction, prop_type=None):
+    """Public tier_for(): raw tier from conviction, then live-calibration
+    KILL-bucket filter demoting to SKIP. 2026-07-12 addition — see
+    apply_calibration_filter() docstring for demote rules.
+    """
+    return apply_calibration_filter(_tier_for_raw(conviction, prop_type), prop_type)
 
 
 _PITCHER_BUCKET_CACHE = {}
