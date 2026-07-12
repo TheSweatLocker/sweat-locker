@@ -274,22 +274,10 @@ def evaluate_ml(
         return TierVerdict('SKIP', None, 'resolver has no clean direction',
             None, 0, None)
 
-    # Panel ML margin counter-signal — when margin is tight, Panel ML hits
-    # only 40%. Even with STRONG resolver, that's a coinflip trap.
-    if panel_implied_margin is not None:
-        abs_margin = abs(panel_implied_margin)
-        if abs_margin < 0.5:
-            return TierVerdict('SKIP', None,
-                f'Panel margin {panel_implied_margin:+.1f} too tight (40% hist on <0.5 margin)',
-                None, 0, None)
-        # Panel direction relative to resolver
-        panel_winner = 'HOME' if panel_implied_margin > 0 else 'AWAY'
-        if panel_winner != resolver_direction:
-            return TierVerdict('SKIP', None,
-                f'resolver says {resolver_direction} but Panel margin {panel_implied_margin:+.1f} says {panel_winner}',
-                None, 0, None)
-
-    # Composite spread agreement
+    # Composite spread agreement — 2026-07-12: first check. When v3+v4+jerry
+    # loudly agree AWAY from resolver by >= 1.0 runs, that's a real model-
+    # consensus signal. Flip to composite as LEAN even if Panel margin is
+    # tight (case: ATL/STL 7/12 — Panel pick'em but composite -1.5 all AWAY).
     composite_winner = None
     if composite_spread is not None:
         try:
@@ -301,9 +289,35 @@ def evaluate_ml(
         except (TypeError, ValueError):
             pass
     if composite_winner and composite_winner != resolver_direction:
+        cs_abs = abs(float(composite_spread))
+        if cs_abs >= 1.0:
+            return TierVerdict('LEAN', composite_winner,
+                f'resolver {resolver_direction} but composite spread {composite_spread:+.2f} loud {composite_winner} — publish composite',
+                None, 0, 0.55)
         return TierVerdict('SKIP', None,
-            f'resolver {resolver_direction} but composite spread {composite_spread:+.2f} → {composite_winner}',
+            f'resolver {resolver_direction} but composite spread {composite_spread:+.2f} → {composite_winner} (thin flip)',
             None, 0, None)
+
+    # Panel ML margin counter-signal — Panel margin < 0.5 = pick'em game,
+    # historically Panel ML hits only 40% in that range. Only apply this
+    # SKIP if composite ALSO wasn't loud in resolver's favor (already checked
+    # above). Then check for Panel-loud opposite → flip to Panel as LEAN.
+    if panel_implied_margin is not None:
+        abs_margin = abs(panel_implied_margin)
+        panel_winner = 'HOME' if panel_implied_margin > 0 else 'AWAY'
+        if panel_winner != resolver_direction:
+            if abs_margin >= 1.0:
+                return TierVerdict('LEAN', panel_winner,
+                    f'resolver {resolver_direction} but Panel margin {panel_implied_margin:+.1f} loud {panel_winner} — publish Panel (57% edge)',
+                    None, 0, 0.57)
+            return TierVerdict('SKIP', None,
+                f'resolver {resolver_direction} but Panel margin {panel_implied_margin:+.1f} says {panel_winner} — thin flip',
+                None, 0, None)
+        # Panel agrees with resolver — but if margin is tight, still coinflip
+        if abs_margin < 0.5:
+            return TierVerdict('SKIP', None,
+                f'Panel margin {panel_implied_margin:+.1f} too tight (40% hist on <0.5 margin)',
+                None, 0, None)
 
     # ELITE: resolver ELITE + Panel margin >= 2 (when Panel available)
     if resolver_tier == 'ELITE':
