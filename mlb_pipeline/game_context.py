@@ -2736,7 +2736,13 @@ def run(target_date=None):
     # The upload_game_context POST uses on_conflict=game_id, so re-running
     # naturally upserts existing rows. Skip today's clear; only clear rows
     # 2+ days old (housekeeping for stale entries).
-    for d in range(2, 4):
+    # 2026-07-12: extended retention window from 2 days → 14 days. 7/12
+    # POTD backfill (7/7-7/11) was blocked because those rows had been
+    # purged. mlb_game_results has the archive with 178 cols including
+    # projections but running-mode gate/scorer code reads game_context.
+    # Keep 14d of rolling history for backtest + audit work; delete only
+    # rows older than that. Storage impact is negligible (~15 rows/day).
+    for d in range(14, 21):
         past_date = (et_now - timedelta(days=d)).strftime('%Y-%m-%d')
         delete_resp = requests.delete(
             f"{SUPABASE_URL}/rest/v1/mlb_game_context?game_date=eq.{past_date}",
