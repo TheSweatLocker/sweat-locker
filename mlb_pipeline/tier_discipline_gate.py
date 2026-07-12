@@ -123,13 +123,24 @@ def evaluate_total(
             f'composite says {abs(gap):.1f}-run gap but Panel implied {panel:.1f} is at line — coinflip trap',
             gap, max(overs, unders), None)
 
-    # Panel-disagrees rejection: if Panel direction is OPPOSITE composite
-    # direction, the historical edge favors Panel 54-46. Skip these.
+    # Panel-disagrees flip: if Panel direction is OPPOSITE composite direction,
+    # historical edge favors Panel 54-46. Instead of throwing the pick away
+    # (POTD noPlay for 6+ days 7/6-7/11 was caused by this), publish Panel's
+    # direction as LEAN when Panel gap is loud enough. 2026-07-12 patch.
     if panel_dir and panel_dir != 'NEU':
         composite_dir = 'OVER' if gap > 0 else 'UNDER'
         if panel_dir != composite_dir:
+            panel_gap = (panel or 0) - line
+            # Threshold set to 1.0 (was 1.5) on 2026-07-12 — 7/11 audit showed
+            # Panel-agree UNDER calls with gaps 1.0-1.5 (CHC/CIN, PHI/DET) all
+            # hit UNDER. Panel edge is 54% on disagreements, so 1.0-run gap
+            # is enough of a signal.
+            if abs(panel_gap) >= 1.0:
+                return TierVerdict('LEAN', panel_dir,
+                    f'composite {composite_dir} but Panel {panel_dir} loud ({panel_gap:+.1f}) — publish Panel (54% edge)',
+                    panel_gap, 0, 0.54)
             return TierVerdict('SKIP', None,
-                f'composite {composite_dir} vs Panel {panel_dir} — Panel wins disagreements 54-46',
+                f'composite {composite_dir} vs Panel {panel_dir} but Panel gap {panel_gap:+.1f} thin — skip',
                 gap, max(overs, unders), None)
 
     # ===== UNDER side =====
