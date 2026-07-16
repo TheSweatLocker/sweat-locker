@@ -2,14 +2,23 @@
  * Track Record — public verified performance page.
  *
  * 2026-07-12 discovery: PRIME props 30d = 61% is the honest headline metric
- * (POTD is 43% same window — not marketing-viable). This page fronts the
- * props record with a clear rolling-window toggle and a bucket-level truth
- * table so users can see WHERE the edge lives, not just tier-averaged wins.
+ * (POTD is 43% same window — not marketing-viable).
  *
- * Data sources (all views defined in supabase/migrations/20260712_track_record_views.sql):
- *   - v_prop_track_record       : 7/30/90d win % by tier
- *   - v_prop_track_record_by_type : 30d hit rate by (tier, prop_type)
- *   - v_potd_track_record       : POTD per sport (secondary section, framed honestly)
+ * 2026-07-16 honesty refit: the 61% was ONLY defensible if we split it out
+ * of batter hits_over 0.5 (which is a SIGNAL surface, not a bettable one —
+ * alt-line juice at -300 to -450 eats the edge). Views were split:
+ *
+ *   BETTABLE (v_prop_track_record):    pitcher props with book_line NOT NULL.
+ *                                       Real receipts a user can act on.
+ *   SIGNAL (v_signal_track_record):    batter hits 0.5 internal-line accuracy.
+ *                                       Model correctness, not bet.
+ *
+ * Page shows BOTH with distinct framing so users understand the difference.
+ *
+ * Data sources (all views defined in supabase/migrations/20260712 + 20260716):
+ *   - v_prop_track_record         : 7/30/90d win % by tier (bettable only)
+ *   - v_prop_track_record_by_type : 30d hit rate by (tier, prop_type) (bettable only)
+ *   - v_signal_track_record       : batter hit signal accuracy (informational)
  *
  * Navigation: reachable from main app tab or deep link. Route is
  * /track-record via Expo Router.
@@ -77,6 +86,7 @@ export default function TrackRecord() {
   const router = useRouter();
   const [window, setWindow] = useState<Window>('30d');
   const [tierRows, setTierRows] = useState<TierRow[] | null>(null);
+  const [signalTierRows, setSignalTierRows] = useState<TierRow[] | null>(null);
   const [bucketRows, setBucketRows] = useState<BucketRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -86,15 +96,18 @@ export default function TrackRecord() {
     const load = async () => {
       setLoading(true); setError(null);
       try {
-        const [tierRes, bucketRes] = await Promise.all([
+        const [tierRes, bucketRes, signalRes] = await Promise.all([
           supabase.from('v_prop_track_record').select('*'),
           supabase.from('v_prop_track_record_by_type').select('*'),
+          supabase.from('v_signal_track_record').select('*'),
         ]);
         if (cancelled) return;
         if (tierRes.error) throw tierRes.error;
         if (bucketRes.error) throw bucketRes.error;
+        // Signal view may not exist on older schemas — non-fatal
         setTierRows((tierRes.data as TierRow[]) ?? []);
         setBucketRows((bucketRes.data as BucketRow[]) ?? []);
+        setSignalTierRows(signalRes.error ? [] : ((signalRes.data as TierRow[]) ?? []));
       } catch (e: any) {
         if (!cancelled) setError(e?.message ?? 'failed to load');
       } finally {
@@ -107,6 +120,8 @@ export default function TrackRecord() {
 
   const primeTier = useMemo(() => tierRows?.find(r => r.tier === 'PRIME'), [tierRows]);
   const strongTier = useMemo(() => tierRows?.find(r => r.tier === 'STRONG'), [tierRows]);
+  const primeSignalTier = useMemo(() => signalTierRows?.find(r => r.tier === 'PRIME'), [signalTierRows]);
+  const strongSignalTier = useMemo(() => signalTierRows?.find(r => r.tier === 'STRONG'), [signalTierRows]);
 
   const getStats = (row: TierRow | undefined, w: Window) => {
     if (!row) return { wins: 0, losses: 0, pct: null as number | null };
@@ -119,6 +134,9 @@ export default function TrackRecord() {
 
   const primeStats = getStats(primeTier, window);
   const strongStats = getStats(strongTier, window);
+  const primeSignalStats = getStats(primeSignalTier, window);
+  const strongSignalStats = getStats(strongSignalTier, window);
+  const hasSignalData = (signalTierRows?.length ?? 0) > 0;
 
   // Sort buckets by hit % desc, KEEP highlighted (>=60%), KILL flagged (<45%)
   const sortedBuckets = useMemo(() => {
@@ -181,37 +199,45 @@ export default function TrackRecord() {
           </View>
         )}
 
-        {/* Hero — PRIME */}
+        {/* SECTION 1 — BETTABLE PROPS (pitcher props at book lines) */}
         {!loading && !error && (
-          <View style={styles.heroCard}>
-            <Text style={styles.heroLabel}>PRIME PROPS</Text>
-            <Text style={styles.heroPct}>
-              {primeStats.pct !== null ? `${primeStats.pct}%` : '—'}
-            </Text>
-            <Text style={styles.heroRecord}>
-              {primeStats.wins}-{primeStats.losses}
-              <Text style={styles.heroN}> · n={primeStats.wins + primeStats.losses}</Text>
-            </Text>
-            <Text style={styles.heroCaption}>
-              Highest-conviction pipeline picks with book-line verification.
-            </Text>
-          </View>
-        )}
-
-        {/* Sub — STRONG */}
-        {!loading && !error && (
-          <View style={styles.subCard}>
-            <Text style={styles.subCardLabel}>STRONG PROPS</Text>
-            <View style={styles.subCardRow}>
-              <Text style={styles.subCardPct}>
-                {strongStats.pct !== null ? `${strongStats.pct}%` : '—'}
-              </Text>
-              <Text style={styles.subCardRecord}>
-                {strongStats.wins}-{strongStats.losses}
-                <Text style={styles.subCardN}> · n={strongStats.wins + strongStats.losses}</Text>
+          <>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionHeaderText}>BETTABLE PROPS</Text>
+              <Text style={styles.sectionHeaderSub}>
+                Pitcher props at posted book lines · what you can act on
               </Text>
             </View>
-          </View>
+
+            {/* Hero — PRIME */}
+            <View style={styles.heroCard}>
+              <Text style={styles.heroLabel}>PRIME</Text>
+              <Text style={styles.heroPct}>
+                {primeStats.pct !== null ? `${primeStats.pct}%` : '—'}
+              </Text>
+              <Text style={styles.heroRecord}>
+                {primeStats.wins}-{primeStats.losses}
+                <Text style={styles.heroN}> · n={primeStats.wins + primeStats.losses}</Text>
+              </Text>
+              <Text style={styles.heroCaption}>
+                Highest-conviction picks verified against book lines.
+              </Text>
+            </View>
+
+            {/* Sub — STRONG */}
+            <View style={styles.subCard}>
+              <Text style={styles.subCardLabel}>STRONG</Text>
+              <View style={styles.subCardRow}>
+                <Text style={styles.subCardPct}>
+                  {strongStats.pct !== null ? `${strongStats.pct}%` : '—'}
+                </Text>
+                <Text style={styles.subCardRecord}>
+                  {strongStats.wins}-{strongStats.losses}
+                  <Text style={styles.subCardN}> · n={strongStats.wins + strongStats.losses}</Text>
+                </Text>
+              </View>
+            </View>
+          </>
         )}
 
         {/* Bucket-level truth table */}
@@ -257,12 +283,58 @@ export default function TrackRecord() {
           </>
         )}
 
+        {/* SECTION 2 — SIGNAL ACCURACY (batter hit projections) */}
+        {!loading && !error && hasSignalData && (
+          <>
+            <View style={[styles.sectionHeader, { marginTop: 8 }]}>
+              <Text style={styles.sectionHeaderText}>SIGNAL ACCURACY</Text>
+              <Text style={styles.sectionHeaderSub}>
+                Model accuracy on batter hit projections · informational, not a straight bet
+              </Text>
+            </View>
+
+            {/* PRIME signal */}
+            <View style={styles.signalCard}>
+              <View style={styles.signalRow}>
+                <Text style={styles.signalLabel}>PRIME model accuracy</Text>
+                <Text style={styles.signalPct}>
+                  {primeSignalStats.pct !== null ? `${primeSignalStats.pct}%` : '—'}
+                </Text>
+              </View>
+              <Text style={styles.signalRecord}>
+                {primeSignalStats.wins}-{primeSignalStats.losses}
+                <Text style={styles.signalN}> · n={primeSignalStats.wins + primeSignalStats.losses}</Text>
+              </Text>
+            </View>
+
+            {/* STRONG signal */}
+            <View style={styles.signalCard}>
+              <View style={styles.signalRow}>
+                <Text style={styles.signalLabel}>STRONG model accuracy</Text>
+                <Text style={styles.signalPct}>
+                  {strongSignalStats.pct !== null ? `${strongSignalStats.pct}%` : '—'}
+                </Text>
+              </View>
+              <Text style={styles.signalRecord}>
+                {strongSignalStats.wins}-{strongSignalStats.losses}
+                <Text style={styles.signalN}> · n={strongSignalStats.wins + strongSignalStats.losses}</Text>
+              </Text>
+            </View>
+
+            <Text style={styles.signalCaveat}>
+              Batter hit signals are internal projection accuracy. Sportsbook "1+ hits" alt-line
+              odds vary (typically −250 to −450); at those prices the model edge may not
+              cover the vig. Best used as same-game parlay legs or confirmation of total plays.
+            </Text>
+          </>
+        )}
+
         {/* Fine print */}
         {!loading && !error && (
           <Text style={styles.finePrint}>
-            Results reflect internally graded picks against posted book lines.
-            Rolling windows update nightly at 12:30 AM ET.
-            Buckets shown only for prop types with ≥5 graded picks in window.
+            Results reflect internally graded picks. Bettable props verified against posted book
+            lines. Rolling windows update nightly at 12:30 AM ET. Buckets shown for prop types
+            with ≥5 graded picks in window.
           </Text>
         )}
 
@@ -355,5 +427,30 @@ const styles = StyleSheet.create({
   finePrint: {
     color: TEXT_MUTED, fontSize: 11, textAlign: 'center', marginTop: 8,
     lineHeight: 16, paddingHorizontal: 16,
+  },
+
+  // Section headers separating BETTABLE from SIGNAL
+  sectionHeader: { marginBottom: 12, marginTop: 4 },
+  sectionHeaderText: {
+    color: TEXT_PRIMARY, fontSize: 13, fontWeight: '800',
+    letterSpacing: 2, marginBottom: 2,
+  },
+  sectionHeaderSub: {
+    color: TEXT_MUTED, fontSize: 11, letterSpacing: 0.3,
+  },
+
+  // Signal cards: dimmer treatment so they read as secondary
+  signalCard: {
+    backgroundColor: CARD_BG, borderRadius: 10, padding: 14, marginBottom: 8,
+    borderWidth: 1, borderColor: BORDER,
+  },
+  signalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  signalLabel: { color: TEXT_MUTED, fontSize: 12, fontWeight: '600', letterSpacing: 0.5 },
+  signalPct: { color: TEXT_PRIMARY, fontSize: 22, fontWeight: '700' },
+  signalRecord: { color: TEXT_MUTED, fontSize: 12, marginTop: 4 },
+  signalN: { color: TEXT_MUTED, fontSize: 11 },
+  signalCaveat: {
+    color: TEXT_MUTED, fontSize: 11, marginTop: 12, marginBottom: 8,
+    lineHeight: 16, paddingHorizontal: 4, fontStyle: 'italic',
   },
 });
