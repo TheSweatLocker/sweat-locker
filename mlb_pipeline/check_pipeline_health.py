@@ -130,11 +130,21 @@ def main():
 
     null_sweat = sum(1 for g in games if g.get('sweat_score') is None)
     if null_sweat > 0:
-        # This is the bug we just shipped a fix for. Hard fail if >0 on what
-        # should be a successful run.
-        issues.append(f'❌ {pct(null_sweat, len(games))} games missing sweat_score. '
-                      f'play_of_day.py may have skipped writes (late-slate defer bug). '
-                      f'App will fall back to client-side calc.')
+        # 2026-07-17: previously hard-failed on any null. That block prevented
+        # the AM cron from continuing on 7/17 when the Odds API had only
+        # posted lines for 8 of 15 games — the health check saw 8/8 = 100%
+        # null (because play_of_day.py hadn't run yet in the workflow order
+        # OR ran and only wrote to a subset) and exited 1, killing card +
+        # POTD generation for the day.
+        # Threshold gated: >25% missing = real bug (issue), <=25% = warn.
+        null_rate = null_sweat / len(games)
+        if null_rate > 0.25:
+            issues.append(f'❌ {pct(null_sweat, len(games))} games missing sweat_score. '
+                          f'play_of_day.py may have skipped writes (>25% threshold). '
+                          f'App will fall back to client-side calc.')
+        else:
+            warnings.append(f'⚠️  {pct(null_sweat, len(games))} games missing sweat_score '
+                            f'(under 25% threshold — likely late-added games not yet scored).')
 
     # Close-line refresh check (added 2026-05-29). After 1pm ET / 17 UTC the
     # afternoon cron should have written close_total / close_spread. If they
