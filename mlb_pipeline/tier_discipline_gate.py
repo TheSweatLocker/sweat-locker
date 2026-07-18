@@ -94,28 +94,40 @@ def evaluate_total(
     jerry_raw = float(jerry_total) if jerry_total is not None else None
     panel = float(panel_implied_total) if panel_implied_total is not None else None
 
-    # 2026-07-18 JERRY DEBIAS
+    # 2026-07-18 JERRY DEBIAS + v4 REMOVAL FROM COMPOSITE
     # ================================================================
-    # 30-day audit (July 12) found jerry systematically over-projects by
-    # ~+0.62 runs vs close line. Jerry alone debiased hit 60.5% (n=190)
-    # vs Composite baseline 52.8% — +7.8pp lift.
+    # 30-day audit ran 7/18 (n=359 graded games):
+    #   Composite (v3+v4+jerry) baseline:        50.2%
+    #   Composite (v3+v4+jerry-debias):          51.4% (+1.2pp)
+    #   Composite v3+jerry-debias (drop v4):    56.1% (+5.9pp) ⭐
+    #   v3 alone:                               52.7%
+    #   v4 alone on totals:                     46.1% (below coinflip)
+    #   jerry-debiased alone:                   53.6%
     #
-    # 7/17 confirmed catastrophically: jerry went 1-7 on totals (12%),
-    # which dragged Composite (average of v3+v4+jerry) down to 40% for
-    # the night. v3 alone hit 71% and v4 hit 50% — Composite was worse
-    # than either individual lens because jerry pulled the average up.
+    # v4 on totals is genuinely broken over 30d — it's the ONLY lens
+    # that fails to beat coinflip. Removing v4 from Composite while
+    # keeping it in _models_direction (consensus counting) delivers
+    # the biggest lift on the audit.
     #
-    # Fix: subtract 0.62 from jerry before using it in Composite AND in
-    # the direction count. Individual jerry_total is preserved for
-    # display / audit purposes — only the Composite consumers see debias.
+    # Jerry debias: subtract 0.62 (its 30d avg drift above line).
+    #
+    # v4 is preserved for:
+    #   - _models_direction (overs/unders consensus counting)
+    #   - spread lens (v4 is 54% on sides — usable)
+    #   - display/audit
+    # Only composite_avg + gap calculation drops v4.
     #
     # See: project_composite_debias_finding_712 memory.
     JERRY_BIAS_ADJUSTMENT = 0.62
     jerry = (jerry_raw - JERRY_BIAS_ADJUSTMENT) if jerry_raw is not None else None
 
+    # v4 stays in the consensus counter (for all-3-unity tier checks)
     overs, unders = _models_direction(proj_total, v4, jerry, line)
     has_v4_jerry = (v4 is not None) and (jerry is not None)
-    composite_avg = sum(filter(None, [proj_total, v4, jerry])) / max(1, sum(1 for x in [proj_total, v4, jerry] if x is not None))
+
+    # Composite (for gap magnitude) drops v4 — only v3 + debiased jerry
+    composite_inputs = [x for x in (proj_total, jerry) if x is not None]
+    composite_avg = sum(composite_inputs) / max(1, len(composite_inputs))
     gap = composite_avg - line
 
     # Panel direction relative to line (2026-06-24)
