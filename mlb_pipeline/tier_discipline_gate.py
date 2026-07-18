@@ -91,8 +91,27 @@ def evaluate_total(
     line = float(line)
     proj_total = float(proj_total)
     v4 = float(v4_total) if v4_total is not None else None
-    jerry = float(jerry_total) if jerry_total is not None else None
+    jerry_raw = float(jerry_total) if jerry_total is not None else None
     panel = float(panel_implied_total) if panel_implied_total is not None else None
+
+    # 2026-07-18 JERRY DEBIAS
+    # ================================================================
+    # 30-day audit (July 12) found jerry systematically over-projects by
+    # ~+0.62 runs vs close line. Jerry alone debiased hit 60.5% (n=190)
+    # vs Composite baseline 52.8% — +7.8pp lift.
+    #
+    # 7/17 confirmed catastrophically: jerry went 1-7 on totals (12%),
+    # which dragged Composite (average of v3+v4+jerry) down to 40% for
+    # the night. v3 alone hit 71% and v4 hit 50% — Composite was worse
+    # than either individual lens because jerry pulled the average up.
+    #
+    # Fix: subtract 0.62 from jerry before using it in Composite AND in
+    # the direction count. Individual jerry_total is preserved for
+    # display / audit purposes — only the Composite consumers see debias.
+    #
+    # See: project_composite_debias_finding_712 memory.
+    JERRY_BIAS_ADJUSTMENT = 0.62
+    jerry = (jerry_raw - JERRY_BIAS_ADJUSTMENT) if jerry_raw is not None else None
 
     overs, unders = _models_direction(proj_total, v4, jerry, line)
     has_v4_jerry = (v4 is not None) and (jerry is not None)
