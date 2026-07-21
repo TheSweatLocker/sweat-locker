@@ -3982,8 +3982,22 @@ def run():
                 composite_spread=_comp_spread(pick),
                 panel_implied_margin=_panel_margin(pick),
             )
+            # 2026-07-21 COHORT-FADE ML LANE (audit finding, n=60 14d @ 61-63%):
+                # When primary gate SKIPs but cohort split-lean fires, publish
+                # the OPPOSITE side as LEAN. Adds ~4-6 additional plays/night.
             if ml_verdict.tier == 'SKIP':
-                print(f"⚠️  ML GATE REJECT: {pick['away_team']} @ {pick['home_team']} — {ml_verdict.reason}")
+                cohort_signals = (pick.get('_ctx') or {}).get('cohort_signals_matched_plays') \
+                                  or pick.get('cohort_signals_matched_plays')
+                fade_verdict = _tdg.evaluate_ml_cohort_fade(cohort_signals)
+                if fade_verdict and fade_verdict.tier != 'SKIP':
+                    print(f"🔀 COHORT FADE LANE: {pick['away_team']} @ {pick['home_team']} — {fade_verdict.reason}")
+                    pick['_gate_tier'] = fade_verdict.tier
+                    pick['_gate_direction'] = fade_verdict.direction
+                    pick['_gate_reason'] = fade_verdict.reason
+                    pick['_gate_source'] = 'cohort_fade_ml_lane'
+                    confidence = 'cohort_fade'
+                else:
+                    print(f"⚠️  ML GATE REJECT: {pick['away_team']} @ {pick['home_team']} — {ml_verdict.reason}")
                 # Look for a replacement ML pick that passes the gate
                 ml_replacement = None
                 ml_search = (audit_pool[1:] if audit_pool else []) + (value_pool[1:] if 'value_pool' in dir() and value_pool else [])

@@ -422,6 +422,115 @@ def evaluate_ml(
         f'unhandled resolver tier {resolver_tier}', None, 0, None)
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# COHORT-FADE ML LANE (2026-07-21) — new
+# ─────────────────────────────────────────────────────────────────────────
+# From 14d cohort combination audit (n=150):
+#   SPLIT_HOME_LEAN cohorts (cohort ratio 0.2 to 0.5 toward HOME) →
+#     AWAY actually wins 62.5% (n=16). Fade to AWAY.
+#   SPLIT_AWAY_LEAN cohorts (cohort ratio -0.5 to -0.2) →
+#     HOME actually wins 61.4% (n=44). Fade to HOME.
+#   LOUD_HOME / LOUD_AWAY / UNANIMOUS → reverts to coinflip. Do NOT fade.
+#   COINFLIP (net weight <4) → no signal.
+#
+# This runs AFTER evaluate_ml. If the primary gate SKIPS, we try this lane
+# to surface a mid-tier LEAN publish. Never publish as PRIME on a fade
+# signal — the historical edge lives at 61% not 70%.
+#
+# Total plays surfaced by this lane in 14d: n=60 (SPLIT_AWAY=44, SPLIT_HOME=16).
+# Recommended usage: LEAN publish only, no auto-parlay leg, no POTD gating.
+# Ship as LEAN because 7d shadow validation is queued.
+
+def evaluate_ml_cohort_fade(cohort_signals):
+    """Contrarian ML lane. See docstring at module block above.
+
+    Args:
+      cohort_signals: dict from game_read.cohort_signals.matched_plays with
+                      keys v3_ml, v4_ml, conf_ml (each a list of cohort rules
+                      containing 'direction' and 'delta').
+
+    Returns:
+      TierVerdict (LEAN, HOME/AWAY, ...) when SPLIT-lean bucket fires.
+      None when LOUD/UNANIMOUS/COINFLIP (no signal).
+    """
+    if not cohort_signals:
+        return None
+    ml_buckets = ('v3_ml', 'v4_ml', 'conf_ml')
+    home_w = away_w = 0.0
+    for b in ml_buckets:
+        rules = cohort_signals.get(b) or []
+        if not isinstance(rules, list):
+            continue
+        for c in rules:
+            if not isinstance(c, dict):
+                continue
+            d = (c.get('direction') or '').lower()
+            try:
+                delta = abs(float(c.get('delta') or 0))
+            except (TypeError, ValueError):
+                continue
+            if d == 'home':
+                home_w += delta
+            elif d == 'away':
+                away_w += delta
+
+    total = home_w + away_w
+    if total < 4:  # coinflip band — no meaningful firing
+        return None
+
+    ratio = (home_w - away_w) / total  # +1 fully home, -1 fully away
+
+    # SPLIT_HOME_LEAN (mild home consensus) → fade to AWAY
+    if 0.2 <= ratio <= 0.5:
+        return TierVerdict(
+            'LEAN', 'AWAY',
+            f'cohort SPLIT_HOME_LEAN fade to AWAY (14d 62.5%, ratio {ratio:.2f}, n=16)',
+            None, 0, 0.62,
+        )
+    # SPLIT_AWAY_LEAN (mild away consensus) → fade to HOME
+    if -0.5 <= ratio <= -0.2:
+        return TierVerdict(
+            'LEAN', 'HOME',
+            f'cohort SPLIT_AWAY_LEAN fade to HOME (14d 61.4%, ratio {ratio:.2f}, n=44)',
+            None, 0, 0.61,
+        )
+    # LOUD (|ratio| > 0.5) or COINFLIP (|ratio| < 0.2) → no signal
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# COHORT TIER-QUALITY GUARD (2026-07-21) — for UNDER decisions
+# ─────────────────────────────────────────────────────────────────────────
+# From 14d audit: LOUD_UNDER + STRONG_ONLY = 55.6% (n=45), but LOUD_UNDER +
+# MIXED (STRONG + LEAN co-firing) = 35.7% (n=14). LEAN cohorts pollute the
+# read. When we see LEAN cohorts stacked on top of STRONG_EDGE, downgrade
+# one tier because the signal is diluted.
+
+def _majority_tier_quality(cohorts):
+    """Classify a list of matched cohorts by their strongest tier presence.
+
+    Returns:
+      'STRONG_ONLY' when 2+ STRONG_EDGE/PRIME/ELITE cohorts fire with 0 LEAN.
+      'MIXED' when both STRONG and LEAN cohorts fire together (36% hist).
+      'LEAN_ONLY' when only LEAN cohorts fire.
+    """
+    strong = 0
+    lean = 0
+    for c in cohorts or []:
+        if not isinstance(c, dict):
+            continue
+        tier = (c.get('tier') or '').upper()
+        if any(t in tier for t in ('STRONG', 'PRIME', 'ELITE')):
+            strong += 1
+        elif any(t in tier for t in ('LEAN', 'LIGHT', 'SOFT')):
+            lean += 1
+    if strong >= 2 and lean == 0:
+        return 'STRONG_ONLY'
+    if strong >= 1 and lean >= 1:
+        return 'MIXED'
+    return 'LEAN_ONLY'
+
+
 if __name__ == '__main__':
     # Self-test against today's slate examples
     cases = [
