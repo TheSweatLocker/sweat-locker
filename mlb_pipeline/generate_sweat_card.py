@@ -942,6 +942,62 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
     MAX_PROP_TYPE_IN_TOP_8 = 2
     prop_type_count = {}
 
+    # ── Correlation cluster tracking (2026-07-21) ──
+    # Tag picks with cluster metadata so the UI can render "correlated w/ #X"
+    # warnings. Cluster signature = (game_id, directional_side). Two picks
+    # in the same cluster mean the same outcome cashes them BOTH (or neither).
+    #
+    # Example clusters:
+    #   • WSH ML + WSH/COL O + Freeland ER O = all cash if WSH scores big
+    #   • LAD ML + Sánchez HA O = both cash if LAD bats hit Sánchez
+    #   • Cease K OVER + TB ML = uncorrelated (different outcomes)
+    #
+    # 3+ legs on same cluster = 1 bet in 3 wrappers, not real diversification.
+    # We assign cluster_id here; downstream card render surfaces the warning.
+    cluster_by_signature = {}      # signature -> cluster_id
+    next_cluster_id = [1]
+
+    def _cluster_signature(pick):
+        """Correlated bets share game + directional side. Returns None for
+        picks that don't fit the pattern (e.g. neutral prop like K prop)."""
+        game = pick.get('game')
+        if not game:
+            return None
+        label = (pick.get('label') or '').lower()
+        ptype = (pick.get('type') or '').lower()
+        # Extract which team's side we're betting on
+        # ML picks: side = team_name
+        if _is_ml_pick(pick):
+            for team_marker in ('braves','yankees','dodgers','phillies','giants',
+                                'royals','athletics','diamondbacks','padres','cubs',
+                                'tigers','angels','cardinals','mets','brewers',
+                                'orioles','red sox','mariners','reds','white sox',
+                                'rangers','rays','blue jays','pirates','guardians',
+                                'twins','marlins','astros','nationals','rockies'):
+                if team_marker in label:
+                    return (game, f'ml_{team_marker}')
+            return (game, 'ml_unknown')
+        # Total OVER/UNDER — cluster with any offensive prop on the game
+        if 'over' in label and 'total' in ptype:
+            return (game, 'game_over')
+        if 'under' in label and 'total' in ptype:
+            return (game, 'game_under')
+        # Pitcher props — cluster with the "opposing team wins" side
+        # Pitcher HA_UNDER / ER_UNDER / K_OVER = pitcher dominating = his team ML side
+        # Pitcher HA_OVER / ER_OVER / K_UNDER / BB_OVER = pitcher struggling = opposing side
+        if ptype.startswith('prop_'):
+            prop_type = ptype.replace('prop_', '')
+            if prop_type in ('ha_under', 'er_under', 'ks_over', 'outs_over', 'bb_under'):
+                # Pitcher dominates → his team side
+                return (game, f'pitcher_dominant_{pick.get("player","?")}')
+            if prop_type in ('ha_over', 'er_over', 'ks_under', 'outs_under', 'bb_over'):
+                # Pitcher struggles → opposing team side
+                return (game, f'pitcher_struggles_{pick.get("player","?")}')
+            if prop_type == 'hits_over':
+                # Batter hits — cluster with team offense
+                return (game, 'batter_hits_stack')
+        return None
+
     def _play_signature(pick):
         """Normalize a pick to its bet-level identity. Same game + same
         bet (ML/RL/total/prop) collapses to one signature, regardless
@@ -1013,6 +1069,20 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             game_pick_count[gkey] = game_pick_count.get(gkey, 0) + 1
         pick["rank"] = len(picks) + 1
         pick["result"] = "Pending"
+        # ── Cluster correlation tag (2026-07-21) ──
+        # Assign cluster_id so the UI can render "correlated w/ #X" warnings
+        # when 2+ picks share directional exposure. Downstream card renderer
+        # can prune, warn, or display alongside — up to the app.
+        csig = _cluster_signature(pick)
+        if csig is not None:
+            if csig not in cluster_by_signature:
+                cluster_by_signature[csig] = next_cluster_id[0]
+                next_cluster_id[0] += 1
+            pick["_correlation_cluster_id"] = cluster_by_signature[csig]
+            # Count how many earlier picks share this cluster
+            cluster_size = sum(1 for p in picks if p.get("_correlation_cluster_id") == cluster_by_signature[csig])
+            if cluster_size >= 1:
+                pick["_correlation_note"] = f"cluster #{cluster_by_signature[csig]} · {cluster_size + 1} correlated legs"
         picks.append(pick)
         return True
 

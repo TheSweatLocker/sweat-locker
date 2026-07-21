@@ -329,6 +329,43 @@ def get_features(g):
         if cp < op - 0.25: out.add("line_moved_to_home")
         elif cp > op + 0.25: out.add("line_moved_to_away")
 
+    # ── Reverse Line Move (RLM) — sharp $ disagreement (2026-07-21) ──
+    # Per cohort_discovery agent: industry's #1 signal, and we detect line
+    # movement but never join it to model direction. Fires when line moved
+    # loudly AGAINST the model's implied side, meaning sharps are betting
+    # the opposite of what our models are seeing. That's real information —
+    # the market is telling us we're wrong.
+    #
+    # Model direction proxy: v3 spread (projected_spread) or v4 spread
+    # (model_pred_spread). Negative = HOME favored by our models.
+    model_spread = _f(g.get("model_pred_spread")) or _f(g.get("projected_spread"))
+    if op is not None and cp is not None and model_spread is not None and abs(cp - op) >= 0.5:
+        # Line moving TO home = market getting sharper on home
+        # Line moving TO away = market getting sharper on away
+        market_direction = "home" if cp < op else "away"
+        model_direction = "home" if model_spread < 0 else "away"
+        if market_direction != model_direction and abs(cp - op) >= 0.5:
+            out.add("line_move_sharp_disagreement")
+            # Which way sharps moved
+            out.add(f"line_moved_sharp_to_{market_direction}")
+            # Bigger move = louder RLM
+            if abs(cp - op) >= 1.0:
+                out.add("line_move_sharp_disagreement_loud")
+        elif market_direction == model_direction:
+            # Line moved WITH model — market confirming our read
+            out.add("line_move_confirms_model")
+
+    # Total line RLM (2026-07-21) — same pattern for totals
+    op_total = _f(g.get("open_total"))
+    cp_total = _f(g.get("close_total"))
+    model_total = _f(g.get("model_pred_total")) or _f(g.get("projected_total"))
+    if op_total is not None and cp_total is not None and model_total is not None and abs(cp_total - op_total) >= 0.5:
+        market_dir_tot = "over" if cp_total > op_total else "under"
+        model_dir_tot = "over" if model_total > (cp_total or op_total) else "under"
+        if market_dir_tot != model_dir_tot and abs(cp_total - op_total) >= 0.5:
+            out.add("total_line_move_sharp_disagreement")
+            out.add(f"total_line_moved_sharp_to_{market_dir_tot}")
+
     # ── Travel / consecutive-road exhaustion ──
     crg = _i(g.get("away_consecutive_road_games"))
     if crg is not None:

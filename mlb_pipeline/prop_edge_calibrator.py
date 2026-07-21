@@ -37,6 +37,25 @@ KEEP_THRESHOLD = 60.0       # bucket hit rate >= this → KEEP tier as published
 KILL_THRESHOLD = 45.0       # bucket hit rate < this → downgrade to SKIP
 
 
+def _conviction_band(conv):
+    """Bucket a raw conviction score into named bands.
+
+    2026-07-21 addition per project_ha_under_conviction_band_720:
+    HA_UNDER 85+ hits 66.7%, 75-84 hits 45.8% — same PRIME badge, opposite EV.
+    Same pattern likely holds across prop types; sub-band tracking exposes it.
+    """
+    if conv is None:
+        return None
+    try:
+        c = float(conv)
+    except (TypeError, ValueError):
+        return None
+    if c >= 85: return '85+'
+    if c >= 75: return '75-84'
+    if c >= 65: return '65-74'
+    return '<65'
+
+
 def _today_et():
     return (datetime.now(timezone.utc) - timedelta(hours=4)).date()
 
@@ -50,7 +69,7 @@ def fetch_graded_props(start_date, end_date):
             f"?game_date=gte.{start_date}&game_date=lte.{end_date}"
             f"&tier=in.(PRIME,STRONG)"
             f"&book_line=not.is.null&result=not.is.null"
-            f"&select=game_date,tier,prop_type,direction,result"
+            f"&select=game_date,tier,prop_type,direction,result,conviction"
             f"&limit={page}&offset={off}",
             headers=H_READ, timeout=30,
         )
@@ -65,15 +84,28 @@ def fetch_graded_props(start_date, end_date):
 
 
 def bucket_by_direction(rows):
-    """Return dict[(tier, prop_type, direction)] -> [wins, losses]."""
+    """Return dict[(tier, prop_type, direction, conviction_band)] -> [wins, losses].
+
+    2026-07-21 upgrade: keyed on conviction_band in addition to tier.
+    Also writes 'ALL' band rows for backward compat.
+    """
     buckets = defaultdict(lambda: [0, 0])
     for p in rows:
-        k = (p["tier"], p["prop_type"], p["direction"])
         r = p.get("result") or ""
-        if "Win" in r:
-            buckets[k][0] += 1
-        elif "Loss" in r:
-            buckets[k][1] += 1
+        won = "Win" in r
+        lost = "Loss" in r
+        if not (won or lost):
+            continue
+        # Sub-band bucket
+        band = _conviction_band(p.get("conviction"))
+        if band:
+            k = (p["tier"], p["prop_type"], p["direction"], band)
+            if won: buckets[k][0] += 1
+            else:   buckets[k][1] += 1
+        # Aggregate 'ALL' bucket (backward compat)
+        k_all = (p["tier"], p["prop_type"], p["direction"], 'ALL')
+        if won: buckets[k_all][0] += 1
+        else:   buckets[k_all][1] += 1
     return buckets
 
 
@@ -90,13 +122,14 @@ def categorize(hit_rate, sample_size):
 
 def build_calibration(buckets, computed_at, window_days):
     rows = []
-    for (tier, prop_type, direction), (w, l) in buckets.items():
+    for (tier, prop_type, direction, band), (w, l) in buckets.items():
         n = w + l
         pct = 100.0 * w / n if n else 0.0
         rows.append({
             "tier": tier,
             "prop_type": prop_type,
             "direction": direction,
+            "conviction_band": band,
             "hit_rate": round(pct, 1),
             "sample_size": n,
             "category": categorize(pct, n),
@@ -124,18 +157,18 @@ def print_summary(rows):
     kept = [r for r in rows if r["category"] == "KEEP"]
     killed = [r for r in rows if r["category"] == "KILL"]
     neutral = [r for r in rows if r["category"] == "NEUTRAL"]
+    def _fmt(r):
+        return (f"    {r['tier']:>6} {r['prop_type']:>10} {r['direction']:>5} "
+                f"[{r.get('conviction_band', 'ALL'):>5}]: {r['hit_rate']}% (n={r['sample_size']})")
     print(f"\n  KEEP ({len(kept)}):")
     for r in sorted(kept, key=lambda x: -x["hit_rate"]):
-        print(f"    {r['tier']:>6} {r['prop_type']:>10} {r['direction']:>5}: "
-              f"{r['hit_rate']}% (n={r['sample_size']})")
+        print(_fmt(r))
     print(f"\n  KILL ({len(killed)}):")
     for r in sorted(killed, key=lambda x: x["hit_rate"]):
-        print(f"    {r['tier']:>6} {r['prop_type']:>10} {r['direction']:>5}: "
-              f"{r['hit_rate']}% (n={r['sample_size']})")
+        print(_fmt(r))
     print(f"\n  NEUTRAL ({len(neutral)}):")
-    for r in sorted(neutral, key=lambda x: -x["sample_size"]):
-        print(f"    {r['tier']:>6} {r['prop_type']:>10} {r['direction']:>5}: "
-              f"{r['hit_rate']}% (n={r['sample_size']})")
+    for r in sorted(neutral, key=lambda x: -x["sample_size"])[:20]:
+        print(_fmt(r))
 
 
 def run(window_days, dry_run):
