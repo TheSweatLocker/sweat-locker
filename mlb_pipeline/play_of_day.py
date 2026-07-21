@@ -2918,6 +2918,18 @@ def run():
     # Score all candidates
     candidates = []
 
+    # 2026-07-21 MONTE CARLO ENRICHMENT — populate per-game probability bundle
+    # BEFORE scoring so downstream (Jerry reads, POTD ranking, UI) can consume
+    # real probabilities instead of point-estimate gaps. Runs enrich_monte_carlo
+    # inline to avoid a separate cron step + keep the pipeline single-pass.
+    try:
+        import enrich_monte_carlo
+        today = get_today_et()
+        print(f"  Enriching Monte Carlo probabilities for {today}...")
+        enrich_monte_carlo.run(target_date=today, dry_run=False)
+    except Exception as e:
+        print(f"  ⚠ MC enrichment failed (non-fatal): {e}")
+
     for ctx in mlb_games:
         gid = ctx.get('game_id')
         # Track contributions/evidence for the WHY THIS SCORE UI block

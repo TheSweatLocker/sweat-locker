@@ -2469,6 +2469,36 @@ def score_batter_hits(g, batter, side, lineup_position=None):
         conviction -= 6
         signals['opp_form_hot'] = f'Opp L3 ERA {opp_l3:.2f} — locked in'
 
+    # 2026-07-21 BvP (Batter-vs-Pitcher) career splits — per-batter level.
+    # Team-level opp_vs_team_baa gives an aggregate view; BvP surfaces the
+    # specific matchup edge (e.g. Freeman .386 / 1.128 OPS on 57 AB vs
+    # Wheeler = BATTER_MASTERY). Requires >= 6 lifetime ABs to trust.
+    # Data from MLB Stats API vsPlayer endpoint (public, no auth).
+    try:
+        from batter_vs_pitcher import get_bvp_line, classify_bvp
+        batter_id = _lookup_player_id(batter)
+        opp_pitcher_id = _lookup_player_id(opp_pitcher)
+        if batter_id and opp_pitcher_id:
+            bvp = get_bvp_line(batter_id, opp_pitcher_id)
+            if bvp:
+                cls = classify_bvp(bvp)
+                ab_str = f"{bvp['ab']} AB"
+                if cls == 'BATTER_MASTERY':
+                    conviction += 8
+                    signals['bvp_mastery'] = (
+                        f"BvP: {bvp['avg']:.3f}/{bvp['ops']:.3f} OPS on {ab_str} — batter owns pitcher"
+                    )
+                elif cls == 'BATTER_TROUBLE':
+                    conviction -= 8
+                    signals['bvp_trouble'] = (
+                        f"BvP: {bvp['avg']:.3f}/{bvp['ops']:.3f} OPS on {ab_str} — pitcher owns batter"
+                    )
+                # NEUTRAL — no conviction adjustment, but log for transparency
+                elif cls == 'NEUTRAL' and bvp['ab'] >= 8:
+                    signals['bvp_neutral'] = f"BvP: {bvp['avg']:.3f}/{bvp['ops']:.3f} on {ab_str}"
+    except Exception:
+        pass  # fail silently — BvP is a lift, not a required signal
+
     # Opp pitcher's career BAA vs this team — mastery dimension specific to
     # hits props (added 2026-05-24 per project_mastery_split_by_prop_type).
     # When opp pitcher has historically held this lineup to low BAA, hits
