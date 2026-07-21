@@ -3882,6 +3882,7 @@ def run():
                 v4_total=pick.get('model_pred_total'),
                 jerry_total=pick.get('jerry_pred_total'),
                 panel_implied_total=_panel_implied(pick),
+                ctx=pick.get('_ctx') or pick,
             )
             if verdict.tier == 'SKIP':
                 print(f"⚠️  TIER GATE REJECT: {pick['away_team']} @ {pick['home_team']} — {verdict.reason}")
@@ -3957,15 +3958,19 @@ def run():
                 except (TypeError, ValueError):
                     return None
 
-            # Composite spread (avg of v3+v4+jerry, positive = home wins)
+            # Composite spread — 2026-07-21 upgraded to reweighted composite.
+            # 60d audit found: v4 spread alone = 58.4% (best individual lens),
+            # jerry pulls sides DOWN, Panel margin adds real edge.
+            # Panel-free: 0.5 v3 / 0.3 v4 / 0.2 jerry = 60.4% (n=462)
+            # With Panel: 0.1 v3 / 0.5 v4 / 0.0 jerry / 0.4 panel = 62.0% (n=187)
+            # See project_model_reweight_721 for full backtest.
             def _comp_spread(c):
-                vals = []
-                for k in ('projected_spread', 'model_pred_spread', 'jerry_pred_spread'):
-                    v = c.get(k)
-                    if v is not None:
-                        try: vals.append(float(v))
-                        except (TypeError, ValueError): pass
-                return sum(vals) / len(vals) if vals else None
+                return _tdg.weighted_composite_spread(
+                    v3_spread=c.get('projected_spread'),
+                    v4_spread=c.get('model_pred_spread'),
+                    jerry_spread=c.get('jerry_pred_spread'),
+                    panel_margin=_panel_margin(c),
+                )
 
             # Get resolver tier+direction from candidate's stamped resolver_side
             resolver_tier = pick.get('_resolver_tier') or pick.get('resolver_side', {}).get('tier')

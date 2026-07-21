@@ -70,6 +70,78 @@ def _models_direction(proj_total, v4_total, jerry_total, line):
     return overs, unders
 
 
+def weighted_composite_total(v3, v4, jerry_deb, ctx):
+    """Condition-aware weighted composite for total.
+
+    Ships 2026-07-21 replacing flat equal-weight v3+jerry. Weights derived
+    from 60d retro backtest (n=753) across 4 game buckets:
+      - Ace matchup (both SPs xERA<=3.5): 72% hit (n=26) with jerry-heavy 0.4/0/0.6
+      - Pitcher park (PRF<=96) or dome: 60.2% with 0.4/0/0.6
+      - Hitter park (PRF>=105): 60.5% with 0.5/0.1/0.4
+      - Default: 58.6% with 0.5/0.2/0.3 (sample-robust across n=297)
+
+    Beats current Composite NEW (equal-weight v3+jerry-deb 57.9%) by up to
+    +14 percentage points in the ace-matchup bucket. See
+    project_model_reweight_721 memory for full backtest receipts.
+
+    Returns (composite_total, weights_used_tuple).
+    """
+    ctx = ctx or {}
+    prf = ctx.get('park_run_factor') or 100
+    home_xera = ctx.get('home_sp_xera')
+    away_xera = ctx.get('away_sp_xera')
+    is_ace = (home_xera is not None and float(home_xera) <= 3.5 and
+              away_xera is not None and float(away_xera) <= 3.5)
+    is_dome = bool(ctx.get('is_dome') or ctx.get('dome_game') or ctx.get('dome_game_flag'))
+
+    if is_ace:
+        w = (0.4, 0.0, 0.6)   # ace-matchup jerry-heavy (72% n=26)
+    elif prf <= 96 or is_dome:
+        w = (0.4, 0.0, 0.6)   # pitcher-friendly jerry-heavy (60.2% n=133)
+    elif prf >= 105:
+        w = (0.5, 0.1, 0.4)   # hitter park (60.5% n=43)
+    else:
+        w = (0.5, 0.2, 0.3)   # sample-robust default (58.6% n=297)
+
+    parts = [(w[0], v3), (w[1], v4), (w[2], jerry_deb)]
+    used = [(wi, x) for wi, x in parts if x is not None and wi > 0]
+    if not used:
+        return None, w
+    norm = sum(wi for wi, _ in used)
+    return sum(wi * float(x) for wi, x in used) / norm, w
+
+
+def weighted_composite_spread(v3_spread, v4_spread, jerry_spread, panel_margin=None):
+    """Reweighted composite spread for ML/side decisions.
+
+    Ships 2026-07-21 from 60d reweight audit (n=753). Key findings:
+      - v4 spread alone is 58.4% on ATS — BEST individual sides lens
+      - jerry PULLS sides down (all top-3 combos have jerry=0.0-0.2)
+      - Panel margin adds real edge when non-null
+      - Best combos:
+          * Panel-free: v3=0.5, v4=0.3, jerry=0.2 → 60.4% (n=462)
+          * With panel: v3=0.1, v4=0.5, jerry=0.0, panel=0.4 → 62.0% (n=187)
+
+    Returns weighted spread where + = HOME advantage.
+    Falls back to whichever lenses are non-null.
+    """
+    if panel_margin is not None:
+        # Panel-included variant — 62.0% on n=187
+        w_v3, w_v4, w_jerry, w_panel = 0.1, 0.5, 0.0, 0.4
+        parts = [(w_v3, v3_spread), (w_v4, v4_spread),
+                 (w_jerry, jerry_spread), (w_panel, panel_margin)]
+    else:
+        # Panel-free default — 60.4% on n=462 (full slate coverage)
+        w_v3, w_v4, w_jerry = 0.5, 0.3, 0.2
+        parts = [(w_v3, v3_spread), (w_v4, v4_spread), (w_jerry, jerry_spread)]
+
+    used = [(wi, x) for wi, x in parts if x is not None and wi > 0]
+    if not used:
+        return None
+    norm = sum(wi for wi, _ in used)
+    return sum(wi * float(x) for wi, x in used) / norm
+
+
 def evaluate_total(
     *,
     line: float,
@@ -77,6 +149,7 @@ def evaluate_total(
     v4_total: Optional[float],
     jerry_total: Optional[float],
     panel_implied_total: Optional[float] = None,
+    ctx: Optional[dict] = None,
 ) -> TierVerdict:
     """Apply tier-discipline rules to decide whether a total pick publishes.
 
@@ -133,9 +206,17 @@ def evaluate_total(
     overs, unders = _models_direction(proj_total, v4, jerry, line)
     has_v4_jerry = (v4 is not None) and (jerry is not None)
 
-    # Composite (for gap magnitude) drops v4 — only v3 + debiased jerry
-    composite_inputs = [x for x in (proj_total, jerry) if x is not None]
-    composite_avg = sum(composite_inputs) / max(1, len(composite_inputs))
+    # 2026-07-21 CONDITIONAL WEIGHTED COMPOSITE (60d reweight audit)
+    # Bucket-specific optimum weights: ace matchup 72% n=26, pitcher park 60.2%,
+    # hitter park 60.5%, default 58.6%. Beats flat v3+jerry-deb Composite (57.9%).
+    # Falls back to prior flat composite if ctx unavailable.
+    if ctx:
+        composite_avg, _weights = weighted_composite_total(proj_total, v4, jerry, ctx)
+        if composite_avg is None:
+            composite_avg = proj_total
+    else:
+        composite_inputs = [x for x in (proj_total, jerry) if x is not None]
+        composite_avg = sum(composite_inputs) / max(1, len(composite_inputs))
     gap = composite_avg - line
 
     # Hard SKIPs first
