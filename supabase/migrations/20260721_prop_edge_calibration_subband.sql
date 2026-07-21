@@ -43,10 +43,13 @@ ALTER TABLE public.prop_edge_calibration
   ADD CONSTRAINT prop_edge_calibration_bucket_key
   UNIQUE (tier, prop_type, direction, conviction_band, window_days, computed_at);
 
--- Index for lookup by (prop_type, tier, conviction_band) — most common query
+-- Index for lookup by (prop_type, tier, conviction_band, computed_at) — most
+-- common query pattern (downstream fetches the latest computed_at row per
+-- bucket). Postgres won't allow a subquery in an index predicate, so this
+-- is a regular composite index. Sort desc on computed_at so ORDER BY DESC
+-- LIMIT 1 lookups walk the index in scan order.
 CREATE INDEX IF NOT EXISTS idx_prop_edge_calibration_lookup
-  ON public.prop_edge_calibration (prop_type, tier, conviction_band)
-  WHERE computed_at = (SELECT MAX(computed_at) FROM prop_edge_calibration);
+  ON public.prop_edge_calibration (prop_type, tier, conviction_band, computed_at DESC);
 
 -- Verify
 SELECT
