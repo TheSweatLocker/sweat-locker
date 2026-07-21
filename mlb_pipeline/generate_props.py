@@ -756,6 +756,65 @@ def score_pitcher_bb_under(g, side):
     return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
 
 
+def _blended_projected_hits(l7, g, side):
+    """Blended hits projection — replaces raw L7 mean.
+
+    2026-07-21 fix: previous formula was `proj_h = l7['avg_hits']` (raw mean of
+    last 7 dated starts). This ignored regression to season mean, opp quality,
+    and park factor. Result: 5-for-5 HA UNDER losses on 7/19-7/20 (Yesavage/
+    Griffin/Holmes/Bibee all "hot streak" pitchers whose L7 mean got baked in
+    as truth, then Regression 101 destroyed the picks). See
+    [[project_hits_allowed_calibration_719]] for the audit chain.
+
+    New formula:
+      season_h  = xERA-derived BAA proxy × proj_ip × 4.3 BF/IP
+      w_l7      = 0.30..0.55 based on L7 sample size AND divergence from season
+      proj      = w_l7 * l7_h + (1 - w_l7) * season_h
+      proj    *= (1 + (opp_wrc - 100) * 0.004)     # opp lineup multiplier
+      proj    *= (1 + (park - 100) * 0.005)         # park factor multiplier
+    """
+    l7_h = l7.get('avg_hits')
+    if l7_h is None:
+        return None
+    n = l7.get('n_starts') or 0
+    proj_ip = l7.get('avg_ip') or 5.5
+
+    # Season-anchored baseline. Prefer BAA if available; fall back to xERA proxy
+    # (BAA ≈ 0.045 * xERA + 0.055 fits across a season with r²≈0.62).
+    xera = _f(g.get(f'{side}_sp_xera'))
+    if xera is not None and 2.0 <= xera <= 8.0:
+        season_baa = 0.045 * float(xera) + 0.055
+        season_h = season_baa * proj_ip * 4.3
+    else:
+        # league starter baseline — 8.5 H/9
+        season_h = proj_ip * 8.5 / 9.0
+
+    # Shrinkage: heavier season weight when L7 sample thin OR L7 diverges hard
+    # from season baseline (regression-risk gate).
+    divergence = abs(l7_h - season_h)
+    if n < 4:
+        w_l7 = 0.30
+    elif divergence >= 2.0:
+        w_l7 = 0.35  # hot/cold streak — trust season more
+    elif n >= 6:
+        w_l7 = 0.55
+    else:
+        w_l7 = 0.45
+
+    proj = w_l7 * l7_h + (1 - w_l7) * season_h
+
+    # Opp lineup multiplier (~10 wRC+ pts ≈ 4% H swing)
+    opp_side = 'away' if side == 'home' else 'home'
+    opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
+    proj *= 1.0 + (opp_wrc - 100) * 0.004
+
+    # Park multiplier (~50% of park_run swing is hits)
+    park = _f(g.get('park_run_factor')) or 100
+    proj *= 1.0 + (park - 100) * 0.005
+
+    return round(proj, 1)
+
+
 def score_pitcher_ha_over(g, side):
     """Score a starter's Hits Allowed OVER prop. Markets typically post O/U
     5.5 (sometimes 4.5 / 6.5). Projects from L7 rolling avg_hits, adjusts for
@@ -771,9 +830,11 @@ def score_pitcher_ha_over(g, side):
     l7 = (proj or {}).get('l7_rolling') if proj else None
     if not l7 or l7.get('avg_hits') is None:
         return None
-    proj_h = l7['avg_hits']
     if l7.get('avg_ip', 0) < 4.0:
         return None  # short profile — hits-over unreliable
+    proj_h = _blended_projected_hits(l7, g, side)
+    if proj_h is None:
+        return None
 
     opp_side = 'away' if side == 'home' else 'home'
     opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
@@ -862,9 +923,11 @@ def score_pitcher_ha_under(g, side):
     l7 = (proj or {}).get('l7_rolling') if proj else None
     if not l7 or l7.get('avg_hits') is None:
         return None
-    proj_h = l7['avg_hits']
     if l7.get('avg_ip', 0) < 4.5:
         return None  # need real innings load for hits-under
+    proj_h = _blended_projected_hits(l7, g, side)
+    if proj_h is None:
+        return None
 
     opp_side = 'away' if side == 'home' else 'home'
     opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100

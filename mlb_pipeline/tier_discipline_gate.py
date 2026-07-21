@@ -80,11 +80,20 @@ def evaluate_total(
 ) -> TierVerdict:
     """Apply tier-discipline rules to decide whether a total pick publishes.
 
-    2026-06-24 — added Panel-implied total as a 4th vote (optional).
-    Backtest on 291 games showed Panel beats Composite 54-46 when they
-    DISAGREE. Panel ELITE-tier (gap >=3) hits 70%. Panel acts as a
-    tie-breaker when v3/v4/jerry split, and required for 4-WAY ELITE tier.
+    2026-07-21 PANEL REMOVED FROM TOTALS.
+    30d audit (n=254): Panel totals 51.2% overall, 43.2% when loud (gap≥2).
+    Panel is bimodal on totals — 29.6% of games off by ≥5 runs. The 2026-06-24
+    "Panel beats Composite 54-46 on disagreement" backtest was small-sample tail
+    variance; real 30d shows Panel-loud-disagree publishes at 43-47%. Removed
+    Panel-NEU coinflip trap, Panel-disagree flip-to-LEAN, and 4-way ELITE Panel
+    boost. Panel retained on sides gate (evaluate_ml) where 30d audit confirms
+    63-64% at |margin|≥1.0 — real edge. See project_30d_lens_audit_718 +
+    project_panel_totals_drop_721.
+
+    panel_implied_total parameter kept in signature for backward compat (call
+    sites pass it) but is now IGNORED for total decisions.
     """
+    _ = panel_implied_total  # backward-compat; unused
     if line is None or proj_total is None:
         return TierVerdict('SKIP', None, 'missing anchor data (line/proj)', None, 0, None)
 
@@ -92,7 +101,6 @@ def evaluate_total(
     proj_total = float(proj_total)
     v4 = float(v4_total) if v4_total is not None else None
     jerry_raw = float(jerry_total) if jerry_total is not None else None
-    panel = float(panel_implied_total) if panel_implied_total is not None else None
 
     # 2026-07-18 JERRY DEBIAS + v4 REMOVAL FROM COMPOSITE
     # ================================================================
@@ -130,61 +138,18 @@ def evaluate_total(
     composite_avg = sum(composite_inputs) / max(1, len(composite_inputs))
     gap = composite_avg - line
 
-    # Panel direction relative to line (2026-06-24)
-    panel_dir = None
-    if panel is not None:
-        if panel > line + 0.3:
-            panel_dir = 'OVER'
-        elif panel < line - 0.3:
-            panel_dir = 'UNDER'
-        else:
-            panel_dir = 'NEU'
-
     # Hard SKIPs first
     if abs(gap) < 0.5:
         return TierVerdict('SKIP', None, f'composite gap |{gap:+.2f}| < 0.5 — no signal', gap, max(overs, unders), None)
 
-    # ===== Panel-aware counter-signal rejection (2026-06-24) =====
-    # Backtest: when Panel ML margin <0.5 runs, Panel ML is wrong 60% of
-    # the time. For totals, a Panel-neutral signal contradicting a loud
-    # composite is a coinflip trap. If composite says OVER/UNDER but Panel
-    # says NEU (basically at line), downgrade the conviction.
-    if panel is not None and panel_dir == 'NEU' and abs(gap) >= 1.5:
-        return TierVerdict('SKIP', None,
-            f'composite says {abs(gap):.1f}-run gap but Panel implied {panel:.1f} is at line — coinflip trap',
-            gap, max(overs, unders), None)
-
-    # Panel-disagrees flip: if Panel direction is OPPOSITE composite direction,
-    # historical edge favors Panel 54-46. Instead of throwing the pick away
-    # (POTD noPlay for 6+ days 7/6-7/11 was caused by this), publish Panel's
-    # direction as LEAN when Panel gap is loud enough. 2026-07-12 patch.
-    if panel_dir and panel_dir != 'NEU':
-        composite_dir = 'OVER' if gap > 0 else 'UNDER'
-        if panel_dir != composite_dir:
-            panel_gap = (panel or 0) - line
-            # Threshold set to 1.0 (was 1.5) on 2026-07-12 — 7/11 audit showed
-            # Panel-agree UNDER calls with gaps 1.0-1.5 (CHC/CIN, PHI/DET) all
-            # hit UNDER. Panel edge is 54% on disagreements, so 1.0-run gap
-            # is enough of a signal.
-            if abs(panel_gap) >= 1.0:
-                return TierVerdict('LEAN', panel_dir,
-                    f'composite {composite_dir} but Panel {panel_dir} loud ({panel_gap:+.1f}) — publish Panel (54% edge)',
-                    panel_gap, 0, 0.54)
-            return TierVerdict('SKIP', None,
-                f'composite {composite_dir} vs Panel {panel_dir} but Panel gap {panel_gap:+.1f} thin — skip',
-                gap, max(overs, unders), None)
+    # 2026-07-21 Panel-aware total logic REMOVED — see audit note in docstring.
+    # The Panel-NEU coinflip trap, Panel-disagree LEAN flip, and 4-way ELITE
+    # boost blocks all deleted. Panel signal on totals is 43-47% when loud.
 
     # ===== UNDER side =====
     if gap < 0:
-        # ELITE-4WAY UNDER: all 3 composite UNDER + Panel UNDER + gap <= -3
-        # Highest conviction tier (4-way unanimity at elite magnitude).
-        # Historical Panel ELITE-UNDER hits 71% (n=7) — small sample but
-        # combined with all-3 composite agreement, this is the loudest signal.
-        if (proj_total - line <= -3.0 and unders >= 3 and
-            panel_dir == 'UNDER'):
-            return TierVerdict('ELITE', 'UNDER',
-                f'4-way ELITE UNDER: all-3 + Panel agree, proj gap {proj_total - line:.2f}',
-                gap, unders, 0.71)
+        # 2026-07-21 4-WAY ELITE UNDER (Panel boost) REMOVED — Panel unreliable
+        # on totals per audit; ELITE UNDER now purely proj-vs-line gap based.
 
         # ELITE UNDER: any setup with proj-vs-line gap <= -3.0
         if proj_total - line <= -3.0:
@@ -216,13 +181,8 @@ def evaluate_total(
 
     # ===== OVER side =====
     if gap > 0:
-        # ELITE-4WAY OVER: all-3 composite OVER + Panel OVER + gap >= 2
-        # Highest conviction OVER tier. Panel ELITE-tier hit 70% in
-        # backtest; combined with all-3 unanimity this is the loudest OVER.
-        if gap >= 2.0 and overs >= 3 and panel_dir == 'OVER':
-            return TierVerdict('ELITE', 'OVER',
-                f'4-way ELITE OVER: all-3 + Panel agree, composite gap {gap:.2f}',
-                gap, overs, 0.75)
+        # 2026-07-21 4-WAY ELITE OVER (Panel boost) REMOVED — Panel unreliable
+        # on totals per audit; ELITE OVER now purely proj-vs-line gap based.
 
         # PRIME OVER: gap 2.0-3.0 + all-3 (71% hist)
         if 2.0 <= gap < 3.0 and overs >= 3:
