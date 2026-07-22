@@ -471,6 +471,18 @@ jobs:
           cd mlb_pipeline
           python resolve_externals.py --sport MLB --days 7 || echo "external resolver failed (non-fatal)"
 
+      # Refresh per-source rolling calibration (7d/30d/lifetime hit rates
+      # per source × surface × fade_flag). Feeds dynamic fade tag refresh
+      # + consensus_fade_alert detector + app-side track record display.
+      - name: Refresh external source calibration
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_external_source_calibration.py --sport MLB || echo "external calibration audit failed (non-fatal)"
+
       # Re-walk the sweat card after POTD is graded (2026-05-26 fix).
       # The card walk inside resolve_game_results.py reads
       # daily_best_bet_history for the POTD row's result — but the FIRST
