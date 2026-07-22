@@ -2017,7 +2017,22 @@ def compute_primary_play(ctx):
     # 2026-05-20 — prior v3-only logic would mis-fire when v4 disagreed.
     v4_spread = ctx.get('model_pred_spread')
     v3_spread = ctx.get('projected_spread')
-    proj_spread = v4_spread if v4_spread is not None else v3_spread
+    jerry_spread = ctx.get('jerry_pred_spread')
+    # Prefer the WEIGHTED composite over raw v4 (7/22 audit fix).
+    # Old behavior: proj_spread = v4 fallback v3. Problem: when v4 disagrees
+    # with jerry+v3+confluence (which was ~75% of the 7/21 slate) delta
+    # collapses below the 2.0 PRIME/STRONG gate and NO primary play fires.
+    # New: blend via tier_discipline_gate.weighted_composite_spread (same
+    # audit-backed formula the resolver uses). Falls back to v4→v3 if the
+    # import isn't available (defensive, keeps offline scripts working).
+    try:
+        from tier_discipline_gate import weighted_composite_spread
+        composite = weighted_composite_spread(
+            v3_spread, v4_spread, jerry_spread, panel_margin=None,
+        )
+        proj_spread = composite if composite is not None else (v4_spread if v4_spread is not None else v3_spread)
+    except Exception:
+        proj_spread = v4_spread if v4_spread is not None else v3_spread
     # Fall back to open_spread when close_spread isn't set yet. Lines barely
     # move during a normal day; using the open line as the comparison anchor
     # is far better than skipping primary-play computation entirely (the prior
