@@ -12306,6 +12306,15 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     </View>
                   );
                 })()}
+                {/* External Picks Panel — 2026-07-22 promoted from bottom
+                    of modal to right after the Sweat Score card. Tier 2
+                    of the external-transparency differentiator: users see
+                    the alert chip up top, then scroll one more section to
+                    see all books/handicappers' picks with per-source
+                    track records + fade tags. */}
+                {gamesSport==='MLB' && selectedGame?.id && (
+                  <ExternalPicksPanel gameId={selectedGame.id} />
+                )}
                 {gamesSport === 'MLB' && (
   <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
     <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,marginBottom:4}}>⚾ MLB DATA NOTE</Text>
@@ -12607,9 +12616,6 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                     </View>
                   );
                 })}
-                {gamesSport==='MLB' && selectedGame?.id && (
-                  <ExternalPicksPanel gameId={selectedGame.id} />
-                )}
                 {parlayLegs.length>0&&(
                   <TouchableOpacity style={[styles.btnPrimary,{marginTop:8}]} onPress={()=>{setGameDetailModal(false);setActiveTab('parlay');}}>
                     <Text style={styles.btnPrimaryText}>View Parlay ({parlayLegs.length} legs) 🎰</Text>

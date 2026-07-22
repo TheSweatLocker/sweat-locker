@@ -45,6 +45,15 @@ type ExternalPick = {
   fade_flag: string | null;
 };
 
+type SourceCalibration = {
+  source: string;
+  surface: string;
+  hit_pct: number | null;
+  sample_n: number;
+  wins: number;
+  losses: number;
+};
+
 const SOURCE_LABEL: Record<string, string> = {
   action: 'Action Network',
   dimers: 'Dimers',
@@ -87,6 +96,7 @@ type Props = { gameId: string };
 
 export const ExternalPicksPanel: React.FC<Props> = ({ gameId }) => {
   const [picks, setPicks] = useState<ExternalPick[] | null>(null);
+  const [calMap, setCalMap] = useState<Record<string, SourceCalibration>>({});
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
@@ -97,7 +107,27 @@ export const ExternalPicksPanel: React.FC<Props> = ({ gameId }) => {
         .select('*')
         .eq('game_id', gameId)
         .order('fetched_at', { ascending: false });
-      if (!cancelled) setPicks(data || []);
+      if (cancelled) return;
+      setPicks(data || []);
+
+      // Also fetch 30d rolling calibration for each source × surface
+      // present in this game's picks. Keyed by `${source}::${surface}`
+      // so a single lookup surfaces the right hit rate.
+      if (data && data.length) {
+        const { data: cal } = await supabase
+          .from('external_source_calibration')
+          .select('source,surface,hit_pct,sample_n,wins,losses,computed_date')
+          .eq('window_label', '30d')
+          .order('computed_date', { ascending: false })
+          .limit(200);
+        if (cancelled) return;
+        const map: Record<string, SourceCalibration> = {};
+        (cal || []).forEach((row: any) => {
+          const key = `${row.source}::${row.surface}`;
+          if (!map[key]) map[key] = row;   // latest computed_date wins
+        });
+        setCalMap(map);
+      }
     })();
     return () => { cancelled = true; };
   }, [gameId]);
@@ -152,7 +182,14 @@ export const ExternalPicksPanel: React.FC<Props> = ({ gameId }) => {
       </View>
 
       <View style={{ marginTop: 12 }}>
-        {shown.map((p, i) => (
+        {shown.map((p, i) => {
+          const cal = calMap[`${p.source}::${p.surface}`];
+          const hasCal = cal && cal.sample_n >= 5;
+          // Hit-rate color: green >= 55%, red < 45%, gray between
+          const calColor = hasCal
+            ? (cal!.hit_pct! >= 55 ? BOOST : cal!.hit_pct! < 45 ? FADE : NEUTRAL)
+            : NEUTRAL;
+          return (
           <View key={i} style={styles.pickRow}>
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -165,6 +202,11 @@ export const ExternalPicksPanel: React.FC<Props> = ({ gameId }) => {
                   </Text>
                 </View>
                 <Text style={styles.surfaceText}>{surfaceLabel(p.surface)}</Text>
+                {hasCal && (
+                  <Text style={[styles.calText, { color: calColor }]}>
+                    · {cal!.hit_pct!.toFixed(0)}% L30 (n={cal!.sample_n})
+                  </Text>
+                )}
               </View>
               <Text style={styles.pickText}>
                 {p.pick_side || '—'}
@@ -179,7 +221,8 @@ export const ExternalPicksPanel: React.FC<Props> = ({ gameId }) => {
               </TouchableOpacity>
             )}
           </View>
-        ))}
+          );
+        })}
       </View>
 
       {picks.length > 4 && (
@@ -242,6 +285,7 @@ const styles = StyleSheet.create({
   },
   flagText: { fontSize: 9, fontWeight: '800' },
   surfaceText: { color: TEXT_MUTED, fontSize: 10 },
+  calText: { fontSize: 10, fontWeight: '600' },
   pickText: { color: TEXT_PRIMARY, fontSize: 13, marginTop: 4 },
   linkText: { color: TRUST, fontSize: 18, paddingHorizontal: 8 },
   moreBtn: { paddingVertical: 10, alignItems: 'center' },
