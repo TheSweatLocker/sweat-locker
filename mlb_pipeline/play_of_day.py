@@ -2970,6 +2970,10 @@ def run():
             'is_nrfi': is_nrfi,
             'lean_display': lean_display,
             'lean_bet': lean_bet,
+            # Rain risk (2026-07-22) — POTD selector uses this to prefer
+            # dry games. Set at game_context write time (see get_weather_forecast).
+            'rain_risk_flag': ctx.get('rain_risk_flag'),
+            'rain_prob_at_kickoff': ctx.get('rain_prob_at_kickoff'),
             # Dimensional surface (5/30) — winning dim's tier + score + play
             # for use in value-fallback POTD selection. dim_score lets the
             # selector rank by sweat-dimensional tier when lean_display
@@ -3051,6 +3055,25 @@ def run():
 
     # Sort by score
     candidates.sort(key=lambda c: c['score'], reverse=True)
+
+    # Weather-risk POTD gate — 2026-07-22.
+    # 7/21 postponement wiped POTD Red Sox ML + STRONG YRFI BAL@BOS + SKIP
+    # prop Warren PIT@NYY (13% of slate + 3 headline picks). Filter
+    # rain-risk candidates out of the POTD pool; keep them all only if
+    # EVERY candidate is rain-risk (e.g. system-wide bad weather day).
+    # rain_risk_flag is set at game_context write time based on OpenWeather
+    # 5-day/3-hour forecast pop >= 0.4 at kickoff.
+    _mlb_candidates = [c for c in candidates if c.get('sport') == 'MLB']
+    _dry_mlb = [c for c in _mlb_candidates if not c.get('rain_risk_flag')]
+    if _dry_mlb and len(_dry_mlb) != len(_mlb_candidates):
+        _dropped = [c for c in _mlb_candidates if c.get('rain_risk_flag')]
+        for _c in _dropped:
+            _pop = _c.get('rain_prob_at_kickoff')
+            print(f"  ☔ Weather-risk POTD skip: {_c.get('away_team')} @ {_c.get('home_team')}"
+                  f" (rain_prob={_pop})")
+        candidates = _dry_mlb + [c for c in candidates if c.get('sport') != 'MLB']
+        # Re-sort in case ordering shifted
+        candidates.sort(key=lambda c: c['score'], reverse=True)
 
     # Late-slate POTD defer — sweat scores are already written above; just
     # skip the POTD lock/selection logic until the 2pm run.

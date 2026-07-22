@@ -1020,6 +1020,65 @@ def get_weather(venue, lat, lon):
     except Exception as e:
         print(f"Weather error for {venue}: {e}")
         return {"temperature": 70, "wind_speed": 5, "wind_direction": "N", "precipitation": 0, "is_dome": False}
+
+
+def get_weather_forecast(venue, lat, lon, kickoff_utc):
+    """Rain probability at game kickoff using OpenWeatherMap 5-day/3-hour forecast.
+
+    2026-07-22 — added after 7/21 postponement wiped POTD + STRONG YRFI + SKIP
+    prop in a single night (13% of slate + 3 headline picks). Play-of-day
+    should downweight games with high rain probability at kickoff.
+
+    Returns {"rain_prob_at_kickoff": float 0-1, "rain_risk_flag": bool}.
+    Dome games always return (0.0, False). Missing key or forecast → falls
+    back to (0.0, False) so pipeline never blocks on weather API issues.
+    """
+    if venue in DOME_VENUES:
+        return {"rain_prob_at_kickoff": 0.0, "rain_risk_flag": False}
+    if not kickoff_utc:
+        return {"rain_prob_at_kickoff": 0.0, "rain_risk_flag": False}
+    try:
+        kickoff_dt = kickoff_utc if isinstance(kickoff_utc, datetime) else \
+            datetime.fromisoformat(str(kickoff_utc).replace('Z', '+00:00'))
+        # Free-tier 5-day/3-hour forecast endpoint
+        r = requests.get(
+            "https://api.openweathermap.org/data/2.5/forecast",
+            params={"lat": lat, "lon": lon, "appid": WEATHER_API_KEY, "units": "imperial"},
+            timeout=8,
+        )
+        data = r.json()
+        if not data or not data.get("list"):
+            return {"rain_prob_at_kickoff": 0.0, "rain_risk_flag": False}
+        # Find the 3-hour block whose dt is closest to kickoff (each block is
+        # 3 hours wide, so max distance to nearest block is ~90 min)
+        kickoff_ts = kickoff_dt.replace(tzinfo=timezone.utc).timestamp() \
+            if kickoff_dt.tzinfo is None else kickoff_dt.timestamp()
+        best = None
+        best_gap = None
+        for block in data["list"]:
+            bdt = block.get("dt")
+            if bdt is None:
+                continue
+            gap = abs(bdt - kickoff_ts)
+            if best_gap is None or gap < best_gap:
+                best_gap = gap
+                best = block
+        if best is None:
+            return {"rain_prob_at_kickoff": 0.0, "rain_risk_flag": False}
+        # pop = 0.0-1.0 probability of precipitation for that block
+        pop = float(best.get("pop", 0.0) or 0.0)
+        return {
+            "rain_prob_at_kickoff": round(pop, 2),
+            # 40% threshold — enough to postpone-risk POTD but not so tight
+            # that every summer thunderstorm map lights up the whole slate.
+            # Calibrate against actual postponement rate after 30 days of data.
+            "rain_risk_flag": pop >= 0.4,
+        }
+    except Exception as e:
+        print(f"Weather forecast error for {venue}: {e}")
+        return {"rain_prob_at_kickoff": 0.0, "rain_risk_flag": False}
+
+
 def get_mlb_games(target_date_et=None):
     """Pull Odds API games for the target ET date. Defaults to today ET when
     not provided. Pass an ET YYYY-MM-DD string to build the window around a
@@ -2873,8 +2932,11 @@ def run(target_date=None):
             venue = TEAM_VENUE.get(home_team, "Unknown")
             coords = VENUE_COORDS.get(venue, (40.7128, -74.0060))
             
-            # Get weather
+            # Get weather (current) + kickoff forecast
             weather = get_weather(venue, coords[0], coords[1])
+            forecast = get_weather_forecast(venue, coords[0], coords[1], commence_time)
+            weather["rain_prob_at_kickoff"] = forecast["rain_prob_at_kickoff"]
+            weather["rain_risk_flag"] = forecast["rain_risk_flag"]
             
             # Get park factors
             park = get_park_factors(home_team)
@@ -4316,6 +4378,10 @@ def run(target_date=None):
                 "wind_speed": weather["wind_speed"],
                 "wind_direction": weather["wind_direction"],
                 "precipitation": weather["precipitation"],
+                # Rain risk added 2026-07-22 — 7/21 postponement wiped 3
+                # headline picks. rain_risk_flag=True → POTD/DAWG downweight.
+                "rain_prob_at_kickoff": weather.get("rain_prob_at_kickoff"),
+                "rain_risk_flag": weather.get("rain_risk_flag"),
                 "park_run_factor": park_run_factor,
                 "open_total": total_line if is_open_run else None,
                 "close_total": total_line if not is_open_run else None,
