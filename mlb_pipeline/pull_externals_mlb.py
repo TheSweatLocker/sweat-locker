@@ -502,12 +502,244 @@ def fetch_oddsshark(slate: list, game_date: str) -> tuple[list, int]:
 
 
 def fetch_pickswise(slate: list, game_date: str) -> tuple[list, int]:
-    """5-STAR picks flagged as fade per audit — override fade_flag per pick."""
-    return [], 200
+    """Pickswise MLB picks — inline listing with 1-5 star ratings.
+
+    Page layout: each pick renders as a card with matchup abbreviations
+    (e.g. "MIN vs CLE"), pick text ("Moneyline - Cleveland Guardians"),
+    odds ("-2000"), and a star row (⭐ × N). We match matchup to slate,
+    parse pick side + odds, and OVERRIDE fade_flag to 'fade' on 5-STAR
+    picks per 7/20 audit (5-star = public-heat = counterindicator).
+    """
+    from bs4 import BeautifulSoup
+    r = requests.get(
+        'https://www.pickswise.com/mlb/picks/',
+        headers={'User-Agent': 'Mozilla/5.0 (Sweat Locker aggregator)'},
+        timeout=12,
+    )
+    if r.status_code != 200:
+        return [], r.status_code
+    soup = BeautifulSoup(r.text, 'html.parser')
+    text = soup.get_text('\n', strip=True)
+
+    picks = []
+    seen_games = set()
+
+    # Anchor on the pick text itself, then match team back to the slate.
+    # Pickswise renders picks as: "Moneyline - Cleveland Guardians\n-2400\nBet Now"
+    ml_re = re.compile(
+        r'Moneyline\s*[-–]\s*([A-Z][A-Za-z. ]+?)\s*\n\s*([+-]\d{2,4})\b',
+    )
+    total_re = re.compile(
+        r'\b(Over|Under)\s+([\d.]+)\s*\n\s*([+-]\d{2,4})\b', re.I,
+    )
+    # Runline / spread pattern: "Run Line - Yankees -1.5\n+120"
+    rl_re = re.compile(
+        r'Run Line\s*[-–]\s*([A-Z][A-Za-z. ]+?)\s+([+-][\d.]+)\s*\n\s*([+-]\d{2,4})\b',
+    )
+
+    def _stars_near(pos: int) -> Optional[int]:
+        window = text[max(0, pos-400): pos+200]
+        n = window.count('⭐') + window.count('★')
+        return n if 1 <= n <= 5 else None
+
+    for m in ml_re.finditer(text):
+        team_name = m.group(1).strip()
+        odds = int(m.group(2))
+        stars = _stars_near(m.start())
+        side, gid = None, None
+        for g in slate:
+            if _team_matches(g.get('home_team'), team_name):
+                side, gid = 'HOME', g['game_id']; break
+            if _team_matches(g.get('away_team'), team_name):
+                side, gid = 'AWAY', g['game_id']; break
+        if side is None or gid in seen_games:
+            continue
+        fade = 'fade' if stars and stars >= 5 else ('boost' if stars and stars >= 4 else 'neutral')
+        picks.append(ExternalPick(
+            game_id=gid, sport='MLB', game_date=game_date, source='pickswise',
+            surface='ml', pick_side=side, odds_american=odds,
+            confidence=f'{stars}-star' if stars else None,
+            raw_text=f'Pickswise: {team_name} ML {odds}' + (f' [{stars}⭐]' if stars else ''),
+            fade_flag=fade,
+        ))
+        seen_games.add(gid)
+
+    for m in total_re.finditer(text):
+        side = m.group(1).upper()
+        line = float(m.group(2))
+        odds = int(m.group(3))
+        stars = _stars_near(m.start())
+        # Total picks need a matchup — Pickswise usually shows two full team
+        # names within ~300 chars above the total pick. Extract both.
+        pre = text[max(0, m.start()-500): m.start()]
+        team_hits = []
+        for g in slate:
+            for team_field in ('home_team', 'away_team'):
+                t = g.get(team_field)
+                if t and t.lower() in pre.lower():
+                    team_hits.append((g['game_id'], team_field, t))
+        gids_in_pre = {g for g, _, _ in team_hits}
+        if len(gids_in_pre) != 1: continue  # ambiguous — skip
+        gid = gids_in_pre.pop()
+        if gid in seen_games: continue
+        fade = 'fade' if stars and stars >= 5 else ('boost' if stars and stars >= 4 else 'neutral')
+        picks.append(ExternalPick(
+            game_id=gid, sport='MLB', game_date=game_date, source='pickswise',
+            surface='total', pick_side=side, pick_line=line, odds_american=odds,
+            confidence=f'{stars}-star' if stars else None,
+            raw_text=f'Pickswise: {side} {line} ({odds})' + (f' [{stars}⭐]' if stars else ''),
+            fade_flag=fade,
+        ))
+        seen_games.add(gid)
+
+    for m in rl_re.finditer(text):
+        team_name = m.group(1).strip()
+        rl_line = float(m.group(2))
+        odds = int(m.group(3))
+        stars = _stars_near(m.start())
+        side, gid = None, None
+        for g in slate:
+            if _team_matches(g.get('home_team'), team_name):
+                side, gid = 'HOME', g['game_id']; break
+            if _team_matches(g.get('away_team'), team_name):
+                side, gid = 'AWAY', g['game_id']; break
+        if side is None or gid in seen_games: continue
+        fade = 'fade' if stars and stars >= 5 else ('boost' if stars and stars >= 4 else 'neutral')
+        picks.append(ExternalPick(
+            game_id=gid, sport='MLB', game_date=game_date, source='pickswise',
+            surface='rl', pick_side=side, pick_line=rl_line, odds_american=odds,
+            confidence=f'{stars}-star' if stars else None,
+            raw_text=f'Pickswise: {team_name} RL {rl_line} ({odds})' + (f' [{stars}⭐]' if stars else ''),
+            fade_flag=fade,
+        ))
+        seen_games.add(gid)
+
+    return picks, 200
+
+
+# Pickswise / most sportsbook 2-3 letter code map
+_PICKSWISE_CODES = {
+    'ATH': 'Athletics', 'ARI': 'Arizona Diamondbacks', 'ATL': 'Atlanta Braves',
+    'BAL': 'Baltimore Orioles', 'BOS': 'Boston Red Sox', 'CHC': 'Chicago Cubs',
+    'CWS': 'Chicago White Sox', 'CHW': 'Chicago White Sox', 'CIN': 'Cincinnati Reds',
+    'CLE': 'Cleveland Guardians', 'COL': 'Colorado Rockies', 'DET': 'Detroit Tigers',
+    'HOU': 'Houston Astros', 'KC': 'Kansas City Royals', 'KCR': 'Kansas City Royals',
+    'LAD': 'Los Angeles Dodgers', 'LAA': 'Los Angeles Angels', 'MIA': 'Miami Marlins',
+    'MIL': 'Milwaukee Brewers', 'MIN': 'Minnesota Twins', 'NYM': 'New York Mets',
+    'NYY': 'New York Yankees', 'PHI': 'Philadelphia Phillies', 'PIT': 'Pittsburgh Pirates',
+    'SD': 'San Diego Padres', 'SDP': 'San Diego Padres', 'SF': 'San Francisco Giants',
+    'SFG': 'San Francisco Giants', 'SEA': 'Seattle Mariners', 'STL': 'St. Louis Cardinals',
+    'TB': 'Tampa Bay Rays', 'TBR': 'Tampa Bay Rays', 'TEX': 'Texas Rangers',
+    'TOR': 'Toronto Blue Jays', 'WAS': 'Washington Nationals', 'WSH': 'Washington Nationals',
+}
+
+
+def _match_pickswise_codes_to_gid(slate: list, away_code: str, home_code: str) -> Optional[str]:
+    away_full = _PICKSWISE_CODES.get(away_code, away_code)
+    home_full = _PICKSWISE_CODES.get(home_code, home_code)
+    return find_game_id(slate, home_hint=home_full, away_hint=away_full)
 
 
 def fetch_pickdawgz(slate: list, game_date: str) -> tuple[list, int]:
-    return [], 200
+    """PickDawgz free MLB picks — landing has article cards with headline
+    format "Team A vs Team B Prediction M/D/YYYY". Crawl each linked article
+    for the actual pick + odds. Mirrors Doc Sports pattern.
+    """
+    from bs4 import BeautifulSoup
+    landing = requests.get(
+        'https://www.pickdawgz.com/mlb-picks',
+        headers={'User-Agent': 'Mozilla/5.0 (Sweat Locker aggregator)'},
+        timeout=12,
+    )
+    if landing.status_code != 200:
+        return [], landing.status_code
+    soup = BeautifulSoup(landing.text, 'html.parser')
+
+    # Match today's date in landing headlines (e.g. "7/21/2026")
+    parts = game_date.split('-')  # ['2026','07','21']
+    date_slug_short = f'{int(parts[1])}/{int(parts[2])}/{parts[0]}'  # 7/21/2026
+    date_slug_url = f'{parts[0]}-{parts[1]}-{parts[2]}'              # 2026-07-21 (some URLs)
+
+    article_urls = set()
+    for a in soup.find_all('a', href=True):
+        href = a.get('href', '')
+        headline = a.get_text(' ', strip=True)
+        # Prefer headline match (dated), fallback to URL segment
+        if date_slug_short in headline or date_slug_url in href:
+            if 'prediction' in href.lower() or 'pick' in href.lower():
+                if href.startswith('/'):
+                    href = 'https://www.pickdawgz.com' + href
+                if href.startswith('http'):
+                    article_urls.add(href)
+
+    if not article_urls:
+        return [], 200
+
+    picks = []
+    for url in list(article_urls)[:15]:
+        try:
+            article = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+            if article.status_code != 200:
+                continue
+            asoup = BeautifulSoup(article.text, 'html.parser')
+            title = (asoup.find('h1') or asoup.find('title'))
+            title_txt = title.get_text(' ', strip=True) if title else ''
+            body = asoup.get_text(' ', strip=True)
+
+            # Extract matchup from headline: "Oakland Athletics vs Arizona Diamondbacks..."
+            matchup_re = re.search(
+                r'([A-Z][A-Za-z .]+?)\s+vs\.?\s+([A-Z][A-Za-z .]+?)\s+(?:Prediction|Pick|Today)',
+                title_txt,
+            )
+            if not matchup_re:
+                continue
+            away_hint, home_hint = matchup_re.group(1).strip(), matchup_re.group(2).strip()
+            gid = find_game_id(slate, home_hint=home_hint, away_hint=away_hint)
+            if not gid:
+                continue
+
+            # Pick pattern in body — PickDawgz uses "Pick:", "Play:", "Free Pick:"
+            pick_re = re.search(
+                r'(?:Pick|Play|Prediction|Free Pick)\s*[:\-]?\s*'
+                r'([A-Z][A-Za-z .]+?)\s+(?:ML|Moneyline)?\s*\(?([+-]\d{2,4})\)?',
+                body[:8000],
+            )
+            total_re = re.search(
+                r'(?:Pick|Play|Prediction)\s*[:\-]?\s*(Over|Under)\s+([\d.]+)\s*\(?([+-]\d{2,4})?\)?',
+                body[:8000], re.I,
+            )
+
+            if pick_re:
+                team = pick_re.group(1).strip()
+                odds = int(pick_re.group(2))
+                side = None
+                if home_hint.lower().find(team.lower()) >= 0 or team.lower().find(home_hint.lower()) >= 0:
+                    side = 'HOME'
+                elif away_hint.lower().find(team.lower()) >= 0 or team.lower().find(away_hint.lower()) >= 0:
+                    side = 'AWAY'
+                if not side:
+                    continue
+                picks.append(ExternalPick(
+                    game_id=gid, sport='MLB', game_date=game_date, source='pickdawgz',
+                    surface='ml', pick_side=side, odds_american=odds,
+                    raw_text=f'PickDawgz: {team} ML ({odds})',
+                    source_url=url,
+                ))
+            elif total_re:
+                side = total_re.group(1).upper()
+                line = float(total_re.group(2))
+                odds = int(total_re.group(3)) if total_re.group(3) else None
+                picks.append(ExternalPick(
+                    game_id=gid, sport='MLB', game_date=game_date, source='pickdawgz',
+                    surface='total', pick_side=side, pick_line=line, odds_american=odds,
+                    raw_text=f'PickDawgz: {side} {line}' + (f' ({odds})' if odds else ''),
+                    source_url=url,
+                ))
+            time.sleep(0.4)  # be polite
+        except Exception:
+            continue
+
+    return picks, 200
 
 
 def fetch_docsports(slate: list, game_date: str) -> tuple[list, int]:
