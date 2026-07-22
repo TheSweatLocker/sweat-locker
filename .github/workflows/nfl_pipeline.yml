@@ -97,6 +97,35 @@ jobs:
           python nfl_pipeline.py || echo "nfl_pipeline (team stats) failed"
           python nfl_player_stats.py || echo "nfl_player_stats failed"
 
+      - name: Build NFL game context (projections + confluence + sweat)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_game_context.py || echo "game_context failed"
+
+      - name: Generate NFL picks (play-of-day + lock_of_week)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_play_of_day.py || echo "play_of_day failed"
+
+      - name: Generate NFL player props
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_generate_props.py || echo "props failed (non-fatal)"
+
       - name: External source aggregation pull (Phase 2 stub)
         if: steps.mode.outputs.mode == 'full'
         env:
