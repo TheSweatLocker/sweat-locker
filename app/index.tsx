@@ -12055,6 +12055,35 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           <Text style={{color:tier.color,fontSize:10,fontWeight:'800'}}>{tier.label}</Text>
                         </View>
                       </View>
+                      {/* CONSENSUS FADE CHIP (Tier 1, 2026-07-22) — reads
+                          mlb_game_context.consensus_fade_flag written by
+                          detect_consensus_fade.py. Surfaces when >=75% of
+                          external books/handicappers are on one side, with
+                          audit-fade sources involved. THE differentiator
+                          alert. */}
+                      {(()=>{
+                        if(gamesSport!=='MLB') return null;
+                        const ctx = mlbGameContext[selectedGame?.home_team];
+                        if(!ctx?.consensus_fade_flag) return null;
+                        const pct = Math.round((ctx.consensus_fade_pct||0)*100);
+                        const side = ctx.consensus_fade_side || '';
+                        const n = ctx.consensus_fade_n || 0;
+                        const note = ctx.consensus_fade_note || '';
+                        return (
+                          <View style={{marginTop:12,padding:12,borderRadius:10,backgroundColor:'#3a1a1a',borderWidth:1,borderColor:'#ff4d6d'}}>
+                            <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:6}}>
+                              <Text style={{fontSize:14}}>⚠️</Text>
+                              <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:12,letterSpacing:0.5}}>CONSENSUS FADE ALERT</Text>
+                            </View>
+                            <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'700',marginBottom:4}}>
+                              {pct}% of books on {side} ({n} sources)
+                            </Text>
+                            <Text style={{color:'#c8d8e8',fontSize:11,lineHeight:15}}>
+                              {note}. Historical audit: aggregate consensus &ge;75% hits ~53% (coinflip). Public heat rarely signals edge — consider fade or skip.
+                            </Text>
+                          </View>
+                        );
+                      })()}
                       {/* Gold MODEL LEAN box REMOVED 2026-05-25 — it duplicated
                           the MODEL'S PLAY card inside Why-This-Score below, and
                           the redundancy made the modal feel cluttered. Single
