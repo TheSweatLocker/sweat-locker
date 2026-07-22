@@ -708,6 +708,18 @@ jobs:
             python pull_externals_mlb.py
           fi
 
+      # After externals land, run consensus-fade detector to flag games
+      # where public heat + fade sources = card-level Tier 1 alert.
+      # continue-on-error so an empty picks day never blocks downstream.
+      - name: Detect consensus-fade alerts
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python detect_consensus_fade.py --sport MLB || echo "fade detector failed (non-fatal)"
+
       # Auto-generate tonight's content card after the 2pm ET pipeline run
       # (skip on 8am run since lineups/lines aren't locked yet — content
       # would just be replaced anyway)
