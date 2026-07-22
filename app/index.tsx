@@ -7,6 +7,7 @@ import { Circle, Defs, G, LinearGradient, Path, Rect, Stop, Svg, Line as SvgLine
 import { RecapCard } from './components/RecapCard';
 import { RecapStrip } from './components/RecapStrip';
 import { CohortDashboard } from './components/CohortDashboard';
+import { ExternalPicksPanel } from './components/ExternalPicksPanel';
 import { TierIntegrityBadge } from './components/TierIntegrityBadge';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Sport } from './lib/sportPeriods';
@@ -12577,6 +12578,9 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                     </View>
                   );
                 })}
+                {gamesSport==='MLB' && selectedGame?.id && (
+                  <ExternalPicksPanel gameId={selectedGame.id} />
+                )}
                 {parlayLegs.length>0&&(
                   <TouchableOpacity style={[styles.btnPrimary,{marginTop:8}]} onPress={()=>{setGameDetailModal(false);setActiveTab('parlay');}}>
                     <Text style={styles.btnPrimaryText}>View Parlay ({parlayLegs.length} legs) 🎰</Text>
