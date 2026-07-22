@@ -12055,31 +12055,54 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           <Text style={{color:tier.color,fontSize:10,fontWeight:'800'}}>{tier.label}</Text>
                         </View>
                       </View>
-                      {/* CONSENSUS FADE CHIP (Tier 1, 2026-07-22) — reads
-                          mlb_game_context.consensus_fade_flag written by
-                          detect_consensus_fade.py. Surfaces when >=75% of
-                          external books/handicappers are on one side, with
-                          audit-fade sources involved. THE differentiator
-                          alert. */}
+                      {/* CONSENSUS FADE / MONITORING CHIP (Tier 1, 2026-07-22 v2)
+                          Reads mlb_game_context.consensus_fade_flag +
+                          consensus_fade_note (v2 detector always writes
+                          for high-consensus games; flag=TRUE only when
+                          audit substantiates the fade). Two states:
+                            FADE  (flag=true)  -> RED alert chip
+                            MONITORING (flag=false + note starts with
+                                        note) -> YELLOW monitoring note
+                          Yellow state = "we see consensus but haven't
+                          proven this pattern loses yet" — transparent,
+                          not an unsubstantiated alarm. */}
                       {(()=>{
                         if(gamesSport!=='MLB') return null;
                         const ctx = mlbGameContext[selectedGame?.home_team];
-                        if(!ctx?.consensus_fade_flag) return null;
-                        const pct = Math.round((ctx.consensus_fade_pct||0)*100);
-                        const side = ctx.consensus_fade_side || '';
-                        const n = ctx.consensus_fade_n || 0;
-                        const note = ctx.consensus_fade_note || '';
+                        const note = ctx?.consensus_fade_note;
+                        const pct = ctx?.consensus_fade_pct;
+                        const side = ctx?.consensus_fade_side;
+                        const n = ctx?.consensus_fade_n;
+                        // No consensus captured -> render nothing
+                        if(!note || pct==null || !side) return null;
+                        const isFade = !!ctx?.consensus_fade_flag;
+                        const pctPct = Math.round((pct||0)*100);
+                        if(isFade){
+                          return (
+                            <View style={{marginTop:12,padding:12,borderRadius:10,backgroundColor:'#3a1a1a',borderWidth:1,borderColor:'#ff4d6d'}}>
+                              <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:6}}>
+                                <Text style={{fontSize:14}}>⚠️</Text>
+                                <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:12,letterSpacing:0.5}}>CONSENSUS FADE ALERT</Text>
+                              </View>
+                              <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'700',marginBottom:4}}>
+                                {pctPct}% of books on {side} ({n} sources)
+                              </Text>
+                              <Text style={{color:'#c8d8e8',fontSize:11,lineHeight:15}}>{note}</Text>
+                            </View>
+                          );
+                        }
+                        // MONITORING state — softer yellow
                         return (
-                          <View style={{marginTop:12,padding:12,borderRadius:10,backgroundColor:'#3a1a1a',borderWidth:1,borderColor:'#ff4d6d'}}>
+                          <View style={{marginTop:12,padding:12,borderRadius:10,backgroundColor:'#2a2410',borderWidth:1,borderColor:'#ffb800'}}>
                             <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:6}}>
-                              <Text style={{fontSize:14}}>⚠️</Text>
-                              <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:12,letterSpacing:0.5}}>CONSENSUS FADE ALERT</Text>
+                              <Text style={{fontSize:14}}>👀</Text>
+                              <Text style={{color:'#ffb800',fontWeight:'800',fontSize:12,letterSpacing:0.5}}>MONITORING CONSENSUS</Text>
                             </View>
                             <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'700',marginBottom:4}}>
-                              {pct}% of books on {side} ({n} sources)
+                              {pctPct}% of books on {side} ({n} sources)
                             </Text>
                             <Text style={{color:'#c8d8e8',fontSize:11,lineHeight:15}}>
-                              {note}. Historical audit: aggregate consensus &ge;75% hits ~53% (coinflip). Public heat rarely signals edge — consider fade or skip.
+                              {note}. Not calling this a fade yet — building audit sample.
                             </Text>
                           </View>
                         );

@@ -483,6 +483,18 @@ jobs:
           cd mlb_pipeline
           python audit_external_source_calibration.py --sport MLB || echo "external calibration audit failed (non-fatal)"
 
+      # Consensus-bucket audit (substantiates consensus_fade detector).
+      # Without this the detector has no bucket calibration and every
+      # high-consensus game shows MONITORING instead of FADE.
+      - name: Refresh consensus bucket calibration
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_consensus_bucket_calibration.py --sport MLB || echo "consensus bucket audit failed (non-fatal)"
+
       # Re-walk the sweat card after POTD is graded (2026-05-26 fix).
       # The card walk inside resolve_game_results.py reads
       # daily_best_bet_history for the POTD row's result — but the FIRST
