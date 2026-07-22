@@ -81,13 +81,32 @@ def fetch_upcoming_games():
 
 
 def fetch_audit_cohorts():
-    """Pull live NFL audit cohort rates from mlb_tier_calibration (STD window)."""
+    """Pull live NFL audit cohort rates from mlb_tier_calibration.
+
+    nfl_cohort_backfill.py writes window_label='lifetime' with columns
+    (tier, wins, losses, pushes, hit_pct, sample_n). Latest computed_date wins.
+    """
     rows = sb_get("mlb_tier_calibration", {
-        "window_label": "eq.std",
+        "window_label": "eq.lifetime",
         "sport": "eq.nfl",
-        "select": "tier,hits,total,hit_rate",
+        "select": "tier,wins,losses,pushes,hit_pct,sample_n,computed_date",
+        "order": "computed_date.desc",
+        "limit": "50",
     })
-    return {r["tier"]: r for r in rows}
+    latest = {}
+    for r in rows:
+        key = r["tier"]
+        if key not in latest:
+            latest[key] = r
+    return latest
+
+
+def _cohort_rate(cohort_key: str, cohorts: dict) -> tuple:
+    """Return (hit_pct, sample_n) for a cohort tag; handles both new and old shapes."""
+    key = cohort_key.upper().replace("NFL_", "")
+    r = cohorts.get(key) or cohorts.get(cohort_key) or {}
+    return (r.get("hit_pct") or r.get("hit_rate") or 0,
+            r.get("sample_n") or r.get("total") or 0)
 
 
 def fetch_team_stats(season):
@@ -119,9 +138,7 @@ def find_underdog_of_week(games, cohorts):
     # Sort by spread magnitude (biggest dog first)
     candidates.sort(key=lambda g: float(g["close_spread"]))
     g = candidates[0]
-    audit = cohorts.get("nfl_heavy_home_dog", {})
-    rate = round((audit.get("hit_rate") or 0) * 100, 1)
-    n = audit.get("total")
+    rate, n = _cohort_rate("nfl_heavy_home_dog", cohorts)
     return {
         "game_id": g["game_id"],
         "matchup": f"{g['away_team']} @ {g['home_team']}",
@@ -137,9 +154,7 @@ def find_outdoor_under_angles(games, cohorts):
     """Outdoor totals trended UNDER at 52.1% in Phase 1 audit. When game is
     outdoors AND total ≥ 47 AND weather is moderate-to-bad (cold or windy),
     surface as a UNDER lean."""
-    audit = cohorts.get("nfl_outdoor_over", {})
-    rate_under = 100 - round((audit.get("hit_rate") or 0) * 100, 1)
-    n = audit.get("total")
+    rate_under, n = _cohort_rate("nfl_outdoor_under", cohorts)
     plays = []
     for g in games:
         if (g.get("roof") or "").lower() != "outdoors":
@@ -167,6 +182,149 @@ def find_outdoor_under_angles(games, cohorts):
     return plays[:3]
 
 
+def find_lock_of_week(games, cohorts, underdog):
+    """Highest-conviction play of the week. Prefers heavy_home_dog when the
+    audit rate is >= 60% AND spread >= +7. Otherwise falls back to the biggest
+    audited-cohort play the model finds.
+    """
+    dog_rate, dog_n = _cohort_rate("nfl_heavy_home_dog", cohorts)
+    if underdog and dog_rate >= 60 and dog_n >= 40:
+        return {
+            "game_id": underdog["game_id"],
+            "matchup": underdog["matchup"],
+            "pick": underdog["pick"],
+            "tier": "PRIME",
+            "conviction": min(100, int(dog_rate + 15)),  # audit + narrative boost
+            "audited_rate": dog_rate,
+            "audited_n": dog_n,
+            "rationale": (f"Lock: {underdog['pick']} — home-dog +7 cohort "
+                          f"hits {dog_rate}% ({dog_n} games, 2022-2025). "
+                          "Audit-anchored highest-conviction of the week."),
+        }
+    # Fallback: strongest weather-driven UNDER when no lock-worthy dog
+    under_rate, under_n = _cohort_rate("nfl_outdoor_under", cohorts)
+    for g in games:
+        if (g.get("roof") or "").lower() != "outdoors": continue
+        if g.get("close_total") is None: continue
+        temp = g.get("temp"); wind = g.get("wind")
+        if not ((temp is not None and int(temp) <= 35) or
+                (wind is not None and int(wind) >= 18)):
+            continue
+        if under_rate < 55 or under_n < 100: continue
+        return {
+            "game_id": g["game_id"],
+            "matchup": f"{g['away_team']} @ {g['home_team']}",
+            "pick": f"UNDER {g['close_total']}",
+            "tier": "STRONG",
+            "conviction": int(under_rate + 10),
+            "audited_rate": under_rate,
+            "audited_n": under_n,
+            "rationale": (f"Lock: UNDER {g['close_total']} — outdoor + "
+                          f"{'cold '+str(temp)+'°F' if temp is not None and int(temp) <= 35 else ''}"
+                          f"{' + ' if temp is not None and wind is not None else ''}"
+                          f"{'wind '+str(wind)+'mph' if wind is not None and int(wind) >= 18 else ''}. "
+                          f"Cohort {under_rate}% ({under_n} games)."),
+        }
+    return None
+
+
+def find_weekly_parlay(games, cohorts, lock, underdog, outdoor_unders):
+    """3-leg conviction parlay. Legs must NOT duplicate lock or come from
+    the same game (correlation risk). Anchored by highest-audited-rate cohorts.
+    """
+    used_games = set()
+    if lock: used_games.add(lock["game_id"])
+    if underdog and underdog.get("game_id") != (lock or {}).get("game_id"):
+        pass  # underdog may still qualify as a leg
+
+    legs = []
+
+    # Leg 1: heavy home dog (if not the lock)
+    if underdog and underdog["game_id"] not in used_games:
+        legs.append({
+            "matchup": underdog["matchup"],
+            "pick": underdog["pick"],
+            "cohort": "heavy_home_dog",
+            "audited_rate": underdog["audited_rate"],
+        })
+        used_games.add(underdog["game_id"])
+
+    # Leg 2: strongest outdoor UNDER
+    for u in outdoor_unders:
+        if u["game_id"] in used_games: continue
+        legs.append({
+            "matchup": u["matchup"],
+            "pick": u["pick"],
+            "cohort": "outdoor_under",
+            "audited_rate": u["audited_rate"],
+        })
+        used_games.add(u["game_id"])
+        break
+
+    # Leg 3: division road dog (nfl_div_home_cover fades home) — pick away spread
+    div_rate, div_n = _cohort_rate("nfl_div_home_cover", cohorts)
+    away_edge = 100 - div_rate if div_rate < 50 else 0
+    if away_edge >= 2 and div_n >= 200:
+        for g in games:
+            if g["game_id"] in used_games: continue
+            if g.get("div_game") is not True: continue
+            if g.get("close_spread") is None or float(g["close_spread"]) <= 0: continue
+            # spread > 0 → home fav; away is the dog in a division game
+            legs.append({
+                "matchup": f"{g['away_team']} @ {g['home_team']}",
+                "pick": f"{g['away_team']} +{g['close_spread']}",
+                "cohort": "div_home_cover_fade",
+                "audited_rate": 100 - div_rate,
+            })
+            used_games.add(g["game_id"])
+            break
+
+    if len(legs) < 2:
+        return None  # parlay needs >=2 legs
+
+    return {
+        "legs": legs,
+        "leg_count": len(legs),
+        "combined_rationale": (
+            f"{len(legs)}-leg parlay anchored by audit-validated cohorts. "
+            "No two legs share a game (correlation control). "
+            "Not a lock — parlay math means all legs must hit."
+        ),
+    }
+
+
+def find_skip_alerts(games, cohorts):
+    """Chalk-trap detector. Surface games the pipeline recommends AVOIDING."""
+    alerts = []
+    # Trap 1: mid-range home favorite (-3.5 to -6.5) in division game — 48.6% audit
+    div_rate, div_n = _cohort_rate("nfl_div_home_cover", cohorts)
+    for g in games:
+        sp = g.get("close_spread")
+        if sp is None: continue
+        sp = float(sp)
+        if 3.5 <= sp <= 6.5 and g.get("div_game") is True:
+            alerts.append({
+                "game_id": g["game_id"],
+                "matchup": f"{g['away_team']} @ {g['home_team']}",
+                "reason": "chalk_div_home_fav",
+                "message": (f"Skip {g['home_team']} -{sp} chalk. Division home favs "
+                            f"cover {div_rate}% ({div_n} games). Coinflip trap."),
+            })
+    # Trap 2: dome + total >= 50 (marketplace already priced up)
+    for g in games:
+        if (g.get("roof") or "").lower() not in ("dome", "closed"): continue
+        tot = g.get("close_total")
+        if tot is None or float(tot) < 50: continue
+        alerts.append({
+            "game_id": g["game_id"],
+            "matchup": f"{g['away_team']} @ {g['home_team']}",
+            "reason": "dome_over_juiced",
+            "message": (f"Skip OVER {tot}. Dome with 50+ total is market-priced; "
+                        f"dome_over cohort ~51% (coinflip). No edge."),
+        })
+    return alerts
+
+
 def build_card():
     print(f"=== NFL Weekly Slate Card ({today_et()}) ===")
     games = fetch_upcoming_games()
@@ -184,17 +342,26 @@ def build_card():
 
     underdog = find_underdog_of_week(games, cohorts)
     outdoor_unders = find_outdoor_under_angles(games, cohorts)
+    lock = find_lock_of_week(games, cohorts, underdog)
+    parlay = find_weekly_parlay(games, cohorts, lock, underdog, outdoor_unders)
+    skip_alerts = find_skip_alerts(games, cohorts)
+
+    # Schedule-only mode: no lines yet (Odds API empty). MVP for Aug 7 preseason
+    # + offseason weeks where slate exists but market isn't loaded.
+    lines_loaded = any(g.get("close_spread") is not None for g in games)
+    card_mode = "full" if lines_loaded else "schedule_only"
 
     card = {
         "week_id": f"{season}_W{week}",
         "season": season,
         "week_number": week,
+        "mode": card_mode,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "lock_of_week": lock,
         "underdog_of_week": underdog,
         "outdoor_under_angles": outdoor_unders,
-        # Phase 2 will populate these when props pipeline + Odds API integration ships:
-        "lock_of_week": None,           # highest-conviction prop or ML
-        "weekly_parlay": None,          # 3-5 leg conviction parlay
+        "weekly_parlay": parlay,
+        "skip_alerts": skip_alerts,
         "slate": [
             {
                 "game_id": g["game_id"],
@@ -208,10 +375,11 @@ def build_card():
             for g in games[:16]
         ],
         "audit_cohort_summary": {
-            tier: {"hits": v.get("hits"), "total": v.get("total"), "rate": v.get("hit_rate")}
+            tier: {"wins": v.get("wins"), "losses": v.get("losses"),
+                   "pushes": v.get("pushes"), "hit_pct": v.get("hit_pct"),
+                   "sample_n": v.get("sample_n")}
             for tier, v in cohorts.items()
         },
-        "skip_alerts": [],  # populated when chalk-trap detector is built in Phase 2
     }
 
     # Upsert to jerry_cache with NFL-specific cache_key

@@ -1,0 +1,154 @@
+name: NFL Pipeline Weekly
+
+on:
+  schedule:
+    # 7-cron NFL cadence (see project_nfl_phase1_ready_721.md).
+    # Times are 30-60 min earlier than user-facing "ready by" to absorb
+    # GitHub Actions queue drift (same pattern as MLB pipeline).
+    - cron: '0 15 * * 2'   # Tue 11am ET  — nflverse schedule + opening lines
+    - cron: '0 22 * * 3'   # Wed 6pm ET   — externals pull + props v1 (Phase 2)
+    - cron: '0 18 * * 4'   # Thu 2pm ET   — TNF finalize (weekly card LOCK)
+    - cron: '0 14 * * 6'   # Sat 10am ET  — Sunday early-slate lock
+    - cron: '0 12 * * 0'   # Sun 8am ET   — final Sunday card
+    - cron: '0 14 * * 1'   # Mon 10am ET  — MNF finalize + Sunday resolver
+    - cron: '0 15 * * 2'   # (duplicated Tue — full-week resolver + cohort grades)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Which sub-pipeline to run manually'
+        required: false
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - odds_only
+          - card_only
+          - resolver_only
+          - cohorts_only
+
+jobs:
+  nfl-pipeline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv beautifulsoup4 nfl_data_py pandas scikit-learn numpy xgboost
+
+      - name: Detect run mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H); DOW=$(date -u +%u)
+            # Sun 12:00 UTC → final Sunday card; Sat 14:00 UTC → early-slate lock;
+            # Tue 15:00 UTC → weekly resolver + cohorts; else → full run.
+            if [ "$DOW" = "7" ] && [ "$HOUR" = "12" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
+            elif [ "$DOW" = "6" ] && [ "$HOUR" = "14" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
+            elif [ "$DOW" = "2" ] && [ "$HOUR" = "15" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
+            elif [ "$DOW" = "1" ] && [ "$HOUR" = "14" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
+            else echo "mode=full" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Pull Odds API NFL lines
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_odds_pull.py || echo "nfl_odds_pull failed (non-fatal)"
+
+      - name: Pull Odds API preseason lines (Aug only)
+        if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only')
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          MONTH=$(date -u +%m)
+          if [ "$MONTH" = "08" ]; then
+            cd mlb_pipeline && python nfl_odds_pull.py --preseason || echo "preseason pull failed"
+          else
+            echo "skipping preseason pull (month=$MONTH)"
+          fi
+
+      - name: Refresh team + player stats (nflverse)
+        if: steps.mode.outputs.mode == 'full'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_pipeline.py || echo "nfl_pipeline (team stats) failed"
+          python nfl_player_stats.py || echo "nfl_player_stats failed"
+
+      - name: External source aggregation pull (Phase 2 stub)
+        if: steps.mode.outputs.mode == 'full'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # pull_externals_nfl.py ships in Phase 2 (Sept target)
+          if [ -f pull_externals_nfl.py ]; then
+            python pull_externals_nfl.py || echo "external pull failed (non-fatal)"
+          else
+            echo "pull_externals_nfl.py not yet built — Phase 2"
+          fi
+
+      - name: Generate NFL game reads (Jerry)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_nfl_game_reads.py || echo "game reads failed (non-fatal)"
+
+      - name: Build weekly slate card
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_weekly_card.py || echo "weekly card failed"
+
+      - name: Resolve completed games + backfill scores
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          if [ -f resolve_nfl_results.py ]; then
+            python resolve_nfl_results.py || echo "resolver failed"
+          else
+            # Fall back to backfill_results incremental mode (last 30 days)
+            python nfl_backfill_results.py --incremental || echo "backfill failed"
+          fi
+
+      - name: Recompute cohort calibration
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_cohort_backfill.py || echo "cohort backfill failed"
