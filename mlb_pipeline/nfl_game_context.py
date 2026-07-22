@@ -403,8 +403,8 @@ def build_row(event: dict, aliases: dict, team_stats: dict) -> Optional[dict]:
         if o['name'] == home_raw:
             pt = _f(o.get('point'))
             row['close_spread'] = -pt if pt is not None else None
-        elif o['name'] == away_raw:
-            row['close_away_spread_ml'] = _i(o.get('price'))
+        # Away spread price not in nfl_game_context schema; captured
+        # in nfl_odds_pull → nfl_game_results if we ever need it.
 
     tot = _pick_book(event, 'totals')
     for o in tot.get('outcomes') or []:
