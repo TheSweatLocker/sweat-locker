@@ -28,6 +28,7 @@ USAGE:
 """
 import argparse
 import os
+import re
 import sys
 import time
 import subprocess
@@ -300,7 +301,118 @@ def fetch_dimers(slate: list, game_date: str) -> tuple[list, int]:
 
 
 def fetch_covers(slate: list, game_date: str) -> tuple[list, int]:
-    return [], 200
+    """Covers.com consensus table (server-rendered).
+
+    Table columns: Matchup | Date | Consensus % | Sides odds | Picks count.
+    Matchup format: "MLB Ath Az" (short team codes).
+    Consensus format: "30% 70%" (away% then home%).
+    Sides format: "+115 -140" (away odds then home odds).
+
+    We parse each row into an ML pick for each side + track sharp picks
+    count as auxiliary metadata.
+    """
+    from bs4 import BeautifulSoup
+    r = requests.get(
+        'https://contests.covers.com/consensus/topconsensus/mlb/overall',
+        headers={'User-Agent': 'Mozilla/5.0 (Sweat Locker aggregator)'},
+        timeout=10,
+    )
+    if r.status_code != 200:
+        return [], r.status_code
+    soup = BeautifulSoup(r.text, 'html.parser')
+    table = soup.find('table')
+    if not table:
+        return [], 200
+
+    picks = []
+    for row in table.find_all('tr')[1:]:  # skip header
+        cells = [c.get_text(' ', strip=True) for c in row.find_all(['td', 'th'])]
+        if len(cells) < 4:
+            continue
+
+        matchup_txt = cells[0].replace('MLB', '').strip()   # e.g. "Ath Az"
+        date_txt = cells[1]
+        consensus_txt = cells[2]                             # "30% 70%"
+        sides_txt = cells[3]                                 # "+115 -140"
+
+        # Only pull rows for our target date
+        if game_date not in _covers_date_to_iso(date_txt):
+            continue
+
+        # Split team abbreviations
+        parts = matchup_txt.split()
+        if len(parts) < 2:
+            continue
+        away_code, home_code = parts[0], parts[1]
+
+        # Match to slate by abbreviation/short name
+        gid = _match_covers_abbrev_to_gid(slate, away_code, home_code)
+        if not gid:
+            continue
+
+        # Parse consensus %s
+        pct_matches = re.findall(r'(\d+)%', consensus_txt)
+        away_pct = int(pct_matches[0]) if len(pct_matches) >= 1 else None
+        home_pct = int(pct_matches[1]) if len(pct_matches) >= 2 else None
+
+        # Parse odds
+        odds_matches = re.findall(r'([+-]\d+)', sides_txt)
+        away_odds = int(odds_matches[0]) if len(odds_matches) >= 1 else None
+        home_odds = int(odds_matches[1]) if len(odds_matches) >= 2 else None
+
+        # Emit a "public consensus" pick for the higher-% side.
+        # This is what users care about: which side the public is on.
+        if home_pct is not None and away_pct is not None:
+            if home_pct > away_pct:
+                pick_side, pick_odds, pct = 'HOME', home_odds, home_pct
+            else:
+                pick_side, pick_odds, pct = 'AWAY', away_odds, away_pct
+            fade_flag = 'boost' if pct >= 70 and pick_odds and pick_odds <= -150 else 'neutral'
+            picks.append(ExternalPick(
+                game_id=gid, sport='MLB', game_date=game_date, source='covers',
+                surface='ml', pick_side=pick_side, odds_american=pick_odds,
+                confidence=f'{pct}% public',
+                raw_text=f'Public consensus: {away_pct}% away / {home_pct}% home @ {away_odds}/{home_odds}',
+                fade_flag=fade_flag,
+            ))
+    return picks, 200
+
+
+def _covers_date_to_iso(date_txt: str) -> str:
+    """Convert 'Tue. Jul 21 9:40 pm ET' → '2026-07-21'. Best-effort."""
+    from datetime import datetime as _dt
+    m = re.search(r'(\w{3})\.?\s+(\w{3})\s+(\d+)', date_txt)
+    if not m:
+        return ''
+    month_abbr, day = m.group(2), m.group(3)
+    year = _et_now().year
+    try:
+        d = _dt.strptime(f'{month_abbr} {day} {year}', '%b %d %Y').date()
+        return d.isoformat()
+    except Exception:
+        return ''
+
+
+# Team abbreviation map for Covers short codes → our team names.
+# Covers uses non-standard 2-3 letter codes; map them carefully.
+_COVERS_ABBREV = {
+    'Ath': 'Athletics', 'Az': 'Arizona Diamondbacks', 'Atl': 'Atlanta Braves',
+    'Bal': 'Baltimore Orioles', 'Bos': 'Boston Red Sox', 'ChC': 'Chicago Cubs',
+    'ChW': 'Chicago White Sox', 'Cin': 'Cincinnati Reds', 'Cle': 'Cleveland Guardians',
+    'Col': 'Colorado Rockies', 'Det': 'Detroit Tigers', 'Hou': 'Houston Astros',
+    'KC': 'Kansas City Royals', 'LA': 'Los Angeles Dodgers', 'LAA': 'Los Angeles Angels',
+    'Mia': 'Miami Marlins', 'Mil': 'Milwaukee Brewers', 'Min': 'Minnesota Twins',
+    'NYM': 'New York Mets', 'NYY': 'New York Yankees', 'Phi': 'Philadelphia Phillies',
+    'Pit': 'Pittsburgh Pirates', 'SD': 'San Diego Padres', 'SF': 'San Francisco Giants',
+    'Sea': 'Seattle Mariners', 'Stl': 'St. Louis Cardinals', 'TB': 'Tampa Bay Rays',
+    'Tex': 'Texas Rangers', 'Tor': 'Toronto Blue Jays', 'Was': 'Washington Nationals',
+}
+
+
+def _match_covers_abbrev_to_gid(slate: list, away_code: str, home_code: str) -> Optional[str]:
+    away_full = _COVERS_ABBREV.get(away_code, away_code)
+    home_full = _COVERS_ABBREV.get(home_code, home_code)
+    return find_game_id(slate, home_hint=home_full, away_hint=away_full)
 
 
 def fetch_cbs(slate: list, game_date: str) -> tuple[list, int]:
@@ -313,7 +425,72 @@ def fetch_action(slate: list, game_date: str) -> tuple[list, int]:
 
 
 def fetch_vsin(slate: list, game_date: str) -> tuple[list, int]:
-    return [], 200
+    """VSiN — Peterson's daily MLB best bets column.
+
+    Landing page has an article link with title matching "MLB Picks Today: Greg
+    Peterson Best Bets". We fetch the article, extract the best-bet picks.
+    """
+    from bs4 import BeautifulSoup
+    landing = requests.get(
+        'https://vsin.com/mlb/',
+        headers={'User-Agent': 'Mozilla/5.0'},
+        timeout=10,
+    )
+    if landing.status_code != 200:
+        return [], landing.status_code
+    lsoup = BeautifulSoup(landing.text, 'html.parser')
+
+    # Find Peterson's MLB article link — needs to be scoped to /mlb/ path
+    # (bare 'peterson in href' also matches his college basketball columns)
+    peterson_link = None
+    for a in lsoup.find_all('a', href=True):
+        href = a.get('href', '').lower()
+        title = a.get_text(strip=True).lower()
+        is_mlb = '/mlb/' in href
+        is_peterson = 'peterson' in href or 'peterson' in title
+        if is_mlb and is_peterson and 'best bets' in title:
+            peterson_link = a.get('href')
+            break
+
+    if not peterson_link:
+        return [], 200
+    if peterson_link.startswith('/'):
+        peterson_link = 'https://vsin.com' + peterson_link
+
+    article = requests.get(peterson_link, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+    if article.status_code != 200:
+        return [], article.status_code
+    asoup = BeautifulSoup(article.text, 'html.parser')
+    text = asoup.get_text(' ', strip=True)
+
+    picks = []
+    # Pattern: "TEAM Moneyline -ODDS" — Peterson's format
+    ml_matches = re.findall(
+        r'([A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)?)\s+Moneyline\s+([+-]\d{2,4})',
+        text,
+    )
+    seen = set()
+    for team, odds in ml_matches[:15]:
+        if team in seen:
+            continue
+        seen.add(team)
+        # Match team → game
+        for g in slate:
+            if _team_matches(g.get('home_team'), team):
+                pick_side, gid = 'HOME', g['game_id']
+                break
+            if _team_matches(g.get('away_team'), team):
+                pick_side, gid = 'AWAY', g['game_id']
+                break
+        else:
+            continue
+        picks.append(ExternalPick(
+            game_id=gid, sport='MLB', game_date=game_date, source='vsin',
+            surface='ml', pick_side=pick_side, odds_american=int(odds),
+            raw_text=f"VSiN Peterson: {team} ML ({odds})",
+            source_url=peterson_link,
+        ))
+    return picks, 200
 
 
 def fetch_bettingpros(slate: list, game_date: str) -> tuple[list, int]:
@@ -334,7 +511,89 @@ def fetch_pickdawgz(slate: list, game_date: str) -> tuple[list, int]:
 
 
 def fetch_docsports(slate: list, game_date: str) -> tuple[list, int]:
-    return [], 200
+    """Doc Sports free MLB picks — crawls today's article links + parses pick.
+
+    Landing page has ~40 links to individual game articles for today+tomorrow.
+    Article URL format: /baseball/2026/<away-team>-vs-<home-team>-prediction-M-D-YYYY-...
+
+    Each article contains the pick + short reasoning. We fetch each article
+    and extract the recommendation.
+    """
+    from bs4 import BeautifulSoup
+    landing = requests.get(
+        'https://www.docsports.com/free-picks/baseball/',
+        headers={'User-Agent': 'Mozilla/5.0 (Sweat Locker aggregator)'},
+        timeout=10,
+    )
+    if landing.status_code != 200:
+        return [], landing.status_code
+
+    soup = BeautifulSoup(landing.text, 'html.parser')
+    # Convert 2026-07-21 → 7-21-2026 (Doc Sports URL format)
+    parts = game_date.split('-')  # ['2026','07','21']
+    date_slug = f'{int(parts[1])}-{int(parts[2])}-{parts[0]}'
+    all_links = soup.find_all('a', href=re.compile(f'/baseball/2026/.+{date_slug}'))
+    unique_urls = list({a.get('href') for a in all_links if a.get('href')})
+    if not unique_urls:
+        return [], 200
+
+    picks = []
+    for url in unique_urls[:15]:  # cap at slate size
+        try:
+            article = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+            if article.status_code != 200:
+                continue
+            asoup = BeautifulSoup(article.text, 'html.parser')
+            text = asoup.get_text(' ', strip=True)
+
+            # Extract matchup from URL: /baseball/2026/cincinnati-reds-vs-seattle-mariners-...
+            slug_match = re.search(r'/baseball/2026/([a-z\-]+)-vs-([a-z\-]+)-prediction', url)
+            if not slug_match:
+                continue
+            away_slug = slug_match.group(1).replace('-', ' ').title()
+            home_slug = slug_match.group(2).replace('-', ' ').title()
+            gid = find_game_id(slate, home_hint=home_slug, away_hint=away_slug)
+            if not gid:
+                continue
+
+            # Find "'s Pick: Take TEAM (+ODDS)" pattern — Doc Sports format
+            pick_match = re.search(
+                r"Pick:\s+(?:Take\s+)?([A-Z][a-zA-Z\s]+?)\s*\(([+-]\d+)\)",
+                text[:10000],
+            )
+            if not pick_match:
+                # Try Under/Over pattern
+                pick_match = re.search(
+                    r"Pick:\s+(?:Take\s+)?(Under|Over)\s+([\d.]+)",
+                    text[:10000], re.I,
+                )
+                if pick_match:
+                    side = pick_match.group(1).upper()
+                    line = float(pick_match.group(2))
+                    picks.append(ExternalPick(
+                        game_id=gid, sport='MLB', game_date=game_date, source='docsports',
+                        surface='total', pick_side=side, pick_line=line,
+                        raw_text=f'Doc Sports: {side} {line}',
+                        source_url=url,
+                    ))
+                    continue
+                continue
+
+            team = pick_match.group(1).strip()
+            odds = int(pick_match.group(2))
+            # Determine home/away
+            pick_side = 'HOME' if team.lower() in home_slug.lower() or home_slug.lower() in team.lower() else 'AWAY'
+            picks.append(ExternalPick(
+                game_id=gid, sport='MLB', game_date=game_date, source='docsports',
+                surface='ml', pick_side=pick_side, odds_american=odds,
+                raw_text=f'Doc Sports: {team} ML ({odds})',
+                source_url=url,
+            ))
+            time.sleep(0.5)  # be polite
+        except Exception as e:
+            continue
+
+    return picks, 200
 
 
 def fetch_scp(slate: list, game_date: str) -> tuple[list, int]:
