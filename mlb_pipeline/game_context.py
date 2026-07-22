@@ -4058,6 +4058,19 @@ def run(target_date=None):
                 confluence_net = support - against
                 confluence_support = support
                 confluence_breakdown = breakdown
+                # Absolute home-vs-away lean — added 2026-07-22.
+                # signal_confluence_net is MODEL-RELATIVE (supports vs opposes
+                # the projected_spread direction), which reads wrong when
+                # displayed as if it were home-lean. Concrete example: MIN@CLE
+                # 7/22 had breakdown 4-HOME/2-AWAY (net home_lean = +2), but
+                # model_pick=away → stored confluence_net = 2-4 = -2. Users see
+                # -2 and think "away lean" when actually 4/6 signals point HOME.
+                # New field is direction-agnostic so app can display the more
+                # intuitive value. Primary_play gate keeps using confluence_net
+                # (correct for fav-only playable ML picks).
+                _home_signals = sum(1 for v in breakdown.values() if v == 'home')
+                _away_signals = sum(1 for v in breakdown.values() if v == 'away')
+                confluence_home_lean = _home_signals - _away_signals
                 # Total possible signals — the universe that COULD vote when
                 # all data is present. Display denominator. Bump this if you
                 # add a new vote above so X / N display stays accurate.
@@ -4394,6 +4407,9 @@ def run(target_date=None):
                 "signal_confluence_net": confluence_net,
                 "signal_confluence_support": confluence_support,
                 "signal_confluence_breakdown": confluence_breakdown if confluence_breakdown else None,
+                # Absolute HOME−AWAY signal count (2026-07-22). See explainer
+                # comment above confluence_home_lean assignment for rationale.
+                "signal_confluence_home_lean": confluence_home_lean if confluence_breakdown else None,
                 # Normalized denominator for the app's "X of Y signals" display.
                 # Voted = how many signals had data + clear-enough delta to vote.
                 # Total = the canonical signal universe (currently 14). Without
