@@ -458,6 +458,19 @@ jobs:
           cd mlb_pipeline
           python resolve_potd.py
 
+      # Grade external picks now that game_results is filled — enables
+      # per-source calibration + consensus-fade detector (transparency
+      # differentiator, 2026-07-22). continue-on-error so a bad
+      # result-map query never blocks downstream POTD walk.
+      - name: Resolve external picks
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python resolve_externals.py --sport MLB --days 7 || echo "external resolver failed (non-fatal)"
+
       # Re-walk the sweat card after POTD is graded (2026-05-26 fix).
       # The card walk inside resolve_game_results.py reads
       # daily_best_bet_history for the POTD row's result — but the FIRST
