@@ -290,14 +290,65 @@ def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:
 # Each returns a list of ExternalPick objects.
 
 def fetch_dimers(slate: list, game_date: str) -> tuple[list, int]:
-    """Dimers.com/bet-hub/mlb/schedule. Returns (picks, http_status).
+    """Dimers.com/bet-hub/mlb/schedule — JS-rendered via Playwright.
 
-    Dimers publishes per-team win probability and total predictions.
-    Attribution: link back to their schedule page.
+    Renders game cards as:
+        JUL 21, 6:40 PM ET
+        Dodgers            <- away team
+        65.7%              <- away win probability
+        Phillies           <- home team
+        34.3%              <- home win probability
+
+    Live games interleave scores between team and %. Regex handles both.
+    Audit tag: BOOST when win_prob >= 60% (Dimers has +7pt lift at 60+).
     """
-    # TODO Phase 1 scraper — for now, return empty + http_status 200 as a
-    # smoke test that pull_log flow works. Wire real scraper next.
-    return [], 200
+    from _playwright_helper import render_page
+    text, err = render_page('https://www.dimers.com/bet-hub/mlb/schedule')
+    if err == 'unavailable':
+        print('  ⚠ Dimers: Playwright unavailable — skip')
+        return [], 200
+    if err:
+        print(f'  ⚠ Dimers render error: {err}')
+        return [], 500
+    if not text:
+        return [], 200
+
+    picks = []
+    seen = set()
+    # Match "TeamA\n(score\n)?WP%\nTeamB\n(score\n)?WP%" chunks
+    chunk_re = re.compile(
+        r'([A-Z][A-Za-z. ]{2,20}?)\s*\n\s*(?:\d+\s*\n\s*)?(\d{1,2}\.\d)%\s*\n'
+        r'\s*([A-Z][A-Za-z. ]{2,20}?)\s*\n\s*(?:\d+\s*\n\s*)?(\d{1,2}\.\d)%',
+    )
+    for m in chunk_re.finditer(text):
+        away_name, away_wp, home_name, home_wp = m.groups()
+        away_wp = float(away_wp); home_wp = float(home_wp)
+        # Sanity: probabilities sum ~100
+        if not (95 <= away_wp + home_wp <= 105):
+            continue
+        # Find matching game
+        gid = None; pick_side = None; pick_wp = None
+        for g in slate:
+            if _team_matches(g.get('away_team'), away_name) and \
+               _team_matches(g.get('home_team'), home_name):
+                gid = g['game_id']
+                if home_wp >= away_wp:
+                    pick_side, pick_wp = 'HOME', home_wp
+                else:
+                    pick_side, pick_wp = 'AWAY', away_wp
+                break
+        if not gid or gid in seen:
+            continue
+        seen.add(gid)
+        fade = 'boost' if pick_wp >= 60 else 'neutral'
+        picks.append(ExternalPick(
+            game_id=gid, sport='MLB', game_date=game_date, source='dimers',
+            surface='ml', pick_side=pick_side, odds_american=None,
+            confidence=f'{pick_wp:.1f}% wp',
+            raw_text=f'Dimers wp: {away_name} {away_wp:.1f}% / {home_name} {home_wp:.1f}%',
+            fade_flag=fade,
+        ))
+    return picks, 200
 
 
 def fetch_covers(slate: list, game_date: str) -> tuple[list, int]:
@@ -420,8 +471,76 @@ def fetch_cbs(slate: list, game_date: str) -> tuple[list, int]:
 
 
 def fetch_action(slate: list, game_date: str) -> tuple[list, int]:
-    """Action Network public bet%/money% split. Sharp $ ≥+35 gap = signal."""
-    return [], 200
+    """Action Network public betting — JS-rendered via Playwright.
+
+    Public $% / bet% split is Pro-locked, but the bet% column is free.
+    Layout (moneyline view):
+        9:38 PM
+        Cardinals
+        975
+        Angels
+        976
+
+        -116 / -105
+        +113 / -115
+        48% / 52%   <- bet %
+
+    We surface which side the public is on. Money % gap (the true sharp
+    signal) requires Pro API access — deferred to Phase 3.
+    """
+    from _playwright_helper import render_page
+    url = 'https://www.actionnetwork.com/mlb/public-betting'
+    text, err = render_page(url, wait_ms=6000, wait_until='networkidle', timeout_ms=45000)
+    if err == 'unavailable':
+        print('  ⚠ Action: Playwright unavailable — skip')
+        return [], 200
+    if err:
+        print(f'  ⚠ Action render error: {err}')
+        return [], 500
+    if not text:
+        return [], 200
+
+    picks = []
+    seen = set()
+    # Pattern: "TeamA\n<3-digit-id>\nTeamB\n<3-digit-id>\n(...odds...)\n<pct>%\n<pct>%"
+    # The two %s at the end are the bet% for away/home respectively.
+    chunk_re = re.compile(
+        r'([A-Z][A-Za-z ]{2,20}?)\s*\n\s*\d{3,4}\s*\n'
+        r'\s*([A-Z][A-Za-z ]{2,20}?)\s*\n\s*\d{3,4}\s*\n'
+        r'.*?(\d{1,3})%\s*\n\s*(\d{1,3})%',
+        re.DOTALL,
+    )
+    for m in chunk_re.finditer(text):
+        away_name = m.group(1).strip()
+        home_name = m.group(2).strip()
+        away_pct = int(m.group(3))
+        home_pct = int(m.group(4))
+        # Sanity: percentages should sum ~100
+        if not (90 <= away_pct + home_pct <= 110):
+            continue
+        gid = None
+        for g in slate:
+            if _team_matches(g.get('away_team'), away_name) and \
+               _team_matches(g.get('home_team'), home_name):
+                gid = g['game_id']; break
+        if not gid or gid in seen:
+            continue
+        seen.add(gid)
+        if home_pct > away_pct:
+            side, pct = 'HOME', home_pct
+        else:
+            side, pct = 'AWAY', away_pct
+        # Audit tag: >=70% public + heavy fav → boost (public+sharp align)
+        # else neutral (mid-gap trap zone was covered by money%, which we lack)
+        fade = 'boost' if pct >= 70 else 'neutral'
+        picks.append(ExternalPick(
+            game_id=gid, sport='MLB', game_date=game_date, source='action',
+            surface='ml', pick_side=side, odds_american=None,
+            confidence=f'{pct}% public bets',
+            raw_text=f'Action bet%: {away_name} {away_pct}% / {home_name} {home_pct}%',
+            fade_flag=fade,
+        ))
+    return picks, 200
 
 
 def fetch_vsin(slate: list, game_date: str) -> tuple[list, int]:
@@ -494,7 +613,78 @@ def fetch_vsin(slate: list, game_date: str) -> tuple[list, int]:
 
 
 def fetch_bettingpros(slate: list, game_date: str) -> tuple[list, int]:
-    return [], 200
+    """BettingPros MLB — JS-rendered player-prop picks via Playwright.
+
+    Free tier surfaces top player prop picks with:
+        Luis Castillo             <- player name
+        U 17.5 OUTS (+102) vs CIN <- pick text
+        65% Cover                 <- EV cover rate
+        +31% EV                   <- expected value
+        Proj: 16.1                <- projection
+        5 out of 5 stars          <- star rating
+
+    Attribution: BettingPros (bettingpros.com/mlb/picks/).
+    Surface: 'prop'. Audit tag: BOOST when stars=5 AND ev%>=+15.
+    """
+    from _playwright_helper import render_page
+    text, err = render_page('https://www.bettingpros.com/mlb/picks/')
+    if err == 'unavailable':
+        print('  ⚠ BettingPros: Playwright unavailable — skip')
+        return [], 200
+    if err:
+        print(f'  ⚠ BettingPros render error: {err}')
+        return [], 500
+    if not text:
+        return [], 200
+
+    picks = []
+    # Match: "Player Name\nU/O <line> <stat> (odds) vs <TEAM>"
+    prop_re = re.compile(
+        r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)\s*\n\s*'      # Player name (2+ words)
+        r'(U|O)\s+([\d.]+)\s+([A-Z]{1,6})\s+'            # U/O line STAT
+        r'\(([+-]\d{2,4})\)\s+vs\s+([A-Z]{2,4})',        # (odds) vs TEAM
+    )
+    for m in prop_re.finditer(text):
+        player = m.group(1).strip()
+        side = 'UNDER' if m.group(2).upper() == 'U' else 'OVER'
+        line = float(m.group(3))
+        stat = m.group(4)
+        odds = int(m.group(5))
+        opp_code = m.group(6)
+
+        # Grab star rating + EV from a nearby window (next ~400 chars)
+        window = text[m.end(): m.end() + 400]
+        star_m = re.search(r'(\d)\s*out of 5 stars', window)
+        stars = int(star_m.group(1)) if star_m else None
+        ev_m = re.search(r'([+-]\d+)% EV', window)
+        ev_pct = int(ev_m.group(1)) if ev_m else None
+        cov_m = re.search(r'(\d+)% Cover', window)
+        cov_pct = int(cov_m.group(1)) if cov_m else None
+
+        # Map player → game via opp_code
+        opp_full = _PICKSWISE_CODES.get(opp_code, opp_code)
+        gid = None
+        for g in slate:
+            if _team_matches(g.get('home_team'), opp_full) or \
+               _team_matches(g.get('away_team'), opp_full):
+                gid = g['game_id']; break
+        if not gid: continue
+
+        fade = 'boost' if (stars == 5 and ev_pct and ev_pct >= 15) else \
+               ('trust' if stars and stars >= 4 else 'neutral')
+        picks.append(ExternalPick(
+            game_id=gid, sport='MLB', game_date=game_date, source='bettingpros',
+            surface='prop', pick_side=side, pick_line=line, odds_american=odds,
+            confidence=(f'{stars}-star' if stars else None),
+            raw_text=(f'BettingPros: {player} {side} {line} {stat} ({odds}) '
+                      f'vs {opp_code}'
+                      + (f' [{stars}★' if stars else '')
+                      + (f' {ev_pct:+d}%EV' if ev_pct is not None else '')
+                      + (f' {cov_pct}%cov' if cov_pct is not None else '')
+                      + (']' if stars else '')),
+            fade_flag=fade,
+        ))
+    return picks, 200
 
 
 def fetch_oddsshark(slate: list, game_date: str) -> tuple[list, int]:

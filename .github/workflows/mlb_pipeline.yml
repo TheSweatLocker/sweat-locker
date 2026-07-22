@@ -29,7 +29,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pybaseball requests python-dotenv beautifulsoup4 scikit-learn numpy xgboost
+          pip install pybaseball requests python-dotenv beautifulsoup4 scikit-learn numpy xgboost playwright
+          # Chromium binary for Playwright-rendered external scrapers
+          # (Dimers/Action/BettingPros). Adds ~200MB but only runs on external pull step.
+          python -m playwright install --with-deps chromium || echo "chromium install failed (non-fatal — Playwright scrapers will skip)"
 
       - name: Run pitcher stats update
         env:
