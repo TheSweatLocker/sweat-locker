@@ -2025,10 +2025,15 @@ def compute_primary_play(ctx):
     # New: blend via tier_discipline_gate.weighted_composite_spread (same
     # audit-backed formula the resolver uses). Falls back to v4→v3 if the
     # import isn't available (defensive, keeps offline scripts working).
+    # Read panel_implied_margin if game_context has it pre-computed
+    # (added 2026-07-22 — see 20260722_context_panel_implied.sql). Panel
+    # was 72% on sides in 7/21 audit; with-panel composite hits 62% n=187.
+    panel_margin_ctx = ctx.get('panel_implied_margin')
     try:
         from tier_discipline_gate import weighted_composite_spread
         composite = weighted_composite_spread(
-            v3_spread, v4_spread, jerry_spread, panel_margin=None,
+            v3_spread, v4_spread, jerry_spread,
+            panel_margin=panel_margin_ctx,
         )
         proj_spread = composite if composite is not None else (v4_spread if v4_spread is not None else v3_spread)
     except Exception:
@@ -2240,6 +2245,35 @@ def upload_game_context(context, commence_time=None):
         "Content-Type": "application/json",
         "Prefer": "resolution=merge-duplicates,return=minimal"
     }
+
+    # Panel-implied margin + total — 2026-07-22.
+    # 7/21 audit: Panel = 72% on sides (8-3), best lens layer of the night.
+    # Precomputing at context write time lets weighted_composite_spread use
+    # the with-panel weight variant (62.0% n=187) instead of panel-free
+    # (60.4% n=462). Formula mirrors backfill_panel_implied.compute_panel.
+    try:
+        _asp_er = context.get("away_pitcher_projected_er")
+        _hsp_er = context.get("home_pitcher_projected_er")
+        _asp_outs = context.get("away_pitcher_projected_outs")
+        _hsp_outs = context.get("home_pitcher_projected_outs")
+        _abp = context.get("away_bullpen_era")
+        _hbp = context.get("home_bullpen_era")
+        if _asp_er is not None and _hsp_er is not None:
+            asp_er_f = float(_asp_er); hsp_er_f = float(_hsp_er)
+            asp_outs_f = float(_asp_outs) if _asp_outs is not None else 15.0
+            hsp_outs_f = float(_hsp_outs) if _hsp_outs is not None else 15.0
+            abp_f = float(_abp) if _abp is not None else 4.10
+            hbp_f = float(_hbp) if _hbp is not None else 4.10
+            _away_bp_ip = max(0, 9 - asp_outs_f / 3)
+            _home_bp_ip = max(0, 9 - hsp_outs_f / 3)
+            _home_scores = asp_er_f + abp_f * _away_bp_ip / 9
+            _away_scores = hsp_er_f + hbp_f * _home_bp_ip / 9
+            context["panel_implied_total"] = round(_home_scores + _away_scores, 2)
+            context["panel_implied_margin"] = round(_home_scores - _away_scores, 2)
+    except (TypeError, ValueError) as e:
+        # Missing/malformed input — leave panel cols null so composite falls
+        # back to panel-free weights per weighted_composite_spread contract.
+        pass
 
     # Compute server-side primary play (replaces in-app threshold logic).
     # App reads ctx.primary_play directly so tuning thresholds doesn't require
