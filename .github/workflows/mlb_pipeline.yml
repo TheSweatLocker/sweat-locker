@@ -659,6 +659,27 @@ jobs:
           cd mlb_pipeline
           python generate_mlb_game_reads.py --force
 
+      # External aggregation pull (2026-07-21) — pulls public handicapper
+      # picks + consensus + sharp $ signals from 13 sources into external_picks
+      # table with per-source pull_id provenance in external_pull_log.
+      # Runs on both crons; --refresh on 2pm-ET (18:00 UTC) hits only sources
+      # that publish mid-day (Action Network sharp $, VSiN column drops, Doc
+      # Sports finalizations). Per-source scrapers currently live for Covers +
+      # VSiN + Doc Sports; rest stubbed and returning 0 gracefully.
+      # continue-on-error so a source outage never breaks downstream steps.
+      - name: External source aggregation pull
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          if [ "${{ github.event.schedule }}" = "0 18 * * *" ]; then
+            python pull_externals_mlb.py --refresh
+          else
+            python pull_externals_mlb.py
+          fi
+
       # Auto-generate tonight's content card after the 2pm ET pipeline run
       # (skip on 8am run since lineups/lines aren't locked yet — content
       # would just be replaced anyway)
