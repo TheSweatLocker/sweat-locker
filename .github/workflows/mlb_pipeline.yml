@@ -271,12 +271,17 @@ jobs:
           KENPOM_KEY: ${{ secrets.KENPOM_KEY }}
         run: |
           DAY=$(date -u -d '-4 hours' +%u)
+          # 2026-07-22 debug: KENPOM_KEY was reporting "missing" per 6/1
+          # audit despite secret set. Print length only (never the value)
+          # so we can tell empty-string vs actually-populated at a glance.
+          # Remove this echo once the KenPom pull is confirmed working.
+          echo "KENPOM_KEY length: ${#KENPOM_KEY}"
           if [ "$DAY" = "1" ]; then
             echo "Monday — pulling KenPom snapshot"
             cd mlb_pipeline
             python ncaab_pipeline.py
           else
-            echo "Not Monday (day=$DAY) — skipping NCAAB pull"
+            echo "Not Monday (day=$DAY) — skipping NCAAB pull (but length probe still ran)"
           fi
 
       # HR Watch audit (2026-06-01) — resolves prior days' predictions
