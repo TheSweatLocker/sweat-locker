@@ -120,6 +120,90 @@ def _weather_mult(temp, wind_speed, wind_direction, is_dome):
     return mult
 
 
+def _pitcher_vs_team_mult(recent_era, recent_n_starts, season_era=None, season_ip=None):
+    """Pitcher-vs-team mastery multiplier (2026-07-23).
+
+    Uses recent (last N seasons) vs same opponent. Requires sample size gate
+    to avoid noise: n_starts >= 3 for recent OR season_ip >= 15 for lifetime.
+    Recent takes priority when both available.
+
+    Clamped 0.80-1.20 — this is a SECONDARY signal and shouldn't dominate.
+
+    Direction: lower ERA vs this team = stronger mastery = LOWER runs multiplier.
+    """
+    era = None
+    if recent_era is not None and recent_n_starts and recent_n_starts >= 3:
+        era = recent_era
+    elif season_era is not None and season_ip and season_ip >= 15:
+        era = season_era
+    if era is None:
+        return 1.0
+    try:
+        raw = float(era) / LEAGUE_AVG_XERA
+        return _clamp(raw, 0.80, 1.20)
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _umpire_over_mult(umpire_note):
+    """Umpire tendency multiplier from stored umpire_note text.
+
+    umpire_note format examples:
+      "Chris Segal — neutral zone, 49% over rate"
+      "Angel Hernandez — tight zone, 42% over rate"
+      "Doug Eddings — wide zone, 55% over rate"
+
+    Extracts the "X% over rate" number. League-neutral = 50%.
+    Direction: >50% = ump favors OVER = higher scoring multiplier.
+
+    Clamped 0.92-1.08 — small effect (K/BB tendencies feed into MC's
+    xERA input indirectly already; this is the *residual* umpire adjust).
+    Applies to full game, not just first inning.
+    """
+    if not umpire_note:
+        return 1.0
+    import re
+    m = re.search(r'(\d+)\s*%\s*over', str(umpire_note).lower())
+    if not m:
+        return 1.0
+    try:
+        pct = int(m.group(1)) / 100.0
+        # 50% = 1.0. Each 1% over league-neutral = +0.4% run rate,
+        # capped at ±8% total (roughly matches the empirical spread from
+        # 42%-lo umps to 58%-hi umps in the 30d cohort).
+        raw = 1.0 + (pct - 0.50) * 0.4
+        return _clamp(raw, 0.92, 1.08)
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _defense_mult(oaa, catcher_framing):
+    """Defensive quality multiplier — OAA (positioning/range) +
+    catcher framing (extra called strikes).
+
+    OAA: 0 = neutral. Elite +15 → 0.96x runs. Bad -15 → 1.04x.
+    Framing: 0 = neutral. Elite +8 → 0.98x. Bad -8 → 1.02x.
+
+    Both clamped small — MC scorer suppression already largely handled
+    by pitcher xERA, so this is *residual* defense signal only.
+    Clamped 0.92-1.08 combined.
+    """
+    mult = 1.0
+    if oaa is not None:
+        try:
+            oaa_f = float(oaa)
+            mult *= _clamp(1.0 - oaa_f * 0.003, 0.94, 1.06)
+        except (TypeError, ValueError):
+            pass
+    if catcher_framing is not None:
+        try:
+            cf_f = float(catcher_framing)
+            mult *= _clamp(1.0 - cf_f * 0.003, 0.96, 1.04)
+        except (TypeError, ValueError):
+            pass
+    return _clamp(mult, 0.92, 1.08)
+
+
 def _which_pitcher_inning(inning, projected_outs):
     """Return 'sp' / 'bp_setup' / 'bp_closer' for the pitcher in box."""
     if not projected_outs:
@@ -164,7 +248,21 @@ def _simulate_inning(rng, scoring, defending, inning):
     w = _weather_mult(scoring['temp'], scoring['wind_speed'],
                       scoring['wind_direction'], scoring['is_dome'])
 
-    rate = base * f * g * d * p * park * w
+    # v2 multipliers (2026-07-23) — all default to 1.0 when data missing.
+    # SP-vs-team mastery: only applies while starter is in box. Attached to
+    # the defending side's SP (his mastery against the scoring team).
+    m = _pitcher_vs_team_mult(
+        defending.get('sp_vs_team_recent_era'),
+        defending.get('sp_vs_team_recent_n'),
+        defending.get('sp_vs_team_season_era'),
+        defending.get('sp_vs_team_season_ip'),
+    ) if box == 'sp' else 1.0
+    # Umpire adjustment: applies to every half-inning (shared, per game)
+    u = _umpire_over_mult(scoring.get('umpire_note'))
+    # Defense (OAA + framing) — attached to the defending team's fielders
+    df = _defense_mult(defending.get('oaa'), defending.get('catcher_framing'))
+
+    rate = base * f * g * d * p * park * w * m * u * df
     rate = _clamp(rate, 0.05, 3.0)
 
     # Poisson sample (Knuth's algorithm — fine for λ < 30)
@@ -179,7 +277,14 @@ def _simulate_inning(rng, scoring, defending, inning):
 
 
 def _extract_sides(g):
-    """Build per-side input dicts from mlb_game_context row."""
+    """Build per-side input dicts from mlb_game_context row.
+
+    2026-07-23 additions: pitcher_vs_team mastery, umpire over-rate,
+    catcher framing, team OAA. All fall back to neutral (1.0 mult) when
+    missing so existing games without these fields aren't affected.
+    """
+    # Umpire is shared between both sides (whole game)
+    ump_note = g.get('umpire_note')
     home = {
         'sp_xera': _f(g.get('home_sp_xera')),
         'sp_l3_era': _f(g.get('home_pitcher_last_3_era')),
@@ -195,6 +300,16 @@ def _extract_sides(g):
         'wind_speed': _f(g.get('wind_speed')),
         'wind_direction': g.get('wind_direction') or '',
         'is_dome': bool(g.get('is_dome')),
+        # 2026-07-23: pitcher-vs-team mastery (attached to the pitcher's own side)
+        'sp_vs_team_recent_era': _f(g.get('home_pitcher_vs_team_recent_era')),
+        'sp_vs_team_recent_n': _f(g.get('home_pitcher_vs_team_recent_n_starts')),
+        'sp_vs_team_season_era': _f(g.get('home_pitcher_vs_team_era')),
+        'sp_vs_team_season_ip': _f(g.get('home_pitcher_vs_team_ip')),
+        # Defensive support (attached to fielding side)
+        'oaa': _f(g.get('home_team_oaa')),
+        'catcher_framing': _f(g.get('home_catcher_framing')),
+        # Umpire — shared
+        'umpire_note': ump_note,
     }
     away = {
         'sp_xera': _f(g.get('away_sp_xera')),
@@ -211,6 +326,13 @@ def _extract_sides(g):
         'wind_speed': _f(g.get('wind_speed')),
         'wind_direction': g.get('wind_direction') or '',
         'is_dome': bool(g.get('is_dome')),
+        'sp_vs_team_recent_era': _f(g.get('away_pitcher_vs_team_recent_era')),
+        'sp_vs_team_recent_n': _f(g.get('away_pitcher_vs_team_recent_n_starts')),
+        'sp_vs_team_season_era': _f(g.get('away_pitcher_vs_team_era')),
+        'sp_vs_team_season_ip': _f(g.get('away_pitcher_vs_team_ip')),
+        'oaa': _f(g.get('away_team_oaa')),
+        'catcher_framing': _f(g.get('away_catcher_framing')),
+        'umpire_note': ump_note,
     }
     return home, away
 

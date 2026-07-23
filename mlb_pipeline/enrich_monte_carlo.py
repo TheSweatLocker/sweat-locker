@@ -35,7 +35,11 @@ KEY = os.environ["SUPABASE_KEY"]
 H_READ = {"apikey": KEY, "Authorization": f"Bearer {KEY}"}
 H_WRITE = {**H_READ, "Content-Type": "application/json", "Prefer": "return=minimal"}
 
-from monte_carlo_win_prob import simulate_total, simulate_side, simulate_spread
+# 2026-07-23: migrated from monte_carlo_win_prob (thin Poisson-on-projections)
+# to monte_carlo.simulate_game (rich per-inning simulator with SP/BP form,
+# offense drift, hand splits, park, weather, pitcher-vs-team mastery, umpire,
+# and defense multipliers). MC is now an INDEPENDENT lens, not a v4-echo.
+from monte_carlo import simulate_game
 
 SIM_N = 10000
 
@@ -52,69 +56,69 @@ def _today_et():
 
 
 def fetch_slate(target_date: str) -> list:
-    """Pull today's game_context rows with the fields we need."""
+    """Pull today's game_context rows with ALL fields (simulate_game consumes
+    ~30 fields via _extract_sides; safer to select * than enumerate).
+    """
     r = requests.get(
         f"{SB}/rest/v1/mlb_game_context"
-        f"?game_date=eq.{target_date}"
-        f"&select=game_id,home_team,away_team,close_total,close_spread,"
-        f"projected_total,model_pred_home_runs,model_pred_away_runs,"
-        f"jerry_pred_home_runs,jerry_pred_away_runs,model_pred_total,jerry_pred_total",
+        f"?game_date=eq.{target_date}&select=*",
         headers=H_READ,
         timeout=20,
     )
     return r.json() if r.status_code == 200 else []
 
 
-def _split_projected_teams(row: dict) -> tuple:
-    """Return (proj_home_runs, proj_away_runs).
-
-    Uses model_pred_{home,away}_runs if both present (v4 XGBoost split),
-    else jerry_pred_{home,away}_runs, else splits projected_total 50/50.
-    """
-    mh = _f(row.get("model_pred_home_runs"))
-    ma = _f(row.get("model_pred_away_runs"))
-    if mh is not None and ma is not None:
-        return mh, ma
-    jh = _f(row.get("jerry_pred_home_runs"))
-    ja = _f(row.get("jerry_pred_away_runs"))
-    if jh is not None and ja is not None:
-        return jh, ja
-    # Fall back: split projected_total 50/50
-    pt = _f(row.get("projected_total"))
-    if pt is not None:
-        return pt / 2.0, pt / 2.0
-    return None, None
-
-
 def compute_mc_probabilities(row: dict) -> dict:
-    """Run Monte Carlo sims + return probability bundle."""
-    proj_h, proj_a = _split_projected_teams(row)
-    if proj_h is None or proj_a is None:
-        return {}
+    """Run rich Monte Carlo (per-inning simulator) + return probability bundle.
+
+    2026-07-23: switched from thin `simulate_total/side/spread` (which just
+    Poisson-sampled v4's projected runs) to `simulate_game` which builds runs
+    from scratch using SP/BP quality, form, offense drift, hand splits, park,
+    weather, pitcher-vs-team mastery, umpire, and team defense.
+    MC is now an INDEPENDENT lens, not a v4-echo.
+
+    Bonus outputs added: mc_p_nrfi + mc_p_yrfi (built into simulate_game).
+    """
     close_total = _f(row.get("close_total"))
     close_spread = _f(row.get("close_spread"))
-    out = {"mc_computed_at": datetime.now(timezone.utc).isoformat()}
-
-    # Total probabilities
+    # simulate_game gracefully handles missing line but needs at least
+    # season_rpg + xERA to produce meaningful probabilities.
+    sim = simulate_game(row, n_iter=SIM_N, line=close_total, seed=42)
+    if sim is None or not isinstance(sim, dict):
+        return {}
+    out = {
+        "mc_computed_at": datetime.now(timezone.utc).isoformat(),
+        "mc_p_home_win":  sim.get("p_home_win"),
+        "mc_p_away_win":  sim.get("p_away_win"),
+        # simulate_game returns mu_total / sigma_total (not mean_/std_)
+        "mc_mean_total":  sim.get("mu_total"),
+        "mc_std_total":   sim.get("sigma_total"),
+        "mc_expected_margin": sim.get("expected_margin"),
+    }
     if close_total is not None:
-        tot_result = simulate_total(proj_h, proj_a, close_total, n=SIM_N, seed=42)
-        out["mc_p_over"] = tot_result["p_over"]
-        out["mc_p_under"] = tot_result["p_under"]
-        out["mc_p_push"] = tot_result["p_push"]
-        out["mc_mean_total"] = tot_result["mean_total"]
-        out["mc_std_total"] = tot_result["std_total"]
-
-    # Side probability (always compute — line-independent)
-    side_result = simulate_side(proj_h, proj_a, n=SIM_N, seed=42)
-    out["mc_p_home_win"] = side_result["p_home_win"]
-    out["mc_p_away_win"] = side_result["p_away_win"]
-
-    # Spread cover probability
+        out["mc_p_over"]  = sim.get("p_over")
+        out["mc_p_under"] = sim.get("p_under")
+        # p_push not returned natively — approximate as 1 - p_over - p_under
+        po = sim.get("p_over"); pu = sim.get("p_under")
+        if po is not None and pu is not None:
+            out["mc_p_push"] = round(max(0.0, 1.0 - po - pu), 3)
+    # Rich simulator gives NRFI/YRFI probabilities natively
+    if sim.get("p_nrfi") is not None:
+        out["mc_p_nrfi"] = sim.get("p_nrfi")
+        out["mc_p_yrfi"] = sim.get("p_yrfi")
+    # Spread cover — approximate via expected_margin + normal distribution
+    # (simulate_game doesn't accept spread as an input; extend later if we
+    # want exact per-line covers).
     if close_spread is not None:
-        sp_result = simulate_spread(proj_h, proj_a, close_spread, n=SIM_N, seed=42)
-        out["mc_p_home_covers"] = sp_result["p_home_covers"]
-        out["mc_p_away_covers"] = sp_result["p_away_covers"]
-
+        em = sim.get("expected_margin")
+        st = sim.get("sigma_total")
+        if em is not None and st is not None and st > 0:
+            from math import erf, sqrt
+            # MLB: positive close_spread = home is dog getting cs runs.
+            # Home covers when actual_margin > -close_spread (loses by <cs OR wins).
+            z = (em - (-close_spread)) / (st * 0.5 / sqrt(2))
+            out["mc_p_home_covers"] = round(0.5 * (1 + erf(z)), 3)
+            out["mc_p_away_covers"] = round(1 - out["mc_p_home_covers"], 3)
     return out
 
 
