@@ -1284,8 +1284,13 @@ def get_pitcher_vs_team_recent(pitcher_id, opponent_team_id, n_starts=3):
             agg["k"] += int(stat.get("strikeOuts", 0) or 0)
             agg["ab"] += int(stat.get("atBats", 0) or 0)
             agg["hits"] += int(stat.get("hits", 0) or 0)
-        # 10-IP minimum gate — 3 starts × 3-5 IP each → 10 IP floor catches noise
-        if agg["ip"] < 10:
+        # 6-IP minimum gate (was 10; lowered 2026-07-23 after MC v2 ablation
+        # showed mastery mult was firing on 0.00 of backtest games due to
+        # gate blocking young pitcher matchups). MC multiplier clamps to
+        # 0.80-1.20 so bad-sample risk is capped even at partial IP.
+        # User-facing "mastery" copy still gates at 15 IP career via
+        # get_pitcher_vs_team — this only affects internal MC input.
+        if agg["ip"] < 6:
             return None
         return {
             "era_vs_team_recent": round((agg["er"] * 9.0) / agg["ip"], 2),

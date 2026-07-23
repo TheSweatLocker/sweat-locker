@@ -121,26 +121,63 @@ def _weather_mult(temp, wind_speed, wind_direction, is_dome):
 
 
 def _pitcher_vs_team_mult(recent_era, recent_n_starts, season_era=None, season_ip=None):
-    """Pitcher-vs-team mastery multiplier (2026-07-23).
+    """Pitcher-vs-team mastery multiplier (2026-07-23, updated to dampen
+    by sample size after MC v2 ablation showed 0.00 delta from gate
+    blocking too many games).
 
-    Uses recent (last N seasons) vs same opponent. Requires sample size gate
-    to avoid noise: n_starts >= 3 for recent OR season_ip >= 15 for lifetime.
-    Recent takes priority when both available.
+    Priority: recent (last 3 starts vs opp) → career (5-season aggregate).
+    Both paths already source-side gated (6-IP recent, 15-IP career) so
+    era is real signal, not 1-inning noise.
 
-    Clamped 0.80-1.20 — this is a SECONDARY signal and shouldn't dominate.
+    SAMPLE-DAMPENED effect: full mastery signal only fires when we have
+    lots of data. Small samples (3 recent starts / 15 career IP) get
+    partial effect (blend with neutral 1.0). This lets us USE the data
+    without over-swinging on small samples.
 
-    Direction: lower ERA vs this team = stronger mastery = LOWER runs multiplier.
+      recent path:  full effect at n_starts>=5, 50% at 3-4, none <3
+      career path:  full effect at ip>=30, 50% at 15-29, none <15
+
+    Overall clamp 0.80-1.20.
+
+    Direction: lower ERA vs this team = stronger mastery = LOWER runs mult.
     """
     era = None
-    if recent_era is not None and recent_n_starts and recent_n_starts >= 3:
-        era = recent_era
-    elif season_era is not None and season_ip and season_ip >= 15:
-        era = season_era
-    if era is None:
+    weight = 0.0
+    if recent_era is not None and recent_n_starts:
+        try:
+            n = int(recent_n_starts)
+            if n >= 5:
+                era, weight = recent_era, 1.0
+            elif n >= 3:
+                era, weight = recent_era, 0.5
+        except (TypeError, ValueError):
+            pass
+    # Career fallback (only when recent not usable). Note: `get_pitcher_vs_team`
+    # already gates at 15 IP source-side and returns None below that — so
+    # season_era existing at ALL implies IP≥15 was already checked. Historical
+    # mlb_game_results copies era but drops ip (data pipeline gap 2026-07-23);
+    # trust era-alone as "yes, has sample" when era populated.
+    if era is None and season_era is not None:
+        try:
+            if season_ip is not None:
+                ip = float(season_ip)
+                weight = 1.0 if ip >= 30 else (0.5 if ip >= 15 else 0.0)
+            else:
+                # era populated but ip null (historical pipeline gap) —
+                # default to 0.5 weight since era was gated at 15 IP source-side.
+                weight = 0.5
+            if weight > 0.0:
+                era = season_era
+        except (TypeError, ValueError):
+            pass
+    if era is None or weight == 0.0:
         return 1.0
     try:
         raw = float(era) / LEAGUE_AVG_XERA
-        return _clamp(raw, 0.80, 1.20)
+        # Blend: at weight=1.0, full raw effect. At weight=0.5, half effect
+        # (blend halfway to neutral 1.0).
+        blended = 1.0 + weight * (raw - 1.0)
+        return _clamp(blended, 0.80, 1.20)
     except (TypeError, ValueError):
         return 1.0
 
