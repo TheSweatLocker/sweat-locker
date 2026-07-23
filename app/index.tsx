@@ -12107,6 +12107,33 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           </View>
                         );
                       })()}
+                      {/* MC HIGH-CONFIDENCE CHIP (2026-07-23) — reads
+                          mlb_game_context.mc_high_conf_flag from
+                          enrich_monte_carlo. Fires when |p_home_win-0.5|>=0.30.
+                          Backtest showed 71.1% hit rate at 80%+ threshold on
+                          n=135 (v2 rich MC post-mastery unlock). Green chip
+                          so it reads as SIGNAL not warning (fade chip is red). */}
+                      {(()=>{
+                        if(gamesSport!=='MLB') return null;
+                        const ctx = mlbGameContext[selectedGame?.home_team];
+                        if(!ctx?.mc_high_conf_flag) return null;
+                        const side = ctx.mc_high_conf_side || '';
+                        const pct = Math.round((ctx.mc_high_conf_pct||0)*100);
+                        return (
+                          <View style={{marginTop:12,padding:12,borderRadius:10,backgroundColor:'#0f2a1c',borderWidth:1,borderColor:'#00e5a0'}}>
+                            <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:6}}>
+                              <Text style={{fontSize:14}}>🎯</Text>
+                              <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12,letterSpacing:0.5}}>MC HIGH CONFIDENCE</Text>
+                            </View>
+                            <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'700',marginBottom:4}}>
+                              Monte Carlo: {pct}% {side}
+                            </Text>
+                            <Text style={{color:'#c8d8e8',fontSize:11,lineHeight:15}}>
+                              Rich per-inning simulator with 10 lenses gives high conviction. Backtest: MC 80%+ confidence hits ~71% on n=135 graded games.
+                            </Text>
+                          </View>
+                        );
+                      })()}
                       {/* Gold MODEL LEAN box REMOVED 2026-05-25 — it duplicated
                           the MODEL'S PLAY card inside Why-This-Score below, and
                           the redundancy made the modal feel cluttered. Single

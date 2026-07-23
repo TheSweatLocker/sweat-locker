@@ -122,16 +122,49 @@ def compute_mc_probabilities(row: dict) -> dict:
     return out
 
 
-def write_mc_to_context(game_id: str, mc_data: dict) -> bool:
-    """Patch mlb_game_context with the MC probability columns.
+def _compute_high_conf_flag(mc_data: dict) -> dict:
+    """Extract MC high-confidence flag from probability bundle.
 
-    Note: writes to a JSON blob column `mc_probabilities` since we don't want
-    to require a schema migration for each MC field. This makes the enrichment
-    ship-safe without touching mlb_game_context DDL.
+    Fires when |p_home_win - 0.5| >= 0.30 (i.e. MC says >=80% or <=20%).
+    Backtest showed 71.1% hit rate at this threshold on n=135 (v2 post-
+    mastery-unlock). App renders as Tier-1 chip.
+
+    Returns {mc_high_conf_flag, mc_high_conf_side, mc_high_conf_pct}
+    or {} if not qualifying.
+    """
+    p = mc_data.get('mc_p_home_win')
+    if p is None:
+        return {}
+    try:
+        p = float(p)
+    except (TypeError, ValueError):
+        return {}
+    delta = abs(p - 0.5)
+    if delta < 0.30:  # under 80% either side
+        return {
+            'mc_high_conf_flag': False,
+            'mc_high_conf_side': None,
+            'mc_high_conf_pct': None,
+        }
+    return {
+        'mc_high_conf_flag': True,
+        'mc_high_conf_side': 'HOME' if p >= 0.80 else 'AWAY',
+        'mc_high_conf_pct': round(p if p >= 0.80 else 1 - p, 3),
+    }
+
+
+def write_mc_to_context(game_id: str, mc_data: dict) -> bool:
+    """Patch mlb_game_context with MC probability blob + high-conf flags.
+
+    Writes mc_probabilities as a JSON blob (schema-free) AND populates
+    dedicated mc_high_conf_flag/_side/_pct columns for the app card badge
+    (added migration 20260723_context_mc_high_conf.sql).
     """
     if not mc_data:
         return False
     payload = {"mc_probabilities": mc_data}
+    # Merge high-confidence flag columns for the Tier-1 chip
+    payload.update(_compute_high_conf_flag(mc_data))
     r = requests.patch(
         f"{SB}/rest/v1/mlb_game_context?game_id=eq.{game_id}",
         headers=H_WRITE, json=payload, timeout=15,
