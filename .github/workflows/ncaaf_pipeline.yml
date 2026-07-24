@@ -84,18 +84,50 @@ jobs:
           cd mlb_pipeline
           python ncaaf_game_context.py || echo "game_context failed"
 
-      - name: External source aggregation (Phase 2 stub)
+      - name: Generate NCAAF game reads (Jerry)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_ncaaf_game_reads.py || echo "game reads failed (non-fatal)"
+
+      - name: External source aggregation pull
         if: steps.mode.outputs.mode == 'full'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          if [ -f pull_externals_ncaaf.py ]; then
-            python pull_externals_ncaaf.py || echo "external pull failed (non-fatal)"
+          # Sat cron uses --refresh mode (subset of sources for late-week updates)
+          if [ "${{ github.event.schedule }}" = "0 12 * * 6" ]; then
+            python pull_externals_ncaaf.py --refresh || echo "external refresh failed"
           else
-            echo "pull_externals_ncaaf.py not yet built — Phase 2"
+            python pull_externals_ncaaf.py || echo "external pull failed"
           fi
+
+      - name: Detect consensus-fade alerts (NCAAF)
+        if: steps.mode.outputs.mode == 'full'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python detect_consensus_fade.py --sport NCAAF || echo "fade detector failed"
+
+      - name: Resolve NCAAF external picks (post-game)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python resolve_externals.py --sport NCAAF --days 14 || echo "resolver failed"
 
       - name: Resolve completed games + refresh outcomes
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
