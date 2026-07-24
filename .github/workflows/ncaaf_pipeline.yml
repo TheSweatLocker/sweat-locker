@@ -1,0 +1,108 @@
+name: NCAAF Pipeline Weekly
+
+on:
+  schedule:
+    # CFB cadence — Sat is Game Day; also handles Thu/Fri weeknight games.
+    - cron: '0 15 * * 2'   # Tue 11am ET  — new week schedule + opening lines
+    - cron: '0 22 * * 3'   # Wed 6pm ET   — mid-week refresh + externals pull (Phase 2)
+    - cron: '0 18 * * 5'   # Fri 2pm ET   — Fri night games lock + Sat prep
+    - cron: '0 12 * * 6'   # Sat 8am ET   — final Sat card + line movement
+    - cron: '0 13 * * 0'   # Sun 9am ET   — Sat resolver + Sun cohort refresh
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Which sub-pipeline to run manually'
+        required: false
+        default: 'full'
+        type: choice
+        options: [full, odds_only, card_only, resolver_only, cohorts_only]
+
+jobs:
+  ncaaf-pipeline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv beautifulsoup4 scikit-learn numpy
+
+      - name: Detect run mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H); DOW=$(date -u +%u)
+            if [ "$DOW" = "7" ] && [ "$HOUR" = "13" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
+            elif [ "$DOW" = "6" ] && [ "$HOUR" = "12" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
+            elif [ "$DOW" = "5" ] && [ "$HOUR" = "18" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
+            else echo "mode=full" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Pull Odds API NCAAF lines
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_odds_pull.py || echo "ncaaf_odds_pull failed (non-fatal)"
+
+      - name: Refresh CFBD team stats (Tue only)
+        if: (steps.mode.outputs.mode == 'full') && github.event.schedule == '0 15 * * 2'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          if [ -f ncaaf_stats_pull.py ]; then
+            python ncaaf_stats_pull.py || echo "stats pull failed (non-fatal)"
+          else
+            echo "ncaaf_stats_pull.py not yet built — Phase 1b"
+          fi
+
+      - name: Build NCAAF game context
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_game_context.py || echo "game_context failed"
+
+      - name: External source aggregation (Phase 2 stub)
+        if: steps.mode.outputs.mode == 'full'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          if [ -f pull_externals_ncaaf.py ]; then
+            python pull_externals_ncaaf.py || echo "external pull failed (non-fatal)"
+          else
+            echo "pull_externals_ncaaf.py not yet built — Phase 2"
+          fi
+
+      - name: Resolve completed games + backfill scores
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_backfill_results.py --season $(date -u +%Y) || echo "backfill failed"
