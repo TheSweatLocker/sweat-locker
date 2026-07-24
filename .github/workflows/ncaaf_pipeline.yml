@@ -97,7 +97,7 @@ jobs:
             echo "pull_externals_ncaaf.py not yet built — Phase 2"
           fi
 
-      - name: Resolve completed games + backfill scores
+      - name: Resolve completed games + refresh outcomes
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -105,4 +105,13 @@ jobs:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_backfill_results.py --season $(date -u +%Y) || echo "backfill failed"
+          python resolve_ncaaf_results.py || echo "resolver failed"
+
+      - name: Recompute NCAAF cohort calibration
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_cohort_backfill.py || echo "cohort backfill failed"
