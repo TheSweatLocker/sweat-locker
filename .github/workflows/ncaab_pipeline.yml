@@ -1,0 +1,173 @@
+name: NCAAB Pipeline Daily
+
+on:
+  schedule:
+    # CBB is nightly during season (Nov-Mar). Off-season these fire as no-ops
+    # (Odds API returns 0 events, game_context builds nothing). Cheap to leave
+    # scheduled year-round rather than gating on month.
+    - cron: '0 14 * * *'   # 10am ET  — morning slate build (Odds + context + Jerry)
+    - cron: '0 20 * * *'   # 4pm  ET  — pre-tip refresh (Odds movement, externals)
+    - cron: '0 11 * * *'   # 7am  ET  — overnight resolver (last night's finals + cohorts)
+    - cron: '0 15 * * 1'   # 11am ET Mon — weekly KenPom refresh (uses existing ncaab_pipeline.py)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Which sub-pipeline to run manually'
+        required: false
+        default: 'full'
+        type: choice
+        options: [full, odds_only, card_only, resolver_only, kenpom_only, backfill]
+      backfill_season:
+        description: 'Season for backfill mode (e.g., 2024-25)'
+        required: false
+        default: ''
+
+jobs:
+  ncaab-pipeline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv beautifulsoup4 scikit-learn numpy playwright
+          python -m playwright install chromium --with-deps || echo "playwright chromium install non-fatal"
+
+      - name: Detect run mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H); DOW=$(date -u +%u)
+            # Sat/Sun morning cron = resolver_only if it fell on the resolver hour
+            if [ "$HOUR" = "11" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
+            elif [ "$HOUR" = "20" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
+            elif [ "$HOUR" = "15" ] && [ "$DOW" = "1" ]; then echo "mode=kenpom_only" >> $GITHUB_OUTPUT
+            else echo "mode=full" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      # ────── KENPOM (Monday 11am ET only) ──────
+      - name: KenPom weekly refresh
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          KENPOM_KEY:   ${{ secrets.KENPOM_KEY }}
+        run: |
+          cd mlb_pipeline
+          # Debug probe (temporary — remove after first successful Monday cron confirms key)
+          if [ -n "$KENPOM_KEY" ]; then echo "KENPOM_KEY length: ${#KENPOM_KEY}"; else echo "KENPOM_KEY not set"; fi
+          python ncaab_pipeline.py || echo "KenPom pull failed (non-fatal — game context can run on prior snapshot)"
+
+      # ────── ALIAS ENRICHMENT (monthly on Monday, cheap idempotent) ──────
+      - name: Refresh NCAAB alias enrichment (Mon only)
+        if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only') && github.event.schedule == '0 15 * * 1'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaab_enrich_aliases.py || echo "enrichment failed (non-fatal)"
+
+      # ────── ODDS PULL ──────
+      - name: Pull Odds API NCAAB lines
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaab_odds_pull.py || echo "ncaab_odds_pull failed (non-fatal)"
+
+      # ────── GAME CONTEXT ──────
+      - name: Build NCAAB game context
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaab_game_context.py || echo "game_context failed"
+
+      # ────── JERRY GAME READS ──────
+      - name: Generate NCAAB game reads (Jerry)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_ncaab_game_reads.py || echo "game reads failed (non-fatal)"
+
+      # ────── EXTERNAL PICKS AGGREGATION ──────
+      - name: External source aggregation pull
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # 4pm cron = --refresh (subset for late-day updates)
+          if [ "${{ github.event.schedule }}" = "0 20 * * *" ]; then
+            python pull_externals_ncaab.py --refresh || echo "external refresh failed"
+          else
+            python pull_externals_ncaab.py || echo "external pull failed"
+          fi
+
+      # ────── CONSENSUS FADE DETECTOR ──────
+      - name: Detect consensus-fade alerts (NCAAB)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python detect_consensus_fade.py --sport NCAAB || echo "fade detector failed"
+
+      # ────── RESOLVE COMPLETED GAMES (ESPN) ──────
+      - name: Resolve completed games + refresh outcomes
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python resolve_ncaab_results.py --days-back 2 || echo "resolver failed"
+
+      # ────── RESOLVE EXTERNAL PICKS ──────
+      - name: Resolve NCAAB external picks (post-game)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python resolve_externals.py --sport NCAAB --days 14 || echo "external resolver failed"
+
+      # ────── ON-DEMAND: BACKFILL ──────
+      - name: Backfill historical NCAAB season
+        if: steps.mode.outputs.mode == 'backfill' && github.event.inputs.backfill_season != ''
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaab_backfill_results.py --season "${{ github.event.inputs.backfill_season }}" --batch-size 300

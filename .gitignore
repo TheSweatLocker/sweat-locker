@@ -66,6 +66,9 @@ mlb_pipeline/_*.csv
 mlb_pipeline/_*.json
 mlb_pipeline/_*_out.txt
 
+# Per-sport alias gap audit logs — regenerated on each enrichment/resolver run
+mlb_pipeline/*_alias_gaps.log
+
 # mlb_pipeline daily-session scripts — not persistent infra
 mlb_pipeline/_check_*.py
 mlb_pipeline/_card_*.py
