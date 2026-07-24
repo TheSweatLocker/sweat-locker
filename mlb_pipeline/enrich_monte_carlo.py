@@ -122,6 +122,66 @@ def compute_mc_probabilities(row: dict) -> dict:
     return out
 
 
+def _compute_nrfi_ensemble(mc_p_nrfi: float, nrfi_score: float) -> dict:
+    """NRFI ensemble scorer combining MC's native p_nrfi + sklearn's nrfi_score.
+
+    Backtest (project_mc_v2_backtest_723, n=241 with both signals):
+      Both agree + right = 61.8% hit rate (baseline signal lane)
+      MC 70-79% conf alone = 63.6% (best single-signal)
+      Sklearn 80%+ conf alone = 58.4% n=166 (still real)
+
+    Tier ladder (highest signal first):
+      ELITE  — both agree AND (MC>=65% OR sklearn>=75)
+      STRONG — MC 70%+ alone OR sklearn 80%+ alone
+      LEAN   — both agree at moderate conf
+      SKIP   — models disagree at moderate conf
+
+    Returns dict with ensemble_pick/tier/conf/reason or {} if neither
+    signal available.
+    """
+    if mc_p_nrfi is None and nrfi_score is None:
+        return {}
+    # Normalize both to same "P(NRFI)" scale
+    mc_p = float(mc_p_nrfi) if mc_p_nrfi is not None else None
+    sk_p = float(nrfi_score) / 100.0 if nrfi_score is not None else None
+
+    # Decide picks (NRFI if >0.5)
+    mc_pick = ('NRFI' if mc_p > 0.5 else 'YRFI') if mc_p is not None else None
+    sk_pick = ('NRFI' if sk_p > 0.5 else 'YRFI') if sk_p is not None else None
+    mc_conf = max(mc_p, 1 - mc_p) if mc_p is not None else 0.0
+    sk_conf = max(sk_p, 1 - sk_p) if sk_p is not None else 0.0
+
+    both_agree = mc_pick is not None and sk_pick is not None and mc_pick == sk_pick
+    tier = None
+    reason = None
+    pick = None
+    conf = None
+    if both_agree:
+        if mc_conf >= 0.65 or sk_conf >= 0.75:
+            tier, pick, conf = 'ELITE', mc_pick, (mc_conf + sk_conf) / 2
+            reason = f'MC {int(mc_conf*100)}% + sklearn {int(sk_conf*100)}% agree'
+        else:
+            tier, pick, conf = 'LEAN', mc_pick, (mc_conf + sk_conf) / 2
+            reason = f'both models lean {pick} at moderate conf'
+    else:
+        # No agreement — check single-signal thresholds
+        if mc_p is not None and mc_conf >= 0.70:
+            tier, pick, conf = 'STRONG', mc_pick, mc_conf
+            reason = f'MC {int(mc_conf*100)}% (63.6% hit @ 70-79% band)'
+        elif sk_p is not None and sk_conf >= 0.80:
+            tier, pick, conf = 'STRONG', sk_pick, sk_conf
+            reason = f'sklearn {int(sk_conf*100)}% (58.4% hit @ 80%+ band)'
+        else:
+            tier, pick, conf = 'SKIP', None, None
+            reason = f'models disagree ({mc_pick} vs {sk_pick}) w/o high conf'
+    return {
+        'nrfi_ensemble_tier': tier,
+        'nrfi_ensemble_pick': pick,
+        'nrfi_ensemble_conf': round(conf, 3) if conf is not None else None,
+        'nrfi_ensemble_reason': reason,
+    }
+
+
 def _compute_high_conf_flag(mc_data: dict) -> dict:
     """Extract MC high-confidence flag from probability bundle.
 
@@ -165,6 +225,20 @@ def write_mc_to_context(game_id: str, mc_data: dict) -> bool:
     payload = {"mc_probabilities": mc_data}
     # Merge high-confidence flag columns for the Tier-1 chip
     payload.update(_compute_high_conf_flag(mc_data))
+    # NRFI ensemble — needs sklearn nrfi_score which lives on ctx.
+    # Fetch it in a quick round trip so ensemble writes atomically.
+    try:
+        rr = requests.get(
+            f"{SB}/rest/v1/mlb_game_context?game_id=eq.{game_id}&select=nrfi_score",
+            headers=H_READ, timeout=8,
+        )
+        sk_score = None
+        if rr.status_code == 200 and rr.json():
+            sk_score = rr.json()[0].get('nrfi_score')
+        ens = _compute_nrfi_ensemble(mc_data.get('mc_p_nrfi'), sk_score)
+        payload.update(ens)
+    except Exception:
+        pass
     r = requests.patch(
         f"{SB}/rest/v1/mlb_game_context?game_id=eq.{game_id}",
         headers=H_WRITE, json=payload, timeout=15,

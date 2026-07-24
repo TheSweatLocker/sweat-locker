@@ -2588,6 +2588,12 @@ def log_game_result(context):
             "away_last_pitch_count": context.get("away_last_pitch_count"),
             "home_pitcher_vs_team_era": context.get("home_pitcher_vs_team_era"),
             "away_pitcher_vs_team_era": context.get("away_pitcher_vs_team_era"),
+            # IP added 2026-07-23 — historical pipeline gap where era was
+            # copied to results but ip was dropped, breaking MC mastery
+            # sample-size gate. Now writes both so future backfills fire
+            # the mastery mult with full sample confidence.
+            "home_pitcher_vs_team_ip": context.get("home_pitcher_vs_team_ip"),
+            "away_pitcher_vs_team_ip": context.get("away_pitcher_vs_team_ip"),
             "home_bp_relievers_3d": context.get("home_bp_relievers_3d"),
             "away_bp_relievers_3d": context.get("away_bp_relievers_3d"),
             "home_injury_count": context.get("home_injury_count"),
