@@ -1,29 +1,30 @@
 """NCAAB pipeline — server-side KenPom puller (Phase 1 prep).
 
 Replaces the client-side KenPom fetch which exposed the API key in the app
-bundle and ran per-user. Runs on the daily MLB cron (gated to once a week
-during regular season). Pulls 365 D1 teams from KenPom, joins ratings +
-four-factors, normalizes via ncaab_team_aliases, upserts to ncaab_team_stats.
+bundle and ran per-user. Runs on the weekly Monday cron during regular
+season. Pulls 365 D1 teams from KenPom, joins ratings + four-factors,
+normalizes via ncaab_team_aliases, upserts to ncaab_team_stats.
 
-Phase 2 (deferred to Nov when season starts):
-  - ncaab_pick_logger.py (mirrors nba_pick_logger.py)
-  - resolver via Barttorvik or ESPN scrape
-  - audit_tier_calibration.py NCAAB cohort hooks
+Accepts --season to backfill historical snapshots. For seasons past their
+final game, KenPom returns the end-of-season ratings — usable as an
+approximation for backtest cohort work (with the known caveat that
+end-of-season stats reflect the FULL season, not "as-of" any single date).
 
 Required SQL: 20260506d_ncaab_foundation.sql
 
 Usage:
-    python ncaab_pipeline.py
+    python ncaab_pipeline.py                    # current season (2025-26)
+    python ncaab_pipeline.py --season 2024-25   # historical backfill
 """
+import argparse
 import os
 import sys
-import json
 import time
 import requests
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 KENPOM_KEY = os.environ.get("KENPOM_KEY") or os.environ.get("EXPO_PUBLIC_KENPOM_KEY")
@@ -38,18 +39,27 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
 WRITE_HEADERS = {**HEADERS, "Content-Type": "application/json",
                  "Prefer": "resolution=merge-duplicates,return=minimal"}
-SEASON = "2025-26"
-SEASON_YEAR = 2026  # KenPom uses end-of-season year
 
 
-def fetch_kenpom(endpoint):
+def parse_season(season_str: str) -> tuple[str, int]:
+    """Convert '2025-26' → ('2025-26', 2026). KenPom uses end-of-season year."""
+    if '-' not in season_str:
+        raise ValueError(f"season must be like '2025-26', got {season_str!r}")
+    start, end = season_str.split('-')
+    start_year = int(start)
+    # '2025-26' → end year 2026 (2-digit end suffix)
+    end_year = int(f'{start_year // 100}{end}') if len(end) == 2 else int(end)
+    return season_str, end_year
+
+
+def fetch_kenpom(endpoint, season_year):
     if not KENPOM_KEY:
         print("  ❌ Missing KENPOM_KEY env var")
         return []
     try:
         r = requests.get(
             "https://kenpom.com/api.php",
-            params={"endpoint": endpoint, "y": SEASON_YEAR},
+            params={"endpoint": endpoint, "y": season_year},
             headers={"Authorization": f"Bearer {KENPOM_KEY}"},
             timeout=30,
         )
@@ -89,11 +99,12 @@ def upsert_team_stats(rows):
     return True
 
 
-def run():
-    print(f"=== NCAAB Phase 1 — KenPom snapshot ({SEASON}) ===")
-    ratings = fetch_kenpom("ratings")
+def run(season: str = "2025-26"):
+    season_key, season_year = parse_season(season)
+    print(f"=== NCAAB Phase 1 — KenPom snapshot ({season_key}, y={season_year}) ===")
+    ratings = fetch_kenpom("ratings", season_year)
     time.sleep(1)
-    four_factors = fetch_kenpom("four-factors")
+    four_factors = fetch_kenpom("four-factors", season_year)
     if not ratings:
         print("No KenPom data — bailing")
         return
@@ -117,7 +128,7 @@ def run():
             continue
         rows.append({
             "team": canonical,
-            "season": SEASON,
+            "season": season_key,
             "conference": t.get("ConfShort") or None,
             "adj_oe": adj_oe,
             "adj_de": adj_de,
@@ -158,4 +169,8 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--season", default="2025-26",
+                    help="Season like '2025-26'. Default: current 2025-26.")
+    args = ap.parse_args()
+    run(season=args.season)
