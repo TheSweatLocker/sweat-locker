@@ -143,8 +143,23 @@ def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
     return row
 
 
+def _normalize_batch_keys(rows: list) -> list:
+    """PostgREST batch upsert requires all rows share the same keys
+    (PGRST102). event_to_row conditionally adds fields when Odds API
+    returns partial market data, so batches mix schemas. Fix: union keys
+    + backfill None. Per feedback_postgrest_batch_normalize_keys memory.
+    """
+    if not rows: return rows
+    keys = set()
+    for r in rows: keys.update(r.keys())
+    for r in rows:
+        for k in keys: r.setdefault(k, None)
+    return rows
+
+
 def upsert_games(rows: list, dry_run: bool = False) -> int:
     if not rows: return 0
+    rows = _normalize_batch_keys(rows)
     if dry_run:
         for r in rows:
             print(f"  [DRY] {r['game_id']}  sp={r.get('close_spread')} "

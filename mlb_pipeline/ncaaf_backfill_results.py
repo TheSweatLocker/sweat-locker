@@ -146,8 +146,27 @@ def transform(game: dict, line: Optional[dict]) -> Optional[dict]:
     return row
 
 
+def _normalize_batch_keys(rows: list) -> list:
+    """PostgREST batch upsert requires all rows share the exact same keys.
+    Our transform() adds outcome/line fields conditionally, so batches of
+    mixed graded+ungraded games hit PGRST102 'All object keys must match'.
+    Fix: union all keys across rows + backfill None on missing.
+
+    Per feedback_postgrest_batch_normalize_keys memory.
+    """
+    if not rows: return rows
+    key_union = set()
+    for r in rows:
+        key_union.update(r.keys())
+    for r in rows:
+        for k in key_union:
+            r.setdefault(k, None)
+    return rows
+
+
 def upsert(rows: list) -> int:
     if not rows: return 0
+    rows = _normalize_batch_keys(rows)
     # Chunk 200 to keep POST body reasonable
     total = 0
     for i in range(0, len(rows), 200):
