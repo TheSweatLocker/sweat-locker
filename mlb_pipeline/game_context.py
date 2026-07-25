@@ -2161,17 +2161,81 @@ def compute_primary_play(ctx):
     ml_playable = _ml_playable()
     fav = home_team if (proj_spread is not None and float(proj_spread) > 0) else away_team
 
+    # ─── MC HIGH-CONF headline (added 2026-07-25) ─────────────────────
+    # MC HIGH-CONF chip fires when Monte Carlo simulator shows ≥80% win
+    # prob AND ≥15pp gap vs market implied. Highest single-lens signal
+    # in the stack. Fires ~2x per 15-game slate. When it fires, this is
+    # the loudest thing the model saw — beats confluence for headline.
+    #
+    # Juice-fav trap gate (7/24 finding): if the MC-picked side is a
+    # HEAVY favorite (ML ≤ -150), surface as ML play — NOT RL -1.5.
+    # 45d data: heavy home favs cover -1.5 only 29% (n=24), light favs
+    # -130/-149 only 40% (n=121). MC's 80% signal is win-prob strength,
+    # NOT cover strength. See project_juice_fav_rl_trap_724.
+    mc_hc_flag = ctx.get('mc_high_conf_flag')
+    mc_hc_side = ctx.get('mc_high_conf_side')
+    mc_hc_pct  = ctx.get('mc_high_conf_pct')
+    if mc_hc_flag and mc_hc_side in ('HOME', 'AWAY') and mc_hc_pct is not None:
+        winning_team = home_team if mc_hc_side == 'HOME' else away_team
+        winning_ml = home_ml if mc_hc_side == 'HOME' else away_ml
+        juice_note = ""
+        try:
+            if winning_ml is not None and float(winning_ml) <= -150:
+                juice_note = " · ML play (juice fav — RL -1.5 covers only 29-40% historically)"
+        except (TypeError, ValueError):
+            pass
+        return {
+            "type": "ml",
+            "tier": "PRIME",
+            "label": f"{winning_team} ML",
+            "sub": f"MC HIGH-CONF: {mc_hc_pct*100:.0f}% win prob (sim on 10k){juice_note}",
+            "signal_floor": 88,
+            "audit_note": "MC HIGH-CONF chip · sample building (recent: 3-1)",
+        }
+
+    # ─── Jerry + v4 direction agreement gate (added 2026-07-25) ───────
+    # 7/24 audit: Jerry sides 12-3 (80%), v4 sides 12-3 (80%). When BOTH
+    # agree on side direction, they're extremely accurate. When they
+    # SPLIT (e.g., yesterday's MIL where Jerry HOME/v4 AWAY), PRIME tier
+    # shouldn't fire — historical PRIME ML with split lenses hits worse.
+    # This gate demotes PRIME → STRONG when Jerry + v4 direction disagree.
+    def _jerry_v4_agree_direction():
+        if jerry_spread is None or v4_spread is None:
+            return None  # can't evaluate — don't gate
+        try:
+            j_dir = 1 if float(jerry_spread) > 0 else -1
+            v_dir = 1 if float(v4_spread) > 0 else -1
+            return j_dir == v_dir
+        except (TypeError, ValueError):
+            return None
+    jerry_v4_align = _jerry_v4_agree_direction()
+
     # PRIME ML: confluence ≥+4 AND |delta| ≥2.0 (hybrid threshold)
     # 2026-05-27: gated on cohort health — see _cohort_healthy docstring.
-    if conf is not None and int(conf) >= 4 and abs_delta >= 2.0 and ml_playable:
+    # 2026-07-25: also gated on Jerry+v4 direction agreement.
+    if (conf is not None and int(conf) >= 4 and abs_delta >= 2.0 and ml_playable
+            and jerry_v4_align is not False):
         if _cohort_healthy('confluence_prime_ge4'):
+            agree_note = " · Jerry+v4 aligned" if jerry_v4_align else ""
             return {
                 "type": "ml",
                 "tier": "PRIME",
                 "label": f"{fav} ML",
-                "sub": f"PRIME confluence ({int(conf)} signals, {abs_delta:.1f} delta)",
+                "sub": f"PRIME confluence ({int(conf)} signals, {abs_delta:.1f} delta){agree_note}",
                 "signal_floor": 85,
                 "audit_note": _audit_note_for('confluence_prime_ge4'),
+            }
+    # Demote-to-STRONG path when Jerry+v4 split (would-have-been PRIME)
+    if (conf is not None and int(conf) >= 4 and abs_delta >= 2.0 and ml_playable
+            and jerry_v4_align is False):
+        if _cohort_healthy('confluence_strong_2_3'):
+            return {
+                "type": "ml",
+                "tier": "STRONG",
+                "label": f"{fav} ML",
+                "sub": f"STRONG (would be PRIME but Jerry+v4 split direction — {jerry_spread:+.1f} vs {v4_spread:+.1f})",
+                "signal_floor": 72,
+                "audit_note": "Jerry+v4 split gate — 7/24 audit says agree-only prints PRIME",
             }
     # NRFI/YRFI demoted 2026-05-30 — see project_nrfi_demotion. Audit
     # showed PRIME NRFI 90-94 hits 50% on n=22 / 30d (coinflip). ML/totals
@@ -2236,11 +2300,58 @@ def compute_primary_play(ctx):
         except (TypeError, ValueError):
             return None
     v4_total = ctx.get('model_pred_total')
+    # ─── MC TOTAL LENS PROMOTED to primary (7/25) ─────────────────────
+    # 7/24 audit: Composite 27% totals, v4 40%, Jerry 33%, MC 53% (best).
+    # MC v2 rich simulator went 5/5 on 7/23. Even after 7/24 drop, MC
+    # remains highest-hit-rate total lens over the sample.
+    #
+    # New primary total logic:
+    #   1. Prefer MC mean_total when present
+    #   2. Apply extrapolation cap: if |MC - line| > 3, DOWNGRADE (models
+    #      tend to overshoot when outputs get extreme)
+    #   3. Fall back to v4 only if MC is unavailable
+    #
+    # v4 OVER kept behind is_v4_over_suppressed() guard; v4 UNDER still
+    # solid (55% 30d) as fallback path.
+    mc = ctx.get('mc_probabilities') or {}
+    mc_mean_total = mc.get('mc_mean_total') if isinstance(mc, dict) else None
+
+    if mc_mean_total is not None and ct is not None:
+        try:
+            mc_delta = float(mc_mean_total) - float(ct)
+        except (TypeError, ValueError):
+            mc_delta = None
+        abs_mc_delta = abs(mc_delta) if mc_delta is not None else 0
+        # Tier ladder + extrapolation cap:
+        #   2.0 <= abs_delta < 3.0  → LIGHT (real but modest edge)
+        #   3.0 <= abs_delta <= 4.0 → STRONG (elite edge)
+        #   abs_delta > 4.0         → LIGHT (extrapolation cap — MC
+        #     overshoots at extreme deltas per 7/24 audit: ARI/WSH said
+        #     14.6 actual 5, ATL/BAL said 6.9 actual 13).
+        if mc_delta is not None and abs_mc_delta >= 2.0:
+            extrapolation = abs_mc_delta > 4.0
+            if extrapolation:
+                tier = 'LIGHT'
+            elif abs_mc_delta >= 3.0:
+                tier = 'STRONG'
+            else:
+                tier = 'LIGHT'
+            direction = 'over' if mc_delta > 0 else 'under'
+            note = ' (extrap cap: |delta|>4 downgraded)' if extrapolation else ''
+            return {
+                "type": direction,
+                "tier": tier,
+                "label": f"{'Over' if direction=='over' else 'Under'} {ct}",
+                "sub": f"MC simulator {mc_mean_total:.1f} vs line {ct} ({mc_delta:+.1f}){note}",
+                "signal_floor": 72 if tier == 'STRONG' else 62,
+                "audit_note": "MC v2 totals 53% (30d, best-lens); extrap cap fires when |delta|>4",
+            }
     # v4 OVER suppression — auto-throttle as of 2026-05-24.
     # Was a hardcoded True; now reads model_health.over_suppressed which
     # is flipped nightly by audit_v4_health.py based on rolling 7d OVER
     # hit rate (with hysteresis: only lift when 7d >= 52%, only re-suppress
     # when 7d < 48%). Falls back to True if model_health unreadable.
+    # Now used ONLY as fallback when MC unavailable (7/25 promotion).
     V4_OVER_SUPPRESSED = is_v4_over_suppressed()
     if v4_total is not None and ct is not None:
         try:
@@ -2252,9 +2363,9 @@ def compute_primary_play(ctx):
                 "type": "over",
                 "tier": "STRONG" if v4_delta >= 3.5 else "LIGHT",
                 "label": f"Over {ct}",
-                "sub": f"v4 model {v4_total:.1f} vs line {ct} (+{v4_delta:.1f})",
+                "sub": f"v4 model {v4_total:.1f} vs line {ct} (+{v4_delta:.1f}) [fallback]",
                 "signal_floor": 72 if v4_delta >= 3.5 else 62,
-                "audit_note": "v4 model edge (cohort audit pending)",
+                "audit_note": "v4 fallback (MC unavailable) · v4 total 40% (30d)",
             }
         # UNDER side stays active — v4 UNDER picks audit at 55% (30d)
         if v4_delta is not None and v4_delta <= -2.5:
@@ -2262,7 +2373,7 @@ def compute_primary_play(ctx):
                 "type": "under",
                 "tier": "STRONG" if v4_delta <= -3.5 else "LIGHT",
                 "label": f"Under {ct}",
-                "sub": f"v4 model {v4_total:.1f} vs line {ct} ({v4_delta:+.1f})",
+                "sub": f"v4 model {v4_total:.1f} vs line {ct} ({v4_delta:+.1f}) [fallback]",
                 "signal_floor": 72 if v4_delta <= -3.5 else 62,
                 "audit_note": "v4 UNDER cohort 55.1% (30d, n=49)",
             }

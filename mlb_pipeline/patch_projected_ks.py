@@ -86,7 +86,7 @@ def get_pitcher_season_stats(name):
         r = urllib.request.urlopen(
             urllib.request.Request(
                 f"{SB}/rest/v1/mlb_pitcher_stats?player_name=eq.{q}&season=eq.2026"
-                f"&select=k_pct,bb_pct,baa_allowed&limit=1",
+                f"&select=k_pct,bb_pct,baa_allowed,last_5_era,xera,last_3_era&limit=1",
                 headers=H_READ,
             ),
             timeout=10,
@@ -104,6 +104,9 @@ def get_pitcher_season_stats(name):
                 "k_pct":   _pct(row.get("k_pct")),
                 "bb_pct":  _pct(row.get("bb_pct")),
                 "baa":     row.get("baa_allowed"),
+                "l5_era":  row.get("last_5_era"),
+                "xera":    row.get("xera"),
+                "l3_era":  row.get("last_3_era"),
             }
     except Exception:
         pass
@@ -173,7 +176,34 @@ def project_all_stats(name, json_cache):
         # Flag the skipped cases so the cron log is readable
         if k is not None and not k_ok:
             out["source"] = "thin_sample_skipped"
-        # No clean fallback for outs/er without IP history — leave None
+
+        # OUTS + ER fallback (added 2026-07-25).
+        # Previously "No clean fallback for outs/er without IP history —
+        # leave None" which meant every pitcher on the season_fallback
+        # path had projected_er = None, breaking panel computation for
+        # ~60% of games (nothing to feed into the panel formula).
+        # Fix: default outs = 15 (5 IP, league avg for SP), scale by
+        # pitcher quality. ER = L5_ERA × IP / 9 (or xERA if L5 missing).
+        # Credibility gate: skip if L5_ERA outside 1.5-9.0 (thin sample
+        # or garbage).
+        l5 = season.get("l5_era")
+        xera = season.get("xera")
+        era_source = l5 if (l5 is not None and 1.5 <= float(l5) <= 9.0) else xera
+        if out["outs"] is None and era_source is not None:
+            # Quality-adjusted outs: elite pitchers go deeper, bad ones get pulled.
+            era_f = float(era_source)
+            if era_f <= 3.00:   default_outs = 18.0  # 6 IP
+            elif era_f <= 4.00: default_outs = 16.0  # 5.1 IP
+            elif era_f <= 5.00: default_outs = 15.0  # 5 IP (league avg SP)
+            else:               default_outs = 13.0  # 4.1 IP for struggling arms
+            out["outs"] = default_outs
+            if out["source"] == "no_data": out["source"] = "season_fallback"
+        if out["er"] is None and era_source is not None and out["outs"] is not None:
+            era_f = float(era_source)
+            if 1.5 <= era_f <= 9.0:
+                ip = float(out["outs"]) / 3.0
+                out["er"] = round(era_f * ip / 9.0, 1)
+                if out["source"] == "no_data": out["source"] = "season_fallback"
 
     return out
 
@@ -186,6 +216,9 @@ def fetch_today_games(date_str):
         for stat in ("ks", "bb", "hits", "outs", "er"):
             cols.append(f"{side}_pitcher_projected_{stat}")
         cols.append(f"{side}_pitcher_whip")
+        # Panel inputs (bullpen_era + panel columns already present in row)
+        cols.append(f"{side}_bullpen_era")
+    cols.extend(["panel_implied_margin", "panel_implied_total"])
     url = (
         f"{SB}/rest/v1/mlb_game_context?game_date=eq.{date_str}"
         f"&select={','.join(cols)}"
@@ -238,6 +271,11 @@ def main():
                 col = f"{side}_pitcher_{col_suffix}"
                 new = proj[stat_key]
                 old = g.get(col)
+                # Don't overwrite existing values with None (2026-07-25 fix)
+                # — season_fallback path returns None for some stats which
+                # was silently nulling valid values game_context.py had set.
+                if new is None and old is not None:
+                    continue
                 if old != new:
                     payload[col] = new
                     changed_bits.append(f"{col_suffix}={new}")
@@ -249,6 +287,42 @@ def main():
                     changed_bits.append(f"whip={proj['whip']}")
             if changed_bits:
                 print(f"  {name} [{proj['source']}]: " + ", ".join(changed_bits))
+        # ─────────────────────────────────────────────────────────────────
+        # Panel_implied compute — do this AFTER stat patching (2026-07-25).
+        #
+        # Panel depends on projected_er + projected_outs + bullpen_era.
+        # game_context.py:2313 tries to compute panel BEFORE this script
+        # runs, so context.get('*_pitcher_projected_er') returns None → the
+        # if-check silently fails → panel_implied stays NULL forever.
+        # Fix: compute here where ER is authoritative (post-patch) and add
+        # to the same PATCH payload. Mirrors game_context.py formula.
+        # Applied on 12 games' worth of 7/25 slate + all future slates.
+        # ─────────────────────────────────────────────────────────────────
+        def _merged(side, stat_col):
+            key = f"{side}_pitcher_projected_{stat_col}"
+            return payload.get(key, g.get(key))
+
+        aer = _merged("away", "er")
+        her = _merged("home", "er")
+        if aer is not None and her is not None:
+            try:
+                asp_er_f = float(aer); hsp_er_f = float(her)
+                asp_outs_f = float(_merged("away", "outs") or 15)
+                hsp_outs_f = float(_merged("home", "outs") or 15)
+                abp = float(g.get("away_bullpen_era") or 4.10)
+                hbp = float(g.get("home_bullpen_era") or 4.10)
+                away_bp_ip = max(0, 9 - asp_outs_f / 3)
+                home_bp_ip = max(0, 9 - hsp_outs_f / 3)
+                home_scores = asp_er_f + abp * away_bp_ip / 9
+                away_scores = hsp_er_f + hbp * home_bp_ip / 9
+                new_pt = round(home_scores + away_scores, 2)
+                new_pm = round(home_scores - away_scores, 2)
+                if g.get("panel_implied_total") != new_pt or g.get("panel_implied_margin") != new_pm:
+                    payload["panel_implied_total"] = new_pt
+                    payload["panel_implied_margin"] = new_pm
+                    print(f"    panel: margin={new_pm:+.2f} total={new_pt}")
+            except (TypeError, ValueError):
+                pass
         if payload:
             if patch_row(g["id"], payload):
                 updated += 1

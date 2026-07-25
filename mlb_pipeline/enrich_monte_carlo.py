@@ -123,57 +123,79 @@ def compute_mc_probabilities(row: dict) -> dict:
 
 
 def _compute_nrfi_ensemble(mc_p_nrfi: float, nrfi_score: float) -> dict:
-    """NRFI ensemble scorer combining MC's native p_nrfi + sklearn's nrfi_score.
+    """NRFI ensemble scorer — REBALANCED 2026-07-25 after n=1470 audit.
 
-    Backtest (project_mc_v2_backtest_723, n=241 with both signals):
-      Both agree + right = 61.8% hit rate (baseline signal lane)
-      MC 70-79% conf alone = 63.6% (best single-signal)
-      Sklearn 80%+ conf alone = 58.4% n=166 (still real)
+    Audit finding (see project_juice_fav_rl_trap_724 companion — NRFI audit):
+      Score 85+ (elite NRFI): 54.1% NRFI hit (n=290) — near base rate
+      Score 75-84 (strong NRFI): 52.3% NRFI (n=218) — no edge
+      Score 65-74 (lean NRFI): 50.2% NRFI (n=291) — flat
+      Score 50-64: actually LEANS 55% YRFI (n=378) — ironic
+      Score 40-49: 52% YRFI (n=160) — coin flip
+      Score 30-39: 60% YRFI (n=85) ⭐ — REAL edge
+      Score 20-29: 58% YRFI (n=33)
+      Score <20:   67% YRFI (n=15)
 
-    Tier ladder (highest signal first):
-      ELITE  — both agree AND (MC>=65% OR sklearn>=75)
-      STRONG — MC 70%+ alone OR sklearn 80%+ alone
-      LEAN   — both agree at moderate conf
-      SKIP   — models disagree at moderate conf
+    CONCLUSION: Our nrfi_score is a YRFI signal, NOT an NRFI signal.
+      - NRFI calls at high score are near base rate (~52% base is 48.8%
+        NRFI). After -140 to -170 NRFI juice, this LOSES money.
+      - YRFI calls at low score (≤ 39) hit 60%+ — real edge.
+
+    NEW tier ladder (asymmetric):
+      YRFI side (score ≤ 39 sweet spot):
+        ELITE YRFI:  score ≤ 25 AND MC agrees (both YRFI)
+        STRONG YRFI: score ≤ 35 (regardless of MC — validated zone)
+        LEAN YRFI:   score 36-45 AND MC agrees YRFI
+
+      NRFI side (single-signal NRFI is weak — require combined evidence):
+        STRONG NRFI: both agree AND (score ≥ 85 AND MC p_nrfi ≥ 70%)
+        LEAN NRFI:   both agree at score ≥ 70 AND MC p_nrfi ≥ 60%
+        (No standalone NRFI tier — the historical single-signal NRFI
+         was 54% at 85+, which loses money at typical juice.)
+
+      SKIP — everything else.
 
     Returns dict with ensemble_pick/tier/conf/reason or {} if neither
     signal available.
     """
     if mc_p_nrfi is None and nrfi_score is None:
         return {}
-    # Normalize both to same "P(NRFI)" scale
+    # Normalize to same "P(NRFI)" scale
     mc_p = float(mc_p_nrfi) if mc_p_nrfi is not None else None
-    sk_p = float(nrfi_score) / 100.0 if nrfi_score is not None else None
+    sk_s = float(nrfi_score) if nrfi_score is not None else None
+    sk_p = (sk_s / 100.0) if sk_s is not None else None
 
-    # Decide picks (NRFI if >0.5)
     mc_pick = ('NRFI' if mc_p > 0.5 else 'YRFI') if mc_p is not None else None
     sk_pick = ('NRFI' if sk_p > 0.5 else 'YRFI') if sk_p is not None else None
     mc_conf = max(mc_p, 1 - mc_p) if mc_p is not None else 0.0
     sk_conf = max(sk_p, 1 - sk_p) if sk_p is not None else 0.0
-
     both_agree = mc_pick is not None and sk_pick is not None and mc_pick == sk_pick
-    tier = None
-    reason = None
-    pick = None
-    conf = None
-    if both_agree:
-        if mc_conf >= 0.65 or sk_conf >= 0.75:
-            tier, pick, conf = 'ELITE', mc_pick, (mc_conf + sk_conf) / 2
-            reason = f'MC {int(mc_conf*100)}% + sklearn {int(sk_conf*100)}% agree'
-        else:
-            tier, pick, conf = 'LEAN', mc_pick, (mc_conf + sk_conf) / 2
-            reason = f'both models lean {pick} at moderate conf'
+
+    tier = 'SKIP'; pick = None; conf = None; reason = None
+
+    # ─── YRFI SIDE ─── (proven signal per audit)
+    if sk_s is not None and sk_s <= 25 and mc_pick == 'YRFI':
+        tier, pick, conf = 'ELITE', 'YRFI', (mc_conf + sk_conf) / 2
+        reason = f'score {int(sk_s)} (≤25 = 60%+ YRFI zone) + MC agrees'
+    elif sk_s is not None and sk_s <= 35:
+        # Validated zone — fire regardless of MC (audit n=85 at 60%)
+        tier, pick = 'STRONG', 'YRFI'
+        conf = sk_conf
+        agree_note = ' (MC agrees)' if mc_pick == 'YRFI' else ' (MC dissents)'
+        reason = f'score {int(sk_s)} (audit: score ≤35 = 60%+ YRFI){agree_note}'
+    elif sk_s is not None and 36 <= sk_s <= 45 and mc_pick == 'YRFI':
+        tier, pick, conf = 'LEAN', 'YRFI', (mc_conf + sk_conf) / 2
+        reason = f'score {int(sk_s)} YRFI-lean + MC agrees'
+
+    # ─── NRFI SIDE ─── (weak signal — require STRONG combined evidence)
+    elif both_agree and mc_pick == 'NRFI' and sk_s is not None and sk_s >= 85 and mc_p >= 0.70:
+        tier, pick, conf = 'STRONG', 'NRFI', (mc_conf + sk_conf) / 2
+        reason = f'both agree NRFI (score {int(sk_s)}, MC {int(mc_conf*100)}%) — combined evidence'
+    elif both_agree and mc_pick == 'NRFI' and sk_s is not None and sk_s >= 70 and mc_p >= 0.60:
+        tier, pick, conf = 'LEAN', 'NRFI', (mc_conf + sk_conf) / 2
+        reason = f'both lean NRFI (score {int(sk_s)}, MC {int(mc_conf*100)}%)'
     else:
-        # No agreement — check single-signal thresholds
-        if mc_p is not None and mc_conf >= 0.70:
-            tier, pick, conf = 'STRONG', mc_pick, mc_conf
-            reason = f'MC {int(mc_conf*100)}% (63.6% hit @ 70-79% band)'
-        elif sk_p is not None and sk_conf >= 0.80:
-            tier, pick, conf = 'STRONG', sk_pick, sk_conf
-            reason = f'sklearn {int(sk_conf*100)}% (58.4% hit @ 80%+ band)'
-        else:
-            tier, pick, conf = 'SKIP', None, None
-            reason = f'models disagree ({mc_pick} vs {sk_pick}) w/o high conf'
+        reason = f'SKIP — score {sk_s}, MC pick {mc_pick} ({int(mc_conf*100)}%)'
+
     return {
         'nrfi_ensemble_tier': tier,
         'nrfi_ensemble_pick': pick,
