@@ -9,6 +9,10 @@ on:
     # buffer to hit the in-app ready-by promise.
     - cron: '0 10 * * *'  # 6:00am EDT (10:00 UTC) — was 8:00am
     - cron: '0 18 * * *'  # 2:00pm EDT (18:00 UTC)
+    # Post-2pm late-announce coverage: queued for a lightweight standalone
+    # workflow (retry_starters.yml) that runs 5pm ET + fires only the
+    # retry_missing_starters + patch_projected_ks steps. Not adding here
+    # to avoid re-running the full 60-step pipeline for 2 API calls.
   workflow_dispatch:
 
 jobs:
@@ -323,6 +327,21 @@ jobs:
         run: |
           cd mlb_pipeline
           python check_starter_changes.py
+
+      # Late-announce starter retry (added 2026-07-25). Some teams
+      # announce home starter after 12pm cron — we get context rows
+      # with home_pitcher NULL, breaking v4/MC. This detects any NULL
+      # pitcher, checks MLB API for updates, PATCHes + re-triggers
+      # patch_projected_ks. Runs on all crons; idempotent no-op when
+      # no gaps. 5pm cron (added same day) is the intended primary
+      # firing since late-announces cluster ~3-5pm ET for evening games.
+      - name: Retry missing starters + downstream recompute
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python retry_missing_starters.py || echo "retry_missing_starters non-fatal"
 
       # v5 nightly retrain (2026-06-21) — rolling 90d window. v5_ml +
       # v5_total are stacked ensembles read by play_of_day's POTD

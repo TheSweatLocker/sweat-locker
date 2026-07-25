@@ -1,0 +1,53 @@
+name: MLB Starter Retry (Late-Announce)
+
+# Lightweight cron for post-2pm late-announce home starters. Detects
+# NULL pitchers on today's mlb_game_context, checks MLB API for
+# updates, PATCHes + triggers patch_projected_ks (panel + ER). Doesn't
+# re-run the full pipeline — just fills the missing-pitcher gap.
+#
+# Rationale (2026-07-25):
+#   Main mlb_pipeline.yml crons at 6am ET + 2pm ET. Some teams announce
+#   home starter after 2pm (ATH@MIN, NYY@PHI on 7/25 both stayed TBD
+#   until ~3pm). Missing home_pitcher cascades to v4/MC null → game
+#   shows data gaps in the artifact.
+#
+# Runs 5pm ET (21:00 UTC) — captures the ~3-5pm announcement window.
+# Also runs 8pm ET to catch anything announced later for late games.
+
+on:
+  schedule:
+    - cron: '0 21 * * *'  # 5:00pm ET
+    - cron: '0 0 * * *'   # 8:00pm ET
+  workflow_dispatch:
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      - name: Detect + fill missing starters
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python retry_missing_starters.py
+
+      # patch_projected_ks is already triggered inside retry_missing_starters
+      # when patches were applied. We DON'T re-run enrich_monte_carlo or
+      # game_context here — those are expensive and only the next
+      # scheduled 6am/2pm cron will produce the full MC recompute.
+      # If retry finds gaps, at least ER + panel + Jerry-usable stats
+      # are refreshed for the affected games.
