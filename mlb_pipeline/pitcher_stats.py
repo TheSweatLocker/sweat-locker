@@ -194,6 +194,87 @@ def fetch_savant_xera(year=2026):
         print(f"  Baseball Savant xERA fetch failed: {e}")
         return {}
 
+def fetch_savant_arsenal_stats(year=2026):
+    """Fetch per-pitcher Statcast whiff% + hard-hit% from Baseball Savant
+    pitch-arsenal-stats CSV. Aggregates per-pitch-type rows into
+    per-pitcher totals weighted by pitch count.
+
+    Added 2026-07-25 to fill the 627 nulled pitcher_stats Statcast
+    fields (see project_system_integrity_sweep_725). Previous defaults
+    were hardcoded 10.0/35.0/6.0/93.0/72.0 which corrupted downstream
+    K-prop scoring (Miller 99-conv 0K disaster). This function pulls
+    real values so the whiff gate in generate_props.py can fire.
+
+    Returns dict {full_name.lower(): {whiff_rate, hard_hit_pct, k_pct}}
+    where values are actual percentages (whiff 12.5 = 12.5%).
+    """
+    try:
+        print(f"Fetching Savant pitch-arsenal-stats ({year})...")
+        import io as _io
+        url = f"https://baseballsavant.mlb.com/leaderboard/pitch-arsenal-stats?type=pitcher&year={year}&csv=true"
+        r = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }, timeout=30)
+        if r.status_code != 200:
+            print(f"  Savant arsenal returned {r.status_code}")
+            return {}
+
+        df = pd.read_csv(_io.StringIO(r.text))
+        print(f"  Fetched {len(df)} per-pitch-type rows")
+
+        # Aggregate per pitcher (weighted by pitches thrown)
+        arsenal_map = {}
+        # Group by (last_name, first_name) — the leading BOM sometimes
+        # corrupts the column name, so try both.
+        name_col = None
+        for c in df.columns:
+            if 'last_name' in c.lower():
+                name_col = c
+                break
+        if not name_col:
+            print("  Could not find name column")
+            return {}
+
+        for name, grp in df.groupby(name_col):
+            # Parse "Last, First" → "First Last"
+            try:
+                parts = str(name).split(', ')
+                full = f"{parts[1]} {parts[0]}".strip() if len(parts) == 2 else str(name).strip()
+            except Exception:
+                continue
+
+            # Weighted average by pitch count
+            pitches = grp['pitches'].astype(float)
+            total_p = pitches.sum()
+            if total_p < 100:  # too few pitches for meaningful whiff rate
+                continue
+
+            def _weighted(col):
+                if col not in grp.columns: return None
+                try:
+                    vals = grp[col].astype(float)
+                    result = round((vals * pitches).sum() / total_p, 2)
+                    return float(result)  # cast np.float64 → plain float for Supabase
+                except Exception:
+                    return None
+
+            arsenal_map[full.lower()] = {
+                'whiff_rate': _weighted('whiff_percent'),
+                'hard_hit_pct': _weighted('hard_hit_percent'),
+                'k_pct_arsenal': _weighted('k_percent'),
+            }
+            # Also key by last name for fuzzy matching
+            if len(parts) == 2:
+                arsenal_map[parts[0].lower()] = arsenal_map[full.lower()]
+
+        n_with_whiff = sum(1 for v in arsenal_map.values() if v.get('whiff_rate') is not None)
+        print(f"  Built arsenal lookup for {n_with_whiff} pitchers w/ whiff data")
+        return arsenal_map
+    except Exception as e:
+        print(f"  Baseball Savant arsenal fetch failed: {e}")
+        return {}
+
+
 def fetch_recent_pitcher_stats():
     print("Fetching recent pitcher stats (last 30 days)...")
     try:
@@ -671,6 +752,17 @@ def run():
         # Pull 2025 as fallback for pitchers with limited 2026 samples (rehab returns, rookies, etc)
         xera_map_prior = fetch_savant_xera(year=2025)
 
+    # ─── Savant arsenal stats (added 2026-07-25) ─────────────────────
+    # Fetch whiff% + hard_hit% from Savant's pitch-arsenal-stats CSV.
+    # Runs ALWAYS (not just MLB API fallback) because FanGraphs data
+    # ALSO has missing Statcast fields for ~78% of pitchers — the
+    # pitcher_stats.py:589 default-of-10.0 bug that corrupted Miller's
+    # 99-conv K-over prop. See project_system_integrity_sweep_725.
+    arsenal_map = fetch_savant_arsenal_stats(year=2026)
+    arsenal_map_prior = {}
+    if not arsenal_map or len(arsenal_map) < 100:
+        arsenal_map_prior = fetch_savant_arsenal_stats(year=2025)
+
     # Detect data format based on source
     is_fangraphs = source == 'fangraphs' or (hasattr(stats, 'columns') and 'Name' in stats.columns)
     name_col = 'Name' if is_fangraphs else 'last_name'
@@ -741,6 +833,21 @@ def run():
                     pitcher['xera'] = savant['xERA']
                     if savant.get('xBA'):
                         pitcher['xba_allowed'] = savant['xBA']
+
+            # ─── Savant arsenal supplement (7/25) — ALWAYS runs ────
+            # Whiff + hard_hit% from pitch-arsenal-stats. Only overrides
+            # when pitcher's existing value is None (post-DQ-fix state)
+            # so we don't stomp on legitimate FanGraphs values.
+            arsenal = None
+            if arsenal_map:
+                arsenal = arsenal_map.get(name.lower()) or arsenal_map.get(name.split(' ')[-1].lower())
+            if not arsenal and arsenal_map_prior:
+                arsenal = arsenal_map_prior.get(name.lower()) or arsenal_map_prior.get(name.split(' ')[-1].lower())
+            if arsenal:
+                if pitcher.get('whiff_rate') is None and arsenal.get('whiff_rate') is not None:
+                    pitcher['whiff_rate'] = arsenal['whiff_rate']
+                if pitcher.get('hard_hit_pct') is None and arsenal.get('hard_hit_pct') is not None:
+                    pitcher['hard_hit_pct'] = arsenal['hard_hit_pct']
 
             result = upload_pitcher(pitcher)
             if result:
