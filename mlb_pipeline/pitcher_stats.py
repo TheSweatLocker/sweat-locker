@@ -576,6 +576,16 @@ def build_pitcher_record(row, name, recent_stats, is_fangraphs=True, is_starter=
     inning_buckets = get_inning_bucket_splits(name) if fetch_api else None
 
     if is_fangraphs:
+        # 2026-07-25 DQ fix: Statcast fields (whiff/hard/barrel/velo/lob)
+        # previously defaulted to hardcoded values when FanGraphs returned
+        # None — resulted in 627/798 pitchers stuck at whiff=10.0,
+        # hard_hit=35.0, barrel=6.0, velo=93.0, lob=72.0. This silently
+        # corrupted the Miller K prop (99-conv → 0 K's) because whiff-
+        # rate gates couldn't distinguish real 10% from default 10%.
+        # NOW: default to None. Downstream code (score_ks_over etc.)
+        # skips the gate when value is None — accurate signal handling.
+        # For the remaining basics (K%, BB%, GB%, FB%, ERA, xERA) we keep
+        # league-avg defaults since those NEVER come back None from FG.
         pitcher = {
             "player_name": name,
             "team": str(row.get('Team', '')),
@@ -583,13 +593,13 @@ def build_pitcher_record(row, name, recent_stats, is_fangraphs=True, is_starter=
             "xera": safe_float(row.get('xERA', row.get('ERA')), 4.50),
             "gb_pct": safe_float(row.get('GB%'), 45.0),
             "fb_pct": safe_float(row.get('FB%'), 35.0),
-            "lob_pct": safe_float(row.get('LOB%'), 72.0),
+            "lob_pct": safe_float(row.get('LOB%'), None),
             "k_pct": safe_float(row.get('K%'), 20.0),
             "bb_pct": safe_float(row.get('BB%'), 8.0),
-            "whiff_rate": safe_float(row.get('Whiff%', row.get('SwStr%')), 10.0),
-            "hard_hit_pct": safe_float(row.get('Hard%'), 35.0),
-            "barrel_pct": safe_float(row.get('Barrel%', row.get('Barrels')), 6.0),
-            "avg_fastball_velo": safe_float(row.get('FBv', row.get('vFB')), 93.0),
+            "whiff_rate": safe_float(row.get('Whiff%', row.get('SwStr%')), None),
+            "hard_hit_pct": safe_float(row.get('Hard%'), None),
+            "barrel_pct": safe_float(row.get('Barrel%', row.get('Barrels')), None),
+            "avg_fastball_velo": safe_float(row.get('FBv', row.get('vFB')), None),
             "last_5_era": last5_era if last5_era else safe_float(row.get('ERA'), 4.50),
             "baa_allowed": safe_float(row.get('AVG', row.get('BA')), None),
             "xba_allowed": safe_float(row.get('xBA', row.get('xAVG')), None),
