@@ -1315,6 +1315,76 @@ def score_pitcher_ks(g, side):
         conviction -= 8
         signals['form_cold'] = f'L3 ERA {l3_era:.2f} — struggling'
 
+    # L3 K% REGRESSION gate (added 2026-07-25 after Miller 99-conv 0K disaster).
+    # Miller had season K% 29.5 but L3 K% 21.8 (down 7.7pts). We had this
+    # data but only used it for HOT streaks — regressions were ignored.
+    # Divergence ≥5pts = downgrade, ≥8pts = suppress.
+    # See project_miller_k_prop_postmortem_725.
+    if l3_k is not None and pitcher_k_pct is not None:
+        l3_delta = l3_k - pitcher_k_pct
+        if l3_delta <= -8:
+            conviction -= 30
+            signals['l3_regression_severe'] = (
+                f'L3 K% {l3_k:.1f}% down {abs(l3_delta):.1f}pts vs season '
+                f'{pitcher_k_pct:.1f}% — SEVERE regression, K-over trap'
+            )
+        elif l3_delta <= -5:
+            conviction -= 18
+            signals['l3_regression'] = (
+                f'L3 K% {l3_k:.1f}% down {abs(l3_delta):.1f}pts vs season '
+                f'{pitcher_k_pct:.1f}% — recency regression'
+            )
+
+    # Whiff-rate credibility gate (added 2026-07-25, defensive version).
+    # Data quality issue: mlb_pitcher_stats.whiff_rate has DEFAULT VALUE
+    # 10.0 stored for many pitchers (Scherzer 10.0, Kershaw 0.103 — mixed
+    # decimal + percent + defaults). Only apply gate when value is
+    # UNAMBIGUOUSLY real: not exactly 10.0 (default marker) AND is a
+    # reasonable percent.
+    #
+    # See project_miller_k_prop_postmortem_725. Miller's actual whiff
+    # was likely much lower than his season K% implied — divergence is
+    # the real signal, not raw whiff.
+    try:
+        import urllib.parse as _urlp, urllib.request as _urlr
+        _q = _urlp.quote(pitcher)
+        _r = _urlr.urlopen(_urlr.Request(
+            f"{os.environ['SUPABASE_URL']}/rest/v1/mlb_pitcher_stats"
+            f"?player_name=eq.{_q}&season=eq.2026&select=whiff_rate&limit=1",
+            headers={'apikey': os.environ['SUPABASE_KEY'],
+                     'Authorization': f'Bearer {os.environ["SUPABASE_KEY"]}'},
+        ), timeout=5)
+        import json as _json
+        _rows = _json.loads(_r.read())
+        _whiff_raw = _rows[0]['whiff_rate'] if _rows and _rows[0].get('whiff_rate') is not None else None
+        # Normalize: values < 1 are decimals (0.28 = 28%), values 1-50 are already %
+        if _whiff_raw is not None:
+            _wf = float(_whiff_raw)
+            _whiff = _wf * 100 if _wf < 1 else _wf
+        else:
+            _whiff = None
+    except Exception:
+        _whiff = None
+    # Skip if value is the 10.0 default (unreliable) or obviously bad
+    if _whiff is not None and abs(_whiff - 10.0) < 0.01:
+        _whiff = None  # default value, don't trust
+    if _whiff is not None and (_whiff < 5 or _whiff > 50):
+        _whiff = None  # implausible
+    if _whiff is not None:
+        if _whiff < 13.0:
+            conviction -= 20
+            signals['whiff_gate_severe'] = (
+                f'whiff_rate {_whiff:.1f}% too low — K-over trap regardless of season'
+            )
+        elif _whiff < 18.0:
+            conviction -= 10
+            signals['whiff_gate'] = (
+                f'whiff_rate {_whiff:.1f}% below elite — K-over risky'
+            )
+        elif _whiff >= 28.0:
+            conviction += 5
+            signals['whiff_elite'] = f'whiff_rate {_whiff:.1f}% — elite miss-bat rate'
+
     # Opposing offense quality
     if opp_wrc >= 120:
         conviction -= 15
