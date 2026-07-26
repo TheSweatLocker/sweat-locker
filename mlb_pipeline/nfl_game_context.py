@@ -439,13 +439,16 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
             'signal_floor': floor,
         }
 
-    # 4. LIGHT spread lean
+    # 4. LIGHT spread lean — but cap at LEAN when stale (case 2/3 already did;
+    # otherwise a weaker signal could sneak into lock_of_week while the
+    # stronger STRONG-tier signals got capped).
     if abs_edge >= 2.0:
+        tier = 'LEAN' if stats_stale else 'LIGHT'
         return {
             'type': 'spread',
-            'tier': 'LIGHT',
+            'tier': tier,
             'label': f'{fav} spread lean',
-            'sub': f'Edge {abs_edge:.1f}' + (' · prior-season data' if stats_stale else ''),
+            'sub': f'Edge {abs_edge:.1f}' + (' · prior-season data, LEAN cap' if stats_stale else ''),
             'signal_floor': 60,
         }
 

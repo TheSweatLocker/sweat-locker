@@ -1531,6 +1531,7 @@ const [mlbPitcherStatsMap, setMlbPitcherStatsMap] = useState({});  // name(lower
 const [ncaabTeamStatsMap, setNcaabTeamStatsMap] = useState({});   // team(lower) -> {adj_em, adj_oe, adj_de, efg_o, to_o, or_o, ftr_o, efg_d, to_d, or_d, ftr_d, luck, sos, tempo, seed}
 const [ncaafTeamStatsMap, setNcaafTeamStatsMap] = useState({});   // team(lower) -> {sp_overall, sp_offense, sp_defense, off_epa_per_play, def_epa_per_play, ...}
 const [nflTeamStatsMap, setNflTeamStatsMap] = useState({});       // team(short) -> {pass_epa, rush_epa, pass_cpoe, def_sacks, def_ints, ...}
+const [nflGameContextMap, setNflGameContextMap] = useState({});   // game_id AND away@home -> {projected_spread, cohort_tags, primary_play, stats_source, ...}
 const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
@@ -4545,6 +4546,28 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           if(t.team && !nflMap[t.team.toLowerCase()]) nflMap[t.team.toLowerCase()] = t;
         });
         setNflTeamStatsMap(nflMap);
+      }
+    } catch(pe) { /* non-fatal */ }
+    // NFL game context (projections + cohort tags + primary_play + stats_source)
+    // Added 2026-07-25 alongside Week 1 fallback ship. stats_source lets us
+    // badge "Early season · using 2025 regressed" on Week 1-3 games so LEAN
+    // caps are legible instead of mysterious.
+    try {
+      const nflCtxResult = await supabase
+        .from('nfl_game_context')
+        .select('game_id,game_date,home_team,away_team,close_spread,close_total,projected_spread,projected_total,signal_confluence_net,cohort_tags,sweat_score,sweat_tier,primary_play,stats_source,season_type,week')
+        .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
+        .limit(500);
+      if(nflCtxResult?.data && nflCtxResult.data.length > 0) {
+        const nflCtxMap = {};
+        nflCtxResult.data.forEach(g => {
+          if(g.game_id) nflCtxMap[g.game_id] = g;
+          // Also index by team pair for lookup when we only have team names
+          if(g.home_team && g.away_team) {
+            nflCtxMap[`${g.away_team}@${g.home_team}`] = g;
+          }
+        });
+        setNflGameContextMap(nflCtxMap);
       }
     } catch(pe) { /* non-fatal */ }
     // Umpire stats for the MLB Situational tab (audit-anchored cohort flags)
@@ -8682,8 +8705,27 @@ setJerryHistory(prev => {
               {label:'Def INT/g', away: _perG(awayT?.def_ints, awayT?.games, 1), home: _perG(homeT?.def_ints, homeT?.games, 1), higherBetter: true},
               {label:'Sacks Allowed/g', away: _perG(awayT?.sacks_suffered, awayT?.games, 1), home: _perG(homeT?.sacks_suffered, homeT?.games, 1), higherBetter: false},
             ];
+            // stats_source badge — look up nfl_game_context for this matchup
+            // (indexed by away@home in the fetch). Non-'current' means Jerry
+            // and the tier gate are running on prior-season regressed data;
+            // surface that here so LEAN caps aren't mysterious.
+            const nflCtxKey = `${stripMascot(selectedGame?.away_team||'')}@${stripMascot(selectedGame?.home_team||'')}`;
+            const nflCtx = nflGameContextMap[nflCtxKey] || nflGameContextMap[selectedGame?.game_id] || null;
+            const nflStatsSrc = nflCtx?.stats_source;
+            const nflBadge = nflStatsSrc === 'prior_season_regressed'
+              ? { text: '⚠ Early season · using 2025 regressed', clr: '#ffd166' }
+              : nflStatsSrc === 'preseason'
+              ? { text: '🏈 Preseason · lines only, no picks', clr: '#7a92a8' }
+              : nflStatsSrc === 'none'
+              ? { text: '⚠ No team stats · market/cohort only', clr: '#ff4d6d' }
+              : null;
             return (
               <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
+                {nflBadge && (
+                  <View style={{backgroundColor:nflBadge.clr+'11',borderRadius:8,paddingHorizontal:10,paddingVertical:6,marginBottom:10,borderWidth:1,borderColor:nflBadge.clr+'44'}}>
+                    <Text style={{color:nflBadge.clr,fontSize:10,fontWeight:'700',textAlign:'center'}}>{nflBadge.text}</Text>
+                  </View>
+                )}
                 <View style={{flexDirection:'row',justifyContent:'flex-end',marginBottom:10}}>
                   <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 SWEAT LOCKER MODEL</Text></View>
                 </View>
