@@ -4242,28 +4242,49 @@ def run(target_date=None):
                 over_pct = ump_stats.get('over_rate', 'N/A') if ump_stats else 'N/A'
                 print(f"  Umpire: {ump_name} — K rate: {k_rate}, Over%: {over_pct}")
 
-            # Build pitcher context string for Jerry
+            # Build pitcher context string for Jerry.
+            # 2026-07-25 DQ FIX: mlb_pitcher_stats fields have INCONSISTENT
+            # units — some rows store as decimal (0.295 = 29.5%), some as
+            # percent (18.9 = 18.9%), some as default 10.0 (was a bug —
+            # now nulled by DQ cleanup). Previously the code always did
+            # `value * 100` which produced "1000%" and "7200% LOB" when
+            # source was already percent. Normalize: values < 1 = decimal,
+            # values >= 1 = already percent, skip if None.
+            def _pct(v):
+                if v is None: return None
+                try:
+                    f = float(v)
+                    if f == 0: return 0.0
+                    return f * 100 if f < 1 else f
+                except (TypeError, ValueError):
+                    return None
+            def _fmt_pitcher_str(pitcher_stats, name, throws_default='R'):
+                xera = pitcher_stats.get('xera', 'N/A')
+                kpct = _pct(pitcher_stats.get('k_pct'))
+                whiff = _pct(pitcher_stats.get('whiff_rate'))
+                gb = _pct(pitcher_stats.get('gb_pct'))
+                fb = _pct(pitcher_stats.get('fb_pct'))
+                lob = _pct(pitcher_stats.get('lob_pct'))
+                throws = pitcher_stats.get('throws') or throws_default
+                pitcher_type = ("GB pitcher" if (gb or 0) > 50
+                                else "FB pitcher" if (fb or 0) > 40
+                                else "neutral")
+                # Only include fields with valid data; skip NULL entries
+                parts = [f"xERA {xera}"]
+                if kpct is not None: parts.append(f"K% {kpct:.1f}%")
+                if whiff is not None: parts.append(f"whiff {whiff:.1f}%")
+                if gb is not None: parts.append(f"GB% {gb:.1f}%")
+                if fb is not None: parts.append(f"FB% {fb:.1f}%")
+                if lob is not None: parts.append(f"LOB% {lob:.1f}%")
+                return f"{name} ({throws}HP): " + ", ".join(parts) + f" ({pitcher_type})"
+
             pitcher_context = ""
             if home_pitcher_stats:
-                xera = home_pitcher_stats.get('xera', 'N/A')
-                kpct = float(home_pitcher_stats.get('k_pct') or 0)
-                whiff = float(home_pitcher_stats.get('whiff_rate') or 0)
-                gb = float(home_pitcher_stats.get('gb_pct') or 0)
-                fb = float(home_pitcher_stats.get('fb_pct') or 0)
-                lob = float(home_pitcher_stats.get('lob_pct') or 0)
-                home_throws = home_pitcher_stats.get('throws', 'R')
-                pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-                pitcher_context += f"{home_pitcher} ({home_throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff*100:.1f}%, GB% {gb*100:.1f}%, FB% {fb*100:.1f}%, LOB% {lob*100:.1f}% ({pitcher_type})"
+                pitcher_context += _fmt_pitcher_str(home_pitcher_stats, home_pitcher)
             if away_pitcher_stats:
-                xera = away_pitcher_stats.get('xera', 'N/A')
-                kpct = float(away_pitcher_stats.get('k_pct') or 0)
-                whiff = float(away_pitcher_stats.get('whiff_rate') or 0)
-                gb = float(away_pitcher_stats.get('gb_pct') or 0)
-                fb = float(away_pitcher_stats.get('fb_pct') or 0)
-                lob = float(away_pitcher_stats.get('lob_pct') or 0)
-                away_throws = away_pitcher_stats.get('throws', 'R')
-                pitcher_type = "GB pitcher" if gb > 50 else "FB pitcher" if fb > 40 else "neutral"
-                pitcher_context += f" | {away_pitcher} ({away_throws}HP): xERA {xera}, K% {kpct*100:.1f}%, whiff {whiff*100:.1f}%, GB% {gb*100:.1f}%, FB% {fb*100:.1f}%, LOB% {lob*100:.1f}% ({pitcher_type})"
+                if pitcher_context:
+                    pitcher_context += " | "
+                pitcher_context += _fmt_pitcher_str(away_pitcher_stats, away_pitcher)
             # Build umpire note
             ump_note = ""
             if ump_stats:

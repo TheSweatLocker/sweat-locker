@@ -1527,6 +1527,7 @@ const [dailyBestBetError, setDailyBestBetError] = useState('');
 const [modelEdgeData, setModelEdgeData] = useState([]);
 const [mlbGameContext, setMlbGameContext] = useState({});
 const [pitcherProjections, setPitcherProjections] = useState({});  // name(lower) -> {l7_rolling, classes, ...}
+const [mlbPitcherStatsMap, setMlbPitcherStatsMap] = useState({});  // name(lower) -> {whiff_rate, hard_hit_pct, k_pct, last_3_k_pct, ...}
 const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
@@ -4478,6 +4479,22 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         setPitcherProjections(projMap);
       }
     } catch(pe) { /* table may not exist yet — non-fatal */ }
+    // MLB pitcher Statcast stats (whiff, hard_hit, L3 K% for regression detection)
+    // Added 2026-07-25 after Miller K-prop post-mortem — surfaces the exact
+    // signals the whiff + L3 gates use, so users can spot regression risk.
+    try {
+      const psResult = await supabase
+        .from('mlb_pitcher_stats')
+        .select('player_name,whiff_rate,hard_hit_pct,k_pct,last_3_k_pct,last_3_era')
+        .limit(1000);
+      if(psResult?.data && psResult.data.length > 0) {
+        const psMap = {};
+        psResult.data.forEach(p => {
+          if(p.player_name) psMap[p.player_name.toLowerCase()] = p;
+        });
+        setMlbPitcherStatsMap(psMap);
+      }
+    } catch(pe) { /* non-fatal */ }
     // Umpire stats for the MLB Situational tab (audit-anchored cohort flags)
     try {
       const umpResult = await supabase
@@ -8627,23 +8644,70 @@ setJerryHistory(prev => {
                       const awayProj = pitcherProjections[awaySP];
                       const homeProj = pitcherProjections[homeSP];
                       if(!awayProj && !homeProj) return null;
+                      // Helper: normalize whiff/K% values that may be stored as decimal (0.28)
+                      // or percent (28.0). If <1 assume decimal, multiply by 100.
+                      const _pct = (v: any) => {
+                        if(v == null) return null;
+                        const f = parseFloat(v);
+                        if(isNaN(f)) return null;
+                        return f < 1 ? f * 100 : f;
+                      };
                       const renderProj = (label: string, proj: any) => {
                         if(!proj) return null;
                         const l7 = proj.l7_rolling;
-                        if(!l7) return (
+                        // Also pull Statcast + L3 from mlb_pitcher_stats for
+                        // whiff/hard_hit + K% regression signal (added 2026-07-25
+                        // after Miller K-prop post-mortem).
+                        const ps = mlbPitcherStatsMap[label.toLowerCase()];
+                        const whiff = _pct(ps?.whiff_rate);
+                        const hardHit = _pct(ps?.hard_hit_pct);
+                        const seasonK = _pct(ps?.k_pct);
+                        const l3K = _pct(ps?.last_3_k_pct);
+                        const kDelta = (seasonK != null && l3K != null) ? l3K - seasonK : null;
+                        // Regression severity — matches generate_props.py gates
+                        const regressColor = kDelta == null ? null
+                          : kDelta <= -8 ? '#ff4d6d'   // severe regression
+                          : kDelta <= -5 ? '#ffb800'   // moderate regression
+                          : kDelta >= 5  ? '#00e5a0'   // hot streak
+                          : '#7a92a8';                 // stable
+                        if(!l7 && !ps) return (
                           <View style={{marginBottom:8}}>
-                            <Text style={{color:'#7a92a8',fontSize:11}}>{label}: no L7 data</Text>
+                            <Text style={{color:'#7a92a8',fontSize:11}}>{label}: no data</Text>
                           </View>
                         );
                         return (
                           <View style={{marginBottom:10,backgroundColor:'#0d1419',borderRadius:8,padding:8}}>
                             <Text style={{color:'#e8f0f8',fontSize:11,fontWeight:'700',marginBottom:3}}>{label}</Text>
-                            <Text style={{color:'#c8d8e8',fontSize:11}}>
-                              L7 ({l7.n_starts} starts): {l7.avg_k} K · {l7.avg_bb} BB · {l7.avg_hits} H · {l7.avg_ip} IP/start
-                            </Text>
-                            <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>
-                              {l7.whip != null ? `${l7.whip} WHIP · ` : ''}{l7.k_per_9} K/9 · {l7.bb_per_9} BB/9 · {l7.hits_per_9} H/9 · {l7.era} ERA
-                            </Text>
+                            {l7 && (
+                              <>
+                                <Text style={{color:'#c8d8e8',fontSize:11}}>
+                                  L7 ({l7.n_starts} starts): {l7.avg_k} K · {l7.avg_bb} BB · {l7.avg_hits} H · {l7.avg_ip} IP/start
+                                </Text>
+                                <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>
+                                  {l7.whip != null ? `${l7.whip} WHIP · ` : ''}{l7.k_per_9} K/9 · {l7.bb_per_9} BB/9 · {l7.hits_per_9} H/9 · {l7.era} ERA
+                                </Text>
+                              </>
+                            )}
+                            {/* Statcast + regression signals — bottom row */}
+                            {(whiff != null || hardHit != null || kDelta != null) && (
+                              <View style={{flexDirection:'row',flexWrap:'wrap',gap:8,marginTop:6,paddingTop:6,borderTopWidth:1,borderTopColor:'#1a2530'}}>
+                                {whiff != null && (
+                                  <Text style={{color:whiff >= 28 ? '#00e5a0' : whiff < 15 ? '#ff4d6d' : '#c8d8e8',fontSize:10,fontWeight:'700'}}>
+                                    whiff {whiff.toFixed(1)}%
+                                  </Text>
+                                )}
+                                {hardHit != null && (
+                                  <Text style={{color:hardHit >= 42 ? '#ff4d6d' : '#c8d8e8',fontSize:10,fontWeight:'700'}}>
+                                    hard-hit {hardHit.toFixed(1)}%
+                                  </Text>
+                                )}
+                                {kDelta != null && Math.abs(kDelta) >= 3 && (
+                                  <Text style={{color:regressColor,fontSize:10,fontWeight:'700'}}>
+                                    L3 K% {l3K!.toFixed(1)}% ({kDelta > 0 ? '+' : ''}{kDelta.toFixed(1)} vs {seasonK!.toFixed(1)}% season)
+                                  </Text>
+                                )}
+                              </View>
+                            )}
                           </View>
                         );
                       };
