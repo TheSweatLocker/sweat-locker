@@ -71,9 +71,12 @@ jobs:
           if [ -n "$KENPOM_KEY" ]; then echo "KENPOM_KEY length: ${#KENPOM_KEY}"; else echo "KENPOM_KEY not set"; fi
           python ncaab_pipeline.py || echo "KenPom pull failed (non-fatal — game context can run on prior snapshot)"
 
-      # ────── ALIAS ENRICHMENT (monthly on Monday, cheap idempotent) ──────
-      - name: Refresh NCAAB alias enrichment (Mon only)
-        if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only') && github.event.schedule == '0 15 * * 1'
+      # ────── ALIAS ENRICHMENT (weekly on Monday, cheap idempotent) ──────
+      # Also fires on manual workflow_dispatch so testing kenpom_only
+      # mode runs the full weekly-Monday routine (2026-07-25 fix —
+      # was gated on schedule only, making manual runs skip enrichment).
+      - name: Refresh NCAAB alias enrichment (Mon + manual)
+        if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only') && (github.event.schedule == '0 15 * * 1' || github.event_name == 'workflow_dispatch')
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
