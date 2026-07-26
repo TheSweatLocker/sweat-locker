@@ -8774,6 +8774,21 @@ setJerryHistory(prev => {
                 const awayCtx = pitcherCtxStr.split('|')[1] || '';
                 const homeKRate = homeCtx.match(/K% ([\d.]+)/)?.[1] || 'N/A';
                 const awayKRate = awayCtx.match(/K% ([\d.]+)/)?.[1] || 'N/A';
+                // Sample-size context (2026-07-25) — per feedback_sample_size_with_pct.
+                // Every surfaced stat needs sample context so users can gauge trust.
+                const sampleHeader = (
+                  <View style={{backgroundColor:'#0d1419',borderRadius:8,padding:8,marginBottom:10,borderWidth:1,borderColor:'#1a2530'}}>
+                    <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',letterSpacing:0.6,marginBottom:4}}>SAMPLE — Season 2026, stats through today</Text>
+                    <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                      <Text style={{color:'#c8d8e8',fontSize:11}}>
+                        <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{awayShort}</Text> {mlbCtx.away_record || '?'} · L10 {mlbCtx.away_last10 || '?'}{mlbCtx.away_streak ? ` · ${mlbCtx.away_streak}` : ''}
+                      </Text>
+                      <Text style={{color:'#c8d8e8',fontSize:11}}>
+                        <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{homeShort}</Text> {mlbCtx.home_record || '?'} · L10 {mlbCtx.home_last10 || '?'}{mlbCtx.home_streak ? ` · ${mlbCtx.home_streak}` : ''}
+                      </Text>
+                    </View>
+                  </View>
+                );
                 const mlbRows = [
                   {label:'SP xERA', away: mlbCtx.away_sp_xera && parseFloat(mlbCtx.away_sp_xera) <= 6.5 ? parseFloat(mlbCtx.away_sp_xera).toFixed(2) : 'N/A', home: mlbCtx.home_sp_xera && parseFloat(mlbCtx.home_sp_xera) <= 6.5 ? parseFloat(mlbCtx.home_sp_xera).toFixed(2) : 'N/A', higherBetter: false},
                   {label:'SP K%', away: awayKRate, home: homeKRate, higherBetter: true},
@@ -8783,6 +8798,7 @@ setJerryHistory(prev => {
                 ];
                 return(
                   <View>
+                    {sampleHeader}
                     {/* Pitcher matchup header */}
                     <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:10,padding:10,marginBottom:10,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
                       <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,marginBottom:6}}>PITCHER MATCHUP</Text>
