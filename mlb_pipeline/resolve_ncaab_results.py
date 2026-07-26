@@ -123,7 +123,8 @@ def _log_gap(entry: dict) -> None:
 
 def fetch_espn_scoreboard(date_str: str) -> list:
     """Returns list of ESPN 'events' for a given YYYYMMDD."""
-    url = f'{ESPN_BASE}/scoreboard?dates={date_str}&limit=500'
+    # groups=50 = full D1 coverage (Phase 1b fix — was missing ~85% of games).
+    url = f'{ESPN_BASE}/scoreboard?dates={date_str}&groups=50&limit=500'
     try:
         r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
         r.raise_for_status()

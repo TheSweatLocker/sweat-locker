@@ -114,7 +114,11 @@ def log_gap(entry: dict) -> None:
 # ─── ESPN parsing ─────────────────────────────────────────────────
 
 def fetch_scoreboard(yyyymmdd: str) -> list:
-    url = f'{ESPN_BASE}/scoreboard?dates={yyyymmdd}&limit=500'
+    # groups=50 unlocks full D1 coverage (2026-07-25 Phase 1b fix).
+    # Without groups param, ESPN returns only ~15-30 "featured" games/day.
+    # With groups=50: ~130-200 games/day = full D1 slate. Test on 2025-03-01
+    # showed 133 events with groups=50 vs 16 without — 8x coverage jump.
+    url = f'{ESPN_BASE}/scoreboard?dates={yyyymmdd}&groups=50&limit=500'
     try:
         r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
         r.raise_for_status()
