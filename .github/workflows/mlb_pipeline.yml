@@ -147,6 +147,37 @@ jobs:
           cd mlb_pipeline
           python patch_projected_ks.py
 
+      # Monte Carlo simulation — writes mc_probabilities + mc_high_conf_flag
+      # + NRFI ensemble back to mlb_game_context. Must run BEFORE Jerry reads
+      # + props + sweat card so MC values are on the ctx everyone reads.
+      # Wired 2026-07-26 after root-cause audit: enrich_monte_carlo was never
+      # in any workflow; MC values only landed via ad-hoc manual runs. That
+      # meant compute_primary_play never saw mc_high_conf_flag at build time
+      # → MC-HIGH-CONF headline block never fired from the primary path.
+      - name: Enrich Monte Carlo (mc_probabilities + high_conf + NRFI ensemble)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_monte_carlo.py
+
+      # Sequencing-bug companion (same pattern as 7/25 panel fix):
+      # game_context.py builds primary_play BEFORE enrich_monte_carlo writes
+      # mc_high_conf_flag, so the MC-HIGH-CONF headline block short-circuits
+      # on the initial compute. This step re-runs compute_primary_play with
+      # the just-landed MC values on ctx. Also recomputes NRFI ensemble.
+      # Verified 2026-07-26 on 15-game slate: 8/15 primary_plays flipped,
+      # 2 new PRIME ML picks landed (COL@MIL + CLE@TB) that MC-HC had been
+      # showing but scorer wasn't converting.
+      - name: Recompute primary_play + NRFI ensemble post-MC
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python recompute_primary_play.py
+
       # L5 pitcher actuals (2026-06-07). Hits MLB Stats API per starter on
       # today's slate, pulls last-5 starts (outs/Ks/BB/hits/ER), writes to
       # jerry_cache rows keyed pitcher_l5_{date}_{game_id}. Consumed by
