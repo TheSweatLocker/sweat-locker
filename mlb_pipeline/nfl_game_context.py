@@ -107,6 +107,85 @@ def load_team_stats(season: int) -> dict:
     return {row['team']: row for row in r.json()}
 
 
+# Minimum games/team avg before we trust current-season stats over prior year.
+# Under this threshold we fall back to prior season (regressed to league mean).
+# 4 games ≈ Week 5 — matches the point where cohort samples are meaningful.
+MIN_GAMES_PER_TEAM_AVG = 4.0
+
+
+def _avg_games(stats_dict: dict) -> float:
+    if not stats_dict: return 0.0
+    games = [(row.get('games') or 0) for row in stats_dict.values()]
+    return sum(games) / max(1, len(games))
+
+
+def _league_mean_per_game(stats_dict: dict) -> dict:
+    """Compute league-mean per-game rates for regression-to-mean blending."""
+    if not stats_dict: return {}
+    totals = {'pass_epa': 0.0, 'rush_epa': 0.0, 'pass_cpoe': 0.0, 'games': 0.0}
+    n_cpoe = 0
+    for row in stats_dict.values():
+        g = row.get('games') or 0
+        if g < 1: continue
+        totals['pass_epa'] += (row.get('pass_epa') or 0) / g
+        totals['rush_epa'] += (row.get('rush_epa') or 0) / g
+        totals['games']    += 1
+        cp = row.get('pass_cpoe')
+        if cp is not None:
+            totals['pass_cpoe'] += cp
+            n_cpoe += 1
+    n = totals['games'] or 1
+    return {
+        'pass_epa_per_g': totals['pass_epa'] / n,
+        'rush_epa_per_g': totals['rush_epa'] / n,
+        'pass_cpoe':      totals['pass_cpoe'] / max(1, n_cpoe),
+    }
+
+
+def _regress_to_mean(stats_dict: dict, shrink: float = 0.4) -> dict:
+    """Blend prior-season stats toward league mean.
+    shrink=0.4 means 60% prior-season signal, 40% pulled toward mean.
+    Handles roster turnover (new QB, coach change) without discarding
+    the prior-year signal entirely. Preserves the 'games' count so the
+    downstream per-game divides still work.
+    """
+    if not stats_dict: return {}
+    mean = _league_mean_per_game(stats_dict)
+    out = {}
+    for team, row in stats_dict.items():
+        g = row.get('games') or 0
+        if g < 1:
+            out[team] = row
+            continue
+        new = dict(row)
+        # Blend per-game rates, then re-scale back to season totals via games count
+        team_pe_pg = (row.get('pass_epa') or 0) / g
+        team_re_pg = (row.get('rush_epa') or 0) / g
+        blend_pe_pg = (1 - shrink) * team_pe_pg + shrink * mean.get('pass_epa_per_g', 0)
+        blend_re_pg = (1 - shrink) * team_re_pg + shrink * mean.get('rush_epa_per_g', 0)
+        new['pass_epa'] = blend_pe_pg * g
+        new['rush_epa'] = blend_re_pg * g
+        cp = row.get('pass_cpoe')
+        if cp is not None:
+            new['pass_cpoe'] = (1 - shrink) * cp + shrink * mean.get('pass_cpoe', 0)
+        out[team] = new
+    return out
+
+
+def load_team_stats_with_fallback(current_season: int) -> tuple:
+    """Return (stats_dict, source_label). Falls back to prior-season
+    regressed-to-mean when current-year sample is too thin (Weeks 1-3).
+    """
+    current = load_team_stats(current_season)
+    if _avg_games(current) >= MIN_GAMES_PER_TEAM_AVG:
+        return current, 'current'
+    prior = load_team_stats(current_season - 1)
+    if _avg_games(prior) >= MIN_GAMES_PER_TEAM_AVG:
+        return _regress_to_mean(prior, shrink=0.4), 'prior_season_regressed'
+    # Neither season is populated — return whatever we have but flag it
+    return current or prior, 'none'
+
+
 def compute_off_rating(stats: dict) -> Optional[float]:
     """EPA per game (pass + rush). Higher = better offense.
     League-avg ≈ 0 by definition of EPA; strong teams 30-50, weak -20 to -40.
@@ -286,7 +365,19 @@ def sweat_tier(score):
 def compute_primary_play(ctx: dict) -> Optional[dict]:
     """Analog of ncaab_game_context.compute_primary_play. Spread/total/ML only.
     Tier gates align with audit (nfl_heavy_home_dog is the only pre-Week-1
-    audit-validated PRIME cohort)."""
+    audit-validated PRIME cohort).
+
+    Early-season discipline: when stats_source='prior_season_regressed',
+    non-cohort plays cap at LEAN. The heavy_home_dog cohort is exempt
+    because it's Vegas-driven, not EPA-driven (audit-validated on
+    2022-2025 data using only close_spread + home/away).
+    """
+    stats_source = ctx.get('stats_source') or 'current'
+    # Preseason = no primary_play at all. Starters play limited series;
+    # historical hit rates on preseason picks are pure noise.
+    if stats_source == 'preseason':
+        return None
+    stats_stale  = stats_source != 'current'
     conf = ctx.get('signal_confluence_net') or 0
     proj_spread = ctx.get('projected_spread')
     close_spread = ctx.get('close_spread')
@@ -319,23 +410,33 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
 
     # 2. STRONG spread — big model-vs-market gap + confluence agrees
     if abs_edge >= 3.5 and abs(conf) >= 2:
+        tier = 'LEAN' if stats_stale else 'STRONG'
+        floor = 60 if stats_stale else 72
+        sub = f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f}, conf {conf:+d})'
+        if stats_stale:
+            sub += ' · prior-season data, LEAN cap'
         return {
             'type': 'spread',
-            'tier': 'STRONG',
-            'label': f'{fav} spread cover',
-            'sub': f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f}, conf {conf:+d})',
-            'signal_floor': 72,
+            'tier': tier,
+            'label': f'{fav} spread {"lean" if stats_stale else "cover"}',
+            'sub': sub,
+            'signal_floor': floor,
         }
 
     # 3. STRONG total — model disagreement ≥ 4
     if total_edge is not None and abs(total_edge) >= 4.0:
         side = 'Over' if total_edge > 0 else 'Under'
+        tier = 'LEAN' if stats_stale else 'STRONG'
+        floor = 58 if stats_stale else 70
+        sub = f'Model projects {proj_total:.1f} vs market {close_total} ({total_edge:+.1f})'
+        if stats_stale:
+            sub += ' · prior-season data, LEAN cap'
         return {
             'type': 'total',
-            'tier': 'STRONG',
+            'tier': tier,
             'label': f'{side} {close_total}',
-            'sub': f'Model projects {proj_total:.1f} vs market {close_total} ({total_edge:+.1f})',
-            'signal_floor': 70,
+            'sub': sub,
+            'signal_floor': floor,
         }
 
     # 4. LIGHT spread lean
@@ -344,7 +445,7 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
             'type': 'spread',
             'tier': 'LIGHT',
             'label': f'{fav} spread lean',
-            'sub': f'Edge {abs_edge:.1f}',
+            'sub': f'Edge {abs_edge:.1f}' + (' · prior-season data' if stats_stale else ''),
             'signal_floor': 60,
         }
 
@@ -372,7 +473,7 @@ def _pick_book(event: dict, market_key: str) -> dict:
     return {}
 
 
-def build_row(event: dict, aliases: dict, team_stats: dict) -> Optional[dict]:
+def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 'current') -> Optional[dict]:
     home_raw = event.get('home_team'); away_raw = event.get('away_team')
     home = aliases.get(home_raw); away = aliases.get(away_raw)
     if not home or not away:
@@ -390,7 +491,7 @@ def build_row(event: dict, aliases: dict, team_stats: dict) -> Optional[dict]:
         'game_id': event.get('id'),
         'game_date': game_date,
         'season': dt.year,
-        'season_type': 'REG',
+        'season_type': 'PRE' if stats_source == 'preseason' else 'REG',
         'home_team': home,
         'away_team': away,
         'kickoff_utc': commence,
@@ -439,6 +540,7 @@ def build_row(event: dict, aliases: dict, team_stats: dict) -> Optional[dict]:
     row['signal_confluence_breakdown'] = breakdown
 
     row['cohort_tags'] = compute_cohort_tags(row)
+    row['stats_source'] = stats_source
 
     score = compute_sweat_score(
         row.get('projected_spread'), row.get('close_spread'), conf_net,
@@ -483,19 +585,30 @@ def run(dry_run: bool = False) -> None:
         return
 
     season = _et_now().year if _et_now().month >= 9 else _et_now().year - 1
-    team_stats = load_team_stats(season)
-    print(f'  aliases={len(aliases)}  team_stats={len(team_stats)} teams for {season}')
+    team_stats, stats_source = load_team_stats_with_fallback(season)
+    if stats_source == 'prior_season_regressed':
+        print(f'  ⚠ current season {season} thin — falling back to {season-1} regressed to mean (LEAN cap on non-cohort plays)')
+    elif stats_source == 'none':
+        print(f'  ⚠ neither {season} nor {season-1} has usable team stats — cohort/market signal only')
+    print(f'  aliases={len(aliases)}  team_stats={len(team_stats)} teams  source={stats_source}')
 
     events = []
     for sk in ('americanfootball_nfl', 'americanfootball_nfl_preseason'):
         e = fetch_odds_events(sk)
+        # Tag each event with its phase so build_row can flag preseason.
+        # Preseason gets stats_source='preseason' — no primary_play emitted
+        # (starters play limited series; picks are noise).
+        phase = 'preseason' if 'preseason' in sk else 'regular'
+        for ev in e:
+            ev['_sweat_phase'] = phase
         events.extend(e)
     print(f'  Odds API events: {len(events)}')
 
     rows = []
     skipped = 0
     for e in events:
-        r = build_row(e, aliases, team_stats)
+        row_source = 'preseason' if e.get('_sweat_phase') == 'preseason' else stats_source
+        r = build_row(e, aliases, team_stats, stats_source=row_source)
         if r is None:
             skipped += 1
             continue

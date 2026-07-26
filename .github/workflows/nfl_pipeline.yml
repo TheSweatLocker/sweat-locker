@@ -126,19 +126,15 @@ jobs:
           cd mlb_pipeline
           python nfl_generate_props.py || echo "props failed (non-fatal)"
 
-      - name: External source aggregation pull (Phase 2 stub)
-        if: steps.mode.outputs.mode == 'full'
+      - name: External source aggregation pull
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          # pull_externals_nfl.py ships in Phase 2 (Sept target)
-          if [ -f pull_externals_nfl.py ]; then
-            python pull_externals_nfl.py || echo "external pull failed (non-fatal)"
-          else
-            echo "pull_externals_nfl.py not yet built — Phase 2"
-          fi
+          python pull_externals_nfl.py || echo "external pull failed (non-fatal)"
 
       - name: Generate NFL game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -166,12 +162,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          if [ -f resolve_nfl_results.py ]; then
-            python resolve_nfl_results.py || echo "resolver failed"
-          else
-            # Fall back to backfill_results incremental mode (last 30 days)
-            python nfl_backfill_results.py --incremental || echo "backfill failed"
-          fi
+          python resolve_nfl_results.py || echo "resolver failed"
 
       - name: Recompute cohort calibration
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'
