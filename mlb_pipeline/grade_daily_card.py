@@ -39,6 +39,14 @@ def _today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
 
+def _yesterday_et() -> str:
+    """Default date for the grader — yesterday's ET slate is what the
+    morning resolver just finished resolving. Today's slate hasn't been
+    played yet (grader would find all PENDING). This is the actual
+    default we want."""
+    return (datetime.now(timezone.utc) - timedelta(hours=4, days=1)).strftime('%Y-%m-%d')
+
+
 def _grade_side(pp_type: str, pp_label: str, ctx: dict, res: dict) -> str:
     """Grade a primary_play side pick. Returns W/L/P/PENDING."""
     if res.get('home_score') is None or res.get('away_score') is None:
@@ -201,7 +209,7 @@ def main():
     ap.add_argument('--date', default=None)
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
-    run(args.date or _today_et(), dry_run=args.dry_run)
+    run(args.date or _yesterday_et(), dry_run=args.dry_run)
 
 
 if __name__ == '__main__':
