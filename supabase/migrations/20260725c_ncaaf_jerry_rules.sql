@@ -9,8 +9,9 @@
 -- EPA/play, success_rate, explosiveness).
 -- ============================================================
 -- Season starts Aug 22 2026 — same anti-hallucination pattern
--- as MLB / NBA / UFC / NFL. INSERT (not UPDATE) because the row
--- doesn't yet exist in prompt_templates.
+-- as MLB / NBA / UFC / NFL. Uses upsert (ON CONFLICT DO UPDATE)
+-- so it's safe to re-run and wins over any prior stub row that
+-- may have been seeded via ad-hoc SQL.
 -- ============================================================
 
 INSERT INTO prompt_templates (name, sport, template, notes) VALUES (
@@ -42,6 +43,9 @@ RULES:
 LENGTH: 3 sentences. Hard cap.
 $tpl$,
 'NCAAF rules block — shipped 2026-07-25 pre-Aug 22 season. Mirrors NFL/UFC anti-hallucination pattern with SP+/EPA-specific signals and NCAAF cohort language.'
-);
+)
+ON CONFLICT (name, sport) WHERE is_active DO UPDATE
+  SET template = EXCLUDED.template,
+      notes    = EXCLUDED.notes;
 
 NOTIFY pgrst, 'reload schema';
