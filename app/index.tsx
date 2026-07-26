@@ -1528,6 +1528,8 @@ const [modelEdgeData, setModelEdgeData] = useState([]);
 const [mlbGameContext, setMlbGameContext] = useState({});
 const [pitcherProjections, setPitcherProjections] = useState({});  // name(lower) -> {l7_rolling, classes, ...}
 const [mlbPitcherStatsMap, setMlbPitcherStatsMap] = useState({});  // name(lower) -> {whiff_rate, hard_hit_pct, k_pct, last_3_k_pct, ...}
+const [ncaafTeamStatsMap, setNcaafTeamStatsMap] = useState({});   // team(lower) -> {sp_overall, sp_offense, sp_defense, off_epa_per_play, def_epa_per_play, ...}
+const [nflTeamStatsMap, setNflTeamStatsMap] = useState({});       // team(short) -> {pass_epa, rush_epa, pass_cpoe, def_sacks, def_ints, ...}
 const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
@@ -4493,6 +4495,38 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           if(p.player_name) psMap[p.player_name.toLowerCase()] = p;
         });
         setMlbPitcherStatsMap(psMap);
+      }
+    } catch(pe) { /* non-fatal */ }
+    // NCAAF team stats (SP+, EPA per play, success rate, explosiveness)
+    // Added 2026-07-25 for NCAAF Team Stats tab (Aug 22 kickoff prep).
+    try {
+      const nfResult = await supabase
+        .from('ncaaf_team_stats')
+        .select('team,sp_overall,sp_offense,sp_defense,off_epa_per_play,def_epa_per_play,off_success_rate,off_explosiveness,season')
+        .order('season', { ascending: false })
+        .limit(600);
+      if(nfResult?.data && nfResult.data.length > 0) {
+        const nfMap = {};
+        // Keep latest season per team
+        nfResult.data.forEach(t => {
+          if(t.team && !nfMap[t.team.toLowerCase()]) nfMap[t.team.toLowerCase()] = t;
+        });
+        setNcaafTeamStatsMap(nfMap);
+      }
+    } catch(pe) { /* non-fatal */ }
+    // NFL team stats (EPA, CPOE, sacks — for NFL Team Stats tab, Sept 4 season)
+    try {
+      const nflResult = await supabase
+        .from('nfl_team_stats')
+        .select('team,pass_epa,rush_epa,pass_cpoe,receiving_epa,def_sacks,def_ints,sacks_suffered,pass_yards,rush_yards,games,season,season_type')
+        .order('season', { ascending: false })
+        .limit(300);
+      if(nflResult?.data && nflResult.data.length > 0) {
+        const nflMap = {};
+        nflResult.data.forEach(t => {
+          if(t.team && !nflMap[t.team.toLowerCase()]) nflMap[t.team.toLowerCase()] = t;
+        });
+        setNflTeamStatsMap(nflMap);
       }
     } catch(pe) { /* non-fatal */ }
     // Umpire stats for the MLB Situational tab (audit-anchored cohort flags)
@@ -8540,6 +8574,133 @@ setJerryHistory(prev => {
               </View>
             </View>
           );
+          // ─── NCAAF Team Stats (added 2026-07-25) ───────────────────
+          if(gamesSport==='NCAAF') {
+            const awayKey = stripMascot(selectedGame?.away_team||'').toLowerCase();
+            const homeKey = stripMascot(selectedGame?.home_team||'').toLowerCase();
+            // Fuzzy lookup — CFBD team names may drop suffix
+            const awayT = ncaafTeamStatsMap[awayKey] ||
+              Object.values(ncaafTeamStatsMap).find((t: any) => t.team?.toLowerCase().includes(awayKey) || awayKey.includes(t.team?.toLowerCase()));
+            const homeT = ncaafTeamStatsMap[homeKey] ||
+              Object.values(ncaafTeamStatsMap).find((t: any) => t.team?.toLowerCase().includes(homeKey) || homeKey.includes(t.team?.toLowerCase()));
+            const hasData = awayT || homeT;
+            if(!hasData) return (
+              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:'#1f2d3d',alignItems:'center'}}>
+                <Text style={{fontSize:32}}>🏈</Text>
+                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>NCAAF Team Stats</Text>
+                <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Team efficiency data (SP+, EPA per play, success rate) will surface once teams appear in our efficiency database. Season kicks off Aug 22.</Text>
+              </View>
+            );
+            const _n = (v: any, d = 1) => v == null ? 'N/A' : parseFloat(v).toFixed(d);
+            const rows = [
+              {label:'SP+ Overall', away: _n((awayT as any)?.sp_overall), home: _n((homeT as any)?.sp_overall), higherBetter: true},
+              {label:'SP+ Offense', away: _n((awayT as any)?.sp_offense), home: _n((homeT as any)?.sp_offense), higherBetter: true},
+              {label:'SP+ Defense', away: _n((awayT as any)?.sp_defense), home: _n((homeT as any)?.sp_defense), higherBetter: false},
+              {label:'Off EPA/play', away: _n((awayT as any)?.off_epa_per_play, 3), home: _n((homeT as any)?.off_epa_per_play, 3), higherBetter: true},
+              {label:'Def EPA/play', away: _n((awayT as any)?.def_epa_per_play, 3), home: _n((homeT as any)?.def_epa_per_play, 3), higherBetter: false},
+              {label:'Off Success%', away: awayT?.off_success_rate != null ? ((awayT.off_success_rate as number)*100).toFixed(1) : 'N/A', home: homeT?.off_success_rate != null ? ((homeT.off_success_rate as number)*100).toFixed(1) : 'N/A', higherBetter: true},
+              {label:'Off Explosiveness', away: _n((awayT as any)?.off_explosiveness, 2), home: _n((homeT as any)?.off_explosiveness, 2), higherBetter: true},
+            ];
+            return (
+              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
+                <View style={{flexDirection:'row',justifyContent:'flex-end',marginBottom:10}}>
+                  <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 SWEAT LOCKER MODEL</Text></View>
+                </View>
+                <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:10}}>
+                  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{awayShort}</Text>
+                  <Text style={{color:'#4a6070',fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
+                  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{homeShort}</Text>
+                </View>
+                {rows.map((row, i) => {
+                  const awayNum = parseFloat(row.away);
+                  const homeNum = parseFloat(row.home);
+                  const awayBetter = row.higherBetter ? awayNum > homeNum : awayNum < homeNum;
+                  const homeBetter = row.higherBetter ? homeNum > awayNum : homeNum < awayNum;
+                  const aClr = awayBetter ? '#00e5a0' : homeBetter ? '#ff4d6d' : '#7a92a8';
+                  const hClr = homeBetter ? '#00e5a0' : awayBetter ? '#ff4d6d' : '#7a92a8';
+                  return (
+                    <View key={i} style={{flexDirection:'row',alignItems:'center',marginBottom:10}}>
+                      <View style={{flex:1,alignItems:'flex-start'}}>
+                        <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:aClr+'22',borderWidth:1,borderColor:aClr+'44',minWidth:56,alignItems:'center'}}>
+                          <Text style={{color:aClr,fontWeight:awayBetter?'800':'700',fontSize:12}}>{row.away}</Text>
+                        </View>
+                      </View>
+                      <Text style={{flex:1.5,color:'#7a92a8',fontSize:11,textAlign:'center'}}>{row.label}</Text>
+                      <View style={{flex:1,alignItems:'flex-end'}}>
+                        <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:hClr+'22',borderWidth:1,borderColor:hClr+'44',minWidth:56,alignItems:'center'}}>
+                          <Text style={{color:hClr,fontWeight:homeBetter?'800':'700',fontSize:12}}>{row.home}</Text>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })}
+                <Text style={{color:'#4a6070',fontSize:10,marginTop:6,fontStyle:'italic'}}>SP+ and EPA per play from the Sweat Locker proprietary efficiency model. Latest season data.</Text>
+              </View>
+            );
+          }
+          // ─── NFL Team Stats (added 2026-07-25) ─────────────────────
+          if(gamesSport==='NFL') {
+            const awayKey = stripMascot(selectedGame?.away_team||'').toLowerCase();
+            const homeKey = stripMascot(selectedGame?.home_team||'').toLowerCase();
+            const awayT = nflTeamStatsMap[awayKey] ||
+              Object.values(nflTeamStatsMap).find((t: any) => t.team?.toLowerCase().includes(awayKey) || awayKey.includes(t.team?.toLowerCase()));
+            const homeT = nflTeamStatsMap[homeKey] ||
+              Object.values(nflTeamStatsMap).find((t: any) => t.team?.toLowerCase().includes(homeKey) || homeKey.includes(t.team?.toLowerCase()));
+            const hasData = awayT || homeT;
+            if(!hasData) return (
+              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:'#1f2d3d',alignItems:'center'}}>
+                <Text style={{fontSize:32}}>🏈</Text>
+                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>NFL Team Stats</Text>
+                <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Team efficiency data will surface once teams appear in our efficiency database. Preseason Aug 7 · Week 1 Sept 4.</Text>
+              </View>
+            );
+            const _n = (v: any, d = 1) => v == null ? 'N/A' : parseFloat(v).toFixed(d);
+            const _perG = (v: any, g: any, d = 1) => (v == null || !g) ? 'N/A' : (parseFloat(v)/parseFloat(g)).toFixed(d);
+            const rows = [
+              {label:'Pass EPA/g', away: _perG(awayT?.pass_epa, awayT?.games, 2), home: _perG(homeT?.pass_epa, homeT?.games, 2), higherBetter: true},
+              {label:'Rush EPA/g', away: _perG(awayT?.rush_epa, awayT?.games, 2), home: _perG(homeT?.rush_epa, homeT?.games, 2), higherBetter: true},
+              {label:'CPOE', away: _n(awayT?.pass_cpoe, 2), home: _n(homeT?.pass_cpoe, 2), higherBetter: true},
+              {label:'Def Sacks/g', away: _perG(awayT?.def_sacks, awayT?.games, 1), home: _perG(homeT?.def_sacks, homeT?.games, 1), higherBetter: true},
+              {label:'Def INT/g', away: _perG(awayT?.def_ints, awayT?.games, 1), home: _perG(homeT?.def_ints, homeT?.games, 1), higherBetter: true},
+              {label:'Sacks Allowed/g', away: _perG(awayT?.sacks_suffered, awayT?.games, 1), home: _perG(homeT?.sacks_suffered, homeT?.games, 1), higherBetter: false},
+            ];
+            return (
+              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
+                <View style={{flexDirection:'row',justifyContent:'flex-end',marginBottom:10}}>
+                  <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 SWEAT LOCKER MODEL</Text></View>
+                </View>
+                <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:10}}>
+                  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{awayShort}</Text>
+                  <Text style={{color:'#4a6070',fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
+                  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{homeShort}</Text>
+                </View>
+                {rows.map((row, i) => {
+                  const awayNum = parseFloat(row.away);
+                  const homeNum = parseFloat(row.home);
+                  const awayBetter = row.higherBetter ? awayNum > homeNum : awayNum < homeNum;
+                  const homeBetter = row.higherBetter ? homeNum > awayNum : homeNum < awayNum;
+                  const aClr = awayBetter ? '#00e5a0' : homeBetter ? '#ff4d6d' : '#7a92a8';
+                  const hClr = homeBetter ? '#00e5a0' : awayBetter ? '#ff4d6d' : '#7a92a8';
+                  return (
+                    <View key={i} style={{flexDirection:'row',alignItems:'center',marginBottom:10}}>
+                      <View style={{flex:1,alignItems:'flex-start'}}>
+                        <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:aClr+'22',borderWidth:1,borderColor:aClr+'44',minWidth:56,alignItems:'center'}}>
+                          <Text style={{color:aClr,fontWeight:awayBetter?'800':'700',fontSize:12}}>{row.away}</Text>
+                        </View>
+                      </View>
+                      <Text style={{flex:1.5,color:'#7a92a8',fontSize:11,textAlign:'center'}}>{row.label}</Text>
+                      <View style={{flex:1,alignItems:'flex-end'}}>
+                        <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:hClr+'22',borderWidth:1,borderColor:hClr+'44',minWidth:56,alignItems:'center'}}>
+                          <Text style={{color:hClr,fontWeight:homeBetter?'800':'700',fontSize:12}}>{row.home}</Text>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })}
+                <Text style={{color:'#4a6070',fontSize:10,marginTop:6,fontStyle:'italic'}}>Per-game rates from Sweat Locker efficiency model. Games sampled: {awayT?.games || '?'} away · {homeT?.games || '?'} home.</Text>
+              </View>
+            );
+          }
           const isNCAAB = gamesSport==='NCAAB';
           const isNBA = gamesSport==='NBA';
           const isMLB = gamesSport==='MLB';
