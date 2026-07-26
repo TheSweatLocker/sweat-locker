@@ -470,6 +470,20 @@ jobs:
           cd mlb_pipeline
           python resolve_game_results.py
 
+      # Grade the day's card automatically (added 2026-07-25). Runs after
+      # resolve_game_results, so primary_play + mc_high_conf + nrfi_ensemble
+      # + PRIME/STRONG props all have final outcomes. Writes to daily_grades
+      # so morning audit is one-shot (no manual grade pull). Also seeds
+      # long-term tier calibration on primary_play performance.
+      - name: Grade daily card
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python grade_daily_card.py || echo "grade_daily_card non-fatal"
+
       # POTD auto-resolver — reads jerry_cache best_bet_* entries, looks
       # up game outcomes via mlb_game_results, writes Win/Loss/Push back
       # to data.result. Idempotent + backfills any unresolved historic

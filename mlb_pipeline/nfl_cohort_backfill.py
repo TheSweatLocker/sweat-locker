@@ -209,7 +209,11 @@ def cohort_result(cohort: str, g: dict) -> Optional[str]:
 
 
 def build_calibration_rows(cohort_tallies: dict) -> list:
-    """Convert cohort tallies to mlb_tier_calibration rows."""
+    """Convert cohort tallies to canonical mlb_tier_calibration rows.
+    Schema (per NCAAF/MLB pattern): hits / total / hit_rate (0-1 float).
+    Fixed 2026-07-25 — was using wins/losses/pushes/hit_pct/sample_n
+    which are not real columns on mlb_tier_calibration → silent
+    upsert failures. See project_ncaaf_phase1_complete_723."""
     from datetime import date
     today = date.today().isoformat()
     rows = []
@@ -217,18 +221,14 @@ def build_calibration_rows(cohort_tallies: dict) -> list:
         n = tally['W'] + tally['L']
         if n == 0:
             continue
-        pct = round(100.0 * tally['W'] / n, 1)
         rows.append({
-            'tier': cohort.upper().replace('NFL_', ''),  # tier column stores cohort tag
-            'sport': 'nfl',
+            'tier': cohort,   # keep nfl_* prefix (matches NCAAF pattern)
+            'sport': 'NFL',   # uppercase (matches MLB/NCAAF/NCAAB/NBA convention)
             'window_label': 'lifetime',
-            'wins': tally['W'],
-            'losses': tally['L'],
-            'pushes': tally['P'],
-            'hit_pct': pct,
-            'sample_n': n,
+            'hits': tally['W'],
+            'total': n,
+            'hit_rate': round(tally['W'] / n, 4),  # 0-1 float
             'computed_date': today,
-            'notes': f'cohort={cohort}',
         })
     return rows
 
@@ -238,11 +238,12 @@ def upsert_calibration(rows: list, dry_run: bool = False) -> int:
         return 0
     if dry_run:
         for r in rows:
-            print(f"  [DRY] {r['tier']:24} {r['hit_pct']:5.1f}% ({r['wins']}-{r['losses']}, n={r['sample_n']})")
+            pct = r['hit_rate'] * 100
+            print(f"  [DRY] {r['tier']:28} {pct:5.1f}% ({r['hits']}/{r['total']})")
         return len(rows)
     r = requests.post(
         f'{SB}/rest/v1/mlb_tier_calibration'
-        f'?on_conflict=tier,sport,window_label,computed_date',
+        f'?on_conflict=tier,window_label,computed_date',
         headers=H_WRITE, json=rows, timeout=30,
     )
     if r.status_code not in (200, 201, 204):
@@ -277,9 +278,10 @@ def run(season_filter: Optional[int] = None, dry_run: bool = False) -> None:
 
     # Summary sorted by hit rate
     print(f'\n=== Sorted cohort hit rates ===')
-    for r in sorted(rows, key=lambda x: -x['hit_pct']):
-        star = ' ⭐' if r['hit_pct'] >= 60 else ''
-        print(f"  {r['tier']:24} {r['hit_pct']:5.1f}%  (n={r['sample_n']:>3}){star}")
+    for r in sorted(rows, key=lambda x: -x['hit_rate']):
+        pct = r['hit_rate'] * 100
+        star = ' ⭐' if pct >= 60 and r['total'] >= 30 else ''
+        print(f"  {r['tier']:28} {pct:5.1f}%  ({r['hits']}/{r['total']}){star}")
 
 
 def main():
