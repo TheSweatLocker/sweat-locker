@@ -8919,6 +8919,71 @@ setJerryHistory(prev => {
                         </View>
                       );
                     })}
+                    {/* Bullpen context (added 2026-07-25 UX audit #6).
+                        We track bullpen_era + save_pct + relievers_3d workload
+                        signals in mlb_game_context — surfacing here so users
+                        see the same bullpen picture the models use. */}
+                    {(mlbCtx.home_bullpen_era != null || mlbCtx.away_bullpen_era != null) && (
+                      <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,marginBottom:8}}>
+                        <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,letterSpacing:0.4,marginBottom:6}}>BULLPEN</Text>
+                        <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
+                          <Text style={{color:'#c8d8e8',fontSize:11}}>
+                            <Text style={{color:HRB_COLOR}}>{awayShort}</Text>: ERA <Text style={{color:mlbCtx.away_bullpen_era>=4.5?'#ff4d6d':mlbCtx.away_bullpen_era<=3.5?'#00e5a0':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.away_bullpen_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.away_save_pct != null ? <Text> · SV% {mlbCtx.away_save_pct.toFixed(0)}%</Text> : null}{mlbCtx.away_bp_relievers_3d != null ? <Text style={{color:mlbCtx.away_bp_relievers_3d>=8?'#ff4d6d':'#7a92a8'}}> · {mlbCtx.away_bp_relievers_3d} arms L3d</Text> : null}
+                          </Text>
+                        </View>
+                        <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                          <Text style={{color:'#c8d8e8',fontSize:11}}>
+                            <Text style={{color:HRB_COLOR}}>{homeShort}</Text>: ERA <Text style={{color:mlbCtx.home_bullpen_era>=4.5?'#ff4d6d':mlbCtx.home_bullpen_era<=3.5?'#00e5a0':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.home_bullpen_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.home_save_pct != null ? <Text> · SV% {mlbCtx.home_save_pct.toFixed(0)}%</Text> : null}{mlbCtx.home_bp_relievers_3d != null ? <Text style={{color:mlbCtx.home_bp_relievers_3d>=8?'#ff4d6d':'#7a92a8'}}> · {mlbCtx.home_bp_relievers_3d} arms L3d</Text> : null}
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+
+                    {/* 1st-inning tendencies (added 2026-07-25 UX audit #9).
+                        Surfaces the exact data feeding NRFI/YRFI ensemble.
+                        Only shows when we have first-inning ERA on both sides. */}
+                    {(mlbCtx.home_first_inning_era != null || mlbCtx.away_first_inning_era != null) && (
+                      <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,marginBottom:8}}>
+                        <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,letterSpacing:0.4,marginBottom:6}}>1ST-INNING TENDENCIES</Text>
+                        <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:3}}>
+                          <Text style={{color:'#c8d8e8',fontSize:11}}>
+                            <Text style={{color:HRB_COLOR}}>{awayShort} SP</Text>: 1st-inn ERA <Text style={{color:mlbCtx.away_first_inning_era>=5?'#ff4d6d':mlbCtx.away_first_inning_era<=2?'#00e5a0':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.away_first_inning_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.away_first_inning_whip != null ? <Text> · WHIP {mlbCtx.away_first_inning_whip.toFixed(2)}</Text> : null}
+                          </Text>
+                        </View>
+                        <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                          <Text style={{color:'#c8d8e8',fontSize:11}}>
+                            <Text style={{color:HRB_COLOR}}>{homeShort} SP</Text>: 1st-inn ERA <Text style={{color:mlbCtx.home_first_inning_era>=5?'#ff4d6d':mlbCtx.home_first_inning_era<=2?'#00e5a0':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.home_first_inning_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.home_first_inning_whip != null ? <Text> · WHIP {mlbCtx.home_first_inning_whip.toFixed(2)}</Text> : null}
+                          </Text>
+                        </View>
+                        {mlbCtx.nrfi_score != null && (
+                          <Text style={{color:'#7a92a8',fontSize:10,marginTop:4,fontStyle:'italic'}}>
+                            NRFI score: {mlbCtx.nrfi_score}/100 {mlbCtx.nrfi_score<=30 ? '· validated YRFI zone (60%+ hit rate historically)' : mlbCtx.nrfi_score>=85 ? '· near base rate, weak signal' : ''}
+                          </Text>
+                        )}
+                      </View>
+                    )}
+
+                    {/* Pitcher vs Team mastery (added 2026-07-25 UX audit #8).
+                        Only surfaces when at least one side has ≥15 IP sample
+                        (matches source-side gate — feedback_verify_pitcher_
+                        attribution + memory:project_pitcher_vs_team_mastery). */}
+                    {((mlbCtx.home_pitcher_vs_team_ip >= 15 && mlbCtx.home_pitcher_vs_team_era != null) ||
+                      (mlbCtx.away_pitcher_vs_team_ip >= 15 && mlbCtx.away_pitcher_vs_team_era != null)) && (
+                      <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,marginBottom:8,borderWidth:1,borderColor:'rgba(0,229,160,0.2)'}}>
+                        <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:11,letterSpacing:0.4,marginBottom:6}}>🎯 PITCHER vs TEAM MASTERY</Text>
+                        {mlbCtx.away_pitcher_vs_team_ip >= 15 && mlbCtx.away_pitcher_vs_team_era != null && (
+                          <Text style={{color:'#c8d8e8',fontSize:11,marginBottom:3}}>
+                            <Text style={{fontWeight:'700'}}>{mlbCtx.away_pitcher}</Text> vs {stripMascot(selectedGame?.home_team)}: <Text style={{color:mlbCtx.away_pitcher_vs_team_era<=3?'#00e5a0':mlbCtx.away_pitcher_vs_team_era>=5?'#ff4d6d':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.away_pitcher_vs_team_era?.toFixed(2)} ERA</Text> · <Text style={{color:'#7a92a8'}}>n={mlbCtx.away_pitcher_vs_team_ip.toFixed(0)} IP</Text>
+                          </Text>
+                        )}
+                        {mlbCtx.home_pitcher_vs_team_ip >= 15 && mlbCtx.home_pitcher_vs_team_era != null && (
+                          <Text style={{color:'#c8d8e8',fontSize:11}}>
+                            <Text style={{fontWeight:'700'}}>{mlbCtx.home_pitcher}</Text> vs {stripMascot(selectedGame?.away_team)}: <Text style={{color:mlbCtx.home_pitcher_vs_team_era<=3?'#00e5a0':mlbCtx.home_pitcher_vs_team_era>=5?'#ff4d6d':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.home_pitcher_vs_team_era?.toFixed(2) ?? 'N/A'} ERA</Text> · <Text style={{color:'#7a92a8'}}>n={mlbCtx.home_pitcher_vs_team_ip?.toFixed(0)} IP</Text>
+                          </Text>
+                        )}
+                      </View>
+                    )}
+
                     {/* Park & weather */}
                     <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,gap:4}}>
                       <View style={{flexDirection:'row',justifyContent:'space-between'}}>
