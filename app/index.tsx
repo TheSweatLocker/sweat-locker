@@ -1528,6 +1528,7 @@ const [modelEdgeData, setModelEdgeData] = useState([]);
 const [mlbGameContext, setMlbGameContext] = useState({});
 const [pitcherProjections, setPitcherProjections] = useState({});  // name(lower) -> {l7_rolling, classes, ...}
 const [mlbPitcherStatsMap, setMlbPitcherStatsMap] = useState({});  // name(lower) -> {whiff_rate, hard_hit_pct, k_pct, last_3_k_pct, ...}
+const [ncaabTeamStatsMap, setNcaabTeamStatsMap] = useState({});   // team(lower) -> {adj_em, adj_oe, adj_de, efg_o, to_o, or_o, ftr_o, efg_d, to_d, or_d, ftr_d, luck, sos, tempo, seed}
 const [ncaafTeamStatsMap, setNcaafTeamStatsMap] = useState({});   // team(lower) -> {sp_overall, sp_offense, sp_defense, off_epa_per_play, def_epa_per_play, ...}
 const [nflTeamStatsMap, setNflTeamStatsMap] = useState({});       // team(short) -> {pass_epa, rush_epa, pass_cpoe, def_sacks, def_ints, ...}
 const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
@@ -4495,6 +4496,23 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           if(p.player_name) psMap[p.player_name.toLowerCase()] = p;
         });
         setMlbPitcherStatsMap(psMap);
+      }
+    } catch(pe) { /* non-fatal */ }
+    // NCAAB team stats (KenPom Four Factors + efficiency + luck + SOS)
+    // Added 2026-07-25 Phase 1c — surface the full Four Factors depth
+    // that separates real CBB analytics from a scoreboard.
+    try {
+      const nbResult = await supabase
+        .from('ncaab_team_stats')
+        .select('team,adj_em,adj_oe,adj_de,adj_oe_rank,adj_de_rank,tempo,tempo_rank,efg_o,efg_o_rank,to_o,to_o_rank,or_o,or_o_rank,ftr_o,ftr_o_rank,efg_d,efg_d_rank,to_d,to_d_rank,or_d,or_d_rank,ftr_d,ftr_d_rank,luck,sos,seed,coach,wins,losses,season')
+        .order('season', { ascending: false })
+        .limit(800);
+      if(nbResult?.data && nbResult.data.length > 0) {
+        const nbMap = {};
+        nbResult.data.forEach(t => {
+          if(t.team && !nbMap[t.team.toLowerCase()]) nbMap[t.team.toLowerCase()] = t;
+        });
+        setNcaabTeamStatsMap(nbMap);
       }
     } catch(pe) { /* non-fatal */ }
     // NCAAF team stats (SP+, EPA per play, success rate, explosiveness)
@@ -8700,6 +8718,91 @@ setJerryHistory(prev => {
                 <Text style={{color:'#4a6070',fontSize:10,marginTop:6,fontStyle:'italic'}}>Per-game rates from Sweat Locker efficiency model. Games sampled: {awayT?.games || '?'} away · {homeT?.games || '?'} home.</Text>
               </View>
             );
+          }
+          // ─── NCAAB Team Stats — Four Factors surfacing (added 2026-07-25 Phase 1c) ───
+          // Prefer the ncaab_team_stats table (Four Factors + ranks) over the
+          // legacy 3-row bartData fallback. Falls through to legacy path if
+          // the lookup misses (early season, alias gap).
+          if(gamesSport==='NCAAB') {
+            const awayKey = stripMascot(selectedGame?.away_team||'').toLowerCase().trim();
+            const homeKey = stripMascot(selectedGame?.home_team||'').toLowerCase().trim();
+            const awayNb = ncaabTeamStatsMap[awayKey] ||
+              Object.values(ncaabTeamStatsMap).find((t: any) => t.team?.toLowerCase() === awayKey);
+            const homeNb = ncaabTeamStatsMap[homeKey] ||
+              Object.values(ncaabTeamStatsMap).find((t: any) => t.team?.toLowerCase() === homeKey);
+            if(awayNb && homeNb) {
+              const totalT = 365;
+              // Rank badge: higher rank number = worse. Colors follow rank not raw value.
+              const rankColor = (rnk: any) => {
+                const r = parseInt(rnk);
+                if(isNaN(r)) return '#7a92a8';
+                if(r <= 50)  return '#00e5a0';
+                if(r <= 150) return '#a5e572';
+                if(r <= 250) return '#ffd166';
+                return '#ff4d6d';
+              };
+              const rankBadge = (rnk: any) => {
+                const r = parseInt(rnk);
+                if(isNaN(r)) return null;
+                return (
+                  <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}> #{r}</Text>
+                );
+              };
+              const fmt = (v: any, d = 1) => v == null ? 'N/A' : parseFloat(v).toFixed(d);
+              const rows = [
+                {label:'Adj Off Eff', away: fmt(awayNb.adj_oe), home: fmt(homeNb.adj_oe), awayRnk: awayNb.adj_oe_rank, homeRnk: homeNb.adj_oe_rank, higherBetter: true, group:'EFFICIENCY'},
+                {label:'Adj Def Eff', away: fmt(awayNb.adj_de), home: fmt(homeNb.adj_de), awayRnk: awayNb.adj_de_rank, homeRnk: homeNb.adj_de_rank, higherBetter: false, group:'EFFICIENCY'},
+                {label:'eFG% (Off)', away: fmt(awayNb.efg_o), home: fmt(homeNb.efg_o), awayRnk: awayNb.efg_o_rank, homeRnk: homeNb.efg_o_rank, higherBetter: true, group:'FOUR FACTORS — OFFENSE'},
+                {label:'TO% (Off)', away: fmt(awayNb.to_o), home: fmt(homeNb.to_o), awayRnk: awayNb.to_o_rank, homeRnk: homeNb.to_o_rank, higherBetter: false, group:'FOUR FACTORS — OFFENSE'},
+                {label:'OR% (Off)', away: fmt(awayNb.or_o), home: fmt(homeNb.or_o), awayRnk: awayNb.or_o_rank, homeRnk: homeNb.or_o_rank, higherBetter: true, group:'FOUR FACTORS — OFFENSE'},
+                {label:'FTR (Off)', away: fmt(awayNb.ftr_o), home: fmt(homeNb.ftr_o), awayRnk: awayNb.ftr_o_rank, homeRnk: homeNb.ftr_o_rank, higherBetter: true, group:'FOUR FACTORS — OFFENSE'},
+                {label:'eFG% (Def)', away: fmt(awayNb.efg_d), home: fmt(homeNb.efg_d), awayRnk: awayNb.efg_d_rank, homeRnk: homeNb.efg_d_rank, higherBetter: false, group:'FOUR FACTORS — DEFENSE'},
+                {label:'TO% (Def)', away: fmt(awayNb.to_d), home: fmt(homeNb.to_d), awayRnk: awayNb.to_d_rank, homeRnk: homeNb.to_d_rank, higherBetter: true, group:'FOUR FACTORS — DEFENSE'},
+                {label:'OR% (Def)', away: fmt(awayNb.or_d), home: fmt(homeNb.or_d), awayRnk: awayNb.or_d_rank, homeRnk: homeNb.or_d_rank, higherBetter: false, group:'FOUR FACTORS — DEFENSE'},
+                {label:'FTR (Def)', away: fmt(awayNb.ftr_d), home: fmt(homeNb.ftr_d), awayRnk: awayNb.ftr_d_rank, homeRnk: homeNb.ftr_d_rank, higherBetter: false, group:'FOUR FACTORS — DEFENSE'},
+              ];
+              let lastGroup = '';
+              return (
+                <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
+                  <View style={{flexDirection:'row',justifyContent:'flex-end',marginBottom:10}}>
+                    <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 SWEAT LOCKER MODEL</Text></View>
+                  </View>
+                  <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:10}}>
+                    <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{awayShort}</Text>
+                    <Text style={{color:'#4a6070',fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
+                    <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{homeShort}</Text>
+                  </View>
+                  {rows.map((row, i) => {
+                    const showHeader = row.group !== lastGroup;
+                    lastGroup = row.group;
+                    const aClr = rankColor(row.awayRnk);
+                    const hClr = rankColor(row.homeRnk);
+                    return (
+                      <View key={i}>
+                        {showHeader && (
+                          <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700',letterSpacing:0.5,marginTop:i===0?0:10,marginBottom:8}}>{row.group}</Text>
+                        )}
+                        <View style={{flexDirection:'row',alignItems:'center',marginBottom:8}}>
+                          <View style={{flex:1,alignItems:'flex-start'}}>
+                            <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:aClr+'22',borderWidth:1,borderColor:aClr+'44',minWidth:64,alignItems:'center'}}>
+                              <Text style={{color:aClr,fontWeight:'800',fontSize:12}}>{row.away}{rankBadge(row.awayRnk)}</Text>
+                            </View>
+                          </View>
+                          <Text style={{flex:1.5,color:'#7a92a8',fontSize:11,textAlign:'center'}}>{row.label}</Text>
+                          <View style={{flex:1,alignItems:'flex-end'}}>
+                            <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:hClr+'22',borderWidth:1,borderColor:hClr+'44',minWidth:64,alignItems:'center'}}>
+                              <Text style={{color:hClr,fontWeight:'800',fontSize:12}}>{row.home}{rankBadge(row.homeRnk)}</Text>
+                            </View>
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })}
+                  <Text style={{color:'#4a6070',fontSize:10,marginTop:8,fontStyle:'italic'}}>Four Factors from Sweat Locker proprietary efficiency model. Ranks out of {totalT} D1 teams.</Text>
+                </View>
+              );
+            }
+            // else fall through to legacy bartData path below
           }
           const isNCAAB = gamesSport==='NCAAB';
           const isNBA = gamesSport==='NBA';
