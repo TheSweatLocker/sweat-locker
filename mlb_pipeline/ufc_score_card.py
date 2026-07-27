@@ -84,14 +84,40 @@ def fetch_upcoming_event():
 
 
 def fetch_fighter_url(name):
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/ufc_fighter_stats",
-        headers=HEADERS,
-        params={"fighter_name": f"ilike.{name}", "select": "fighter_url", "limit": "1"},
-        timeout=10,
-    )
-    d = r.json() if r.status_code == 200 else []
-    return d[0]["fighter_url"] if d else None
+    """Look up fighter_url via ufc_fighter_stats.
+
+    2026-07-27 fix: fighter names in ufc_fighter_stats are stored
+    accent-stripped (Uros Medic, not Uroš Medić) but ESPN's scraper
+    feeds us accented names. Plain ILIKE with accented input misses
+    accent-stripped rows. Try three lookups in order:
+      1. Exact name as-given (in case DB has both variants)
+      2. Accent-stripped version (catches Medić → Medic etc.)
+      3. Last-name-only fallback (last-ditch fuzzy)
+    """
+    import unicodedata
+    def _strip(s):
+        return unicodedata.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
+
+    tries = [name, _strip(name)]
+    # Only add last-name if it's a plausibly-unique last name (5+ chars)
+    stripped_last = _strip(name).split()[-1] if name.split() else ''
+    if len(stripped_last) >= 5:
+        tries.append(stripped_last)
+
+    seen = set()
+    for candidate in tries:
+        if candidate in seen or not candidate: continue
+        seen.add(candidate)
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/ufc_fighter_stats",
+            headers=HEADERS,
+            params={"fighter_name": f"ilike.{candidate}", "select": "fighter_url", "limit": "1"},
+            timeout=10,
+        )
+        d = r.json() if r.status_code == 200 else []
+        if d:
+            return d[0]["fighter_url"]
+    return None
 
 
 def parse_event_iso(date_str):
