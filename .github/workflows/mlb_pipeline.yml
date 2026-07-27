@@ -485,6 +485,21 @@ jobs:
           cd mlb_pipeline
           python resolve_props.py
 
+      # Resolve yesterday's Daily Degen parlay. Runs after resolve_props +
+      # resolve_game_results so leg outcomes (props via mlb_pipeline_props.result;
+      # ML via mlb_game_results.spread_result / home_win) are already graded.
+      # Wired 2026-07-26 alongside daily_degen.legs_resolved / result / resolved_at
+      # migration — before this, "how often does Daily Degen hit?" was unanswerable
+      # because no tracking existed.
+      - name: Resolve Daily Degen parlays
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python resolve_daily_degen.py
+
       - name: Resolve NRFI results
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

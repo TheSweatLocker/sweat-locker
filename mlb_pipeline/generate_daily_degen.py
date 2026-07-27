@@ -646,11 +646,18 @@ def select_diverse_legs(candidates, tier_rates=None):
 
 
 def build_narrative(legs):
-    """Generate a single 2-3 sentence Jerry narrative. One Haiku call per day."""
+    """Generate a single 2-3 sentence Jerry narrative. One Haiku call per day.
+
+    2026-07-26 fix: audit found ~half the recent daily_degen narratives were
+    falling back to the boilerplate ("Model found edges across the slate.")
+    because the 10s timeout was too tight for Haiku long-tail latency + no
+    retry existed. Bumped timeout to 25s + added one retry with 2s backoff.
+    Also surfaces the specific failure mode (timeout vs API error vs empty
+    response) so silent regression is easier to catch next time.
+    """
     if not ANTHROPIC_API_KEY:
         print("  (no ANTHROPIC_API_KEY in env — using default narrative)")
         return "Model found edges across the slate. That's the Degen Parlay."
-    print("  Calling Haiku for narrative (10s timeout)...")
 
     legs_desc = "\n".join(
         f"Leg {i+1}: {l['pick']} ({l['matchup']}) — {l['signals'][0] if l.get('signals') else ''}"
@@ -663,30 +670,50 @@ Legs:
 
 Write 2-3 sentences MAX. Reference specific data signals. Sound like a sharp friend who found edges today. End naturally — something like "That's the Degen Parlay." or "Jerry's riding all of these." Never say "bet" or "must play". High energy but data-backed. NEVER start with "Let me" or "Looking at" or any preamble — jump straight in."""
 
-    try:
-        r = requests.post(
-            'https://api.anthropic.com/v1/messages',
-            headers={
-                'Content-Type': 'application/json',
-                'x-api-key': ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01',
-            },
-            json={
-                'model': 'claude-haiku-4-5-20251001',
-                'max_tokens': 240,
-                'messages': [{'role': 'user', 'content': prompt}]
-            },
-            timeout=10
-        )
-        data = r.json()
-        text = ''.join(
-            b.get('text', '') for b in (data.get('content') or [])
-            if b.get('type') == 'text'
-        )
-        return text.strip() or "Model found edges across the slate. That's the Degen Parlay."
-    except Exception as e:
-        print(f"  ⚠️ narrative generation failed: {e}")
-        return "Model found edges across the slate. That's the Degen Parlay."
+    payload = {
+        'model': 'claude-haiku-4-5-20251001',
+        'max_tokens': 240,
+        'messages': [{'role': 'user', 'content': prompt}],
+    }
+    headers = {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+    }
+
+    import time
+    last_err = None
+    for attempt in (1, 2):
+        try:
+            print(f"  Calling Haiku for narrative (25s timeout, attempt {attempt}/2)...")
+            r = requests.post(
+                'https://api.anthropic.com/v1/messages',
+                headers=headers, json=payload, timeout=25,
+            )
+            if r.status_code != 200:
+                last_err = f"HTTP {r.status_code}: {r.text[:200]}"
+                print(f"  ⚠ narrative attempt {attempt} — {last_err}")
+                if attempt == 1: time.sleep(2)
+                continue
+            data = r.json()
+            text = ''.join(
+                b.get('text', '') for b in (data.get('content') or [])
+                if b.get('type') == 'text'
+            ).strip()
+            if text:
+                return text
+            last_err = 'empty response body'
+        except requests.exceptions.Timeout:
+            last_err = 'timeout (25s)'
+            print(f"  ⚠ narrative attempt {attempt} — {last_err}")
+            if attempt == 1: time.sleep(2)
+        except Exception as e:
+            last_err = f'{type(e).__name__}: {e}'
+            print(f"  ⚠ narrative attempt {attempt} — {last_err}")
+            if attempt == 1: time.sleep(2)
+
+    print(f"  ⚠ narrative generation failed after 2 attempts: {last_err}")
+    return "Model found edges across the slate. That's the Degen Parlay."
 
 
 def upsert_daily_degen(game_date, legs, narrative):
