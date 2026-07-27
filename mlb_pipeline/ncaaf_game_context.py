@@ -78,6 +78,71 @@ def load_team_stats(season: int) -> dict:
     return {row['team']: row for row in r.json()} if r.status_code == 200 else {}
 
 
+# Weeks 1-3 discipline (mirrors NFL Sept-4 fallback).
+# CFB regular season = ~12 games per team; 3 games/team avg ≈ Week 4.
+# Below this we fall back to prior season with regression-to-mean.
+# Shrink=0.5 (heavier than NFL's 0.4) because CFB has higher year-over-year
+# roster turnover — portal transfers + coaching changes shift team quality
+# more than NFL free agency does. Cutting prior-year edge in half is honest.
+MIN_GAMES_PER_TEAM_AVG = 3.0
+SHRINK = 0.5
+
+
+def _avg_games(stats_dict: dict) -> float:
+    if not stats_dict: return 0.0
+    games = [(row.get('games') or 0) for row in stats_dict.values()]
+    return sum(games) / max(1, len(games))
+
+
+def _league_mean_stats(stats_dict: dict) -> dict:
+    """Compute league-mean SP+/EPA rates for regression-to-mean blending."""
+    if not stats_dict: return {}
+    keys = ('sp_overall', 'off_epa_per_play', 'def_epa_per_play',
+            'off_success_rate', 'off_explosiveness')
+    totals = {k: 0.0 for k in keys}
+    counts = {k: 0 for k in keys}
+    for row in stats_dict.values():
+        for k in keys:
+            v = row.get(k)
+            if v is not None:
+                totals[k] += float(v)
+                counts[k] += 1
+    return {k: (totals[k] / counts[k]) if counts[k] > 0 else 0.0 for k in keys}
+
+
+def _regress_to_mean(stats_dict: dict, shrink: float = SHRINK) -> dict:
+    """Blend prior-season stats toward league mean.
+    shrink=0.5 → 50% prior signal + 50% league mean. Handles portal
+    turnover + coaching changes without discarding prior-year signal.
+    """
+    if not stats_dict: return {}
+    mean = _league_mean_stats(stats_dict)
+    keys = ('sp_overall', 'off_epa_per_play', 'def_epa_per_play',
+            'off_success_rate', 'off_explosiveness')
+    out = {}
+    for team, row in stats_dict.items():
+        new = dict(row)
+        for k in keys:
+            v = row.get(k)
+            if v is not None:
+                new[k] = (1 - shrink) * float(v) + shrink * mean.get(k, 0.0)
+        out[team] = new
+    return out
+
+
+def load_team_stats_with_fallback(current_season: int) -> tuple:
+    """Return (stats_dict, source_label). Falls back to prior-season
+    regressed-to-mean when current-year sample is too thin (Aug-Sep).
+    """
+    current = load_team_stats(current_season)
+    if _avg_games(current) >= MIN_GAMES_PER_TEAM_AVG:
+        return current, 'current'
+    prior = load_team_stats(current_season - 1)
+    if _avg_games(prior) >= MIN_GAMES_PER_TEAM_AVG:
+        return _regress_to_mean(prior, shrink=SHRINK), 'prior_season_regressed'
+    return current or prior, 'none'
+
+
 def compute_projections(home_stats: dict, away_stats: dict,
                         neutral_site: bool = False) -> dict:
     """EPA/SP+ based projected spread + total."""
@@ -193,6 +258,14 @@ def compute_sweat_score(proj_spread, close_spread, conf_net, proj_total, close_t
 
 
 def compute_primary_play(ctx):
+    """NCAAF primary_play. Early-season discipline (Aug-Sep):
+    when stats_source='prior_season_regressed', all tiers cap at LEAN.
+    Cohort-based plays exempt (none audit-validated yet for NCAAF —
+    see project_ncaaf_phase1_audit_baselines for future additions).
+    """
+    stats_source = ctx.get('stats_source') or 'current'
+    stats_stale = stats_source != 'current'
+
     conf = ctx.get('signal_confluence_net') or 0
     proj_spread = ctx.get('projected_spread')
     close_spread = ctx.get('close_spread')
@@ -211,35 +284,46 @@ def compute_primary_play(ctx):
     if proj_total is not None and close_total is not None:
         total_edge = round(float(proj_total) - float(close_total), 2)
 
+    stale_note = ' · prior-season regressed, LEAN cap' if stats_stale else ''
+
     # PRIME spread — big edge + confluence agreement
     if abs_edge >= 6.0 and abs(conf) >= 3:
-        return {'type': 'spread', 'tier': 'PRIME',
-                'label': f'{fav} spread cover',
-                'sub': f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f}, conf {conf:+d})',
-                'signal_floor': 85}
+        tier = 'LEAN' if stats_stale else 'PRIME'
+        floor = 60 if stats_stale else 85
+        return {'type': 'spread', 'tier': tier,
+                'label': f'{fav} spread {"lean" if stats_stale else "cover"}',
+                'sub': f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f}, conf {conf:+d}){stale_note}',
+                'signal_floor': floor}
     # STRONG spread — meaningful edge
     if abs_edge >= 4.0 and abs(conf) >= 2:
-        return {'type': 'spread', 'tier': 'STRONG',
-                'label': f'{fav} spread cover',
-                'sub': f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f})',
-                'signal_floor': 72}
+        tier = 'LEAN' if stats_stale else 'STRONG'
+        floor = 58 if stats_stale else 72
+        return {'type': 'spread', 'tier': tier,
+                'label': f'{fav} spread {"lean" if stats_stale else "cover"}',
+                'sub': f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f}){stale_note}',
+                'signal_floor': floor}
     # STRONG total
     if total_edge is not None and abs(total_edge) >= 5.0:
         side = 'Over' if total_edge > 0 else 'Under'
-        return {'type': 'total', 'tier': 'STRONG',
+        tier = 'LEAN' if stats_stale else 'STRONG'
+        floor = 58 if stats_stale else 70
+        return {'type': 'total', 'tier': tier,
                 'label': f'{side} {close_total}',
-                'sub': f'Model projects {proj_total:.1f} vs market {close_total} ({total_edge:+.1f})',
-                'signal_floor': 70}
-    # LIGHT spread
+                'sub': f'Model projects {proj_total:.1f} vs market {close_total} ({total_edge:+.1f}){stale_note}',
+                'signal_floor': floor}
+    # LIGHT spread — cap at LEAN when stale (same rationale as NFL:
+    # a weaker signal shouldn't sneak into lock_of_week when the
+    # stronger STRONG-tier signal on the same data got capped out)
     if abs_edge >= 3.0:
-        return {'type': 'spread', 'tier': 'LIGHT',
+        tier = 'LEAN' if stats_stale else 'LIGHT'
+        return {'type': 'spread', 'tier': tier,
                 'label': f'{fav} spread lean',
-                'sub': f'Edge {abs_edge:.1f}',
+                'sub': f'Edge {abs_edge:.1f}{stale_note}',
                 'signal_floor': 60}
     return None
 
 
-def build_context_row(g: dict, team_stats: dict) -> Optional[dict]:
+def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current') -> Optional[dict]:
     home = g.get('home_team'); away = g.get('away_team')
     if not home or not away:
         return None
@@ -267,6 +351,7 @@ def build_context_row(g: dict, team_stats: dict) -> Optional[dict]:
         'close_away_ml': g.get('close_away_ml'),
         'neutral_site': g.get('neutral_site'),
         'conference_game': g.get('conference_game'),
+        'stats_source': stats_source,
         **proj,
         'signal_confluence_net': conf_net,
         'signal_confluence_breakdown': breakdown,
@@ -308,10 +393,14 @@ def run(dry_run: bool = False) -> None:
     if not games:
         return
     season = games[0].get('season') or 2026
-    team_stats = load_team_stats(season)
-    print(f'  team_stats: {len(team_stats)} teams for {season}')
+    team_stats, stats_source = load_team_stats_with_fallback(season)
+    if stats_source == 'prior_season_regressed':
+        print(f'  ⚠ current season {season} thin — falling back to {season-1} regressed to mean (LEAN cap on non-cohort plays)')
+    elif stats_source == 'none':
+        print(f'  ⚠ neither {season} nor {season-1} has usable team stats — cohort/market signal only')
+    print(f'  team_stats: {len(team_stats)} teams  source={stats_source}')
 
-    rows = [build_context_row(g, team_stats) for g in games]
+    rows = [build_context_row(g, team_stats, stats_source=stats_source) for g in games]
     rows = [r for r in rows if r]
     written = upsert(rows, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '

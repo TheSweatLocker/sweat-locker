@@ -174,6 +174,52 @@ def _resolve_nrfi_leg(leg: dict) -> dict:
     return {'outcome': 'Win' if won else 'Loss', 'note': f'first inning {nr}'}
 
 
+def _resolve_total_leg(leg: dict) -> dict:
+    """Over/Under game total.
+    leg.pick = 'Over 8.5' or 'Under 9.0'; sub_type = 'over' | 'under'.
+    Grade via mlb_game_results home_score + away_score.
+    """
+    game_id = leg.get('game_id')
+    if not game_id:
+        return {'outcome': 'Pending', 'note': 'no game_id'}
+
+    r = requests.get(
+        f'{SB}/rest/v1/mlb_game_results'
+        f'?game_id=eq.{game_id}'
+        f'&select=home_score,away_score,total_result,close_total',
+        headers=H, timeout=15,
+    ).json()
+    if not r:
+        return {'outcome': 'Pending', 'note': 'no game_results row'}
+    g = r[0]
+    hs, as_ = g.get('home_score'), g.get('away_score')
+    if hs is None or as_ is None:
+        return {'outcome': 'Pending', 'note': 'game not final'}
+
+    pick_txt = (leg.get('pick') or '').strip()
+    m = re.search(r'(\d+(?:\.\d+)?)', pick_txt)
+    line = float(m.group(1)) if m else None
+    if line is None:
+        # Fall back to close_total from context
+        line = g.get('close_total')
+    if line is None:
+        return {'outcome': 'Pending', 'note': 'no line to grade against'}
+
+    picking_over = leg.get('sub_type') == 'over' or pick_txt.lower().startswith('over')
+    actual = hs + as_
+
+    if abs(actual - line) < 1e-6:
+        return {'outcome': 'Push', 'actual_value': actual, 'line': line}
+    over_won = actual > line
+    won = over_won if picking_over else not over_won
+    return {
+        'outcome': 'Win' if won else 'Loss',
+        'actual_value': actual,
+        'line': line,
+        'note': f'{"Over" if picking_over else "Under"} {line} · actual {actual}',
+    }
+
+
 def resolve_leg(leg: dict) -> dict:
     """Dispatch on leg type."""
     ltype = (leg.get('type') or '').upper()
@@ -183,6 +229,8 @@ def resolve_leg(leg: dict) -> dict:
         return _resolve_ml_leg(leg)
     if ltype == 'NRFI':
         return _resolve_nrfi_leg(leg)
+    if ltype == 'TOTAL':
+        return _resolve_total_leg(leg)
     return {'outcome': 'Pending', 'note': f'unknown leg type {ltype}'}
 
 
