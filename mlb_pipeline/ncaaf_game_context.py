@@ -80,18 +80,21 @@ def load_team_stats(season: int) -> dict:
 
 # Weeks 1-3 discipline (mirrors NFL Sept-4 fallback).
 # CFB regular season = ~12 games per team; 3 games/team avg ≈ Week 4.
-# Below this we fall back to prior season with regression-to-mean.
 # Shrink=0.5 (heavier than NFL's 0.4) because CFB has higher year-over-year
 # roster turnover — portal transfers + coaching changes shift team quality
 # more than NFL free agency does. Cutting prior-year edge in half is honest.
-MIN_GAMES_PER_TEAM_AVG = 3.0
 SHRINK = 0.5
+# CFBD's ncaaf_team_stats populates SP+/EPA fields for teams once meaningful
+# game data exists but leaves games=None. Use "% of teams with sp_overall
+# populated" as the freshness signal instead. 60% = ~80 of 133 teams have
+# real SP+ this season → considered mature enough to use as 'current'.
+MIN_POPULATED_PCT = 0.60
 
 
-def _avg_games(stats_dict: dict) -> float:
+def _populated_pct(stats_dict: dict) -> float:
     if not stats_dict: return 0.0
-    games = [(row.get('games') or 0) for row in stats_dict.values()]
-    return sum(games) / max(1, len(games))
+    populated = sum(1 for row in stats_dict.values() if row.get('sp_overall') is not None)
+    return populated / len(stats_dict)
 
 
 def _league_mean_stats(stats_dict: dict) -> dict:
@@ -133,12 +136,17 @@ def _regress_to_mean(stats_dict: dict, shrink: float = SHRINK) -> dict:
 def load_team_stats_with_fallback(current_season: int) -> tuple:
     """Return (stats_dict, source_label). Falls back to prior-season
     regressed-to-mean when current-year sample is too thin (Aug-Sep).
+
+    Uses "% of teams with SP+ populated" as the freshness gate — CFBD
+    writes SP+/EPA to ncaaf_team_stats but leaves games=None, so we
+    can't use a games/team average. 60%+ populated = current season
+    has enough games to trust.
     """
     current = load_team_stats(current_season)
-    if _avg_games(current) >= MIN_GAMES_PER_TEAM_AVG:
+    if _populated_pct(current) >= MIN_POPULATED_PCT:
         return current, 'current'
     prior = load_team_stats(current_season - 1)
-    if _avg_games(prior) >= MIN_GAMES_PER_TEAM_AVG:
+    if _populated_pct(prior) >= MIN_POPULATED_PCT:
         return _regress_to_mean(prior, shrink=SHRINK), 'prior_season_regressed'
     return current or prior, 'none'
 
