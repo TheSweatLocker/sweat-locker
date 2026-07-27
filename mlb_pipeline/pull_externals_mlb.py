@@ -228,7 +228,17 @@ def complete_pull_log(pull_id: Optional[str], status: str,
 
 
 def write_picks(picks: list, pull_id: Optional[str]) -> int:
-    """Batch insert picks with pull_id FK. Returns count written."""
+    """Batch UPSERT picks with pull_id FK. Returns count written.
+
+    2026-07-27 fix: previously plain INSERT — each cron pull created
+    a new row for same (source, game_id, surface, pick_side) combo,
+    inflating consensus counts 2-3x (source posts pick at noon → row 1,
+    5pm cron pulls same pick → row 2, etc). Fade detector triggered off
+    inflated counts. Now uses on_conflict=merge-duplicates against the
+    unique index shipped in 20260727_external_picks_dedup.sql:
+      (source, game_id, surface, pick_side, game_date).
+    pull_id + pulled_at refresh on each merge to reflect latest pull.
+    """
     if not picks:
         return 0
     payload = []
@@ -238,16 +248,16 @@ def write_picks(picks: list, pull_id: Optional[str]) -> int:
         payload.append(d)
     try:
         r = requests.post(
-            f'{SB}/rest/v1/external_picks',
-            headers={**H_WRITE, 'Prefer': 'return=minimal'},
+            f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,pick_side,game_date',
+            headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
             json=payload, timeout=20,
         )
         if r.status_code not in (200, 201, 204):
-            print(f'  ⚠ picks write failed {r.status_code}: {r.text[:120]}')
+            print(f'  ⚠ picks upsert failed {r.status_code}: {r.text[:120]}')
             return 0
         return len(payload)
     except Exception as e:
-        print(f'  ⚠ picks write exception: {e}')
+        print(f'  ⚠ picks upsert exception: {e}')
         return 0
 
 
