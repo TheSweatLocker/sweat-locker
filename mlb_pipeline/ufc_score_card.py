@@ -12,6 +12,13 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 
+# UTF-8 stdout on Windows so unicode fighter names / event names (Medić,
+# Rębecki, Milošević, etc.) don't crash the print statements. cp1252 default
+# on Windows Python — no-op on Linux cron.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except Exception: pass
+
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")

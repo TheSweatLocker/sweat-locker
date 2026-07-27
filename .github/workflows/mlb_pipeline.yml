@@ -421,9 +421,12 @@ jobs:
         run: |
           DAY=$(date -u -d '-4 hours' +%u)
           if [ "$DAY" = "4" ]; then
-            echo "Thursday — running UFC card scraper"
+            echo "Thursday — running UFC card scraper (v3 ESPN-backed)"
             cd mlb_pipeline
-            python ufc_card_scraper.py
+            # v3 replaces v1 (UFCStats.com added JS bot-check May 2026).
+            # ESPN scoreboard API is the reliable source. Kept v1 script
+            # in repo for reference until fighter-DB gap is closed.
+            python ufc_card_scraper_v3.py
           else
             echo "Not Thursday (day=$DAY) — skipping UFC scraper"
           fi
