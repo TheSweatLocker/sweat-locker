@@ -47,7 +47,13 @@ HEADERS = {
     'Prefer': 'resolution=merge-duplicates,return=minimal',
 }
 
-TARGET_LEGS = 4  # 4 legs = juicy parlay without being ridiculous
+TARGET_LEGS = 3  # dropped from 4 → 3 on 2026-07-27.
+# Rationale: 92-parlay backfill graded 7-81 (8.0%) at 4 legs. Legs
+# ran 190-148 = 56.2%. At -110 avg juice, 4-leg break-even = 7.52%
+# — we cleared it but barely. 3-leg break-even = 14.4%, and at
+# 56.2% legs a 3-leg hits 17.6% (theoretical). Also drops the
+# lowest-conviction 4th leg entirely, which should nudge realized
+# legs% slightly upward. Re-audit after 30 3-leg parlays.
 MIN_LEGS = 2
 
 # Audit-based prioritization (added 2026-05-04). Each candidate's static

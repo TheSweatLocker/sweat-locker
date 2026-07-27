@@ -677,6 +677,17 @@ def score_pitcher_bb_over(g, side):
     conviction = _apply_l5_signal(g, side, 'bb', suggested_line, 'over', conviction, signals)
     conviction = max(0, min(100, conviction))
 
+    # 2026-07-27 cohort audit: bb_over PRIME hit 29% (n=7 7d), STRONG 50%
+    # (n=16 7d), LEAN 25% (n=4 7d). No tier has an edge — every level is
+    # coin flip or worse. Cap conviction at 65 so tier never reaches
+    # STRONG (70+) or PRIME (82+). Keeps LEAN available for elite-walk
+    # matchups (BB/9 >= 4.5, first-inn WHIP >= 1.8) where a small L5-lift
+    # signal might genuinely fire, but prevents systemic false-PRIMEs.
+    # Recalibrate at n=25+ per tier.
+    if conviction > 65:
+        signals['_cohort_cap'] = 'bb_over cohort weak (PRIME 29% / STRONG 50% 7d) — capped at LEAN'
+        conviction = 65
+
     return {'conviction': conviction, 'signals': signals, 'prop_line': suggested_line}
 
 
