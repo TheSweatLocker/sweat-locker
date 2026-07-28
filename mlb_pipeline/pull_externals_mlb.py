@@ -129,6 +129,11 @@ SOURCE_REGISTRY = {
         'base_url': 'https://www.ballparkpal.com/Park-Factors.php',
         'label': 'Ballpark Pal',
     },
+    'oddscrowd': {
+        'fade_flag': 'trust', 'ttl_hours': 6,       # money% drifts intraday
+        'base_url': 'https://oddscrowd.com/games/upcoming/baseball',
+        'label': 'OddsCrowd',
+    },
 }
 
 
@@ -1041,6 +1046,189 @@ def fetch_ballparkpal(slate: list, game_date: str) -> tuple[list, int]:
     return [], 200
 
 
+def _parse_american(tok: str):
+    """Parse '+120' / '-142' / 'even' → int, or None."""
+    if not tok: return None
+    t = tok.strip().replace('EVEN', '+100').replace('even', '+100')
+    m = re.match(r'([+-]?\d{2,4})', t)
+    if not m: return None
+    v = int(m.group(1))
+    return v if -900 <= v <= 900 else None
+
+
+def _parse_line(tok: str):
+    """Parse '+1.5' / '-1.5' / '8.5' / '9' → float, or None."""
+    if not tok: return None
+    m = re.match(r'([+-]?\d+(?:\.\d+)?)', tok.strip())
+    if not m: return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
+# OddsCrowd — per-market Money% / Bets% for every game
+# ─────────────────────────────────────────────────────────────
+# Higher-signal source than Action (which only has bets%). OddsCrowd exposes
+# BOTH money% and bets% per market (ML, Spread, Total). Divergence between the
+# two is the classic RLM/sharp-side signal:
+#   money >> bets  → sharp on that side (boost)
+#   money ~= bets  → aligned, no edge (neutral)
+#   money <<  bets  → public trap on that side (fade — we back the OTHER side)
+#
+# Emits ONE ExternalPick per (game, market). pick_side is the higher-money side.
+# confidence stores "money X% / bets Y%" for the picked side, plus divergence pp.
+# Detail URL pattern: /games/{away-slug}-vs-{home-slug}-mlb-{month}-{d}-{yyyy}/{id}/best-odds
+def fetch_oddscrowd(slate: list, game_date: str) -> tuple[list, int]:
+    from bs4 import BeautifulSoup
+    from urllib.parse import urljoin
+
+    LIST_URL = 'https://oddscrowd.com/games/upcoming/baseball?hide_leagues=1'
+    HEADERS = {'User-Agent': 'Mozilla/5.0 (Sweat Locker aggregator)'}
+
+    landing = requests.get(LIST_URL, headers=HEADERS, timeout=15)
+    if landing.status_code != 200:
+        return [], landing.status_code
+
+    # Extract every game-detail URL from the list page.
+    # Pattern: /games/{away-vs-home-mlb-month-day-year}/{7-digit-id}/best-odds
+    detail_paths = sorted(set(re.findall(
+        r'/games/[a-z0-9\-]+-mlb-[a-z]+-\d+-\d{4}/\d+/best-odds',
+        landing.text,
+    )))
+    if not detail_paths:
+        return [], 200
+
+    # Date scoping — URL slug carries "-mlb-<month>-<day>-<yyyy>"
+    from datetime import datetime as _dt
+    parts = game_date.split('-')  # ['2026','07','28']
+    year = parts[0]
+    day = str(int(parts[2]))
+    month_full = _dt.strptime(parts[1], '%m').strftime('%B').lower()  # 'july'
+    date_slug = f'-mlb-{month_full}-{day}-{year}'
+    detail_paths = [p for p in detail_paths if date_slug in p]
+    if not detail_paths:
+        return [], 200
+
+    picks = []
+    for path in detail_paths:
+        url = urljoin('https://oddscrowd.com', path)
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=20)
+            if r.status_code != 200:
+                continue
+
+            # Extract team slugs from URL for slate matching.
+            # /games/baltimore-orioles-vs-detroit-tigers-mlb-july-28-2026/...
+            m = re.search(r'/games/([a-z0-9\-]+?)-vs-([a-z0-9\-]+?)-mlb-', path)
+            if not m:
+                continue
+            away_slug = m.group(1).replace('-', ' ')
+            home_slug = m.group(2).replace('-', ' ')
+            gid = find_game_id(slate, home_hint=home_slug, away_hint=away_slug)
+            if not gid:
+                continue
+
+            soup = BeautifulSoup(r.text, 'html.parser')
+            text = soup.get_text('\n', strip=True)
+
+            # Isolate the Odds Comparison → Full Game block. Everything before
+            # "Odds Comparison" is header/team summary; parse from that anchor.
+            anchor = text.find('Odds Comparison')
+            if anchor == -1:
+                continue
+            block = text[anchor: anchor + 4000]
+
+            for surface, header, side_a_lbl, side_b_lbl in [
+                ('ml',    'Moneyline', 'AWAY',  'HOME'),
+                ('rl',    'Spread',    'AWAY',  'HOME'),
+                ('total', 'Total',     'OVER',  'UNDER'),
+            ]:
+                # Section format (BeautifulSoup-normalized with \n between nodes):
+                #   Moneyline / Moneyline (repeated header)
+                #   <away short> / <home short>
+                #   Bets / <a>% / <b>%
+                #   Money / <a>% / <b>%
+                #   Opener / <opener a> / <opener b>
+                # ML opener  =  "+120\n-142"      (odds only)
+                # Spread opener = "+1.5\n-184\n-1.5\n+152"  (line + odds per side)
+                # Total opener  = "8.5\n+100\n8.5\n-122"    (line + odds per side)
+                # Core pattern: Bets/Money rows are always present. Opener is optional.
+                pat = re.compile(
+                    rf'\b{header}\b\s*\n\s*\b{header}\b\s*\n'
+                    r'([^\n]+)\n([^\n]+)\n'
+                    r'\s*Bets\s*\n\s*(\d+)%\s*\n\s*(\d+)%\s*\n'
+                    r'\s*Money\s*\n\s*(\d+)%\s*\n\s*(\d+)%',
+                )
+                sm = pat.search(block)
+                if not sm:
+                    continue
+                a_bets = int(sm.group(3)); b_bets = int(sm.group(4))
+                a_money = int(sm.group(5)); b_money = int(sm.group(6))
+
+                # Opener parsing is best-effort — grab the next few lines after Money row
+                opener_raw = ''
+                op = re.search(r'Opener\s*\n([^\n]+(?:\n[^\n]+){0,5})', block[sm.end(): sm.end() + 400])
+                if op:
+                    opener_raw = op.group(1)
+
+                # Sanity: percentages should sum ~100 on each row
+                if not (85 <= a_bets + b_bets <= 115): continue
+                if not (85 <= a_money + b_money <= 115): continue
+
+                # Parse opener lines (best-effort)
+                a_line, a_odds, b_line, b_odds = None, None, None, None
+                tokens = [t.strip() for t in opener_raw.split('\n') if t.strip()]
+                if surface == 'ml' and len(tokens) >= 2:
+                    a_odds, b_odds = _parse_american(tokens[0]), _parse_american(tokens[1])
+                elif surface in ('rl', 'total') and len(tokens) >= 4:
+                    a_line = _parse_line(tokens[0]); a_odds = _parse_american(tokens[1])
+                    b_line = _parse_line(tokens[2]); b_odds = _parse_american(tokens[3])
+
+                # pick_side = side with higher money %
+                if a_money >= b_money:
+                    pick_side, money_pct, bets_pct = side_a_lbl, a_money, a_bets
+                    other_money, other_bets = b_money, b_bets
+                    pick_line, pick_odds = a_line, a_odds
+                else:
+                    pick_side, money_pct, bets_pct = side_b_lbl, b_money, b_bets
+                    other_money, other_bets = a_money, a_bets
+                    pick_line, pick_odds = b_line, b_odds
+
+                divergence = money_pct - bets_pct  # positive = sharp on this side
+                if divergence >= 10:
+                    fade = 'boost'
+                elif divergence >= -5:
+                    fade = 'neutral'
+                elif other_bets - other_money >= 15:
+                    # heavy public on the OTHER side w/o money support → still boost our side
+                    fade = 'boost'
+                else:
+                    fade = 'neutral'
+
+                picks.append(ExternalPick(
+                    game_id=gid, sport='MLB', game_date=game_date,
+                    source='oddscrowd', surface=surface, pick_side=pick_side,
+                    pick_line=pick_line, odds_american=pick_odds,
+                    confidence=f'money {money_pct}% / bets {bets_pct}% (div {divergence:+d}pp)',
+                    raw_text=(f'OddsCrowd {header}: '
+                              f'{side_a_lbl} money {a_money}%/bets {a_bets}%'
+                              + (f' @ {a_line}({a_odds:+d})' if a_line is not None and a_odds is not None
+                                 else (f' @ {a_odds:+d}' if a_odds is not None else '')) + ' · '
+                              f'{side_b_lbl} money {b_money}%/bets {b_bets}%'
+                              + (f' @ {b_line}({b_odds:+d})' if b_line is not None and b_odds is not None
+                                 else (f' @ {b_odds:+d}' if b_odds is not None else ''))),
+                    source_url=url,
+                    fade_flag=fade,
+                ))
+            time.sleep(0.3)  # be polite between game pages
+        except Exception:
+            continue
+
+    return picks, 200
+
+
 FETCHERS = {
     'dimers': fetch_dimers,
     'covers': fetch_covers,
@@ -1055,6 +1243,7 @@ FETCHERS = {
     'scp': fetch_scp,
     'fangraphs': fetch_fangraphs,
     'ballparkpal': fetch_ballparkpal,
+    'oddscrowd': fetch_oddscrowd,
 }
 
 
