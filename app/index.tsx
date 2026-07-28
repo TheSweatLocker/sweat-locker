@@ -4855,12 +4855,23 @@ const fetchJerryRecord = async () => {
       // not a rolling 2000-window that shrinks the visible record over time.
       // 3963 resolved props exist as of 7/26; 5000 covers headroom through
       // end of MLB season + gives NFL room when it kicks in.
-      const { data: resolvedRows } = await supabase
-        .from('mlb_pipeline_props')
-        .select('result,tier,prop_type,game_date')
-        .in('result', ['Win', 'Loss', 'Push'])
-        .order('game_date', {ascending: false})
-        .limit(5000);
+      // 2026-07-27: PostgREST has a server-side max-rows=1000 cap that
+      // ignores our .limit(5000). Result: only most recent 1000 resolved
+      // props counted → lifetime record showed 987 instead of 3000+.
+      // Fix: paginate via .range() until fewer than page size returned.
+      const PAGE = 1000;
+      let resolvedRows: any[] = [];
+      for (let offset = 0; offset < 20000; offset += PAGE) {
+        const { data: page } = await supabase
+          .from('mlb_pipeline_props')
+          .select('result,tier,prop_type,game_date')
+          .in('result', ['Win', 'Loss', 'Push'])
+          .order('game_date', {ascending: false})
+          .range(offset, offset + PAGE - 1);
+        if (!page || page.length === 0) break;
+        resolvedRows.push(...page);
+        if (page.length < PAGE) break;   // last page
+      }
       // Separate pending count
       const { data: pendingRows } = await supabase
         .from('mlb_pipeline_props')
