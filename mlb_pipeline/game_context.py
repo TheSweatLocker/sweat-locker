@@ -2397,6 +2397,79 @@ def compute_primary_play(ctx):
             "signal_floor": 60,
             "audit_note": _audit_note_for('xera_gap_2_3_over'),
         }
+
+    # ─── ML CONSENSUS FALLBACK (added 2026-07-27) ─────────────────────
+    # Fires when 5+/6 lens agree on ML winner but no lens has a big enough
+    # spread edge to trigger the delta-gated tiers above. Real example:
+    # CLE @ CIN 7/27 — Panel +0.14, Jerry +0.84, v3 +1.01, v4 +0.80, MC +1.17
+    # all agreed CIN wins ML, confluence +1 agreed HOME → 5/6 lens on CIN.
+    # But all deltas < 1.5 (none cover -1.5 line) so nothing fired.
+    #
+    # Backed by 30d audit: Jerry+MC ML-direction agreement hit 68% (n=34).
+    # 5+/6 ML consensus is a strictly stronger signal.
+    # Guard: skip if ML price is heavy juice (<= -220) — the juice-fav-RL-trap
+    # memory shows heavy favs win outright but eat ROI on the ML price.
+    home_ml_val = ctx.get('home_ml_close') or ctx.get('home_ml_odds')
+    away_ml_val = ctx.get('away_ml_close') or ctx.get('away_ml_odds')
+    if proj_spread is not None and close_spread is not None:
+        # Count ML-direction agreement across lens
+        margins = {
+            'panel': panel_margin_ctx,
+            'jerry': jerry_spread,
+            'v3': v3_spread,
+            'v4': v4_spread,
+        }
+        try:
+            mc_em = _f((ctx.get('mc_probabilities') or {}).get('mc_expected_margin')) if isinstance(ctx.get('mc_probabilities'), dict) else None
+            margins['mc'] = mc_em
+        except Exception:
+            pass
+        # Positive margin = home wins outright
+        try:
+            composite_side = 'H' if float(proj_spread) > 0 else 'A'
+        except (TypeError, ValueError):
+            composite_side = None
+        if composite_side:
+            agree_count = 1  # composite counts as its own vote
+            for name, m in margins.items():
+                if m is None: continue
+                try:
+                    side = 'H' if float(m) > 0 else 'A'
+                    if side == composite_side: agree_count += 1
+                except (TypeError, ValueError):
+                    pass
+            # Confluence direction adds another vote
+            if conf is not None:
+                try:
+                    conf_side = 'H' if int(conf) > 0 else 'A' if int(conf) < 0 else None
+                    if conf_side and conf_side == composite_side:
+                        agree_count += 1
+                except (TypeError, ValueError):
+                    pass
+            # agree_count now out of ~6 (composite + up to 5 lens + confluence dir)
+            # Total possible: composite + 5 lens + conf = 7. But composite is
+            # derived from lens so we cap at 6 unique signals.
+            winning_team = home_team if composite_side == 'H' else away_team
+            winning_ml = home_ml_val if composite_side == 'H' else away_ml_val
+            # Juice-fav skip
+            juice_skip = False
+            try:
+                if winning_ml is not None and float(winning_ml) <= -220:
+                    juice_skip = True
+            except (TypeError, ValueError):
+                pass
+            if not juice_skip and agree_count >= 5:
+                # STRONG at 6/6, LEAN at 5/6
+                tier = 'STRONG' if agree_count >= 6 else 'LEAN'
+                floor = 72 if tier == 'STRONG' else 62
+                return {
+                    'type': 'ml',
+                    'tier': tier,
+                    'label': f'{winning_team} ML',
+                    'sub': f'ML consensus fallback — {agree_count}/6 lens agree on {winning_team} (small spread deltas but strong direction)',
+                    'signal_floor': floor,
+                    'audit_note': 'ML consensus tier · Jerry+MC-agree cohort 68% 30d (n=34) as baseline',
+                }
     return None
 
 
