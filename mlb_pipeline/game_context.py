@@ -2161,6 +2161,72 @@ def compute_primary_play(ctx):
     ml_playable = _ml_playable()
     fav = home_team if (proj_spread is not None and float(proj_spread) > 0) else away_team
 
+    # ─── ANTI-CONSENSUS FADE (added 2026-07-27) ───────────────────────
+    # 30d audit finding: when MC agrees with exactly ONE stat lens
+    # (Panel / Jerry / v3 / v4) and the other 3 stat lens all pick the
+    # OPPOSITE side, the MC+partner side LOSES the ML at brutal rates:
+    #   MC + Panel alone vs 3 others   : 1-9  (10%) n=10
+    #   MC + Jerry alone vs 3 others   : 2-5  (29%) n=7
+    #   MC + v3    alone vs 3 others   : 3-6  (33%) n=9
+    #   MC + v4    alone vs 3 others   : 3-6  (33%) n=9
+    #   AGGREGATE                      : 9-26 (26%) n=35
+    #
+    # Inverse: taking the 3-lens majority side hits 26/35 (74%). MC+Panel
+    # alone is the strongest single trap (90% fade win) — worth a
+    # dedicated STRONG tier. Other partner combos hit 67-71% inverse,
+    # LEAN tier.
+    #
+    # Fires BEFORE all other tiers because it's a directional flag that
+    # overrides the naive "MC likes this" reading — a heavy fav MC-HC
+    # can still be a fade if the other lens all disagree.
+    def _mc_side_of(margin):
+        if margin is None: return None
+        try: return 'H' if float(margin) > 0 else 'A'
+        except: return None
+    mc_probs = ctx.get('mc_probabilities') or {}
+    mc_em = mc_probs.get('mc_expected_margin') if isinstance(mc_probs, dict) else None
+    mc_side_val = _mc_side_of(mc_em)
+    stat_lens_sides = {
+        'panel': _mc_side_of(panel_margin_ctx),
+        'jerry': _mc_side_of(jerry_spread),
+        'v3':    _mc_side_of(v3_spread),
+        'v4':    _mc_side_of(v4_spread),
+    }
+    if mc_side_val:
+        # Which stat lens agree with MC?
+        mc_partners = [k for k, v in stat_lens_sides.items() if v == mc_side_val]
+        # Which stat lens dissent from MC?
+        mc_dissenters = [k for k, v in stat_lens_sides.items() if v and v != mc_side_val]
+        # Fire ONLY if exactly one partner + 3 dissenters (clean pattern)
+        if len(mc_partners) == 1 and len(mc_dissenters) == 3:
+            partner = mc_partners[0]
+            fade_side_val = 'H' if mc_side_val == 'A' else 'A'
+            fade_team = home_team if fade_side_val == 'H' else away_team
+            # Juice check on fade side ML — same guard as ML consensus tier
+            fade_ml = home_ml if fade_side_val == 'H' else away_ml
+            juice_skip = False
+            try:
+                if fade_ml is not None and float(fade_ml) <= -220:
+                    juice_skip = True
+            except (TypeError, ValueError):
+                pass
+            if not juice_skip:
+                # MC+Panel is the strongest trap → STRONG tier fade
+                is_panel = partner == 'panel'
+                tier = 'STRONG' if is_panel else 'LEAN'
+                floor = 72 if is_panel else 62
+                partner_note = f'MC+{partner} alone (' + (
+                    '90% fade rate n=10' if is_panel else '~68% fade rate n=25'
+                ) + ')'
+                return {
+                    'type': 'ml',
+                    'tier': tier,
+                    'label': f'{fade_team} ML',
+                    'sub': f'ANTI-CONSENSUS FADE — MC likes {mc_side_val} but only {partner} agrees; other 3 lens on {fade_team}. {partner_note}.',
+                    'signal_floor': floor,
+                    'audit_note': f'anti-consensus fade tier · aggregate 9-26 (26% inverse=74%) 30d',
+                }
+
     # ─── MC HIGH-CONF headline (added 2026-07-25) ─────────────────────
     # MC HIGH-CONF chip fires when Monte Carlo simulator shows ≥80% win
     # prob AND ≥15pp gap vs market implied. Highest single-lens signal
