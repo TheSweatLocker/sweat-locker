@@ -860,17 +860,21 @@ def fetch_pickdawgz(slate: list, game_date: str) -> tuple[list, int]:
         return [], landing.status_code
     soup = BeautifulSoup(landing.text, 'html.parser')
 
-    # Match today's date in landing headlines (e.g. "7/21/2026")
-    parts = game_date.split('-')  # ['2026','07','21']
-    date_slug_short = f'{int(parts[1])}/{int(parts[2])}/{parts[0]}'  # 7/21/2026
-    date_slug_url = f'{parts[0]}-{parts[1]}-{parts[2]}'              # 2026-07-21 (some URLs)
+    # PickDawgz uses TWO date formats depending on surface:
+    #   - Headlines:  "7/28/2026"  (slashes)
+    #   - URL slugs:  "prediction-7-28-2026"  (dashes, M-D-YYYY, NOT ISO)
+    parts = game_date.split('-')  # ['2026','07','28']
+    date_slug_headline = f'{int(parts[1])}/{int(parts[2])}/{parts[0]}'   # 7/28/2026
+    date_slug_url = f'{int(parts[1])}-{int(parts[2])}-{parts[0]}'         # 7-28-2026
+    date_iso_url = f'{parts[0]}-{parts[1]}-{parts[2]}'                    # 2026-07-28 (safety)
 
     article_urls = set()
     for a in soup.find_all('a', href=True):
         href = a.get('href', '')
         headline = a.get_text(' ', strip=True)
-        # Prefer headline match (dated), fallback to URL segment
-        if date_slug_short in headline or date_slug_url in href:
+        # Match either date format anywhere in headline OR URL
+        if (date_slug_headline in headline or date_slug_url in href
+                or date_slug_url in headline or date_iso_url in href):
             if 'prediction' in href.lower() or 'pick' in href.lower():
                 if href.startswith('/'):
                     href = 'https://www.pickdawgz.com' + href
@@ -881,7 +885,7 @@ def fetch_pickdawgz(slate: list, game_date: str) -> tuple[list, int]:
         return [], 200
 
     picks = []
-    for url in list(article_urls)[:15]:
+    for url in list(article_urls)[:25]:  # up to 25 games — safely covers 16-game MLB slate
         try:
             article = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
             if article.status_code != 200:
@@ -903,37 +907,52 @@ def fetch_pickdawgz(slate: list, game_date: str) -> tuple[list, int]:
             if not gid:
                 continue
 
-            # Pick pattern in body — PickDawgz uses "Pick:", "Play:", "Free Pick:"
-            pick_re = re.search(
-                r'(?:Pick|Play|Prediction|Free Pick)\s*[:\-]?\s*'
-                r'([A-Z][A-Za-z .]+?)\s+(?:ML|Moneyline)?\s*\(?([+-]\d{2,4})\)?',
-                body[:8000],
-            )
-            total_re = re.search(
-                r'(?:Pick|Play|Prediction)\s*[:\-]?\s*(Over|Under)\s+([\d.]+)\s*\(?([+-]\d{2,4})?\)?',
-                body[:8000], re.I,
-            )
+            # PickDawgz pick format at the author sign-off, e.g.:
+            #   "Nikos Lagouretos's Pick: Boston Red Sox ML Need More? Get Premium"
+            # Article body is a single line (soup.get_text(' ')) so we anchor on the
+            # apostrophe-s Pick pattern and stop at the "Need More" / "Get Premium"
+            # tail that always follows the pick. Support both straight ' and curly '.
+            pick_matches = list(re.finditer(
+                r"[A-Za-z]+[’']s\s+Pick\s*:\s*([A-Z][A-Za-z .]{2,60}?)"
+                r"(?:\s+(?:ML|Moneyline|-1\.5|\+1\.5|RL|Run Line))?"
+                r"\s*(?:\(([+-]\d{2,4})\))?"
+                r"\s+(?:Need More|Get Premium|Hot Cappers|Buy|Add to)",
+                body[:15000],
+            ))
+            total_matches = list(re.finditer(
+                r"[A-Za-z]+[’']s\s+Pick\s*:\s*(Over|Under)\s+([\d.]+)"
+                r"\s*(?:\(([+-]\d{2,4})\))?"
+                r"\s+(?:Need More|Get Premium|Hot Cappers)",
+                body[:15000], re.I,
+            ))
 
-            if pick_re:
-                team = pick_re.group(1).strip()
-                odds = int(pick_re.group(2))
+            emitted = False
+            if pick_matches:
+                # Use the LAST match (author's sign-off pick)
+                pm = pick_matches[-1]
+                team = pm.group(1).strip()
+                odds = int(pm.group(2)) if pm.group(2) else None
+                # Clean team name — strip trailing "ML" or "Moneyline"
+                team = re.sub(r'\s+(?:ML|Moneyline|RL|Run Line|\-?\d+\.\d+)\s*$', '', team, flags=re.I).strip()
                 side = None
                 if home_hint.lower().find(team.lower()) >= 0 or team.lower().find(home_hint.lower()) >= 0:
                     side = 'HOME'
                 elif away_hint.lower().find(team.lower()) >= 0 or team.lower().find(away_hint.lower()) >= 0:
                     side = 'AWAY'
-                if not side:
-                    continue
-                picks.append(ExternalPick(
-                    game_id=gid, sport='MLB', game_date=game_date, source='pickdawgz',
-                    surface='ml', pick_side=side, odds_american=odds,
-                    raw_text=f'PickDawgz: {team} ML ({odds})',
-                    source_url=url,
-                ))
-            elif total_re:
-                side = total_re.group(1).upper()
-                line = float(total_re.group(2))
-                odds = int(total_re.group(3)) if total_re.group(3) else None
+                if side:
+                    picks.append(ExternalPick(
+                        game_id=gid, sport='MLB', game_date=game_date, source='pickdawgz',
+                        surface='ml', pick_side=side, odds_american=odds,
+                        raw_text=f'PickDawgz: {team} ML' + (f' ({odds})' if odds else ''),
+                        source_url=url,
+                    ))
+                    emitted = True
+
+            if not emitted and total_matches:
+                tm2 = total_matches[-1]
+                side = tm2.group(1).upper()
+                line = float(tm2.group(2))
+                odds = int(tm2.group(3)) if tm2.group(3) else None
                 picks.append(ExternalPick(
                     game_id=gid, sport='MLB', game_date=game_date, source='pickdawgz',
                     surface='total', pick_side=side, pick_line=line, odds_american=odds,
