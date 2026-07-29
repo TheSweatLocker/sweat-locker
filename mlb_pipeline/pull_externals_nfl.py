@@ -91,6 +91,11 @@ SOURCE_REGISTRY = {
         'base_url': 'https://www.pickdawgz.com/nfl-picks',
         'label': 'PickDawgz NFL',
     },
+    'oddscrowd': {
+        'fade_flag': 'trust', 'ttl_hours': 12,   # money% drifts intraday
+        'base_url': 'https://oddscrowd.com/games/upcoming/football',
+        'label': 'OddsCrowd NFL',
+    },
 }
 
 
@@ -475,6 +480,32 @@ def fetch_pickdawgz(slate: list, game_date: str, aliases: dict) -> tuple:
     return [], 200
 
 
+def fetch_oddscrowd(slate: list, game_date: str, aliases: dict) -> tuple:
+    """OddsCrowd h2h/rl/total for NFL. Thin wrapper — real work in shared module.
+    NOTE: OddsCrowd's /football listing mixes NFL + NCAAF; date+team-name matching
+    in the shared code + find_game_id_fn filters to our NFL slate cleanly.
+    """
+    from externals_oddscrowd import fetch_oddscrowd_generic
+    picks_dicts, status = fetch_oddscrowd_generic(
+        sport_url_slug='football',
+        league_slug='nfl',
+        sport_code='NFL',
+        game_date=game_date,
+        slate=slate,
+        find_game_id_fn=find_game_id,
+    )
+    picks = []
+    for d in picks_dicts:
+        picks.append(ExternalPick(
+            game_id=d['game_id'], sport=d['sport'], game_date=d['game_date'],
+            source=d['source'], surface=d['surface'], pick_side=d['pick_side'],
+            pick_line=d['pick_line'], odds_american=d['odds_american'],
+            confidence=d['confidence'], raw_text=d['raw_text'],
+            source_url=d['source_url'], fade_flag=d['fade_flag'],
+        ))
+    return picks, status
+
+
 FETCHERS = {
     'dimers': fetch_dimers,
     'covers': fetch_covers,
@@ -483,6 +514,7 @@ FETCHERS = {
     'bettingpros': fetch_bettingpros,
     'pickswise': fetch_pickswise,
     'pickdawgz': fetch_pickdawgz,
+    'oddscrowd': fetch_oddscrowd,
 }
 
 
@@ -569,6 +601,17 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
     print(f'  Sources OK/FAIL: {summary["sources_pulled"]}/{summary["sources_failed"]}')
     print(f'  Picks written:   {summary["picks_written"]}')
     print(f'  Games covered:   up to {summary["games"]}')
+
+    # Compute alignment + oddscrowd snapshot for NFL app UX layer
+    # (mirror MLB pattern shipped 2026-07-29)
+    if not dry_run and summary['picks_written'] > 0:
+        try:
+            from compute_align_status_nfl import run as compute_align_run
+            print('\n=== Alignment + oddscrowd snapshot (NFL) ===')
+            compute_align_run(game_date=game_date, dry_run=False)
+        except Exception as e:
+            print(f'  ⚠ compute_align_status_nfl failed: {type(e).__name__}: {e}')
+
     return summary
 
 
