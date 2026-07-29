@@ -2250,14 +2250,48 @@ def compute_primary_play(ctx):
                 juice_note = " · ML play (juice fav — RL -1.5 covers only 29-40% historically)"
         except (TypeError, ValueError):
             pass
-        return {
-            "type": "ml",
-            "tier": "PRIME",
-            "label": f"{winning_team} ML",
-            "sub": f"MC HIGH-CONF: {mc_hc_pct*100:.0f}% win prob (sim on 10k){juice_note}",
-            "signal_floor": 88,
-            "audit_note": "MC HIGH-CONF chip · sample building (recent: 3-1)",
-        }
+
+        # 2026-07-29 MC-HC lens-support gate ([[project_mc_hc_recalibration_729]]).
+        # MC HIGH-CONF picks hit 40% (4-6) over last 10 fires per daily_grades —
+        # dangerous to auto-PRIME when only MC agrees. Gate: require ≥4/5 of
+        # {panel, jerry, v3, v4, conf} to point the same side. Below that,
+        # downgrade PRIME → STRONG and note the downgrade in sub.
+        mc_hc_side_letter = 'H' if mc_hc_side == 'HOME' else 'A'
+        conf_side_letter = None
+        if conf is not None:
+            try:
+                cn = int(conf)
+                conf_side_letter = 'H' if cn > 0 else ('A' if cn < 0 else None)
+            except (TypeError, ValueError):
+                conf_side_letter = None
+        # stat_lens_sides is computed above (line ~2189). Reuse.
+        lens_supporting = sum(1 for k, v in stat_lens_sides.items()
+                              if v == mc_hc_side_letter)
+        if conf_side_letter == mc_hc_side_letter:
+            lens_supporting += 1
+        mc_gate_pass = lens_supporting >= 4  # 4 of 5 (4 stat + conf)
+
+        if mc_gate_pass:
+            return {
+                "type": "ml",
+                "tier": "PRIME",
+                "label": f"{winning_team} ML",
+                "sub": f"MC HIGH-CONF: {mc_hc_pct*100:.0f}% win prob (sim on 10k){juice_note} · {lens_supporting}/5 lens confirm",
+                "signal_floor": 88,
+                "audit_note": "MC HIGH-CONF chip · lens-support gate passed",
+            }
+        else:
+            # Downgrade to STRONG — insufficient lens support flags a risk that
+            # MC is a lone-loud signal (40% recent).
+            return {
+                "type": "ml",
+                "tier": "STRONG",
+                "label": f"{winning_team} ML",
+                "sub": (f"MC HIGH-CONF: {mc_hc_pct*100:.0f}% win prob (sim on 10k){juice_note} · "
+                        f"DOWNGRADED — only {lens_supporting}/5 lens agree (need 4)"),
+                "signal_floor": 72,
+                "audit_note": "MC-HC lens-support gate 7/29 — 40% recent hits w/o confirm",
+            }
 
     # ─── Jerry + v4 direction agreement gate (added 2026-07-25) ───────
     # 7/24 audit: Jerry sides 12-3 (80%), v4 sides 12-3 (80%). When BOTH
@@ -2333,8 +2367,26 @@ def compute_primary_play(ctx):
     # the model's pick LOSES more than it wins. spread_delta_ge2 cohort
     # hits 55-58%. Old threshold put STRONG picks square in the trap; new
     # threshold matches the cohort cliff. See project_spread_delta_trap_zone.
+    #
+    # 2026-07-29 |net|=3 TRAP DOWNGRADE ([[project_confluence_net3_trap_729]]):
+    # Lifetime audit found |net|=3 hits 30.8% (n=26) — the worst bucket in the
+    # entire confluence distribution. |net|=2 hits 58.3%, |net|=4 hits 75%.
+    # Non-monotonic — the mid-tier cohorts (h2h_recent_home, bp_taxed, trend)
+    # pull good signals to +3 by adding fade-direction votes. Downgrade
+    # |net|=3 games one grade: STRONG → LEAN.
     if conf is not None and int(conf) >= 2 and abs_delta >= 2.0 and ml_playable:
         if _cohort_healthy('confluence_strong_2_3'):
+            net3_trap = abs(int(conf)) == 3
+            if net3_trap:
+                return {
+                    "type": "ml",
+                    "tier": "LEAN",
+                    "label": f"{fav} ML lean",
+                    "sub": (f"LEAN (would be STRONG but |net|=3 trap bucket — "
+                            f"30.8% hit rate historically, downgraded)"),
+                    "signal_floor": 62,
+                    "audit_note": "|net|=3 trap downgrade 7/29 · project_confluence_net3_trap_729",
+                }
             return {
                 "type": "ml",
                 "tier": "STRONG",
@@ -4109,17 +4161,31 @@ def run(target_date=None):
                 # season, fire as an OVERRIDE vote (counts double). This
                 # signal specifically catches the case where overall L14
                 # contradicts opponent-specific recency.
+                # 2026-07-29 INVERSION: lifetime audit ([[project_cohort_inversion_729]])
+                # found h2h_recent_home fires wrong direction 68.9% of the time
+                # (31.1% hit rate n=45). Root cause hypothesis: recent H2H is
+                # already priced by the books; naive signal captures a mean-reversion
+                # trap. Invert both sign of home + away H2H signals — flipped vote
+                # should push toward ~68.9% at the same sample size.
+                # Guarded by env INVERT_H2H (defaults on) for safe rollback.
+                _INVERT_H2H_RECENT = os.environ.get('INVERT_H2H_RECENT', '1') != '0'
                 try:
                     h_h2h = fetch_h2h_recent(home_team, away_team) if 'fetch_h2h_recent' in globals() else None
                     a_h2h = fetch_h2h_recent(away_team, home_team) if 'fetch_h2h_recent' in globals() else None
                     if h_h2h and h_h2h.get('games_played', 0) >= 2:
                         h_delta = h_h2h.get('rpg_delta_vs_l14')
                         if h_delta is not None and abs(h_delta) >= 1.5:
-                            breakdown['h2h_recent_home'] = 'home' if h_delta > 0 else 'away'
+                            side = 'home' if h_delta > 0 else 'away'
+                            if _INVERT_H2H_RECENT:
+                                side = 'away' if side == 'home' else 'home'
+                            breakdown['h2h_recent_home'] = side
                     if a_h2h and a_h2h.get('games_played', 0) >= 2:
                         a_delta = a_h2h.get('rpg_delta_vs_l14')
                         if a_delta is not None and abs(a_delta) >= 1.5:
-                            breakdown['h2h_recent_away'] = 'away' if a_delta > 0 else 'home'
+                            side = 'away' if a_delta > 0 else 'home'
+                            if _INVERT_H2H_RECENT:
+                                side = 'home' if side == 'away' else 'away'
+                            breakdown['h2h_recent_away'] = side
                 except (NameError, AttributeError, TypeError):
                     pass  # H2H data not loaded — silent skip
 
