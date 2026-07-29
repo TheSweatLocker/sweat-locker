@@ -1,0 +1,126 @@
+name: UFC Pipeline Weekly
+
+# UFC cadence: fight cards Saturday nights.
+#   Wed 6pm ET  — scrape card + score model + pull odds + compute EV
+#   Fri 10am ET — refresh odds (line-move settle) + rebuild card
+#   Sun 10am ET — resolve completed card (grade all fights)
+#
+# Times are 30-60 min earlier than user-facing "ready by" to absorb
+# GitHub Actions queue drift (same pattern as MLB + NFL).
+
+on:
+  schedule:
+    - cron: '0 22 * * 3'   # Wed 6pm ET  — primary pull (score + odds + EV)
+    - cron: '0 14 * * 5'   # Fri 10am ET — line-move refresh + weekly card
+    - cron: '0 14 * * 0'   # Sun 10am ET — resolver (grade Saturday fights)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Which sub-pipeline to run manually'
+        required: false
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - odds_only
+          - card_only
+          - resolver_only
+
+jobs:
+  ufc-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv beautifulsoup4 pandas scikit-learn numpy xgboost
+
+      - name: Detect run mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H); DOW=$(date -u +%u)
+            # Sun 14:00 UTC → resolver_only; Fri 14:00 UTC → card refresh only;
+            # Wed 22:00 UTC → full (fresh pull).
+            if [ "$DOW" = "7" ] && [ "$HOUR" = "14" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
+            elif [ "$DOW" = "5" ] && [ "$HOUR" = "14" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
+            else echo "mode=full" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Scrape upcoming UFC card (ESPN)
+        if: steps.mode.outputs.mode == 'full'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ufc_card_scraper_v3.py || echo "card scraper failed (non-fatal)"
+
+      - name: Score card with 4-model ensemble
+        if: steps.mode.outputs.mode == 'full'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ufc_score_card.py || echo "score card failed"
+
+      - name: Pull market odds (Odds API h2h)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ufc_odds_pull.py || echo "odds pull failed"
+
+      - name: Compute EV tiers
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ufc_compute_ev.py || echo "EV compute failed"
+
+      - name: Build weekly card payload
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ufc_weekly_card.py --format markdown || echo "weekly card failed"
+
+      - name: Pull external UFC picks (handicappers + BFO market)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_externals_ufc.py || echo "externals pull failed (non-fatal)"
+
+      - name: Resolve completed fights (grade Saturday card)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ufc_resolve_fights.py || echo "resolver failed"
