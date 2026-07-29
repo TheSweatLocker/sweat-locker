@@ -1,0 +1,50 @@
+name: MLB OddsCrowd Refresh (T-45min sharp money capture)
+
+# Sharp money on OddsCrowd moves throughout the day — especially the last
+# 30-90 min before first pitch when whales load up. The default noon +
+# 5pm externals cron misses that window entirely. This workflow refreshes
+# oddscrowd (only) at high cadence during game hours so:
+#   1. oddscrowd_snapshot on mlb_game_context stays fresh for the app
+#   2. compute_align_status re-fires with each pull (chained via
+#      pull_externals_mlb.py's end-hook) so ALIGNED verdicts update live
+#   3. reverse-line-move signal (money side diverges from bets side
+#      intraday) becomes detectable — needed for the eventual RLM tier
+#
+# Backfill history: the pull is idempotent thanks to the
+# (source, game_id, surface, pick_side, game_date) unique index shipped
+# 2026-07-27b — repeat pulls overwrite the same row with fresh values.
+
+on:
+  schedule:
+    # Every 30 min from ~11am ET through midnight = 15:00-04:00 UTC.
+    # Covers early afternoon games through late West Coast finishers.
+    - cron: '*/30 15-23 * * *'
+    - cron: '*/30 0-4 * * *'
+  workflow_dispatch:
+
+jobs:
+  refresh-oddscrowd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv beautifulsoup4
+
+      - name: Pull oddscrowd for today's slate
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_externals_mlb.py --source oddscrowd
