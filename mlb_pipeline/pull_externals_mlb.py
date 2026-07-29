@@ -1198,6 +1198,16 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
     print(f'  Sources OK/FAIL: {summary["sources_pulled"]}/{summary["sources_failed"]}')
     print(f'  Picks written:   {summary["picks_written"]}')
     print(f'  Games covered:   up to {summary["games"]}')
+
+    # Compute alignment + oddscrowd snapshot for the app UX layer
+    if not dry_run and summary['picks_written'] > 0:
+        try:
+            from compute_align_status import run as compute_align_run
+            print('\n=== Alignment + oddscrowd snapshot ===')
+            compute_align_run(game_date=game_date, dry_run=False)
+        except Exception as e:
+            print(f'  ⚠ compute_align_status failed: {type(e).__name__}: {e}')
+
     return summary
 
 
