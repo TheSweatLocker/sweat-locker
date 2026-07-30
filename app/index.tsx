@@ -5885,8 +5885,14 @@ if(scoreData) {
         const wrcGap = mlbData.home_wrc_plus - mlbData.away_wrc_plus;
         if(Math.abs(wrcGap) >= 10) sweatSignals.push(`wRC+ edge: ${wrcGap > 0 ? game.home_team : game.away_team} +${Math.abs(wrcGap)} wRC+ advantage`);
       }
-      if(mlbData.home_platoon_note) sweatSignals.push(`Platoon: ${mlbData.home_platoon_note}`);
-      if(mlbData.away_platoon_note) sweatSignals.push(`Platoon: ${mlbData.away_platoon_note}`);
+      // 2026-07-30: gate platoon chip on |value| >= 5 (material threshold per
+      // home_platoon_advantage docstring — below that = noise band). Showing
+      // "slight advantage (+1.1)" as a signal misleads users into thinking
+      // there's an edge when there isn't.
+      const homePlatoonMag = Math.abs(parseFloat(mlbData.home_platoon_advantage) || 0);
+      const awayPlatoonMag = Math.abs(parseFloat(mlbData.away_platoon_advantage) || 0);
+      if(mlbData.home_platoon_note && homePlatoonMag >= 5) sweatSignals.push(`Platoon: ${mlbData.home_platoon_note}`);
+      if(mlbData.away_platoon_note && awayPlatoonMag >= 5) sweatSignals.push(`Platoon: ${mlbData.away_platoon_note}`);
       if(mlbData.spread_delta != null && Math.abs(mlbData.spread_delta) >= 2.0) {
         const mlFav = mlbData.spread_delta > 0 ? game.home_team : game.away_team;
         const mlDelta = Math.abs(mlbData.spread_delta).toFixed(1);
@@ -11217,7 +11223,9 @@ setJerryHistory(prev => {
                             }
                             if(mlbCtx.home_k_gap && Math.abs(mlbCtx.home_k_gap) >= 4) signals.push(`K gap: ${mlbCtx.home_k_gap > 0 ? '+' : ''}${mlbCtx.home_k_gap}pts`);
                             if(mlbCtx.away_k_gap && Math.abs(mlbCtx.away_k_gap) >= 4 && signals.length < 2) signals.push(`K gap: ${mlbCtx.away_k_gap > 0 ? '+' : ''}${mlbCtx.away_k_gap}pts`);
-                            if(mlbCtx.home_platoon_note && signals.length < 2) signals.push(mlbCtx.home_platoon_note.split('—')[1]?.trim() || 'Platoon edge');
+                            // Platoon chip only when |advantage| >= 5 (material threshold)
+                            const _homePlatMag = Math.abs(parseFloat(mlbCtx.home_platoon_advantage) || 0);
+                            if(mlbCtx.home_platoon_note && _homePlatMag >= 5 && signals.length < 2) signals.push(mlbCtx.home_platoon_note.split('—')[1]?.trim() || 'Platoon edge');
                             if(mlbCtx.temperature <= 45 && signals.length < 3) signals.push(`❄️ ${mlbCtx.temperature}°F`);
                             if(mlbCtx.park_run_factor >= 110 && signals.length < 3) signals.push(`🏟️ Hitter park ${mlbCtx.park_run_factor}`);
                             if(mlbCtx.park_run_factor <= 93 && signals.length < 3) signals.push(`🏟️ Pitcher park ${mlbCtx.park_run_factor}`);
