@@ -253,8 +253,12 @@ export default function GameDetailV2({
     return () => { cancelled = true; };
   }, [game?.id, ctx?.game_id, ctx?.game_date, game?.away_team, game?.home_team, gamesSport, externalPicksProp, gamePropsProp]);
 
-  const externalPicks = externalPicksProp ?? fetchedExternals;
-  const gameProps = gamePropsProp ?? fetchedProps;
+  // `??` falls back only on null/undefined — parent's `[]` would win over
+  // fetched data. Prefer parent's data only if it's non-empty.
+  const externalPicks = (externalPicksProp && externalPicksProp.length > 0)
+    ? externalPicksProp : fetchedExternals;
+  const gameProps = (gamePropsProp && gamePropsProp.length > 0)
+    ? gamePropsProp : fetchedProps;
 
   if (!game) return null;
 
