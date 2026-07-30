@@ -655,8 +655,19 @@ def attach_book_odds(candidates):
         except Exception:
             continue
 
-        # Aggregate prices across books (use median of "Over 0.5" odds)
-        by_batter = {}  # name_lower → list of over_odds_int
+        # Aggregate prices across books. Selection priority (2026-07-30 fix):
+        #   1. Hard Rock Bet (user's book) — matches what user sees in-app
+        #   2. Best price for user (highest American odds — most $ back per bet)
+        #   3. Median across all books (safe fallback if HRB unavailable AND
+        #      best-price outlier looks stale/suspicious)
+        # Prior behavior picked the MEDIAN, which meant book_source rotated
+        # through whatever book landed in the middle (usually williamhill_us).
+        # Users compared "app says +3000 (3.2%)" vs "HRB says +2500 (4.0%)"
+        # and thought our data was broken. Fixed by prefering HRB when
+        # available, else best-price.
+        HRB_KEYS = {'hardrockbet', 'hard_rock_bet', 'hardrock', 'hard_rock',
+                    'hardrockbet_us'}  # Odds API has used variants over time
+        by_batter = {}  # name_lower → list of (over_odds_int, src)
         for bk in ev_data.get('bookmakers', []) or []:
             src = bk.get('key', '?')
             for mkt in bk.get('markets', []) or []:
@@ -672,9 +683,14 @@ def attach_book_odds(candidates):
         for name, prices in by_batter.items():
             if not prices:
                 continue
-            prices.sort(key=lambda x: x[0])
-            mid = prices[len(prices) // 2]
-            book_map[name] = mid
+            # 1. Prefer HRB
+            hrb = next((p for p in prices if p[1].lower() in HRB_KEYS), None)
+            if hrb:
+                book_map[name] = hrb
+                continue
+            # 2. Best price for user = max American odds (higher = better payout)
+            best = max(prices, key=lambda x: x[0])
+            book_map[name] = best
 
     matched = 0
     for c in candidates:
