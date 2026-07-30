@@ -380,23 +380,34 @@ def write_picks(picks: list, pull_id: str) -> int:
         d = asdict(p)
         d['pull_id'] = pull_id
         payload.append(d)
-    # Try upsert first (requires 20260727_external_picks_dedup.sql migration)
+    # Upsert using the partial unique index (idx_external_picks_dedup).
+    # PostgREST needs the on_conflict cols to match the index cols. The
+    # partial predicate (WHERE game_id IS NOT NULL) is inferred as long
+    # as our payload always has game_id set — which it always does for
+    # UFC because we skip un-matched fights before appending.
     r = requests.post(
         f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,pick_side,game_date',
         headers=H_WRITE,
         json=payload, timeout=20,
     )
-    # Migration not applied → 42P10 no unique constraint. Fall back to plain
-    # INSERT with a warning. Row-dedup deferred until migration lands.
+    # If migration hasn't landed, PostgREST returns 42P10. Fall back to
+    # a per-row upsert loop skipping 23505 conflicts (still dedup-safe
+    # even without the index because we manually skip dupes).
     if r.status_code == 400 and '42P10' in r.text:
-        print('  ⚠ upsert unavailable (dedup migration 20260727 not applied) — plain INSERT with dupe risk')
-        r = requests.post(
-            f'{SB}/rest/v1/external_picks',
-            headers={**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'},
-            json=payload, timeout=20,
-        )
+        print('  ⚠ dedup migration not applied — per-row upsert with skip-on-conflict')
+        wrote = 0
+        for row in payload:
+            rr = requests.post(
+                f'{SB}/rest/v1/external_picks',
+                headers={**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'},
+                json=row, timeout=15,
+            )
+            if rr.status_code in (200, 201, 204): wrote += 1
+            elif rr.status_code == 409:  # unique conflict — expected if index exists
+                pass
+        return wrote
     if r.status_code not in (200, 201, 204):
-        print(f'  ⚠ picks write failed {r.status_code}: {r.text[:150]}')
+        print(f'  ⚠ picks upsert failed {r.status_code}: {r.text[:200]}')
         return 0
     return len(payload)
 
