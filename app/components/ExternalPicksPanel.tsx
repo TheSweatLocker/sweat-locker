@@ -27,8 +27,8 @@ const CARD_BG = THEME.surface;
 const BORDER = THEME.border;
 const TEXT_PRIMARY = THEME.text;
 const TEXT_MUTED = THEME.textDim;
-const BOOST = '#00e5a0';   // green — aligns with audit
-const FADE = '#ff4d6d';    // red — audit-flagged counterindicator
+const BOOST = THEME.accent;   // green — aligns with audit
+const FADE = THEME.loss;    // red — audit-flagged counterindicator
 const TRUST = '#5bb9ff';   // blue — trusted but not headline
 const NEUTRAL = THEME.textDim; // gray — reference-only
 

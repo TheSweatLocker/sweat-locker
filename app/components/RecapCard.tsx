@@ -31,13 +31,13 @@ const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
-const BRAND_GREEN = '#00e5a0';
+const BRAND_GREEN = THEME.win;
 const BRAND_AMBER = THEME.hrb;
 const CARD_BG = THEME.surface;
 const TEXT_PRIMARY = THEME.text;
 const TEXT_MUTED = THEME.textDim;
 const BORDER = THEME.border;
-const RED = '#ff4d6d';
+const RED = THEME.loss;
 
 type RecapData = {
   potd: { lean: string; result: string | null; matchup?: string } | null;

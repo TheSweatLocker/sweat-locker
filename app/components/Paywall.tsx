@@ -25,7 +25,7 @@ import {
 import { useSubscription } from '../contexts/SubscriptionContext';
 
 import { THEME, TIER_COLOR, OUTCOME_COLOR } from '../theme';
-const BRAND_GREEN = '#00e5a0';
+const BRAND_GREEN = THEME.accent;
 const BRAND_AMBER = THEME.hrb;
 const BG_DARK = THEME.bg;
 const CARD_BG = THEME.surface;

@@ -31,12 +31,12 @@ const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
-const BRAND_GREEN = '#00e5a0';
+const BRAND_GREEN = THEME.accent;
 const BRAND_AMBER = THEME.hrb;
 const CARD_BG = THEME.surface;
 const TEXT_PRIMARY = THEME.text;
 const TEXT_MUTED = THEME.textDim;
-const RED = '#ff4d6d';
+const RED = THEME.loss;
 
 const SURFACE_THRESHOLD_PCT = 60;   // Only surface yesterday if hit >=60%
 const SURFACE_MIN_SAMPLE = 5;        // ... and at least 5 resolved picks

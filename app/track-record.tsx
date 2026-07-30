@@ -38,9 +38,9 @@ const supabase = createClient(
 );
 
 // Brand palette — match RecapCard.tsx
-const BRAND_GREEN = '#00e5a0';
+const BRAND_GREEN = THEME.accent;
 const BRAND_AMBER = THEME.hrb;
-const RED = '#ff4d6d';
+const RED = THEME.loss;
 const BG = THEME.bg;
 const CARD_BG = THEME.surface;
 const CARD_HL = THEME.surfaceAlt;
