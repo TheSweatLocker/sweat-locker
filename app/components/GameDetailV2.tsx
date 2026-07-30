@@ -357,7 +357,7 @@ export default function GameDetailV2({
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>
-            MORE DATA · LESS SWEAT · <Text style={{color: C.accent, fontWeight: '800'}}>SWEAT LOCKER</Text>
+            MORE DATA · LESS SWEAT · <Text style={{color: C.accent, fontWeight: '800'}}>THE SWEAT LOCKER</Text>
           </Text>
         </View>
       </ScrollView>
@@ -788,13 +788,21 @@ function LensGrid({ctx, gamesSport}: any) {
 
 // ─── HANDICAPPERS ROW ───────────────────────────────────────────────────
 function HandicappersRow({picks, homeTeam, awayTeam}: any) {
-  const ml = (picks || []).filter((p: any) => p.surface === 'ml' && p.source !== 'oddscrowd');
-  const home = ml.filter((p: any) => p.pick_side === 'HOME');
-  const away = ml.filter((p: any) => p.pick_side === 'AWAY');
+  const nonOC = (picks || []).filter((p: any) => p.source !== 'oddscrowd');
+  const ml = nonOC.filter((p: any) => p.surface === 'ml');
+  const rl = nonOC.filter((p: any) => p.surface === 'rl');
+  const totals = nonOC.filter((p: any) => p.surface === 'total');
+
+  const mlHome = ml.filter((p: any) => p.pick_side === 'HOME');
+  const mlAway = ml.filter((p: any) => p.pick_side === 'AWAY');
+  const rlHome = rl.filter((p: any) => p.pick_side === 'HOME');
+  const rlAway = rl.filter((p: any) => p.pick_side === 'AWAY');
+  const totOver = totals.filter((p: any) => p.pick_side === 'OVER');
+  const totUnder = totals.filter((p: any) => p.pick_side === 'UNDER');
 
   const chip = (p: any, i: number) => (
     <View
-      key={i}
+      key={`${p.source}-${i}`}
       style={[
         styles.handiChip,
         p.fade_flag === 'boost' && {backgroundColor: C.accentDim, borderColor: C.accent},
@@ -810,22 +818,42 @@ function HandicappersRow({picks, homeTeam, awayTeam}: any) {
     </View>
   );
 
+  const bucketRow = (label: string, items: any[]) => (
+    <View style={styles.handiRow}>
+      <Text style={styles.handiSideLabel}>{label}</Text>
+      {items.length === 0
+        ? <Text style={styles.handiEmpty}>— none —</Text>
+        : items.map(chip)}
+      <Text style={styles.handiCount}>{items.length}</Text>
+    </View>
+  );
+
   return (
     <View>
-      <View style={styles.handiRow}>
-        <Text style={styles.handiSideLabel}>On {abbrev3(homeTeam)} (Home)</Text>
-        {home.length === 0
-          ? <Text style={styles.handiEmpty}>— none —</Text>
-          : home.map(chip)}
-        <Text style={styles.handiCount}>{home.length}</Text>
-      </View>
-      <View style={styles.handiRow}>
-        <Text style={styles.handiSideLabel}>On {abbrev3(awayTeam)} (Away)</Text>
-        {away.length === 0
-          ? <Text style={styles.handiEmpty}>— none —</Text>
-          : away.map(chip)}
-        <Text style={styles.handiCount}>{away.length}</Text>
-      </View>
+      {(mlHome.length + mlAway.length) > 0 && (
+        <>
+          <Text style={styles.handiGroupLabel}>Moneyline</Text>
+          {bucketRow(`On ${abbrev3(homeTeam)} (H)`, mlHome)}
+          {bucketRow(`On ${abbrev3(awayTeam)} (A)`, mlAway)}
+        </>
+      )}
+      {(rlHome.length + rlAway.length) > 0 && (
+        <>
+          <Text style={styles.handiGroupLabel}>Runline / Spread</Text>
+          {bucketRow(`On ${abbrev3(homeTeam)} (H)`, rlHome)}
+          {bucketRow(`On ${abbrev3(awayTeam)} (A)`, rlAway)}
+        </>
+      )}
+      {(totOver.length + totUnder.length) > 0 && (
+        <>
+          <Text style={styles.handiGroupLabel}>Total</Text>
+          {bucketRow('OVER', totOver)}
+          {bucketRow('UNDER', totUnder)}
+        </>
+      )}
+      {nonOC.length === 0 && (
+        <Text style={styles.handiEmpty}>No handicapper picks pulled yet.</Text>
+      )}
     </View>
   );
 }
@@ -1502,6 +1530,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 4, paddingVertical: 6,
   },
   handiSideLabel: {fontSize: 10, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginRight: 6},
+  handiGroupLabel: {fontSize: 9, color: C.textDim, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginTop: 8, marginBottom: 2},
   handiChip: {
     paddingHorizontal: 7, paddingVertical: 2, backgroundColor: C.surface2,
     borderWidth: 1, borderColor: C.border, borderRadius: 4,
