@@ -14,6 +14,7 @@ import { useSubscription } from './contexts/SubscriptionContext';
 import { Sport } from './lib/sportPeriods';
 
 import { THEME, TIER_COLOR, OUTCOME_COLOR } from './theme';
+import StatusChip from './components/StatusChip';
 const ODDS_API_KEY = process.env.EXPO_PUBLIC_ODDS_API_KEY;
 const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
 const BDL_API_KEY = process.env.EXPO_PUBLIC_BDL_API_KEY;
@@ -11243,17 +11244,11 @@ setJerryHistory(prev => {
 
                         return(
   <View style={{marginBottom:8}}>
-    <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:signals.length > 0 ? 5 : 0}}>
+    <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:signals.length > 0 ? 5 : 0,flexWrap:'wrap'}}>
       {isLive ? (
-        <View style={{paddingHorizontal:10,paddingVertical:4,borderRadius:20,backgroundColor:THEME.loss + '22',borderWidth:1,borderColor:THEME.loss,flexDirection:'row',alignItems:'center',gap:4}}>
-          <View style={{width:6,height:6,borderRadius:3,backgroundColor:THEME.loss}}/>
-          <Text style={{color:THEME.loss,fontWeight:'800',fontSize:11}}>LIVE</Text>
-        </View>
+        <StatusChip variant="outcome" outcome="live" label="LIVE" />
       ) : (
-        <View style={{paddingHorizontal:10,paddingVertical:4,borderRadius:20,backgroundColor:tier.color+'22',borderWidth:1,borderColor:tier.color,flexDirection:'row',alignItems:'center',gap:4}}>
-          <Text style={{color:tier.color,fontWeight:'800',fontSize:13}}>{ss.total}</Text>
-          <Text style={{color:tier.color,fontSize:10,fontWeight:'700'}}>SWEAT</Text>
-        </View>
+        <StatusChip variant="score" score={ss.total} scoreLabel="SWEAT" tier={(tier.label?.toUpperCase().split(' ')[0] || 'LIGHT') as any} />
       )}
       <Text style={{color:isLive ? THEME.loss : tier.color,fontSize:11,fontWeight:'600'}}>{isLive ? 'In Progress' : tier.label}</Text>
     </View>
@@ -11297,50 +11292,55 @@ setJerryHistory(prev => {
                           </View>
                         );
                       })()}
+{/* ─── Verdict + alignment strip: sport-agnostic, hidden when data null ─── */}
+{(()=>{
+  const ctxAny: any = gamesSport === 'MLB'
+    ? (mlbGameContext[game.home_team] || mlbGameContext[game.away_team] ||
+       Object.values(mlbGameContext).find((c: any) => c.home_team === game.home_team || c.away_team === game.away_team))
+    : null;
+  const pp = ctxAny?.primary_play;
+  const al = ctxAny?.align_status;
+  const alML: any = al?.ml;
+  const chips: React.ReactNode[] = [];
+  if (pp?.tier && pp?.label) {
+    chips.push(<StatusChip key="pp" variant="tier" tier={pp.tier} label={`${pp.tier} · ${pp.label}`} />);
+  }
+  if (alML?.verdict && alML.verdict !== 'no_data') {
+    chips.push(<StatusChip key="al" variant="alignment" alignment={alML.verdict} />);
+  }
+  if (!chips.length) return null;
+  return <View style={{flexDirection:'row',flexWrap:'wrap',gap:6,marginBottom:8}}>{chips}</View>;
+})()}
 {gamesSport === 'NBA' && isPlayoffMode && (()=>{
   const series = playoffSeries[game.home_team] || playoffSeries[game.away_team];
   if(!series) return null;
-  return(
-    <View style={{backgroundColor:THEME.hrb + '1A',borderRadius:8,paddingHorizontal:10,paddingVertical:4,marginBottom:8,borderWidth:1,borderColor:THEME.hrb + '4C',alignSelf:'flex-start'}}>
-      <Text style={{color:THEME.hrb,fontSize:11,fontWeight:'800'}}>🏆 {series.series_label} — Game {series.game_number}</Text>
+  return (
+    <View style={{marginBottom:8}}>
+      <StatusChip variant="custom" color={THEME.hrb} icon="🏆" label={`${series.series_label} — Game ${series.game_number}`} />
     </View>
   );
 })()}
 {gamesSport === 'UFC' && ufcPick && (()=>{
-  // Map model 'a'/'b' side back to fighter names matching the tile's away/home
-  const aLast = (game.away_team || '').split(' ').pop()?.toLowerCase();
-  const paLast = (ufcPick.fighter_a || '').split(' ').pop()?.toLowerCase();
-  const tileMatchesModelA = aLast === paLast;
   const pickedSide = ufcPick.recommended_side; // 'a' or 'b'
   const pickedFighter = pickedSide === 'a' ? ufcPick.fighter_a : ufcPick.fighter_b;
-  const conv = ufcPick.conviction_winner || 0;
   const tier = ufcPick.tier_winner;
   if (!tier) return null; // hide if model has no conviction
-  const tierColor = tier === 'PRIME' ? THEME.accent : tier === 'STRONG' ? THEME.sharp : THEME.textDim;
+  const winPct = Math.round(((pickedSide==='a'?ufcPick.p_winner_a:1-ufcPick.p_winner_a)*100));
   return(
     <View style={{flexDirection:'row',gap:6,marginBottom:8,flexWrap:'wrap'}}>
-      <View style={{backgroundColor:tierColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:tierColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
-        <Text style={{color:tierColor,fontWeight:'800',fontSize:11}}>🤖 {tier}</Text>
-        <Text style={{color:tierColor,fontWeight:'800',fontSize:11}}>{pickedFighter.split(' ').pop()} {Math.round(((pickedSide==='a'?ufcPick.p_winner_a:1-ufcPick.p_winner_a)*100))}%</Text>
-      </View>
+      <StatusChip variant="tier" tier={tier} icon="🤖" label={`${tier} · ${pickedFighter.split(' ').pop()}`} value={`${winPct}%`} />
       {ufcPick.edge_method && (
-        <View style={{backgroundColor:THEME.hrb + '26',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:THEME.hrb + '66'}}>
-          <Text style={{color:THEME.hrb,fontWeight:'800',fontSize:11}}>{ufcPick.edge_method}</Text>
-        </View>
+        <StatusChip variant="custom" color={THEME.hrb} label={ufcPick.edge_method} />
       )}
       {ufcPick.edge_distance && (
-        <View style={{backgroundColor:'rgba(180,140,255,0.15)',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:'rgba(180,140,255,0.4)'}}>
-          <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:11}}>{ufcPick.edge_distance} DIST</Text>
-        </View>
+        <StatusChip variant="custom" color={THEME.sharp} label={`${ufcPick.edge_distance} DIST`} />
       )}
     </View>
   );
 })()}
 {gamesSport==='MLB'&&(()=>{
-  // Collapsed to single state (2026-07-30). Prior five variants (NRFI ⚠️,
-  // NRFI lean, YRFI, YRFI lean, PRIME NRFI) diluted the chip when the only
-  // publishable case is extreme. Gate: nrfi_score >= 92 AND sweat_tier is
-  // PRIME/STRONG — matches feedback_no_nrfi_on_cards. Suppress at Coors-type
+  // Collapsed to single state (2026-07-30). PRIME NRFI only when
+  // score >= 92 AND sweat_tier PRIME/STRONG. Suppress at Coors-type
   // parks (>=116) where NRFI hit 12.5% in the audit.
   const nrfiCtx = mlbGameContext[game.home_team] || mlbGameContext[game.away_team] ||
     Object.values(mlbGameContext).find((ctx: any) => ctx.home_team === game.home_team || ctx.away_team === game.away_team);
@@ -11353,13 +11353,9 @@ setJerryHistory(prev => {
   const hasNrfiBadge = !suppressExtremePark && sweatOk && nScore && nScore >= 92;
   if(!hasNrfiBadge) return null;
 
-  const nColor = THEME.win;  // single-state = confirmed edge = green
   return(
     <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8,flexWrap:'wrap'}}>
-      <View style={{backgroundColor:nColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:nColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
-        <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>⚾ PRIME NRFI</Text>
-        <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>{nScore}</Text>
-      </View>
+      <StatusChip variant="score" score={nScore} scoreLabel="⚾ PRIME NRFI" tier={'PRIME' as any} />
       {nrfiCtx.home_pitcher && <Text style={{color:THEME.textMuted,fontSize:10}}>{nrfiCtx.home_pitcher?.split(' ').pop()} vs {nrfiCtx.away_pitcher?.split(' ').pop()}</Text>}
     </View>
   );
