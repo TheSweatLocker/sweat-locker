@@ -126,6 +126,8 @@ type Props = {
   externalPicks?: any[];    // rows from external_picks (non-oddscrowd) — if omitted, fetched inside
   gameProps?: any[];        // rows from mlb_pipeline_props / nfl_props etc. — if omitted, fetched inside
   historicalOdds?: any;     // {opening_spread, opening_total, opening_ml_home, opening_ml_away}
+  jerryNarrative?: string;  // Jerry's LLM-generated read for this game (markdown)
+  jerryLoading?: boolean;
   onClose: () => void;
   onAddParlayLeg?: (leg: any) => void;
   onLogPick?: (pick: any) => void;   // opens the manual log-pick modal pre-filled
@@ -168,7 +170,7 @@ const abbrev3 = (team: string) => {
 // ─── Main component ─────────────────────────────────────────────────────
 export default function GameDetailV2({
   game, ctx, gamesSport, externalPicks: externalPicksProp, gameProps: gamePropsProp,
-  historicalOdds, onClose, onAddParlayLeg, onLogPick,
+  historicalOdds, jerryNarrative, jerryLoading, onClose, onAddParlayLeg, onLogPick,
 }: Props) {
   const [fetchedExternals, setFetchedExternals] = useState<any[]>([]);
   const [fetchedProps, setFetchedProps] = useState<any[]>([]);
@@ -280,6 +282,7 @@ export default function GameDetailV2({
 
       <ScrollView style={{flex: 1}} contentContainerStyle={{paddingBottom: 24}}>
         <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
+        <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} />
         <AlignmentStrip ctx={ctx} />
 
         <Section title="Market">
@@ -411,6 +414,54 @@ function VerdictCard({ctx, awayTeam, homeTeam}: any) {
       </View>
       <Text style={styles.verdictPlay}>{label}</Text>
       {sub ? <Text style={styles.verdictWhy}>{sub}</Text> : null}
+    </View>
+  );
+}
+
+// ─── JERRY READ ─────────────────────────────────────────────────────────
+// Jerry = the LLM-generated per-game read. Structured markdown from
+// generate_mlb_game_read.py (or equivalent per sport). Rendered as
+// scrollable text w/ minimal markdown stripping — headings + bullets
+// stay readable, bold/italic markers get cleaned.
+//
+// Placed high on the page (right after Verdict) because it's the product's
+// biggest differentiator — the AI voice explaining the model reads.
+function JerryReadSection({narrative, loading}: {narrative?: string; loading?: boolean}) {
+  const [expanded, setExpanded] = useState(false);
+  if (loading) {
+    return (
+      <View style={styles.jerrySection}>
+        <View style={styles.jerryHeader}>
+          <Text style={styles.jerryTitle}>🧠 JERRY'S READ</Text>
+          <Text style={styles.jerryLoadingText}>reviewing the tape…</Text>
+        </View>
+      </View>
+    );
+  }
+  if (!narrative || !narrative.trim()) return null;
+
+  // Strip common markdown: `#` headings, `**bold**`, `*italic*`
+  const clean = narrative
+    .replace(/^\s*#{1,6}\s*/gm, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/(?<!\*)\*(?!\*)([^\n*]+?)\*(?!\*)/g, '$1')
+    .trim();
+
+  const SHORT_LEN = 320;
+  const isLong = clean.length > SHORT_LEN;
+  const shown = expanded || !isLong ? clean : clean.slice(0, SHORT_LEN).trimEnd() + '…';
+
+  return (
+    <View style={styles.jerrySection}>
+      <View style={styles.jerryHeader}>
+        <Text style={styles.jerryTitle}>🧠 JERRY'S READ</Text>
+      </View>
+      <Text style={styles.jerryBody}>{shown}</Text>
+      {isLong && (
+        <TouchableOpacity onPress={() => setExpanded(!expanded)} activeOpacity={0.7}>
+          <Text style={styles.jerryToggle}>{expanded ? '▴ Show less' : '▾ Read full analysis'}</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -1400,6 +1451,19 @@ const styles = StyleSheet.create({
   verdictPlay: {fontSize: 22, fontWeight: '700', color: C.text, letterSpacing: -0.4, lineHeight: 26, marginBottom: 4},
   verdictWhy: {fontSize: 13, color: C.textMuted, lineHeight: 19, marginTop: 6},
   verdictNoPlay: {fontSize: 12, color: C.textMuted, fontStyle: 'italic'},
+
+  // Jerry read
+  jerrySection: {
+    paddingHorizontal: 18, paddingTop: 14, paddingBottom: 16,
+    backgroundColor: C.surface2,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+    borderLeftWidth: 3, borderLeftColor: C.accent,
+  },
+  jerryHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8},
+  jerryTitle: {fontSize: 11, fontWeight: '800', color: C.accent, letterSpacing: 1.4, textTransform: 'uppercase'},
+  jerryLoadingText: {fontSize: 10, color: C.textMuted, fontStyle: 'italic'},
+  jerryBody: {fontSize: 13, color: C.text, lineHeight: 20},
+  jerryToggle: {marginTop: 8, fontSize: 11, color: C.accent, fontWeight: '600'},
 
   // Alignment strip
   alignmentStripWrap: {

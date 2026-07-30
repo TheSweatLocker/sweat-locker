@@ -12697,6 +12697,8 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 externalPicks={[]}
                 gameProps={[]}
                 historicalOdds={historicalOdds?.[selectedGame.id]}
+                jerryNarrative={gameNarrative}
+                jerryLoading={gameNarrativeLoading}
                 onClose={()=>setGameDetailModal(false)}
                 onAddParlayLeg={(leg)=>{
                   const legData = {
