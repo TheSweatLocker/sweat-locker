@@ -24,8 +24,72 @@
  * (PitcherMatchupSlot) is filled out in this first pass; NFL/NBA/UFC/NHL
  * render lightweight placeholders until their sport-specific data is wired.
  */
-import React, {useState, useMemo} from 'react';
+import React, {useState, useMemo, useEffect} from 'react';
 import {View, Text, TouchableOpacity, ScrollView, StyleSheet, Platform} from 'react-native';
+import {createClient} from '@supabase/supabase-js';
+
+// Standard sport-league abbreviations — Dodgers → LAD (not DOD)
+const TEAM_ABBREV: Record<string, string> = {
+  // MLB
+  'Arizona Diamondbacks': 'ARI', 'Atlanta Braves': 'ATL', 'Baltimore Orioles': 'BAL',
+  'Boston Red Sox': 'BOS', 'Chicago Cubs': 'CHC', 'Chicago White Sox': 'CWS',
+  'Cincinnati Reds': 'CIN', 'Cleveland Guardians': 'CLE', 'Colorado Rockies': 'COL',
+  'Detroit Tigers': 'DET', 'Houston Astros': 'HOU', 'Kansas City Royals': 'KC',
+  'Los Angeles Angels': 'LAA', 'Los Angeles Dodgers': 'LAD', 'Miami Marlins': 'MIA',
+  'Milwaukee Brewers': 'MIL', 'Minnesota Twins': 'MIN', 'New York Mets': 'NYM',
+  'New York Yankees': 'NYY', 'Oakland Athletics': 'OAK', 'Athletics': 'ATH',
+  'Philadelphia Phillies': 'PHI', 'Pittsburgh Pirates': 'PIT', 'San Diego Padres': 'SD',
+  'San Francisco Giants': 'SF', 'Seattle Mariners': 'SEA', 'St. Louis Cardinals': 'STL',
+  'Tampa Bay Rays': 'TB', 'Texas Rangers': 'TEX', 'Toronto Blue Jays': 'TOR',
+  'Washington Nationals': 'WSH',
+  // NFL — standard 2-3 letter
+  'Arizona Cardinals': 'ARI', 'Atlanta Falcons': 'ATL', 'Baltimore Ravens': 'BAL',
+  'Buffalo Bills': 'BUF', 'Carolina Panthers': 'CAR', 'Chicago Bears': 'CHI',
+  'Cincinnati Bengals': 'CIN', 'Cleveland Browns': 'CLE', 'Dallas Cowboys': 'DAL',
+  'Denver Broncos': 'DEN', 'Detroit Lions': 'DET', 'Green Bay Packers': 'GB',
+  'Houston Texans': 'HOU', 'Indianapolis Colts': 'IND', 'Jacksonville Jaguars': 'JAX',
+  'Kansas City Chiefs': 'KC', 'Las Vegas Raiders': 'LV', 'Los Angeles Chargers': 'LAC',
+  'Los Angeles Rams': 'LAR', 'Miami Dolphins': 'MIA', 'Minnesota Vikings': 'MIN',
+  'New England Patriots': 'NE', 'New Orleans Saints': 'NO', 'New York Giants': 'NYG',
+  'New York Jets': 'NYJ', 'Philadelphia Eagles': 'PHI', 'Pittsburgh Steelers': 'PIT',
+  'San Francisco 49ers': 'SF', 'Seattle Seahawks': 'SEA', 'Tampa Bay Buccaneers': 'TB',
+  'Tennessee Titans': 'TEN', 'Washington Commanders': 'WAS',
+  // NBA
+  'Atlanta Hawks': 'ATL', 'Boston Celtics': 'BOS', 'Brooklyn Nets': 'BKN',
+  'Charlotte Hornets': 'CHA', 'Chicago Bulls': 'CHI', 'Cleveland Cavaliers': 'CLE',
+  'Dallas Mavericks': 'DAL', 'Denver Nuggets': 'DEN', 'Detroit Pistons': 'DET',
+  'Golden State Warriors': 'GSW', 'Houston Rockets': 'HOU', 'Indiana Pacers': 'IND',
+  'LA Clippers': 'LAC', 'Los Angeles Clippers': 'LAC', 'Los Angeles Lakers': 'LAL',
+  'Memphis Grizzlies': 'MEM', 'Miami Heat': 'MIA', 'Milwaukee Bucks': 'MIL',
+  'Minnesota Timberwolves': 'MIN', 'New Orleans Pelicans': 'NOP', 'New York Knicks': 'NYK',
+  'Oklahoma City Thunder': 'OKC', 'Orlando Magic': 'ORL', 'Philadelphia 76ers': 'PHI',
+  'Phoenix Suns': 'PHX', 'Portland Trail Blazers': 'POR', 'Sacramento Kings': 'SAC',
+  'San Antonio Spurs': 'SA', 'Toronto Raptors': 'TOR', 'Utah Jazz': 'UTA',
+  'Washington Wizards': 'WAS',
+  // NHL
+  'Anaheim Ducks': 'ANA', 'Arizona Coyotes': 'ARI', 'Boston Bruins': 'BOS',
+  'Buffalo Sabres': 'BUF', 'Calgary Flames': 'CGY', 'Carolina Hurricanes': 'CAR',
+  'Chicago Blackhawks': 'CHI', 'Colorado Avalanche': 'COL', 'Columbus Blue Jackets': 'CBJ',
+  'Dallas Stars': 'DAL', 'Detroit Red Wings': 'DET', 'Edmonton Oilers': 'EDM',
+  'Florida Panthers': 'FLA', 'Los Angeles Kings': 'LAK', 'Minnesota Wild': 'MIN',
+  'Montreal Canadiens': 'MTL', 'Nashville Predators': 'NSH', 'New Jersey Devils': 'NJD',
+  'New York Islanders': 'NYI', 'New York Rangers': 'NYR', 'Ottawa Senators': 'OTT',
+  'Philadelphia Flyers': 'PHI', 'Pittsburgh Penguins': 'PIT', 'San Jose Sharks': 'SJS',
+  'Seattle Kraken': 'SEA', 'St. Louis Blues': 'STL', 'Tampa Bay Lightning': 'TBL',
+  'Toronto Maple Leafs': 'TOR', 'Vancouver Canucks': 'VAN', 'Vegas Golden Knights': 'VGK',
+  'Washington Capitals': 'WSH', 'Winnipeg Jets': 'WPG',
+};
+
+// Lazy Supabase client (reads EXPO_PUBLIC_ env at first use)
+let _sb: any = null;
+function sb() {
+  if (_sb) return _sb;
+  const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const key = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) return null;
+  _sb = createClient(url, key);
+  return _sb;
+}
 
 // ─── Palette (matches mock in artifact_URL) ─────────────────────────────
 const C = {
@@ -59,11 +123,12 @@ type Props = {
   game: any;
   ctx: any;                 // sport's game_context row (nullable when not loaded)
   gamesSport: SportCode;
-  externalPicks?: any[];    // rows from external_picks (non-oddscrowd)
-  gameProps?: any[];        // rows from mlb_pipeline_props / nfl_props etc.
+  externalPicks?: any[];    // rows from external_picks (non-oddscrowd) — if omitted, fetched inside
+  gameProps?: any[];        // rows from mlb_pipeline_props / nfl_props etc. — if omitted, fetched inside
   historicalOdds?: any;     // {opening_spread, opening_total, opening_ml_home, opening_ml_away}
   onClose: () => void;
   onAddParlayLeg?: (leg: any) => void;
+  onLogPick?: (pick: any) => void;   // opens the manual log-pick modal pre-filled
 };
 
 // ─── Small util helpers ─────────────────────────────────────────────────
@@ -83,12 +148,54 @@ const signSide = (m: any): 'H'|'A'|null => {
 
 const sideColor = (side: 'H'|'A'|null) => side === 'H' ? C.home : side === 'A' ? C.away : C.textDim;
 
-const abbrev3 = (team: string) => (team || '?').split(' ').slice(-1)[0].slice(0, 3).toUpperCase();
+const abbrev3 = (team: string) => {
+  if (!team) return '?';
+  // Prefer standard sport-league abbreviation (LAD, MIA, LAA...)
+  const canonical = TEAM_ABBREV[team.trim()];
+  if (canonical) return canonical;
+  // Fallback for unknown/international teams — use last word first 3 chars
+  return team.split(' ').slice(-1)[0].slice(0, 3).toUpperCase();
+};
 
 // ─── Main component ─────────────────────────────────────────────────────
 export default function GameDetailV2({
-  game, ctx, gamesSport, externalPicks = [], gameProps = [], historicalOdds, onClose, onAddParlayLeg,
+  game, ctx, gamesSport, externalPicks: externalPicksProp, gameProps: gamePropsProp,
+  historicalOdds, onClose, onAddParlayLeg, onLogPick,
 }: Props) {
+  const [fetchedExternals, setFetchedExternals] = useState<any[]>([]);
+  const [fetchedProps, setFetchedProps] = useState<any[]>([]);
+
+  // Auto-fetch externals + props per-game when parent doesn't supply
+  useEffect(() => {
+    if (!game?.id && !ctx?.game_id) return;
+    const client = sb();
+    if (!client) return;
+    const gid = ctx?.game_id || game?.id;
+    const gameDate = ctx?.game_date;
+    // externals
+    if (!externalPicksProp && gameDate) {
+      client.from('external_picks')
+        .select('source,surface,pick_side,confidence,fade_flag,pick_line,odds_american')
+        .eq('sport', gamesSport)
+        .eq('game_date', gameDate)
+        .eq('game_id', gid)
+        .then((r: any) => { if (r.data) setFetchedExternals(r.data); });
+    }
+    // props (MLB only for now)
+    if (!gamePropsProp && gamesSport === 'MLB' && gameDate && gid) {
+      client.from('mlb_pipeline_props')
+        .select('player_name,player_team,prop_type,direction,prop_line,conviction,tier,signals')
+        .eq('game_date', gameDate)
+        .eq('game_id', gid)
+        .order('conviction', {ascending: false})
+        .limit(15)
+        .then((r: any) => { if (r.data) setFetchedProps(r.data); });
+    }
+  }, [game?.id, ctx?.game_id, ctx?.game_date, gamesSport, externalPicksProp, gamePropsProp]);
+
+  const externalPicks = externalPicksProp ?? fetchedExternals;
+  const gameProps = gamePropsProp ?? fetchedProps;
+
   if (!game) return null;
 
   const awayTeam = game.away_team || ctx?.away_team || 'Away';
@@ -156,7 +263,7 @@ export default function GameDetailV2({
           <GamePropsPanel props={gameProps} />
         </Expander>
 
-        <Section title="Your Book · Hard Rock Bet" hint="tap to add parlay">
+        <Section title="Your Book · Hard Rock Bet" hint="tap to add parlay or log pick">
           <YourBookTiles
             closeSpread={closeSpread}
             closeTotal={closeTotal}
@@ -165,12 +272,19 @@ export default function GameDetailV2({
             homeTeam={homeTeam}
             awayTeam={awayTeam}
             primaryPlay={ctx?.primary_play}
+            bookmakers={game.bookmakers || []}
             onAddParlayLeg={onAddParlayLeg}
+            onLogPick={onLogPick}
           />
         </Section>
 
         <Expander title="All Book Lines" badge={`${(game.bookmakers || []).length} books`}>
-          <AllBookLinesPanel bookmakers={game.bookmakers || []} />
+          <AllBookLinesPanel
+            bookmakers={game.bookmakers || []}
+            homeTeam={homeTeam}
+            awayTeam={awayTeam}
+            onAddParlayLeg={onAddParlayLeg}
+          />
         </Expander>
 
         <Expander title="📐 Numbers" badge="full model dump">
@@ -740,74 +854,237 @@ function GamePropsPanel({props: propsList}: {props: any[]}) {
 }
 
 // ─── YOUR BOOK TILES (HRB) ───────────────────────────────────────────────
-function YourBookTiles({closeSpread, closeTotal, homeML, awayML, homeTeam, awayTeam, primaryPlay, onAddParlayLeg}: any) {
+// Pulls Hard Rock Bet lines from the bookmakers[] payload. Falls back to
+// ctx close_* if HRB isn't offering that market. Each tile is tappable to
+// add as a parlay leg, and a "Log Pick" button opens the manual-log flow.
+function YourBookTiles({
+  closeSpread, closeTotal, homeML, awayML, homeTeam, awayTeam, primaryPlay,
+  bookmakers = [], onAddParlayLeg, onLogPick,
+}: any) {
+  // Find HRB odds if available, else use fallback close_*
+  const hrb = (bookmakers || []).find((b: any) =>
+    (b.key || '').toLowerCase().includes('hardrock') || (b.title || '').toLowerCase().includes('hard rock'),
+  );
+
+  const findMarket = (mk: string) => hrb?.markets?.find((m: any) => m.key === mk);
+  const spreadMkt = findMarket('spreads');
+  const totalMkt = findMarket('totals');
+  const h2hMkt = findMarket('h2h');
+
+  const homeSpreadOutcome = spreadMkt?.outcomes?.find((o: any) => o.name === homeTeam);
+  const awaySpreadOutcome = spreadMkt?.outcomes?.find((o: any) => o.name === awayTeam);
+  const overOutcome = totalMkt?.outcomes?.find((o: any) => (o.name || '').toLowerCase() === 'over');
+  const underOutcome = totalMkt?.outcomes?.find((o: any) => (o.name || '').toLowerCase() === 'under');
+  const homeMLOutcome = h2hMkt?.outcomes?.find((o: any) => o.name === homeTeam);
+  const awayMLOutcome = h2hMkt?.outcomes?.find((o: any) => o.name === awayTeam);
+
+  const spreadLine = homeSpreadOutcome?.point ?? closeSpread;
+  const spreadOdds = homeSpreadOutcome?.price;
+  const totalLine = overOutcome?.point ?? closeTotal;
+  const overOdds = overOutcome?.price;
+  const finalHomeML = homeMLOutcome?.price ?? homeML;
+  const finalAwayML = awayMLOutcome?.price ?? awayML;
+
   const recommended = primaryPlay?.type === 'ml' && primaryPlay?.label
     ? primaryPlay.label.includes(homeTeam) ? 'ml_home'
       : primaryPlay.label.includes(awayTeam) ? 'ml_away'
       : null
     : null;
-  const addLeg = (kind: string, label: string, odds: any) => {
-    if (onAddParlayLeg) {
-      onAddParlayLeg({kind, label, odds, matchup: `${awayTeam} @ ${homeTeam}`});
-    }
+
+  const addLeg = (kind: string, label: string, odds: any, line?: any) => {
+    onAddParlayLeg?.({kind, label, odds, line, matchup: `${awayTeam} @ ${homeTeam}`, book: 'Hard Rock Bet'});
   };
-  const spreadHome = closeSpread != null ? `${homeTeam.slice(0, 3).toUpperCase()} ${closeSpread > 0 ? '+' : ''}${closeSpread}` : '—';
+  const logPick = (pick: string, type: string, odds: any) => {
+    onLogPick?.({pick, type, odds, matchup: `${awayTeam} @ ${homeTeam}`, book: 'Hard Rock Bet'});
+  };
+
+  const spreadHomeLbl = spreadLine != null
+    ? `${abbrev3(homeTeam)} ${spreadLine > 0 ? '+' : ''}${spreadLine}`
+    : '—';
 
   return (
     <View>
       <View style={styles.hrbTiles}>
-        <TouchableOpacity style={styles.hrbTile} onPress={() => addLeg('spread', spreadHome, null)} activeOpacity={0.7}>
+        <TouchableOpacity
+          style={styles.hrbTile}
+          onPress={() => addLeg('spread', spreadHomeLbl, spreadOdds, spreadLine)}
+          activeOpacity={0.7}
+        >
           <Text style={styles.hrbTileLabel}>Spread</Text>
-          <Text style={styles.hrbTileVal}>{spreadHome}</Text>
-          <Text style={styles.hrbTileOdds}>—</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.hrbTile} onPress={() => addLeg('total', `O ${closeTotal}`, null)} activeOpacity={0.7}>
-          <Text style={styles.hrbTileLabel}>Total</Text>
-          <Text style={styles.hrbTileVal}>O {f(closeTotal, 1)}</Text>
-          <Text style={styles.hrbTileOdds}>—</Text>
+          <Text style={styles.hrbTileVal}>{spreadHomeLbl}</Text>
+          <Text style={styles.hrbTileOdds}>{spreadOdds ?? '—'}</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[
-            styles.hrbTile,
-            recommended && {borderColor: C.accent, backgroundColor: C.accentDim},
-          ]}
-          onPress={() => addLeg('ml', 'ML', homeML)}
-          activeOpacity={0.7}>
+          style={styles.hrbTile}
+          onPress={() => addLeg('total', `O ${f(totalLine, 1)}`, overOdds, totalLine)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.hrbTileLabel}>Total</Text>
+          <Text style={styles.hrbTileVal}>O {f(totalLine, 1)}</Text>
+          <Text style={styles.hrbTileOdds}>{overOdds ?? '—'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.hrbTile, recommended && {borderColor: C.accent, backgroundColor: C.accentDim}]}
+          onPress={() => addLeg('ml', `${abbrev3(recommended === 'ml_home' ? homeTeam : awayTeam)} ML`,
+            recommended === 'ml_home' ? finalHomeML : finalAwayML)}
+          activeOpacity={0.7}
+        >
           <Text style={[styles.hrbTileLabel, recommended && {color: C.accent}]}>ML {recommended ? '★' : ''}</Text>
           <Text style={[styles.hrbTileVal, recommended && {color: C.accent}]}>
             {abbrev3(recommended === 'ml_home' ? homeTeam : awayTeam)}
           </Text>
           <Text style={[styles.hrbTileOdds, recommended && {color: C.accent}]}>
-            {recommended === 'ml_home' ? homeML : awayML}
+            {(recommended === 'ml_home' ? finalHomeML : finalAwayML) ?? '—'}
           </Text>
         </TouchableOpacity>
       </View>
-      {primaryPlay?.label && (
+
+      {/* Away ML tile as a small extras row (both sides accessible) */}
+      <View style={[styles.hrbTiles, {marginTop: 6}]}>
         <TouchableOpacity
-          style={styles.parlayCta}
-          onPress={() => addLeg('primary', primaryPlay.label, null)}
-          activeOpacity={0.7}>
-          <Text style={styles.parlayCtaText}>Add {primaryPlay.label} to Parlay</Text>
+          style={styles.hrbTile}
+          onPress={() => addLeg('ml_away', `${abbrev3(awayTeam)} ML`, finalAwayML)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.hrbTileLabel}>{abbrev3(awayTeam)} ML</Text>
+          <Text style={styles.hrbTileVal}>{finalAwayML ?? '—'}</Text>
         </TouchableOpacity>
-      )}
+        <TouchableOpacity
+          style={styles.hrbTile}
+          onPress={() => addLeg('ml_home', `${abbrev3(homeTeam)} ML`, finalHomeML)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.hrbTileLabel}>{abbrev3(homeTeam)} ML</Text>
+          <Text style={styles.hrbTileVal}>{finalHomeML ?? '—'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.hrbTile}
+          onPress={() => addLeg('total_under', `U ${f(totalLine, 1)}`, underOutcome?.price, totalLine)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.hrbTileLabel}>Under</Text>
+          <Text style={styles.hrbTileVal}>U {f(totalLine, 1)}</Text>
+          <Text style={styles.hrbTileOdds}>{underOutcome?.price ?? '—'}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Action buttons: Parlay + Log Pick */}
+      <View style={{flexDirection: 'row', gap: 8, marginTop: 12}}>
+        {primaryPlay?.label ? (
+          <TouchableOpacity
+            style={[styles.parlayCta, {flex: 1}]}
+            onPress={() => addLeg('primary', primaryPlay.label,
+              recommended === 'ml_home' ? finalHomeML : finalAwayML)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.parlayCtaText}>+ Parlay {primaryPlay.label.split(' ML')[0]}</Text>
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity
+          style={[styles.parlayCta, {
+            flex: 1,
+            backgroundColor: 'transparent',
+            borderWidth: 1,
+            borderColor: C.accent,
+          }]}
+          onPress={() => logPick(
+            primaryPlay?.label || `${abbrev3(homeTeam)} ML`,
+            primaryPlay?.type || 'ml',
+            recommended === 'ml_home' ? finalHomeML : finalAwayML,
+          )}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.parlayCtaText, {color: C.accent}]}>Log Pick</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
 
-// ─── ALL BOOK LINES ─────────────────────────────────────────────────────
-function AllBookLinesPanel({bookmakers}: any) {
+// ─── ALL BOOK LINES (real table, tap-to-add-leg) ─────────────────────────
+function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any) {
   if (!bookmakers || bookmakers.length === 0) {
     return <Text style={styles.emptyMuted}>No book lines available.</Text>;
   }
+  // Sort HRB first (pinned), rest alphabetical
+  const sorted = [...bookmakers].sort((a: any, b: any) => {
+    const aHRB = /hardrock|hard rock/i.test(a.key || a.title || '');
+    const bHRB = /hardrock|hard rock/i.test(b.key || b.title || '');
+    if (aHRB && !bHRB) return -1;
+    if (bHRB && !aHRB) return 1;
+    return (a.title || '').localeCompare(b.title || '');
+  });
+
+  const addLeg = (kind: string, label: string, odds: any, line: any, bookTitle: string) => {
+    onAddParlayLeg?.({kind, label, odds, line, matchup: `${awayTeam} @ ${homeTeam}`, book: bookTitle});
+  };
+
   return (
-    <View>
-      <Text style={[styles.emptyMuted, {marginBottom: 6}]}>
-        {bookmakers.map((b: any) => b.title).join(' · ')}
-      </Text>
-      <Text style={[styles.emptyMuted, {fontStyle: 'italic'}]}>
-        Tap-to-add-leg table will render here. Kept minimal in v2 pending parlay flow finalization.
-      </Text>
-    </View>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{paddingRight: 12}}>
+      <View style={{minWidth: 320}}>
+        {/* Header row */}
+        <View style={styles.bookTableHeader}>
+          <Text style={[styles.bookTh, {flex: 1.6}]}>Book</Text>
+          <Text style={[styles.bookTh, {flex: 1.2, textAlign: 'right'}]}>Spread</Text>
+          <Text style={[styles.bookTh, {flex: 1, textAlign: 'right'}]}>Total</Text>
+          <Text style={[styles.bookTh, {flex: 1, textAlign: 'right'}]}>ML A</Text>
+          <Text style={[styles.bookTh, {flex: 1, textAlign: 'right'}]}>ML H</Text>
+        </View>
+        {sorted.map((bm: any, i: number) => {
+          const spreadMkt = bm.markets?.find((m: any) => m.key === 'spreads');
+          const totalMkt = bm.markets?.find((m: any) => m.key === 'totals');
+          const h2hMkt = bm.markets?.find((m: any) => m.key === 'h2h');
+          const homeSpread = spreadMkt?.outcomes?.find((o: any) => o.name === homeTeam);
+          const overTot = totalMkt?.outcomes?.find((o: any) => (o.name || '').toLowerCase() === 'over');
+          const awayML = h2hMkt?.outcomes?.find((o: any) => o.name === awayTeam);
+          const homeML = h2hMkt?.outcomes?.find((o: any) => o.name === homeTeam);
+          const isHRB = /hardrock|hard rock/i.test(bm.key || bm.title || '');
+          return (
+            <View key={i} style={[styles.bookTableRow, isHRB && {backgroundColor: C.accentDim}]}>
+              <Text style={[styles.bookTd, {flex: 1.6, fontWeight: isHRB ? '700' : '400'}]} numberOfLines={1}>
+                {isHRB ? '★ ' : ''}{bm.title || bm.key}
+              </Text>
+              <TouchableOpacity
+                style={{flex: 1.2}}
+                onPress={() => homeSpread && addLeg('spread', `${abbrev3(homeTeam)} ${homeSpread.point > 0 ? '+' : ''}${homeSpread.point}`, homeSpread.price, homeSpread.point, bm.title)}
+                activeOpacity={0.6}
+              >
+                <Text style={[styles.bookTd, {textAlign: 'right'}]}>
+                  {homeSpread ? `${homeSpread.point > 0 ? '+' : ''}${homeSpread.point}` : '—'}
+                  {homeSpread?.price ? ` (${homeSpread.price})` : ''}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{flex: 1}}
+                onPress={() => overTot && addLeg('total', `O ${overTot.point}`, overTot.price, overTot.point, bm.title)}
+                activeOpacity={0.6}
+              >
+                <Text style={[styles.bookTd, {textAlign: 'right'}]}>
+                  {overTot ? `O${overTot.point}` : '—'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{flex: 1}}
+                onPress={() => awayML && addLeg('ml', `${abbrev3(awayTeam)} ML`, awayML.price, null, bm.title)}
+                activeOpacity={0.6}
+              >
+                <Text style={[styles.bookTd, {textAlign: 'right'}]}>{awayML?.price ?? '—'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{flex: 1}}
+                onPress={() => homeML && addLeg('ml', `${abbrev3(homeTeam)} ML`, homeML.price, null, bm.title)}
+                activeOpacity={0.6}
+              >
+                <Text style={[styles.bookTd, {textAlign: 'right'}]}>{homeML?.price ?? '—'}</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })}
+        <Text style={[styles.emptyMuted, {marginTop: 8, fontSize: 10, fontStyle: 'italic'}]}>
+          Tap any cell to add that specific book's line to your parlay.
+        </Text>
+      </View>
+    </ScrollView>
   );
 }
 
@@ -1158,6 +1435,18 @@ const styles = StyleSheet.create({
     marginTop: 12, padding: 12, backgroundColor: C.accent, borderRadius: 8, alignItems: 'center',
   },
   parlayCtaText: {color: '#000', fontWeight: '700', fontSize: 13, letterSpacing: 0.3},
+
+  // All book lines table
+  bookTableHeader: {
+    flexDirection: 'row', paddingVertical: 6, paddingHorizontal: 4,
+    borderBottomWidth: 1, borderBottomColor: C.border, gap: 6, marginBottom: 4,
+  },
+  bookTh: {fontSize: 9, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5},
+  bookTableRow: {
+    flexDirection: 'row', paddingVertical: 6, paddingHorizontal: 4, gap: 6,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  bookTd: {fontSize: 11, color: C.text, fontVariant: ['tabular-nums']},
 
   // Numbers
   numbersHeading: {fontSize: 10, color: C.textMuted, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 4},

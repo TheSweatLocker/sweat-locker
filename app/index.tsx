@@ -12680,7 +12680,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       {selectedGame&&(
         <Modal visible={gameDetailModal} animationType="slide" transparent>
           <View style={styles.modalOverlay}>
-            <View style={[styles.modalSheet,{maxHeight:'96%',padding:0,overflow:'hidden'}]}>
+            <View style={[styles.modalSheet,{height:'92%',maxHeight:'92%',padding:0,overflow:'hidden'}]}>
               <GameDetailV2
                 game={selectedGame}
                 ctx={
@@ -12705,10 +12705,27 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     pick: leg.label,
                     type: leg.kind,
                     odds: leg.odds,
+                    line: leg.line,
+                    book: leg.book,
                     sport: gamesSport,
                     gameId: selectedGame.id,
                   };
                   setParlayLegs(prev=>[...prev, legData]);
+                }}
+                onLogPick={(pick)=>{
+                  // Pre-fill the manual pick log modal with this game's info
+                  setForm({
+                    matchup: pick.matchup || `${selectedGame.away_team} vs ${selectedGame.home_team}`,
+                    pick: pick.pick || '',
+                    sport: gamesSport,
+                    type: pick.type || 'ML',
+                    odds: pick.odds ?? '',
+                    units: '',
+                    book: pick.book || 'Hard Rock',
+                    result: 'Pending',
+                  });
+                  setGameDetailModal(false);
+                  setModalVisible(true);
                 }}
               />
             </View>
