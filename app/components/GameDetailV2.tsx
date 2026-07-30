@@ -139,6 +139,14 @@ const f = (v: any, digits = 2): string => {
   return n.toFixed(digits);
 };
 
+// Format American odds — positive gets a `+` prefix ("+149" not "149")
+const fmtOdds = (v: any): string => {
+  if (v === null || v === undefined || v === '' || v === '—') return '—';
+  const n = typeof v === 'number' ? v : parseFloat(String(v));
+  if (!isFinite(n)) return String(v);
+  return n > 0 ? `+${n}` : String(n);
+};
+
 const signSide = (m: any): 'H'|'A'|null => {
   if (m === null || m === undefined) return null;
   const n = typeof m === 'number' ? m : parseFloat(m);
@@ -445,7 +453,7 @@ function MarketRow({closeSpread, closeTotal, homeML, awayML}: any) {
     <View style={styles.marketRow}>
       <Text style={styles.marketItem}>Spread <Text style={styles.marketVal}>{f(closeSpread, 1)}</Text></Text>
       <Text style={styles.marketItem}>Total <Text style={styles.marketVal}>{f(closeTotal, 1)}</Text></Text>
-      <Text style={styles.marketItem}>ML <Text style={styles.marketVal}>{awayML ?? '—'}/{homeML ?? '—'}</Text></Text>
+      <Text style={styles.marketItem}>ML <Text style={styles.marketVal}>{fmtOdds(awayML)}/{fmtOdds(homeML)}</Text></Text>
     </View>
   );
 }
@@ -498,7 +506,7 @@ function ScoreRange({ctx, awayTeam, homeTeam}: any) {
       </Text>
       {jerry ? (
         <View style={styles.jerryBanner}>
-          <Text style={styles.jerryLabel}>Top lens (Jerry, 60% lifetime):</Text>
+          <Text style={styles.jerryLabel}>Top lens (Jerry):</Text>
           <Text style={styles.jerryValue}>
             {abbrev3(awayTeam)} {f(jerry.a, 1)} — {f(jerry.h, 1)} {abbrev3(homeTeam)}
           </Text>
@@ -686,7 +694,7 @@ function LensGrid({ctx, gamesSport}: any) {
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
     {name: 'v4', m: ctx?.model_pred_spread, t: ctx?.model_pred_total},
     {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
-  ].filter(r => r.m != null);
+  ];
 
   const closeTot = ctx?.close_total;
 
@@ -697,19 +705,24 @@ function LensGrid({ctx, gamesSport}: any) {
         const totDir = r.t != null && closeTot != null
           ? (r.t > closeTot ? 'O' : r.t < closeTot ? 'U' : '=')
           : null;
+        const missing = r.m == null;
         return (
-          <View key={i} style={[styles.lens, {borderTopColor: sideColor(mgnSide)}]}>
+          <View
+            key={i}
+            style={[
+              styles.lens,
+              {borderTopColor: missing ? C.border : sideColor(mgnSide), opacity: missing ? 0.5 : 1},
+            ]}
+          >
             <Text style={styles.lensName}>{r.name}</Text>
-            <Text style={[styles.lensMargin, {color: sideColor(mgnSide)}]}>
-              {r.m == null ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2))}
+            <Text style={[styles.lensMargin, {color: missing ? C.textDim : sideColor(mgnSide)}]}>
+              {missing ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2))}
             </Text>
-            {r.t != null && (
-              <Text style={[styles.lensTotal, {
-                color: totDir === 'O' ? C.accent : totDir === 'U' ? C.sharp : C.textMuted,
-              }]}>
-                {totDir ?? '—'} {f(r.t, 1)}
-              </Text>
-            )}
+            <Text style={[styles.lensTotal, {
+              color: totDir === 'O' ? C.accent : totDir === 'U' ? C.sharp : C.textMuted,
+            }]}>
+              {r.t == null ? '—' : `${totDir ?? '='} ${f(r.t, 1)}`}
+            </Text>
           </View>
         );
       })}
@@ -854,18 +867,16 @@ function GamePropsPanel({props: propsList}: {props: any[]}) {
 }
 
 // ─── YOUR BOOK TILES (HRB) ───────────────────────────────────────────────
-// Pulls Hard Rock Bet lines from the bookmakers[] payload. Falls back to
-// ctx close_* if HRB isn't offering that market. Each tile is tappable to
-// add as a parlay leg, and a "Log Pick" button opens the manual-log flow.
+// Toggle-select behavior: tap a tile → it highlights as SELECTED. Then the
+// Log Pick / Add to Parlay buttons at the bottom act on the selected tile.
+// Default selected = primary_play if it maps to a tile, else no selection.
 function YourBookTiles({
   closeSpread, closeTotal, homeML, awayML, homeTeam, awayTeam, primaryPlay,
   bookmakers = [], onAddParlayLeg, onLogPick,
 }: any) {
-  // Find HRB odds if available, else use fallback close_*
   const hrb = (bookmakers || []).find((b: any) =>
     (b.key || '').toLowerCase().includes('hardrock') || (b.title || '').toLowerCase().includes('hard rock'),
   );
-
   const findMarket = (mk: string) => hrb?.markets?.find((m: any) => m.key === mk);
   const spreadMkt = findMarket('spreads');
   const totalMkt = findMarket('totals');
@@ -878,120 +889,167 @@ function YourBookTiles({
   const homeMLOutcome = h2hMkt?.outcomes?.find((o: any) => o.name === homeTeam);
   const awayMLOutcome = h2hMkt?.outcomes?.find((o: any) => o.name === awayTeam);
 
-  const spreadLine = homeSpreadOutcome?.point ?? closeSpread;
-  const spreadOdds = homeSpreadOutcome?.price;
+  const spreadHomeLine = homeSpreadOutcome?.point ?? closeSpread;
+  const spreadHomeOdds = homeSpreadOutcome?.price;
+  const spreadAwayLine = awaySpreadOutcome?.point ?? (closeSpread != null ? -closeSpread : null);
+  const spreadAwayOdds = awaySpreadOutcome?.price;
   const totalLine = overOutcome?.point ?? closeTotal;
   const overOdds = overOutcome?.price;
+  const underOdds = underOutcome?.price;
   const finalHomeML = homeMLOutcome?.price ?? homeML;
   const finalAwayML = awayMLOutcome?.price ?? awayML;
 
-  const recommended = primaryPlay?.type === 'ml' && primaryPlay?.label
-    ? primaryPlay.label.includes(homeTeam) ? 'ml_home'
-      : primaryPlay.label.includes(awayTeam) ? 'ml_away'
-      : null
-    : null;
+  // Default-select the primary_play if it maps to one of our tiles
+  const primaryDefault: any = (() => {
+    if (!primaryPlay?.type) return null;
+    if (primaryPlay.type === 'ml' && primaryPlay.label) {
+      if (primaryPlay.label.includes(homeTeam)) return {key: 'ml_home'};
+      if (primaryPlay.label.includes(awayTeam)) return {key: 'ml_away'};
+    }
+    if (primaryPlay.type === 'over') return {key: 'over'};
+    if (primaryPlay.type === 'under') return {key: 'under'};
+    return null;
+  })();
+  const [selectedKey, setSelectedKey] = useState<string | null>(primaryDefault?.key || null);
 
-  const addLeg = (kind: string, label: string, odds: any, line?: any) => {
-    onAddParlayLeg?.({kind, label, odds, line, matchup: `${awayTeam} @ ${homeTeam}`, book: 'Hard Rock Bet'});
-  };
-  const logPick = (pick: string, type: string, odds: any) => {
-    onLogPick?.({pick, type, odds, matchup: `${awayTeam} @ ${homeTeam}`, book: 'Hard Rock Bet'});
+  // Tile definitions (single source of truth for selection + action wiring)
+  const tiles: Record<string, {label: string; val: string; odds: any; line: any; pickLabel: string; type: string}> = {
+    spread_home: {
+      label: 'Spread H',
+      val: spreadHomeLine != null ? `${abbrev3(homeTeam)} ${spreadHomeLine > 0 ? '+' : ''}${spreadHomeLine}` : '—',
+      odds: spreadHomeOdds, line: spreadHomeLine,
+      pickLabel: spreadHomeLine != null ? `${abbrev3(homeTeam)} ${spreadHomeLine > 0 ? '+' : ''}${spreadHomeLine}` : '—',
+      type: 'RL',
+    },
+    spread_away: {
+      label: 'Spread A',
+      val: spreadAwayLine != null ? `${abbrev3(awayTeam)} ${spreadAwayLine > 0 ? '+' : ''}${spreadAwayLine}` : '—',
+      odds: spreadAwayOdds, line: spreadAwayLine,
+      pickLabel: spreadAwayLine != null ? `${abbrev3(awayTeam)} ${spreadAwayLine > 0 ? '+' : ''}${spreadAwayLine}` : '—',
+      type: 'RL',
+    },
+    over: {
+      label: 'Over',
+      val: `O ${f(totalLine, 1)}`,
+      odds: overOdds, line: totalLine,
+      pickLabel: `Over ${f(totalLine, 1)}`,
+      type: 'Total',
+    },
+    under: {
+      label: 'Under',
+      val: `U ${f(totalLine, 1)}`,
+      odds: underOdds, line: totalLine,
+      pickLabel: `Under ${f(totalLine, 1)}`,
+      type: 'Total',
+    },
+    ml_away: {
+      label: `${abbrev3(awayTeam)} ML`,
+      val: fmtOdds(finalAwayML),
+      odds: finalAwayML, line: null,
+      pickLabel: `${abbrev3(awayTeam)} ML`,
+      type: 'ML',
+    },
+    ml_home: {
+      label: `${abbrev3(homeTeam)} ML`,
+      val: fmtOdds(finalHomeML),
+      odds: finalHomeML, line: null,
+      pickLabel: `${abbrev3(homeTeam)} ML`,
+      type: 'ML',
+    },
   };
 
-  const spreadHomeLbl = spreadLine != null
-    ? `${abbrev3(homeTeam)} ${spreadLine > 0 ? '+' : ''}${spreadLine}`
-    : '—';
+  const renderTile = (key: string) => {
+    const t = tiles[key];
+    if (!t) return null;
+    const isSel = selectedKey === key;
+    const isPrimary = primaryDefault?.key === key;
+    return (
+      <TouchableOpacity
+        key={key}
+        style={[
+          styles.hrbTile,
+          isSel && {borderColor: C.accent, backgroundColor: C.accentDim, borderWidth: 2},
+        ]}
+        onPress={() => setSelectedKey(selectedKey === key ? null : key)}
+        activeOpacity={0.7}
+      >
+        <Text style={[styles.hrbTileLabel, isSel && {color: C.accent}]}>
+          {t.label}{isPrimary ? ' ★' : ''}
+        </Text>
+        <Text style={[styles.hrbTileVal, isSel && {color: C.accent}]}>{t.val}</Text>
+        {(key === 'spread_home' || key === 'spread_away' || key === 'over' || key === 'under') && (
+          <Text style={[styles.hrbTileOdds, isSel && {color: C.accent}]}>{fmtOdds(t.odds)}</Text>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  const selected = selectedKey ? tiles[selectedKey] : null;
+  const canAct = !!selected && selected.val !== '—';
+
+  const doAddParlay = () => {
+    if (!selected) return;
+    onAddParlayLeg?.({
+      kind: selectedKey,
+      label: selected.pickLabel,
+      odds: selected.odds,
+      line: selected.line,
+      matchup: `${awayTeam} @ ${homeTeam}`,
+      book: 'Hard Rock Bet',
+    });
+  };
+  const doLogPick = () => {
+    if (!selected) return;
+    onLogPick?.({
+      pick: selected.pickLabel,
+      type: selected.type,
+      odds: selected.odds,
+      matchup: `${awayTeam} @ ${homeTeam}`,
+      book: 'Hard Rock Bet',
+    });
+  };
 
   return (
     <View>
+      {/* Row 1: spread home + total over + ML home */}
       <View style={styles.hrbTiles}>
-        <TouchableOpacity
-          style={styles.hrbTile}
-          onPress={() => addLeg('spread', spreadHomeLbl, spreadOdds, spreadLine)}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.hrbTileLabel}>Spread</Text>
-          <Text style={styles.hrbTileVal}>{spreadHomeLbl}</Text>
-          <Text style={styles.hrbTileOdds}>{spreadOdds ?? '—'}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.hrbTile}
-          onPress={() => addLeg('total', `O ${f(totalLine, 1)}`, overOdds, totalLine)}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.hrbTileLabel}>Total</Text>
-          <Text style={styles.hrbTileVal}>O {f(totalLine, 1)}</Text>
-          <Text style={styles.hrbTileOdds}>{overOdds ?? '—'}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.hrbTile, recommended && {borderColor: C.accent, backgroundColor: C.accentDim}]}
-          onPress={() => addLeg('ml', `${abbrev3(recommended === 'ml_home' ? homeTeam : awayTeam)} ML`,
-            recommended === 'ml_home' ? finalHomeML : finalAwayML)}
-          activeOpacity={0.7}
-        >
-          <Text style={[styles.hrbTileLabel, recommended && {color: C.accent}]}>ML {recommended ? '★' : ''}</Text>
-          <Text style={[styles.hrbTileVal, recommended && {color: C.accent}]}>
-            {abbrev3(recommended === 'ml_home' ? homeTeam : awayTeam)}
-          </Text>
-          <Text style={[styles.hrbTileOdds, recommended && {color: C.accent}]}>
-            {(recommended === 'ml_home' ? finalHomeML : finalAwayML) ?? '—'}
-          </Text>
-        </TouchableOpacity>
+        {renderTile('spread_home')}
+        {renderTile('over')}
+        {renderTile('ml_home')}
       </View>
-
-      {/* Away ML tile as a small extras row (both sides accessible) */}
+      {/* Row 2: spread away + total under + ML away */}
       <View style={[styles.hrbTiles, {marginTop: 6}]}>
-        <TouchableOpacity
-          style={styles.hrbTile}
-          onPress={() => addLeg('ml_away', `${abbrev3(awayTeam)} ML`, finalAwayML)}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.hrbTileLabel}>{abbrev3(awayTeam)} ML</Text>
-          <Text style={styles.hrbTileVal}>{finalAwayML ?? '—'}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.hrbTile}
-          onPress={() => addLeg('ml_home', `${abbrev3(homeTeam)} ML`, finalHomeML)}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.hrbTileLabel}>{abbrev3(homeTeam)} ML</Text>
-          <Text style={styles.hrbTileVal}>{finalHomeML ?? '—'}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.hrbTile}
-          onPress={() => addLeg('total_under', `U ${f(totalLine, 1)}`, underOutcome?.price, totalLine)}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.hrbTileLabel}>Under</Text>
-          <Text style={styles.hrbTileVal}>U {f(totalLine, 1)}</Text>
-          <Text style={styles.hrbTileOdds}>{underOutcome?.price ?? '—'}</Text>
-        </TouchableOpacity>
+        {renderTile('spread_away')}
+        {renderTile('under')}
+        {renderTile('ml_away')}
       </View>
 
-      {/* Action buttons: Parlay + Log Pick */}
-      <View style={{flexDirection: 'row', gap: 8, marginTop: 12}}>
-        {primaryPlay?.label ? (
-          <TouchableOpacity
-            style={[styles.parlayCta, {flex: 1}]}
-            onPress={() => addLeg('primary', primaryPlay.label,
-              recommended === 'ml_home' ? finalHomeML : finalAwayML)}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.parlayCtaText}>+ Parlay {primaryPlay.label.split(' ML')[0]}</Text>
-          </TouchableOpacity>
-        ) : null}
+      {/* Selection status + Action buttons */}
+      <Text style={styles.hrbSelectionHint}>
+        {selected
+          ? <>Selected: <Text style={{color: C.accent, fontWeight: '700'}}>{selected.pickLabel}</Text> {selected.odds != null ? `@ ${fmtOdds(selected.odds)}` : ''}</>
+          : 'Tap a tile above to select a pick'}
+      </Text>
+
+      <View style={{flexDirection: 'row', gap: 8, marginTop: 10}}>
+        <TouchableOpacity
+          style={[styles.parlayCta, {flex: 1, opacity: canAct ? 1 : 0.4}]}
+          disabled={!canAct}
+          onPress={doAddParlay}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.parlayCtaText}>+ Parlay</Text>
+        </TouchableOpacity>
         <TouchableOpacity
           style={[styles.parlayCta, {
             flex: 1,
             backgroundColor: 'transparent',
             borderWidth: 1,
             borderColor: C.accent,
+            opacity: canAct ? 1 : 0.4,
           }]}
-          onPress={() => logPick(
-            primaryPlay?.label || `${abbrev3(homeTeam)} ML`,
-            primaryPlay?.type || 'ml',
-            recommended === 'ml_home' ? finalHomeML : finalAwayML,
-          )}
+          disabled={!canAct}
+          onPress={doLogPick}
           activeOpacity={0.7}
         >
           <Text style={[styles.parlayCtaText, {color: C.accent}]}>Log Pick</Text>
@@ -1051,7 +1109,7 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
               >
                 <Text style={[styles.bookTd, {textAlign: 'right'}]}>
                   {homeSpread ? `${homeSpread.point > 0 ? '+' : ''}${homeSpread.point}` : '—'}
-                  {homeSpread?.price ? ` (${homeSpread.price})` : ''}
+                  {homeSpread?.price ? ` (${fmtOdds(homeSpread.price)})` : ''}
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -1068,14 +1126,14 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
                 onPress={() => awayML && addLeg('ml', `${abbrev3(awayTeam)} ML`, awayML.price, null, bm.title)}
                 activeOpacity={0.6}
               >
-                <Text style={[styles.bookTd, {textAlign: 'right'}]}>{awayML?.price ?? '—'}</Text>
+                <Text style={[styles.bookTd, {textAlign: 'right'}]}>{fmtOdds(awayML?.price)}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={{flex: 1}}
                 onPress={() => homeML && addLeg('ml', `${abbrev3(homeTeam)} ML`, homeML.price, null, bm.title)}
                 activeOpacity={0.6}
               >
-                <Text style={[styles.bookTd, {textAlign: 'right'}]}>{homeML?.price ?? '—'}</Text>
+                <Text style={[styles.bookTd, {textAlign: 'right'}]}>{fmtOdds(homeML?.price)}</Text>
               </TouchableOpacity>
             </View>
           );
@@ -1431,6 +1489,7 @@ const styles = StyleSheet.create({
   hrbTileLabel: {fontSize: 9, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5},
   hrbTileVal: {fontSize: 13, fontWeight: '700', color: C.text, fontVariant: ['tabular-nums']},
   hrbTileOdds: {fontSize: 10, color: C.textMuted, fontVariant: ['tabular-nums']},
+  hrbSelectionHint: {marginTop: 10, fontSize: 11, color: C.textMuted, textAlign: 'center'},
   parlayCta: {
     marginTop: 12, padding: 12, backgroundColor: C.accent, borderRadius: 8, alignItems: 'center',
   },
