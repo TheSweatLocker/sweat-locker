@@ -173,14 +173,31 @@ export default function GameDetailV2({
   const [fetchedExternals, setFetchedExternals] = useState<any[]>([]);
   const [fetchedProps, setFetchedProps] = useState<any[]>([]);
 
+  // MOUNT LOG (console.warn to bypass Metro log filters that hide console.log).
+  // If this shows up in Metro, the component IS rendering. If NOT, we have
+  // a wiring issue in the parent modal.
+  console.warn('[GameDetailV2] rendered', {
+    gid_from_ctx: ctx?.game_id,
+    gid_from_game: game?.id,
+    game_date: ctx?.game_date,
+    away: game?.away_team,
+    home: game?.home_team,
+    sport: gamesSport,
+    ctx_present: !!ctx,
+  });
+
   // Auto-fetch externals + props per-game when parent doesn't supply.
-  // Two-step lookup for resilience: if ctx.game_id missing, fetch
-  // mlb_game_context by team-name+date to derive it, THEN fetch external_picks
-  // (external_picks has no team columns — game_id is the only key).
   useEffect(() => {
     let cancelled = false;
-    const client = sb();
-    if (!client) { console.log('[GameDetailV2] Supabase client not init — env vars missing?'); return; }
+    let client: any = null;
+    try {
+      client = sb();
+    } catch (e: any) {
+      console.warn('[GameDetailV2] sb() threw:', e?.message || String(e));
+      return;
+    }
+    if (!client) { console.warn('[GameDetailV2] Supabase client not init — env vars missing?'); return; }
+    console.warn('[GameDetailV2] useEffect fired, client OK');
 
     (async () => {
       // Determine game_id + game_date
@@ -219,7 +236,7 @@ export default function GameDetailV2({
       }
 
       if (!gid || !gameDate) {
-        console.log('[GameDetailV2] no game_id or game_date resolved — externals fetch skipped', {gid, gameDate, away, home});
+        console.warn('[GameDetailV2] no game_id or game_date resolved — externals fetch skipped', {gid, gameDate, away, home});
         return;
       }
 
@@ -231,7 +248,7 @@ export default function GameDetailV2({
           .eq('sport', gamesSport)
           .eq('game_date', gameDate)
           .eq('game_id', gid);
-        if (extErr) console.log('[GameDetailV2] externals fetch error:', extErr.message);
+        if (extErr) console.warn('[GameDetailV2] externals fetch error:', extErr.message);
         if (!cancelled && extData) {
           console.log(`[GameDetailV2] fetched ${extData.length} external_picks for gid=${gid}`);
           setFetchedExternals(extData);
@@ -247,7 +264,7 @@ export default function GameDetailV2({
           .eq('game_id', gid)
           .order('conviction', {ascending: false})
           .limit(15);
-        if (propErr) console.log('[GameDetailV2] props fetch error:', propErr.message);
+        if (propErr) console.warn('[GameDetailV2] props fetch error:', propErr.message);
         if (!cancelled && propData) setFetchedProps(propData);
       }
     })();
