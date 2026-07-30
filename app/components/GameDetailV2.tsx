@@ -173,31 +173,12 @@ export default function GameDetailV2({
   const [fetchedExternals, setFetchedExternals] = useState<any[]>([]);
   const [fetchedProps, setFetchedProps] = useState<any[]>([]);
 
-  // MOUNT LOG (console.warn to bypass Metro log filters that hide console.log).
-  // If this shows up in Metro, the component IS rendering. If NOT, we have
-  // a wiring issue in the parent modal.
-  console.warn('[GameDetailV2] rendered', {
-    gid_from_ctx: ctx?.game_id,
-    gid_from_game: game?.id,
-    game_date: ctx?.game_date,
-    away: game?.away_team,
-    home: game?.home_team,
-    sport: gamesSport,
-    ctx_present: !!ctx,
-  });
-
   // Auto-fetch externals + props per-game when parent doesn't supply.
   useEffect(() => {
     let cancelled = false;
     let client: any = null;
-    try {
-      client = sb();
-    } catch (e: any) {
-      console.warn('[GameDetailV2] sb() threw:', e?.message || String(e));
-      return;
-    }
-    if (!client) { console.warn('[GameDetailV2] Supabase client not init — env vars missing?'); return; }
-    console.warn('[GameDetailV2] useEffect fired, client OK');
+    try { client = sb(); } catch { /* client stays null */ }
+    if (!client) return;
 
     (async () => {
       // Determine game_id + game_date
@@ -241,7 +222,7 @@ export default function GameDetailV2({
       }
 
       // Fetch externals
-      if (!externalPicksProp) {
+      if (!externalPicksProp || externalPicksProp.length === 0) {
         const {data: extData, error: extErr} = await client
           .from('external_picks')
           .select('source,surface,pick_side,confidence,fade_flag,pick_line,odds_american')
@@ -256,7 +237,7 @@ export default function GameDetailV2({
       }
 
       // Fetch props (MLB only for now)
-      if (!gamePropsProp && gamesSport === 'MLB') {
+      if ((!gamePropsProp || gamePropsProp.length === 0) && gamesSport === 'MLB') {
         const {data: propData, error: propErr} = await client
           .from('mlb_pipeline_props')
           .select('player_name,player_team,prop_type,direction,prop_line,conviction,tier,signals')
