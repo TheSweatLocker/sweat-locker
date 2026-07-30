@@ -856,6 +856,38 @@ def build_struct(g, props, potd):
                 "cohort_note": cohort_note,
             }
 
+    # ---- OddsCrowd bets%/money% block (2026-07-30) ----
+    # Real bettor + real dollar percentages per market. Only populated when
+    # data was pulled today (via T-45min oddscrowd cron). Passed to Jerry
+    # so THE READ can reference actual money flow when material.
+    # STRICT: never fabricate. If oddscrowd_snapshot is null/empty on the
+    # ctx row, this stays None and prompt guard rules require Jerry to
+    # skip any money-flow language.
+    def _money_flow_block(gctx):
+        oc = gctx.get("oddscrowd_snapshot") or {}
+        if isinstance(oc, str):
+            try:
+                oc = json.loads(oc)
+            except Exception:
+                oc = {}
+        if not oc or not isinstance(oc, dict):
+            return None
+        out = {}
+        for surface in ("ml", "rl", "total"):
+            m = oc.get(surface)
+            if isinstance(m, dict) and m.get("money") is not None:
+                out[surface] = {
+                    "side": m.get("pick"),
+                    "money_pct": m.get("money"),
+                    "bets_pct": m.get("bets"),
+                    "divergence_pp": m.get("div"),
+                    "fade_flag": m.get("fade"),
+                }
+        if not out:
+            return None
+        out["pulled_at"] = oc.get("pulled_at")
+        return out
+
     struct = {
         "matchup": f"{away} @ {home}",
         "game_id": g.get("game_id"),
@@ -873,6 +905,8 @@ def build_struct(g, props, potd):
             "model_spread": round(model_spr, 2) if model_spr is not None else None,
             "home_ml": g.get("home_ml_odds"),
             "away_ml": g.get("away_ml_odds"),
+            # oddscrowd bets%/money% — None when not available (never faked)
+            "money_flow": _money_flow_block(g),
         },
         "confluence": {
             "net": g.get("signal_confluence_net"),
