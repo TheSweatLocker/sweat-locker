@@ -242,7 +242,7 @@ const styles = StyleSheet.create({
   featureTitle: { color: TEXT_PRIMARY, fontWeight: '700', fontSize: 14, marginBottom: 2 },
   featureDesc: { color: TEXT_MUTED, fontSize: 12 },
   planCard: { backgroundColor: CARD_BG, borderRadius: 12, padding: 16, marginBottom: 10, borderWidth: 2, borderColor: BORDER },
-  planCardSelected: { borderColor: BRAND_GREEN, backgroundColor: 'rgba(0,229,160,0.06)' },
+  planCardSelected: { borderColor: BRAND_GREEN, backgroundColor: 'THEME.accent + '0F'' },
   badge: { backgroundColor: BRAND_AMBER, alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, marginBottom: 8 },
   badgeText: { color: '#000', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
   planRow: { flexDirection: 'row', alignItems: 'center' },

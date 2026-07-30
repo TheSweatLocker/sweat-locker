@@ -344,7 +344,7 @@ const styles = StyleSheet.create({
   chipScroll: { marginTop: 8, marginBottom: 14 },
   chipScrollContent: { gap: 6 },
   chip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: 'rgba(122,146,168,0.10)', borderWidth: 1, borderColor: 'transparent' },
-  chipActive: { backgroundColor: 'rgba(0,229,160,0.10)', borderColor: BRAND_GREEN },
+  chipActive: { backgroundColor: 'THEME.accent + '1A'', borderColor: BRAND_GREEN },
   chipDisabled: { opacity: 0.4 },
   chipText: { color: TEXT_MUTED, fontSize: 11, fontWeight: '600' },
   chipTextActive: { color: BRAND_GREEN, fontWeight: '700' },
