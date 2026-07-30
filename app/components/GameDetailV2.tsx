@@ -923,11 +923,7 @@ function SportSpecificSlot({ctx, gamesSport, game}: any) {
     );
   }
   if (gamesSport === 'NFL' || gamesSport === 'NCAAF') {
-    return (
-      <Section title="Key Matchups">
-        <Text style={styles.emptyMuted}>QB vs defense + injury deltas coming next.</Text>
-      </Section>
-    );
+    return <NFLSlot ctx={ctx} game={game} />;
   }
   if (gamesSport === 'NBA' || gamesSport === 'NCAAB') {
     return (
@@ -944,6 +940,197 @@ function SportSpecificSlot({ctx, gamesSport, game}: any) {
     );
   }
   return null;
+}
+
+// ─── NFL SLOT ────────────────────────────────────────────────────────────
+// Phase 1 (2026-07-30) — renders what's available from nfl_game_context +
+// nfl_team_stats. Phase 2 adds QB starter card + injuries + weather when
+// those pipes ship.
+function NFLSlot({ctx, game}: any) {
+  const [teamStats, setTeamStats] = useState<{home?: any; away?: any} | null>(null);
+  const [starters, setStarters] = useState<{home?: any; away?: any} | null>(null);
+  const [injuries, setInjuries] = useState<{home: any[]; away: any[]}>({home: [], away: []});
+
+  const homeTeam = ctx?.home_team || game?.home_team;
+  const awayTeam = ctx?.away_team || game?.away_team;
+
+  useEffect(() => {
+    const client = sb();
+    if (!client || !homeTeam || !awayTeam) return;
+    (async () => {
+      const season = ctx?.season || new Date().getFullYear();
+      // Season team stats — try current season, fall back to prior season
+      const {data: ts} = await client
+        .from('nfl_team_stats')
+        .select('team,pass_epa,rush_epa,pass_yards,rush_yards,pass_attempts,rush_attempts,pass_tds,pass_ints,def_sacks,def_ints,def_pass_def,pass_cpoe,sacks_suffered,games,season')
+        .in('team', [homeTeam, awayTeam])
+        .lte('season', season)
+        .eq('season_type', 'REG')
+        .order('season', {ascending: false})
+        .limit(6);
+      if (ts) {
+        // Pick most-recent per team
+        const map: any = {};
+        for (const row of ts) {
+          if (!map[row.team]) map[row.team] = row;
+        }
+        setTeamStats({home: map[homeTeam], away: map[awayTeam]});
+      }
+      // Starters (Phase 2 table — nfl_starters, populated by nfl_weekly_starters.py)
+      const {data: st} = await client.from('nfl_starters')
+        .select('team,position,player_name,is_starter')
+        .in('team', [homeTeam, awayTeam])
+        .eq('position', 'QB')
+        .eq('is_starter', true)
+        .order('week', {ascending: false})
+        .limit(2);
+      if (st) {
+        const smap: any = {};
+        for (const row of st) if (!smap[row.team]) smap[row.team] = row;
+        setStarters({home: smap[homeTeam], away: smap[awayTeam]});
+      }
+      // Injuries (Phase 2 table — nfl_injuries)
+      const {data: inj} = await client.from('nfl_injuries')
+        .select('team,player_name,position,injury_status,body_part,practice_status')
+        .in('team', [homeTeam, awayTeam])
+        .in('injury_status', ['Out', 'Doubtful', 'Questionable'])
+        .order('updated_at', {ascending: false})
+        .limit(20);
+      if (inj) {
+        setInjuries({
+          home: inj.filter((r: any) => r.team === homeTeam).slice(0, 4),
+          away: inj.filter((r: any) => r.team === awayTeam).slice(0, 4),
+        });
+      }
+    })();
+  }, [homeTeam, awayTeam, ctx?.season]);
+
+  const tags = ctx?.cohort_tags || [];
+  const rest = {home: ctx?.home_rest, away: ctx?.away_rest};
+  const wx = {temp: ctx?.temp, wind: ctx?.wind};
+  const roof = ctx?.roof;
+  const div = ctx?.div_game;
+
+  return (
+    <>
+      {/* Starter QBs (if pipe has populated) */}
+      {(starters?.home || starters?.away) && (
+        <Section title="Starting QBs" hint="from nfl_starters">
+          <View style={styles.pitcherMatchup}>
+            <View style={[styles.pitcherCard, {borderTopColor: C.away}]}>
+              <Text style={styles.pitcherName}>{starters?.away?.player_name || 'TBD'}</Text>
+              <Text style={styles.pitcherStats}>{abbrev3(awayTeam)} QB</Text>
+            </View>
+            <View style={[styles.pitcherCard, {borderTopColor: C.home}]}>
+              <Text style={styles.pitcherName}>{starters?.home?.player_name || 'TBD'}</Text>
+              <Text style={styles.pitcherStats}>{abbrev3(homeTeam)} QB</Text>
+            </View>
+          </View>
+        </Section>
+      )}
+
+      {/* Team offense/defense — always try, degrades w/ '—' when missing */}
+      <Section title="Team Matchup" hint="season · pass EPA + def">
+        {teamStats ? (
+          <View style={{gap: 8}}>
+            <TeamStatRow team={awayTeam} side="away" stats={teamStats.away} defense={teamStats.home} />
+            <TeamStatRow team={homeTeam} side="home" stats={teamStats.home} defense={teamStats.away} />
+          </View>
+        ) : (
+          <Text style={styles.emptyMuted}>Loading team stats…</Text>
+        )}
+      </Section>
+
+      {/* Injuries (if populated) */}
+      {(injuries.home.length + injuries.away.length) > 0 && (
+        <Section title="Injuries" hint="Out / Doubtful / Questionable">
+          <View style={{gap: 6}}>
+            {injuries.away.length > 0 && (
+              <View>
+                <Text style={styles.injSideLabel}>{abbrev3(awayTeam)}</Text>
+                {injuries.away.map((r: any, i: number) => (
+                  <Text key={i} style={styles.injRow}>
+                    <Text style={{color: injStatusColor(r.injury_status)}}>[{r.injury_status?.[0]}]</Text>{' '}
+                    {r.player_name} ({r.position}) — {r.body_part || 'undisclosed'}
+                  </Text>
+                ))}
+              </View>
+            )}
+            {injuries.home.length > 0 && (
+              <View>
+                <Text style={styles.injSideLabel}>{abbrev3(homeTeam)}</Text>
+                {injuries.home.map((r: any, i: number) => (
+                  <Text key={i} style={styles.injRow}>
+                    <Text style={{color: injStatusColor(r.injury_status)}}>[{r.injury_status?.[0]}]</Text>{' '}
+                    {r.player_name} ({r.position}) — {r.body_part || 'undisclosed'}
+                  </Text>
+                ))}
+              </View>
+            )}
+          </View>
+        </Section>
+      )}
+
+      {/* Situational chips row — only render if at least one is present */}
+      {(div || roof || wx.temp != null || wx.wind != null || rest.home != null || rest.away != null || (tags && tags.length)) && (
+        <Section title="Situational">
+          <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
+            {div && <SitChip label="Divisional" />}
+            {roof && <SitChip label={`Roof: ${roof}`} />}
+            {wx.temp != null && <SitChip label={`${wx.temp}°F`} kind={wx.temp <= 40 ? 'info' : 'neutral'} />}
+            {wx.wind != null && wx.wind >= 15 && <SitChip label={`Wind ${wx.wind}mph`} kind="warn" />}
+            {rest.home != null && rest.away != null && Math.abs(rest.home - rest.away) >= 3 && (
+              <SitChip label={`Rest gap: ${abbrev3(rest.home > rest.away ? homeTeam : awayTeam)} +${Math.abs(rest.home - rest.away)}d`} kind="info" />
+            )}
+            {Array.isArray(tags) && tags.map((t: string, i: number) => (
+              <SitChip key={i} label={t.replace(/^nfl_/, '').replace(/_/g, ' ')} />
+            ))}
+          </View>
+        </Section>
+      )}
+    </>
+  );
+}
+
+function TeamStatRow({team, side, stats, defense}: any) {
+  if (!stats) return <Text style={styles.emptyMuted}>{team}: season stats unavailable</Text>;
+  const passYPA = stats.pass_yards && stats.pass_attempts ? (stats.pass_yards / stats.pass_attempts).toFixed(1) : '—';
+  const rushYPC = stats.rush_yards && stats.rush_attempts ? (stats.rush_yards / stats.rush_attempts).toFixed(1) : '—';
+  const passEPA_per = stats.pass_epa != null && stats.pass_attempts ? (stats.pass_epa / stats.pass_attempts).toFixed(3) : '—';
+  const defSacks = defense?.def_sacks;
+  const defInts = defense?.def_ints;
+  const defPassDef = defense?.def_pass_def;
+  return (
+    <View style={[styles.pitcherCard, {borderTopColor: side === 'home' ? C.home : C.away, padding: 12, gap: 4}]}>
+      <Text style={styles.pitcherName}>{team} <Text style={{color: C.textMuted, fontWeight: '500', fontSize: 10}}>({stats.season} season)</Text></Text>
+      <Text style={styles.pitcherStats}>
+        Pass: <Text style={styles.pitcherStatBold}>{passYPA} YPA</Text> · EPA/att {passEPA_per} · {stats.pass_tds || 0} TD/{stats.pass_ints || 0} INT
+      </Text>
+      <Text style={styles.pitcherStats}>
+        Rush: <Text style={styles.pitcherStatBold}>{rushYPC} YPC</Text> · sacks taken {stats.sacks_suffered || 0}
+      </Text>
+      {defense && (
+        <Text style={[styles.pitcherStats, {color: C.textMuted, fontStyle: 'italic'}]}>
+          vs {defense.team} D: {defSacks || '—'} sacks · {defInts || '—'} INT · {defPassDef || '—'} passes def
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function SitChip({label, kind = 'neutral'}: {label: string; kind?: 'ok'|'warn'|'info'|'neutral'}) {
+  return (
+    <View style={[styles.sitChip, chipStyleFor(kind)]}>
+      <Text style={[styles.sitChipText, {color: chipTextColorFor(kind)}]}>{label}</Text>
+    </View>
+  );
+}
+
+function injStatusColor(status: string): string {
+  if (status === 'Out') return C.fade;
+  if (status === 'Doubtful') return C.warn;
+  if (status === 'Questionable') return C.sharp;
+  return C.textMuted;
 }
 
 // ─── COHORTS PANEL ──────────────────────────────────────────────────────
@@ -1595,6 +1782,15 @@ const styles = StyleSheet.create({
   },
   handiSideLabel: {fontSize: 10, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginRight: 6},
   handiGroupLabel: {fontSize: 9, color: C.textDim, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginTop: 8, marginBottom: 2},
+
+  // NFL slot
+  sitChip: {
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4,
+    borderWidth: 1, backgroundColor: C.surface2,
+  },
+  sitChipText: {fontSize: 10, fontWeight: '700', letterSpacing: 0.3},
+  injSideLabel: {fontSize: 10, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2},
+  injRow: {fontSize: 11, color: C.text, lineHeight: 17, marginBottom: 2},
   handiChip: {
     paddingHorizontal: 7, paddingVertical: 2, backgroundColor: C.surface2,
     borderWidth: 1, borderColor: C.border, borderRadius: 4,
