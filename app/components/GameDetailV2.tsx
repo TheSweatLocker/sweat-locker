@@ -173,33 +173,87 @@ export default function GameDetailV2({
   const [fetchedExternals, setFetchedExternals] = useState<any[]>([]);
   const [fetchedProps, setFetchedProps] = useState<any[]>([]);
 
-  // Auto-fetch externals + props per-game when parent doesn't supply
+  // Auto-fetch externals + props per-game when parent doesn't supply.
+  // Two-step lookup for resilience: if ctx.game_id missing, fetch
+  // mlb_game_context by team-name+date to derive it, THEN fetch external_picks
+  // (external_picks has no team columns — game_id is the only key).
   useEffect(() => {
-    if (!game?.id && !ctx?.game_id) return;
+    let cancelled = false;
     const client = sb();
-    if (!client) return;
-    const gid = ctx?.game_id || game?.id;
-    const gameDate = ctx?.game_date;
-    // externals
-    if (!externalPicksProp && gameDate) {
-      client.from('external_picks')
-        .select('source,surface,pick_side,confidence,fade_flag,pick_line,odds_american')
-        .eq('sport', gamesSport)
-        .eq('game_date', gameDate)
-        .eq('game_id', gid)
-        .then((r: any) => { if (r.data) setFetchedExternals(r.data); });
-    }
-    // props (MLB only for now)
-    if (!gamePropsProp && gamesSport === 'MLB' && gameDate && gid) {
-      client.from('mlb_pipeline_props')
-        .select('player_name,player_team,prop_type,direction,prop_line,conviction,tier,signals')
-        .eq('game_date', gameDate)
-        .eq('game_id', gid)
-        .order('conviction', {ascending: false})
-        .limit(15)
-        .then((r: any) => { if (r.data) setFetchedProps(r.data); });
-    }
-  }, [game?.id, ctx?.game_id, ctx?.game_date, gamesSport, externalPicksProp, gamePropsProp]);
+    if (!client) { console.log('[GameDetailV2] Supabase client not init — env vars missing?'); return; }
+
+    (async () => {
+      // Determine game_id + game_date
+      let gid = ctx?.game_id;
+      let gameDate = ctx?.game_date;
+      const away = game?.away_team || ctx?.away_team;
+      const home = game?.home_team || ctx?.home_team;
+
+      // If we don't have gid but we have teams + date, look it up
+      if (!gid && away && home) {
+        // Try to derive game_date from game.commence_time if not on ctx
+        if (!gameDate && game?.commence_time) {
+          try {
+            gameDate = new Date(game.commence_time).toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+          } catch { /* skip */ }
+        }
+        if (gameDate) {
+          const contextTable = gamesSport === 'MLB' ? 'mlb_game_context'
+            : gamesSport === 'NFL' ? 'nfl_game_context'
+            : gamesSport === 'NCAAF' ? 'ncaaf_game_context'
+            : gamesSport === 'NCAAB' ? 'ncaab_game_context' : null;
+          if (contextTable) {
+            const {data: ctxData} = await client
+              .from(contextTable)
+              .select('game_id,game_date')
+              .eq('game_date', gameDate)
+              .eq('home_team', home)
+              .eq('away_team', away)
+              .limit(1);
+            if (ctxData && ctxData.length) {
+              gid = ctxData[0].game_id;
+              gameDate = ctxData[0].game_date;
+            }
+          }
+        }
+      }
+
+      if (!gid || !gameDate) {
+        console.log('[GameDetailV2] no game_id or game_date resolved — externals fetch skipped', {gid, gameDate, away, home});
+        return;
+      }
+
+      // Fetch externals
+      if (!externalPicksProp) {
+        const {data: extData, error: extErr} = await client
+          .from('external_picks')
+          .select('source,surface,pick_side,confidence,fade_flag,pick_line,odds_american')
+          .eq('sport', gamesSport)
+          .eq('game_date', gameDate)
+          .eq('game_id', gid);
+        if (extErr) console.log('[GameDetailV2] externals fetch error:', extErr.message);
+        if (!cancelled && extData) {
+          console.log(`[GameDetailV2] fetched ${extData.length} external_picks for gid=${gid}`);
+          setFetchedExternals(extData);
+        }
+      }
+
+      // Fetch props (MLB only for now)
+      if (!gamePropsProp && gamesSport === 'MLB') {
+        const {data: propData, error: propErr} = await client
+          .from('mlb_pipeline_props')
+          .select('player_name,player_team,prop_type,direction,prop_line,conviction,tier,signals')
+          .eq('game_date', gameDate)
+          .eq('game_id', gid)
+          .order('conviction', {ascending: false})
+          .limit(15);
+        if (propErr) console.log('[GameDetailV2] props fetch error:', propErr.message);
+        if (!cancelled && propData) setFetchedProps(propData);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [game?.id, ctx?.game_id, ctx?.game_date, game?.away_team, game?.home_team, gamesSport, externalPicksProp, gamePropsProp]);
 
   const externalPicks = externalPicksProp ?? fetchedExternals;
   const gameProps = gamePropsProp ?? fetchedProps;
@@ -1138,9 +1192,6 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
             </View>
           );
         })}
-        <Text style={[styles.emptyMuted, {marginTop: 8, fontSize: 10, fontStyle: 'italic'}]}>
-          Tap any cell to add that specific book's line to your parlay.
-        </Text>
       </View>
     </ScrollView>
   );
