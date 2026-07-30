@@ -55,6 +55,64 @@ HEADERS = {
 }
 
 
+# ─── Calibrator (2026-07-30) ───────────────────────────────────────────
+# Isotonic regression fit on 820 resolved HR-Watch rows (90 days). Raw
+# projected_hr_prob is over-confident above ~15% and under-confident
+# below. This map applies the post-hoc calibration at write-time so the
+# stored `calibrated_hr_prob` reflects the model's empirical hit rate.
+# See build_hr_watch_recal.py + models/hr_watch_calibrator_*.json.
+import bisect
+import json as _json_lib
+from pathlib import Path as _Path
+
+_CAL_BREAKPOINTS: list[tuple[float, float]] = []
+def _load_calibrator():
+    global _CAL_BREAKPOINTS
+    models = _Path(__file__).parent / 'models'
+    candidates = sorted(models.glob('hr_watch_calibrator_*.json'), reverse=True)
+    if not candidates:
+        print('  ⚠  no HR Watch calibrator found — calibrated_hr_prob will equal raw')
+        return
+    latest = candidates[0]
+    try:
+        data = _json_lib.loads(latest.read_text())
+        _CAL_BREAKPOINTS = [(float(x), float(y)) for x, y in data['breakpoints']]
+        print(f'  📐 loaded HR Watch calibrator: {latest.name} '
+              f'(n={data["n_samples"]}, base={data["base_rate"]:.1%})')
+    except Exception as e:
+        print(f'  ⚠  calibrator load failed: {e}')
+
+def calibrate_hr_prob(raw: float) -> float:
+    if not _CAL_BREAKPOINTS or not raw:
+        return raw
+    xs = [x for x, _ in _CAL_BREAKPOINTS]
+    ys = [y for _, y in _CAL_BREAKPOINTS]
+    idx = bisect.bisect_left(xs, raw)
+    if idx == 0: return ys[0]
+    if idx >= len(xs): return ys[-1]
+    # Linear interp between breakpoints
+    x0, x1 = xs[idx-1], xs[idx]
+    y0, y1 = ys[idx-1], ys[idx]
+    t = (raw - x0) / (x1 - x0) if x1 > x0 else 0
+    return round(y0 + t * (y1 - y0), 4)
+
+_load_calibrator()
+
+def compute_edge_vs_market(calibrated_prob: float, book_odds) -> float | None:
+    """Returns model_prob − book_implied_prob. Positive = model bullish
+    vs market (+EV in isolation). Negative = market thinks player is
+    more likely to HR than we do (bearish signal). None when no book
+    price to compare against."""
+    if not calibrated_prob or book_odds is None:
+        return None
+    try:
+        odds = int(book_odds)
+    except Exception:
+        return None
+    implied = 100.0 / (odds + 100) if odds >= 0 else -odds / (-odds + 100.0)
+    return round(calibrated_prob - implied, 4)
+
+
 def get_today_et():
     et_now = datetime.now(timezone.utc) - timedelta(hours=4)
     return et_now.strftime('%Y-%m-%d')
@@ -704,13 +762,18 @@ def attach_book_odds(candidates):
         # CJ Abrams case: model 17.9%, book +18000 implied 0.55% → ratio 32x.
         # Any book row where model_prob / implied_prob > 5 is data noise, not
         # a real price. Falls open (null book_odds) rather than showing garbage.
-        p_model = c.get('projected_hr_prob') or 0
+        p_model = c.get('calibrated_hr_prob') or c.get('projected_hr_prob') or 0
         implied = 100.0 / (odds + 100) if odds >= 0 else -odds / (-odds + 100.0)
         if p_model > 0 and implied > 0 and (p_model / implied) > 5.0:
             rejected_sanity += 1
             continue
         c['book_odds'] = odds
         c['book_source'] = src
+        # Compute edge_vs_market now that book is attached (2026-07-30).
+        # Positive edge = model bullish vs book — surface in-app for
+        # secondary sort. Null when calibration is 0 or book missing.
+        c['edge_vs_market'] = compute_edge_vs_market(
+            c.get('calibrated_hr_prob') or 0, odds)
         matched += 1
     print(f'  📖 HR book odds attached: {matched}/{len(candidates)} candidates'
           f' (rejected {rejected_sanity} on sanity gate)')
@@ -864,6 +927,10 @@ def run():
                     'savant_score': scoring.get('savant_score', 0),
                     # Projection (added 2026-06-01)
                     'projected_hr_prob': projected_hr_prob,
+                    # Calibrated projection (added 2026-07-30). Post-hoc
+                    # isotonic fit on 90d — see calibrate_hr_prob().
+                    # This is what the app should show as "our probability".
+                    'calibrated_hr_prob': calibrate_hr_prob(projected_hr_prob),
                     # "Due for HR" interaction flag — surfaced when batter looks
                     # cold but Statcast says he's been squaring it up. Set by
                     # score_batter via the stats dict side-channel.
