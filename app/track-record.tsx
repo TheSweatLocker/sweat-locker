@@ -31,6 +31,7 @@ import {
 import { Stack, useRouter } from 'expo-router';
 import { createClient } from '@supabase/supabase-js';
 
+import { THEME, TIER_COLOR, OUTCOME_COLOR } from './theme';
 const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_URL!,
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
@@ -38,14 +39,14 @@ const supabase = createClient(
 
 // Brand palette — match RecapCard.tsx
 const BRAND_GREEN = '#00e5a0';
-const BRAND_AMBER = '#ffb800';
+const BRAND_AMBER = THEME.hrb;
 const RED = '#ff4d6d';
-const BG = '#080c10';
-const CARD_BG = '#0d1419';
-const CARD_HL = '#152029';
-const TEXT_PRIMARY = '#e8f0f8';
-const TEXT_MUTED = '#7a92a8';
-const BORDER = '#1f2d3d';
+const BG = THEME.bg;
+const CARD_BG = THEME.surface;
+const CARD_HL = THEME.surfaceAlt;
+const TEXT_PRIMARY = THEME.text;
+const TEXT_MUTED = THEME.textDim;
+const BORDER = THEME.border;
 
 type Window = '7d' | '30d' | '90d';
 

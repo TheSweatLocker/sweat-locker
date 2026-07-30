@@ -8,7 +8,7 @@
     "splash": {
       "image": "./assets/images/splash-logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#080c10"
+      "backgroundColor": "#22323E"
     },
     "ios": {
       "supportsTablet": true,
@@ -20,7 +20,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/splash-logo.png",
-        "backgroundColor": "#080c10"
+        "backgroundColor": "#22323E"
       },
       "package": "com.sweatlocker.app"
     },
@@ -28,7 +28,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#080c10",
+          "backgroundColor": "#22323E",
           "image": "./assets/images/splash-logo.png",
           "resizeMode": "contain"
         }

@@ -17,19 +17,20 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, ActivityIndicator, StyleSheet, Linking, TouchableOpacity } from 'react-native';
 import { createClient } from '@supabase/supabase-js';
 
+import { THEME, TIER_COLOR, OUTCOME_COLOR } from '../theme';
 const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_URL!,
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
-const CARD_BG = '#0d1419';
-const BORDER = '#1f2d3d';
-const TEXT_PRIMARY = '#e8f0f8';
-const TEXT_MUTED = '#7a92a8';
+const CARD_BG = THEME.surface;
+const BORDER = THEME.border;
+const TEXT_PRIMARY = THEME.text;
+const TEXT_MUTED = THEME.textDim;
 const BOOST = '#00e5a0';   // green — aligns with audit
 const FADE = '#ff4d6d';    // red — audit-flagged counterindicator
 const TRUST = '#5bb9ff';   // blue — trusted but not headline
-const NEUTRAL = '#7a92a8'; // gray — reference-only
+const NEUTRAL = THEME.textDim; // gray — reference-only
 
 type ExternalPick = {
   pick_id?: string;

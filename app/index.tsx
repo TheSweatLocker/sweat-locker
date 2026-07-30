@@ -13,6 +13,7 @@ import GameDetailV2 from './components/GameDetailV2';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Sport } from './lib/sportPeriods';
 
+import { THEME, TIER_COLOR, OUTCOME_COLOR } from './theme';
 const ODDS_API_KEY = process.env.EXPO_PUBLIC_ODDS_API_KEY;
 const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
 const BDL_API_KEY = process.env.EXPO_PUBLIC_BDL_API_KEY;
@@ -22,7 +23,7 @@ const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
 );
 const HRB = 'Hard Rock';
-const HRB_COLOR = '#FFB800';
+const HRB_COLOR = THEME.hrb;
 
 // Cohort name → user-facing label. Backend tier names use snake_case
 // (e.g. `yrfi_lean_le40`, `nrfi_prime_90_94`). Title-casing alone produced
@@ -1457,7 +1458,7 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
   if(degenLoading) return (
     <View style={{alignItems:'center',paddingTop:60,gap:12}}>
       <Text style={{fontSize:32}}>🎲</Text>
-      <Text style={{color:'#7a92a8',fontSize:14}}>Jerry is scanning the slate...</Text>
+      <Text style={{color:THEME.textDim,fontSize:14}}>Jerry is scanning the slate...</Text>
     </View>
   );
 
@@ -1471,8 +1472,8 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
     return (
       <View style={{alignItems:'center',paddingTop:60,paddingHorizontal:40}}>
         <Text style={{fontSize:32}}>🎲</Text>
-        <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18,marginTop:16}}>No Degen Plays Today</Text>
-        <Text style={{color:'#7a92a8',marginTop:8,fontSize:14,textAlign:'center',lineHeight:20}}>{degenMsg}</Text>
+        <Text style={{color:THEME.text,fontWeight:'800',fontSize:18,marginTop:16}}>No Degen Plays Today</Text>
+        <Text style={{color:THEME.textDim,marginTop:8,fontSize:14,textAlign:'center',lineHeight:20}}>{degenMsg}</Text>
       </View>
     );
   }
@@ -1487,7 +1488,7 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
             <Text style={{color:'#ff4d6d',fontSize:11,fontWeight:'800'}}>{degenData.legs?.length}-LEG PARLAY</Text>
           </View>
         </View>
-        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{degenData.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>
+        <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{degenData.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>
       </View>
 
       {/* Track Record — added 2026-07-26. Parlay is all-or-nothing so the
@@ -1495,8 +1496,8 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
           the more informative diagnostic — it's what tells you the underlying
           picks are good, even when the parlay format eats them alive. */}
       {degenRecord && (degenRecord.total.wins + degenRecord.total.losses + degenRecord.total.pushes) > 0 && (
-        <View style={{backgroundColor:'#12161d',borderRadius:12,padding:12,marginBottom:16,borderWidth:1,borderColor:'#1f2d3d'}}>
-          <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',marginBottom:8,letterSpacing:0.5}}>🎲 DEGEN PARLAY TRACK RECORD</Text>
+        <View style={{backgroundColor:THEME.surface,borderRadius:12,padding:12,marginBottom:16,borderWidth:1,borderColor:THEME.border}}>
+          <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',marginBottom:8,letterSpacing:0.5}}>🎲 DEGEN PARLAY TRACK RECORD</Text>
           {(() => {
             const t = degenRecord.total;
             const t30 = degenRecord.last30;
@@ -1506,37 +1507,37 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
             const legsPct30 = degenRecord.legsTotal30 > 0 ? Math.round((degenRecord.legsCorrect30/degenRecord.legsTotal30)*100) : 0;
             return (
               <>
-                <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',paddingBottom:10,borderBottomWidth:1,borderBottomColor:'#1f2d3d'}}>
+                <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',paddingBottom:10,borderBottomWidth:1,borderBottomColor:THEME.border}}>
                   <View style={{alignItems:'center'}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:22}}>{t.wins}-{t.losses}{t.pushes>0?`-${t.pushes}`:''}</Text>
-                    <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>PARLAY LIFETIME</Text>
+                    <Text style={{color:THEME.text,fontWeight:'900',fontSize:22}}>{t.wins}-{t.losses}{t.pushes>0?`-${t.pushes}`:''}</Text>
+                    <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>PARLAY LIFETIME</Text>
                   </View>
                   <View style={{alignItems:'center'}}>
-                    <Text style={{color:parlayPct>=25?'#00e5a0':parlayPct>=15?HRB_COLOR:'#ff8c5a',fontWeight:'800',fontSize:18}}>{parlayPct}%</Text>
-                    <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
+                    <Text style={{color:parlayPct>=25?'#00e5a0':parlayPct>=15?HRB_COLOR:THEME.accent,fontWeight:'800',fontSize:18}}>{parlayPct}%</Text>
+                    <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
                   </View>
                   <View style={{alignItems:'center'}}>
                     <Text style={{color:legsPct>=60?'#00e5a0':legsPct>=50?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:18}}>{legsPct}%</Text>
-                    <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>LEGS ({degenRecord.legsCorrect}/{degenRecord.legsTotal})</Text>
+                    <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>LEGS ({degenRecord.legsCorrect}/{degenRecord.legsTotal})</Text>
                   </View>
                 </View>
                 {(t30.wins + t30.losses) > 0 && (
                   <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',paddingTop:10}}>
                     <View style={{alignItems:'center'}}>
-                      <Text style={{color:'#c8d8e8',fontWeight:'700',fontSize:14}}>{t30.wins}-{t30.losses}{t30.pushes>0?`-${t30.pushes}`:''}</Text>
-                      <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>LAST 30D</Text>
+                      <Text style={{color:THEME.textDim,fontWeight:'700',fontSize:14}}>{t30.wins}-{t30.losses}{t30.pushes>0?`-${t30.pushes}`:''}</Text>
+                      <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>LAST 30D</Text>
                     </View>
                     <View style={{alignItems:'center'}}>
-                      <Text style={{color:'#c8d8e8',fontWeight:'700',fontSize:14}}>{Math.round((t30.wins/(t30.wins+t30.losses))*100)}%</Text>
-                      <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>PARLAY 30D</Text>
+                      <Text style={{color:THEME.textDim,fontWeight:'700',fontSize:14}}>{Math.round((t30.wins/(t30.wins+t30.losses))*100)}%</Text>
+                      <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>PARLAY 30D</Text>
                     </View>
                     <View style={{alignItems:'center'}}>
                       <Text style={{color:legsPct30>=60?'#00e5a0':legsPct30>=50?HRB_COLOR:'#ff4d6d',fontWeight:'700',fontSize:14}}>{legsPct30}%</Text>
-                      <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>LEGS 30D</Text>
+                      <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>LEGS 30D</Text>
                     </View>
                   </View>
                 )}
-                <Text style={{color:'#4a6070',fontSize:9,marginTop:8,fontStyle:'italic',textAlign:'center',lineHeight:12}}>Parlay hit rate is all-or-nothing (~20-30% is strong for 4-leg). Legs% tells you the underlying pick quality.</Text>
+                <Text style={{color:THEME.textMuted,fontSize:9,marginTop:8,fontStyle:'italic',textAlign:'center',lineHeight:12}}>Parlay hit rate is all-or-nothing (~20-30% is strong for 4-leg). Legs% tells you the underlying pick quality.</Text>
               </>
             );
           })()}
@@ -1545,18 +1546,18 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
 
       {/* Legs */}
       {degenData.legs?.map((leg: any, i: number) => (
-        <View key={i} style={{backgroundColor:'#111820',borderRadius:12,padding:12,marginBottom:10,borderWidth:1,borderColor:'#1f2d3d'}}>
+        <View key={i} style={{backgroundColor:THEME.surface,borderRadius:12,padding:12,marginBottom:10,borderWidth:1,borderColor:THEME.border}}>
           <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6,gap:8}}>
             <View style={{flexDirection:'row',alignItems:'flex-start',gap:6,flex:1,flexWrap:'wrap'}}>
               <View style={{backgroundColor:leg.type==='NRFI'?'rgba(0,229,160,0.15)':leg.type==='NBA'?'rgba(0,153,255,0.15)':'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2}}>
-                <Text style={{color:leg.type==='NRFI'?'#00e5a0':leg.type==='NBA'?'#0099ff':'#FFB800',fontSize:10,fontWeight:'800'}}>{leg.type}</Text>
+                <Text style={{color:leg.type==='NRFI'?'#00e5a0':leg.type==='NBA'?THEME.sharp:THEME.hrb,fontSize:10,fontWeight:'800'}}>{leg.type}</Text>
               </View>
-              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,flexShrink:1}}>{leg.pick}</Text>
+              <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,flexShrink:1}}>{leg.pick}</Text>
             </View>
-            <Text style={{color:leg.odds<0?'#e8f0f8':'#00e5a0',fontWeight:'800',fontSize:13}}>{leg.odds>0?'+':''}{leg.odds}</Text>
+            <Text style={{color:leg.odds<0?THEME.text:'#00e5a0',fontWeight:'800',fontSize:13}}>{leg.odds>0?'+':''}{leg.odds}</Text>
           </View>
-          <Text style={{color:'#7a92a8',fontSize:11}}>{leg.matchup}</Text>
-          <Text style={{color:'#4a6070',fontSize:10,marginTop:3}}>{leg.signal}</Text>
+          <Text style={{color:THEME.textDim,fontSize:11}}>{leg.matchup}</Text>
+          <Text style={{color:THEME.textMuted,fontSize:10,marginTop:3}}>{leg.signal}</Text>
         </View>
       ))}
 
@@ -1568,8 +1569,8 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
         <Text style={{color:'#fff',fontWeight:'800',fontSize:15}}>🎰 Add All to Parlay Builder</Text>
       </TouchableOpacity>
 
-      <Text style={{color:'#4a6070',fontSize:11,textAlign:'center',marginTop:12}}>Updated twice daily • by 11am + 4pm ET</Text>
-      <Text style={{color:'#4a6070',fontSize:10,textAlign:'center',marginTop:6,paddingHorizontal:20,lineHeight:14}}>Daily Degen uses model signals only. Jerry's full game read may weigh additional situational factors differently.</Text>
+      <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',marginTop:12}}>Updated twice daily • by 11am + 4pm ET</Text>
+      <Text style={{color:THEME.textMuted,fontSize:10,textAlign:'center',marginTop:6,paddingHorizontal:20,lineHeight:14}}>Daily Degen uses model signals only. Jerry's full game read may weigh additional situational factors differently.</Text>
     </View>
   );
 };
@@ -1869,7 +1870,7 @@ useEffect(() => {
 }, 0);
   const totalDollars = totalUnits*usd;
   const winRate = wins+losses>0 ? ((wins/(wins+losses))*100).toFixed(1) : '0.0';
-  const resultColor = (r) => r==='Win'?'#00e5a0':r==='Loss'?'#ff4d6d':r==='Push'?'#ffd166':'#0099ff';
+  const resultColor = (r) => r==='Win'?'#00e5a0':r==='Loss'?'#ff4d6d':r==='Push'?THEME.push:THEME.sharp;
 
   const getHRBLine = (game) => {
     if(!game||!game.bookmakers) return null;
@@ -2691,9 +2692,9 @@ if(r.data && r.data.data) {
   const SWEAT_TIER_DISPLAY = {
     PRIME:      {label:'🔥 PRIME PLAY',  color:'#ff4d6d'},
     STRONG:     {label:'✅ STRONG LEAN', color:'#00e5a0'},
-    LIGHT_LEAN: {label:'👀 LIGHT LEAN',  color:'#ffd166'},
-    LIGHT:      {label:'👀 LIGHT LEAN',  color:'#ffd166'},
-    PASS:       {label:'❌ PASS',        color:'#4a6070'},
+    LIGHT_LEAN: {label:'👀 LIGHT LEAN',  color:THEME.push},
+    LIGHT:      {label:'👀 LIGHT LEAN',  color:THEME.push},
+    PASS:       {label:'❌ PASS',        color:THEME.textMuted},
   } as const;
   const getSweatTier = (score, serverTier?: string) => {
     // Prefer server tier when provided — MLB games ship sweat_tier in
@@ -7373,9 +7374,9 @@ if(isMatchupProp) {
   if(matchupConviction >= 35) {
     grade='A'; gradeColor='#00e5a0';  // multiple strong signals converging
   } else if(matchupConviction >= 25) {
-    grade='B'; gradeColor='#FFB800';  // solid signal
+    grade='B'; gradeColor=THEME.hrb;  // solid signal
   } else if(matchupConviction >= 15) {
-    grade='C'; gradeColor='#0099ff';  // moderate signal
+    grade='C'; gradeColor=THEME.sharp;  // moderate signal
   }
   // EV bonus — if matchup prop ALSO has strong positive EV, upgrade
   if(bestEV >= 5 && grade === 'B') { grade='A'; gradeColor='#00e5a0'; }
@@ -7387,9 +7388,9 @@ if(isMatchupProp) {
   if(pathOneA || pathTwoA) {
     grade='A'; gradeColor='#00e5a0';
   } else if(bestEV >= 3 && bookCount >= minBooksB && lineRange <= maxRangeB && hasModelEdge) {
-    grade='B'; gradeColor='#FFB800';
+    grade='B'; gradeColor=THEME.hrb;
   } else if(bestEV >= 1) {
-    grade='C'; gradeColor='#0099ff';
+    grade='C'; gradeColor=THEME.sharp;
   } else {
     grade='D'; gradeColor='#ff4d6d';
   }
@@ -7397,15 +7398,15 @@ if(isMatchupProp) {
 
 // Model override — if model says wrong side or coin flip, cap grade
 if((propJerrySport === 'NBA' || propJerrySport === 'MLB') && modelProb !== null && modelProb <= 0.50) {
-  if(grade === 'A' || grade === 'B') { grade = 'C'; gradeColor = '#0099ff'; }
+  if(grade === 'A' || grade === 'B') { grade = 'C'; gradeColor = THEME.sharp; }
 }
 // NBA without BDL stats — can't confirm, cap at B
 if(propJerrySport === 'NBA' && modelAvg === null && grade === 'A') {
-  grade = 'B'; gradeColor = '#FFB800';
+  grade = 'B'; gradeColor = THEME.hrb;
 }
 // Temporarily exclude pitcher K props — early season data too thin
 if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-01')) {
-  grade = 'C'; gradeColor = '#0099ff';
+  grade = 'C'; gradeColor = THEME.sharp;
 }
         // AI Jerry narration
         try {
@@ -8023,7 +8024,7 @@ setJerryHistory(prev => {
   const rankColor=(rank,total=30)=>{
     const pct=rank/total;
     if(pct<=0.33) return '#00e5a0';
-    if(pct<=0.66) return '#ffd166';
+    if(pct<=0.66) return THEME.push;
     return '#ff4d6d';
   };
 
@@ -8134,7 +8135,7 @@ setJerryHistory(prev => {
             const tierColor = pp?.tier === 'PRIME' ? '#ff4d6d' :
               pp?.tier === 'STRONG' ? '#00e5a0' :
               pp?.tier === 'LEAN' ? HRB_COLOR :
-              pp?.tier === 'LIGHT' ? '#7a92a8' : '#7a92a8';
+              pp?.tier === 'LIGHT' ? THEME.textDim : THEME.textDim;
             const tierBg = pp?.tier === 'PRIME' ? 'rgba(255,77,109,0.10)' :
               pp?.tier === 'STRONG' ? 'rgba(0,229,160,0.10)' :
               pp?.tier === 'LEAN' ? 'rgba(255,184,0,0.10)' :
@@ -8155,28 +8156,28 @@ setJerryHistory(prev => {
                   <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
                     <Text style={{color:tierColor,fontSize:11,fontWeight:'800',letterSpacing:1}}>🔒 THE PLAY</Text>
                     <View style={{backgroundColor:tierColor,borderRadius:10,paddingHorizontal:8,paddingVertical:3}}>
-                      <Text style={{color:'#0a1520',fontSize:10,fontWeight:'800'}}>{pp.tier}</Text>
+                      <Text style={{color:THEME.surfaceHero,fontSize:10,fontWeight:'800'}}>{pp.tier}</Text>
                     </View>
                   </View>
-                  <Text style={{color:'#e8f0f8',fontSize:22,fontWeight:'800',marginBottom:6,letterSpacing:0.3}}>{pp.label}</Text>
+                  <Text style={{color:THEME.text,fontSize:22,fontWeight:'800',marginBottom:6,letterSpacing:0.3}}>{pp.label}</Text>
                   {pp.sub ? (
-                    <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:18,marginBottom:auditNote?8:0}}>{pp.sub}</Text>
+                    <Text style={{color:THEME.textDim,fontSize:13,lineHeight:18,marginBottom:auditNote?8:0}}>{pp.sub}</Text>
                   ) : null}
                   {auditNote ? (
                     <View style={{paddingTop:8,borderTopWidth:1,borderTopColor:tierBorder}}>
                       <Text style={{color:tierColor,fontSize:11,fontWeight:'700'}}>📊 AUDIT</Text>
-                      <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{auditNote}</Text>
+                      <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{auditNote}</Text>
                     </View>
                   ) : null}
                   {sweat != null ? (
                     <View style={{flexDirection:'row',justifyContent:'space-between',marginTop:10,paddingTop:8,borderTopWidth:1,borderTopColor:tierBorder}}>
-                      <Text style={{color:'#7a92a8',fontSize:11}}>Sweat Score</Text>
-                      <Text style={{color:'#c8d8e8',fontSize:11,fontWeight:'700'}}>{sweat}/100 — {sweatTier || ''}</Text>
+                      <Text style={{color:THEME.textDim,fontSize:11}}>Sweat Score</Text>
+                      <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700'}}>{sweat}/100 — {sweatTier || ''}</Text>
                     </View>
                   ) : null}
                   {lockedAtLabel ? (
                     <View style={{flexDirection:'row',alignItems:'center',justifyContent:'flex-end',marginTop:4}}>
-                      <Text style={{color:'#5e7388',fontSize:10}}>🔒 Tier locked at {lockedAtLabel}</Text>
+                      <Text style={{color:THEME.textDim,fontSize:10}}>🔒 Tier locked at {lockedAtLabel}</Text>
                     </View>
                   ) : null}
                 </View>
@@ -8186,8 +8187,8 @@ setJerryHistory(prev => {
             if (sweat != null && (sweatTier === 'STRONG' || sweatTier === 'LIGHT_LEAN')) {
               return (
                 <View style={{marginHorizontal:16,marginTop:4,marginBottom:12,backgroundColor:'rgba(122,146,168,0.06)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(122,146,168,0.15)'}}>
-                  <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:4,letterSpacing:0.5}}>NO SPECIFIC PLAY</Text>
-                  <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:18}}>
+                  <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',marginBottom:4,letterSpacing:0.5}}>NO SPECIFIC PLAY</Text>
+                  <Text style={{color:THEME.textDim,fontSize:13,lineHeight:18}}>
                     Sweat Score {sweat}/100 — high data interest but no actionable lean (model edge below conviction threshold). See best plays below.
                   </Text>
                 </View>
@@ -8211,18 +8212,18 @@ setJerryHistory(prev => {
             {jerryExpanded && (gameNarrativeLoading?(
               <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
                 <ActivityIndicator size='small' color={HRB_COLOR}/>
-                <Text style={{color:'#4a6070',fontSize:13}}>Jerry is breaking down the tape...</Text>
+                <Text style={{color:THEME.textMuted,fontSize:13}}>Jerry is breaking down the tape...</Text>
               </View>
             ):(()=>{
               const raw = (gameNarrative || '').trim();
-              if(!raw) return <Text style={{color:'#7a92a8',fontSize:13}}>No read available yet.</Text>;
+              if(!raw) return <Text style={{color:THEME.textDim,fontSize:13}}>No read available yet.</Text>;
               // Parse sections from **Header** markdown — split preserving headers
               const sectionRegex = /\*\*([^*]+?)\*\*/g;
               const hasHeaders = sectionRegex.test(raw);
               if(!hasHeaders) {
                 // Plain paragraph (or compact single-paragraph style for NHL/UFC/NCAAB)
                 const clean = raw.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim();
-                return <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20}}>{clean}</Text>;
+                return <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>{clean}</Text>;
               }
               // Split — parts[0] is any leading text before first header, then
               // alternating header/body pairs. We skip leading text (Jerry
@@ -8237,7 +8238,7 @@ setJerryHistory(prev => {
               if(sections.length === 0) {
                 // Fallback: render whatever we got, stripped
                 const clean = raw.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim();
-                return <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20}}>{clean}</Text>;
+                return <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>{clean}</Text>;
               }
               return (
                 <View style={{gap:12, width: '100%'}}>
@@ -8249,7 +8250,7 @@ setJerryHistory(prev => {
                     // expanding past the parent padding.
                     <View key={i} style={{width: '100%', flexShrink: 1}}>
                       <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11,marginBottom:4,letterSpacing:0.5}}>{s.title.toUpperCase()}</Text>
-                      <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:19,flexShrink:1}}>{s.body.replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
+                      <Text style={{color:THEME.textDim,fontSize:13,lineHeight:19,flexShrink:1}}>{s.body.replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
                     </View>
                   ))}
                 </View>
@@ -8271,23 +8272,23 @@ setJerryHistory(prev => {
             const bottomLine: string = cs.bottom_line || '';
             const Row = ({label, value}: {label: string, value: any}) => (value === null || value === undefined || value === '' || value === 'neutral') ? null : (
               <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
-                <Text style={{color:'#7a92a8',fontSize:12}}>{label}</Text>
-                <Text style={{color:'#c8d8e8',fontSize:12,fontWeight:'600',flexShrink:1,textAlign:'right',marginLeft:8}}>{String(value)}</Text>
+                <Text style={{color:THEME.textDim,fontSize:12}}>{label}</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600',flexShrink:1,textAlign:'right',marginLeft:8}}>{String(value)}</Text>
               </View>
             );
-            const Section = ({title}: {title: string}) => <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginTop:8,marginBottom:6,letterSpacing:0.5}}>{title}</Text>;
+            const Section = ({title}: {title: string}) => <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',marginTop:8,marginBottom:6,letterSpacing:0.5}}>{title}</Text>;
             const m = s.market || {};
             const playRows = (Array.isArray(s.best_plays) && s.best_plays.length > 0) ? (
               <>
                 <Section title={isNBA ? 'MODEL PICKS THIS GAME' : 'BEST PLAYS THIS GAME'}/>
                 {s.best_plays.slice(0,5).map((b: any, i: number) => (
                   <View key={i} style={{marginBottom:6}}>
-                    <Text style={{color:'#c8d8e8',fontSize:12,fontWeight:'600'}}>
+                    <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600'}}>
                       {b.tier ? `[${b.tier}${b.conviction!=null?` ${b.conviction}`:''}] ` : ''}
                       {b.player ? `${b.player} ${String(b.prop_type||'').replace(/_/g,' ')}${b.line!=null?` ${b.line}`:''}${b.projection!=null?`  ·  proj ${b.projection}`:''}`
                                 : `${b.label || String(b.pick_type||'').toUpperCase()}${b.model_edge!=null?`  ·  ${b.model_edge>0?'+':''}${b.model_edge} edge`:''}`}
                     </Text>
-                    {Array.isArray(b.why) && b.why[0] ? <Text style={{color:'#7a92a8',fontSize:11}}>{b.why[0]}</Text> : null}
+                    {Array.isArray(b.why) && b.why[0] ? <Text style={{color:THEME.textDim,fontSize:11}}>{b.why[0]}</Text> : null}
                   </View>
                 ))}
               </>
@@ -8312,20 +8313,20 @@ setJerryHistory(prev => {
               };
               denseContent = (
                 <>
-                  <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>MODEL vs MARKET</Text>
+                  <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>MODEL vs MARKET</Text>
                   <Row label="Spread edge" value={edgeLine}/>
                   <Row label="Total" value={m.total!=null ? `${m.total}${m.pace_avg!=null?`  ·  pace ${m.pace_avg}`:''}${mo.total_lean?`  ·  ${String(mo.total_lean).toUpperCase()} lean${mo.total_tier?` (${mo.total_tier})`:''}`:''}` : null}/>
                   <Row label="ML" value={(m.home_ml!=null||m.away_ml!=null) ? `home ${m.home_ml ?? '?'} / away ${m.away_ml ?? '?'}` : null}/>
                   <Row label="L10 drift" value={(mo.home_drift!=null||mo.away_drift!=null) ? `home ${mo.home_drift ?? '?'} / away ${mo.away_drift ?? '?'}` : null}/>
                   <Section title="EFFICIENCY"/>
-                  {effText(ea, away) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{effText(ea, away)}</Text>}
-                  {ea.home_record||ea.away_record ? <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6}}>{away} home {ea.home_record||'?'} / away {ea.away_record||'?'}</Text> : null}
-                  {effText(eh, home) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{effText(eh, home)}</Text>}
-                  {eh.home_record||eh.away_record ? <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6}}>{home} home {eh.home_record||'?'} / away {eh.away_record||'?'}</Text> : null}
+                  {effText(ea, away) && <Text style={{color:THEME.textDim,fontSize:12,marginBottom:3}}>{effText(ea, away)}</Text>}
+                  {ea.home_record||ea.away_record ? <Text style={{color:THEME.textDim,fontSize:11,marginBottom:6}}>{away} home {ea.home_record||'?'} / away {ea.away_record||'?'}</Text> : null}
+                  {effText(eh, home) && <Text style={{color:THEME.textDim,fontSize:12,marginBottom:3}}>{effText(eh, home)}</Text>}
+                  {eh.home_record||eh.away_record ? <Text style={{color:THEME.textDim,fontSize:11,marginBottom:6}}>{home} home {eh.home_record||'?'} / away {eh.away_record||'?'}</Text> : null}
                   {(inj.home || inj.away || inj.star_out) ? (
                     <>
                       <Section title="INJURIES"/>
-                      {inj.star_out ? <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:4}}>⚠ Star OUT — leans suppressed{inj.star_out_note?`: ${inj.star_out_note}`:''}</Text> : null}
+                      {inj.star_out ? <Text style={{color:THEME.accent,fontSize:11,marginBottom:4}}>⚠ Star OUT — leans suppressed{inj.star_out_note?`: ${inj.star_out_note}`:''}</Text> : null}
                       <Row label={home} value={inj.home}/>
                       <Row label={away} value={inj.away}/>
                     </>
@@ -8399,8 +8400,8 @@ setJerryHistory(prev => {
                 if(p.projected_outs != null) tail.push(`${p.projected_outs} outs`);
                 if(p.projected_er != null) tail.push(`${p.projected_er} ER`);
                 return (
-                  <Text style={{color:'#c8d8e8',fontSize:11,marginBottom:3,marginLeft:8}}>
-                    <Text style={{color:'#7a92a8'}}>Projects: </Text>
+                  <Text style={{color:THEME.textDim,fontSize:11,marginBottom:3,marginLeft:8}}>
+                    <Text style={{color:THEME.textDim}}>Projects: </Text>
                     {p.projected_ks != null ? (
                       <Text style={{fontWeight:'800'}}>{p.projected_ks} K</Text>
                     ) : null}
@@ -8411,7 +8412,7 @@ setJerryHistory(prev => {
               };
               denseContent = (
                 <>
-                  <Text style={{color:'#5a7a92',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>MODEL vs MARKET</Text>
+                  <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>MODEL vs MARKET</Text>
                   <Row label="Total" value={totalLine}/>
                   <Row label="Spread" value={spreadLine}/>
                   <Row label="Confluence" value={conflLine}/>
@@ -8423,12 +8424,12 @@ setJerryHistory(prev => {
                   <Row label="L10 offense" value={drift(sit.home_l10_rpg, sit.away_l10_rpg)}/>
                   <Row label="wRC+" value={(sit.home_wrc_plus!=null||sit.away_wrc_plus!=null) ? `home ${sit.home_wrc_plus ?? '?'} / away ${sit.away_wrc_plus ?? '?'}` : null}/>
                   <Section title="STARTERS"/>
-                  {pitcherText(pa) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(pa)}</Text>}
+                  {pitcherText(pa) && <Text style={{color:THEME.textDim,fontSize:12,marginBottom:3}}>{pitcherText(pa)}</Text>}
                   {projectionLine(pa)}
-                  {(pa.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(pa.flags||[]).join(' · ')}</Text>}
-                  {pitcherText(ph) && <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:3}}>{pitcherText(ph)}</Text>}
+                  {(pa.flags||[]).length > 0 && <Text style={{color:THEME.accent,fontSize:11,marginBottom:6}}>⚠ {(pa.flags||[]).join(' · ')}</Text>}
+                  {pitcherText(ph) && <Text style={{color:THEME.textDim,fontSize:12,marginBottom:3}}>{pitcherText(ph)}</Text>}
                   {projectionLine(ph)}
-                  {(ph.flags||[]).length > 0 && <Text style={{color:'#ff8c5a',fontSize:11,marginBottom:6}}>⚠ {(ph.flags||[]).join(' · ')}</Text>}
+                  {(ph.flags||[]).length > 0 && <Text style={{color:THEME.accent,fontSize:11,marginBottom:6}}>⚠ {(ph.flags||[]).join(' · ')}</Text>}
                   {playRows}
                 </>
               );
@@ -8436,7 +8437,7 @@ setJerryHistory(prev => {
 
             return (
               <View style={{marginHorizontal:16,marginBottom:12,backgroundColor:'rgba(74,158,255,0.05)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(74,158,255,0.18)'}}>
-                <Text style={{color:'#4a9eff',fontWeight:'800',fontSize:12,marginBottom:10}}>📊 THE NUMBERS{s.is_potd ? '  ·  ⭐ PLAY OF THE DAY' : ''}</Text>
+                <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:12,marginBottom:10}}>📊 THE NUMBERS{s.is_potd ? '  ·  ⭐ PLAY OF THE DAY' : ''}</Text>
 
                 {/* Casual summary — always visible, plain-English headlines + bottom line.
                     Derived server-side in generate_<sport>_game_reads.py so the tone is
@@ -8444,13 +8445,13 @@ setJerryHistory(prev => {
                 {headlines.length > 0 && (
                   <View style={{marginBottom:8}}>
                     {headlines.map((h, i) => (
-                      <Text key={i} style={{color:'#c8d8e8',fontSize:13,lineHeight:19,marginBottom:4}}>{h}</Text>
+                      <Text key={i} style={{color:THEME.textDim,fontSize:13,lineHeight:19,marginBottom:4}}>{h}</Text>
                     ))}
                   </View>
                 )}
                 {bottomLine ? (
                   <View style={{paddingTop:8,marginBottom:numbersExpanded?10:6,borderTopWidth:1,borderTopColor:'rgba(74,158,255,0.15)'}}>
-                    <Text style={{color:'#4a9eff',fontSize:13,fontWeight:'700',lineHeight:18}}>{bottomLine}</Text>
+                    <Text style={{color:THEME.sharp,fontSize:13,fontWeight:'700',lineHeight:18}}>{bottomLine}</Text>
                   </View>
                 ) : null}
 
@@ -8460,7 +8461,7 @@ setJerryHistory(prev => {
                   style={{alignSelf:'flex-start',paddingVertical:4}}
                   activeOpacity={0.7}
                 >
-                  <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'600'}}>
+                  <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'600'}}>
                     {numbersExpanded ? 'Hide the numbers ▴' : 'Show all the numbers ▾'}
                   </Text>
                 </TouchableOpacity>
@@ -8468,7 +8469,7 @@ setJerryHistory(prev => {
                 {numbersExpanded && (
                   <View style={{marginTop:10,paddingTop:10,borderTopWidth:1,borderTopColor:'rgba(74,158,255,0.15)'}}>
                     {denseContent}
-                    <Text style={{color:'#4a6070',fontSize:10,marginTop:8,fontStyle:'italic'}}>Pre-game model snapshot — tendencies, not predictions. Single-game variance applies.</Text>
+                    <Text style={{color:THEME.textMuted,fontSize:10,marginTop:8,fontStyle:'italic'}}>Pre-game model snapshot — tendencies, not predictions. Single-game variance applies.</Text>
                   </View>
                 )}
               </View>
@@ -8487,7 +8488,7 @@ setJerryHistory(prev => {
             const pickedFighter = pickedSide === 'a' ? p.fighter_a : p.fighter_b;
             const winProb = pickedSide === 'a' ? p.p_winner_a : 1 - p.p_winner_a;
             const tier = p.tier_winner;
-            const tierColor = tier === 'PRIME' ? '#00e5a0' : tier === 'STRONG' ? '#4a9eff' : '#7a92a8';
+            const tierColor = tier === 'PRIME' ? '#00e5a0' : tier === 'STRONG' ? THEME.sharp : THEME.textDim;
 
             const methods = [
               { label: 'KO/TKO', val: p.p_method_ko || 0 },
@@ -8515,72 +8516,72 @@ setJerryHistory(prev => {
 
             return (
               <View style={{marginHorizontal:16,marginBottom:12,backgroundColor:'rgba(74,158,255,0.08)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(74,158,255,0.3)'}}>
-                <Text style={{color:'#4a9eff',fontWeight:'800',fontSize:12,marginBottom:10}}>🤖 MODEL FIGHT BREAKDOWN</Text>
+                <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:12,marginBottom:10}}>🤖 MODEL FIGHT BREAKDOWN</Text>
 
                 {/* Winner row */}
                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10,paddingBottom:10,borderBottomWidth:1,borderBottomColor:'rgba(74,158,255,0.2)'}}>
-                  <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',letterSpacing:0.5}}>WINNER PICK</Text>
+                  <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',letterSpacing:0.5}}>WINNER PICK</Text>
                   <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
                     <Text style={{color:'#fff',fontWeight:'700',fontSize:13}}>{pickedFighter.split(' ').pop()}</Text>
-                    <Text style={{color:'#4a9eff',fontWeight:'800',fontSize:14}}>{Math.round(winProb * 100)}%</Text>
+                    <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:14}}>{Math.round(winProb * 100)}%</Text>
                     {tier && <View style={{backgroundColor:tierColor+'20',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:tierColor+'44'}}><Text style={{color:tierColor,fontWeight:'800',fontSize:10}}>{tier}</Text></View>}
                   </View>
                 </View>
 
                 {/* Method probabilities */}
                 <View style={{marginBottom:10}}>
-                  <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>METHOD OF VICTORY</Text>
+                  <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>METHOD OF VICTORY</Text>
                   {methods.map((m, i) => (
                     <View key={i} style={{flexDirection:'row',alignItems:'center',marginBottom:4}}>
-                      <Text style={{color: i === 0 ? '#fff' : '#7a92a8', fontSize:12, fontWeight: i === 0 ? '700' : '400', width:90}}>{m.label}</Text>
+                      <Text style={{color: i === 0 ? '#fff' : THEME.textDim, fontSize:12, fontWeight: i === 0 ? '700' : '400', width:90}}>{m.label}</Text>
                       <View style={{flex:1,marginRight:8}}>
                         <View style={{height:5,backgroundColor:'rgba(74,158,255,0.15)',borderRadius:2,overflow:'hidden'}}>
-                          <View style={{height:5,width:`${m.val*100}%`,backgroundColor: i === 0 ? '#4a9eff' : 'rgba(74,158,255,0.4)',borderRadius:2}}/>
+                          <View style={{height:5,width:`${m.val*100}%`,backgroundColor: i === 0 ? THEME.sharp : 'rgba(74,158,255,0.4)',borderRadius:2}}/>
                         </View>
                       </View>
-                      <Text style={{color: i === 0 ? '#4a9eff' : '#7a92a8', fontSize:12, fontWeight: i === 0 ? '700' : '400', width:36, textAlign:'right'}}>{Math.round(m.val * 100)}%</Text>
+                      <Text style={{color: i === 0 ? THEME.sharp : THEME.textDim, fontSize:12, fontWeight: i === 0 ? '700' : '400', width:36, textAlign:'right'}}>{Math.round(m.val * 100)}%</Text>
                     </View>
                   ))}
                   {p.edge_method && (
                     <View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2,marginTop:4,alignSelf:'flex-start'}}>
-                      <Text style={{color:'#FFB800',fontSize:10,fontWeight:'800'}}>⚡ {p.edge_method} EDGE</Text>
+                      <Text style={{color:THEME.hrb,fontSize:10,fontWeight:'800'}}>⚡ {p.edge_method} EDGE</Text>
                     </View>
                   )}
                 </View>
 
                 {/* Distance */}
                 <View style={{marginBottom:10,paddingTop:10,borderTopWidth:1,borderTopColor:'rgba(74,158,255,0.2)'}}>
-                  <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>FIGHT GOES THE DISTANCE</Text>
+                  <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>FIGHT GOES THE DISTANCE</Text>
                   <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:3}}>
-                    <Text style={{color:p.p_distance >= 0.5 ? '#fff' : '#7a92a8',fontSize:12,fontWeight:p.p_distance >= 0.5 ? '700' : '400'}}>YES (decision)</Text>
-                    <Text style={{color:p.p_distance >= 0.5 ? '#4a9eff' : '#7a92a8',fontSize:12,fontWeight:p.p_distance >= 0.5 ? '700' : '400'}}>{Math.round((p.p_distance || 0) * 100)}%</Text>
+                    <Text style={{color:p.p_distance >= 0.5 ? '#fff' : THEME.textDim,fontSize:12,fontWeight:p.p_distance >= 0.5 ? '700' : '400'}}>YES (decision)</Text>
+                    <Text style={{color:p.p_distance >= 0.5 ? THEME.sharp : THEME.textDim,fontSize:12,fontWeight:p.p_distance >= 0.5 ? '700' : '400'}}>{Math.round((p.p_distance || 0) * 100)}%</Text>
                   </View>
                   <View style={{flexDirection:'row',justifyContent:'space-between'}}>
-                    <Text style={{color:p.p_distance < 0.5 ? '#fff' : '#7a92a8',fontSize:12,fontWeight:p.p_distance < 0.5 ? '700' : '400'}}>NO (finish before R5)</Text>
-                    <Text style={{color:p.p_distance < 0.5 ? '#4a9eff' : '#7a92a8',fontSize:12,fontWeight:p.p_distance < 0.5 ? '700' : '400'}}>{Math.round((1 - (p.p_distance || 0)) * 100)}%</Text>
+                    <Text style={{color:p.p_distance < 0.5 ? '#fff' : THEME.textDim,fontSize:12,fontWeight:p.p_distance < 0.5 ? '700' : '400'}}>NO (finish before R5)</Text>
+                    <Text style={{color:p.p_distance < 0.5 ? THEME.sharp : THEME.textDim,fontSize:12,fontWeight:p.p_distance < 0.5 ? '700' : '400'}}>{Math.round((1 - (p.p_distance || 0)) * 100)}%</Text>
                   </View>
                   {p.edge_distance && (
                     <View style={{backgroundColor:'rgba(180,140,255,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2,marginTop:4,alignSelf:'flex-start'}}>
-                      <Text style={{color:'#b48cff',fontSize:10,fontWeight:'800'}}>⚡ {p.edge_distance} DIST EDGE</Text>
+                      <Text style={{color:THEME.sharp,fontSize:10,fontWeight:'800'}}>⚡ {p.edge_distance} DIST EDGE</Text>
                     </View>
                   )}
                 </View>
 
                 {/* Per-round probabilities */}
                 <View style={{paddingTop:10,borderTopWidth:1,borderTopColor:'rgba(74,158,255,0.2)'}}>
-                  <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>WHEN FIGHT ENDS (ROUND)</Text>
+                  <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>WHEN FIGHT ENDS (ROUND)</Text>
                   {[1, 2, 3, 4, 5].map(r => {
                     const val = p[`p_round_${r}`];
                     if (val == null || val < 0.03) return null;
                     return (
                       <View key={r} style={{flexDirection:'row',alignItems:'center',marginBottom:4}}>
-                        <Text style={{color:'#7a92a8',fontSize:12,width:60}}>Round {r}</Text>
+                        <Text style={{color:THEME.textDim,fontSize:12,width:60}}>Round {r}</Text>
                         <View style={{flex:1,marginRight:8}}>
                           <View style={{height:4,backgroundColor:'rgba(74,158,255,0.15)',borderRadius:2,overflow:'hidden'}}>
-                            <View style={{height:4,width:`${val*100}%`,backgroundColor:'#4a9eff',borderRadius:2}}/>
+                            <View style={{height:4,width:`${val*100}%`,backgroundColor:THEME.sharp,borderRadius:2}}/>
                           </View>
                         </View>
-                        <Text style={{color:'#7a92a8',fontSize:12,width:36,textAlign:'right'}}>{Math.round(val*100)}%</Text>
+                        <Text style={{color:THEME.textDim,fontSize:12,width:36,textAlign:'right'}}>{Math.round(val*100)}%</Text>
                       </View>
                     );
                   })}
@@ -8590,8 +8591,8 @@ setJerryHistory(prev => {
                 {divergenceNote && (
                   <View style={{marginTop:10,paddingTop:10,borderTopWidth:1,borderTopColor:'rgba(74,158,255,0.2)'}}>
                     <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:8,padding:10,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
-                      <Text style={{color:'#FFB800',fontSize:11,fontWeight:'800',marginBottom:4}}>⚡ MARKET-MODEL DIVERGENCE</Text>
-                      <Text style={{color:'#c8d8e8',fontSize:11,lineHeight:16}}>{divergenceNote}</Text>
+                      <Text style={{color:THEME.hrb,fontSize:11,fontWeight:'800',marginBottom:4}}>⚡ MARKET-MODEL DIVERGENCE</Text>
+                      <Text style={{color:THEME.textDim,fontSize:11,lineHeight:16}}>{divergenceNote}</Text>
                     </View>
                   </View>
                 )}
@@ -8601,8 +8602,8 @@ setJerryHistory(prev => {
 
            {matchupTab==='money'&&(
                   <View style={{padding:16}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:14,marginBottom:4}}>📚 BOOK CONSENSUS</Text>
-                    <Text style={{color:'#4a6070',fontSize:11,marginBottom:16}}>Real data from {bookmakers?.length||0} sportsbooks</Text>
+                    <Text style={{color:THEME.text,fontWeight:'800',fontSize:14,marginBottom:4}}>📚 BOOK CONSENSUS</Text>
+                    <Text style={{color:THEME.textMuted,fontSize:11,marginBottom:16}}>Real data from {bookmakers?.length||0} sportsbooks</Text>
                     {(()=>{
                       const spreads = bookmakers.map(bm=>{
                         const s=bm.markets&&bm.markets.find(m=>m.key==='spreads');
@@ -8625,46 +8626,46 @@ setJerryHistory(prev => {
                       const isLocked = spreadRange<=0.5&&totalRange<=0.5;
                       return(
                         <View>
-                          <View style={{backgroundColor:'#151c24',borderRadius:12,padding:14,marginBottom:12,alignItems:'center'}}>
-                            <Text style={{color:isLocked?'#00e5a0':'#FFB800',fontSize:22,fontWeight:'800'}}>{isLocked?'🔒 Locked':'⚡ Variance'}</Text>
-                            <Text style={{color:'#7a92a8',fontSize:11,marginTop:4}}>{isLocked?'Books in tight agreement':'Books disagree — potential sharp opportunity'}</Text>
+                          <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:12,padding:14,marginBottom:12,alignItems:'center'}}>
+                            <Text style={{color:isLocked?'#00e5a0':THEME.hrb,fontSize:22,fontWeight:'800'}}>{isLocked?'🔒 Locked':'⚡ Variance'}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:11,marginTop:4}}>{isLocked?'Books in tight agreement':'Books disagree — potential sharp opportunity'}</Text>
                           </View>
                           {/* Spread */}
-                          <View style={{backgroundColor:'#151c24',borderRadius:12,padding:14,marginBottom:8}}>
+                          <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:12,padding:14,marginBottom:8}}>
                             <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:8}}>
-                              <Text style={{color:'#e8f0f8',fontWeight:'700'}}>SPREAD</Text>
-                              <Text style={{color:spreadRange<=0.5?'#00e5a0':'#FFB800',fontWeight:'700'}}>{spreadRange===0?'Consensus':spreadRange.toFixed(1)+' pt range'}</Text>
+                              <Text style={{color:THEME.text,fontWeight:'700'}}>SPREAD</Text>
+                              <Text style={{color:spreadRange<=0.5?'#00e5a0':THEME.hrb,fontWeight:'700'}}>{spreadRange===0?'Consensus':spreadRange.toFixed(1)+' pt range'}</Text>
                             </View>
                             {spreads.map((s,i)=>(
-                              <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:4,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
-                                <Text style={{color:s.isHRB?HRB_COLOR:'#7a92a8',fontSize:12,fontWeight:s.isHRB?'700':'400'}}>{s.isHRB?'🎸 ':''}{s.book}</Text>
-                                <Text style={{color:s.isHRB?HRB_COLOR:'#e8f0f8',fontSize:12,fontWeight:s.isHRB?'700':'400'}}>{s.line>0?'+':''}{s.line}</Text>
+                              <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:4,borderTopWidth:i>0?1:0,borderTopColor:THEME.border}}>
+                                <Text style={{color:s.isHRB?HRB_COLOR:THEME.textDim,fontSize:12,fontWeight:s.isHRB?'700':'400'}}>{s.isHRB?'🎸 ':''}{s.book}</Text>
+                                <Text style={{color:s.isHRB?HRB_COLOR:THEME.text,fontSize:12,fontWeight:s.isHRB?'700':'400'}}>{s.line>0?'+':''}{s.line}</Text>
                               </View>
                             ))}
                           </View>
                           {/* Total */}
-                          <View style={{backgroundColor:'#151c24',borderRadius:12,padding:14,marginBottom:8}}>
+                          <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:12,padding:14,marginBottom:8}}>
                             <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:8}}>
-                              <Text style={{color:'#e8f0f8',fontWeight:'700'}}>TOTAL (O/U)</Text>
-                              <Text style={{color:totalRange<=0.5?'#00e5a0':'#FFB800',fontWeight:'700'}}>{totalRange===0?'Consensus':totalRange.toFixed(1)+' pt range'}</Text>
+                              <Text style={{color:THEME.text,fontWeight:'700'}}>TOTAL (O/U)</Text>
+                              <Text style={{color:totalRange<=0.5?'#00e5a0':THEME.hrb,fontWeight:'700'}}>{totalRange===0?'Consensus':totalRange.toFixed(1)+' pt range'}</Text>
                             </View>
                             {totals.map((t,i)=>(
-                              <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:4,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
-                                <Text style={{color:t.isHRB?HRB_COLOR:'#7a92a8',fontSize:12,fontWeight:t.isHRB?'700':'400'}}>{t.isHRB?'🎸 ':''}{t.book}</Text>
-                                <Text style={{color:t.isHRB?HRB_COLOR:'#e8f0f8',fontSize:12,fontWeight:t.isHRB?'700':'400'}}>{t.line}</Text>
+                              <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:4,borderTopWidth:i>0?1:0,borderTopColor:THEME.border}}>
+                                <Text style={{color:t.isHRB?HRB_COLOR:THEME.textDim,fontSize:12,fontWeight:t.isHRB?'700':'400'}}>{t.isHRB?'🎸 ':''}{t.book}</Text>
+                                <Text style={{color:t.isHRB?HRB_COLOR:THEME.text,fontSize:12,fontWeight:t.isHRB?'700':'400'}}>{t.line}</Text>
                               </View>
                             ))}
                           </View>
                           {/* ML */}
-                          <View style={{backgroundColor:'#151c24',borderRadius:12,padding:14}}>
+                          <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:12,padding:14}}>
                             <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:8}}>
-                              <Text style={{color:'#e8f0f8',fontWeight:'700'}}>MONEYLINE</Text>
-                              <Text style={{color:mlRange<=10?'#00e5a0':'#FFB800',fontWeight:'700'}}>{mlRange<=10?'Consensus':'+'+Math.round(mlRange)+' range'}</Text>
+                              <Text style={{color:THEME.text,fontWeight:'700'}}>MONEYLINE</Text>
+                              <Text style={{color:mlRange<=10?'#00e5a0':THEME.hrb,fontWeight:'700'}}>{mlRange<=10?'Consensus':'+'+Math.round(mlRange)+' range'}</Text>
                             </View>
                             {mls.map((m,i)=>(
-                              <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:4,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
-                                <Text style={{color:m.isHRB?HRB_COLOR:'#7a92a8',fontSize:12,fontWeight:m.isHRB?'700':'400'}}>{m.isHRB?'🎸 ':''}{m.book}</Text>
-                                <Text style={{color:m.isHRB?HRB_COLOR:'#e8f0f8',fontSize:12,fontWeight:m.isHRB?'700':'400'}}>{m.line>0?'+':''}{m.line}</Text>
+                              <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:4,borderTopWidth:i>0?1:0,borderTopColor:THEME.border}}>
+                                <Text style={{color:m.isHRB?HRB_COLOR:THEME.textDim,fontSize:12,fontWeight:m.isHRB?'700':'400'}}>{m.isHRB?'🎸 ':''}{m.book}</Text>
+                                <Text style={{color:m.isHRB?HRB_COLOR:THEME.text,fontSize:12,fontWeight:m.isHRB?'700':'400'}}>{m.line>0?'+':''}{m.line}</Text>
                               </View>
                             ))}
                           </View>
@@ -8678,10 +8679,10 @@ setJerryHistory(prev => {
             {/* SCHEDULE TAB */}
         {matchupTab==='schedule'&&(()=>{
           if(gamesSport==='NHL') return(
-            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:'#1f2d3d',alignItems:'center'}}>
+            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:THEME.border,alignItems:'center'}}>
               <Text style={{fontSize:32}}>🏒</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>NHL Schedule Data</Text>
-              <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Real-time schedule and game log data will be available for the 2026-27 NHL season.</Text>
+              <Text style={{color:THEME.text,fontWeight:'800',fontSize:16,marginTop:12}}>NHL Schedule Data</Text>
+              <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Real-time schedule and game log data will be available for the 2026-27 NHL season.</Text>
               <View style={{marginTop:12,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,paddingHorizontal:14,paddingVertical:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
                 <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11}}>🔜 COMING NEXT SEASON</Text>
               </View>
@@ -8690,36 +8691,36 @@ setJerryHistory(prev => {
           const games = scheduleGames.length > 0 ? scheduleGames : (scheduleTeam==='away'?md.awayGames:scheduleTeam==='home'?md.homeGames:md.h2hGames);
           const isReal = scheduleGames.length > 0;
           return(
-            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
+            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:THEME.border}}>
               <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
                 <View style={{flexDirection:'row',gap:6}}>
                   {[{id:'away',label:awayShort},{id:'home',label:homeShort}].map(t=>(
-                    <TouchableOpacity key={t.id} style={[{flex:1,alignItems:'center',paddingVertical:8,paddingHorizontal:12,borderRadius:10,borderWidth:1,borderColor:'#1f2d3d',backgroundColor:'#151c24'},scheduleTeam===t.id&&{backgroundColor:'rgba(255,184,0,0.12)',borderColor:HRB_COLOR}]} onPress={()=>setScheduleTeam(t.id)}>
-                      <Text style={{color:scheduleTeam===t.id?HRB_COLOR:'#7a92a8',fontWeight:'700',fontSize:12}}>{t.label}</Text>
+                    <TouchableOpacity key={t.id} style={[{flex:1,alignItems:'center',paddingVertical:8,paddingHorizontal:12,borderRadius:10,borderWidth:1,borderColor:THEME.border,backgroundColor:THEME.surfaceAlt},scheduleTeam===t.id&&{backgroundColor:'rgba(255,184,0,0.12)',borderColor:HRB_COLOR}]} onPress={()=>setScheduleTeam(t.id)}>
+                      <Text style={{color:scheduleTeam===t.id?HRB_COLOR:THEME.textDim,fontWeight:'700',fontSize:12}}>{t.label}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>
               </View>
               {scheduleGamesLoading?(
-                <View style={{alignItems:'center',paddingVertical:20}}><ActivityIndicator size="small" color={HRB_COLOR}/><Text style={{color:'#7a92a8',fontSize:11,marginTop:8}}>Loading results...</Text></View>
+                <View style={{alignItems:'center',paddingVertical:20}}><ActivityIndicator size="small" color={HRB_COLOR}/><Text style={{color:THEME.textDim,fontSize:11,marginTop:8}}>Loading results...</Text></View>
               ):(
                 <>
                   <View style={{flexDirection:'row',marginBottom:8,paddingHorizontal:4}}>
-                    <Text style={{flex:1,color:'#4a6070',fontSize:10,fontWeight:'700'}}>DATE</Text>
-                    <Text style={{flex:2,color:'#4a6070',fontSize:10,fontWeight:'700'}}>OPP</Text>
-                    <Text style={{flex:1.5,color:'#4a6070',fontSize:10,fontWeight:'700',textAlign:'center'}}>RESULT</Text>
-                    <Text style={{flex:1,color:'#4a6070',fontSize:10,fontWeight:'700',textAlign:'center'}}>ATS</Text>
-                    <Text style={{flex:1,color:'#4a6070',fontSize:10,fontWeight:'700',textAlign:'center'}}>O/U</Text>
+                    <Text style={{flex:1,color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>DATE</Text>
+                    <Text style={{flex:2,color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>OPP</Text>
+                    <Text style={{flex:1.5,color:THEME.textMuted,fontSize:10,fontWeight:'700',textAlign:'center'}}>RESULT</Text>
+                    <Text style={{flex:1,color:THEME.textMuted,fontSize:10,fontWeight:'700',textAlign:'center'}}>ATS</Text>
+                    <Text style={{flex:1,color:THEME.textMuted,fontSize:10,fontWeight:'700',textAlign:'center'}}>O/U</Text>
                   </View>
                   {games.map((g,i)=>(
-                    <View key={i} style={{flexDirection:'row',alignItems:'center',paddingVertical:8,borderTopWidth:1,borderTopColor:'#1f2d3d',paddingHorizontal:4}}>
-                      <Text style={{flex:1,color:'#7a92a8',fontSize:11}}>{g.date}</Text>
-                      <Text style={{flex:2,color:'#e8f0f8',fontSize:11,fontWeight:'600'}}>{g.home?'vs':'@'} {g.opp}</Text>
+                    <View key={i} style={{flexDirection:'row',alignItems:'center',paddingVertical:8,borderTopWidth:1,borderTopColor:THEME.border,paddingHorizontal:4}}>
+                      <Text style={{flex:1,color:THEME.textDim,fontSize:11}}>{g.date}</Text>
+                      <Text style={{flex:2,color:THEME.text,fontSize:11,fontWeight:'600'}}>{g.home?'vs':'@'} {g.opp}</Text>
                       <View style={{flex:1.5,alignItems:'center',flexDirection:'row',justifyContent:'center',gap:4}}>
                         <View style={{width:20,height:20,borderRadius:10,backgroundColor:g.win?'rgba(0,229,160,0.2)':'rgba(255,77,109,0.2)',alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:g.win?'#00e5a0':'#ff4d6d'}}>
                           <Text style={{color:g.win?'#00e5a0':'#ff4d6d',fontSize:10,fontWeight:'800'}}>{g.win?'W':'L'}</Text>
                         </View>
-                        <Text style={{color:'#7a92a8',fontSize:10}}>{g.score}</Text>
+                        <Text style={{color:THEME.textDim,fontSize:10}}>{g.score}</Text>
                       </View>
                       <View style={{flex:1,alignItems:'center'}}>
                         <View style={{width:20,height:20,borderRadius:10,backgroundColor:g.atsWin?'rgba(0,229,160,0.2)':'rgba(255,77,109,0.2)',alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:g.atsWin?'#00e5a0':'#ff4d6d'}}>
@@ -8727,14 +8728,14 @@ setJerryHistory(prev => {
                         </View>
                       </View>
                       <View style={{flex:1,alignItems:'center'}}>
-                        <View style={{width:20,height:20,borderRadius:10,backgroundColor:g.ouOver?'rgba(0,153,255,0.2)':'rgba(255,209,102,0.2)',alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:g.ouOver?'#0099ff':'#ffd166'}}>
-                          <Text style={{color:g.ouOver?'#0099ff':'#ffd166',fontSize:10,fontWeight:'800'}}>{g.ouOver?'O':'U'}</Text>
+                        <View style={{width:20,height:20,borderRadius:10,backgroundColor:g.ouOver?'rgba(0,153,255,0.2)':'rgba(255,209,102,0.2)',alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:g.ouOver?THEME.sharp:THEME.push}}>
+                          <Text style={{color:g.ouOver?THEME.sharp:THEME.push,fontSize:10,fontWeight:'800'}}>{g.ouOver?'O':'U'}</Text>
                         </View>
                       </View>
                     </View>
                   ))}
-                  {games.length===0&&<View style={{alignItems:'center',paddingVertical:20}}><Text style={{color:'#7a92a8',fontSize:12}}>No recent results found.</Text></View>}
-                  {!isReal&&<Text style={{color:'#4a6070',fontSize:10,textAlign:'right',marginTop:8}}>* Simulated data</Text>}
+                  {games.length===0&&<View style={{alignItems:'center',paddingVertical:20}}><Text style={{color:THEME.textDim,fontSize:12}}>No recent results found.</Text></View>}
+                  {!isReal&&<Text style={{color:THEME.textMuted,fontSize:10,textAlign:'right',marginTop:8}}>* Simulated data</Text>}
                 </>
               )}
             </View>
@@ -8744,10 +8745,10 @@ setJerryHistory(prev => {
             {/* TEAM STATS TAB */}
         {matchupTab==='stats'&&(()=>{
           if(gamesSport==='NHL') return(
-            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:'#1f2d3d',alignItems:'center'}}>
+            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:THEME.border,alignItems:'center'}}>
               <Text style={{fontSize:32}}>🏒</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>NHL Team Stats</Text>
-              <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Advanced team stats and efficiency data will be available for the 2026-27 NHL season.</Text>
+              <Text style={{color:THEME.text,fontWeight:'800',fontSize:16,marginTop:12}}>NHL Team Stats</Text>
+              <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Advanced team stats and efficiency data will be available for the 2026-27 NHL season.</Text>
               <View style={{marginTop:12,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,paddingHorizontal:14,paddingVertical:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
                 <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11}}>🔜 COMING NEXT SEASON</Text>
               </View>
@@ -8764,10 +8765,10 @@ setJerryHistory(prev => {
               Object.values(ncaafTeamStatsMap).find((t: any) => t.team?.toLowerCase().includes(homeKey) || homeKey.includes(t.team?.toLowerCase()));
             const hasData = awayT || homeT;
             if(!hasData) return (
-              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:'#1f2d3d',alignItems:'center'}}>
+              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:THEME.border,alignItems:'center'}}>
                 <Text style={{fontSize:32}}>🏈</Text>
-                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>NCAAF Team Stats</Text>
-                <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Team efficiency data (SP+, EPA per play, success rate) will surface once teams appear in our efficiency database. Season kicks off Aug 22.</Text>
+                <Text style={{color:THEME.text,fontWeight:'800',fontSize:16,marginTop:12}}>NCAAF Team Stats</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Team efficiency data (SP+, EPA per play, success rate) will surface once teams appear in our efficiency database. Season kicks off Aug 22.</Text>
               </View>
             );
             const _n = (v: any, d = 1) => v == null ? 'N/A' : parseFloat(v).toFixed(d);
@@ -8781,13 +8782,13 @@ setJerryHistory(prev => {
               {label:'Off Explosiveness', away: _n((awayT as any)?.off_explosiveness, 2), home: _n((homeT as any)?.off_explosiveness, 2), higherBetter: true},
             ];
             return (
-              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
+              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:THEME.border}}>
                 <View style={{flexDirection:'row',justifyContent:'flex-end',marginBottom:10}}>
                   <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 SWEAT LOCKER MODEL</Text></View>
                 </View>
                 <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:10}}>
                   <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{awayShort}</Text>
-                  <Text style={{color:'#4a6070',fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
                   <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{homeShort}</Text>
                 </View>
                 {rows.map((row, i) => {
@@ -8795,8 +8796,8 @@ setJerryHistory(prev => {
                   const homeNum = parseFloat(row.home);
                   const awayBetter = row.higherBetter ? awayNum > homeNum : awayNum < homeNum;
                   const homeBetter = row.higherBetter ? homeNum > awayNum : homeNum < awayNum;
-                  const aClr = awayBetter ? '#00e5a0' : homeBetter ? '#ff4d6d' : '#7a92a8';
-                  const hClr = homeBetter ? '#00e5a0' : awayBetter ? '#ff4d6d' : '#7a92a8';
+                  const aClr = awayBetter ? '#00e5a0' : homeBetter ? '#ff4d6d' : THEME.textDim;
+                  const hClr = homeBetter ? '#00e5a0' : awayBetter ? '#ff4d6d' : THEME.textDim;
                   return (
                     <View key={i} style={{flexDirection:'row',alignItems:'center',marginBottom:10}}>
                       <View style={{flex:1,alignItems:'flex-start'}}>
@@ -8804,7 +8805,7 @@ setJerryHistory(prev => {
                           <Text style={{color:aClr,fontWeight:awayBetter?'800':'700',fontSize:12}}>{row.away}</Text>
                         </View>
                       </View>
-                      <Text style={{flex:1.5,color:'#7a92a8',fontSize:11,textAlign:'center'}}>{row.label}</Text>
+                      <Text style={{flex:1.5,color:THEME.textDim,fontSize:11,textAlign:'center'}}>{row.label}</Text>
                       <View style={{flex:1,alignItems:'flex-end'}}>
                         <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:hClr+'22',borderWidth:1,borderColor:hClr+'44',minWidth:56,alignItems:'center'}}>
                           <Text style={{color:hClr,fontWeight:homeBetter?'800':'700',fontSize:12}}>{row.home}</Text>
@@ -8813,7 +8814,7 @@ setJerryHistory(prev => {
                     </View>
                   );
                 })}
-                <Text style={{color:'#4a6070',fontSize:10,marginTop:6,fontStyle:'italic'}}>SP+ and EPA per play from the Sweat Locker proprietary efficiency model. Latest season data.</Text>
+                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:6,fontStyle:'italic'}}>SP+ and EPA per play from the Sweat Locker proprietary efficiency model. Latest season data.</Text>
               </View>
             );
           }
@@ -8827,10 +8828,10 @@ setJerryHistory(prev => {
               Object.values(nflTeamStatsMap).find((t: any) => t.team?.toLowerCase().includes(homeKey) || homeKey.includes(t.team?.toLowerCase()));
             const hasData = awayT || homeT;
             if(!hasData) return (
-              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:'#1f2d3d',alignItems:'center'}}>
+              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:THEME.border,alignItems:'center'}}>
                 <Text style={{fontSize:32}}>🏈</Text>
-                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>NFL Team Stats</Text>
-                <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Team efficiency data will surface once teams appear in our efficiency database. Preseason Aug 7 · Week 1 Sept 4.</Text>
+                <Text style={{color:THEME.text,fontWeight:'800',fontSize:16,marginTop:12}}>NFL Team Stats</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Team efficiency data will surface once teams appear in our efficiency database. Preseason Aug 7 · Week 1 Sept 4.</Text>
               </View>
             );
             const _n = (v: any, d = 1) => v == null ? 'N/A' : parseFloat(v).toFixed(d);
@@ -8851,14 +8852,14 @@ setJerryHistory(prev => {
             const nflCtx = nflGameContextMap[nflCtxKey] || nflGameContextMap[selectedGame?.game_id] || null;
             const nflStatsSrc = nflCtx?.stats_source;
             const nflBadge = nflStatsSrc === 'prior_season_regressed'
-              ? { text: '⚠ Early season · using 2025 regressed', clr: '#ffd166' }
+              ? { text: '⚠ Early season · using 2025 regressed', clr: THEME.push }
               : nflStatsSrc === 'preseason'
-              ? { text: '🏈 Preseason · lines only, no picks', clr: '#7a92a8' }
+              ? { text: '🏈 Preseason · lines only, no picks', clr: THEME.textDim }
               : nflStatsSrc === 'none'
               ? { text: '⚠ No team stats · market/cohort only', clr: '#ff4d6d' }
               : null;
             return (
-              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
+              <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:THEME.border}}>
                 {nflBadge && (
                   <View style={{backgroundColor:nflBadge.clr+'11',borderRadius:8,paddingHorizontal:10,paddingVertical:6,marginBottom:10,borderWidth:1,borderColor:nflBadge.clr+'44'}}>
                     <Text style={{color:nflBadge.clr,fontSize:10,fontWeight:'700',textAlign:'center'}}>{nflBadge.text}</Text>
@@ -8869,7 +8870,7 @@ setJerryHistory(prev => {
                 </View>
                 <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:10}}>
                   <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{awayShort}</Text>
-                  <Text style={{color:'#4a6070',fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
                   <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{homeShort}</Text>
                 </View>
                 {rows.map((row, i) => {
@@ -8877,8 +8878,8 @@ setJerryHistory(prev => {
                   const homeNum = parseFloat(row.home);
                   const awayBetter = row.higherBetter ? awayNum > homeNum : awayNum < homeNum;
                   const homeBetter = row.higherBetter ? homeNum > awayNum : homeNum < awayNum;
-                  const aClr = awayBetter ? '#00e5a0' : homeBetter ? '#ff4d6d' : '#7a92a8';
-                  const hClr = homeBetter ? '#00e5a0' : awayBetter ? '#ff4d6d' : '#7a92a8';
+                  const aClr = awayBetter ? '#00e5a0' : homeBetter ? '#ff4d6d' : THEME.textDim;
+                  const hClr = homeBetter ? '#00e5a0' : awayBetter ? '#ff4d6d' : THEME.textDim;
                   return (
                     <View key={i} style={{flexDirection:'row',alignItems:'center',marginBottom:10}}>
                       <View style={{flex:1,alignItems:'flex-start'}}>
@@ -8886,7 +8887,7 @@ setJerryHistory(prev => {
                           <Text style={{color:aClr,fontWeight:awayBetter?'800':'700',fontSize:12}}>{row.away}</Text>
                         </View>
                       </View>
-                      <Text style={{flex:1.5,color:'#7a92a8',fontSize:11,textAlign:'center'}}>{row.label}</Text>
+                      <Text style={{flex:1.5,color:THEME.textDim,fontSize:11,textAlign:'center'}}>{row.label}</Text>
                       <View style={{flex:1,alignItems:'flex-end'}}>
                         <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:hClr+'22',borderWidth:1,borderColor:hClr+'44',minWidth:56,alignItems:'center'}}>
                           <Text style={{color:hClr,fontWeight:homeBetter?'800':'700',fontSize:12}}>{row.home}</Text>
@@ -8895,7 +8896,7 @@ setJerryHistory(prev => {
                     </View>
                   );
                 })}
-                <Text style={{color:'#4a6070',fontSize:10,marginTop:6,fontStyle:'italic'}}>Per-game rates from Sweat Locker efficiency model. Games sampled: {awayT?.games || '?'} away · {homeT?.games || '?'} home.</Text>
+                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:6,fontStyle:'italic'}}>Per-game rates from Sweat Locker efficiency model. Games sampled: {awayT?.games || '?'} away · {homeT?.games || '?'} home.</Text>
               </View>
             );
           }
@@ -8915,17 +8916,17 @@ setJerryHistory(prev => {
               // Rank badge: higher rank number = worse. Colors follow rank not raw value.
               const rankColor = (rnk: any) => {
                 const r = parseInt(rnk);
-                if(isNaN(r)) return '#7a92a8';
+                if(isNaN(r)) return THEME.textDim;
                 if(r <= 50)  return '#00e5a0';
-                if(r <= 150) return '#a5e572';
-                if(r <= 250) return '#ffd166';
+                if(r <= 150) return THEME.win;
+                if(r <= 250) return THEME.push;
                 return '#ff4d6d';
               };
               const rankBadge = (rnk: any) => {
                 const r = parseInt(rnk);
                 if(isNaN(r)) return null;
                 return (
-                  <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}> #{r}</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}> #{r}</Text>
                 );
               };
               const fmt = (v: any, d = 1) => v == null ? 'N/A' : parseFloat(v).toFixed(d);
@@ -8943,13 +8944,13 @@ setJerryHistory(prev => {
               ];
               let lastGroup = '';
               return (
-                <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
+                <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:THEME.border}}>
                   <View style={{flexDirection:'row',justifyContent:'flex-end',marginBottom:10}}>
                     <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 SWEAT LOCKER MODEL</Text></View>
                   </View>
                   <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:10}}>
                     <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{awayShort}</Text>
-                    <Text style={{color:'#4a6070',fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
+                    <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
                     <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{homeShort}</Text>
                   </View>
                   {rows.map((row, i) => {
@@ -8968,7 +8969,7 @@ setJerryHistory(prev => {
                               <Text style={{color:aClr,fontWeight:'800',fontSize:12}}>{row.away}{rankBadge(row.awayRnk)}</Text>
                             </View>
                           </View>
-                          <Text style={{flex:1.5,color:'#7a92a8',fontSize:11,textAlign:'center'}}>{row.label}</Text>
+                          <Text style={{flex:1.5,color:THEME.textDim,fontSize:11,textAlign:'center'}}>{row.label}</Text>
                           <View style={{flex:1,alignItems:'flex-end'}}>
                             <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:hClr+'22',borderWidth:1,borderColor:hClr+'44',minWidth:64,alignItems:'center'}}>
                               <Text style={{color:hClr,fontWeight:'800',fontSize:12}}>{row.home}{rankBadge(row.homeRnk)}</Text>
@@ -8978,7 +8979,7 @@ setJerryHistory(prev => {
                       </View>
                     );
                   })}
-                  <Text style={{color:'#4a6070',fontSize:10,marginTop:8,fontStyle:'italic'}}>Four Factors from Sweat Locker proprietary efficiency model. Ranks out of {totalT} D1 teams.</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:10,marginTop:8,fontStyle:'italic'}}>Four Factors from Sweat Locker proprietary efficiency model. Ranks out of {totalT} D1 teams.</Text>
                 </View>
               );
             }
@@ -9014,13 +9015,13 @@ setJerryHistory(prev => {
           ] : md.statCategories;
           const totalTeams = isNCAAB ? bartData.length||358 : 30;
           return(
-            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
+            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:THEME.border}}>
               {hasReal&&<View style={{flexDirection:'row',justifyContent:'flex-end',marginBottom:10}}>
                 <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 LIVE DATA</Text></View>
               </View>}
               <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:10}}>
                 <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{awayShort}</Text>
-                <Text style={{color:'#4a6070',fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
+                <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'600'}}>STAT CATEGORY</Text>
                 <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>{homeShort}</Text>
               </View>
               {!isMLB && (hasReal ? statCats : md.statCategories).map((stat,i)=>{
@@ -9033,8 +9034,8 @@ setJerryHistory(prev => {
                const homeNum = parseFloat(homeVal);
                const awayBetter = useComparison ? (hb===true ? awayNum>homeNum : hb===false ? awayNum<homeNum : null) : null;
                const homeBetter = useComparison ? (hb===true ? homeNum>awayNum : hb===false ? homeNum<awayNum : null) : null;
-               const awayColor = useComparison ? (awayBetter?'#00e5a0':homeBetter?'#ff4d6d':'#7a92a8') : rankColor(awayVal, totalTeams);
-               const homeColor = useComparison ? (homeBetter?'#00e5a0':awayBetter?'#ff4d6d':'#7a92a8') : rankColor(homeVal, totalTeams);
+               const awayColor = useComparison ? (awayBetter?'#00e5a0':homeBetter?'#ff4d6d':THEME.textDim) : rankColor(awayVal, totalTeams);
+               const homeColor = useComparison ? (homeBetter?'#00e5a0':awayBetter?'#ff4d6d':THEME.textDim) : rankColor(homeVal, totalTeams);
                 return(
                   <View key={i} style={{flexDirection:'row',alignItems:'center',marginBottom:10}}>
                     <View style={{flex:1,alignItems:'flex-start'}}>
@@ -9042,7 +9043,7 @@ setJerryHistory(prev => {
                         <Text style={{color:awayColor,fontWeight:awayBetter?'800':'700',fontSize:12}}>{isNCAAB?'#':''}{awayVal}</Text>
                       </View>
                     </View>
-                    <Text style={{flex:1.5,color:'#7a92a8',fontSize:11,textAlign:'center'}}>{stat.label}</Text>
+                    <Text style={{flex:1.5,color:THEME.textDim,fontSize:11,textAlign:'center'}}>{stat.label}</Text>
                     <View style={{flex:1,alignItems:'flex-end'}}>
                       <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:homeColor+'22',borderWidth:1,borderColor:homeColor+'44',minWidth:48,alignItems:'center'}}>
                         <Text style={{color:homeColor,fontWeight:homeBetter?'800':'700',fontSize:12}}>{isNCAAB?'#':''}{homeVal}</Text>
@@ -9060,13 +9061,13 @@ setJerryHistory(prev => {
                 // Sample-size context (2026-07-25) — per feedback_sample_size_with_pct.
                 // Every surfaced stat needs sample context so users can gauge trust.
                 const sampleHeader = (
-                  <View style={{backgroundColor:'#0d1419',borderRadius:8,padding:8,marginBottom:10,borderWidth:1,borderColor:'#1a2530'}}>
-                    <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',letterSpacing:0.6,marginBottom:4}}>SAMPLE — Season 2026, stats through today</Text>
+                  <View style={{backgroundColor:THEME.surface,borderRadius:8,padding:8,marginBottom:10,borderWidth:1,borderColor:THEME.surfaceAlt}}>
+                    <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',letterSpacing:0.6,marginBottom:4}}>SAMPLE — Season 2026, stats through today</Text>
                     <View style={{flexDirection:'row',justifyContent:'space-between'}}>
-                      <Text style={{color:'#c8d8e8',fontSize:11}}>
+                      <Text style={{color:THEME.textDim,fontSize:11}}>
                         <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{awayShort}</Text> {mlbCtx.away_record || '?'} · L10 {mlbCtx.away_last10 || '?'}{mlbCtx.away_streak ? ` · ${mlbCtx.away_streak}` : ''}
                       </Text>
-                      <Text style={{color:'#c8d8e8',fontSize:11}}>
+                      <Text style={{color:THEME.textDim,fontSize:11}}>
                         <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{homeShort}</Text> {mlbCtx.home_record || '?'} · L10 {mlbCtx.home_last10 || '?'}{mlbCtx.home_streak ? ` · ${mlbCtx.home_streak}` : ''}
                       </Text>
                     </View>
@@ -9087,13 +9088,13 @@ setJerryHistory(prev => {
                       <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,marginBottom:6}}>PITCHER MATCHUP</Text>
                       <View style={{flexDirection:'row',justifyContent:'space-between'}}>
                         <View style={{flex:1}}>
-                          <Text style={{color:'#e8f0f8',fontSize:12,fontWeight:'700'}}>{mlbCtx.away_pitcher || selectedGame?.away_pitcher || 'TBD'}</Text>
-                          <Text style={{color:'#7a92a8',fontSize:10}}>xERA: {mlbCtx.away_sp_xera && parseFloat(mlbCtx.away_sp_xera) <= 6.5 ? parseFloat(mlbCtx.away_sp_xera).toFixed(2) : 'N/A'}</Text>
+                          <Text style={{color:THEME.text,fontSize:12,fontWeight:'700'}}>{mlbCtx.away_pitcher || selectedGame?.away_pitcher || 'TBD'}</Text>
+                          <Text style={{color:THEME.textDim,fontSize:10}}>xERA: {mlbCtx.away_sp_xera && parseFloat(mlbCtx.away_sp_xera) <= 6.5 ? parseFloat(mlbCtx.away_sp_xera).toFixed(2) : 'N/A'}</Text>
                         </View>
-                        <Text style={{color:'#4a6070',fontSize:11,fontWeight:'700',alignSelf:'center'}}>vs</Text>
+                        <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'700',alignSelf:'center'}}>vs</Text>
                         <View style={{flex:1,alignItems:'flex-end'}}>
-                          <Text style={{color:'#e8f0f8',fontSize:12,fontWeight:'700'}}>{mlbCtx.home_pitcher || selectedGame?.home_pitcher || 'TBD'}</Text>
-                          <Text style={{color:'#7a92a8',fontSize:10}}>xERA: {mlbCtx.home_sp_xera && parseFloat(mlbCtx.home_sp_xera) <= 6.5 ? parseFloat(mlbCtx.home_sp_xera).toFixed(2) : 'N/A'}</Text>
+                          <Text style={{color:THEME.text,fontSize:12,fontWeight:'700'}}>{mlbCtx.home_pitcher || selectedGame?.home_pitcher || 'TBD'}</Text>
+                          <Text style={{color:THEME.textDim,fontSize:10}}>xERA: {mlbCtx.home_sp_xera && parseFloat(mlbCtx.home_sp_xera) <= 6.5 ? parseFloat(mlbCtx.home_sp_xera).toFixed(2) : 'N/A'}</Text>
                         </View>
                       </View>
                     </View>
@@ -9127,37 +9128,37 @@ setJerryHistory(prev => {
                         // Regression severity — matches generate_props.py gates
                         const regressColor = kDelta == null ? null
                           : kDelta <= -8 ? '#ff4d6d'   // severe regression
-                          : kDelta <= -5 ? '#ffb800'   // moderate regression
+                          : kDelta <= -5 ? THEME.hrb   // moderate regression
                           : kDelta >= 5  ? '#00e5a0'   // hot streak
-                          : '#7a92a8';                 // stable
+                          : THEME.textDim;                 // stable
                         if(!l7 && !ps) return (
                           <View style={{marginBottom:8}}>
-                            <Text style={{color:'#7a92a8',fontSize:11}}>{label}: no data</Text>
+                            <Text style={{color:THEME.textDim,fontSize:11}}>{label}: no data</Text>
                           </View>
                         );
                         return (
-                          <View style={{marginBottom:10,backgroundColor:'#0d1419',borderRadius:8,padding:8}}>
-                            <Text style={{color:'#e8f0f8',fontSize:11,fontWeight:'700',marginBottom:3}}>{label}</Text>
+                          <View style={{marginBottom:10,backgroundColor:THEME.surface,borderRadius:8,padding:8}}>
+                            <Text style={{color:THEME.text,fontSize:11,fontWeight:'700',marginBottom:3}}>{label}</Text>
                             {l7 && (
                               <>
-                                <Text style={{color:'#c8d8e8',fontSize:11}}>
+                                <Text style={{color:THEME.textDim,fontSize:11}}>
                                   L7 ({l7.n_starts} starts): {l7.avg_k} K · {l7.avg_bb} BB · {l7.avg_hits} H · {l7.avg_ip} IP/start
                                 </Text>
-                                <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>
+                                <Text style={{color:THEME.textDim,fontSize:10,marginTop:2}}>
                                   {l7.whip != null ? `${l7.whip} WHIP · ` : ''}{l7.k_per_9} K/9 · {l7.bb_per_9} BB/9 · {l7.hits_per_9} H/9 · {l7.era} ERA
                                 </Text>
                               </>
                             )}
                             {/* Statcast + regression signals — bottom row */}
                             {(whiff != null || hardHit != null || kDelta != null) && (
-                              <View style={{flexDirection:'row',flexWrap:'wrap',gap:8,marginTop:6,paddingTop:6,borderTopWidth:1,borderTopColor:'#1a2530'}}>
+                              <View style={{flexDirection:'row',flexWrap:'wrap',gap:8,marginTop:6,paddingTop:6,borderTopWidth:1,borderTopColor:THEME.surfaceAlt}}>
                                 {whiff != null && (
-                                  <Text style={{color:whiff >= 28 ? '#00e5a0' : whiff < 15 ? '#ff4d6d' : '#c8d8e8',fontSize:10,fontWeight:'700'}}>
+                                  <Text style={{color:whiff >= 28 ? '#00e5a0' : whiff < 15 ? '#ff4d6d' : THEME.textDim,fontSize:10,fontWeight:'700'}}>
                                     whiff {whiff.toFixed(1)}%
                                   </Text>
                                 )}
                                 {hardHit != null && (
-                                  <Text style={{color:hardHit >= 42 ? '#ff4d6d' : '#c8d8e8',fontSize:10,fontWeight:'700'}}>
+                                  <Text style={{color:hardHit >= 42 ? '#ff4d6d' : THEME.textDim,fontSize:10,fontWeight:'700'}}>
                                     hard-hit {hardHit.toFixed(1)}%
                                   </Text>
                                 )}
@@ -9173,10 +9174,10 @@ setJerryHistory(prev => {
                       };
                       return (
                         <View style={{marginBottom:14,backgroundColor:'rgba(0,153,255,0.06)',borderRadius:10,padding:10,borderWidth:1,borderColor:'rgba(0,153,255,0.2)'}}>
-                          <Text style={{color:'#0099ff',fontWeight:'700',fontSize:11,marginBottom:6,letterSpacing:0.5}}>📋 PITCHER SCOUTING — last 7 starts</Text>
+                          <Text style={{color:THEME.sharp,fontWeight:'700',fontSize:11,marginBottom:6,letterSpacing:0.5}}>📋 PITCHER SCOUTING — last 7 starts</Text>
                           {renderProj(mlbCtx.away_pitcher || selectedGame?.away_pitcher || 'Away SP', awayProj)}
                           {renderProj(mlbCtx.home_pitcher || selectedGame?.home_pitcher || 'Home SP', homeProj)}
-                          <Text style={{color:'#4a6070',fontSize:9,marginTop:2,fontStyle:'italic'}}>Per-start averages from gameLog. Use to shop pitcher prop lines (K / walks / hits / outs) at your book.</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,fontStyle:'italic'}}>Per-start averages from gameLog. Use to shop pitcher prop lines (K / walks / hits / outs) at your book.</Text>
                         </View>
                       );
                     })()}
@@ -9189,14 +9190,14 @@ setJerryHistory(prev => {
                       return(
                         <View key={i} style={{flexDirection:'row',alignItems:'center',marginBottom:10}}>
                           <View style={{flex:1,alignItems:'flex-start'}}>
-                            <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:(awayBetter?'#00e5a0':homeBetter?'#ff4d6d':'#7a92a8')+'22',borderWidth:1,borderColor:(awayBetter?'#00e5a0':homeBetter?'#ff4d6d':'#7a92a8')+'44',minWidth:48,alignItems:'center'}}>
-                              <Text style={{color:awayBetter?'#00e5a0':homeBetter?'#ff4d6d':'#7a92a8',fontWeight:awayBetter?'800':'700',fontSize:12}}>{row.away}</Text>
+                            <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:(awayBetter?'#00e5a0':homeBetter?'#ff4d6d':THEME.textDim)+'22',borderWidth:1,borderColor:(awayBetter?'#00e5a0':homeBetter?'#ff4d6d':THEME.textDim)+'44',minWidth:48,alignItems:'center'}}>
+                              <Text style={{color:awayBetter?'#00e5a0':homeBetter?'#ff4d6d':THEME.textDim,fontWeight:awayBetter?'800':'700',fontSize:12}}>{row.away}</Text>
                             </View>
                           </View>
-                          <Text style={{flex:1.5,color:'#7a92a8',fontSize:11,textAlign:'center'}}>{row.label}</Text>
+                          <Text style={{flex:1.5,color:THEME.textDim,fontSize:11,textAlign:'center'}}>{row.label}</Text>
                           <View style={{flex:1,alignItems:'flex-end'}}>
-                            <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:(homeBetter?'#00e5a0':awayBetter?'#ff4d6d':'#7a92a8')+'22',borderWidth:1,borderColor:(homeBetter?'#00e5a0':awayBetter?'#ff4d6d':'#7a92a8')+'44',minWidth:48,alignItems:'center'}}>
-                              <Text style={{color:homeBetter?'#00e5a0':awayBetter?'#ff4d6d':'#7a92a8',fontWeight:homeBetter?'800':'700',fontSize:12}}>{row.home}</Text>
+                            <View style={{paddingHorizontal:10,paddingVertical:5,borderRadius:8,backgroundColor:(homeBetter?'#00e5a0':awayBetter?'#ff4d6d':THEME.textDim)+'22',borderWidth:1,borderColor:(homeBetter?'#00e5a0':awayBetter?'#ff4d6d':THEME.textDim)+'44',minWidth:48,alignItems:'center'}}>
+                              <Text style={{color:homeBetter?'#00e5a0':awayBetter?'#ff4d6d':THEME.textDim,fontWeight:homeBetter?'800':'700',fontSize:12}}>{row.home}</Text>
                             </View>
                           </View>
                         </View>
@@ -9207,16 +9208,16 @@ setJerryHistory(prev => {
                         signals in mlb_game_context — surfacing here so users
                         see the same bullpen picture the models use. */}
                     {(mlbCtx.home_bullpen_era != null || mlbCtx.away_bullpen_era != null) && (
-                      <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,marginBottom:8}}>
+                      <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,marginBottom:8}}>
                         <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,letterSpacing:0.4,marginBottom:6}}>BULLPEN</Text>
                         <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
-                          <Text style={{color:'#c8d8e8',fontSize:11}}>
-                            <Text style={{color:HRB_COLOR}}>{awayShort}</Text>: ERA <Text style={{color:mlbCtx.away_bullpen_era>=4.5?'#ff4d6d':mlbCtx.away_bullpen_era<=3.5?'#00e5a0':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.away_bullpen_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.away_save_pct != null ? <Text> · SV% {mlbCtx.away_save_pct.toFixed(0)}%</Text> : null}{mlbCtx.away_bp_relievers_3d != null ? <Text style={{color:mlbCtx.away_bp_relievers_3d>=8?'#ff4d6d':'#7a92a8'}}> · {mlbCtx.away_bp_relievers_3d} arms L3d</Text> : null}
+                          <Text style={{color:THEME.textDim,fontSize:11}}>
+                            <Text style={{color:HRB_COLOR}}>{awayShort}</Text>: ERA <Text style={{color:mlbCtx.away_bullpen_era>=4.5?'#ff4d6d':mlbCtx.away_bullpen_era<=3.5?'#00e5a0':THEME.text,fontWeight:'700'}}>{mlbCtx.away_bullpen_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.away_save_pct != null ? <Text> · SV% {mlbCtx.away_save_pct.toFixed(0)}%</Text> : null}{mlbCtx.away_bp_relievers_3d != null ? <Text style={{color:mlbCtx.away_bp_relievers_3d>=8?'#ff4d6d':THEME.textDim}}> · {mlbCtx.away_bp_relievers_3d} arms L3d</Text> : null}
                           </Text>
                         </View>
                         <View style={{flexDirection:'row',justifyContent:'space-between'}}>
-                          <Text style={{color:'#c8d8e8',fontSize:11}}>
-                            <Text style={{color:HRB_COLOR}}>{homeShort}</Text>: ERA <Text style={{color:mlbCtx.home_bullpen_era>=4.5?'#ff4d6d':mlbCtx.home_bullpen_era<=3.5?'#00e5a0':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.home_bullpen_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.home_save_pct != null ? <Text> · SV% {mlbCtx.home_save_pct.toFixed(0)}%</Text> : null}{mlbCtx.home_bp_relievers_3d != null ? <Text style={{color:mlbCtx.home_bp_relievers_3d>=8?'#ff4d6d':'#7a92a8'}}> · {mlbCtx.home_bp_relievers_3d} arms L3d</Text> : null}
+                          <Text style={{color:THEME.textDim,fontSize:11}}>
+                            <Text style={{color:HRB_COLOR}}>{homeShort}</Text>: ERA <Text style={{color:mlbCtx.home_bullpen_era>=4.5?'#ff4d6d':mlbCtx.home_bullpen_era<=3.5?'#00e5a0':THEME.text,fontWeight:'700'}}>{mlbCtx.home_bullpen_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.home_save_pct != null ? <Text> · SV% {mlbCtx.home_save_pct.toFixed(0)}%</Text> : null}{mlbCtx.home_bp_relievers_3d != null ? <Text style={{color:mlbCtx.home_bp_relievers_3d>=8?'#ff4d6d':THEME.textDim}}> · {mlbCtx.home_bp_relievers_3d} arms L3d</Text> : null}
                           </Text>
                         </View>
                       </View>
@@ -9226,20 +9227,20 @@ setJerryHistory(prev => {
                         Surfaces the exact data feeding NRFI/YRFI ensemble.
                         Only shows when we have first-inning ERA on both sides. */}
                     {(mlbCtx.home_first_inning_era != null || mlbCtx.away_first_inning_era != null) && (
-                      <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,marginBottom:8}}>
+                      <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,marginBottom:8}}>
                         <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,letterSpacing:0.4,marginBottom:6}}>1ST-INNING TENDENCIES</Text>
                         <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:3}}>
-                          <Text style={{color:'#c8d8e8',fontSize:11}}>
-                            <Text style={{color:HRB_COLOR}}>{awayShort} SP</Text>: 1st-inn ERA <Text style={{color:mlbCtx.away_first_inning_era>=5?'#ff4d6d':mlbCtx.away_first_inning_era<=2?'#00e5a0':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.away_first_inning_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.away_first_inning_whip != null ? <Text> · WHIP {mlbCtx.away_first_inning_whip.toFixed(2)}</Text> : null}
+                          <Text style={{color:THEME.textDim,fontSize:11}}>
+                            <Text style={{color:HRB_COLOR}}>{awayShort} SP</Text>: 1st-inn ERA <Text style={{color:mlbCtx.away_first_inning_era>=5?'#ff4d6d':mlbCtx.away_first_inning_era<=2?'#00e5a0':THEME.text,fontWeight:'700'}}>{mlbCtx.away_first_inning_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.away_first_inning_whip != null ? <Text> · WHIP {mlbCtx.away_first_inning_whip.toFixed(2)}</Text> : null}
                           </Text>
                         </View>
                         <View style={{flexDirection:'row',justifyContent:'space-between'}}>
-                          <Text style={{color:'#c8d8e8',fontSize:11}}>
-                            <Text style={{color:HRB_COLOR}}>{homeShort} SP</Text>: 1st-inn ERA <Text style={{color:mlbCtx.home_first_inning_era>=5?'#ff4d6d':mlbCtx.home_first_inning_era<=2?'#00e5a0':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.home_first_inning_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.home_first_inning_whip != null ? <Text> · WHIP {mlbCtx.home_first_inning_whip.toFixed(2)}</Text> : null}
+                          <Text style={{color:THEME.textDim,fontSize:11}}>
+                            <Text style={{color:HRB_COLOR}}>{homeShort} SP</Text>: 1st-inn ERA <Text style={{color:mlbCtx.home_first_inning_era>=5?'#ff4d6d':mlbCtx.home_first_inning_era<=2?'#00e5a0':THEME.text,fontWeight:'700'}}>{mlbCtx.home_first_inning_era?.toFixed(2) || 'N/A'}</Text>{mlbCtx.home_first_inning_whip != null ? <Text> · WHIP {mlbCtx.home_first_inning_whip.toFixed(2)}</Text> : null}
                           </Text>
                         </View>
                         {mlbCtx.nrfi_score != null && (
-                          <Text style={{color:'#7a92a8',fontSize:10,marginTop:4,fontStyle:'italic'}}>
+                          <Text style={{color:THEME.textDim,fontSize:10,marginTop:4,fontStyle:'italic'}}>
                             NRFI score: {mlbCtx.nrfi_score}/100 {mlbCtx.nrfi_score<=30 ? '· validated YRFI zone (60%+ hit rate historically)' : mlbCtx.nrfi_score>=85 ? '· near base rate, weak signal' : ''}
                           </Text>
                         )}
@@ -9252,30 +9253,30 @@ setJerryHistory(prev => {
                         attribution + memory:project_pitcher_vs_team_mastery). */}
                     {((mlbCtx.home_pitcher_vs_team_ip >= 15 && mlbCtx.home_pitcher_vs_team_era != null) ||
                       (mlbCtx.away_pitcher_vs_team_ip >= 15 && mlbCtx.away_pitcher_vs_team_era != null)) && (
-                      <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,marginBottom:8,borderWidth:1,borderColor:'rgba(0,229,160,0.2)'}}>
+                      <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,marginBottom:8,borderWidth:1,borderColor:'rgba(0,229,160,0.2)'}}>
                         <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:11,letterSpacing:0.4,marginBottom:6}}>🎯 PITCHER vs TEAM MASTERY</Text>
                         {mlbCtx.away_pitcher_vs_team_ip >= 15 && mlbCtx.away_pitcher_vs_team_era != null && (
-                          <Text style={{color:'#c8d8e8',fontSize:11,marginBottom:3}}>
-                            <Text style={{fontWeight:'700'}}>{mlbCtx.away_pitcher}</Text> vs {stripMascot(selectedGame?.home_team)}: <Text style={{color:mlbCtx.away_pitcher_vs_team_era<=3?'#00e5a0':mlbCtx.away_pitcher_vs_team_era>=5?'#ff4d6d':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.away_pitcher_vs_team_era?.toFixed(2)} ERA</Text> · <Text style={{color:'#7a92a8'}}>n={mlbCtx.away_pitcher_vs_team_ip.toFixed(0)} IP</Text>
+                          <Text style={{color:THEME.textDim,fontSize:11,marginBottom:3}}>
+                            <Text style={{fontWeight:'700'}}>{mlbCtx.away_pitcher}</Text> vs {stripMascot(selectedGame?.home_team)}: <Text style={{color:mlbCtx.away_pitcher_vs_team_era<=3?'#00e5a0':mlbCtx.away_pitcher_vs_team_era>=5?'#ff4d6d':THEME.text,fontWeight:'700'}}>{mlbCtx.away_pitcher_vs_team_era?.toFixed(2)} ERA</Text> · <Text style={{color:THEME.textDim}}>n={mlbCtx.away_pitcher_vs_team_ip.toFixed(0)} IP</Text>
                           </Text>
                         )}
                         {mlbCtx.home_pitcher_vs_team_ip >= 15 && mlbCtx.home_pitcher_vs_team_era != null && (
-                          <Text style={{color:'#c8d8e8',fontSize:11}}>
-                            <Text style={{fontWeight:'700'}}>{mlbCtx.home_pitcher}</Text> vs {stripMascot(selectedGame?.away_team)}: <Text style={{color:mlbCtx.home_pitcher_vs_team_era<=3?'#00e5a0':mlbCtx.home_pitcher_vs_team_era>=5?'#ff4d6d':'#e8f0f8',fontWeight:'700'}}>{mlbCtx.home_pitcher_vs_team_era?.toFixed(2) ?? 'N/A'} ERA</Text> · <Text style={{color:'#7a92a8'}}>n={mlbCtx.home_pitcher_vs_team_ip?.toFixed(0)} IP</Text>
+                          <Text style={{color:THEME.textDim,fontSize:11}}>
+                            <Text style={{fontWeight:'700'}}>{mlbCtx.home_pitcher}</Text> vs {stripMascot(selectedGame?.away_team)}: <Text style={{color:mlbCtx.home_pitcher_vs_team_era<=3?'#00e5a0':mlbCtx.home_pitcher_vs_team_era>=5?'#ff4d6d':THEME.text,fontWeight:'700'}}>{mlbCtx.home_pitcher_vs_team_era?.toFixed(2) ?? 'N/A'} ERA</Text> · <Text style={{color:THEME.textDim}}>n={mlbCtx.home_pitcher_vs_team_ip?.toFixed(0)} IP</Text>
                           </Text>
                         )}
                       </View>
                     )}
 
                     {/* Park & weather */}
-                    <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,gap:4}}>
+                    <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,gap:4}}>
                       <View style={{flexDirection:'row',justifyContent:'space-between'}}>
-                        <Text style={{color:'#7a92a8',fontSize:11}}>Park Factor</Text>
-                        <Text style={{color:mlbCtx.park_run_factor>=110?'#ff4d6d':mlbCtx.park_run_factor<=93?'#00e5a0':'#e8f0f8',fontWeight:'700',fontSize:12}}>{mlbCtx.park_run_factor || 'N/A'}</Text>
+                        <Text style={{color:THEME.textDim,fontSize:11}}>Park Factor</Text>
+                        <Text style={{color:mlbCtx.park_run_factor>=110?'#ff4d6d':mlbCtx.park_run_factor<=93?'#00e5a0':THEME.text,fontWeight:'700',fontSize:12}}>{mlbCtx.park_run_factor || 'N/A'}</Text>
                       </View>
                       <View style={{flexDirection:'row',justifyContent:'space-between'}}>
-                        <Text style={{color:'#7a92a8',fontSize:11}}>Weather</Text>
-                        <Text style={{color:'#e8f0f8',fontSize:12}}>{mlbCtx.temperature ? mlbCtx.temperature+'°F' : 'N/A'} | {mlbCtx.wind_speed ? mlbCtx.wind_speed+'mph '+mlbCtx.wind_direction : 'N/A'}</Text>
+                        <Text style={{color:THEME.textDim,fontSize:11}}>Weather</Text>
+                        <Text style={{color:THEME.text,fontSize:12}}>{mlbCtx.temperature ? mlbCtx.temperature+'°F' : 'N/A'} | {mlbCtx.wind_speed ? mlbCtx.wind_speed+'mph '+mlbCtx.wind_direction : 'N/A'}</Text>
                       </View>
                     </View>
                   </View>
@@ -9283,17 +9284,17 @@ setJerryHistory(prev => {
               })()}
               {hasReal&&awayReal&&homeReal&&(
                 <View style={{marginTop:8,backgroundColor:'rgba(255,184,0,0.07)',borderRadius:10,padding:10,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
-                  {isNCAAB&&<Text style={{color:'#e8f0f8',fontSize:12,lineHeight:18}}>
-                    <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{awayShort}</Text> AdjOE: <Text style={{color:'#00e5a0',fontWeight:'700'}}>{awayReal.adjOE.toFixed(1)}</Text> | AdjDE: <Text style={{color:'#0099ff',fontWeight:'700'}}>{awayReal.adjDE.toFixed(1)}</Text>{'\n'}
-                    <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{homeShort}</Text> AdjOE: <Text style={{color:'#00e5a0',fontWeight:'700'}}>{homeReal.adjOE.toFixed(1)}</Text> | AdjDE: <Text style={{color:'#0099ff',fontWeight:'700'}}>{homeReal.adjDE.toFixed(1)}</Text>
+                  {isNCAAB&&<Text style={{color:THEME.text,fontSize:12,lineHeight:18}}>
+                    <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{awayShort}</Text> AdjOE: <Text style={{color:'#00e5a0',fontWeight:'700'}}>{awayReal.adjOE.toFixed(1)}</Text> | AdjDE: <Text style={{color:THEME.sharp,fontWeight:'700'}}>{awayReal.adjDE.toFixed(1)}</Text>{'\n'}
+                    <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{homeShort}</Text> AdjOE: <Text style={{color:'#00e5a0',fontWeight:'700'}}>{homeReal.adjOE.toFixed(1)}</Text> | AdjDE: <Text style={{color:THEME.sharp,fontWeight:'700'}}>{homeReal.adjDE.toFixed(1)}</Text>
                   </Text>}
-                  <Text style={{color:'#4a6070',fontSize:10,marginTop:6}}>📡 {isNCAAB?'Live Efficiency':'BDL'} live data</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:10,marginTop:6}}>📡 {isNCAAB?'Live Efficiency':'BDL'} live data</Text>
                    {isNCAAB&&awayReal&&homeReal&&(
                     <View style={{marginTop:10,gap:6}}>
-                      <View style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:6,borderTopWidth:1,borderTopColor:'#1f2d3d'}}>
-                        <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>STAT</Text>
-                        <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>{awayShort}</Text>
-                        <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>{homeShort}</Text>
+                      <View style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:6,borderTopWidth:1,borderTopColor:THEME.border}}>
+                        <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>STAT</Text>
+                        <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>{awayShort}</Text>
+                        <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>{homeShort}</Text>
                       </View>
                       {[
                         {label:'AdjEM',away:(awayReal.adjEM||0).toFixed(1),home:(homeReal.adjEM||0).toFixed(1),higherBetter:true},
@@ -9309,10 +9310,10 @@ setJerryHistory(prev => {
                         const awayBetter = row.higherBetter===true ? awayVal>homeVal : row.higherBetter===false ? awayVal<homeVal : null;
                         const homeBetter = row.higherBetter===true ? homeVal>awayVal : row.higherBetter===false ? homeVal<awayVal : null;
                         return(
-                          <View key={i} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:5,borderTopWidth:1,borderTopColor:'#1f2d3d'}}>
-                            <Text style={{color:'#7a92a8',fontSize:11,flex:1}}>{row.label}</Text>
-                            <Text style={{color:awayBetter?'#00e5a0':homeBetter?'#ff4d6d':'#e8f0f8',fontWeight:awayBetter?'800':'400',fontSize:12,flex:1,textAlign:'center'}}>{row.away}</Text>
-                            <Text style={{color:homeBetter?'#00e5a0':awayBetter?'#ff4d6d':'#e8f0f8',fontWeight:homeBetter?'800':'400',fontSize:12,flex:1,textAlign:'right'}}>{row.home}</Text>
+                          <View key={i} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:5,borderTopWidth:1,borderTopColor:THEME.border}}>
+                            <Text style={{color:THEME.textDim,fontSize:11,flex:1}}>{row.label}</Text>
+                            <Text style={{color:awayBetter?'#00e5a0':homeBetter?'#ff4d6d':THEME.text,fontWeight:awayBetter?'800':'400',fontSize:12,flex:1,textAlign:'center'}}>{row.away}</Text>
+                            <Text style={{color:homeBetter?'#00e5a0':awayBetter?'#ff4d6d':THEME.text,fontWeight:homeBetter?'800':'400',fontSize:12,flex:1,textAlign:'right'}}>{row.home}</Text>
                           </View>
                         );
                       })}
@@ -9321,11 +9322,11 @@ setJerryHistory(prev => {
 
                 </View>
               )}
-              {!hasReal&&!isMLB&&!isNBA&&<Text style={{color:'#4a6070',fontSize:10,textAlign:'right',marginTop:4}}>* Simulated data</Text>}
-              <View style={{flexDirection:'row',gap:12,paddingTop:10,borderTopWidth:1,borderTopColor:'#1f2d3d',marginTop:8}}>
-                <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#00e5a0'}}/><Text style={{color:'#7a92a8',fontSize:10}}>Top tier</Text></View>
-                <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#ffd166'}}/><Text style={{color:'#7a92a8',fontSize:10}}>Mid</Text></View>
-                <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#ff4d6d'}}/><Text style={{color:'#7a92a8',fontSize:10}}>Bottom</Text></View>
+              {!hasReal&&!isMLB&&!isNBA&&<Text style={{color:THEME.textMuted,fontSize:10,textAlign:'right',marginTop:4}}>* Simulated data</Text>}
+              <View style={{flexDirection:'row',gap:12,paddingTop:10,borderTopWidth:1,borderTopColor:THEME.border,marginTop:8}}>
+                <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#00e5a0'}}/><Text style={{color:THEME.textDim,fontSize:10}}>Top tier</Text></View>
+                <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:THEME.push}}/><Text style={{color:THEME.textDim,fontSize:10}}>Mid</Text></View>
+                <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#ff4d6d'}}/><Text style={{color:THEME.textDim,fontSize:10}}>Bottom</Text></View>
               </View>
             </View>
           );
@@ -9333,7 +9334,7 @@ setJerryHistory(prev => {
 
         {/* SITUATIONAL TAB */}
         {matchupTab==='situational'&&(
-          <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:'#1f2d3d'}}>
+          <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:THEME.border}}>
            {(()=>{
               if(gamesSport==='NCAAB' && bartData.length) {
                 const awayT = fuzzyMatchTeam(stripMascot(selectedGame.away_team), bartData, 'team');
@@ -9356,13 +9357,13 @@ setJerryHistory(prev => {
                       </View>
                       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
                         <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13}}>{awayShort}</Text>
-                        <Text style={{color:'#4a6070',fontSize:10,fontWeight:'600'}}>LIVE DATA</Text>
+                        <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'600'}}>LIVE DATA</Text>
                         <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13}}>{homeShort}</Text>
                       </View>
                       {rows.map((row,i)=>(
                         <View key={i} style={{marginBottom:12}}>
-                          <Text style={{color:'#4a6070',fontSize:10,fontWeight:'600',marginBottom:2,textAlign:'center'}}>{row.label}</Text>
-                          <Text style={{color:'#4a6071',fontSize:9,textAlign:'center',marginBottom:6}}>{row.desc}</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'600',marginBottom:2,textAlign:'center'}}>{row.label}</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:9,textAlign:'center',marginBottom:6}}>{row.desc}</Text>
                           <View style={{flexDirection:'row',gap:8}}>
                             <View style={{flex:1,backgroundColor:row.awayGood?'rgba(0,229,160,0.1)':'rgba(255,77,109,0.1)',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:row.awayGood?'rgba(0,229,160,0.3)':'rgba(255,77,109,0.3)'}}>
                               <Text style={{color:row.awayGood?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:16}}>{row.away}</Text>
@@ -9401,14 +9402,14 @@ setJerryHistory(prev => {
                       </View>
                       {rows.map((row,i)=>(
                         <View key={i} style={{marginBottom:12}}>
-                          <Text style={{color:'#4a6070',fontSize:10,fontWeight:'600',marginBottom:2,textAlign:'center'}}>{row.label}</Text>
-                          <Text style={{color:'#4a6071',fontSize:9,textAlign:'center',marginBottom:6}}>{row.desc}</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'600',marginBottom:2,textAlign:'center'}}>{row.label}</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:9,textAlign:'center',marginBottom:6}}>{row.desc}</Text>
                           <View style={{flexDirection:'row',gap:8}}>
                             <View style={{flex:1,backgroundColor:row.awayGood?'rgba(0,229,160,0.1)':row.awayGood===false?'rgba(255,77,109,0.1)':'rgba(122,146,168,0.1)',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:row.awayGood?'rgba(0,229,160,0.3)':row.awayGood===false?'rgba(255,77,109,0.3)':'rgba(122,146,168,0.3)'}}>
-                              <Text style={{color:row.awayGood?'#00e5a0':row.awayGood===false?'#ff4d6d':'#e8f0f8',fontWeight:'800',fontSize:14}}>{row.away}</Text>
+                              <Text style={{color:row.awayGood?'#00e5a0':row.awayGood===false?'#ff4d6d':THEME.text,fontWeight:'800',fontSize:14}}>{row.away}</Text>
                             </View>
                             <View style={{flex:1,backgroundColor:row.awayGood===false?'rgba(0,229,160,0.1)':row.awayGood?'rgba(255,77,109,0.1)':'rgba(122,146,168,0.1)',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:row.awayGood===false?'rgba(0,229,160,0.3)':row.awayGood?'rgba(255,77,109,0.3)':'rgba(122,146,168,0.3)'}}>
-                              <Text style={{color:row.awayGood===false?'#00e5a0':row.awayGood?'#ff4d6d':'#e8f0f8',fontWeight:'800',fontSize:14}}>{row.home}</Text>
+                              <Text style={{color:row.awayGood===false?'#00e5a0':row.awayGood?'#ff4d6d':THEME.text,fontWeight:'800',fontSize:14}}>{row.home}</Text>
                             </View>
                           </View>
                         </View>
@@ -9428,8 +9429,8 @@ setJerryHistory(prev => {
                   return (
                     <View style={{alignItems:'center',paddingVertical:30}}>
                       <Text style={{fontSize:32}}>📊</Text>
-                      <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>Situational Data</Text>
-                      <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center'}}>No context loaded for this matchup yet — check back closer to game time.</Text>
+                      <Text style={{color:THEME.text,fontWeight:'800',fontSize:16,marginTop:12}}>Situational Data</Text>
+                      <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center'}}>No context loaded for this matchup yet — check back closer to game time.</Text>
                     </View>
                   );
                 }
@@ -9443,15 +9444,15 @@ setJerryHistory(prev => {
                 );
                 const Row = ({label, away, home, awayGood=null}) => (
                   <View style={{flexDirection:'row',alignItems:'center',marginBottom:8}}>
-                    <Text style={{color:'#7a92a8',fontSize:11,flex:1.4}}>{label}</Text>
+                    <Text style={{color:THEME.textDim,fontSize:11,flex:1.4}}>{label}</Text>
                     <View style={{flex:1,alignItems:'center'}}>
-                      <View style={{paddingHorizontal:8,paddingVertical:4,borderRadius:6,backgroundColor:(awayGood===true?'#00e5a0':awayGood===false?'#ff4d6d':'#7a92a8')+'1f'}}>
-                        <Text style={{color:awayGood===true?'#00e5a0':awayGood===false?'#ff4d6d':'#c8d8e8',fontSize:11,fontWeight:'700'}}>{away}</Text>
+                      <View style={{paddingHorizontal:8,paddingVertical:4,borderRadius:6,backgroundColor:(awayGood===true?'#00e5a0':awayGood===false?'#ff4d6d':THEME.textDim)+'1f'}}>
+                        <Text style={{color:awayGood===true?'#00e5a0':awayGood===false?'#ff4d6d':THEME.textDim,fontSize:11,fontWeight:'700'}}>{away}</Text>
                       </View>
                     </View>
                     <View style={{flex:1,alignItems:'center'}}>
-                      <View style={{paddingHorizontal:8,paddingVertical:4,borderRadius:6,backgroundColor:(awayGood===false?'#00e5a0':awayGood===true?'#ff4d6d':'#7a92a8')+'1f'}}>
-                        <Text style={{color:awayGood===false?'#00e5a0':awayGood===true?'#ff4d6d':'#c8d8e8',fontSize:11,fontWeight:'700'}}>{home}</Text>
+                      <View style={{paddingHorizontal:8,paddingVertical:4,borderRadius:6,backgroundColor:(awayGood===false?'#00e5a0':awayGood===true?'#ff4d6d':THEME.textDim)+'1f'}}>
+                        <Text style={{color:awayGood===false?'#00e5a0':awayGood===true?'#ff4d6d':THEME.textDim,fontSize:11,fontWeight:'700'}}>{home}</Text>
                       </View>
                     </View>
                   </View>
@@ -9497,20 +9498,20 @@ setJerryHistory(prev => {
                 return (
                   <View>
                     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-                      <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:12}}>{awayShort}</Text>
+                      <Text style={{color:THEME.text,fontWeight:'800',fontSize:12}}>{awayShort}</Text>
                       <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,229,160,0.3)'}}><Text style={{color:'#00e5a0',fontSize:9,fontWeight:'800'}}>📡 LIVE</Text></View>
-                      <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:12}}>{homeShort}</Text>
+                      <Text style={{color:THEME.text,fontWeight:'800',fontSize:12}}>{homeShort}</Text>
                     </View>
 
                     <Section title="🔒 NRFI LENS">
-                      <Text style={{color:'#c8d8e8',fontSize:12,marginBottom:8}}>{nrfiBand}</Text>
+                      <Text style={{color:THEME.textDim,fontSize:12,marginBottom:8}}>{nrfiBand}</Text>
                       <Row label="1st-inn R/G" away={f(c.away_first_inning_runs_per_game ?? c.away_inning_1_runs_per_game)} home={f(c.home_first_inning_runs_per_game ?? c.home_inning_1_runs_per_game)} awayGood={null}/>
                       <Row label="1st-inn pitcher ERA" away={f(c.away_first_inning_era)} home={f(c.home_first_inning_era)} awayGood={null}/>
                     </Section>
 
                     {(c.temperature != null || c.wind_speed != null || c.wind_mph != null) && (
                       <Section title="🌤 WEATHER · PARK">
-                        <Text style={{color:'#c8d8e8',fontSize:12}}>
+                        <Text style={{color:THEME.textDim,fontSize:12}}>
                           {c.temperature != null ? `${fi(c.temperature)}°F` : 'temp —'}
                           {(c.wind_speed != null || c.wind_mph != null) ? ` · wind ${fi(c.wind_speed ?? c.wind_mph)} mph ${c.wind_direction || c.wind_dir || ''}` : ''}
                           {c.park_run_factor != null ? ` · park factor ${fi(c.park_run_factor)}${parseInt(c.park_run_factor)>=108?' (hitter-friendly)':parseInt(c.park_run_factor)<=92?' (pitcher-friendly)':''}` : ''}
@@ -9521,34 +9522,34 @@ setJerryHistory(prev => {
                     {umpName && (
                       <Section title={`🦓 UMPIRE — ${umpName}${ump && ump.games_sampled ? ` (n=${ump.games_sampled})` : ''}`}>
                         {umpFlags.length ? umpFlags.map((fl,idx)=>(
-                          <Text key={idx} style={{color:'#c8d8e8',fontSize:11,marginBottom:3}}>• {fl}</Text>
-                        )) : <Text style={{color:'#7a92a8',fontSize:11}}>All audit bands neutral (or sample too small)</Text>}
+                          <Text key={idx} style={{color:THEME.textDim,fontSize:11,marginBottom:3}}>• {fl}</Text>
+                        )) : <Text style={{color:THEME.textDim,fontSize:11}}>All audit bands neutral (or sample too small)</Text>}
                       </Section>
                     )}
 
                     <Section title="🔁 BULLPEN WORKLOAD (last 3 days)">
-                      <Text style={{color:'#c8d8e8',fontSize:12}}>
+                      <Text style={{color:THEME.textDim,fontSize:12}}>
                         {awayShort}: {fi(c.away_bp_relievers_3d)} relievers{penFlag(c.away_bp_relievers_3d)}  ·  {homeShort}: {fi(c.home_bp_relievers_3d)} relievers{penFlag(c.home_bp_relievers_3d)}
                       </Text>
                       {(c.away_bullpen_era != null || c.home_bullpen_era != null) && (
-                        <Text style={{color:'#7a92a8',fontSize:11,marginTop:4}}>Season pen ERA: {awayShort} {f(c.away_bullpen_era)} · {homeShort} {f(c.home_bullpen_era)}</Text>
+                        <Text style={{color:THEME.textDim,fontSize:11,marginTop:4}}>Season pen ERA: {awayShort} {f(c.away_bullpen_era)} · {homeShort} {f(c.home_bullpen_era)}</Text>
                       )}
                     </Section>
 
                     {(c.away_last10_runs_per_game != null || c.home_last10_runs_per_game != null) && (
                       <Section title="📉 RECENCY DRIFT (L10 vs season offense)">
-                        {driftLine(c.away_last10_runs_per_game, c.away_runs_per_game) && <Text style={{color:'#c8d8e8',fontSize:11,marginBottom:4}}>{awayShort}: {driftLine(c.away_last10_runs_per_game, c.away_runs_per_game)}</Text>}
-                        {driftLine(c.home_last10_runs_per_game, c.home_runs_per_game) && <Text style={{color:'#c8d8e8',fontSize:11}}>{homeShort}: {driftLine(c.home_last10_runs_per_game, c.home_runs_per_game)}</Text>}
+                        {driftLine(c.away_last10_runs_per_game, c.away_runs_per_game) && <Text style={{color:THEME.textDim,fontSize:11,marginBottom:4}}>{awayShort}: {driftLine(c.away_last10_runs_per_game, c.away_runs_per_game)}</Text>}
+                        {driftLine(c.home_last10_runs_per_game, c.home_runs_per_game) && <Text style={{color:THEME.textDim,fontSize:11}}>{homeShort}: {driftLine(c.home_last10_runs_per_game, c.home_runs_per_game)}</Text>}
                       </Section>
                     )}
 
                     <Section title="⚾ PITCHER SITUATIONAL">
-                      <Text style={{color:'#c8d8e8',fontSize:11,marginBottom:4}}>
+                      <Text style={{color:THEME.textDim,fontSize:11,marginBottom:4}}>
                         {awayP}: {c.away_sp_days_rest != null ? `${fi(c.away_sp_days_rest)} days rest` : 'rest —'}
                         {c.away_pitcher_away_era != null && c.away_pitcher_home_era != null ? ` · split ${f(c.away_pitcher_home_era)}H / ${f(c.away_pitcher_away_era)}A` : ''}
                         {c.away_pitcher_vs_team_era != null && parseFloat(c.away_pitcher_vs_team_era) > 0 ? ` · vs ${homeShort}: ${f(c.away_pitcher_vs_team_era)} ERA` : ''}
                       </Text>
-                      <Text style={{color:'#c8d8e8',fontSize:11}}>
+                      <Text style={{color:THEME.textDim,fontSize:11}}>
                         {homeP}: {c.home_sp_days_rest != null ? `${fi(c.home_sp_days_rest)} days rest` : 'rest —'}
                         {c.home_pitcher_away_era != null && c.home_pitcher_home_era != null ? ` · split ${f(c.home_pitcher_home_era)}H / ${f(c.home_pitcher_away_era)}A` : ''}
                         {c.home_pitcher_vs_team_era != null && parseFloat(c.home_pitcher_vs_team_era) > 0 ? ` · vs ${awayShort}: ${f(c.home_pitcher_vs_team_era)} ERA` : ''}
@@ -9557,7 +9558,7 @@ setJerryHistory(prev => {
 
                     {(c.signal_confluence_net != null || c.spread_delta != null) && (
                       <Section title="🎯 MODEL EDGE SNAPSHOT">
-                        <Text style={{color:'#c8d8e8',fontSize:11}}>
+                        <Text style={{color:THEME.textDim,fontSize:11}}>
                           {c.signal_confluence_net != null ? `Confluence net ${c.signal_confluence_net > 0 ? '+' : ''}${c.signal_confluence_net}` : ''}
                           {c.signal_confluence_net != null && c.spread_delta != null ? '  ·  ' : ''}
                           {c.spread_delta != null ? `Spread Δ ${parseFloat(c.spread_delta) >= 0 ? '+' : ''}${f(c.spread_delta, 1)} runs (model vs market)` : ''}
@@ -9566,7 +9567,7 @@ setJerryHistory(prev => {
                       </Section>
                     )}
 
-                    <Text style={{color:'#4a6070',fontSize:9,fontStyle:'italic',marginTop:4}}>Situational signals from the daily pipeline. Tendencies, not guarantees — single-game variance applies.</Text>
+                    <Text style={{color:THEME.textMuted,fontSize:9,fontStyle:'italic',marginTop:4}}>Situational signals from the daily pipeline. Tendencies, not guarantees — single-game variance applies.</Text>
                   </View>
                 );
               }
@@ -9574,8 +9575,8 @@ setJerryHistory(prev => {
               return(
                 <View style={{alignItems:'center',paddingVertical:30}}>
                   <Text style={{fontSize:32}}>📊</Text>
-                  <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16,marginTop:12}}>Situational Data</Text>
-                  <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Advanced situational analytics coming soon for {gamesSport}.</Text>
+                  <Text style={{color:THEME.text,fontWeight:'800',fontSize:16,marginTop:12}}>Situational Data</Text>
+                  <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Advanced situational analytics coming soon for {gamesSport}.</Text>
                   <View style={{marginTop:16,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:12,padding:12,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
                     <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,textAlign:'center'}}>🔜 COMING IN V1.1</Text>
                   </View>
@@ -9603,20 +9604,20 @@ setJerryHistory(prev => {
     const linePath=points.map((p,i)=>(i===0?'M':'L')+p.x.toFixed(1)+' '+p.y.toFixed(1)).join(' ');
     const areaPath=linePath+' L'+points[points.length-1].x.toFixed(1)+' '+(PAD_T+innerH)+' L'+points[0].x.toFixed(1)+' '+(PAD_T+innerH)+' Z';
     const isHRBBest=points.some(p=>p.book===HRB&&p.val===min);
-    const gradColor=parseFloat(moved)===0?'#4a6070':isHRBBest?HRB_COLOR:'#00e5a0';
+    const gradColor=parseFloat(moved)===0?THEME.textMuted:isHRBBest?HRB_COLOR:'#00e5a0';
     const gradId='g_'+label.replace(/\W/g,'');
     return(
       <View style={{marginBottom:16}}>
         <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-          <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700'}}>{label}</Text>
+          <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700'}}>{label}</Text>
           <View style={{flexDirection:'row',gap:8,alignItems:'center'}}>
-            <Text style={{color:'#4a6070',fontSize:10}}>Range: {min} — {max}</Text>
-            <Text style={{color:parseFloat(moved)>0?'#ffd166':'#00e5a0',fontSize:11,fontWeight:'700'}}>
+            <Text style={{color:THEME.textMuted,fontSize:10}}>Range: {min} — {max}</Text>
+            <Text style={{color:parseFloat(moved)>0?THEME.push:'#00e5a0',fontSize:11,fontWeight:'700'}}>
               {parseFloat(moved)>0?'↕ '+moved+' pts':'🔒 Locked'}
             </Text>
           </View>
         </View>
-        <View style={{backgroundColor:'#0d1520',borderRadius:12,overflow:'hidden',borderWidth:1,borderColor:'#1f2d3d'}}>
+        <View style={{backgroundColor:THEME.surface,borderRadius:12,overflow:'hidden',borderWidth:1,borderColor:THEME.border}}>
           <Svg width={CHART_W} height={CHART_H}>
             <Defs>
               <LinearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
@@ -9630,7 +9631,7 @@ setJerryHistory(prev => {
             <Path d={linePath} stroke={gradColor} strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
             {points.map((p,i)=>{
               const isHRB=p.book===HRB;
-              const dotColor=isHRB?HRB_COLOR:i===0?'#ffd166':i===points.length-1?'#00e5a0':'#0099ff';
+              const dotColor=isHRB?HRB_COLOR:i===0?THEME.push:i===points.length-1?'#00e5a0':THEME.sharp;
               const r=isHRB?6:4.5;
               const showLabel=isHRB||i===0||i===points.length-1;
               const labelY=i===0?p.y+r+10:p.y-r-4;
@@ -9639,8 +9640,8 @@ setJerryHistory(prev => {
                   {isHRB&&<Circle cx={p.x} cy={p.y} r={r+3.5} fill="none" stroke={HRB_COLOR} strokeWidth="1" strokeOpacity="0.4"/>}
                   <Circle cx={p.x} cy={p.y} r={r+1.5} fill="#0d1520"/>
                   <Circle cx={p.x} cy={p.y} r={r} fill={dotColor}/>
-                  {showLabel&&<SvgText x={p.x} y={labelY} fontSize="9" fill={isHRB?HRB_COLOR:i===0?'#ffd166':'#00e5a0'} textAnchor="middle" fontWeight={isHRB?'bold':'normal'}>{p.val}</SvgText>}
-                  <SvgText x={p.x} y={CHART_H-6} fontSize="8" fill={isHRB?HRB_COLOR:'#4a6070'} textAnchor="middle" fontWeight={isHRB?'bold':'normal'}>
+                  {showLabel&&<SvgText x={p.x} y={labelY} fontSize="9" fill={isHRB?HRB_COLOR:i===0?THEME.push:'#00e5a0'} textAnchor="middle" fontWeight={isHRB?'bold':'normal'}>{p.val}</SvgText>}
+                  <SvgText x={p.x} y={CHART_H-6} fontSize="8" fill={isHRB?HRB_COLOR:THEME.textMuted} textAnchor="middle" fontWeight={isHRB?'bold':'normal'}>
                     {isHRB?'HRB':p.book.split(' ')[0]}
                   </SvgText>
                 </React.Fragment>
@@ -9671,25 +9672,25 @@ setJerryHistory(prev => {
     }).filter(x=>x!==null);
     if(spreadLines.length<2&&totalLines.length<2)return null;
     return(
-      <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,marginBottom:16,borderWidth:1,borderColor:'#1f2d3d'}}>
-        <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:13,marginBottom:14}}>📊 LINE MOVEMENT</Text>{(()=>{
+      <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,marginBottom:16,borderWidth:1,borderColor:THEME.border}}>
+        <Text style={{color:THEME.text,fontWeight:'800',fontSize:13,marginBottom:14}}>📊 LINE MOVEMENT</Text>{(()=>{
           const key = game?.id||(game?.away_team+game?.home_team);
           const hist = histOdds?.[key]||null;
           const loading = histLoading?.[key]||false;
-          if(loading) return <Text style={{color:'#4a6070',fontSize:11,marginBottom:8}}>⏳ Loading opening lines...</Text>;
+          if(loading) return <Text style={{color:THEME.textMuted,fontSize:11,marginBottom:8}}>⏳ Loading opening lines...</Text>;
           if(!hist||(!hist.openingSpread&&!hist.openingTotal&&!hist.openingML)) return null;
           return(
             <View style={{flexDirection:'row',gap:8,marginBottom:12,flexWrap:'wrap'}}>
               {hist.openingSpread!=null&&<View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:8,paddingHorizontal:10,paddingVertical:6,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
-                <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>OPENING SPREAD</Text>
+                <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>OPENING SPREAD</Text>
                 <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14}}>{hist.openingSpread>0?'+':''}{hist.openingSpread}</Text>
               </View>}
               {hist.openingTotal!=null&&<View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:8,paddingHorizontal:10,paddingVertical:6,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
-                <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>OPENING TOTAL</Text>
+                <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>OPENING TOTAL</Text>
                 <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14}}>{hist.openingTotal}</Text>
               </View>}
               {hist.openingML!=null&&<View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:8,paddingHorizontal:10,paddingVertical:6,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
-                <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>OPENING ML</Text>
+                <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>OPENING ML</Text>
                 <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14}}>{hist.openingML>0?'+':''}{hist.openingML}</Text>
               </View>}
             </View>
@@ -9697,11 +9698,11 @@ setJerryHistory(prev => {
         })()}
         {renderLineChart(spreadLines,'SPREAD')}
         {renderLineChart(totalLines,'TOTAL (O/U)')}
-        <View style={{flexDirection:'row',gap:12,paddingTop:8,borderTopWidth:1,borderTopColor:'#1f2d3d',flexWrap:'wrap'}}>
+        <View style={{flexDirection:'row',gap:12,paddingTop:8,borderTopWidth:1,borderTopColor:THEME.border,flexWrap:'wrap'}}>
           <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:10,height:10,borderRadius:5,backgroundColor:HRB_COLOR}}/><Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700'}}>Hard Rock</Text></View>
-          <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#ffd166'}}/><Text style={{color:'#7a92a8',fontSize:10}}>Open</Text></View>
-          <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#0099ff'}}/><Text style={{color:'#7a92a8',fontSize:10}}>Mid</Text></View>
-          <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#00e5a0'}}/><Text style={{color:'#7a92a8',fontSize:10}}>Current</Text></View>
+          <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:THEME.push}}/><Text style={{color:THEME.textDim,fontSize:10}}>Open</Text></View>
+          <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:THEME.sharp}}/><Text style={{color:THEME.textDim,fontSize:10}}>Mid</Text></View>
+          <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#00e5a0'}}/><Text style={{color:THEME.textDim,fontSize:10}}>Current</Text></View>
         </View>
       </View>
     );
@@ -9862,7 +9863,7 @@ setJerryHistory(prev => {
   };
 
   if(!betsLoaded){
-    return(<View style={[styles.container,{alignItems:'center',justifyContent:'center'}]}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:'#7a92a8',marginTop:12}}>Loading The Sweat Locker...</Text></View>);
+    return(<View style={[styles.container,{alignItems:'center',justifyContent:'center'}]}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:THEME.textDim,marginTop:12}}>Loading The Sweat Locker...</Text></View>);
   }
 
   const trends=myTrends();
@@ -9870,65 +9871,65 @@ setJerryHistory(prev => {
   return(
     <View style={styles.container}>
       {!onboardingDone&&(
-        <View style={{position:'absolute',top:0,left:0,right:0,bottom:0,backgroundColor:'#060d14',zIndex:999,justifyContent:'space-between',padding:30,paddingTop:80,paddingBottom:50}}>
+        <View style={{position:'absolute',top:0,left:0,right:0,bottom:0,backgroundColor:THEME.bgModal,zIndex:999,justifyContent:'space-between',padding:30,paddingTop:80,paddingBottom:50}}>
           {onboardingStep===0&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🔒</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:34,textAlign:'center',marginBottom:12,letterSpacing:1}}>THE SWEAT LOCKER</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:34,textAlign:'center',marginBottom:12,letterSpacing:1}}>THE SWEAT LOCKER</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>More Data, Less Sweat.</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>A real sports analytics engine — not picks, not vibes. Proprietary models updated twice daily.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>A real sports analytics engine — not picks, not vibes. Proprietary models updated twice daily.</Text>
             </View>
           )}
           {onboardingStep===1&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🔥</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Sweat Score</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Sweat Score</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Every game graded 0–100</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>A layered conviction score built from signals that actually move predictions — not public consensus:{'\n\n'}🏟️ Matchup quality — pitching, lineups, fighter profiles{'\n'}📊 Recency vs season-long form{'\n'}🎯 Platoon and handedness edges{'\n'}💨 Park, weather, venue factors{'\n'}🐕 Market efficiency and sharp line movement{'\n'}📋 Situational + audit-validated rules{'\n\n'}Higher scores reflect stronger multi-signal alignment. Pipeline refreshes throughout the day as new data lands.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>A layered conviction score built from signals that actually move predictions — not public consensus:{'\n\n'}🏟️ Matchup quality — pitching, lineups, fighter profiles{'\n'}📊 Recency vs season-long form{'\n'}🎯 Platoon and handedness edges{'\n'}💨 Park, weather, venue factors{'\n'}🐕 Market efficiency and sharp line movement{'\n'}📋 Situational + audit-validated rules{'\n\n'}Higher scores reflect stronger multi-signal alignment. Pipeline refreshes throughout the day as new data lands.</Text>
             </View>
           )}
           {onboardingStep===2&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🏟</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Your Daily Slate</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Your Daily Slate</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>MLB · NBA · UFC · NHL · NCAAB — and more</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Every game card shows its Sweat Score and top model signals at a glance.{'\n\n'}Tap any game for the deep breakdown:{'\n'}📚 Book consensus across multiple sportsbooks{'\n'}🎤 Jerry's pipeline-driven game read{'\n'}📊 The Numbers — deterministic data behind every read; sport-aware (pitcher blocks for MLB, efficiency for NBA, fight matchup for UFC, more landing as we expand){'\n'}📈 Line movement with opening vs current{'\n'}⚾ Sport-specific signals layered in (NRFI for baseball, method probabilities for UFC, more){'\n\n'}Add any line to Parlay Builder with one tap.{'\n\n'}🏈 NFL & NCAAF arrive for football season.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>Every game card shows its Sweat Score and top model signals at a glance.{'\n\n'}Tap any game for the deep breakdown:{'\n'}📚 Book consensus across multiple sportsbooks{'\n'}🎤 Jerry's pipeline-driven game read{'\n'}📊 The Numbers — deterministic data behind every read; sport-aware (pitcher blocks for MLB, efficiency for NBA, fight matchup for UFC, more landing as we expand){'\n'}📈 Line movement with opening vs current{'\n'}⚾ Sport-specific signals layered in (NRFI for baseball, method probabilities for UFC, more){'\n\n'}Add any line to Parlay Builder with one tap.{'\n\n'}🏈 NFL & NCAAF arrive for football season.</Text>
             </View>
           )}
           {onboardingStep===3&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🧠</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Meet Jerry</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Meet Jerry</Text>
               <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your AI sports analyst</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>Jerry lives in the Jerry tab. Four tools:{'\n\n'}🧠 Prop Jerry — Daily prop edges from our pipeline, conviction-tiered (PRIME / STRONG / LEAN) with labeled signals so you see why each pick made the board.{'\n\n'}🎲 Daily Degen — A multi-leg parlay built from the slate's strongest pipeline signals. One pick for everyone.{'\n\n'}🐕 Dawg of the Day — The underdog moneyline where our model sharply disagrees with the market.{'\n\n'}📋 Record — Verified performance across all four tools, tier-stratified.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>Jerry lives in the Jerry tab. Four tools:{'\n\n'}🧠 Prop Jerry — Daily prop edges from our pipeline, conviction-tiered (PRIME / STRONG / LEAN) with labeled signals so you see why each pick made the board.{'\n\n'}🎲 Daily Degen — A multi-leg parlay built from the slate's strongest pipeline signals. One pick for everyone.{'\n\n'}🐕 Dawg of the Day — The underdog moneyline where our model sharply disagrees with the market.{'\n\n'}📋 Record — Verified performance across all four tools, tier-stratified.</Text>
             </View>
           )}
           {onboardingStep===4&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>⚾</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>MLB Flagship — NRFI</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>MLB Flagship — NRFI</Text>
               <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Where our pipeline goes deepest</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>No Run First Inning (NRFI) is our most-developed model. Built from pitcher xERA, strikeout-gap vs lineup K%, ground-ball rate, first-inning splits, days rest, weather, park factor, umpires, and offensive quality.{'\n\n'}Each game gets a 0–100 NRFI score that maps to audit-validated tiers:{'\n\n'}🟢 PRIME sweet spot — highest conviction band{'\n'}🟡 Mild lean — edge-of-lean territory{'\n'}⚪ Neutral — Jerry doesn't lean here{'\n'}🔴 Trap zone — high scores historically volatile, flagged not leaned{'\n\n'}Baseball is where we ship the deepest stack today. Other sports get the same multi-signal treatment scaled to their data shape.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>No Run First Inning (NRFI) is our most-developed model. Built from pitcher xERA, strikeout-gap vs lineup K%, ground-ball rate, first-inning splits, days rest, weather, park factor, umpires, and offensive quality.{'\n\n'}Each game gets a 0–100 NRFI score that maps to audit-validated tiers:{'\n\n'}🟢 PRIME sweet spot — highest conviction band{'\n'}🟡 Mild lean — edge-of-lean territory{'\n'}⚪ Neutral — Jerry doesn't lean here{'\n'}🔴 Trap zone — high scores historically volatile, flagged not leaned{'\n\n'}Baseball is where we ship the deepest stack today. Other sports get the same multi-signal treatment scaled to their data shape.</Text>
             </View>
           )}
           {onboardingStep===5&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>⏰</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>When to Check</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>When to Check</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Pipeline runs twice daily</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>⏰ Morning lock by 11am ET{'\n'}Initial Sweat Scores, opening matchup data, NRFI baselines (MLB).{'\n\n'}⏰ Afternoon refresh by 4pm ET{'\n'}Confirmed lineups, Prop Jerry sharpens, Play of the Day locks in.{'\n\n'}After 4pm, all data is locked in. Best time for full slate analysis.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>⏰ Morning lock by 11am ET{'\n'}Initial Sweat Scores, opening matchup data, NRFI baselines (MLB).{'\n\n'}⏰ Afternoon refresh by 4pm ET{'\n'}Confirmed lineups, Prop Jerry sharpens, Play of the Day locks in.{'\n\n'}After 4pm, all data is locked in. Best time for full slate analysis.</Text>
             </View>
           )}
           {onboardingStep===6&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>⚠️</Text>
-              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>One More Thing</Text>
-              <Text style={{color:'#7a92a8',fontSize:14,textAlign:'center',lineHeight:22}}>The Sweat Locker provides data analysis for entertainment purposes only.{'\n\n'}Past performance is not indicative of future results.{'\n\n'}Must be 18+ to use this app. Know your local laws and gamble responsibly.</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>One More Thing</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>The Sweat Locker provides data analysis for entertainment purposes only.{'\n\n'}Past performance is not indicative of future results.{'\n\n'}Must be 18+ to use this app. Know your local laws and gamble responsibly.</Text>
             </View>
           )}
           <View style={{flexDirection:'row',justifyContent:'center',gap:8,marginBottom:28}}>
             {[0,1,2,3,4,5,6].map(i=>(
-              <View key={i} style={{width:i===onboardingStep?24:8,height:8,borderRadius:4,backgroundColor:i===onboardingStep?HRB_COLOR:'#1f2d3d'}}/>
+              <View key={i} style={{width:i===onboardingStep?24:8,height:8,borderRadius:4,backgroundColor:i===onboardingStep?HRB_COLOR:THEME.border}}/>
             ))}
           </View>
           <View style={{gap:12}}>
@@ -9955,7 +9956,7 @@ setJerryHistory(prev => {
                 style={{alignItems:'center',padding:10}}
                 onPress={()=>setOnboardingStep(s=>s-1)}
               >
-                <Text style={{color:'#4a6070',fontSize:13}}>← Back</Text>
+                <Text style={{color:THEME.textMuted,fontSize:13}}>← Back</Text>
               </TouchableOpacity>
             )}
             {onboardingStep<6&&(
@@ -9966,7 +9967,7 @@ setJerryHistory(prev => {
                   setOnboardingDone(true);
                 }}
               >
-                <Text style={{color:'#4a6070',fontSize:13}}>Skip</Text>
+                <Text style={{color:THEME.textMuted,fontSize:13}}>Skip</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -9980,51 +9981,51 @@ setJerryHistory(prev => {
         <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
           <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12}}>🎤 JERRY'S PARLAY GRADER</Text>
           <TouchableOpacity onPress={()=>setParlayAnalysisVisible(false)}>
-            <Text style={{color:'#4a6070',fontSize:13}}>✕ Close</Text>
+            <Text style={{color:THEME.textMuted,fontSize:13}}>✕ Close</Text>
           </TouchableOpacity>
         </View>
         {parlayAnalysisLoading?(
           <View style={{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:12}}>
             <ActivityIndicator size='small' color={HRB_COLOR}/>
-            <Text style={{color:'#4a6070',fontSize:13}}>Jerry is grading each leg...</Text>
+            <Text style={{color:THEME.textMuted,fontSize:13}}>Jerry is grading each leg...</Text>
           </View>
         ) : parlayAnalysis?.error ? (
-          <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>{parlayAnalysis.error}</Text>
+          <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>{parlayAnalysis.error}</Text>
         ) : parlayAnalysis?.legs ? (
           <View>
             {/* Correlation Warning */}
             {parlayAnalysis?.hasCorrelation && (
               <View style={{backgroundColor:'rgba(255,77,109,0.1)',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:'rgba(255,77,109,0.3)'}}>
                 <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:12}}>⚠️ CORRELATION WARNING</Text>
-                <Text style={{color:'#7a92a8',fontSize:11,marginTop:4}}>One or more legs are from the same game — this affects true parlay odds. Some books void correlated parlays.</Text>
+                <Text style={{color:THEME.textDim,fontSize:11,marginTop:4}}>One or more legs are from the same game — this affects true parlay odds. Some books void correlated parlays.</Text>
               </View>
             )}
             {/* Overall Grade */}
             <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
   <View style={{flexDirection:'row',alignItems:'center',marginBottom:8}}>
-    <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',letterSpacing:1,flex:1}}>OVERALL GRADE</Text>
+    <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',letterSpacing:1,flex:1}}>OVERALL GRADE</Text>
     <View style={{width:36,height:36,borderRadius:18,borderWidth:2,borderColor:parlayAnalysis.overallColor||HRB_COLOR,alignItems:'center',justifyContent:'center'}}>
       <Text style={{color:parlayAnalysis.overallColor||HRB_COLOR,fontSize:14,fontWeight:'800'}}>{parlayAnalysis.overallGrade}</Text>
     </View>
   </View>
-  <Text style={{color:'#e8f0f8',fontSize:13,lineHeight:18,fontStyle:'italic'}}>"{(parlayAnalysis.verdict||'').replace(/[\[\]{}*_`#]/g, '').trim()}"</Text>
+  <Text style={{color:THEME.text,fontSize:13,lineHeight:18,fontStyle:'italic'}}>"{(parlayAnalysis.verdict||'').replace(/[\[\]{}*_`#]/g, '').trim()}"</Text>
 </View>
             {/* Leg Grades */}
             {parlayAnalysis.legs.map((leg, i) => (
-              <View key={i} style={{backgroundColor:'#0a1520',borderRadius:12,padding:12,marginBottom:8,borderWidth:1,borderColor:leg.gradeColor+'44',borderLeftWidth:3,borderLeftColor:leg.gradeColor}}>
+              <View key={i} style={{backgroundColor:THEME.surfaceHero,borderRadius:12,padding:12,marginBottom:8,borderWidth:1,borderColor:leg.gradeColor+'44',borderLeftWidth:3,borderLeftColor:leg.gradeColor}}>
                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
                   <View style={{flex:1,marginRight:8}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{leg.pick}</Text>
-                    <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>Leg {leg.leg}</Text>
+                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>{leg.pick}</Text>
+                    <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>Leg {leg.leg}</Text>
                   </View>
                   <View style={{alignItems:'center'}}>
                     <View style={{width:36,height:36,borderRadius:18,borderWidth:2,borderColor:leg.gradeColor,alignItems:'center',justifyContent:'center'}}>
                       <Text style={{color:leg.gradeColor,fontSize:16,fontWeight:'800'}}>{leg.grade}</Text>
                     </View>
-                    <Text style={{color:'#4a6070',fontSize:9,marginTop:2}}>{leg.confidence}%</Text>
+                    <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2}}>{leg.confidence}%</Text>
                   </View>
                 </View>
-                <Text style={{color:'#c8d8e8',fontSize:12,lineHeight:17,fontStyle:'italic',marginBottom:4,flexWrap:'wrap',flex:1}}>"{(leg.jerry||'').replace(/[\[\]{}*_`#]/g, '').trim()}"</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,lineHeight:17,fontStyle:'italic',marginBottom:4,flexWrap:'wrap',flex:1}}>"{(leg.jerry||'').replace(/[\[\]{}*_`#]/g, '').trim()}"</Text>
                 {leg.risk&&(
                   <View style={{flexDirection:'row',alignItems:'center',gap:4,marginTop:4}}>
                     <Text style={{color:'#ff4d6d',fontSize:10}}>⚠️</Text>
@@ -10043,7 +10044,7 @@ setJerryHistory(prev => {
                 )}
                 {(leg.correlation === 'HIGH' || leg.correlation === 'MODERATE') && (
                   <View style={{backgroundColor:'rgba(255,140,0,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,alignSelf:'flex-start',marginTop:6}}>
-                    <Text style={{color:'#ff8c00',fontSize:10,fontWeight:'700'}}>🔗 {leg.correlation} CORRELATION</Text>
+                    <Text style={{color:THEME.accent,fontSize:10,fontWeight:'700'}}>🔗 {leg.correlation} CORRELATION</Text>
                   </View>
                 )}
                 {leg.pipelineData && (
@@ -10065,8 +10066,8 @@ setJerryHistory(prev => {
           style={{position:'absolute',bottom:90,left:16,right:16,backgroundColor:'#0d1f2d',borderRadius:16,padding:16,borderWidth:1,borderColor:HRB_COLOR,zIndex:998,shadowColor:'#000',shadowOffset:{width:0,height:4},shadowOpacity:0.4,shadowRadius:8}}
         >
           <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11,marginBottom:6}}>🎤 JERRY'S TAKE</Text>
-          <Text style={{color:'#e8f0f8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{pickRecap}"</Text>
-          <Text style={{color:'#4a6070',fontSize:10,marginTop:8,textAlign:'right'}}>Tap to dismiss</Text>
+          <Text style={{color:THEME.text,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{pickRecap}"</Text>
+          <Text style={{color:THEME.textMuted,fontSize:10,marginTop:8,textAlign:'right'}}>Tap to dismiss</Text>
         </TouchableOpacity>
       )}
       <View style={styles.header}>
@@ -10103,12 +10104,12 @@ setJerryHistory(prev => {
                source_table + source_key the resolver uses to mark Win/Loss
                nightly. Same set we post on social. */}
 {sweatCard && !sweatCard.noCard && (
-  <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:'#00e5a0',marginBottom:16,shadowColor:'#00e5a0',shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
+  <View style={{backgroundColor:THEME.surfaceHero,borderRadius:16,padding:16,borderWidth:1.5,borderColor:'#00e5a0',marginBottom:16,shadowColor:'#00e5a0',shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
       <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:13,letterSpacing:1}}>🔥 TODAY'S SWEAT CARD</Text>
-      <Text style={{color:'#7a92a8',fontSize:10}}>{sweatCard.slate_date} • {sweatCard.top_8?.length || 8} picks</Text>
+      <Text style={{color:THEME.textDim,fontSize:10}}>{sweatCard.slate_date} • {sweatCard.top_8?.length || 8} picks</Text>
     </View>
-    <Text style={{color:'#4a6070',fontSize:10,marginBottom:12,fontStyle:'italic'}}>Curated • backed by audit-driven cohorts • updates as lineups confirm</Text>
+    <Text style={{color:THEME.textMuted,fontSize:10,marginBottom:12,fontStyle:'italic'}}>Curated • backed by audit-driven cohorts • updates as lineups confirm</Text>
 
     {/* 🎯 THE CURATED 8 — lead picks, server-driven from sweatCard.top_8 */}
     {Array.isArray(sweatCard.top_8) && sweatCard.top_8.length > 0 && (
@@ -10116,8 +10117,8 @@ setJerryHistory(prev => {
         {sweatCard.top_8.map((pick: any, i: number) => {
           const tierColor =
             pick.tier === 'PRIME' ? '#00e5a0' :
-            pick.tier === 'STRONG' ? '#ffb800' :
-            pick.tier === 'VALUE' ? '#5b8def' : '#7a92a8';
+            pick.tier === 'STRONG' ? THEME.hrb :
+            pick.tier === 'VALUE' ? THEME.sharp : THEME.textDim;
           const resultIcon =
             pick.result === 'Win' ? '✓' :
             pick.result === 'Loss' ? '✗' :
@@ -10125,16 +10126,16 @@ setJerryHistory(prev => {
           const resultColor =
             pick.result === 'Win' ? '#00e5a0' :
             pick.result === 'Loss' ? '#ff4d6d' :
-            pick.result === 'Push' ? '#7a92a8' : null;
+            pick.result === 'Push' ? THEME.textDim : null;
           return (
-            <View key={`top8-${i}`} style={{flexDirection:'row',alignItems:'flex-start',paddingVertical:7,borderTopWidth:i>0?0.5:0,borderTopColor:'#1a2530'}}>
-              <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',width:18,marginTop:1}}>{pick.rank}.</Text>
+            <View key={`top8-${i}`} style={{flexDirection:'row',alignItems:'flex-start',paddingVertical:7,borderTopWidth:i>0?0.5:0,borderTopColor:THEME.surfaceAlt}}>
+              <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',width:18,marginTop:1}}>{pick.rank}.</Text>
               <Text style={{fontSize:14,marginRight:8}}>{pick.icon}</Text>
               <View style={{flex:1}}>
-                <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'600'}} numberOfLines={2}>{pick.label}</Text>
-                {pick.game && <Text style={{color:'#7a92a8',fontSize:10,marginTop:1}} numberOfLines={1}>{pick.game}</Text>}
+                <Text style={{color:THEME.text,fontSize:13,fontWeight:'600'}} numberOfLines={2}>{pick.label}</Text>
+                {pick.game && <Text style={{color:THEME.textDim,fontSize:10,marginTop:1}} numberOfLines={1}>{pick.game}</Text>}
                 {pick.narrative_hint && (
-                  <Text style={{color:'#4a6070',fontSize:10,marginTop:2,fontStyle:'italic'}} numberOfLines={1}>{pick.narrative_hint}</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,fontStyle:'italic'}} numberOfLines={1}>{pick.narrative_hint}</Text>
                 )}
               </View>
               <View style={{alignItems:'flex-end',marginLeft:8}}>
@@ -10147,7 +10148,7 @@ setJerryHistory(prev => {
                   )}
                 </View>
                 {pick.conviction != null && (
-                  <Text style={{color:'#4a6070',fontSize:9,marginTop:1}}>{pick.conviction}</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:9,marginTop:1}}>{pick.conviction}</Text>
                 )}
               </View>
             </View>
@@ -10155,9 +10156,9 @@ setJerryHistory(prev => {
         })}
         {/* Summary line if resolved */}
         {sweatCard.top_8_summary && sweatCard.top_8_summary.resolved > 0 && (
-          <View style={{marginTop:8,paddingTop:8,borderTopWidth:0.5,borderTopColor:'#1a2530',flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-            <Text style={{color:'#7a92a8',fontSize:10,fontWeight:'700',letterSpacing:0.5}}>CARD RESULT</Text>
-            <Text style={{color:'#e8f0f8',fontSize:12,fontWeight:'800'}}>
+          <View style={{marginTop:8,paddingTop:8,borderTopWidth:0.5,borderTopColor:THEME.surfaceAlt,flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+            <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',letterSpacing:0.5}}>CARD RESULT</Text>
+            <Text style={{color:THEME.text,fontSize:12,fontWeight:'800'}}>
               {sweatCard.top_8_summary.wins}-{sweatCard.top_8_summary.losses}
               {sweatCard.top_8_summary.pushes ? ` (${sweatCard.top_8_summary.pushes}P)` : ''}
               {sweatCard.top_8_summary.pending ? ` • ${sweatCard.top_8_summary.pending} pending` : ''}
@@ -10169,7 +10170,7 @@ setJerryHistory(prev => {
 
     {/* ━━━ ADDITIONAL INTEL ━━━ */}
     {(sweatCard.lock || sweatCard.secondary_lock || sweatCard.dawg || (sweatCard.total_edges?.length > 0) || (sweatCard.stack_alerts?.length > 0) || (sweatCard.skip_alerts?.length > 0)) && (
-      <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',letterSpacing:1,marginBottom:8,marginTop:4}}>━━━ ADDITIONAL INTEL ━━━</Text>
+      <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',letterSpacing:1,marginBottom:8,marginTop:4}}>━━━ ADDITIONAL INTEL ━━━</Text>
     )}
 
     {/* 🔒 PRIME LOCK — NRFI 90-94 sweet spot */}
@@ -10182,7 +10183,7 @@ setJerryHistory(prev => {
           </Text>
         </View>
         <Text style={{color:'#fff',fontSize:14,fontWeight:'700'}}>{sweatCard.lock.game} — NRFI {sweatCard.lock.score}</Text>
-        <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>
+        <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>
           {sweatCard.lock.context?.home_pitcher} vs {sweatCard.lock.context?.away_pitcher}
         </Text>
       </View>
@@ -10203,13 +10204,13 @@ setJerryHistory(prev => {
 
     {/* 🐕 DAWG OF THE DAY */}
     {sweatCard.dawg && (
-      <View style={{backgroundColor:'rgba(120,180,255,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#78b4ff'}}>
+      <View style={{backgroundColor:'rgba(120,180,255,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:THEME.sharp}}>
         <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:4}}>
-          <Text style={{color:'#78b4ff',fontWeight:'800',fontSize:11}}>🐕 DAWG OF THE DAY</Text>
-          <Text style={{color:'#78b4ff',fontSize:10,fontWeight:'700'}}>{sweatCard.dawg.tier} {sweatCard.dawg.conviction}</Text>
+          <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:11}}>🐕 DAWG OF THE DAY</Text>
+          <Text style={{color:THEME.sharp,fontSize:10,fontWeight:'700'}}>{sweatCard.dawg.tier} {sweatCard.dawg.conviction}</Text>
         </View>
         <Text style={{color:'#fff',fontSize:14,fontWeight:'700'}}>{sweatCard.dawg.team} ML</Text>
-        <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{sweatCard.dawg.matchup}</Text>
+        <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{sweatCard.dawg.matchup}</Text>
       </View>
     )}
 
@@ -10255,14 +10256,14 @@ setJerryHistory(prev => {
       };
       return (
         <View style={{marginBottom:10}}>
-          <Text style={{color:'#7a92a8',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:6}}>⚡ TOP PROPS</Text>
+          <Text style={{color:THEME.textDim,fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:6}}>⚡ TOP PROPS</Text>
           {propsToShow.map((p:any, i:number) => (
-            <View key={i} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:6,borderTopWidth:i>0?0.5:0,borderTopColor:'#1a2530'}}>
+            <View key={i} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:6,borderTopWidth:i>0?0.5:0,borderTopColor:THEME.surfaceAlt}}>
               <View style={{flex:1}}>
                 <Text style={{color:'#fff',fontSize:12,fontWeight:'600'}}>{p.player_name} {renderLine(p)}</Text>
-                <Text style={{color:'#7a92a8',fontSize:10}}>{p.matchup}</Text>
+                <Text style={{color:THEME.textDim,fontSize:10}}>{p.matchup}</Text>
               </View>
-              <Text style={{color:p.tier==='PRIME'?'#00e5a0':'#7a92a8',fontSize:11,fontWeight:'700'}}>{p.tier} {p.conviction}</Text>
+              <Text style={{color:p.tier==='PRIME'?'#00e5a0':THEME.textDim,fontSize:11,fontWeight:'700'}}>{p.tier} {p.conviction}</Text>
             </View>
           ))}
         </View>
@@ -10271,26 +10272,26 @@ setJerryHistory(prev => {
 
     {/* 📊 BUCKET ANGLE */}
     {sweatCard.bucket_angle && (
-      <View style={{backgroundColor:'rgba(180,140,255,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#b48cff'}}>
-        <Text style={{color:'#b48cff',fontWeight:'800',fontSize:11,marginBottom:4}}>📊 BUCKET ANGLE</Text>
+      <View style={{backgroundColor:'rgba(180,140,255,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:THEME.sharp}}>
+        <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:11,marginBottom:4}}>📊 BUCKET ANGLE</Text>
         <Text style={{color:'#fff',fontSize:13,fontWeight:'700'}}>{sweatCard.bucket_angle.headline}</Text>
-        <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{sweatCard.bucket_angle.reason}</Text>
+        <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{sweatCard.bucket_angle.reason}</Text>
         {sweatCard.bucket_angle.extra && (
-          <Text style={{color:'#7a92a8',fontSize:11,marginTop:1}}>{sweatCard.bucket_angle.extra}</Text>
+          <Text style={{color:THEME.textDim,fontSize:11,marginTop:1}}>{sweatCard.bucket_angle.extra}</Text>
         )}
       </View>
     )}
 
     {/* 📈 TOTAL EDGE — model vs market deltas >= 1.5 */}
     {sweatCard.total_edges?.length > 0 && (
-      <View style={{backgroundColor:'rgba(80,180,255,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#50b4ff'}}>
-        <Text style={{color:'#50b4ff',fontWeight:'800',fontSize:11,marginBottom:4}}>📈 TOTAL EDGE</Text>
+      <View style={{backgroundColor:'rgba(80,180,255,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:THEME.sharp}}>
+        <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:11,marginBottom:4}}>📈 TOTAL EDGE</Text>
         {sweatCard.total_edges.map((t:any, i:number) => (
           <View key={i} style={{marginTop:i>0?6:0}}>
             <Text style={{color:'#fff',fontSize:13,fontWeight:'700'}}>
               {t.game} — {t.direction} {t.close_total}
             </Text>
-            <Text style={{color:'#7a92a8',fontSize:11,marginTop:1}}>
+            <Text style={{color:THEME.textDim,fontSize:11,marginTop:1}}>
               Model {t.projected_total} vs market {t.close_total} ({t.delta > 0 ? '+' : ''}{t.delta})
             </Text>
           </View>
@@ -10300,8 +10301,8 @@ setJerryHistory(prev => {
 
     {/* 🔥 STACK ALERT */}
     {sweatCard.stack_alerts?.length > 0 && (
-      <View style={{backgroundColor:'rgba(255,140,80,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:'#ff8c50'}}>
-        <Text style={{color:'#ff8c50',fontWeight:'800',fontSize:11,marginBottom:4}}>🔥 STACK ALERT</Text>
+      <View style={{backgroundColor:'rgba(255,140,80,0.08)',borderRadius:10,padding:12,marginBottom:10,borderLeftWidth:3,borderLeftColor:THEME.accent}}>
+        <Text style={{color:THEME.accent,fontWeight:'800',fontSize:11,marginBottom:4}}>🔥 STACK ALERT</Text>
         {sweatCard.stack_alerts.map((s:any, i:number) => (
           <Text key={i} style={{color:'#fff',fontSize:12}}>
             {s.matchup} — {s.prime_count} PRIME hits picks vs the same starter
@@ -10317,10 +10318,10 @@ setJerryHistory(prev => {
         ? `${Math.round(volatile.hit_rate * 100)}% audited`
         : 'audit pending';
       return (
-        <View style={{borderTopWidth:0.5,borderTopColor:'#1a2530',paddingTop:8,marginTop:4}}>
-          <Text style={{color:'#aa6a6a',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:4}}>🚫 SKIP TIER (NRFI 95+ — {rateStr})</Text>
+        <View style={{borderTopWidth:0.5,borderTopColor:THEME.surfaceAlt,paddingTop:8,marginTop:4}}>
+          <Text style={{color:THEME.textMuted,fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:4}}>🚫 SKIP TIER (NRFI 95+ — {rateStr})</Text>
           {sweatCard.skip_alerts.map((s:any, i:number) => (
-            <Text key={i} style={{color:'#7a92a8',fontSize:11}}>{s.game} — NRFI {s.nrfi_score}</Text>
+            <Text key={i} style={{color:THEME.textDim,fontSize:11}}>{s.game} — NRFI {s.nrfi_score}</Text>
           ))}
         </View>
       );
@@ -10333,12 +10334,12 @@ setJerryHistory(prev => {
          slates and rendering "LIGHT SLATE — 18 games today" which is
          clearly wrong. Banner now reads slate_density directly. */}
     {(sweatCard.slate_density === 'thin' || sweatCard.slate_density === 'empty') && (
-      <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:'#1a2530'}}>
-        <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:8,padding:10,marginBottom:10,borderLeftWidth:2,borderLeftColor:'#7a92a8'}}>
-          <Text style={{color:'#7a92a8',fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:2}}>
+      <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:THEME.surfaceAlt}}>
+        <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:8,padding:10,marginBottom:10,borderLeftWidth:2,borderLeftColor:THEME.textDim}}>
+          <Text style={{color:THEME.textDim,fontWeight:'700',fontSize:10,letterSpacing:1,marginBottom:2}}>
             ☀️ LIGHT SLATE — {sweatCard.total_games || 0} game{sweatCard.total_games === 1 ? '' : 's'} today
           </Text>
-          <Text style={{color:'#7a92a8',fontSize:11,fontStyle:'italic'}}>
+          <Text style={{color:THEME.textDim,fontSize:11,fontStyle:'italic'}}>
             Quiet day. Surfacing track record + upcoming events instead of forcing picks.
           </Text>
         </View>
@@ -10349,7 +10350,7 @@ setJerryHistory(prev => {
          regardless of slate density. This is the "show your work" surface,
          not padding. Lives just below the sweat card top_8.  */}
     {(sweatCard.audit_roll_up || sweatCard.yesterday_recap || sweatCard.upcoming_events) && (
-      <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:'#1a2530'}}>
+      <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:THEME.surfaceAlt}}>
         {/* Yesterday recap — POTD/DotD anchors + full top_8 grades when
             available. 2026-05-24: extended from anchors-only to show the
             full receipts unit (resolver populates per-pick W/L overnight).
@@ -10368,13 +10369,13 @@ setJerryHistory(prev => {
             </View>
             {sweatCard.yesterday_recap.potd && (
               <Text style={{color:'#fff',fontSize:12,marginBottom:2}}>
-                🎯 POTD: <Text style={{color:'#7a92a8'}}>{sweatCard.yesterday_recap.potd.matchup?.away_team || sweatCard.yesterday_recap.potd.matchup} @ {sweatCard.yesterday_recap.potd.matchup?.home_team || ''}</Text>
+                🎯 POTD: <Text style={{color:THEME.textDim}}>{sweatCard.yesterday_recap.potd.matchup?.away_team || sweatCard.yesterday_recap.potd.matchup} @ {sweatCard.yesterday_recap.potd.matchup?.home_team || ''}</Text>
                 {sweatCard.yesterday_recap.potd.result && <Text style={{color:sweatCard.yesterday_recap.potd.result === 'Win' ? '#00e5a0' : '#ff4d6d',fontWeight:'700'}}> — {sweatCard.yesterday_recap.potd.result}</Text>}
               </Text>
             )}
             {sweatCard.yesterday_recap.dawg && (
               <Text style={{color:'#fff',fontSize:12,marginBottom:6}}>
-                🐕 Dawg: <Text style={{color:'#78b4ff',fontWeight:'700'}}>{sweatCard.yesterday_recap.dawg.team}</Text>
+                🐕 Dawg: <Text style={{color:THEME.sharp,fontWeight:'700'}}>{sweatCard.yesterday_recap.dawg.team}</Text>
                 {sweatCard.yesterday_recap.dawg.result_status && (
                   <Text style={{color:sweatCard.yesterday_recap.dawg.result_status === 'Win' ? '#00e5a0' : '#ff4d6d',fontWeight:'700'}}> — {sweatCard.yesterday_recap.dawg.result_status}</Text>
                 )}
@@ -10384,12 +10385,12 @@ setJerryHistory(prev => {
             {Array.isArray(sweatCard.yesterday_recap.top_8) && sweatCard.yesterday_recap.top_8.length > 0 && (
               <View style={{marginTop:4,paddingTop:6,borderTopWidth:0.5,borderTopColor:'rgba(255,184,0,0.2)'}}>
                 {sweatCard.yesterday_recap.top_8.map((pk:any, i:number) => {
-                  const resColor = pk.result === 'Win' ? '#00e5a0' : pk.result === 'Loss' ? '#ff4d6d' : '#7a92a8';
+                  const resColor = pk.result === 'Win' ? '#00e5a0' : pk.result === 'Loss' ? '#ff4d6d' : THEME.textDim;
                   const resIcon = pk.result === 'Win' ? '✓' : pk.result === 'Loss' ? '✗' : (pk.result === 'Push' ? '=' : '·');
                   return (
                     <View key={`yrecap-${i}`} style={{flexDirection:'row',alignItems:'center',paddingVertical:2}}>
-                      <Text style={{color:'#7a92a8',fontSize:10,width:18,fontWeight:'700'}}>{pk.rank}.</Text>
-                      <Text style={{color:'#c8d8e8',fontSize:11,flex:1}} numberOfLines={1}>{pk.label}</Text>
+                      <Text style={{color:THEME.textDim,fontSize:10,width:18,fontWeight:'700'}}>{pk.rank}.</Text>
+                      <Text style={{color:THEME.textDim,fontSize:11,flex:1}} numberOfLines={1}>{pk.label}</Text>
                       <Text style={{color:resColor,fontSize:13,fontWeight:'900',marginLeft:6}}>{resIcon}</Text>
                     </View>
                   );
@@ -10416,8 +10417,8 @@ setJerryHistory(prev => {
               const tierLabel = prettyCohort(tier);
               return (
                 <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:3}}>
-                  <Text style={{color:'#7a92a8',fontSize:11,flex:1}}>{tierLabel}</Text>
-                  <Text style={{color:rate >= 60 ? '#00e5a0' : rate >= 50 ? '#fff' : '#aa6a6a',fontSize:11,fontWeight:'700'}}>
+                  <Text style={{color:THEME.textDim,fontSize:11,flex:1}}>{tierLabel}</Text>
+                  <Text style={{color:rate >= 60 ? '#00e5a0' : rate >= 50 ? '#fff' : THEME.textMuted,fontSize:11,fontWeight:'700'}}>
                     {w.hits}-{w.total - w.hits} ({rate}% on {w.total})
                   </Text>
                 </View>
@@ -10428,14 +10429,14 @@ setJerryHistory(prev => {
 
         {/* Upcoming events — UFC card + tomorrow MLB preview */}
         {sweatCard.upcoming_events?.length > 0 && (
-          <View style={{backgroundColor:'rgba(120,180,255,0.06)',borderRadius:10,padding:10,borderLeftWidth:3,borderLeftColor:'#78b4ff'}}>
-            <Text style={{color:'#78b4ff',fontWeight:'800',fontSize:11,marginBottom:6}}>🔭 UPCOMING</Text>
+          <View style={{backgroundColor:'rgba(120,180,255,0.06)',borderRadius:10,padding:10,borderLeftWidth:3,borderLeftColor:THEME.sharp}}>
+            <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:11,marginBottom:6}}>🔭 UPCOMING</Text>
             {sweatCard.upcoming_events.map((ev:any, i:number) => {
               if (ev.type === 'ufc_card') {
                 return (
                   <View key={i} style={{marginTop:i>0?6:0}}>
                     <Text style={{color:'#fff',fontSize:12,fontWeight:'700'}}>🥊 {ev.event_name}</Text>
-                    <Text style={{color:'#7a92a8',fontSize:11,marginTop:1}}>
+                    <Text style={{color:THEME.textDim,fontSize:11,marginTop:1}}>
                       {ev.event_date} • {ev.fight_count} fights{ev.prime_picks?.length > 0 ? ` • ${ev.prime_picks.length} PRIME pick${ev.prime_picks.length === 1 ? '' : 's'}` : ''}
                     </Text>
                   </View>
@@ -10446,7 +10447,7 @@ setJerryHistory(prev => {
                   <View key={i} style={{marginTop:i>0?6:0}}>
                     <Text style={{color:'#fff',fontSize:12,fontWeight:'700'}}>⚾ Tomorrow ({ev.date}) — {ev.game_count} games</Text>
                     {ev.matchups.slice(0,3).map((m:any, j:number) => (
-                      <Text key={j} style={{color:'#7a92a8',fontSize:10,marginTop:1}}>
+                      <Text key={j} style={{color:THEME.textDim,fontSize:10,marginTop:1}}>
                         {m.game} — {m.home_sp || 'TBD'} ({m.home_xera || '—'}) vs {m.away_sp || 'TBD'} ({m.away_xera || '—'})
                       </Text>
                     ))}
@@ -10476,9 +10477,9 @@ setJerryHistory(prev => {
       ? { name: 'HEADLINE',       badge: '🔒', color: HRB_COLOR,  bgColor: 'rgba(255,184,0,0.15)', subhead: null }
     : (conf === 'secondary')
       ? { name: 'SECONDARY',      badge: '🥈', color: '#00e5a0',  bgColor: 'rgba(0,229,160,0.1)',  subhead: 'No headline conviction — best available secondary lean' }
-      : { name: 'BEST AVAILABLE', badge: '🥉', color: '#0099ff',  bgColor: 'rgba(0,153,255,0.1)',  subhead: 'Below-conviction lean — model edge present but light' };
+      : { name: 'BEST AVAILABLE', badge: '🥉', color: THEME.sharp,  bgColor: 'rgba(0,153,255,0.1)',  subhead: 'Below-conviction lean — model edge present but light' };
   return (
-  <View style={{backgroundColor:'#0a1520',borderRadius:16,padding:16,borderWidth:1.5,borderColor:potdTier.color,marginBottom:16,shadowColor:potdTier.color,shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
+  <View style={{backgroundColor:THEME.surfaceHero,borderRadius:16,padding:16,borderWidth:1.5,borderColor:potdTier.color,marginBottom:16,shadowColor:potdTier.color,shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:potdTier.subhead ? 4 : 10}}>
       <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
         <Text style={{color:potdTier.color,fontWeight:'800',fontSize:12,letterSpacing:1}}>{potdTier.badge} JERRY'S PLAY OF THE DAY</Text>
@@ -10500,52 +10501,52 @@ setJerryHistory(prev => {
       )}
     </View>
     {potdTier.subhead && (
-      <Text style={{color:'#4a6070',fontSize:10,fontStyle:'italic',marginBottom:10}}>{potdTier.subhead}</Text>
+      <Text style={{color:THEME.textMuted,fontSize:10,fontStyle:'italic',marginBottom:10}}>{potdTier.subhead}</Text>
     )}
 
     {dailyBestBetLoading ? (
       <View style={{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:8}}>
         <ActivityIndicator size='small' color={HRB_COLOR}/>
-        <Text style={{color:'#4a6070',fontSize:13}}>Jerry is finding today's best play...</Text>
+        <Text style={{color:THEME.textMuted,fontSize:13}}>Jerry is finding today's best play...</Text>
       </View>
     ) : dailyBestBet?.waiting ? (
-      <Text style={{color:'#7a92a8',fontSize:13,lineHeight:20}}>Jerry's Play of the Day generates after the morning pipeline runs. Data locks in by 11am ET with pitcher matchups and NRFI scores, then refreshes by 4pm ET with confirmed lineups and umpires.</Text>
+      <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>Jerry's Play of the Day generates after the morning pipeline runs. Data locks in by 11am ET with pitcher matchups and NRFI scores, then refreshes by 4pm ET with confirmed lineups and umpires.</Text>
     ) : dailyBestBet?.noGames ? (
-      <Text style={{color:'#7a92a8',fontSize:13}}>No games on the slate today. Check back tomorrow.</Text>
+      <Text style={{color:THEME.textDim,fontSize:13}}>No games on the slate today. Check back tomorrow.</Text>
     ) : dailyBestBet?.noPrime ? (
-      <Text style={{color:'#7a92a8',fontSize:13}}>No prime plays today — top game scores {dailyBestBet.topScore}/100. Jerry says wait for a better spot.</Text>
+      <Text style={{color:THEME.textDim,fontSize:13}}>No prime plays today — top game scores {dailyBestBet.topScore}/100. Jerry says wait for a better spot.</Text>
     ) : dailyBestBet?.noPlay ? (
-      <Text style={{color:'#7a92a8',fontSize:13,lineHeight:20}}>{dailyBestBet.narrative || "No play cleared the discipline gate tonight. Model, cohort engine, and Panel didn't converge — we sit out rather than force one. Dawg of the Day + bucket angles are still in the app."}</Text>
+      <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>{dailyBestBet.narrative || "No play cleared the discipline gate tonight. Model, cohort engine, and Panel didn't converge — we sit out rather than force one. Dawg of the Day + bucket angles are still in the app."}</Text>
     ) : dailyBestBet?.game ? (
       <View>
 {isPlayoffMode && dailyBestBet?.sport === 'NBA' && (
   <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,marginBottom:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
-    <Text style={{color:'#FFB800',fontSize:11,fontWeight:'700'}}>🏆 NBA PLAYOFFS</Text>
+    <Text style={{color:THEME.hrb,fontSize:11,fontWeight:'700'}}>🏆 NBA PLAYOFFS</Text>
   </View>
 )}
-        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',letterSpacing:0.5,marginBottom:6}}>
+        <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',letterSpacing:0.5,marginBottom:6}}>
           {SPORT_EMOJI[dailyBestBet.sport] || '🎯'} {dailyBestBet.sport} — {new Date(dailyBestBet.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} ET
         </Text>
-        <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:15,marginBottom:8}}>
+        <Text style={{color:THEME.text,fontWeight:'800',fontSize:15,marginBottom:8}}>
           {dailyBestBet.game.away_team} @ {dailyBestBet.game.home_team}
         </Text>
         <View style={{flexDirection:'row',alignItems:'center',gap:10,marginBottom:12}}>
           <View style={{backgroundColor:potdTier.bgColor,borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:potdTier.color,flex:1}}>
-            <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>TOP PLAY</Text>
+            <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>TOP PLAY</Text>
             <Text style={{color:potdTier.color,fontWeight:'800',fontSize:16}}>
   {dailyBestBet.leanDisplay || 'Top Model Edge'}
 </Text>
           </View>
           <View style={{backgroundColor:'rgba(0,229,160,0.1)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:'rgba(0,229,160,0.3)',alignItems:'center'}}>
-            <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>SWEAT</Text>
+            <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>SWEAT</Text>
             <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:16}}>{dailyBestBet.score?.total || '--'}</Text>
           </View>
           <View style={{backgroundColor:'rgba(0,153,255,0.1)',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:'rgba(0,153,255,0.3)',alignItems:'center'}}>
-            <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>BOOK</Text>
-            <Text style={{color:'#0099ff',fontWeight:'800',fontSize:11}}>🎸 HRB</Text>
+            <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>BOOK</Text>
+            <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:11}}>🎸 HRB</Text>
           </View>
         </View>
-        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>
+        <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>
       </View>
     ) : null}
   </View>
@@ -10560,19 +10561,19 @@ setJerryHistory(prev => {
                   onPress={()=>{setTempUnitSize(unitSize);setUnitSizeModal(true);}}
                   style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',backgroundColor:'rgba(255,184,0,0.08)',borderWidth:1,borderColor:'rgba(255,184,0,0.2)',borderRadius:10,paddingHorizontal:14,paddingVertical:10,marginBottom:12}}
                 >
-                  <Text style={{color:'#7a92a8',fontSize:13}}>Unit Size</Text>
+                  <Text style={{color:THEME.textDim,fontSize:13}}>Unit Size</Text>
                   <Text style={{color:HRB_COLOR,fontSize:13,fontWeight:'700'}}>${unitSize} / unit ›</Text>
                 </TouchableOpacity>
               )}
 
               <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
                 <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                <TouchableOpacity onPress={toggleMode} style={{flexDirection:'row',backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',borderRadius:20,padding:3,gap:2}}>
+                <TouchableOpacity onPress={toggleMode} style={{flexDirection:'row',backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:20,padding:3,gap:2}}>
                   <View style={[{paddingHorizontal:10,paddingVertical:4,borderRadius:16},trackingMode==='units'&&{backgroundColor:'#00e5a0'}]}>
-                    <Text style={{fontSize:11,fontWeight:'700',color:trackingMode==='units'?'#080c10':'#7a92a8'}}>Units</Text>
+                    <Text style={{fontSize:11,fontWeight:'700',color:trackingMode==='units'?THEME.bg:THEME.textDim}}>Units</Text>
                   </View>
                   <View style={[{paddingHorizontal:10,paddingVertical:4,borderRadius:16},trackingMode==='dollars'&&{backgroundColor:'#00e5a0'}]}>
-                    <Text style={{fontSize:11,fontWeight:'700',color:trackingMode==='dollars'?'#080c10':'#7a92a8'}}>$$$</Text>
+                    <Text style={{fontSize:11,fontWeight:'700',color:trackingMode==='dollars'?THEME.bg:THEME.textDim}}>$$$</Text>
                   </View>
                 </TouchableOpacity>
               </View>
@@ -10582,7 +10583,7 @@ setJerryHistory(prev => {
                 onPress={async()=>{await autoDetectResults();}}
                 style={{flexDirection:'row',alignItems:'center',justifyContent:'flex-end',gap:6,marginBottom:8,paddingHorizontal:4}}
               >
-                <Text style={{color:'#4a6070',fontSize:11}}>🔄 Sync Results</Text>
+                <Text style={{color:THEME.textMuted,fontSize:11}}>🔄 Sync Results</Text>
               </TouchableOpacity>
 
             <View style={styles.hero}>
@@ -10598,13 +10599,13 @@ setJerryHistory(prev => {
             </View>
             <View style={styles.statRow}>
               <View style={[styles.statBox,styles.statGreen]}><Text style={[styles.statVal,{color:'#00e5a0'}]}>{winRate}%</Text><Text style={styles.statKey}>Win Rate</Text></View>
-              <View style={[styles.statBox,styles.statBlue]}><Text style={[styles.statVal,{color:'#0099ff',fontSize:trackingMode==='dollars'?16:20}]}>{trackingMode==='units'?(totalUnits>=0?'+':'')+totalUnits.toFixed(1)+'u':(totalDollars>=0?'+':'-')+'$'+Math.abs(totalDollars).toFixed(0)}</Text><Text style={styles.statKey}>{trackingMode==='units'?'UNITS':'Profit'}</Text></View>
+              <View style={[styles.statBox,styles.statBlue]}><Text style={[styles.statVal,{color:THEME.sharp,fontSize:trackingMode==='dollars'?16:20}]}>{trackingMode==='units'?(totalUnits>=0?'+':'')+totalUnits.toFixed(1)+'u':(totalDollars>=0?'+':'-')+'$'+Math.abs(totalDollars).toFixed(0)}</Text><Text style={styles.statKey}>{trackingMode==='units'?'UNITS':'Profit'}</Text></View>
               <View style={styles.statBox}><Text style={styles.statVal}>{bets.length}</Text><Text style={styles.statKey}>Total Bets</Text></View>
             </View>
             {/* ROI CHART */}
             <View style={[styles.card,{marginBottom:16}]}>
               <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:15}}>📈 ROI Tracker</Text>
+                <Text style={{color:THEME.text,fontWeight:'800',fontSize:15}}>📈 ROI Tracker</Text>
                 <TouchableOpacity onPress={()=>setRoiUnit(roiUnit==='units'?'dollars':'units')} style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:8,paddingHorizontal:10,paddingVertical:4,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
                   <Text style={{color:HRB_COLOR,fontSize:11,fontWeight:'700'}}>{roiUnit==='units'?'Units':'$$$'}</Text>
                 </TouchableOpacity>
@@ -10612,8 +10613,8 @@ setJerryHistory(prev => {
               {/* Tab selector */}
               <View style={{flexDirection:'row',gap:6,marginBottom:12}}>
                 {[{id:'cumulative',label:'📈 P/L'},{id:'sports',label:'🏆 By Sport'}].map(t=>(
-                  <TouchableOpacity key={t.id} style={{flex:1,alignItems:'center',paddingVertical:7,borderRadius:10,borderWidth:1,borderColor:roiChartTab===t.id?HRB_COLOR:'#1f2d3d',backgroundColor:roiChartTab===t.id?'rgba(255,184,0,0.1)':'#151c24'}} onPress={()=>setRoiChartTab(t.id)}>
-                    <Text style={{color:roiChartTab===t.id?HRB_COLOR:'#7a92a8',fontSize:12,fontWeight:'700'}}>{t.label}</Text>
+                  <TouchableOpacity key={t.id} style={{flex:1,alignItems:'center',paddingVertical:7,borderRadius:10,borderWidth:1,borderColor:roiChartTab===t.id?HRB_COLOR:THEME.border,backgroundColor:roiChartTab===t.id?'rgba(255,184,0,0.1)':THEME.surfaceAlt}} onPress={()=>setRoiChartTab(t.id)}>
+                    <Text style={{color:roiChartTab===t.id?HRB_COLOR:THEME.textDim,fontSize:12,fontWeight:'700'}}>{t.label}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -10623,7 +10624,7 @@ setJerryHistory(prev => {
                 if(data.length === 0) return(
                   <View style={{alignItems:'center',paddingVertical:24}}>
                     <Text style={{fontSize:28}}>📊</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,marginTop:8}}>Log settled bets to see your ROI chart</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,marginTop:8}}>Log settled bets to see your ROI chart</Text>
                   </View>
                 );
                 const maxVal = Math.max(...data.map(d=>d.value), 0.1);
@@ -10638,8 +10639,8 @@ setJerryHistory(prev => {
                     {/* Time range toggle */}
                     <View style={{flexDirection:'row',gap:4,marginBottom:12}}>
                       {[{id:'last10',label:'L10'},{id:'last30',label:'L30'},{id:'all',label:'All'}].map(t=>(
-                        <TouchableOpacity key={t.id} style={{paddingHorizontal:12,paddingVertical:5,borderRadius:8,borderWidth:1,borderColor:roiTimeRange===t.id?HRB_COLOR:'#1f2d3d',backgroundColor:roiTimeRange===t.id?'rgba(255,184,0,0.1)':'transparent'}} onPress={()=>setRoiTimeRange(t.id)}>
-                          <Text style={{color:roiTimeRange===t.id?HRB_COLOR:'#7a92a8',fontSize:11,fontWeight:'700'}}>{t.label}</Text>
+                        <TouchableOpacity key={t.id} style={{paddingHorizontal:12,paddingVertical:5,borderRadius:8,borderWidth:1,borderColor:roiTimeRange===t.id?HRB_COLOR:THEME.border,backgroundColor:roiTimeRange===t.id?'rgba(255,184,0,0.1)':'transparent'}} onPress={()=>setRoiTimeRange(t.id)}>
+                          <Text style={{color:roiTimeRange===t.id?HRB_COLOR:THEME.textDim,fontSize:11,fontWeight:'700'}}>{t.label}</Text>
                         </TouchableOpacity>
                       ))}
                       <View style={{flex:1,alignItems:'flex-end',justifyContent:'center'}}>
@@ -10678,7 +10679,7 @@ setJerryHistory(prev => {
   {data.map((d,i)=>{
     const x = data.length > 1 ? (i/(data.length-1))*(chartW-20)+10 : chartW/2;
     const y = Math.min(chartH-2, Math.max(2, chartH - ((d.value-minVal)/range*chartH)));
-    return <Circle key={i} cx={x} cy={y} r={3} fill={d.result==='Win'?'#00e5a0':d.result==='Loss'?'#ff4d6d':'#ffd166'}/>;
+    return <Circle key={i} cx={x} cy={y} r={3} fill={d.result==='Win'?'#00e5a0':d.result==='Loss'?'#ff4d6d':THEME.push}/>;
   })}
   {/* Y axis labels */}
   <SvgText x={2} y={8} fill="#4a6070" fontSize={9}>{maxVal>0?'+':''}{maxVal.toFixed(1)}{roiUnit==='units'?'u':'$'}</SvgText>
@@ -10687,20 +10688,20 @@ setJerryHistory(prev => {
 
                     {/* X axis labels */}
                     <View style={{flexDirection:'row',justifyContent:'space-between',paddingHorizontal:10,marginTop:2}}>
-                      <Text style={{color:'#4a6070',fontSize:9}}>{data[0]?.date}</Text>
-                      {data.length > 2 && <Text style={{color:'#4a6070',fontSize:9}}>{data[Math.floor(data.length/2)]?.date}</Text>}
-                      <Text style={{color:'#4a6070',fontSize:9}}>{data[data.length-1]?.date}</Text>
+                      <Text style={{color:THEME.textMuted,fontSize:9}}>{data[0]?.date}</Text>
+                      {data.length > 2 && <Text style={{color:THEME.textMuted,fontSize:9}}>{data[Math.floor(data.length/2)]?.date}</Text>}
+                      <Text style={{color:THEME.textMuted,fontSize:9}}>{data[data.length-1]?.date}</Text>
                     </View>
                     {/* Stats row */}
-                    <View style={{flexDirection:'row',justifyContent:'space-around',marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:'#1f2d3d'}}>
+                    <View style={{flexDirection:'row',justifyContent:'space-around',marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:THEME.border}}>
                       {[
                         {label:'Best Bet',val:(()=>{const best=data.reduce((a,b)=>b.profit>a.profit?b:a,data[0]);return (best.profit>0?'+':'')+best.profit.toFixed(1)+(roiUnit==='units'?'u':'$');})(  ),color:'#00e5a0'},
                         {label:'Worst Bet',val:(()=>{const worst=data.reduce((a,b)=>b.profit<a.profit?b:a,data[0]);return (worst.profit>0?'+':'')+worst.profit.toFixed(1)+(roiUnit==='units'?'u':'$');})(  ),color:'#ff4d6d'},
-                        {label:'Avg/Bet',val:(()=>{const avg=data.reduce((s,d)=>s+d.profit,0)/data.length;return (avg>0?'+':'')+avg.toFixed(1)+(roiUnit==='units'?'u':'$');})(  ),color:'#ffd166'},
+                        {label:'Avg/Bet',val:(()=>{const avg=data.reduce((s,d)=>s+d.profit,0)/data.length;return (avg>0?'+':'')+avg.toFixed(1)+(roiUnit==='units'?'u':'$');})(  ),color:THEME.push},
                       ].map((s,i)=>(
                         <View key={i} style={{alignItems:'center'}}>
                           <Text style={{color:s.color,fontWeight:'800',fontSize:13}}>{s.val}</Text>
-                          <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{s.label}</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>{s.label}</Text>
                         </View>
                       ))}
                     </View>
@@ -10712,7 +10713,7 @@ setJerryHistory(prev => {
                 if(data.length === 0) return(
                   <View style={{alignItems:'center',paddingVertical:24}}>
                     <Text style={{fontSize:28}}>🏆</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,marginTop:8}}>Log settled bets to see sport breakdown</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,marginTop:8}}>Log settled bets to see sport breakdown</Text>
                   </View>
                 );
                 const maxUnits = Math.max(...data.map(d=>Math.abs(d.displayUnits)),0.1);
@@ -10722,28 +10723,28 @@ setJerryHistory(prev => {
                       <View key={i} style={{marginBottom:12}}>
                         <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
                           <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
-                            <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{SPORT_EMOJI[s.sport]||'🎯'} {s.sport}</Text>
-                            <Text style={{color:'#4a6070',fontSize:11}}>{s.wins}-{s.losses}{s.pushes>0?`-${s.pushes}`:''}</Text>
+                            <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>{SPORT_EMOJI[s.sport]||'🎯'} {s.sport}</Text>
+                            <Text style={{color:THEME.textMuted,fontSize:11}}>{s.wins}-{s.losses}{s.pushes>0?`-${s.pushes}`:''}</Text>
                           </View>
                           <View style={{alignItems:'flex-end'}}>
                             <Text style={{color:s.displayUnits>=0?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:13}}>{s.displayUnits>=0?'+':''}{s.displayUnits.toFixed(1)}{roiUnit==='units'?'u':'$'}</Text>
-                            <Text style={{color:'#4a6070',fontSize:10}}>{s.winRate}% WR</Text>
+                            <Text style={{color:THEME.textMuted,fontSize:10}}>{s.winRate}% WR</Text>
                           </View>
                         </View>
-                        <View style={{flexDirection:'row',gap:4,height:8,borderRadius:4,overflow:'hidden',backgroundColor:'#1f2d3d'}}>
+                        <View style={{flexDirection:'row',gap:4,height:8,borderRadius:4,overflow:'hidden',backgroundColor:THEME.border}}>
                           <View style={{flex:s.wins,backgroundColor:'#00e5a0',borderRadius:4}}/>
                           <View style={{flex:s.losses,backgroundColor:'#ff4d6d',borderRadius:4}}/>
-                          {s.pushes>0&&<View style={{flex:s.pushes,backgroundColor:'#ffd166',borderRadius:4}}/>}
+                          {s.pushes>0&&<View style={{flex:s.pushes,backgroundColor:THEME.push,borderRadius:4}}/>}
                         </View>
-                        <View style={{height:6,backgroundColor:'#1f2d3d',borderRadius:3,overflow:'hidden',marginTop:4}}>
+                        <View style={{height:6,backgroundColor:THEME.border,borderRadius:3,overflow:'hidden',marginTop:4}}>
                           <View style={{height:'100%',width:`${(Math.abs(s.displayUnits)/maxUnits)*100}%`,backgroundColor:s.displayUnits>=0?'rgba(0,229,160,0.4)':'rgba(255,77,109,0.4)',borderRadius:3}}/>
                         </View>
                       </View>
                     ))}
                     <View style={{flexDirection:'row',gap:8,marginTop:4}}>
-                      <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#00e5a0'}}/><Text style={{color:'#4a6070',fontSize:10}}>Win</Text></View>
-                      <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#ff4d6d'}}/><Text style={{color:'#4a6070',fontSize:10}}>Loss</Text></View>
-                      <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#ffd166'}}/><Text style={{color:'#4a6070',fontSize:10}}>Push</Text></View>
+                      <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#00e5a0'}}/><Text style={{color:THEME.textMuted,fontSize:10}}>Win</Text></View>
+                      <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:'#ff4d6d'}}/><Text style={{color:THEME.textMuted,fontSize:10}}>Loss</Text></View>
+                      <View style={{flexDirection:'row',alignItems:'center',gap:4}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:THEME.push}}/><Text style={{color:THEME.textMuted,fontSize:10}}>Push</Text></View>
                     </View>
                   </View>
                 );
@@ -10762,22 +10763,22 @@ setJerryHistory(prev => {
                   <Text style={styles.metaChip}>🏆 {bet.sport}</Text>
                   <Text style={styles.metaChip}>{bet.odds}</Text>
                   <Text style={styles.metaChip}>{formatBetSize(bet.units)}</Text>
-                  <Text style={[styles.metaChip,bet.book===HRB&&{borderColor:HRB_COLOR}]}><Text style={{color:bet.book===HRB?HRB_COLOR:'#7a92a8'}}>{bet.book===HRB?'🎸 ':''}{bet.book}</Text></Text>
+                  <Text style={[styles.metaChip,bet.book===HRB&&{borderColor:HRB_COLOR}]}><Text style={{color:bet.book===HRB?HRB_COLOR:THEME.textDim}}>{bet.book===HRB?'🎸 ':''}{bet.book}</Text></Text>
                 </View>
               </View>
             ))}
-            {bets.length===0&&<View style={{alignItems:'center',paddingTop:40}}><Text style={{fontSize:32}}>🎯</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14}}>No picks yet. Tap ➕ to log your first bet!</Text></View>}
+            {bets.length===0&&<View style={{alignItems:'center',paddingTop:40}}><Text style={{fontSize:32}}>🎯</Text><Text style={{color:THEME.textDim,marginTop:12,fontSize:14}}>No picks yet. Tap ➕ to log your first bet!</Text></View>}
           </View>
         )}
 
         {(activeTab==='picks'||(activeTab==='mybets'&&mybetsTab==='picks'))&&(
           <View>
-            <View style={{flexDirection:'row',marginBottom:14,gap:0,backgroundColor:'#151c24',borderRadius:12,overflow:'hidden'}}>
-              <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='picks'?'#1a2a3a':'transparent'}} onPress={()=>setMybetsTab('picks')}>
-                <Text style={{color:mybetsTab==='picks'?'#00e5a0':'#7a92a8',fontWeight:'700',fontSize:13}}>My Picks</Text>
+            <View style={{flexDirection:'row',marginBottom:14,gap:0,backgroundColor:THEME.surfaceAlt,borderRadius:12,overflow:'hidden'}}>
+              <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='picks'?THEME.surfaceAlt:'transparent'}} onPress={()=>setMybetsTab('picks')}>
+                <Text style={{color:mybetsTab==='picks'?'#00e5a0':THEME.textDim,fontWeight:'700',fontSize:13}}>My Picks</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='parlay_sub'?'#1a2a3a':'transparent'}} onPress={()=>setMybetsTab('parlay_sub')}>
-                <Text style={{color:mybetsTab==='parlay_sub'?'#00e5a0':'#7a92a8',fontWeight:'700',fontSize:13}}>Parlay Builder</Text>
+              <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='parlay_sub'?THEME.surfaceAlt:'transparent'}} onPress={()=>setMybetsTab('parlay_sub')}>
+                <Text style={{color:mybetsTab==='parlay_sub'?'#00e5a0':THEME.textDim,fontWeight:'700',fontSize:13}}>Parlay Builder</Text>
               </TouchableOpacity>
             </View>
             {mybetsTab==='picks'&&(
@@ -10786,7 +10787,7 @@ setJerryHistory(prev => {
             <View style={styles.statRow}>
               <View style={[styles.statBox,styles.statGreen]}><Text style={[styles.statVal,{color:'#00e5a0'}]}>{wins}W</Text><Text style={styles.statKey}>Wins</Text></View>
               <View style={[styles.statBox,styles.statRed]}><Text style={[styles.statVal,{color:'#ff4d6d'}]}>{losses}L</Text><Text style={styles.statKey}>Losses</Text></View>
-              <View style={[styles.statBox,styles.statBlue]}><Text style={[styles.statVal,{color:'#0099ff',fontSize:trackingMode==='dollars'?15:20}]}>{trackingMode==='units'?(totalUnits>=0?'+':'')+totalUnits.toFixed(1)+'u':(totalDollars>=0?'+':'-')+'$'+Math.abs(totalDollars).toFixed(0)}</Text><Text style={styles.statKey}>{trackingMode==='units'?'UNITS':'Profit'}</Text></View>
+              <View style={[styles.statBox,styles.statBlue]}><Text style={[styles.statVal,{color:THEME.sharp,fontSize:trackingMode==='dollars'?15:20}]}>{trackingMode==='units'?(totalUnits>=0?'+':'')+totalUnits.toFixed(1)+'u':(totalDollars>=0?'+':'-')+'$'+Math.abs(totalDollars).toFixed(0)}</Text><Text style={styles.statKey}>{trackingMode==='units'?'UNITS':'Profit'}</Text></View>
             </View>
             {/* Per-type split — Games / Props / Parlays. Diagnostic under the overall headline. */}
             {(() => {
@@ -10801,10 +10802,10 @@ setJerryHistory(prev => {
               const props = wlRate(bets.filter(b => b.type === 'Prop'));
               const parlays = wlRate(bets.filter(b => b.type === 'Parlay'));
               const Cell = ({label, s}) => (
-                <View style={{flex:1, paddingVertical:8, paddingHorizontal:6, backgroundColor:'#0d1419', borderRadius:8, alignItems:'center'}}>
-                  <Text style={{color:'#7a92a8', fontSize:9, fontWeight:'700', letterSpacing:0.5, marginBottom:2}}>{label}</Text>
-                  <Text style={{color:'#e8f0f8', fontSize:13, fontWeight:'700'}}>{s.w}-{s.l}</Text>
-                  <Text style={{color: s.rate==null?'#4a6070':s.rate>=55?'#00e5a0':s.rate<=45?'#ff4d6d':'#7a92a8', fontSize:10, fontWeight:'600', marginTop:1}}>
+                <View style={{flex:1, paddingVertical:8, paddingHorizontal:6, backgroundColor:THEME.surface, borderRadius:8, alignItems:'center'}}>
+                  <Text style={{color:THEME.textDim, fontSize:9, fontWeight:'700', letterSpacing:0.5, marginBottom:2}}>{label}</Text>
+                  <Text style={{color:THEME.text, fontSize:13, fontWeight:'700'}}>{s.w}-{s.l}</Text>
+                  <Text style={{color: s.rate==null?THEME.textMuted:s.rate>=55?'#00e5a0':s.rate<=45?'#ff4d6d':THEME.textDim, fontSize:10, fontWeight:'600', marginTop:1}}>
                     {s.rate==null?'—':s.rate+'%'}
                   </Text>
                 </View>
@@ -10830,20 +10831,20 @@ setJerryHistory(prev => {
                   <View style={{flexDirection:'row',gap:6,marginTop:8}}>
                     <TouchableOpacity style={styles.quickBtn} onPress={()=>quickUpdateResult(bet.id,'Win')}><Text style={{color:'#00e5a0',fontSize:12,fontWeight:'700'}}>✓ Win</Text></TouchableOpacity>
                     <TouchableOpacity style={styles.quickBtn} onPress={()=>quickUpdateResult(bet.id,'Loss')}><Text style={{color:'#ff4d6d',fontSize:12,fontWeight:'700'}}>✗ Loss</Text></TouchableOpacity>
-                    <TouchableOpacity style={styles.quickBtn} onPress={()=>quickUpdateResult(bet.id,'Push')}><Text style={{color:'#ffd166',fontSize:12,fontWeight:'700'}}>~ Push</Text></TouchableOpacity>
+                    <TouchableOpacity style={styles.quickBtn} onPress={()=>quickUpdateResult(bet.id,'Push')}><Text style={{color:THEME.push,fontSize:12,fontWeight:'700'}}>~ Push</Text></TouchableOpacity>
                   </View>
                 )}
                 <View style={styles.betMeta}>
                   <Text style={styles.metaChip}>🏆 {bet.sport}</Text>
                   <Text style={styles.metaChip}>{bet.odds}</Text>
                   <Text style={styles.metaChip}>{formatBetSize(bet.units)}</Text>
-                  <Text style={[styles.metaChip,bet.book===HRB&&{borderColor:HRB_COLOR}]}><Text style={{color:bet.book===HRB?HRB_COLOR:'#7a92a8'}}>{bet.book===HRB?'🎸 ':''}{bet.book}</Text></Text>
+                  <Text style={[styles.metaChip,bet.book===HRB&&{borderColor:HRB_COLOR}]}><Text style={{color:bet.book===HRB?HRB_COLOR:THEME.textDim}}>{bet.book===HRB?'🎸 ':''}{bet.book}</Text></Text>
                   {bet.date&&<Text style={styles.metaChip}>📅 {bet.date}</Text>}
-                  <TouchableOpacity onPress={()=>deleteBet(bet.id)}><Text style={{color:'#4a6070',fontSize:11,paddingVertical:2}}>🗑</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={()=>deleteBet(bet.id)}><Text style={{color:THEME.textMuted,fontSize:11,paddingVertical:2}}>🗑</Text></TouchableOpacity>
                 </View>
               </View>
             ))}
-            {bets.length===0&&<View style={{alignItems:'center',paddingTop:40}}><Text style={{fontSize:32}}>🎯</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14}}>No picks logged yet.</Text></View>}
+            {bets.length===0&&<View style={{alignItems:'center',paddingTop:40}}><Text style={{fontSize:32}}>🎯</Text><Text style={{color:THEME.textDim,marginTop:12,fontSize:14}}>No picks logged yet.</Text></View>}
             <TouchableOpacity style={styles.btnPrimary} onPress={()=>setModalVisible(true)}><Text style={styles.btnPrimaryText}>+ Log New Pick</Text></TouchableOpacity>
             <View style={{height:20}}/>
             </View>
@@ -10865,8 +10866,8 @@ setJerryHistory(prev => {
               ))}
             </View>
             {gamesDay==='tomorrow' && (
-              <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:10,padding:10,marginBottom:12,borderLeftWidth:3,borderLeftColor:'#7a92a8'}}>
-                <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>
+              <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:10,padding:10,marginBottom:12,borderLeftWidth:3,borderLeftColor:THEME.textDim}}>
+                <Text style={{color:THEME.textDim,fontSize:11,lineHeight:16}}>
                   Preview — probable pitchers, opening lines, weather, and stat projections refresh by 4pm ET today. Confirmed lineups, conviction tiers, and final picks land by 11am ET tomorrow.
                 </Text>
               </View>
@@ -10876,10 +10877,10 @@ setJerryHistory(prev => {
                 {SPORTS.map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,gamesSport===s&&styles.chipBtnActive]} onPress={()=>setGamesSport(s)}><Text style={[styles.chipTxt,gamesSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text></TouchableOpacity>))}
               </View>
             </ScrollView>
-            <View style={{flexDirection:'row',alignItems:'center',backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',borderRadius:12,paddingHorizontal:12,marginBottom:14}}>
+            <View style={{flexDirection:'row',alignItems:'center',backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:12,paddingHorizontal:12,marginBottom:14}}>
   <Text style={{fontSize:16,marginRight:8}}>🔍</Text>
   <TextInput
-    style={{flex:1,color:'#e8f0f8',fontSize:14,paddingVertical:10}}
+    style={{flex:1,color:THEME.text,fontSize:14,paddingVertical:10}}
     placeholder="Search teams..."
     placeholderTextColor="#4a6070"
     value={gamesSearch}
@@ -10888,7 +10889,7 @@ setJerryHistory(prev => {
   />
   {gamesSearch.length>0&&(
     <TouchableOpacity onPress={()=>setGamesSearch('')}>
-      <Text style={{color:'#4a6070',fontSize:16}}>✕</Text>
+      <Text style={{color:THEME.textMuted,fontSize:16}}>✕</Text>
     </TouchableOpacity>
   )}
 </View>
@@ -10915,19 +10916,19 @@ setJerryHistory(prev => {
                <View style={{backgroundColor:'rgba(255,184,0,0.10)',borderRadius:12,padding:12,marginBottom:10,borderWidth:1,borderColor:'rgba(255,184,0,0.30)'}}>
                  <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:6}}>
                    <Text style={{fontSize:14}}>🔄</Text>
-                   <Text style={{color:'#FFB800',fontWeight:'800',fontSize:12}}>MORNING PIPELINE RUNNING</Text>
+                   <Text style={{color:THEME.hrb,fontWeight:'800',fontSize:12}}>MORNING PIPELINE RUNNING</Text>
                  </View>
-                 <Text style={{color:'#c8d8e8',fontSize:12,lineHeight:17}}>Pitcher matchups, NRFI scores, and Sweat Scores landing by 11 AM ET. Market lines below are live; model-derived fields refresh once today's pipeline completes.</Text>
+                 <Text style={{color:THEME.textDim,fontSize:12,lineHeight:17}}>Pitcher matchups, NRFI scores, and Sweat Scores landing by 11 AM ET. Market lines below are live; model-derived fields refresh once today's pipeline completes.</Text>
                </View>
              );
            })()}
            {gamesSport==='MLB'&&(
   <View style={{backgroundColor:'rgba(0,153,255,0.06)',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:'rgba(0,153,255,0.2)'}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-      <Text style={{color:'#0099ff',fontWeight:'800',fontSize:12}}>⚾ MLB MODEL ACTIVE</Text>
-      <Text style={{color:'#4a6070',fontSize:10}}>🔄 by 11am + 4pm ET</Text>
+      <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:12}}>⚾ MLB MODEL ACTIVE</Text>
+      <Text style={{color:THEME.textMuted,fontSize:10}}>🔄 by 11am + 4pm ET</Text>
     </View>
-    <Text style={{color:'#7a92a8',fontSize:11,lineHeight:16}}>Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back after 4pm for full confirmed slate.</Text>
+    <Text style={{color:THEME.textDim,fontSize:11,lineHeight:16}}>Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back after 4pm for full confirmed slate.</Text>
   </View>
 )}
 {gamesSport==='UFC' && ufcEvent && (() => {
@@ -10943,19 +10944,19 @@ setJerryHistory(prev => {
   <View style={{backgroundColor:'rgba(255,77,109,0.08)',borderRadius:14,padding:14,marginBottom:14,borderWidth:1.5,borderColor:'rgba(255,77,109,0.35)'}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
       <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:13,letterSpacing:0.5}}>🥊 {ufcEvent.event_name}</Text>
-      <Text style={{color:'#7a92a8',fontSize:10}}>{ufcEvent.event_date}</Text>
+      <Text style={{color:THEME.textDim,fontSize:10}}>{ufcEvent.event_date}</Text>
     </View>
     {ufcEvent.fight_card && ufcEvent.fight_card[0] && (
-      <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'700',marginTop:2}}>
+      <Text style={{color:THEME.text,fontSize:13,fontWeight:'700',marginTop:2}}>
         Main Event — {ufcEvent.fight_card[0].fighter1} vs {ufcEvent.fight_card[0].fighter2}
       </Text>
     )}
     {ufcEvent.fight_card && ufcEvent.fight_card[1] && (
-      <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>
+      <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>
         Co-Main — {ufcEvent.fight_card[1].fighter1} vs {ufcEvent.fight_card[1].fighter2}
       </Text>
     )}
-    <Text style={{color:'#4a6070',fontSize:10,marginTop:6}}>{ufcEvent.fight_card?.length || 0}-fight card • Tap a fight below for stats + edges</Text>
+    <Text style={{color:THEME.textMuted,fontSize:10,marginTop:6}}>{ufcEvent.fight_card?.length || 0}-fight card • Tap a fight below for stats + edges</Text>
   </View>
 )}
 {gamesSport==='MLB' && hrWatch.filter((h:any) => {
@@ -10976,8 +10977,8 @@ setJerryHistory(prev => {
         </View>
       </View>
       <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
-        <Text style={{color:'#4a6070',fontSize:10}}>Power + Pitcher + Env</Text>
-        <Text style={{color:'#7a92a8',fontSize:13}}>{hrWatchOpen ? '▾' : '▸'}</Text>
+        <Text style={{color:THEME.textMuted,fontSize:10}}>Power + Pitcher + Env</Text>
+        <Text style={{color:THEME.textDim,fontSize:13}}>{hrWatchOpen ? '▾' : '▸'}</Text>
       </View>
     </TouchableOpacity>
     {hrWatchOpen && (
@@ -11010,11 +11011,11 @@ setJerryHistory(prev => {
           const modelProb = h.projectedHrProb;
           const valueEdge = (implied != null && modelProb != null) ? modelProb - implied : null;
           return (
-          <View key={i} style={{paddingVertical:10,borderTopWidth:i>0?1:0,borderTopColor:'#1f2d3d'}}>
+          <View key={i} style={{paddingVertical:10,borderTopWidth:i>0?1:0,borderTopColor:THEME.border}}>
             <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4,gap:8}}>
               <View style={{flexDirection:'row',alignItems:'center',gap:6,flex:1,flexWrap:'wrap'}}>
-                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{h.player}</Text>
-                {h.isFallback && <Text style={{color:'#7a92a8',fontSize:9,fontStyle:'italic'}}>est.</Text>}
+                <Text style={{color:THEME.text,fontWeight:'700',fontSize:14}}>{h.player}</Text>
+                {h.isFallback && <Text style={{color:THEME.textDim,fontSize:9,fontStyle:'italic'}}>est.</Text>}
                 {h.dueSignal && (
                   <View style={{backgroundColor:'rgba(255,184,0,0.18)',borderRadius:5,paddingHorizontal:5,paddingVertical:1}}>
                     <Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'800'}}>⚡ DUE</Text>
@@ -11030,7 +11031,7 @@ setJerryHistory(prev => {
                   </View>
                 )}
                 <View style={{backgroundColor:'rgba(122,146,168,0.12)',borderRadius:6,paddingHorizontal:7,paddingVertical:2}}>
-                  <Text style={{color:'#9ab0c2',fontSize:10,fontWeight:'700'}}>{h.hr} HR / {h.pa} PA</Text>
+                  <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700'}}>{h.hr} HR / {h.pa} PA</Text>
                 </View>
               </View>
             </View>
@@ -11040,26 +11041,26 @@ setJerryHistory(prev => {
             {(modelProb != null || h.bookOdds != null) && (
               <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
                 {modelProb != null && (
-                  <Text style={{color:'#e8f0f8',fontSize:12,fontWeight:'700'}}>
+                  <Text style={{color:THEME.text,fontSize:12,fontWeight:'700'}}>
                     {(modelProb * 100).toFixed(1)}% to go yard
                   </Text>
                 )}
                 {h.bookOdds != null && (
-                  <Text style={{color:'#9ab0c2',fontSize:11}}>
+                  <Text style={{color:THEME.textDim,fontSize:11}}>
                     • book {h.bookOdds > 0 ? '+' : ''}{h.bookOdds}
                     {implied != null && ` (impl ${(implied * 100).toFixed(1)}%)`}
                   </Text>
                 )}
                 {valueEdge != null && (
                   <View style={{backgroundColor: valueEdge > 0.05 ? 'rgba(0,229,160,0.15)' : valueEdge < -0.05 ? 'rgba(255,77,109,0.15)' : 'rgba(122,146,168,0.12)', borderRadius:5, paddingHorizontal:6, paddingVertical:2}}>
-                    <Text style={{color: valueEdge > 0.05 ? '#00e5a0' : valueEdge < -0.05 ? '#ff4d6d' : '#9ab0c2', fontSize:10, fontWeight:'800'}}>
+                    <Text style={{color: valueEdge > 0.05 ? '#00e5a0' : valueEdge < -0.05 ? '#ff4d6d' : THEME.textDim, fontSize:10, fontWeight:'800'}}>
                       {valueEdge > 0 ? '+' : ''}{(valueEdge * 100).toFixed(1)}pt edge
                     </Text>
                   </View>
                 )}
               </View>
             )}
-            <Text style={{color:'#7a92a8',fontSize:11,marginBottom:6,lineHeight:16}}>
+            <Text style={{color:THEME.textDim,fontSize:11,marginBottom:6,lineHeight:16}}>
               {h.game} • vs {h.oppPitcher?.split(' ').pop() || 'TBD'} • {h.temp}°F
             </Text>
             {/* Top 3 signal contributors — gives the user a one-glance read
@@ -11068,7 +11069,7 @@ setJerryHistory(prev => {
               <View style={{flexDirection:'row',gap:5,flexWrap:'wrap',marginBottom:5}}>
                 {drivers.map((d, di) => (
                   <View key={di} style={{backgroundColor:'rgba(0,153,255,0.10)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
-                    <Text style={{color:'#0099ff',fontSize:10,fontWeight:'700'}}>+{d.pts} {d.label}</Text>
+                    <Text style={{color:THEME.sharp,fontSize:10,fontWeight:'700'}}>+{d.pts} {d.label}</Text>
                   </View>
                 ))}
               </View>
@@ -11087,7 +11088,7 @@ setJerryHistory(prev => {
                 )}
                 {h.oppXera && h.oppXera > 4.0 && (
                   <View style={{backgroundColor:'rgba(0,153,255,0.12)',borderRadius:5,paddingHorizontal:6,paddingVertical:2}}>
-                    <Text style={{color:'#0099ff',fontSize:10,fontWeight:'700'}}>⚾ {h.oppXera.toFixed(2)} xERA</Text>
+                    <Text style={{color:THEME.sharp,fontSize:10,fontWeight:'700'}}>⚾ {h.oppXera.toFixed(2)} xERA</Text>
                   </View>
                 )}
               </View>
@@ -11098,17 +11099,17 @@ setJerryHistory(prev => {
     )}
   </View>
 )}
-            {gamesLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:'#7a92a8',marginTop:12}}>Loading games...</Text></View>):
+            {gamesLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:THEME.textDim,marginTop:12}}>Loading games...</Text></View>):
             gamesData.length===0 && gamesSport==='NCAAB'?(
               <View style={{alignItems:'center',paddingTop:50,paddingHorizontal:24}}>
                 <Text style={{fontSize:48}}>🏀</Text>
-                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18,marginTop:16,textAlign:'center'}}>NCAAB Returns November 2026</Text>
-                <Text style={{color:'#7a92a8',fontSize:13,marginTop:10,textAlign:'center',lineHeight:20}}>
+                <Text style={{color:THEME.text,fontWeight:'800',fontSize:18,marginTop:16,textAlign:'center'}}>NCAAB Returns November 2026</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,marginTop:10,textAlign:'center',lineHeight:20}}>
                   College basketball season is in recess. Our proprietary efficiency model is ready to go when November tips off.
                 </Text>
                 <View style={{marginTop:20,backgroundColor:'rgba(0,229,160,0.08)',borderRadius:12,padding:14,borderWidth:1,borderColor:'rgba(0,229,160,0.25)',width:'100%'}}>
                   <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:11,letterSpacing:1,marginBottom:8}}>🎯 WHAT TO EXPECT IN NOVEMBER</Text>
-                  <Text style={{color:'#c8d8e8',fontSize:12,lineHeight:18}}>
+                  <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>
                     • Adjusted efficiency model (full D1 coverage){'\n'}
                     • Four-factors deep dive (eFG%, TO%, OR%, FTR){'\n'}
                     • Spreads / totals / ML with audit-driven cohorts{'\n'}
@@ -11116,18 +11117,18 @@ setJerryHistory(prev => {
                   </Text>
                 </View>
                 <View style={{marginTop:14,backgroundColor:'rgba(122,146,168,0.06)',borderRadius:10,padding:12,width:'100%'}}>
-                  <Text style={{color:'#7a92a8',fontSize:11,fontStyle:'italic',textAlign:'center'}}>
+                  <Text style={{color:THEME.textDim,fontSize:11,fontStyle:'italic',textAlign:'center'}}>
                     Your subscription stays active year-round — MLB carries through summer, NCAAB joins in November.
                   </Text>
                 </View>
               </View>
             ):
-            gamesData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:40}}>{SPORT_EMOJI[gamesSport]}</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No {gamesSport} games {gamesDay}.{'\n'}Try a different sport or day.</Text></View>):(
+            gamesData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:40}}>{SPORT_EMOJI[gamesSport]}</Text><Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center'}}>No {gamesSport} games {gamesDay}.{'\n'}Try a different sport or day.</Text></View>):(
               <>
                 {gamesSport==='NHL' && (
                   <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.25)',flexDirection:'row',alignItems:'center',gap:8}}>
                     <Text style={{fontSize:14}}>ℹ️</Text>
-                    <Text style={{color:'#b0c4d8',fontSize:11,flex:1,lineHeight:16}}>
+                    <Text style={{color:THEME.textDim,fontSize:11,flex:1,lineHeight:16}}>
                       <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NHL — Market Model Only.</Text> No proprietary NHL pipeline yet. Analysis based on odds movement, public consensus, and goalie matchup. Proprietary model coming later this season.
                     </Text>
                   </View>
@@ -11190,9 +11191,9 @@ setJerryHistory(prev => {
                   return(
                     <TouchableOpacity key={i} style={styles.gameCard} onPress={()=>openGameDetail(game)} activeOpacity={0.8}>
                       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-                        <Text style={{fontSize:11,color:'#7a92a8',fontWeight:'600'}}>{gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})} ET</Text>
+                        <Text style={{fontSize:11,color:THEME.textDim,fontWeight:'600'}}>{gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})} ET</Text>
                         {isLive?(<View style={{flexDirection:'row',alignItems:'center',gap:4,backgroundColor:'rgba(255,77,109,0.15)',paddingHorizontal:8,paddingVertical:3,borderRadius:20}}><View style={{width:6,height:6,borderRadius:3,backgroundColor:'#ff4d6d'}}/><Text style={{color:'#ff4d6d',fontSize:11,fontWeight:'700'}}>LIVE</Text></View>):
-                        (<View style={[styles.pill,{backgroundColor:'rgba(0,153,255,0.15)'}]}><Text style={{color:'#0099ff',fontSize:11,fontWeight:'700'}}>{gamesSport}</Text></View>)}
+                        (<View style={[styles.pill,{backgroundColor:'rgba(0,153,255,0.15)'}]}><Text style={{color:THEME.sharp,fontSize:11,fontWeight:'700'}}>{gamesSport}</Text></View>)}
                       </View>
                        {(()=>{
                           if(gamesSport==='NCAAB' && !bartData.length) return null;
@@ -11268,8 +11269,8 @@ setJerryHistory(prev => {
                             {signals.length > 0 && (
                               <View style={{flexDirection:'row',flexWrap:'wrap',gap:4}}>
                                 {signals.slice(0,3).map((sig,i) => (
-                                  <View key={i} style={{backgroundColor:'rgba(255,255,255,0.05)',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:'#1f2d3d'}}>
-                                    <Text style={{color:'#7a92a8',fontSize:9,fontWeight:'600'}}>{sig}</Text>
+                                  <View key={i} style={{backgroundColor:'rgba(255,255,255,0.05)',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:THEME.border}}>
+                                    <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'600'}}>{sig}</Text>
                                   </View>
                                 ))}
                               </View>
@@ -11284,23 +11285,23 @@ setJerryHistory(prev => {
                         return(
                           <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
                             <View style={{flex:1}}>
-                              <Text style={{fontSize:15,fontWeight:'700',color:'#e8f0f8'}}>{stripMascot(game.away_team)}</Text>
+                              <Text style={{fontSize:15,fontWeight:'700',color:THEME.text}}>{stripMascot(game.away_team)}</Text>
                               {awayKP&&<View style={{flexDirection:'row',alignItems:'center',gap:4,marginTop:3}}>
                                 <Text style={{fontSize:10,color:'#00e5a0',fontWeight:'700'}}>#{awayKP.adjOERank} OFF</Text>
-                                <Text style={{fontSize:10,color:'#0099ff',fontWeight:'700'}}>#{awayKP.adjDERank} DEF</Text>
+                                <Text style={{fontSize:10,color:THEME.sharp,fontWeight:'700'}}>#{awayKP.adjDERank} DEF</Text>
                               </View>}
-                              {!awayKP&&<Text style={{fontSize:11,color:'#7a92a8',marginTop:2}}>Away</Text>}
+                              {!awayKP&&<Text style={{fontSize:11,color:THEME.textDim,marginTop:2}}>Away</Text>}
                             </View>
-                            <View style={{paddingHorizontal:12,paddingVertical:6,backgroundColor:'#151c24',borderRadius:8,borderWidth:1,borderColor:'#1f2d3d'}}>
-                              <Text style={{color:'#4a6070',fontWeight:'800',fontSize:12}}>@</Text>
+                            <View style={{paddingHorizontal:12,paddingVertical:6,backgroundColor:THEME.surfaceAlt,borderRadius:8,borderWidth:1,borderColor:THEME.border}}>
+                              <Text style={{color:THEME.textMuted,fontWeight:'800',fontSize:12}}>@</Text>
                             </View>
                             <View style={{flex:1,alignItems:'flex-end'}}>
-                              <Text style={{fontSize:15,fontWeight:'700',color:'#e8f0f8'}}>{stripMascot(game.home_team)}</Text>
+                              <Text style={{fontSize:15,fontWeight:'700',color:THEME.text}}>{stripMascot(game.home_team)}</Text>
                               {homeKP&&<View style={{flexDirection:'row',alignItems:'center',gap:4,marginTop:3,justifyContent:'flex-end'}}>
                                 <Text style={{fontSize:10,color:'#00e5a0',fontWeight:'700'}}>#{homeKP.adjOERank} OFF</Text>
-                                <Text style={{fontSize:10,color:'#0099ff',fontWeight:'700'}}>#{homeKP.adjDERank} DEF</Text>
+                                <Text style={{fontSize:10,color:THEME.sharp,fontWeight:'700'}}>#{homeKP.adjDERank} DEF</Text>
                               </View>}
-                              {!homeKP&&<Text style={{fontSize:11,color:'#7a92a8',marginTop:2}}>Home</Text>}
+                              {!homeKP&&<Text style={{fontSize:11,color:THEME.textDim,marginTop:2}}>Home</Text>}
                             </View>
                           </View>
                         );
@@ -11310,7 +11311,7 @@ setJerryHistory(prev => {
   if(!series) return null;
   return(
     <View style={{backgroundColor:'rgba(255,184,0,0.1)',borderRadius:8,paddingHorizontal:10,paddingVertical:4,marginBottom:8,borderWidth:1,borderColor:'rgba(255,184,0,0.3)',alignSelf:'flex-start'}}>
-      <Text style={{color:'#FFB800',fontSize:11,fontWeight:'800'}}>🏆 {series.series_label} — Game {series.game_number}</Text>
+      <Text style={{color:THEME.hrb,fontSize:11,fontWeight:'800'}}>🏆 {series.series_label} — Game {series.game_number}</Text>
     </View>
   );
 })()}
@@ -11324,7 +11325,7 @@ setJerryHistory(prev => {
   const conv = ufcPick.conviction_winner || 0;
   const tier = ufcPick.tier_winner;
   if (!tier) return null; // hide if model has no conviction
-  const tierColor = tier === 'PRIME' ? '#00e5a0' : tier === 'STRONG' ? '#4a9eff' : '#7a92a8';
+  const tierColor = tier === 'PRIME' ? '#00e5a0' : tier === 'STRONG' ? THEME.sharp : THEME.textDim;
   return(
     <View style={{flexDirection:'row',gap:6,marginBottom:8,flexWrap:'wrap'}}>
       <View style={{backgroundColor:tierColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:tierColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
@@ -11333,12 +11334,12 @@ setJerryHistory(prev => {
       </View>
       {ufcPick.edge_method && (
         <View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:'rgba(255,184,0,0.4)'}}>
-          <Text style={{color:'#FFB800',fontWeight:'800',fontSize:11}}>{ufcPick.edge_method}</Text>
+          <Text style={{color:THEME.hrb,fontWeight:'800',fontSize:11}}>{ufcPick.edge_method}</Text>
         </View>
       )}
       {ufcPick.edge_distance && (
         <View style={{backgroundColor:'rgba(180,140,255,0.15)',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:'rgba(180,140,255,0.4)'}}>
-          <Text style={{color:'#b48cff',fontWeight:'800',fontSize:11}}>{ufcPick.edge_distance} DIST</Text>
+          <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:11}}>{ufcPick.edge_distance} DIST</Text>
         </View>
       )}
     </View>
@@ -11368,7 +11369,7 @@ setJerryHistory(prev => {
         <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>⚾ PRIME NRFI</Text>
         <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>{nScore}</Text>
       </View>
-      {nrfiCtx.home_pitcher && <Text style={{color:'#4a6070',fontSize:10}}>{nrfiCtx.home_pitcher?.split(' ').pop()} vs {nrfiCtx.away_pitcher?.split(' ').pop()}</Text>}
+      {nrfiCtx.home_pitcher && <Text style={{color:THEME.textMuted,fontSize:10}}>{nrfiCtx.home_pitcher?.split(' ').pop()} vs {nrfiCtx.away_pitcher?.split(' ').pop()}</Text>}
     </View>
   );
 })()}
@@ -11376,9 +11377,9 @@ setJerryHistory(prev => {
                         <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:10,padding:10,marginBottom:8,borderWidth:1,borderColor:'rgba(255,184,0,0.25)'}}>
                           <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',marginBottom:6}}>🎸 HARD ROCK BET</Text>
                           <View style={{flexDirection:'row',gap:6}}>
-                            {hrbSpread&&gamesSport!=='UFC'&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbSpread.name.split(' ').pop()} {hrbSpread.point>0?'+':''}{hrbSpread.point}</Text><Text style={{color:'#7a92a8',fontSize:10}}>{hrbSpread.price>0?'+':''}{hrbSpread.price}</Text></View>}
-                            {hrbTotal&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>O/U {hrbTotal.point}</Text><Text style={{color:'#7a92a8',fontSize:10}}>{hrbTotal.price>0?'+':''}{hrbTotal.price}</Text></View>}
-                            {hrbLine.ml&&hrbLine.ml[0]&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>ML</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbLine.ml[0].price>0?'+':''}{hrbLine.ml[0].price}</Text><Text style={{color:'#7a92a8',fontSize:10}}>{game.away_team.split(' ').pop()}</Text></View>}
+                            {hrbSpread&&gamesSport!=='UFC'&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbSpread.name.split(' ').pop()} {hrbSpread.point>0?'+':''}{hrbSpread.point}</Text><Text style={{color:THEME.textDim,fontSize:10}}>{hrbSpread.price>0?'+':''}{hrbSpread.price}</Text></View>}
+                            {hrbTotal&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>O/U {hrbTotal.point}</Text><Text style={{color:THEME.textDim,fontSize:10}}>{hrbTotal.price>0?'+':''}{hrbTotal.price}</Text></View>}
+                            {hrbLine.ml&&hrbLine.ml[0]&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>ML</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbLine.ml[0].price>0?'+':''}{hrbLine.ml[0].price}</Text><Text style={{color:THEME.textDim,fontSize:10}}>{game.away_team.split(' ').pop()}</Text></View>}
                           </View>
                         </View>
                       ):(
@@ -11388,7 +11389,7 @@ setJerryHistory(prev => {
                           <View style={styles.oddsQuickChip}><Text style={styles.oddsQuickLabel}>ML</Text><Text style={styles.oddsQuickVal}>{summary.mlAway}/{summary.mlHome}</Text></View>
                         </View>
                       )}
-                      <Text style={{color:'#4a6070',fontSize:11,textAlign:'right'}}>Tap for full matchup →</Text>
+                      <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'right'}}>Tap for full matchup →</Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -11416,11 +11417,11 @@ setJerryHistory(prev => {
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'}}>
   <View style={{flex:1}}>
     <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🎤 PROP JERRY</Text>
-    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Top prop edges from our pipeline — conviction-tiered matchup plays (MLB). Market EV scanning for other sports while we build out their models.</Text>
+    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Top prop edges from our pipeline — conviction-tiered matchup plays (MLB). Market EV scanning for other sports while we build out their models.</Text>
   </View>
   <TouchableOpacity onPress={async()=>{const lastRefresh=await AsyncStorage.getItem('propjerry_last_refresh');if(lastRefresh&&Date.now()-parseInt(lastRefresh)<5*60*1000){showToast('⏳ Wait 5 minutes between refreshes');return;}await AsyncStorage.setItem('propjerry_last_refresh',String(Date.now()));try{await AsyncStorage.removeItem(PROP_JERRY_CACHE_KEY+'_'+propJerrySport);}catch(e){}try{await supabase.from('prop_jerry_cache').delete().eq('sport',propJerrySport);}catch(e){}fetchPropJerry(propJerrySport);}} style={{alignItems:'center',gap:3}}>
     <Text style={{fontSize:18}}>🔄</Text>
-    <Text style={{color:'#4a6070',fontSize:9}}>{propJerryLastUpdate ? Math.floor((new Date()-propJerryLastUpdate)/60000)+'m ago' : 'tap to load'}</Text>
+    <Text style={{color:THEME.textMuted,fontSize:9}}>{propJerryLastUpdate ? Math.floor((new Date()-propJerryLastUpdate)/60000)+'m ago' : 'tap to load'}</Text>
   </TouchableOpacity>
 </View>
     </View>
@@ -11434,9 +11435,9 @@ setJerryHistory(prev => {
             <Text style={{color:'#00e5a0',fontSize:11,fontWeight:'800'}}>{propOfDay.ev?.toFixed(1)}% EV</Text>
           </View>
         </View>
-        <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:15,marginBottom:4}}>{propOfDay.player} — {propOfDay.market} {propOfDay.side} {propOfDay.line > 0 ? '+' : ''}{propOfDay.line}</Text>
-        <Text style={{color:'#7a92a8',fontSize:11,marginBottom:10}}>{propOfDay.game} • {propOfDay.book}</Text>
-        <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{propOfDay.narrative?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}"</Text>
+        <Text style={{color:THEME.text,fontWeight:'700',fontSize:15,marginBottom:4}}>{propOfDay.player} — {propOfDay.market} {propOfDay.side} {propOfDay.line > 0 ? '+' : ''}{propOfDay.line}</Text>
+        <Text style={{color:THEME.textDim,fontSize:11,marginBottom:10}}>{propOfDay.game} • {propOfDay.book}</Text>
+        <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{propOfDay.narrative?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}"</Text>
         {propOfDay.signals?.length > 0 && (
           <View style={{flexDirection:'row',gap:6,marginTop:10,flexWrap:'wrap'}}>
             {propOfDay.signals.map((sig: string, i: number) => (
@@ -11464,7 +11465,7 @@ setJerryHistory(prev => {
     {propJerrySport !== 'MLB' && (
       <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.25)',flexDirection:'row',alignItems:'flex-start',gap:10}}>
         <Text style={{fontSize:18}}>{propJerrySport === 'NHL' ? 'ℹ️' : '🚧'}</Text>
-        <Text style={{color:'#b0c4d8',fontSize:11,flex:1,lineHeight:16}}>
+        <Text style={{color:THEME.textDim,fontSize:11,flex:1,lineHeight:16}}>
           {propJerrySport === 'NHL' ? (
             <>
               <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NHL — Market Analysis Only.</Text> No proprietary NHL pipeline yet. Props show EV edges based on line movement, book consensus, and goalie matchup data from our scraper. Proprietary NHL model planned for later this season.
@@ -11491,7 +11492,7 @@ setJerryHistory(prev => {
       (pipelineMLBLoading || !pipelineMLBFetched) ? (
         <View style={{alignItems:'center',paddingTop:40}}>
           <ActivityIndicator size="large" color={HRB_COLOR}/>
-          <Text style={{color:'#7a92a8',marginTop:12}}>Loading pipeline matchup edges...</Text>
+          <Text style={{color:THEME.textDim,marginTop:12}}>Loading pipeline matchup edges...</Text>
         </View>
       ) : pipelineMLBProps.length === 0 ? (
         (() => {
@@ -11512,17 +11513,17 @@ setJerryHistory(prev => {
           return (
             <View style={{alignItems:'center',paddingTop:40}}>
               <Text style={{fontSize:32}}>🎤</Text>
-              <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center',lineHeight:20}}>{message}</Text>
+              <Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center',lineHeight:20}}>{message}</Text>
             </View>
           );
         })()
       ) : (
         <>
-          <Text style={{color:'#4a6070',fontSize:11,marginBottom:12,textAlign:'center'}}>
+          <Text style={{color:THEME.textMuted,fontSize:11,marginBottom:12,textAlign:'center'}}>
             {pipelineMLBProps.length} matchup edges • Model-driven, no market filter
           </Text>
           {pipelineMLBProps.map((prop, i) => {
-            const tierColor = prop.tier === 'PRIME' ? '#00e5a0' : prop.tier === 'STRONG' ? HRB_COLOR : '#7a92a8';
+            const tierColor = prop.tier === 'PRIME' ? '#00e5a0' : prop.tier === 'STRONG' ? HRB_COLOR : THEME.textDim;
             const signals = prop.signals || {};
             // Projected Ks (server-computed, lives in signals as _projected_ks).
             // Decoupled from "Over X.X" framing — book lines/juice vary, so we
@@ -11558,17 +11559,17 @@ setJerryHistory(prev => {
                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
                   <View style={{flex:1, marginRight:12}}>
                     <View style={{flexDirection:'row', alignItems:'center', gap:6, flexWrap:'wrap'}}>
-                      <Text style={{color:'#e8f0f8', fontWeight:'800', fontSize:15}}>{prop.player_name}</Text>
+                      <Text style={{color:THEME.text, fontWeight:'800', fontSize:15}}>{prop.player_name}</Text>
                       {/* Stack alert badge — fires when 4+ hits picks share matchup */}
                       {prop.stack_alert && (
                         <View style={{backgroundColor:'rgba(255,140,80,0.18)', borderRadius:6, paddingHorizontal:6, paddingVertical:2}}>
-                          <Text style={{color:'#ff8c50', fontSize:9, fontWeight:'800', letterSpacing:0.5}}>🔥 STACK</Text>
+                          <Text style={{color:THEME.accent, fontSize:9, fontWeight:'800', letterSpacing:0.5}}>🔥 STACK</Text>
                         </View>
                       )}
                       {/* Lineup state — projected vs confirmed for hits props */}
                       {prop.lineup_state === 'projected' && (prop.prop_type === 'hits_over' || prop.prop_type === 'hits_under') && (
                         <View style={{backgroundColor:'rgba(122,146,168,0.2)', borderRadius:6, paddingHorizontal:6, paddingVertical:2}}>
-                          <Text style={{color:'#7a92a8', fontSize:9, fontWeight:'700', letterSpacing:0.5}}>PROJECTED</Text>
+                          <Text style={{color:THEME.textDim, fontSize:9, fontWeight:'700', letterSpacing:0.5}}>PROJECTED</Text>
                         </View>
                       )}
                       {prop.lineup_state === 'confirmed' && (prop.prop_type === 'hits_over' || prop.prop_type === 'hits_under') && (
@@ -11578,7 +11579,7 @@ setJerryHistory(prev => {
                       )}
                     </View>
                     <Text style={{color:tierColor, fontWeight:'700', fontSize:13, marginTop:2}}>{propLabel}</Text>
-                    <Text style={{color:'#4a6070', fontSize:11, marginTop:2}}>{prop.matchup}</Text>
+                    <Text style={{color:THEME.textMuted, fontSize:11, marginTop:2}}>{prop.matchup}</Text>
                   </View>
                   <View style={{alignItems:'center'}}>
                     <View style={{width:56, height:56, borderRadius:28, borderWidth:2, borderColor:tierColor, alignItems:'center', justifyContent:'center', backgroundColor:tierColor+'15'}}>
@@ -11589,12 +11590,12 @@ setJerryHistory(prev => {
                 </View>
 
                 {signalEntries.length > 0 && (
-                  <View style={{backgroundColor:'#0d1419', borderRadius:10, padding:10, gap:6}}>
-                    <Text style={{color:'#4a6070', fontSize:10, fontWeight:'700', marginBottom:2, letterSpacing:0.5}}>MODEL SIGNALS</Text>
+                  <View style={{backgroundColor:THEME.surface, borderRadius:10, padding:10, gap:6}}>
+                    <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', marginBottom:2, letterSpacing:0.5}}>MODEL SIGNALS</Text>
                     {signalEntries.slice(0, 5).map(([key, val], j) => (
                       <View key={j} style={{flexDirection:'row', alignItems:'flex-start', gap:6}}>
                         <Text style={{color:tierColor, fontSize:11, marginTop:1}}>•</Text>
-                        <Text style={{color:'#c8d8e8', fontSize:12, flex:1, lineHeight:17}}>{String(val)}</Text>
+                        <Text style={{color:THEME.textDim, fontSize:12, flex:1, lineHeight:17}}>{String(val)}</Text>
                       </View>
                     ))}
                   </View>
@@ -11618,20 +11619,20 @@ setJerryHistory(prev => {
                   return (
                     <View style={{marginTop:10}}>
                       {sameGameLegs > 0 && (
-                        <Text style={{color:'#ff8c50', fontSize:10, fontWeight:'700', marginBottom:6}}>
+                        <Text style={{color:THEME.accent, fontSize:10, fontWeight:'700', marginBottom:6}}>
                           ⚠ {sameGameLegs} leg{sameGameLegs>1?'s':''} already in this game
                         </Text>
                       )}
                       <View style={{flexDirection:'row', gap:8, justifyContent:'flex-end'}}>
                         <TouchableOpacity
-                          style={[styles.addParlayBtn, {borderColor:'#0099ff', backgroundColor:'rgba(0,153,255,0.12)'}]}
+                          style={[styles.addParlayBtn, {borderColor:THEME.sharp, backgroundColor:'rgba(0,153,255,0.12)'}]}
                           onPress={() => {
                             setLegForm(prefill());
                             setLegMode('single');
                             setAddLegModal(true);
                           }}
                         >
-                          <Text style={[styles.addParlayBtnText, {color:'#0099ff'}]}>📝 Log Pick</Text>
+                          <Text style={[styles.addParlayBtnText, {color:THEME.sharp}]}>📝 Log Pick</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                           style={styles.addParlayBtn}
@@ -11655,20 +11656,20 @@ setJerryHistory(prev => {
     ) : propJerryLoading?(
       <View style={{alignItems:'center',paddingTop:40}}>
         <ActivityIndicator size="large" color={HRB_COLOR}/>
-        <Text style={{color:'#7a92a8',marginTop:12}}>Jerry is finding edges...</Text>
+        <Text style={{color:THEME.textDim,marginTop:12}}>Jerry is finding edges...</Text>
       </View>
     ):propJerryData.length===0?(
       <View style={{alignItems:'center',paddingTop:40}}>
         <Text style={{fontSize:32}}>🎤</Text>
-        <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No props available.{'\n'}Tap 🔄 above or try another sport.</Text>
+        <Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center'}}>No props available.{'\n'}Tap 🔄 above or try another sport.</Text>
       </View>
     ):(
       <>
-        <Text style={{color:'#4a6070',fontSize:11,marginBottom:12,textAlign:'center'}}>{propJerryData.filter(p=>p.grade==='A'||p.grade==='B').length} top props • {propJerryData.filter(p=>p.grade==='C').length} on watch list</Text>
+        <Text style={{color:THEME.textMuted,fontSize:11,marginBottom:12,textAlign:'center'}}>{propJerryData.filter(p=>p.grade==='A'||p.grade==='B').length} top props • {propJerryData.filter(p=>p.grade==='C').length} on watch list</Text>
         {propJerryData.filter(p=>p.grade==='A'||p.grade==='B').length===0&&propJerryData.filter(p=>p.grade==='C').length===0&&(
           <View style={{alignItems:'center',paddingVertical:30}}>
             <Text style={{fontSize:32}}>🎤</Text>
-            <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center'}}>No strong edges right now.{'\n'}Check back closer to game time.</Text>
+            <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center'}}>No strong edges right now.{'\n'}Check back closer to game time.</Text>
           </View>
         )}
         {propJerryData.filter(p=>p.grade==='A'||p.grade==='B').length>0&&(
@@ -11680,9 +11681,9 @@ setJerryHistory(prev => {
             {/* Header */}
             <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
               <View style={{flex:1,marginRight:12}}>
-                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:15}}>{prop.player}</Text>
-                <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{prop.marketLabel}</Text>
-                <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{prop.gameName}</Text>
+                <Text style={{color:THEME.text,fontWeight:'800',fontSize:15}}>{prop.player}</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,marginTop:2}}>{prop.marketLabel}</Text>
+                <Text style={{color:THEME.textMuted,fontSize:11,marginTop:2}}>{prop.gameName}</Text>
                 <View style={{flexDirection:'row',gap:4,marginTop:4,flexWrap:'wrap'}}>
                   {prop.matchupConviction >= 15 ? (
                     <View style={{backgroundColor:'rgba(255,184,0,0.12)',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
@@ -11694,8 +11695,8 @@ setJerryHistory(prev => {
                     </View>
                   ) : null}
                   {prop.matchupSignals?.length > 0 && prop.matchupSignals.slice(0,2).map((sig: string, j: number) => (
-                    <View key={j} style={{backgroundColor:'rgba(255,255,255,0.05)',borderRadius:6,paddingHorizontal:5,paddingVertical:2,borderWidth:1,borderColor:'#1f2d3d'}}>
-                      <Text style={{color:'#7a92a8',fontSize:8,fontWeight:'600'}}>{sig}</Text>
+                    <View key={j} style={{backgroundColor:'rgba(255,255,255,0.05)',borderRadius:6,paddingHorizontal:5,paddingVertical:2,borderWidth:1,borderColor:THEME.border}}>
+                      <Text style={{color:THEME.textDim,fontSize:8,fontWeight:'600'}}>{sig}</Text>
                     </View>
                   ))}
                 </View>
@@ -11709,20 +11710,20 @@ setJerryHistory(prev => {
             </View>
 
             {/* Best Bet */}
-            <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,marginBottom:10}}>
-              <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:6}}>JERRY'S PICK</Text>
+            <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,marginBottom:10}}>
+              <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',marginBottom:6}}>JERRY'S PICK</Text>
               <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
                 <View>
                   <Text style={{color:prop.gradeColor,fontWeight:'800',fontSize:16}}>
                     {prop.bestSide} {prop.bestLine?.line}
                   </Text>
-                  <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{prop.bestLine?.book}</Text>
+                  <Text style={{color:THEME.textDim,fontSize:12,marginTop:2}}>{prop.bestLine?.book}</Text>
                 </View>
                 <View style={{alignItems:'flex-end'}}>
                   <Text style={{color:prop.bestEV>0?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:16}}>
                     {prop.bestEV>0?'+':''}{prop.bestEV.toFixed(1)}% EV
                   </Text>
-                  <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>
+                  <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>
                     {prop.bestLine?.odds>0?'+':''}{prop.bestLine?.odds}
                   </Text>
                 </View>
@@ -11732,20 +11733,20 @@ setJerryHistory(prev => {
             {/* Meta chips */}
             <View style={{flexDirection:'row',gap:6,marginBottom:10,flexWrap:'wrap'}}>
               <View style={styles.metaChip}>
-                <Text style={{color:'#7a92a8',fontSize:11}}>{prop.bookCount} books</Text>
+                <Text style={{color:THEME.textDim,fontSize:11}}>{prop.bookCount} books</Text>
               </View>
-              <View style={[styles.metaChip,{borderColor:prop.lineRange<=0.5?'#00e5a0':'#FFB800'}]}>
-                <Text style={{color:prop.lineRange<=0.5?'#00e5a0':'#FFB800',fontSize:11}}>
+              <View style={[styles.metaChip,{borderColor:prop.lineRange<=0.5?'#00e5a0':THEME.hrb}]}>
+                <Text style={{color:prop.lineRange<=0.5?'#00e5a0':THEME.hrb,fontSize:11}}>
                   {prop.lineRange===0?'Consensus':prop.lineRange.toFixed(1)+' pt range'}
                 </Text>
               </View>
               <View style={styles.metaChip}>
-                <Text style={{color:'#7a92a8',fontSize:11}}>
+                <Text style={{color:THEME.textDim,fontSize:11}}>
                   Over {prop.bestOver?.line} ({prop.bestOver?.odds>0?'+':''}{prop.bestOver?.odds})
                 </Text>
               </View>
               <View style={styles.metaChip}>
-                <Text style={{color:'#7a92a8',fontSize:11}}>
+                <Text style={{color:THEME.textDim,fontSize:11}}>
                   Under {prop.bestUnder?.line} ({prop.bestUnder?.odds>0?'+':''}{prop.bestUnder?.odds})
                 </Text>
               </View>
@@ -11753,7 +11754,7 @@ setJerryHistory(prev => {
 
              {/* Jerry quote */}
             <View style={{backgroundColor:'rgba(255,184,0,0.05)',borderRadius:8,padding:10,borderLeftWidth:2,borderLeftColor:HRB_COLOR,marginBottom:10}}>
-              <Text style={{color:'#7a92a8',fontSize:12,fontStyle:'italic',lineHeight:18}}>{prop.Jerry?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
+              <Text style={{color:THEME.textDim,fontSize:12,fontStyle:'italic',lineHeight:18}}>{prop.Jerry?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
             </View>
 
              {/* Action buttons */}
@@ -11806,17 +11807,17 @@ setJerryHistory(prev => {
           ))}
         {propJerryData.filter(p=>p.grade==='C').length>0&&(
           <>
-            <Text style={{color:'#7a92a8',fontWeight:'800',fontSize:13,marginTop:16,marginBottom:4}}>👀 WATCH LIST</Text>
-            <Text style={{color:'#4a6070',fontSize:11,marginBottom:10}}>Lower confidence — monitor only</Text>
+            <Text style={{color:THEME.textDim,fontWeight:'800',fontSize:13,marginTop:16,marginBottom:4}}>👀 WATCH LIST</Text>
+            <Text style={{color:THEME.textMuted,fontSize:11,marginBottom:10}}>Lower confidence — monitor only</Text>
           </>
         )}
         {propJerryData.filter(p=>p.grade==='C').map((prop,i)=>(
           <View key={i} style={[styles.card,{marginBottom:10,borderLeftWidth:3,borderLeftColor:prop.gradeColor,opacity:0.75}]}>
             <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
               <View style={{flex:1,marginRight:12}}>
-                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:15}}>{prop.player}</Text>
-                <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{prop.marketLabel}</Text>
-                <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{prop.gameName}</Text>
+                <Text style={{color:THEME.text,fontWeight:'800',fontSize:15}}>{prop.player}</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,marginTop:2}}>{prop.marketLabel}</Text>
+                <Text style={{color:THEME.textMuted,fontSize:11,marginTop:2}}>{prop.gameName}</Text>
               </View>
               <View style={{alignItems:'center'}}>
                 <View style={{width:52,height:52,borderRadius:26,borderWidth:2,borderColor:prop.gradeColor,alignItems:'center',justifyContent:'center',backgroundColor:prop.gradeColor+'20'}}>
@@ -11825,21 +11826,21 @@ setJerryHistory(prev => {
                 <Text style={{color:prop.gradeColor,fontSize:9,fontWeight:'700',marginTop:3}}>GRADE</Text>
               </View>
             </View>
-            <View style={{backgroundColor:'#151c24',borderRadius:10,padding:10,marginBottom:10}}>
-              <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:6}}>JERRY'S PICK</Text>
+            <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,marginBottom:10}}>
+              <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',marginBottom:6}}>JERRY'S PICK</Text>
               <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
                 <View>
                   <Text style={{color:prop.gradeColor,fontWeight:'800',fontSize:16}}>{prop.bestSide} {prop.bestLine?.line}</Text>
-                  <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{prop.bestLine?.book}</Text>
+                  <Text style={{color:THEME.textDim,fontSize:12,marginTop:2}}>{prop.bestLine?.book}</Text>
                 </View>
                 <View style={{alignItems:'flex-end'}}>
                   <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:16}}>{prop.bestEV>0?'+':''}{prop.bestEV.toFixed(1)}% EV</Text>
-                  <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{prop.bestLine?.odds>0?'+':''}{prop.bestLine?.odds}</Text>
+                  <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{prop.bestLine?.odds>0?'+':''}{prop.bestLine?.odds}</Text>
                 </View>
               </View>
             </View>
             <View style={{backgroundColor:'rgba(255,184,0,0.05)',borderRadius:8,padding:10,borderLeftWidth:2,borderLeftColor:HRB_COLOR}}>
-              <Text style={{color:'#7a92a8',fontSize:12,fontStyle:'italic',lineHeight:18}}>{prop.Jerry?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
+              <Text style={{color:THEME.textDim,fontSize:12,fontStyle:'italic',lineHeight:18}}>{prop.Jerry?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
             </View>
           </View>
         ))}
@@ -11872,18 +11873,18 @@ setJerryHistory(prev => {
               if(dawgLoading) return (
                 <View style={{alignItems:'center',paddingTop:60}}>
                   <ActivityIndicator size="large" color={HRB_COLOR}/>
-                  <Text style={{color:'#7a92a8',marginTop:12}}>Finding today's barker...</Text>
+                  <Text style={{color:THEME.textDim,marginTop:12}}>Finding today's barker...</Text>
                 </View>
               );
               if(!dawgData || dawgData.noPick) return (
                 <View style={{alignItems:'center',paddingTop:60}}>
                   <Text style={{fontSize:48}}>🐕</Text>
-                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:16,marginTop:12}}>No Dawg today</Text>
-                  <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',paddingHorizontal:30,lineHeight:19}}>Market and model are aligned on today's favorites.{'\n'}Check back tomorrow — the right spot will come.</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700',fontSize:16,marginTop:12}}>No Dawg today</Text>
+                  <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',paddingHorizontal:30,lineHeight:19}}>Market and model are aligned on today's favorites.{'\n'}Check back tomorrow — the right spot will come.</Text>
                 </View>
               );
               const d = dawgData;
-              const tierColor = d.tier === 'PRIME' ? '#00e5a0' : d.tier === 'STRONG' ? HRB_COLOR : '#7a92a8';
+              const tierColor = d.tier === 'PRIME' ? '#00e5a0' : d.tier === 'STRONG' ? HRB_COLOR : THEME.textDim;
               const signalEntries = Object.entries(d.signals || {});
               return (
                 <View>
@@ -11895,29 +11896,29 @@ setJerryHistory(prev => {
                         <Text style={{color:tierColor,fontSize:11,fontWeight:'800'}}>{d.tier} · {d.conviction}</Text>
                       </View>
                     </View>
-                    <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:22,marginBottom:4}}>{d.team} ML</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,marginBottom:10}}>{d.matchup} • Market has them {d.close_spread > 0 ? '+' : ''}{Number(d.close_spread).toFixed(1)}</Text>
+                    <Text style={{color:THEME.text,fontWeight:'800',fontSize:22,marginBottom:4}}>{d.team} ML</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,marginBottom:10}}>{d.matchup} • Market has them {d.close_spread > 0 ? '+' : ''}{Number(d.close_spread).toFixed(1)}</Text>
                     {d.narrative && (
-                      <Text style={{color:'#c8d8e8',fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{String(d.narrative).replace(/\*\*/g,'').replace(/\*/g,'').replace(/#{1,6}\s/g,'').trim()}"</Text>
+                      <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{String(d.narrative).replace(/\*\*/g,'').replace(/\*/g,'').replace(/#{1,6}\s/g,'').trim()}"</Text>
                     )}
                   </View>
 
                   {/* Signals */}
                   {signalEntries.length > 0 && (
                     <View style={[styles.card,{marginBottom:12}]}>
-                      <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>WHY THIS DOG IS BARKING</Text>
+                      <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>WHY THIS DOG IS BARKING</Text>
                       <View style={{gap:8}}>
                         {signalEntries.map(([k, v], i) => (
                           <View key={i} style={{flexDirection:'row',alignItems:'flex-start',gap:8}}>
                             <Text style={{color:tierColor,fontSize:12,marginTop:1}}>•</Text>
-                            <Text style={{color:'#c8d8e8',fontSize:13,flex:1,lineHeight:18}}>{String(v)}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:13,flex:1,lineHeight:18}}>{String(v)}</Text>
                           </View>
                         ))}
                       </View>
                     </View>
                   )}
 
-                  <Text style={{color:'#4a6070',fontSize:10,textAlign:'center',marginTop:6,paddingHorizontal:20,lineHeight:14}}>Dawg of the Day = model-identified underdog where our pipeline sees more value than the market. Spread delta {Number(d.spread_delta).toFixed(1)} runs in {d.team.split(' ').pop()}'s favor vs posted line.</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:10,textAlign:'center',marginTop:6,paddingHorizontal:20,lineHeight:14}}>Dawg of the Day = model-identified underdog where our pipeline sees more value than the market. Spread delta {Number(d.spread_delta).toFixed(1)} runs in {d.team.split(' ').pop()}'s favor vs posted line.</Text>
                 </View>
               );
             })()}
@@ -11930,13 +11931,13 @@ setJerryHistory(prev => {
               if(jerryRecordLoading) return(
                 <View style={{alignItems:'center',paddingTop:60}}>
                   <ActivityIndicator size="large" color={HRB_COLOR}/>
-                  <Text style={{color:'#7a92a8',marginTop:12}}>Loading Jerry's record...</Text>
+                  <Text style={{color:THEME.textDim,marginTop:12}}>Loading Jerry's record...</Text>
                 </View>
               );
               if(!jerryRecord) return(
                 <View style={{alignItems:'center',paddingTop:40}}>
                   <Text style={{fontSize:32}}>📋</Text>
-                  <Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No record data yet.{'\n'}Jerry's picks will be tracked automatically.</Text>
+                  <Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center'}}>No record data yet.{'\n'}Jerry's picks will be tracked automatically.</Text>
                 </View>
               );
               const p = jerryRecord.props;
@@ -11958,7 +11959,7 @@ setJerryHistory(prev => {
                   {/* Header */}
                   <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:14,padding:14,marginBottom:16,borderWidth:1,borderColor:'rgba(255,184,0,0.25)'}}>
                     <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🎤 JERRY'S TRACK RECORD</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Model performance — updated daily · {winLabel}</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Model performance — updated daily · {winLabel}</Text>
                   </View>
 
                   {/* Window drill-down chips (2026-07-26) */}
@@ -11973,13 +11974,13 @@ setJerryHistory(prev => {
                         onPress={() => setRecordWindow(w.id)}
                         style={{
                           flex:1, paddingVertical:8, borderRadius:8, alignItems:'center',
-                          backgroundColor: recordWindow===w.id ? 'rgba(255,184,0,0.15)' : '#12161d',
+                          backgroundColor: recordWindow===w.id ? 'rgba(255,184,0,0.15)' : THEME.surface,
                           borderWidth:1,
-                          borderColor: recordWindow===w.id ? HRB_COLOR : '#1f2d3d',
+                          borderColor: recordWindow===w.id ? HRB_COLOR : THEME.border,
                         }}
                       >
                         <Text style={{
-                          color: recordWindow===w.id ? HRB_COLOR : '#7a92a8',
+                          color: recordWindow===w.id ? HRB_COLOR : THEME.textDim,
                           fontSize:11, fontWeight:'700', letterSpacing:0.3,
                         }}>{w.label}</Text>
                       </TouchableOpacity>
@@ -11997,19 +11998,19 @@ setJerryHistory(prev => {
                     if(primeTotal === 0 && mildTotal === 0) return(
                       <View style={[styles.card,{marginBottom:16}]}>
                         <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL — LEAN TIERS</Text>
-                        <Text style={{color:'#7a92a8',fontSize:13,marginTop:8}}>NRFI results loading...</Text>
+                        <Text style={{color:THEME.textDim,fontSize:13,marginTop:8}}>NRFI results loading...</Text>
                       </View>
                     );
                     return(
                       <View style={[styles.card,{marginBottom:16}]}>
                         <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12,marginBottom:12}}>⚾ NRFI MODEL — LEAN TIERS  ·  MLB</Text>
                         {/* PRIME tier — gold standard */}
-                        <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8,borderBottomWidth:1,borderBottomColor:'#1f2d3d'}}>
+                        <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8,borderBottomWidth:1,borderBottomColor:THEME.border}}>
                           <View style={{flex:1}}>
-                            <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>🟢 PRIME (90-94)</Text>
-                            <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>Sweet spot tier</Text>
+                            <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>🟢 PRIME (90-94)</Text>
+                            <Text style={{color:THEME.textDim,fontSize:10,marginTop:2}}>Sweet spot tier</Text>
                           </View>
-                          <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:18,marginRight:14}}>{prime.wins}-{prime.losses}</Text>
+                          <Text style={{color:THEME.text,fontWeight:'900',fontSize:18,marginRight:14}}>{prime.wins}-{prime.losses}</Text>
                           <View style={{width:48,height:48,borderRadius:24,borderWidth:2,borderColor:primePct>=55?'#00e5a0':'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
                             <Text style={{color:primePct>=55?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:13}}>{primeTotal>0?`${primePct}%`:'—'}</Text>
                           </View>
@@ -12017,10 +12018,10 @@ setJerryHistory(prev => {
                         {/* Mild Lean tier — volume */}
                         <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8}}>
                           <View style={{flex:1}}>
-                            <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>🔵 Mild Lean (70-79)</Text>
-                            <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>Volume tier — edge but not lock</Text>
+                            <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>🔵 Mild Lean (70-79)</Text>
+                            <Text style={{color:THEME.textDim,fontSize:10,marginTop:2}}>Volume tier — edge but not lock</Text>
                           </View>
-                          <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:18,marginRight:14}}>{mild.wins}-{mild.losses}</Text>
+                          <Text style={{color:THEME.text,fontWeight:'900',fontSize:18,marginRight:14}}>{mild.wins}-{mild.losses}</Text>
                           <View style={{width:48,height:48,borderRadius:24,borderWidth:2,borderColor:mildPct>=55?'#00e5a0':mildPct>=50?HRB_COLOR:'#ff4d6d',alignItems:'center',justifyContent:'center'}}>
                             <Text style={{color:mildPct>=55?'#00e5a0':mildPct>=50?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:13}}>{mildTotal>0?`${mildPct}%`:'—'}</Text>
                           </View>
@@ -12038,23 +12039,23 @@ setJerryHistory(prev => {
                     const pct = total > 0 ? Math.round((d.wins / total) * 100) : 0;
                     return (
                       <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🐕 DAWG OF THE DAY  ·  MLB  ·  {winLabel}</Text>
+                        <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🐕 DAWG OF THE DAY  ·  MLB  ·  {winLabel}</Text>
                         {total === 0 ? (
-                          <Text style={{color:'#7a92a8',fontSize:13,lineHeight:18}}>{recordWindow === 'lifetime' ? 'Tracking begins once picks resolve.' : `No resolved dawgs in the ${recordWindow} window yet.`}{'\n'}{pending > 0 && recordWindow === 'lifetime' ? `${pending} pending result${pending === 1 ? '' : 's'}.` : ''}</Text>
+                          <Text style={{color:THEME.textDim,fontSize:13,lineHeight:18}}>{recordWindow === 'lifetime' ? 'Tracking begins once picks resolve.' : `No resolved dawgs in the ${recordWindow} window yet.`}{'\n'}{pending > 0 && recordWindow === 'lifetime' ? `${pending} pending result${pending === 1 ? '' : 's'}.` : ''}</Text>
                         ) : (
                           <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center'}}>
                             <View style={{alignItems:'center'}}>
-                              <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:32}}>{d.wins}-{d.losses}</Text>
-                              <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>RECORD</Text>
+                              <Text style={{color:THEME.text,fontWeight:'900',fontSize:32}}>{d.wins}-{d.losses}</Text>
+                              <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>RECORD</Text>
                             </View>
                             <View style={{alignItems:'center'}}>
                               <Text style={{color:pct>=55?'#00e5a0':pct>=45?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:24}}>{pct}%</Text>
-                              <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
+                              <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
                             </View>
                             {pending > 0 && recordWindow === 'lifetime' && (
                               <View style={{alignItems:'center'}}>
                                 <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:22}}>{pending}</Text>
-                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>PENDING</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>PENDING</Text>
                               </View>
                             )}
                           </View>
@@ -12064,18 +12065,18 @@ setJerryHistory(prev => {
                             tier is noise). Users get tier context via the primary
                             lifetime view, then focus on rolling for recency. */}
                         {recordWindow === 'lifetime' && dRoot.byTier && (
-                          <View style={{backgroundColor:'#0d1419',borderRadius:10,padding:10,marginTop:12}}>
-                            <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY TIER (LIFETIME)</Text>
+                          <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10,marginTop:12}}>
+                            <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY TIER (LIFETIME)</Text>
                             {['PRIME','STRONG','LEAN'].map(t => {
                               const tr = dRoot.byTier[t] || {wins:0,losses:0};
                               const tn = tr.wins + tr.losses;
                               const tp = tn > 0 ? Math.round((tr.wins/tn)*100) : 0;
-                              const color = t === 'PRIME' ? '#00e5a0' : t === 'STRONG' ? HRB_COLOR : '#7a92a8';
+                              const color = t === 'PRIME' ? '#00e5a0' : t === 'STRONG' ? HRB_COLOR : THEME.textDim;
                               return (
                                 <View key={t} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
                                   <Text style={{color:color,fontWeight:'700',fontSize:12}}>{t}</Text>
                                   <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                                    <Text style={{color:'#7a92a8',fontSize:12}}>{tr.wins}-{tr.losses}</Text>
+                                    <Text style={{color:THEME.textDim,fontSize:12}}>{tr.wins}-{tr.losses}</Text>
                                     {tn > 0 && <Text style={{color:tp>=55?'#00e5a0':tp>=45?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{tp}%</Text>}
                                   </View>
                                 </View>
@@ -12108,7 +12109,7 @@ setJerryHistory(prev => {
                         <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:6}}>
                           <Text style={{color:color,fontWeight:'700',fontSize:12}}>{label}</Text>
                           <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                            <Text style={{color:'#7a92a8',fontSize:12}}>{tier.wins}-{tier.losses}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:12}}>{tier.wins}-{tier.losses}</Text>
                             {tTotal > 0 && (
                               <Text style={{color:tPct>=55?'#00e5a0':tPct>=45?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{tPct}%</Text>
                             )}
@@ -12118,25 +12119,25 @@ setJerryHistory(prev => {
                     };
                     return (
                       <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🧠 PIPELINE PROPS — CONVICTION TIERS  ·  MLB  ·  {winLabel}</Text>
+                        <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🧠 PIPELINE PROPS — CONVICTION TIERS  ·  MLB  ·  {winLabel}</Text>
                         {resolved === 0 ? (
-                          <Text style={{color:'#7a92a8',fontSize:13,lineHeight:18}}>{recordWindow === 'lifetime' ? 'Tracking begins once picks resolve.' : `No resolved props in the ${recordWindow} window yet.`}{'\n'}{tLifetime.pending > 0 && recordWindow === 'lifetime' ? `${tLifetime.pending} pending result${tLifetime.pending === 1 ? '' : 's'}.` : ''}</Text>
+                          <Text style={{color:THEME.textDim,fontSize:13,lineHeight:18}}>{recordWindow === 'lifetime' ? 'Tracking begins once picks resolve.' : `No resolved props in the ${recordWindow} window yet.`}{'\n'}{tLifetime.pending > 0 && recordWindow === 'lifetime' ? `${tLifetime.pending} pending result${tLifetime.pending === 1 ? '' : 's'}.` : ''}</Text>
                         ) : (
                           <>
                             {/* Headline row — reflects selected window */}
-                            <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:12,paddingBottom:12,borderBottomWidth:1,borderBottomColor:'#1f2d3d'}}>
+                            <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:12,paddingBottom:12,borderBottomWidth:1,borderBottomColor:THEME.border}}>
                               <View style={{alignItems:'center'}}>
-                                <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:28}}>{t.wins}-{t.losses}</Text>
-                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>{winLabel}</Text>
+                                <Text style={{color:THEME.text,fontWeight:'900',fontSize:28}}>{t.wins}-{t.losses}</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>{winLabel}</Text>
                               </View>
                               <View style={{alignItems:'center'}}>
                                 <Text style={{color:pct>=55?'#00e5a0':pct>=45?HRB_COLOR:'#ff4d6d',fontWeight:'800',fontSize:22}}>{pct}%</Text>
-                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
                               </View>
                               {tLifetime.pending > 0 && recordWindow === 'lifetime' && (
                                 <View style={{alignItems:'center'}}>
                                   <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:20}}>{tLifetime.pending}</Text>
-                                  <Text style={{color:'#4a6070',fontSize:10,marginTop:2,letterSpacing:0.5}}>PENDING</Text>
+                                  <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>PENDING</Text>
                                 </View>
                               )}
                             </View>
@@ -12144,25 +12145,25 @@ setJerryHistory(prev => {
                             {recordWindow !== 'lifetime' && resolvedLifetime > 0 && (
                               <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:10}}>
                                 <View style={{alignItems:'center'}}>
-                                  <Text style={{color:'#c8d8e8',fontWeight:'800',fontSize:16}}>{tLifetime.wins}-{tLifetime.losses}</Text>
-                                  <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>LIFETIME</Text>
+                                  <Text style={{color:THEME.textDim,fontWeight:'800',fontSize:16}}>{tLifetime.wins}-{tLifetime.losses}</Text>
+                                  <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>LIFETIME</Text>
                                 </View>
                                 <View style={{alignItems:'center'}}>
                                   <Text style={{color:pctLifetime>=55?'#00e5a0':pctLifetime>=45?HRB_COLOR:'#ff4d6d',fontWeight:'700',fontSize:14}}>{pctLifetime}%</Text>
-                                  <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>BASELINE</Text>
+                                  <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>BASELINE</Text>
                                 </View>
                                 <View style={{alignItems:'center'}}>
-                                  <Text style={{color:pct>pctLifetime?'#00e5a0':pct<pctLifetime?'#ff8c5a':'#7a92a8',fontWeight:'700',fontSize:16}}>{pct>pctLifetime?'↑':pct<pctLifetime?'↓':'→'}{Math.abs(pct-pctLifetime)}pt</Text>
-                                  <Text style={{color:'#4a6070',fontSize:9,marginTop:2,letterSpacing:0.5}}>VS LIFETIME</Text>
+                                  <Text style={{color:pct>pctLifetime?'#00e5a0':pct<pctLifetime?THEME.accent:THEME.textDim,fontWeight:'700',fontSize:16}}>{pct>pctLifetime?'↑':pct<pctLifetime?'↓':'→'}{Math.abs(pct-pctLifetime)}pt</Text>
+                                  <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>VS LIFETIME</Text>
                                 </View>
                               </View>
                             )}
                             {/* Per-tier breakdown stays lifetime — 30d/7d per-tier splits get too thin */}
-                            <View style={{backgroundColor:'#0d1419',borderRadius:10,padding:10,marginTop:4}}>
-                              <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:4,letterSpacing:0.5}}>BY TIER (LIFETIME)</Text>
+                            <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10,marginTop:4}}>
+                              <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:4,letterSpacing:0.5}}>BY TIER (LIFETIME)</Text>
                               {tierRow('🔒 PRIME (80+)', pp.byTier.PRIME || {wins:0,losses:0}, '#00e5a0')}
                               {tierRow('⚡ STRONG (65-79)', pp.byTier.STRONG || {wins:0,losses:0}, HRB_COLOR)}
-                              {tierRow('📊 LEAN (50-64)', pp.byTier.LEAN || {wins:0,losses:0}, '#7a92a8')}
+                              {tierRow('📊 LEAN (50-64)', pp.byTier.LEAN || {wins:0,losses:0}, THEME.textDim)}
                             </View>
                           </>
                         )}
@@ -12204,14 +12205,14 @@ setJerryHistory(prev => {
                       {jerryRecord.bestBets.slice(0,14).map((bet, i) => {
                         const isPending = bet.result === 'Pending';
                         const isWin = bet.result === 'Win';
-                        const resultColor = isPending ? '#4a6070' : isWin ? '#00e5a0' : '#ff4d6d';
+                        const resultColor = isPending ? THEME.textMuted : isWin ? '#00e5a0' : '#ff4d6d';
                         return(
                           <View key={i} style={[styles.betCard,{borderLeftColor:resultColor,marginBottom:8}]}>
                             <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
                               <View style={{flex:1}}>
-                                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13}}>{bet.game}</Text>
+                                <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>{bet.game}</Text>
                                 <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginTop:2}}>{bet.lean || 'Model Edge'}</Text>
-                                <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>{SPORT_EMOJI[bet.sport]||''} {bet.sport} • {new Date(bet.bet_date + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>{SPORT_EMOJI[bet.sport]||''} {bet.sport} • {new Date(bet.bet_date + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</Text>
                               </View>
                               <View style={{alignItems:'center',gap:4}}>
                                 <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:HRB_COLOR,alignItems:'center',justifyContent:'center',backgroundColor:'rgba(255,184,0,0.1)'}}>
@@ -12229,7 +12230,7 @@ setJerryHistory(prev => {
                   )}
 
                   {/* Footer note */}
-                  <Text style={{color:'#4a6070',fontSize:10,textAlign:'center',marginTop:12,lineHeight:14}}>Results auto-resolve daily via MLB Stats API and BDL box scores</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:10,textAlign:'center',marginTop:12,lineHeight:14}}>Results auto-resolve daily via MLB Stats API and BDL box scores</Text>
 
                   <View style={{height:20}}/>
                 </View>
@@ -12240,9 +12241,9 @@ setJerryHistory(prev => {
               <View>
                 <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:'rgba(255,184,0,0.25)'}}>
                   <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginBottom:4}}>🎸 CLOSING LINE VALUE vs HARD ROCK</Text>
-                  <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Tracks whether you got better odds than the Hard Rock closing line. Consistently beating the close is the strongest indicator of long-term edge.</Text>
+                  <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Tracks whether you got better odds than the Hard Rock closing line. Consistently beating the close is the strongest indicator of long-term edge.</Text>
                 </View>
-                {clvBets.length===0?(<View style={{alignItems:'center',paddingTop:40}}><Text style={{fontSize:32}}>📈</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>Log bets with odds to track your CLV!</Text></View>):(
+                {clvBets.length===0?(<View style={{alignItems:'center',paddingTop:40}}><Text style={{fontSize:32}}>📈</Text><Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center'}}>Log bets with odds to track your CLV!</Text></View>):(
                   <>
                     <View style={styles.statRow}>
                       <View style={[styles.statBox,{borderColor:parseFloat(avgCLV)<=0?'rgba(0,229,160,0.3)':'rgba(255,77,109,0.3)'}]}><Text style={{fontSize:18,fontWeight:'800',color:parseFloat(avgCLV)<=0?'#00e5a0':'#ff4d6d'}}>{avgCLV}%</Text><Text style={styles.statKey}>Avg CLV</Text></View>
@@ -12256,8 +12257,8 @@ setJerryHistory(prev => {
                           <View style={{flex:1}}><Text style={styles.betMatchup}>{bet.matchup}</Text><Text style={styles.betPick}>{bet.pick}</Text></View>
                           <View style={{alignItems:'flex-end',gap:3}}>
                             <Text style={{color:bet.beatClosing?'#00e5a0':'#ff4d6d',fontWeight:'700',fontSize:13}}>{bet.beatClosing?'✓ Beat Close':'✗ Missed'}</Text>
-                            <Text style={{color:'#7a92a8',fontSize:11}}>Got: {bet.myOdds>0?'+':''}{bet.myOdds}</Text>
-                            <Text style={{color:'#7a92a8',fontSize:11}}>Close: {bet.closingOdds>0?'+':''}{bet.closingOdds}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:11}}>Got: {bet.myOdds>0?'+':''}{bet.myOdds}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:11}}>Close: {bet.closingOdds>0?'+':''}{bet.closingOdds}</Text>
                           </View>
                         </View>
                         <View style={styles.betMeta}>
@@ -12309,21 +12310,21 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       {/* Header */}
       <View style={{backgroundColor:'rgba(255,184,0,0.07)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.2)',marginBottom:16}}>
         <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🏀 2026 MARCH MADNESS TRACKER</Text>
-        <Text style={{color:'#7a92a8',fontSize:12}}>Your tournament record + today's top model plays</Text>
+        <Text style={{color:THEME.textDim,fontSize:12}}>Your tournament record + today's top model plays</Text>
       </View>
 
       {/* Record Hero */}
       <View style={[styles.hero,{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:16}]}>
         <View>
-          <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700'}}>TOURNAMENT RECORD</Text>
-          <Text style={{color:'#e8f0f8',fontWeight:'900',fontSize:36}}>{wins}-{losses}</Text>
-          <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{pending} pending • {winRate}% hit rate</Text>
+          <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700'}}>TOURNAMENT RECORD</Text>
+          <Text style={{color:THEME.text,fontWeight:'900',fontSize:36}}>{wins}-{losses}</Text>
+          <Text style={{color:THEME.textDim,fontSize:12,marginTop:2}}>{pending} pending • {winRate}% hit rate</Text>
         </View>
         <View style={{alignItems:'center'}}>
           <Text style={{color:profit>=0?'#00e5a0':'#ff4d6d',fontWeight:'800',fontSize:28}}>
             {profit>=0?'+':''}{profit.toFixed(1)}u
           </Text>
-          <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>PROFIT</Text>
+          <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>PROFIT</Text>
         </View>
       </View>
 
@@ -12332,7 +12333,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       {topGames.length === 0 ? (
         <View style={{alignItems:'center',paddingVertical:30}}>
           <Text style={{fontSize:32}}>🏀</Text>
-          <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center'}}>Switch Games tab to NCAAB to load tournament games.</Text>
+          <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center'}}>Switch Games tab to NCAAB to load tournament games.</Text>
         </View>
       ) : (
         topGames.map((item, i) => {
@@ -12341,11 +12342,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           const gameTime = new Date(item.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
           return(
             <TouchableOpacity key={i} onPress={()=>{setActiveTab('games');setGamesSport('NCAAB');openGameDetail(item.game);}}
-              style={{backgroundColor:'#0e1318',borderRadius:14,padding:14,marginBottom:8,borderWidth:1,borderLeftWidth:3,borderColor:'#1f2d3d',borderLeftColor:tier.color}}>
+              style={{backgroundColor:THEME.surface,borderRadius:14,padding:14,marginBottom:8,borderWidth:1,borderLeftWidth:3,borderColor:THEME.border,borderLeftColor:tier.color}}>
               <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                 <View style={{flex:1}}>
-                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{item.game.away_team} vs {item.game.home_team}</Text>
-                  <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{gameTime}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700',fontSize:14}}>{item.game.away_team} vs {item.game.home_team}</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:11,marginTop:2}}>{gameTime}</Text>
                 </View>
                 <View style={{alignItems:'center',marginLeft:12}}>
                   <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:tier.color,alignItems:'center',justifyContent:'center',backgroundColor:tier.color+'15'}}>
@@ -12376,7 +12377,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
         <>
           <Text style={styles.sectionLabel}>📋 TOURNAMENT BETS</Text>
           {tourneyBets.slice(0,20).map((bet,i) => (
-            <View key={i} style={[styles.betCard,{borderLeftColor:bet.result==='Win'?'#00e5a0':bet.result==='Loss'?'#ff4d6d':'#4a6070'}]}>
+            <View key={i} style={[styles.betCard,{borderLeftColor:bet.result==='Win'?'#00e5a0':bet.result==='Loss'?'#ff4d6d':THEME.textMuted}]}>
               <View style={styles.betTop}>
                 <View style={{flex:1}}>
                   <Text style={styles.betMatchup}>{bet.matchup}</Text>
@@ -12384,7 +12385,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 </View>
                 <View style={{alignItems:'flex-end',gap:3}}>
                   <Text style={{color:resultColor(bet.result),fontWeight:'700',fontSize:13}}>{bet.result}</Text>
-                  <Text style={{color:'#7a92a8',fontSize:11}}>{bet.units}u • {bet.odds>0?'+':''}{bet.odds}</Text>
+                  <Text style={{color:THEME.textDim,fontSize:11}}>{bet.units}u • {bet.odds>0?'+':''}{bet.odds}</Text>
                 </View>
               </View>
             </View>
@@ -12406,7 +12407,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
               <View style={{flexDirection:'row',gap:6}}>{SPORTS.map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,oddsSport===s&&styles.chipBtnActive]} onPress={()=>setOddsSport(s)}><Text style={[styles.chipTxt,oddsSport===s&&styles.chipTxtActive]}>{s}</Text></TouchableOpacity>))}</View>
             </ScrollView>
             {oddsLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/></View>):
-            oddsData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:32}}>🏆</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No games for {oddsSport} right now.</Text></View>):(
+            oddsData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:32}}>🏆</Text><Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center'}}>No games for {oddsSport} right now.</Text></View>):(
               oddsData.map((game,i)=>{
                 const bestBook=getBestSpread(game);
                 const sortedBooks=game.bookmakers?[...game.bookmakers].sort((a,b)=>{
@@ -12418,7 +12419,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   <View key={i} style={styles.card}>
                     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
                       <View style={{flex:1}}><Text style={styles.cardTitle}>{game.away_team} @ {game.home_team}</Text><Text style={styles.cardSub}>{new Date(game.commence_time).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} • {new Date(game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</Text></View>
-                      <View style={[styles.pill,{backgroundColor:'rgba(0,153,255,0.15)'}]}><Text style={{color:'#0099ff',fontSize:11,fontWeight:'700'}}>{oddsSport}</Text></View>
+                      <View style={[styles.pill,{backgroundColor:'rgba(0,153,255,0.15)'}]}><Text style={{color:THEME.sharp,fontSize:11,fontWeight:'700'}}>{oddsSport}</Text></View>
                     </View>
                     <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:6,paddingHorizontal:4}}>
                       <Text style={styles.oddsHeader}>BOOK</Text><Text style={styles.oddsHeader}>SPREAD</Text><Text style={styles.oddsHeader}>TOTAL</Text>
@@ -12460,10 +12461,10 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
                   <View style={{flexDirection:'row',gap:6}}>{['NBA','NFL','NHL','MLB'].map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,propsSport===s&&styles.chipBtnActive]} onPress={()=>setPropsSport(s)}><Text style={[styles.chipTxt,propsSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text></TouchableOpacity>))}</View>
                 </ScrollView>
-                <View style={{flexDirection:'row',alignItems:'center',backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',borderRadius:12,paddingHorizontal:12,marginBottom:14}}>
+                <View style={{flexDirection:'row',alignItems:'center',backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:12,paddingHorizontal:12,marginBottom:14}}>
   <Text style={{fontSize:16,marginRight:8}}>🔍</Text>
   <TextInput
-    style={{flex:1,color:'#e8f0f8',fontSize:14,paddingVertical:10}}
+    style={{flex:1,color:THEME.text,fontSize:14,paddingVertical:10}}
     placeholder="Search players..."
     placeholderTextColor="#4a6070"
     value={propsSearch}
@@ -12472,12 +12473,12 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
   />
   {propsSearch.length>0&&(
     <TouchableOpacity onPress={()=>setPropsSearch('')}>
-      <Text style={{color:'#4a6070',fontSize:16}}>✕</Text>
+      <Text style={{color:THEME.textMuted,fontSize:16}}>✕</Text>
     </TouchableOpacity>
   )}
 </View>
                 {propsLoading?<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/></View>:
-                propsData.length===0?<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:32}}>🎯</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No props available right now.</Text></View>:
+                propsData.length===0?<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:32}}>🎯</Text><Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center'}}>No props available right now.</Text></View>:
                 propsData.filter(prop=>
   propsSearch===''||
   prop.player.toLowerCase().includes(propsSearch.toLowerCase())
@@ -12489,14 +12490,14 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
                         <View style={{flex:1}}><Text style={styles.betMatchup}>{prop.player}</Text><Text style={styles.betPick}>{prop.market} • {prop.gameName}</Text></View>
                         <View style={{alignItems:'flex-end'}}>
-                          {hrbPropLine?<Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16}}>🎸 {hrbPropLine.line}</Text>:bestLine?<Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:16}}>O/U {bestLine.line}</Text>:null}
-                          {hrbPropLine?<Text style={{color:HRB_COLOR,fontSize:11}}>Hard Rock</Text>:bestLine?<Text style={{color:'#7a92a8',fontSize:11}}>{bestLine.book}</Text>:null}
+                          {hrbPropLine?<Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16}}>🎸 {hrbPropLine.line}</Text>:bestLine?<Text style={{color:THEME.text,fontWeight:'700',fontSize:16}}>O/U {bestLine.line}</Text>:null}
+                          {hrbPropLine?<Text style={{color:HRB_COLOR,fontSize:11}}>Hard Rock</Text>:bestLine?<Text style={{color:THEME.textDim,fontSize:11}}>{bestLine.book}</Text>:null}
                         </View>
                       </View>
                       <View style={{flexDirection:'row',gap:6,flexWrap:'wrap',marginTop:4}}>
                         {prop.lines.map((l,j)=>(
                           <View key={j} style={[styles.metaChip,l.book===HRB&&{borderColor:HRB_COLOR}]}>
-                            <Text style={[{fontSize:11,color:'#7a92a8'},l.book===HRB&&{color:HRB_COLOR}]}>{l.book===HRB?'🎸 ':''}{l.book}: {l.line} ({l.odds>0?'+':''}{l.odds})</Text>
+                            <Text style={[{fontSize:11,color:THEME.textDim},l.book===HRB&&{color:HRB_COLOR}]}>{l.book===HRB?'🎸 ':''}{l.book}: {l.line} ({l.odds>0?'+':''}{l.odds})</Text>
                           </View>
                         ))}
                       </View>
@@ -12508,8 +12509,8 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             {statsTab==='players'&&(
   <View style={{alignItems:'center',paddingTop:60,paddingHorizontal:24}}>
     <Text style={{fontSize:40}}>📊</Text>
-    <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18,marginTop:16,textAlign:'center'}}>Player Profiles</Text>
-    <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Deep player stats, game logs, and trend analysis coming soon.{'\n\n'}Upgrade to Pro to get early access when it launches.</Text>
+    <Text style={{color:THEME.text,fontWeight:'800',fontSize:18,marginTop:16,textAlign:'center'}}>Player Profiles</Text>
+    <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Deep player stats, game logs, and trend analysis coming soon.{'\n\n'}Upgrade to Pro to get early access when it launches.</Text>
     <View style={{marginTop:20,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:12,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}}>
       <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,textAlign:'center'}}>🔜 COMING IN V1.1</Text>
     </View>
@@ -12532,7 +12533,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
     <View>
       <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:14,padding:14,borderWidth:1,borderColor:'rgba(255,184,0,0.2)',marginBottom:12}}>
   <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:12,marginBottom:4}}>🏆 MODEL LEADERBOARD</Text>
-  <Text style={{color:'#7a92a8',fontSize:12}}>Today's top plays ranked by Sweat Score</Text>
+  <Text style={{color:THEME.textDim,fontSize:12}}>Today's top plays ranked by Sweat Score</Text>
 </View>
 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>
   <View style={{flexDirection:'row',gap:6}}>
@@ -12548,7 +12549,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       {scored.length === 0 ? (
         <View style={{alignItems:'center',paddingTop:40}}>
           <Text style={{fontSize:32}}>🏆</Text>
-          <Text style={{color:'#7a92a8',fontSize:13,marginTop:8,textAlign:'center'}}>Switch to a sport tab with games to see the leaderboard.</Text>
+          <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center'}}>Switch to a sport tab with games to see the leaderboard.</Text>
         </View>
       ) : (
         scored.map((item, i) => {
@@ -12557,11 +12558,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           const gameTime = new Date(item.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
           return(
             <TouchableOpacity key={i} onPress={()=>openGameDetail(item.game)}
-              style={{backgroundColor:'#0e1318',borderRadius:14,padding:14,marginBottom:8,borderWidth:1,borderLeftWidth:3,borderColor:'#1f2d3d',borderLeftColor:tier.color}}>
+              style={{backgroundColor:THEME.surface,borderRadius:14,padding:14,marginBottom:8,borderWidth:1,borderLeftWidth:3,borderColor:THEME.border,borderLeftColor:tier.color}}>
               <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                 <View style={{flex:1}}>
-                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>{item.game.away_team} vs {item.game.home_team}</Text>
-                  <Text style={{color:'#4a6070',fontSize:11,marginTop:2}}>{gamesSport} • {gameTime}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700',fontSize:14}}>{item.game.away_team} vs {item.game.home_team}</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:11,marginTop:2}}>{gamesSport} • {gameTime}</Text>
                 </View>
                 <View style={{alignItems:'center',marginLeft:12}}>
                   <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:tier.color,alignItems:'center',justifyContent:'center',backgroundColor:tier.color+'15'}}>
@@ -12577,7 +12578,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   </View>
                   {ss.totalIsPrimary && (
                     <View style={{backgroundColor:'rgba(0,153,255,0.1)',borderRadius:6,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:'rgba(0,153,255,0.3)'}}>
-                      <Text style={{color:'#0099ff',fontSize:11,fontWeight:'700'}}>📈 Total Signal</Text>
+                      <Text style={{color:THEME.sharp,fontSize:11,fontWeight:'700'}}>📈 Total Signal</Text>
                     </View>
                   )}
                 </View>
@@ -12595,12 +12596,12 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
         {(activeTab==='parlay'||(activeTab==='mybets'&&mybetsTab==='parlay_sub'))&&(
           <View>
             {activeTab==='mybets'&&(
-              <View style={{flexDirection:'row',marginBottom:14,gap:0,backgroundColor:'#151c24',borderRadius:12,overflow:'hidden'}}>
-                <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='picks'?'#1a2a3a':'transparent'}} onPress={()=>setMybetsTab('picks')}>
-                  <Text style={{color:mybetsTab==='picks'?'#00e5a0':'#7a92a8',fontWeight:'700',fontSize:13}}>My Picks</Text>
+              <View style={{flexDirection:'row',marginBottom:14,gap:0,backgroundColor:THEME.surfaceAlt,borderRadius:12,overflow:'hidden'}}>
+                <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='picks'?THEME.surfaceAlt:'transparent'}} onPress={()=>setMybetsTab('picks')}>
+                  <Text style={{color:mybetsTab==='picks'?'#00e5a0':THEME.textDim,fontWeight:'700',fontSize:13}}>My Picks</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='parlay_sub'?'#1a2a3a':'transparent'}} onPress={()=>setMybetsTab('parlay_sub')}>
-                  <Text style={{color:mybetsTab==='parlay_sub'?'#00e5a0':'#7a92a8',fontWeight:'700',fontSize:13}}>Parlay Builder</Text>
+                <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='parlay_sub'?THEME.surfaceAlt:'transparent'}} onPress={()=>setMybetsTab('parlay_sub')}>
+                  <Text style={{color:mybetsTab==='parlay_sub'?'#00e5a0':THEME.textDim,fontWeight:'700',fontSize:13}}>Parlay Builder</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -12609,31 +12610,31 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
               <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
                 <View>
                   <Text style={styles.heroSub}>{parlayLegs.length}-Leg Parlay</Text>
-                  <Text style={{fontSize:36,fontWeight:'800',color:parlayLegs.length>0?'#00e5a0':'#4a6070'}}>{parlayAmerican}</Text>
+                  <Text style={{fontSize:36,fontWeight:'800',color:parlayLegs.length>0?'#00e5a0':THEME.textMuted}}>{parlayAmerican}</Text>
                   <Text style={styles.heroMeta}>Implied prob: {parlayProb}%</Text>
                 </View>
                 <View style={{alignItems:'flex-end'}}>
-                  <Text style={{fontSize:12,color:'#7a92a8',fontWeight:'600'}}>PAYOUT</Text>
-                  <Text style={{fontSize:28,fontWeight:'800',color:'#e8f0f8'}}>${parlayPayout}</Text>
+                  <Text style={{fontSize:12,color:THEME.textDim,fontWeight:'600'}}>PAYOUT</Text>
+                  <Text style={{fontSize:28,fontWeight:'800',color:THEME.text}}>${parlayPayout}</Text>
                   <Text style={{fontSize:12,color:'#00e5a0',fontWeight:'600'}}>+${parlayProfit} profit</Text>
                 </View>
               </View>
-              <View style={{flexDirection:'row',alignItems:'center',backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',borderRadius:12,paddingHorizontal:14,paddingVertical:10}}>
+              <View style={{flexDirection:'row',alignItems:'center',backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:12,paddingHorizontal:14,paddingVertical:10}}>
                 <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16,marginRight:8}}>$</Text>
-                <TextInput style={{flex:1,color:'#e8f0f8',fontSize:16,fontWeight:'600'}} placeholder="Enter wager" placeholderTextColor="#4a6070" value={parlayWager} onChangeText={setParlayWager} keyboardType="numeric" returnKeyType="done"/>
-                <Text style={{color:'#7a92a8',fontSize:12}}>WAGER</Text>
+                <TextInput style={{flex:1,color:THEME.text,fontSize:16,fontWeight:'600'}} placeholder="Enter wager" placeholderTextColor="#4a6070" value={parlayWager} onChangeText={setParlayWager} keyboardType="numeric" returnKeyType="done"/>
+                <Text style={{color:THEME.textDim,fontSize:12}}>WAGER</Text>
               </View>
             </View>
-            {parlayLegs.length===0?(<View style={{alignItems:'center',paddingTop:20,paddingBottom:20}}><Text style={{fontSize:32}}>🎰</Text><Text style={{color:'#7a92a8',marginTop:12,fontSize:14,textAlign:'center'}}>No legs added yet.{'\n'}Browse games or add manually!</Text></View>):(
+            {parlayLegs.length===0?(<View style={{alignItems:'center',paddingTop:20,paddingBottom:20}}><Text style={{fontSize:32}}>🎰</Text><Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center'}}>No legs added yet.{'\n'}Browse games or add manually!</Text></View>):(
               <>{<Text style={styles.sectionLabel}>PARLAY LEGS</Text>}
               {parlayLegs.map((leg)=>{
                 const legDecimal=americanToDecimal(leg.oddsSign+leg.odds);
                 const legProb=((1/legDecimal)*100).toFixed(0);
-                return(<View key={leg.id} style={[styles.betCard,{borderLeftColor:'#00e5a0'}]}><View style={styles.betTop}><View style={{flex:1}}><Text style={styles.betMatchup}>{leg.matchup}</Text><Text style={styles.betPick}>{leg.pick}</Text></View><View style={{alignItems:'flex-end',gap:4}}><Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16}}>{leg.oddsSign}{leg.odds}</Text><Text style={{color:'#7a92a8',fontSize:11}}>{legProb}% prob</Text><TouchableOpacity onPress={()=>removeLeg(leg.id)}><Text style={{color:'#ff4d6d',fontSize:11}}>✕ Remove</Text></TouchableOpacity></View></View></View>);
+                return(<View key={leg.id} style={[styles.betCard,{borderLeftColor:'#00e5a0'}]}><View style={styles.betTop}><View style={{flex:1}}><Text style={styles.betMatchup}>{leg.matchup}</Text><Text style={styles.betPick}>{leg.pick}</Text></View><View style={{alignItems:'flex-end',gap:4}}><Text style={{color:'#00e5a0',fontWeight:'700',fontSize:16}}>{leg.oddsSign}{leg.odds}</Text><Text style={{color:THEME.textDim,fontSize:11}}>{legProb}% prob</Text><TouchableOpacity onPress={()=>removeLeg(leg.id)}><Text style={{color:'#ff4d6d',fontSize:11}}>✕ Remove</Text></TouchableOpacity></View></View></View>);
               })}</>
             )}
-            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'rgba(0,153,255,0.15)',borderWidth:1,borderColor:'#0099ff'}]} onPress={()=>setActiveTab('games')}><Text style={[styles.btnPrimaryText,{color:'#0099ff'}]}>🏟 Browse Games to Add Legs</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d'}]} onPress={()=>setAddLegModal(true)}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>+ Add Leg Manually</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'rgba(0,153,255,0.15)',borderWidth:1,borderColor:THEME.sharp}]} onPress={()=>setActiveTab('games')}><Text style={[styles.btnPrimaryText,{color:THEME.sharp}]}>🏟 Browse Games to Add Legs</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border}]} onPress={()=>setAddLegModal(true)}><Text style={[styles.btnPrimaryText,{color:THEME.textDim}]}>+ Add Leg Manually</Text></TouchableOpacity>
             {parlayLegs.length>=2&&(
                 <TouchableOpacity
                   style={[styles.btnPrimary,{backgroundColor:'rgba(255,184,0,0.1)',borderWidth:1,borderColor:HRB_COLOR}]}
@@ -12644,7 +12645,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
               )}
             {parlayLegs.length>0&&(
               <>
-                <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'#151c24',borderWidth:1,borderColor:'#00e5a0'}]} onPress={()=>{
+                <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:'#00e5a0'}]} onPress={()=>{
                   setBets(prev=>[{id:Date.now(),matchup:parlayLegs.length+'-Leg Parlay',pick:parlayLegs.map(l=>l.pick).join(' + '),sport:'Parlay',type:'Parlay',odds:parlayAmerican,units:(parseFloat(parlayWager)/10).toFixed(1),book:'Hard Rock',result:'Pending',date:new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'})},...prev]);
                   setParlayLegs([]);Alert.alert('✅ Saved!','Parlay added to My Picks.');
                 }}><Text style={[styles.btnPrimaryText,{color:'#00e5a0'}]}>📋 Save to My Picks</Text></TouchableOpacity>
@@ -12657,11 +12658,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
         <View style={{height:20}}/>
       </ScrollView>
 
-      <View style={{backgroundColor:'#0a1018',paddingHorizontal:16,paddingVertical:8,borderTopWidth:1,borderTopColor:'#1f2d3d'}}>
-              <Text style={{color:'#4a6070',fontSize:9,textAlign:'center',lineHeight:14}}>⚠️ For entertainment only. The Sweat Locker provides data analysis and does not faciliate wagering of any kind. Past performance is not indicative of future results.{'  '}
+      <View style={{backgroundColor:'#0a1018',paddingHorizontal:16,paddingVertical:8,borderTopWidth:1,borderTopColor:THEME.border}}>
+              <Text style={{color:THEME.textMuted,fontSize:9,textAlign:'center',lineHeight:14}}>⚠️ For entertainment only. The Sweat Locker provides data analysis and does not faciliate wagering of any kind. Past performance is not indicative of future results.{'  '}
 
                 {'  •  '}
-                <Text style={{color:'#FFB800'}} onPress={()=>Linking.openURL('tel:18882364848')}></Text>
+                <Text style={{color:THEME.hrb}} onPress={()=>Linking.openURL('tel:18882364848')}></Text>
               </Text>
             </View>
             <View style={styles.bottomNavContainer}></View>
@@ -12750,7 +12751,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             <View style={[styles.modalSheet,{maxHeight:'92%'}]}>
               <View style={styles.modalHandle}/>
               <Text style={[styles.modalTitle, {fontSize:18}]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{stripMascot(selectedGame.away_team)} @ {stripMascot(selectedGame.home_team)}</Text>
-              <Text style={{color:'#7a92a8',fontSize:12,marginTop:-10,marginBottom:16}}>{new Date(selectedGame.commence_time).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} • {new Date(selectedGame.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})} ET</Text>
+              <Text style={{color:THEME.textDim,fontSize:12,marginTop:-10,marginBottom:16}}>{new Date(selectedGame.commence_time).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} • {new Date(selectedGame.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})} ET</Text>
               <ScrollView showsVerticalScrollIndicator={false}>
                 
                 {(()=>{
@@ -12763,8 +12764,8 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     <View style={{backgroundColor:'#0a1018',borderRadius:16,padding:16,marginBottom:16,borderWidth:1.5,borderColor:tier.color+'66'}}>
                       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
                         <View>
-                          <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:16}}>🧠 SWEAT SCORE</Text>
-                          <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>Algorithmic confidence rating</Text>
+                          <Text style={{color:THEME.text,fontWeight:'800',fontSize:16}}>🧠 SWEAT SCORE</Text>
+                          <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>Algorithmic confidence rating</Text>
                         </View>
                         <View style={{alignItems:'center',gap:2}}>
                           <View style={{width:64,height:64,borderRadius:32,borderWidth:2.5,borderColor:tier.color,alignItems:'center',justifyContent:'center',backgroundColor:tier.color+'15'}}>
@@ -12802,24 +12803,24 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 <Text style={{fontSize:14}}>⚠️</Text>
                                 <Text style={{color:'#ff4d6d',fontWeight:'800',fontSize:12,letterSpacing:0.5}}>CONSENSUS FADE ALERT</Text>
                               </View>
-                              <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'700',marginBottom:4}}>
+                              <Text style={{color:THEME.text,fontSize:13,fontWeight:'700',marginBottom:4}}>
                                 {pctPct}% of books on {side} ({n} sources)
                               </Text>
-                              <Text style={{color:'#c8d8e8',fontSize:11,lineHeight:15}}>{note}</Text>
+                              <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}}>{note}</Text>
                             </View>
                           );
                         }
                         // MONITORING state — softer yellow
                         return (
-                          <View style={{marginTop:12,padding:12,borderRadius:10,backgroundColor:'#2a2410',borderWidth:1,borderColor:'#ffb800'}}>
+                          <View style={{marginTop:12,padding:12,borderRadius:10,backgroundColor:'#2a2410',borderWidth:1,borderColor:THEME.hrb}}>
                             <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:6}}>
                               <Text style={{fontSize:14}}>👀</Text>
-                              <Text style={{color:'#ffb800',fontWeight:'800',fontSize:12,letterSpacing:0.5}}>MONITORING CONSENSUS</Text>
+                              <Text style={{color:THEME.hrb,fontWeight:'800',fontSize:12,letterSpacing:0.5}}>MONITORING CONSENSUS</Text>
                             </View>
-                            <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'700',marginBottom:4}}>
+                            <Text style={{color:THEME.text,fontSize:13,fontWeight:'700',marginBottom:4}}>
                               {pctPct}% of books on {side} ({n} sources)
                             </Text>
-                            <Text style={{color:'#c8d8e8',fontSize:11,lineHeight:15}}>
+                            <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}}>
                               {note}. Not calling this a fade yet — building audit sample.
                             </Text>
                           </View>
@@ -12843,10 +12844,10 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               <Text style={{fontSize:14}}>🎯</Text>
                               <Text style={{color:'#00e5a0',fontWeight:'800',fontSize:12,letterSpacing:0.5}}>MC HIGH CONFIDENCE</Text>
                             </View>
-                            <Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'700',marginBottom:4}}>
+                            <Text style={{color:THEME.text,fontSize:13,fontWeight:'700',marginBottom:4}}>
                               Monte Carlo: {pct}% {side}
                             </Text>
-                            <Text style={{color:'#c8d8e8',fontSize:11,lineHeight:15}}>
+                            <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}}>
                               Rich per-inning simulator with 10 lenses gives high conviction. Backtest: MC 80%+ confidence hits ~71% on n=135 graded games.
                             </Text>
                           </View>
@@ -12877,32 +12878,32 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         if(!fm) return null;
                         return(
                           <View style={{backgroundColor:'rgba(0,229,160,0.07)',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:'rgba(0,229,160,0.2)'}}>
-                            <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:6}}>📡 MODEL PREDICTION</Text>
+                            <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',marginBottom:6}}>📡 MODEL PREDICTION</Text>
                             <View style={{flexDirection:'row',justifyContent:'space-around',marginBottom:8}}>
                               <View style={{alignItems:'center'}}>
-                                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:22}}>{Math.round(fm.visitorPred)}</Text>
-                                <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>{stripMascot(selectedGame.away_team)}</Text>
+                                <Text style={{color:THEME.text,fontWeight:'800',fontSize:22}}>{Math.round(fm.visitorPred)}</Text>
+                                <Text style={{color:THEME.textDim,fontSize:10,marginTop:2}}>{stripMascot(selectedGame.away_team)}</Text>
                               </View>
                               <View style={{alignItems:'center',justifyContent:'center'}}>
-                                <Text style={{color:'#4a6070',fontSize:16,fontWeight:'700'}}>@</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:16,fontWeight:'700'}}>@</Text>
                               </View>
                               <View style={{alignItems:'center'}}>
-                                <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:22}}>{Math.round(fm.homePred)}</Text>
-                                <Text style={{color:'#7a92a8',fontSize:10,marginTop:2}}>{stripMascot(selectedGame.home_team)}</Text>
+                                <Text style={{color:THEME.text,fontWeight:'800',fontSize:22}}>{Math.round(fm.homePred)}</Text>
+                                <Text style={{color:THEME.textDim,fontSize:10,marginTop:2}}>{stripMascot(selectedGame.home_team)}</Text>
                               </View>
                             </View>
-                            <View style={{flexDirection:'row',justifyContent:'space-around',borderTopWidth:1,borderTopColor:'#1f2d3d',paddingTop:8}}>
+                            <View style={{flexDirection:'row',justifyContent:'space-around',borderTopWidth:1,borderTopColor:THEME.border,paddingTop:8}}>
                               <View style={{alignItems:'center'}}>
                                 <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:13}}>{Math.round(fm.homeWP)}%</Text>
-                                <Text style={{color:'#4a6070',fontSize:9}}>HOME WIN PROB</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:9}}>HOME WIN PROB</Text>
                               </View>
                               <View style={{alignItems:'center'}}>
                                 <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:13}}>{Math.round(fm.predTempo)}</Text>
-                                <Text style={{color:'#4a6070',fontSize:9}}>PRED TEMPO</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:9}}>PRED TEMPO</Text>
                               </View>
                               <View style={{alignItems:'center'}}>
                                 <Text style={{color:'#00e5a0',fontWeight:'700',fontSize:13}}>{fm.thrillScore?.toFixed(1)}</Text>
-                                <Text style={{color:'#4a6070',fontSize:9}}>THRILL SCORE</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:9}}>THRILL SCORE</Text>
                               </View>
                             </View>
                           </View>
@@ -12913,7 +12914,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           gap between Sweat Score circle and Best Bets is filled
                           with something useful rather than empty marginBottom. */}
                       {(ss.narrative || ss.primaryPlay?.sub) && (
-                        <Text style={{color:'#b0c4d8',fontSize:13,lineHeight:20,marginBottom:12}}>
+                        <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,marginBottom:12}}>
                           {ss.narrative || ss.primaryPlay?.sub}
                         </Text>
                       )}
@@ -12926,17 +12927,17 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           games with no surfaced play at all. NBA contributions
                           still render via the legacy calcGameSweatScore path. */}
                       {(ss.primaryPlay || (ss.signals && ((ss.signals.contributions && ss.signals.contributions.length > 0) || (ss.signals.evidence && ss.signals.evidence.length > 0)))) && (
-                        <View style={{backgroundColor:'#151c24',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'#1f2d3d'}}>
-                          <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>
+                        <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:THEME.border}}>
+                          <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>
                             WHY THIS SCORE
                           </Text>
                           {/* Primary play — what the score actually backs */}
                           {ss.primaryPlay && (
                             <View style={{backgroundColor:tier.color+'15',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:tier.color+'44'}}>
                               <Text style={{color:tier.color,fontSize:9,fontWeight:'700',letterSpacing:0.5,marginBottom:4}}>MODEL'S PLAY</Text>
-                              <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:15}}>{ss.primaryPlay.label}</Text>
+                              <Text style={{color:THEME.text,fontWeight:'800',fontSize:15}}>{ss.primaryPlay.label}</Text>
                               {ss.primaryPlay.sub && (
-                                <Text style={{color:'#7a92a8',fontSize:11,marginTop:3}}>{ss.primaryPlay.sub}</Text>
+                                <Text style={{color:THEME.textDim,fontSize:11,marginTop:3}}>{ss.primaryPlay.sub}</Text>
                               )}
                             </View>
                           )}
@@ -12946,28 +12947,28 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               <Text style={{fontSize:16}}>{sig.emoji}</Text>
                               <View style={{flex:1}}>
                                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-                                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,flex:1}}>{sig.casual_label || sig.label}</Text>
+                                  <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,flex:1}}>{sig.casual_label || sig.label}</Text>
                                   <Text style={{color:tier.color,fontWeight:'800',fontSize:13,marginLeft:8}}>+{sig.points}</Text>
                                 </View>
                                 {sig.detail && (
-                                  <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{sig.detail}</Text>
+                                  <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{sig.detail}</Text>
                                 )}
                               </View>
                             </View>
                           ))}
                           {/* Evidence badges — supporting context, no point claim */}
                           {ss.signals.evidence && ss.signals.evidence.length > 0 && (
-                            <View style={{marginTop:6,paddingTop:10,borderTopWidth:1,borderTopColor:'#1f2d3d'}}>
-                              <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:8,letterSpacing:0.5}}>
+                            <View style={{marginTop:6,paddingTop:10,borderTopWidth:1,borderTopColor:THEME.border}}>
+                              <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:8,letterSpacing:0.5}}>
                                 SUPPORTING EVIDENCE
                               </Text>
                               {ss.signals.evidence.map((ev, i) => (
                                 <View key={`e-${i}`} style={{flexDirection:'row',alignItems:'flex-start',marginBottom: i < ss.signals.evidence.length - 1 ? 6 : 0, gap:10}}>
                                   <Text style={{fontSize:14}}>{ev.emoji}</Text>
                                   <View style={{flex:1}}>
-                                    <Text style={{color:'#b0c4d8',fontWeight:'600',fontSize:12}}>{ev.casual_label || ev.label}</Text>
+                                    <Text style={{color:THEME.textDim,fontWeight:'600',fontSize:12}}>{ev.casual_label || ev.label}</Text>
                                     {ev.detail && (
-                                      <Text style={{color:'#7a92a8',fontSize:10,marginTop:1}}>{ev.detail}</Text>
+                                      <Text style={{color:THEME.textDim,fontSize:10,marginTop:1}}>{ev.detail}</Text>
                                     )}
                                   </View>
                                 </View>
@@ -12982,8 +12983,8 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           extraction fix this gate prevents a future regression from
                           producing the same empty-section UX. */}
                       {(gamesSport==='UFC' || ss.spreadBet || ss.totalBet || ss.mlBet) && (
-                      <View style={{backgroundColor:'#151c24',borderRadius:12,padding:12,marginBottom:12}}>
-                        <Text style={{color:'#4a6070',fontSize:10,fontWeight:'700',marginBottom:8}}>
+                      <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:12,padding:12,marginBottom:12}}>
+                        <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',marginBottom:8}}>
                           {gamesSport==='UFC'
                             ? '🎯 BEST FIGHT MONEYLINES'
                             : (ss.spreadBet?.book===HRB && ss.totalBet?.book===HRB && ss.mlBet?.book===HRB
@@ -12996,16 +12997,16 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               look like nonsense -13.5 etc. to a normal user.
                               UFC only renders both fighters' moneylines below. */}
                           {gamesSport!=='UFC' && ss.spreadBet&&<TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:ss.spreadBet.pick,sport:gamesSport,type:'Spread',odds:String(ss.spreadBet.odds),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
-                            <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>SPREAD</Text>
+                            <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>SPREAD</Text>
                             <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13,marginTop:3}}>{ss.spreadBet.pick}</Text>
-                            <Text style={{color:'#7a92a8',fontSize:11}}>{ss.spreadBet.odds>0?'+':''}{ss.spreadBet.odds}</Text>
-                           <Text style={{color:ss.spreadBet.book===HRB?HRB_COLOR:'#4a6070',fontSize:9,fontWeight:'700',marginTop:2}}>{ss.spreadBet.book===HRB?'🎸 HRB':ss.spreadBet.book}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:11}}>{ss.spreadBet.odds>0?'+':''}{ss.spreadBet.odds}</Text>
+                           <Text style={{color:ss.spreadBet.book===HRB?HRB_COLOR:THEME.textMuted,fontSize:9,fontWeight:'700',marginTop:2}}>{ss.spreadBet.book===HRB?'🎸 HRB':ss.spreadBet.book}</Text>
                           </TouchableOpacity>}
                           {gamesSport!=='UFC' && ss.totalBet&&<TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:ss.totalBet.pick,sport:gamesSport,type:'Total (O/U)',odds:String(ss.totalBet.odds),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
-                            <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>TOTAL</Text>
+                            <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>TOTAL</Text>
                             <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13,marginTop:3}}>{ss.totalBet.pick}</Text>
-                            <Text style={{color:'#7a92a8',fontSize:11}}>{ss.totalBet.odds>0?'+':''}{ss.totalBet.odds}</Text>
-                          <Text style={{color:ss.totalBet.book===HRB?HRB_COLOR:'#4a6070',fontSize:9,fontWeight:'700',marginTop:2}}>{ss.totalBet.book===HRB?'🎸 HRB':ss.totalBet.book}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:11}}>{ss.totalBet.odds>0?'+':''}{ss.totalBet.odds}</Text>
+                          <Text style={{color:ss.totalBet.book===HRB?HRB_COLOR:THEME.textMuted,fontSize:9,fontWeight:'700',marginTop:2}}>{ss.totalBet.book===HRB?'🎸 HRB':ss.totalBet.book}</Text>
                           </TouchableOpacity>}
                           {/* UFC: render BOTH fighters' MLs side by side using
                               name-matched outcome lookup so price always matches
@@ -13033,23 +13034,23 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                             return (
                               <>
                                 {mlA && <TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:fighterA+' vs '+fighterB,pick:fighterA+' ML',sport:'UFC',type:'Moneyline',odds:String(mlA.price),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
-                                  <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>{fighterA.split(' ').pop().toUpperCase()}</Text>
+                                  <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>{fighterA.split(' ').pop().toUpperCase()}</Text>
                                   <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginTop:3}}>{mlA.price>0?'+':''}{mlA.price}</Text>
-                                  <Text style={{color:mlA.book===HRB?HRB_COLOR:'#4a6070',fontSize:9,fontWeight:'700',marginTop:2}}>{mlA.book===HRB?'🎸 HRB':mlA.book}</Text>
+                                  <Text style={{color:mlA.book===HRB?HRB_COLOR:THEME.textMuted,fontSize:9,fontWeight:'700',marginTop:2}}>{mlA.book===HRB?'🎸 HRB':mlA.book}</Text>
                                 </TouchableOpacity>}
                                 {mlB && <TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:fighterA+' vs '+fighterB,pick:fighterB+' ML',sport:'UFC',type:'Moneyline',odds:String(mlB.price),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
-                                  <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>{fighterB.split(' ').pop().toUpperCase()}</Text>
+                                  <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>{fighterB.split(' ').pop().toUpperCase()}</Text>
                                   <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginTop:3}}>{mlB.price>0?'+':''}{mlB.price}</Text>
-                                  <Text style={{color:mlB.book===HRB?HRB_COLOR:'#4a6070',fontSize:9,fontWeight:'700',marginTop:2}}>{mlB.book===HRB?'🎸 HRB':mlB.book}</Text>
+                                  <Text style={{color:mlB.book===HRB?HRB_COLOR:THEME.textMuted,fontSize:9,fontWeight:'700',marginTop:2}}>{mlB.book===HRB?'🎸 HRB':mlB.book}</Text>
                                 </TouchableOpacity>}
                               </>
                             );
                           })()}
                           {gamesSport!=='UFC' && ss.mlBet&&<TouchableOpacity style={{flex:1,backgroundColor:'rgba(255,184,0,0.1)',borderRadius:10,padding:8,alignItems:'center',borderWidth:1,borderColor:'rgba(255,184,0,0.3)'}} onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:ss.mlBet.pick,sport:gamesSport,type:'Moneyline',odds:String(ss.mlBet.odds),units:'',book:HRB,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}>
-                            <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>ML</Text>
+                            <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>ML</Text>
                             <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13,marginTop:3}}>{ss.mlBet.pick}</Text>
-                            <Text style={{color:'#7a92a8',fontSize:11}}>{ss.mlBet.odds>0?'+':''}{ss.mlBet.odds}</Text>
-                           <Text style={{color:ss.mlBet.book===HRB?HRB_COLOR:'#4a6070',fontSize:9,fontWeight:'700',marginTop:2}}>{ss.mlBet.book===HRB?'🎸 HRB':ss.mlBet.book}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:11}}>{ss.mlBet.odds>0?'+':''}{ss.mlBet.odds}</Text>
+                           <Text style={{color:ss.mlBet.book===HRB?HRB_COLOR:THEME.textMuted,fontSize:9,fontWeight:'700',marginTop:2}}>{ss.mlBet.book===HRB?'🎸 HRB':ss.mlBet.book}</Text>
                           </TouchableOpacity>}
                         </View>
                       </View>
@@ -13086,7 +13087,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 {gamesSport === 'MLB' && (
   <View style={{backgroundColor:'rgba(255,184,0,0.06)',borderRadius:12,padding:12,marginBottom:12,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
     <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11,marginBottom:4}}>⚾ MLB DATA NOTE</Text>
-    <Text style={{color:'#7a92a8',fontSize:11,lineHeight:17}}>Jerry analyzes each game through The Sweat Locker's proprietary MLB pipeline — pitcher Statcast metrics (xERA, K%, whiff rate, ground ball rate), platoon-adjusted wRC+ vs opposing handedness, K rate gap vs opponent lineup, bullpen ERA + recent workload, projected total + spread models, NRFI tier scoring, signal confluence detection, park run factors, weather (temp, wind direction), umpire K rate + over tendencies, confirmed lineups + injury impact, and L3 starter form. All updated daily.</Text>
+    <Text style={{color:THEME.textDim,fontSize:11,lineHeight:17}}>Jerry analyzes each game through The Sweat Locker's proprietary MLB pipeline — pitcher Statcast metrics (xERA, K%, whiff rate, ground ball rate), platoon-adjusted wRC+ vs opposing handedness, K rate gap vs opponent lineup, bullpen ERA + recent workload, projected total + spread models, NRFI tier scoring, signal confluence detection, park run factors, weather (temp, wind direction), umpire K rate + over tendencies, confirmed lineups + injury impact, and L3 starter form. All updated daily.</Text>
   </View>
 )}
 {renderMatchupView(selectedGame, gamesSport)}
@@ -13101,8 +13102,8 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         <View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:8,paddingVertical:3}}><Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'700'}}>YOUR BOOK</Text></View>
                       </View>
                       <View style={{flexDirection:'row',gap:8,marginBottom:10}}>
-                        {gamesSport!=='UFC' && hrbLine.spread&&hrbLine.spread[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.spread[0].name.split(' ').pop()} {hrbLine.spread[0].point>0?'+':''}{hrbLine.spread[0].point}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{hrbLine.spread[0].price>0?'+':''}{hrbLine.spread[0].price}</Text></View>}
-                        {gamesSport!=='UFC' && hrbLine.total&&hrbLine.total[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>O/U {hrbLine.total[0].point}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{hrbLine.total[0].price>0?'+':''}{hrbLine.total[0].price}</Text></View>}
+                        {gamesSport!=='UFC' && hrbLine.spread&&hrbLine.spread[0]&&<View style={{flex:1,backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.spread[0].name.split(' ').pop()} {hrbLine.spread[0].point>0?'+':''}{hrbLine.spread[0].point}</Text><Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{hrbLine.spread[0].price>0?'+':''}{hrbLine.spread[0].price}</Text></View>}
+                        {gamesSport!=='UFC' && hrbLine.total&&hrbLine.total[0]&&<View style={{flex:1,backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>O/U {hrbLine.total[0].point}</Text><Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{hrbLine.total[0].price>0?'+':''}{hrbLine.total[0].price}</Text></View>}
                         {/* UFC: render BOTH fighter MLs from HRB book using
                             name-match so price stays attached to the right
                             fighter regardless of outcomes[] order. */}
@@ -13113,25 +13114,25 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           const mlB = hrbLine.ml.find(o => o.name === fighterB);
                           return (
                             <>
-                              {mlA && <View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>{fighterA.split(' ').pop().toUpperCase()}</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{mlA.price>0?'+':''}{mlA.price}</Text></View>}
-                              {mlB && <View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>{fighterB.split(' ').pop().toUpperCase()}</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{mlB.price>0?'+':''}{mlB.price}</Text></View>}
+                              {mlA && <View style={{flex:1,backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>{fighterA.split(' ').pop().toUpperCase()}</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{mlA.price>0?'+':''}{mlA.price}</Text></View>}
+                              {mlB && <View style={{flex:1,backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>{fighterB.split(' ').pop().toUpperCase()}</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{mlB.price>0?'+':''}{mlB.price}</Text></View>}
                             </>
                           );
                         })()}
-                        {gamesSport!=='UFC' && hrbLine.ml&&hrbLine.ml[0]&&<View style={{flex:1,backgroundColor:'#151c24',borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:'#4a6070',fontSize:10,fontWeight:'700'}}>ML</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.ml[0].price>0?'+':''}{hrbLine.ml[0].price}</Text><Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{selectedGame.away_team.split(' ').pop()}</Text></View>}
+                        {gamesSport!=='UFC' && hrbLine.ml&&hrbLine.ml[0]&&<View style={{flex:1,backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>ML</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.ml[0].price>0?'+':''}{hrbLine.ml[0].price}</Text><Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{selectedGame.away_team.split(' ').pop()}</Text></View>}
                       </View>
                       {hrbEV&&hrbEV.length>0&&(
                         <View>
                           {hrbEV.filter(e=>e.isPositive).slice(0,2).map((e,i)=>(
                             <View key={i} style={{flexDirection:'row',alignItems:'center',gap:8,backgroundColor:'rgba(0,229,160,0.07)',borderRadius:8,padding:8,marginBottom:4}}>
                               <Text style={{color:'#00e5a0',fontSize:12}}>✅</Text>
-                              <Text style={{color:'#e8f0f8',fontSize:12,flex:1}}>{e.pick} — <Text style={{color:'#00e5a0',fontWeight:'700'}}>+{e.ev.toFixed(1)}% EV</Text> on Hard Rock</Text>
+                              <Text style={{color:THEME.text,fontSize:12,flex:1}}>{e.pick} — <Text style={{color:'#00e5a0',fontWeight:'700'}}>+{e.ev.toFixed(1)}% EV</Text> on Hard Rock</Text>
                             </View>
                           ))}
                           {hrbEV.filter(e=>!e.isPositive).slice(0,1).map((e,i)=>(
                             <View key={i} style={{flexDirection:'row',alignItems:'center',gap:8,backgroundColor:'rgba(255,77,109,0.07)',borderRadius:8,padding:8,marginBottom:4}}>
                               <Text style={{color:'#ff4d6d',fontSize:12}}>⚠️</Text>
-                              <Text style={{color:'#7a92a8',fontSize:12,flex:1}}>{e.pick} — <Text style={{color:'#ff4d6d',fontWeight:'700'}}>{e.ev.toFixed(1)}% EV</Text> — shop other books</Text>
+                              <Text style={{color:THEME.textDim,fontSize:12,flex:1}}>{e.pick} — <Text style={{color:'#ff4d6d',fontWeight:'700'}}>{e.ev.toFixed(1)}% EV</Text> — shop other books</Text>
                             </View>
                           ))}
                         </View>
@@ -13147,7 +13148,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
   if(altLinesLoading[key]) return(
     <View style={{alignItems:'center',paddingVertical:12}}>
       <ActivityIndicator size="small" color={HRB_COLOR}/>
-      <Text style={{color:'#4a6070',fontSize:11,marginTop:4}}>Loading alt lines...</Text>
+      <Text style={{color:THEME.textMuted,fontSize:11,marginTop:4}}>Loading alt lines...</Text>
     </View>
   );
   if(!alt || (!alt.altSpreads.length && !alt.altTotals.length)) return null;
@@ -13156,7 +13157,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       <Text style={styles.sectionLabel}>ALT LINES</Text>
       {alt.altSpreads.length > 0 && (
         <View style={[styles.card,{marginBottom:10}]}>
-          <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8}}>ALTERNATE SPREADS</Text>
+          <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',marginBottom:8}}>ALTERNATE SPREADS</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View style={{flexDirection:'row',gap:8}}>
              {alt.altSpreads.filter(s => s.name === selectedGame.away_team || s.name === selectedGame.home_team).reduce((acc, s) => {
@@ -13167,10 +13168,10 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
               }, []).filter(s => Math.abs(s.odds) <= 350).slice(0,10).map((s,i) => (
                 <TouchableOpacity key={i} 
                   onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:s.name+' '+( s.point>0?'+':'')+s.point,sport:gamesSport,type:'Spread',odds:String(s.odds),units:'',book:s.book,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}
-                  style={{backgroundColor:s.isHRB?'rgba(255,184,0,0.1)':'#151c24',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:s.isHRB?HRB_COLOR:'#1f2d3d',minWidth:80}}>
-                  <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>{s.name.split(' ').pop()}</Text>
-                  <Text style={{color:s.isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'800',fontSize:14,marginTop:2}}>{s.point>0?'+':''}{s.point}</Text>
-                  <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{s.odds>0?'+':''}{s.odds}</Text>
+                  style={{backgroundColor:s.isHRB?'rgba(255,184,0,0.1)':THEME.surfaceAlt,borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:s.isHRB?HRB_COLOR:THEME.border,minWidth:80}}>
+                  <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>{s.name.split(' ').pop()}</Text>
+                  <Text style={{color:s.isHRB?HRB_COLOR:THEME.text,fontWeight:'800',fontSize:14,marginTop:2}}>{s.point>0?'+':''}{s.point}</Text>
+                  <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{s.odds>0?'+':''}{s.odds}</Text>
                   {s.isHRB&&<Text style={{color:HRB_COLOR,fontSize:9,marginTop:2}}>🎸</Text>}
                 </TouchableOpacity>
               ))}
@@ -13180,7 +13181,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       )}
       {alt.altTotals.length > 0 && (
         <View style={[styles.card,{marginBottom:10}]}>
-          <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8}}>ALTERNATE TOTALS</Text>
+          <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',marginBottom:8}}>ALTERNATE TOTALS</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View style={{flexDirection:'row',gap:8}}>
               {alt.altTotals.filter(t => t.name === 'Over').reduce((acc, t) => {
@@ -13191,9 +13192,9 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
               }, []).filter(t => Math.abs(t.odds) <= 350).slice(0,10).map((t,i) => (
                 <TouchableOpacity key={i}
                   onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:'Over '+t.point,sport:gamesSport,type:'Total (O/U)',odds:String(t.odds),units:'',book:t.book,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}
-                  style={{backgroundColor:t.isHRB?'rgba(255,184,0,0.1)':'#151c24',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:t.isHRB?HRB_COLOR:'#1f2d3d',minWidth:70}}>
-                  <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>O {t.point}</Text>
-                  <Text style={{color:t.isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'800',fontSize:14,marginTop:2}}>{t.odds>0?'+':''}{t.odds}</Text>
+                  style={{backgroundColor:t.isHRB?'rgba(255,184,0,0.1)':THEME.surfaceAlt,borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:t.isHRB?HRB_COLOR:THEME.border,minWidth:70}}>
+                  <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>O {t.point}</Text>
+                  <Text style={{color:t.isHRB?HRB_COLOR:THEME.text,fontWeight:'800',fontSize:14,marginTop:2}}>{t.odds>0?'+':''}{t.odds}</Text>
                   {t.isHRB&&<Text style={{color:HRB_COLOR,fontSize:9,marginTop:2}}>🎸</Text>}
                 </TouchableOpacity>
               ))}
@@ -13203,7 +13204,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
       )}
       {alt.altTotals.filter(t => t.isF5).length > 0 && gamesSport === 'MLB' && (
   <View style={[styles.card,{marginBottom:10}]}>
-    <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700',marginBottom:8}}>FIRST 5 INNINGS</Text>
+    <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',marginBottom:8}}>FIRST 5 INNINGS</Text>
     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
       <View style={{flexDirection:'row',gap:8}}>
         {alt.altTotals.filter(t => t.isF5).reduce((acc, t) => {
@@ -13214,10 +13215,10 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
         }, []).filter(t => Math.abs(t.odds) <= 350).slice(0,8).map((t,i) => (
           <TouchableOpacity key={i}
             onPress={()=>{setForm({matchup:selectedGame.away_team+' vs '+selectedGame.home_team,pick:'F5 '+t.name+' '+t.point,sport:gamesSport,type:'Total (O/U)',odds:String(t.odds),units:'',book:t.book,result:'Pending'});setGameDetailModal(false);setModalVisible(true);}}
-            style={{backgroundColor:t.isHRB?'rgba(255,184,0,0.1)':'#151c24',borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:t.isHRB?HRB_COLOR:'#1f2d3d',minWidth:80}}>
-            <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>F5 {t.name}</Text>
-            <Text style={{color:t.isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'800',fontSize:14,marginTop:2}}>{t.point}</Text>
-            <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>{t.odds>0?'+':''}{t.odds}</Text>
+            style={{backgroundColor:t.isHRB?'rgba(255,184,0,0.1)':THEME.surfaceAlt,borderRadius:10,padding:10,alignItems:'center',borderWidth:1,borderColor:t.isHRB?HRB_COLOR:THEME.border,minWidth:80}}>
+            <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>F5 {t.name}</Text>
+            <Text style={{color:t.isHRB?HRB_COLOR:THEME.text,fontWeight:'800',fontSize:14,marginTop:2}}>{t.point}</Text>
+            <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{t.odds>0?'+':''}{t.odds}</Text>
             {t.isHRB&&<Text style={{color:HRB_COLOR,fontSize:9,marginTop:2}}>🎸</Text>}
           </TouchableOpacity>
         ))}
@@ -13243,7 +13244,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
   //console.log('NRFI check - sport:', gamesSport, 'mlbCtx:', mlbCtx ? 'FOUND' : 'NOT FOUND', 'home:', selectedGame?.home_team);
   if(!mlbCtx) return(
     <View style={[styles.card,{marginBottom:10}]}>
-      <Text style={{color:'#7a92a8',fontSize:11}}>NRFI — awaiting game context data</Text>
+      <Text style={{color:THEME.textDim,fontSize:11}}>NRFI — awaiting game context data</Text>
     </View>
   );
   // Use pipeline NRFI score if available, fall back to client-side calc
@@ -13292,22 +13293,22 @@ if(pipelineNRFI !== null && pipelineNRFI !== undefined) {
 // 90-94: 73.3% (PRIME) | 95+: 47% (volatile) | 70-79: ~60% (mild lean)
 // 80-89: 42.5% (NEUTRAL — no edge) | <=40: 77.8% YRFI hit
 const nrfiLean  = nrfiScore >= 95 ? 'NRFI (volatile)' : nrfiScore >= 90 ? 'PRIME NRFI' : nrfiScore >= 80 && nrfiScore <= 89 ? 'NEUTRAL' : nrfiScore >= 70 ? 'NRFI lean' : nrfiScore <= 35 ? 'YRFI' : nrfiScore <= 40 ? 'YRFI lean' : 'NEUTRAL';
-const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 95 ? '#ffb800' : nrfiScore >= 80 && nrfiScore <= 89 ? '#7a92a8' : nrfiScore >= 70 ? '#4a9eff' : nrfiScore <= 40 ? '#ff4d6d' : '#7a92a8';
+const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 95 ? THEME.hrb : nrfiScore >= 80 && nrfiScore <= 89 ? THEME.textDim : nrfiScore >= 70 ? THEME.sharp : nrfiScore <= 40 ? '#ff4d6d' : THEME.textDim;
   return(
     <View style={[styles.card,{marginBottom:10}]}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-        <Text style={{color:'#7a92a8',fontSize:11,fontWeight:'700'}}>NRFI / YRFI SIGNAL</Text>
+        <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700'}}>NRFI / YRFI SIGNAL</Text>
         <View style={{backgroundColor:`${nrfiColor}20`,borderRadius:6,paddingHorizontal:8,paddingVertical:3}}>
           <Text style={{color:nrfiColor,fontSize:11,fontWeight:'800'}}>{nrfiLean}</Text>
         </View>
       </View>
       <View style={{flexDirection:'row',gap:8}}>
-        <View style={{flex:1,backgroundColor:'#151c24',borderRadius:8,padding:8,alignItems:'center'}}>
-          <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700'}}>NRFI SCORE</Text>
+        <View style={{flex:1,backgroundColor:THEME.surfaceAlt,borderRadius:8,padding:8,alignItems:'center'}}>
+          <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>NRFI SCORE</Text>
           <Text style={{color:nrfiColor,fontWeight:'800',fontSize:20,marginTop:2}}>{Math.min(99,Math.max(1,nrfiScore))}</Text>
         </View>
-        <View style={{flex:2,backgroundColor:'#151c24',borderRadius:8,padding:8}}>
-          <Text style={{color:'#4a6070',fontSize:9,fontWeight:'700',marginBottom:4}}>KEY SIGNALS</Text>
+        <View style={{flex:2,backgroundColor:THEME.surfaceAlt,borderRadius:8,padding:8}}>
+          <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:4}}>KEY SIGNALS</Text>
           {(()=>{
             const homeXERA = mlbCtx.home_sp_xera && parseFloat(mlbCtx.home_sp_xera) <= 6.5
               ? parseFloat(mlbCtx.home_sp_xera).toFixed(2)
@@ -13316,13 +13317,13 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
               ? parseFloat(mlbCtx.away_sp_xera).toFixed(2)
               : null;
             return(<>
-              {(mlbCtx.home_pitcher || selectedGame?.home_pitcher) && <Text style={{color:'#e8f0f8',fontSize:10}}>🏠 {mlbCtx.home_pitcher || selectedGame?.home_pitcher} xERA: {homeXERA || 'N/A'}</Text>}
-              {(mlbCtx.away_pitcher || selectedGame?.away_pitcher) && <Text style={{color:'#e8f0f8',fontSize:10}}>✈️ {mlbCtx.away_pitcher || selectedGame?.away_pitcher} xERA: {awayXERA || 'N/A'}</Text>}
+              {(mlbCtx.home_pitcher || selectedGame?.home_pitcher) && <Text style={{color:THEME.text,fontSize:10}}>🏠 {mlbCtx.home_pitcher || selectedGame?.home_pitcher} xERA: {homeXERA || 'N/A'}</Text>}
+              {(mlbCtx.away_pitcher || selectedGame?.away_pitcher) && <Text style={{color:THEME.text,fontSize:10}}>✈️ {mlbCtx.away_pitcher || selectedGame?.away_pitcher} xERA: {awayXERA || 'N/A'}</Text>}
             </>);
           })()}
-          {mlbCtx.umpire_note ? <Text style={{color:'#e8f0f8',fontSize:10}}>{mlbCtx.umpire_note.includes('K-friendly') ? '✅ K-friendly ump' : mlbCtx.umpire_note.includes('hitter') ? '⚠️ Hitter-friendly ump' : `Ump: ${mlbCtx.umpire || 'TBD'}`}</Text> : null}
-          <Text style={{color:'#e8f0f8',fontSize:10}}>Park: {mlbCtx.park_run_factor} {mlbCtx.park_run_factor >= 110 ? '⚠️ hitter' : mlbCtx.park_run_factor <= 93 ? '✅ pitcher' : '—'} | {mlbCtx.temperature}°F</Text>
-          {pipelineNRFI !== null && pipelineNRFI !== undefined && <Text style={{color:'#4a6070',fontSize:9,marginTop:2}}>Pipeline model ✓</Text>}
+          {mlbCtx.umpire_note ? <Text style={{color:THEME.text,fontSize:10}}>{mlbCtx.umpire_note.includes('K-friendly') ? '✅ K-friendly ump' : mlbCtx.umpire_note.includes('hitter') ? '⚠️ Hitter-friendly ump' : `Ump: ${mlbCtx.umpire || 'TBD'}`}</Text> : null}
+          <Text style={{color:THEME.text,fontSize:10}}>Park: {mlbCtx.park_run_factor} {mlbCtx.park_run_factor >= 110 ? '⚠️ hitter' : mlbCtx.park_run_factor <= 93 ? '✅ pitcher' : '—'} | {mlbCtx.temperature}°F</Text>
+          {pipelineNRFI !== null && pipelineNRFI !== undefined && <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2}}>Pipeline model ✓</Text>}
         </View>
       </View>
     </View>
@@ -13355,29 +13356,29 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                   const bookName=BOOKMAKER_MAP[bm.key]||bm.key;
                   const isHRB=bookName===HRB;
                   return(
-                    <View key={i} style={[styles.card,{marginBottom:8,padding:12,borderColor:isHRB?'rgba(255,184,0,0.4)':'#1f2d3d',borderWidth:isHRB?1.5:1}]}>
+                    <View key={i} style={[styles.card,{marginBottom:8,padding:12,borderColor:isHRB?'rgba(255,184,0,0.4)':THEME.border,borderWidth:isHRB?1.5:1}]}>
                       <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:8}}>
                         <Text style={{color:isHRB?HRB_COLOR:'#00e5a0',fontWeight:'700',fontSize:12}}>{isHRB?'🎸 HARD ROCK BET':bookName}</Text>
                         {isHRB&&<View style={{backgroundColor:'rgba(255,184,0,0.15)',borderRadius:6,paddingHorizontal:6,paddingVertical:2}}><Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'800'}}>YOUR BOOK</Text></View>}
                       </View>
                       {spreadMkt&&spreadMkt.outcomes&&gamesSport!=='UFC'&&spreadMkt.outcomes.map((outcome,j)=>(
                         <TouchableOpacity key={j} style={styles.parlayLineRow} onPress={()=>addToParlay(selectedGame,outcome.name+' '+(outcome.point>0?'+':'')+outcome.point,outcome.price)}>
-                          <View style={{flex:1}}><Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'600'}}>{outcome.name} {outcome.point>0?'+':''}{outcome.point}</Text><Text style={{color:'#7a92a8',fontSize:11}}>Spread</Text></View>
-                          <Text style={{color:isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'700',marginRight:12}}>{outcome.price>0?'+':''}{outcome.price}</Text>
+                          <View style={{flex:1}}><Text style={{color:THEME.text,fontSize:13,fontWeight:'600'}}>{outcome.name} {outcome.point>0?'+':''}{outcome.point}</Text><Text style={{color:THEME.textDim,fontSize:11}}>Spread</Text></View>
+                          <Text style={{color:isHRB?HRB_COLOR:THEME.text,fontWeight:'700',marginRight:12}}>{outcome.price>0?'+':''}{outcome.price}</Text>
                           <View style={[styles.addParlayBtn,isHRB&&{borderColor:HRB_COLOR,backgroundColor:'rgba(255,184,0,0.12)'}]}><Text style={[styles.addParlayBtnText,isHRB&&{color:HRB_COLOR}]}>+ Parlay</Text></View>
                         </TouchableOpacity>
                       ))}
                       {totalMkt&&totalMkt.outcomes&&totalMkt.outcomes.map((outcome,j)=>(
                         <TouchableOpacity key={'t'+j} style={styles.parlayLineRow} onPress={()=>addToParlay(selectedGame,outcome.name+' '+(totalMkt.outcomes[0]&&totalMkt.outcomes[0].point),outcome.price)}>
-                          <View style={{flex:1}}><Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'600'}}>{outcome.name} {totalMkt.outcomes[0]&&totalMkt.outcomes[0].point}</Text><Text style={{color:'#7a92a8',fontSize:11}}>Total</Text></View>
-                          <Text style={{color:isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'700',marginRight:12}}>{outcome.price>0?'+':''}{outcome.price}</Text>
+                          <View style={{flex:1}}><Text style={{color:THEME.text,fontSize:13,fontWeight:'600'}}>{outcome.name} {totalMkt.outcomes[0]&&totalMkt.outcomes[0].point}</Text><Text style={{color:THEME.textDim,fontSize:11}}>Total</Text></View>
+                          <Text style={{color:isHRB?HRB_COLOR:THEME.text,fontWeight:'700',marginRight:12}}>{outcome.price>0?'+':''}{outcome.price}</Text>
                           <View style={[styles.addParlayBtn,isHRB&&{borderColor:HRB_COLOR,backgroundColor:'rgba(255,184,0,0.12)'}]}><Text style={[styles.addParlayBtnText,isHRB&&{color:HRB_COLOR}]}>+ Parlay</Text></View>
                         </TouchableOpacity>
                       ))}
                       {mlMkt&&mlMkt.outcomes&&mlMkt.outcomes.map((outcome,j)=>(
                         <TouchableOpacity key={'ml'+j} style={[styles.parlayLineRow,{borderBottomWidth:0}]} onPress={()=>addToParlay(selectedGame,outcome.name+' ML',outcome.price)}>
-                          <View style={{flex:1}}><Text style={{color:'#e8f0f8',fontSize:13,fontWeight:'600'}}>{outcome.name}</Text><Text style={{color:'#7a92a8',fontSize:11}}>Moneyline</Text></View>
-                          <Text style={{color:isHRB?HRB_COLOR:'#e8f0f8',fontWeight:'700',marginRight:12}}>{outcome.price>0?'+':''}{outcome.price}</Text>
+                          <View style={{flex:1}}><Text style={{color:THEME.text,fontSize:13,fontWeight:'600'}}>{outcome.name}</Text><Text style={{color:THEME.textDim,fontSize:11}}>Moneyline</Text></View>
+                          <Text style={{color:isHRB?HRB_COLOR:THEME.text,fontWeight:'700',marginRight:12}}>{outcome.price>0?'+':''}{outcome.price}</Text>
                           <View style={[styles.addParlayBtn,isHRB&&{borderColor:HRB_COLOR,backgroundColor:'rgba(255,184,0,0.12)'}]}><Text style={[styles.addParlayBtnText,isHRB&&{color:HRB_COLOR}]}>+ Parlay</Text></View>
                         </TouchableOpacity>
                       ))}
@@ -13391,8 +13392,8 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                 )}
                 <View style={{height:20}}/>
               </ScrollView>
-              <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>setGameDetailModal(false)}>
-                <Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Close</Text>
+              <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:THEME.border,marginTop:8}]} onPress={()=>setGameDetailModal(false)}>
+                <Text style={[styles.btnPrimaryText,{color:THEME.textDim}]}>Close</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -13404,18 +13405,18 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
           <View style={[styles.modalSheet]}>
             <View style={styles.modalHandle}/>
             <Text style={styles.modalTitle}>Set Unit Size</Text>
-            <Text style={{color:'#7a92a8',fontSize:14,marginBottom:20,marginTop:-8}}>How much is 1 unit worth in dollars?</Text>
-            <View style={{flexDirection:'row',alignItems:'center',backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',borderRadius:12,paddingHorizontal:14,paddingVertical:10,marginBottom:16}}>
+            <Text style={{color:THEME.textDim,fontSize:14,marginBottom:20,marginTop:-8}}>How much is 1 unit worth in dollars?</Text>
+            <View style={{flexDirection:'row',alignItems:'center',backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:12,paddingHorizontal:14,paddingVertical:10,marginBottom:16}}>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:18,marginRight:8}}>$</Text>
-              <TextInput style={{flex:1,color:'#e8f0f8',fontSize:20,fontWeight:'700'}} placeholder="25" placeholderTextColor="#4a6070" value={tempUnitSize} onChangeText={setTempUnitSize} keyboardType="numeric" returnKeyType="done" autoFocus/>
-              <Text style={{color:'#7a92a8',fontSize:13}}>per unit</Text>
+              <TextInput style={{flex:1,color:THEME.text,fontSize:20,fontWeight:'700'}} placeholder="25" placeholderTextColor="#4a6070" value={tempUnitSize} onChangeText={setTempUnitSize} keyboardType="numeric" returnKeyType="done" autoFocus/>
+              <Text style={{color:THEME.textDim,fontSize:13}}>per unit</Text>
             </View>
             <View style={{flexDirection:'row',gap:8}}>
               {['10','25','50','100'].map(v=>(<TouchableOpacity key={v} style={[styles.chipBtn,tempUnitSize===v&&styles.chipBtnActive,{flex:1,alignItems:'center'}]} onPress={()=>setTempUnitSize(v)}><Text style={[styles.chipTxt,tempUnitSize===v&&styles.chipTxtActive]}>${v}</Text></TouchableOpacity>))}
             </View>
             <View style={{height:16}}/>
             <TouchableOpacity style={styles.btnPrimary} onPress={saveUnitSize}><Text style={styles.btnPrimaryText}>Save Unit Size ✓</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>setUnitSizeModal(false)}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:THEME.border,marginTop:8}]} onPress={()=>setUnitSizeModal(false)}><Text style={[styles.btnPrimaryText,{color:THEME.textDim}]}>Cancel</Text></TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -13423,74 +13424,74 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
 {/* SETTINGS MODAL */}
       <Modal visible={settingsModal} transparent animationType="slide" onRequestClose={()=>setSettingsModal(false)}>
         <View style={{flex:1,backgroundColor:'rgba(0,0,0,0.85)',justifyContent:'flex-end'}}>
-          <View style={{backgroundColor:'#0d1821',borderTopLeftRadius:24,borderTopRightRadius:24,padding:20,maxHeight:'90%'}}>
+          <View style={{backgroundColor:THEME.bgModal,borderTopLeftRadius:24,borderTopRightRadius:24,padding:20,maxHeight:'90%'}}>
             <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
-              <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:20}}>⚙️ Settings</Text>
+              <Text style={{color:THEME.text,fontWeight:'800',fontSize:20}}>⚙️ Settings</Text>
               <TouchableOpacity onPress={()=>setSettingsModal(false)} style={{padding:8}}>
-                <Text style={{color:'#7a92a8',fontSize:18}}>✕</Text>
+                <Text style={{color:THEME.textDim,fontSize:18}}>✕</Text>
               </TouchableOpacity>
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
               {/* Unit Size */}
               <View style={[styles.card,{marginBottom:12}]}>
-                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14,marginBottom:12}}>💰 Unit Size</Text>
+                <Text style={{color:THEME.text,fontWeight:'700',fontSize:14,marginBottom:12}}>💰 Unit Size</Text>
                 <View style={{flexDirection:'row',gap:8,flexWrap:'wrap'}}>
                   {[10,25,50,100,250].map(u=>(
-                    <TouchableOpacity key={u} style={{paddingHorizontal:16,paddingVertical:8,borderRadius:10,borderWidth:1,borderColor:unitSize===u?HRB_COLOR:'#1f2d3d',backgroundColor:unitSize===u?'rgba(255,184,0,0.1)':'#151c24'}} onPress={()=>setUnitSize(u)}>
-                      <Text style={{color:unitSize===u?HRB_COLOR:'#7a92a8',fontWeight:'700'}}>${u}</Text>
+                    <TouchableOpacity key={u} style={{paddingHorizontal:16,paddingVertical:8,borderRadius:10,borderWidth:1,borderColor:unitSize===u?HRB_COLOR:THEME.border,backgroundColor:unitSize===u?'rgba(255,184,0,0.1)':THEME.surfaceAlt}} onPress={()=>setUnitSize(u)}>
+                      <Text style={{color:unitSize===u?HRB_COLOR:THEME.textDim,fontWeight:'700'}}>${u}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>
               </View>
               {/* How It Works */}
               <View style={[styles.card,{marginBottom:12}]}>
-                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14,marginBottom:12}}>📖 How It Works</Text>
+                <Text style={{color:THEME.text,fontWeight:'700',fontSize:14,marginBottom:12}}>📖 How It Works</Text>
                 <View style={{gap:12}}>
                   <View style={{borderLeftWidth:3,borderLeftColor:HRB_COLOR,paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🔥 Sweat Score</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Every game graded 0-100. Built on pitcher xERA, K rate gap, L3 form, platoon-adjusted wRC+, team defense (OAA), catcher framing, expected wOBA, park, weather, and umpire tendencies. 68+ is Prime Sweat — multiple strong signals aligning. Updates by 11am and 4pm ET.</Text>
+                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>🔥 Sweat Score</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Every game graded 0-100. Built on pitcher xERA, K rate gap, L3 form, platoon-adjusted wRC+, team defense (OAA), catcher framing, expected wOBA, park, weather, and umpire tendencies. 68+ is Prime Sweat — multiple strong signals aligning. Updates by 11am and 4pm ET.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#00e5a0',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>⚾ NRFI Model</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>No Run First Inning — tier-based leans. 90-94 = PRIME (highest conviction). 70-79 = Mild lean. 80-89 = neutral (no lean). 95+ = flagged volatile but not leaned. Built on pitcher xERA, K gap, first-inning ERA, rest, weather, park, wRC+.</Text>
+                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>⚾ NRFI Model</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>No Run First Inning — tier-based leans. 90-94 = PRIME (highest conviction). 70-79 = Mild lean. 80-89 = neutral (no lean). 95+ = flagged volatile but not leaned. Built on pitcher xERA, K gap, first-inning ERA, rest, weather, park, wRC+.</Text>
                   </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:'#0099ff',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🧠 Prop Jerry</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Top 15 prop edges from our pipeline daily. Not an EV scanner — picks come from proprietary matchup signals (K rate gaps, platoon-adjusted offense, L3 pitcher form, catcher framing, bullpen fatigue). Conviction-tiered: PRIME 80+, STRONG 65-79, LEAN 50-64. MLB first; NBA/UFC expand post-launch.</Text>
+                  <View style={{borderLeftWidth:3,borderLeftColor:THEME.sharp,paddingLeft:10}}>
+                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>🧠 Prop Jerry</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Top 15 prop edges from our pipeline daily. Not an EV scanner — picks come from proprietary matchup signals (K rate gaps, platoon-adjusted offense, L3 pitcher form, catcher framing, bullpen fatigue). Conviction-tiered: PRIME 80+, STRONG 65-79, LEAN 50-64. MLB first; NBA/UFC expand post-launch.</Text>
                   </View>
                   <View style={{borderLeftWidth:3,borderLeftColor:'#ff4d6d',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🎲 Daily Degen</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>3-5 leg parlay built once per day from the slate's highest-conviction pipeline picks (top ML leans, PRIME NRFIs, top props). Max 1 leg per game — no correlated legs. Generated server-side — every user sees the same pick.</Text>
+                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>🎲 Daily Degen</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>3-5 leg parlay built once per day from the slate's highest-conviction pipeline picks (top ML leans, PRIME NRFIs, top props). Max 1 leg per game — no correlated legs. Generated server-side — every user sees the same pick.</Text>
                   </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:'#ff8c00',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>🐕 Dawg of the Day</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>One underdog ML per day where our model sharply disagrees with the market. Requires 2+ runs of "better than market" edge on the dog. Comes with Jerry's take on why the dog is barking.</Text>
+                  <View style={{borderLeftWidth:3,borderLeftColor:THEME.accent,paddingLeft:10}}>
+                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>🐕 Dawg of the Day</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>One underdog ML per day where our model sharply disagrees with the market. Requires 2+ runs of "better than market" edge on the dog. Comes with Jerry's take on why the dog is barking.</Text>
                   </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:'#9b59b6',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>📋 Jerry's Track Record</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>Verified model performance: NRFI lean-tier record, Prop Jerry A-grades, Play of the Day history, Dawg of the Day record. Results auto-resolve via MLB Stats API and BDL box scores.</Text>
+                  <View style={{borderLeftWidth:3,borderLeftColor:THEME.sharp,paddingLeft:10}}>
+                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>📋 Jerry's Track Record</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Verified model performance: NRFI lean-tier record, Prop Jerry A-grades, Play of the Day history, Dawg of the Day record. Results auto-resolve via MLB Stats API and BDL box scores.</Text>
                   </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:'#4a6070',paddingLeft:10}}>
-                    <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:4}}>⏰ Pipeline Schedule</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18}}>By 11am ET — Pitcher stats, team splits, Savant enrichment, game context, NRFI scores, POTD, Dawg of the Day{'\n'}By 4pm ET — Confirmed lineups, umpire assignments, final weather, Prop Jerry, Daily Degen, HR Watch{'\n'}After 4pm — All pipeline data locked in. Best time for full analysis.</Text>
+                  <View style={{borderLeftWidth:3,borderLeftColor:THEME.textMuted,paddingLeft:10}}>
+                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>⏰ Pipeline Schedule</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>By 11am ET — Pitcher stats, team splits, Savant enrichment, game context, NRFI scores, POTD, Dawg of the Day{'\n'}By 4pm ET — Confirmed lineups, umpire assignments, final weather, Prop Jerry, Daily Degen, HR Watch{'\n'}After 4pm — All pipeline data locked in. Best time for full analysis.</Text>
                   </View>
                 </View>
               </View>
               {/* Responsible Gambling */}
               <View style={[styles.card,{marginBottom:12}]}>
-                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14,marginBottom:12}}>🆘 Responsible Gambling</Text>
-                <Text style={{color:'#7a92a8',fontSize:12,lineHeight:18,marginBottom:12}}>If you or someone you know has a gambling problem, free help is available 24/7.</Text>
-                <TouchableOpacity style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:12,borderTopWidth:1,borderTopColor:'#1f2d3d'}} onPress={()=>Linking.openURL('tel:18004262537')}>
+                <Text style={{color:THEME.text,fontWeight:'700',fontSize:14,marginBottom:12}}>🆘 Responsible Gambling</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18,marginBottom:12}}>If you or someone you know has a gambling problem, free help is available 24/7.</Text>
+                <TouchableOpacity style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:12,borderTopWidth:1,borderTopColor:THEME.border}} onPress={()=>Linking.openURL('tel:18004262537')}>
                   <View>
                     <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:14}}>1-800-GAMBLER</Text>
-                    <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>National Problem Gambling Helpline</Text>
+                    <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>National Problem Gambling Helpline</Text>
                   </View>
                   <Text style={{fontSize:18}}>📞</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:12,borderTopWidth:1,borderTopColor:'#1f2d3d'}} onPress={()=>Linking.openURL('tel:18882364848')}>
+                <TouchableOpacity style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:12,borderTopWidth:1,borderTopColor:THEME.border}} onPress={()=>Linking.openURL('tel:18882364848')}>
                   <View>
                     <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:14}}>1-888-ADMIT-IT</Text>
-                    <Text style={{color:'#7a92a8',fontSize:11,marginTop:2}}>Florida Council on Compulsive Gambling</Text>
+                    <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>Florida Council on Compulsive Gambling</Text>
                   </View>
                   <Text style={{fontSize:18}}>📞</Text>
                 </TouchableOpacity>
@@ -13498,16 +13499,16 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
               {/* Privacy Policy */}
               <TouchableOpacity style={[styles.card,{marginBottom:12}]} onPress={()=>setShowPrivacy(!showPrivacy)} activeOpacity={0.7}>
                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>🔒 Privacy Policy</Text>
-                  <Text style={{color:'#4a6070',fontSize:12}}>{showPrivacy?'Hide ▲':'View ▼'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700',fontSize:14}}>🔒 Privacy Policy</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:12}}>{showPrivacy?'Hide ▲':'View ▼'}</Text>
                 </View>
-                <Text style={{color:'#7a92a8',fontSize:12,marginTop:8,lineHeight:18}}>Your data stays yours. We never sell or share it with advertisers. Last updated May 2026.</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,marginTop:8,lineHeight:18}}>Your data stays yours. We never sell or share it with advertisers. Last updated May 2026.</Text>
                 {showPrivacy&&(
-                <Text style={{color:'#7a92a8',fontSize:12,lineHeight:20,marginTop:12}}>
+                <Text style={{color:THEME.textDim,fontSize:12,lineHeight:20,marginTop:12}}>
                   Note: "Hard Rock Bet" and the guitar logo are trademarks of the Seminole Tribe of Florida/Hard Rock Digital. Referenced for informational purposes only.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>WHO WE ARE{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>WHO WE ARE{'\n'}</Text>
                   The Sweat Locker is a pipeline-driven sports analytics application owned and operated by The Sweat Locker LLC, a veteran-owned business. Every result logged. Every miss explained. Contact us at: support@thesweatlocker.com{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>DATA WE COLLECT{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>DATA WE COLLECT{'\n'}</Text>
                   Data you provide:{'\n'}
                   - Bet logs, picks, and parlay history you manually enter{'\n'}
                   - Sport preferences and unit size settings{'\n'}
@@ -13517,41 +13518,41 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                   - Subscription status and purchase history (processed by Apple and RevenueCat){'\n'}
                   - Device type and OS version for compatibility purposes{'\n\n'}
                   We do not collect location data, financial information, social security numbers, or government IDs.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>HOW WE USE YOUR DATA{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>HOW WE USE YOUR DATA{'\n'}</Text>
                   - To display your personal bet history and performance tracking{'\n'}
                   - To deliver personalized analytics based on your sport preferences{'\n'}
                   - To manage your subscription status{'\n'}
                   - To improve app performance and fix bugs{'\n\n'}
                   We never sell your data. We never share your data with advertisers.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>THIRD PARTY SERVICES{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>THIRD PARTY SERVICES{'\n'}</Text>
                   The Sweat Locker uses the following third party services that may process your data:{'\n\n'}
                   Apple App Store — handles all payment processing. We never see or store your card information.{'\n'}
                   RevenueCat — manages subscription status and trial periods. Privacy policy at revenuecat.com/privacy{'\n'}
                   Supabase — secure cloud database for app analytics data. Privacy policy at supabase.com/privacy{'\n'}
                   Anthropic (Claude AI) — powers Jerry AI game analysis. Prompts are not stored or used for training. Privacy policy at anthropic.com/privacy{'\n\n'}
                   We also aggregate publicly available sports statistics, odds data, and weather data from various public APIs and data providers to power our analytics. These providers do not receive any of your personal data.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>EXTERNAL PICKS AND MARKET DATA{'\n'}</Text>
-                  The Sweat Locker aggregates publicly available handicapper picks and betting-market percentages from third-party sources including Doc Sports, Pickswise, VSiN, PickDawgz, Action Network, BettingPros, Covers, OddsCrowd, and BestFightOdds (UFC). We surface those picks alongside our own analytics for comparison purposes and to help users see where public and market consensus lies. We do not endorse any external handicapper. All external picks are the opinions of those third parties and do not constitute betting advice from us. We do not share any of your personal data with any of these external sources.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>YOUR DATA RIGHTS{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>EXTERNAL PICKS AND MARKET DATA{'\n'}</Text>
+                  The Sweat Locker aggregates publicly available handicapper picks and betting-market data from third-party aggregators to surface external opinions and market consensus alongside our own analytics. We do not endorse any external handicapper. All external picks are the opinions of third parties and do not constitute betting advice from us. We do not share any of your personal data with any of these external sources.{'\n\n'}
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>YOUR DATA RIGHTS{'\n'}</Text>
                   - You can delete all manually entered bet history anytime within the app{'\n'}
                   - You can request complete deletion of your account data by emailing support@thesweatlocker.com{'\n'}
                   - Your bet history is stored locally on your device and in your personal account only{'\n'}
                   - We will respond to data deletion requests within 30 days{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>SUBSCRIPTIONS{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>SUBSCRIPTIONS{'\n'}</Text>
                   - Subscriptions are managed through Apple and RevenueCat{'\n'}
                   - You can cancel anytime through your Apple ID settings → Subscriptions{'\n'}
                   - Refunds are handled by Apple per their standard refund policy{'\n'}
                   - A 7-day free trial is available for new subscribers only{'\n'}
                   - Subscription pricing: $14.99/month or $119.99/year{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>AI-GENERATED CONTENT{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>AI-GENERATED CONTENT{'\n'}</Text>
                   Jerry AI analysis is generated by Anthropic's Claude AI model and is intended for entertainment and informational purposes only. AI analysis does not constitute financial or betting advice. Past model performance does not guarantee future results.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>AGE REQUIREMENT{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>AGE REQUIREMENT{'\n'}</Text>
                   The Sweat Locker is intended for users 18 years of age or older. We do not knowingly collect data from users under 18. If you believe a minor has created an account please contact us immediately.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>DISCLAIMER{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>DISCLAIMER{'\n'}</Text>
                   The Sweat Locker provides sports analytics for entertainment purposes only. We do not facilitate wagering of any kind. Nothing in this app constitutes betting advice. Please bet responsibly and in accordance with your local laws and regulations.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>CHANGES TO THIS POLICY{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>CHANGES TO THIS POLICY{'\n'}</Text>
                   We may update this Privacy Policy periodically. Continued use of the app after changes constitutes acceptance of the updated policy. Material changes will be communicated via in-app notification.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>CONTACT{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>CONTACT{'\n'}</Text>
                   The Sweat Locker LLC{'\n'}
                   support@thesweatlocker.com
                 </Text>
@@ -13560,21 +13561,21 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                 {/* Terms of Service */}
               <TouchableOpacity style={[styles.card,{marginBottom:12}]} onPress={()=>setShowTerms(!showTerms)} activeOpacity={0.7}>
                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-                  <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14}}>📋 Terms of Service</Text>
-                  <Text style={{color:'#4a6070',fontSize:12}}>{showTerms?'Hide ▲':'View ▼'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700',fontSize:14}}>📋 Terms of Service</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:12}}>{showTerms?'Hide ▲':'View ▼'}</Text>
                 </View>
-                <Text style={{color:'#7a92a8',fontSize:12,marginTop:8,lineHeight:18}}>Entertainment and analytics only. Not gambling advice. Must be 18+. Last updated May 2026.</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,marginTop:8,lineHeight:18}}>Entertainment and analytics only. Not gambling advice. Must be 18+. Last updated May 2026.</Text>
                 {showTerms&&(
-                <Text style={{color:'#7a92a8',fontSize:12,lineHeight:20,marginTop:12}}>
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>1. ACCEPTANCE OF TERMS{'\n'}</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,lineHeight:20,marginTop:12}}>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>1. ACCEPTANCE OF TERMS{'\n'}</Text>
                   By downloading, accessing, or using The Sweat Locker ("App"), you agree to these Terms of Service. If you do not agree, do not use the App.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>2. ELIGIBILITY{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>2. ELIGIBILITY{'\n'}</Text>
                   You must be at least 18 years of age to use this App. If sports betting is legal in your jurisdiction, you must also meet the minimum legal betting age required there. Sports betting is not legal in all jurisdictions — you are solely responsible for knowing and complying with your local laws. We do not facilitate wagering of any kind.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>3. NATURE OF THE APP{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>3. NATURE OF THE APP{'\n'}</Text>
                   The Sweat Locker is a sports analytics and information tool for entertainment purposes only. Nothing in the App constitutes financial, legal, or gambling advice. Jerry AI analysis is generated by artificial intelligence and reflects model outputs, not professional advice of any kind.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>4. NO GUARANTEE OF RESULTS{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>4. NO GUARANTEE OF RESULTS{'\n'}</Text>
                   The Sweat Score, NRFI Model, Prop Jerry grades, EV calculations, and all analytical outputs are probabilistic in nature and based on historical data patterns. Model performance records displayed in the App reflect past results only. Past performance does not guarantee future results. You may lose money betting on sports regardless of information provided by this App.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>5. SUBSCRIPTIONS AND BILLING{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>5. SUBSCRIPTIONS AND BILLING{'\n'}</Text>
                   - Subscriptions are billed through Apple and managed via RevenueCat{'\n'}
                   - Your subscription automatically renews unless cancelled at least 24 hours before the end of the current billing period{'\n'}
                   - You can cancel anytime through your Apple ID settings → Subscriptions{'\n'}
@@ -13582,34 +13583,34 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                   - Subscription pricing: $14.99/month or $119.99/year{'\n'}
                   - Refunds are handled by Apple per their standard refund policy — we do not process refunds directly{'\n'}
                   - Prices are in USD and subject to change with reasonable notice{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>6. DATA ACCURACY{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>6. DATA ACCURACY{'\n'}</Text>
                   We aggregate data from various public sports statistics providers, odds APIs, weather services, external handicapper picks (Doc Sports, Pickswise, VSiN, PickDawgz, Action Network, BettingPros, Covers, OddsCrowd, BestFightOdds), and betting-market percentages. We make no warranty that data is complete, accurate, or current at all times. Pipeline data is updated multiple times daily; oddscrowd bets%/money% data refreshes at higher cadence during game hours. External handicapper picks reflect the opinions of those third parties, not endorsements from us. Always verify odds, lines, and picks with your sportsbook and the original source before placing any wager.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>7. AI-GENERATED CONTENT{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>7. AI-GENERATED CONTENT{'\n'}</Text>
                   Jerry AI is powered by Anthropic's Claude AI model. AI-generated analysis may contain errors, omissions, or outdated information. We are not responsible for decisions made based on AI-generated content. Jerry AI analysis is clearly labeled as AI-generated throughout the App.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>8. RESPONSIBLE GAMBLING{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>8. RESPONSIBLE GAMBLING{'\n'}</Text>
                   We are committed to responsible gambling. If you or someone you know has a gambling problem:{'\n'}
                   National Problem Gambling Helpline: 1-800-522-4700{'\n'}
                   Online chat: ncpgambling.org{'\n'}
                   Text: Text "HOPENY" to 467369{'\n'}
                   Please gamble responsibly and within your means.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>9. PROHIBITED USES{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>9. PROHIBITED USES{'\n'}</Text>
                   You agree not to:{'\n'}
                   - Scrape, reproduce, or redistribute any data or content from the App{'\n'}
                   - Reverse engineer any part of the App or pipeline{'\n'}
                   - Use the App for any commercial purpose without written permission{'\n'}
                   - Share subscription access with others{'\n'}
                   - Attempt to circumvent the freemium gating system{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>10. THIRD PARTY SERVICES{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>10. THIRD PARTY SERVICES{'\n'}</Text>
                   The App integrates with third party services including Apple, RevenueCat, Supabase, Anthropic, and various sports data providers. Your use of those services is subject to their respective terms and privacy policies. We are not responsible for third party service outages or data errors.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>11. LIMITATION OF LIABILITY{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>11. LIMITATION OF LIABILITY{'\n'}</Text>
                   To the fullest extent permitted by law, The Sweat Locker LLC and its developers, officers, and affiliates shall not be liable for any direct, indirect, incidental, or consequential damages arising from your use of the App, including but not limited to gambling losses, decisions made based on App analytics, or service interruptions.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>12. DISCLAIMER OF WARRANTIES{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>12. DISCLAIMER OF WARRANTIES{'\n'}</Text>
                   The App is provided "as is" without warranties of any kind, express or implied. We do not warrant that the App will be error-free, uninterrupted, or that data will always be accurate or current.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>13. CHANGES TO TERMS{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>13. CHANGES TO TERMS{'\n'}</Text>
                   We reserve the right to update these Terms at any time. Continued use of the App after changes constitutes acceptance of the updated Terms. Material changes will be communicated via in-app notification.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>14. GOVERNING LAW{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>14. GOVERNING LAW{'\n'}</Text>
                   These Terms are governed by the laws of the State of Florida. Any disputes shall be resolved in the courts of Brevard County, Florida.{'\n\n'}
-                  <Text style={{color:'#e8f0f8',fontWeight:'700'}}>15. CONTACT{'\n'}</Text>
+                  <Text style={{color:THEME.text,fontWeight:'700'}}>15. CONTACT{'\n'}</Text>
                   The Sweat Locker LLC{'\n'}
                   support@thesweatlocker.com
                 </Text>
@@ -13617,8 +13618,8 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
               </TouchableOpacity>
               {/* Delete Data */}
               <View style={[styles.card,{marginBottom:12}]}>
-                <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:14,marginBottom:8}}>🗑️ Delete My Data</Text>
-                <Text style={{color:'#7a92a8',fontSize:12,marginBottom:12}}>Permanently delete all your bet logs and app preferences. This cannot be undone.</Text>
+                <Text style={{color:THEME.text,fontWeight:'700',fontSize:14,marginBottom:8}}>🗑️ Delete My Data</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,marginBottom:12}}>Permanently delete all your bet logs and app preferences. This cannot be undone.</Text>
                 <TouchableOpacity style={{backgroundColor:'rgba(255,77,109,0.1)',borderRadius:10,padding:12,borderWidth:1,borderColor:'rgba(255,77,109,0.3)',alignItems:'center'}} onPress={()=>{
                   Alert.alert('Delete All Data','This will permanently delete all your bets and preferences. Are you sure?',[
                     {text:'Cancel',style:'cancel'},
@@ -13634,9 +13635,9 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
               </View>
               {/* App Version */}
               <View style={{alignItems:'center',paddingVertical:16}}>
-                <Text style={{color:'#4a6070',fontSize:11}}>The Sweat Locker v1.0.0 — Beta</Text>
-                <Text style={{color:'#4a6070',fontSize:10,marginTop:4}}>Built for Hard Rock Bettors 🎸</Text>
-                <Text style={{color:'#4a6070',fontSize:10,marginTop:4}}>⚠️ For entertainment only. Not gambling advice.</Text>
+                <Text style={{color:THEME.textMuted,fontSize:11}}>The Sweat Locker v1.0.0 — Beta</Text>
+                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:4}}>Built for Hard Rock Bettors 🎸</Text>
+                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:4}}>⚠️ For entertainment only. Not gambling advice.</Text>
               </View>
             </ScrollView>
           </View>
@@ -13646,16 +13647,16 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
       {/* PROP HISTORY MODAL */}
       <Modal visible={propHistoryModal} transparent animationType="slide" onRequestClose={()=>setPropHistoryModal(false)}>
         <View style={{flex:1,backgroundColor:'rgba(0,0,0,0.85)',justifyContent:'flex-end'}}>
-          <View style={{backgroundColor:'#0d1821',borderTopLeftRadius:24,borderTopRightRadius:24,padding:20,maxHeight:'85%'}}>
+          <View style={{backgroundColor:THEME.bgModal,borderTopLeftRadius:24,borderTopRightRadius:24,padding:20,maxHeight:'85%'}}>
             {selectedPropPlayer&&(
               <>
                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
                   <View>
-                    <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18}}>{selectedPropPlayer.name}</Text>
-                    <Text style={{color:'#7a92a8',fontSize:12,marginTop:2}}>{selectedPropPlayer.team} • {selectedPropPlayer.position}</Text>
+                    <Text style={{color:THEME.text,fontWeight:'800',fontSize:18}}>{selectedPropPlayer.name}</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,marginTop:2}}>{selectedPropPlayer.team} • {selectedPropPlayer.position}</Text>
                   </View>
                   <TouchableOpacity onPress={()=>setPropHistoryModal(false)} style={{padding:8}}>
-                    <Text style={{color:'#7a92a8',fontSize:18}}>✕</Text>
+                    <Text style={{color:THEME.textDim,fontSize:18}}>✕</Text>
                   </TouchableOpacity>
                 </View>
                 {/* Stat selector */}
@@ -13668,8 +13669,8 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                       {id:'stl',label:'STL',line:null},
                       {id:'blk',label:'BLK',line:null},
                     ].map(s=>(
-                      <TouchableOpacity key={s.id} style={{paddingHorizontal:14,paddingVertical:7,borderRadius:10,borderWidth:1,borderColor:propHistoryStat===s.id?HRB_COLOR:'#1f2d3d',backgroundColor:propHistoryStat===s.id?'rgba(255,184,0,0.1)':'#151c24'}} onPress={()=>{setPropHistoryStat(s.id);fetchPropHistory(selectedPropPlayer,s.id);}}>
-                        <Text style={{color:propHistoryStat===s.id?HRB_COLOR:'#7a92a8',fontWeight:'700',fontSize:12}}>{s.label}{s.line?` (${s.line})`:''}  </Text>
+                      <TouchableOpacity key={s.id} style={{paddingHorizontal:14,paddingVertical:7,borderRadius:10,borderWidth:1,borderColor:propHistoryStat===s.id?HRB_COLOR:THEME.border,backgroundColor:propHistoryStat===s.id?'rgba(255,184,0,0.1)':THEME.surfaceAlt}} onPress={()=>{setPropHistoryStat(s.id);fetchPropHistory(selectedPropPlayer,s.id);}}>
+                        <Text style={{color:propHistoryStat===s.id?HRB_COLOR:THEME.textDim,fontWeight:'700',fontSize:12}}>{s.label}{s.line?` (${s.line})`:''}  </Text>
                       </TouchableOpacity>
                     ))}
                   </View>
@@ -13678,29 +13679,29 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                 <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:12}}>
                   <View style={{flexDirection:'row',gap:4}}>
                     {[{id:'last5',label:'L5'},{id:'last10',label:'L10'}].map(r=>(
-                      <TouchableOpacity key={r.id} style={{paddingHorizontal:12,paddingVertical:5,borderRadius:8,borderWidth:1,borderColor:propHistoryRange===r.id?HRB_COLOR:'#1f2d3d',backgroundColor:propHistoryRange===r.id?'rgba(255,184,0,0.1)':'transparent'}} onPress={()=>setPropHistoryRange(r.id)}>
-                        <Text style={{color:propHistoryRange===r.id?HRB_COLOR:'#7a92a8',fontSize:11,fontWeight:'700'}}>{r.label}</Text>
+                      <TouchableOpacity key={r.id} style={{paddingHorizontal:12,paddingVertical:5,borderRadius:8,borderWidth:1,borderColor:propHistoryRange===r.id?HRB_COLOR:THEME.border,backgroundColor:propHistoryRange===r.id?'rgba(255,184,0,0.1)':'transparent'}} onPress={()=>setPropHistoryRange(r.id)}>
+                        <Text style={{color:propHistoryRange===r.id?HRB_COLOR:THEME.textDim,fontSize:11,fontWeight:'700'}}>{r.label}</Text>
                       </TouchableOpacity>
                     ))}
                   </View>
                   <View style={{flexDirection:'row',gap:4}}>
                     {[{id:'bars',label:'📊'},{id:'trend',label:'📈'}].map(t=>(
-                      <TouchableOpacity key={t.id} style={{paddingHorizontal:12,paddingVertical:5,borderRadius:8,borderWidth:1,borderColor:propHistoryTab===t.id?HRB_COLOR:'#1f2d3d',backgroundColor:propHistoryTab===t.id?'rgba(255,184,0,0.1)':'transparent'}} onPress={()=>setPropHistoryTab(t.id)}>
-                        <Text style={{color:propHistoryTab===t.id?HRB_COLOR:'#7a92a8',fontSize:13,fontWeight:'700'}}>{t.label}</Text>
+                      <TouchableOpacity key={t.id} style={{paddingHorizontal:12,paddingVertical:5,borderRadius:8,borderWidth:1,borderColor:propHistoryTab===t.id?HRB_COLOR:THEME.border,backgroundColor:propHistoryTab===t.id?'rgba(255,184,0,0.1)':'transparent'}} onPress={()=>setPropHistoryTab(t.id)}>
+                        <Text style={{color:propHistoryTab===t.id?HRB_COLOR:THEME.textDim,fontSize:13,fontWeight:'700'}}>{t.label}</Text>
                       </TouchableOpacity>
                     ))}
                   </View>
                 </View>
                 {propHistoryLoading?(
                   <View style={{alignItems:'center',paddingVertical:40}}>
-                    <Text style={{color:'#7a92a8',fontSize:13}}>Loading game log...</Text>
+                    <Text style={{color:THEME.textDim,fontSize:13}}>Loading game log...</Text>
                   </View>
                 ):(()=>{
                   const rangeData = propHistoryRange==='last5' ? propHistoryData.slice(0,5) : propHistoryData;
                   if(rangeData.length===0) return(
                     <View style={{alignItems:'center',paddingVertical:40}}>
                       <Text style={{fontSize:28}}>📊</Text>
-                      <Text style={{color:'#7a92a8',fontSize:12,marginTop:8}}>No game log available</Text>
+                      <Text style={{color:THEME.textDim,fontSize:12,marginTop:8}}>No game log available</Text>
                     </View>
                   );
                   const line = selectedPropPlayer.line || 0;
@@ -13714,22 +13715,22 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
                   return(
                     <View>
                       {/* Stats summary */}
-                      <View style={{flexDirection:'row',justifyContent:'space-around',marginBottom:16,backgroundColor:'#151c24',borderRadius:12,padding:12}}>
+                      <View style={{flexDirection:'row',justifyContent:'space-around',marginBottom:16,backgroundColor:THEME.surfaceAlt,borderRadius:12,padding:12}}>
                         <View style={{alignItems:'center'}}>
                           <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:18}}>{avg}</Text>
-                          <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>AVG</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>AVG</Text>
                         </View>
                         <View style={{alignItems:'center'}}>
-                          <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18}}>{line||'—'}</Text>
-                          <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>LINE</Text>
+                          <Text style={{color:THEME.text,fontWeight:'800',fontSize:18}}>{line||'—'}</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>LINE</Text>
                         </View>
                         <View style={{alignItems:'center'}}>
-                          <Text style={{color:hitRate>=55?'#00e5a0':hitRate>=45?'#ffd166':'#ff4d6d',fontWeight:'800',fontSize:18}}>{hitRate}%</Text>
-                          <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>HIT RATE</Text>
+                          <Text style={{color:hitRate>=55?'#00e5a0':hitRate>=45?THEME.push:'#ff4d6d',fontWeight:'800',fontSize:18}}>{hitRate}%</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>HIT RATE</Text>
                         </View>
                         <View style={{alignItems:'center'}}>
-                          <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:18}}>{hits}/{vals.length}</Text>
-                          <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>OVERS</Text>
+                          <Text style={{color:THEME.text,fontWeight:'800',fontSize:18}}>{hits}/{vals.length}</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>OVERS</Text>
                         </View>
                       </View>
                       {propHistoryTab==='bars'&&(
@@ -13808,54 +13809,54 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
       <Modal visible={ageGateVisible} transparent animationType="fade">
         <View style={{flex:1,backgroundColor:'rgba(0,0,0,0.97)',justifyContent:'center',alignItems:'center',padding:24}}>
           <Text style={{fontSize:48,marginBottom:16}}>🎰</Text>
-          <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:28,textAlign:'center',marginBottom:8}}>You must be 18+</Text>
-          <Text style={{color:'#7a92a8',fontSize:15,textAlign:'center',lineHeight:24,marginBottom:32}}>The Sweat Locker is intended for users 18 years of age or older. By continuing you confirm you meet this requirement.</Text>
+          <Text style={{color:THEME.text,fontWeight:'800',fontSize:28,textAlign:'center',marginBottom:8}}>You must be 18+</Text>
+          <Text style={{color:THEME.textDim,fontSize:15,textAlign:'center',lineHeight:24,marginBottom:32}}>The Sweat Locker is intended for users 18 years of age or older. By continuing you confirm you meet this requirement.</Text>
           <TouchableOpacity style={{backgroundColor:HRB_COLOR,borderRadius:14,paddingVertical:16,paddingHorizontal:40,marginBottom:12,width:'100%',alignItems:'center'}} onPress={()=>{setAgeGateVisible(false);setOnboardingVisible(true);}}>
             <Text style={{color:'#000',fontWeight:'800',fontSize:16}}>I am 18 or older — Continue</Text>
           </TouchableOpacity>
           <TouchableOpacity style={{paddingVertical:12}} onPress={()=>setAgeGateVisible(false)}>
-            <Text style={{color:'#4a6070',fontSize:13,textAlign:'center'}}>I am under 18 — Exit</Text>
+            <Text style={{color:THEME.textMuted,fontSize:13,textAlign:'center'}}>I am under 18 — Exit</Text>
           </TouchableOpacity>
         </View>
       </Modal>
       {/* ONBOARDING DISCLAIMER */}
       <Modal visible={onboardingVisible} transparent animationType="slide">
         <View style={{flex:1,backgroundColor:'rgba(0,0,0,0.97)',justifyContent:'flex-end'}}>
-          <View style={{backgroundColor:'#0d1821',borderTopLeftRadius:24,borderTopRightRadius:24,padding:24,paddingBottom:40}}>
+          <View style={{backgroundColor:THEME.bgModal,borderTopLeftRadius:24,borderTopRightRadius:24,padding:24,paddingBottom:40}}>
             <Text style={{fontSize:32,textAlign:'center',marginBottom:12}}>🧠</Text>
-            <Text style={{color:'#e8f0f8',fontWeight:'800',fontSize:22,textAlign:'center',marginBottom:16}}>Welcome to The Sweat Locker</Text>
+            <Text style={{color:THEME.text,fontWeight:'800',fontSize:22,textAlign:'center',marginBottom:16}}>Welcome to The Sweat Locker</Text>
             <View style={{backgroundColor:'rgba(255,184,0,0.08)',borderRadius:14,padding:16,marginBottom:20,borderWidth:1,borderColor:'rgba(255,184,0,0.2)'}}>
               <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13,marginBottom:8}}>⚠️ IMPORTANT DISCLAIMER</Text>
-              <Text style={{color:'#b0c4d8',fontSize:13,lineHeight:22}}>The Sweat Locker is for entertainment and informational purposes only. This is not gambling advice. We do not place bets or guarantee results. All Sweat Scores, EV calculations, and analysis are algorithmic estimates only.{'\n\n'}Please gamble responsibly. Only bet what you can afford to lose.</Text>
+              <Text style={{color:THEME.textDim,fontSize:13,lineHeight:22}}>The Sweat Locker is for entertainment and informational purposes only. This is not gambling advice. We do not place bets or guarantee results. All Sweat Scores, EV calculations, and analysis are algorithmic estimates only.{'\n\n'}Please gamble responsibly. Only bet what you can afford to lose.</Text>
             </View>
-            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:16,marginBottom:20,borderWidth:1,borderColor:'#1f2d3d'}}>
-              <Text style={{color:'#e8f0f8',fontWeight:'700',fontSize:13,marginBottom:12}}>🆘 Problem Gambling Resources</Text>
+            <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:16,marginBottom:20,borderWidth:1,borderColor:THEME.border}}>
+              <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:12}}>🆘 Problem Gambling Resources</Text>
               <TouchableOpacity style={{flexDirection:'row',alignItems:'center',gap:10,marginBottom:12}} onPress={()=>Linking.openURL('tel:18004262537')}>
                 <Text style={{fontSize:20}}>📞</Text>
                 <View>
                   <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13}}>1-800-GAMBLER</Text>
-                  <Text style={{color:'#7a92a8',fontSize:11}}>National Problem Gambling Helpline</Text>
+                  <Text style={{color:THEME.textDim,fontSize:11}}>National Problem Gambling Helpline</Text>
                 </View>
               </TouchableOpacity>
               <TouchableOpacity style={{flexDirection:'row',alignItems:'center',gap:10,marginBottom:12}} onPress={()=>Linking.openURL('tel:18882364848')}>
                 <Text style={{fontSize:20}}>📞</Text>
                 <View>
                   <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13}}>1-888-ADMIT-IT</Text>
-                  <Text style={{color:'#7a92a8',fontSize:11}}>Florida Council on Compulsive Gambling</Text>
+                  <Text style={{color:THEME.textDim,fontSize:11}}>Florida Council on Compulsive Gambling</Text>
                 </View>
               </TouchableOpacity>
               <TouchableOpacity style={{flexDirection:'row',alignItems:'center',gap:10}} onPress={()=>Linking.openURL('sms:18005224700&body=GAMBLER')}>
                 <Text style={{fontSize:20}}>💬</Text>
                 <View>
                   <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13}}>Text GAMBLER to 1-800-522-4700</Text>
-                  <Text style={{color:'#7a92a8',fontSize:11}}>24/7 Crisis Text Line</Text>
+                  <Text style={{color:THEME.textDim,fontSize:11}}>24/7 Crisis Text Line</Text>
                 </View>
               </TouchableOpacity>
             </View>
             <TouchableOpacity style={{backgroundColor:HRB_COLOR,borderRadius:14,paddingVertical:16,alignItems:'center',marginBottom:12}} onPress={async()=>{await AsyncStorage.setItem('hasSeenOnboarding','true');setOnboardingVisible(false);}}>
               <Text style={{color:'#000',fontWeight:'800',fontSize:16}}>I Understand — Let's Go 🔥</Text>
             </TouchableOpacity>
-            <Text style={{color:'#4a6070',fontSize:11,textAlign:'center',lineHeight:16}}>By using The Sweat Locker you agree that this app is for informational and entertainment purposes only and does not constitute gambling advice.</Text>
+            <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16}}>By using The Sweat Locker you agree that this app is for informational and entertainment purposes only and does not constitute gambling advice.</Text>
           </View>
         </View>
       </Modal>
@@ -13882,9 +13883,9 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? '#00e5a0' : nrfiScore >= 
             <View style={{flexDirection:'row',gap:8,marginBottom:12}}>
              <View style={{flex:1}}><Text style={styles.fieldLabel}>Odds</Text>
 <View style={{flexDirection:'row',gap:8,marginBottom:12}}>
-  <View style={{flexDirection:'row',borderRadius:10,overflow:'hidden',borderWidth:1,borderColor:'#1f2d3d'}}>
-    <TouchableOpacity style={{paddingHorizontal:16,paddingVertical:12,backgroundColor:form.oddsSign==='+'?'rgba(0,229,160,0.15)':'#151c24'}} onPress={()=>setForm({...form,oddsSign:'+'})}><Text style={{color:form.oddsSign==='+'?'#00e5a0':'#7a92a8',fontWeight:'800',fontSize:18}}>+</Text></TouchableOpacity>
-    <TouchableOpacity style={{paddingHorizontal:16,paddingVertical:12,backgroundColor:form.oddsSign==='-'?'rgba(255,77,109,0.15)':'#151c24'}} onPress={()=>setForm({...form,oddsSign:'-'})}><Text style={{color:form.oddsSign==='-'?'#ff4d6d':'#7a92a8',fontWeight:'800',fontSize:18}}>−</Text></TouchableOpacity>
+  <View style={{flexDirection:'row',borderRadius:10,overflow:'hidden',borderWidth:1,borderColor:THEME.border}}>
+    <TouchableOpacity style={{paddingHorizontal:16,paddingVertical:12,backgroundColor:form.oddsSign==='+'?'rgba(0,229,160,0.15)':THEME.surfaceAlt}} onPress={()=>setForm({...form,oddsSign:'+'})}><Text style={{color:form.oddsSign==='+'?'#00e5a0':THEME.textDim,fontWeight:'800',fontSize:18}}>+</Text></TouchableOpacity>
+    <TouchableOpacity style={{paddingHorizontal:16,paddingVertical:12,backgroundColor:form.oddsSign==='-'?'rgba(255,77,109,0.15)':THEME.surfaceAlt}} onPress={()=>setForm({...form,oddsSign:'-'})}><Text style={{color:form.oddsSign==='-'?'#ff4d6d':THEME.textDim,fontWeight:'800',fontSize:18}}>−</Text></TouchableOpacity>
   </View>
   <TextInput style={[styles.input,{flex:1,marginBottom:0}]} placeholder="110" placeholderTextColor="#4a6070" value={form.odds} onChangeText={t=>setForm({...form,odds:t.replace(/[^0-9]/g,'')})} keyboardType="numeric" returnKeyType="done"/>
 </View>
@@ -13928,13 +13929,13 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
           style={{backgroundColor:'rgba(0,229,160,0.08)',borderRadius:8,padding:8,borderWidth:1,borderColor:'rgba(0,229,160,0.2)',marginTop:-4,marginBottom:4}}
         >
           <Text style={{color:'#00e5a0',fontSize:11,fontWeight:'700'}}>⚡ Kelly: {suggestedUnits}u — tap to apply</Text>
-          <Text style={{color:'#4a6070',fontSize:10,marginTop:2}}>
+          <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>
             {isMinimum
               ? `Implied prob ${impliedPct}% — juice-heavy line, minimum stake advised`
               : `Implied prob ${impliedPct}% — plus-odds value, Kelly rewards the underdog`}
           </Text>
         </TouchableOpacity>
-        <Text style={{color:'#4a6070',fontSize:10,marginBottom:8,paddingHorizontal:4}}>
+        <Text style={{color:THEME.textMuted,fontSize:10,marginBottom:8,paddingHorizontal:4}}>
           💡 Quarter-Kelly: sharps bet 25% of full Kelly to protect bankroll. Higher odds = more units because you're getting paid more than the risk.
         </Text>
       </View>
@@ -13949,7 +13950,7 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
             <Text style={styles.fieldLabel}>Result</Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:16}}>{RESULTS.map(r=>(<TouchableOpacity key={r} style={[styles.chipBtn,form.result===r&&styles.chipBtnActive]} onPress={()=>setForm({...form,result:r})}><Text style={[styles.chipTxt,form.result===r&&styles.chipTxtActive]}>{r}</Text></TouchableOpacity>))}</View>
             <TouchableOpacity style={styles.btnPrimary} onPress={saveBet}><Text style={styles.btnPrimaryText}>Save Pick ✓</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>setModalVisible(false)}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:THEME.border,marginTop:8}]} onPress={()=>setModalVisible(false)}><Text style={[styles.btnPrimaryText,{color:THEME.textDim}]}>Cancel</Text></TouchableOpacity>
           </ScrollView>
           </View>
           </KeyboardAvoidingView>
@@ -13970,9 +13971,9 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
               <TextInput style={styles.input} placeholderTextColor="#4a6070" value={editingBet.pick} onChangeText={t=>setEditingBet({...editingBet,pick:t})}/>
               <Text style={styles.fieldLabel}>Odds</Text>
               <View style={{flexDirection:'row',gap:8,marginBottom:12}}>
-                <View style={{flexDirection:'row',borderRadius:10,overflow:'hidden',borderWidth:1,borderColor:'#1f2d3d'}}>
-                  <TouchableOpacity style={{paddingHorizontal:20,paddingVertical:12,backgroundColor:editingBet.oddsSign==='+'?'rgba(0,229,160,0.15)':'#151c24'}} onPress={()=>setEditingBet({...editingBet,oddsSign:'+'})}><Text style={{color:editingBet.oddsSign==='+'?'#00e5a0':'#7a92a8',fontWeight:'800',fontSize:18}}>+</Text></TouchableOpacity>
-                  <TouchableOpacity style={{paddingHorizontal:20,paddingVertical:12,backgroundColor:editingBet.oddsSign==='-'?'rgba(255,77,109,0.15)':'#151c24'}} onPress={()=>setEditingBet({...editingBet,oddsSign:'-'})}><Text style={{color:editingBet.oddsSign==='-'?'#ff4d6d':'#7a92a8',fontWeight:'800',fontSize:18}}>−</Text></TouchableOpacity>
+                <View style={{flexDirection:'row',borderRadius:10,overflow:'hidden',borderWidth:1,borderColor:THEME.border}}>
+                  <TouchableOpacity style={{paddingHorizontal:20,paddingVertical:12,backgroundColor:editingBet.oddsSign==='+'?'rgba(0,229,160,0.15)':THEME.surfaceAlt}} onPress={()=>setEditingBet({...editingBet,oddsSign:'+'})}><Text style={{color:editingBet.oddsSign==='+'?'#00e5a0':THEME.textDim,fontWeight:'800',fontSize:18}}>+</Text></TouchableOpacity>
+                  <TouchableOpacity style={{paddingHorizontal:20,paddingVertical:12,backgroundColor:editingBet.oddsSign==='-'?'rgba(255,77,109,0.15)':THEME.surfaceAlt}} onPress={()=>setEditingBet({...editingBet,oddsSign:'-'})}><Text style={{color:editingBet.oddsSign==='-'?'#ff4d6d':THEME.textDim,fontWeight:'800',fontSize:18}}>−</Text></TouchableOpacity>
                 </View>
                 <TextInput style={[styles.input,{flex:1,marginBottom:0}]} placeholder="110" placeholderTextColor="#4a6070" value={String(editingBet.odds||'')} onChangeText={t=>setEditingBet({...editingBet,odds:t.replace(/[^0-9]/g,'')})} keyboardType="numeric" returnKeyType="done"/>
               </View>
@@ -13983,7 +13984,7 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
                 {RESULTS.map(r=>(<TouchableOpacity key={r} style={[styles.chipBtn,editingBet.result===r&&{backgroundColor:resultColor(r)+'22',borderColor:resultColor(r)}]} onPress={()=>setEditingBet({...editingBet,result:r})}><Text style={[styles.chipTxt,editingBet.result===r&&{color:resultColor(r),fontWeight:'800'}]}>{r}</Text></TouchableOpacity>))}
               </View>
               <TouchableOpacity style={styles.btnPrimary} onPress={saveEdit}><Text style={styles.btnPrimaryText}>Save Changes ✓</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>{setEditModalVisible(false);setEditingBet(null);}}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:THEME.border,marginTop:8}]} onPress={()=>{setEditModalVisible(false);setEditingBet(null);}}><Text style={[styles.btnPrimaryText,{color:THEME.textDim}]}>Cancel</Text></TouchableOpacity>
               </ScrollView>
             </View>
             </KeyboardAvoidingView>
@@ -14004,9 +14005,9 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
             <TextInput style={styles.input} placeholder="e.g. Lakers -2.5" placeholderTextColor="#4a6070" value={legForm.pick} onChangeText={t=>setLegForm({...legForm,pick:t})}/>
             <Text style={styles.fieldLabel}>Odds</Text>
             <View style={{flexDirection:'row',gap:8,marginBottom:12}}>
-              <View style={{flexDirection:'row',borderRadius:10,overflow:'hidden',borderWidth:1,borderColor:'#1f2d3d'}}>
-                <TouchableOpacity style={{paddingHorizontal:20,paddingVertical:12,backgroundColor:legForm.oddsSign==='+'?'rgba(0,229,160,0.15)':'#151c24'}} onPress={()=>setLegForm({...legForm,oddsSign:'+'})}><Text style={{color:legForm.oddsSign==='+'?'#00e5a0':'#7a92a8',fontWeight:'800',fontSize:18}}>+</Text></TouchableOpacity>
-                <TouchableOpacity style={{paddingHorizontal:20,paddingVertical:12,backgroundColor:legForm.oddsSign==='-'?'rgba(255,77,109,0.15)':'#151c24'}} onPress={()=>setLegForm({...legForm,oddsSign:'-'})}><Text style={{color:legForm.oddsSign==='-'?'#ff4d6d':'#7a92a8',fontWeight:'800',fontSize:18}}>−</Text></TouchableOpacity>
+              <View style={{flexDirection:'row',borderRadius:10,overflow:'hidden',borderWidth:1,borderColor:THEME.border}}>
+                <TouchableOpacity style={{paddingHorizontal:20,paddingVertical:12,backgroundColor:legForm.oddsSign==='+'?'rgba(0,229,160,0.15)':THEME.surfaceAlt}} onPress={()=>setLegForm({...legForm,oddsSign:'+'})}><Text style={{color:legForm.oddsSign==='+'?'#00e5a0':THEME.textDim,fontWeight:'800',fontSize:18}}>+</Text></TouchableOpacity>
+                <TouchableOpacity style={{paddingHorizontal:20,paddingVertical:12,backgroundColor:legForm.oddsSign==='-'?'rgba(255,77,109,0.15)':THEME.surfaceAlt}} onPress={()=>setLegForm({...legForm,oddsSign:'-'})}><Text style={{color:legForm.oddsSign==='-'?'#ff4d6d':THEME.textDim,fontWeight:'800',fontSize:18}}>−</Text></TouchableOpacity>
               </View>
               <TextInput style={[styles.input,{flex:1,marginBottom:0}]} placeholder="110" placeholderTextColor="#4a6070" value={legForm.odds} onChangeText={t=>setLegForm({...legForm,odds:t.replace(/[^0-9]/g,'')})} keyboardType="numeric" returnKeyType="done"/>
             </View>
@@ -14022,7 +14023,7 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
               </View>
             )}
             <TouchableOpacity style={styles.btnPrimary} onPress={addLeg}><Text style={styles.btnPrimaryText}>{legMode === 'single' ? 'Log Pick ✓' : 'Add to Parlay ✓'}</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:'#1f2d3d',marginTop:8}]} onPress={()=>{setAddLegModal(false);setLegMode('parlay');setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-',units:'',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});}}><Text style={[styles.btnPrimaryText,{color:'#7a92a8'}]}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:'transparent',borderWidth:1,borderColor:THEME.border,marginTop:8}]} onPress={()=>{setAddLegModal(false);setLegMode('parlay');setLegForm({matchup:'',pick:'',odds:'',oddsSign:'-',units:'',type:'',game_id:'',signals:null,player_name:'',tier:'',conviction:0});}}><Text style={[styles.btnPrimaryText,{color:THEME.textDim}]}>Cancel</Text></TouchableOpacity>
             </ScrollView>
           </View>
           </KeyboardAvoidingView>
@@ -14033,75 +14034,75 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
 }
 
 const styles = StyleSheet.create({
-  container:{flex:1,backgroundColor:'#080c10'},
-  header:{paddingTop:56,paddingBottom:12,paddingHorizontal:20,flexDirection:'row',justifyContent:'space-between',alignItems:'center',borderBottomWidth:1,borderBottomColor:'#1f2d3d',backgroundColor:'rgba(8,12,16,0.95)'},
+  container:{flex:1,backgroundColor:THEME.bg},
+  header:{paddingTop:56,paddingBottom:12,paddingHorizontal:20,flexDirection:'row',justifyContent:'space-between',alignItems:'center',borderBottomWidth:1,borderBottomColor:THEME.border,backgroundColor:'rgba(8,12,16,0.95)'},
   logo:{fontSize:18,fontWeight:'800',color:'#00e5a0',letterSpacing:2},
-  navIcon:{width:36,height:36,borderRadius:10,backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',alignItems:'center',justifyContent:'center'},
-  parlayBadge:{backgroundColor:'rgba(255,184,0,0.15)',borderWidth:1,borderColor:'#FFB800',borderRadius:20,paddingHorizontal:10,paddingVertical:4},
-  parlayBadgeText:{color:'#FFB800',fontWeight:'800',fontSize:12},
-  toast:{position:'absolute',top:100,alignSelf:'center',backgroundColor:'#0e1318',borderWidth:1,borderColor:'#FFB800',borderRadius:20,paddingHorizontal:20,paddingVertical:10,zIndex:999},
-  toastText:{color:'#FFB800',fontWeight:'700',fontSize:13},
+  navIcon:{width:36,height:36,borderRadius:10,backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,alignItems:'center',justifyContent:'center'},
+  parlayBadge:{backgroundColor:'rgba(255,184,0,0.15)',borderWidth:1,borderColor:THEME.hrb,borderRadius:20,paddingHorizontal:10,paddingVertical:4},
+  parlayBadgeText:{color:THEME.hrb,fontWeight:'800',fontSize:12},
+  toast:{position:'absolute',top:100,alignSelf:'center',backgroundColor:THEME.surface,borderWidth:1,borderColor:THEME.hrb,borderRadius:20,paddingHorizontal:20,paddingVertical:10,zIndex:999},
+  toastText:{color:THEME.hrb,fontWeight:'700',fontSize:13},
   content:{flex:1,paddingHorizontal:16,paddingTop:16},
-  hero:{backgroundColor:'#0e1318',borderWidth:1,borderColor:'#1f2d3d',borderRadius:20,padding:20,marginBottom:14,flexDirection:'row',justifyContent:'space-between',alignItems:'center'},
-  heroSub:{fontSize:12,color:'#7a92a8',fontWeight:'600'},
-  heroRecord:{fontSize:32,fontWeight:'800',color:'#e8f0f8',marginTop:2},
-  heroMeta:{fontSize:12,color:'#7a92a8',marginTop:4},
-  roiCircle:{width:80,height:80,borderRadius:40,borderWidth:2,borderColor:'#FFB800',alignItems:'center',justifyContent:'center'},
-  roiVal:{fontSize:16,fontWeight:'800',color:'#FFB800',textAlign:'center'},
-  roiLbl:{fontSize:10,color:'#7a92a8',fontWeight:'600'},
+  hero:{backgroundColor:THEME.surface,borderWidth:1,borderColor:THEME.border,borderRadius:20,padding:20,marginBottom:14,flexDirection:'row',justifyContent:'space-between',alignItems:'center'},
+  heroSub:{fontSize:12,color:THEME.textDim,fontWeight:'600'},
+  heroRecord:{fontSize:32,fontWeight:'800',color:THEME.text,marginTop:2},
+  heroMeta:{fontSize:12,color:THEME.textDim,marginTop:4},
+  roiCircle:{width:80,height:80,borderRadius:40,borderWidth:2,borderColor:THEME.hrb,alignItems:'center',justifyContent:'center'},
+  roiVal:{fontSize:16,fontWeight:'800',color:THEME.hrb,textAlign:'center'},
+  roiLbl:{fontSize:10,color:THEME.textDim,fontWeight:'600'},
   statRow:{flexDirection:'row',gap:8,marginBottom:14},
-  statBox:{flex:1,backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',borderRadius:12,padding:12,alignItems:'center'},
+  statBox:{flex:1,backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:12,padding:12,alignItems:'center'},
   statGreen:{borderColor:'rgba(0,229,160,0.3)'},
   statBlue:{borderColor:'rgba(0,153,255,0.3)'},
   statRed:{borderColor:'rgba(255,77,109,0.3)'},
-  statVal:{fontSize:20,fontWeight:'800',color:'#e8f0f8'},
-  statKey:{fontSize:10,color:'#7a92a8',fontWeight:'600',marginTop:2},
-  sectionLabel:{fontSize:11,fontWeight:'700',letterSpacing:1.5,color:'#4a6070',marginBottom:10,marginTop:4},
-  betCard:{backgroundColor:'#0e1318',borderWidth:1,borderColor:'#1f2d3d',borderLeftWidth:3,borderRadius:14,padding:14,marginBottom:10},
-  gameCard:{backgroundColor:'#0e1318',borderWidth:1,borderColor:'#1f2d3d',borderRadius:16,padding:16,marginBottom:10},
+  statVal:{fontSize:20,fontWeight:'800',color:THEME.text},
+  statKey:{fontSize:10,color:THEME.textDim,fontWeight:'600',marginTop:2},
+  sectionLabel:{fontSize:11,fontWeight:'700',letterSpacing:1.5,color:THEME.textMuted,marginBottom:10,marginTop:4},
+  betCard:{backgroundColor:THEME.surface,borderWidth:1,borderColor:THEME.border,borderLeftWidth:3,borderRadius:14,padding:14,marginBottom:10},
+  gameCard:{backgroundColor:THEME.surface,borderWidth:1,borderColor:THEME.border,borderRadius:16,padding:16,marginBottom:10},
   betTop:{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'},
-  betMatchup:{fontSize:14,fontWeight:'700',color:'#e8f0f8'},
-  betPick:{fontSize:13,color:'#7a92a8',marginTop:3},
+  betMatchup:{fontSize:14,fontWeight:'700',color:THEME.text},
+  betPick:{fontSize:13,color:THEME.textDim,marginTop:3},
   pill:{paddingHorizontal:9,paddingVertical:3,borderRadius:20},
   betMeta:{flexDirection:'row',gap:6,marginTop:8,flexWrap:'wrap',alignItems:'center'},
-  metaChip:{backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',borderRadius:6,paddingHorizontal:7,paddingVertical:2,fontSize:11,color:'#7a92a8'},
-  quickBtn:{backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',borderRadius:8,paddingHorizontal:14,paddingVertical:6},
-  oddsQuickChip:{flex:1,backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',borderRadius:10,padding:8,alignItems:'center'},
-  oddsQuickLabel:{fontSize:9,fontWeight:'700',color:'#4a6070',letterSpacing:1,marginBottom:3},
-  oddsQuickVal:{fontSize:12,fontWeight:'600',color:'#e8f0f8',textAlign:'center'},
-  parlayLineRow:{flexDirection:'row',alignItems:'center',paddingVertical:10,borderBottomWidth:1,borderBottomColor:'#1f2d3d'},
+  metaChip:{backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:6,paddingHorizontal:7,paddingVertical:2,fontSize:11,color:THEME.textDim},
+  quickBtn:{backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:8,paddingHorizontal:14,paddingVertical:6},
+  oddsQuickChip:{flex:1,backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:10,padding:8,alignItems:'center'},
+  oddsQuickLabel:{fontSize:9,fontWeight:'700',color:THEME.textMuted,letterSpacing:1,marginBottom:3},
+  oddsQuickVal:{fontSize:12,fontWeight:'600',color:THEME.text,textAlign:'center'},
+  parlayLineRow:{flexDirection:'row',alignItems:'center',paddingVertical:10,borderBottomWidth:1,borderBottomColor:THEME.border},
   addParlayBtn:{backgroundColor:'rgba(0,229,160,0.12)',borderWidth:1,borderColor:'#00e5a0',borderRadius:8,paddingHorizontal:10,paddingVertical:5},
   addParlayBtnText:{color:'#00e5a0',fontSize:11,fontWeight:'700'},
-  pageTitle:{fontSize:28,fontWeight:'800',color:'#e8f0f8',marginBottom:12},
+  pageTitle:{fontSize:28,fontWeight:'800',color:THEME.text,marginBottom:12},
   btnPrimary:{backgroundColor:'#00e5a0',borderRadius:12,padding:14,alignItems:'center',marginBottom:8},
-  btnPrimaryText:{color:'#080c10',fontWeight:'700',fontSize:15},
-  card:{backgroundColor:'#0e1318',borderWidth:1,borderColor:'#1f2d3d',borderRadius:16,padding:16,marginBottom:12},
-  cardTitle:{fontSize:15,fontWeight:'700',color:'#e8f0f8'},
-  cardSub:{fontSize:12,color:'#7a92a8',marginTop:2,marginBottom:8},
-  oddsHeader:{fontSize:10,fontWeight:'700',color:'#4a6070',letterSpacing:1,flex:1,textAlign:'center'},
-  oddsRow:{flexDirection:'row',alignItems:'center',paddingVertical:8,borderBottomWidth:1,borderBottomColor:'#1f2d3d'},
+  btnPrimaryText:{color:THEME.bg,fontWeight:'700',fontSize:15},
+  card:{backgroundColor:THEME.surface,borderWidth:1,borderColor:THEME.border,borderRadius:16,padding:16,marginBottom:12},
+  cardTitle:{fontSize:15,fontWeight:'700',color:THEME.text},
+  cardSub:{fontSize:12,color:THEME.textDim,marginTop:2,marginBottom:8},
+  oddsHeader:{fontSize:10,fontWeight:'700',color:THEME.textMuted,letterSpacing:1,flex:1,textAlign:'center'},
+  oddsRow:{flexDirection:'row',alignItems:'center',paddingVertical:8,borderBottomWidth:1,borderBottomColor:THEME.border},
   oddsRowBest:{backgroundColor:'rgba(0,229,160,0.04)',borderRadius:8,paddingHorizontal:4},
-  bookNameInline:{fontSize:11,fontWeight:'700',color:'#7a92a8',width:85},
-  oddsVal:{fontSize:12,fontWeight:'600',color:'#e8f0f8'},
-  oddsSmall:{fontSize:10,color:'#4a6070',marginTop:1},
-  teamRow:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:10,borderBottomWidth:1,borderBottomColor:'#1f2d3d'},
-  teamName:{fontSize:14,fontWeight:'600',color:'#e8f0f8'},
-  teamSub:{fontSize:11,color:'#7a92a8'},
-  bottomNavContainer:{backgroundColor:'rgba(8,12,16,0.97)',borderTopWidth:1,borderTopColor:'#1f2d3d',paddingBottom:24,paddingTop:8},
+  bookNameInline:{fontSize:11,fontWeight:'700',color:THEME.textDim,width:85},
+  oddsVal:{fontSize:12,fontWeight:'600',color:THEME.text},
+  oddsSmall:{fontSize:10,color:THEME.textMuted,marginTop:1},
+  teamRow:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:10,borderBottomWidth:1,borderBottomColor:THEME.border},
+  teamName:{fontSize:14,fontWeight:'600',color:THEME.text},
+  teamSub:{fontSize:11,color:THEME.textDim},
+  bottomNavContainer:{backgroundColor:'rgba(8,12,16,0.97)',borderTopWidth:1,borderTopColor:THEME.border,paddingBottom:24,paddingTop:8},
   bottomNav:{paddingHorizontal:8,gap:4},
   tabItem:{width:64,alignItems:'center',justifyContent:'center',gap:3},
   tabIcon:{fontSize:20},
-  tabLabel:{fontSize:9,fontWeight:'700',color:'#4a6070',letterSpacing:0.5},
-  tabBadge:{position:'absolute',top:-6,right:-10,backgroundColor:'#FFB800',borderRadius:8,minWidth:16,height:16,alignItems:'center',justifyContent:'center',paddingHorizontal:3},
-  tabBadgeText:{color:'#080c10',fontSize:9,fontWeight:'800'},
+  tabLabel:{fontSize:9,fontWeight:'700',color:THEME.textMuted,letterSpacing:0.5},
+  tabBadge:{position:'absolute',top:-6,right:-10,backgroundColor:THEME.hrb,borderRadius:8,minWidth:16,height:16,alignItems:'center',justifyContent:'center',paddingHorizontal:3},
+  tabBadgeText:{color:THEME.bg,fontSize:9,fontWeight:'800'},
   modalOverlay:{flex:1,backgroundColor:'rgba(0,0,0,0.7)',justifyContent:'flex-end'},
-  modalSheet:{backgroundColor:'#0e1318',borderTopLeftRadius:24,borderTopRightRadius:24,padding:24,paddingBottom:40,borderWidth:1,borderColor:'#1f2d3d',maxHeight:'90%'},
-  modalHandle:{width:40,height:4,backgroundColor:'#1f2d3d',borderRadius:2,alignSelf:'center',marginBottom:20},
-  modalTitle:{fontSize:24,fontWeight:'800',color:'#e8f0f8',marginBottom:16},
-  fieldLabel:{fontSize:11,fontWeight:'700',color:'#4a6070',letterSpacing:1,marginBottom:6},
-  input:{backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d',borderRadius:10,padding:12,color:'#e8f0f8',fontSize:14,marginBottom:12},
-  chipBtn:{paddingHorizontal:14,paddingVertical:6,borderRadius:20,backgroundColor:'#151c24',borderWidth:1,borderColor:'#1f2d3d'},
+  modalSheet:{backgroundColor:THEME.surface,borderTopLeftRadius:24,borderTopRightRadius:24,padding:24,paddingBottom:40,borderWidth:1,borderColor:THEME.border,maxHeight:'90%'},
+  modalHandle:{width:40,height:4,backgroundColor:THEME.border,borderRadius:2,alignSelf:'center',marginBottom:20},
+  modalTitle:{fontSize:24,fontWeight:'800',color:THEME.text,marginBottom:16},
+  fieldLabel:{fontSize:11,fontWeight:'700',color:THEME.textMuted,letterSpacing:1,marginBottom:6},
+  input:{backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:10,padding:12,color:THEME.text,fontSize:14,marginBottom:12},
+  chipBtn:{paddingHorizontal:14,paddingVertical:6,borderRadius:20,backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border},
   chipBtnActive:{backgroundColor:'rgba(0,229,160,0.12)',borderColor:'#00e5a0'},
-  chipTxt:{fontSize:12,fontWeight:'600',color:'#7a92a8'},
+  chipTxt:{fontSize:12,fontWeight:'600',color:THEME.textDim},
   chipTxtActive:{color:'#00e5a0'},
 });

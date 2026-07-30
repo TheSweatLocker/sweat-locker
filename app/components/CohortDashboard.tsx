@@ -24,18 +24,19 @@ import { View, Text, ActivityIndicator, ScrollView, StyleSheet, TouchableOpacity
 import { createClient } from '@supabase/supabase-js';
 import { Sport, sportDb, isSportLive } from '../lib/sportPeriods';
 
+import { THEME, TIER_COLOR, OUTCOME_COLOR } from '../theme';
 const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_URL!,
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
 const BRAND_GREEN = '#00e5a0';
-const BRAND_AMBER = '#ffb800';
+const BRAND_AMBER = THEME.hrb;
 const RED = '#ff4d6d';
-const CARD_BG = '#0d1419';
-const TEXT_PRIMARY = '#e8f0f8';
-const TEXT_MUTED = '#7a92a8';
-const BORDER = '#1f2d3d';
+const CARD_BG = THEME.surface;
+const TEXT_PRIMARY = THEME.text;
+const TEXT_MUTED = THEME.textDim;
+const BORDER = THEME.border;
 
 type CohortRow = {
   tier: string;
@@ -357,8 +358,8 @@ const styles = StyleSheet.create({
   cohortStats: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   cohortN: { color: TEXT_MUTED, fontSize: 11, minWidth: 40, textAlign: 'right' },
   cohortPct: { fontSize: 13, fontWeight: '800', minWidth: 40, textAlign: 'right' },
-  cohortSample: { color: '#4a6070', fontSize: 9, minWidth: 36 },
+  cohortSample: { color: THEME.textMuted, fontSize: 9, minWidth: 36 },
   emptyText: { color: TEXT_MUTED, fontSize: 12, textAlign: 'center', marginTop: 20 },
   offseasonText: { color: TEXT_MUTED, fontSize: 12, marginTop: 8 },
-  footer: { color: '#4a6070', fontSize: 10, lineHeight: 14, marginTop: 12, fontStyle: 'italic' },
+  footer: { color: THEME.textMuted, fontSize: 10, lineHeight: 14, marginTop: 12, fontStyle: 'italic' },
 });

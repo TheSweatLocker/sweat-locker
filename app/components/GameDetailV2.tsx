@@ -684,7 +684,10 @@ function PitcherCard({name, side, k, er, bb, h, outs}: any) {
 function MoneyFlow({ctx}: any) {
   const oc = ctx?.oddscrowd_snapshot;
   if (!oc || typeof oc !== 'object') {
-    return <Text style={styles.emptyMuted}>No oddscrowd data yet. Refreshes every 30 min during game hours.</Text>;
+    // No source attribution. When money data is missing, we say nothing about
+    // provenance (competitive moat — see feedback re: Action Network model).
+    // Hidden rather than "no data" copy since presence is itself a signal.
+    return null;
   }
   const markets: {key: 'ml'|'rl'|'total'; label: string; data: any}[] = [
     {key: 'ml', label: 'Moneyline', data: oc.ml},

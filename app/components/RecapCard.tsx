@@ -20,6 +20,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, ScrollView } from 'react-native';
 import { createClient } from '@supabase/supabase-js';
+import { THEME, TIER_COLOR, OUTCOME_COLOR } from '../theme';
 import {
   Sport, Period, getDefaultPeriod, getAvailablePeriods,
   getDateRange, sportDb, getResolvedPropsTable, isSportLive,
@@ -31,11 +32,11 @@ const supabase = createClient(
 );
 
 const BRAND_GREEN = '#00e5a0';
-const BRAND_AMBER = '#ffb800';
-const CARD_BG = '#0d1419';
-const TEXT_PRIMARY = '#e8f0f8';
-const TEXT_MUTED = '#7a92a8';
-const BORDER = '#1f2d3d';
+const BRAND_AMBER = THEME.hrb;
+const CARD_BG = THEME.surface;
+const TEXT_PRIMARY = THEME.text;
+const TEXT_MUTED = THEME.textDim;
+const BORDER = THEME.border;
 const RED = '#ff4d6d';
 
 type RecapData = {

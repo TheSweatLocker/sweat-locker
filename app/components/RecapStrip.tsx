@@ -25,16 +25,17 @@ import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'rea
 import { createClient } from '@supabase/supabase-js';
 import { Sport, isSportLive } from '../lib/sportPeriods';
 
+import { THEME, TIER_COLOR, OUTCOME_COLOR } from '../theme';
 const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_URL!,
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
 const BRAND_GREEN = '#00e5a0';
-const BRAND_AMBER = '#ffb800';
-const CARD_BG = '#0d1419';
-const TEXT_PRIMARY = '#e8f0f8';
-const TEXT_MUTED = '#7a92a8';
+const BRAND_AMBER = THEME.hrb;
+const CARD_BG = THEME.surface;
+const TEXT_PRIMARY = THEME.text;
+const TEXT_MUTED = THEME.textDim;
 const RED = '#ff4d6d';
 
 const SURFACE_THRESHOLD_PCT = 60;   // Only surface yesterday if hit >=60%
@@ -221,7 +222,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#1f2d3d',
+    borderColor: THEME.border,
   },
   content: {
     flexDirection: 'row',
@@ -260,7 +261,7 @@ const styles = StyleSheet.create({
   divider: {
     width: 1,
     height: 18,
-    backgroundColor: '#1f2d3d',
+    backgroundColor: THEME.border,
   },
   tapHint: {
     color: TEXT_MUTED,

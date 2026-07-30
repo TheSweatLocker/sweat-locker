@@ -24,13 +24,14 @@ import {
 } from 'react-native';
 import { useSubscription } from '../contexts/SubscriptionContext';
 
+import { THEME, TIER_COLOR, OUTCOME_COLOR } from '../theme';
 const BRAND_GREEN = '#00e5a0';
-const BRAND_AMBER = '#ffb800';
-const BG_DARK = '#080c10';
-const CARD_BG = '#0d1419';
-const TEXT_PRIMARY = '#e8f0f8';
-const TEXT_MUTED = '#7a92a8';
-const BORDER = '#1f2d3d';
+const BRAND_AMBER = THEME.hrb;
+const BG_DARK = THEME.bg;
+const CARD_BG = THEME.surface;
+const TEXT_PRIMARY = THEME.text;
+const TEXT_MUTED = THEME.textDim;
+const BORDER = THEME.border;
 
 // Match what's configured in RevenueCat dashboard + App Store Connect.
 // User decision (2026-05-22): $14.99/mo, $99/yr (45% off), 3-day free trial.
@@ -255,5 +256,5 @@ const styles = StyleSheet.create({
   linksRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' },
   linkText: { color: TEXT_MUTED, fontSize: 12, textDecorationLine: 'underline' },
   dot: { color: TEXT_MUTED, marginHorizontal: 8 },
-  disclaimer: { color: '#4a6070', fontSize: 10, lineHeight: 14, textAlign: 'center', marginTop: 8 },
+  disclaimer: { color: THEME.textMuted, fontSize: 10, lineHeight: 14, textAlign: 'center', marginTop: 8 },
 });

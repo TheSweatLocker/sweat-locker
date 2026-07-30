@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, Image, StyleSheet } from 'react-native';
 import { SubscriptionProvider } from './contexts/SubscriptionContext';
 
+import { THEME, TIER_COLOR, OUTCOME_COLOR } from './theme';
 const logo = require('../assets/images/splash-logo.png');
 
 export default function RootLayout() {
@@ -44,7 +45,7 @@ const styles = StyleSheet.create({
   splash: {
     position: 'absolute',
     top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: '#080c10',
+    backgroundColor: THEME.bg,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 999,
