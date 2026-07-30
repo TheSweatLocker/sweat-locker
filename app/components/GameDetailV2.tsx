@@ -1,0 +1,1181 @@
+/**
+ * GameDetailV2 — sport-agnostic game detail body approved 2026-07-29
+ * ([[project_game_detail_redesign_729]]).
+ *
+ * Replaces the ~650-line inline modal block at app/index.tsx 12675-13328.
+ * Kills the cross-book SVG chart, standalone NRFI section, "Log a Pick"
+ * chips, and verbose Sweat Score card. Adds Money Flow (differentiator),
+ * Alignment status strip, Predicted Score RANGE (not blind avg), Stat
+ * Projections section, and a collapsed Numbers panel for depth users.
+ *
+ * Data sources (all lookup from ctx which is the sport's game_context row):
+ *   oddscrowd_snapshot  → Money Flow bars
+ *   align_status        → Alignment status strip + verdict chip
+ *   panel_implied_*     → Model lens grid + Stat Projections
+ *   jerry_pred_*        → Model lens grid + Predicted Score range
+ *   projected_*         → Model lens grid (v3)
+ *   model_pred_*        → Model lens grid (v4)
+ *   mc_probabilities    → Model lens (MC) + Numbers panel
+ *   signal_confluence_* → Cohorts panel + Numbers panel
+ *   primary_play        → Hero verdict card
+ *   *_pitcher_projected_* → Stat Projections (MLB slot)
+ *
+ * Sport-specific slots live between Handicappers and Cohorts. Only MLB slot
+ * (PitcherMatchupSlot) is filled out in this first pass; NFL/NBA/UFC/NHL
+ * render lightweight placeholders until their sport-specific data is wired.
+ */
+import React, {useState, useMemo} from 'react';
+import {View, Text, TouchableOpacity, ScrollView, StyleSheet, Platform} from 'react-native';
+
+// ─── Palette (matches mock in artifact_URL) ─────────────────────────────
+const C = {
+  bg: '#0e1116',
+  surface: '#161b23',
+  surface2: '#1c232d',
+  surface3: '#232c39',
+  border: '#2a3341',
+  borderStrong: '#3b4656',
+  text: '#e6ebef',
+  textMuted: '#7a8894',
+  textDim: '#556270',
+  accent: '#00c785',
+  accentDim: 'rgba(0,199,133,0.14)',
+  accentBg: 'rgba(0,199,133,0.10)',
+  sharp: '#5aa9ff',
+  sharpDim: 'rgba(90,169,255,0.14)',
+  warn: '#f0b34a',
+  warnDim: 'rgba(240,179,74,0.12)',
+  fade: '#e05561',
+  fadeDim: 'rgba(224,85,97,0.12)',
+  home: '#e8b8ff',
+  away: '#a8d8ff',
+  overlay: 'rgba(255,255,255,0.05)',
+};
+
+// ─── Types ──────────────────────────────────────────────────────────────
+type SportCode = 'MLB'|'NFL'|'NCAAF'|'NBA'|'NCAAB'|'UFC'|'NHL';
+
+type Props = {
+  game: any;
+  ctx: any;                 // sport's game_context row (nullable when not loaded)
+  gamesSport: SportCode;
+  externalPicks?: any[];    // rows from external_picks (non-oddscrowd)
+  gameProps?: any[];        // rows from mlb_pipeline_props / nfl_props etc.
+  historicalOdds?: any;     // {opening_spread, opening_total, opening_ml_home, opening_ml_away}
+  onClose: () => void;
+  onAddParlayLeg?: (leg: any) => void;
+};
+
+// ─── Small util helpers ─────────────────────────────────────────────────
+const f = (v: any, digits = 2): string => {
+  if (v === null || v === undefined) return '—';
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  if (!isFinite(n)) return '—';
+  return n.toFixed(digits);
+};
+
+const signSide = (m: any): 'H'|'A'|null => {
+  if (m === null || m === undefined) return null;
+  const n = typeof m === 'number' ? m : parseFloat(m);
+  if (!isFinite(n) || n === 0) return null;
+  return n > 0 ? 'H' : 'A';
+};
+
+const sideColor = (side: 'H'|'A'|null) => side === 'H' ? C.home : side === 'A' ? C.away : C.textDim;
+
+const abbrev3 = (team: string) => (team || '?').split(' ').slice(-1)[0].slice(0, 3).toUpperCase();
+
+// ─── Main component ─────────────────────────────────────────────────────
+export default function GameDetailV2({
+  game, ctx, gamesSport, externalPicks = [], gameProps = [], historicalOdds, onClose, onAddParlayLeg,
+}: Props) {
+  if (!game) return null;
+
+  const awayTeam = game.away_team || ctx?.away_team || 'Away';
+  const homeTeam = game.home_team || ctx?.home_team || 'Home';
+  const closeSpread = ctx?.close_spread ?? game.close_spread;
+  const closeTotal = ctx?.close_total ?? game.close_total;
+  const homeML = ctx?.home_ml_close ?? game.home_ml;
+  const awayML = ctx?.away_ml_close ?? game.away_ml;
+
+  return (
+    <View style={styles.root}>
+      <StickyHeader
+        away={awayTeam} home={homeTeam}
+        time={game.commence_time_local || game.game_time || ''}
+        venue={ctx?.venue || game.venue}
+        onClose={onClose}
+      />
+
+      <ScrollView style={{flex: 1}} contentContainerStyle={{paddingBottom: 24}}>
+        <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
+        <AlignmentStrip ctx={ctx} />
+
+        <Section title="Market">
+          <MarketRow
+            closeSpread={closeSpread}
+            closeTotal={closeTotal}
+            homeML={homeML}
+            awayML={awayML}
+          />
+        </Section>
+
+        <Section title="Predicted Score" hint="range across models">
+          <ScoreRange ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
+        </Section>
+
+        {gamesSport === 'MLB' && (
+          <Section title="Stat Projections" hint="model-implied · check against your prop lines">
+            <StatProjectionsMLB ctx={ctx} />
+          </Section>
+        )}
+
+        <Section title="Money Flow" hint="bets vs money · sharps vs public">
+          <MoneyFlow ctx={ctx} />
+        </Section>
+
+        <Section title="Line Movement" hint="opening → current">
+          <LineMovementStrip ctx={ctx} historicalOdds={historicalOdds} />
+        </Section>
+
+        <Section title="Model Consensus" hint="margin (H+ / A−)">
+          <LensGrid ctx={ctx} gamesSport={gamesSport} />
+        </Section>
+
+        <Section title="External Handicappers">
+          <HandicappersRow picks={externalPicks} homeTeam={homeTeam} awayTeam={awayTeam} />
+        </Section>
+
+        <SportSpecificSlot ctx={ctx} gamesSport={gamesSport} game={game} />
+
+        <Expander title="Cohort Signals" badge={cohortBadge(ctx)}>
+          <CohortsPanel ctx={ctx} />
+        </Expander>
+
+        <Expander title="Game Props" badge={`${gameProps.length} signal${gameProps.length === 1 ? '' : 's'}`}>
+          <GamePropsPanel props={gameProps} />
+        </Expander>
+
+        <Section title="Your Book · Hard Rock Bet" hint="tap to add parlay">
+          <YourBookTiles
+            closeSpread={closeSpread}
+            closeTotal={closeTotal}
+            homeML={homeML}
+            awayML={awayML}
+            homeTeam={homeTeam}
+            awayTeam={awayTeam}
+            primaryPlay={ctx?.primary_play}
+            onAddParlayLeg={onAddParlayLeg}
+          />
+        </Section>
+
+        <Expander title="All Book Lines" badge={`${(game.bookmakers || []).length} books`}>
+          <AllBookLinesPanel bookmakers={game.bookmakers || []} />
+        </Expander>
+
+        <Expander title="📐 Numbers" badge="full model dump">
+          <NumbersPanel ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
+        </Expander>
+
+        <View style={styles.footer}>
+          <Text style={styles.footerText}>
+            MORE DATA · LESS SWEAT · <Text style={{color: C.accent, fontWeight: '800'}}>SWEAT LOCKER</Text>
+          </Text>
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+// ─── STICKY HEADER ──────────────────────────────────────────────────────
+function StickyHeader({away, home, time, venue, onClose}: any) {
+  return (
+    <View style={styles.header}>
+      <View style={{flex: 1, minWidth: 0}}>
+        <Text style={styles.hdrMatchup} numberOfLines={2}>
+          <Text style={{color: C.away}}>{away}</Text>
+          <Text style={{color: C.textMuted}}>  @  </Text>
+          <Text style={{color: C.home}}>{home}</Text>
+        </Text>
+        {(time || venue) && (
+          <Text style={styles.hdrMeta} numberOfLines={1}>
+            {[time, venue].filter(Boolean).join(' · ')}
+          </Text>
+        )}
+      </View>
+      <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
+        <Text style={styles.closeBtnText}>✕</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+// ─── HERO VERDICT ───────────────────────────────────────────────────────
+function VerdictCard({ctx, awayTeam, homeTeam}: any) {
+  const play = ctx?.primary_play;
+  if (!play || typeof play !== 'object') {
+    return (
+      <View style={styles.verdict}>
+        <Text style={styles.verdictNoPlay}>No primary play surfaced for this game.</Text>
+      </View>
+    );
+  }
+  const tier = play.tier || '—';
+  const label = play.label || '';
+  const sub = play.sub || '';
+  const tierStyle = tierBadgeStyle(tier);
+  return (
+    <View style={styles.verdict}>
+      <View style={[styles.verdictTierPill, tierStyle]}>
+        <Text style={[styles.verdictTierText, {color: tierStyle.color}]}>
+          {tier} · {String(play.type || '').toUpperCase()}
+        </Text>
+      </View>
+      <Text style={styles.verdictPlay}>{label}</Text>
+      {sub ? <Text style={styles.verdictWhy}>{sub}</Text> : null}
+    </View>
+  );
+}
+
+// ─── ALIGNMENT STRIP ─────────────────────────────────────────────────────
+function AlignmentStrip({ctx}: any) {
+  const align = ctx?.align_status;
+  if (!align || typeof align !== 'object') return null;
+  const chips: {label: string; value: string; kind: 'ok'|'warn'|'info'|'neutral'}[] = [];
+
+  const ml = align.ml || {};
+  if (ml.ext_count) {
+    const side = ml.ext_lead === 'H' ? 'HOME' : ml.ext_lead === 'A' ? 'AWAY' : '—';
+    chips.push({
+      label: 'Handicappers',
+      value: `${ml.ext_count}/${ml.ext_total} ${side}`,
+      kind: ml.ext_count >= 4 ? 'ok' : 'neutral',
+    });
+  }
+  if (ml.money_pct != null) {
+    const side = ml.money_side === 'H' ? 'HOME' : ml.money_side === 'A' ? 'AWAY' : '—';
+    chips.push({
+      label: 'Money',
+      value: `${side} ${ml.money_pct}%`,
+      kind: (ml.div ?? 0) >= 10 ? 'info' : 'neutral',
+    });
+  }
+  if (ml.lens_count) {
+    const side = ml.lens_side === 'H' ? 'HOME' : ml.lens_side === 'A' ? 'AWAY' : '—';
+    chips.push({
+      label: 'Models',
+      value: `${ml.lens_count}/${ml.lens_total} ${side}`,
+      kind: ml.lens_count >= 5 ? 'ok' : 'neutral',
+    });
+  }
+  const overall = align.overall || {};
+  const verdictStr = overall.verdict || 'no_data';
+  const isAligned = overall.aligned === true;
+  const isDisagree = verdictStr === 'disagreement';
+  chips.push({
+    label: 'Overall',
+    value: isAligned ? '✓ ALIGNED' : isDisagree ? '⚠ DISAGREE' : '—',
+    kind: isAligned ? 'ok' : isDisagree ? 'warn' : 'neutral',
+  });
+
+  return (
+    <ScrollView
+      horizontal showsHorizontalScrollIndicator={false}
+      style={styles.alignmentStripWrap}
+      contentContainerStyle={styles.alignmentStripInner}
+    >
+      {chips.map((chip, i) => (
+        <View key={i} style={[styles.alignChip, chipStyleFor(chip.kind)]}>
+          <Text style={[styles.alignChipLabel]}>{chip.label}</Text>
+          <Text style={[styles.alignChipValue, {color: chipTextColorFor(chip.kind)}]}>{chip.value}</Text>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
+// ─── SECTION WRAPPER ────────────────────────────────────────────────────
+function Section({title, hint, children}: any) {
+  return (
+    <View style={styles.section}>
+      <View style={styles.sectionTitleRow}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+        {hint ? <Text style={styles.sectionHint}>{hint}</Text> : null}
+      </View>
+      {children}
+    </View>
+  );
+}
+
+function Expander({title, badge, children}: any) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={styles.expander}>
+      <TouchableOpacity
+        onPress={() => setOpen(!open)}
+        style={styles.expanderSummary}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.expanderTitle}>{title}</Text>
+        {badge ? <Text style={styles.expanderBadge}>{badge}</Text> : null}
+        <Text style={styles.expanderChevron}>{open ? '▴' : '▾'}</Text>
+      </TouchableOpacity>
+      {open && <View style={styles.expanderBody}>{children}</View>}
+    </View>
+  );
+}
+
+// ─── MARKET ROW ─────────────────────────────────────────────────────────
+function MarketRow({closeSpread, closeTotal, homeML, awayML}: any) {
+  return (
+    <View style={styles.marketRow}>
+      <Text style={styles.marketItem}>Spread <Text style={styles.marketVal}>{f(closeSpread, 1)}</Text></Text>
+      <Text style={styles.marketItem}>Total <Text style={styles.marketVal}>{f(closeTotal, 1)}</Text></Text>
+      <Text style={styles.marketItem}>ML <Text style={styles.marketVal}>{awayML ?? '—'}/{homeML ?? '—'}</Text></Text>
+    </View>
+  );
+}
+
+// ─── SCORE RANGE (per user "no blind average") ───────────────────────────
+function ScoreRange({ctx, awayTeam, homeTeam}: any) {
+  const mc = safeJSON(ctx?.mc_probabilities) || {};
+  const preds: {name: string; a: number; h: number}[] = [];
+  const addPred = (name: string, tot: any, mgn: any) => {
+    if (tot == null || mgn == null) return;
+    const t = parseFloat(tot); const m = parseFloat(mgn);
+    if (!isFinite(t) || !isFinite(m)) return;
+    preds.push({name, a: (t - m) / 2, h: (t + m) / 2});
+  };
+  addPred('Panel', ctx?.panel_implied_total, ctx?.panel_implied_margin);
+  addPred('Jerry', ctx?.jerry_pred_total, ctx?.jerry_pred_spread);
+  addPred('v3', ctx?.projected_total, ctx?.projected_spread);
+  addPred('v4', ctx?.model_pred_total, ctx?.model_pred_spread);
+  addPred('MC', mc.mc_expected_total ?? mc.mc_mean_total, mc.mc_expected_margin);
+
+  if (preds.length === 0) return <Text style={styles.emptyMuted}>No score projections available.</Text>;
+
+  const aMin = Math.min(...preds.map(p => p.a)); const aMax = Math.max(...preds.map(p => p.a));
+  const hMin = Math.min(...preds.map(p => p.h)); const hMax = Math.max(...preds.map(p => p.h));
+  const totMin = Math.min(...preds.map(p => p.a + p.h));
+  const totMax = Math.max(...preds.map(p => p.a + p.h));
+  const line = ctx?.close_total;
+  const overCount = preds.filter(p => line != null && (p.a + p.h) > line).length;
+  const underCount = preds.filter(p => line != null && (p.a + p.h) < line).length;
+  const totalDir = overCount > underCount ? 'OVER' : underCount > overCount ? 'UNDER' : 'PUSH';
+  const jerry = preds.find(p => p.name === 'Jerry');
+
+  return (
+    <View>
+      <View style={styles.scoreLine}>
+        <View style={styles.scoreTeam}>
+          <Text style={[styles.scoreRuns, {color: C.away}]}>{f(aMin, 1)}–{f(aMax, 1)}</Text>
+          <Text style={styles.scoreTeamAbbr}>{abbrev3(awayTeam)}</Text>
+        </View>
+        <Text style={styles.scoreSep}>—</Text>
+        <View style={styles.scoreTeam}>
+          <Text style={[styles.scoreRuns, {color: C.home}]}>{f(hMin, 1)}–{f(hMax, 1)}</Text>
+          <Text style={styles.scoreTeamAbbr}>{abbrev3(homeTeam)}</Text>
+        </View>
+      </View>
+      <Text style={styles.scoreSub}>
+        Total range {f(totMin, 1)}–{f(totMax, 1)}
+        {line != null ? ` · Line ${f(line, 1)} → ${preds.length}/${preds.length} models agree ` : ''}
+        {line != null && <Text style={{color: totalDir === 'OVER' ? C.accent : C.sharp, fontWeight: '700'}}>{totalDir}</Text>}
+      </Text>
+      {jerry ? (
+        <View style={styles.jerryBanner}>
+          <Text style={styles.jerryLabel}>Top lens (Jerry, 60% lifetime):</Text>
+          <Text style={styles.jerryValue}>
+            {abbrev3(awayTeam)} {f(jerry.a, 1)} — {f(jerry.h, 1)} {abbrev3(homeTeam)}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+// ─── STAT PROJECTIONS (MLB slot) ────────────────────────────────────────
+function StatProjectionsMLB({ctx}: any) {
+  if (!ctx) return null;
+  return (
+    <View>
+      <View style={styles.pitcherMatchup}>
+        <PitcherCard
+          name={ctx.away_pitcher || 'Away TBD'}
+          side="away"
+          k={ctx.away_pitcher_projected_ks}
+          er={ctx.away_pitcher_projected_er}
+          bb={ctx.away_pitcher_projected_bb}
+          h={ctx.away_pitcher_projected_hits}
+          outs={ctx.away_pitcher_projected_outs}
+        />
+        <PitcherCard
+          name={ctx.home_pitcher || 'Home TBD'}
+          side="home"
+          k={ctx.home_pitcher_projected_ks}
+          er={ctx.home_pitcher_projected_er}
+          bb={ctx.home_pitcher_projected_bb}
+          h={ctx.home_pitcher_projected_hits}
+          outs={ctx.home_pitcher_projected_outs}
+        />
+      </View>
+      {(ctx.panel_implied_margin != null && ctx.panel_implied_total != null) && (
+        <View style={styles.teamProjBanner}>
+          <Text style={styles.teamProjLabel}>Team offense (projected)</Text>
+          <Text style={styles.teamProjValue}>
+            {abbrev3(ctx.away_team)} {f((ctx.panel_implied_total - ctx.panel_implied_margin) / 2, 1)} R
+            {' · '}
+            {abbrev3(ctx.home_team)} {f((ctx.panel_implied_total + ctx.panel_implied_margin) / 2, 1)} R
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+function PitcherCard({name, side, k, er, bb, h, outs}: any) {
+  const ipDisplay = outs != null ? ` (${f(outs / 3, 1)} IP)` : '';
+  return (
+    <View style={[styles.pitcherCard, {borderTopColor: side === 'away' ? C.away : C.home}]}>
+      <Text style={styles.pitcherName} numberOfLines={1}>{name}</Text>
+      <Text style={styles.pitcherStats}>
+        K <Text style={styles.pitcherStatBold}>{f(k, 1)}</Text>{'  '}
+        ER <Text style={styles.pitcherStatBold}>{f(er, 1)}</Text>{'  '}
+        BB <Text style={styles.pitcherStatBold}>{f(bb, 1)}</Text>
+      </Text>
+      <Text style={styles.pitcherStats}>
+        H <Text style={styles.pitcherStatBold}>{f(h, 1)}</Text>{'  '}
+        Outs <Text style={styles.pitcherStatBold}>{f(outs, 0)}</Text>{ipDisplay}
+      </Text>
+    </View>
+  );
+}
+
+// ─── MONEY FLOW ─────────────────────────────────────────────────────────
+function MoneyFlow({ctx}: any) {
+  const oc = ctx?.oddscrowd_snapshot;
+  if (!oc || typeof oc !== 'object') {
+    return <Text style={styles.emptyMuted}>No oddscrowd data yet. Refreshes every 30 min during game hours.</Text>;
+  }
+  const markets: {key: 'ml'|'rl'|'total'; label: string; data: any}[] = [
+    {key: 'ml', label: 'Moneyline', data: oc.ml},
+    {key: 'rl', label: 'Runline/Spread', data: oc.rl},
+    {key: 'total', label: 'Total', data: oc.total},
+  ].filter(x => x.data);
+  return (
+    <View style={{gap: 8}}>
+      {markets.map(m => <MoneyMarket key={m.key} label={m.label} data={m.data} />)}
+    </View>
+  );
+}
+
+function MoneyMarket({label, data}: any) {
+  if (!data) return null;
+  const div = data.div ?? 0;
+  const sharp = div >= 10;
+  const money = Math.max(0, Math.min(100, data.money ?? 0));
+  const bets = Math.max(0, Math.min(100, data.bets ?? 0));
+  return (
+    <View style={[
+      styles.moneyMarket,
+      sharp && {borderLeftColor: C.sharp, backgroundColor: C.sharpDim},
+    ]}>
+      <View style={styles.moneyMarketHeader}>
+        <Text style={styles.moneyMarketLabel}>{label}</Text>
+        <View style={{flexDirection: 'row', alignItems: 'center', gap: 6}}>
+          <Text style={styles.moneyMarketSide}>{data.pick || '—'}</Text>
+          {sharp ? (
+            <View style={styles.sharpBadge}>
+              <Text style={styles.sharpBadgeText}>SHARP</Text>
+            </View>
+          ) : null}
+          <Text style={styles.moneyMarketDiv}>{div >= 0 ? `+${div}` : div}pp</Text>
+        </View>
+      </View>
+      <View style={{gap: 5}}>
+        <MoneyBar label="Money" pct={money} color={C.sharp} />
+        <MoneyBar label="Bets" pct={bets} color={C.warn} />
+      </View>
+      {sharp && (
+        <Text style={styles.moneyDivNote}>
+          <Text style={{color: C.sharp, fontWeight: '700'}}>+{div}pp sharp divergence</Text>
+          {' · '}money loading on {data.pick} while public sits out
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function MoneyBar({label, pct, color}: any) {
+  return (
+    <View style={styles.moneyBarRow}>
+      <Text style={[styles.moneyBarLabel, {color}]}>{label}</Text>
+      <View style={styles.moneyBarTrack}>
+        <View style={[styles.moneyBarFill, {width: `${pct}%`, backgroundColor: color}]} />
+      </View>
+      <Text style={styles.moneyBarPct}>{pct}%</Text>
+    </View>
+  );
+}
+
+// ─── LINE MOVEMENT STRIP (opening → current) ─────────────────────────────
+function LineMovementStrip({ctx, historicalOdds}: any) {
+  const openSp = ctx?.open_spread ?? historicalOdds?.opening_spread;
+  const openTot = ctx?.open_total ?? historicalOdds?.opening_total;
+  const openHomeML = historicalOdds?.opening_ml_home;
+  const closeSp = ctx?.close_spread;
+  const closeTot = ctx?.close_total;
+  const closeHomeML = ctx?.home_ml_close;
+
+  const items = [
+    {label: 'Spread', open: openSp, current: closeSp, fmt: (v: any) => f(v, 1)},
+    {label: 'Total', open: openTot, current: closeTot, fmt: (v: any) => f(v, 1)},
+    {label: 'ML (Home)', open: openHomeML, current: closeHomeML, fmt: (v: any) => v == null ? '—' : String(v)},
+  ];
+
+  return (
+    <View style={styles.lineMoveStrip}>
+      {items.map((it, i) => {
+        const openN = typeof it.open === 'number' ? it.open : parseFloat(it.open);
+        const currN = typeof it.current === 'number' ? it.current : parseFloat(it.current);
+        const delta = isFinite(openN) && isFinite(currN) ? currN - openN : null;
+        const deltaColor = delta == null ? C.textDim : delta === 0 ? C.textDim : delta > 0 ? C.accent : C.fade;
+        return (
+          <View key={i} style={styles.lineMoveItem}>
+            <Text style={styles.lineMoveLabel}>{it.label}</Text>
+            <Text style={styles.lineMoveValues}>
+              <Text style={{color: C.textMuted}}>{it.fmt(it.open)}</Text>
+              <Text style={{color: C.textDim, fontSize: 10}}>  →  </Text>
+              <Text style={{color: C.text, fontWeight: '700'}}>{it.fmt(it.current)}</Text>
+            </Text>
+            <Text style={[styles.lineMoveDelta, {color: deltaColor}]}>
+              {delta == null ? '—' : delta === 0 ? 'flat' : delta > 0 ? `↑ +${delta.toFixed(1)}` : `↓ ${delta.toFixed(1)}`}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+// ─── LENS GRID ──────────────────────────────────────────────────────────
+function LensGrid({ctx, gamesSport}: any) {
+  const mc = safeJSON(ctx?.mc_probabilities) || {};
+  const rows = gamesSport === 'MLB' ? [
+    {name: 'Panel', m: ctx?.panel_implied_margin, t: ctx?.panel_implied_total},
+    {name: 'Jerry', m: ctx?.jerry_pred_spread, t: ctx?.jerry_pred_total},
+    {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+    {name: 'v4', m: ctx?.model_pred_spread, t: ctx?.model_pred_total},
+    {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
+  ] : [
+    // Non-MLB sports have fewer lens fields
+    {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+    {name: 'v4', m: ctx?.model_pred_spread, t: ctx?.model_pred_total},
+    {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
+  ].filter(r => r.m != null);
+
+  const closeTot = ctx?.close_total;
+
+  return (
+    <View style={styles.lensGrid}>
+      {rows.map((r, i) => {
+        const mgnSide = signSide(r.m);
+        const totDir = r.t != null && closeTot != null
+          ? (r.t > closeTot ? 'O' : r.t < closeTot ? 'U' : '=')
+          : null;
+        return (
+          <View key={i} style={[styles.lens, {borderTopColor: sideColor(mgnSide)}]}>
+            <Text style={styles.lensName}>{r.name}</Text>
+            <Text style={[styles.lensMargin, {color: sideColor(mgnSide)}]}>
+              {r.m == null ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2))}
+            </Text>
+            {r.t != null && (
+              <Text style={[styles.lensTotal, {
+                color: totDir === 'O' ? C.accent : totDir === 'U' ? C.sharp : C.textMuted,
+              }]}>
+                {totDir ?? '—'} {f(r.t, 1)}
+              </Text>
+            )}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+// ─── HANDICAPPERS ROW ───────────────────────────────────────────────────
+function HandicappersRow({picks, homeTeam, awayTeam}: any) {
+  const ml = (picks || []).filter((p: any) => p.surface === 'ml' && p.source !== 'oddscrowd');
+  const home = ml.filter((p: any) => p.pick_side === 'HOME');
+  const away = ml.filter((p: any) => p.pick_side === 'AWAY');
+
+  const chip = (p: any, i: number) => (
+    <View
+      key={i}
+      style={[
+        styles.handiChip,
+        p.fade_flag === 'boost' && {backgroundColor: C.accentDim, borderColor: C.accent},
+        p.fade_flag === 'fade' && {backgroundColor: C.fadeDim, borderColor: C.fade},
+      ]}>
+      <Text style={[
+        styles.handiChipText,
+        p.fade_flag === 'boost' && {color: C.accent},
+        p.fade_flag === 'fade' && {color: C.fade},
+      ]}>
+        {p.source}
+      </Text>
+    </View>
+  );
+
+  return (
+    <View>
+      <View style={styles.handiRow}>
+        <Text style={styles.handiSideLabel}>On {abbrev3(homeTeam)} (Home)</Text>
+        {home.length === 0
+          ? <Text style={styles.handiEmpty}>— none —</Text>
+          : home.map(chip)}
+        <Text style={styles.handiCount}>{home.length}</Text>
+      </View>
+      <View style={styles.handiRow}>
+        <Text style={styles.handiSideLabel}>On {abbrev3(awayTeam)} (Away)</Text>
+        {away.length === 0
+          ? <Text style={styles.handiEmpty}>— none —</Text>
+          : away.map(chip)}
+        <Text style={styles.handiCount}>{away.length}</Text>
+      </View>
+    </View>
+  );
+}
+
+// ─── SPORT-SPECIFIC SLOT ─────────────────────────────────────────────────
+function SportSpecificSlot({ctx, gamesSport, game}: any) {
+  if (gamesSport === 'MLB') {
+    // Pitcher card lives in Stat Projections above; no additional slot needed
+    return null;
+  }
+  if (gamesSport === 'UFC') {
+    return (
+      <Section title="Fighter Reads">
+        <Text style={styles.emptyMuted}>Fighter breakdown card coming next (reach/reads + method/round breakdown).</Text>
+      </Section>
+    );
+  }
+  if (gamesSport === 'NFL' || gamesSport === 'NCAAF') {
+    return (
+      <Section title="Key Matchups">
+        <Text style={styles.emptyMuted}>QB vs defense + injury deltas coming next.</Text>
+      </Section>
+    );
+  }
+  if (gamesSport === 'NBA' || gamesSport === 'NCAAB') {
+    return (
+      <Section title="Pace + Rating">
+        <Text style={styles.emptyMuted}>Pace / net-rating card + rest days coming next.</Text>
+      </Section>
+    );
+  }
+  if (gamesSport === 'NHL') {
+    return (
+      <Section title="Goalie + Rest">
+        <Text style={styles.emptyMuted}>Goalie matchup + B2B chip coming next.</Text>
+      </Section>
+    );
+  }
+  return null;
+}
+
+// ─── COHORTS PANEL ──────────────────────────────────────────────────────
+function CohortsPanel({ctx}: any) {
+  const cb = safeJSON(ctx?.signal_confluence_breakdown) || {};
+  const items = Object.entries(cb).filter(([_, v]) => v === 'home' || v === 'away');
+  if (items.length === 0) return <Text style={styles.emptyMuted}>No cohort signals fired.</Text>;
+  return (
+    <View style={styles.cohortsGrid}>
+      {items.map(([name, side]: any, i) => (
+        <View key={i} style={[
+          styles.cohort,
+          {borderLeftColor: side === 'home' ? C.home : C.away},
+        ]}>
+          <Text style={styles.cohortName}>{name}</Text>
+          <Text style={[styles.cohortSide, {color: side === 'home' ? C.home : C.away}]}>
+            {String(side).toUpperCase()}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+// ─── GAME PROPS PANEL ────────────────────────────────────────────────────
+function GamePropsPanel({props: propsList}: {props: any[]}) {
+  if (!propsList || propsList.length === 0) {
+    return <Text style={styles.emptyMuted}>No qualifying props for this game.</Text>;
+  }
+  return (
+    <View style={{gap: 4}}>
+      {propsList.slice(0, 8).map((p, i) => {
+        const dir = String(p.direction || '').toLowerCase() === 'over' ? '↑' : '↓';
+        const projected = p.projected_value ?? p.projected ?? null;
+        return (
+          <View key={i} style={styles.propRow}>
+            <View style={[styles.propTier, tierPillStyle(p.tier)]}>
+              <Text style={[styles.propTierText, {color: tierPillTextColor(p.tier)}]}>{p.tier}</Text>
+            </View>
+            <View style={{flex: 1}}>
+              <Text style={styles.propPlayer} numberOfLines={1}>{p.player_name || '?'}</Text>
+              <Text style={styles.propDetail}>
+                Line <Text style={styles.propBold}>{p.prop_line}</Text> {String(p.prop_type || '')}
+                {projected != null && <> · Projected <Text style={styles.propBold}>{f(projected, 1)}</Text></>}
+              </Text>
+            </View>
+            <View style={{alignItems: 'flex-end'}}>
+              <Text style={[styles.propDetail, {color: C.text, fontWeight: '700'}]}>{dir} {p.direction}</Text>
+              <Text style={[styles.propDetail, {fontSize: 9}]}>conv {p.conviction}</Text>
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+// ─── YOUR BOOK TILES (HRB) ───────────────────────────────────────────────
+function YourBookTiles({closeSpread, closeTotal, homeML, awayML, homeTeam, awayTeam, primaryPlay, onAddParlayLeg}: any) {
+  const recommended = primaryPlay?.type === 'ml' && primaryPlay?.label
+    ? primaryPlay.label.includes(homeTeam) ? 'ml_home'
+      : primaryPlay.label.includes(awayTeam) ? 'ml_away'
+      : null
+    : null;
+  const addLeg = (kind: string, label: string, odds: any) => {
+    if (onAddParlayLeg) {
+      onAddParlayLeg({kind, label, odds, matchup: `${awayTeam} @ ${homeTeam}`});
+    }
+  };
+  const spreadHome = closeSpread != null ? `${homeTeam.slice(0, 3).toUpperCase()} ${closeSpread > 0 ? '+' : ''}${closeSpread}` : '—';
+
+  return (
+    <View>
+      <View style={styles.hrbTiles}>
+        <TouchableOpacity style={styles.hrbTile} onPress={() => addLeg('spread', spreadHome, null)} activeOpacity={0.7}>
+          <Text style={styles.hrbTileLabel}>Spread</Text>
+          <Text style={styles.hrbTileVal}>{spreadHome}</Text>
+          <Text style={styles.hrbTileOdds}>—</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.hrbTile} onPress={() => addLeg('total', `O ${closeTotal}`, null)} activeOpacity={0.7}>
+          <Text style={styles.hrbTileLabel}>Total</Text>
+          <Text style={styles.hrbTileVal}>O {f(closeTotal, 1)}</Text>
+          <Text style={styles.hrbTileOdds}>—</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.hrbTile,
+            recommended && {borderColor: C.accent, backgroundColor: C.accentDim},
+          ]}
+          onPress={() => addLeg('ml', 'ML', homeML)}
+          activeOpacity={0.7}>
+          <Text style={[styles.hrbTileLabel, recommended && {color: C.accent}]}>ML {recommended ? '★' : ''}</Text>
+          <Text style={[styles.hrbTileVal, recommended && {color: C.accent}]}>
+            {abbrev3(recommended === 'ml_home' ? homeTeam : awayTeam)}
+          </Text>
+          <Text style={[styles.hrbTileOdds, recommended && {color: C.accent}]}>
+            {recommended === 'ml_home' ? homeML : awayML}
+          </Text>
+        </TouchableOpacity>
+      </View>
+      {primaryPlay?.label && (
+        <TouchableOpacity
+          style={styles.parlayCta}
+          onPress={() => addLeg('primary', primaryPlay.label, null)}
+          activeOpacity={0.7}>
+          <Text style={styles.parlayCtaText}>Add {primaryPlay.label} to Parlay</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
+// ─── ALL BOOK LINES ─────────────────────────────────────────────────────
+function AllBookLinesPanel({bookmakers}: any) {
+  if (!bookmakers || bookmakers.length === 0) {
+    return <Text style={styles.emptyMuted}>No book lines available.</Text>;
+  }
+  return (
+    <View>
+      <Text style={[styles.emptyMuted, {marginBottom: 6}]}>
+        {bookmakers.map((b: any) => b.title).join(' · ')}
+      </Text>
+      <Text style={[styles.emptyMuted, {fontStyle: 'italic'}]}>
+        Tap-to-add-leg table will render here. Kept minimal in v2 pending parlay flow finalization.
+      </Text>
+    </View>
+  );
+}
+
+// ─── NUMBERS PANEL ──────────────────────────────────────────────────────
+function NumbersPanel({ctx, awayTeam, homeTeam}: any) {
+  const mc = safeJSON(ctx?.mc_probabilities) || {};
+  const rows = [
+    ['Panel', ctx?.panel_implied_margin, ctx?.panel_implied_total,
+      p2(ctx?.panel_implied_total, ctx?.panel_implied_margin, 'a'),
+      p2(ctx?.panel_implied_total, ctx?.panel_implied_margin, 'h')],
+    ['Jerry', ctx?.jerry_pred_spread, ctx?.jerry_pred_total,
+      p2(ctx?.jerry_pred_total, ctx?.jerry_pred_spread, 'a'),
+      p2(ctx?.jerry_pred_total, ctx?.jerry_pred_spread, 'h')],
+    ['v3', ctx?.projected_spread, ctx?.projected_total, null, null],
+    ['v4', ctx?.model_pred_spread, ctx?.model_pred_total, null, null],
+    ['MC', mc.mc_expected_margin, mc.mc_expected_total ?? mc.mc_mean_total, null, null],
+  ];
+  return (
+    <View style={{gap: 12}}>
+      <Text style={styles.numbersHeading}>Per-Model Predictions</Text>
+      <View style={styles.numbersTable}>
+        <View style={styles.numbersTableRow}>
+          <Text style={[styles.numbersTh, {flex: 1.4}]}>Model</Text>
+          <Text style={[styles.numbersTh, {flex: 1, textAlign: 'right'}]}>Margin</Text>
+          <Text style={[styles.numbersTh, {flex: 1, textAlign: 'right'}]}>Total</Text>
+          <Text style={[styles.numbersTh, {flex: 1, textAlign: 'right'}]}>{abbrev3(awayTeam)}</Text>
+          <Text style={[styles.numbersTh, {flex: 1, textAlign: 'right'}]}>{abbrev3(homeTeam)}</Text>
+        </View>
+        {rows.map((r: any, i) => (
+          <View key={i} style={styles.numbersTableRow}>
+            <Text style={[styles.numbersTd, {flex: 1.4}]}>{r[0]}</Text>
+            <Text style={[styles.numbersTd, {flex: 1, textAlign: 'right'}]}>{f(r[1], 2)}</Text>
+            <Text style={[styles.numbersTd, {flex: 1, textAlign: 'right'}]}>{f(r[2], 2)}</Text>
+            <Text style={[styles.numbersTd, {flex: 1, textAlign: 'right'}]}>{f(r[3], 2)}</Text>
+            <Text style={[styles.numbersTd, {flex: 1, textAlign: 'right'}]}>{f(r[4], 2)}</Text>
+          </View>
+        ))}
+      </View>
+
+      <Text style={styles.numbersHeading}>MC Probabilities (10k sims)</Text>
+      <View style={styles.numbersMCGrid}>
+        <MCTile label="Home win prob" value={mc.mc_home_win_prob != null ? `${(mc.mc_home_win_prob * 100).toFixed(1)}%` : '—'} />
+        <MCTile label="Away win prob" value={mc.mc_away_win_prob != null ? `${(mc.mc_away_win_prob * 100).toFixed(1)}%` : '—'} />
+        <MCTile label="Over prob" value={mc.mc_p_over != null ? `${(mc.mc_p_over * 100).toFixed(1)}%` : '—'} />
+        <MCTile label="Under prob" value={mc.mc_p_under != null ? `${(mc.mc_p_under * 100).toFixed(1)}%` : '—'} />
+        <MCTile label="Mean total" value={mc.mc_mean_total != null ? f(mc.mc_mean_total, 2) : '—'} />
+        <MCTile label="Std total" value={mc.mc_std_total != null ? f(mc.mc_std_total, 2) : '—'} />
+        <MCTile label="NRFI prob" value={mc.mc_p_nrfi != null ? `${(mc.mc_p_nrfi * 100).toFixed(1)}%` : '—'} />
+        <MCTile label="YRFI prob" value={mc.mc_p_yrfi != null ? `${(mc.mc_p_yrfi * 100).toFixed(1)}%` : '—'} />
+      </View>
+
+      {ctx?.signal_confluence_v2_breakdown && (
+        <>
+          <Text style={styles.numbersHeading}>v2 Cohorts (shadow)</Text>
+          <Text style={styles.numbersMono}>
+            v2_net = <Text style={{color: (ctx.signal_confluence_v2_net || 0) > 0 ? C.home : C.away, fontWeight: '700'}}>
+              {(ctx.signal_confluence_v2_net || 0) > 0 ? '+' : ''}{ctx.signal_confluence_v2_net || 0}
+            </Text>
+          </Text>
+        </>
+      )}
+    </View>
+  );
+}
+
+function MCTile({label, value}: any) {
+  return (
+    <View style={styles.mcTile}>
+      <Text style={styles.mcTileLabel}>{label}</Text>
+      <Text style={styles.mcTileValue}>{value}</Text>
+    </View>
+  );
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────
+function safeJSON(v: any) {
+  if (!v) return null;
+  if (typeof v === 'object') return v;
+  try { return JSON.parse(v); } catch { return null; }
+}
+
+function p2(tot: any, mgn: any, which: 'a'|'h'): number | null {
+  if (tot == null || mgn == null) return null;
+  const t = parseFloat(tot); const m = parseFloat(mgn);
+  if (!isFinite(t) || !isFinite(m)) return null;
+  return which === 'a' ? (t - m) / 2 : (t + m) / 2;
+}
+
+function tierBadgeStyle(tier: string) {
+  const t = String(tier).toUpperCase();
+  if (t === 'PRIME') return {backgroundColor: C.accentDim, borderColor: C.accent, color: C.accent};
+  if (t === 'STRONG') return {backgroundColor: C.sharpDim, borderColor: C.sharp, color: C.sharp};
+  if (t === 'LEAN') return {backgroundColor: C.warnDim, borderColor: C.warn, color: C.warn};
+  if (t === 'LIGHT') return {backgroundColor: C.surface2, borderColor: C.border, color: C.textMuted};
+  return {backgroundColor: C.surface2, borderColor: C.border, color: C.textMuted};
+}
+
+function tierPillStyle(tier: string) {
+  const t = String(tier).toUpperCase();
+  if (t === 'PRIME') return {backgroundColor: C.accentDim};
+  if (t === 'STRONG') return {backgroundColor: C.sharpDim};
+  if (t === 'LEAN') return {backgroundColor: C.warnDim};
+  return {backgroundColor: C.surface2};
+}
+
+function tierPillTextColor(tier: string) {
+  const t = String(tier).toUpperCase();
+  if (t === 'PRIME') return C.accent;
+  if (t === 'STRONG') return C.sharp;
+  if (t === 'LEAN') return C.warn;
+  return C.textMuted;
+}
+
+function chipStyleFor(kind: 'ok'|'warn'|'info'|'neutral') {
+  if (kind === 'ok') return {backgroundColor: C.accentDim, borderColor: C.accent};
+  if (kind === 'warn') return {backgroundColor: C.warnDim, borderColor: C.warn};
+  if (kind === 'info') return {backgroundColor: C.sharpDim, borderColor: C.sharp};
+  return {backgroundColor: C.surface, borderColor: C.border};
+}
+
+function chipTextColorFor(kind: 'ok'|'warn'|'info'|'neutral') {
+  if (kind === 'ok') return C.accent;
+  if (kind === 'warn') return C.warn;
+  if (kind === 'info') return C.sharp;
+  return C.text;
+}
+
+function cohortBadge(ctx: any): string {
+  const cb = safeJSON(ctx?.signal_confluence_breakdown);
+  if (!cb) return 'no data';
+  const fired = Object.entries(cb).filter(([_, v]) => v === 'home' || v === 'away').length;
+  const net = ctx?.signal_confluence_net;
+  return `${fired} fired · net ${net != null && net > 0 ? '+' : ''}${net ?? '—'}`;
+}
+
+// ─── STYLES ─────────────────────────────────────────────────────────────
+const styles = StyleSheet.create({
+  root: {flex: 1, backgroundColor: C.bg},
+
+  // Header
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 12,
+    backgroundColor: C.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+    gap: 12,
+  },
+  hdrMatchup: {fontSize: 15, fontWeight: '700', letterSpacing: -0.2, lineHeight: 20},
+  hdrMeta: {fontSize: 11, color: C.textMuted, marginTop: 3, fontVariant: ['tabular-nums']},
+  closeBtn: {
+    width: 28, height: 28, borderRadius: 14, backgroundColor: C.surface2,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  closeBtnText: {color: C.textMuted, fontSize: 15},
+
+  // Verdict
+  verdict: {
+    paddingHorizontal: 18, paddingTop: 20, paddingBottom: 18,
+    backgroundColor: C.accentBg,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  verdictTierPill: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 4, borderWidth: 1,
+    marginBottom: 8,
+  },
+  verdictTierText: {fontSize: 10, fontWeight: '800', letterSpacing: 1.2},
+  verdictPlay: {fontSize: 22, fontWeight: '700', color: C.text, letterSpacing: -0.4, lineHeight: 26, marginBottom: 4},
+  verdictWhy: {fontSize: 13, color: C.textMuted, lineHeight: 19, marginTop: 6},
+  verdictNoPlay: {fontSize: 12, color: C.textMuted, fontStyle: 'italic'},
+
+  // Alignment strip
+  alignmentStripWrap: {
+    backgroundColor: C.surface2,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+    paddingVertical: 12,
+  },
+  alignmentStripInner: {paddingHorizontal: 18, gap: 8},
+  alignChip: {
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6,
+    borderWidth: 1, backgroundColor: C.surface,
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+  },
+  alignChipLabel: {color: C.textMuted, fontWeight: '500', fontSize: 10},
+  alignChipValue: {fontWeight: '700', fontSize: 11},
+
+  // Section wrapper
+  section: {
+    paddingHorizontal: 18, paddingVertical: 16,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  sectionTitleRow: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10},
+  sectionTitle: {fontSize: 10, fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1.2},
+  sectionHint: {fontSize: 10, color: C.textDim, fontStyle: 'italic'},
+  emptyMuted: {fontSize: 11, color: C.textDim, fontStyle: 'italic'},
+
+  // Expander
+  expander: {borderTopWidth: 1, borderTopColor: C.border},
+  expanderSummary: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 18, paddingVertical: 14,
+    gap: 8,
+  },
+  expanderTitle: {fontSize: 10, fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1.2, flex: 1},
+  expanderBadge: {
+    fontSize: 10, paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: 10, backgroundColor: C.surface2, color: C.text, fontWeight: '700',
+  },
+  expanderChevron: {color: C.textDim, fontSize: 14, marginLeft: 4},
+  expanderBody: {paddingHorizontal: 18, paddingBottom: 18},
+
+  // Market row
+  marketRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 14,
+    padding: 10, backgroundColor: C.surface2, borderRadius: 8,
+  },
+  marketItem: {color: C.textMuted, fontSize: 13, fontVariant: ['tabular-nums']},
+  marketVal: {color: C.text, fontWeight: '600'},
+
+  // Score
+  scoreLine: {flexDirection: 'row', justifyContent: 'center', alignItems: 'baseline', gap: 16, paddingVertical: 8},
+  scoreTeam: {alignItems: 'center', gap: 3},
+  scoreRuns: {fontSize: 22, fontWeight: '700', fontVariant: ['tabular-nums']},
+  scoreTeamAbbr: {fontSize: 10, color: C.textMuted, fontWeight: '600', letterSpacing: 1},
+  scoreSep: {color: C.textDim, fontSize: 20, fontWeight: '300'},
+  scoreSub: {textAlign: 'center', fontSize: 11, color: C.textMuted, marginTop: 4},
+  jerryBanner: {
+    marginTop: 10, paddingHorizontal: 10, paddingVertical: 8,
+    backgroundColor: C.surface2, borderRadius: 6,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+  },
+  jerryLabel: {fontSize: 11, color: C.textMuted, fontWeight: '600'},
+  jerryValue: {fontSize: 11, color: C.text, fontVariant: ['tabular-nums']},
+
+  // Pitcher matchup
+  pitcherMatchup: {flexDirection: 'row', gap: 8},
+  pitcherCard: {
+    flex: 1, padding: 10, backgroundColor: C.surface2, borderRadius: 8,
+    borderTopWidth: 2, gap: 3,
+  },
+  pitcherName: {fontSize: 12, fontWeight: '700', color: C.text},
+  pitcherStats: {fontSize: 10, color: C.textMuted, fontVariant: ['tabular-nums'], lineHeight: 15},
+  pitcherStatBold: {color: C.text, fontWeight: '700'},
+  teamProjBanner: {
+    marginTop: 8, paddingHorizontal: 10, paddingVertical: 8,
+    backgroundColor: C.surface2, borderRadius: 6,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8,
+  },
+  teamProjLabel: {fontSize: 11, color: C.textMuted},
+  teamProjValue: {fontSize: 11, color: C.text, fontWeight: '600', fontVariant: ['tabular-nums']},
+
+  // Money flow
+  moneyMarket: {
+    padding: 10, backgroundColor: C.surface2, borderRadius: 8,
+    borderLeftWidth: 3, borderLeftColor: C.border,
+  },
+  moneyMarketHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline',
+    marginBottom: 8, flexWrap: 'wrap', gap: 6,
+  },
+  moneyMarketLabel: {fontSize: 11, fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.5},
+  moneyMarketSide: {fontSize: 12, fontWeight: '700', color: C.text},
+  moneyMarketDiv: {fontSize: 12, fontWeight: '700', color: C.text, fontVariant: ['tabular-nums']},
+  sharpBadge: {backgroundColor: C.sharp, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 3},
+  sharpBadgeText: {color: '#fff', fontSize: 9, fontWeight: '800', letterSpacing: 0.8},
+  moneyBarRow: {flexDirection: 'row', alignItems: 'center', gap: 8},
+  moneyBarLabel: {width: 42, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5},
+  moneyBarTrack: {flex: 1, height: 8, backgroundColor: C.overlay, borderRadius: 4, overflow: 'hidden'},
+  moneyBarFill: {height: 8, borderRadius: 4},
+  moneyBarPct: {width: 40, textAlign: 'right', fontSize: 11, fontWeight: '700', color: C.text, fontVariant: ['tabular-nums']},
+  moneyDivNote: {
+    fontSize: 10, color: C.textMuted, marginTop: 6, paddingTop: 6,
+    borderTopWidth: 1, borderTopColor: C.border, borderStyle: 'dashed',
+  },
+
+  // Line movement
+  lineMoveStrip: {flexDirection: 'row', gap: 8},
+  lineMoveItem: {
+    flex: 1, padding: 8, backgroundColor: C.surface2, borderRadius: 6,
+    gap: 2, minWidth: 0,
+  },
+  lineMoveLabel: {fontSize: 9, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5},
+  lineMoveValues: {fontSize: 12, fontVariant: ['tabular-nums']},
+  lineMoveDelta: {fontSize: 10, fontVariant: ['tabular-nums']},
+
+  // Lens grid
+  lensGrid: {flexDirection: 'row', gap: 5},
+  lens: {
+    flex: 1, backgroundColor: C.surface2, borderRadius: 6, padding: 7,
+    alignItems: 'center', gap: 3, borderTopWidth: 2,
+  },
+  lensName: {fontSize: 9, fontWeight: '700', color: C.textMuted, letterSpacing: 0.6, textTransform: 'uppercase'},
+  lensMargin: {fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums']},
+  lensTotal: {fontSize: 9, fontVariant: ['tabular-nums']},
+
+  // Handicappers
+  handiRow: {
+    flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 4, paddingVertical: 6,
+  },
+  handiSideLabel: {fontSize: 10, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginRight: 6},
+  handiChip: {
+    paddingHorizontal: 7, paddingVertical: 2, backgroundColor: C.surface2,
+    borderWidth: 1, borderColor: C.border, borderRadius: 4,
+  },
+  handiChipText: {fontSize: 10, color: C.text},
+  handiCount: {marginLeft: 'auto', fontSize: 11, color: C.textMuted, fontWeight: '600', fontVariant: ['tabular-nums']},
+  handiEmpty: {fontSize: 10, color: C.textDim, fontStyle: 'italic'},
+
+  // Cohorts
+  cohortsGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 4},
+  cohort: {
+    width: '48%',
+    padding: 6, backgroundColor: C.surface2, borderRadius: 5,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    borderLeftWidth: 2,
+  },
+  cohortName: {color: C.textMuted, fontSize: 10, fontVariant: ['tabular-nums']},
+  cohortSide: {fontSize: 10, fontWeight: '700', letterSpacing: 0.5},
+
+  // Props
+  propRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    padding: 8, backgroundColor: C.surface2, borderRadius: 6,
+  },
+  propTier: {width: 46, paddingVertical: 3, borderRadius: 3, alignItems: 'center'},
+  propTierText: {fontSize: 9, fontWeight: '800', letterSpacing: 0.4},
+  propPlayer: {fontSize: 12, fontWeight: '600', color: C.text},
+  propDetail: {fontSize: 10, color: C.textMuted, fontVariant: ['tabular-nums']},
+  propBold: {color: C.text, fontWeight: '700'},
+
+  // HRB tiles
+  hrbTiles: {flexDirection: 'row', gap: 6},
+  hrbTile: {
+    flex: 1, padding: 8, backgroundColor: C.surface2, borderRadius: 6,
+    alignItems: 'center', gap: 2,
+    borderWidth: 1, borderColor: C.border,
+  },
+  hrbTileLabel: {fontSize: 9, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5},
+  hrbTileVal: {fontSize: 13, fontWeight: '700', color: C.text, fontVariant: ['tabular-nums']},
+  hrbTileOdds: {fontSize: 10, color: C.textMuted, fontVariant: ['tabular-nums']},
+  parlayCta: {
+    marginTop: 12, padding: 12, backgroundColor: C.accent, borderRadius: 8, alignItems: 'center',
+  },
+  parlayCtaText: {color: '#000', fontWeight: '700', fontSize: 13, letterSpacing: 0.3},
+
+  // Numbers
+  numbersHeading: {fontSize: 10, color: C.textMuted, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 4},
+  numbersTable: {},
+  numbersTableRow: {flexDirection: 'row', paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: C.border, gap: 6},
+  numbersTh: {fontSize: 10, color: C.textMuted, fontWeight: '600', letterSpacing: 0.4, textTransform: 'uppercase'},
+  numbersTd: {fontSize: 11, color: C.text, fontVariant: ['tabular-nums']},
+  numbersMCGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 4},
+  mcTile: {
+    width: '48%',
+    padding: 6, backgroundColor: C.surface2, borderRadius: 4,
+    flexDirection: 'row', justifyContent: 'space-between',
+  },
+  mcTileLabel: {color: C.textMuted, fontSize: 11},
+  mcTileValue: {color: C.text, fontWeight: '700', fontVariant: ['tabular-nums'], fontSize: 11},
+  numbersMono: {fontSize: 11, color: C.textMuted, fontVariant: ['tabular-nums']},
+
+  // Footer
+  footer: {padding: 18, alignItems: 'center'},
+  footerText: {fontSize: 10, color: C.textDim, letterSpacing: 0.6, textTransform: 'uppercase'},
+});

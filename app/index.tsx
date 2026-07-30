@@ -9,6 +9,7 @@ import { RecapStrip } from './components/RecapStrip';
 import { CohortDashboard } from './components/CohortDashboard';
 import { ExternalPicksPanel } from './components/ExternalPicksPanel';
 import { TierIntegrityBadge } from './components/TierIntegrityBadge';
+import GameDetailV2 from './components/GameDetailV2';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Sport } from './lib/sportPeriods';
 
@@ -12672,8 +12673,55 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
         </View>
       </View>
 
+      {/* Game detail modal — redesigned v2 (project_game_detail_redesign_729).
+          Replaces the ~650-line inline block that used to live here.
+          All rendering lives in components/GameDetailV2.tsx; this Modal is
+          just the slide-in wrapper. */}
       {selectedGame&&(
         <Modal visible={gameDetailModal} animationType="slide" transparent>
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalSheet,{maxHeight:'96%',padding:0,overflow:'hidden'}]}>
+              <GameDetailV2
+                game={selectedGame}
+                ctx={
+                  gamesSport === 'MLB'
+                    ? (mlbGameContext[selectedGame.away_team] ||
+                       mlbGameContext[selectedGame.home_team] ||
+                       mlbGameContext[selectedGame.id] || null)
+                    : gamesSport === 'NFL' || gamesSport === 'NCAAF'
+                      ? (nflGameContextMap?.[`${stripMascot(selectedGame.away_team||'')}@${stripMascot(selectedGame.home_team||'')}`] ||
+                         nflGameContextMap?.[selectedGame.id] || null)
+                      : null
+                }
+                gamesSport={gamesSport}
+                externalPicks={[]}
+                gameProps={[]}
+                historicalOdds={historicalOdds?.[selectedGame.id]}
+                onClose={()=>setGameDetailModal(false)}
+                onAddParlayLeg={(leg)=>{
+                  const legData = {
+                    id: `${selectedGame.id}_${leg.kind}_${Date.now()}`,
+                    matchup: leg.matchup,
+                    pick: leg.label,
+                    type: leg.kind,
+                    odds: leg.odds,
+                    sport: gamesSport,
+                    gameId: selectedGame.id,
+                  };
+                  setParlayLegs(prev=>[...prev, legData]);
+                }}
+              />
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* LEGACY game detail modal — kept behind flag for regression testing.
+          Was inline JSX 12676-13327 pre-2026-07-29 redesign. Feature-flagged
+          off. Remove entirely once v2 has 30+ days in production without
+          feature-parity complaints. */}
+      {false && selectedGame&&(
+        <Modal visible={false} animationType="slide" transparent>
           <View style={styles.modalOverlay}>
             <View style={[styles.modalSheet,{maxHeight:'92%'}]}>
               <View style={styles.modalHandle}/>
