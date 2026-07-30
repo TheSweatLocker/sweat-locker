@@ -161,7 +161,7 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: 'THEME.hrb + '59'',
+    borderColor: THEME.hrb + '59',
   },
   cleanContainer: {
     backgroundColor: CARD_BG,
@@ -169,7 +169,7 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: 'THEME.accent + '33'',
+    borderColor: THEME.accent + '33',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
