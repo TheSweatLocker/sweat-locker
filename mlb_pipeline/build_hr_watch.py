@@ -645,7 +645,7 @@ def attach_book_odds(candidates):
         try:
             odds_r = requests.get(
                 f'https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{ev_id}/odds',
-                params={'apiKey': api_key, 'regions': 'us',
+                params={'apiKey': api_key, 'regions': 'us,us2',
                         'markets': 'batter_home_runs', 'oddsFormat': 'american'},
                 timeout=15,
             )
@@ -666,7 +666,7 @@ def attach_book_odds(candidates):
         # and thought our data was broken. Fixed by prefering HRB when
         # available, else best-price.
         HRB_KEYS = {'hardrockbet', 'hard_rock_bet', 'hardrock', 'hard_rock',
-                    'hardrockbet_us'}  # Odds API has used variants over time
+                    'hardrockbet_us', 'hardrockbet_oh'}  # base + Ohio variant; add state variants as they appear
         by_batter = {}  # name_lower → list of (over_odds_int, src)
         for bk in ev_data.get('bookmakers', []) or []:
             src = bk.get('key', '?')
@@ -693,14 +693,27 @@ def attach_book_odds(candidates):
             book_map[name] = best
 
     matched = 0
+    rejected_sanity = 0
     for c in candidates:
         name = (c.get('player_name') or '').strip().lower()
         hit = book_map.get(name)
-        if hit:
-            c['book_odds'] = hit[0]
-            c['book_source'] = hit[1]
-            matched += 1
-    print(f'  📖 HR book odds attached: {matched}/{len(candidates)} candidates')
+        if not hit:
+            continue
+        odds, src = hit[0], hit[1]
+        # Sanity gate (2026-07-30): drop prices that diverge insanely from model.
+        # CJ Abrams case: model 17.9%, book +18000 implied 0.55% → ratio 32x.
+        # Any book row where model_prob / implied_prob > 5 is data noise, not
+        # a real price. Falls open (null book_odds) rather than showing garbage.
+        p_model = c.get('projected_hr_prob') or 0
+        implied = 100.0 / (odds + 100) if odds >= 0 else -odds / (-odds + 100.0)
+        if p_model > 0 and implied > 0 and (p_model / implied) > 5.0:
+            rejected_sanity += 1
+            continue
+        c['book_odds'] = odds
+        c['book_source'] = src
+        matched += 1
+    print(f'  📖 HR book odds attached: {matched}/{len(candidates)} candidates'
+          f' (rejected {rejected_sanity} on sanity gate)')
 
 
 def run():

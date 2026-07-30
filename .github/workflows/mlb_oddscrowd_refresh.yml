@@ -1,25 +1,30 @@
-name: MLB OddsCrowd Refresh (T-45min sharp money capture)
+name: MLB OddsCrowd Refresh (4-shot daily cadence)
 
-# Sharp money on OddsCrowd moves throughout the day — especially the last
-# 30-90 min before first pitch when whales load up. The default noon +
-# 5pm externals cron misses that window entirely. This workflow refreshes
-# oddscrowd (only) at high cadence during game hours so:
-#   1. oddscrowd_snapshot on mlb_game_context stays fresh for the app
-#   2. compute_align_status re-fires with each pull (chained via
-#      pull_externals_mlb.py's end-hook) so ALIGNED verdicts update live
-#   3. reverse-line-move signal (money side diverges from bets side
-#      intraday) becomes detectable — needed for the eventual RLM tier
+# OddsCrowd public/money% moves throughout the day. Prior cadence was every
+# 30 min (26 pulls/day) which was expensive and mostly noise. Per user
+# 2026-07-30: 4 discrete scrapes at meaningful money-move windows so we see
+# where money's going without hitting the source or our Supabase writes
+# unnecessarily. Each pull re-fires compute_align_status downstream.
 #
-# Backfill history: the pull is idempotent thanks to the
-# (source, game_id, surface, pick_side, game_date) unique index shipped
-# 2026-07-27b — repeat pulls overwrite the same row with fresh values.
+# Trade-off vs the old cadence: we lose intraday reverse-line-move detection
+# in the final ~30 min before first pitch (whale-money window). If RLM tier
+# ships and needs that resolution, add a 5th scrape at ~9pm ET (01:00 UTC).
+#
+# Times (America/New_York, DST-aware — cron is UTC so we cover both):
+#   8am ET  · morning line (12:00 UTC EDT / 13:00 UTC EST)
+#   12pm ET · midday adjust (16:00 UTC EDT / 17:00 UTC EST)
+#   3pm ET  · afternoon-slate lock (19:00 UTC EDT / 20:00 UTC EST)
+#   6pm ET  · pre-primetime whale money (22:00 UTC EDT / 23:00 UTC EST)
+#
+# Backfill: pull is idempotent via (source, game_id, surface, pick_side,
+# game_date) unique index (20260727b) — repeat pulls overwrite in place.
 
 on:
   schedule:
-    # Every 30 min from ~11am ET through midnight = 15:00-04:00 UTC.
-    # Covers early afternoon games through late West Coast finishers.
-    - cron: '*/30 15-23 * * *'
-    - cron: '*/30 0-4 * * *'
+    # EDT window (Mar–Nov)
+    - cron: '0 12,16,19,22 * * *'
+    # EST window (Nov–Mar) — safe to double-fire, upsert is idempotent
+    - cron: '0 13,17,20,23 * * *'
   workflow_dispatch:
 
 jobs:

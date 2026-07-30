@@ -11345,32 +11345,29 @@ setJerryHistory(prev => {
   );
 })()}
 {gamesSport==='MLB'&&(()=>{
+  // Collapsed to single state (2026-07-30). Prior five variants (NRFI ⚠️,
+  // NRFI lean, YRFI, YRFI lean, PRIME NRFI) diluted the chip when the only
+  // publishable case is extreme. Gate: nrfi_score >= 92 AND sweat_tier is
+  // PRIME/STRONG — matches feedback_no_nrfi_on_cards. Suppress at Coors-type
+  // parks (>=116) where NRFI hit 12.5% in the audit.
   const nrfiCtx = mlbGameContext[game.home_team] || mlbGameContext[game.away_team] ||
     Object.values(mlbGameContext).find((ctx: any) => ctx.home_team === game.home_team || ctx.away_team === game.away_team);
   if(!nrfiCtx) return null;
   const nScore = nrfiCtx.nrfi_score;
   const pf = nrfiCtx.park_run_factor ? parseFloat(nrfiCtx.park_run_factor) : 100;
-  // Show badge only for tiers with proven edge (audit-backed): 90+ NRFI, 70-79 mild lean, <=40 YRFI
-  // 80-89 tier is 42.5% hit rate — hide | Coors-type parks (116+) = 12.5% NRFI — suppress NRFI badge
-  const suppressNrfiAtExtremePark = pf >= 116 && nScore >= 70;
-  const hasNrfiBadge = !suppressNrfiAtExtremePark && nScore && (nScore >= 90 || (nScore >= 70 && nScore <= 79) || nScore <= 40);
+  const sweatTier = String(nrfiCtx.sweat_tier || '').toUpperCase();
+  const sweatOk = sweatTier === 'PRIME' || sweatTier === 'STRONG';
+  const suppressExtremePark = pf >= 116;
+  const hasNrfiBadge = !suppressExtremePark && sweatOk && nScore && nScore >= 92;
   if(!hasNrfiBadge) return null;
 
-  const nColor = nScore >= 90 && nScore <= 94 ? '#00e5a0' : nScore >= 95 ? '#ffb800' : nScore >= 70 && nScore <= 79 ? '#4a9eff' : nScore <= 40 ? '#ff4d6d' : '#7a92a8';
-  // Tier labels based on 235-game audit:
-  // 90-94: 73.3% (PRIME), 95+: 47% (volatile warning), 75-79: 60.9%, 70-74: 59.4%
-  // 85-89: 47.1% (too weak for badge), 80-84: 38.9% (no badge)
-  // <=40: 77.8% YRFI hit rate
-  const nLabel = nScore >= 95 ? 'NRFI ⚠️' : nScore >= 90 ? 'PRIME NRFI' : nScore >= 70 && nScore <= 79 ? 'NRFI lean' : nScore <= 35 ? 'YRFI' : nScore <= 40 ? 'YRFI lean' : null;
-
+  const nColor = '#00e5a0';  // single-state = confirmed edge = green
   return(
     <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8,flexWrap:'wrap'}}>
-      {hasNrfiBadge && nLabel && (
-        <View style={{backgroundColor:nColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:nColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
-          <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>⚾ {nLabel}</Text>
-          <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>{nScore}</Text>
-        </View>
-      )}
+      <View style={{backgroundColor:nColor+'20',borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:nColor+'44',flexDirection:'row',alignItems:'center',gap:4}}>
+        <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>⚾ PRIME NRFI</Text>
+        <Text style={{color:nColor,fontWeight:'800',fontSize:12}}>{nScore}</Text>
+      </View>
       {nrfiCtx.home_pitcher && <Text style={{color:'#4a6070',fontSize:10}}>{nrfiCtx.home_pitcher?.split(' ').pop()} vs {nrfiCtx.away_pitcher?.split(' ').pop()}</Text>}
     </View>
   );
