@@ -134,6 +134,11 @@ SOURCE_REGISTRY = {
         'base_url': 'https://oddscrowd.com/games/upcoming/baseball',
         'label': 'OddsCrowd',
     },
+    'sbr': {
+        'fade_flag': 'fade', 'ttl_hours': 6,        # extreme public → fade signal
+        'base_url': 'https://www.sportsbookreview.com/betting-odds/mlb-baseball/consensus/',
+        'label': 'SBR Consensus',
+    },
 }
 
 
@@ -1094,6 +1099,22 @@ def fetch_oddscrowd(slate: list, game_date: str) -> tuple[list, int]:
     return picks, status
 
 
+def fetch_sbr(slate: list, game_date: str) -> tuple[list, int]:
+    """SportsBookReview consensus — thin wrapper around externals_consensus.
+    See externals_consensus.py::fetch_sbr for parser + fade-flag policy."""
+    from externals_consensus import fetch_sbr as _sbr
+    picks_dicts, status = _sbr(slate, game_date, find_game_id)
+    picks = []
+    for d in picks_dicts:
+        picks.append(ExternalPick(
+            game_id=d['game_id'], sport='MLB', game_date=game_date,
+            source=d['source'], surface=d['surface'], pick_side=d['pick_side'],
+            confidence=d.get('confidence'), raw_text=d.get('raw_text'),
+            source_url=d.get('source_url'), fade_flag=d.get('fade_flag'),
+        ))
+    return picks, status
+
+
 FETCHERS = {
     'dimers': fetch_dimers,
     'covers': fetch_covers,
@@ -1109,6 +1130,7 @@ FETCHERS = {
     'fangraphs': fetch_fangraphs,
     'ballparkpal': fetch_ballparkpal,
     'oddscrowd': fetch_oddscrowd,
+    'sbr': fetch_sbr,
 }
 
 
