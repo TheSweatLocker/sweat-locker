@@ -1870,7 +1870,7 @@ useEffect(() => {
 }, 0);
   const totalDollars = totalUnits*usd;
   const winRate = wins+losses>0 ? ((wins/(wins+losses))*100).toFixed(1) : '0.0';
-  const resultColor = (r) => r==='Win'?THEME.win:r==='Loss'?THEME.loss:r==='Push'?THEME.push:THEME.sharp;
+  const resultColor = (r) => r==='Win'?THEME.win:r==='Loss'?THEME.loss:r==='Push'?THEME.push:THEME.textMuted;
 
   const getHRBLine = (game) => {
     if(!game||!game.bookmakers) return null;
@@ -8132,18 +8132,9 @@ setJerryHistory(prev => {
             if (!isMLBSelected) return null;
 
             // Tier-driven palette
-            const tierColor = pp?.tier === 'PRIME' ? TIER_COLOR.PRIME :
-              pp?.tier === 'STRONG' ? THEME.accent :
-              pp?.tier === 'LEAN' ? HRB_COLOR :
-              pp?.tier === 'LIGHT' ? THEME.textDim : THEME.textDim;
-            const tierBg = pp?.tier === 'PRIME' ? 'rgba(255,77,109,0.10)' :
-              pp?.tier === 'STRONG' ? 'rgba(0,229,160,0.10)' :
-              pp?.tier === 'LEAN' ? 'rgba(255,184,0,0.10)' :
-              'rgba(122,146,168,0.08)';
-            const tierBorder = pp?.tier === 'PRIME' ? 'rgba(255,77,109,0.30)' :
-              pp?.tier === 'STRONG' ? 'rgba(0,229,160,0.30)' :
-              pp?.tier === 'LEAN' ? 'rgba(255,184,0,0.30)' :
-              'rgba(122,146,168,0.20)';
+            const tierColor = TIER_COLOR[(pp?.tier as any) as 'PRIME'|'STRONG'|'LEAN'|'LIGHT'] || THEME.textDim;
+            const tierBg = tierColor + '1A';   // ~10% alpha
+            const tierBorder = tierColor + '4D'; // ~30% alpha
 
             // Audit hit rate — server-driven (mlb_tier_calibration → primary_play.audit_note)
             // No hardcoded numbers; if the cohort isn't calibrated yet, the
@@ -10116,9 +10107,9 @@ setJerryHistory(prev => {
       <View style={{marginBottom:14}}>
         {sweatCard.top_8.map((pick: any, i: number) => {
           const tierColor =
-            pick.tier === 'PRIME' ? THEME.win :
-            pick.tier === 'STRONG' ? THEME.hrb :
-            pick.tier === 'VALUE' ? THEME.sharp : THEME.textDim;
+            pick.tier === 'PRIME' ? THEME.accent :
+            pick.tier === 'STRONG' ? THEME.sharp :
+            pick.tier === 'VALUE' ? THEME.highlight : THEME.textDim;
           const resultIcon =
             pick.result === 'Win' ? '✓' :
             pick.result === 'Loss' ? '✗' :
@@ -10385,7 +10376,7 @@ setJerryHistory(prev => {
             {Array.isArray(sweatCard.yesterday_recap.top_8) && sweatCard.yesterday_recap.top_8.length > 0 && (
               <View style={{marginTop:4,paddingTop:6,borderTopWidth:0.5,borderTopColor:'rgba(255,184,0,0.2)'}}>
                 {sweatCard.yesterday_recap.top_8.map((pk:any, i:number) => {
-                  const resColor = pk.result === 'Win' ? THEME.accent : pk.result === 'Loss' ? THEME.loss : THEME.textDim;
+                  const resColor = pk.result === 'Win' ? THEME.win : pk.result === 'Loss' ? THEME.loss : THEME.textDim;
                   const resIcon = pk.result === 'Win' ? '✓' : pk.result === 'Loss' ? '✗' : (pk.result === 'Push' ? '=' : '·');
                   return (
                     <View key={`yrecap-${i}`} style={{flexDirection:'row',alignItems:'center',paddingVertical:2}}>
@@ -11523,7 +11514,7 @@ setJerryHistory(prev => {
             {pipelineMLBProps.length} matchup edges • Model-driven, no market filter
           </Text>
           {pipelineMLBProps.map((prop, i) => {
-            const tierColor = prop.tier === 'PRIME' ? THEME.accent : prop.tier === 'STRONG' ? HRB_COLOR : THEME.textDim;
+            const tierColor = prop.tier === 'PRIME' ? THEME.accent : prop.tier === 'STRONG' ? THEME.sharp : THEME.textDim;
             const signals = prop.signals || {};
             // Projected Ks (server-computed, lives in signals as _projected_ks).
             // Decoupled from "Over X.X" framing — book lines/juice vary, so we
@@ -11884,7 +11875,7 @@ setJerryHistory(prev => {
                 </View>
               );
               const d = dawgData;
-              const tierColor = d.tier === 'PRIME' ? THEME.accent : d.tier === 'STRONG' ? HRB_COLOR : THEME.textDim;
+              const tierColor = d.tier === 'PRIME' ? THEME.accent : d.tier === 'STRONG' ? THEME.sharp : THEME.textDim;
               const signalEntries = Object.entries(d.signals || {});
               return (
                 <View>
@@ -12071,7 +12062,7 @@ setJerryHistory(prev => {
                               const tr = dRoot.byTier[t] || {wins:0,losses:0};
                               const tn = tr.wins + tr.losses;
                               const tp = tn > 0 ? Math.round((tr.wins/tn)*100) : 0;
-                              const color = t === 'PRIME' ? THEME.accent : t === 'STRONG' ? HRB_COLOR : THEME.textDim;
+                              const color = t === 'PRIME' ? THEME.accent : t === 'STRONG' ? THEME.sharp : THEME.textDim;
                               return (
                                 <View key={t} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
                                   <Text style={{color:color,fontWeight:'700',fontSize:12}}>{t}</Text>
@@ -13293,7 +13284,7 @@ if(pipelineNRFI !== null && pipelineNRFI !== undefined) {
 // 90-94: 73.3% (PRIME) | 95+: 47% (volatile) | 70-79: ~60% (mild lean)
 // 80-89: 42.5% (NEUTRAL — no edge) | <=40: 77.8% YRFI hit
 const nrfiLean  = nrfiScore >= 95 ? 'NRFI (volatile)' : nrfiScore >= 90 ? 'PRIME NRFI' : nrfiScore >= 80 && nrfiScore <= 89 ? 'NEUTRAL' : nrfiScore >= 70 ? 'NRFI lean' : nrfiScore <= 35 ? 'YRFI' : nrfiScore <= 40 ? 'YRFI lean' : 'NEUTRAL';
-const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore >= 95 ? THEME.hrb : nrfiScore >= 80 && nrfiScore <= 89 ? THEME.textDim : nrfiScore >= 70 ? THEME.sharp : nrfiScore <= 40 ? THEME.loss : THEME.textDim;
+const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore >= 95 ? THEME.warn : nrfiScore >= 80 && nrfiScore <= 89 ? THEME.textDim : nrfiScore >= 70 ? THEME.sharp : nrfiScore <= 40 ? THEME.loss : THEME.textDim;
   return(
     <View style={[styles.card,{marginBottom:10}]}>
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
