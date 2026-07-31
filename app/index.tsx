@@ -6801,16 +6801,38 @@ if(mkt.key === 'pitcher_props') {
         console.log('Pipeline MLB props fetch error:', error.message);
         setPipelineMLBProps([]);
       } else {
-        // SKIP tier = pipeline computed a score but Phase 2 attach failed
-        // (no book line, no recal). Shouldn't surface in the per-game props
-        // panel — these are the "Expected Ks (over)" with no book line that
-        // were eroding trust. RPC currently returns them for downstream
-        // audit consumers; the user-facing surface drops them here.
-        // TODO: move filter into get_todays_pipeline_props RPC once we
-        // confirm no other consumer needs SKIP rows. See
-        // feedback_backside_dictates_app_renders.
         const filtered = (data || []).filter((p: any) => p?.tier !== 'SKIP');
-        setPipelineMLBProps(filtered);
+        // Refit conviction merge (2026-07-31 · Option C step 1). The RPC
+        // doesn't return refit_conviction yet; join it in client-side
+        // via a second lightweight query keyed on (player_name, prop_type,
+        // game_id) — the RPC does return those. Falls back to legacy
+        // conviction when refit is null (prop type not in refit registry
+        // or migration not applied). Sort by refit-first, conviction-second.
+        try {
+          const etStr = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+          const {data: refitRows} = await supabase
+            .from('mlb_pipeline_props')
+            .select('player_name,prop_type,direction,game_id,refit_conviction')
+            .eq('game_date', etStr)
+            .not('refit_conviction', 'is', null);
+          const refitMap: Record<string, number> = {};
+          for (const r of (refitRows || [])) {
+            refitMap[`${r.game_id}|${r.player_name}|${r.prop_type}|${r.direction}`] = r.refit_conviction;
+          }
+          const merged = filtered.map((p: any) => {
+            const k = `${p.game_id}|${p.player_name}|${p.prop_type}|${p.direction}`;
+            const refit = refitMap[k];
+            return {...p, refit_conviction: refit ?? null,
+                    display_conviction: refit ?? p.conviction};
+          });
+          // Re-sort by display_conviction DESC so refit-boosted picks bubble up
+          merged.sort((a: any, b: any) => (b.display_conviction || 0) - (a.display_conviction || 0));
+          setPipelineMLBProps(merged);
+        } catch (e) {
+          // Refit merge non-fatal — user still sees legacy conviction
+          console.log('[refit merge]', (e as any)?.message);
+          setPipelineMLBProps(filtered);
+        }
       }
     } catch (e) {
       console.log('Pipeline MLB props exception:', e?.message);
@@ -11576,9 +11598,13 @@ setJerryHistory(prev => {
                   </View>
                   <View style={{alignItems:'center'}}>
                     <View style={{width:56, height:56, borderRadius:28, borderWidth:2, borderColor:tierColor, alignItems:'center', justifyContent:'center', backgroundColor:tierColor+'15'}}>
-                      <Text style={{color:tierColor, fontWeight:'900', fontSize:20}}>{prop.conviction}</Text>
+                      {/* Refit conviction preferred (2026-07-31); falls back to legacy conviction */}
+                      <Text style={{color:tierColor, fontWeight:'900', fontSize:20}}>{Math.round(prop.display_conviction ?? prop.conviction)}</Text>
                     </View>
                     <Text style={{color:tierColor, fontSize:9, fontWeight:'800', marginTop:3, letterSpacing:0.5}}>{prop.tier}</Text>
+                    {prop.refit_conviction != null && (
+                      <Text style={{color:THEME.textMuted, fontSize:8, fontWeight:'700', marginTop:2, letterSpacing:0.4}}>REFIT v1</Text>
+                    )}
                   </View>
                 </View>
 
