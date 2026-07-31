@@ -2492,7 +2492,39 @@ if(r.data && r.data.data) {
     }
   };
 
+  // ─── Sport-universal server-side resolver sweep (2026-07-31, tabletop C) ──
+  // Grades Props + Parlays + ML/Spread/Total from server-side game_results
+  // tables (mlb_game_results, nba_, nfl_, ncaaf_, ncaab_, ufc_fight_results).
+  // Runs BEFORE the legacy Odds-API-driven autoDetectResults below —
+  // authoritative server data preferred; legacy fills the gaps for games
+  // not yet posted to the results table.
+  const autoResolveSportUniversal = async () => {
+    try {
+      const { resolveAllPending } = await import('./utils/betResolver');
+      const resolved = await resolveAllPending(supabase, bets as any);
+      if (!resolved.length) return 0;
+      let count = 0;
+      for (const {bet, outcome} of resolved) {
+        setBets(prev => prev.map(b => b.id === bet.id
+          ? {...b, result: outcome.result, auto_resolved: true, auto_source: outcome.source, auto_detail: outcome.detail}
+          : b));
+        try { fetchPickRecap(bet as any, outcome.result); } catch {}
+        try { quickUpdateResult(bet.id, outcome.result); } catch {}
+        count++;
+      }
+      if (count) console.warn(`🤖 auto-resolver graded ${count} bets`);
+      return count;
+    } catch (e) {
+      console.warn('[universal resolver]', (e as any)?.message);
+      return 0;
+    }
+  };
+
   const autoDetectResults = async () => {
+    // Run sport-universal resolver first (Prop + Parlay + ML/Spread/Total
+    // from server tables). Then fall through to legacy Odds-API sweep for
+    // any pending ML/Spread/Total that server hasn't posted yet.
+    await autoResolveSportUniversal();
     try {
       const pending = bets.filter(b => b.result === 'Pending' && b.type !== 'Prop');
       if(!pending.length) return;
