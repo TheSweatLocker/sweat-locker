@@ -42,7 +42,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     except Exception: pass
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
-           'Prefer': 'return=minimal'}
+           'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 MARKET_MAP = {
     'pitcher_strikeouts':  'ks',

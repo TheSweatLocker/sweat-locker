@@ -4070,6 +4070,7 @@ def run():
         qs = urlencode({
             'game_date': f'eq.{gd}',
             'prop_type': f'in.({",".join(PROP_MARKET_MAP.keys())})',
+            'tier': 'neq.COVERAGE',   # sweep_prop_coverage.py owns these; do not delete
             'select': 'player_name,game_id,prop_type',
         })
         r = requests.get(f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?{qs}",
