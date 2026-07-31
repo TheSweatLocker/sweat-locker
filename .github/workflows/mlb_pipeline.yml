@@ -242,6 +242,20 @@ jobs:
           cd mlb_pipeline
           python apply_prop_refit.py || echo "prop refit failed (non-fatal)"
 
+      # Prop Jerry synthesis (2026-07-31 · sport-universal). Runs AFTER
+      # apply_prop_refit so Jerry sees refit_conviction. Writes 40-60w
+      # take + BACK/FADE/PASS verdict + conviction to prop_jerry_reads.
+      # continue-on-error: bad prop take never blocks card / degen / potd.
+      - name: Generate Prop Jerry synthesis
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_prop_jerry_synthesis.py --force || echo "prop jerry synthesis failed (non-fatal)"
+
       # Prop-signal override (added 2026-05-19): when v4 says OVER big
       # (>=+1.5 vs market) but PRIME/STRONG props concentrate UNDER, props
       # win the head-to-head 64.7% (backtested on n=17). Patches
