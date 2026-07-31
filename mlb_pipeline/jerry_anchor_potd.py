@@ -61,12 +61,17 @@ def run(game_date: str | None = None, threshold: int = 70,
     gd = game_date or today_et()
     print(f"=== jerry_anchor_potd · {gd} (threshold={threshold}) ===")
 
-    # Pull all Jerry reads for the day, sorted by conviction DESC
+    # Pull Jerry reads across all eligible sports (POTD_SPORTS below).
+    # UFC intentionally excluded per user 2026-07-31 — UFC stays a
+    # standalone tab destination, not a cross-sport POTD candidate.
+    # Add sports to POTD_SPORTS as their synthesizers ship.
+    POTD_SPORTS = ["MLB", "NBA", "NFL", "NCAAF", "NCAAB"]
     r = requests.get(
         f"{SUPABASE_URL}/rest/v1/jerry_reads",
         headers=H_READ,
-        params={"sport": "eq.MLB", "game_date": f"eq.{gd}",
-                "select": "game_id,call_text,call_market,call_side,call_line,"
+        params={"sport": f"in.({','.join(POTD_SPORTS)})",
+                "game_date": f"eq.{gd}",
+                "select": "sport,game_id,call_text,call_market,call_side,call_line,"
                           "conviction,short_read,long_read,generated_at",
                 "order": "conviction.desc"},
         timeout=15,

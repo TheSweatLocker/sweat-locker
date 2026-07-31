@@ -50,12 +50,16 @@ def today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
 
+DEGEN_SPORTS = ['MLB', 'NBA', 'NFL', 'NCAAF', 'NCAAB']  # UFC excluded (standalone tab per user)
+
+
 def fetch_game_reads(gd: str) -> list:
-    """Every sport's jerry_reads for the day (currently MLB only; NBA/NFL
-    when their synthesizers ship)."""
+    """Every eligible sport's jerry_reads for the day. UFC intentionally
+    excluded (standalone tab, not cross-sport degen material)."""
     r = requests.get(f'{SUPABASE_URL}/rest/v1/jerry_reads',
         headers=H_READ,
-        params={'game_date': f'eq.{gd}',
+        params={'sport': f'in.({",".join(DEGEN_SPORTS)})',
+                'game_date': f'eq.{gd}',
                 'select': 'sport,game_id,call_text,conviction,call_market,call_side,short_read',
                 'order': 'conviction.desc'},
         timeout=15)
