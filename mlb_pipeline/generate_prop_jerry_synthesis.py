@@ -108,9 +108,19 @@ def parse_synthesis(raw: str) -> dict:
         return m.group(1).strip() if m else None
     take = _sec('TAKE') or ''
     call = _sec('CALL') or ''
-    verdict = (re.search(r'VERDICT\s*:\s*(\w+)', call) or [None,''])[1].upper() if 'VERDICT' in call else None
-    conv_m = re.search(r'CONVICTION\s*:\s*(\d+)', call)
+    # Parser hardening: Claude sometimes puts VERDICT: / CONVICTION: inside the
+    # TAKE block instead of CALL (~1 in 5 today's slate). Search CALL first (canonical),
+    # then fall back to the entire raw output so we never lose an actionable verdict.
+    verdict_src = call if 'VERDICT' in call else raw
+    verdict_m = re.search(r'VERDICT\s*:\s*(\w+)', verdict_src)
+    verdict = verdict_m.group(1).upper() if verdict_m else None
+    conv_src = call if 'CONVICTION' in call else raw
+    conv_m = re.search(r'CONVICTION\s*:\s*(\d+)', conv_src)
     conv = max(0, min(100, int(conv_m.group(1)))) if conv_m else None
+    # If TAKE section missing, salvage from raw: use everything before first --- marker
+    if not take:
+        pre = re.split(r'---[A-Z]+---', raw, maxsplit=1)[0].strip()
+        take = pre if len(pre) >= 20 else raw.strip()[:400]
     return {'short_read': take, 'call_verdict': verdict, 'conviction': conv}
 
 
