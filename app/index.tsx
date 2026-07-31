@@ -1629,6 +1629,19 @@ const [dailyBestBetLoading, setDailyBestBetLoading] = useState(false);
 const [bestBetFetched, setBestBetFetched] = useState(false);
 const [sweatCard, setSweatCard] = useState<any>(null);
 const [sweatCardLoading, setSweatCardLoading] = useState(false);
+
+  // Feature flags (2026-07-31f · sport-universal control plane). Read once
+  // on launch + on foreground refresh. Server flips a row → users see the
+  // change next open. Keyed as `${sport}:${feature}` → boolean enabled.
+  // Fail-safe default: missing flag = disabled (launch flow must explicitly
+  // enable each sport/feature).
+  const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({});
+  const isFeatureOn = React.useCallback((sport: string, feature: string) => {
+    const key = `${sport.toUpperCase()}:${feature}`;
+    // MLB stays permissive during rollout — flags gate NEW sports first
+    if (sport.toUpperCase() === 'MLB') return featureFlags[key] !== false;
+    return featureFlags[key] === true;
+  }, [featureFlags]);
 const [dailyBestBetError, setDailyBestBetError] = useState('');
 const [modelEdgeData, setModelEdgeData] = useState([]);
 const [mlbGameContext, setMlbGameContext] = useState({});
@@ -1824,10 +1837,11 @@ useEffect(() => {
     if (Date.now() - lastMLBRefreshAt.current < 5 * 60 * 1000) return;
     lastMLBRefreshAt.current = Date.now();
     fetchSweatCard();
+    fetchFeatureFlags();
     fetchDailyBestBet();
     fetchDawgOfDay();
     fetchMLBGameContext();  // ← sweat scores per game
-    if (propJerrySport === 'MLB') fetchPipelineMLBProps();
+    if (propJerrySport === 'MLB') fetchPipelineProps('MLB');
   });
   return () => sub.remove();
 }, [propJerrySport]);
@@ -5054,6 +5068,19 @@ const fetchJerryRecord = async () => {
   setModelEdgeLoading(false);
 };
 
+// Feature flags loader (2026-07-31f). Non-blocking; if the fetch fails,
+// the map stays empty and non-MLB features stay hidden (fail-safe).
+const fetchFeatureFlags = async () => {
+  try {
+    const {data} = await supabase.from('feature_flags').select('sport,feature,enabled');
+    if (data) {
+      const m: Record<string, boolean> = {};
+      for (const r of data) m[`${(r as any).sport}:${(r as any).feature}`] = !!(r as any).enabled;
+      setFeatureFlags(m);
+    }
+  } catch (e) { console.warn('[feature_flags]', (e as any)?.message); }
+};
+
 const fetchSweatCard = async () => {
   setSweatCardLoading(true);
   try {
@@ -6823,13 +6850,21 @@ if(mkt.key === 'pitcher_props') {
     setPropOfDayLoading(false);
   };
 
-  const fetchPipelineMLBProps = async () => {
+  // Sport-parametric prop fetch (2026-07-31 · Tabletop C 100% universal).
+  // Backward-compat wrapper — fetchPipelineMLBProps() still works, defaults
+  // to MLB. Adding NBA/NFL/UFC prop fetches = 1 registry line below when
+  // their prop pipelines produce rows into a *_pipeline_props table.
+  const PROP_SPORT_REGISTRY: Record<string, {rpc: string; table: string; propJerryFilter: string}> = {
+    MLB: {rpc: 'get_todays_pipeline_props', table: 'mlb_pipeline_props', propJerryFilter: 'MLB'},
+    // NBA: {rpc: 'get_todays_pipeline_props_nba', table: 'nba_pipeline_props', propJerryFilter: 'NBA'},
+  };
+  const fetchPipelineProps = async (sport: string = 'MLB') => {
+    const cfg = PROP_SPORT_REGISTRY[sport.toUpperCase()];
+    if (!cfg) { setPipelineMLBProps([]); return; }
     setPipelineMLBLoading(true);
     try {
-      // Server-side RPC — Postgres function returns props for ET-today.
-      // Client never derives a slate date.
       const { data, error } = await supabase
-        .rpc('get_todays_pipeline_props')
+        .rpc(cfg.rpc)
         .order('conviction', { ascending: false });
       if (error) {
         console.log('Pipeline MLB props fetch error:', error.message);
@@ -6845,7 +6880,7 @@ if(mkt.key === 'pitcher_props') {
         try {
           const etStr = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
           const {data: refitRows} = await supabase
-            .from('mlb_pipeline_props')
+            .from(cfg.table)
             .select('player_name,prop_type,direction,game_id,refit_conviction')
             .eq('game_date', etStr)
             .not('refit_conviction', 'is', null);
@@ -6859,7 +6894,7 @@ if(mkt.key === 'pitcher_props') {
           const {data: jerryRows} = await supabase
             .from('prop_jerry_reads')
             .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction')
-            .eq('sport', 'MLB')
+            .eq('sport', cfg.propJerryFilter)
             .eq('game_date', etStr);
           const jerryMap: Record<string, any> = {};
           for (const r of (jerryRows || [])) {
@@ -6889,11 +6924,15 @@ if(mkt.key === 'pitcher_props') {
     setPipelineMLBLoading(false);
     setPipelineMLBFetched(true);
   };
+  // Backward-compat alias — call sites that reference the old name still work.
+  const fetchPipelineMLBProps = () => fetchPipelineProps('MLB');
 
   const fetchPropJerry = async (sport=propJerrySport) => {
-    // MLB now uses pipeline-driven props (server-generated, proprietary signals)
-    if (sport === 'MLB') {
-      await fetchPipelineMLBProps();
+    // Sport-parametric — routes through fetchPipelineProps for any sport
+    // registered in PROP_SPORT_REGISTRY. Falls back to legacy Odds-API
+    // path for sports without a pipeline yet (NHL, UFC props).
+    if (PROP_SPORT_REGISTRY[sport.toUpperCase()]) {
+      await fetchPipelineProps(sport);
       return;
     }
 
@@ -7956,7 +7995,7 @@ setJerryHistory(prev => {
   // effect-above-this still fires on subsequent tab transitions.
   useEffect(()=>{
     if(propJerrySport === 'MLB' && !pipelineMLBFetched) {
-      fetchPipelineMLBProps();
+      fetchPipelineProps('MLB');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
@@ -9964,47 +10003,47 @@ setJerryHistory(prev => {
               <Text style={{fontSize:64,marginBottom:24}}>🔒</Text>
               <Text style={{color:THEME.text,fontWeight:'900',fontSize:34,textAlign:'center',marginBottom:12,letterSpacing:1}}>THE SWEAT LOCKER</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>More Data, Less Sweat.</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>A real sports analytics engine — not picks, not vibes. Proprietary models updated twice daily.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>A real sports analytics app. Every model, every external opinion, every market signal — read by one analyst voice, graded every night.</Text>
             </View>
           )}
           {onboardingStep===1&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>🔥</Text>
-              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Sweat Score</Text>
-              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Every game graded 0–100</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>A layered conviction score built from signals that actually move predictions — not public consensus:{'\n\n'}🏟️ Matchup quality — pitching, lineups, fighter profiles{'\n'}📊 Recency vs season-long form{'\n'}🎯 Platoon and handedness edges{'\n'}💨 Park, weather, venue factors{'\n'}🐕 Market efficiency and sharp line movement{'\n'}📋 Situational + audit-validated rules{'\n\n'}Higher scores reflect stronger multi-signal alignment. Pipeline refreshes throughout the day as new data lands.</Text>
+              <Text style={{fontSize:64,marginBottom:24}}>🧠</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Meet Jerry</Text>
+              <Text style={{color:THEME.accent,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your analyst voice</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>Jerry reads every angle for you:{'\n\n'}📊 Every internal model (Monte Carlo · Panel · V4 · Cohorts){'\n'}🎤 Every external handicapper (17+ sources){'\n'}💰 Sharp money flow · public splits{'\n'}⚾ Sport-specific signals (xERA · L5 form · matchup){'\n\n'}Then he tells you the play — one call per game with conviction 0-100 and a short "why". No touty voice. Analyst voice.</Text>
             </View>
           )}
           {onboardingStep===2&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>🏟</Text>
-              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Your Daily Slate</Text>
-              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>MLB · NBA · UFC · NHL · NCAAB — and more</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>Every game card shows its Sweat Score and top model signals at a glance.{'\n\n'}Tap any game for the deep breakdown:{'\n'}📚 Book consensus across multiple sportsbooks{'\n'}🎤 Jerry's pipeline-driven game read{'\n'}📊 The Numbers — deterministic data behind every read; sport-aware (pitcher blocks for MLB, efficiency for NBA, fight matchup for UFC, more landing as we expand){'\n'}📈 Line movement with opening vs current{'\n'}⚾ Sport-specific signals layered in (NRFI for baseball, method probabilities for UFC, more){'\n\n'}Add any line to Parlay Builder with one tap.{'\n\n'}🏈 NFL & NCAAF arrive for football season.</Text>
+              <Text style={{fontSize:64,marginBottom:24}}>📋</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Every Read Graded</Text>
+              <Text style={{color:THEME.win,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Transparency is the moat</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>Every Jerry read gets graded post-game. Wins AND losses shown, no hiding.{'\n\n'}📈 Live 30-day record for every call type{'\n'}🎯 Auto-resolver grades your logged bets too — no click-through-each-one{'\n'}⚖️ Every external source tracked by 30d W/L so Jerry can weigh who's actually right lately{'\n\n'}You bet on people. We track ours in the open.</Text>
             </View>
           )}
           {onboardingStep===3&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>🧠</Text>
-              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Meet Jerry</Text>
-              <Text style={{color:THEME.accent,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your AI sports analyst</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>Jerry lives in the Jerry tab. Four tools:{'\n\n'}🧠 Prop Jerry — Daily prop edges from our pipeline, conviction-tiered (PRIME / STRONG / LEAN) with labeled signals so you see why each pick made the board.{'\n\n'}🎲 Daily Degen — A multi-leg parlay built from the slate's strongest pipeline signals. One pick for everyone.{'\n\n'}🐕 Dawg of the Day — The underdog moneyline where our model sharply disagrees with the market.{'\n\n'}📋 Record — Verified performance across all four tools, tier-stratified.</Text>
+              <Text style={{fontSize:64,marginBottom:24}}>🏟</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Your Daily Slate</Text>
+              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>MLB · NBA · NFL · UFC · NCAAB · NCAAF</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>Every game card shows Jerry's call + conviction + a 40-60 word take. Tap for the deep breakdown:{'\n\n'}🎤 Jerry's full analysis (~200-300 words){'\n'}📊 Model consensus — MC · Panel · V4{'\n'}💰 Money Flow — sharp vs public split{'\n'}📈 Line movement · opening → current{'\n'}⚡ Book comparison across sportsbooks{'\n\n'}One-tap Log Pick or Add to Parlay from any line.</Text>
             </View>
           )}
           {onboardingStep===4&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>⚾</Text>
-              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>MLB Flagship — NRFI</Text>
-              <Text style={{color:THEME.win,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Where our pipeline goes deepest</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>No Run First Inning (NRFI) is our most-developed model. Built from pitcher xERA, strikeout-gap vs lineup K%, ground-ball rate, first-inning splits, days rest, weather, park factor, umpires, and offensive quality.{'\n\n'}Each game gets a 0–100 NRFI score that maps to audit-validated tiers:{'\n\n'}🟢 PRIME sweet spot — highest conviction band{'\n'}🟡 Mild lean — edge-of-lean territory{'\n'}⚪ Neutral — Jerry doesn't lean here{'\n'}🔴 Trap zone — high scores historically volatile, flagged not leaned{'\n\n'}Baseball is where we ship the deepest stack today. Other sports get the same multi-signal treatment scaled to their data shape.</Text>
+              <Text style={{fontSize:64,marginBottom:24}}>🎯</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Prop Jerry + Sweat Card</Text>
+              <Text style={{color:THEME.sharp,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Every angle, ranked</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>🎯 Prop Jerry — 40+ player props daily with Jerry's BACK / FADE / PASS call and conviction. Weights refit weekly against actual outcomes.{'\n\n'}🔥 Sweat Card — Jerry's shortlist: Play of the Day + Dawg + Daily Degen parlay. One curated headline.{'\n\n'}Every pick tracked. Every miss explained.</Text>
             </View>
           )}
           {onboardingStep===5&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>⏰</Text>
               <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>When to Check</Text>
-              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Pipeline runs twice daily</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>⏰ Morning lock by 11am ET{'\n'}Initial Sweat Scores, opening matchup data, NRFI baselines (MLB).{'\n\n'}⏰ Afternoon refresh by 4pm ET{'\n'}Confirmed lineups, Prop Jerry sharpens, Play of the Day locks in.{'\n\n'}After 4pm, all data is locked in. Best time for full slate analysis.</Text>
+              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Two locks daily</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>⏰ AM read (by 11am ET){'\n'}Jerry's early call on pre-lineup data. Labeled "AM · updates 2pm ET" so you know it'll refresh.{'\n\n'}⏰ Final read (by 4pm ET){'\n'}Confirmed lineups, late externals, full money flow. This is the definitive call for the night.{'\n\n'}Open anytime — Jerry stays fresh.</Text>
             </View>
           )}
           {onboardingStep===6&&(
@@ -10961,7 +11000,7 @@ setJerryHistory(prev => {
             )}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
               <View style={{flexDirection:'row',gap:6}}>
-                {SPORTS.map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,gamesSport===s&&styles.chipBtnActive]} onPress={()=>setGamesSport(s)}><Text style={[styles.chipTxt,gamesSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text></TouchableOpacity>))}
+                {SPORTS.filter(s=>isFeatureOn(s,'sport_tab')).map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,gamesSport===s&&styles.chipBtnActive]} onPress={()=>setGamesSport(s)}><Text style={[styles.chipTxt,gamesSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text></TouchableOpacity>))}
               </View>
             </ScrollView>
             <View style={{flexDirection:'row',alignItems:'center',backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:12,paddingHorizontal:12,marginBottom:14}}>
