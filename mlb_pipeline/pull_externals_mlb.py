@@ -139,6 +139,11 @@ SOURCE_REGISTRY = {
         'base_url': 'https://www.sportsbookreview.com/betting-odds/mlb-baseball/consensus/',
         'label': 'SBR Consensus',
     },
+    'betfirm': {
+        'fade_flag': 'trust', 'ttl_hours': 12,       # individual handicapper picks
+        'base_url': 'https://www.betfirm.com/free-baseball-picks/',
+        'label': 'Betfirm',
+    },
 }
 
 
@@ -1115,6 +1120,23 @@ def fetch_sbr(slate: list, game_date: str) -> tuple[list, int]:
     return picks, status
 
 
+def fetch_betfirm(slate: list, game_date: str) -> tuple[list, int]:
+    """Betfirm free MLB picks — thin wrapper around externals_consensus.
+    See externals_consensus.py::fetch_betfirm for parser."""
+    from externals_consensus import fetch_betfirm as _betfirm
+    picks_dicts, status = _betfirm(slate, game_date, find_game_id)
+    picks = []
+    for d in picks_dicts:
+        picks.append(ExternalPick(
+            game_id=d['game_id'], sport='MLB', game_date=game_date,
+            source=d['source'], surface=d['surface'], pick_side=d['pick_side'],
+            pick_line=d.get('pick_line'), odds_american=d.get('odds_american'),
+            confidence=d.get('confidence'), raw_text=d.get('raw_text'),
+            source_url=d.get('source_url'), fade_flag=d.get('fade_flag'),
+        ))
+    return picks, status
+
+
 FETCHERS = {
     'dimers': fetch_dimers,
     'covers': fetch_covers,
@@ -1131,6 +1153,7 @@ FETCHERS = {
     'ballparkpal': fetch_ballparkpal,
     'oddscrowd': fetch_oddscrowd,
     'sbr': fetch_sbr,
+    'betfirm': fetch_betfirm,
 }
 
 

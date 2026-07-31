@@ -27,7 +27,9 @@ HEADERS = {
     'User-Agent': UA,
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
+    # NOTE: intentionally NO Accept-Encoding — requests handles gzip/deflate
+    # automatically. Advertising 'br' without the brotli package installed
+    # gives us Brotli-compressed bytes we can't decode.
     'Connection': 'keep-alive',
     'Upgrade-Insecure-Requests': '1',
 }
@@ -164,3 +166,225 @@ def _emit_lean(gid, surface, pct_a, pct_b, sides, raw_text) -> list:
             'fade_flag': 'fade' if pct_b >= 75 else 'neutral',
         }]
     return []
+
+
+# ─── Betfirm ─────────────────────────────────────────────────────────────
+BETFIRM_URL = 'https://www.betfirm.com/free-baseball-picks/'
+
+
+def fetch_betfirm(slate: list, game_date: str,
+                  find_game_id_fn: Callable) -> tuple[list, int]:
+    """Betfirm free MLB picks — 8-12 picks/day, one per handicapper.
+
+    Static HTML, no auth. Each pick sits inside a div with class
+    'pick-result'; walk up to nearest ancestor that has an <h3> for
+    the capper name + a 'free-pick-game' for teams + a 'free-pick-time'
+    for start.
+
+    Play text follows one of two patterns:
+        "Play on: <Team> [±1½] <odds> [at <book>]"    (ML or RL)
+        "Play on: OVER|UNDER <line> <odds> [at <book>]"  (total)
+
+    Emits ExternalPick per pick. `raw_text` keeps the play text verbatim
+    so downstream can show the capper's quote.
+    """
+    try:
+        r = requests.get(BETFIRM_URL, headers=HEADERS, timeout=15)
+    except Exception as e:
+        print(f'  ⚠ betfirm fetch failed: {e}')
+        return [], 599
+    if r.status_code != 200:
+        return [], r.status_code
+
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(r.text, 'html.parser')
+    picks = []
+
+    for pr in soup.find_all(class_='pick-result'):
+        # Walk up to a container that has capper name (h3) + game info
+        container = pr
+        capper = game_str = time_str = None
+        for _ in range(6):
+            container = container.parent
+            if not container:
+                break
+            h3 = container.find('h3')
+            game_el = container.find(class_='free-pick-game')
+            time_el = container.find(class_='free-pick-time')
+            if h3 and game_el:
+                capper = h3.get_text(strip=True)
+                game_str = game_el.get_text(' ', strip=True)
+                time_str = time_el.get_text(strip=True) if time_el else ''
+                break
+        if not (capper and game_str):
+            continue
+
+        # Filter to MLB only (page also carries other sports if present)
+        if 'MLB' not in game_str and 'Baseball' not in game_str:
+            continue
+        # Filter to today only — "Jul 30 '26" prefix on today's picks
+        today_dt = _parse_game_date(game_date)  # yy '26 short form
+        if today_dt and today_dt not in (time_str or ''):
+            # tonyspicks/betfirm often show future picks — skip anything
+            # whose game date isn't today's slate. Best-effort match.
+            continue
+
+        # Parse team names from "MLB | Mariners vs Dodgers".
+        # Betfirm mixes short codes (BOS, LAD) with nicknames (Red Sox, A's)
+        # — normalize both before find_game_id so it matches against
+        # slate team names via _team_matches.
+        gm = re.search(r'\|\s*(.+?)\s+vs\.?\s+(.+)', game_str)
+        if not gm:
+            continue
+        away_raw = gm.group(1).strip()
+        home_raw = gm.group(2).strip()
+        away_hint = _mlb_norm(away_raw) or away_raw
+        home_hint = _mlb_norm(home_raw) or home_raw
+        gid = find_game_id_fn(slate, home_hint=home_hint, away_hint=away_hint)
+        if not gid:
+            continue
+
+        play_text = pr.get_text(' ', strip=True)
+        # Strip "Play on:" prefix
+        play_clean = re.sub(r'^.*?Play on\s*:\s*', '', play_text, flags=re.I).strip()
+
+        # Try total first (OVER/UNDER)
+        tot = re.search(r'^(OVER|UNDER)\s+([\d.½]+)\s*([+-]?\d{2,4})?', play_clean, re.I)
+        if tot:
+            side = tot.group(1).upper()
+            line_raw = tot.group(2).replace('½', '.5')
+            try:
+                line = float(line_raw)
+            except ValueError:
+                line = None
+            odds = int(tot.group(3)) if tot.group(3) else None
+            picks.append({
+                'game_id': gid, 'source': 'betfirm', 'surface': 'total',
+                'pick_side': side, 'pick_line': line, 'odds_american': odds,
+                'confidence': _betfirm_conf(play_text),
+                'raw_text': f'Betfirm ({capper}): {play_clean}',
+                'source_url': BETFIRM_URL, 'fade_flag': 'neutral',
+            })
+            continue
+
+        # ML or RL: "Team ±1½ -160 at Bovada"
+        # RL if a spread like "+1½" or "-1½" appears. Team-name char class
+        # includes apostrophe for A's / Blue Jays etc.
+        rl = re.search(r"([A-Z][A-Za-z .\-'’]+?)\s+([+\-])1[½\.5]+\s*([+\-]?\d{2,4})", play_clean)
+        if rl:
+            team = rl.group(1).strip()
+            sign = rl.group(2)
+            odds = int(rl.group(3))
+            pick_side = _side_for_team(team, home_hint, away_hint)
+            if not pick_side:
+                continue
+            picks.append({
+                'game_id': gid, 'source': 'betfirm', 'surface': 'rl',
+                'pick_side': pick_side, 'pick_line': 1.5 if sign == '+' else -1.5,
+                'odds_american': odds, 'confidence': _betfirm_conf(play_text),
+                'raw_text': f'Betfirm ({capper}): {play_clean}',
+                'source_url': BETFIRM_URL, 'fade_flag': 'neutral',
+            })
+            continue
+
+        # ML — "Team -150 at book"
+        ml = re.search(r"([A-Z][A-Za-z .\-'’]+?)\s+([+\-]\d{2,4})(?:\s+at\s+\w+)?", play_clean)
+        if ml:
+            team = ml.group(1).strip()
+            odds = int(ml.group(2))
+            pick_side = _side_for_team(team, home_hint, away_hint)
+            if not pick_side:
+                continue
+            picks.append({
+                'game_id': gid, 'source': 'betfirm', 'surface': 'ml',
+                'pick_side': pick_side, 'odds_american': odds,
+                'confidence': _betfirm_conf(play_text),
+                'raw_text': f'Betfirm ({capper}): {play_clean}',
+                'source_url': BETFIRM_URL, 'fade_flag': 'neutral',
+            })
+
+    # Dedupe: if multiple handicappers picked the same side of the same
+    # market, collapse to one row. The unique index is
+    # (source, game_id, surface, pick_side, game_date) — same key = same
+    # row. Combine raw_text to preserve capper names as consensus signal;
+    # use median odds so we don't misrepresent as one shop's line.
+    dedup: dict[tuple, dict] = {}
+    for p in picks:
+        key = (p['game_id'], p['surface'], p['pick_side'])
+        if key in dedup:
+            existing = dedup[key]
+            # Combine raw_text (capper A + capper B all agree)
+            existing['raw_text'] = existing['raw_text'] + ' | ' + p['raw_text']
+            # Median-ish odds — take avg of the two, keep the line
+            if p.get('odds_american') is not None and existing.get('odds_american') is not None:
+                existing['odds_american'] = round((existing['odds_american'] + p['odds_american']) / 2)
+        else:
+            dedup[key] = p
+    return list(dedup.values()), 200
+
+
+def _side_for_team(team: str, home_hint: str, away_hint: str) -> str | None:
+    """Match capper's team name to home/away. Tolerant of abbreviations
+    (BOS ↔ Red Sox), curly apostrophes (A's), and multi-word nicknames."""
+    t = _mlb_norm(team)
+    h = _mlb_norm(home_hint)
+    a = _mlb_norm(away_hint)
+    if not t:
+        return None
+    if t == h or (h and t in h) or (t and h in t):
+        return 'HOME'
+    if t == a or (a and t in a) or (t and a in t):
+        return 'AWAY'
+    return None
+
+
+# Abbrev / nickname → canonical last-name for matching (all lowercase).
+# Not every team; only the ones our external scrapers hit as short codes.
+_MLB_TEAM_MAP: dict[str, str] = {
+    'bos': 'red sox', 'oak': 'athletics', "a's": 'athletics', 'a’s': 'athletics',
+    'sea': 'mariners', 'lad': 'dodgers', 'laa': 'angels',
+    'nyy': 'yankees', 'nym': 'mets',
+    'cws': 'white sox', 'chw': 'white sox', 'chc': 'cubs',
+    'stl': 'cardinals', 'kc': 'royals', 'tb': 'rays', 'tbr': 'rays',
+    'sf': 'giants', 'sfg': 'giants', 'sd': 'padres', 'sdp': 'padres',
+    'mil': 'brewers', 'was': 'nationals', 'wsh': 'nationals',
+    'pit': 'pirates', 'cin': 'reds', 'col': 'rockies',
+    'min': 'twins', 'tex': 'rangers', 'hou': 'astros',
+    'atl': 'braves', 'ari': 'diamondbacks', 'mia': 'marlins',
+    'det': 'tigers', 'cle': 'guardians', 'tor': 'blue jays',
+    'bal': 'orioles', 'phi': 'phillies', 'nyi': 'islanders',  # nyi ignored (wrong sport)
+}
+
+
+def _mlb_norm(name: str) -> str:
+    """Canonicalize an MLB team name for matching. Applies abbrev map +
+    strips city prefix (e.g. 'Los Angeles Dodgers' → 'dodgers')."""
+    if not name:
+        return ''
+    n = name.lower().strip().replace('’', "'").strip()  # curly → straight apostrophe
+    if n in _MLB_TEAM_MAP:
+        return _MLB_TEAM_MAP[n]
+    # Drop leading city — take last 1-2 words (Red Sox / White Sox / Blue Jays)
+    words = n.split()
+    if len(words) >= 2 and (words[-2] + ' ' + words[-1]) in {'red sox', 'white sox', 'blue jays'}:
+        return words[-2] + ' ' + words[-1]
+    return words[-1] if words else ''
+
+
+_STAR_RE = re.compile(r'(\d+)\s*\*')
+def _betfirm_conf(text: str) -> str | None:
+    """Extract confidence tier — '1*', '3*', '7* Play' etc."""
+    m = _STAR_RE.search(text)
+    return f'{m.group(1)}*' if m else None
+
+
+def _parse_game_date(iso_date: str) -> str | None:
+    """Convert '2026-07-30' → 'Jul 30' (matches Betfirm's date prefix)."""
+    try:
+        from datetime import datetime
+        return datetime.strptime(iso_date, '%Y-%m-%d').strftime('%b %-d')
+    except Exception:
+        try:
+            return datetime.strptime(iso_date, '%Y-%m-%d').strftime('%b %#d')  # windows
+        except Exception:
+            return None
