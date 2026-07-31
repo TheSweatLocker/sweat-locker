@@ -5037,12 +5037,86 @@ const fetchJerryRecord = async () => {
     dawg.losses = dawg.total.losses;
     dawg.pending = dawg.total.pending;
 
+    // ─── Jerry synthesis records (2026-07-31 · Tier 3) ─────────────────
+    // Aggregates jerry_reads (game synthesis) + prop_jerry_reads (BACK/FADE
+    // props) by W/L. Sport-universal — pulls all sports, then rolls up.
+    // Populated once graders run (grade_jerry_reads.py + grade_prop_jerry_reads.py).
+    let jerrySynthesis = {
+      total: {wins: 0, losses: 0, push: 0, no_action: 0},
+      last30: {wins: 0, losses: 0},
+      byMarket: {ml: {wins:0,losses:0}, rl: {wins:0,losses:0}, total: {wins:0,losses:0}},
+      bySport: {},
+    };
+    try {
+      const {data: jRows} = await supabase.from('jerry_reads')
+        .select('sport,call_market,result,game_date')
+        .not('result', 'is', null)
+        .order('game_date', {ascending: false}).limit(1000);
+      if (jRows) {
+        const _30d = new Date(); _30d.setDate(_30d.getDate() - 30);
+        const _30dStr = _30d.toISOString().slice(0,10);
+        for (const r of (jRows as any[])) {
+          const w = r.result === 'Win', l = r.result === 'Loss', p = r.result === 'Push';
+          if (w) jerrySynthesis.total.wins++;
+          else if (l) jerrySynthesis.total.losses++;
+          else if (p) jerrySynthesis.total.push++;
+          else if (r.result === 'NO_ACTION') jerrySynthesis.total.no_action++;
+          if (r.game_date && r.game_date >= _30dStr) {
+            if (w) jerrySynthesis.last30.wins++; else if (l) jerrySynthesis.last30.losses++;
+          }
+          const mkt = r.call_market;
+          if (mkt && jerrySynthesis.byMarket[mkt]) {
+            if (w) jerrySynthesis.byMarket[mkt].wins++;
+            else if (l) jerrySynthesis.byMarket[mkt].losses++;
+          }
+          if (r.sport) {
+            if (!jerrySynthesis.bySport[r.sport]) jerrySynthesis.bySport[r.sport] = {wins:0,losses:0};
+            if (w) jerrySynthesis.bySport[r.sport].wins++;
+            else if (l) jerrySynthesis.bySport[r.sport].losses++;
+          }
+        }
+      }
+    } catch (e) { console.log('jerry_reads record fetch:', (e as any)?.message); }
+
+    let propJerry = {
+      total: {wins: 0, losses: 0, push: 0, no_action: 0},
+      last30: {wins: 0, losses: 0},
+      byVerdict: {BACK: {wins:0,losses:0}, FADE: {wins:0,losses:0}},
+    };
+    try {
+      const {data: pRows} = await supabase.from('prop_jerry_reads')
+        .select('call_verdict,result,game_date')
+        .not('result', 'is', null)
+        .order('game_date', {ascending: false}).limit(2000);
+      if (pRows) {
+        const _30d = new Date(); _30d.setDate(_30d.getDate() - 30);
+        const _30dStr = _30d.toISOString().slice(0,10);
+        for (const r of (pRows as any[])) {
+          const w = r.result === 'Win', l = r.result === 'Loss', p = r.result === 'Push';
+          if (w) propJerry.total.wins++;
+          else if (l) propJerry.total.losses++;
+          else if (p) propJerry.total.push++;
+          else if (r.result === 'NO_ACTION') propJerry.total.no_action++;
+          if (r.game_date && r.game_date >= _30dStr) {
+            if (w) propJerry.last30.wins++; else if (l) propJerry.last30.losses++;
+          }
+          const v = String(r.call_verdict || '').toUpperCase();
+          if ((v === 'BACK' || v === 'FADE') && propJerry.byVerdict[v]) {
+            if (w) propJerry.byVerdict[v].wins++;
+            else if (l) propJerry.byVerdict[v].losses++;
+          }
+        }
+      }
+    } catch (e) { console.log('prop_jerry_reads record fetch:', (e as any)?.message); }
+
     setJerryRecord({
       props: { wins: propWins, losses: propLosses, pending: pendingProps, bySport: propBySport, recent: recentProps },
       nrfi,
       dawg,
       pipelineProps,
       bestBets: bestBetHistory || [],
+      jerrySynthesis,
+      propJerry,
       fetched_at: Date.now(),
     });
   } catch(e) {
@@ -12320,6 +12394,117 @@ setJerryHistory(prev => {
                     );
                   })()}
 
+                  {/* ─── Jerry Synthesis Record (2026-07-31 · Tier 3) ─────
+                      Live scoreboard for the game-level Jerry take. Populated
+                      by grade_jerry_reads.py nightly. Sport-universal — rolls
+                      up MLB + NBA + NFL + NCAAF + NCAAB as those sports ship. */}
+                  {(() => {
+                    const js = (jerryRecord as any).jerrySynthesis || {total: {wins:0,losses:0,push:0,no_action:0}, last30: {wins:0,losses:0}, byMarket: {}, bySport: {}};
+                    const t = pickWindow(js, {wins:0,losses:0});
+                    const graded = (t.wins||0) + (t.losses||0);
+                    const pct = graded > 0 ? Math.round((t.wins/graded)*100) : 0;
+                    const noAction = js.total?.no_action ?? 0;
+                    return (
+                      <View style={[styles.card,{marginBottom:16}]}>
+                        <Text style={{color:THEME.accent,fontWeight:'800',fontSize:12,marginBottom:10,letterSpacing:0.5}}>🧠 JERRY GAME SYNTHESIS  ·  {winLabel}</Text>
+                        {graded === 0 ? (
+                          <Text style={{color:THEME.textDim,fontSize:13,lineHeight:18}}>Jerry synthesis grading begins as games resolve. Live from 2026-07-31.{noAction > 0 ? `\n${noAction} PASS calls (Jerry stayed out).` : ''}</Text>
+                        ) : (
+                          <>
+                            <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:12,paddingBottom:12,borderBottomWidth:1,borderBottomColor:THEME.border}}>
+                              <View style={{alignItems:'center'}}>
+                                <Text style={{color:THEME.text,fontWeight:'900',fontSize:32}}>{t.wins}-{t.losses}</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>RECORD</Text>
+                              </View>
+                              <View style={{alignItems:'center'}}>
+                                <Text style={{color:pct>=55?THEME.accent:pct>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:24}}>{pct}%</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
+                              </View>
+                              {noAction > 0 && (
+                                <View style={{alignItems:'center'}}>
+                                  <Text style={{color:THEME.textDim,fontWeight:'700',fontSize:22}}>{noAction}</Text>
+                                  <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>PASSES</Text>
+                                </View>
+                              )}
+                            </View>
+                            {/* By market breakdown (ML / RL / Total) */}
+                            <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10}}>
+                              <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY MARKET (LIFETIME)</Text>
+                              {([['ml','ML'],['rl','Run Line'],['total','Total']] as [string,string][]).map(([k,label]) => {
+                                const m = (js.byMarket as any)?.[k] || {wins:0,losses:0};
+                                const mt = m.wins + m.losses;
+                                const mp = mt > 0 ? Math.round((m.wins/mt)*100) : 0;
+                                return (
+                                  <View key={k} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
+                                    <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600'}}>{label}</Text>
+                                    <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+                                      <Text style={{color:THEME.textDim,fontSize:12}}>{m.wins}-{m.losses}</Text>
+                                      {mt > 0 && <Text style={{color:mp>=55?THEME.accent:mp>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{mp}%</Text>}
+                                    </View>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          </>
+                        )}
+                      </View>
+                    );
+                  })()}
+
+                  {/* ─── Prop Jerry BACK/FADE Record ───────────────────── */}
+                  {(() => {
+                    const pj = (jerryRecord as any).propJerry || {total: {wins:0,losses:0,push:0,no_action:0}, last30: {wins:0,losses:0}, byVerdict: {}};
+                    const t = pickWindow(pj, {wins:0,losses:0});
+                    const graded = (t.wins||0) + (t.losses||0);
+                    const pct = graded > 0 ? Math.round((t.wins/graded)*100) : 0;
+                    const passes = pj.total?.no_action ?? 0;
+                    return (
+                      <View style={[styles.card,{marginBottom:16}]}>
+                        <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:12,marginBottom:10,letterSpacing:0.5}}>🎯 PROP JERRY  ·  BACK / FADE  ·  {winLabel}</Text>
+                        {graded === 0 ? (
+                          <Text style={{color:THEME.textDim,fontSize:13,lineHeight:18}}>Prop Jerry grading begins as props resolve. Live from 2026-07-31.{passes > 0 ? `\n${passes} PASS calls (Jerry stayed out — most props don't clear the threshold).` : ''}</Text>
+                        ) : (
+                          <>
+                            <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:12,paddingBottom:12,borderBottomWidth:1,borderBottomColor:THEME.border}}>
+                              <View style={{alignItems:'center'}}>
+                                <Text style={{color:THEME.text,fontWeight:'900',fontSize:32}}>{t.wins}-{t.losses}</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>RECORD</Text>
+                              </View>
+                              <View style={{alignItems:'center'}}>
+                                <Text style={{color:pct>=55?THEME.accent:pct>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:24}}>{pct}%</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
+                              </View>
+                              {passes > 0 && (
+                                <View style={{alignItems:'center'}}>
+                                  <Text style={{color:THEME.textDim,fontWeight:'700',fontSize:22}}>{passes}</Text>
+                                  <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>PASSES</Text>
+                                </View>
+                              )}
+                            </View>
+                            {/* BACK vs FADE breakdown */}
+                            <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10}}>
+                              <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY VERDICT (LIFETIME)</Text>
+                              {([['BACK','🎯 BACK'],['FADE','⛔ FADE']] as [string,string][]).map(([k,label]) => {
+                                const m = (pj.byVerdict as any)?.[k] || {wins:0,losses:0};
+                                const mt = m.wins + m.losses;
+                                const mp = mt > 0 ? Math.round((m.wins/mt)*100) : 0;
+                                return (
+                                  <View key={k} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
+                                    <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600'}}>{label}</Text>
+                                    <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+                                      <Text style={{color:THEME.textDim,fontSize:12}}>{m.wins}-{m.losses}</Text>
+                                      {mt > 0 && <Text style={{color:mp>=55?THEME.accent:mp>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{mp}%</Text>}
+                                    </View>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          </>
+                        )}
+                      </View>
+                    );
+                  })()}
+
                   {/* TIER INTEGRITY BADGE — reads nightly findings from
                       audit_tier_integrity.py (tier_integrity_findings table).
                       When a lower-tier cohort outperforms a higher one,
@@ -12364,8 +12549,12 @@ setJerryHistory(prev => {
                                 <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>{SPORT_EMOJI[bet.sport]||''} {bet.sport} • {new Date(bet.bet_date + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</Text>
                               </View>
                               <View style={{alignItems:'center',gap:4}}>
-                                <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:HRB_COLOR,alignItems:'center',justifyContent:'center',backgroundColor:THEME.hrb + '1A'}}>
-                                  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14}}>{bet.sweat_score||'—'}</Text>
+                                {/* Circle now shows Jerry conviction (POTD anchored to Jerry
+                                    2026-07-31 · daily_best_bet_history.sweat_score column
+                                    stores conv value now). Label reflects new anchor. */}
+                                <View style={{width:52,height:52,borderRadius:26,borderWidth:2,borderColor:THEME.accent,alignItems:'center',justifyContent:'center',backgroundColor:THEME.accent + '1A'}}>
+                                  <Text style={{color:THEME.accent,fontWeight:'800',fontSize:14}}>{bet.sweat_score||'—'}</Text>
+                                  <Text style={{color:THEME.accent,fontSize:7,fontWeight:'800',letterSpacing:0.4,marginTop:1}}>JERRY</Text>
                                 </View>
                                 <View style={{backgroundColor:resultColor+'22',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:resultColor}}>
                                   <Text style={{color:resultColor,fontWeight:'800',fontSize:9}}>{isPending?'PENDING':isWin?'WIN':'LOSS'}</Text>
@@ -12379,7 +12568,7 @@ setJerryHistory(prev => {
                   )}
 
                   {/* Footer note */}
-                  <Text style={{color:THEME.textMuted,fontSize:10,textAlign:'center',marginTop:12,lineHeight:14}}>Results auto-resolve daily via MLB Stats API and BDL box scores</Text>
+                  <Text style={{color:THEME.textMuted,fontSize:10,textAlign:'center',marginTop:12,lineHeight:14}}>Every Jerry read graded post-game · results auto-resolve daily via sport-specific APIs</Text>
 
                   <View style={{height:20}}/>
                 </View>

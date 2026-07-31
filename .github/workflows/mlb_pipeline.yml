@@ -582,6 +582,22 @@ jobs:
           cd mlb_pipeline
           python grade_daily_card.py || echo "grade_daily_card non-fatal"
 
+      # Jerry synthesis graders (2026-07-31 · Tier 3). Runs alongside
+      # legacy grade_daily_card. Populates jerry_reads.result +
+      # prop_jerry_reads.result so the Receipts tab can show live
+      # Jerry track record starting day one. Sport-universal via
+      # RESULTS_TABLE / PROPS_TABLE registries.
+      # continue-on-error: bad grading never blocks morning audit.
+      - name: Grade Jerry synthesis reads (game + prop)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python grade_jerry_reads.py || echo "grade_jerry_reads non-fatal"
+          python grade_prop_jerry_reads.py || echo "grade_prop_jerry_reads non-fatal"
+
       # POTD auto-resolver — reads jerry_cache best_bet_* entries, looks
       # up game outcomes via mlb_game_results, writes Win/Loss/Push back
       # to data.result. Idempotent + backfills any unresolved historic
