@@ -1637,10 +1637,15 @@ const [sweatCardLoading, setSweatCardLoading] = useState(false);
   // enable each sport/feature).
   const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({});
   const isFeatureOn = React.useCallback((sport: string, feature: string) => {
+    // Fail-OPEN when the flag map hasn't loaded yet (network delay,
+    // pre-fetch first render, offline). Prevents sport tabs from
+    // disappearing while state is loading — worse UX than showing
+    // all-and-letting-empty-state-handle-it. Only explicit `false`
+    // in the DB hides a sport.
+    if (Object.keys(featureFlags).length === 0) return true;
     const key = `${sport.toUpperCase()}:${feature}`;
-    // MLB stays permissive during rollout — flags gate NEW sports first
-    if (sport.toUpperCase() === 'MLB') return featureFlags[key] !== false;
-    return featureFlags[key] === true;
+    // Explicit false → hidden. Missing key or true → visible.
+    return featureFlags[key] !== false;
   }, [featureFlags]);
 const [dailyBestBetError, setDailyBestBetError] = useState('');
 const [modelEdgeData, setModelEdgeData] = useState([]);
