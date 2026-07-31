@@ -137,7 +137,14 @@ def format_potd(potd):
     matchup = f"{game.get('away_team', '?')} @ {game.get('home_team', '?')}"
     score = potd.get("score", {}).get("total", "?")
     confidence = potd.get("confidence", "standard")
-    return f"**{sport}** — {matchup}\n**Pick:** {lean}\n**Tier:** {confidence.upper()} | Sweat Score {score}/100"
+    # Score label — 2026-07-31 Sweat Card swap: POTD is now Jerry-anchored
+    # (see jerry_anchor_potd.py). We look for the anchor flag in the payload;
+    # if present, show "Jerry" label; else fall back to legacy "Sweat Score".
+    is_jerry = potd.get("anchor") == "jerry_synthesis_v1" \
+               or (potd.get("score", {}) or {}).get("source") == "jerry_conviction" \
+               or (potd.get("context", {}) or {}).get("jerry_anchored")
+    score_label = "Jerry" if is_jerry else "Sweat Score"
+    return f"**{sport}** — {matchup}\n**Pick:** {lean}\n**Tier:** {confidence.upper()} | {score_label} {score}/100"
 
 
 def format_top_legs(degen):
@@ -304,7 +311,7 @@ _Auto-generated from {date} pipeline output. Edit prose to taste before posting.
 
 ## 📱 TIKTOK / IG SHORT (copy/paste, ~30 sec read)
 
-> Tonight's Sweat Locker card.
+> Tonight's Sweat Locker card — 🧠 Powered by Jerry.
 >
 > 🏆 **POTD:** {format_potd(potd).split(chr(10))[1].replace('**Pick:**', '').strip() if potd else 'TBA'}
 > 📊 **Top Prop:** {_prop_label(props[0]) if props else 'TBA'}

@@ -842,6 +842,23 @@ jobs:
           cd mlb_pipeline
           python generate_jerry_synthesis.py --force || echo "jerry synthesis failed (non-fatal)"
 
+      # Jerry-anchored POTD (2026-07-31 · Sweat Card swap). Runs AFTER
+      # generate_jerry_synthesis so jerry_reads is populated. Overwrites the
+      # legacy play_of_day.py POTD selection with the highest-conviction
+      # Jerry read (>=70). If no read clears threshold, marks POTD "no play"
+      # (discipline preserved). Card format + app render unchanged — just
+      # the pick source is now Jerry's synthesis instead of the composite
+      # sweat_score / primary_play.tier logic.
+      # continue-on-error: if this fails, users still see legacy POTD.
+      - name: Jerry-anchor tonight's POTD
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python jerry_anchor_potd.py --threshold 70 || echo "jerry POTD anchor failed (non-fatal)"
+
       # Auto-generate tonight's content card after the 2pm ET pipeline run
       # (skip on 8am run since lineups/lines aren't locked yet — content
       # would just be replaced anyway)
