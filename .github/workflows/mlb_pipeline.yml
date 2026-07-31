@@ -223,6 +223,25 @@ jobs:
           cd mlb_pipeline
           python generate_props.py
 
+      # Prop refit conviction (2026-07-31 · Option C step 1). Post-hoc
+      # rescore of every prop's conviction using logistic-fit weights
+      # trained on 60d graded outcomes. Legacy conviction column
+      # untouched. App reads refit_conviction (with fallback).
+      # Backtest lift (top-30% picks): +9.3pp system, +21pp on
+      # outs_under, +42pp on hits_under. Weight table at
+      # models/prop_refit_weights_v1.json. Sign-flip fix is implicit —
+      # data-driven negative coefficients naturally penalize L-predictor
+      # signal firings. continue-on-error: if refit fails, legacy
+      # conviction still populates everything downstream.
+      - name: Apply prop refit conviction
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python apply_prop_refit.py || echo "prop refit failed (non-fatal)"
+
       # Prop-signal override (added 2026-05-19): when v4 says OVER big
       # (>=+1.5 vs market) but PRIME/STRONG props concentrate UNDER, props
       # win the head-to-head 64.7% (backtested on n=17). Patches

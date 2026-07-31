@@ -1,0 +1,169 @@
+{
+  "trained_at": "2026-07-31T12:05:04.313046",
+  "training_window": "60d",
+  "n_total_rows": 1000,
+  "method": "sklearn.LogisticRegression(C=0.5, class_weight=balanced)",
+  "usage": "apply_prop_refit reads this JSON and computes refit_conviction per prop as normalized sum of fired-signal coefficients rescaled to 0-100.",
+  "prop_types": {
+    "hits_over/over": {
+      "n_training": 313,
+      "baseline_hit": 0.6549520766773163,
+      "intercept": -0.30211509076484533,
+      "coefficients": {
+        "lineup_spot": 0.13157882630270687,
+        "opp_starter": -0.18788644069422886,
+        "team_heat": 0.40487191927274696,
+        "l7_hot": 0.29634549720104725,
+        "l14_heat": 0.17614336140670245,
+        "opp_form": -0.13875277404573674,
+        "team_offense": -0.1566587211090735,
+        "opp_bullpen": -0.257170345303721,
+        "l7_avg_hot": -0.2998089058870982,
+        "park": 0.3049168850535322,
+        "l7_warm": 0.12015677773929379,
+        "l14_warming": 0.011017537540082063,
+        "wind": 1.0561991668108102,
+        "l14_reversing": -0.3634454618230091,
+        "opp_vs_team_baa_anti": -0.21839476560420906,
+        "team_cold": 0.14119962344022538,
+        "opp_vs_team_baa": -0.5669698570449763,
+        "l14_cooling": -0.03494431701522299,
+        "l14_cold": 0.6264841892122623
+      },
+      "score_min": -1.01323427077513,
+      "score_max": 1.7205936091907112
+    },
+    "outs_over/over": {
+      "n_training": 47,
+      "baseline_hit": 0.44680851063829785,
+      "intercept": -0.21783567974247456,
+      "coefficients": {
+        "xera": 0.00021791595414906873,
+        "book_recalibration": 0.14502460776806889,
+        "l5_confirm": -0.34104523434605,
+        "l3": 0.6201777126240323,
+        "durable": 0.22518083484122972,
+        "l7_durable": -0.06691463200580584,
+        "pen_gassed": 0.016671659397169913,
+        "opp_weak": -0.01731373500265899
+      },
+      "score_min": -0.4077419503977068,
+      "score_max": 0.99060107118748
+    },
+    "outs_under/under": {
+      "n_training": 48,
+      "baseline_hit": 0.6041666666666666,
+      "intercept": 1.3216128340711113,
+      "coefficients": {
+        "book_recalibration": -0.0056292679995570355,
+        "l5_confirm": -0.3802290938455921,
+        "l3_bad": -0.7591427531425877,
+        "slow_start": -0.5248608675786057,
+        "xera_high": 0.3729870890261411,
+        "short_last": -0.2611585919700269,
+        "opp_wrc": -0.039512648106547726,
+        "park": -0.6565219570172338
+      },
+      "score_min": -2.2145554425274625,
+      "score_max": -0.05238392092555577
+    },
+    "bb_under/under": {
+      "n_training": 75,
+      "baseline_hit": 0.48,
+      "intercept": 0.09684152604279189,
+      "coefficients": {
+        "l7_control": 0.0005417314576776815,
+        "book_recalibration": -0.13364576839530845,
+        "bb_rate": 0.2850287737803593,
+        "aggressive_opp": -0.30324417767796324,
+        "clean_start": -0.2539981359046894,
+        "l5_confirm": 0.11826074279410158
+      },
+      "score_min": -0.6903463505202834,
+      "score_max": 0.28557050523803695
+    },
+    "bb_over/over": {
+      "n_training": 113,
+      "baseline_hit": 0.5663716814159292,
+      "intercept": 1.0816673107993604,
+      "coefficients": {
+        "l7_walks": 2.883214590139959e-05,
+        "book_recalibration": -0.8793670683680257,
+        "bb_rate": -0.6379084214473213,
+        "l5_confirm": 0.3517247806188275,
+        "wild_start": 0.099429478681662,
+        "rest_rust": -0.39457614615812575
+      },
+      "score_min": -1.9118228038275715,
+      "score_max": 0.3517536127647289
+    },
+    "ks_under/under": {
+      "n_training": 114,
+      "baseline_hit": 0.49122807017543857,
+      "intercept": -0.21111253864748292,
+      "coefficients": {
+        "k_gap_neg": 0.30490124412580777,
+        "book_recalibration": -0.3560895256875273,
+        "low_k_pitcher": -0.05797745996065989,
+        "l5_confirm": 0.3499825118115095,
+        "opp_offense": 0.0911338967151621,
+        "short_outing": -0.07965537476585306,
+        "bucket_k": 0.2136813580007537,
+        "form_struggling": -0.26568676193540186,
+        "form_cold": 0.18118298626869025,
+        "prime_gate": -0.15257080904889156,
+        "framing": -0.147315691985663,
+        "vs_team_k_anti": 0.7287713159312044,
+        "vs_team_k": -0.12594399072968476
+      },
+      "score_min": -0.6418887812870485,
+      "score_max": 1.1525667371791837
+    },
+    "hits_under/under": {
+      "n_training": 42,
+      "baseline_hit": 0.42857142857142855,
+      "intercept": -1.2756722847323392,
+      "coefficients": {
+        "l7_avg_cold": 0.12716629826466477,
+        "l7_cold": 0.4616121555984321,
+        "l14_cold": 0.1049346626959105,
+        "opp_starter": 0.40575860603629804,
+        "hitless_streak": 0.1208998754413314,
+        "lineup_spot": 0.20317464911990465,
+        "team_cold": -0.11878219583837782,
+        "opp_form_hot": 0.23343976086465512,
+        "opp_k_heavy": 0.24064755141193203,
+        "team_offense": 0.26299242682460705,
+        "anticorr_team_individual": 0.019021403962953938,
+        "opp_vs_team_baa": 0.5938337789871253,
+        "prime_gate": 0.11573638715729925,
+        "park": -0.851134710578048,
+        "opp_k_artist": -0.4025308077476967
+      },
+      "score_min": 0.2643022247626783,
+      "score_max": 2.5297878091148043
+    },
+    "ks_over/over": {
+      "n_training": 56,
+      "baseline_hit": 0.5535714285714286,
+      "intercept": -1.1067328534869505,
+      "coefficients": {
+        "book_recalibration": -0.12445389702743052,
+        "xera": 0.6852852023436699,
+        "bucket_k": 0.08295540589824939,
+        "bucket_sustain": -0.08363416228853186,
+        "l5_confirm": 0.5723419794301355,
+        "k_artist": -0.2339637049699005,
+        "k_gap": 0.019281256365503267,
+        "form_hot": 0.88255030338165,
+        "opp_k_rate": -0.3017686189486738,
+        "vs_team_k": 0.4931000938974665,
+        "framing": -0.17582596044270912,
+        "slow_start": -0.06810203307691667,
+        "opp_offense": 0.35686660391481506
+      },
+      "score_min": -0.8366909377789964,
+      "score_max": 2.5917790879237406
+    }
+  }
+}
