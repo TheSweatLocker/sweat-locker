@@ -155,7 +155,33 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     props = r.json() if r.status_code == 200 else []
     # Skip SKIP-tier props (Phase-2 attach failed)
     props = [p for p in props if p.get('tier') != 'SKIP']
-    print(f'  [{sport}] {len(props)} eligible props on the slate')
+
+    # Edge gate: COVERAGE stubs (from sweep_prop_coverage) only pass if they
+    # carry a meaningful projection delta or opp K% extreme. Non-COVERAGE tiers
+    # already earned Jerry's attention via legacy scorer. Keeps Jerry-take
+    # volume manageable (~30–60/day) even when coverage stubs push the raw
+    # props table to 250+ rows.
+    def _has_edge(p: dict) -> bool:
+        if (p.get('tier') or '').upper() != 'COVERAGE':
+            return True
+        sig = p.get('signals') or {}
+        edge = sig.get('_edge_pct')
+        if edge is not None:
+            try:
+                if abs(float(edge)) >= 0.10: return True   # projection ≥10% off line
+            except (TypeError, ValueError): pass
+        # opp K% extremes as fallback signal — high-K opponent → K under edge, etc.
+        opp_k = sig.get('opp_k_rate')
+        if isinstance(opp_k, str) and any(c.isdigit() for c in opp_k):
+            try:
+                num = float(''.join(c for c in opp_k if c.isdigit() or c == '.'))
+                if p.get('prop_type') == 'ks' and (num >= 26 or num <= 19): return True
+            except ValueError: pass
+        return False
+
+    before = len(props)
+    props = [p for p in props if _has_edge(p)]
+    print(f'  [{sport}] {len(props)}/{before} eligible after edge gate')
 
     done = 0
     for prop in props:

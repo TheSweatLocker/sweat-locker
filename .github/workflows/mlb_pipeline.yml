@@ -223,6 +223,24 @@ jobs:
           cd mlb_pipeline
           python generate_props.py
 
+      # Prop coverage sweeper (2026-07-31 · Tier 3). generate_props.py
+      # silent-skips pitchers with no pitcher_stats row (Fedde, Martinez
+      # er_under, and ~25 others tonight). Sweeper pulls every pitcher
+      # prop the sportsbook publishes and inserts a COVERAGE-tier stub
+      # so every book market is represented in mlb_pipeline_props.
+      # Downstream generate_prop_jerry_synthesis has an edge gate — only
+      # rates props with a real signal (legacy scored it OR projection
+      # delta ≥10%), so Jerry-take volume stays manageable (~30–60/day).
+      - name: Sweep prop coverage
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sweep_prop_coverage.py || echo "prop coverage sweep failed (non-fatal)"
+
       # Prop refit conviction (2026-07-31 · Option C step 1). Post-hoc
       # rescore of every prop's conviction using logistic-fit weights
       # trained on 60d graded outcomes. Legacy conviction column
