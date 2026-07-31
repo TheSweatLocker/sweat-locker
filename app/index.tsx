@@ -1632,6 +1632,11 @@ const [sweatCardLoading, setSweatCardLoading] = useState(false);
 const [dailyBestBetError, setDailyBestBetError] = useState('');
 const [modelEdgeData, setModelEdgeData] = useState([]);
 const [mlbGameContext, setMlbGameContext] = useState({});
+  // Jerry synthesis reads (2026-07-31, Tier 2). Keyed by game_id. Rows shape:
+  //   { call_text, conviction (0-100), short_read (40-60w card), long_read
+  //     (200-300w detail), call_market, call_side, generated_at }
+  // Written by generate_jerry_synthesis.py cron 8am + 2pm ET.
+  const [jerryReads, setJerryReads] = useState<any>({});
 const [pitcherProjections, setPitcherProjections] = useState({});  // name(lower) -> {l7_rolling, classes, ...}
 const [mlbPitcherStatsMap, setMlbPitcherStatsMap] = useState({});  // name(lower) -> {whiff_rate, hard_hit_pct, k_pct, last_3_k_pct, ...}
 const [ncaabTeamStatsMap, setNcaabTeamStatsMap] = useState({});   // team(lower) -> {adj_em, adj_oe, adj_de, efg_o, to_o, or_o, ftr_o, efg_d, to_d, or_d, ftr_d, luck, sos, tempo, seed}
@@ -4575,6 +4580,26 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         addAliases(game.away_team);
       });
       setMlbGameContext(contextMap);
+    }
+
+    // Jerry synthesis reads (2026-07-31, Tier 2). Fetch alongside context so
+    // both land in the same render pass. Keyed by game_id.
+    try {
+      const jRes = await supabase
+        .from('jerry_reads')
+        .select('game_id,call_text,conviction,short_read,long_read,call_market,call_side,generated_at')
+        .eq('sport', 'MLB')
+        .eq('game_date', etStr);
+      if (jRes?.data && jRes.data.length > 0) {
+        const jMap: any = {};
+        jRes.data.forEach((r: any) => { if (r.game_id) jMap[r.game_id] = r; });
+        setJerryReads(jMap);
+      } else {
+        setJerryReads({});
+      }
+    } catch (e) {
+      // Non-blocking — Jerry synthesis is additive, cards still render without it
+      console.warn('[jerry_reads]', (e as any)?.message);
     }
     // Pitcher projections (L7 rolling + per-class) for the Pitcher Scouting panel
     try {
@@ -11237,6 +11262,40 @@ setJerryHistory(prev => {
                           </View>
                         );
                       })()}
+{/* ─── Jerry synthesis short read (Tier 2 · 2026-07-31) ─────────────
+    Headline block. Shows Jerry's call chip + conviction + short read.
+    Hidden entirely when no jerry_reads row exists (fails soft — user
+    sees the tier/alignment chips below as the fallback signal).
+    Label "AM · updates 2pm ET" appears on morning-only generations
+    so users know it'll refresh with confirmed lineups. */}
+{gamesSport === 'MLB' && game.id && jerryReads[game.id] && (()=>{
+  const jr = jerryReads[game.id];
+  if (!jr.short_read) return null;
+  const gen = jr.generated_at ? new Date(jr.generated_at) : null;
+  // If generated before 2pm ET, tag as AM read (12pm ET = 16:00 UTC in EDT)
+  const isAmRead = gen ? (gen.getUTCHours() < 17) : false;
+  const conv = jr.conviction || 0;
+  const isPass = String(jr.call_market || '').toLowerCase() === 'pass';
+  const chipColor = isPass ? THEME.textDim
+                  : conv >= 75 ? THEME.accent
+                  : conv >= 60 ? THEME.sharp
+                  : THEME.warn;
+  return (
+    <View style={{marginBottom:10,padding:10,borderRadius:10,backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border}}>
+      <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:6,flexWrap:'wrap'}}>
+        <Text style={{color:THEME.textDim,fontWeight:'800',fontSize:10,letterSpacing:0.5}}>🧠 JERRY</Text>
+        <View style={{backgroundColor:chipColor + '22',borderColor:chipColor + '44',borderWidth:1,paddingHorizontal:8,paddingVertical:2,borderRadius:6}}>
+          <Text style={{color:chipColor,fontWeight:'800',fontSize:11}}>{jr.call_text || 'Pass'} · {conv}</Text>
+        </View>
+        {isAmRead && (
+          <Text style={{color:THEME.textMuted,fontSize:9,fontStyle:'italic'}}>AM · updates 2pm ET</Text>
+        )}
+      </View>
+      <Text style={{color:THEME.text,fontSize:12,lineHeight:17}}>{jr.short_read}</Text>
+    </View>
+  );
+})()}
+
 {/* ─── Verdict + alignment strip: sport-agnostic, hidden when data null ─── */}
 {(()=>{
   const ctxAny: any = gamesSport === 'MLB'
@@ -12637,7 +12696,26 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 externalPicks={[]}
                 gameProps={[]}
                 historicalOdds={historicalOdds?.[selectedGame.id]}
-                jerryNarrative={gameNarrative}
+                jerryNarrative={
+                  // Prefer Jerry synthesis long_read (Tier 2, 2026-07-31)
+                  // if present for this game; else fall back to the legacy
+                  // jerry_cache narrative (gameNarrative) so nothing regresses
+                  // during the rollout.
+                  (gamesSport === 'MLB' && jerryReads[selectedGame.id]?.long_read)
+                    ? jerryReads[selectedGame.id].long_read
+                    : gameNarrative
+                }
+                jerrySynthesis={
+                  gamesSport === 'MLB' && jerryReads[selectedGame.id]
+                    ? {
+                        call_text: jerryReads[selectedGame.id].call_text,
+                        conviction: jerryReads[selectedGame.id].conviction,
+                        call_market: jerryReads[selectedGame.id].call_market,
+                        call_side: jerryReads[selectedGame.id].call_side,
+                        generated_at: jerryReads[selectedGame.id].generated_at,
+                      }
+                    : undefined
+                }
                 jerryLoading={gameNarrativeLoading}
                 onClose={()=>setGameDetailModal(false)}
                 onAddParlayLeg={(leg)=>{

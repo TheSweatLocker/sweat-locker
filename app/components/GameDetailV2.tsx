@@ -126,7 +126,15 @@ type Props = {
   externalPicks?: any[];    // rows from external_picks (non-oddscrowd) — if omitted, fetched inside
   gameProps?: any[];        // rows from mlb_pipeline_props / nfl_props etc. — if omitted, fetched inside
   historicalOdds?: any;     // {opening_spread, opening_total, opening_ml_home, opening_ml_away}
-  jerryNarrative?: string;  // Jerry's LLM-generated read for this game (markdown)
+  jerryNarrative?: string;  // Jerry's LLM-generated read for this game (markdown).
+                            // Prefers new jerry_reads.long_read, falls back to jerry_cache.
+  jerrySynthesis?: {        // NEW (2026-07-31): parseable directional call from jerry_reads.
+    call_text?: string;     // e.g. "Pittsburgh Pirates ML", "Under 8.5", "Pass"
+    conviction?: number;    // 0-100
+    call_market?: string;   // 'ml' | 'rl' | 'total' | 'prop' | 'pass'
+    call_side?: string;     // 'HOME' | 'AWAY' | 'OVER' | 'UNDER'
+    generated_at?: string;
+  };
   jerryLoading?: boolean;
   onClose: () => void;
   onAddParlayLeg?: (leg: any) => void;
@@ -170,7 +178,7 @@ const abbrev3 = (team: string) => {
 // ─── Main component ─────────────────────────────────────────────────────
 export default function GameDetailV2({
   game, ctx, gamesSport, externalPicks: externalPicksProp, gameProps: gamePropsProp,
-  historicalOdds, jerryNarrative, jerryLoading, onClose, onAddParlayLeg, onLogPick,
+  historicalOdds, jerryNarrative, jerrySynthesis, jerryLoading, onClose, onAddParlayLeg, onLogPick,
 }: Props) {
   const [fetchedExternals, setFetchedExternals] = useState<any[]>([]);
   const [fetchedProps, setFetchedProps] = useState<any[]>([]);
@@ -282,7 +290,7 @@ export default function GameDetailV2({
 
       <ScrollView style={{flex: 1}} contentContainerStyle={{paddingBottom: 24}}>
         <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
-        <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} />
+        <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} synthesis={jerrySynthesis} />
         <AlignmentStrip ctx={ctx} />
 
         <Section title="Market">
@@ -426,7 +434,12 @@ function VerdictCard({ctx, awayTeam, homeTeam}: any) {
 //
 // Placed high on the page (right after Verdict) because it's the product's
 // biggest differentiator — the AI voice explaining the model reads.
-function JerryReadSection({narrative, loading}: {narrative?: string; loading?: boolean}) {
+function JerryReadSection({narrative, loading, synthesis}: {
+  narrative?: string;
+  loading?: boolean;
+  synthesis?: {call_text?: string; conviction?: number; call_market?: string;
+               call_side?: string; generated_at?: string};
+}) {
   const [expanded, setExpanded] = useState(false);
   if (loading) {
     return (
@@ -451,11 +464,34 @@ function JerryReadSection({narrative, loading}: {narrative?: string; loading?: b
   const isLong = clean.length > SHORT_LEN;
   const shown = expanded || !isLong ? clean : clean.slice(0, SHORT_LEN).trimEnd() + '…';
 
+  // Synthesis header (Tier 2 · 2026-07-31): shows Jerry's parseable call +
+  // conviction + AM/final label. Renders only when jerrySynthesis is passed
+  // (i.e. we have a jerry_reads row); falls back to old header for legacy
+  // jerry_cache narratives.
+  const conv = synthesis?.conviction ?? 0;
+  const isPass = String(synthesis?.call_market || '').toLowerCase() === 'pass';
+  const chipColor = isPass ? C.textDim
+                  : conv >= 75 ? C.accent
+                  : conv >= 60 ? C.sharp
+                  : C.warn;
+  const gen = synthesis?.generated_at ? new Date(synthesis.generated_at) : null;
+  const isAmRead = gen ? (gen.getUTCHours() < 17) : false;
+
   return (
     <View style={styles.jerrySection}>
       <View style={styles.jerryHeader}>
         <Text style={styles.jerryTitle}>🧠 JERRY'S READ</Text>
       </View>
+      {synthesis?.call_text && (
+        <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8,flexWrap:'wrap'}}>
+          <View style={{backgroundColor:chipColor + '22',borderColor:chipColor + '44',borderWidth:1,paddingHorizontal:10,paddingVertical:4,borderRadius:8}}>
+            <Text style={{color:chipColor,fontWeight:'800',fontSize:13}}>{synthesis.call_text} · {conv}</Text>
+          </View>
+          {isAmRead && (
+            <Text style={{color:C.textMuted,fontSize:10,fontStyle:'italic'}}>AM read · refreshes 2pm ET</Text>
+          )}
+        </View>
+      )}
       <Text style={styles.jerryBody}>{shown}</Text>
       {isLong && (
         <TouchableOpacity onPress={() => setExpanded(!expanded)} activeOpacity={0.7}>
