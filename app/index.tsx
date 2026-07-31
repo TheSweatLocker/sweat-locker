@@ -6851,11 +6851,25 @@ if(mkt.key === 'pitcher_props') {
           for (const r of (refitRows || [])) {
             refitMap[`${r.game_id}|${r.player_name}|${r.prop_type}|${r.direction}`] = r.refit_conviction;
           }
+          // Prop Jerry synthesis merge (2026-07-31d · prop_jerry_reads).
+          // Sport-universal: filter by sport='MLB'; when NBA/NFL props ship
+          // this block iterates via sport dispatch (per-sport surface).
+          const {data: jerryRows} = await supabase
+            .from('prop_jerry_reads')
+            .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction')
+            .eq('sport', 'MLB')
+            .eq('game_date', etStr);
+          const jerryMap: Record<string, any> = {};
+          for (const r of (jerryRows || [])) {
+            jerryMap[`${r.game_id}|${r.player_name}|${r.prop_type}|${r.direction}`] = r;
+          }
           const merged = filtered.map((p: any) => {
             const k = `${p.game_id}|${p.player_name}|${p.prop_type}|${p.direction}`;
             const refit = refitMap[k];
+            const jerry = jerryMap[k] || null;
             return {...p, refit_conviction: refit ?? null,
-                    display_conviction: refit ?? p.conviction};
+                    display_conviction: refit ?? p.conviction,
+                    prop_jerry: jerry};
           });
           // Re-sort by display_conviction DESC so refit-boosted picks bubble up
           merged.sort((a: any, b: any) => (b.display_conviction || 0) - (a.display_conviction || 0));
@@ -11651,6 +11665,27 @@ setJerryHistory(prev => {
                     ))}
                   </View>
                 )}
+
+                {/* Prop Jerry synthesis (2026-07-31d). BACK/FADE/PASS chip
+                    + 40-60w take, sport-universal via prop_jerry_reads. */}
+                {(prop as any).prop_jerry?.short_read && (()=>{
+                  const j = (prop as any).prop_jerry;
+                  const v = String(j.call_verdict || '').toUpperCase();
+                  const chipColor = v === 'BACK' ? THEME.win
+                                  : v === 'FADE' ? THEME.loss
+                                  : THEME.textDim;
+                  return (
+                    <View style={{marginTop:10, padding:10, borderRadius:10, backgroundColor:THEME.surface, borderWidth:1, borderColor:THEME.border}}>
+                      <View style={{flexDirection:'row', alignItems:'center', gap:6, marginBottom:6, flexWrap:'wrap'}}>
+                        <Text style={{color:THEME.textDim, fontWeight:'800', fontSize:10, letterSpacing:0.5}}>🧠 JERRY</Text>
+                        <View style={{backgroundColor:chipColor + '22', borderColor:chipColor + '44', borderWidth:1, paddingHorizontal:8, paddingVertical:2, borderRadius:6}}>
+                          <Text style={{color:chipColor, fontWeight:'800', fontSize:11}}>{v || 'PASS'} · {j.conviction ?? '-'}</Text>
+                        </View>
+                      </View>
+                      <Text style={{color:THEME.text, fontSize:12, lineHeight:17}}>{j.short_read}</Text>
+                    </View>
+                  );
+                })()}
 
                 {/* Pick actions — Log Pick (single bet) + Add to Parlay */}
                 {(() => {
