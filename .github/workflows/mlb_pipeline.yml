@@ -819,6 +819,29 @@ jobs:
           cd mlb_pipeline
           python detect_consensus_fade.py --sport MLB || echo "fade detector failed (non-fatal)"
 
+      # Jerry synthesis (added 2026-07-31) — new analytical layer that
+      # reads every internal model + external pick (with 30d track
+      # records) + money flow + primary_play + cohorts and emits ONE
+      # actionable call per game with conviction 0-100. Writes to
+      # jerry_reads. Runs AFTER externals so Jerry sees today's picks;
+      # runs AFTER generate_mlb_game_reads so the struct-build helper +
+      # legacy jerry_cache stay in sync.
+      #
+      # --force on every run: 8am cron writes AM read on partial data
+      # (no lineups), 2pm cron overwrites with final read on confirmed
+      # lineups + late-published externals + fuller money flow. App
+      # labels the AM version as "AM · updates 2pm ET".
+      # continue-on-error: never let a bad Jerry call block the pipeline.
+      - name: Generate Jerry synthesis reads
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_jerry_synthesis.py --force || echo "jerry synthesis failed (non-fatal)"
+
       # Auto-generate tonight's content card after the 2pm ET pipeline run
       # (skip on 8am run since lineups/lines aren't locked yet — content
       # would just be replaced anyway)
