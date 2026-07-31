@@ -144,6 +144,11 @@ SOURCE_REGISTRY = {
         'base_url': 'https://www.betfirm.com/free-baseball-picks/',
         'label': 'Betfirm',
     },
+    'tonyspicks': {
+        'fade_flag': 'trust', 'ttl_hours': 12,       # Ramon Scott daily picks
+        'base_url': 'https://www.tonyspicks.com/category/freepicks/free-mlb-picks/',
+        'label': "Tony's Picks",
+    },
 }
 
 
@@ -1137,6 +1142,22 @@ def fetch_betfirm(slate: list, game_date: str) -> tuple[list, int]:
     return picks, status
 
 
+def fetch_tonyspicks(slate: list, game_date: str) -> tuple[list, int]:
+    """Tony's Picks (Ramon Scott daily) — thin wrapper around
+    externals_consensus. Title-only parse; line + odds not extracted."""
+    from externals_consensus import fetch_tonyspicks as _tp
+    picks_dicts, status = _tp(slate, game_date, find_game_id)
+    picks = []
+    for d in picks_dicts:
+        picks.append(ExternalPick(
+            game_id=d['game_id'], sport='MLB', game_date=game_date,
+            source=d['source'], surface=d['surface'], pick_side=d['pick_side'],
+            raw_text=d.get('raw_text'), source_url=d.get('source_url'),
+            fade_flag=d.get('fade_flag'),
+        ))
+    return picks, status
+
+
 FETCHERS = {
     'dimers': fetch_dimers,
     'covers': fetch_covers,
@@ -1154,6 +1175,7 @@ FETCHERS = {
     'oddscrowd': fetch_oddscrowd,
     'sbr': fetch_sbr,
     'betfirm': fetch_betfirm,
+    'tonyspicks': fetch_tonyspicks,
 }
 
 

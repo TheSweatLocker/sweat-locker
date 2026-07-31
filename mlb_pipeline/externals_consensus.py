@@ -380,11 +380,148 @@ def _betfirm_conf(text: str) -> str | None:
 
 def _parse_game_date(iso_date: str) -> str | None:
     """Convert '2026-07-30' → 'Jul 30' (matches Betfirm's date prefix)."""
+    from datetime import datetime
     try:
-        from datetime import datetime
         return datetime.strptime(iso_date, '%Y-%m-%d').strftime('%b %-d')
     except Exception:
         try:
             return datetime.strptime(iso_date, '%Y-%m-%d').strftime('%b %#d')  # windows
         except Exception:
             return None
+
+
+# ─── Tony's Picks ────────────────────────────────────────────────────────
+TONYS_URL = 'https://www.tonyspicks.com/category/freepicks/free-mlb-picks/'
+
+
+def fetch_tonyspicks(slate: list, game_date: str,
+                     find_game_id_fn: Callable) -> tuple[list, int]:
+    """Tony's Picks free MLB category — one pick per game/day from Ramon Scott.
+
+    Category page = WordPress index of articles. Each article's TITLE
+    encodes enough for surface + side classification. Line + odds live
+    in article prose; skipped for MVP to avoid 12 extra HTTP fetches.
+
+    Title format:
+      "<Team1> vs <Team2> Betting Odds Pick, <Month Day>: <Capper> <action> …"
+
+    Action → market map:
+      "Lays the First-Five" / "First-Five Run Line"  → skip (F5 not tracked)
+      "Lays the Run"                                  → RL on named team
+      "Backs the Over"  / "Rides the Over"            → total/OVER
+      "Backs the Under" / "Rides the Under"           → total/UNDER
+      "Trusts the", "Takes the", "Rolls With",
+      "Backs" (no Over/Under)                         → ML on named team
+
+    URL slug encodes away-home order: `<away>-vs-<home>-<capper>-…-<date>`.
+    """
+    try:
+        r = requests.get(TONYS_URL, headers=HEADERS, timeout=15)
+    except Exception as e:
+        print(f'  ⚠ tonyspicks fetch failed: {e}')
+        return [], 599
+    if r.status_code != 200:
+        return [], r.status_code
+
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(r.text, 'html.parser')
+
+    # Match today's date in URL slug (e.g. "7-30-2026")
+    from datetime import datetime
+    try:
+        dt = datetime.strptime(game_date, '%Y-%m-%d')
+        slug_date = f'{dt.month}-{dt.day}-{dt.year}'   # 7-30-2026
+        alt_slug  = f'/{dt.year}/{dt.month:02d}/{dt.day:02d}/'
+    except Exception:
+        return [], 200
+
+    picks = []
+    for a in soup.find_all('article'):
+        h = a.find(['h1', 'h2', 'h3'])
+        link = h.find('a') if h else None
+        if not link:
+            continue
+        url = link.get('href', '')
+        title = link.get_text(' ', strip=True)
+        if slug_date not in url and alt_slug not in url:
+            continue
+
+        # Extract away/home from URL slug (before "-<capper-slug>")
+        slug = url.rstrip('/').split('/')[-1]
+        # e.g. "seattle-mariners-vs-los-angeles-dodgers-ramon-scott-betting-odds-pick-7-30-2026"
+        m = re.search(r'^(.+?)-vs-(.+?)-(?:ramon-scott|betting-odds|pick|\d{1,2}-\d{1,2}-\d{4})', slug)
+        if not m:
+            # Prop-picks articles use different slug — skip for now
+            continue
+        away_slug = m.group(1).replace('-', ' ')
+        home_slug = m.group(2).replace('-', ' ')
+        away_hint = _mlb_norm(away_slug) or away_slug
+        home_hint = _mlb_norm(home_slug) or home_slug
+        gid = find_game_id_fn(slate, home_hint=home_hint, away_hint=away_hint)
+        if not gid:
+            continue
+
+        # Post-colon action phrase — everything after ":  Ramon Scott "
+        m2 = re.search(r':\s*Ramon Scott\s+(.+)$', title)
+        if not m2:
+            continue
+        action = m2.group(1).strip()
+        surface = pick_side = None
+
+        low = action.lower()
+        # Skip First-Five (not a market we track)
+        if 'first-five' in low or 'first five' in low or ' f5 ' in low:
+            continue
+        if 'the under' in low:
+            surface, pick_side = 'total', 'UNDER'
+        elif 'the over' in low:
+            surface, pick_side = 'total', 'OVER'
+        elif 'run line' in low or 'lays the run' in low:
+            surface = 'rl'
+            # Team named in action or slug — check both
+            pick_side = _infer_side_from_action(action, home_slug, away_slug)
+        else:
+            # ML — team name mentioned after action verb
+            surface = 'ml'
+            pick_side = _infer_side_from_action(action, home_slug, away_slug)
+
+        if not (surface and pick_side):
+            continue
+        picks.append({
+            'game_id': gid, 'source': 'tonyspicks', 'surface': surface,
+            'pick_side': pick_side,
+            'raw_text': f"Tony's Picks (Ramon Scott): {action}",
+            'source_url': url, 'fade_flag': 'neutral',
+        })
+
+    return picks, 200
+
+
+def _infer_side_from_action(action: str, home_slug: str, away_slug: str) -> str | None:
+    """Given an action phrase like 'Trusts the Nats' Hot Road Offense',
+    figure out which side is being backed. Match on nickname keywords
+    from the URL slug (home/away)."""
+    low = action.lower()
+    home_words = home_slug.lower().split()
+    away_words = away_slug.lower().split()
+    # Common nickname aliases picked up in prose
+    nicknames = {
+        'nats': 'washington nationals', 'sox': None,  # ambiguous
+        'fish': 'miami marlins', 'a\'s': 'athletics',
+        'jays': 'toronto blue jays', 'stros': 'houston astros',
+    }
+    # Match by last-word (nickname) — check home first, then away
+    for hw in home_words:
+        if hw in low and len(hw) > 2:
+            return 'HOME'
+    for aw in away_words:
+        if aw in low and len(aw) > 2:
+            return 'AWAY'
+    # Nickname fallback
+    for nick, full in nicknames.items():
+        if nick in low and full:
+            if full in ' '.join(home_words):
+                return 'HOME'
+            if full in ' '.join(away_words):
+                return 'AWAY'
+    return None
