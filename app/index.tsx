@@ -4615,12 +4615,14 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     }
 
     // Jerry synthesis reads (2026-07-31, Tier 2). Fetch alongside context so
-    // both land in the same render pass. Keyed by game_id.
+    // both land in the same render pass. Keyed by game_id (unique across
+    // sports). No sport filter — one query covers MLB + any other sport
+    // whose synthesizer has run today. Game card render dispatches by
+    // game.id lookup, so multi-sport support is free.
     try {
       const jRes = await supabase
         .from('jerry_reads')
-        .select('game_id,call_text,conviction,short_read,long_read,call_market,call_side,generated_at')
-        .eq('sport', 'MLB')
+        .select('sport,game_id,call_text,conviction,short_read,long_read,call_market,call_side,generated_at')
         .eq('game_date', etStr);
       if (jRes?.data && jRes.data.length > 0) {
         const jMap: any = {};

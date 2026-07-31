@@ -60,6 +60,19 @@ SB_WRITE = {**SB_READ, "Content-Type": "application/json",
 MODEL = "claude-haiku-4-5-20251001"
 PROMPT_VERSION = "synthesis_v1"
 
+# Sport-universal registry (2026-07-31 · Tabletop C).
+# Adding a new sport = 1 line + confirming that sport's game_context table
+# follows the same shape as mlb_game_context. NHL/UFC deferred by a couple
+# days per user; NBA/NFL/NCAAF/NCAAB rows here become active when their
+# feature_flags(sport, 'jerry_synthesis').enabled=true.
+SPORT_REGISTRY: dict = {
+    'MLB':  {'context_table': 'mlb_game_context',   'prompt_sport': 'MLB',   'active': True},
+    'NBA':  {'context_table': 'nba_game_context',   'prompt_sport': 'NBA',   'active': False},
+    'NFL':  {'context_table': 'nfl_game_context',   'prompt_sport': 'NFL',   'active': False},
+    'NCAAF':{'context_table': 'ncaaf_game_context', 'prompt_sport': 'NCAAF', 'active': False},
+    'NCAAB':{'context_table': 'ncaab_game_context', 'prompt_sport': 'NCAAB', 'active': False},
+}
+
 
 # ─── Data helpers ────────────────────────────────────────────────────────
 def today_et() -> str:
@@ -174,18 +187,21 @@ def enrich_struct(struct: dict, game: dict, externals: list,
 
 
 # ─── Prompt + LLM call ───────────────────────────────────────────────────
-def load_synthesis_prompt() -> str | None:
-    """Fetch the jerry_synthesis/MLB prompt template. See seed_synthesis_prompt.py
-    for the initial insert."""
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/prompt_templates",
-        headers=SB_READ,
-        params={"name": "eq.jerry_synthesis", "sport": "eq.MLB",
-                "is_active": "eq.true", "select": "template"},
-        timeout=15,
-    )
-    rows = r.json() if r.status_code == 200 else []
-    return rows[0]["template"] if rows else None
+def load_synthesis_prompt(sport: str = 'MLB') -> str | None:
+    """Fetch the jerry_synthesis/{sport} prompt template. Falls back to
+    jerry_synthesis/ALL when no per-sport template exists (sport-universal
+    prompt). Per-sport templates preferred so voice can be tuned."""
+    for candidate_sport in [sport, 'ALL']:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/prompt_templates",
+            headers=SB_READ,
+            params={"name": "eq.jerry_synthesis", "sport": f"eq.{candidate_sport}",
+                    "is_active": "eq.true", "select": "template"},
+            timeout=15,
+        )
+        rows = r.json() if r.status_code == 200 else []
+        if rows: return rows[0]["template"]
+    return None
 
 
 def render_prompt(template: str, game: dict, struct: dict) -> str:
@@ -306,19 +322,46 @@ def upsert_jerry_read(game: dict, parsed: dict, struct: dict,
 
 
 # ─── Main ────────────────────────────────────────────────────────────────
-def run(force: bool = False, game_date: str | None = None, limit: int | None = None) -> None:
-    gd = game_date or today_et()
-    print(f"=== generate_jerry_synthesis · {gd} ===")
+def _fetch_games_for_sport(sport: str, gd: str) -> list:
+    """Sport-parametric: pulls today's game_context rows for the sport.
+    Falls back to legacy fetch_games() for MLB backward compat."""
+    if sport == 'MLB':
+        return fetch_games()
+    reg = SPORT_REGISTRY.get(sport)
+    if not reg: return []
+    table = reg['context_table']
+    r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}",
+                     headers=SB_READ,
+                     params={"game_date": f"eq.{gd}", "select": "*"},
+                     timeout=15)
+    return r.json() if r.status_code == 200 else []
 
-    template = load_synthesis_prompt()
-    if not template:
-        print("  ⛔ no jerry_synthesis prompt found — run seed_synthesis_prompt.py first")
+
+def run(force: bool = False, game_date: str | None = None,
+        limit: int | None = None, sport: str = 'MLB') -> None:
+    gd = game_date or today_et()
+    sport = sport.upper()
+    print(f"=== generate_jerry_synthesis · {sport} · {gd} ===")
+
+    reg = SPORT_REGISTRY.get(sport)
+    if not reg:
+        print(f"  ⛔ sport {sport} not in SPORT_REGISTRY — abort")
+        return
+    if not reg['active'] and sport != 'MLB':
+        # Belt-and-suspenders: allow MLB always; skip inactive sports even if
+        # the cron accidentally invokes them. Flip 'active' when ready.
+        print(f"  ⏭  sport {sport} not active in registry — skipping (safe no-op)")
         return
 
-    games = fetch_games()
+    template = load_synthesis_prompt(sport)
+    if not template:
+        print(f"  ⛔ no jerry_synthesis prompt for {sport} (and no ALL fallback)")
+        return
+
+    games = _fetch_games_for_sport(sport, gd)
     if not games:
-        print("  ⚠ no games on slate"); return
-    print(f"  slate: {len(games)} games")
+        print(f"  ⚠ no {sport} games on slate"); return
+    print(f"  slate: {len(games)} {sport} games")
     props_by_game = fetch_props_by_game()
     potd = fetch_potd()
     source_records = fetch_source_track_records()
@@ -360,14 +403,36 @@ def run(force: bool = False, game_date: str | None = None, limit: int | None = N
             print(f"     raw head: {raw[:200]!r}")
             continue
 
-        if upsert_jerry_read(g, parsed, struct, gd):
+        if upsert_jerry_read_sport(g, parsed, struct, gd, sport):
             call_str = f"{parsed.get('call_text') or 'PASS'} ({parsed.get('conviction') or '-'})"
             print(f"  ✓ {away} @ {home}: {call_str}  [{len(externals)} externals]")
             done += 1
         if limit and done >= limit:
             break
 
-    print(f"=== wrote {done} jerry_reads ===")
+    print(f"=== wrote {done} jerry_reads for {sport} ===")
+
+
+def upsert_jerry_read_sport(game: dict, parsed: dict, struct: dict,
+                             game_date: str, sport: str) -> bool:
+    """Sport-universal upsert — same schema as upsert_jerry_read but writes
+    the sport tag correctly for non-MLB sports."""
+    payload = {
+        "sport": sport,
+        "game_id": game.get("game_id"),
+        "game_date": game_date,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "prompt_version": PROMPT_VERSION,
+        "input_snapshot": struct,
+        **parsed,
+    }
+    r = requests.post(
+        f"{SUPABASE_URL}/rest/v1/jerry_reads?on_conflict=sport,game_id,game_date",
+        headers=SB_WRITE, json=payload, timeout=20,
+    )
+    if r.status_code in (200, 201, 204): return True
+    print(f"  ⚠ upsert {r.status_code}: {r.text[:200]}")
+    return False
 
 
 if __name__ == "__main__":
@@ -375,5 +440,7 @@ if __name__ == "__main__":
     p.add_argument("--force", action="store_true")
     p.add_argument("--date")
     p.add_argument("--limit", type=int)
+    p.add_argument("--sport", default="MLB",
+                   help="MLB (default). NBA/NFL/NCAAF/NCAAB when their pipelines ship.")
     args = p.parse_args()
-    run(force=args.force, game_date=args.date, limit=args.limit)
+    run(force=args.force, game_date=args.date, limit=args.limit, sport=args.sport)
