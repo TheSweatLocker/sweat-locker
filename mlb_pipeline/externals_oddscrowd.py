@@ -70,18 +70,35 @@ def fetch_oddscrowd_generic(
     if landing.status_code != 200:
         return [], landing.status_code
 
-    # Date scoping — URL slug carries "-<league>-<month>-<d>-<yyyy>"
+    # Date scoping — URL slug carries "-<league>-<month>-<d>-<yyyy>".
+    # Late West Coast games (starts >= ~8pm ET / 00:00 UTC) get dated on
+    # the NEXT day by OddsCrowd's slug — otherwise our scraper misses
+    # SEA@LAD / SF@SD / BOS@ATH etc. Build slugs for today AND today+1
+    # and accept either in the date-verification step below.
+    from datetime import timedelta as _td
     parts = game_date.split('-')  # ['2026','07','28']
     year = parts[0]
     day = str(int(parts[2]))
     month_full = _dt.strptime(parts[1], '%m').strftime('%B').lower()  # 'july'
     date_slug = f'-{league_slug}-{month_full}-{day}-{year}'
 
-    # Discover known game URLs from list page for THIS sport + date
-    detail_paths = sorted(set(re.findall(
-        rf'/games/[a-z0-9\-]+{re.escape(date_slug)}/\d+/best-odds',
-        landing.text,
-    )))
+    d1 = _dt.strptime(game_date, '%Y-%m-%d') + _td(days=1)
+    year_next = str(d1.year)
+    day_next = str(d1.day)
+    month_next_full = d1.strftime('%B').lower()
+    date_slug_next = f'-{league_slug}-{month_next_full}-{day_next}-{year_next}'
+
+    accepted_dates = {
+        (month_full, day, year),
+        (month_next_full, day_next, year_next),
+    }
+
+    # Discover known game URLs from list page for THIS sport + today OR
+    # tomorrow's slug (covers late-night games slugged as tomorrow).
+    detail_paths = sorted(set(
+        re.findall(rf'/games/[a-z0-9\-]+{re.escape(date_slug)}/\d+/best-odds',      landing.text)
+      + re.findall(rf'/games/[a-z0-9\-]+{re.escape(date_slug_next)}/\d+/best-odds', landing.text)
+    ))
 
     # Broader per-sport URL discovery (catches leagues sharing a page, e.g. NFL+NCAAF on /football)
     broader = sorted(set(re.findall(
@@ -133,7 +150,11 @@ def fetch_oddscrowd_generic(
             page_month = tm.group(3).lower()
             page_day = str(int(tm.group(4)))
             page_year = tm.group(5)
-            if (page_month, page_day, page_year) != (month_full, day, year):
+            # Accept either today's OR tomorrow's slug — late West Coast
+            # games (>= 10pm ET) get dated on the next UTC day by
+            # OddsCrowd. We still bucket the pick under our requested
+            # game_date because that's how our slate is keyed.
+            if (page_month, page_day, page_year) not in accepted_dates:
                 continue
             gid = find_game_id_fn(slate, home_hint=home_name, away_hint=away_name)
             if not gid:
