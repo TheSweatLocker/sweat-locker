@@ -11410,7 +11410,14 @@ setJerryHistory(prev => {
   );
 })()}
 
-{/* ─── Verdict + alignment strip: sport-agnostic, hidden when data null ─── */}
+{/* ─── Verdict + alignment strip: sport-agnostic, hidden when data null ───
+    Tier chip source order (2026-07-31 · Jerry-first):
+      1. primary_play.tier if present (legacy resolver — strict gates)
+      2. Fall back to Jerry synthesis conviction → derived tier so games
+         where the resolver held (MC-HC gate) but Jerry synthesized a
+         BACK/FADE call still show a headline chip that matches the
+         Jerry take below. Fixes the "no primary play at top but Jerry
+         says TB Rays ML" disconnect. */}
 {(()=>{
   const ctxAny: any = gamesSport === 'MLB'
     ? (mlbGameContext[game.home_team] || mlbGameContext[game.away_team] ||
@@ -11419,9 +11426,19 @@ setJerryHistory(prev => {
   const pp = ctxAny?.primary_play;
   const al = ctxAny?.align_status;
   const alML: any = al?.ml;
+  const jr = game.id ? jerryReads[game.id] : null;
   const chips: React.ReactNode[] = [];
   if (pp?.tier && pp?.label) {
     chips.push(<StatusChip key="pp" variant="tier" tier={pp.tier} label={`${pp.tier} · ${pp.label}`} />);
+  } else if (jr?.call_text && jr?.conviction != null &&
+             String(jr.call_market || '').toLowerCase() !== 'pass') {
+    // Derive tier from Jerry conviction so headline matches the take.
+    const conv = jr.conviction;
+    const derivedTier = conv >= 80 ? 'PRIME'
+                       : conv >= 70 ? 'STRONG'
+                       : conv >= 60 ? 'LEAN' : 'LIGHT';
+    chips.push(<StatusChip key="pp" variant="tier" tier={derivedTier as any}
+                            label={`${derivedTier} · ${jr.call_text}`} />);
   }
   if (alML?.verdict && alML.verdict !== 'no_data') {
     chips.push(<StatusChip key="al" variant="alignment" alignment={alML.verdict} />);
