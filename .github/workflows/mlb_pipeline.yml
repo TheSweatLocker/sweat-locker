@@ -256,6 +256,22 @@ jobs:
           cd mlb_pipeline
           python generate_prop_jerry_synthesis.py --force || echo "prop jerry synthesis failed (non-fatal)"
 
+      # Jerry-anchor Daily Degen (2026-07-31 · Tabletop C step 3). Runs
+      # AFTER generate_prop_jerry_synthesis so it can pull from both
+      # jerry_reads (game-level) and prop_jerry_reads (prop-level) to
+      # build a top-conviction parlay. Sport-universal — cross-sport
+      # legs will surface once NBA/NFL synthesizers ship. Falls back
+      # gracefully to legacy generate_daily_degen output if fewer than
+      # MIN_LEGS Jerry legs qualify.
+      - name: Jerry-anchor Daily Degen
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python jerry_anchor_daily_degen.py || echo "degen jerry anchor failed (non-fatal)"
+
       # Prop-signal override (added 2026-05-19): when v4 says OVER big
       # (>=+1.5 vs market) but PRIME/STRONG props concentrate UNDER, props
       # win the head-to-head 64.7% (backtested on n=17). Patches
