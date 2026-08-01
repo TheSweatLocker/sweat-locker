@@ -39,7 +39,8 @@ H_READ = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
 H_WRITE = {**H_READ, "Content-Type": "application/json",
            "Prefer": "resolution=merge-duplicates,return=minimal"}
 
-WEIGHTS_PATH = Path(__file__).parent / "models" / "prop_refit_weights_v1.json"
+WEIGHTS_V1 = Path(__file__).parent / "models" / "prop_refit_weights_v1.json"
+WEIGHTS_V2 = Path(__file__).parent / "models" / "prop_refit_weights_v2.json"
 
 
 def today_et() -> str:
@@ -47,10 +48,32 @@ def today_et() -> str:
 
 
 def load_weights() -> dict:
-    if not WEIGHTS_PATH.exists():
-        print(f"  ⚠ no refit weights at {WEIGHTS_PATH}")
+    """Load v2 as primary + v1 as fallback for prop types v2 didn't cover.
+
+    v2 was retrained 2026-08-01 with fixes for sign-flipped bb_under coefficients:
+      - class_weight=None (was 'balanced' → sign flips at small n)
+      - L1 penalty + tighter regularization (kills correlated features)
+      - Higher min-sample gate (n≥60)
+
+    Result: v2 covers 4 high-sample types (hits_over/under n=300+, ks_over/under n=80+)
+    with zero sign flips. Low-sample types (bb_*, er_*, ha_*) still use v1 weights;
+    Jerry synth conviction caps prevent overexposure on those uncalibrated flows.
+    """
+    merged = {}
+    if WEIGHTS_V1.exists():
+        merged = json.loads(WEIGHTS_V1.read_text())
+    if WEIGHTS_V2.exists():
+        v2 = json.loads(WEIGHTS_V2.read_text())
+        # v2 prop_types override v1 for anything v2 retrained
+        pt_merged = dict(merged.get("prop_types") or {})
+        pt_merged.update(v2.get("prop_types") or {})
+        merged["prop_types"] = pt_merged
+        merged["version"] = "v2+v1_fallback"
+        merged["v2_trained_at"] = v2.get("trained_at")
+    if not merged:
+        print(f"  ⚠ no refit weights available")
         return {}
-    return json.loads(WEIGHTS_PATH.read_text())
+    return merged
 
 
 def compute_refit(prop_type: str, direction: str, signals: dict,

@@ -1,0 +1,102 @@
+{
+  "trained_at": "2026-08-01T15:18:34.508656",
+  "training_window": "120d",
+  "n_total_rows": 1000,
+  "method": "sklearn.LogisticRegression(C=0.3, penalty=l1, solver=liblinear, class_weight=None) + corr>0.9 feature drop + sign-flip warnings",
+  "usage": "apply_prop_refit reads this JSON and computes refit_conviction per prop as normalized sum of fired-signal coefficients rescaled to 0-100.",
+  "prop_types": {
+    "hits_under/under": {
+      "n_training": 323,
+      "baseline_hit": 0.5913312693498453,
+      "intercept": 0.07035112320164792,
+      "coefficients": {
+        "opp_starter": 0.0,
+        "l7_avg_cold": 0.12743186944900767,
+        "lineup_spot": 0.0,
+        "l7_cold": 0.0,
+        "opp_form_hot": 0.0,
+        "opp_k_artist": 0.0,
+        "opp_k_heavy": 0.0,
+        "l7_cool": 0.0,
+        "hitless_streak": 0.3884828204323473,
+        "team_cold": 0.17963393240677028,
+        "park": 0.056647982950130744,
+        "l14_cold": 0.0,
+        "team_offense": 0.0,
+        "prime_gate": 0.0,
+        "opp_vs_team_baa": 0.0,
+        "umpire": 0.0,
+        "anticorr_team_individual": 0.0,
+        "team_heat": 0.0,
+        "l14_warming": 0.0
+      },
+      "score_min": 0.0,
+      "score_max": 0.7521966052382559,
+      "features_dropped_correlated": []
+    },
+    "ks_over/over": {
+      "n_training": 89,
+      "baseline_hit": 0.6853932584269663,
+      "intercept": 0.5498268567999327,
+      "coefficients": {
+        "xera": 0.0,
+        "k_artist": 0.0,
+        "k_gap": 0.0,
+        "bucket_k": 0.11222973668998214,
+        "bucket_sustain": 0.0,
+        "opp_k_rate": 0.0,
+        "form_hot": 0.0,
+        "framing": 0.0,
+        "opp_offense": 0.0
+      },
+      "score_min": 0.0,
+      "score_max": 0.11222973668998214,
+      "features_dropped_correlated": []
+    },
+    "hits_over/over": {
+      "n_training": 341,
+      "baseline_hit": 0.7155425219941349,
+      "intercept": 0.42298342899518304,
+      "coefficients": {
+        "opp_starter": 0.0,
+        "lineup_spot": 0.0,
+        "opp_form": 0.1987820928045373,
+        "opp_bullpen": 0.1100880438346325,
+        "l7_hot": 0.5211283925268705,
+        "team_offense": 0.0,
+        "l7_avg_hot": 0.0,
+        "park": 0.0,
+        "wind": 0.0,
+        "l7_warm": 0.0,
+        "team_heat": 0.0,
+        "l14_heat": -0.05458767904615205,
+        "l14_warming": 0.0,
+        "l14_reversing": 0.0,
+        "opp_vs_team_baa_anti": 0.0
+      },
+      "score_min": -0.05458767904615205,
+      "score_max": 0.8299985291660403,
+      "features_dropped_correlated": []
+    },
+    "ks_under/under": {
+      "n_training": 76,
+      "baseline_hit": 0.6052631578947368,
+      "intercept": 0.23180581812481926,
+      "coefficients": {
+        "k_gap_neg": 0.0,
+        "low_k_pitcher": 0.0,
+        "bucket_k": 0.0,
+        "short_outing": 0.0,
+        "opp_offense": 0.0,
+        "form_struggling": 0.0,
+        "prime_gate": 0.0,
+        "form_cold": 0.04776987760942755,
+        "framing": 0.0
+      },
+      "score_min": 0.0,
+      "score_max": 0.04776987760942755,
+      "features_dropped_correlated": []
+    }
+  },
+  "sign_flip_warnings": []
+}
