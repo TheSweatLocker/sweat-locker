@@ -23,7 +23,23 @@ H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
-RESULTS_TABLE = {'MLB': 'mlb_game_results'}
+# Sport-universal dispatch — same architecture as grade_jerry_reads.
+# Each sport has its own game_context + game_results tables; all write to
+# the shared game_bucket_roi table with sport tag.
+RESULTS_TABLE = {
+    'MLB':   'mlb_game_results',
+    # 'NBA':   'nba_game_results',
+    # 'NFL':   'nfl_game_results',
+    # 'NCAAF': 'ncaaf_game_results',
+    # 'NCAAB': 'ncaab_game_results',
+}
+CONTEXT_TABLE = {
+    'MLB':   'mlb_game_context',
+    # 'NBA':   'nba_game_context',
+    # 'NFL':   'nfl_game_context',
+    # 'NCAAF': 'ncaaf_game_context',
+    # 'NCAAB': 'ncaab_game_context',
+}
 
 
 def american_to_decimal(a):
@@ -177,5 +193,11 @@ def compute_mlb(window: str = 'lifetime') -> None:
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--window', default='lifetime', choices=['lifetime', '90d', '30d'])
+    p.add_argument('--sport', default='ALL')
     args = p.parse_args()
-    compute_mlb(window=args.window)
+    sports = list(CONTEXT_TABLE.keys()) if args.sport == 'ALL' else [args.sport]
+    for s in sports:
+        if s == 'MLB':
+            compute_mlb(window=args.window)
+        else:
+            print(f'  [{s}] game bucket computer not yet implemented — extend compute_{s.lower()}')

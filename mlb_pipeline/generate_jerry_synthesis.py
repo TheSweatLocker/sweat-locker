@@ -391,6 +391,16 @@ def run(force: bool = False, game_date: str | None = None,
     except Exception as e:
         print(f"  ⚠ totals cohort stats load failed: {e}")
 
+    # Game bucket ROI (R-4): load once, inject per game so Jerry sees the
+    # historical (tier, market, direction) ROI when he makes ML/RL/Total calls.
+    game_bucket_roi = {}
+    try:
+        from bucket_roi_lookup import load_game_buckets
+        game_bucket_roi = load_game_buckets(sport=sport if sport in ('MLB',) else 'MLB')
+        print(f"  game bucket ROI loaded: {len(game_bucket_roi)} (sport={sport})")
+    except Exception as e:
+        print(f"  ⚠ game bucket ROI load failed: {e}")
+
     done = 0
     attempted = 0
     for g in games:
@@ -416,6 +426,26 @@ def run(force: bool = False, game_date: str | None = None,
         externals = fetch_externals_for_game(gid, gd)
         struct = enrich_struct(base_struct, g, externals, source_records,
                                totals_cohort_stats=totals_cohort_stats)
+
+        # Inject game bucket ROI hints into struct so Jerry sees them in {STRUCT}
+        # JSON. Look up bucket for the game's primary_play tier + market.
+        try:
+            from bucket_roi_lookup import lookup_game, format_game_hint
+            pp = g.get('primary_play') or {}
+            if isinstance(pp, dict) and pp.get('tier') and pp.get('type'):
+                # Best-effort direction from label: 'HOME'/'AWAY' for ML/RL, 'OVER'/'UNDER' for totals
+                label = str(pp.get('label') or '').lower()
+                sub = str(pp.get('sub') or '').lower()
+                if pp.get('type').lower() == 'total':
+                    direction = 'OVER' if 'over' in label or 'over' in sub else 'UNDER'
+                else:
+                    direction = 'HOME' if 'home' in label or (g.get('home_team','').lower() in label) else 'AWAY'
+                b = lookup_game(game_bucket_roi, pp['tier'], pp['type'], direction)
+                struct['game_bucket_roi'] = b
+                struct['game_bucket_hint'] = format_game_hint(b)
+        except Exception as e:
+            print(f"  ⚠ game bucket lookup: {e}")
+
         prompt = render_prompt(template, g, struct)
         raw = call_claude(prompt)
         if not raw:

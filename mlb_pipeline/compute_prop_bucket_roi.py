@@ -28,6 +28,17 @@ H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
+# Sport-universal props table dispatch — same pattern as grade_prop_jerry_reads.
+# All sports write to the SAME prop_bucket_roi table with sport tag; the mining
+# reads from the sport-specific graded-props table.
+PROPS_TABLE = {
+    'MLB': 'mlb_pipeline_props',
+    # 'NBA': 'nba_pipeline_props',      # add when NBA prop pipeline ships
+    # 'NFL': 'nfl_pipeline_props',
+    # 'NCAAF': 'ncaaf_pipeline_props',
+    # 'NCAAB': 'ncaab_pipeline_props',
+}
+
 # Prop-type family normalization — collapse variants like 'ks_over' + 'ks' into 'ks'
 FAMILY_MAP = {
     'ks_over': 'ks', 'ks_under': 'ks', 'ks': 'ks',
@@ -73,10 +84,12 @@ def compute_jerry_hint(hit_rate, roi_pct, sample_n):
     return 'PASS', 30
 
 
-def compute(window: str = 'lifetime') -> None:
-    print(f'=== compute_prop_bucket_roi · window={window} ===')
+def compute(window: str = 'lifetime', sport: str = 'MLB') -> None:
+    table = PROPS_TABLE.get(sport)
+    if not table:
+        print(f'  [{sport}] no props table registered — skip'); return
+    print(f'=== compute_prop_bucket_roi · sport={sport} · window={window} ===')
 
-    # Pull graded MLB props (paginated)
     date_filter = None
     if window == '90d':
         date_filter = (datetime.now(timezone.utc) - timedelta(days=90)).strftime('%Y-%m-%d')
@@ -89,13 +102,13 @@ def compute(window: str = 'lifetime') -> None:
         params = {'select': 'prop_type,direction,tier,result,book_over_odds,book_under_odds',
                   'result': 'in.(Win,Loss)', 'limit': '1000', 'offset': str(offset)}
         if date_filter: params['game_date'] = f'gte.{date_filter}'
-        r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+        r = requests.get(f'{SB}/rest/v1/{table}',
                          headers=H_READ, params=params, timeout=30).json()
         if not isinstance(r, list) or not r: break
         all_props += r
         if len(r) < 1000: break
         offset += 1000
-    print(f'  {len(all_props)} graded rows for MLB')
+    print(f'  {len(all_props)} graded rows for {sport}')
 
     # Bucket: (tier, prop_family, direction) — merges prop_type variants
     buckets = defaultdict(lambda: {'w':0, 'n':0, 'push':0, 'odds_sum':0, 'odds_n':0})
@@ -129,7 +142,7 @@ def compute(window: str = 'lifetime') -> None:
             roi = 100 * (hit_rate * (avg_dec - 1) - (1 - hit_rate))
         hint, hint_conf = compute_jerry_hint(hit_rate * 100, roi, n)
         payload = {
-            'sport': 'MLB', 'tier': tier, 'prop_type': family, 'direction': d,
+            'sport': sport, 'tier': tier, 'prop_type': family, 'direction': d,
             'bucket_window': window,
             'wins': wins, 'losses': losses, 'pushes': v['push'], 'sample_n': n,
             'hit_rate': round(hit_rate * 100, 1),
@@ -156,5 +169,9 @@ def compute(window: str = 'lifetime') -> None:
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--window', default='lifetime', choices=['lifetime', '90d', '30d'])
+    p.add_argument('--sport', default='ALL',
+                   help='MLB / NBA / NFL / NCAAF / NCAAB / UFC / ALL (loops)')
     args = p.parse_args()
-    compute(window=args.window)
+    sports = list(PROPS_TABLE.keys()) if args.sport == 'ALL' else [args.sport]
+    for s in sports:
+        compute(window=args.window, sport=s)

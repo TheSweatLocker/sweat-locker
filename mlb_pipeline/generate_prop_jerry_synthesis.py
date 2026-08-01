@@ -68,12 +68,26 @@ def load_prompt() -> str | None:
     return rows[0]['template'] if rows else None
 
 
-def render_prompt(template: str, prop: dict, sport: str) -> str:
+def render_prompt(template: str, prop: dict, sport: str,
+                  bucket_roi: dict | None = None) -> str:
     odds = prop.get('book_over_odds') if prop.get('direction') == 'over' else prop.get('book_under_odds')
     implied = _implied_prob(odds)
     sigs = prop.get('signals') or {}
     sig_lines = '\n'.join(f'  - {k}: {v}' for k, v in sigs.items() if not k.startswith('_'))[:2000]
-    return (template
+
+    # Bucket ROI injection (2026-08-01 R-4): give Jerry the historical hit
+    # rate + juice-adjusted ROI for this exact (tier, prop_type, direction)
+    # bucket. Jerry uses this to decide BACK/FADE/PASS with real edge instead
+    # of just parroting tier labels. e.g. SKIP outs_under = +38.8% ROI → BACK
+    # despite the SKIP tier.
+    bucket_hint = ''
+    if bucket_roi:
+        from bucket_roi_lookup import lookup_prop, format_prop_hint
+        b = lookup_prop(bucket_roi, prop.get('tier',''),
+                        prop.get('prop_type',''), prop.get('direction',''))
+        bucket_hint = format_prop_hint(b)
+
+    rendered = (template
         .replace('{PLAYER}', prop.get('player_name') or '?')
         .replace('{PROP_TYPE}', prop.get('prop_type') or '?')
         .replace('{DIRECTION}', prop.get('direction') or '?')
@@ -83,6 +97,18 @@ def render_prompt(template: str, prop: dict, sport: str) -> str:
         .replace('{REFIT_CONVICTION}', str(prop.get('refit_conviction') or 'n/a'))
         .replace('{CONVICTION}', str(prop.get('conviction') or '?'))
         .replace('{SIGNALS}', sig_lines or '(no signals recorded)'))
+
+    # Append bucket hint if template doesn't have a placeholder for it yet.
+    # Older templates won't have {BUCKET_HINT} — safe append pattern.
+    if '{BUCKET_HINT}' in rendered:
+        rendered = rendered.replace('{BUCKET_HINT}', bucket_hint)
+    elif bucket_hint:
+        rendered = (
+            f'{rendered}\n\n---HISTORICAL BUCKET (season-long backtest) ---\n{bucket_hint}\n'
+            f'IMPORTANT: Weight this bucket ROI heavily in your BACK/FADE/PASS decision. '
+            f'Positive ROI = evidence to BACK. Negative ROI = evidence to FADE regardless of tier.'
+        )
+    return rendered
 
 
 def call_claude(prompt: str) -> str | None:
@@ -194,8 +220,21 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                              'limit': 300},
                      timeout=30)
     props = r.json() if r.status_code == 200 else []
-    # Skip SKIP-tier props (Phase-2 attach failed)
-    props = [p for p in props if p.get('tier') != 'SKIP']
+    # Skip SKIP-tier props ONLY when the bucket doesn't say BACK. 8/1 audit
+    # found SKIP outs_under at +38.8% ROI (n=79) — literally hidden gold.
+    # Keep SKIP rows when the bucket ROI table says BACK; drop when it says
+    # PASS/FADE (which is the majority case for SKIP).
+    from bucket_roi_lookup import load_prop_buckets, lookup_prop
+    _bucket_roi = load_prop_buckets(sport=sport)
+    def _keep_skip(p):
+        if (p.get('tier') or '').upper() != 'SKIP':
+            return True
+        b = lookup_prop(_bucket_roi, 'SKIP', p.get('prop_type',''), p.get('direction',''))
+        return b and (b.get('jerry_hint') or '').upper() == 'BACK'
+    before = len(props)
+    props = [p for p in props if _keep_skip(p)]
+    if before != len(props):
+        print(f'  [{sport}] dropped {before - len(props)} SKIP-tier props with no BACK hint')
 
     # Edge gate: COVERAGE stubs (from sweep_prop_coverage) only pass if they
     # carry a meaningful projection delta or opp K% extreme. Non-COVERAGE tiers
@@ -238,7 +277,7 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                 }, timeout=10)
             if check.status_code == 200 and check.json():
                 continue
-        prompt = render_prompt(template, prop, sport)
+        prompt = render_prompt(template, prop, sport, bucket_roi=_bucket_roi)
         raw = call_claude(prompt)
         if not raw: continue
         parsed = parse_synthesis(raw, prop.get('prop_type'))
