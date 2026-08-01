@@ -28,18 +28,33 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 # the shared game_bucket_roi table with sport tag.
 RESULTS_TABLE = {
     'MLB':   'mlb_game_results',
+    'NFL':   'nfl_game_results',
+    'NCAAF': 'ncaaf_game_results',
+    'NCAAB': 'ncaab_game_results',
     # 'NBA':   'nba_game_results',
-    # 'NFL':   'nfl_game_results',
-    # 'NCAAF': 'ncaaf_game_results',
-    # 'NCAAB': 'ncaab_game_results',
 }
 CONTEXT_TABLE = {
     'MLB':   'mlb_game_context',
+    'NFL':   'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context',
+    'NCAAB': 'ncaab_game_context',
     # 'NBA':   'nba_game_context',
-    # 'NFL':   'nfl_game_context',
-    # 'NCAAF': 'ncaaf_game_context',
-    # 'NCAAB': 'ncaab_game_context',
 }
+# Field-name dispatch — sports vary. NFL uses 'points' not 'runs',
+# 'close_home_ml' not 'home_ml_close', etc. NCAAF + NCAAB share NFL's
+# column naming since they were built off the same college template.
+FIELD_MAP = {
+    'MLB':   {'home_ml':'home_ml_close','away_ml':'away_ml_close','total':'close_total','spread':'close_spread'},
+    'NFL':   {'home_ml':'close_home_ml','away_ml':'close_away_ml','total':'close_total','spread':'close_spread'},
+    'NCAAF': {'home_ml':'close_home_ml','away_ml':'close_away_ml','total':'close_total','spread':'close_spread'},
+    'NCAAB': {'home_ml':'close_home_ml','away_ml':'close_away_ml','total':'close_total','spread':'close_spread'},
+}
+
+# Note (2026-08-01): NFL context uses hash game_ids while nfl_game_results
+# uses '{season}_{week}_{away}_{home}' format — game_id JOIN currently
+# fails. NCAAF/NCAAB may hit similar mismatches. Bridge fix needed at
+# ingest time (either normalize game_id or add a mapping table). Until
+# that ships, NFL/NCAAF/NCAAB will populate 0 rows even with data.
 
 
 def american_to_decimal(a):
@@ -64,39 +79,53 @@ def compute_hint(hit_rate, roi_pct, n):
     return 'PASS', 30
 
 
-def compute_mlb(window: str = 'lifetime') -> None:
-    print(f'=== compute_game_bucket_roi · MLB · window={window} ===')
+def compute_sport(sport: str, window: str = 'lifetime') -> None:
+    ctx_table = CONTEXT_TABLE.get(sport); res_table = RESULTS_TABLE.get(sport)
+    fmap = FIELD_MAP.get(sport)
+    if not ctx_table or not res_table or not fmap:
+        print(f'  [{sport}] no registry entry — skip'); return
+    print(f'=== compute_game_bucket_roi · {sport} · window={window} ===')
 
-    # Pull mlb_game_context + join results — for now use rolling window (all 221)
-    # Extended path: reconstruct historical ML picks from primary_play
     ctx_all = []
     offset = 0
+    home_ml_col = fmap['home_ml']; away_ml_col = fmap['away_ml']
+    total_col = fmap['total']; spread_col = fmap['spread']
+    select_cols = f'game_id,game_date,{home_ml_col},{away_ml_col},{total_col},primary_play,{spread_col}'
     while True:
-        params = {'select': 'game_id,game_date,home_ml_close,away_ml_close,close_total,'
-                            'primary_play,close_spread',
+        params = {'select': select_cols,
                   'limit': '500', 'offset': str(offset)}
-        r = requests.get(f'{SB}/rest/v1/mlb_game_context',
+        r = requests.get(f'{SB}/rest/v1/{ctx_table}',
                          headers=H_READ, params=params, timeout=30).json()
         if not isinstance(r, list) or not r: break
         ctx_all += r
         if len(r) < 500: break
         offset += 500
-    print(f'  {len(ctx_all)} game contexts available')
+    print(f'  {len(ctx_all)} {sport} game contexts available')
 
     if not ctx_all:
-        print('  no context data — skip'); return
+        print(f'  [{sport}] no context data — skip'); return
 
     gids = [c['game_id'] for c in ctx_all if isinstance(c, dict) and c.get('game_id')]
     results = {}
-    # Fetch results in chunks
     for i in range(0, len(gids), 100):
         chunk = gids[i:i+100]
         in_clause = ','.join(f'"{g}"' for g in chunk)
-        r = requests.get(f'{SB}/rest/v1/mlb_game_results',
-                         headers=H_READ,
-                         params={'game_id': f'in.({in_clause})',
-                                 'select': 'game_id,home_score,away_score,run_line_result,total_result',
-                                 'limit': '500'}, timeout=15).json()
+        # Try full column list first (MLB has run_line_result + total_result;
+        # NFL/others may not). Fall back to score-only.
+        try:
+            r = requests.get(f'{SB}/rest/v1/{res_table}',
+                             headers=H_READ,
+                             params={'game_id': f'in.({in_clause})',
+                                     'select': 'game_id,home_score,away_score,run_line_result,total_result',
+                                     'limit': '500'}, timeout=15).json()
+            if isinstance(r, dict) and r.get('code') == '42703':
+                r = requests.get(f'{SB}/rest/v1/{res_table}',
+                                 headers=H_READ,
+                                 params={'game_id': f'in.({in_clause})',
+                                         'select': 'game_id,home_score,away_score',
+                                         'limit': '500'}, timeout=15).json()
+        except Exception:
+            r = []
         for x in (r if isinstance(r, list) else []):
             results[x['game_id']] = x
 
@@ -114,23 +143,42 @@ def compute_mlb(window: str = 'lifetime') -> None:
         tier = pp.get('tier'); ptype = (pp.get('type') or '').lower(); label = pp.get('label') or ''
         if not tier or not ptype: continue
 
-        # Determine direction + outcome
+        # Determine direction + outcome (uses sport's home_ml column via fmap)
         if ptype == 'ml':
             market = 'ML'
-            # HOME or AWAY based on label
-            direction = 'HOME' if 'home' in label.lower() or (c.get('home_ml_close') and str(c.get('home_ml_close')) in label) else 'AWAY'
+            direction = 'HOME' if 'home' in label.lower() or (c.get(home_ml_col) and str(c.get(home_ml_col)) in label) else 'AWAY'
             # Better: extract from label text — for now, just check if home_team in label
             # Fall back: use sign of home_ml_close
             # Match by team hint
             if hs == as_: outcome = 'push'
             elif direction == 'HOME': outcome = 'W' if hs > as_ else 'L'
             else: outcome = 'W' if as_ > hs else 'L'
-            odds = american_to_decimal(c.get('home_ml_close') if direction=='HOME' else c.get('away_ml_close'))
+            odds = american_to_decimal(c.get(home_ml_col) if direction=='HOME' else c.get(away_ml_col))
+        elif ptype == 'spread':
+            # NFL / NCAAF / NBA / NCAAB use spread as the primary side market
+            market = 'SPREAD'
+            direction = 'HOME' if 'home' in label.lower() or (c.get(spread_col) is not None and c.get(spread_col) < 0 and 'home' in label.lower()) else 'AWAY'
+            line = c.get(spread_col)
+            if line is None: continue
+            try: line = float(line)
+            except (ValueError, TypeError): continue
+            # spread cover: direction team's margin + line > 0
+            margin_picked = (hs - as_) if direction == 'HOME' else (as_ - hs)
+            if margin_picked + line == 0: outcome = 'push'
+            elif margin_picked + line > 0: outcome = 'W'
+            else: outcome = 'L'
+            odds = 1.91  # standard -110 on spreads
+            k = (tier, market, direction)
+            buckets[k]['n'] += 1
+            if outcome == 'W': buckets[k]['w'] += 1
+            elif outcome == 'push': buckets[k]['push'] += 1
+            if odds: buckets[k]['odds_sum'] += odds; buckets[k]['odds_n'] += 1
+            continue
         elif ptype == 'total':
             market = 'TOTAL'
             sub = (pp.get('sub') or '').lower()
             direction = 'OVER' if 'over' in sub or 'over' in label.lower() else 'UNDER'
-            line = c.get('close_total')
+            line = c.get(total_col)
             if line is None: continue
             try: line = float(line)
             except: continue
@@ -168,7 +216,7 @@ def compute_mlb(window: str = 'lifetime') -> None:
         roi = 100 * (hit_rate * (avg_dec - 1) - (1 - hit_rate)) if avg_dec else None
         hint, conf = compute_hint(hit_rate * 100, roi, n)
         payload = {
-            'sport': 'MLB', 'tier': tier, 'market': market, 'direction': direction,
+            'sport': sport, 'tier': tier, 'market': market, 'direction': direction,
             'bucket_window': window,
             'wins': wins, 'losses': losses, 'pushes': v['push'], 'sample_n': n,
             'hit_rate': round(hit_rate * 100, 1),
@@ -197,7 +245,4 @@ if __name__ == '__main__':
     args = p.parse_args()
     sports = list(CONTEXT_TABLE.keys()) if args.sport == 'ALL' else [args.sport]
     for s in sports:
-        if s == 'MLB':
-            compute_mlb(window=args.window)
-        else:
-            print(f'  [{s}] game bucket computer not yet implemented — extend compute_{s.lower()}')
+        compute_sport(s, window=args.window)
