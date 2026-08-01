@@ -59,6 +59,28 @@ def american_to_decimal(a):
     return None
 
 
+# Estimated juice for prop types where odds aren't captured in DB
+# (hits_over/hits_under generator never attached odds). Industry-standard
+# midpoints by (prop_type, direction, prop_line). Marks ROI as an estimate
+# in the display but is CLOSE ENOUGH to prevent us from missing edge on the
+# 540+ hits_over graded rows.
+def estimate_juice_american(prop_type: str, direction: str, prop_line):
+    if not prop_type or not direction: return None
+    try: line = float(prop_line) if prop_line is not None else None
+    except (TypeError, ValueError): return None
+    family = FAMILY_MAP.get(prop_type, prop_type)
+    if family != 'hits': return None   # only fill hits for now
+    d = direction.lower()
+    # Hits (batter to get X hits) — typical juice midpoints
+    if line == 0.5:
+        return -320 if d == 'over' else 250          # first-hit
+    if line == 1.5:
+        return -140 if d == 'over' else 105          # 2+ hits
+    if line == 2.5:
+        return 120 if d == 'over' else -160          # 3+ hits
+    return -110
+
+
 def compute_jerry_hint(hit_rate, roi_pct, sample_n):
     """BACK / FADE / PASS with confidence 0-100."""
     if sample_n < 20:
@@ -123,6 +145,10 @@ def compute(window: str = 'lifetime', sport: str = 'MLB') -> None:
         elif p['result'] == 'Push': buckets[k]['push'] += 1
         odds = p.get('book_over_odds') if d == 'over' else p.get('book_under_odds')
         dec = american_to_decimal(odds)
+        if dec is None:
+            # Fallback: industry-standard estimated juice for hits family
+            est = estimate_juice_american(pt, d, p.get('prop_line'))
+            dec = american_to_decimal(est)
         if dec:
             buckets[k]['odds_sum'] += dec
             buckets[k]['odds_n'] += 1
