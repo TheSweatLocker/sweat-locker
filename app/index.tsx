@@ -11161,7 +11161,73 @@ setJerryHistory(prev => {
         Co-Main — {ufcEvent.fight_card[1].fighter1} vs {ufcEvent.fight_card[1].fighter2}
       </Text>
     )}
-    <Text style={{color:THEME.textMuted,fontSize:10,marginTop:6}}>{ufcEvent.fight_card?.length || 0}-fight card • Tap a fight below for stats + edges</Text>
+    <Text style={{color:THEME.textMuted,fontSize:10,marginTop:6}}>{ufcEvent.fight_card?.length || 0}-fight card • Model pick per fight below</Text>
+
+    {/* Full fight-card list (2026-08-01 F): renders every fight on the card
+        with model pick + win% + method distribution. Fills the "UFC tab looks
+        blank" gap when the shared MLB-shaped game card can't populate. Tap
+        a row to see the full fight breakdown. */}
+    {ufcEvent.fight_card && ufcEvent.fight_card.length > 2 && (()=>{
+      // Match each fight_card row to a ufc_picks row by last-name pair
+      const rows = ufcEvent.fight_card.map((f:any, idx:number) => {
+        const f1 = String(f.fighter1 || ''); const f2 = String(f.fighter2 || '');
+        const f1Last = f1.split(' ').pop()?.toLowerCase() || '';
+        const f2Last = f2.split(' ').pop()?.toLowerCase() || '';
+        const pick = (ufcPicks || []).find((p:any) => {
+          const paLast = String(p.fighter_a || '').split(' ').pop()?.toLowerCase() || '';
+          const pbLast = String(p.fighter_b || '').split(' ').pop()?.toLowerCase() || '';
+          return (paLast === f1Last && pbLast === f2Last) || (paLast === f2Last && pbLast === f1Last);
+        });
+        return { f, pick, idx };
+      });
+      return (
+        <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:THEME.combat + '33'}}>
+          <Text style={{color:THEME.combat,fontSize:10,fontWeight:'800',letterSpacing:0.7,marginBottom:8}}>FULL CARD</Text>
+          {rows.map(({f, pick}:any, idx:number) => {
+            const winPct = pick ? (
+              String(pick.fighter_a || '').toLowerCase() === String(pick.recommended_side || '').toLowerCase() ||
+              String(pick.recommended_side || '').toLowerCase() === 'a'
+                ? Math.round((pick.p_winner_a || 0) * 100)
+                : Math.round((1 - (pick.p_winner_a || 0)) * 100)
+            ) : null;
+            const pickName = pick ? (
+              (pick.recommended_side || '').toLowerCase() === 'a' ? pick.fighter_a : pick.fighter_b
+            ) : null;
+            const conv = pick?.conviction_winner;
+            const methodKO = pick?.p_method_ko != null ? Math.round(pick.p_method_ko * 100) : null;
+            const methodDec = pick?.p_method_dec != null ? Math.round(pick.p_method_dec * 100) : null;
+            return (
+              <View key={idx} style={{flexDirection:'row',alignItems:'center',paddingVertical:8,borderBottomWidth: idx < rows.length - 1 ? 1 : 0,borderBottomColor:THEME.border + '30'}}>
+                <View style={{flex:1}}>
+                  <Text style={{color:THEME.text,fontSize:12,fontWeight:'600'}} numberOfLines={1}>
+                    {f.fighter1} <Text style={{color:THEME.textMuted}}>vs</Text> {f.fighter2}
+                  </Text>
+                  {pickName && (
+                    <View style={{flexDirection:'row',alignItems:'center',gap:6,marginTop:3}}>
+                      <Text style={{color:THEME.accent,fontSize:11,fontWeight:'700'}}>{pickName}</Text>
+                      {winPct != null && <Text style={{color:THEME.textDim,fontSize:10}}>{winPct}%</Text>}
+                      {methodKO != null && methodDec != null && (
+                        <Text style={{color:THEME.textMuted,fontSize:9}}>
+                          KO {methodKO}% · DEC {methodDec}%
+                        </Text>
+                      )}
+                    </View>
+                  )}
+                  {!pickName && (
+                    <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>No model pick</Text>
+                  )}
+                </View>
+                {conv != null && (
+                  <View style={{paddingHorizontal:8,paddingVertical:3,backgroundColor:conv >= 60 ? THEME.win + '26' : (conv >= 40 ? THEME.sharp + '20' : THEME.surfaceAlt),borderRadius:6}}>
+                    <Text style={{color:conv >= 60 ? THEME.win : (conv >= 40 ? THEME.sharp : THEME.textMuted),fontSize:10,fontWeight:'800'}}>{conv}</Text>
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      );
+    })()}
   </View>
 )}
 {gamesSport==='MLB' && hrWatch.filter((h:any) => {
