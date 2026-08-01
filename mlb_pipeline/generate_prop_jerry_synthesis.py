@@ -109,6 +109,21 @@ def call_claude(prompt: str) -> str | None:
 UNCALIBRATED_PROP_TYPES = {'ha', 'ha_over', 'ha_under'}
 UNCALIBRATED_CONVICTION_CAP = 60   # LEAN tier ceiling
 
+# Sign-flip audit (7/31): bb_under refit weights have negative coefficients on
+# clean_start (-0.254), book_recalibration (-0.134), aggressive_opp (-0.303).
+# All three should be POSITIVE. Small n=75 training artifact. Result: high-conv
+# BACKs (Griffin 94 · Suarez 82) both busted. Cap BACK conviction on prop types
+# with known sign-flip issues until refit v2 trains on ≥200 rows per type.
+SIGN_FLIP_SUSPECT_TYPES = {'bb_under', 'bb'}
+SIGN_FLIP_BACK_CAP = 80   # STRONG max, never PRIME
+
+# LLM overconfidence guard: Jerry's synthesis prompt naturally amplifies BACK
+# convictions above the legacy/refit score because clean narratives read as
+# stronger than they are. Global BACK cap at 85 = anything above needs the
+# refit v2 to explicitly support it. FADEs unaffected — they historically
+# beat BACKs 54.7% vs 43.4% on 7/31.
+GLOBAL_BACK_CAP = 85
+
 
 def parse_synthesis(raw: str, prop_type: str | None = None) -> dict:
     def _sec(name):
@@ -128,6 +143,11 @@ def parse_synthesis(raw: str, prop_type: str | None = None) -> dict:
     # Uncalibrated prop cap — see UNCALIBRATED_PROP_TYPES comment above.
     if conv is not None and prop_type in UNCALIBRATED_PROP_TYPES:
         conv = min(conv, UNCALIBRATED_CONVICTION_CAP)
+    # Sign-flip cap (BACKs only — FADEs unaffected)
+    if conv is not None and verdict == 'BACK':
+        if prop_type in SIGN_FLIP_SUSPECT_TYPES:
+            conv = min(conv, SIGN_FLIP_BACK_CAP)
+        conv = min(conv, GLOBAL_BACK_CAP)
     # If TAKE section missing, salvage from raw: use everything before first --- marker
     if not take:
         pre = re.split(r'---[A-Z]+---', raw, maxsplit=1)[0].strip()
