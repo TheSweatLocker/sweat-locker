@@ -90,7 +90,10 @@ def compute_sport(sport: str, window: str = 'lifetime') -> None:
     offset = 0
     home_ml_col = fmap['home_ml']; away_ml_col = fmap['away_ml']
     total_col = fmap['total']; spread_col = fmap['spread']
-    select_cols = f'game_id,game_date,{home_ml_col},{away_ml_col},{total_col},primary_play,{spread_col}'
+    # Include home_team + away_team for natural-key join fallback (NFL/NCAAF/NCAAB
+    # have hash game_ids in context but season-format in results — join fails on
+    # game_id, works on (game_date, home_team, away_team))
+    select_cols = f'game_id,game_date,home_team,away_team,{home_ml_col},{away_ml_col},{total_col},primary_play,{spread_col}'
     while True:
         params = {'select': select_cols,
                   'limit': '500', 'offset': str(offset)}
@@ -105,29 +108,68 @@ def compute_sport(sport: str, window: str = 'lifetime') -> None:
     if not ctx_all:
         print(f'  [{sport}] no context data — skip'); return
 
+    # Try game_id join first (works for MLB), fall back to natural key join
+    # (works for NFL / NCAAF / NCAAB where ID formats differ between tables).
     gids = [c['game_id'] for c in ctx_all if isinstance(c, dict) and c.get('game_id')]
     results = {}
     for i in range(0, len(gids), 100):
         chunk = gids[i:i+100]
         in_clause = ','.join(f'"{g}"' for g in chunk)
-        # Try full column list first (MLB has run_line_result + total_result;
-        # NFL/others may not). Fall back to score-only.
         try:
             r = requests.get(f'{SB}/rest/v1/{res_table}',
                              headers=H_READ,
                              params={'game_id': f'in.({in_clause})',
-                                     'select': 'game_id,home_score,away_score,run_line_result,total_result',
+                                     'select': 'game_id,home_score,away_score,run_line_result,total_result,home_team,away_team,game_date',
                                      'limit': '500'}, timeout=15).json()
             if isinstance(r, dict) and r.get('code') == '42703':
                 r = requests.get(f'{SB}/rest/v1/{res_table}',
                                  headers=H_READ,
                                  params={'game_id': f'in.({in_clause})',
-                                         'select': 'game_id,home_score,away_score',
+                                         'select': 'game_id,home_score,away_score,home_team,away_team,game_date',
                                          'limit': '500'}, timeout=15).json()
         except Exception:
             r = []
         for x in (r if isinstance(r, list) else []):
             results[x['game_id']] = x
+
+    # Natural-key fallback: for context rows without a game_id match, look up
+    # by (game_date, home_team, away_team). Team names normalized to lower to
+    # forgive case differences (NFL uses 'DAL', context might use 'DAL' too but
+    # NCAAF/NCAAB could differ).
+    orphans = [c for c in ctx_all if isinstance(c, dict) and c.get('game_id') not in results
+               and c.get('home_team') and c.get('away_team') and c.get('game_date')]
+    if orphans:
+        print(f'  [{sport}] {len(orphans)} contexts without game_id match — trying natural-key join')
+        # Fetch results by date-range covering all orphan dates
+        dates = sorted({c['game_date'] for c in orphans})
+        # Chunk date query to avoid huge IN clause
+        by_natural = {}
+        for i in range(0, len(dates), 30):
+            date_chunk = dates[i:i+30]
+            in_dates = ','.join(f'"{d}"' for d in date_chunk)
+            try:
+                r = requests.get(f'{SB}/rest/v1/{res_table}',
+                                 headers=H_READ,
+                                 params={'game_date': f'in.({in_dates})',
+                                         'select': 'game_id,home_score,away_score,run_line_result,total_result,home_team,away_team,game_date',
+                                         'limit': '2000'}, timeout=20).json()
+                if isinstance(r, dict) and r.get('code') == '42703':
+                    r = requests.get(f'{SB}/rest/v1/{res_table}',
+                                     headers=H_READ,
+                                     params={'game_date': f'in.({in_dates})',
+                                             'select': 'game_id,home_score,away_score,home_team,away_team,game_date',
+                                             'limit': '2000'}, timeout=20).json()
+                for x in (r if isinstance(r, list) else []):
+                    k = (str(x.get('game_date')), (x.get('home_team') or '').upper(), (x.get('away_team') or '').upper())
+                    by_natural[k] = x
+            except Exception: pass
+        matched = 0
+        for c in orphans:
+            k = (str(c['game_date']), (c['home_team'] or '').upper(), (c['away_team'] or '').upper())
+            if k in by_natural:
+                results[c['game_id']] = by_natural[k]
+                matched += 1
+        print(f'  [{sport}] natural-key matched {matched}/{len(orphans)} orphans')
 
     # Buckets: (tier, market, direction) → stats
     buckets = defaultdict(lambda: {'w':0, 'n':0, 'push':0, 'odds_sum':0, 'odds_n':0})
