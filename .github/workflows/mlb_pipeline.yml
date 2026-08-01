@@ -274,6 +274,21 @@ jobs:
           cd mlb_pipeline
           python generate_prop_jerry_synthesis.py --force || echo "prop jerry synthesis failed (non-fatal)"
 
+      # Collapse Prop Jerry contradictions (2026-08-01 C). Runs AFTER
+      # generate_prop_jerry_synthesis. Kills Skenes-style BACK+BACK /
+      # FADE+FADE paradoxes where each (prop_type, direction) is a
+      # separate Claude call that doesn't know what the opposite
+      # direction row said. Loser downgraded to PASS (still gradable
+      # as NO_ACTION), winner keeps its verdict + conviction.
+      - name: Collapse Prop Jerry contradictions
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python collapse_prop_jerry_contradictions.py || echo "prop jerry collapse failed (non-fatal)"
+
       # Jerry-anchor Daily Degen (2026-07-31 · Tabletop C step 3). Runs
       # AFTER generate_prop_jerry_synthesis so it can pull from both
       # jerry_reads (game-level) and prop_jerry_reads (prop-level) to
