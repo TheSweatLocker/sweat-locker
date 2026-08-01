@@ -102,7 +102,15 @@ def call_claude(prompt: str) -> str | None:
         print(f'  ⚠ claude call failed: {e}'); return None
 
 
-def parse_synthesis(raw: str) -> dict:
+# Prop types with NO refit calibration data — legacy scorer runs uncalibrated
+# so Jerry conviction over-extends on them. 7/31 audit: ha props 5-14 (26.3%)
+# with high-conv BACKs the dominant loss driver. Cap conviction until refit
+# weights include these prop types. Remove from set as each gets calibrated.
+UNCALIBRATED_PROP_TYPES = {'ha', 'ha_over', 'ha_under'}
+UNCALIBRATED_CONVICTION_CAP = 60   # LEAN tier ceiling
+
+
+def parse_synthesis(raw: str, prop_type: str | None = None) -> dict:
     def _sec(name):
         m = re.search(rf'---{name}---\s*(.*?)(?=---[A-Z]+---|$)', raw, re.S)
         return m.group(1).strip() if m else None
@@ -117,6 +125,9 @@ def parse_synthesis(raw: str) -> dict:
     conv_src = call if 'CONVICTION' in call else raw
     conv_m = re.search(r'CONVICTION\s*:\s*(\d+)', conv_src)
     conv = max(0, min(100, int(conv_m.group(1)))) if conv_m else None
+    # Uncalibrated prop cap — see UNCALIBRATED_PROP_TYPES comment above.
+    if conv is not None and prop_type in UNCALIBRATED_PROP_TYPES:
+        conv = min(conv, UNCALIBRATED_CONVICTION_CAP)
     # If TAKE section missing, salvage from raw: use everything before first --- marker
     if not take:
         pre = re.split(r'---[A-Z]+---', raw, maxsplit=1)[0].strip()
@@ -210,7 +221,7 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
         prompt = render_prompt(template, prop, sport)
         raw = call_claude(prompt)
         if not raw: continue
-        parsed = parse_synthesis(raw)
+        parsed = parse_synthesis(raw, prop.get('prop_type'))
         if not parsed.get('short_read'):
             print(f'  ⚠ parse missing take for {prop["player_name"]}'); continue
         if upsert_read(sport, prop, parsed, prompt, game_date):

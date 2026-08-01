@@ -30,13 +30,19 @@ def get_pending_props():
     Filters:
       - game_date <= yesterday (don't grade in-flight games)
       - result is null (not yet graded)
-      - tier in {PRIME, STRONG, LEAN} (skip SKIP-tier props)
+      - tier in {PRIME, STRONG, LEAN, COVERAGE} (skip SKIP-tier only)
+
+    COVERAGE tier was added 2026-07-31 by sweep_prop_coverage. Those
+    stubs need grading too so prop_jerry_reads can inherit W/L on
+    every BACK/FADE call, not just the ~30% that map to legacy-scored
+    rows. Without this filter, 121 of 181 prop_jerry_reads sat
+    ungraded after Day 1 of the Jerry-first launch.
     """
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     r = requests.get(
         f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
         f"?game_date=lte.{yesterday}&result=is.null"
-        f"&tier=in.(PRIME,STRONG,LEAN)&select=*",
+        f"&tier=in.(PRIME,STRONG,LEAN,COVERAGE)&select=*",
         headers=HEADERS,
         timeout=30
     )
