@@ -124,3 +124,18 @@ jobs:
         run: |
           cd mlb_pipeline
           python ufc_resolve_fights.py || echo "resolver failed"
+
+      # Per-fight Jerry synthesis (2026-08-01). Runs AFTER card is scored +
+      # odds pulled + EV computed so Jerry sees the full model output. Writes
+      # SHORT + LONG + verdict to jerry_reads (sport=UFC). Users now get
+      # analytical voice alongside raw probs (Rakic 74%, Stirling 78%, etc).
+      - name: Generate UFC per-fight Jerry synthesis
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_ufc_fight_synthesis.py || echo "UFC Jerry synth failed (non-fatal)"
