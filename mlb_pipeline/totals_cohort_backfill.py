@@ -50,101 +50,201 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 class MLBTotalsSignals:
     """Extracts totals cohort signals from mlb_game_context rows.
 
-    Each `_sig_*` method returns a list of (cohort_name, direction) tuples
-    that fired for the game. `direction` is the side historically favored
-    when the cohort fires — the hit rate then measures how often that
-    prediction was correct.
+    Each `_sig_*` method returns a (cohort_name, direction, description) tuple
+    that fired for the game. `direction` is the side we hypothesize when the
+    cohort fires — the backtest hit rate then measures whether that prediction
+    is real signal or coin-flip. 7/31 audit surprise: park_hitter_high OVER
+    hits only 38% (INVERTED). Backtest catches these before they cost picks.
     """
     SPORT = 'MLB'
 
     def _get(self, ctx, key, default=None):
         v = ctx.get(key)
-        return default if v in (None, '', 0) else v
+        return default if v in (None, '') else v
 
+    def _f(self, v):
+        try: return float(v)
+        except (TypeError, ValueError): return None
+
+    # === WEATHER ===
+    def _sig_temp_cold(self, ctx):
+        t = self._f(self._get(ctx, 'temperature'))
+        if t is None: return None
+        if t <= 50:
+            return ('temp_cold', 'UNDER',
+                    f'Game-time temp {int(t)}°F ≤ 50 — ball does not carry')
+
+    def _sig_temp_hot(self, ctx):
+        """Backtest FLIP 2026-08-01: OVER hits only 38.5% (n=13). Books price hot
+        weather into the total; the real edge is UNDER when everyone else is
+        chasing the OVER narrative."""
+        t = self._f(self._get(ctx, 'temperature'))
+        if t is None: return None
+        if t >= 90:
+            return ('temp_hot', 'UNDER',
+                    f'Game-time temp {int(t)}°F ≥ 90 — market prices hot-weather OVER, UNDER 61.5% historically')
+
+    def _sig_wind_out_strong(self, ctx):
+        ws = self._f(self._get(ctx, 'wind_speed'))
+        blowing_in = ctx.get('wind_blowing_in')
+        if ws is None or blowing_in is None: return None
+        if ws >= 12 and blowing_in is False:
+            return ('wind_out_strong', 'OVER',
+                    f'Wind {int(ws)}mph blowing OUT — carry boost')
+
+    def _sig_wind_in_strong(self, ctx):
+        ws = self._f(self._get(ctx, 'wind_speed'))
+        blowing_in = ctx.get('wind_blowing_in')
+        if ws is None or blowing_in is None: return None
+        if ws >= 12 and blowing_in is True:
+            return ('wind_in_strong', 'UNDER',
+                    f'Wind {int(ws)}mph blowing IN — carry killer')
+
+    def _sig_rain_risk(self, ctx):
+        if ctx.get('rain_risk_flag') is True:
+            return ('rain_risk', 'UNDER',
+                    'Rain risk flagged — delays + wet conditions dampen offense')
+
+    # === BULLPEN / PITCHER STATE ===
     def _sig_bp_taxed_both(self, ctx):
-        h = self._get(ctx, 'home_bp_era_3d')
-        a = self._get(ctx, 'away_bp_era_3d')
+        h = self._f(self._get(ctx, 'home_bullpen_era'))
+        a = self._f(self._get(ctx, 'away_bullpen_era'))
         if h is None or a is None: return None
-        try:
-            if float(h) > 5.0 and float(a) > 5.0:
-                return ('bp_taxed_both', 'OVER',
-                        'Both bullpens with 3d ERA > 5.0 — late-inning runs likely')
-        except (TypeError, ValueError): pass
-        return None
+        if h > 4.5 and a > 4.5:
+            return ('bp_taxed_both', 'OVER',
+                    f'Both bullpen ERA > 4.5 (home {h} · away {a}) — late-inning runs')
 
-    def _sig_wrc_hot_both(self, ctx):
-        h = self._get(ctx, 'home_wrc_plus')
-        a = self._get(ctx, 'away_wrc_plus')
-        if h is None or a is None: return None
-        try:
-            if float(h) > 110 and float(a) > 110:
-                return ('wrc_hot_both', 'OVER',
-                        'Both offenses wRC+ > 110 — pace + power both sides')
-        except (TypeError, ValueError): pass
-        return None
+    def _sig_bp_relievers_heavy_both(self, ctx):
+        """Extras-hangover proxy — both teams used ≥10 relievers L3 days.
 
-    def _sig_wrc_cold_both(self, ctx):
-        h = self._get(ctx, 'home_wrc_plus')
-        a = self._get(ctx, 'away_wrc_plus')
+        Backtest 2026-08-01: 42.1% OVER (n=19) — no meaningful edge either way.
+        Kept for observation but tightening threshold to 12+ to isolate true
+        depth-crisis spots."""
+        h = self._f(self._get(ctx, 'home_bp_relievers_3d'))
+        a = self._f(self._get(ctx, 'away_bp_relievers_3d'))
         if h is None or a is None: return None
-        try:
-            if float(h) < 90 and float(a) < 90:
-                return ('wrc_cold_both', 'UNDER',
-                        'Both offenses wRC+ < 90 — matchup lacks bats')
-        except (TypeError, ValueError): pass
-        return None
+        if h >= 12 and a >= 12:
+            return ('bp_relievers_depleted_both', 'OVER',
+                    f'Both BPs used ≥12 relievers L3 (h {int(h)} · a {int(a)}) — depth crisis, late runs likely')
+
+    def _sig_sp_short_rest_home(self, ctx):
+        r = self._f(self._get(ctx, 'home_days_rest'))
+        if r is None: return None
+        if r < 4:
+            return ('sp_short_rest_home', 'OVER',
+                    f'Home SP on {int(r)} days rest (<4) — worse stuff')
+
+    def _sig_sp_short_rest_away(self, ctx):
+        r = self._f(self._get(ctx, 'away_days_rest'))
+        if r is None: return None
+        if r < 4:
+            return ('sp_short_rest_away', 'OVER',
+                    f'Away SP on {int(r)} days rest (<4) — worse stuff')
 
     def _sig_sp_form_bad_both(self, ctx):
-        h = self._get(ctx, 'home_pitcher_last_3_era')
-        a = self._get(ctx, 'away_pitcher_last_3_era')
+        """Backtest FLIP 2026-08-01: OVER hits only 33.3% (n=15). Real direction
+        is UNDER — market prices bad L3 pitching; when both SPs bomb it often
+        means injury/replacement chaos → tighter games."""
+        h = self._f(self._get(ctx, 'home_pitcher_last_3_era'))
+        a = self._f(self._get(ctx, 'away_pitcher_last_3_era'))
         if h is None or a is None: return None
-        try:
-            if float(h) > 5.0 and float(a) > 5.0:
-                return ('sp_form_bad_both', 'OVER',
-                        'Both SP L3 ERA > 5 — both getting hit')
-        except (TypeError, ValueError): pass
-        return None
+        if h > 5.0 and a > 5.0:
+            return ('sp_form_bad_both', 'UNDER',
+                    f'Both SP L3 ERA > 5 (h {h} · a {a}) — market over-corrects, UNDER 67% historically')
 
     def _sig_sp_form_elite_both(self, ctx):
-        h = self._get(ctx, 'home_sp_xera')
-        a = self._get(ctx, 'away_sp_xera')
+        h = self._f(self._get(ctx, 'home_sp_xera'))
+        a = self._f(self._get(ctx, 'away_sp_xera'))
         if h is None or a is None: return None
-        try:
-            if float(h) < 3.5 and float(a) < 3.5:
-                return ('sp_form_elite_both', 'UNDER',
-                        'Both SP xERA < 3.5 — pitchers duel setup')
-        except (TypeError, ValueError): pass
-        return None
+        if h < 3.5 and a < 3.5:
+            return ('sp_form_elite_both', 'UNDER',
+                    f'Both SP xERA < 3.5 (h {h} · a {a}) — pitchers duel')
 
-    def _sig_temp_cold(self, ctx):
-        t = self._get(ctx, 'temperature') or self._get(ctx, 'weather_temp')
-        if t is None: return None
-        try:
-            if float(t) <= 50:
-                return ('temp_cold', 'UNDER',
-                        f'Game-time temp ≤ 50°F ({t}) — ball does not carry')
-        except (TypeError, ValueError): pass
-        return None
+    # === OFFENSE STATE ===
+    def _sig_wrc_hot_both(self, ctx):
+        """Backtest FLIP 2026-08-01: OVER hits only 37.5% (n=16). Market prices
+        offensive momentum efficiently; the counter-narrative UNDER wins 62%."""
+        h = self._f(self._get(ctx, 'home_wrc_proxy_l14'))
+        a = self._f(self._get(ctx, 'away_wrc_proxy_l14'))
+        if h is None or a is None: return None
+        if h > 110 and a > 110:
+            return ('wrc_hot_both', 'UNDER',
+                    f'Both offenses L14 wRC+ > 110 (h {h} · a {a}) — market over-prices momentum, UNDER 62% historically')
 
+    def _sig_wrc_cold_both(self, ctx):
+        h = self._f(self._get(ctx, 'home_wrc_proxy_l14'))
+        a = self._f(self._get(ctx, 'away_wrc_proxy_l14'))
+        if h is None or a is None: return None
+        if h < 90 and a < 90:
+            return ('wrc_cold_both', 'UNDER',
+                    f'Both offenses L14 wRC+ < 90 (h {h} · a {a})')
+
+    def _sig_l10_hot_both(self, ctx):
+        hw = self._f(self._get(ctx, 'home_l10_wins'))
+        aw = self._f(self._get(ctx, 'away_l10_wins'))
+        if hw is None or aw is None: return None
+        if hw >= 7 and aw >= 7:
+            return ('l10_hot_both', 'OVER',
+                    f'Both teams ≥7 wins L10 (h {int(hw)} · a {int(aw)}) — momentum')
+
+    def _sig_l10_cold_both(self, ctx):
+        hw = self._f(self._get(ctx, 'home_l10_wins'))
+        aw = self._f(self._get(ctx, 'away_l10_wins'))
+        if hw is None or aw is None: return None
+        if hw <= 3 and aw <= 3:
+            return ('l10_cold_both', 'UNDER',
+                    f'Both teams ≤3 wins L10 (h {int(hw)} · a {int(aw)}) — skidding')
+
+    # === ROAD TRIP / TRAVEL ===
+    def _sig_road_trip_long(self, ctx):
+        """User's request: coming off road fatigue."""
+        r = self._f(self._get(ctx, 'away_consecutive_road_games'))
+        if r is None: return None
+        if r >= 5:
+            return ('road_trip_long_away', 'UNDER',
+                    f'Away team on {int(r)}+ consecutive road games — travel fatigue')
+
+    def _sig_travel_zero_home(self, ctx):
+        """Home team on extended homestand — well-rested, familiar."""
+        d = self._f(self._get(ctx, 'days_since_last_home_game'))
+        if d is None: return None
+        if d == 0:
+            return ('home_stand_active', 'OVER',
+                    'Home team on active homestand — rested + fed')
+
+    # === PARK ===
     def _sig_park_hitter_high(self, ctx):
-        p = self._get(ctx, 'park_run_factor')
+        p = self._f(self._get(ctx, 'park_run_factor'))
         if p is None: return None
-        try:
-            if float(p) >= 105:
-                return ('park_hitter_high', 'OVER',
-                        f'Park run factor {p} ≥ 105 — hitter-friendly')
-        except (TypeError, ValueError): pass
-        return None
+        if p >= 105:
+            return ('park_hitter_high', 'OVER',
+                    f'Park run factor {int(p)} ≥ 105 — hitter-friendly')
 
     def _sig_park_pitcher_low(self, ctx):
-        p = self._get(ctx, 'park_run_factor')
+        p = self._f(self._get(ctx, 'park_run_factor'))
         if p is None: return None
-        try:
-            if float(p) <= 95:
-                return ('park_pitcher_low', 'UNDER',
-                        f'Park run factor {p} ≤ 95 — pitcher-friendly')
-        except (TypeError, ValueError): pass
-        return None
+        if p <= 95:
+            return ('park_pitcher_low', 'UNDER',
+                    f'Park run factor {int(p)} ≤ 95 — pitcher-friendly')
+
+    # === UMPIRE ===
+    def _sig_ump_over_lean(self, ctx):
+        """Parse umpire_note text for over-lean pct — e.g. '54% over'.
+
+        Backtest FLIP 2026-08-01: ump_over_lean OVER hits 36.4% (n=22). Books
+        already price umpire tendency into the total. The play is UNDER when
+        the umpire has a public 'over-lean' reputation everyone else chases."""
+        note = ctx.get('umpire_note') or ''
+        import re
+        m = re.search(r'(\d+)%\s*over', note.lower())
+        if not m: return None
+        pct = int(m.group(1))
+        if pct >= 55:
+            return ('ump_over_lean', 'UNDER',
+                    f'Umpire lean {pct}% over — market chases OVER; UNDER 63.6% historically')
+        if pct <= 45:
+            return ('ump_under_lean', 'OVER',
+                    f'Umpire lean {pct}% over — flip logic (need more sample)')
 
     def extract(self, ctx) -> list:
         """Return list of (cohort_name, direction, description) fired for this game."""
@@ -268,8 +368,10 @@ def backfill_mlb(days: int = 60) -> None:
                 'description': descriptions.get((cohort, direction), ''),
                 'computed_at': datetime.now(timezone.utc).isoformat(),
             }
-            wr = requests.post(f'{SB}/rest/v1/totals_cohort_signals',
-                               headers=H_WRITE, json=payload, timeout=15)
+            wr = requests.post(
+                f'{SB}/rest/v1/totals_cohort_signals'
+                f'?on_conflict=sport,cohort_name,direction',
+                headers=H_WRITE, json=payload, timeout=15)
             if wr.status_code in (200, 201, 204):
                 written += 1
             else:
