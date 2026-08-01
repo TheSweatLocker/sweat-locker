@@ -116,7 +116,8 @@ def fetch_source_track_records() -> dict:
 
 
 def enrich_struct(struct: dict, game: dict, externals: list,
-                  source_records: dict) -> dict:
+                  source_records: dict,
+                  totals_cohort_stats: dict | None = None) -> dict:
     """Add the fields Jerry v2 needs on top of the legacy struct.
 
     Adds:
@@ -124,10 +125,23 @@ def enrich_struct(struct: dict, game: dict, externals: list,
                    source_30d_hit_rate, source_30d_n}]
       full_models: every internal projection in one place — panel, MC, v4,
                    Jerry pred, cohorts v1+v2, mc_hc flags, align_status
+      totals_cohorts: [{cohort, direction, pct, n, description}] — backtested
+                   contextual signals firing for THIS game (E-4, 2026-08-01).
+                   Populated when totals_cohort_stats dict passed in.
       align_status: mirrored to top level for prompt convenience
       money_flow: oddscrowd snapshot at top level
     """
     struct = dict(struct)
+
+    # Totals cohort attribution — pulls firing signals from totals_cohort_signals
+    # backtest so Jerry cites concrete historical hit rates on totals reads.
+    if totals_cohort_stats is not None:
+        try:
+            from totals_cohort_attribution import attribute
+            struct["totals_cohorts"] = attribute(game, totals_cohort_stats, sport='MLB')
+        except Exception as e:
+            struct["totals_cohorts"] = []
+            print(f"  ⚠ totals cohort attribution failed: {e}")
 
     ext_rows = []
     for e in externals:
@@ -367,6 +381,16 @@ def run(force: bool = False, game_date: str | None = None,
     source_records = fetch_source_track_records()
     print(f"  source records loaded: {len(source_records)} sources")
 
+    # Preload totals cohort stats once (2026-08-01 E-4). Jerry cites firing
+    # cohorts with their backtested hit rates when synthesizing totals reads.
+    totals_cohort_stats = {}
+    try:
+        from totals_cohort_attribution import load_stats
+        totals_cohort_stats = load_stats(sport if sport in ('MLB',) else 'MLB')
+        print(f"  totals cohort stats loaded: {len(totals_cohort_stats)} (sport={sport})")
+    except Exception as e:
+        print(f"  ⚠ totals cohort stats load failed: {e}")
+
     done = 0
     attempted = 0
     for g in games:
@@ -390,7 +414,8 @@ def run(force: bool = False, game_date: str | None = None,
         props = next((v for k, v in props_by_game.items() if _matches(k, home, away)), [])
         base_struct = build_struct(g, props, potd)
         externals = fetch_externals_for_game(gid, gd)
-        struct = enrich_struct(base_struct, g, externals, source_records)
+        struct = enrich_struct(base_struct, g, externals, source_records,
+                               totals_cohort_stats=totals_cohort_stats)
         prompt = render_prompt(template, g, struct)
         raw = call_claude(prompt)
         if not raw:
