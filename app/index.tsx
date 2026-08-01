@@ -1679,6 +1679,10 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [unitSize, setUnitSize] = useState('25');
   const [unitSizeModal, setUnitSizeModal] = useState(false);
   const [tempUnitSize, setTempUnitSize] = useState('25');
+  // Presenter Mode (2026-08-01 B): hides book odds + book source attribution
+  // so screen recordings for TikTok/IG don't trigger gambling-content
+  // suppression. Content-creator focused feature.
+  const [presenterMode, setPresenterMode] = useState(false);
   const [toastMsg, setToastMsg] = useState('');
   const [toastVisible, setToastVisible] = useState(false);
   const [trendsTab, setTrendsTab] = useState('propjerry');
@@ -1776,6 +1780,7 @@ const [ageGateVisible, setAgeGateVisible] = useState(false);
           const p = JSON.parse(settings);
           if (p.trackingMode) setTrackingMode(p.trackingMode);
           if (p.unitSize) setUnitSize(p.unitSize);
+          if (typeof p.presenterMode === 'boolean') setPresenterMode(p.presenterMode);
         }
         const jerryHist = await AsyncStorage.getItem(JERRY_HISTORY_KEY);
 if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
@@ -1805,9 +1810,16 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(bets)).catch(e => console.error(e));
   }, [bets, betsLoaded]);
 
-  const saveSettings = async (mode, size) => {
-    try { await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({trackingMode:mode,unitSize:size})); }
-    catch(e) { console.error(e); }
+  const saveSettings = async (mode, size, presenter?: boolean) => {
+    try {
+      const payload = {trackingMode:mode, unitSize:size, presenterMode: presenter ?? presenterMode};
+      await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(payload));
+    } catch(e) { console.error(e); }
+  };
+  const togglePresenterMode = () => {
+    const next = !presenterMode;
+    setPresenterMode(next);
+    saveSettings(trackingMode, unitSize, next);
   };
   const toggleMode = () => {
     const newMode = trackingMode==='units' ? 'dollars' : 'units';
@@ -13865,6 +13877,25 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                     </TouchableOpacity>
                   ))}
                 </View>
+              </View>
+
+              {/* Presenter Mode (2026-08-01 B) — hides book odds + HRB
+                  attribution so screen recordings for TikTok/IG don't
+                  trigger gambling-content suppression. */}
+              <View style={[styles.card,{marginBottom:12}]}>
+                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                  <Text style={{color:THEME.text,fontWeight:'700',fontSize:14}}>🎬 Presenter Mode</Text>
+                  <TouchableOpacity onPress={togglePresenterMode}
+                    style={{width:52,height:30,borderRadius:15,backgroundColor:presenterMode?THEME.accent:THEME.surfaceAlt,padding:3,borderWidth:1,borderColor:presenterMode?THEME.accent:THEME.border}}>
+                    <View style={{width:22,height:22,borderRadius:11,backgroundColor:THEME.text,marginLeft:presenterMode?22:0}}/>
+                  </TouchableOpacity>
+                </View>
+                <Text style={{color:THEME.textDim,fontSize:11,lineHeight:16}}>
+                  Hides book odds + sportsbook attribution across the app. Perfect for
+                  screen recording content — TikTok/IG suppress videos showing gambling
+                  numbers or third-party sportsbook names. Jerry reads + tiers + conviction
+                  chips stay visible.
+                </Text>
               </View>
               {/* How It Works */}
               <View style={[styles.card,{marginBottom:12}]}>
