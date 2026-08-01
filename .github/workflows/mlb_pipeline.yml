@@ -241,6 +241,22 @@ jobs:
           cd mlb_pipeline
           python sweep_prop_coverage.py || echo "prop coverage sweep failed (non-fatal)"
 
+      # Recompute prop + game bucket ROI (2026-08-01 R-6). Nightly
+      # rebuild of prop_bucket_roi + game_bucket_roi from graded rows so
+      # Jerry synth sees the freshest juice-adjusted edge per bucket.
+      # Runs BEFORE Jerry synth so today's take uses today's data.
+      # Also implicitly refreshes the "SKIP-tier BACK overrides" so
+      # SKIP outs_under +38.8% stays hot.
+      - name: Recompute bucket ROI
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_prop_bucket_roi.py || echo "prop bucket recompute failed (non-fatal)"
+          python compute_game_bucket_roi.py || echo "game bucket recompute failed (non-fatal)"
+
       # Prop refit conviction (2026-07-31 · Option C step 1). Post-hoc
       # rescore of every prop's conviction using logistic-fit weights
       # trained on 60d graded outcomes. Legacy conviction column
