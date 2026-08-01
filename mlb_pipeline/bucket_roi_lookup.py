@@ -74,9 +74,31 @@ def lookup_game(buckets: dict, tier: str, market: str, direction: str) -> dict |
     return buckets.get((tier, market.upper(), direction.upper()))
 
 
+# Smart-injection gates (2026-08-01 Path B). Prevents signal dilution: only
+# inject bucket_hint into Jerry prompt when the bucket has MEANINGFUL edge.
+# Otherwise Jerry sees "no historical bucket data" (short + skippable).
+MIN_ROI_ABS_PCT = 5.0          # abs(ROI) must clear this to inject
+MIN_HINT_CONF   = 45           # hint_confidence floor (guards against weak hints)
+MIN_SAMPLE_N    = 25           # too-small samples always suppressed
+
+
+def _is_worth_injecting(bucket: dict) -> bool:
+    n = bucket.get('sample_n') or 0
+    if n < MIN_SAMPLE_N: return False
+    roi = bucket.get('roi_pct')
+    hint_conf = bucket.get('hint_confidence') or 0
+    if roi is not None and abs(float(roi)) >= MIN_ROI_ABS_PCT: return True
+    if hint_conf >= MIN_HINT_CONF: return True
+    return False
+
+
 def format_prop_hint(bucket: dict | None) -> str:
-    """One-line summary for Jerry prompt injection."""
-    if not bucket: return 'No historical bucket data (insufficient sample).'
+    """One-line summary for Jerry prompt injection. Only surfaces buckets with
+    real edge (|ROI|≥5% or conf≥45) at n≥25. Weak buckets return a terse
+    string Jerry can safely ignore — prevents attention dilution across 60+
+    prop reads per slate."""
+    if not bucket or not _is_worth_injecting(bucket):
+        return 'No meaningful historical bucket edge (bucket too neutral or too thin).'
     hint = bucket.get('jerry_hint') or 'PASS'
     roi = bucket.get('roi_pct')
     hit = bucket.get('hit_rate')
@@ -88,7 +110,8 @@ def format_prop_hint(bucket: dict | None) -> str:
 
 
 def format_game_hint(bucket: dict | None) -> str:
-    if not bucket: return 'No historical game-bucket data.'
+    if not bucket or not _is_worth_injecting(bucket):
+        return 'No meaningful historical game-bucket edge.'
     hint = bucket.get('jerry_hint') or 'PASS'
     roi = bucket.get('roi_pct')
     hit = bucket.get('hit_rate')

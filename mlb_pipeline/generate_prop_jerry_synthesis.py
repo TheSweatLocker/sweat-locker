@@ -220,21 +220,28 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                              'limit': 300},
                      timeout=30)
     props = r.json() if r.status_code == 200 else []
-    # Skip SKIP-tier props ONLY when the bucket doesn't say BACK. 8/1 audit
-    # found SKIP outs_under at +38.8% ROI (n=79) — literally hidden gold.
-    # Keep SKIP rows when the bucket ROI table says BACK; drop when it says
-    # PASS/FADE (which is the majority case for SKIP).
-    from bucket_roi_lookup import load_prop_buckets, lookup_prop
-    _bucket_roi = load_prop_buckets(sport=sport)
-    def _keep_skip(p):
-        if (p.get('tier') or '').upper() != 'SKIP':
-            return True
-        b = lookup_prop(_bucket_roi, 'SKIP', p.get('prop_type',''), p.get('direction',''))
-        return b and (b.get('jerry_hint') or '').upper() == 'BACK'
-    before = len(props)
-    props = [p for p in props if _keep_skip(p)]
-    if before != len(props):
-        print(f'  [{sport}] dropped {before - len(props)} SKIP-tier props with no BACK hint')
+    # Kill switch (2026-08-01 Path B): JERRY_BUCKET_ROI_ENABLED=false disables
+    # the entire bucket ROI injection path. Fallback = pre-8/1 behavior.
+    BUCKET_ROI_ON = os.environ.get('JERRY_BUCKET_ROI_ENABLED', 'true').lower() != 'false'
+    _bucket_roi = {}
+    if BUCKET_ROI_ON:
+        # Skip SKIP-tier props ONLY when the bucket doesn't say BACK. 8/1 audit
+        # found SKIP outs_under at +38.8% ROI (n=79) — literally hidden gold.
+        from bucket_roi_lookup import load_prop_buckets, lookup_prop
+        _bucket_roi = load_prop_buckets(sport=sport)
+        def _keep_skip(p):
+            if (p.get('tier') or '').upper() != 'SKIP':
+                return True
+            b = lookup_prop(_bucket_roi, 'SKIP', p.get('prop_type',''), p.get('direction',''))
+            return b and (b.get('jerry_hint') or '').upper() == 'BACK'
+        before = len(props)
+        props = [p for p in props if _keep_skip(p)]
+        if before != len(props):
+            print(f'  [{sport}] dropped {before - len(props)} SKIP-tier props with no BACK hint')
+    else:
+        # Kill switch active — fall back to prior SKIP filter
+        props = [p for p in props if p.get('tier') != 'SKIP']
+        print(f'  [{sport}] JERRY_BUCKET_ROI_ENABLED=false — using legacy SKIP filter')
 
     # Edge gate: COVERAGE stubs (from sweep_prop_coverage) only pass if they
     # carry a meaningful projection delta or opp K% extreme. Non-COVERAGE tiers

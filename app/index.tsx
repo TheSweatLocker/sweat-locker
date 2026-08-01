@@ -6961,7 +6961,11 @@ if(mkt.key === 'pitcher_props') {
         console.log('Pipeline MLB props fetch error:', error.message);
         setPipelineMLBProps([]);
       } else {
-        const filtered = (data || []).filter((p: any) => p?.tier !== 'SKIP');
+        // R-5 (2026-08-01): Jerry-aware SKIP filter. Previously ALL SKIP rows
+        // were dropped BEFORE the Jerry merge, so SKIP-tier props with a
+        // Jerry BACK verdict (e.g. SKIP outs_under at +38.8% ROI historically)
+        // never surfaced. New logic: keep SKIP if Jerry BACKs it, drop otherwise.
+        const allProps = (data || []);
         // Refit conviction merge (2026-07-31 · Option C step 1). The RPC
         // doesn't return refit_conviction yet; join it in client-side
         // via a second lightweight query keyed on (player_name, prop_type,
@@ -6991,21 +6995,28 @@ if(mkt.key === 'pitcher_props') {
           for (const r of (jerryRows || [])) {
             jerryMap[`${r.game_id}|${r.player_name}|${r.prop_type}|${r.direction}`] = r;
           }
-          const merged = filtered.map((p: any) => {
+          const merged = allProps.map((p: any) => {
             const k = `${p.game_id}|${p.player_name}|${p.prop_type}|${p.direction}`;
             const refit = refitMap[k];
             const jerry = jerryMap[k] || null;
-            return {...p, refit_conviction: refit ?? null,
+            const isSkipBack = p?.tier === 'SKIP' && (jerry?.call_verdict || '').toUpperCase() === 'BACK';
+            return {...p,
+                    refit_conviction: refit ?? null,
                     display_conviction: refit ?? p.conviction,
-                    prop_jerry: jerry};
+                    prop_jerry: jerry,
+                    is_skip_back: isSkipBack};   // flag for UI to badge as override
           });
+          // Jerry-aware filter: keep if not SKIP OR Jerry says BACK
+          const filtered = merged.filter((p: any) =>
+            p?.tier !== 'SKIP' || (p.prop_jerry?.call_verdict || '').toUpperCase() === 'BACK'
+          );
           // Re-sort by display_conviction DESC so refit-boosted picks bubble up
-          merged.sort((a: any, b: any) => (b.display_conviction || 0) - (a.display_conviction || 0));
-          setPipelineMLBProps(merged);
-        } catch (e) {
-          // Refit merge non-fatal — user still sees legacy conviction
-          console.log('[refit merge]', (e as any)?.message);
+          filtered.sort((a: any, b: any) => (b.display_conviction || 0) - (a.display_conviction || 0));
           setPipelineMLBProps(filtered);
+        } catch (e) {
+          // Refit merge non-fatal — fall back to legacy filter behavior
+          console.log('[refit merge]', (e as any)?.message);
+          setPipelineMLBProps(allProps.filter((p: any) => p?.tier !== 'SKIP'));
         }
       }
     } catch (e) {

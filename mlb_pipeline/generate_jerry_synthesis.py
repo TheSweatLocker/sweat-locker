@@ -391,15 +391,19 @@ def run(force: bool = False, game_date: str | None = None,
     except Exception as e:
         print(f"  ⚠ totals cohort stats load failed: {e}")
 
-    # Game bucket ROI (R-4): load once, inject per game so Jerry sees the
-    # historical (tier, market, direction) ROI when he makes ML/RL/Total calls.
+    # Game bucket ROI (R-4 + Path B kill switch): load once, inject per game.
+    # JERRY_BUCKET_ROI_ENABLED=false disables entirely for rollback safety.
     game_bucket_roi = {}
-    try:
-        from bucket_roi_lookup import load_game_buckets
-        game_bucket_roi = load_game_buckets(sport=sport if sport in ('MLB',) else 'MLB')
-        print(f"  game bucket ROI loaded: {len(game_bucket_roi)} (sport={sport})")
-    except Exception as e:
-        print(f"  ⚠ game bucket ROI load failed: {e}")
+    BUCKET_ROI_ON = os.environ.get('JERRY_BUCKET_ROI_ENABLED', 'true').lower() != 'false'
+    if BUCKET_ROI_ON:
+        try:
+            from bucket_roi_lookup import load_game_buckets
+            game_bucket_roi = load_game_buckets(sport=sport if sport in ('MLB',) else 'MLB')
+            print(f"  game bucket ROI loaded: {len(game_bucket_roi)} (sport={sport})")
+        except Exception as e:
+            print(f"  ⚠ game bucket ROI load failed: {e}")
+    else:
+        print(f"  JERRY_BUCKET_ROI_ENABLED=false — bucket ROI injection disabled")
 
     done = 0
     attempted = 0

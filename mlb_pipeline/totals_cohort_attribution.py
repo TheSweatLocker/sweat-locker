@@ -52,7 +52,8 @@ def load_stats(sport: str = 'MLB') -> dict:
 
 
 def attribute(ctx: dict, stats: dict, sport: str = 'MLB',
-              min_n: int = 12, min_edge_pp: float = 5.0) -> list:
+              min_n: int = 15, min_edge_pp: float = 8.0,
+              max_cohorts: int = 3) -> list:
     """Return list of firing cohorts with meaningful backtested edge.
 
     Filters:
@@ -82,7 +83,10 @@ def attribute(ctx: dict, stats: dict, sport: str = 'MLB',
             'description': description,
         })
     out.sort(key=lambda x: -x['strength'])
-    return out
+    # Path B (2026-08-01): cap cohorts injected to top-3 by strength to
+    # prevent signal dilution. Weak cohorts (below min_edge_pp) never made
+    # it through the filter above.
+    return out[:max_cohorts]
 
 
 def format_for_prompt(cohorts: list) -> str:
