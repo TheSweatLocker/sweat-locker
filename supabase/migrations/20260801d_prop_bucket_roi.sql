@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS prop_bucket_roi (
     direction       text        NOT NULL,      -- over / under
 
     -- Rolling window stats (window is fixed per table row, snapshot at computed_at)
-    window          text        NOT NULL DEFAULT 'lifetime',  -- 'lifetime' | '90d' | '30d'
+    bucket_window   text        NOT NULL DEFAULT 'lifetime',  -- 'lifetime' | '90d' | '30d'
     wins            integer     NOT NULL DEFAULT 0,
     losses          integer     NOT NULL DEFAULT 0,
     pushes          integer     NOT NULL DEFAULT 0,
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS prop_bucket_roi (
 
     computed_at     timestamptz NOT NULL DEFAULT now(),
 
-    UNIQUE (sport, tier, prop_type, direction, window)
+    UNIQUE (sport, tier, prop_type, direction, bucket_window)
 );
 
 CREATE INDEX IF NOT EXISTS idx_prop_bucket_roi_lookup

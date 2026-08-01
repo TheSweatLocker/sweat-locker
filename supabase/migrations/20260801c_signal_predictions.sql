@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS signal_track_records (
     signal_source   text        NOT NULL,
     market          text        NOT NULL,
     direction_filter text,                      -- optional: 'HOME_ONLY', 'FAV_ONLY', etc.
-    window          text        NOT NULL,       -- 'lifetime' | '90d' | '30d' | '14d' | '7d'
+    bucket_window   text        NOT NULL,       -- 'lifetime' | '90d' | '30d' | '14d' | '7d'
 
     wins            integer     DEFAULT 0,
     losses          integer     DEFAULT 0,
@@ -64,11 +64,11 @@ CREATE TABLE IF NOT EXISTS signal_track_records (
 
     computed_at     timestamptz NOT NULL DEFAULT now(),
 
-    UNIQUE (sport, signal_source, market, direction_filter, window)
+    UNIQUE (sport, signal_source, market, direction_filter, bucket_window)
 );
 
 CREATE INDEX IF NOT EXISTS idx_signal_track_records_lookup
-    ON signal_track_records (sport, market, window);
+    ON signal_track_records (sport, market, bucket_window);
 
 ALTER TABLE signal_track_records DISABLE ROW LEVEL SECURITY;
 

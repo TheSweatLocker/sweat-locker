@@ -153,7 +153,7 @@ def compute_mlb(window: str = 'lifetime') -> None:
         hint, conf = compute_hint(hit_rate * 100, roi, n)
         payload = {
             'sport': 'MLB', 'tier': tier, 'market': market, 'direction': direction,
-            'window': window,
+            'bucket_window': window,
             'wins': wins, 'losses': losses, 'pushes': v['push'], 'sample_n': n,
             'hit_rate': round(hit_rate * 100, 1),
             'avg_decimal_odds': round(avg_dec, 3) if avg_dec else None,
@@ -162,7 +162,7 @@ def compute_mlb(window: str = 'lifetime') -> None:
             'computed_at': datetime.now(timezone.utc).isoformat(),
         }
         r = requests.post(
-            f'{SB}/rest/v1/game_bucket_roi?on_conflict=sport,tier,market,direction,window',
+            f'{SB}/rest/v1/game_bucket_roi?on_conflict=sport,tier,market,direction,bucket_window',
             headers=H_WRITE, json=payload, timeout=15)
         if r.status_code in (200, 201, 204):
             written += 1

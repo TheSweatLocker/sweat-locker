@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS game_bucket_roi (
     market          text        NOT NULL,      -- ML / RL / TOTAL
     direction       text        NOT NULL,      -- HOME / AWAY / OVER / UNDER / FAV / DOG
 
-    window          text        NOT NULL DEFAULT 'lifetime',
+    bucket_window   text        NOT NULL DEFAULT 'lifetime',
     wins            integer     NOT NULL DEFAULT 0,
     losses          integer     NOT NULL DEFAULT 0,
     pushes          integer     NOT NULL DEFAULT 0,
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS game_bucket_roi (
 
     computed_at     timestamptz NOT NULL DEFAULT now(),
 
-    UNIQUE (sport, tier, market, direction, window)
+    UNIQUE (sport, tier, market, direction, bucket_window)
 );
 
 CREATE INDEX IF NOT EXISTS idx_game_bucket_roi_lookup
