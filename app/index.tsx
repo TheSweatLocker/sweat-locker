@@ -11649,7 +11649,9 @@ setJerryHistory(prev => {
     </View>
   );
 })()}
-                      {hrbLine?(
+                      {/* Presenter Mode gate: hides all book odds + HRB branding
+                          so screen recordings don't trip TikTok/IG gambling filters */}
+                      {presenterMode ? null : (hrbLine?(
                         <View style={{backgroundColor:THEME.hrb + '12',borderRadius:10,padding:10,marginBottom:8,borderWidth:1,borderColor:THEME.hrb + '40'}}>
                           <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',marginBottom:6}}>🎸 HARD ROCK BET</Text>
                           <View style={{flexDirection:'row',gap:6}}>
@@ -11663,6 +11665,11 @@ setJerryHistory(prev => {
                           {gamesSport!=='UFC'&&(<View style={styles.oddsQuickChip}><Text style={styles.oddsQuickLabel}>SPREAD</Text><Text style={styles.oddsQuickVal}>{summary.spread}</Text></View>)}
                           <View style={styles.oddsQuickChip}><Text style={styles.oddsQuickLabel}>TOTAL</Text><Text style={styles.oddsQuickVal}>{summary.total}</Text></View>
                           <View style={styles.oddsQuickChip}><Text style={styles.oddsQuickLabel}>ML</Text><Text style={styles.oddsQuickVal}>{summary.mlAway}/{summary.mlHome}</Text></View>
+                        </View>
+                      ))}
+                      {presenterMode && (
+                        <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:8,marginBottom:8,alignItems:'center'}}>
+                          <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>🎬 PRESENTER MODE · odds hidden</Text>
                         </View>
                       )}
                       <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'right'}}>Tap for full matchup →</Text>
