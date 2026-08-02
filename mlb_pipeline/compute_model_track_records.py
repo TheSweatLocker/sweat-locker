@@ -194,13 +194,18 @@ def compute_for_sport(sport: str = 'MLB', window: str = 'lifetime') -> None:
             except (TypeError, ValueError): pass
 
         # === MODEL_SPREAD ===
+        # CORRECTED 2026-08-02 (spread_delta convention from game_context.py:14):
+        #   spread_delta = model_pred_spread + close_spread
+        #   POSITIVE = model leans more home than market → back HOME
+        #   NEGATIVE = model leans more away than market → back AWAY
+        # Prior version compared model_spread < close_spread directly, which
+        # inverted the signal (46.7% W) because model_spread is positive-for-home
+        # while close_spread is negative-for-home (opposite signs).
         if p['model_spread'] is not None and p['close_spread'] is not None:
             try:
-                ms = float(p['model_spread']); cs = float(p['close_spread'])
-                if hs != as_:
-                    # model_spread convention: positive = home fav side
-                    # If model_spread more negative than close (home is bigger dog than market), pick AWAY
-                    pick = 'HOME' if ms < cs else 'AWAY'
+                delta = float(p['model_spread']) + float(p['close_spread'])
+                if hs != as_ and delta != 0:
+                    pick = 'HOME' if delta > 0 else 'AWAY'
                     winner = 'HOME' if hs > as_ else 'AWAY'
                     buckets[('MODEL_SPREAD','ML',None)]['n'] += 1
                     if pick == winner: buckets[('MODEL_SPREAD','ML',None)]['w'] += 1
