@@ -85,23 +85,84 @@ def run_for_sport(sport: str, gd: str, dry_run: bool = False) -> int:
             graded += 1
             continue
 
-        # Look up matching prop row
+        # Normalize prop_type (2026-08-02): Jerry synth sometimes emits the
+        # bare prop family ("bb", "ha", "outs") without the direction suffix,
+        # while mlb_pipeline_props always stores "bb_over"/"bb_under"/etc.
+        # Was killing 119 BACK/FADE per day silently.
+        jerry_ptype = read['prop_type']
+        direction = (read.get('direction') or '').lower()
+        opposite = 'under' if direction == 'over' else ('over' if direction == 'under' else None)
+        if jerry_ptype and '_' not in jerry_ptype and direction in ('over', 'under'):
+            family = jerry_ptype
+        elif jerry_ptype and '_' in jerry_ptype:
+            family = jerry_ptype.rsplit('_', 1)[0]  # ks_over → ks
+        else:
+            family = jerry_ptype
+
+        lookup_same = f'{family}_{direction}' if direction else family
+        lookup_flip = f'{family}_{opposite}' if opposite else None
+        flipped = False
+
+        # Try exact match (same family, same direction)
         pr = requests.get(f'{SB}/rest/v1/{props_table}',
                           headers=H_READ,
                           params={'game_id': f'eq.{read["game_id"]}',
                                   'player_name': f'eq.{read["player_name"]}',
-                                  'prop_type': f'eq.{read["prop_type"]}',
-                                  'direction': f'eq.{read["direction"]}',
+                                  'prop_type': f'eq.{lookup_same}',
+                                  'direction': f'eq.{direction}',
                                   'game_date': f'eq.{gd}',
-                                  'select': 'result,actual_pa'},
+                                  'select': 'result,final_value'},
                           timeout=10)
-        prop_rows = pr.json() if pr.status_code == 200 else []
-        if not prop_rows or prop_rows[0].get('result') in (None, 'Pending'):
-            continue  # still pending
+        if pr.status_code != 200:
+            print(f'  ⚠ id={read["id"]} lookup HTTP {pr.status_code}: {pr.text[:200]}')
+            prop_rows = []
+        else:
+            prop_rows = pr.json()
+
+        # If no same-direction row, try opposite direction (grade with flip)
+        if not prop_rows and lookup_flip:
+            pr2 = requests.get(f'{SB}/rest/v1/{props_table}',
+                               headers=H_READ,
+                               params={'game_id': f'eq.{read["game_id"]}',
+                                       'player_name': f'eq.{read["player_name"]}',
+                                       'prop_type': f'eq.{lookup_flip}',
+                                       'direction': f'eq.{opposite}',
+                                       'game_date': f'eq.{gd}',
+                                       'select': 'result,final_value'},
+                               timeout=10)
+            prop_rows = pr2.json() if pr2.status_code == 200 else []
+            if prop_rows:
+                flipped = True  # Jerry called opposite side — flip result
+
+        # No matching prop at all — mark UNGRADEABLE so it stops being Pending
+        # forever. Coverage sweeper missed this prop entirely, or Jerry read
+        # against a family we don't track. Preserves auditability.
+        if not prop_rows:
+            if dry_run:
+                print(f'  [DRY] id={read["id"]} {read["player_name"]} {jerry_ptype}/{direction} → UNGRADEABLE (no pipeline row)')
+                graded += 1
+                continue
+            requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{read["id"]}',
+                           headers=H_WRITE,
+                           json={'result': 'UNGRADEABLE',
+                                 'resolved_at': datetime.now(timezone.utc).isoformat()},
+                           timeout=10)
+            graded += 1
+            continue
+
+        if prop_rows[0].get('result') in (None, 'Pending'):
+            continue  # underlying prop still pending
 
         base_result = prop_rows[0]['result']
+        # If we matched on OPPOSITE direction (Jerry called over, pipeline stored
+        # under), flip the base_result first — the underlying outcome is the same
+        # (player's actual K/BB/HA count) but Win/Loss reads inverse from the
+        # opposite line. Then apply FADE flip on top of that if verdict is FADE.
+        if flipped:
+            if base_result == 'Win':  base_result = 'Loss'
+            elif base_result == 'Loss': base_result = 'Win'
         final_result = flip_for_fade(base_result, verdict)
-        actual = {'prop_result': base_result, 'actual_pa': prop_rows[0].get('actual_pa')}
+        actual = {'prop_result': base_result, 'final_value': prop_rows[0].get('final_value')}
 
         if dry_run:
             print(f'  [DRY] id={read["id"]} {read["player_name"]} {verdict} → {final_result}'); graded += 1
