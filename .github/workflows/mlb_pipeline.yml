@@ -956,6 +956,35 @@ jobs:
           cd mlb_pipeline
           python generate_jerry_synthesis.py --force || echo "jerry synthesis failed (non-fatal)"
 
+      # Snapshot game_context (2026-08-02 · adaptive ensemble Phase 1B).
+      # Runs AFTER generate_jerry_synthesis so we capture the state Jerry
+      # actually saw — mc_probabilities, jerry_pred_*, model_pred_*,
+      # panel_*, align_status, oddscrowd, primary_play — write-once per
+      # (game_id, snapshot_date). Foundation for per-model backtest 30d
+      # from now when we've accumulated ~450 games per model.
+      # continue-on-error: snapshot failure never blocks downstream cards.
+      - name: Snapshot game_context for adaptive weighting
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python snapshot_mlb_game_context.py || echo "context snapshot failed (non-fatal)"
+
+      # Recompute model_track_records (2026-08-02 · Phase 1B nightly).
+      # Reads jerry_cache historical + fresh snapshots; recomputes rolling
+      # per-model accuracy so Jerry synth tomorrow has today's data
+      # baked in. Runs after snapshot so latest state is captured first.
+      - name: Recompute model track records
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_model_track_records.py || echo "model track records failed (non-fatal)"
+
       # Jerry-anchored POTD (2026-07-31 · Sweat Card swap). Runs AFTER
       # generate_jerry_synthesis so jerry_reads is populated. Overwrites the
       # legacy play_of_day.py POTD selection with the highest-conviction
