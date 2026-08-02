@@ -219,13 +219,21 @@ def load_synthesis_prompt(sport: str = 'MLB') -> str | None:
 
 
 def render_prompt(template: str, game: dict, struct: dict) -> str:
-    """Substitute {STRUCT} in the template. Template does the framing."""
+    """Substitute {STRUCT} in the template. Template does the framing.
+
+    Pitcher names surfaced as top-level template vars so the guardrail rule
+    against pitcher-team misattribution (2026-08-02 · Cole/Yankees hallucination)
+    can reference them directly instead of forcing Jerry to dig them out of
+    the struct JSON.
+    """
     struct_json = json.dumps(struct, indent=2, default=str)
     return (
         template
         .replace("{STRUCT}", struct_json)
         .replace("{AWAY_TEAM}", game.get("away_team", ""))
         .replace("{HOME_TEAM}", game.get("home_team", ""))
+        .replace("{AWAY_PITCHER}", game.get("away_pitcher") or "(TBD)")
+        .replace("{HOME_PITCHER}", game.get("home_pitcher") or "(TBD)")
     )
 
 

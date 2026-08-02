@@ -1011,8 +1011,14 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         ptype = (pick.get("type") or "").lower()
         if not label:
             return None
-        # Strip trailing " lean" so PRIMARY and "lean" variants collapse
+        # Strip trailing " lean" so PRIMARY and "lean" variants collapse.
+        # 2026-08-02: also strip " (jerry X/YY)" suffix so POTD label
+        # ("Milwaukee Brewers ML (Jerry 76/100)") collapses with the plain
+        # ML slot label ("Milwaukee Brewers ML") — otherwise Brewers ML
+        # surfaced at rank 1 (POTD) AND rank 2 (Jerry-anchored ML slot).
+        import re as _re
         norm_label = label.replace(" lean", "").strip()
+        norm_label = _re.sub(r"\s*\(jerry\s+\d+/\d+\)\s*$", "", norm_label).strip()
         # For props, include the player name (already in label) so two
         # different players on the same team don't collide.
         if ptype.startswith("prop_"):
@@ -1229,6 +1235,67 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             },
             "narrative_hint": f"v4 model {te['projected_total']} vs line {te['close_total']} ({te['delta']:+.1f})",
         })
+
+    # 4b. Jerry-anchored game-side fallback (2026-08-02). primary_play
+    # populated inconsistently — 8/2 slate had 13/15 games with no primary_play
+    # at all, meaning zero sides surfaced despite Jerry synth reading Brewers ML
+    # @ 76 conv, Tigers ML @ 72, UNDER 6.5 NYY/CHC @ 72. This path pulls
+    # jerry_reads (conv >= 70 = STRONG) as game-side candidates so the card
+    # always surfaces Jerry's top game plays even when primary_play is empty.
+    # Dedup via play_signature blocks duplicates when primary_play IS populated.
+    try:
+        jr_url = f"{os.environ.get('SUPABASE_URL')}/rest/v1/jerry_reads"
+        jr_h = {"apikey": os.environ.get('SUPABASE_KEY'),
+                "Authorization": f"Bearer {os.environ.get('SUPABASE_KEY')}"}
+        jr = requests.get(jr_url, headers=jr_h,
+                          params={"sport": "eq.MLB", "game_date": f"eq.{today_et()}",
+                                  "call_market": "not.eq.pass",
+                                  "select": "game_id,call_market,call_side,call_line,"
+                                            "conviction,call_text,short_read",
+                                  "order": "conviction.desc"},
+                          timeout=10).json()
+        # Map game_id -> matchup for label building
+        game_by_id = {g.get("game_id"): g for g in games if g.get("game_id")}
+        for jread in (jr if isinstance(jr, list) else []):
+            conv = jread.get("conviction") or 0
+            if conv < 70:
+                continue
+            gid = jread.get("game_id")
+            gctx = game_by_id.get(gid)
+            if not gctx:
+                continue
+            mkt = (jread.get("call_market") or "").lower()
+            side = (jread.get("call_side") or "").upper()
+            call_text = jread.get("call_text") or ""
+            tier = "PRIME" if conv >= 80 else "STRONG"
+            if mkt == "ml":
+                team = gctx["home_team"] if side == "HOME" else gctx["away_team"]
+                label = f"{team} ML"
+                icon = "📈"; ptype = "ml"; line = None
+            elif mkt == "total":
+                label = f"{side.title()} {jread.get('call_line') or gctx.get('close_total','')}".strip()
+                icon = "📊"; ptype = "over" if side == "OVER" else "under"
+                line = jread.get("call_line") or gctx.get("close_total")
+            else:
+                continue  # spread + others: skip until wired
+            game_side_candidates.append({
+                "type": "ML" if mkt == "ml" else "Over/Under",
+                "icon": icon,
+                "label": label,
+                "game": f"{gctx.get('away_team')} @ {gctx.get('home_team')}",
+                "conviction": conv,
+                "tier": tier,
+                "tier_source": "jerry_synthesis",
+                "source_table": "mlb_game_results",
+                "source_key": gid,
+                "eval": {"type": ptype, "side": label,
+                         "line": line,
+                         "home_team": gctx.get("home_team"),
+                         "away_team": gctx.get("away_team")},
+                "narrative_hint": (jread.get("short_read") or call_text)[:200],
+            })
+    except Exception as _e:
+        print(f"  ⚠ jerry-anchored side fallback failed: {_e}")
 
     # Add game-side candidates in conviction order; cap at 3 game-side picks
     game_side_candidates.sort(key=lambda c: -(c.get("conviction") or 0))

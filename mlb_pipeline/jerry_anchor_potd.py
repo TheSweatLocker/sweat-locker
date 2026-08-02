@@ -114,11 +114,18 @@ def run(game_date: str | None = None, threshold: int = 70,
     ctx = ctx_rows[0]
 
     # Build the payload — matches existing jerry_cache best_bet schema
+    # 2026-08-02: include `matchup` explicitly so generate_sweat_card's
+    # play_signature dedup can collapse POTD with the plain Jerry-anchored
+    # ML slot on the same game (both are the same bet). Without this,
+    # game field on POTD ended up None and dedup missed.
+    matchup_str = f"{ctx['away_team']} @ {ctx['home_team']}"
     payload_data = {
         "sport": "MLB",
+        "matchup": matchup_str,
         "game": {
             "away_team": ctx["away_team"],
             "home_team": ctx["home_team"],
+            "matchup": matchup_str,
             "commence_time": None,  # play_of_day carries this; Jerry doesn't need it
         },
         "leanDisplay": f"{call} (Jerry {conv}/100)",
@@ -143,9 +150,9 @@ def run(game_date: str | None = None, threshold: int = 70,
         print(f"  [DRY] would upsert best_bet_{gd} · {narrative_line}")
         return
 
-    # Upsert jerry_cache best_bet
+    # Upsert jerry_cache best_bet — actual unique constraint is on cache_key
     r = requests.post(
-        f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport",
+        f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=cache_key",
         headers=H_WRITE,
         json={
             "cache_key": f"best_bet_{gd}",
@@ -196,7 +203,7 @@ def _write_no_play(game_date: str, dry_run: bool, reads: list) -> None:
         print(f"  [DRY] would upsert best_bet_{game_date} · noPlay=True · {reason}")
         return
     r = requests.post(
-        f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport",
+        f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=cache_key",
         headers=H_WRITE,
         json={
             "cache_key": f"best_bet_{game_date}",
