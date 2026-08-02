@@ -1800,10 +1800,16 @@ if(jerryHist) setJerryHistory(JSON.parse(jerryHist));
   }, []);
 
 
+  // Fix 2026-08-02: was fired-once-on-mount before betsLoaded → never resolved.
+  // Now fires when bets finish loading + whenever bets list length changes
+  // (new bet added). Guarded to run at most every 60s to prevent spamming.
+  const lastAutoResolveAt = useRef(0);
   useEffect(() => {
-    if(betsLoaded && bets.length) autoDetectResults();
-
-  }, []);
+    if (!betsLoaded || !bets.length) return;
+    if (Date.now() - lastAutoResolveAt.current < 60_000) return;
+    lastAutoResolveAt.current = Date.now();
+    autoDetectResults();
+  }, [betsLoaded, bets.length]);
 
   useEffect(() => {
     if (!betsLoaded) return;
@@ -1859,9 +1865,16 @@ useEffect(() => {
     fetchDawgOfDay();
     fetchMLBGameContext();  // ← sweat scores per game
     if (propJerrySport === 'MLB') fetchPipelineProps('MLB');
+    // 2026-08-02 fix: also fire auto-resolver on foreground so bets grade
+    // as soon as user returns to app (user placed Rangers ML 8/1, game
+    // ended, app never re-fired resolver until this).
+    if (betsLoaded && bets.length) {
+      lastAutoResolveAt.current = Date.now();
+      autoDetectResults();
+    }
   });
   return () => sub.remove();
-}, [propJerrySport]);
+}, [propJerrySport, betsLoaded, bets.length]);
 
 // Auto-refresh MLB game context every 90s while user is sitting on the
 // Games tab AND viewing MLB. Catches the silent-cron-update case the
