@@ -236,7 +236,15 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
             if edge is not None and abs(edge) >= 0.10: edge_ct += 1
 
             for direction in ('over', 'under'):
-                key = (display.lower(), prop_type, direction)
+                # 2026-08-02: store as full {family}_{direction} form to match
+                # the convention generate_props.py already uses (bb_over,
+                # ha_under, outs_over, etc). Sweeper previously wrote bare
+                # family (bb, ha, outs) which made the existing_keys dedup
+                # never hit (main gen's full-form rows didn't match sweeper's
+                # bare-form check → duplicate stubs) AND broke downstream
+                # grader natural-key JOIN → 152 orphan Jerry reads across 2d.
+                full_type = f'{prop_type}_{direction}'
+                key = (display.lower(), full_type, direction)
                 if key in existing_keys: continue
                 payload = {
                     'game_date': game_date,
@@ -244,7 +252,7 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                     'player_name': display,
                     'player_team': team,
                     'matchup': matchup,
-                    'prop_type': prop_type,
+                    'prop_type': full_type,
                     'direction': direction,
                     'prop_line': entry['line'],
                     'book_line': entry['line'],
