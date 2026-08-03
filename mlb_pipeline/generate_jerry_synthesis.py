@@ -290,10 +290,22 @@ def parse_synthesis(raw: str) -> dict:
     call_block = _section("CALL") or ""
 
     def _field(field: str) -> str | None:
-        m = re.search(rf"{field}\s*:\s*(.+?)(?=\n[A-Z_]+\s*:|$)", call_block, re.S)
-        return m.group(1).strip() if m else None
+        # Allow optional markdown around the field name itself (Jerry sometimes
+        # writes "**MARKET:** pass") and strip surrounding markdown/whitespace
+        # from the captured value. Was causing call_market='** pass' on PASS
+        # rows and downstream Sweat Card display corruption (2026-08-03).
+        m = re.search(rf"\**{field}\**\s*:\s*(.+?)(?=\n\**[A-Z_]+\**\s*:|$)",
+                       call_block, re.S)
+        if not m: return None
+        val = m.group(1).strip()
+        # Strip leading/trailing markdown asterisks + underscores
+        val = re.sub(r"^[*_\s]+|[*_\s]+$", "", val)
+        return val or None
 
     market = (_field("MARKET") or "").lower() or None
+    # Extra scrub — some responses still leak a stray leading "**" that survives
+    if market and market.startswith("*"):
+        market = market.lstrip("*").strip()
     side = (_field("SIDE") or "").upper() or None
     if side == "NULL": side = None
     line_raw = _field("LINE")
