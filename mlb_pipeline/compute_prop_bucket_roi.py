@@ -33,8 +33,8 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 # reads from the sport-specific graded-props table.
 PROPS_TABLE = {
     'MLB': 'mlb_pipeline_props',
+    'NFL': 'nfl_pipeline_props',        # enabled 2026-08-03 Sprint 2
     # 'NBA': 'nba_pipeline_props',      # add when NBA prop pipeline ships
-    # 'NFL': 'nfl_pipeline_props',
     # 'NCAAF': 'ncaaf_pipeline_props',
     # 'NCAAB': 'ncaab_pipeline_props',
 }

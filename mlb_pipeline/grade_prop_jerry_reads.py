@@ -34,8 +34,8 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minim
 
 PROPS_TABLE = {
     'MLB': 'mlb_pipeline_props',
+    'NFL': 'nfl_pipeline_props',      # enabled 2026-08-03 Sprint 2
     # 'NBA': 'nba_pipeline_props',
-    # 'NFL': 'nfl_pipeline_props',
 }
 
 
