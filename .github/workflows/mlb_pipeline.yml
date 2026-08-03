@@ -985,6 +985,29 @@ jobs:
           cd mlb_pipeline
           python compute_model_track_records.py || echo "model track records failed (non-fatal)"
 
+      # Weekly refresh of Jerry's prompt MODEL PERFORMANCE CONTEXT block.
+      # Interim adaptive weighting (2026-08-02) — pulls current lifetime hit
+      # rates from model_track_records + live-computes MONEY hit rate from
+      # 90d oddscrowd_snapshot vs results, then PATCHes the jerry_synthesis
+      # prompt so Jerry sees fresh numbers instead of stale July audit
+      # estimates. Runs Sunday only (day-of-week 0) so it doesn't churn the
+      # prompt daily — one refresh/week keeps signals fresh without noise.
+      # Fully replaced by Phase 3 (dynamic per-request weights) once 30d of
+      # Option B snapshot data lands.
+      - name: Refresh Jerry prompt performance context (weekly)
+        if: (github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch')
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          if [ "$(date -u +%u)" = "7" ]; then
+            python refresh_jerry_prompt_context.py --sport MLB || echo "prompt refresh failed (non-fatal)"
+          else
+            echo "skip (not Sunday UTC)"
+          fi
+
       # Jerry-anchored POTD (2026-07-31 · Sweat Card swap). Runs AFTER
       # generate_jerry_synthesis so jerry_reads is populated. Overwrites the
       # legacy play_of_day.py POTD selection with the highest-conviction
