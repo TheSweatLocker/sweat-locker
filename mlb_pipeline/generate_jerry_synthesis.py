@@ -483,6 +483,17 @@ def run(force: bool = False, game_date: str | None = None,
         except ImportError:
             pass  # sanitizer optional — prompt guardrail alone is defensive
 
+        # Post-LLM hallucination detector (2026-08-03 Sprint 2) — scans cited
+        # numbers vs input struct. LOGS issues for now; auto-regen loop TBD.
+        try:
+            from validate_jerry_read import validate as _validate
+            report = _validate(parsed.get("short_read"), parsed.get("long_read"), struct)
+            if not report["is_valid"]:
+                print(f"  ⚠ HALLUCINATION SUSPECTS: {report['hallucinated_numbers']}  "
+                      f"({report['notes']})")
+        except ImportError:
+            pass
+
         if upsert_jerry_read_sport(g, parsed, struct, gd, sport):
             call_str = f"{parsed.get('call_text') or 'PASS'} ({parsed.get('conviction') or '-'})"
             print(f"  ✓ {away} @ {home}: {call_str}  [{len(externals)} externals]")

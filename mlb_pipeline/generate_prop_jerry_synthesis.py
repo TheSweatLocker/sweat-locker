@@ -298,6 +298,15 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                 parsed['long_read'] = scrub(parsed.get('long_read'))
         except ImportError:
             pass
+        # Post-LLM hallucination detector (2026-08-03 Sprint 2)
+        try:
+            from validate_jerry_read import validate as _validate
+            report = _validate(parsed.get('short_read'), parsed.get('long_read',''), prop)
+            if not report['is_valid']:
+                print(f'  ⚠ HALLUCINATION SUSPECTS on {prop["player_name"]}: '
+                      f'{report["hallucinated_numbers"]}')
+        except ImportError:
+            pass
         if upsert_read(sport, prop, parsed, prompt, game_date):
             verdict = parsed.get('call_verdict') or '?'; conv = parsed.get('conviction') or '?'
             print(f'  ✓ {prop["player_name"][:20]:<20} {prop["prop_type"]:<12} {prop["direction"]:<5} → {verdict} {conv}')
