@@ -290,6 +290,14 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
         parsed = parse_synthesis(raw, prop.get('prop_type'))
         if not parsed.get('short_read'):
             print(f'  ⚠ parse missing take for {prop["player_name"]}'); continue
+        # Post-LLM brand-name sanitizer (2026-08-03) — belt-and-suspenders
+        try:
+            from sanitize_jerry_prose import scrub
+            parsed['short_read'] = scrub(parsed.get('short_read'))
+            if 'long_read' in parsed:
+                parsed['long_read'] = scrub(parsed.get('long_read'))
+        except ImportError:
+            pass
         if upsert_read(sport, prop, parsed, prompt, game_date):
             verdict = parsed.get('call_verdict') or '?'; conv = parsed.get('conviction') or '?'
             print(f'  ✓ {prop["player_name"][:20]:<20} {prop["prop_type"]:<12} {prop["direction"]:<5} → {verdict} {conv}')

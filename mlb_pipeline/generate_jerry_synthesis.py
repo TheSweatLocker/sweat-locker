@@ -470,6 +470,19 @@ def run(force: bool = False, game_date: str | None = None,
             print(f"     raw head: {raw[:200]!r}")
             continue
 
+        # Post-LLM brand-name sanitizer (2026-08-03) — belt-and-suspenders
+        # for the prompt's BRAND ATTRIBUTION GUARDRAIL. Removes any leaked
+        # data-provider or handicapper names from prose before storage.
+        try:
+            from sanitize_jerry_prose import scrub, audit
+            leaked_before = audit(parsed.get("long_read", "")) + audit(parsed.get("short_read", ""))
+            parsed["short_read"] = scrub(parsed.get("short_read"))
+            parsed["long_read"] = scrub(parsed.get("long_read"))
+            if leaked_before:
+                print(f"  🔧 sanitized brand leaks: {sorted(set(leaked_before))}")
+        except ImportError:
+            pass  # sanitizer optional — prompt guardrail alone is defensive
+
         if upsert_jerry_read_sport(g, parsed, struct, gd, sport):
             call_str = f"{parsed.get('call_text') or 'PASS'} ({parsed.get('conviction') or '-'})"
             print(f"  ✓ {away} @ {home}: {call_str}  [{len(externals)} externals]")
