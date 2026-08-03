@@ -41,8 +41,8 @@ PROMPT_VERSION = 'prop_synthesis_v1'
 # Sport → table. Add sports as their prop pipelines ship.
 PROPS_TABLE = {
     'MLB': 'mlb_pipeline_props',
+    'NFL': 'nfl_pipeline_props',      # enabled 2026-08-03 for Week 1 launch
     # 'NBA': 'nba_pipeline_props',
-    # 'NFL': 'nfl_pipeline_props',
     # 'UFC': 'ufc_pipeline_props',
 }
 

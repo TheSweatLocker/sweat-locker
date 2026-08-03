@@ -275,6 +275,13 @@ def enrich_prop(row: dict, projections_cache: dict) -> Optional[dict]:
         'projection': f'Projected {family} {proj_value} vs line {book_line} ({directional_edge:+.1f}% {direction.upper()} edge)',
         'l5_form': f'L5 {family} avg {inputs.get("L5_avg","?")}' + (f' over {inputs.get("L5_games","?")} games' if inputs.get("L5_games") else ''),
         'opp_matchup': inputs.get('opp_D_note', 'no opp data'),
+        # MLB-compat: _edge_pct is expected by the shared prop synth COVERAGE-tier
+        # gate to decide whether coverage stubs earn a Jerry take. NFL enricher
+        # normally tiers everything > COVERAGE, but leaving this key ensures
+        # compatibility when synth runs before enricher on a race.
+        '_edge_pct': round(directional_edge / 100, 3),
+        '_projected_value': proj_value,
+        '_book_line': book_line,
     }
     aligned = 0
     if directional_edge >= 6: aligned += 1  # book edge alone counts as 1 signal
