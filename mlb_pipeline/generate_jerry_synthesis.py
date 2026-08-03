@@ -289,6 +289,15 @@ def parse_synthesis(raw: str) -> dict:
     long_ = _section("LONG") or ""
     call_block = _section("CALL") or ""
 
+    # Defense-in-depth (2026-08-03): globally strip markdown from CALL block
+    # BEFORE field extraction. Jerry occasionally wraps field names AND values
+    # in ** (e.g. "**MARKET:** **ML**"), which broke prior surround-only fixes.
+    # Wiping all * / _ pre-parse makes field extraction bulletproof regardless
+    # of markdown flavor. Only applied to CALL block — preserves markdown in
+    # short/long prose which is user-facing.
+    call_block = re.sub(r"\*+", "", call_block)
+    call_block = re.sub(r"_+", "", call_block)
+
     def _field(field: str) -> str | None:
         # Allow optional markdown around the field name itself (Jerry sometimes
         # writes "**MARKET:** pass") and strip surrounding markdown/whitespace
@@ -319,6 +328,20 @@ def parse_synthesis(raw: str) -> dict:
         conviction = max(0, min(100, int(re.sub(r"\D", "", conv_raw or "")))) if conv_raw else None
     except ValueError:
         conviction = None
+
+    # Post-parse validation (2026-08-03): ensure market falls in valid set,
+    # else log + null out. Prevents corrupted values reaching downstream
+    # Sweat Card / POTD anchor / app render. Better to store no call than
+    # store "** ml **side:**..." garbage.
+    _VALID_MARKETS = {'ml', 'rl', 'total', 'prop', 'pass', None}
+    if market not in _VALID_MARKETS:
+        print(f"  ⚠ parser produced invalid call_market {market!r} — nulling")
+        market = None
+        side = None
+    _VALID_SIDES = {'HOME', 'AWAY', 'OVER', 'UNDER', None}
+    if side not in _VALID_SIDES:
+        print(f"  ⚠ parser produced invalid call_side {side!r} — nulling")
+        side = None
 
     return {
         "short_read": short,
