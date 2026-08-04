@@ -10726,20 +10726,21 @@ setJerryHistory(prev => {
         <Text style={{color:THEME.text,fontWeight:'800',fontSize:15,marginBottom:8}}>
           {dailyBestBet.game.away_team} @ {dailyBestBet.game.home_team}
         </Text>
+        {/* 2026-08-04: BOOK tile removed (hardcoded '🎸 HRB' didn't reflect
+            any real book selection). SWEAT tile renamed to CONVICTION and
+            given room to breathe since we deleted BOOK. Number is Jerry's
+            0-100 conviction score. */}
         <View style={{flexDirection:'row',alignItems:'center',gap:10,marginBottom:12}}>
-          <View style={{backgroundColor:potdTier.bgColor,borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:potdTier.color,flex:1}}>
+          <View style={{backgroundColor:potdTier.bgColor,borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:potdTier.color,flex:2}}>
             <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>TOP PLAY</Text>
             <Text style={{color:potdTier.color,fontWeight:'800',fontSize:16}}>
   {dailyBestBet.leanDisplay || 'Top Model Edge'}
 </Text>
           </View>
-          <View style={{backgroundColor:THEME.accent + '1A',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:THEME.accent + '4C',alignItems:'center'}}>
-            <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>SWEAT</Text>
-            <Text style={{color:THEME.accent,fontWeight:'800',fontSize:16}}>{dailyBestBet.score?.total || '--'}</Text>
-          </View>
-          <View style={{backgroundColor:THEME.sharp + '1A',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:THEME.sharp + '4C',alignItems:'center'}}>
-            <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>BOOK</Text>
-            <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:11}}>🎸 HRB</Text>
+          <View style={{backgroundColor:THEME.accent + '1A',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:THEME.accent + '4C',alignItems:'center',minWidth:80}}>
+            <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>CONVICTION</Text>
+            <Text style={{color:THEME.accent,fontWeight:'800',fontSize:20}}>{dailyBestBet.score?.total || '--'}</Text>
+            <Text style={{color:THEME.textMuted,fontSize:8,fontWeight:'600',letterSpacing:0.5,marginTop:1}}>/100</Text>
           </View>
         </View>
         <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>

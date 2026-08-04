@@ -165,8 +165,39 @@ def run(game_date: str | None = None, threshold: int = 70,
     winner = eligible[0]
     gid = winner["game_id"]
     conv = winner["conviction"]
-    call = winner.get("call_text") or "?"
     winner_sport = (winner.get("sport") or "MLB").upper()
+
+    # Reconstruct display text when call_text is None (2026-08-04).
+    # Jerry's LLM output sometimes omits CALL_TEXT for prop reads even
+    # though SIDE + LINE + market are populated. Fallback synthesizes a
+    # sensible display so the app doesn't render literal "?" in the POTD
+    # box (the whole point of the anchor is a headline play).
+    def _synthesize_display(w):
+        raw = w.get("call_text")
+        if raw and raw.strip() and raw.strip() != "?":
+            return raw
+        mk = (w.get("call_market") or "").lower()
+        side = w.get("call_side") or ""
+        line = w.get("call_line")
+        short = w.get("short_read") or ""
+        if mk == "prop":
+            # Extract player name from first sentence of short_read
+            first_sent = short.split(".")[0].strip() if short else ""
+            # Player name is usually the first 2-3 capitalized words
+            import re as _re
+            m = _re.match(r"^\**([A-Z][a-zA-ZÀ-ÿ.'-]+(?:\s+[A-Z][a-zA-ZÀ-ÿ.'-]+){0,3})", first_sent)
+            player = m.group(1).strip() if m else "Prop"
+            line_str = f" {line}" if line is not None else ""
+            return f"{player} {side.title()}{line_str}"
+        if mk == "total":
+            return f"{side.title()} {line}" if line is not None else side.title()
+        if mk == "ml":
+            return f"{side.title()} ML"
+        if mk == "rl":
+            return f"{side.title()} RL{f' {line:+g}' if line is not None else ''}"
+        return "Play of the Day"
+
+    call = _synthesize_display(winner)
     print(f"  🏆 POTD winner: {call} (conviction={conv}, game_id={gid}, sport={winner_sport})")
 
     # Route to sport-specific context table (2026-08-03 universalization).
