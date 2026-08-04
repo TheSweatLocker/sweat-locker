@@ -88,7 +88,45 @@ def run(game_date: str | None = None, threshold: int = 70,
                 and (r.get("call_market") or "").lower() != "pass"]
     if not eligible:
         print(f"  ⚠ no Jerry read at conviction >= {threshold} — Jerry passing on POTD today")
-        # Write a "no play" payload
+        _write_no_play(gd, dry_run, reads)
+        return
+
+    # POTD JUICE GATE (2026-08-03 user directive): "-200 or juicier ML shouldn't
+    # be POTD — they're often anti-consensus plays priced heavy by books."
+    # Fetch ML for each eligible ML pick and filter out ones at -200+ juice.
+    # Non-ML picks (total/rl/prop) unaffected.
+    ml_picks = [r for r in eligible if (r.get("call_market") or "").lower() == "ml"]
+    if ml_picks:
+        game_ids = list({r["game_id"] for r in ml_picks})
+        in_str = ','.join(f'"{g}"' for g in game_ids)
+        ml_ctx = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_context",
+            headers=H_READ,
+            params={"game_id": f"in.({in_str})", "game_date": f"eq.{gd}",
+                    "select": "game_id,home_ml_close,away_ml_close"},
+            timeout=15,
+        ).json()
+        ml_lookup = {c["game_id"]: c for c in (ml_ctx if isinstance(ml_ctx, list) else [])}
+        filtered = []
+        skipped_juice = []
+        for r in eligible:
+            if (r.get("call_market") or "").lower() != "ml":
+                filtered.append(r); continue
+            ctx_row = ml_lookup.get(r["game_id"], {})
+            side = (r.get("call_side") or "").upper()
+            pick_ml = ctx_row.get("home_ml_close") if side == "HOME" else ctx_row.get("away_ml_close")
+            if pick_ml is not None and pick_ml <= -200:
+                skipped_juice.append(f"{r.get('call_text','?')[:30]} at {pick_ml}")
+                continue
+            filtered.append(r)
+        if skipped_juice:
+            print(f"  🚫 POTD juice gate: skipped {len(skipped_juice)} ML picks at -200+")
+            for s in skipped_juice[:5]:
+                print(f"      · {s}")
+        eligible = filtered
+
+    if not eligible:
+        print(f"  ⚠ no eligible reads after juice gate — Jerry passing")
         _write_no_play(gd, dry_run, reads)
         return
 

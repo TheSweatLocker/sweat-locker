@@ -67,16 +67,22 @@ HISTORICAL_HIT_RATES = {
     ('hits_under', 'PRIME', 'under'): (60.2, 103),
 }
 
-# HARD SUPPRESSION LIST — never publish these tier/type combos regardless
-# of conviction. Selected for hit rate <45% AND n >= 15.
-SUPPRESS_COMBOS = {
-    ('outs_over', 'SKIP', 'over'),
-    ('er_under', 'SKIP', 'under'),
-    ('ha_over',  'LEAN', 'over'),
-    ('ha_over',  'SKIP', 'over'),
-    ('bb_under', 'SKIP', 'under'),
-    ('er_under', 'STRONG', 'under'),
-    ('er_over',  'STRONG', 'over'),
+# FADE COMBOS (2026-08-03 user directive): "Don't suppress garbage — let
+# Jerry FADE the other side, market has priced it in." A prop_type at
+# 29% hit rate is a 71% FADE signal. Flip the direction, publish as the
+# opposite side at a tier proportional to the inverse hit rate.
+#
+# Format: (prop_type_family, tier, direction) → (fade_tier, inverse_pct, n)
+# fade_tier assigned by inverse rate:
+#   >=70% → STRONG,  60-69% → LEAN,  55-59% → LEAN (light),  <55% → skip (fade too soft)
+FADE_COMBOS = {
+    ('outs_over', 'SKIP', 'over'):    ('STRONG', 70.6, 51),  # over 29% → under 71%
+    ('er_under',  'SKIP', 'under'):   ('STRONG', 75.9, 29),  # under 24% → over 76%
+    ('ha_over',   'LEAN', 'over'):    ('STRONG', 66.7, 27),  # over 33% → under 67%
+    ('ha_over',   'SKIP', 'over'):    ('LEAN',   62.5, 24),  # over 38% → under 63%
+    ('bb_under',  'SKIP', 'under'):   ('LEAN',   60.0, 25),  # under 40% → over 60%
+    ('er_under',  'STRONG', 'under'): ('LEAN',   60.0, 20),  # under 40% → over 60%
+    ('er_over',   'STRONG', 'over'):  ('LEAN',   56.1, 41),  # over 44% → under 56% (fade too soft, but flag)
 }
 
 # GOLDMINE — SKIP tier that beats PRIME. Promote to STRONG when Jerry BACKs.
@@ -86,12 +92,28 @@ GOLDMINE_SKIP_COMBOS = {
 }
 
 
-def suppress(prop_type: str, tier: str, direction: str) -> tuple[bool, str]:
-    """Returns (should_suppress, reason). Publisher should skip if True."""
+def should_fade(prop_type: str, tier: str, direction: str) -> tuple[bool, Optional[str], Optional[int], str]:
+    """Check if this combo is a historical loser that should be FADED (flip direction).
+    Returns (is_fade, fade_tier, fade_conviction, reason).
+    Fade_tier is what to publish the FLIPPED direction as."""
     key = ((prop_type or '').lower(), (tier or '').upper(), (direction or '').lower())
-    if key in SUPPRESS_COMBOS:
-        rate, n = HISTORICAL_HIT_RATES.get(key, (None, None))
-        return True, f'historical_loser_{rate}pct_n{n}'
+    if key in FADE_COMBOS:
+        fade_tier, inverse_pct, n = FADE_COMBOS[key]
+        # Conviction: 70+ → 78, 60-69 → 65, 55-59 → 55
+        if inverse_pct >= 70: fade_conv = 78
+        elif inverse_pct >= 60: fade_conv = 65
+        else: fade_conv = 55
+        original_pct = 100 - inverse_pct
+        reason = f'fade_signal_{prop_type}_{direction}_hit_only_{original_pct:.1f}pct_at_this_tier_n{n}'
+        return True, fade_tier, fade_conv, reason
+    return False, None, None, ''
+
+
+# Kept for backward-compat but now maps to fade
+def suppress(prop_type: str, tier: str, direction: str) -> tuple[bool, str]:
+    """DEPRECATED — use should_fade() instead. Never returns True now,
+    since suppression policy replaced with fade policy per user directive
+    2026-08-03 ('don't suppress garbage — let Jerry FADE the other side')."""
     return False, ''
 
 
@@ -143,11 +165,13 @@ def juice_cap(book_odds: Optional[int], conviction: int, prop_type: str,
 
 
 def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
-    """One-call pipeline stage: applies suppress + goldmine + juice_cap.
+    """One-call pipeline stage: goldmine promotion + fade-flip + juice_cap.
     Returns dict with keys:
-      keep (bool) — publisher should skip if False
-      new_tier (str|None) — override tier if promoted or capped
-      new_conviction (int) — possibly-capped conviction
+      keep (bool) — always True now (fade policy replaced suppress)
+      flip_direction (bool) — if True, publish opposite direction
+      new_direction (str|None) — the flipped direction if fade
+      new_tier (str) — possibly-promoted or fade-based tier
+      new_conviction (int) — possibly-capped or fade-boosted conviction
       reason (str) — audit trail
     """
     pt = (prop.get('prop_type') or '').lower()
@@ -156,20 +180,24 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
     odds = prop.get('book_over_odds') if direction == 'over' else prop.get('book_under_odds')
     conv = prop.get('conviction') or 0
 
-    # 1. Goldmine check first — promotes over suppress
+    # 1. Goldmine check first — promotes over fade
     if is_goldmine_skip(pt, tier, direction) and jerry_verdict == 'BACK':
-        return {'keep': True, 'new_tier': 'STRONG',
-                'new_conviction': min(conv + 10, 78),
+        return {'keep': True, 'flip_direction': False, 'new_direction': direction,
+                'new_tier': 'STRONG', 'new_conviction': min(conv + 10, 78),
                 'reason': f'goldmine_skip_promoted_{pt}_{direction}'}
 
-    # 2. Hard suppress
-    should_suppress, reason = suppress(pt, tier, direction)
-    if should_suppress:
-        return {'keep': False, 'new_tier': tier, 'new_conviction': conv, 'reason': reason}
+    # 2. Fade signal — historical loser at this direction → flip and publish
+    is_fade, fade_tier, fade_conv, fade_reason = should_fade(pt, tier, direction)
+    if is_fade:
+        new_direction = 'under' if direction == 'over' else 'over'
+        return {'keep': True, 'flip_direction': True, 'new_direction': new_direction,
+                'new_tier': fade_tier, 'new_conviction': fade_conv,
+                'reason': fade_reason}
 
-    # 3. Juice cap
+    # 3. Juice cap (no fade, no goldmine — just check if price is a trap)
     new_conv, jc_reason = juice_cap(odds, conv, pt, tier, direction)
-    return {'keep': True, 'new_tier': tier, 'new_conviction': new_conv,
+    return {'keep': True, 'flip_direction': False, 'new_direction': direction,
+            'new_tier': tier, 'new_conviction': new_conv,
             'reason': jc_reason or 'no_calibration_needed'}
 
 

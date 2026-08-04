@@ -882,36 +882,42 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         if p.get('prop_type') not in PROP_TYPES_SUPPRESSED_FROM_CARD
     ]
 
-    # Tier calibration (2026-08-03) — suppress historical-loser (prop_type,
-    # tier, direction) combos + cap conviction on juice traps + promote
-    # goldmine SKIPs. Sourced from 90d audit (n=3797). Runs BEFORE the
-    # legacy cohort_eligibility gate so we don't waste cycles on known
-    # losers. Full details in prop_tier_calibration.py.
+    # Tier calibration (2026-08-03 v2) — FADE historical losers (flip
+    # direction), cap juice traps, promote goldmine SKIPs. Per user
+    # directive 2026-08-03: don't suppress garbage — Jerry should FADE
+    # the other side ("market has priced it in").
     try:
         from prop_tier_calibration import apply_calibration
         pre = len(props)
         calibrated = []
-        cal_suppressed = cal_capped = cal_promoted = 0
+        cal_faded = cal_capped = cal_promoted = 0
         for p in props:
-            r = apply_calibration(p, jerry_verdict='BACK')  # optimistic
-            if not r['keep']:
-                cal_suppressed += 1
-                continue
-            if 'promoted' in r.get('reason', ''):
-                p = dict(p)
+            r = apply_calibration(p, jerry_verdict='BACK')
+            p = dict(p)
+            if r.get('flip_direction'):
+                old_dir = p['direction']
+                new_dir = r['new_direction']
+                p['direction'] = new_dir
+                p['tier'] = r['new_tier']
+                p['conviction'] = r['new_conviction']
+                if p.get('prop_type', '').endswith(f'_{old_dir}'):
+                    family = p['prop_type'].rsplit('_', 1)[0]
+                    p['prop_type'] = f'{family}_{new_dir}'
+                p['_tier_calibration'] = r['reason']
+                cal_faded += 1
+            elif 'promoted' in r.get('reason', ''):
                 p['tier'] = r['new_tier']
                 p['conviction'] = r['new_conviction']
                 p['_tier_calibration'] = r['reason']
                 cal_promoted += 1
             elif r['new_conviction'] < (p.get('conviction') or 0):
-                p = dict(p)
                 p['conviction'] = r['new_conviction']
                 p['_tier_calibration'] = r['reason']
                 cal_capped += 1
             calibrated.append(p)
         props = calibrated
-        if cal_suppressed or cal_capped or cal_promoted:
-            print(f'  tier calibration: suppressed {cal_suppressed} '
+        if cal_faded or cal_capped or cal_promoted:
+            print(f'  tier calibration: faded {cal_faded} '
                   f'· juice-capped {cal_capped} · goldmine-promoted {cal_promoted} '
                   f'(of {pre} pre-cal)')
     except ImportError:

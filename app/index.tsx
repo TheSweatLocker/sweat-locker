@@ -1492,58 +1492,13 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
         <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{degenData.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>
       </View>
 
-      {/* Track Record — added 2026-07-26. Parlay is all-or-nothing so the
-          headline parlay hit rate reads low by design. Per-leg accuracy is
-          the more informative diagnostic — it's what tells you the underlying
-          picks are good, even when the parlay format eats them alive. */}
-      {degenRecord && (degenRecord.total.wins + degenRecord.total.losses + degenRecord.total.pushes) > 0 && (
-        <View style={{backgroundColor:THEME.surface,borderRadius:12,padding:12,marginBottom:16,borderWidth:1,borderColor:THEME.border}}>
-          <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',marginBottom:8,letterSpacing:0.5}}>🎲 DEGEN PARLAY TRACK RECORD</Text>
-          {(() => {
-            const t = degenRecord.total;
-            const t30 = degenRecord.last30;
-            const parlayTotal = t.wins + t.losses;
-            const parlayPct = parlayTotal > 0 ? Math.round((t.wins/parlayTotal)*100) : 0;
-            const legsPct = degenRecord.legsTotal > 0 ? Math.round((degenRecord.legsCorrect/degenRecord.legsTotal)*100) : 0;
-            const legsPct30 = degenRecord.legsTotal30 > 0 ? Math.round((degenRecord.legsCorrect30/degenRecord.legsTotal30)*100) : 0;
-            return (
-              <>
-                <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',paddingBottom:10,borderBottomWidth:1,borderBottomColor:THEME.border}}>
-                  <View style={{alignItems:'center'}}>
-                    <Text style={{color:THEME.text,fontWeight:'900',fontSize:22}}>{t.wins}-{t.losses}{t.pushes>0?`-${t.pushes}`:''}</Text>
-                    <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>PARLAY LIFETIME</Text>
-                  </View>
-                  <View style={{alignItems:'center'}}>
-                    <Text style={{color:parlayPct>=25?THEME.accent:parlayPct>=15?HRB_COLOR:THEME.accent,fontWeight:'800',fontSize:18}}>{parlayPct}%</Text>
-                    <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
-                  </View>
-                  <View style={{alignItems:'center'}}>
-                    <Text style={{color:legsPct>=60?THEME.accent:legsPct>=50?HRB_COLOR:THEME.loss,fontWeight:'800',fontSize:18}}>{legsPct}%</Text>
-                    <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>LEGS ({degenRecord.legsCorrect}/{degenRecord.legsTotal})</Text>
-                  </View>
-                </View>
-                {(t30.wins + t30.losses) > 0 && (
-                  <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',paddingTop:10}}>
-                    <View style={{alignItems:'center'}}>
-                      <Text style={{color:THEME.textDim,fontWeight:'700',fontSize:14}}>{t30.wins}-{t30.losses}{t30.pushes>0?`-${t30.pushes}`:''}</Text>
-                      <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>LAST 30D</Text>
-                    </View>
-                    <View style={{alignItems:'center'}}>
-                      <Text style={{color:THEME.textDim,fontWeight:'700',fontSize:14}}>{Math.round((t30.wins/(t30.wins+t30.losses))*100)}%</Text>
-                      <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>PARLAY 30D</Text>
-                    </View>
-                    <View style={{alignItems:'center'}}>
-                      <Text style={{color:legsPct30>=60?THEME.accent:legsPct30>=50?HRB_COLOR:THEME.loss,fontWeight:'700',fontSize:14}}>{legsPct30}%</Text>
-                      <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>LEGS 30D</Text>
-                    </View>
-                  </View>
-                )}
-                <Text style={{color:THEME.textMuted,fontSize:9,marginTop:8,fontStyle:'italic',textAlign:'center',lineHeight:12}}>Parlay hit rate is all-or-nothing (~20-30% is strong for 4-leg). Legs% tells you the underlying pick quality.</Text>
-              </>
-            );
-          })()}
-        </View>
-      )}
+      {/* Daily Degen record display REMOVED 2026-08-03 per user directive:
+          "Daily Degen is a parlay for degens — they shouldn't care about the record."
+          Parlay hit rate is optically brutal (all-or-nothing) even when underlying
+          picks are strong. Displaying 8-89 on the headline card degrades trust more
+          than it informs. Data still fetched via fetchDegenRecord for internal
+          telemetry but not rendered. Re-enable by restoring the full block from
+          git SHA d632436a if record improves meaningfully. */}
 
       {/* Legs */}
       {degenData.legs?.map((leg: any, i: number) => (

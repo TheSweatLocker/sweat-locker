@@ -270,30 +270,37 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     props = [p for p in props if _has_edge(p)]
     print(f'  [{sport}] {len(props)}/{before} eligible after edge gate')
 
-    # Tier calibration (2026-08-03): suppress historical losers, cap juice
-    # traps, promote goldmine SKIP tiers. Sourced from 90d audit (n=3797).
-    # Full details in prop_tier_calibration.py. Runs BEFORE Jerry calls
-    # so we don't waste LLM tokens on known-loser combos.
+    # Tier calibration (2026-08-03 v2): FADE historical losers (flip direction),
+    # cap juice traps, promote goldmine SKIP tiers. Per user directive: don't
+    # suppress — Jerry should say "fade the other side, market has priced it
+    # in". A 29% W bucket is a 71% FADE signal.
     try:
         from prop_tier_calibration import apply_calibration
-        suppressed = capped = promoted = 0
-        kept = []
+        faded = capped = promoted = 0
         for p in props:
-            r = apply_calibration(p, jerry_verdict='BACK')  # optimistic — assume Jerry will BACK
-            if not r['keep']:
-                suppressed += 1
-                continue
-            if r['new_tier'] != (p.get('tier') or '').upper() and 'promoted' in r.get('reason', ''):
+            r = apply_calibration(p, jerry_verdict='BACK')
+            if r.get('flip_direction'):
+                # Flip direction, adjust prop_type suffix, use fade tier/conv
+                old_dir = p['direction']
+                new_dir = r['new_direction']
+                p['direction'] = new_dir
+                p['tier'] = r['new_tier']
+                p['conviction'] = r['new_conviction']
+                # prop_type flip: outs_over → outs_under, etc.
+                if p.get('prop_type', '').endswith(f'_{old_dir}'):
+                    family = p['prop_type'].rsplit('_', 1)[0]
+                    p['prop_type'] = f'{family}_{new_dir}'
+                p.setdefault('signals', {})['_calibration_fade'] = r['reason']
+                faded += 1
+            elif 'promoted' in r.get('reason', ''):
                 p['tier'] = r['new_tier']
                 p['conviction'] = r['new_conviction']
                 promoted += 1
             elif r['new_conviction'] < (p.get('conviction') or 0):
                 p['conviction'] = r['new_conviction']
                 capped += 1
-            kept.append(p)
-        props = kept
-        if suppressed or capped or promoted:
-            print(f'  [{sport}] tier calibration: suppressed {suppressed} '
+        if faded or capped or promoted:
+            print(f'  [{sport}] tier calibration: faded {faded} '
                   f'· juice-capped {capped} · goldmine-promoted {promoted}')
     except ImportError:
         pass  # calibration module optional; earlier pipeline unaffected
