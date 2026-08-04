@@ -270,6 +270,34 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     props = [p for p in props if _has_edge(p)]
     print(f'  [{sport}] {len(props)}/{before} eligible after edge gate')
 
+    # Tier calibration (2026-08-03): suppress historical losers, cap juice
+    # traps, promote goldmine SKIP tiers. Sourced from 90d audit (n=3797).
+    # Full details in prop_tier_calibration.py. Runs BEFORE Jerry calls
+    # so we don't waste LLM tokens on known-loser combos.
+    try:
+        from prop_tier_calibration import apply_calibration
+        suppressed = capped = promoted = 0
+        kept = []
+        for p in props:
+            r = apply_calibration(p, jerry_verdict='BACK')  # optimistic — assume Jerry will BACK
+            if not r['keep']:
+                suppressed += 1
+                continue
+            if r['new_tier'] != (p.get('tier') or '').upper() and 'promoted' in r.get('reason', ''):
+                p['tier'] = r['new_tier']
+                p['conviction'] = r['new_conviction']
+                promoted += 1
+            elif r['new_conviction'] < (p.get('conviction') or 0):
+                p['conviction'] = r['new_conviction']
+                capped += 1
+            kept.append(p)
+        props = kept
+        if suppressed or capped or promoted:
+            print(f'  [{sport}] tier calibration: suppressed {suppressed} '
+                  f'· juice-capped {capped} · goldmine-promoted {promoted}')
+    except ImportError:
+        pass  # calibration module optional; earlier pipeline unaffected
+
     done = 0
     for prop in props:
         if limit and done >= limit: break
