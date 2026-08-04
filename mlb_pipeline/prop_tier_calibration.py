@@ -108,10 +108,12 @@ def _refresh_from_live_data():
         SB = os.environ.get('SUPABASE_URL')
         KEY = os.environ.get('SUPABASE_KEY')
         if not (SB and KEY): return
+        # Read ALL sports — the (prop_type, tier, direction) keys don't collide
+        # because prop_type strings differ per sport (MLB 'ks_over', NFL
+        # 'pass_yds_over', etc). One universal table serves every sport.
         r = requests.get(f'{SB}/rest/v1/prop_bucket_roi',
                          headers={'apikey': KEY, 'Authorization': f'Bearer {KEY}'},
-                         params={'sport': 'eq.MLB',
-                                 'select': 'prop_type,tier,direction,hit_rate,sample_n'},
+                         params={'select': 'sport,prop_type,tier,direction,hit_rate,sample_n'},
                          timeout=10)
         if r.status_code != 200: return
         rows = r.json()

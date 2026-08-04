@@ -26,6 +26,7 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 import requests
 from dotenv import load_dotenv
@@ -45,6 +46,24 @@ H_WRITE = {**H_READ, "Content-Type": "application/json",
 
 def today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
+
+
+# Sport → game context table registry (2026-08-03 sport-universalization).
+# Add rows here as each sport's game_context table ships. Fallback path
+# handles POTD winners from sports without a context table (best-effort;
+# skips juice gate + context-details fetch, but still writes the POTD).
+CONTEXT_TABLE_BY_SPORT = {
+    "MLB": "mlb_game_context",
+    "NFL": "nfl_game_context",        # migration applied 2026-08-03
+    # "NBA": "nba_game_context",
+    # "NCAAF": "ncaaf_game_context",
+    # "NCAAB": "ncaab_game_context",
+    # "UFC": "ufc_fight_context",
+}
+
+
+def _context_table(sport: str) -> Optional[str]:
+    return CONTEXT_TABLE_BY_SPORT.get((sport or "").upper())
 
 
 def _conviction_tier(conv: int) -> str:
@@ -97,16 +116,28 @@ def run(game_date: str | None = None, threshold: int = 70,
     # Non-ML picks (total/rl/prop) unaffected.
     ml_picks = [r for r in eligible if (r.get("call_market") or "").lower() == "ml"]
     if ml_picks:
-        game_ids = list({r["game_id"] for r in ml_picks})
-        in_str = ','.join(f'"{g}"' for g in game_ids)
-        ml_ctx = requests.get(
-            f"{SUPABASE_URL}/rest/v1/mlb_game_context",
-            headers=H_READ,
-            params={"game_id": f"in.({in_str})", "game_date": f"eq.{gd}",
-                    "select": "game_id,home_ml_close,away_ml_close"},
-            timeout=15,
-        ).json()
-        ml_lookup = {c["game_id"]: c for c in (ml_ctx if isinstance(ml_ctx, list) else [])}
+        # Route each ML pick to its sport-specific context table (2026-08-03
+        # universalization). Skip juice gate for sports without a
+        # context table registered — best-effort, don't block the POTD.
+        ml_lookup = {}
+        by_sport = {}
+        for r in ml_picks:
+            by_sport.setdefault((r.get("sport") or "MLB").upper(), []).append(r)
+        for sport, sport_picks in by_sport.items():
+            ctx_table = _context_table(sport)
+            if not ctx_table: continue
+            game_ids = list({p["game_id"] for p in sport_picks})
+            in_str = ','.join(f'"{g}"' for g in game_ids)
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/{ctx_table}",
+                headers=H_READ,
+                params={"game_id": f"in.({in_str})", "game_date": f"eq.{gd}",
+                        "select": "game_id,home_ml_close,away_ml_close"},
+                timeout=15,
+            )
+            rows = resp.json() if resp.status_code == 200 else []
+            for c in (rows if isinstance(rows, list) else []):
+                ml_lookup[c["game_id"]] = c
         filtered = []
         skipped_juice = []
         for r in eligible:
@@ -135,15 +166,22 @@ def run(game_date: str | None = None, threshold: int = 70,
     gid = winner["game_id"]
     conv = winner["conviction"]
     call = winner.get("call_text") or "?"
-    print(f"  🏆 POTD winner: {call} (conviction={conv}, game_id={gid})")
+    winner_sport = (winner.get("sport") or "MLB").upper()
+    print(f"  🏆 POTD winner: {call} (conviction={conv}, game_id={gid}, sport={winner_sport})")
 
-    # Fetch game context (team names, commence_time)
+    # Route to sport-specific context table (2026-08-03 universalization).
+    # Select fields available across sports; MLB-specific (venue, temperature,
+    # nrfi_score, lineup_confirmed) may be null for non-MLB but PostgREST
+    # returns them anyway.
+    ctx_table = _context_table(winner_sport)
+    if not ctx_table:
+        print(f"  ⚠ no context table registered for sport={winner_sport} — aborting")
+        return
     gc = requests.get(
-        f"{SUPABASE_URL}/rest/v1/mlb_game_context",
+        f"{SUPABASE_URL}/rest/v1/{ctx_table}",
         headers=H_READ,
         params={"game_id": f"eq.{gid}", "game_date": f"eq.{gd}",
-                "select": "home_team,away_team,venue,temperature,"
-                          "nrfi_score,lineup_confirmed"},
+                "select": "home_team,away_team"},
         timeout=10,
     )
     ctx_rows = gc.json() if gc.status_code == 200 else []
