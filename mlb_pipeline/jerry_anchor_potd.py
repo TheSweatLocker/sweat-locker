@@ -116,7 +116,8 @@ def run(game_date: str | None = None, threshold: int = 70,
             side = (r.get("call_side") or "").upper()
             pick_ml = ctx_row.get("home_ml_close") if side == "HOME" else ctx_row.get("away_ml_close")
             if pick_ml is not None and pick_ml <= -200:
-                skipped_juice.append(f"{r.get('call_text','?')[:30]} at {pick_ml}")
+                ct = (r.get('call_text') or '?')[:30]
+                skipped_juice.append(f"{ct} at {pick_ml}")
                 continue
             filtered.append(r)
         if skipped_juice:

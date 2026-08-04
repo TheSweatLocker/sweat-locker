@@ -1,38 +1,37 @@
-"""Prop tier calibration + juice-aware suppression (2026-08-03).
+"""Prop tier calibration — fade + juice + goldmine (2026-08-03).
 
-Sprint-3 response to the 14-day audit that showed props hitting 46% on the
-Sweat Card top_8 while totals hit 83%. Root causes identified:
+Sprint-3 response to the 14-day audit that showed props hitting 46% on
+the Sweat Card top_8 while totals hit 83%. Provides three helpers any
+prop stage can import: should_fade, juice_cap, is_goldmine_skip.
 
-  1. LEAK — specific (prop_type, tier, direction) combos have historical
-     hit rates FAR below break-even. We were shipping known losers.
+DYNAMIC CALIBRATION (2026-08-03 v2): The FADE_COMBOS, GOLDMINE_SKIP_COMBOS,
+and HISTORICAL_HIT_RATES tables below are the STARTING POINT sourced from
+today's 90d audit (n=3797). At import time, this module refreshes them
+from live prop_bucket_roi data via load_live_calibration() — so as
+buckets climb back over 50% they naturally exit the fade list, and new
+losers can auto-enter without manual editing.
 
-  2. JUICE BLEED — every price bucket showed negative ROI. Even 60%-hit
-     picks lose money at -175+ juice. Conviction assignment doesn't
-     factor in price.
+Refresh cycle:
+  - Live check on every pipeline import (~50ms overhead)
+  - Adds combo to FADE_COMBOS when hit_rate < 45% AND n >= 15
+  - Removes combo from FADE_COMBOS when hit_rate ≥ 55%
+  - Adds combo to GOLDMINE_SKIP when SKIP tier hit_rate ≥ 65% AND n >= 15
+  - Removes combo from GOLDMINE_SKIP when SKIP hit_rate < 55%
+  - Fallback to static tables if DB unreachable (never break the pipeline)
 
-  3. MISSED GOLDMINES — outs_under SKIP hits 76% (n=87); hits_under SKIP
-     hits 72% (n=25). Our SKIP filter was throwing away real edge.
-
-This module provides three helpers that any prop stage can import:
-
-  suppress(prop) → bool
-    Returns True if this (prop_type, tier, direction) combo has proven
-    historical losing rate at meaningful n. Publisher blocks it.
-
-  juice_cap(prop, conviction) → int
-    Recomputes max allowable conviction given the book_odds. Any prop
-    at -175 or juicier needs historical hit rate >65% to earn PRIME;
-    otherwise cap conviction so downstream sees it as LEAN/SKIP.
-
-  promote_hidden_gem(prop, jerry_verdict) → new_tier | None
-    If prop is SKIP-tier but historical goldmine (outs_under SKIP,
-    hits_under SKIP), AND Jerry BACKs it, promote to STRONG.
-
-Historical rates below sourced from prop audit 2026-08-03 (n=3797 graded
-props across 90d). Update when re-running compute_prop_bucket_roi.
+Buckets between 45-55% W (grey zone) neither fade nor promote — noise.
 """
 from __future__ import annotations
 from typing import Optional
+import os
+
+
+# Thresholds for auto-add / auto-remove (dynamic calibration)
+FADE_ENTER_HIT_PCT = 45.0    # bucket becomes fade when hit% falls below this
+FADE_EXIT_HIT_PCT = 55.0     # bucket exits fade when hit% climbs above this
+GOLDMINE_ENTER_HIT_PCT = 65.0
+GOLDMINE_EXIT_HIT_PCT = 55.0
+MIN_N_ACTIONABLE = 15         # need at least this much sample to add/remove
 
 
 # ── Historical hit rates by (prop_type, tier, direction) ──
@@ -90,6 +89,88 @@ GOLDMINE_SKIP_COMBOS = {
     ('outs_under', 'SKIP', 'under'),   # 76% n=87
     ('hits_under', 'SKIP', 'under'),   # 72% n=25
 }
+
+
+def _refresh_from_live_data():
+    """Refresh FADE_COMBOS + GOLDMINE_SKIP_COMBOS + HISTORICAL_HIT_RATES from
+    the live prop_bucket_roi table. Runs once per import — silent no-op if
+    Supabase unreachable (keeps static defaults). Called at module load.
+
+    Auto-add: bucket hit_rate < 45% at n >= 15 → add to FADE_COMBOS
+    Auto-remove: bucket hit_rate ≥ 55% → remove from FADE_COMBOS
+    Auto-add goldmine: SKIP tier hit_rate ≥ 65% at n >= 15 → add
+    Auto-remove goldmine: SKIP hit_rate < 55% → remove
+
+    Between 45-55% is grey zone — noise, no action.
+    """
+    try:
+        import requests
+        SB = os.environ.get('SUPABASE_URL')
+        KEY = os.environ.get('SUPABASE_KEY')
+        if not (SB and KEY): return
+        r = requests.get(f'{SB}/rest/v1/prop_bucket_roi',
+                         headers={'apikey': KEY, 'Authorization': f'Bearer {KEY}'},
+                         params={'sport': 'eq.MLB',
+                                 'select': 'prop_type,tier,direction,hit_rate,sample_n'},
+                         timeout=10)
+        if r.status_code != 200: return
+        rows = r.json()
+        if not isinstance(rows, list): return
+    except Exception:
+        return  # fall back to static tables
+
+    added_fade = removed_fade = added_gold = removed_gold = 0
+    live_seen = set()
+
+    for row in rows:
+        pt = (row.get('prop_type') or '').lower()
+        tier = (row.get('tier') or '').upper()
+        direction = (row.get('direction') or '').lower()
+        hit = row.get('hit_rate')
+        n = row.get('sample_n') or 0
+        if hit is None or n < MIN_N_ACTIONABLE: continue
+        # prop_type in bucket_roi is stored as family (bb, ks) not family_direction
+        # so we reconstruct the full form for matching HISTORICAL_HIT_RATES
+        full_pt = pt if '_' in pt else f'{pt}_{direction}'
+        key = (full_pt, tier, direction)
+        live_seen.add(key)
+
+        # Update HISTORICAL_HIT_RATES with fresh data
+        HISTORICAL_HIT_RATES[key] = (float(hit), int(n))
+
+        # Fade rules
+        if hit < FADE_ENTER_HIT_PCT:
+            if key not in FADE_COMBOS:
+                inverse_pct = 100.0 - float(hit)
+                if inverse_pct >= 70: fade_tier = 'STRONG'
+                elif inverse_pct >= 60: fade_tier = 'LEAN'
+                else: fade_tier = 'LEAN'
+                FADE_COMBOS[key] = (fade_tier, round(inverse_pct, 1), int(n))
+                added_fade += 1
+        elif hit >= FADE_EXIT_HIT_PCT:
+            if key in FADE_COMBOS:
+                del FADE_COMBOS[key]
+                removed_fade += 1
+
+        # Goldmine rules (SKIP tier only)
+        if tier == 'SKIP':
+            if hit >= GOLDMINE_ENTER_HIT_PCT:
+                if key not in GOLDMINE_SKIP_COMBOS:
+                    GOLDMINE_SKIP_COMBOS.add(key)
+                    added_gold += 1
+            elif hit < GOLDMINE_EXIT_HIT_PCT:
+                if key in GOLDMINE_SKIP_COMBOS:
+                    GOLDMINE_SKIP_COMBOS.discard(key)
+                    removed_gold += 1
+
+    if added_fade or removed_fade or added_gold or removed_gold:
+        print(f'[prop_tier_calibration] refreshed from live data: '
+              f'+{added_fade} fade / -{removed_fade} fade · '
+              f'+{added_gold} goldmine / -{removed_gold} goldmine')
+
+
+# Refresh on import — silent if DB unreachable
+_refresh_from_live_data()
 
 
 def should_fade(prop_type: str, tier: str, direction: str) -> tuple[bool, Optional[str], Optional[int], str]:
