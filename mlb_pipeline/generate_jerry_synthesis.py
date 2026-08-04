@@ -330,10 +330,11 @@ def parse_synthesis(raw: str) -> dict:
         conviction = None
 
     # Post-parse validation (2026-08-03): ensure market falls in valid set,
-    # else log + null out. Prevents corrupted values reaching downstream
-    # Sweat Card / POTD anchor / app render. Better to store no call than
-    # store "** ml **side:**..." garbage.
-    _VALID_MARKETS = {'ml', 'rl', 'total', 'prop', 'pass', None}
+    # else log + null out. Prevents corrupted values reaching downstream.
+    # 2026-08-04: added 'lean' — Jerry emits when directional signal is
+    # visible but conviction is 40-64 (not confident enough to actively
+    # recommend). App renders LEAN with muted styling to signal hedge.
+    _VALID_MARKETS = {'ml', 'rl', 'total', 'prop', 'lean', 'pass', None}
     if market not in _VALID_MARKETS:
         print(f"  ⚠ parser produced invalid call_market {market!r} — nulling")
         market = None

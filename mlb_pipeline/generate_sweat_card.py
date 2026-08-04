@@ -1288,9 +1288,14 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         jr_url = f"{os.environ.get('SUPABASE_URL')}/rest/v1/jerry_reads"
         jr_h = {"apikey": os.environ.get('SUPABASE_KEY'),
                 "Authorization": f"Bearer {os.environ.get('SUPABASE_KEY')}"}
+        # Filter: exclude both 'pass' AND 'lean' from Sweat Card (2026-08-04).
+        # 'lean' = Jerry's directional hedge at conv 40-64, not an active play.
+        # Sweat Card only surfaces conv ≥70 (active PLAY tier) — the ceiling
+        # for 'lean' is 64 so pulling call_market != pass AND != lean is
+        # equivalent to conv ≥ 65 filter, but keeps it explicit + safe.
         jr = requests.get(jr_url, headers=jr_h,
                           params={"sport": "eq.MLB", "game_date": f"eq.{today_et()}",
-                                  "call_market": "not.eq.pass",
+                                  "call_market": "not.in.(pass,lean)",
                                   "select": "game_id,call_market,call_side,call_line,"
                                             "conviction,call_text,short_read",
                                   "order": "conviction.desc"},

@@ -101,10 +101,12 @@ def run(game_date: str | None = None, threshold: int = 70,
         print("  ⚠ no reads — POTD unchanged (falls back to whatever play_of_day picked)")
         return
 
-    # Filter to eligible: conviction >= threshold, not a PASS
+    # Filter to eligible: conviction >= threshold, not a PASS or LEAN.
+    # 2026-08-04: exclude 'lean' — Jerry's hedge state (conv 40-64) is not
+    # POTD-worthy. POTD requires active PLAY conviction (≥ threshold, default 70).
     eligible = [r for r in reads
                 if (r.get("conviction") or 0) >= threshold
-                and (r.get("call_market") or "").lower() != "pass"]
+                and (r.get("call_market") or "").lower() not in ("pass", "lean")]
     if not eligible:
         print(f"  ⚠ no Jerry read at conviction >= {threshold} — Jerry passing on POTD today")
         _write_no_play(gd, dry_run, reads)
