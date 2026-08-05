@@ -34,6 +34,64 @@ GOLDMINE_EXIT_HIT_PCT = 55.0
 MIN_N_ACTIONABLE = 15         # need at least this much sample to add/remove
 
 
+# ── FAMILY BASE RATES (2026-08-05 v3 audit — n=1237 graded, 30d) ──
+# Anchors conviction to historical family hit rate. A PRIME 90 in hits_over
+# is fundamentally different from PRIME 90 in ha_over — the priors matter.
+# Bayesian: raw conviction blended with family_prior gives adjusted output.
+#
+# Also used to permanently suppress dead families (outs_over @ 22.7%).
+FAMILY_BASE_RATES = {
+    'outs_under': (79.6, 93),   # 🎯 goldmine — default boost
+    'hits_over':  (64.1, 345),  # winner, largest volume
+    'bb_over':    (58.8, 131),  # solid
+    'bb_under':   (56.4, 133),  # solid
+    'ks_over':    (52.7, 91),   # break-even
+    'ks_under':   (51.1, 180),  # break-even
+    'ha_under':   (48.9, 88),
+    'er_over':    (48.3, 60),
+    'hits_under': (60.2, 103),  # from earlier audit
+    'ha_over':    (42.9, 70),   # loser
+    'er_under':   (37.5, 24),   # loser
+    'outs_over':  (22.7, 22),   # DEAD family — hard suppress
+}
+
+# Family-level hard suppression (never publish regardless of tier/conviction).
+# outs_over hits 22.7% at n=22 with avg delta -9.77 (actual outs are 10 FEWER
+# than line consistently) — the market is fundamentally mispriced for us.
+FAMILY_SUPPRESS = {'outs_over'}
+
+
+def apply_family_prior(prop_type: str, direction: str, raw_conviction: int) -> tuple[int, str]:
+    """Blend raw conviction with historical family hit rate.
+
+    Bayesian anchor:
+      - Family hits >=60% → boost conviction toward that rate (encouraging plays)
+      - Family hits 45-59% → hold conviction near projection edge
+      - Family hits <45% → hard cap conviction (family is unreliable regardless)
+
+    Return: (adjusted_conviction, reason).
+    """
+    if not prop_type: return raw_conviction, 'no_prop_type'
+    family = prop_type.lower()
+    # Convert 'bb' → 'bb_under'/'bb_over' shape by joining with direction if not present
+    if '_' not in family and direction:
+        family = f'{family}_{direction.lower()}'
+    entry = FAMILY_BASE_RATES.get(family)
+    if not entry:
+        return raw_conviction, 'no_family_prior'
+    hit_pct, n = entry
+    if n < 20:
+        return raw_conviction, 'family_sample_too_small'
+    # Bayesian blend: 30% weight on family prior, 70% on raw conviction
+    # Prior is expressed on the same 0-100 scale as conviction
+    adjusted = int(raw_conviction * 0.7 + hit_pct * 0.3)
+    # Hard-cap losing families
+    if hit_pct <= 42:
+        adjusted = min(adjusted, 42)
+        return adjusted, f'family_hard_cap_{hit_pct}pct_hist'
+    return adjusted, f'family_prior_blend_{hit_pct}pct'
+
+
 # ── Historical hit rates by (prop_type, tier, direction) ──
 # Sourced 2026-08-03 audit. n shown for context. Only entries with n >= 15
 # are considered actionable; smaller samples are ignored.
@@ -263,6 +321,14 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
     odds = prop.get('book_over_odds') if direction == 'over' else prop.get('book_under_odds')
     conv = prop.get('conviction') or 0
 
+    # 0. FAMILY HARD SUPPRESS (2026-08-05) — dead prop families never publish
+    # regardless of tier/conviction. outs_over at 22.7% n=22 = graveyard.
+    family_norm = pt if '_' in pt else f'{pt}_{direction}'
+    if family_norm in FAMILY_SUPPRESS:
+        return {'keep': False, 'flip_direction': False, 'new_direction': direction,
+                'new_tier': tier, 'new_conviction': 0,
+                'reason': f'family_dead_{family_norm}_hist_hit_below_25pct'}
+
     # 1. Goldmine check first — promotes over fade
     if is_goldmine_skip(pt, tier, direction) and jerry_verdict == 'BACK':
         return {'keep': True, 'flip_direction': False, 'new_direction': direction,
@@ -277,11 +343,22 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
                 'new_tier': fade_tier, 'new_conviction': fade_conv,
                 'reason': fade_reason}
 
-    # 3. Juice cap (no fade, no goldmine — just check if price is a trap)
-    new_conv, jc_reason = juice_cap(odds, conv, pt, tier, direction)
+    # 3. Family base-rate prior (2026-08-05) — blend raw conviction with
+    # historical family hit rate. Fixes the conviction-inflation issue
+    # where PRIME 90 in hits_over (64% hist) was treated identically to
+    # PRIME 90 in ha_over (43% hist).
+    prior_conv, prior_reason = apply_family_prior(pt, direction, conv)
+
+    # 4. Juice cap (uses possibly-adjusted conviction)
+    new_conv, jc_reason = juice_cap(odds, prior_conv, pt, tier, direction)
+
+    # Combine reasons
+    reasons = [r for r in (prior_reason, jc_reason) if r and r != 'no_family_prior']
+    reason_str = '·'.join(reasons) or 'no_calibration_needed'
+
     return {'keep': True, 'flip_direction': False, 'new_direction': direction,
             'new_tier': tier, 'new_conviction': new_conv,
-            'reason': jc_reason or 'no_calibration_needed'}
+            'reason': reason_str}
 
 
 if __name__ == '__main__':
