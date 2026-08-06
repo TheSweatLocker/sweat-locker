@@ -31,7 +31,7 @@ BRAND_REPLACEMENTS = [
     # Data providers (money flow, aggregators, models)
     (r'\b(?:the\s+)?OddsCrowd(?:\.com)?\b', 'sharp money data'),
     (r'\bAction\s+Network\b',               'external aggregator'),
-    (r'\bVSiN(?:\s+[A-Z][a-z]+)?\b',        'external handicapper'),
+    (r'\bVSiN(?:\s+[A-Z][a-z]+)?\b',        'an analyst'),
     (r'\bCircaSports\b',                     'sharp market'),
     (r'\bCirca\b',                           'sharp market'),
     (r'\bPinnacle\b',                        'sharp market'),
@@ -40,13 +40,13 @@ BRAND_REPLACEMENTS = [
     (r'\bKenPom\b',                         'efficiency model'),
     (r'\bFanGraphs\b',                      'advanced stats'),
     # Handicappers / individual pickers (safe on any casing)
-    (r"\bDoc\s+Sports\b",                    'external handicapper'),
-    (r"\bBetfirm(?:\'s)?\b",                'external handicapper'),
-    (r"\bRocky\s+Atkinson\b",                'external handicapper'),
-    (r"\bTony(?:'s)?\s+Picks?\b",            'external handicapper'),
-    (r"\bPickswise\b",                       'external handicapper'),
-    (r"\bPickdawgz\b",                       'external handicapper'),
-    (r"\bPeterson\b(?=\s|,|\.|$)",           'external handicapper'),  # VSiN Peterson
+    (r"\bDoc\s+Sports\b",                    'an analyst'),
+    (r"\bBetfirm(?:\'s)?\b",                'an analyst'),
+    (r"\bRocky\s+Atkinson\b",                'an analyst'),
+    (r"\bTony(?:'s)?\s+Picks?\b",            'an analyst'),
+    (r"\bPickswise\b",                       'an analyst'),
+    (r"\bPickdawgz\b",                       'an analyst'),
+    (r"\bPeterson\b(?=\s|,|\.|$)",           'an analyst'),  # VSiN Peterson
     # Sportsbooks (Jerry shouldn't cite specific books)
     (r'\bDraftKings\b',                      'the market'),
     (r'\bFanDuel\b',                         'the market'),
