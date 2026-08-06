@@ -299,6 +299,78 @@ def is_goldmine_skip(prop_type: str, tier: str, direction: str) -> bool:
     return key in GOLDMINE_SKIP_COMBOS
 
 
+# ── FORM-DRIFT JUICE TRAP (2026-08-05) ──────────────────────────────
+# 90d audit of ER OVER by (L3_ERA - xERA) drift × book juice bucket:
+#   drift ≥3 · juice -140 to -110: 33.3% hit (n=21)  ← TRAP
+#   drift ≥3 · juice -175 to -140: 46.7% hit (n=15)  ← below breakeven
+#   drift ≥3 · fair/plus odds:     66.7% hit (n=18)  ← edge survives
+# Book prices in the reversion at moderate juice — Painter (-115),
+# Kremer (-125) both lost 8/5 fitting this exact profile.
+# Same trap on ER UNDER when pitcher is IN form (L3 ≤ xERA):
+#   ALIGNED · any juice: 30.8% hit (n=26)
+FORM_DRIFT_TRAP_JUICE_MIN = -175
+FORM_DRIFT_TRAP_JUICE_MAX = -110
+FORM_DRIFT_MIN_DELTA = 3.0        # L3_ERA - xERA gap that qualifies
+FORM_DRIFT_TRAP_CAP = 50           # LEAN max
+
+
+def form_drift_juice_trap(prop: dict) -> tuple[bool, str]:
+    """Return (should_cap, reason) if the prop is a form-drift ER over/under
+    priced in the trap-juice band. Only fires for er_over/er_under.
+
+    ER OVER trap: L3 ERA is elevated by ≥3 vs xERA (loud "he's collapsing")
+    AND book juice is in -175..-110 → book has priced the collapse; hit rate
+    drops to 33-47%.
+
+    ER UNDER trap: L3 ERA is aligned/below xERA (loud "he's elite") AND book
+    juice is in -175..-110 → book has priced the elite form; hit rate 31%.
+    """
+    pt = (prop.get('prop_type') or '').lower()
+    direction = (prop.get('direction') or '').lower()
+    if pt not in ('er_over', 'er_under'):
+        return False, ''
+
+    signals = prop.get('signals') or {}
+    if not isinstance(signals, dict):
+        return False, ''
+
+    # Parse L3 ERA and xERA out of the signal text values
+    import re as _re
+    l3 = xera = None
+    l3_re = _re.compile(r'L3\s*ERA\s*(\d+(?:\.\d+)?)')
+    xe_re = _re.compile(r'xERA\s*(\d+(?:\.\d+)?)')
+    for v in signals.values():
+        if not isinstance(v, str): continue
+        m = l3_re.search(v)
+        if m and l3 is None:
+            try: l3 = float(m.group(1))
+            except ValueError: pass
+        m = xe_re.search(v)
+        if m and xera is None:
+            try: xera = float(m.group(1))
+            except ValueError: pass
+    if l3 is None or xera is None:
+        return False, ''
+
+    odds = prop.get('book_over_odds') if direction == 'over' else prop.get('book_under_odds')
+    if odds is None:
+        return False, ''
+    try: odds = int(odds)
+    except (TypeError, ValueError): return False, ''
+
+    # Trap zone: juice in the priced-in band
+    if not (FORM_DRIFT_TRAP_JUICE_MIN <= odds <= FORM_DRIFT_TRAP_JUICE_MAX):
+        return False, ''
+
+    drift = l3 - xera
+    if direction == 'over' and drift >= FORM_DRIFT_MIN_DELTA:
+        return True, f'form_drift_er_over_L3{l3}_xERA{xera}_drift+{drift:.1f}_juice{odds}_hist33pct_n21'
+    if direction == 'under' and drift <= -0.5:  # pitcher in form; audit showed 31% (n=26)
+        return True, f'form_alignment_er_under_L3{l3}_xERA{xera}_drift{drift:+.1f}_juice{odds}_hist31pct_n26'
+
+    return False, ''
+
+
 def cap_unsupported_high_conviction(raw_conviction: int,
                                     refit_conviction: Optional[float]) -> tuple[int, str]:
     """Cap conviction >= 90 unless refit model corroborates.
@@ -407,6 +479,17 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
     # PRIME 90 in ha_over (43% hist).
     prior_conv, prior_reason = apply_family_prior(pt, direction, conv)
 
+    # 3a. Form-drift juice trap (2026-08-05) — er_over with L3 ERA loudly
+    # elevated vs xERA + juice in -175..-110 hits 33% (n=21). Book has
+    # priced in the collapse; only fair-price fades survive. Same trap
+    # inverse for er_under when pitcher is in form.
+    is_trap, trap_reason = form_drift_juice_trap(prop)
+    if is_trap:
+        # Hard cap at LEAN max — user can still play as lotto, but
+        # sweat-card selection layer treats it as low conviction.
+        conv = min(conv, FORM_DRIFT_TRAP_CAP)
+        prior_conv = min(prior_conv, FORM_DRIFT_TRAP_CAP)
+
     # 3b. Multi-signal gate (2026-08-05) — legacy hand-tuned PRIMEs at
     # conviction >= 90 hit 50% vs STRONG 60-69 at 61%. Require refit model
     # backing to hold above 90; otherwise drop to STRONG max.
@@ -423,7 +506,7 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
         new_tier = 'STRONG'
 
     # Combine reasons
-    reasons = [r for r in (prior_reason, cap_reason, jc_reason)
+    reasons = [r for r in (trap_reason, prior_reason, cap_reason, jc_reason)
                if r and r != 'no_family_prior']
     reason_str = '·'.join(reasons) or 'no_calibration_needed'
 
@@ -449,6 +532,15 @@ if __name__ == '__main__':
         {'prop_type':'er_over','tier':'PRIME','direction':'over','conviction':95,'book_over_odds':-125, 'refit_conviction': 55},     # low refit → cap
         {'prop_type':'bb_under','tier':'PRIME','direction':'under','conviction':98,'book_under_odds':-130, 'refit_conviction': 98.4}, # refit supported → keep
         {'prop_type':'hits_over','tier':'PRIME','direction':'over','conviction':82,'book_over_odds':-120, 'refit_conviction': None}, # below 90 → keep
+        # FORM-DRIFT JUICE TRAP tests (2026-08-05) — tonight's actual losers
+        {'prop_type':'er_over','tier':'PRIME','direction':'over','conviction':100,'book_over_odds':-115,
+         'signals': {'l3':'L3 ERA 9.95 elevated','xera_high':'xERA 5.24'},'refit_conviction': None},  # Painter — should cap
+        {'prop_type':'er_over','tier':'PRIME','direction':'over','conviction':98,'book_over_odds':-125,
+         'signals': {'l3':'L3 ERA 10.29','xera_high':'xERA 4.94'},'refit_conviction': None},          # Kremer — should cap
+        {'prop_type':'er_over','tier':'PRIME','direction':'over','conviction':95,'book_over_odds':-135,
+         'signals': {'l3':'L3 ERA 10.22','xera_high':'xERA 5.86'},'refit_conviction': None},          # Taillon — should cap (still won by chance)
+        {'prop_type':'er_over','tier':'PRIME','direction':'over','conviction':85,'book_over_odds':115,
+         'signals': {'l3':'L3 ERA 9.00','xera_high':'xERA 4.50'},'refit_conviction': None},          # same drift + FAIR PRICE (+odds) → no trap
     ]
     for t in tests:
         r = apply_calibration(t, jerry_verdict='BACK')
