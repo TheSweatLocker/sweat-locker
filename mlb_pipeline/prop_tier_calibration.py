@@ -371,29 +371,34 @@ def form_drift_juice_trap(prop: dict) -> tuple[bool, str]:
     return False, ''
 
 
-def er_under_fair_price_trap(prop: dict) -> tuple[bool, str]:
-    """Return (should_hard_suppress, reason) for ER UNDER at plus-money with
-    pitcher in form. 90d audit says this is nearly automatic loss.
+def outs_over_fair_price_fade(prop: dict) -> Optional[dict]:
+    """outs_over on an in-form pitcher at fair odds → flip to STRONG outs_UNDER.
 
-    ALIGNED (L3≤xERA) + FAIR odds > -110:   0-8   (0%)
-    STRONG_FORM       + FAIR odds > -110:   1-8   (11%)
-    Combined FAIR trap: 1-16 (6%) at n=17.
+    90d audit (2026-08-05):
+      outs_over STRONG_FORM (L3 << xERA) + FAIR odds > -110:  1-7  (12%)
+        → outs_UNDER inverse: 87.5% (n=8)
+      outs_over ALIGNED (L3 ≤ xERA) + FAIR odds > -110:       3-7  (30%)
+        → outs_UNDER inverse: 70%   (n=10)
 
-    Interpretation: market pays +odds on ER UNDER despite the pitcher being
-    in form → market has a specific reason (matchup, park, weather, bullpen)
-    → trust the market. Nearly automatic loss.
+    Mechanism: fair-price outs_over on an in-form ace = the market is
+    telling us HE WON'T GO DEEP. That signal is right ~80-90% of the
+    time. Instead of silently suppressing via FAMILY_SUPPRESS, publish
+    an aggressive outs_UNDER fade so Jerry can say "fade this hard."
+
+    Returns dict with flip_direction=True, new_direction='under', tier,
+    conviction, reason. Returns None if not applicable (falls through
+    to FAMILY_SUPPRESS for the outs_over pass).
     """
-    if (prop.get('prop_type') or '').lower() != 'er_under': return False, ''
-    if (prop.get('direction') or '').lower() != 'under': return False, ''
-    odds = prop.get('book_under_odds')
-    if odds is None: return False, ''
+    if (prop.get('prop_type') or '').lower() != 'outs_over': return None
+    if (prop.get('direction') or '').lower() != 'over': return None
+    odds = prop.get('book_over_odds')
+    if odds is None: return None
     try: odds = int(odds)
-    except (TypeError, ValueError): return False, ''
-    # Fair-or-better only (> -110 = plus-money or thin juice)
-    if odds <= -110: return False, ''
+    except (TypeError, ValueError): return None
+    if odds <= -110: return None  # fair/plus price only
 
     signals = prop.get('signals') or {}
-    if not isinstance(signals, dict): return False, ''
+    if not isinstance(signals, dict): return None
 
     import re as _re
     l3 = xera = None
@@ -409,13 +414,74 @@ def er_under_fair_price_trap(prop: dict) -> tuple[bool, str]:
         if m and xera is None:
             try: xera = float(m.group(1))
             except ValueError: pass
-    if l3 is None or xera is None: return False, ''
+    if l3 is None or xera is None: return None
 
-    # Aligned or in-form pitcher (drift ≤ 0)
     drift = l3 - xera
-    if drift > 0: return False, ''
+    if drift <= -1.5:  # STRONG_FORM
+        return {
+            'flip_direction': True, 'new_direction': 'under',
+            'new_tier': 'STRONG', 'new_conviction': 78,
+            'reason': f'outs_over_strong_form_fade_L3{l3}_xERA{xera}_drift{drift:+.1f}_juice{odds}_inverse87pct_n8',
+        }
+    if drift <= 0:  # ALIGNED
+        return {
+            'flip_direction': True, 'new_direction': 'under',
+            'new_tier': 'STRONG', 'new_conviction': 70,
+            'reason': f'outs_over_aligned_fade_L3{l3}_xERA{xera}_drift{drift:+.1f}_juice{odds}_inverse70pct_n10',
+        }
+    return None
 
-    return True, f'er_under_fair_price_trap_L3{l3}_xERA{xera}_drift{drift:+.1f}_juice{odds}_hist6pct_n17'
+
+def er_under_fair_price_fade(prop: dict) -> Optional[dict]:
+    """ER UNDER at plus-money with pitcher in form → flip to ER OVER STRONG.
+
+    90d audit:
+      er_under ALIGNED (L3≤xERA) + FAIR odds > -110:   0-8   (0%)
+      er_under STRONG_FORM       + FAIR odds > -110:   1-8   (11%)
+      Combined FAIR trap: 1-16 (6%) at n=17 → inverse 94% for er_over
+
+    Market pays +odds on ER UNDER despite the pitcher being in form because
+    it has a specific reason (matchup, park, weather, bullpen). Fading to
+    er_over aligns with the market's judgment — hits ~94%.
+
+    Returns dict with flip_direction=True, new_direction='over', tier,
+    conviction, reason. None if not applicable.
+    """
+    if (prop.get('prop_type') or '').lower() != 'er_under': return None
+    if (prop.get('direction') or '').lower() != 'under': return None
+    odds = prop.get('book_under_odds')
+    if odds is None: return None
+    try: odds = int(odds)
+    except (TypeError, ValueError): return None
+    if odds <= -110: return None  # fair/plus price only
+
+    signals = prop.get('signals') or {}
+    if not isinstance(signals, dict): return None
+
+    import re as _re
+    l3 = xera = None
+    l3_re = _re.compile(r'L3\s*ERA\s*(\d+(?:\.\d+)?)')
+    xe_re = _re.compile(r'xERA\s*(\d+(?:\.\d+)?)')
+    for v in signals.values():
+        if not isinstance(v, str): continue
+        m = l3_re.search(v)
+        if m and l3 is None:
+            try: l3 = float(m.group(1))
+            except ValueError: pass
+        m = xe_re.search(v)
+        if m and xera is None:
+            try: xera = float(m.group(1))
+            except ValueError: pass
+    if l3 is None or xera is None: return None
+
+    drift = l3 - xera
+    if drift > 0: return None  # pitcher NOT in form → rule doesn't apply
+
+    return {
+        'flip_direction': True, 'new_direction': 'over',
+        'new_tier': 'STRONG', 'new_conviction': 80,
+        'reason': f'er_under_fair_price_fade_L3{l3}_xERA{xera}_drift{drift:+.1f}_juice{odds}_inverse94pct_n17',
+    }
 
 
 def cap_unsupported_high_conviction(raw_conviction: int,
@@ -498,24 +564,32 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
     odds = prop.get('book_over_odds') if direction == 'over' else prop.get('book_under_odds')
     conv = prop.get('conviction') or 0
 
-    # 0. FAMILY HARD SUPPRESS (2026-08-05) — dead prop families never publish
+    # 0. Outs-over fair-price fade (2026-08-05 v2) — must run BEFORE
+    # FAMILY_SUPPRESS or the outs_over row gets silent-killed. If pitcher
+    # is in-form and market is offering fair/plus odds on outs_over, the
+    # market is telling us HE WON'T GO DEEP. Flip to outs_UNDER STRONG
+    # (87% hist inverse) so Jerry publishes an aggressive fade.
+    outs_fade = outs_over_fair_price_fade(prop)
+    if outs_fade:
+        return {'keep': True, **outs_fade}
+
+    # 0.5 ER UNDER fair-price fade (2026-08-05 v2) — flip to er_over STRONG.
+    # 94% inverse rate at n=17: market pays +odds on ER UNDER when pitcher
+    # is in form because it has a specific reason to expect runs. Align
+    # with the market via er_over instead of silently killing the read.
+    er_fade = er_under_fair_price_fade(prop)
+    if er_fade:
+        return {'keep': True, **er_fade}
+
+    # 1. FAMILY HARD SUPPRESS (2026-08-05) — dead prop families never publish
     # regardless of tier/conviction. outs_over at 22.7% n=22 = graveyard.
+    # Runs AFTER the fair-price fade check so signal-rich outs_over rows
+    # get flipped to outs_under before being blindly suppressed.
     family_norm = pt if '_' in pt else f'{pt}_{direction}'
     if family_norm in FAMILY_SUPPRESS:
         return {'keep': False, 'flip_direction': False, 'new_direction': direction,
                 'new_tier': tier, 'new_conviction': 0,
                 'reason': f'family_dead_{family_norm}_hist_hit_below_25pct'}
-
-    # 0.5 ER UNDER fair-price trap (2026-08-05 v2) — must run BEFORE fade
-    # logic. Fair-priced er_under on an in-form pitcher hits 6% (1-16, n=17).
-    # The "opposite side" (er_over) isn't necessarily good either — the
-    # market has a specific reason for the +odds, and it's usually right.
-    # Hard suppress instead of fade-flip.
-    is_er_trap, er_trap_reason = er_under_fair_price_trap(prop)
-    if is_er_trap:
-        return {'keep': False, 'flip_direction': False, 'new_direction': direction,
-                'new_tier': tier, 'new_conviction': 0,
-                'reason': er_trap_reason}
 
     # 1. Goldmine check first — promotes over fade
     if is_goldmine_skip(pt, tier, direction) and jerry_verdict == 'BACK':
