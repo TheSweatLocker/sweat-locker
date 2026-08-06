@@ -446,6 +446,13 @@ FAIR_PRICE_TIER_FADES = {
     # ks_under — biggest sample: ks_under SKIP at fair odds is a graveyard
     ('ks_under', 'STRONG', 'under'): ('STRONG', 70, 62, 24),   # 37.5% → 62% over
     ('ks_under', 'SKIP',   'under'): ('STRONG', 72, 63, 110),  # 37.3% → 63% over (n=110)
+    # ha_over — 2026-08-06 30d audit: fair-priced ha_over across ALL tiers
+    # is nearly automatic loss (1-16, 5.9%). Fair-priced hits allowed over
+    # means the market thinks the pitcher WON'T get hit that much despite
+    # the elevated line — trust the market, fade to ha_under.
+    ('ha_over',  'PRIME',  'over'):  ('STRONG', 85, 100, 5),   # 0-5 → 100% ha_under (small n but decisive)
+    ('ha_over',  'STRONG', 'over'):  ('STRONG', 78, 83, 6),    # 17% → 83% ha_under
+    ('ha_over',  'SKIP',   'over'):  ('STRONG', 78, 100, 3),   # 0-3 → 100% ha_under (small n)
 }
 
 

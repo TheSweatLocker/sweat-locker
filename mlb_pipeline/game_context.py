@@ -2271,7 +2271,21 @@ def compute_primary_play(ctx):
             lens_supporting += 1
         mc_gate_pass = lens_supporting >= 4  # 4 of 5 (4 stat + conf)
 
-        if mc_gate_pass:
+        # 2026-08-06 juice-band gate on top of the lens-support gate.
+        # 60d audit: MC HIGH-CONF at MC80-89% × ML>-110 (thin/plus) hits
+        # 42.9% (n=7) — market is fair-pricing what MC thinks is a huge
+        # favorite, which means the market has a specific reason (matchup,
+        # BP, weather). Trust market at fair odds even on loud MC.
+        # Same trap on the heavy-fav side (ML<=-200) but that's already
+        # gated downstream in generate_sweat_card.
+        thin_juice_trap = False
+        try:
+            if winning_ml is not None and float(winning_ml) > -110:
+                thin_juice_trap = True
+        except (TypeError, ValueError):
+            pass
+
+        if mc_gate_pass and not thin_juice_trap:
             return {
                 "type": "ml",
                 "tier": "PRIME",
@@ -2279,6 +2293,20 @@ def compute_primary_play(ctx):
                 "sub": f"MC HIGH-CONF: {mc_hc_pct*100:.0f}% win prob (sim on 10k){juice_note} · {lens_supporting}/5 lens confirm",
                 "signal_floor": 88,
                 "audit_note": "MC HIGH-CONF chip · lens-support gate passed",
+            }
+        elif mc_gate_pass and thin_juice_trap:
+            # Lens support solid, but market fair-pricing a "huge fav" is a
+            # trap signature. Demote to STRONG so it can still surface but
+            # doesn't headline as PRIME.
+            return {
+                "type": "ml",
+                "tier": "STRONG",
+                "label": f"{winning_team} ML",
+                "sub": (f"MC HIGH-CONF: {mc_hc_pct*100:.0f}% win prob{juice_note} · "
+                        f"DOWNGRADED — market at {winning_ml:+d} is thin juice on a MC-loud fav "
+                        f"(60d MC×thin-juice hits 43% n=7)"),
+                "signal_floor": 72,
+                "audit_note": "MC-HC juice-band gate 8/6 — thin juice on MC-loud fav is priced-in trap",
             }
         else:
             # Downgrade to STRONG — insufficient lens support flags a risk that
