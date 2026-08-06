@@ -335,11 +335,29 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
             pass
         # Post-LLM hallucination detector (2026-08-03 Sprint 2)
         try:
-            from validate_jerry_read import validate as _validate
+            from validate_jerry_read import validate as _validate, validate_direction as _validate_dir
             report = _validate(parsed.get('short_read'), parsed.get('long_read',''), prop)
             if not report['is_valid']:
                 print(f'  ⚠ HALLUCINATION SUSPECTS on {prop["player_name"]}: '
                       f'{report["hallucinated_numbers"]}')
+            # Direction-contradiction check (2026-08-05) — catches BACK calls
+            # whose direction disagrees with the model's own projection.
+            # Painter BB Under @ -135 with projection 2.10 BB was the canary.
+            dir_report = _validate_dir(prop, parsed.get('call_verdict'),
+                                       parsed.get('call_direction') or parsed.get('call_side'))
+            if dir_report['contradicts']:
+                print(f'  ⚠ DIRECTION CONTRADICTION on {prop["player_name"]} '
+                      f'{prop.get("prop_type")}/{prop.get("direction")}: {dir_report["reason"]} '
+                      f'— downgrading BACK → PASS')
+                parsed['call_verdict'] = 'PASS'
+                # Cap conviction so downstream sweat card selection can't
+                # promote a contradicted read back into the top set
+                prev_conv = parsed.get('conviction') or 0
+                try:
+                    prev_conv = int(prev_conv)
+                except (TypeError, ValueError):
+                    prev_conv = 0
+                parsed['conviction'] = min(prev_conv, 35)
         except ImportError:
             pass
         if upsert_read(sport, prop, parsed, prompt, game_date):

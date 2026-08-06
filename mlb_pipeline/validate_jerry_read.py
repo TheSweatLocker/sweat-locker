@@ -120,6 +120,64 @@ def _within_tolerance(cited: str, allowed_set: set, pct_tol: float = 1.0) -> boo
     return False
 
 
+def validate_direction(prop: dict, call_verdict: str, call_direction: str | None) -> dict:
+    """Reject BACK calls whose direction contradicts the projection.
+
+    Catches the "Painter BB Under @ -135 with projection 2.10 BB" class of
+    Jerry logic errors: LLM cites market-implied vs refit prob gap to
+    justify BACK, but the model's own projected value is on the OPPOSITE
+    side of the line.
+
+    Returns:
+        {
+          'contradicts': bool,
+          'edge_pct': float | None,   # (projection - line) / line
+          'reason': str,
+        }
+
+    A positive edge_pct means projection is ABOVE line (favors OVER).
+    A negative edge_pct means projection is BELOW line (favors UNDER).
+    BACK on OVER with edge_pct <= -0.05  → contradicts (projection says UNDER)
+    BACK on UNDER with edge_pct >= +0.05 → contradicts (projection says OVER)
+    """
+    if not call_verdict or call_verdict.upper() != 'BACK':
+        return {'contradicts': False, 'edge_pct': None, 'reason': 'not_a_back'}
+
+    signals = prop.get('signals') or {}
+    if not isinstance(signals, dict):
+        return {'contradicts': False, 'edge_pct': None, 'reason': 'no_signals'}
+
+    # Prefer explicit _edge_pct if present (from sweep_prop_coverage)
+    edge = signals.get('_edge_pct')
+    if edge is None:
+        # Fall back: parse "Projected X vs line Y" from signals['projection']
+        proj_str = signals.get('projection') or ''
+        m = re.search(r'([-+]?\d+(?:\.\d+)?)\s*vs\s*line\s*([-+]?\d+(?:\.\d+)?)', proj_str)
+        if m:
+            try:
+                proj_val = float(m.group(1))
+                line_val = float(m.group(2))
+                if line_val != 0:
+                    edge = (proj_val - line_val) / line_val
+            except (ValueError, ZeroDivisionError):
+                pass
+    if edge is None:
+        return {'contradicts': False, 'edge_pct': None, 'reason': 'no_projection_to_check'}
+
+    direction = (call_direction or prop.get('direction') or '').lower()
+    if direction not in ('over', 'under'):
+        return {'contradicts': False, 'edge_pct': edge, 'reason': 'unknown_direction'}
+
+    # 5% tolerance — small edge in the wrong direction is noise, not contradiction
+    if direction == 'over' and edge <= -0.05:
+        return {'contradicts': True, 'edge_pct': edge,
+                'reason': f'BACK_over_but_projection_edge_{edge*100:+.1f}pct_favors_under'}
+    if direction == 'under' and edge >= 0.05:
+        return {'contradicts': True, 'edge_pct': edge,
+                'reason': f'BACK_under_but_projection_edge_{edge*100:+.1f}pct_favors_over'}
+    return {'contradicts': False, 'edge_pct': edge, 'reason': 'projection_aligned'}
+
+
 def validate(short_read: str, long_read: str, input_struct: dict,
              tolerance_pct: float = 1.0) -> dict:
     """Validate Jerry's output against input struct.
@@ -198,3 +256,30 @@ if __name__ == '__main__':
     print('\n--- BAD READ (fabricated 312, 288, 301) ---')
     r2 = validate(bad_read, '', struct)
     print(json.dumps(r2, indent=2, default=str))
+
+    # --- validate_direction smoke tests (2026-08-05) ---
+    print('\n=== validate_direction smoke tests ===')
+    tests = [
+        # (name, prop, verdict, direction, expected_contradicts)
+        ('Painter BB Under with proj OVER (should flag)',
+         {'signals': {'_edge_pct': 0.40, 'projection': 'Projected bb 2.10 vs line 1.5 · edge +40.0%'},
+          'direction': 'under'}, 'BACK', 'under', True),
+        ('Kremer ER Over with proj OVER (aligned)',
+         {'signals': {'_edge_pct': 0.48, 'projection': 'Projected er 3.7 vs line 2.5 · edge +48.0%'},
+          'direction': 'over'}, 'BACK', 'over', False),
+        ('Whisenhunt outs_under with proj UNDER (aligned)',
+         {'signals': {'_edge_pct': -0.20, 'projection': 'Projected outs 12.4 vs line 15.5 · edge -20.0%'},
+          'direction': 'under'}, 'BACK', 'under', False),
+        ('BACK with tiny wrong-direction edge (noise, no flag)',
+         {'signals': {'_edge_pct': -0.02, 'projection': 'Projected ks 5.4 vs line 5.5'},
+          'direction': 'over'}, 'BACK', 'over', False),
+        ('PASS never flags',
+         {'signals': {'_edge_pct': 0.40}, 'direction': 'under'}, 'PASS', 'under', False),
+        ('Parse-only fallback when no _edge_pct',
+         {'signals': {'projection': 'Projected bb 2.10 vs line 1.5 · edge +40.0%'},
+          'direction': 'under'}, 'BACK', 'under', True),
+    ]
+    for name, prop, verdict, direction, expected in tests:
+        r = validate_direction(prop, verdict, direction)
+        ok = '✓' if r['contradicts'] == expected else '✗ FAIL'
+        print(f'  {ok} {name}: contradicts={r["contradicts"]} reason={r["reason"]}')
