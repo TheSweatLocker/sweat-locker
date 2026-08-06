@@ -1191,99 +1191,38 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             "narrative_hint": (dawg.get("narrative") or "")[:200],
         })
 
-    # 3. PRIME confluence ML/RL primary plays from game contexts
-    # We pull sorted by sweat_score so the strongest game-side plays go first.
+    # 3. Game-side candidates — Jerry-driven single source of truth (2026-08-06).
+    #
+    # Refactor rationale: 30d daily_grades showed primary_play at 55.6%,
+    # v4_total_edges implicitly averaged in at ~55%, mc_high_conf at 40%.
+    # Meanwhile Jerry-scored props hit 61-62%. Selection layer was mixing
+    # quality bars from 8+ sources; simplifying to a single Jerry-ranked
+    # source. primary_play + v4_total_edges become SIGNALS Jerry considers
+    # in his synthesis, not direct card picks.
+    #
+    # NRFI/YRFI are folded in via sync_nrfi_to_jerry_reads.py which
+    # bridges the rules-based nrfi_ensemble output into jerry_reads with
+    # call_market='nrfi'/'yrfi'. From the card's perspective they're just
+    # more jerry_reads entries.
+    #
+    # (The block that reads jerry_reads and builds game_side_candidates
+    # lives below in section 4 — kept there for locality with its ML
+    # juice gate + line-movement contradiction filter.)
     game_side_candidates = []
-    for g in sorted(games, key=lambda x: -(x.get("sweat_score") or 0)):
-        pp = g.get("primary_play")
-        if not pp or not isinstance(pp, dict):
-            continue
-        tier = pp.get("tier")
-        if tier not in ("PRIME", "STRONG"):
-            continue
-        # Skip the type that's already POTD (NRFI typically) — POTD already in list
-        ptype = pp.get("type")
-        if ptype == "nrfi" and any(p["type"] == "POTD" for p in picks):
-            continue
-        game_side_candidates.append({
-            "type": (
-                "ML" if ptype == "ml"
-                else "Over/Under" if ptype == "over"
-                else "NRFI" if ptype == "nrfi"
-                else "YRFI" if ptype == "yrfi"
-                else ptype
-            ),
-            "icon": (
-                "📈" if ptype == "ml"
-                else "📊" if ptype == "over"
-                else "🔒" if ptype == "nrfi"
-                else "🔥" if ptype == "yrfi"
-                else "📊"
-            ),
-            "label": pp.get("label"),
-            "game": f"{g.get('away_team')} @ {g.get('home_team')}",
-            "conviction": g.get("sweat_score"),
-            "tier": tier,
-            # Phase 1 namespacing (2026-06-18): explicit tier provenance.
-            # primary_play tier is set by compute_primary_play() in
-            # game_context.py and reflects the v3-side resolver's call
-            # for the picked ML/spread/total/NRFI play.
-            "tier_source": "primary_play",
-            "source_table": "mlb_game_results",
-            "source_key": g.get("game_id"),
-            # The resolver needs to know how to evaluate this — for ML we
-            # check home_win, for total we compare actual_total vs line, etc.
-            "eval": {
-                "type": ptype,
-                "side": pp.get("label"),
-                "line": g.get("close_total") if ptype == "over" else g.get("close_spread"),
-                "home_team": g.get("home_team"),
-                "away_team": g.get("away_team"),
-            },
-            "narrative_hint": pp.get("sub"),
-        })
 
-    # 4. Total edges from v4 (already filtered to >=1.5 delta by find_total_edges).
-    # Convert into the same shape so they can compete in conviction ranking.
-    for te in (total_edges or []):
-        # Find the game_id from games list by matching matchup
-        match = next(
-            (g for g in games if f"{g.get('away_team')} @ {g.get('home_team')}" == te.get("game")),
-            None,
-        )
-        if not match:
-            continue
-        game_side_candidates.append({
-            "type": "Over/Under",
-            "icon": "📊",
-            "label": f"{te['direction']} {te['close_total']}",
-            "game": te["game"],
-            "conviction": int(60 + min(20, abs(te["delta"]) * 6)),  # synthetic conviction
-            "tier": "STRONG" if abs(te["delta"]) >= 2.0 else "LIGHT",
-            # Phase 1: this tier is derived from v4 model edge magnitude
-            # (>=2.0 = STRONG, otherwise LIGHT). NOT the same as resolver
-            # tier — it's a single-model edge classification used as a
-            # secondary candidate source.
-            "tier_source": "v4_total_edge_magnitude",
-            "source_table": "mlb_game_results",
-            "source_key": match.get("game_id"),
-            "eval": {
-                "type": "over" if te["direction"] == "OVER" else "under",
-                "side": te["direction"],
-                "line": te["close_total"],
-                "home_team": match.get("home_team"),
-                "away_team": match.get("away_team"),
-            },
-            "narrative_hint": f"v4 model {te['projected_total']} vs line {te['close_total']} ({te['delta']:+.1f})",
-        })
-
-    # 4b. Jerry-anchored game-side fallback (2026-08-02). primary_play
-    # populated inconsistently — 8/2 slate had 13/15 games with no primary_play
-    # at all, meaning zero sides surfaced despite Jerry synth reading Brewers ML
-    # @ 76 conv, Tigers ML @ 72, UNDER 6.5 NYY/CHC @ 72. This path pulls
-    # jerry_reads (conv >= 70 = STRONG) as game-side candidates so the card
-    # always surfaces Jerry's top game plays even when primary_play is empty.
-    # Dedup via play_signature blocks duplicates when primary_play IS populated.
+    # 4. Jerry-driven game-side selection — PRIMARY SOURCE (2026-08-06 refactor).
+    #
+    # jerry_reads is now the single source of truth for ML/total game picks.
+    # Everything Jerry BACKs at conv >= 70 is a candidate; nothing else
+    # surfaces at this layer. primary_play + v4 total edges are inputs
+    # Jerry synthesizes over, not competing picks. This closed the
+    # split-quality-bar problem where 8+ sources fought for card slots
+    # (see 30d dip to 57.9% driven by primary_play 55.6% and mc_high_conf 40%).
+    #
+    # NRFI/YRFI live directly on mlb_game_context (nrfi_ensemble_tier/pick/conf).
+    # No jerry_reads bridge — the unique constraint (sport, game_id, game_date)
+    # blocks a second jerry_read per game. Instead, read nrfi_ensemble
+    # directly and add as candidates in the block below.
     try:
         jr_url = f"{os.environ.get('SUPABASE_URL')}/rest/v1/jerry_reads"
         jr_h = {"apikey": os.environ.get('SUPABASE_KEY'),
@@ -1344,7 +1283,7 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
                 except ImportError:
                     pass
             else:
-                continue  # spread + others: skip until wired
+                continue  # spread + others + nrfi/yrfi: skip; NRFI/YRFI handled below
             game_side_candidates.append({
                 "type": "ML" if mkt == "ml" else "Over/Under",
                 "icon": icon,
@@ -1362,7 +1301,49 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
                 "narrative_hint": (jread.get("short_read") or call_text)[:200],
             })
     except Exception as _e:
-        print(f"  ⚠ jerry-anchored side fallback failed: {_e}")
+        print(f"  ⚠ jerry-driven game-side selection failed: {_e}")
+
+    # 4b. NRFI/YRFI ensemble → game-side candidates (2026-08-06).
+    # Bridged directly from mlb_game_context.nrfi_ensemble_* fields.
+    # Ensemble tier converts to conviction: PRIME→80, STRONG→72, LEAN→55.
+    # LEAN skipped for card (needs conv >= 70 gate). Not published if
+    # POTD already surfaced the same NRFI/YRFI pick.
+    _tier_to_conv = {"PRIME": 80, "STRONG": 72, "LEAN": 55}
+    for g in games:
+        pick = g.get("nrfi_ensemble_pick")
+        tier = (g.get("nrfi_ensemble_tier") or "").upper()
+        if not pick or tier not in ("PRIME", "STRONG"):
+            continue
+        conv = _tier_to_conv[tier]
+        pick_upper = pick.upper()
+        if pick_upper not in ("NRFI", "YRFI"):
+            continue
+        # Dedup with POTD (which often picks the top NRFI)
+        if any(p.get("type") == "POTD" and pick_upper in str(p.get("label","")).upper()
+               for p in picks):
+            continue
+        matchup = f'{g.get("away_team")} @ {g.get("home_team")}'
+        icon = "🔒" if pick_upper == "NRFI" else "🔥"
+        label = f'{pick_upper} — {matchup}'
+        game_side_candidates.append({
+            "type": pick_upper,
+            "icon": icon,
+            "label": label,
+            "game": matchup,
+            "conviction": conv,
+            "tier": tier,
+            "tier_source": "nrfi_ensemble",
+            "source_table": "mlb_game_results",
+            "source_key": g.get("game_id"),
+            "eval": {
+                "type": pick_upper.lower(),
+                "side": pick_upper,
+                "line": None,
+                "home_team": g.get("home_team"),
+                "away_team": g.get("away_team"),
+            },
+            "narrative_hint": (g.get("nrfi_ensemble_reason") or "")[:200],
+        })
 
     # Add game-side candidates in conviction order; cap at 3 game-side picks
     game_side_candidates.sort(key=lambda c: -(c.get("conviction") or 0))
