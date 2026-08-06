@@ -432,6 +432,65 @@ def outs_over_fair_price_fade(prop: dict) -> Optional[dict]:
     return None
 
 
+def ks_kdrift_fair_price_fade(prop: dict) -> Optional[dict]:
+    """K-rate drift traps priced in at fair juice → fade to opposite side.
+
+    90d audit (2026-08-05):
+      ks_over  MOD_HOT_K  (L3 K% +2-5pt over season) + FAIR > -110: 6-13 (32%)
+        → ks_UNDER inverse: 68% (n=19)
+      ks_under COLD_K     (L3 K% <-5pt below season)  + FAIR > -110: 11-21 (34%)
+        → ks_OVER inverse: 66% (n=32)
+
+    Mechanism: book prices modest K-rate heat (over) or K-rate drops
+    (under) into the line. Fair-priced fades on the primed side aren't
+    "value" — they're already digested. Flip to the opposite side.
+
+    Returns dict with flip_direction=True, new_direction, tier, conviction.
+    None if not applicable.
+    """
+    pt = (prop.get('prop_type') or '').lower()
+    direction = (prop.get('direction') or '').lower()
+    if pt not in ('ks_over', 'ks_under'): return None
+
+    odds = prop.get('book_over_odds') if direction == 'over' else prop.get('book_under_odds')
+    if odds is None: return None
+    try: odds = int(odds)
+    except (TypeError, ValueError): return None
+    if odds <= -110: return None  # fair/plus-odds only
+
+    signals = prop.get('signals') or {}
+    if not isinstance(signals, dict): return None
+
+    import re as _re
+    k_drift_re = _re.compile(r'L3\s*K%\s*(\d+(?:\.\d+)?)%?\s*vs\s*season\s*(\d+(?:\.\d+)?)')
+    kd = None
+    for v in signals.values():
+        if not isinstance(v, str): continue
+        m = k_drift_re.search(v)
+        if m:
+            try:
+                kd = float(m.group(1)) - float(m.group(2))
+                break
+            except (ValueError, IndexError): pass
+    if kd is None: return None
+
+    # ks_over + modest heat (L3 K% +2 to +5pt over season) → fade to under
+    if pt == 'ks_over' and direction == 'over' and 2.0 <= kd < 5.0:
+        return {
+            'flip_direction': True, 'new_direction': 'under',
+            'new_tier': 'STRONG', 'new_conviction': 72,
+            'reason': f'ks_over_mod_hot_fair_price_fade_kdrift+{kd:.1f}_juice{odds}_inverse68pct_n19',
+        }
+    # ks_under + cold streak (L3 K% <-5pt below season) → fade to over
+    if pt == 'ks_under' and direction == 'under' and kd <= -5.0:
+        return {
+            'flip_direction': True, 'new_direction': 'over',
+            'new_tier': 'STRONG', 'new_conviction': 72,
+            'reason': f'ks_under_cold_fair_price_fade_kdrift{kd:+.1f}_juice{odds}_inverse66pct_n32',
+        }
+    return None
+
+
 def er_under_fair_price_fade(prop: dict) -> Optional[dict]:
     """ER UNDER at plus-money with pitcher in form → flip to ER OVER STRONG.
 
@@ -581,6 +640,14 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
     if er_fade:
         return {'keep': True, **er_fade}
 
+    # 0.6 KS drift fair-price fade (2026-08-05 v3) — modest K-rate heat
+    # on ks_over (32% at fair) → fade to under 68%. Cold K-rate on
+    # ks_under (34% at fair) → fade to over 66%. Book prices in the
+    # narrative drift; fair-price fades are already digested.
+    ks_fade = ks_kdrift_fair_price_fade(prop)
+    if ks_fade:
+        return {'keep': True, **ks_fade}
+
     # 1. FAMILY HARD SUPPRESS (2026-08-05) — dead prop families never publish
     # regardless of tier/conviction. outs_over at 22.7% n=22 = graveyard.
     # Runs AFTER the fair-price fade check so signal-rich outs_over rows
@@ -677,6 +744,15 @@ if __name__ == '__main__':
          'signals': {'l3':'L3 ERA 1.50','xera':'xERA 3.20'},'refit_conviction': None},               # same drift but -140 juice → NO trap
         {'prop_type':'er_under','tier':'STRONG','direction':'under','conviction':70,'book_under_odds':105,
          'signals': {'l3':'L3 ERA 9.50','xera':'xERA 4.20'},'refit_conviction': None},               # pitcher NOT in form (drift +5) + +105 → NO trap
+        # KS DRIFT FAIR-PRICE FADE tests (2026-08-05 v3)
+        {'prop_type':'ks_over','tier':'STRONG','direction':'over','conviction':70,'book_over_odds':105,
+         'signals': {'form_hot':'L3 K% 27.0 vs season 24.0'},'refit_conviction': None},              # mod hot + fair → FADE
+        {'prop_type':'ks_over','tier':'STRONG','direction':'over','conviction':70,'book_over_odds':105,
+         'signals': {'form_hot':'L3 K% 35.0 vs season 27.0'},'refit_conviction': None},              # HEAVILY hot (+8pt) — no fade (only mod range)
+        {'prop_type':'ks_under','tier':'STRONG','direction':'under','conviction':70,'book_under_odds':105,
+         'signals': {'form_cold':'L3 K% 12.0 vs season 18.5'},'refit_conviction': None},             # cold -6.5pt + fair → FADE
+        {'prop_type':'ks_over','tier':'STRONG','direction':'over','conviction':70,'book_over_odds':-140,
+         'signals': {'form_hot':'L3 K% 27.0 vs season 24.0'},'refit_conviction': None},              # mod hot + trap juice → NO fade (juice range excludes)
     ]
     for t in tests:
         r = apply_calibration(t, jerry_verdict='BACK')
