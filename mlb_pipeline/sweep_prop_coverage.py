@@ -1,20 +1,22 @@
-"""Prop coverage sweeper (2026-07-31 · Tier 3).
+"""Prop coverage sweeper (2026-07-31 · Tier 3 · batter added 2026-08-05).
 
-Guarantees every pitcher prop the sportsbook publishes gets INTO
-mlb_pipeline_props. Fills the gap where generate_props.py silently
-skips (missing L5 data, sample-size gate, book-attach failure — all
-silent bail conditions in the legacy 4218-line hand-tuned scorer).
+Guarantees every player prop the sportsbook publishes has book_odds
+attached to mlb_pipeline_props. Two paths:
 
-Pattern:
-  1. Pull all pitcher prop markets from The Odds API (us,us2 regions)
-  2. For each (pitcher, prop_type, direction, prop_line) combo NOT yet
-     in today's mlb_pipeline_props, insert a "COVERAGE" tier stub row
-     with book odds + line + basic pitcher context pulled from
-     mlb_game_context.
-  3. Downstream generate_prop_jerry_synthesis has an edge gate — only
-     rates props with a real signal (legacy scored it OR meaningful
-     projection delta), so coverage in the props table is complete
-     but Jerry-take volume stays manageable (~30–60/day).
+  PATH A (PATCH): row already exists but book_line / book_odds is null
+    → attach line + odds + source. Used for BOTH pitcher and batter
+    families. Closes the "PRIME hits_over @ NULL odds" trap that let
+    -300 juice batter picks ship all summer.
+
+  PATH B (INSERT): no row exists → insert COVERAGE-tier stub with
+    signals block. Used ONLY for pitchers — generate_props gates
+    batters on lineup+sample, so an un-scored batter shouldn't be
+    back-doored via the sweeper.
+
+Downstream generate_prop_jerry_synthesis has an edge gate — only
+rates props with a real signal (legacy scored it OR meaningful
+projection delta), so coverage stays complete but Jerry-take
+volume stays manageable (~30–60/day).
 
 Sport-universal: MLB today. Adding NBA/NFL = add market list +
 table registry entry + team-context lookup.
@@ -50,11 +52,20 @@ MARKET_MAP = {
     'pitcher_walks':       'bb',
     'pitcher_hits_allowed':'ha',
     'pitcher_outs':        'outs',
+    # 2026-08-05: batter markets. Batter props are PATCH-only (fill book_odds
+    # on rows generate_props already scored); we don't insert new batter stubs
+    # because generate_props gates on lineup + season sample. Adding batters
+    # here closes the "PRIME hits_over @ NULL odds" trap that shipped -300
+    # juice batter picks all summer.
+    'batter_hits':         'hits',
 }
+BATTER_PREFIXES = {'hits'}  # markets that map to batter prop families
+
 PREFERRED_BOOKS = ['hardrockbet', 'hardrockbet_oh', 'draftkings', 'betmgm',
                    'fanduel', 'bovada', 'espnbet', 'betrivers']
 
 # Per-prop-type: which context projection key aligns with the line
+# (pitcher families only; batters use lineup/xstats projections downstream)
 PROJECTION_KEY = {
     'ks': 'projected_ks',
     'er': 'projected_er',
@@ -75,9 +86,10 @@ def fetch_upcoming_events() -> list:
     return r.json() if r.status_code == 200 else []
 
 
-def fetch_pitcher_props(event_id: str) -> dict:
-    """Returns {(pitcher_lc, prop_type): {'line': .., 'over_odds': .., 'under_odds': .., 'book': .., 'display': ..}}
-    Bundles over+under from the same preferred book so both odds columns populate."""
+def fetch_player_props(event_id: str) -> dict:
+    """Returns {(player_lc, prop_type): {'line': .., 'over_odds': .., 'under_odds': .., 'book': .., 'display': ..}}
+    Bundles over+under from the same preferred book so both odds columns populate.
+    Handles both pitcher (bb/ks/er/ha/outs) and batter (hits) markets in one pull."""
     r = requests.get(
         f'https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds',
         params={'apiKey': ODDS_API_KEY, 'regions': 'us,us2',
@@ -86,8 +98,12 @@ def fetch_pitcher_props(event_id: str) -> dict:
     if r.status_code != 200: return {}
     data = r.json()
 
-    # Collect by (pitcher, prop_type, book) → both sides
-    by_book: dict = {}  # (pitcher_lc, prop_type, book) -> {over, under, line, display}
+    # Collect by (player, prop_type, book, LINE) → both sides.
+    # Line must be in the key: batter markets return alt lines per book
+    # (Bohm over 1.5 @ +250 AND over 2.5 @ +900), and merging them under
+    # one book slot would over-write line each iteration → wrong "line"
+    # paired with wrong odds. 2026-08-05: was silently pairing alt lines.
+    by_bl: dict = {}  # (player_lc, prop_type, book, line) -> {over, under, display, line}
     for bk in data.get('bookmakers', []):
         book = bk.get('key')
         for mkt in bk.get('markets', []):
@@ -95,34 +111,43 @@ def fetch_pitcher_props(event_id: str) -> dict:
             if mkt_key not in MARKET_MAP: continue
             prop_type = MARKET_MAP[mkt_key]
             for out in mkt.get('outcomes', []):
-                pitcher = (out.get('description') or '').strip()
-                if not pitcher: continue
+                player = (out.get('description') or '').strip()
+                if not player: continue
                 side = (out.get('name') or '').lower()
                 direction = 'over' if 'over' in side else ('under' if 'under' in side else None)
                 if not direction: continue
                 line = out.get('point'); price = out.get('price')
                 if line is None or price is None: continue
-                key = (pitcher.lower(), prop_type, book)
-                slot = by_book.setdefault(key, {'display': pitcher, 'line': float(line),
-                                                'over_odds': None, 'under_odds': None})
+                key = (player.lower(), prop_type, book, float(line))
+                slot = by_bl.setdefault(key, {'display': player, 'line': float(line),
+                                              'over_odds': None, 'under_odds': None})
                 slot[f'{direction}_odds'] = int(price)
-                slot['line'] = float(line)  # last write wins; matched line assumed
 
-    # For each (pitcher, prop_type), pick preferred book that has BOTH sides
+    # Group all (book, line) offerings per (player, prop_type)
     combos: dict = {}
-    for (p_lc, ptype, book), slot in by_book.items():
+    for (p_lc, ptype, book, _line), slot in by_bl.items():
         combos.setdefault((p_lc, ptype), []).append({**slot, 'book': book})
+
+    def _tightness(e: dict) -> float:
+        """Distance from 50/50 based on over_odds. Smaller = closer to standard line."""
+        o = e.get('over_odds')
+        if o is None: return 1.0
+        implied = 100.0 / (o + 100.0) if o > 0 else -o / (-o + 100.0)
+        return abs(implied - 0.5)
 
     out: dict = {}
     for key, entries in combos.items():
-        # Prefer books with both over+under
+        # Prefer both-sided offerings first
         both_sided = [e for e in entries if e['over_odds'] is not None and e['under_odds'] is not None]
         pool = both_sided or entries
+        # Sort by tightness (line closest to 50/50 — the "standard" line for that market)
+        pool_sorted = sorted(pool, key=_tightness)
+        # Walk PREFERRED_BOOKS in order; take first hit at the tightest line that book has
         chosen = None
         for pref in PREFERRED_BOOKS:
-            hit = next((e for e in pool if e['book'] == pref), None)
+            hit = next((e for e in pool_sorted if e['book'] == pref), None)
             if hit: chosen = hit; break
-        if not chosen: chosen = pool[0]
+        if not chosen: chosen = pool_sorted[0]
         out[key] = chosen
     return out
 
@@ -206,12 +231,13 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
     r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
                      headers=H_READ,
                      params={'game_date': f'eq.{game_date}',
-                             'select': 'player_name,prop_type,direction'},
+                             'select': 'id,player_name,prop_type,direction,book_line,book_over_odds,book_under_odds'},
                      timeout=15)
-    existing_keys = {(p['player_name'].lower(), p['prop_type'], p['direction'])
-                     for p in (r.json() if r.status_code == 200 else [])
-                     if p.get('player_name')}
-    print(f'  existing prop rows: {len(existing_keys)}')
+    existing_rows = [p for p in (r.json() if r.status_code == 200 else []) if p.get('player_name')]
+    existing_by_key: dict = {}
+    for p in existing_rows:
+        existing_by_key[(p['player_name'].lower(), p['prop_type'], p['direction'])] = p
+    print(f'  existing prop rows: {len(existing_by_key)}')
 
     r = requests.get(f'{SB}/rest/v1/mlb_game_context',
                      headers=H_READ,
@@ -224,28 +250,68 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
     written = skipped = 0
     edge_ct = 0
 
+    patched = 0
     for ev in events:
         ctx = find_game(context, ev.get('home_team',''), ev.get('away_team',''))
         if not ctx: continue
         matchup = f"{ev.get('away_team','?')} @ {ev.get('home_team','?')}"
 
-        for (pitcher_lc, prop_type), entry in fetch_pitcher_props(ev['id']).items():
+        for (player_lc, prop_type), entry in fetch_player_props(ev['id']).items():
             display = entry['display']
-            team = _resolve_team(display, ctx)
-            signals, edge = build_signals(display, prop_type, entry['line'], ctx)
-            if edge is not None and abs(edge) >= 0.10: edge_ct += 1
+            is_batter = prop_type in BATTER_PREFIXES
+            # Pitcher signals only; batter attribution comes from existing DB row
+            if is_batter:
+                signals, edge = None, None
+                team = None
+            else:
+                team = _resolve_team(display, ctx)
+                signals, edge = build_signals(display, prop_type, entry['line'], ctx)
+                if edge is not None and abs(edge) >= 0.10: edge_ct += 1
 
             for direction in ('over', 'under'):
                 # 2026-08-02: store as full {family}_{direction} form to match
-                # the convention generate_props.py already uses (bb_over,
-                # ha_under, outs_over, etc). Sweeper previously wrote bare
-                # family (bb, ha, outs) which made the existing_keys dedup
-                # never hit (main gen's full-form rows didn't match sweeper's
-                # bare-form check → duplicate stubs) AND broke downstream
-                # grader natural-key JOIN → 152 orphan Jerry reads across 2d.
+                # the convention generate_props.py already uses. Bare family
+                # broke grader natural-key JOIN → 152 orphan Jerry reads.
                 full_type = f'{prop_type}_{direction}'
                 key = (display.lower(), full_type, direction)
-                if key in existing_keys: continue
+                existing = existing_by_key.get(key)
+
+                # PATH A: row already exists → PATCH book fields if missing
+                if existing:
+                    odds_col = 'book_over_odds' if direction == 'over' else 'book_under_odds'
+                    needs_patch = (
+                        existing.get(odds_col) is None
+                        or existing.get('book_line') is None
+                    )
+                    if not needs_patch:
+                        continue
+                    patch = {
+                        'book_line': entry['line'],
+                        'book_over_odds': entry.get('over_odds'),
+                        'book_under_odds': entry.get('under_odds'),
+                        'book_source': entry['book'],
+                        'last_attached_at': datetime.now(timezone.utc).isoformat(),
+                    }
+                    if dry_run:
+                        patched += 1
+                        continue
+                    pr = requests.patch(
+                        f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{existing["id"]}',
+                        headers=H_WRITE, json=patch, timeout=15,
+                    )
+                    if pr.status_code in (200, 201, 204):
+                        patched += 1
+                    else:
+                        skipped += 1
+                        if skipped <= 3: print(f'  ⚠ patch {pr.status_code}: {pr.text[:180]}')
+                    continue
+
+                # PATH B: no existing row. Insert stub only for pitcher families.
+                # Batter families are PATCH-only: generate_props gates on lineup+
+                # sample, so an un-scored batter shouldn't be back-doored here.
+                if is_batter:
+                    continue
+
                 payload = {
                     'game_date': game_date,
                     'game_id': ctx['game_id'],
@@ -274,7 +340,7 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                     skipped += 1
                     if skipped <= 3: print(f'  ⚠ insert {wr.status_code}: {wr.text[:180]}')
 
-    print(f'\n=== wrote {written} coverage stubs · {skipped} skipped · {edge_ct} with |edge|≥10% ===')
+    print(f'\n=== wrote {written} stubs · patched {patched} · {skipped} skipped · {edge_ct} with |edge|≥10% ===')
 
 
 if __name__ == '__main__':
