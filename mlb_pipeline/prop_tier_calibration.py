@@ -4,19 +4,20 @@ Sprint-3 response to the 14-day audit that showed props hitting 46% on
 the Sweat Card top_8 while totals hit 83%. Provides three helpers any
 prop stage can import: should_fade, juice_cap, is_goldmine_skip.
 
-DYNAMIC CALIBRATION (2026-08-03 v2): The FADE_COMBOS, GOLDMINE_SKIP_COMBOS,
-and HISTORICAL_HIT_RATES tables below are the STARTING POINT sourced from
-today's 90d audit (n=3797). At import time, this module refreshes them
-from live prop_bucket_roi data via load_live_calibration() — so as
-buckets climb back over 50% they naturally exit the fade list, and new
-losers can auto-enter without manual editing.
+DYNAMIC CALIBRATION (2026-08-03 v2, family_prior 2026-08-05 v3):
+FADE_COMBOS, GOLDMINE_SKIP_COMBOS, HISTORICAL_HIT_RATES, and
+FAMILY_BASE_RATES all start from the 8/5 audit snapshot but refresh
+from live prop_bucket_roi on every module import (~50ms). Buckets
+climb back over 50% → exit fade list. Family rates roll up via
+weighted mean across tiers — so as new grades arrive nightly the
+prior naturally shifts without manual editing.
 
-Refresh cycle:
-  - Live check on every pipeline import (~50ms overhead)
+Refresh cycle (every import):
   - Adds combo to FADE_COMBOS when hit_rate < 45% AND n >= 15
   - Removes combo from FADE_COMBOS when hit_rate ≥ 55%
   - Adds combo to GOLDMINE_SKIP when SKIP tier hit_rate ≥ 65% AND n >= 15
   - Removes combo from GOLDMINE_SKIP when SKIP hit_rate < 55%
+  - Rebuilds FAMILY_BASE_RATES weighted-mean across tiers per family
   - Fallback to static tables if DB unreachable (never break the pipeline)
 
 Buckets between 45-55% W (grey zone) neither fade nor promote — noise.
@@ -193,6 +194,9 @@ def _refresh_from_live_data():
 
     added_fade = removed_fade = added_gold = removed_gold = 0
     live_seen = set()
+    # Aggregation buckets for FAMILY_BASE_RATES rebuild
+    # {family_direction: [ (hit_pct, n), ... ]}
+    family_agg: dict = {}
 
     for row in rows:
         pt = (row.get('prop_type') or '').lower()
@@ -209,6 +213,9 @@ def _refresh_from_live_data():
 
         # Update HISTORICAL_HIT_RATES with fresh data
         HISTORICAL_HIT_RATES[key] = (float(hit), int(n))
+
+        # Aggregate for family base-rate refresh (all tiers rolled up)
+        family_agg.setdefault(full_pt, []).append((float(hit), int(n)))
 
         # Fade rules
         if hit < FADE_ENTER_HIT_PCT:
@@ -235,10 +242,25 @@ def _refresh_from_live_data():
                     GOLDMINE_SKIP_COMBOS.discard(key)
                     removed_gold += 1
 
-    if added_fade or removed_fade or added_gold or removed_gold:
+    # Refresh FAMILY_BASE_RATES from aggregation. Weighted mean across
+    # tiers: hit_pct = Σ(hit_i * n_i) / Σ(n_i). Requires total n ≥ 20
+    # (same floor apply_family_prior enforces). Overwrites the static
+    # 8/5 snapshot with fresh weighted numbers each import.
+    families_refreshed = 0
+    for family, buckets in family_agg.items():
+        total_n = sum(n for _, n in buckets)
+        if total_n < 20: continue
+        weighted_hit = sum(h * n for h, n in buckets) / total_n
+        prev = FAMILY_BASE_RATES.get(family)
+        FAMILY_BASE_RATES[family] = (round(weighted_hit, 1), int(total_n))
+        if prev is None or abs(prev[0] - weighted_hit) > 1.0:
+            families_refreshed += 1
+
+    if added_fade or removed_fade or added_gold or removed_gold or families_refreshed:
         print(f'[prop_tier_calibration] refreshed from live data: '
               f'+{added_fade} fade / -{removed_fade} fade · '
-              f'+{added_gold} goldmine / -{removed_gold} goldmine')
+              f'+{added_gold} goldmine / -{removed_gold} goldmine · '
+              f'{families_refreshed} family rates updated')
 
 
 # Refresh on import — silent if DB unreachable
