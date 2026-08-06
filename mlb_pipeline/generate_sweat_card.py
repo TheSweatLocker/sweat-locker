@@ -1232,9 +1232,16 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         # Sweat Card only surfaces conv ≥70 (active PLAY tier) — the ceiling
         # for 'lean' is 64 so pulling call_market != pass AND != lean is
         # equivalent to conv ≥ 65 filter, but keeps it explicit + safe.
+        # 2026-08-06 persona shift: pull ALL Jerry reads except structural
+        # PASS (blank data). LEAN + READ get published as their own tiers.
+        # Pass-through everything with a directional side; conviction band
+        # decides the tier on the card. Historical filter was
+        # call_market != pass AND != lean (conv >= 70 only) — that was
+        # the pre-persona-shift discipline gate. New card shows the
+        # analyst's take on every game.
         jr = requests.get(jr_url, headers=jr_h,
                           params={"sport": "eq.MLB", "game_date": f"eq.{today_et()}",
-                                  "call_market": "not.in.(pass,lean)",
+                                  "call_market": "not.eq.pass",
                                   "select": "game_id,call_market,call_side,call_line,"
                                             "conviction,call_text,short_read",
                                   "order": "conviction.desc"},
@@ -1243,7 +1250,13 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         game_by_id = {g.get("game_id"): g for g in games if g.get("game_id")}
         for jread in (jr if isinstance(jr, list) else []):
             conv = jread.get("conviction") or 0
-            if conv < 70:
+            # New tier map (2026-08-06 persona shift):
+            #   80+  = PRIME
+            #   65-79 = STRONG
+            #   50-64 = LEAN
+            #   30-49 = READ (analytical, thin edge — still directional)
+            #   <30  = drop (data broken)
+            if conv < 30:
                 continue
             gid = jread.get("game_id")
             gctx = game_by_id.get(gid)
@@ -1252,7 +1265,10 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             mkt = (jread.get("call_market") or "").lower()
             side = (jread.get("call_side") or "").upper()
             call_text = jread.get("call_text") or ""
-            tier = "PRIME" if conv >= 80 else "STRONG"
+            if conv >= 80:   tier = "PRIME"
+            elif conv >= 65: tier = "STRONG"
+            elif conv >= 50: tier = "LEAN"
+            else:            tier = "READ"
             if mkt == "ml":
                 # HEAVY-FAV ML HARD FILTER (2026-08-04): Jerry's prompt says
                 # never emit ML at -200+ but Jerry has violated it in practice
@@ -1472,6 +1488,50 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         add(_build_prop_pick(prop))
 
     return picks[:8]
+
+
+def _fetch_all_game_reads(game_date: str) -> list:
+    """Pull every non-PASS Jerry game read for the slate, sorted by conviction.
+
+    Powers the sweat card's 'game_reads' section — per-game analyst content
+    surfaced regardless of whether the read made the featured top_8. Persona
+    shift 2026-08-06 means every game gets a directional take; this exposes
+    those takes to the app for game-list rendering.
+
+    Tier is derived from conviction (30+ = READ, 50+ = LEAN, 65+ = STRONG,
+    80+ = PRIME) so the app can style each entry appropriately.
+    """
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jerry_reads",
+            headers=HEADERS,
+            params={
+                "sport": "eq.MLB",
+                "game_date": f"eq.{game_date}",
+                "call_market": "not.eq.pass",
+                "select": "game_id,call_market,call_side,call_line,call_text,"
+                          "conviction,short_read",
+                "order": "conviction.desc",
+            },
+            timeout=15,
+        )
+        rows = r.json() if r.status_code == 200 else []
+    except Exception as e:
+        print(f"  ⚠ game_reads fetch failed: {e}")
+        return []
+
+    out = []
+    for row in rows:
+        conv = row.get("conviction") or 0
+        if conv < 30:
+            continue
+        if conv >= 80:   tier = "PRIME"
+        elif conv >= 65: tier = "STRONG"
+        elif conv >= 50: tier = "LEAN"
+        else:            tier = "READ"
+        row["tier"] = tier
+        out.append(row)
+    return out
 
 
 def build_card():
@@ -1773,6 +1833,13 @@ def build_card():
         "total_edges": total_edges,           # 📈 model vs market total deltas >= 1.5
         "stack_alerts": stack_alerts,
         "skip_alerts": skip_alerts,
+        # 2026-08-06 persona shift: every Jerry take on every game.
+        # top_8 is FEATURED picks (PRIME/STRONG heavy); game_reads is the
+        # per-game analyst content (READ tier and up) that the app renders
+        # in the game list so users see Jerry's read even on games he'd
+        # PASS as a bet. Independent pull direct from jerry_reads so the
+        # data isn't gated by curate_top_8's featured-picks selection.
+        "game_reads": _fetch_all_game_reads(today),
         "tier_rates_30d": {
             "nrfi_prime_90_94": tier_rates.get("nrfi_prime_90_94"),
             "yrfi_lean_le40": tier_rates.get("yrfi_lean_le40"),

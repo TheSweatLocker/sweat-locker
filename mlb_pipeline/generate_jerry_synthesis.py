@@ -329,11 +329,17 @@ def parse_synthesis(raw: str) -> dict:
     except ValueError:
         conviction = None
 
-    # Post-parse validation (2026-08-03): ensure market falls in valid set,
-    # else log + null out. Prevents corrupted values reaching downstream.
+    # Post-parse validation (2026-08-03, expanded 2026-08-06 for persona shift):
+    # ensure market falls in valid set, else log + null out. Prevents corrupted
+    # values reaching downstream.
     # 2026-08-04: added 'lean' — Jerry emits when directional signal is
-    # visible but conviction is 40-64 (not confident enough to actively
-    # recommend). App renders LEAN with muted styling to signal hedge.
+    # visible but conviction is 50-64 (soft directional).
+    # 2026-08-06: no new market added — READ tier is expressed via ml/rl/total
+    # with CONVICTION in 30-49 band. Tier derivation happens on the card side
+    # from the conviction number, not from a distinct market label. This keeps
+    # market values clean (ml/rl/total/prop) while the tier granularity lives
+    # in CONVICTION. PASS remains but is now reserved for structurally blank
+    # data (postponed, lineup missing, no market posted).
     _VALID_MARKETS = {'ml', 'rl', 'total', 'prop', 'lean', 'pass', None}
     if market not in _VALID_MARKETS:
         print(f"  ⚠ parser produced invalid call_market {market!r} — nulling")
@@ -343,6 +349,15 @@ def parse_synthesis(raw: str) -> dict:
     if side not in _VALID_SIDES:
         print(f"  ⚠ parser produced invalid call_side {side!r} — nulling")
         side = None
+
+    # Persona-shift enforcement (2026-08-06): the new prompt commands PASS
+    # only for structurally broken data. If Jerry emits PASS with a
+    # conviction > 30, that's a prompt violation — coerce to READ tier
+    # (keep the directional take if any, otherwise flag and skip).
+    # Log-only for the first week so we can watch drift, then hard-enforce.
+    if market == 'pass' and conviction is not None and conviction > 30:
+        print(f"  ⚠ PERSONA VIOLATION: MARKET=pass with CONVICTION={conviction} — "
+              f"expected READ (ml/rl/total with conv 30-49) instead")
 
     return {
         "short_read": short,
@@ -531,7 +546,26 @@ def run(force: bool = False, game_date: str | None = None,
             pass
 
         if upsert_jerry_read_sport(g, parsed, struct, gd, sport):
-            call_str = f"{parsed.get('call_text') or 'PASS'} ({parsed.get('conviction') or '-'})"
+            # Display fallback: prefer call_text; if missing, reconstruct from
+            # market + side + line so logs don't misleadingly show "PASS" for
+            # a real ml/total pick where the LLM omitted CALL_TEXT (persona
+            # shift 2026-08-06 introduces more variance in LLM field discipline).
+            call_text = parsed.get('call_text')
+            if not call_text:
+                mkt = parsed.get('call_market') or 'pass'
+                side = parsed.get('call_side') or ''
+                line = parsed.get('call_line')
+                if mkt == 'pass':
+                    call_text = 'PASS'
+                elif mkt == 'total':
+                    call_text = f"{side.title()} {line or ''}".strip()
+                elif mkt == 'ml':
+                    call_text = f"{side.title()} ML" if side else 'ML'
+                elif mkt == 'rl':
+                    call_text = f"{side.title()} RL {line or ''}".strip()
+                else:
+                    call_text = f"{mkt.upper()} {side}".strip()
+            call_str = f"{call_text} ({parsed.get('conviction') or '-'})"
             print(f"  ✓ {away} @ {home}: {call_str}  [{len(externals)} externals]")
             done += 1
         if limit and done >= limit:
