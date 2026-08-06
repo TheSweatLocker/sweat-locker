@@ -410,6 +410,17 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                         parsed['long_read'] = substitute_hallucinated_names(
                             parsed.get('long_read',''), whitelist_struct, name_rpt['suspects'])
                     print(f'  🔧 substituted {len(name_rpt["suspects"])} suspect name(s)')
+
+                # NUMBER HALLUCINATION HARD-ENFORCE (2026-08-06 v2): cap
+                # prop conviction at 55 if retry still has hallucinated
+                # numbers. Prop props with fake proj values are worse than
+                # game reads (users bet on the specific projected value).
+                if not worked and num_rpt.get('hallucinated_numbers'):
+                    orig_conv = parsed.get('conviction') or 0
+                    if orig_conv > 55:
+                        parsed['conviction'] = 55
+                        print(f'  🔒 {prop["player_name"][:20]} conviction capped '
+                              f'{orig_conv}→55 due to unverified nums')
             # Legacy log line — keep for backward compat + audit trail
             report = num_rpt
             # Direction-contradiction check (2026-08-05) — catches BACK calls

@@ -591,6 +591,19 @@ def run(force: bool = False, game_date: str | None = None,
                     parsed['long_read'] = substitute_hallucinated_names(
                         parsed.get('long_read',''), struct, name_report['suspects'])
                     print(f"  🔧 substituted {len(name_report['suspects'])} suspect name(s) with generic form")
+
+                # NUMBER HALLUCINATION HARD-ENFORCE (2026-08-06 v2): names can
+                # be substituted safely (references), but numbers ARE the pitch's
+                # meaning ("0.94 xERA" is not swappable). If retry STILL leaves
+                # hallucinated numbers, we can't publish at full conviction.
+                # Cap at LEAN (55) so downstream sweat card treats as low-conf
+                # and users see the appropriate tier signal. Log for review.
+                if not retry_worked and num_report.get('hallucinated_numbers'):
+                    orig_conv = parsed.get('conviction') or 0
+                    if orig_conv > 55:
+                        parsed['conviction'] = 55
+                        print(f"  🔒 conviction capped {orig_conv}→55 (LEAN) due to unverified numbers: "
+                              f"{num_report['hallucinated_numbers'][:3]}")
         except ImportError:
             pass
 
