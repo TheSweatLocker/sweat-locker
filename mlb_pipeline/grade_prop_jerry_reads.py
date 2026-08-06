@@ -179,18 +179,38 @@ def run_for_sport(sport: str, gd: str, dry_run: bool = False) -> int:
     return graded
 
 
-def main(game_date: str | None = None, dry_run: bool = False):
-    gd = game_date or yesterday_et()
-    print(f'=== grade_prop_jerry_reads · {gd}{" · dry-run" if dry_run else ""} ===')
+def main(game_date: str | None = None, dry_run: bool = False,
+         backfill_days: int = 3):
+    """Grade prop_jerry_reads. Default runs on yesterday + backfill_days prior
+    to catch late-arriving results (games delayed, rows created after cron,
+    grader schedule misses).
+
+    Coverage audit 2026-08-06 found 2 ungraded rows on 8/1 that survived the
+    1-day-only grader (previous behavior). Backfill window catches those.
+    """
+    if game_date:
+        # Explicit date — just that one
+        dates = [game_date]
+    else:
+        # Yesterday + N days prior for backfill of any straggling rows
+        base = yesterday_et()
+        from datetime import date, timedelta
+        base_d = date.fromisoformat(base)
+        dates = [(base_d - timedelta(days=i)).isoformat() for i in range(backfill_days + 1)]
+
     total = 0
-    for sport in PROPS_TABLE.keys():
-        total += run_for_sport(sport, gd, dry_run=dry_run)
-    print(f'\n=== graded {total} prop_jerry_reads total ===')
+    for gd in dates:
+        print(f'=== grade_prop_jerry_reads · {gd}{" · dry-run" if dry_run else ""} ===')
+        for sport in PROPS_TABLE.keys():
+            total += run_for_sport(sport, gd, dry_run=dry_run)
+    print(f'\n=== graded {total} prop_jerry_reads total across {len(dates)} date(s) ===')
 
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
-    p.add_argument('--date')
+    p.add_argument('--date', help='Specific date; if omitted, grades yesterday + backfill window')
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--backfill-days', type=int, default=3,
+                   help='Days prior to yesterday to also re-grade (catches late-arriving results). Default 3.')
     args = p.parse_args()
-    main(game_date=args.date, dry_run=args.dry_run)
+    main(game_date=args.date, dry_run=args.dry_run, backfill_days=args.backfill_days)
