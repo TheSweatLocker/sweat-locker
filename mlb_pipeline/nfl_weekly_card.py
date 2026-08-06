@@ -67,6 +67,68 @@ def sb_get(table, params=None):
     return r.json() if r.status_code == 200 else []
 
 
+def _fetch_jerry_game_picks(season, week):
+    """Pull structured Jerry game-side picks (jerry_reads) for this NFL week.
+
+    Empty today (NFL Jerry synthesis writes prose to jerry_cache, not
+    structured to jerry_reads). Once generate_nfl_game_reads.py is
+    upgraded to emit VERDICT/CONVICTION markers + write to jerry_reads,
+    this function starts returning real picks and the weekly card gains
+    a Jerry-driven primary source alongside the cohort audits.
+
+    Filter mirrors MLB sweat card: BACK verdict, conv >= 70, not pass/lean.
+    """
+    try:
+        # Use the week's approximate date window (Thu → Mon)
+        today = today_et()
+        window_start = today.isoformat()
+        window_end = (today + timedelta(days=10)).isoformat()
+        rows = sb_get("jerry_reads", {
+            "sport": "eq.NFL",
+            "game_date": f"gte.{window_start}",
+            "call_market": "not.in.(pass,lean)",
+            "select": "game_id,call_market,call_side,call_line,conviction,short_read",
+            "order": "conviction.desc",
+        })
+        return [r for r in rows if (r.get("conviction") or 0) >= 70
+                and r.get("game_date", "1970-01-01") <= window_end]
+    except Exception as e:
+        print(f"  ⚠ jerry_reads NFL fetch failed: {e}")
+        return []
+
+
+def _fetch_jerry_prop_picks(season, week):
+    """Pull structured Jerry prop picks (prop_jerry_reads) for this NFL week.
+
+    prop_jerry_reads already runs sport-universally through
+    generate_prop_jerry_synthesis when NFL prop pipeline emits props.
+    Once NFL props generate at scale (Week 1+), these picks populate
+    the card's prop rail same as MLB.
+
+    Filter: BACK verdict at conv >= 70 (matches MLB sweat card gate).
+    Calibration flip signal in signals['_calibration_fade'] is respected
+    downstream since we honor whatever direction Jerry stored (already
+    calibration-flipped upstream).
+    """
+    try:
+        today = today_et()
+        window_start = today.isoformat()
+        window_end = (today + timedelta(days=10)).isoformat()
+        rows = sb_get("prop_jerry_reads", {
+            "sport": "eq.NFL",
+            "game_date": f"gte.{window_start}",
+            "call_verdict": "eq.BACK",
+            "select": "game_id,player_name,prop_type,direction,prop_line,"
+                      "book_odds,conviction,short_read",
+            "order": "conviction.desc",
+        })
+        return [r for r in rows if (r.get("conviction") or 0) >= 70
+                and r.get("game_date", "1970-01-01") <= window_end]
+    except Exception as e:
+        print(f"  ⚠ prop_jerry_reads NFL fetch failed: {e}")
+        return []
+
+
 def fetch_upcoming_games():
     """Pull upcoming NFL games from nfl_game_results within horizon."""
     today = today_et()
@@ -346,6 +408,23 @@ def build_card():
     parlay = find_weekly_parlay(games, cohorts, lock, underdog, outdoor_unders)
     skip_alerts = find_skip_alerts(games, cohorts)
 
+    # 2026-08-06 refactor prep: pull Jerry-driven picks (jerry_reads sport=NFL
+    # BACK conv>=70 + prop_jerry_reads sport=NFL) to sit alongside cohort
+    # picks. When empty (offseason, or before Jerry NFL structured output
+    # ships), cohort picks stay primary. Once populated (Week 1+, once
+    # generate_nfl_game_reads.py starts emitting VERDICT/CONVICTION), these
+    # become the same primary-source pattern MLB uses.
+    #
+    # Cohort audits (heavy_home_dog, outdoor_under, div_home_cover_fade)
+    # remain valuable — they become inputs Jerry considers, not competing
+    # picks, once Jerry NFL synthesis is fully wired. This just adds the
+    # pulling infrastructure now so the card structure is ready.
+    jerry_game_picks = _fetch_jerry_game_picks(season, week)
+    jerry_prop_picks = _fetch_jerry_prop_picks(season, week)
+    if jerry_game_picks or jerry_prop_picks:
+        print(f"  Jerry-driven picks: {len(jerry_game_picks)} games, "
+              f"{len(jerry_prop_picks)} props")
+
     # Schedule-only mode: no lines yet (Odds API empty). MVP for Aug 7 preseason
     # + offseason weeks where slate exists but market isn't loaded.
     lines_loaded = any(g.get("close_spread") is not None for g in games)
@@ -380,6 +459,13 @@ def build_card():
                    "sample_n": v.get("sample_n")}
             for tier, v in cohorts.items()
         },
+        # 2026-08-06: Jerry-driven picks surfaced alongside cohort picks.
+        # Empty during offseason and until generate_nfl_game_reads.py emits
+        # structured VERDICT/CONVICTION to jerry_reads. Once populated,
+        # UI treats these as the primary card fill and cohort picks become
+        # supplemental / diagnostic.
+        "jerry_game_picks": jerry_game_picks,
+        "jerry_prop_picks": jerry_prop_picks,
     }
 
     # Upsert to jerry_cache with NFL-specific cache_key
