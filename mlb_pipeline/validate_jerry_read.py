@@ -178,6 +178,49 @@ def validate_direction(prop: dict, call_verdict: str, call_direction: str | None
     return {'contradicts': False, 'edge_pct': edge, 'reason': 'projection_aligned'}
 
 
+def validate_line_movement(call_direction: str | None, call_line: float | None,
+                           current_line: float | None,
+                           min_delta: float = 0.5) -> dict:
+    """Flag totals/spread calls where the line has moved AGAINST the thesis.
+
+    Catches: Jerry leans UNDER 8.0 (LAA@BAL) but total drifts 8.0 → 9.5.
+    Market has already re-priced in the direction we're fading, meaning
+    our edge (if it existed) is now smaller or gone. Same for OVER at
+    line X with current < X - min_delta.
+
+    Returns:
+        {
+          'contradicts': bool,
+          'movement': float | None,   # (current - call_line)
+          'reason': str,
+        }
+
+    Only fires for over/under. Spread contradictions require a
+    signed-direction convention (home fav vs dog) that varies by game
+    — handle in the caller.
+    """
+    if call_direction is None or call_line is None or current_line is None:
+        return {'contradicts': False, 'movement': None, 'reason': 'insufficient_data'}
+    try:
+        cl = float(call_line)
+        cur = float(current_line)
+    except (TypeError, ValueError):
+        return {'contradicts': False, 'movement': None, 'reason': 'non_numeric_line'}
+
+    movement = cur - cl
+    d = (call_direction or '').lower()
+    if d not in ('over', 'under'):
+        return {'contradicts': False, 'movement': movement, 'reason': 'non_directional_call'}
+
+    if d == 'under' and movement >= min_delta:
+        return {'contradicts': True, 'movement': movement,
+                'reason': f'call_under_{cl}_but_line_moved_UP_to_{cur}_(+{movement:.1f})'}
+    if d == 'over' and movement <= -min_delta:
+        return {'contradicts': True, 'movement': movement,
+                'reason': f'call_over_{cl}_but_line_moved_DOWN_to_{cur}_({movement:+.1f})'}
+    return {'contradicts': False, 'movement': movement, 'reason': 'movement_aligned_or_neutral'}
+
+
 def validate(short_read: str, long_read: str, input_struct: dict,
              tolerance_pct: float = 1.0) -> dict:
     """Validate Jerry's output against input struct.
@@ -281,5 +324,22 @@ if __name__ == '__main__':
     ]
     for name, prop, verdict, direction, expected in tests:
         r = validate_direction(prop, verdict, direction)
+        ok = '✓' if r['contradicts'] == expected else '✗ FAIL'
+        print(f'  {ok} {name}: contradicts={r["contradicts"]} reason={r["reason"]}')
+
+    # --- validate_line_movement smoke tests (2026-08-05) ---
+    print('\n=== validate_line_movement smoke tests ===')
+    lm_tests = [
+        # (name, direction, call_line, current, expected_contradicts)
+        ('LAA@BAL UNDER 8.0 with current 9.5 (should flag)', 'under', 8.0, 9.5, True),
+        ('CWS@BOS UNDER 8.0 with current 9.0 (should flag)', 'under', 8.0, 9.0, True),
+        ('NYM@CLE UNDER 7.5 with current 7.5 (aligned)', 'under', 7.5, 7.5, False),
+        ('NYM@CLE UNDER 8.5 with current 7.5 (line moved WITH us — aligned)', 'under', 8.5, 7.5, False),
+        ('OVER 8.5 with current 8.0 (line drifted DOWN, flag)', 'over', 8.5, 8.0, True),
+        ('OVER 8.5 with current 9.5 (line moved WITH us — aligned)', 'over', 8.5, 9.5, False),
+        ('Missing current line — no flag', 'under', 8.0, None, False),
+    ]
+    for name, d, cl, cur, expected in lm_tests:
+        r = validate_line_movement(d, cl, cur)
         ok = '✓' if r['contradicts'] == expected else '✗ FAIL'
         print(f'  {ok} {name}: contradicts={r["contradicts"]} reason={r["reason"]}')

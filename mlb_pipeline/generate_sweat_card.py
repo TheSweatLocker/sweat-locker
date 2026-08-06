@@ -1315,6 +1315,14 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             call_text = jread.get("call_text") or ""
             tier = "PRIME" if conv >= 80 else "STRONG"
             if mkt == "ml":
+                # HEAVY-FAV ML HARD FILTER (2026-08-04): Jerry's prompt says
+                # never emit ML at -200+ but Jerry has violated it in practice
+                # (PHI ML -298 conv 72 tonight). Defense-in-depth: reject at
+                # curation layer too. Same principle as jerry_anchor_potd.
+                pick_ml = gctx.get("home_ml_close") if side == "HOME" else gctx.get("away_ml_close")
+                if pick_ml is not None and pick_ml <= -200:
+                    print(f"  🚫 sweat-card juice gate: skipped {jread.get('call_text') or '?'} at ML {pick_ml}")
+                    continue
                 team = gctx["home_team"] if side == "HOME" else gctx["away_team"]
                 label = f"{team} ML"
                 icon = "📈"; ptype = "ml"; line = None
@@ -1322,6 +1330,19 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
                 label = f"{side.title()} {jread.get('call_line') or gctx.get('close_total','')}".strip()
                 icon = "📊"; ptype = "over" if side == "OVER" else "under"
                 line = jread.get("call_line") or gctx.get("close_total")
+                # LINE MOVEMENT CONTRADICTION FILTER (2026-08-05).
+                # Suppress totals where the market has moved AGAINST Jerry's
+                # thesis by ≥0.5 runs. LAA@BAL tonight was Jerry UNDER 8.0
+                # while the total drifted 8.0 → 9.5 — edge (if any) evaporated
+                # and the sharp side is now opposite ours.
+                try:
+                    from validate_jerry_read import validate_line_movement
+                    lm = validate_line_movement(ptype, line, gctx.get("current_total"))
+                    if lm['contradicts']:
+                        print(f"  🚫 sweat-card line-move filter: skipped {label} — {lm['reason']}")
+                        continue
+                except ImportError:
+                    pass
             else:
                 continue  # spread + others: skip until wired
             game_side_candidates.append({
