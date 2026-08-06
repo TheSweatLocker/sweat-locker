@@ -359,13 +359,59 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                 parsed['long_read'] = scrub(parsed.get('long_read'))
         except ImportError:
             pass
-        # Post-LLM hallucination detector (2026-08-03 Sprint 2)
+        # Hallucination guard v2 (2026-08-06): retry + name whitelist for props too.
+        # Props are more targeted (single player, single prop_type) so name
+        # whitelist is stricter — only the player and pitchers on the game
+        # should appear in prose.
         try:
-            from validate_jerry_read import validate as _validate, validate_direction as _validate_dir
-            report = _validate(parsed.get('short_read'), parsed.get('long_read',''), prop)
-            if not report['is_valid']:
-                print(f'  ⚠ HALLUCINATION SUSPECTS on {prop["player_name"]}: '
-                      f'{report["hallucinated_numbers"]}')
+            from validate_jerry_read import (validate as _validate,
+                                              validate_direction as _validate_dir,
+                                              validate_pitcher_names,
+                                              build_corrective_prompt,
+                                              substitute_hallucinated_names)
+            # Build prop-specific whitelist struct (player + pitchers if we have game context)
+            whitelist_struct = {
+                'home_pitcher': prop.get('player_name') if prop.get('prop_type','').startswith(('bb','ks','er','ha','outs')) else None,
+                'away_pitcher': None,
+                'home_team': prop.get('player_team',''),
+                'away_team': '',
+            }
+            combined = (parsed.get('short_read') or '') + '\n' + (parsed.get('long_read') or '')
+            num_rpt = _validate(parsed.get('short_read'), parsed.get('long_read',''), prop)
+            name_rpt = validate_pitcher_names(combined, whitelist_struct)
+
+            if not num_rpt['is_valid'] or not name_rpt['valid']:
+                print(f'  ⚠ {prop["player_name"][:20]} hallucination (nums={num_rpt.get("hallucinated_numbers")[:3]}, '
+                      f'names={name_rpt.get("suspects")[:2]}) — regen')
+                corr = build_corrective_prompt(prompt, num_rpt, name_rpt)
+                raw2 = call_claude(corr)
+                worked = False
+                if raw2:
+                    p2 = parse_synthesis(raw2, prop.get('prop_type'))
+                    if p2.get('short_read'):
+                        try:
+                            from sanitize_jerry_prose import scrub
+                            p2['short_read'] = scrub(p2.get('short_read'))
+                            if 'long_read' in p2:
+                                p2['long_read'] = scrub(p2.get('long_read'))
+                        except ImportError: pass
+                        parsed = p2
+                        c2 = (p2.get('short_read') or '') + '\n' + (p2.get('long_read') or '')
+                        n2 = _validate(p2.get('short_read'), p2.get('long_read',''), prop)
+                        nm2 = validate_pitcher_names(c2, whitelist_struct)
+                        if n2['is_valid'] and nm2['valid']:
+                            worked = True; print(f'  ✓ retry clean')
+                        else:
+                            name_rpt = nm2
+                if not worked and name_rpt.get('suspects'):
+                    parsed['short_read'] = substitute_hallucinated_names(
+                        parsed.get('short_read',''), whitelist_struct, name_rpt['suspects'])
+                    if parsed.get('long_read'):
+                        parsed['long_read'] = substitute_hallucinated_names(
+                            parsed.get('long_read',''), whitelist_struct, name_rpt['suspects'])
+                    print(f'  🔧 substituted {len(name_rpt["suspects"])} suspect name(s)')
+            # Legacy log line — keep for backward compat + audit trail
+            report = num_rpt
             # Direction-contradiction check (2026-08-05) — catches BACK calls
             # whose direction disagrees with the model's own projection.
             # Painter BB Under @ -135 with projection 2.10 BB was the canary.

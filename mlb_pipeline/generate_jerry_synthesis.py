@@ -534,14 +534,63 @@ def run(force: bool = False, game_date: str | None = None,
         except ImportError:
             pass  # sanitizer optional — prompt guardrail alone is defensive
 
-        # Post-LLM hallucination detector (2026-08-03 Sprint 2) — scans cited
-        # numbers vs input struct. LOGS issues for now; auto-regen loop TBD.
+        # Hallucination guard v2 (2026-08-06): auto-retry + name whitelist +
+        # substitution fallback. Was LOG-ONLY before; user directive to
+        # hard-enforce for paid-launch readiness (no more "David an analyst"
+        # as a pitcher name, no more cited numbers not in struct).
         try:
-            from validate_jerry_read import validate as _validate
-            report = _validate(parsed.get("short_read"), parsed.get("long_read"), struct)
-            if not report["is_valid"]:
-                print(f"  ⚠ HALLUCINATION SUSPECTS: {report['hallucinated_numbers']}  "
-                      f"({report['notes']})")
+            from validate_jerry_read import (validate as _validate,
+                                              validate_pitcher_names,
+                                              build_corrective_prompt,
+                                              substitute_hallucinated_names)
+            combined_prose = (parsed.get("short_read") or "") + "\n" + (parsed.get("long_read") or "")
+            # Build explicit whitelist from raw game row (struct is derived +
+            # may not have top-level home_pitcher/away_pitcher fields).
+            name_whitelist = {
+                'home_pitcher': g.get('home_pitcher'),
+                'away_pitcher': g.get('away_pitcher'),
+                'home_team': g.get('home_team'),
+                'away_team': g.get('away_team'),
+                'home_lineup': g.get('home_lineup'),
+                'away_lineup': g.get('away_lineup'),
+            }
+            num_report = _validate(parsed.get("short_read"), parsed.get("long_read"), struct)
+            name_report = validate_pitcher_names(combined_prose, name_whitelist)
+
+            if not num_report['is_valid'] or not name_report['valid']:
+                # LAYER A: retry once with corrective feedback
+                print(f"  ⚠ hallucination detected (nums={num_report.get('hallucinated_numbers')}, "
+                      f"names={name_report.get('suspects')}) — regen with corrective prompt")
+                corrective = build_corrective_prompt(prompt, num_report, name_report)
+                raw2 = call_claude(corrective)
+                retry_worked = False
+                if raw2:
+                    parsed2 = parse_synthesis(raw2)
+                    if parsed2.get('short_read') and parsed2.get('long_read'):
+                        try:
+                            from sanitize_jerry_prose import scrub
+                            parsed2['short_read'] = scrub(parsed2.get('short_read'))
+                            parsed2['long_read'] = scrub(parsed2.get('long_read'))
+                        except ImportError: pass
+                        combined2 = (parsed2.get("short_read") or "") + "\n" + (parsed2.get("long_read") or "")
+                        num2 = _validate(parsed2.get("short_read"), parsed2.get("long_read"), struct)
+                        name2 = validate_pitcher_names(combined2, struct)
+                        parsed = parsed2  # accept retry even if imperfect (usually better)
+                        if num2['is_valid'] and name2['valid']:
+                            print(f"  ✓ retry succeeded — clean output")
+                            retry_worked = True
+                        else:
+                            # Update reports to reflect retry state for substitution below
+                            name_report = name2
+                            num_report = num2
+                # LAYER C: if still hallucinating names after retry (or retry
+                # produced nothing), substitute with 'the home/away starter'.
+                if not retry_worked and name_report.get('suspects'):
+                    parsed['short_read'] = substitute_hallucinated_names(
+                        parsed.get('short_read',''), struct, name_report['suspects'])
+                    parsed['long_read'] = substitute_hallucinated_names(
+                        parsed.get('long_read',''), struct, name_report['suspects'])
+                    print(f"  🔧 substituted {len(name_report['suspects'])} suspect name(s) with generic form")
         except ImportError:
             pass
 

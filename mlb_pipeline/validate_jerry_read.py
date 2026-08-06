@@ -120,6 +120,221 @@ def _within_tolerance(cited: str, allowed_set: set, pct_tol: float = 1.0) -> boo
     return False
 
 
+def _ascii_lower(s: str) -> str:
+    """Normalize accents + case for whitelist comparison ('Sánchez' → 'sanchez')."""
+    if not isinstance(s, str): return ''
+    import unicodedata
+    return unicodedata.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii').lower()
+
+
+def validate_pitcher_names(prose: str, struct: dict) -> dict:
+    """Detect hallucinated pitcher names in Jerry's prose (2026-08-06).
+
+    User caught this on TOR@CHC: Jerry wrote "David an analyst" as a pitcher
+    name (his actual write was probably some hallucinated name that the brand
+    sanitizer scrubbed to 'an analyst'). More broadly, Jerry sometimes uses
+    names from externals[] as if they were players on the game.
+
+    Rule: any capitalized 2-word sequence in prose that LOOKS like a person
+    name (Firstname Lastname pattern) must appear in the whitelist:
+      - struct.home_pitcher / struct.away_pitcher
+      - struct.home_lineup / struct.away_lineup (batter names)
+      - Common baseball figures (managers, umpires) — future work
+
+    Returns:
+      {
+        'valid': bool,
+        'suspects': [list of unrecognized names],
+        'whitelist_size': int,
+      }
+    """
+    if not prose or not isinstance(struct, dict):
+        return {'valid': True, 'suspects': [], 'whitelist_size': 0}
+
+    whitelist = set()
+    # Pitcher names — normalize accents so 'Sánchez' matches 'Sanchez' in prose
+    for key in ('home_pitcher', 'away_pitcher'):
+        v = struct.get(key)
+        if isinstance(v, str) and v.strip():
+            n = _ascii_lower(v.strip())
+            whitelist.add(n)
+            parts = n.split()
+            if len(parts) >= 2:
+                whitelist.add(parts[-1])
+
+    # Batter names from lineup (comma-sep string or list)
+    for key in ('home_lineup', 'away_lineup'):
+        v = struct.get(key)
+        names_iter = []
+        if isinstance(v, str) and v.strip():
+            names_iter = v.split(',')
+        elif isinstance(v, list):
+            names_iter = v
+        for name in names_iter:
+            if not isinstance(name, str) or not name.strip(): continue
+            n = _ascii_lower(name)
+            whitelist.add(n)
+            parts = n.split()
+            if len(parts) >= 2:
+                whitelist.add(parts[-1])
+
+    # Team names (Jerry can reference teams)
+    for key in ('home_team', 'away_team'):
+        v = struct.get(key)
+        if isinstance(v, str) and v.strip():
+            for word in v.split():
+                whitelist.add(_ascii_lower(word))
+
+    # Firstname Lastname pattern. Removed `.` from word character class —
+    # was catching "ERA. He'll" because "ERA." was treated as a word token.
+    # Now dots are only allowed via explicit middle-name particles
+    # (St., Jr.). Negative lookbehind on `. ` prevents sentence-boundary
+    # matches ("...ERA. He'll..." no longer matches).
+    NAME_CHAR = r"[a-zA-Z'ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝàáâãäåæçèéêëìíîïñòóôõöøùúûüý-]"
+    name_re = re.compile(
+        r"(?<!\. )(?<!\.\n)(?<![A-Z])"
+        rf"([A-Z]{NAME_CHAR}{{2,}}"
+        r"(?: (?:de|van|von|le|la|St\.|Jr\.|III|II))?"
+        rf" [A-Z]{NAME_CHAR}{{2,}})"
+        r"(?![a-zA-Z])"
+    )
+    # First-word stopwords: if candidate starts with these, it's not a name.
+    # Covers sentence-start verbs, prepositions, article-team combos.
+    _FIRST_WORD_STOP = {
+        'take', 'back', 'fade', 'lean', 'consider', 'against', 'facing', 'versus', 'vs',
+        'the', 'a', 'an', 'his', 'her', 'their', 'our', 'my', 'this', 'that',
+        'if', 'when', 'while', 'unless', 'though', 'although', 'because', 'since',
+        'over', 'under', 'above', 'below', 'through', 'during', 'after', 'before',
+        'and', 'but', 'or', 'so', 'yet', 'nor',
+        'sharp', 'public', 'monte', 'model', 'models', 'simulator', 'panel',
+        'in', 'of', 'at', 'on', 'for', 'to', 'from', 'with', 'without',
+        'ml', 'rl', 'total', 'over/under',
+        # City/team-prefix false positives:
+        'los', 'san', 'new', 'chicago', 'washington', 'baltimore', 'boston',
+        'kansas', 'philadelphia', 'seattle', 'toronto', 'cincinnati', 'detroit',
+        'minnesota', 'houston', 'oakland', 'pittsburgh', 'milwaukee', 'colorado',
+        'arizona', 'atlanta', 'miami', 'tampa', 'texas',
+        # Common English words Jerry uses as pseudo-headers ("Money Flow",
+        # "External Context", "Historical Pattern"). Common enough that
+        # if either part is one of these, we're not looking at a person name.
+        'money', 'external', 'internal', 'historical', 'what', 'why', 'how',
+        'data', 'signal', 'signals', 'context', 'pattern', 'patterns',
+        'flow', 'reading', 'analysis', 'summary', 'result', 'results',
+        'total', 'totals', 'runs', 'bullpen', 'starter', 'lineup', 'weather',
+        'trend', 'trends', 'note', 'notes', 'point', 'points', 'stat', 'stats',
+        'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh',
+        'last', 'next', 'previous', 'recent', 'career', 'season', 'year',
+    }
+    _LAST_WORD_STOP = {
+        # team-name endings
+        'sox', 'jays', 'cubs', 'mets', 'reds', 'nationals', 'phillies', 'yankees',
+        'orioles', 'rays', 'guardians', 'rangers', 'astros', 'angels', 'padres',
+        'giants', 'brewers', 'pirates', 'braves', 'marlins', 'twins', 'royals',
+        'mariners', 'tigers', 'diamondbacks', 'rockies', 'cardinals', 'dodgers',
+        'athletics',
+        # market/prop terms
+        'ml', 'rl', 'over', 'under', 'era', 'whip', 'xera', 'strikeout', 'strikeouts',
+        'walk', 'walks', 'hit', 'hits', 'inning', 'innings',
+        # venue-word suffixes ("Wrigley Field", "Chase Field", "American Ball", etc.)
+        'field', 'park', 'stadium', 'yards', 'coliseum', 'center', 'arena',
+        'ballpark', 'ball', 'way', 'grounds',
+        # Common English words that appear as pseudo-header second words
+        'flow', 'context', 'signal', 'signals', 'pattern', 'patterns',
+        'reading', 'analysis', 'summary', 'result', 'results', 'note', 'notes',
+        'data', 'runs', 'total', 'totals', 'bullpen', 'starter', 'lineup',
+        'weather', 'trend', 'trends',
+    }
+
+    suspects = []
+    seen = set()
+    for m in name_re.finditer(prose):
+        candidate = m.group(1).strip()
+        # Ascii-normalize for accent-insensitive whitelist compare
+        lc = _ascii_lower(candidate)
+        if lc in seen: continue
+        seen.add(lc)
+        parts = lc.split()
+        # Possessive prefix filter — "Miami's Janson", "Mets' Nolan",
+        # "Boston's Suarez" are attribution phrases, not hallucinated pairs.
+        if parts[0].endswith("'s") or parts[0].endswith("'"): continue
+        # First-word filter (verbs, prepositions, city prefixes)
+        if parts[0] in _FIRST_WORD_STOP: continue
+        # Last-word filter (team names, market terms)
+        if parts[-1] in _LAST_WORD_STOP: continue
+        # Exact whitelist match
+        if lc in whitelist: continue
+        # Last-name-only match (Jerry might say "Suarez" not "Ranger Suarez")
+        if len(parts) >= 2 and parts[-1] in whitelist: continue
+        # Sanitizer replaces brand names with "an analyst" — clear hallucination signal
+        if 'an analyst' in lc:
+            suspects.append(f'{candidate} (brand-scrubbed hallucination)')
+            continue
+        suspects.append(candidate)
+
+    return {
+        'valid': len(suspects) == 0,
+        'suspects': suspects[:10],  # cap for readability
+        'whitelist_size': len(whitelist),
+    }
+
+
+def substitute_hallucinated_names(prose: str, struct: dict, suspects: list) -> str:
+    """Layer C fallback: when retry still leaves hallucinated names in prose,
+    substitute them with generic 'home/away starter' phrasing rather than
+    shipping the bad text.
+
+    Not perfect — reader gets slightly awkward prose ("the home starter faces
+    the away starter") but it's honest instead of shipping "David an analyst
+    gets tagged early." Structural credibility > prose polish.
+    """
+    if not prose or not suspects:
+        return prose
+    out = prose
+    home_p = struct.get('home_pitcher', '') if isinstance(struct, dict) else ''
+    away_p = struct.get('away_pitcher', '') if isinstance(struct, dict) else ''
+    for suspect in suspects:
+        # Strip parenthetical note (from validate_pitcher_names)
+        base = suspect.split(' (')[0]
+        # Try to guess if this was standing in for home or away — pick whichever
+        # is shorter/absent in the prose already
+        if home_p and home_p.lower() not in out.lower():
+            replacement = f'the home starter ({home_p})'
+        elif away_p and away_p.lower() not in out.lower():
+            replacement = f'the away starter ({away_p})'
+        else:
+            replacement = 'the opposing starter'
+        out = re.sub(re.escape(base), replacement, out, count=1)
+    return out
+
+
+def build_corrective_prompt(original_prompt: str, hallucination_report: dict,
+                             name_report: dict) -> str:
+    """Build the corrective retry prompt when hallucinations are detected.
+
+    Layer A of the hallucination-guard shipped 2026-08-06.
+    """
+    issues = []
+    if hallucination_report.get('hallucinated_numbers'):
+        nums = hallucination_report['hallucinated_numbers'][:5]
+        issues.append(
+            f"You cited these numbers that DO NOT appear in the input struct: {', '.join(nums)}.\n"
+            "Regenerate using ONLY numbers verbatim from the struct. Do not invent, estimate, or derive values."
+        )
+    if name_report.get('suspects'):
+        suspects = name_report['suspects'][:3]
+        issues.append(
+            f"You referenced these names that are NOT starters/players in this game: {', '.join(suspects)}.\n"
+            "Pitchers are struct.home_pitcher and struct.away_pitcher — use those exact names or say 'the home/away starter'."
+        )
+    if not issues:
+        return original_prompt
+
+    corrective = original_prompt + "\n\n=== REGENERATE: previous output had errors ===\n"
+    corrective += "\n\n".join(issues)
+    corrective += "\n\nProduce the output again in the same format, this time strictly using only struct data."
+    return corrective
+
+
 def validate_direction(prop: dict, call_verdict: str, call_direction: str | None) -> dict:
     """Reject BACK calls whose direction contradicts the projection.
 
