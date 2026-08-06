@@ -371,6 +371,53 @@ def form_drift_juice_trap(prop: dict) -> tuple[bool, str]:
     return False, ''
 
 
+def er_under_fair_price_trap(prop: dict) -> tuple[bool, str]:
+    """Return (should_hard_suppress, reason) for ER UNDER at plus-money with
+    pitcher in form. 90d audit says this is nearly automatic loss.
+
+    ALIGNED (L3≤xERA) + FAIR odds > -110:   0-8   (0%)
+    STRONG_FORM       + FAIR odds > -110:   1-8   (11%)
+    Combined FAIR trap: 1-16 (6%) at n=17.
+
+    Interpretation: market pays +odds on ER UNDER despite the pitcher being
+    in form → market has a specific reason (matchup, park, weather, bullpen)
+    → trust the market. Nearly automatic loss.
+    """
+    if (prop.get('prop_type') or '').lower() != 'er_under': return False, ''
+    if (prop.get('direction') or '').lower() != 'under': return False, ''
+    odds = prop.get('book_under_odds')
+    if odds is None: return False, ''
+    try: odds = int(odds)
+    except (TypeError, ValueError): return False, ''
+    # Fair-or-better only (> -110 = plus-money or thin juice)
+    if odds <= -110: return False, ''
+
+    signals = prop.get('signals') or {}
+    if not isinstance(signals, dict): return False, ''
+
+    import re as _re
+    l3 = xera = None
+    l3_re = _re.compile(r'L3\s*ERA\s*(\d+(?:\.\d+)?)')
+    xe_re = _re.compile(r'xERA\s*(\d+(?:\.\d+)?)')
+    for v in signals.values():
+        if not isinstance(v, str): continue
+        m = l3_re.search(v)
+        if m and l3 is None:
+            try: l3 = float(m.group(1))
+            except ValueError: pass
+        m = xe_re.search(v)
+        if m and xera is None:
+            try: xera = float(m.group(1))
+            except ValueError: pass
+    if l3 is None or xera is None: return False, ''
+
+    # Aligned or in-form pitcher (drift ≤ 0)
+    drift = l3 - xera
+    if drift > 0: return False, ''
+
+    return True, f'er_under_fair_price_trap_L3{l3}_xERA{xera}_drift{drift:+.1f}_juice{odds}_hist6pct_n17'
+
+
 def cap_unsupported_high_conviction(raw_conviction: int,
                                     refit_conviction: Optional[float]) -> tuple[int, str]:
     """Cap conviction >= 90 unless refit model corroborates.
@@ -459,6 +506,17 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
                 'new_tier': tier, 'new_conviction': 0,
                 'reason': f'family_dead_{family_norm}_hist_hit_below_25pct'}
 
+    # 0.5 ER UNDER fair-price trap (2026-08-05 v2) — must run BEFORE fade
+    # logic. Fair-priced er_under on an in-form pitcher hits 6% (1-16, n=17).
+    # The "opposite side" (er_over) isn't necessarily good either — the
+    # market has a specific reason for the +odds, and it's usually right.
+    # Hard suppress instead of fade-flip.
+    is_er_trap, er_trap_reason = er_under_fair_price_trap(prop)
+    if is_er_trap:
+        return {'keep': False, 'flip_direction': False, 'new_direction': direction,
+                'new_tier': tier, 'new_conviction': 0,
+                'reason': er_trap_reason}
+
     # 1. Goldmine check first — promotes over fade
     if is_goldmine_skip(pt, tier, direction) and jerry_verdict == 'BACK':
         return {'keep': True, 'flip_direction': False, 'new_direction': direction,
@@ -481,12 +539,9 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
 
     # 3a. Form-drift juice trap (2026-08-05) — er_over with L3 ERA loudly
     # elevated vs xERA + juice in -175..-110 hits 33% (n=21). Book has
-    # priced in the collapse; only fair-price fades survive. Same trap
-    # inverse for er_under when pitcher is in form.
+    # priced in the collapse; only fair-price fades survive.
     is_trap, trap_reason = form_drift_juice_trap(prop)
     if is_trap:
-        # Hard cap at LEAN max — user can still play as lotto, but
-        # sweat-card selection layer treats it as low conviction.
         conv = min(conv, FORM_DRIFT_TRAP_CAP)
         prior_conv = min(prior_conv, FORM_DRIFT_TRAP_CAP)
 
@@ -541,6 +596,13 @@ if __name__ == '__main__':
          'signals': {'l3':'L3 ERA 10.22','xera_high':'xERA 5.86'},'refit_conviction': None},          # Taillon — should cap (still won by chance)
         {'prop_type':'er_over','tier':'PRIME','direction':'over','conviction':85,'book_over_odds':115,
          'signals': {'l3':'L3 ERA 9.00','xera_high':'xERA 4.50'},'refit_conviction': None},          # same drift + FAIR PRICE (+odds) → no trap
+        # ER UNDER FAIR-PRICE TRAP tests (2026-08-05 v2)
+        {'prop_type':'er_under','tier':'STRONG','direction':'under','conviction':70,'book_under_odds':105,
+         'signals': {'l3':'L3 ERA 1.50','xera':'xERA 3.20'},'refit_conviction': None},               # strong form + +105 → HARD SUPPRESS
+        {'prop_type':'er_under','tier':'STRONG','direction':'under','conviction':70,'book_under_odds':-140,
+         'signals': {'l3':'L3 ERA 1.50','xera':'xERA 3.20'},'refit_conviction': None},               # same drift but -140 juice → NO trap
+        {'prop_type':'er_under','tier':'STRONG','direction':'under','conviction':70,'book_under_odds':105,
+         'signals': {'l3':'L3 ERA 9.50','xera':'xERA 4.20'},'refit_conviction': None},               # pitcher NOT in form (drift +5) + +105 → NO trap
     ]
     for t in tests:
         r = apply_calibration(t, jerry_verdict='BACK')
