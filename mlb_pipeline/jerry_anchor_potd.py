@@ -229,6 +229,23 @@ def run(game_date: str | None = None, threshold: int = 70,
     # ML slot on the same game (both are the same bet). Without this,
     # game field on POTD ended up None and dedup missed.
     matchup_str = f"{ctx['away_team']} @ {ctx['home_team']}"
+
+    # 2026-08-06 label uniformity fix: _synthesize_display returns generic
+    # "Home ML" / "Away ML" strings because it doesn't have ctx access.
+    # Resolve to actual team name here (before it hits leanDisplay). The
+    # generic form leaked into the sweat card POTD tile as "Home ML (Jerry
+    # 70/100)" instead of "Boston Red Sox ML (Jerry 70/100)".
+    _mkt = (winner.get("call_market") or "").lower()
+    _side = (winner.get("call_side") or "").upper()
+    if _mkt == "ml" and call in ("Home ML", "Away ML"):
+        team = ctx["home_team"] if _side == "HOME" else ctx["away_team"]
+        call = f"{team} ML"
+    elif _mkt == "rl" and call.startswith(("Home RL", "Away RL")):
+        team = ctx["home_team"] if _side == "HOME" else ctx["away_team"]
+        # Preserve the line suffix (e.g. "Home RL -1.5" → "Boston Red Sox RL -1.5")
+        rest = call[len("Home RL"):] if call.startswith("Home RL") else call[len("Away RL"):]
+        call = f"{team} RL{rest}"
+
     payload_data = {
         "sport": "MLB",
         "matchup": matchup_str,
