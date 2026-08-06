@@ -87,9 +87,20 @@ def fetch_upcoming_events() -> list:
 
 
 def fetch_player_props(event_id: str) -> dict:
-    """Returns {(player_lc, prop_type): {'line': .., 'over_odds': .., 'under_odds': .., 'book': .., 'display': ..}}
-    Bundles over+under from the same preferred book so both odds columns populate.
-    Handles both pitcher (bb/ks/er/ha/outs) and batter (hits) markets in one pull."""
+    """Returns {(player_lc, prop_type): [entry1, entry2, ...]} — one entry per
+    line the preferred book offers, sorted by tightness (standard line first).
+    Each entry = {'line', 'over_odds', 'under_odds', 'book', 'display'}.
+
+    2026-08-06: refactored from returning ONE entry per (player, prop_type)
+    to returning ALL lines. Star hitters like Bohm have alt lines (0.5, 1.5,
+    2.5); tightness heuristic picked 1.5 because the odds are near 50/50,
+    but generate_props scored the 0.5 line — so PATCH ended up pairing
+    line=0.5 rows with 1.5-line odds. Caller now line-matches on PATCH,
+    uses tightest on INSERT (which is fine for fresh stubs).
+
+    Bundles over+under from the same preferred book so both odds columns
+    populate. Handles both pitcher (bb/ks/er/ha/outs) and batter (hits)
+    markets in one pull."""
     r = requests.get(
         f'https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds',
         params={'apiKey': ODDS_API_KEY, 'regions': 'us,us2',
@@ -142,13 +153,18 @@ def fetch_player_props(event_id: str) -> dict:
         pool = both_sided or entries
         # Sort by tightness (line closest to 50/50 — the "standard" line for that market)
         pool_sorted = sorted(pool, key=_tightness)
-        # Walk PREFERRED_BOOKS in order; take first hit at the tightest line that book has
-        chosen = None
+        # Pick a preferred book and return ALL lines that book offers so the
+        # caller can line-match against an existing DB row's prop_line rather
+        # than being locked into the tightest-line default.
+        chosen_book = None
         for pref in PREFERRED_BOOKS:
-            hit = next((e for e in pool_sorted if e['book'] == pref), None)
-            if hit: chosen = hit; break
-        if not chosen: chosen = pool_sorted[0]
-        out[key] = chosen
+            if any(e['book'] == pref for e in pool_sorted):
+                chosen_book = pref; break
+        if chosen_book:
+            out[key] = [e for e in pool_sorted if e['book'] == chosen_book]
+        else:
+            # Fall back to all pool entries (may span multiple books)
+            out[key] = pool_sorted
     return out
 
 
@@ -231,7 +247,7 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
     r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
                      headers=H_READ,
                      params={'game_date': f'eq.{game_date}',
-                             'select': 'id,player_name,prop_type,direction,book_line,book_over_odds,book_under_odds'},
+                             'select': 'id,player_name,prop_type,direction,prop_line,book_line,book_over_odds,book_under_odds'},
                      timeout=15)
     existing_rows = [p for p in (r.json() if r.status_code == 200 else []) if p.get('player_name')]
     existing_by_key: dict = {}
@@ -256,17 +272,10 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
         if not ctx: continue
         matchup = f"{ev.get('away_team','?')} @ {ev.get('home_team','?')}"
 
-        for (player_lc, prop_type), entry in fetch_player_props(ev['id']).items():
-            display = entry['display']
+        for (player_lc, prop_type), entries in fetch_player_props(ev['id']).items():
+            if not entries: continue
+            display = entries[0]['display']  # display is same across all lines
             is_batter = prop_type in BATTER_PREFIXES
-            # Pitcher signals only; batter attribution comes from existing DB row
-            if is_batter:
-                signals, edge = None, None
-                team = None
-            else:
-                team = _resolve_team(display, ctx)
-                signals, edge = build_signals(display, prop_type, entry['line'], ctx)
-                if edge is not None and abs(edge) >= 0.10: edge_ct += 1
 
             for direction in ('over', 'under'):
                 # 2026-08-02: store as full {family}_{direction} form to match
@@ -276,15 +285,88 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                 key = (display.lower(), full_type, direction)
                 existing = existing_by_key.get(key)
 
-                # PATH A: row already exists → PATCH book fields if missing
+                # LINE-MATCHING (2026-08-06 fix): if existing row has a
+                # prop_line, pick the entry whose book line matches it —
+                # NOT the tightness default. Star hitters have alt lines
+                # (Bohm 0.5 AND 1.5); tightness picks 1.5 but generate_props
+                # usually scored 0.5. Mis-matched line = mis-priced prop.
+                # Fallback to entries[0] (tightest) if no line match or no
+                # existing row.
+                entry = None
+                if existing and existing.get('prop_line') is not None:
+                    try:
+                        target = float(existing['prop_line'])
+                        entry = next((e for e in entries
+                                      if abs(float(e['line']) - target) < 0.01), None)
+                    except (TypeError, ValueError):
+                        pass
+                if entry is None:
+                    entry = entries[0]  # tightest line default (for INSERT path)
+
+                # Pitcher signals only; batter attribution from existing row
+                if is_batter:
+                    signals, edge = None, None
+                    team = None
+                else:
+                    team = _resolve_team(display, ctx)
+                    signals, edge = build_signals(display, prop_type, entry['line'], ctx)
+                    if edge is not None and abs(edge) >= 0.10: edge_ct += 1
+
+                # PATH A: row already exists → PATCH book fields if missing OR
+                # if the stored book_line doesn't match the scorer's prop_line
+                # (the mis-matched-line bug — was locking in wrong-line odds
+                # for star-hitter alt lines).
                 if existing:
                     odds_col = 'book_over_odds' if direction == 'over' else 'book_under_odds'
+                    existing_book_line = existing.get('book_line')
+                    prop_line = existing.get('prop_line')
+                    line_mismatch = False
+                    if existing_book_line is not None and prop_line is not None:
+                        try:
+                            line_mismatch = abs(float(existing_book_line) - float(prop_line)) > 0.01
+                        except (TypeError, ValueError):
+                            pass
                     needs_patch = (
                         existing.get(odds_col) is None
                         or existing.get('book_line') is None
+                        or line_mismatch
                     )
                     if not needs_patch:
                         continue
+                    # Line-match guard: patch with entry that matches the
+                    # scorer's prop_line. If no matching line entry exists
+                    # (book dropped the 0.5 line pre-gametime, common for
+                    # star hitters), CLEAR the stale wrong-line odds so
+                    # downstream doesn't ship misleading prices.
+                    if prop_line is not None:
+                        try:
+                            target = float(prop_line)
+                            if abs(float(entry['line']) - target) > 0.01:
+                                if line_mismatch:
+                                    # Actively clearing bad data — null out
+                                    # book_line + odds since we can't get right ones
+                                    print(f'  🧹 clearing wrong-line data for {display} {full_type} '
+                                          f'(scorer wants line-{target}, book only has {entry["line"]})')
+                                    if dry_run:
+                                        patched += 1
+                                        continue
+                                    clear = {
+                                        'book_line': None,
+                                        'book_over_odds': None,
+                                        'book_under_odds': None,
+                                        'book_source': None,
+                                        'last_attached_at': datetime.now(timezone.utc).isoformat(),
+                                    }
+                                    cr = requests.patch(
+                                        f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{existing["id"]}',
+                                        headers=H_WRITE, json=clear, timeout=15,
+                                    )
+                                    if cr.status_code in (200, 201, 204):
+                                        patched += 1
+                                # No existing mismatch and no matching entry — skip
+                                continue
+                        except (TypeError, ValueError):
+                            pass
                     patch = {
                         'book_line': entry['line'],
                         'book_over_odds': entry.get('over_odds'),
