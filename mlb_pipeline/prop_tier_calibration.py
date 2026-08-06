@@ -61,6 +61,18 @@ FAMILY_BASE_RATES = {
 FAMILY_SUPPRESS = {'outs_over'}
 
 
+# ── HIGH-CONVICTION MULTI-SIGNAL GATE (2026-08-05) ──
+# Audit finding: PRIME 100 hits 50% (n=20) while STRONG 60-69 hits 60.8%
+# (n=186). Higher conviction is INVERSELY correlated with hit rate at the
+# top — single-signal legacy PRIMEs are inflated by the 4200-line hand-tuned
+# scorer's tendency to weight one loud signal (hot L7, park factor) as
+# proof. Multi-signal confirmation from the refit model is required to
+# keep conviction above 90.
+HIGH_CONVICTION_THRESHOLD = 90     # conviction level that requires backing
+HIGH_CONVICTION_REFIT_MIN = 70     # refit must be >= this to hold ≥90
+HIGH_CONVICTION_CAP = 85           # otherwise conviction drops to STRONG max
+
+
 def apply_family_prior(prop_type: str, direction: str, raw_conviction: int) -> tuple[int, str]:
     """Blend raw conviction with historical family hit rate.
 
@@ -265,6 +277,30 @@ def is_goldmine_skip(prop_type: str, tier: str, direction: str) -> bool:
     return key in GOLDMINE_SKIP_COMBOS
 
 
+def cap_unsupported_high_conviction(raw_conviction: int,
+                                    refit_conviction: Optional[float]) -> tuple[int, str]:
+    """Cap conviction >= 90 unless refit model corroborates.
+
+    Audit 2026-08-05: PRIME 100 hit 50% (n=20) vs STRONG 60-69 at 60.8%
+    (n=186). Legacy hand-tuned scorer inflates single-signal PRIMEs.
+    Requiring refit backing (a model trained on outcomes, not weights)
+    filters the inflation.
+
+    Returns (adjusted_conviction, reason). Empty reason = no cap applied.
+    """
+    if raw_conviction < HIGH_CONVICTION_THRESHOLD:
+        return raw_conviction, ''
+    if refit_conviction is None:
+        return HIGH_CONVICTION_CAP, f'high_conv{raw_conviction}_no_refit_cap{HIGH_CONVICTION_CAP}'
+    try:
+        rc = float(refit_conviction)
+    except (TypeError, ValueError):
+        return HIGH_CONVICTION_CAP, f'high_conv{raw_conviction}_bad_refit_cap{HIGH_CONVICTION_CAP}'
+    if rc < HIGH_CONVICTION_REFIT_MIN:
+        return HIGH_CONVICTION_CAP, f'high_conv{raw_conviction}_refit{rc:.0f}_below_gate{HIGH_CONVICTION_REFIT_MIN}_cap{HIGH_CONVICTION_CAP}'
+    return raw_conviction, ''
+
+
 def _implied_prob(odds: Optional[int]) -> Optional[float]:
     if odds is None: return None
     try: o = int(odds)
@@ -349,15 +385,28 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
     # PRIME 90 in ha_over (43% hist).
     prior_conv, prior_reason = apply_family_prior(pt, direction, conv)
 
+    # 3b. Multi-signal gate (2026-08-05) — legacy hand-tuned PRIMEs at
+    # conviction >= 90 hit 50% vs STRONG 60-69 at 61%. Require refit model
+    # backing to hold above 90; otherwise drop to STRONG max.
+    refit_conv = prop.get('refit_conviction')
+    capped_conv, cap_reason = cap_unsupported_high_conviction(prior_conv, refit_conv)
+
     # 4. Juice cap (uses possibly-adjusted conviction)
-    new_conv, jc_reason = juice_cap(odds, prior_conv, pt, tier, direction)
+    new_conv, jc_reason = juice_cap(odds, capped_conv, pt, tier, direction)
+
+    # Tier follows conviction: if we dropped below PRIME threshold from PRIME,
+    # demote to STRONG so downstream renderers/UI don't mis-signal tier.
+    new_tier = tier
+    if tier == 'PRIME' and new_conv < 90:
+        new_tier = 'STRONG'
 
     # Combine reasons
-    reasons = [r for r in (prior_reason, jc_reason) if r and r != 'no_family_prior']
+    reasons = [r for r in (prior_reason, cap_reason, jc_reason)
+               if r and r != 'no_family_prior']
     reason_str = '·'.join(reasons) or 'no_calibration_needed'
 
     return {'keep': True, 'flip_direction': False, 'new_direction': direction,
-            'new_tier': tier, 'new_conviction': new_conv,
+            'new_tier': new_tier, 'new_conviction': new_conv,
             'reason': reason_str}
 
 
@@ -373,7 +422,13 @@ if __name__ == '__main__':
         {'prop_type':'er_over','tier':'STRONG','direction':'over','conviction':75,'book_over_odds':-165},
         {'prop_type':'hits_over','tier':'PRIME','direction':'over','conviction':92,'book_over_odds':-350},
         {'prop_type':'ks_over','tier':'PRIME','direction':'over','conviction':90,'book_over_odds':-142},
+        # HIGH-CONV GATE tests (2026-08-05)
+        {'prop_type':'er_over','tier':'PRIME','direction':'over','conviction':100,'book_over_odds':-115, 'refit_conviction': None},  # no refit → cap
+        {'prop_type':'er_over','tier':'PRIME','direction':'over','conviction':95,'book_over_odds':-125, 'refit_conviction': 55},     # low refit → cap
+        {'prop_type':'bb_under','tier':'PRIME','direction':'under','conviction':98,'book_under_odds':-130, 'refit_conviction': 98.4}, # refit supported → keep
+        {'prop_type':'hits_over','tier':'PRIME','direction':'over','conviction':82,'book_over_odds':-120, 'refit_conviction': None}, # below 90 → keep
     ]
     for t in tests:
         r = apply_calibration(t, jerry_verdict='BACK')
-        print(f'{t["prop_type"]:<12} {t["tier"]:<6} {t["direction"]:<5}  odds={t.get("book_over_odds") or t.get("book_under_odds")}  conv={t["conviction"]} → keep={r["keep"]}, tier={r["new_tier"]}, conv={r["new_conviction"]}  ({r["reason"]})')
+        refit = t.get('refit_conviction')
+        print(f'{t["prop_type"]:<12} {t["tier"]:<6} {t["direction"]:<5}  raw={t["conviction"]}  refit={refit}  → keep={r["keep"]}  tier={r["new_tier"]:<6}  conv={r["new_conviction"]}  ({r["reason"]})')
