@@ -75,6 +75,28 @@ def render_prompt(template: str, prop: dict, sport: str,
     sigs = prop.get('signals') or {}
     sig_lines = '\n'.join(f'  - {k}: {v}' for k, v in sigs.items() if not k.startswith('_'))[:2000]
 
+    # CALIBRATION SIGNAL SURFACE (2026-08-05). apply_calibration stores its
+    # fade/flip reason under signals['_calibration_fade']. The underscore
+    # normally hides it from Jerry (implementation detail), but when a fade
+    # fired we MUST tell Jerry — otherwise he may write PASS prose while
+    # the mechanical layer forces STRONG conviction, producing a card
+    # with inconsistent tier vs narrative. Surface it as an explicit
+    # instruction so Jerry's prose aligns with the calibrated call.
+    cal_fade = sigs.get('_calibration_fade')
+    calibration_directive = ''
+    if cal_fade:
+        calibration_directive = (
+            f'\n\n=== CALIBRATION OVERRIDE (must honor) ===\n'
+            f'A historical trap pattern fired for this prop: {cal_fade}\n'
+            f'This means the ORIGINAL side is a known losing bucket at this juice band. '
+            f'The prop has already been FLIPPED to the winning side ({prop.get("direction")}) '
+            f'at the tier/conviction shown. Your job: write BACK prose for THIS side, '
+            f'explaining WHY the market has priced the fade in (juice-band trap, form drift '
+            f'already digested, etc.). Do NOT return PASS or FADE for this prop — '
+            f'the mechanical layer has already made the call and your narrative must '
+            f'match. Set VERDICT: BACK and CONVICTION consistent with the tier shown.'
+        )
+
     # Bucket ROI injection (2026-08-01 R-4): give Jerry the historical hit
     # rate + juice-adjusted ROI for this exact (tier, prop_type, direction)
     # bucket. Jerry uses this to decide BACK/FADE/PASS with real edge instead
@@ -108,6 +130,10 @@ def render_prompt(template: str, prop: dict, sport: str,
             f'IMPORTANT: Weight this bucket ROI heavily in your BACK/FADE/PASS decision. '
             f'Positive ROI = evidence to BACK. Negative ROI = evidence to FADE regardless of tier.'
         )
+    # Append calibration override AFTER bucket hint so it's the final instruction
+    # Jerry sees. Highest-priority context = highest place in prompt tail.
+    if calibration_directive:
+        rendered = f'{rendered}{calibration_directive}'
     return rendered
 
 
@@ -343,9 +369,13 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
             # Direction-contradiction check (2026-08-05) — catches BACK calls
             # whose direction disagrees with the model's own projection.
             # Painter BB Under @ -135 with projection 2.10 BB was the canary.
+            # SKIP when calibration has already forced a fade-flip — the
+            # projection edge belongs to the ORIGINAL direction and the
+            # historical trap pattern outranks the projection here.
+            calibration_flip_active = bool((prop.get('signals') or {}).get('_calibration_fade'))
             dir_report = _validate_dir(prop, parsed.get('call_verdict'),
                                        parsed.get('call_direction') or parsed.get('call_side'))
-            if dir_report['contradicts']:
+            if dir_report['contradicts'] and not calibration_flip_active:
                 print(f'  ⚠ DIRECTION CONTRADICTION on {prop["player_name"]} '
                       f'{prop.get("prop_type")}/{prop.get("direction")}: {dir_report["reason"]} '
                       f'— downgrading BACK → PASS')
