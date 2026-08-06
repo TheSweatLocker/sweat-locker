@@ -432,6 +432,51 @@ def outs_over_fair_price_fade(prop: dict) -> Optional[dict]:
     return None
 
 
+# ── TIER × FAIR-PRICE FADES (2026-08-05 v3) ─────────────────────────
+# Discovered by deep-dive audit: certain (prop_type, tier, direction)
+# combos hit <40% at fair/plus odds regardless of drift signal. Book
+# has priced these systematically; fair-odds "value" is illusory.
+#
+# Format: (prop_type, tier, direction) → (fade_tier, fade_conviction, inverse_pct, n)
+FAIR_PRICE_TIER_FADES = {
+    # bb_over — book prices modest walk rate signal into fair odds
+    ('bb_over',  'PRIME',  'over'):  ('STRONG', 82, 83, 12),   # 17% hit → 83% under
+    ('bb_over',  'STRONG', 'over'):  ('STRONG', 70, 60, 38),   # 40% → 60% under
+    ('bb_over',  'SKIP',   'over'):  ('STRONG', 68, 58, 48),   # 42% → 58% under
+    # ks_under — biggest sample: ks_under SKIP at fair odds is a graveyard
+    ('ks_under', 'STRONG', 'under'): ('STRONG', 70, 62, 24),   # 37.5% → 62% over
+    ('ks_under', 'SKIP',   'under'): ('STRONG', 72, 63, 110),  # 37.3% → 63% over (n=110)
+}
+
+
+def fair_price_tier_fade(prop: dict) -> Optional[dict]:
+    """When a (prop_type, tier, direction) combo consistently loses at
+    fair/plus odds, flip to the opposite side.
+
+    Runs AFTER drift-based fades so the more specific rules win. Only
+    activates when book_odds > -110 (fair-price band).
+    """
+    pt = (prop.get('prop_type') or '').lower()
+    tier = (prop.get('tier') or '').upper()
+    direction = (prop.get('direction') or '').lower()
+    if direction not in ('over', 'under'): return None
+    odds = prop.get('book_over_odds') if direction == 'over' else prop.get('book_under_odds')
+    if odds is None: return None
+    try: odds = int(odds)
+    except (TypeError, ValueError): return None
+    if odds <= -110: return None  # fair/plus only
+
+    entry = FAIR_PRICE_TIER_FADES.get((pt, tier, direction))
+    if not entry: return None
+    fade_tier, fade_conv, inv_pct, n = entry
+    new_direction = 'under' if direction == 'over' else 'over'
+    return {
+        'flip_direction': True, 'new_direction': new_direction,
+        'new_tier': fade_tier, 'new_conviction': fade_conv,
+        'reason': f'fair_price_tier_fade_{pt}_{tier}_{direction}_hit{100-inv_pct}pct_inverse{inv_pct}pct_n{n}',
+    }
+
+
 def ks_kdrift_fair_price_fade(prop: dict) -> Optional[dict]:
     """K-rate drift traps priced in at fair juice → fade to opposite side.
 
@@ -648,6 +693,17 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
     if ks_fade:
         return {'keep': True, **ks_fade}
 
+    # 0.7 TIER × FAIR-PRICE fades (2026-08-05 v3) — blanket fades for
+    # (prop_type, tier) combos that lose systemically at fair odds
+    # regardless of drift context. Runs AFTER drift-based rules so
+    # the more specific fades win first. Covers:
+    #   - bb_over PRIME/STRONG/SKIP + FAIR (16-42% hit)
+    #   - ks_under SKIP + FAIR (37% hit, n=110 — biggest sample)
+    #   - ks_under STRONG + FAIR (37.5% hit)
+    tier_fade = fair_price_tier_fade(prop)
+    if tier_fade:
+        return {'keep': True, **tier_fade}
+
     # 1. FAMILY HARD SUPPRESS (2026-08-05) — dead prop families never publish
     # regardless of tier/conviction. outs_over at 22.7% n=22 = graveyard.
     # Runs AFTER the fair-price fade check so signal-rich outs_over rows
@@ -753,6 +809,17 @@ if __name__ == '__main__':
          'signals': {'form_cold':'L3 K% 12.0 vs season 18.5'},'refit_conviction': None},             # cold -6.5pt + fair → FADE
         {'prop_type':'ks_over','tier':'STRONG','direction':'over','conviction':70,'book_over_odds':-140,
          'signals': {'form_hot':'L3 K% 27.0 vs season 24.0'},'refit_conviction': None},              # mod hot + trap juice → NO fade (juice range excludes)
+        # TIER × FAIR-PRICE FADE tests (2026-08-05 v3)
+        {'prop_type':'bb_over','tier':'PRIME','direction':'over','conviction':85,'book_over_odds':105,
+         'signals': {},'refit_conviction': None},                                                     # PRIME bb_over + FAIR → FADE (17% hist)
+        {'prop_type':'bb_over','tier':'STRONG','direction':'over','conviction':70,'book_over_odds':-105,
+         'signals': {},'refit_conviction': None},                                                     # STRONG bb_over + FAIR → FADE
+        {'prop_type':'bb_over','tier':'LEAN','direction':'over','conviction':50,'book_over_odds':105,
+         'signals': {},'refit_conviction': None},                                                     # LEAN bb_over + FAIR → NO FADE (LEAN not in dict)
+        {'prop_type':'bb_over','tier':'PRIME','direction':'over','conviction':85,'book_over_odds':-140,
+         'signals': {},'refit_conviction': None},                                                     # PRIME bb_over + TRAP juice → NO FADE
+        {'prop_type':'ks_under','tier':'SKIP','direction':'under','conviction':30,'book_under_odds':110,
+         'signals': {},'refit_conviction': None},                                                     # ks_under SKIP + FAIR → FADE (big sample)
     ]
     for t in tests:
         r = apply_calibration(t, jerry_verdict='BACK')
