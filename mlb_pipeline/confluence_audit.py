@@ -50,6 +50,7 @@ KEY = os.environ['SUPABASE_KEY']
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
 from similar_games import find_similar, load_history
+from pipeline_consistency import check_pick_vs_model
 
 
 def _today_et() -> str:
@@ -181,7 +182,8 @@ def audit_slate(date_str: str, sport: str = 'MLB'):
             'game_id': f'in.({ids})',
             'select': ('game_id,home_team,away_team,close_total,open_total,'
                        'current_total,close_spread,open_spread,home_ml_odds,'
-                       'home_ml_close,home_ml_open,oddscrowd_snapshot'),
+                       'home_ml_close,home_ml_open,oddscrowd_snapshot,'
+                       'jerry_pred_total,jerry_pred_spread'),
         }, timeout=15).json()
     games = {g['game_id']: g for g in ctx}
 
@@ -206,12 +208,13 @@ def audit_slate(date_str: str, sport: str = 'MLB'):
     target_map = {g['game_id']: g for g in target_ctx}
 
     print()
-    print(f'{"MATCH":30s}  {"CONV":>4}  {"PICK":15s}  {"LINE":>18}  {"SHARP":>18}  {"HIST(n30)":>18}  CONF')
-    print('-' * 130)
+    print(f'{"MATCH":30s}  {"CONV":>4}  {"PICK":15s}  {"LINE":>18}  {"SHARP":>18}  {"HIST(n30)":>16}  {"MDL✓":>5}  CONF')
+    print('-' * 138)
 
     aligned_games = []
     mixed_games = []
     silent_games = []
+    inverted_picks = []  # picks where pipeline direction contradicts model
 
     for row in jr:
         g = games.get(row.get('game_id'), {})
@@ -236,6 +239,11 @@ def audit_slate(date_str: str, sport: str = 'MLB'):
         if target and mkt in ('ml', 'total'):
             sim = find_similar(target, k=30, sport=sport, history=history)
             sim_summary = sim.get('outcome_summary')
+
+        # Pipeline vs model direction consistency (GAP 2)
+        model_check = check_pick_vs_model(g, mkt, jerry_side, row.get('call_line'))
+        if model_check.get('consistent') is False:
+            inverted_picks.append((match, model_check['note']))
 
         # Confluence classification
         line_ok = _direction_agrees(jerry_side, line_sig, mkt)
@@ -268,15 +276,21 @@ def audit_slate(date_str: str, sport: str = 'MLB'):
         # Hist summary
         if sim_summary:
             if mkt == 'ml':
-                hist_disp = f'H{sim_summary.get("ml_home_pct","?")}%'[:18]
+                hist_disp = f'H{sim_summary.get("ml_home_pct","?")}%'[:16]
             elif mkt == 'total':
-                hist_disp = f'O{sim_summary.get("total_over_pct","?")}%'[:18]
+                hist_disp = f'O{sim_summary.get("total_over_pct","?")}%'[:16]
             else:
                 hist_disp = '-'
         else:
             hist_disp = '-'
 
-        print(f'{match:30s}  {conv:>4}  {call_text[:15]:15s}  {line_disp:>18}  {sharp_disp:>18}  {hist_disp:>18}  {conf_label}')
+        # Model consistency column
+        mc = model_check.get('consistent')
+        if mc is True: mdl_disp = 'OK'
+        elif mc is False: mdl_disp = '⚠INV'
+        else: mdl_disp = '-'
+
+        print(f'{match:30s}  {conv:>4}  {call_text[:15]:15s}  {line_disp:>18}  {sharp_disp:>18}  {hist_disp:>16}  {mdl_disp:>5}  {conf_label}')
 
     print()
     print(f'ALIGNED (all signals agree): {len(aligned_games)}')
@@ -286,6 +300,12 @@ def audit_slate(date_str: str, sport: str = 'MLB'):
     for m, note in mixed_games:
         print(f'    ⚠ {m}  [{note}]')
     print(f'SILENT (insufficient data): {len(silent_games)}')
+    if inverted_picks:
+        print()
+        print(f'🚨 PIPELINE INVERSIONS ({len(inverted_picks)}) — pick direction opposes jerry_pred model:')
+        for m, note in inverted_picks:
+            print(f'    ⚠ {m}')
+            print(f'        {note}')
 
 
 def main():
