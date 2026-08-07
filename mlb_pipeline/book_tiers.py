@@ -50,6 +50,8 @@ BOOK_TIER = {
     'ESPN BET':       'mid',
     'Fanatics':       'mid',
     'betPARX':        'mid',
+    'ReBet':          'mid',   # 2026-08-07 first appearance in tonight's slate
+    'theScore Bet':   'mid',   # 2026-08-07 first appearance in tonight's slate
 
     # ── PUBLIC (recreational — square money flow dominant) ───────────
     'Bovada':         'public',
