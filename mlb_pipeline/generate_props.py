@@ -456,6 +456,68 @@ def fetch_batter_quality(player_name, season=2026):
 _PITCHER_PROJ_CACHE = None  # loaded from data/pitcher_class_projections.json
 
 
+# ── Bayesian blend of L7 rolling vs season baseline (2026-08-06) ────
+# Root cause of Buehler BB over 2.5 miscalibration: score_pitcher_bb_over
+# used l7_rolling.avg_bb DIRECTLY (3.0 walks/start for Buehler) while the
+# game-context field projected 2.1 — a 40% divergence Jerry then had to
+# pick from and always picked the aggressive one that justified the pick.
+#
+# The 3.0 came from 7 short starts (avg 4.5 IP). Season baseline computed
+# from classes was 2.2. Proper Bayesian blend with a 20-start prior gives
+# 2.4 — closer to the game-context number, less trap-prone.
+#
+# Prior weight of 20 starts = "we trust the season baseline about as much
+# as 20 recent starts". Small enough that a real change in form (10-12
+# starts of new data) shifts the blend materially, large enough that a
+# 7-start hot streak doesn't stampede the projection.
+_SEASON_PRIOR_N_STARTS = 20
+
+
+def _season_baseline_from_classes(proj: dict, stat_key: str):
+    """Weighted mean of a stat across pitcher_projections.classes buckets.
+
+    stat_key: 'avg_bb' | 'avg_ks' | 'avg_hits' | 'avg_er' | 'avg_outs'
+    Returns (baseline_value, total_n_starts) or (None, 0) if unavailable.
+    Classes are opponent-strength buckets (91_100 = league-avg offense,
+    101_110 = above-avg offense, etc.). Weighting by n gives season avg.
+    """
+    if not proj: return None, 0
+    classes = proj.get('classes') or {}
+    if not classes: return None, 0
+    total_n, total_val = 0, 0.0
+    for _label, bucket in classes.items():
+        if not isinstance(bucket, dict): continue
+        n = bucket.get('n')
+        v = bucket.get(stat_key)
+        try: n = int(n); v = float(v)
+        except (TypeError, ValueError): continue
+        if n <= 0: continue
+        total_n += n
+        total_val += v * n
+    if total_n == 0: return None, 0
+    return total_val / total_n, total_n
+
+
+def _bayes_blend_l7_season(l7_val, l7_n, season_val, prior_n: int = _SEASON_PRIOR_N_STARTS):
+    """Bayesian-style weighted blend: (l7 × l7_n + season × prior_n) / (l7_n + prior_n).
+
+    Returns blended value. If either input is None, returns the other.
+    Both None → None. Handles Buehler-style hot-streak inflation without
+    overriding real form changes once l7_n climbs above prior_n.
+    """
+    try:
+        l7_val = float(l7_val) if l7_val is not None else None
+        l7_n = int(l7_n) if l7_n is not None else 0
+        season_val = float(season_val) if season_val is not None else None
+    except (TypeError, ValueError):
+        return None
+    if l7_val is None and season_val is None: return None
+    if l7_val is None: return season_val
+    if season_val is None: return l7_val
+    if l7_n <= 0: return season_val
+    return (l7_val * l7_n + season_val * prior_n) / (l7_n + prior_n)
+
+
 def get_pitcher_projection(name):
     """Load the pitcher class-projection JSON cache (built by
     compute_pitcher_class_projections.py) and return this pitcher's entry
@@ -614,9 +676,16 @@ def score_pitcher_bb_over(g, side):
     l7 = (proj or {}).get('l7_rolling') if proj else None
     if not l7 or l7.get('avg_bb') is None:
         return None  # no projection basis = no walks prop
-    proj_bb = l7['avg_bb']
     if l7.get('avg_ip', 0) < 3.0:
         return None  # opener / short-relief profile
+
+    # 2026-08-06 Bayesian blend: raw L7 avg was inflating projections on
+    # small-sample hot streaks (Buehler 7 short starts → 3.0 BB/start when
+    # season baseline was 2.2). Blend with season baseline from classes.
+    l7_avg_bb = l7['avg_bb']
+    l7_n = l7.get('n_starts') or 7
+    season_bb, season_n = _season_baseline_from_classes(proj, 'avg_bb')
+    proj_bb = _bayes_blend_l7_season(l7_avg_bb, l7_n, season_bb) or l7_avg_bb
 
     opp_side = 'away' if side == 'home' else 'home'
     opp_k_pct = _f(g.get(f'{opp_side}_team_k_pct')) or 22  # patient-vs-aggressive proxy (lower K = more contact-y)
@@ -625,9 +694,12 @@ def score_pitcher_bb_over(g, side):
 
     signals = {}
     signals['_projected_bb'] = round(proj_bb, 1)
+    signals['_projected_bb_l7_raw'] = round(l7_avg_bb, 1)
+    if season_bb is not None:
+        signals['_projected_bb_season'] = round(season_bb, 2)
     conviction = 30
 
-    # Primary: how far is L7 walk rate above the 1.5 line?
+    # Primary: how far is blended walk rate above the 1.5 line?
     # Thresholds widened 2026-05-13 — pre-patch only Schultz-style outliers
     # (L7 BB ≥3.0) cleared the +28 bonus; middling walks-prone arms like
     # McCullers (2.86) and Bradish (2.71) got stuck at slim-edge tier and
@@ -635,22 +707,22 @@ def score_pitcher_bb_over(g, side):
     over_margin = proj_bb - 1.5
     if over_margin >= 0.7:
         conviction += 28
-        signals['l7_walks'] = f'L7 avg {proj_bb:.1f} BB/start — {over_margin:+.1f} vs 1.5 line'
+        signals['last7_walks'] = f'last 7 starts avg {l7_avg_bb:.1f} BB/start · blended proj {proj_bb:.1f} — {over_margin:+.1f} vs 1.5 line'
     elif over_margin >= 0.4:
         conviction += 18
-        signals['l7_walks'] = f'L7 avg {proj_bb:.1f} BB/start — {over_margin:+.1f} vs 1.5 line'
+        signals['last7_walks'] = f'last 7 starts avg {l7_avg_bb:.1f} BB/start · blended proj {proj_bb:.1f} — {over_margin:+.1f} vs 1.5 line'
     elif over_margin >= 0.15:
         conviction += 8
-        signals['l7_walks'] = f'L7 avg {proj_bb:.1f} BB/start — slim edge over 1.5'
+        signals['last7_walks'] = f'last 7 starts avg {l7_avg_bb:.1f} BB/start · blended proj {proj_bb:.1f} — slim edge over 1.5'
     else:
         return None  # not enough walk volume to bet the over
 
-    # BB/9 layer — corroborates the per-start average
+    # BB/9 layer — corroborates the per-start average (raw L7, informational)
     bb9 = l7.get('bb_per_9')
     if bb9 is not None:
         if bb9 >= 4.0:
             conviction += 10
-            signals['bb_rate'] = f'{bb9:.1f} BB/9 L7 — elevated walk rate'
+            signals['bb_rate'] = f'{bb9:.1f} BB/9 over last 7 starts — elevated walk rate'
         elif bb9 <= 2.0:
             conviction -= 8
 
@@ -707,9 +779,16 @@ def score_pitcher_bb_under(g, side):
     l7 = (proj or {}).get('l7_rolling') if proj else None
     if not l7 or l7.get('avg_bb') is None:
         return None
-    proj_bb = l7['avg_bb']
     if l7.get('avg_ip', 0) < 4.0:
         return None  # need a real innings load to bet UNDER on walks
+
+    # 2026-08-06 Bayesian blend — symmetric to bb_over. A 7-start "elite
+    # control" streak from a career-average command guy shouldn't drive
+    # PRIME UNDER; blend to season baseline to catch true low-BB arms only.
+    l7_avg_bb = l7['avg_bb']
+    l7_n = l7.get('n_starts') or 7
+    season_bb, _ = _season_baseline_from_classes(proj, 'avg_bb')
+    proj_bb = _bayes_blend_l7_season(l7_avg_bb, l7_n, season_bb) or l7_avg_bb
 
     opp_side = 'away' if side == 'home' else 'home'
     opp_k_pct = _f(g.get(f'{opp_side}_team_k_pct')) or 22
@@ -717,9 +796,12 @@ def score_pitcher_bb_under(g, side):
 
     signals = {}
     signals['_projected_bb'] = round(proj_bb, 1)
+    signals['_projected_bb_l7_raw'] = round(l7_avg_bb, 1)
+    if season_bb is not None:
+        signals['_projected_bb_season'] = round(season_bb, 2)
     conviction = 30
 
-    # Primary: how far is L7 walk rate below the 1.5 line?
+    # Primary: how far is blended walk rate below the 1.5 line?
     # Thresholds widened 2026-05-13 — pre-patch most pitchers projecting
     # 1.1-1.4 BB/start (clean BB-Unders) got stuck at +6 and never cleared
     # cutoff 55. New tiers: 0.4/0.2/0.1 (was 0.7/0.4/0.2). This surfaces
@@ -729,13 +811,13 @@ def score_pitcher_bb_under(g, side):
     under_margin = 1.5 - proj_bb
     if under_margin >= 0.4:
         conviction += 28
-        signals['l7_control'] = f'L7 avg {proj_bb:.1f} BB/start — elite control, {under_margin:.1f} under 1.5'
+        signals['last7_control'] = f'last 7 starts avg {l7_avg_bb:.1f} BB/start · blended proj {proj_bb:.1f} — elite control, {under_margin:.1f} under 1.5'
     elif under_margin >= 0.2:
         conviction += 18
-        signals['l7_control'] = f'L7 avg {proj_bb:.1f} BB/start — {under_margin:.1f} under 1.5'
+        signals['last7_control'] = f'last 7 starts avg {l7_avg_bb:.1f} BB/start · blended proj {proj_bb:.1f} — {under_margin:.1f} under 1.5'
     elif under_margin >= 0.05:
         conviction += 8
-        signals['l7_control'] = f'L7 avg {proj_bb:.1f} BB/start — slim edge under 1.5'
+        signals['last7_control'] = f'last 7 starts avg {l7_avg_bb:.1f} BB/start · blended proj {proj_bb:.1f} — slim edge under 1.5'
     else:
         return None  # walks too high to bet the under
 
@@ -743,7 +825,7 @@ def score_pitcher_bb_under(g, side):
     if bb9 is not None:
         if bb9 <= 2.0:
             conviction += 12
-            signals['bb_rate'] = f'{bb9:.1f} BB/9 L7 — elite command'
+            signals['bb_rate'] = f'{bb9:.1f} BB/9 over last 7 starts — elite command'
         elif bb9 >= 4.0:
             conviction -= 10
 

@@ -70,7 +70,9 @@ Translation guide (map internal terms → user-facing language):
   MC / Monte Carlo                           →  "simulator" or "sim" (never "MC")
   V4 / Panel / model_v4                      →  "our model" (specify which if useful)
   bets/money divergence +Xpp                 →  "sharp money on X" / "public on X, sharps on Y"
-  L3 / L7 / L10 / L14                        →  "last three starts" / "last week" / "last ten games" / "last two weeks"
+  L3 / L7 / L10 / L14 (batter/team context)  →  "last three games" / "last seven games" / "last ten games" / "last two weeks"
+  L7 / last7 (PITCHER context)               →  "last seven starts" (NOT "last week" or "last seven days" — a starter makes ~1 start per week, so L7 spans ~30 days of games)
+  last 7 starts avg X BB/start               →  "averaging X walks per start over his last seven starts" (never abbreviate as "L7 days" or "last week")
   L3 ERA X vs xERA Y                         →  "his ERA in last 3 is X but his stuff (xERA) suggests Y" — say "his stuff" so readers get it
   wRC+                                       →  "offense" (e.g. "top-10 offense" for wRC+ 115+, "cold bats" for wRC+ 90-)
   xERA                                       →  "ERA" if close to actual ERA; "stuff" if divergent (his stuff)
