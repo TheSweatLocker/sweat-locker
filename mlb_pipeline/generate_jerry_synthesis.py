@@ -197,6 +197,16 @@ def enrich_struct(struct: dict, game: dict, externals: list,
     struct["align_status"] = game.get("align_status")
     struct["money_flow"] = game.get("oddscrowd_snapshot")
 
+    # UMPIRE PRIOR (2026-08-06): the pipeline computes umpire O/U bias into
+    # game.umpire_note ("Dan Bellino — hitter-friendly zone, 58% over rate")
+    # but Jerry never saw it before. Wire it in as a first-class signal
+    # alongside park factor + weather. Umps with 55%+ or 45%- over rate at
+    # meaningful sample are a real edge nobody in the tools space surfaces.
+    struct["umpire"] = {
+        "name": game.get("umpire"),
+        "note": game.get("umpire_note"),
+    }
+
     return struct
 
 
