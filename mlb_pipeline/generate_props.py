@@ -1628,17 +1628,25 @@ def score_pitcher_ks(g, side):
     # Now suggested_line is derived from projected_ks so what we recommend
     # matches what we project.
     proj = get_pitcher_projection(pitcher)
-    l7_k = (proj or {}).get('l7_rolling', {}).get('avg_k') if proj else None
+    l7_rolling = (proj or {}).get('l7_rolling') if proj else {}
+    l7_k = (l7_rolling or {}).get('avg_k')
     # 2026-06-05 K_PROJECTION_SHIFT: subtract 0.3 from raw L7 K projection.
     # Lifetime backtest n=127 graded K props: applying shift -0.3 improves
     # OVER picks 66.7%→72.0% AND UNDER picks 70.2%→71.9% (3.5pt total lift).
     # The raw L7 average modestly over-projects in modern MLB — likely a
     # bullpen-leverage effect (starters get hooked before reaching peak K).
-    # Adjusts at projection time so both _projected_ks display value AND
-    # downstream edge calculation use the calibrated number.
+    # 2026-08-07 Bayesian blend: on top of the -0.3 shift, blend L7 with
+    # season baseline from classes so short-sample streaks don't drive
+    # inflated K lines (same fix pattern as bb 9a42c7cd).
     K_PROJECTION_SHIFT = 0.3
     if l7_k is not None:
-        signals['_projected_ks'] = round(float(l7_k) - K_PROJECTION_SHIFT, 1)
+        l7_n = (l7_rolling or {}).get('n_starts') or 7
+        season_k, _ = _season_baseline_from_classes(proj, 'avg_k')
+        blended_k = _bayes_blend_l7_season(l7_k, l7_n, season_k) or float(l7_k)
+        signals['_projected_ks'] = round(blended_k - K_PROJECTION_SHIFT, 1)
+        signals['_projected_ks_l7_raw'] = round(float(l7_k), 1)
+        if season_k is not None:
+            signals['_projected_ks_season'] = round(season_k, 2)
     elif pitcher_k_pct is not None:
         signals['_projected_ks'] = round(pitcher_k_pct / 100 * 22 - K_PROJECTION_SHIFT, 1)
 
@@ -1858,11 +1866,21 @@ def score_pitcher_ks_under(g, side):
     # suggested_line can use it directly — same unification as K-Over scorer.
     # Apply K_PROJECTION_SHIFT for the same reason as K-Over (see comment
     # at score_pitcher_ks).
+    # 2026-08-07 Bayesian blend added — symmetric to K-Over. A hot 7-start
+    # K streak on a career-avg strikeout guy shouldn't drive PRIME UNDER
+    # (nor short-sample cold streak drive PRIME OVER on the sister scorer).
     proj = get_pitcher_projection(pitcher)
-    l7_k = (proj or {}).get('l7_rolling', {}).get('avg_k') if proj else None
+    l7_rolling = (proj or {}).get('l7_rolling') if proj else {}
+    l7_k = (l7_rolling or {}).get('avg_k')
     K_PROJECTION_SHIFT = 0.3
     if l7_k is not None:
-        signals['_projected_ks'] = round(float(l7_k) - K_PROJECTION_SHIFT, 1)
+        l7_n = (l7_rolling or {}).get('n_starts') or 7
+        season_k, _ = _season_baseline_from_classes(proj, 'avg_k')
+        blended_k = _bayes_blend_l7_season(l7_k, l7_n, season_k) or float(l7_k)
+        signals['_projected_ks'] = round(blended_k - K_PROJECTION_SHIFT, 1)
+        signals['_projected_ks_l7_raw'] = round(float(l7_k), 1)
+        if season_k is not None:
+            signals['_projected_ks_season'] = round(season_k, 2)
     elif pitcher_k_pct is not None:
         signals['_projected_ks'] = round(pitcher_k_pct / 100 * 18 - K_PROJECTION_SHIFT, 1)
 
@@ -2266,15 +2284,26 @@ def score_pitcher_er(g, side):
     # 2026-05-13 after 5/13 surfaced Woods Richardson (L7 4.0 ER) / McCullers
     # (L7 4.0 ER) projecting clean ER-overs that didn't clear the xERA-anchored
     # scorer. L7 captures what xERA misses (mechanical issues, command slumps).
+    # 2026-08-07 Bayesian blend added — same fix pattern as bb 9a42c7cd.
+    # Raw L7 avg_er inflated projections when a hot-streak spike (Buehler
+    # 7 short starts) drove PRIME OVERs off unregressed numbers.
     proj = get_pitcher_projection(pitcher)
     l7 = (proj or {}).get('l7_rolling') if proj else None
     l7_er = (l7 or {}).get('avg_er') if l7 else None
     if l7_er is not None:
-        signals['_projected_er'] = round(float(l7_er), 1)
-        if float(l7_er) >= 3.5:
+        l7_n = (l7 or {}).get('n_starts') or 7
+        season_er, _ = _season_baseline_from_classes(proj, 'avg_er')
+        blended_er = _bayes_blend_l7_season(l7_er, l7_n, season_er) or float(l7_er)
+        signals['_projected_er'] = round(blended_er, 1)
+        signals['_projected_er_l7_raw'] = round(float(l7_er), 1)
+        if season_er is not None:
+            signals['_projected_er_season'] = round(season_er, 2)
+        # Gate on BLENDED value — was gating on raw l7_er and inflating
+        # conviction on small-sample hot streaks
+        if blended_er >= 3.5:
             conviction += 12
-            signals['l7_er'] = f'L7 avg {l7_er:.1f} ER/start — getting tagged'
-        elif float(l7_er) <= 1.5:
+            signals['last7_er'] = f'last 7 starts avg {l7_er:.1f} ER/start · blended proj {blended_er:.1f} — getting tagged'
+        elif blended_er <= 1.5:
             conviction -= 8
 
     # Vs-team ERA history override — when a starter has historically been
@@ -2388,11 +2417,19 @@ def score_pitcher_er_under(g, side):
     # avg_er (matches over-side projection source for symmetry), fall back to
     # xERA × projected_IP / 9 when L7 sample isn't available. Stored as
     # `_projected_er` to mirror _projected_ks / _projected_bb / _projected_hits.
+    # 2026-08-07 Bayesian blend added — symmetric to ER-Over. Cold-streak
+    # ER dips shouldn't drive PRIME UNDER on a career-average arm.
     proj = get_pitcher_projection(pitcher)
     l7 = (proj or {}).get('l7_rolling') if proj else None
     _l7_er = (l7 or {}).get('avg_er') if l7 else None
     if _l7_er is not None:
-        signals['_projected_er'] = round(float(_l7_er), 1)
+        l7_n = (l7 or {}).get('n_starts') or 7
+        season_er, _ = _season_baseline_from_classes(proj, 'avg_er')
+        blended_er = _bayes_blend_l7_season(_l7_er, l7_n, season_er) or float(_l7_er)
+        signals['_projected_er'] = round(blended_er, 1)
+        signals['_projected_er_l7_raw'] = round(float(_l7_er), 1)
+        if season_er is not None:
+            signals['_projected_er_season'] = round(season_er, 2)
     elif projected_outs is not None and xera is not None:
         # ER = xERA × IP / 9 = xERA × outs / 27
         signals['_projected_er'] = round(float(xera) * float(projected_outs) / 27.0, 1)
