@@ -46,6 +46,54 @@ H_WRITE = {**H_READ, "Content-Type": "application/json", "Prefer": "return=minim
 CACHE_PATH = Path(__file__).parent / "data" / "pitcher_class_projections.json"
 
 
+# ── Bayesian blend of L7 vs season baseline (2026-08-07) ────────────
+# Mirrors generate_props.py:_bayes_blend_l7_season. See that file's
+# comment for the full derivation. Prior weight of 20 starts = "we
+# trust the season baseline as much as 20 recent starts". Small enough
+# that a real form change (10-12 new starts) shifts the blend, large
+# enough that a 7-start hot streak doesn't stampede the projection.
+# Applied here so game_context.{home,away}_pitcher_projected_* fields
+# reflect the blended projection — same numbers the prop scorer uses,
+# closes the Buehler-style discrepancy (game_context said 2.1 while
+# prop scorer said 3.0 on the same pitcher, same night).
+_SEASON_PRIOR_N_STARTS = 20
+
+
+def _season_baseline_from_classes(entry, stat_key):
+    """Weighted mean of stat_key across classes[*].n. Returns None if
+    the entry has no classes data."""
+    if not entry: return None
+    classes = entry.get("classes") or {}
+    if not classes: return None
+    total_n, total_val = 0, 0.0
+    for bucket in classes.values():
+        if not isinstance(bucket, dict): continue
+        n = bucket.get("n"); v = bucket.get(stat_key)
+        try: n = int(n); v = float(v)
+        except (TypeError, ValueError): continue
+        if n <= 0: continue
+        total_n += n
+        total_val += v * n
+    if total_n == 0: return None
+    return total_val / total_n
+
+
+def _bayes_blend(l7_val, l7_n, season_val, prior_n: int = _SEASON_PRIOR_N_STARTS):
+    """(l7×l7_n + season×prior_n) / (l7_n + prior_n). Falls back cleanly
+    to whichever side has a value if the other is None."""
+    try:
+        l7_val = float(l7_val) if l7_val is not None else None
+        l7_n = int(l7_n) if l7_n is not None else 0
+        season_val = float(season_val) if season_val is not None else None
+    except (TypeError, ValueError):
+        return None
+    if l7_val is None and season_val is None: return None
+    if l7_val is None: return season_val
+    if season_val is None: return l7_val
+    if l7_n <= 0: return season_val
+    return (l7_val * l7_n + season_val * prior_n) / (l7_n + prior_n)
+
+
 def today_et():
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
 
@@ -62,18 +110,23 @@ def load_json_cache():
 
 
 def get_supabase_projection(name):
+    """Fallback to Supabase pitcher_projections when JSON cache misses.
+    Returns dict with l7_rolling AND classes (2026-08-07 — classes added
+    so the blend has a season baseline even on cache-miss pitchers)."""
     try:
         q = urllib.parse.quote(name)
+        # 2026-08-07 fix: table is keyed on `pitcher_name` not `player_name`.
+        # Prior version silently returned None for every miss.
         r = urllib.request.urlopen(
             urllib.request.Request(
-                f"{SB}/rest/v1/pitcher_projections?player_name=eq.{q}&select=l7_rolling&limit=1",
+                f"{SB}/rest/v1/pitcher_projections?pitcher_name=eq.{q}&select=l7_rolling,classes&limit=1",
                 headers=H_READ,
             ),
             timeout=10,
         )
         rows = json.loads(r.read())
         if rows:
-            return rows[0].get("l7_rolling")
+            return rows[0]  # {'l7_rolling': ..., 'classes': ...}
     except Exception:
         pass
     return None
@@ -120,28 +173,49 @@ def project_all_stats(name, json_cache):
     None values for any stat the source chain can't supply."""
     out = {"ks": None, "bb": None, "hits": None, "outs": None, "er": None, "whip": None, "source": "no_data"}
 
-    # 1. JSON cache (preferred)
+    # 1. JSON cache (preferred). Entry shape: {l7_rolling, classes, name, ...}
     entry = json_cache.get((name or "").lower())
-    l7 = (entry or {}).get("l7_rolling") if entry else None
-    if not l7:
-        # 2. Supabase pitcher_projections fallback
-        l7 = get_supabase_projection(name)
-        if l7:
-            out["source"] = "sb_l7"
-    else:
+    if entry:
         out["source"] = "json_l7"
+    else:
+        # 2. Supabase pitcher_projections fallback — returns {l7_rolling, classes}
+        entry = get_supabase_projection(name)
+        if entry:
+            out["source"] = "sb_l7"
+
+    l7 = (entry or {}).get("l7_rolling") if entry else None
 
     if l7:
-        if l7.get("avg_k") is not None:
-            out["ks"] = round(float(l7["avg_k"]), 1)
-        if l7.get("avg_bb") is not None:
-            out["bb"] = round(float(l7["avg_bb"]), 1)
-        if l7.get("avg_hits") is not None:
-            out["hits"] = round(float(l7["avg_hits"]), 1)
-        if l7.get("avg_er") is not None:
-            out["er"] = round(float(l7["avg_er"]), 1)
-        if l7.get("avg_ip") is not None:
-            out["outs"] = round(float(l7["avg_ip"]) * 3.0, 1)
+        # 2026-08-07 Bayesian blend: L7 vs season baseline from classes.
+        # Blends every projection type at the game_context layer so panel
+        # inputs (projected_er + projected_outs) and Jerry's game reads
+        # see the same regressed numbers the prop scorer uses. Buehler-
+        # style discrepancies (game_context 2.1 vs prop scorer 3.0)
+        # disappear because both paths converge to the blended value.
+        l7_n = l7.get("n_starts") or 7
+        # (stat_key, l7_field, classes_stat_key, multiplier)
+        blend_map = [
+            ("ks",   "avg_k",    "avg_k",    1.0),
+            ("bb",   "avg_bb",   "avg_bb",   1.0),
+            ("hits", "avg_hits", "avg_hits", 1.0),
+            ("er",   "avg_er",   "avg_er",   1.0),
+            ("outs", "avg_ip",   "avg_outs", None),  # special: outs derives from IP
+        ]
+        for stat_key, l7_field, classes_stat, mult in blend_map:
+            l7_val = l7.get(l7_field)
+            if l7_val is None: continue
+            l7_val = float(l7_val)
+            season_val = _season_baseline_from_classes(entry, classes_stat)
+            if stat_key == "outs":
+                # classes has avg_outs directly; l7 has avg_ip. Convert
+                # l7 to outs, then blend against classes.avg_outs.
+                l7_outs = l7_val * 3.0
+                blended = _bayes_blend(l7_outs, l7_n, season_val)
+                out["outs"] = round(blended, 1) if blended is not None else round(l7_outs, 1)
+            else:
+                blended = _bayes_blend(l7_val, l7_n, season_val)
+                out[stat_key] = round(blended, 1) if blended is not None else round(l7_val, 1)
+
         if l7.get("whip") is not None:
             out["whip"] = round(float(l7["whip"]), 2)
 
