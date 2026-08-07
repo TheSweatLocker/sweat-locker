@@ -387,8 +387,24 @@ def parse_synthesis(raw: str) -> dict:
     # market values clean (ml/rl/total/prop) while the tier granularity lives
     # in CONVICTION. PASS remains but is now reserved for structurally blank
     # data (postponed, lineup missing, no market posted).
-    _VALID_MARKETS = {'ml', 'rl', 'total', 'prop', 'lean', 'pass', None}
-    if market not in _VALID_MARKETS:
+    # 2026-08-07: removed 'lean' from valid markets. LEAN is a TIER (derived
+    # from CONVICTION), not a market. When Jerry emits MARKET=lean (tier/
+    # market conflation), infer the actual market from SIDE: OVER/UNDER →
+    # total, HOME/AWAY → ml (spread requires an explicit LINE). Prevents
+    # call_market='lean' rows from persisting.
+    _VALID_MARKETS = {'ml', 'rl', 'total', 'prop', 'pass', None}
+    if market == 'lean':
+        # Infer from side
+        if side in ('OVER', 'UNDER'):
+            market = 'total'
+            print(f"  ⚠ MARKET=lean coerced to 'total' (inferred from SIDE={side})")
+        elif side in ('HOME', 'AWAY'):
+            market = 'ml'
+            print(f"  ⚠ MARKET=lean coerced to 'ml' (inferred from SIDE={side})")
+        else:
+            print(f"  ⚠ MARKET=lean with SIDE={side!r} — can't infer, nulling")
+            market = None; side = None
+    elif market not in _VALID_MARKETS:
         print(f"  ⚠ parser produced invalid call_market {market!r} — nulling")
         market = None
         side = None
@@ -420,6 +436,19 @@ def parse_synthesis(raw: str) -> dict:
 # ─── Persist ─────────────────────────────────────────────────────────────
 def upsert_jerry_read(game: dict, parsed: dict, struct: dict,
                      game_date: str) -> bool:
+    # 2026-08-07 filter: skip empty PASS reads to prevent PASS-badge
+    # pollution on graded games. If Jerry has no directional take AND
+    # no call text, don't persist the row — the app's grading view
+    # correctly shows "no read" instead of "PASS". Legitimate PASS
+    # reads (postponed games, structurally broken data) should still
+    # emit call_text explaining why — those DO persist.
+    market = (parsed.get('call_market') or '').lower()
+    side = parsed.get('call_side')
+    text = (parsed.get('call_text') or '').strip()
+    if market == 'pass' and not side and not text:
+        print(f"  ⏭  skipping empty PASS read for {game.get('game_id')} — no take, no rationale")
+        return False
+
     payload = {
         "sport": "MLB",
         "game_id": game.get("game_id"),
