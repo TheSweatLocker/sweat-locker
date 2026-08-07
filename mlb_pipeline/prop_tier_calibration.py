@@ -898,11 +898,38 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None,
     # 4. Juice cap (uses possibly-adjusted conviction)
     new_conv, jc_reason = juice_cap(odds, capped_conv, pt, tier, direction)
 
-    # Tier follows conviction: if we dropped below PRIME threshold from PRIME,
-    # demote to STRONG so downstream renderers/UI don't mis-signal tier.
-    new_tier = tier
-    if tier == 'PRIME' and new_conv < 90:
-        new_tier = 'STRONG'
+    # 4a. hits_over juice trap (2026-08-07) — memory rule
+    # `feedback_batter_hits_juice_trap_803`: hits O 0.5 at -200+ hits ~69%
+    # baseline, book prices juice up on star names so implied ≥ hist. The
+    # generic juice_cap uses a 3pp buffer that misses -180 to -220 range
+    # for this family. Hard-cap hits_over conviction here based on odds
+    # tier so juiced star-hitter props can never show as PRIME/STRONG.
+    if pt == 'hits_over' and direction == 'over' and odds is not None:
+        try:
+            o = int(odds)
+            if o <= -250:
+                # deep trap zone: implied >= 71.4%, hist 66.3% = -EV
+                new_conv = min(new_conv, 40)  # READ tier max
+                jc_reason = (jc_reason + '·' if jc_reason else '') + f'hits_over_deep_juice{o}_capREAD40'
+            elif o <= -200:
+                # moderate trap: implied 66.7%-71.4%, tight EV
+                new_conv = min(new_conv, 55)  # LEAN cap
+                jc_reason = (jc_reason + '·' if jc_reason else '') + f'hits_over_juice{o}_capLEAN55'
+            elif o <= -180:
+                # borderline: still promotable but never STRONG+
+                new_conv = min(new_conv, 60)
+                jc_reason = (jc_reason + '·' if jc_reason else '') + f'hits_over_juice{o}_cap60'
+        except (TypeError, ValueError): pass
+
+    # Tier follows conviction (2026-08-07 fix): full ladder walk, not just
+    # PRIME → STRONG. Prior bug: prop starting as PRIME 92 juice-capped to
+    # 55 still displayed as STRONG (should have been LEAN). Now: any tier
+    # with new_conv below its floor drops to the correct tier.
+    if new_conv >= 80:   new_tier = 'PRIME'
+    elif new_conv >= 65: new_tier = 'STRONG'
+    elif new_conv >= 50: new_tier = 'LEAN'
+    elif new_conv >= 30: new_tier = 'READ'
+    else:                new_tier = 'SKIP'
 
     # Combine reasons
     reasons = [r for r in (trap_reason, prior_reason, cap_reason, jc_reason)
