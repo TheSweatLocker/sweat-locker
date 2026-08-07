@@ -89,6 +89,13 @@ When struct.umpire.note is present with 55%+ over rate → material OVER signal
 When 45%- over rate → material UNDER signal
 When neutral (45-55%) → don't mention unless K-caller / K-suppressor tag fires and prop-relevant
 
+When struct.park_weather.interaction has entries → weight heavily. Examples:
+  "HITTER PARK (108) + WIND OUT (15mph SW) — OVER amplifier" → strong OVER signal, cite in prose
+  "PITCHER PARK (92) + WIND IN (18mph N) — UNDER amplifier" → strong UNDER signal
+  "COLD (48F) + non-hitter park — UNDER lean" → moderate UNDER signal
+  "HOT (91F) + hitter park — OVER amplifier" → moderate OVER signal
+Translate to English: "Coors + wind blowing out — recipe for runs" NOT "park_run_factor 118 with wind 15mph SW"
+
 PITCHER NAMES (hallucination guardrail):
 Pitchers on this game are IN THE STRUCT — home_pitcher and away_pitcher fields. NEVER use a name from externals[] as if it were a pitcher name. If you can't remember a pitcher's name, use "the home starter" or "the away starter" — never invent one.
 

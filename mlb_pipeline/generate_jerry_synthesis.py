@@ -207,6 +207,43 @@ def enrich_struct(struct: dict, game: dict, externals: list,
         "note": game.get("umpire_note"),
     }
 
+    # WEATHER × PARK INTERACTION (2026-08-06): park factor + weather are
+    # both in the struct separately, but the INTERACTION is what actually
+    # matters. High wind at Coors (park 118) ≠ high wind at Petco (park 92).
+    # Compute a compact interaction signal Jerry can reason over.
+    park_pf = game.get('park_run_factor')
+    wind = game.get('wind_speed') or game.get('wind_mph')
+    wind_dir = game.get('wind_direction')
+    temp = game.get('temperature')
+    wind_blowing_in = game.get('wind_blowing_in')
+    interaction_notes = []
+    try:
+        pf = float(park_pf) if park_pf is not None else None
+        w = float(wind) if wind is not None else None
+        t = float(temp) if temp is not None else None
+    except (TypeError, ValueError):
+        pf = w = t = None
+
+    if pf is not None and w is not None:
+        if pf >= 108 and w >= 12 and (wind_blowing_in is False or wind_dir in ('SW', 'W', 'S', 'SE')):
+            interaction_notes.append(f'HITTER PARK ({pf}) + WIND OUT ({w}mph {wind_dir}) — OVER amplifier')
+        elif pf <= 95 and w >= 12 and (wind_blowing_in is True or wind_dir in ('N', 'NE', 'NW', 'E')):
+            interaction_notes.append(f'PITCHER PARK ({pf}) + WIND IN ({w}mph {wind_dir}) — UNDER amplifier')
+        elif pf >= 108 and w >= 15 and wind_blowing_in is True:
+            interaction_notes.append(f'HITTER PARK ({pf}) BUT WIND IN ({w}mph) — neutralized')
+    if t is not None and pf is not None:
+        if t <= 50 and pf <= 100:
+            interaction_notes.append(f'COLD ({t}F) + non-hitter park — UNDER lean (cold suppresses ball flight)')
+        elif t >= 90 and pf >= 105:
+            interaction_notes.append(f'HOT ({t}F) + hitter park — OVER amplifier (ball travels)')
+
+    struct["park_weather"] = {
+        "park_factor": park_pf,
+        "wind_mph": wind, "wind_direction": wind_dir, "wind_blowing_in": wind_blowing_in,
+        "temperature": temp,
+        "interaction": interaction_notes,  # empty list if no notable interaction
+    }
+
     return struct
 
 
