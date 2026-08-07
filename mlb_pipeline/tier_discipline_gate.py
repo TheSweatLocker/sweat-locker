@@ -114,25 +114,42 @@ def weighted_composite_total(v3, v4, jerry_deb, ctx):
 def weighted_composite_spread(v3_spread, v4_spread, jerry_spread, panel_margin=None):
     """Reweighted composite spread for ML/side decisions.
 
-    Ships 2026-07-21 from 60d reweight audit (n=753). Key findings:
-      - v4 spread alone is 58.4% on ATS — BEST individual sides lens
-      - jerry PULLS sides down (all top-3 combos have jerry=0.0-0.2)
-      - Panel margin adds real edge when non-null
-      - Best combos:
-          * Panel-free: v3=0.5, v4=0.3, jerry=0.2 → 60.4% (n=462)
-          * With panel: v3=0.1, v4=0.5, jerry=0.0, panel=0.4 → 62.0% (n=187)
+    2026-08-07 REWEIGHT — v4 dropped from 0.3-0.5 to 0.1
+    Cause: v4 (MODEL_SPREAD) has degraded from 58.4% ATS at set-time
+    (2026-07-21) to 44.4% ML in last 14 days (n=189). At the previous
+    v4 weight of 0.3-0.5, v4 was actively pulling picks the wrong
+    direction — CURRENT config graded at 53.4% / +1.9% ROI on the
+    2026-07-09 → 2026-08-06 test set (311 games).
+
+    Reweight per backtest_composite_weights.py — 60/40 chronological
+    OOS split, 776 games:
+      * Panel-included: v3=0.1, v4=0.1, jerry=0.4, panel=0.4 → 58.2% test
+      * Panel-free:     v3=0.4, v4=0.1, jerry=0.5             → 47.8% test (n=12, thin)
+
+    Delta vs CURRENT weights (test-set, panel-variant n=299):
+      +5.0 pp hit rate (53.2% → 58.2%)
+      +9.2 pp ROI (~+1.9% → +11.1%)
+
+    V4 kept at 0.1 (not 0) so recovery is auto-picked up when compute_
+    model_track_records upgrades v4's recommended_weight. Panel weight
+    retained at 0.4 — panel hit rate on the panel-branch subset is
+    still positive.
+
+    Prior weights (2026-07-21, kept for audit trail):
+      * Panel: v3=0.1, v4=0.5, jerry=0.0, panel=0.4 → 62.0% n=187 (in-sample)
+      * No-panel: v3=0.5, v4=0.3, jerry=0.2 → 60.4% n=462 (in-sample)
 
     Returns weighted spread where + = HOME advantage.
     Falls back to whichever lenses are non-null.
     """
     if panel_margin is not None:
-        # Panel-included variant — 62.0% on n=187
-        w_v3, w_v4, w_jerry, w_panel = 0.1, 0.5, 0.0, 0.4
+        # Panel-included variant (2026-08-07 reweight) — 58.2% test OOS
+        w_v3, w_v4, w_jerry, w_panel = 0.1, 0.1, 0.4, 0.4
         parts = [(w_v3, v3_spread), (w_v4, v4_spread),
                  (w_jerry, jerry_spread), (w_panel, panel_margin)]
     else:
-        # Panel-free default — 60.4% on n=462 (full slate coverage)
-        w_v3, w_v4, w_jerry = 0.5, 0.3, 0.2
+        # Panel-free default (2026-08-07 reweight)
+        w_v3, w_v4, w_jerry = 0.4, 0.1, 0.5
         parts = [(w_v3, v3_spread), (w_v4, v4_spread), (w_jerry, jerry_spread)]
 
     used = [(wi, x) for wi, x in parts if x is not None and wi > 0]
