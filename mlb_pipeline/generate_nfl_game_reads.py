@@ -252,7 +252,116 @@ def call_claude(prompt):
         return None
 
 
-def upsert_read(game, struct, narrative):
+def parse_nfl_synthesis(raw: str) -> dict:
+    """Parse NFL Jerry LLM output (2026-08-06). Mirrors MLB's parse_synthesis
+    from generate_jerry_synthesis.py — same SHORT/LONG/CALL contract now
+    that seed_nfl_game_read_prompt has been updated.
+
+    Returns:
+      {
+        'short_read': str,
+        'long_read': str,
+        'call_market': str | None,      # ml/spread/total/pass
+        'call_side': str | None,        # HOME/AWAY/OVER/UNDER
+        'call_line': float | None,
+        'call_text': str | None,
+        'conviction': int | None,       # 0-100
+      }
+
+    Falls back gracefully on malformed output — missing CALL block just
+    means we store prose only (like pre-Phase 2 behavior).
+    """
+    import re as _re
+    def _section(name):
+        m = _re.search(rf"---{name}---\s*(.*?)(?=---[A-Z]+---|$)", raw, _re.S)
+        return m.group(1).strip() if m else None
+
+    short = _section("SHORT") or ""
+    long_ = _section("LONG") or ""
+    call_block = _section("CALL") or ""
+
+    # Strip markdown for robust field extraction (Jerry sometimes writes **MARKET:** **ml**)
+    call_block = _re.sub(r"\*+", "", call_block)
+    call_block = _re.sub(r"_+", "", call_block)
+
+    def _field(field):
+        m = _re.search(rf"\**{field}\**\s*:\s*(.+?)(?=\n\**[A-Z_]+\**\s*:|$)",
+                        call_block, _re.S)
+        if not m: return None
+        val = m.group(1).strip()
+        val = _re.sub(r"^[*_\s]+|[*_\s]+$", "", val)
+        return val or None
+
+    market = (_field("MARKET") or "").lower() or None
+    side = (_field("SIDE") or "").upper() or None
+    if side == "NULL": side = None
+    line_raw = _field("LINE")
+    try:
+        line = float(line_raw) if line_raw and line_raw.lower() != "null" else None
+    except ValueError:
+        line = None
+    call_text = _field("CALL_TEXT")
+    conv_raw = _field("CONVICTION")
+    try:
+        conviction = max(0, min(100, int(_re.sub(r"\D", "", conv_raw or "")))) if conv_raw else None
+    except ValueError:
+        conviction = None
+
+    _VALID_MARKETS = {'ml', 'spread', 'rl', 'total', 'prop', 'lean', 'pass', None}
+    if market not in _VALID_MARKETS:
+        print(f"  ⚠ parser invalid NFL call_market {market!r} — nulling")
+        market = None; side = None
+    _VALID_SIDES = {'HOME', 'AWAY', 'OVER', 'UNDER', None}
+    if side not in _VALID_SIDES:
+        print(f"  ⚠ parser invalid NFL call_side {side!r} — nulling")
+        side = None
+
+    return {
+        "short_read": short,
+        "long_read": long_,
+        "call_market": market,
+        "call_side": side,
+        "call_line": line,
+        "call_text": call_text,
+        "conviction": conviction,
+    }
+
+
+def upsert_jerry_read_nfl(game, struct, parsed, narrative):
+    """Write structured NFL Jerry read to jerry_reads table (2026-08-06 Phase 2).
+    Uses (sport, game_id, game_date) unique key. This is what the sweat card
+    queries for game-side picks — parity with MLB path."""
+    game_id = game.get('id')  # Odds API game id
+    # commence_time to game_date ET
+    ct = game.get('commence_time', '')[:10] or today_et()
+    payload = {
+        'sport': 'NFL',
+        'game_id': game_id,
+        'game_date': ct,
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+        'prompt_version': 'nfl_game_read_v2_2026-08-06',
+        'input_snapshot': {'source': 'generate_nfl_game_reads', 'matchup': struct.get('matchup')},
+        'short_read': parsed.get('short_read') or narrative[:500],
+        'long_read': parsed.get('long_read') or narrative,
+        'call_text': parsed.get('call_text'),
+        'call_market': parsed.get('call_market'),
+        'call_side': parsed.get('call_side'),
+        'call_line': parsed.get('call_line'),
+        'call_odds_est': None,
+        'conviction': parsed.get('conviction') or 0,
+    }
+    r = requests.post(
+        f'{SUPABASE_URL}/rest/v1/jerry_reads?on_conflict=sport,game_id,game_date',
+        headers={**SB_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+        json=payload, timeout=15,
+    )
+    if r.status_code not in (200, 201, 204):
+        print(f"  ⚠️ jerry_reads upsert failed {r.status_code}: {r.text[:200]}")
+        return False
+    return True
+
+
+def upsert_read(game, struct, narrative, parsed=None):
     key = f"game_read_{game.get('id')}_{today_et()}"
     payload = {
         "game_id": key,
@@ -264,10 +373,18 @@ def upsert_read(game, struct, narrative):
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
     r = requests.post(f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=cache_key", headers=SB_WRITE, json=payload, timeout=15)
-    if r.status_code not in (200, 201, 204):
-        print(f"  ⚠️ upsert failed {r.status_code}: {r.text[:300]}")
-        return False
-    return True
+    ok = r.status_code in (200, 201, 204)
+    if not ok:
+        print(f"  ⚠️ jerry_cache upsert failed {r.status_code}: {r.text[:300]}")
+
+    # DUAL-WRITE (2026-08-06 Phase 2): also write structured pick to
+    # jerry_reads so sweat card can rank it alongside MLB Jerry picks
+    # by conviction. This is the missing piece that had NFL sitting at
+    # "prose-only, no structured selection" until now.
+    if parsed and parsed.get('short_read'):
+        upsert_jerry_read_nfl(game, struct, parsed, narrative or '')
+
+    return ok
 
 
 def run():
@@ -311,8 +428,12 @@ def run():
         narrative = call_claude(prompt)
         if not narrative:
             print(f"  • {away} @ {home}: no narrative — struct only")
-        if upsert_read(g, struct, narrative or ""):
-            print(f"  ✓ {away} @ {home}")
+        parsed = parse_nfl_synthesis(narrative) if narrative else {}
+        if upsert_read(g, struct, narrative or "", parsed=parsed):
+            call_str = ''
+            if parsed.get('call_market'):
+                call_str = f" · {parsed.get('call_text') or parsed['call_market']} ({parsed.get('conviction') or '-'})"
+            print(f"  ✓ {away} @ {home}{call_str}")
             done += 1
         if limit and done >= limit:
             break
