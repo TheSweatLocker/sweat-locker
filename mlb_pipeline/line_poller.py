@@ -294,9 +294,21 @@ def run():
     slate = fetch_slate_odds()
     print(f"  {len(slate)} upcoming events from slate endpoint (1 API call)")
 
+    # Per-book writer for sharp/public divergence signal (2026-08-07).
+    # Runs alongside the median-aggregate flow, writing to book_lines
+    # only when a book's price CHANGES vs its most recent stored value.
+    # Silently no-ops if the book_lines migration hasn't been applied.
+    try:
+        from book_lines_writer import write_book_lines
+        _BL_AVAILABLE = True
+    except ImportError:
+        _BL_AVAILABLE = False
+
     polled = 0
     closed = 0
     skipped_inprog = 0
+    bl_rows_written = 0
+    bl_books_scanned = 0
     for ev in slate:
         game_id, game_date = map_event_to_game(ev, ctx_rows)
         if not game_id: continue
@@ -311,8 +323,19 @@ def run():
         update_game_context(game_id, game_date, snap, set_close=set_close)
         if set_close: closed += 1
         polled += 1
+        # Per-book path (parallel, non-blocking on failure)
+        if _BL_AVAILABLE:
+            try:
+                bl_stats = write_book_lines(ev, sport='MLB',
+                                            game_id=game_id, game_date=game_date)
+                bl_rows_written += bl_stats.get('rows_written', 0)
+                bl_books_scanned += bl_stats.get('books_scanned', 0)
+            except Exception as e:
+                print(f"    ⚠ book_lines writer error on {game_id[:10]}: {e}")
 
     print(f"  ✓ polled {polled} events, locked close_total on {closed}, skipped {skipped_inprog} in-progress")
+    if _BL_AVAILABLE:
+        print(f"  📚 book_lines: {bl_rows_written} rows written (change-only) across {bl_books_scanned} book-events scanned")
 
 
 if __name__ == "__main__":
