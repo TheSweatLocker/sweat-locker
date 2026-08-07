@@ -184,7 +184,7 @@ def _refresh_from_live_data():
         # 'pass_yds_over', etc). One universal table serves every sport.
         r = requests.get(f'{SB}/rest/v1/prop_bucket_roi',
                          headers={'apikey': KEY, 'Authorization': f'Bearer {KEY}'},
-                         params={'select': 'sport,prop_type,tier,direction,hit_rate,sample_n'},
+                         params={'select': 'sport,prop_type,tier,direction,hit_rate,sample_n,bucket_window'},
                          timeout=10)
         if r.status_code != 200: return
         rows = r.json()
@@ -192,30 +192,64 @@ def _refresh_from_live_data():
     except Exception:
         return  # fall back to static tables
 
-    added_fade = removed_fade = added_gold = removed_gold = 0
-    live_seen = set()
-    # Aggregation buckets for FAMILY_BASE_RATES rebuild
-    # {family_direction: [ (hit_pct, n), ... ]}
-    family_agg: dict = {}
+    # TIME-WEIGHTED PRIOR BLEND (2026-08-06): recent data more predictive
+    # than older. Rather than treating all-time equally, exponentially
+    # decay weight by window recency. Compute weighted-average hit_pct
+    # per (prop_type, tier, direction) across available windows.
+    #
+    #   14d weight × 3.0  (most recent, sharpest signal)
+    #   30d weight × 1.5  (recent-but-noisy)
+    #   90d weight × 1.0  (medium context)
+    #   lifetime × 0.5    (long-tail context)
+    #
+    # Falls back to lifetime-only if no windowed data present (backward
+    # compat with pre-2026-08-06 bucket_roi state).
+    WINDOW_WEIGHTS = {'14d': 3.0, '30d': 1.5, '90d': 1.0, 'lifetime': 0.5}
 
+    # Group rows by (full_pt, tier, direction) collecting all windows
+    by_key: dict = {}  # key → {window: (hit, n)}
     for row in rows:
         pt = (row.get('prop_type') or '').lower()
         tier = (row.get('tier') or '').upper()
         direction = (row.get('direction') or '').lower()
         hit = row.get('hit_rate')
         n = row.get('sample_n') or 0
+        window = (row.get('bucket_window') or 'lifetime').lower()
         if hit is None or n < MIN_N_ACTIONABLE: continue
-        # prop_type in bucket_roi is stored as family (bb, ks) not family_direction
-        # so we reconstruct the full form for matching HISTORICAL_HIT_RATES
         full_pt = pt if '_' in pt else f'{pt}_{direction}'
         key = (full_pt, tier, direction)
+        by_key.setdefault(key, {})[window] = (float(hit), int(n))
+
+    added_fade = removed_fade = added_gold = removed_gold = 0
+    live_seen = set()
+    family_agg: dict = {}
+
+    for key, windows in by_key.items():
+        full_pt, tier, direction = key
         live_seen.add(key)
 
-        # Update HISTORICAL_HIT_RATES with fresh data
-        HISTORICAL_HIT_RATES[key] = (float(hit), int(n))
+        # Time-weighted blend across windows this bucket has data for.
+        # Weight × sample_n so a small 14d sample doesn't overwhelm a
+        # large lifetime sample. Effective_weight = window_weight × n.
+        num = 0.0; denom = 0.0; total_n = 0
+        for w, (h, wn) in windows.items():
+            weight = WINDOW_WEIGHTS.get(w, 0.5) * wn
+            num += h * weight
+            denom += weight
+            total_n += wn
+        if denom == 0: continue
+        blended_hit = num / denom
+
+        # Update HISTORICAL_HIT_RATES with blended value
+        HISTORICAL_HIT_RATES[key] = (round(blended_hit, 1), total_n)
 
         # Aggregate for family base-rate refresh (all tiers rolled up)
-        family_agg.setdefault(full_pt, []).append((float(hit), int(n)))
+        family_agg.setdefault(full_pt, []).append((blended_hit, total_n))
+
+        # Fade/goldmine rules now driven by BLENDED hit rate — recent
+        # buckets that spike below 45% enter fade faster than lifetime alone.
+        hit = blended_hit
+        n = total_n
 
         # Fade rules
         if hit < FADE_ENTER_HIT_PCT:

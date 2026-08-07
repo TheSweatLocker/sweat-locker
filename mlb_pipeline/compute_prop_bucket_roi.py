@@ -117,6 +117,8 @@ def compute(window: str = 'lifetime', sport: str = 'MLB') -> None:
         date_filter = (datetime.now(timezone.utc) - timedelta(days=90)).strftime('%Y-%m-%d')
     elif window == '30d':
         date_filter = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%d')
+    elif window == '14d':
+        date_filter = (datetime.now(timezone.utc) - timedelta(days=14)).strftime('%Y-%m-%d')
 
     all_props = []
     offset = 0
@@ -194,10 +196,16 @@ def compute(window: str = 'lifetime', sport: str = 'MLB') -> None:
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
-    p.add_argument('--window', default='lifetime', choices=['lifetime', '90d', '30d'])
+    p.add_argument('--window', default='all',
+                   choices=['lifetime', '90d', '30d', '14d', 'all'],
+                   help="'all' computes lifetime + 90d + 30d + 14d (for time-weighted prior blend)")
     p.add_argument('--sport', default='ALL',
                    help='MLB / NBA / NFL / NCAAF / NCAAB / UFC / ALL (loops)')
     args = p.parse_args()
     sports = list(PROPS_TABLE.keys()) if args.sport == 'ALL' else [args.sport]
+    # 'all' → run every window so prop_tier_calibration can blend them via
+    # time-weighted priors (14d × 3 + 30d × 1.5 + 90d × 1 exponential decay).
+    windows = ['lifetime', '90d', '30d', '14d'] if args.window == 'all' else [args.window]
     for s in sports:
-        compute(window=args.window, sport=s)
+        for w in windows:
+            compute(window=w, sport=s)
