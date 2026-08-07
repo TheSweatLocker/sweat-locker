@@ -67,7 +67,12 @@ def _verdict(aligned, ext_count, oc_div):
 
 def load_contexts(sb_url: str, sb_key: str, context_table: str,
                   game_date: str, extra_select: str = '') -> list:
-    sel = 'game_id,away_team,home_team,close_total,close_spread' + (',' + extra_select if extra_select else '')
+    # 2026-08-06: added open_total/current_total/home_ml_open/close for RLM
+    # detector in market_status (_compute_rlm needs these to detect reverse
+    # line movement — line moved opposite to public money).
+    sel = ('game_id,away_team,home_team,close_total,close_spread,'
+           'open_total,current_total,home_ml_open,home_ml_close,home_ml_odds'
+           + (',' + extra_select if extra_select else ''))
     h = {'apikey': sb_key, 'Authorization': f'Bearer {sb_key}'}
     r = requests.get(
         f'{sb_url}/rest/v1/{context_table}',
@@ -177,6 +182,53 @@ def build_alignment(c: dict, ext_rows: list, lens_fields: dict) -> tuple[dict, d
             if surf in ('ml', 'rl', 'total'):
                 ext_by_surface[surf].append(e)
 
+    def _compute_rlm(surface: str, oc_side: str | None) -> dict:
+        """Reverse line movement detector (2026-08-06).
+
+        RLM = line moved OPPOSITE to public/money side. Historically one
+        of the strongest sharp-money signals: sharps bet the unpopular
+        side heavily enough to move the number against the public.
+
+        Returns {rlm: bool, sharp_side: str | None, direction_note: str}.
+        """
+        if oc_side is None:
+            return {'rlm': False, 'sharp_side': None, 'direction_note': 'no_money_data'}
+        if surface == 'total':
+            opn = c.get('open_total'); cur = c.get('current_total')
+            if opn is None or cur is None:
+                return {'rlm': False, 'sharp_side': None, 'direction_note': 'no_line_data'}
+            try:
+                opn, cur = float(opn), float(cur)
+            except (TypeError, ValueError):
+                return {'rlm': False, 'sharp_side': None, 'direction_note': 'bad_line_data'}
+            if abs(cur - opn) < 0.25:
+                return {'rlm': False, 'sharp_side': None, 'direction_note': 'no_movement'}
+            line_side = 'O' if cur > opn else 'U'
+            note = f'total {opn}→{cur}'
+        elif surface == 'ml':
+            opn = c.get('home_ml_open'); cur = c.get('home_ml_close') or c.get('home_ml_odds')
+            if opn is None or cur is None:
+                return {'rlm': False, 'sharp_side': None, 'direction_note': 'no_line_data'}
+            try:
+                opn, cur = int(opn), int(cur)
+            except (TypeError, ValueError):
+                return {'rlm': False, 'sharp_side': None, 'direction_note': 'bad_line_data'}
+            if abs(cur - opn) < 10:  # thin ML drift is noise
+                return {'rlm': False, 'sharp_side': None, 'direction_note': 'no_movement'}
+            # more-negative home_ml = HOME more heavily favored → line moved toward HOME
+            line_side = 'H' if cur < opn else 'A'
+            note = f'home_ml {opn:+d}→{cur:+d}'
+        else:
+            return {'rlm': False, 'sharp_side': None, 'direction_note': 'unsupported_surface'}
+
+        # RLM fires when line moves opposite to public money
+        rlm = (line_side != oc_side)
+        return {
+            'rlm': rlm,
+            'sharp_side': line_side if rlm else None,
+            'direction_note': f'{note} · line→{line_side}, money→{oc_side}',
+        }
+
     def market_status(surface: str) -> dict:
         oc = oc_by_surface.get(surface)
         ext = ext_by_surface.get(surface, [])
@@ -206,6 +258,7 @@ def build_alignment(c: dict, ext_rows: list, lens_fields: dict) -> tuple[dict, d
             lens_lead, lens_ct, lens_total = compute_lens_ml_from_context(c, lens_fields)
         elif surface == 'total':
             lens_lead, lens_ct, lens_total = compute_lens_total_from_context(c, lens_fields)
+        rlm_info = _compute_rlm(surface, oc_side)
         return {
             'ext_lead': ext_lead, 'ext_count': ext_count, 'ext_total': ext_total,
             'money_side': oc_side,
@@ -215,6 +268,10 @@ def build_alignment(c: dict, ext_rows: list, lens_fields: dict) -> tuple[dict, d
             'lens_side': lens_lead, 'lens_count': lens_ct, 'lens_total': lens_total,
             'aligned': aligned,
             'verdict': _verdict(aligned, ext_count, oc.get('div') if oc else None),
+            # 2026-08-06: reverse line movement (line moved opposite to public $)
+            'rlm': rlm_info['rlm'],
+            'sharp_side': rlm_info['sharp_side'],
+            'rlm_note': rlm_info['direction_note'],
         }
 
     ml_s = market_status('ml')
