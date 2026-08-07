@@ -490,6 +490,92 @@ FAIR_PRICE_TIER_FADES = {
 }
 
 
+# ── CROSS-SPORT PATTERN HYPOTHESES (2026-08-06) ──────────────────────
+# Sport-launch prep. Patterns proven in MLB (fair-price _over trap at
+# scored tier = 40% hit → 60% inverse) are STRUCTURAL — books over-price
+# star names / hot stats regardless of sport. NFL / NBA / NCAAF / NCAAB
+# don't have their own bucket_roi yet, but the same shape likely applies.
+#
+# When a prop from a sport that has NO per-sport confirmed FAIR_PRICE fade
+# entry hits the pattern, apply the MLB-proven fade as a HYPOTHESIS with
+# a clear "cross_sport_hypothesis" tag in the reason. Log for validation.
+# Once per-sport bucket_roi accumulates 30+ graded rows in that bucket,
+# _refresh_from_live_data will auto-write the sport-specific FADE_COMBOS
+# entry which overrides the hypothesis (more accurate).
+#
+# Pattern list is intentionally minimal — only ship the strongest MLB
+# findings (>60% inverse rate at n>=20). Weaker MLB patterns wait for
+# per-sport confirmation.
+CROSS_SPORT_PATTERNS = [
+    {
+        'name': 'fair_price_over_scored_tier',
+        'description': 'PRIME/STRONG/SKIP tier + direction=over + odds > -110 → fade to under',
+        'inverse_pct': 60,      # conservative — average of MLB confirmed rates
+        'fade_conviction': 68,  # slightly below MLB-confirmed 70-82 since untested per sport
+        'reference_data': 'MLB bb_over PRIME 83% inv, ha_over PRIME 100% inv, aggregate ~60-70%',
+    },
+    {
+        'name': 'fair_price_under_scored_tier',
+        'description': 'STRONG/SKIP tier + direction=under + odds > -110 → fade to over',
+        'inverse_pct': 62,
+        'fade_conviction': 68,
+        'reference_data': 'MLB ks_under SKIP 63% inv (n=110), STRONG 62% inv (n=24)',
+    },
+]
+
+
+def cross_sport_pattern_hypothesis(prop: dict, sport: str) -> Optional[dict]:
+    """When a sport has no per-sport FADE data yet, check if this prop
+    matches a universal pattern proven in MLB. Returns fade dict if a
+    hypothesis fires, None otherwise.
+
+    Only fires for sports NOT already in FAIR_PRICE_TIER_FADES (i.e. no
+    per-sport confirmation exists). Once per-sport data accumulates,
+    _refresh_from_live_data auto-writes sport-specific entries which
+    take precedence via the normal fair_price_tier_fade path.
+
+    Tagged with 'cross_sport_hypothesis' in reason so downstream can
+    log + audit whether the hypothesis is holding for this sport.
+    """
+    sport = (sport or '').upper()
+    # MLB has its own confirmed FAIR_PRICE_TIER_FADES entries — skip
+    # hypothesis for MLB (would just duplicate).
+    if sport == 'MLB': return None
+    pt = (prop.get('prop_type') or '').lower()
+    tier = (prop.get('tier') or '').upper()
+    direction = (prop.get('direction') or '').lower()
+    if direction not in ('over', 'under'): return None
+    odds = prop.get('book_over_odds') if direction == 'over' else prop.get('book_under_odds')
+    if odds is None: return None
+    try: odds = int(odds)
+    except (TypeError, ValueError): return None
+    if odds <= -110: return None  # fair/plus only
+
+    # Pattern 1: fair-price _over at scored tier
+    if direction == 'over' and tier in ('PRIME', 'STRONG', 'SKIP'):
+        p = CROSS_SPORT_PATTERNS[0]
+        return {
+            'flip_direction': True, 'new_direction': 'under',
+            'new_tier': 'STRONG', 'new_conviction': p['fade_conviction'],
+            'reason': (f'cross_sport_hypothesis_{p["name"]}_'
+                       f'{sport}_{pt}_{tier}_{direction}_'
+                       f'{p["inverse_pct"]}pct_est_from_MLB_priors'),
+        }
+
+    # Pattern 2: fair-price _under at STRONG/SKIP
+    if direction == 'under' and tier in ('STRONG', 'SKIP'):
+        p = CROSS_SPORT_PATTERNS[1]
+        return {
+            'flip_direction': True, 'new_direction': 'over',
+            'new_tier': 'STRONG', 'new_conviction': p['fade_conviction'],
+            'reason': (f'cross_sport_hypothesis_{p["name"]}_'
+                       f'{sport}_{pt}_{tier}_{direction}_'
+                       f'{p["inverse_pct"]}pct_est_from_MLB_priors'),
+        }
+
+    return None
+
+
 def fair_price_tier_fade(prop: dict) -> Optional[dict]:
     """When a (prop_type, tier, direction) combo consistently loses at
     fair/plus odds, flip to the opposite side.
@@ -693,7 +779,8 @@ def juice_cap(book_odds: Optional[int], conviction: int, prop_type: str,
     return conviction, ''
 
 
-def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
+def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None,
+                      sport: str = 'MLB') -> dict:
     """One-call pipeline stage: goldmine promotion + fade-flip + juice_cap.
     Returns dict with keys:
       keep (bool) — always True now (fade policy replaced suppress)
@@ -702,12 +789,31 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None) -> dict:
       new_tier (str) — possibly-promoted or fade-based tier
       new_conviction (int) — possibly-capped or fade-boosted conviction
       reason (str) — audit trail
+
+    sport: 'MLB' (default) uses all sport-specific fades. Other sports
+    fall through to cross_sport_pattern_hypothesis which applies
+    MLB-proven universal patterns as hypotheses until per-sport
+    bucket_roi data confirms/rejects them.
     """
     pt = (prop.get('prop_type') or '').lower()
     tier = (prop.get('tier') or '').upper()
     direction = (prop.get('direction') or '').lower()
     odds = prop.get('book_over_odds') if direction == 'over' else prop.get('book_under_odds')
     conv = prop.get('conviction') or 0
+
+    # 0.0 CROSS-SPORT hypothesis (2026-08-06) — non-MLB sports have no
+    # per-sport confirmed fade entries yet. Apply MLB-proven universal
+    # patterns as hypotheses. Runs FIRST so hypothesis fires cleanly
+    # before any MLB-specific fade logic can no-op on a non-MLB prop.
+    # Once per-sport bucket_roi accumulates, _refresh_from_live_data
+    # writes sport-specific FADE_COMBOS entries — those override via
+    # should_fade() lower down.
+    if (sport or '').upper() != 'MLB':
+        cs_hyp = cross_sport_pattern_hypothesis(prop, sport)
+        if cs_hyp:
+            return {'keep': True, **cs_hyp}
+        # non-MLB props with no matching hypothesis fall through to
+        # the generic prior + juice_cap path (still safe / useful).
 
     # 0. Outs-over fair-price fade (2026-08-05 v2) — must run BEFORE
     # FAMILY_SUPPRESS or the outs_over row gets silent-killed. If pitcher

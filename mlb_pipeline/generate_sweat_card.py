@@ -892,7 +892,8 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         calibrated = []
         cal_faded = cal_capped = cal_promoted = 0
         for p in props:
-            r = apply_calibration(p, jerry_verdict='BACK')
+            r = apply_calibration(p, jerry_verdict='BACK',
+                                  sport=(p.get('sport') or 'MLB'))
             p = dict(p)
             if r.get('flip_direction'):
                 old_dir = p['direction']
