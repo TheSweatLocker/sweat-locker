@@ -45,6 +45,112 @@ from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 
 
+# ── Dynamic weight adjustment (2026-08-07 GAP 5) ─────────────────────
+# Multiplies baseline composite weights by tracker's recommended_weight,
+# so degrading models auto-downweight and recovering models auto-upweight
+# without manual reweight commits.
+#
+# Baseline weights come from backtest (stable, tuned). Multiplier comes
+# from model_track_records.recommended_weight which is 0.3-2.5 range
+# centered at 1.0 (0.3 = deeply losing, 1.0 = neutral, 2.5 = elite).
+#
+# Applying: w_final = w_baseline * tracker_multiplier
+# Composite formulas already normalize by sum-of-weights, so the ratios
+# are what matter.
+#
+# Cache: (sport, market) → {model_name: multiplier}. Loaded once per
+# process; refresh via _refresh_tracker_multipliers().
+_TRACKER_MULT_CACHE: Dict[tuple, Dict[str, float]] = {}
+
+# Map composite-formula inputs → tracker model_name. Extensible per sport.
+# Composite input → (sport, market, tracker_model_name)
+_COMPOSITE_INPUT_TO_TRACKER = {
+    # Spread composite
+    ('MLB', 'spread', 'v4'):     ('MLB', 'ML', 'MODEL_SPREAD'),
+    ('MLB', 'spread', 'jerry'):  ('MLB', 'ML', 'RESOLVER_SIDE'),
+    # Total composite
+    ('MLB', 'total', 'v4'):      ('MLB', 'TOTAL', 'MODEL_TOTAL'),
+    ('MLB', 'total', 'jerry'):   ('MLB', 'TOTAL', 'RESOLVER'),
+    # v3 and panel not separately tracked; multiplier defaults to 1.0
+}
+
+
+def _load_tracker_multipliers(sport: str, market: str) -> Dict[str, float]:
+    """Fetch tracker recommended_weight per model for a (sport, market).
+    Returns {model_name: multiplier}. Empty if tracker unreachable —
+    composite falls back to baseline weights (safe).
+    """
+    key = (sport, market)
+    if key in _TRACKER_MULT_CACHE:
+        return _TRACKER_MULT_CACHE[key]
+
+    import os, requests
+    SB = os.environ.get('SUPABASE_URL')
+    KEY = os.environ.get('SUPABASE_KEY')
+    if not SB or not KEY:
+        # Don't cache when env missing — allow retry once env loads
+        return {}
+    try:
+        r = requests.get(
+            f'{SB}/rest/v1/model_track_records',
+            headers={'apikey': KEY, 'Authorization': f'Bearer {KEY}'},
+            params={
+                'sport': f'eq.{sport}',
+                'market': f'eq.{market}',
+                'select': 'model_name,bucket_window,recommended_weight,sample_n',
+                'limit': '200',
+            }, timeout=8,
+        )
+        rows = r.json() if r.status_code == 200 else []
+    except Exception:
+        # Don't cache network failures
+        return {}
+
+    # Prefer recency: 14d > 30d > 90d > lifetime, min n>=25
+    priority = ['14d', '30d', '90d', 'lifetime']
+    by_model: Dict[str, Dict[str, dict]] = {}
+    for row in rows:
+        m = row.get('model_name'); w = row.get('bucket_window')
+        if not m or not w: continue
+        by_model.setdefault(m, {})[w] = row
+
+    out: Dict[str, float] = {}
+    for model, windows in by_model.items():
+        chosen = None
+        for w in priority:
+            r = windows.get(w)
+            if r and (r.get('sample_n') or 0) >= 25:
+                chosen = r; break
+        if chosen is None:
+            for w in priority:
+                r = windows.get(w)
+                if r: chosen = r; break
+        if chosen is None: continue
+        try:
+            out[model] = float(chosen.get('recommended_weight') or 1.0)
+        except (TypeError, ValueError):
+            out[model] = 1.0
+    _TRACKER_MULT_CACHE[key] = out
+    return out
+
+
+def _composite_input_multiplier(sport: str, composite_market: str,
+                                composite_input: str) -> float:
+    """Get the tracker-based multiplier for a composite formula input.
+    Returns 1.0 if no tracker mapping or data missing."""
+    mapping = _COMPOSITE_INPUT_TO_TRACKER.get((sport, composite_market, composite_input))
+    if not mapping: return 1.0
+    tracker_sport, tracker_market, tracker_model = mapping
+    weights = _load_tracker_multipliers(tracker_sport, tracker_market)
+    return weights.get(tracker_model, 1.0)
+
+
+def refresh_tracker_cache():
+    """Manually clear the cache — call after compute_model_track_records
+    runs so composite formulas pick up the new weights."""
+    _TRACKER_MULT_CACHE.clear()
+
+
 @dataclass
 class TierVerdict:
     tier: str          # 'ELITE' | 'STRONG' | 'LEAN' | 'SKIP'
@@ -103,7 +209,14 @@ def weighted_composite_total(v3, v4, jerry_deb, ctx):
     else:
         w = (0.5, 0.2, 0.3)   # sample-robust default (58.6% n=297)
 
-    parts = [(w[0], v3), (w[1], v4), (w[2], jerry_deb)]
+    # 2026-08-07 GAP 5 — apply tracker multipliers to v4 + jerry weights
+    # for total composite. v4 already low here (0.0-0.2) so multiplier
+    # matters less than on spread, but recovery still auto-picks up.
+    mult_v4 = _composite_input_multiplier('MLB', 'total', 'v4')
+    mult_jerry = _composite_input_multiplier('MLB', 'total', 'jerry')
+    w_adjusted = (w[0], w[1] * mult_v4, w[2] * mult_jerry)
+
+    parts = [(w_adjusted[0], v3), (w_adjusted[1], v4), (w_adjusted[2], jerry_deb)]
     used = [(wi, x) for wi, x in parts if x is not None and wi > 0]
     if not used:
         return None, w
@@ -142,14 +255,23 @@ def weighted_composite_spread(v3_spread, v4_spread, jerry_spread, panel_margin=N
     Returns weighted spread where + = HOME advantage.
     Falls back to whichever lenses are non-null.
     """
+    # 2026-08-07 GAP 5 — apply tracker multipliers to baseline weights.
+    # Baseline weights (backtest-tuned) get multiplied by each model's
+    # tracker recommended_weight so degradation/recovery auto-adjusts.
+    # E.g. if MODEL_SPREAD tracker weight drops to 0.5 (deeply losing),
+    # v4's effective weight becomes 0.1 * 0.5 = 0.05. If it recovers to
+    # 1.5, effective weight becomes 0.15.
+    mult_v4 = _composite_input_multiplier('MLB', 'spread', 'v4')
+    mult_jerry = _composite_input_multiplier('MLB', 'spread', 'jerry')
+
     if panel_margin is not None:
         # Panel-included variant (2026-08-07 reweight) — 58.2% test OOS
-        w_v3, w_v4, w_jerry, w_panel = 0.1, 0.1, 0.4, 0.4
+        w_v3, w_v4, w_jerry, w_panel = 0.1, 0.1 * mult_v4, 0.4 * mult_jerry, 0.4
         parts = [(w_v3, v3_spread), (w_v4, v4_spread),
                  (w_jerry, jerry_spread), (w_panel, panel_margin)]
     else:
         # Panel-free default (2026-08-07 reweight)
-        w_v3, w_v4, w_jerry = 0.4, 0.1, 0.5
+        w_v3, w_v4, w_jerry = 0.4, 0.1 * mult_v4, 0.5 * mult_jerry
         parts = [(w_v3, v3_spread), (w_v4, v4_spread), (w_jerry, jerry_spread)]
 
     used = [(wi, x) for wi, x in parts if x is not None and wi > 0]
