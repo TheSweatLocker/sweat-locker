@@ -99,32 +99,96 @@ def match_pick_to_event(pick: dict, events: list, target_date: str) -> Optional[
     Odds API `home_team` / `away_team` are the two fighters — but their
     order does NOT map to our fighter_a / fighter_b booking order.
     Match by name-set intersection, then return (event, a_price, b_price).
+
+    2026-08-08 fixes:
+    - Date filter expanded to target_date + next UTC day (late-night ET
+      cards fall on next UTC day: Aug 8 9pm ET = Aug 9 01:00 UTC).
+      Missed 5/8 fights on 8/8 slate before this fix.
+    - Loose match now also strips 'del ', 'de ', 'da ', 'la ' prefixes
+      and squashes concatenations ('DelValle' vs 'del Valle') by also
+      trying the raw alphabetic characters only.
+    - Substring match: if all last-name tokens of one side appear in
+      other, accept (handles "Billy Ray Goff" vs "Billy Goff",
+      "Carlos Diego Ferreira" vs "Diego Ferreira").
     """
     a_norm = _normalize(pick['fighter_a'])
     b_norm = _normalize(pick['fighter_b'])
-    # Prefer date match to avoid false positives across separate cards
+    # Build date window: target_date + next UTC day
+    date_prefixes = [target_date]
+    if target_date:
+        try:
+            dt = datetime.strptime(target_date, '%Y-%m-%d')
+            date_prefixes.append((dt + timedelta(days=1)).strftime('%Y-%m-%d'))
+        except ValueError:
+            pass
+
+    def _alpha_only(s: str) -> str:
+        return re.sub(r'[^a-z]', '', s or '')
+
     for e in events:
         commence = e.get('commence_time', '')
-        if target_date and target_date not in commence:
+        if date_prefixes and not any(dp in commence for dp in date_prefixes):
             continue
         home = _normalize(e.get('home_team', ''))
         away = _normalize(e.get('away_team', ''))
         if {home, away} == {a_norm, b_norm}:
             return e
-        # Loose match via last-name if exact fails (accent variations, hyphens)
+        # Loose match via last-name if exact fails
         a_last = a_norm.split()[-1] if a_norm else ''
         b_last = b_norm.split()[-1] if b_norm else ''
         home_last = home.split()[-1] if home else ''
         away_last = away.split()[-1] if away else ''
         if {home_last, away_last} == {a_last, b_last} and all([a_last, b_last]):
             return e
+        # Alpha-only concatenation match (DelValle vs del Valle)
+        a_alpha = _alpha_only(a_norm); b_alpha = _alpha_only(b_norm)
+        home_alpha = _alpha_only(home); away_alpha = _alpha_only(away)
+        if {home_alpha, away_alpha} == {a_alpha, b_alpha}:
+            return e
+        # Substring last-token match (Billy Goff ⊂ Billy Ray Goff)
+        def _tokens(s): return set(s.split()) if s else set()
+        a_toks, b_toks = _tokens(a_norm), _tokens(b_norm)
+        h_toks, w_toks = _tokens(home), _tokens(away)
+        # If home's tokens are a subset of a's OR a's tokens ⊂ home's, and same for away/b
+        def _sub(x, y): return len(x & y) >= min(2, min(len(x), len(y)))
+        if ((_sub(h_toks, a_toks) and _sub(w_toks, b_toks)) or
+            (_sub(w_toks, a_toks) and _sub(h_toks, b_toks))):
+            return e
     return None
 
 
 def extract_prices(event: dict, pick: dict) -> tuple[list, list]:
-    """Return (a_prices, b_prices) — decimal odds per book. Handles home/away swap."""
+    """Return (a_prices, b_prices) — decimal odds per book. Handles home/away swap.
+
+    2026-08-08 hardening: match logic now uses last-name, alpha-only
+    concatenation, and token-subset in that priority order — same
+    strategy as match_pick_to_event, so any match found there succeeds
+    at the outcome level too.
+    """
     a_norm = _normalize(pick['fighter_a'])
     b_norm = _normalize(pick['fighter_b'])
+    a_alpha = re.sub(r'[^a-z]', '', a_norm)
+    b_alpha = re.sub(r'[^a-z]', '', b_norm)
+    a_last = a_norm.split()[-1] if a_norm else ''
+    b_last = b_norm.split()[-1] if b_norm else ''
+    a_tokens = set(a_norm.split()) if a_norm else set()
+    b_tokens = set(b_norm.split()) if b_norm else set()
+
+    def _side_for(name_norm: str) -> str | None:
+        """Return 'a', 'b', or None for a bookmaker outcome name."""
+        if name_norm == a_norm: return 'a'
+        if name_norm == b_norm: return 'b'
+        name_alpha = re.sub(r'[^a-z]', '', name_norm)
+        if name_alpha == a_alpha: return 'a'
+        if name_alpha == b_alpha: return 'b'
+        name_last = name_norm.split()[-1] if name_norm else ''
+        if name_last and name_last == a_last: return 'a'
+        if name_last and name_last == b_last: return 'b'
+        name_tokens = set(name_norm.split()) if name_norm else set()
+        if a_tokens and len(name_tokens & a_tokens) >= min(2, min(len(a_tokens), len(name_tokens))): return 'a'
+        if b_tokens and len(name_tokens & b_tokens) >= min(2, min(len(b_tokens), len(name_tokens))): return 'b'
+        return None
+
     a_prices = []
     b_prices = []
     for bm in event.get('bookmakers', []):
@@ -136,10 +200,9 @@ def extract_prices(event: dict, pick: dict) -> tuple[list, list]:
                 price = out.get('price')
                 if price is None:
                     continue
-                if name_norm == a_norm or name_norm.split()[-1] == a_norm.split()[-1]:
-                    a_prices.append(price)
-                elif name_norm == b_norm or name_norm.split()[-1] == b_norm.split()[-1]:
-                    b_prices.append(price)
+                side = _side_for(name_norm)
+                if side == 'a': a_prices.append(price)
+                elif side == 'b': b_prices.append(price)
     return a_prices, b_prices
 
 
