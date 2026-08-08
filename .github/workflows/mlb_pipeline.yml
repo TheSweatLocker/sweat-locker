@@ -584,7 +584,13 @@ jobs:
           BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
         run: |
           cd mlb_pipeline
-          python resolve_props.py
+          # 2026-08-08: grade_props.py replaces resolve_props.py — the latter
+          # had a silent bug where get_pitcher_outs wrote final_value=0 when
+          # player-name matching failed. grade_props uses a single-pass MLB
+          # API fetch with correct IP-to-outs parsing. resolve_props kept as
+          # fallback for 3-5 days of parallel run before retirement.
+          python grade_props.py || echo "grade_props non-fatal"
+          python resolve_props.py || echo "resolve_props non-fatal (fallback)"
 
       # Resolve yesterday's Daily Degen parlay. Runs after resolve_props +
       # resolve_game_results so leg outcomes (props via mlb_pipeline_props.result;
