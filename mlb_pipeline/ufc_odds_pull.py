@@ -269,6 +269,17 @@ def run(event_date: str | None = None, dry_run: bool = False):
 
     print(f'\nSummary: matched {matched}/{len(picks)} · updated {updated} rows')
 
+    # 2026-08-08 auto-refresh display labels after odds change.
+    # Odds change → EV change (via ufc_compute_ev on next run) → display
+    # change. Trigger display refresh here so app shows fresh American-
+    # odds strings + updated action badges immediately after any pull.
+    if not dry_run and event_date and updated > 0:
+        try:
+            from ufc_display_labels import refresh_for_event
+            refresh_for_event(event_date)
+        except Exception as e:
+            print(f'  ⚠ display_labels refresh failed (non-fatal): {e}')
+
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()

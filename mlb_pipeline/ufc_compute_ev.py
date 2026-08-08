@@ -147,6 +147,17 @@ def run(event_date: str | None = None, dry_run: bool = False):
     print(f'\nSummary: {scored} scored · {updated} updated')
     print(f'Tier distribution: {tier_counts}')
 
+    # 2026-08-08 auto-refresh display labels after EV compute.
+    # display_labels is user-facing translated text (odds w/ American,
+    # method breakdown in English, action badge). Kept in sync with EV
+    # here so app always renders latest translated view.
+    if not dry_run and event_date:
+        try:
+            from ufc_display_labels import refresh_for_event
+            refresh_for_event(event_date)
+        except Exception as e:
+            print(f'  ⚠ display_labels refresh failed (non-fatal): {e}')
+
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
