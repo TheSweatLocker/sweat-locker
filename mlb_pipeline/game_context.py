@@ -34,6 +34,7 @@ from datetime import datetime, date, timedelta, timezone
 import time
 import json
 from math import radians, sin, cos, sqrt, atan2
+from typing import Optional
 
 import os
 from dotenv import load_dotenv
@@ -2054,6 +2055,72 @@ def _cohort_healthy(cohort_key, min_rate=0.48, min_n=15):
     return rate >= min_rate
 
 
+# ── Jerry fallback cache (2026-08-07 GAP-PASS-badge fix) ───────────
+# When compute_primary_play would return None, look up Jerry's directional
+# read as a fallback so the app never shows a PASS badge on games where
+# Jerry actually has a take. Cached per-date to avoid hammering PostgREST.
+_JERRY_READS_CACHE: dict = {}
+
+
+def _jerry_fallback_for_game(game_id: str, game_date: str) -> Optional[dict]:
+    """Return a SOFT primary_play dict from Jerry's read for this game,
+    or None if Jerry didn't have a directional take either.
+
+    Uses per-date cache — first lookup fetches all reads for the date,
+    subsequent lookups hit the cache. Silently no-ops on network errors.
+    """
+    if not game_id or not game_date: return None
+    if not SUPABASE_URL or not SUPABASE_KEY: return None
+    if game_date not in _JERRY_READS_CACHE:
+        try:
+            r = requests.get(
+                f'{SUPABASE_URL}/rest/v1/jerry_reads',
+                headers={'apikey': SUPABASE_KEY,
+                         'Authorization': f'Bearer {SUPABASE_KEY}'},
+                params={'game_date': f'eq.{game_date}',
+                        'sport': 'eq.MLB',
+                        'select': 'game_id,call_market,call_side,call_line,call_text,conviction'},
+                timeout=8,
+            )
+            rows = r.json() if r.status_code == 200 else []
+            _JERRY_READS_CACHE[game_date] = {row['game_id']: row for row in rows if row.get('game_id')}
+        except Exception:
+            _JERRY_READS_CACHE[game_date] = {}
+    read = _JERRY_READS_CACHE.get(game_date, {}).get(game_id)
+    if not read: return None
+    market = (read.get('call_market') or '').lower()
+    side = read.get('call_side')
+    text = read.get('call_text') or ''
+    line = read.get('call_line')
+    conv = read.get('conviction') or 0
+
+    # Skip if Jerry also said PASS or no directional call
+    if market in ('', 'pass') or not side:
+        return None
+    # Map market to primary_play type
+    type_map = {'ml': 'ml', 'rl': 'ml', 'total': 'total', 'prop': 'prop'}
+    pp_type = type_map.get(market)
+    if not pp_type: return None
+    # Build display label
+    if market == 'total' and line is not None:
+        label = f'{"Over" if side == "OVER" else "Under"} {line}'
+    elif market in ('ml', 'rl'):
+        label = f'{side.title()} ML'
+    else:
+        label = text or f'{side}'
+    # Tier maps: cap at LEAN since this is a fallback (primary path didn't
+    # find PRIME/STRONG). App renders LEAN badge instead of PASS.
+    tier = 'LEAN' if conv >= 50 else 'READ'
+    return {
+        'type': pp_type,
+        'tier': tier,
+        'label': label,
+        'sub': f'Jerry fallback (conv {conv}) — primary path found no STRONG/PRIME edge',
+        'signal_floor': 50 if tier == 'LEAN' else 30,
+        'audit_note': 'jerry_read fallback · added 2026-08-07 to prevent PASS badge on games with directional Jerry take',
+    }
+
+
 def compute_primary_play(ctx):
     """Compute the headline primary-play recommendation for a game, server-side.
 
@@ -2616,6 +2683,21 @@ def compute_primary_play(ctx):
                     'signal_floor': floor,
                     'audit_note': 'ML consensus tier · Jerry+MC-agree cohort 68% 30d (n=34) as baseline',
                 }
+
+    # ── 2026-08-07 GAP-PASS-badge fix ────────────────────────────────
+    # Before returning None (which the app renders as PASS badge), try
+    # Jerry's directional read as a fallback. If Jerry has a total /
+    # ml / prop call, surface it as a LEAN primary_play so the app
+    # renders a real tier instead of PASS.
+    #
+    # This is a display-hygiene fallback — the primary paths above
+    # remain authoritative for STRONG/PRIME calls. We only fall
+    # through to Jerry when no strong-edge play cleared.
+    game_id = ctx.get('game_id')
+    game_date = ctx.get('game_date')
+    if game_id and game_date:
+        jerry_fb = _jerry_fallback_for_game(game_id, game_date)
+        if jerry_fb: return jerry_fb
     return None
 
 
