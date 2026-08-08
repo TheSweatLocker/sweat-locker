@@ -65,8 +65,51 @@ def fetch_upcoming_fights(game_date: str | None = None):
     return r.json() if r.status_code == 200 else []
 
 
-def build_fight_struct(fight: dict) -> dict:
-    """Pack fight data into a struct Claude can synthesize on."""
+# Fields from ufc_fighter_stats that are RELIABLE for prompt use.
+# Excludes wins_by_ko / wins_by_sub / wins_by_dec / finishing_rate —
+# discovered 2026-08-08 that 94% of fighter rows have zero across all
+# three finish-method columns (scraper populated total_wins but failed
+# on method breakdown; UFC stats site now behind JS anti-scraper).
+# Including these fields caused "Gamrot has no finishes in 25 fights"
+# hallucination class. Solution: only pass fields that are actually
+# populated correctly.
+_RELIABLE_FIGHTER_FIELDS = [
+    'record',       # e.g. "25-4-0"
+    'height', 'weight', 'reach', 'stance',
+    'slpm', 'str_acc', 'sapm', 'str_def',       # striking
+    'td_avg', 'td_acc', 'td_def', 'sub_avg',    # grappling
+]
+
+
+def _fetch_fighter_stats_bulk(names: list) -> dict:
+    """Bulk-fetch fighter_stats for a list of names.
+    Returns {lowered_name: {reliable_field: value, ...}}."""
+    if not names: return {}
+    # PostgREST IN filter with quoted names
+    in_list = ','.join(f'"{n}"' for n in names)
+    r = requests.get(
+        f'{SUPABASE_URL}/rest/v1/ufc_fighter_stats',
+        headers=H_READ,
+        params={'fighter_name': f'in.({in_list})',
+                'select': 'fighter_name,' + ','.join(_RELIABLE_FIGHTER_FIELDS)},
+        timeout=15,
+    )
+    if r.status_code != 200: return {}
+    out = {}
+    for row in r.json():
+        name = (row.get('fighter_name') or '').strip()
+        if not name: continue
+        stats = {k: row.get(k) for k in _RELIABLE_FIGHTER_FIELDS
+                 if row.get(k) is not None}
+        out[name.lower()] = stats
+    return out
+
+
+def build_fight_struct(fight: dict, fighter_stats: dict | None = None) -> dict:
+    """Pack fight data into a struct Claude can synthesize on.
+    fighter_stats: {lowered_name: {reliable_field: value}} — enrichment
+    from _fetch_fighter_stats_bulk. Optional; if None struct has no
+    fighter-stat blocks (Claude will only have model probabilities)."""
     pick_side = (fight.get('recommended_side') or '').lower()   # 'a' or 'b'
     picked_fighter = fight.get('fighter_a') if pick_side == 'a' else fight.get('fighter_b')
     other_fighter = fight.get('fighter_b') if pick_side == 'a' else fight.get('fighter_a')
@@ -76,7 +119,7 @@ def build_fight_struct(fight: dict) -> dict:
 
     def pct(v): return round((v or 0) * 100, 1)
 
-    return {
+    struct = {
         'event': fight.get('event_name'),
         'date': fight.get('event_date'),
         'fight_order': fight.get('fight_order'),
@@ -106,17 +149,75 @@ def build_fight_struct(fight: dict) -> dict:
         'ev_tier': fight.get('ev_tier'),
     }
 
+    # 2026-08-08 enrichment: append reliable fighter stats.
+    # Only fields verified populated + accurate (record, physicals, strike/grapple
+    # rates). NEVER include finish-method breakdown — scraper is broken and
+    # data is 0 for 94% of fighters (would create false narratives).
+    if fighter_stats is not None:
+        struct['fighter_a_stats'] = fighter_stats.get(
+            (fight.get('fighter_a') or '').lower(), {})
+        struct['fighter_b_stats'] = fighter_stats.get(
+            (fight.get('fighter_b') or '').lower(), {})
+
+    return struct
+
+
+def _render_fighter_stats(name: str, stats: dict) -> str:
+    """Render a fighter_stats block. Empty string if no stats."""
+    if not stats: return f'  {name}: NO PROFILE DATA AVAILABLE — do not cite record/physicals/stats for this fighter.'
+    parts = []
+    if stats.get('record'): parts.append(f'record {stats["record"]}')
+    if stats.get('total_wins') is not None: parts.append(f'{stats["total_wins"]}W-{stats.get("total_losses",0)}L')
+    ko = stats.get('wins_by_ko'); sub = stats.get('wins_by_sub'); dec = stats.get('wins_by_dec')
+    if ko is not None and sub is not None and dec is not None:
+        parts.append(f'wins by KO/TKO {ko}, SUB {sub}, DEC {dec}')
+    fr = stats.get('finishing_rate')
+    if fr is not None: parts.append(f'finish rate {fr}%')
+    if stats.get('height'): parts.append(f'height {stats["height"]}')
+    if stats.get('reach'): parts.append(f'reach {stats["reach"]}')
+    if stats.get('stance'): parts.append(f'stance {stats["stance"]}')
+    if stats.get('slpm') is not None: parts.append(f'SLpM {stats["slpm"]}')
+    if stats.get('str_acc') is not None: parts.append(f'strike acc {stats["str_acc"]}%')
+    if stats.get('str_def') is not None: parts.append(f'strike def {stats["str_def"]}%')
+    if stats.get('td_avg') is not None: parts.append(f'TD/15 {stats["td_avg"]}')
+    if stats.get('td_def') is not None: parts.append(f'TD def {stats["td_def"]}%')
+    if stats.get('sub_avg') is not None: parts.append(f'sub att/15 {stats["sub_avg"]}')
+    return f'  {name}: {" · ".join(parts)}'
+
 
 def render_prompt(struct: dict) -> str:
     """Fight-specific prompt. Guardrails against hallucination — Jerry must
-    cite only fields in struct, never invent stats about the fighters."""
+    cite only fields in struct, never invent stats about the fighters.
+
+    2026-08-08 hardening: Gamrot hallucination ("no finish in 25 fights"
+    when real record is 26-4 with 14 finishes) traced to Claude filling
+    in fight history from training data. Explicit instructions to ONLY
+    cite fields present in the struct + fighter_stats blocks below.
+    """
+    fa_stats_block = _render_fighter_stats(struct['fighter_a'], struct.get('fighter_a_stats') or {})
+    fb_stats_block = _render_fighter_stats(struct['fighter_b'], struct.get('fighter_b_stats') or {})
     return f"""You are Jerry — combat sports analyst for The Sweat Locker. Read the model output for this UFC fight and deliver ONE actionable synthesis.
 
-Voice: direct analyst. No "lock", "smash", "must play". Cite specific numbers from the struct only. If a stat isn't below, don't cite it.
+═══════════════════════════════════════════════════════════════════════
+HARD RULES (2026-08-08):
+1. ONLY cite numbers that appear in THIS PROMPT. If it's not below, don't say it.
+2. NEVER invent fighter records, finish counts, streaks, camp changes,
+   weight-cut history, head-to-head results, or "he's never been finished".
+3. If a fighter's PROFILE DATA is "NOT AVAILABLE" — do not describe them
+   with any record-based facts. Stay on the MODEL numbers only.
+4. Do NOT reference specific past fights, opponents, or dates from your
+   general knowledge. Only what's in the struct.
+═══════════════════════════════════════════════════════════════════════
+
+Voice: direct analyst. No "lock", "smash", "must play".
 
 Fight:
   Event: {struct['event']}
   {struct['fighter_a']} vs {struct['fighter_b']} (fight #{struct.get('fight_order','?')})
+
+Fighter profiles (cite only what's here):
+{fa_stats_block}
+{fb_stats_block}
 
 Model output:
   Recommended pick: {struct['model_pick_fighter']} at {struct['win_probability_pct']}% win probability
@@ -228,6 +329,19 @@ def main(game_date: str | None = None, force: bool = False, limit: int | None = 
         print(f'no upcoming UFC fights on {game_date or today_et()}'); return
     print(f'  {len(fights)} UFC fights in window')
 
+    # 2026-08-08 enrichment: bulk-fetch fighter_stats for every fighter
+    # on the card. Prompt has access to real record + physicals + strike
+    # stats. Prevents "Gamrot has no finish in 25 fights" hallucination
+    # class where Claude filled in from training data (or 0-corrupted DB
+    # values). Only reliable fields — no wins_by_ko/sub/dec until scraper
+    # is repaired (see ufc_espn_enrich.py for backfill flow).
+    unique_names = set()
+    for f in fights:
+        if f.get('fighter_a'): unique_names.add(f['fighter_a'])
+        if f.get('fighter_b'): unique_names.add(f['fighter_b'])
+    fighter_stats_map = _fetch_fighter_stats_bulk(list(unique_names))
+    print(f'  fighter_stats loaded for {len(fighter_stats_map)}/{len(unique_names)} fighters')
+
     done = 0
     for f in fights:
         if limit and done >= limit: break
@@ -241,7 +355,7 @@ def main(game_date: str | None = None, force: bool = False, limit: int | None = 
                 timeout=10)
             if check.status_code == 200 and check.json():
                 continue
-        struct = build_fight_struct(f)
+        struct = build_fight_struct(f, fighter_stats=fighter_stats_map)
         prompt = render_prompt(struct)
         raw = call_claude(prompt)
         if not raw:
