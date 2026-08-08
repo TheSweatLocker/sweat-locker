@@ -2544,11 +2544,11 @@ def compute_primary_play(ctx):
         if mc_delta is not None and abs_mc_delta >= 2.0:
             extrapolation = abs_mc_delta > 4.0
             if extrapolation:
-                tier = 'LIGHT'
+                tier = 'LEAN'  # 2026-08-07: was LIGHT, renamed to LEAN so app renders proper badge (not PASS default)
             elif abs_mc_delta >= 3.0:
                 tier = 'STRONG'
             else:
-                tier = 'LIGHT'
+                tier = 'LEAN'  # 2026-08-07: was LIGHT, renamed to LEAN so app renders proper badge (not PASS default)
             direction = 'over' if mc_delta > 0 else 'under'
             note = ' (extrap cap: |delta|>4 downgraded)' if extrapolation else ''
             return {
@@ -2574,7 +2574,7 @@ def compute_primary_play(ctx):
         if v4_delta is not None and v4_delta >= 2.5 and not V4_OVER_SUPPRESSED:
             return {
                 "type": "over",
-                "tier": "STRONG" if v4_delta >= 3.5 else "LIGHT",
+                "tier": "STRONG" if v4_delta >= 3.5 else "LEAN",
                 "label": f"Over {ct}",
                 "sub": f"v4 model {v4_total:.1f} vs line {ct} (+{v4_delta:.1f}) [fallback]",
                 "signal_floor": 72 if v4_delta >= 3.5 else 62,
@@ -2584,7 +2584,7 @@ def compute_primary_play(ctx):
         if v4_delta is not None and v4_delta <= -2.5:
             return {
                 "type": "under",
-                "tier": "STRONG" if v4_delta <= -3.5 else "LIGHT",
+                "tier": "STRONG" if v4_delta <= -3.5 else "LEAN",
                 "label": f"Under {ct}",
                 "sub": f"v4 model {v4_total:.1f} vs line {ct} ({v4_delta:+.1f}) [fallback]",
                 "signal_floor": 72 if v4_delta <= -3.5 else 62,
@@ -2604,7 +2604,7 @@ def compute_primary_play(ctx):
             return None  # cohort failing live — suppress until it recovers
         return {
             "type": "over",
-            "tier": "LIGHT",
+            "tier": "LEAN",
             "label": f"Over {ct}" if ct else "Over",
             "sub": "xERA gap rule fired",
             "signal_floor": 60,
