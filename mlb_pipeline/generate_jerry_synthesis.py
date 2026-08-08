@@ -711,6 +711,24 @@ def run(force: bool = False, game_date: str | None = None,
 
     print(f"=== wrote {done} jerry_reads for {sport} ===")
 
+    # 2026-08-08 auto-sync sweat card after Jerry regen.
+    # Root cause discovered in 8/7 post-mortem: Jerry regenerated at 6:36pm
+    # ET (1 hour before first pitch), flipping CLE @ CHW UNDER → OVER.
+    # Card was cached from morning run at 9am with the stale UNDER — users
+    # who bet from the card locked in the wrong direction. Now: any Jerry
+    # regen for MLB triggers a fresh sweat card build so cached card always
+    # matches current Jerry reads.
+    # Only fires when done>0 (something actually wrote) and sport is MLB
+    # (card generator is MLB-specific; per-sport cards ship separately).
+    if done > 0 and sport == 'MLB':
+        try:
+            print()
+            print(f'🔄 auto-syncing sweat card after Jerry regen...')
+            import generate_sweat_card
+            generate_sweat_card.build_card()
+        except Exception as e:
+            print(f'  ⚠ sweat card auto-sync failed (not fatal): {e}')
+
 
 def upsert_jerry_read_sport(game: dict, parsed: dict, struct: dict,
                              game_date: str, sport: str) -> bool:

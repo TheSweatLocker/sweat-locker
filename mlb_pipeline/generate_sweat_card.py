@@ -1853,6 +1853,29 @@ def build_card():
         "upcoming_events": upcoming_events,
     }
 
+    # 2026-08-08 freshness metadata: stamp the card with WHEN it was built
+    # + the most recent jerry_reads generation timestamp for the slate. App
+    # can display "Card as of X" so users know when the picks last refreshed.
+    # Prevents the 8/7 CLE-flip-mid-day silent staleness issue.
+    jr_latest = None
+    try:
+        r_j = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jerry_reads",
+            headers=HEADERS,
+            params={"game_date": f"eq.{today}", "sport": "eq.MLB",
+                    "order": "generated_at.desc", "limit": "1",
+                    "select": "generated_at"},
+            timeout=10,
+        )
+        rows = r_j.json() if r_j.status_code == 200 else []
+        if rows: jr_latest = rows[0].get("generated_at")
+    except Exception:
+        pass
+    now_utc = datetime.now(timezone.utc).isoformat()
+    card["_card_built_at"] = now_utc
+    card["_jerry_reads_latest_at"] = jr_latest
+    card["_synced"] = (jr_latest is not None)
+
     # Upsert to jerry_cache
     cache_key = f"sweat_card_{today}"
     payload = {
@@ -1861,7 +1884,7 @@ def build_card():
         "sport": "MLB",
         "narrative": f"Sweat Card for {today}",
         "data": card,
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": now_utc,
     }
     r = requests.post(
         f"{SUPABASE_URL}/rest/v1/jerry_cache",
