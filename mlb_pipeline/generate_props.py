@@ -929,6 +929,22 @@ def score_pitcher_ha_over(g, side):
     if proj_h is None:
         return None
 
+    # 2026-08-08 EARLY-PULL ADJUSTMENT — ha_over went 0-5 on 8/7 because
+    # bad-xERA pitchers projected for 5+ hits kept getting pulled at
+    # 3 IP (giving up only 2-3 hits). The projected_hits number came
+    # from a full-outing L7 average that assumed 5+ IP. If the pitcher
+    # has been getting pulled early (last_ip low or projected_outs low
+    # in game_context), scale hits down proportionally.
+    #
+    # Scale factor: expected_outs / typical_starter_outs (18).
+    # If proj_outs = 12 (4 IP), scale = 0.67 → 5 hits becomes 3.3 hits.
+    # Correlates with outs_under prop (which went 5-2 same night).
+    proj_outs = _f(g.get(f'{side}_pitcher_projected_outs'))
+    if proj_outs is not None and proj_outs > 0 and proj_outs < 18:
+        pull_scale = proj_outs / 18.0
+        proj_h_raw = proj_h
+        proj_h = proj_h * pull_scale
+
     opp_side = 'away' if side == 'home' else 'home'
     opp_wrc = _f(g.get(f'{opp_side}_wrc_plus')) or 100
     park_run = _f(g.get('park_run_factor')) or 100
@@ -936,6 +952,10 @@ def score_pitcher_ha_over(g, side):
 
     signals = {}
     signals['_projected_hits'] = round(proj_h, 1)
+    if proj_outs is not None and proj_outs < 18:
+        signals['_projected_hits_pre_pull_adjust'] = round(proj_h_raw, 1)
+        signals['_projected_outs_used'] = proj_outs
+        signals['_pull_scale'] = round(proj_outs/18.0, 2)
     conviction = 30
     LINE = 5.5
     over_margin = proj_h - LINE

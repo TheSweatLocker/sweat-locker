@@ -73,6 +73,17 @@ HIGH_CONVICTION_THRESHOLD = 90     # conviction level that requires backing
 HIGH_CONVICTION_REFIT_MIN = 70     # refit must be >= this to hold ≥90
 HIGH_CONVICTION_CAP = 85           # otherwise conviction drops to STRONG max
 
+# 2026-08-08 PRIME gate tightening
+# 30d audit: PRIME 43% (n=7) vs STRONG 73% (n=15). PRIME conviction 80-89
+# needs same refit-corroboration treatment as the >=90 tier — otherwise
+# hand-tuned scorer promotes single-signal PRIMEs that are structurally
+# closer to STRONG-tier hit rate.
+# Applied to conviction range [PRIME_GATE_MIN, HIGH_CONVICTION_THRESHOLD):
+# if in this range and no refit ≥ PRIME_GATE_REFIT_MIN, cap at 79 (top STRONG).
+PRIME_GATE_MIN = 80                # entry point for PRIME tier
+PRIME_GATE_REFIT_MIN = 60          # refit must be >= this to hold >= 80
+PRIME_GATE_CAP = 79                # cap at top STRONG when refit missing
+
 
 def apply_family_prior(prop_type: str, direction: str, raw_conviction: int) -> tuple[int, str]:
     """Blend raw conviction with historical family hit rate.
@@ -724,18 +735,37 @@ def cap_unsupported_high_conviction(raw_conviction: int,
     Requiring refit backing (a model trained on outcomes, not weights)
     filters the inflation.
 
+    2026-08-08 extension: PRIME 80-89 also gated. 8/7 slate saw PRIME
+    hit 43% (n=7). 30d PRIME hit 43% vs STRONG 73%. Same refit-
+    corroboration approach — cap at 79 (top STRONG) when refit weak
+    or missing on the 80-89 band.
+
     Returns (adjusted_conviction, reason). Empty reason = no cap applied.
     """
-    if raw_conviction < HIGH_CONVICTION_THRESHOLD:
+    # Tier 1: conviction >= 90 requires strong refit (existing gate)
+    if raw_conviction >= HIGH_CONVICTION_THRESHOLD:
+        if refit_conviction is None:
+            return HIGH_CONVICTION_CAP, f'high_conv{raw_conviction}_no_refit_cap{HIGH_CONVICTION_CAP}'
+        try:
+            rc = float(refit_conviction)
+        except (TypeError, ValueError):
+            return HIGH_CONVICTION_CAP, f'high_conv{raw_conviction}_bad_refit_cap{HIGH_CONVICTION_CAP}'
+        if rc < HIGH_CONVICTION_REFIT_MIN:
+            return HIGH_CONVICTION_CAP, f'high_conv{raw_conviction}_refit{rc:.0f}_below_gate{HIGH_CONVICTION_REFIT_MIN}_cap{HIGH_CONVICTION_CAP}'
         return raw_conviction, ''
-    if refit_conviction is None:
-        return HIGH_CONVICTION_CAP, f'high_conv{raw_conviction}_no_refit_cap{HIGH_CONVICTION_CAP}'
-    try:
-        rc = float(refit_conviction)
-    except (TypeError, ValueError):
-        return HIGH_CONVICTION_CAP, f'high_conv{raw_conviction}_bad_refit_cap{HIGH_CONVICTION_CAP}'
-    if rc < HIGH_CONVICTION_REFIT_MIN:
-        return HIGH_CONVICTION_CAP, f'high_conv{raw_conviction}_refit{rc:.0f}_below_gate{HIGH_CONVICTION_REFIT_MIN}_cap{HIGH_CONVICTION_CAP}'
+
+    # Tier 2 (new 2026-08-08): PRIME 80-89 requires moderate refit
+    if raw_conviction >= PRIME_GATE_MIN:
+        if refit_conviction is None:
+            return PRIME_GATE_CAP, f'prime80_conv{raw_conviction}_no_refit_cap{PRIME_GATE_CAP}'
+        try:
+            rc = float(refit_conviction)
+        except (TypeError, ValueError):
+            return PRIME_GATE_CAP, f'prime80_conv{raw_conviction}_bad_refit_cap{PRIME_GATE_CAP}'
+        if rc < PRIME_GATE_REFIT_MIN:
+            return PRIME_GATE_CAP, f'prime80_conv{raw_conviction}_refit{rc:.0f}_below_gate{PRIME_GATE_REFIT_MIN}_cap{PRIME_GATE_CAP}'
+        return raw_conviction, ''
+
     return raw_conviction, ''
 
 

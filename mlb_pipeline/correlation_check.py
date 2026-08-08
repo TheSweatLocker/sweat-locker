@@ -113,6 +113,43 @@ def check_correlations(picks: list, pitcher_map: Optional[dict] = None) -> list:
                     w['game_id'] = gid
                     warnings.append(w)
 
+    # 2026-08-08 SAME-PITCHER CORRELATION (R7).
+    # Discovery from 8/7 post-mortem: Wheeler had TWO PRIME props
+    # (Ks OVER 6.5 + BB UNDER 1.5). Wheeler had an off night with 5
+    # walks and only 6 Ks — BOTH props lost as a single-pitcher-outing
+    # event. When a pitcher has 2+ STRONG+ props on the card, one bad
+    # outing cascades into multiple losses. Warn so bettors can
+    # correlation-adjust units (drop one or use smaller sizes on both).
+    by_pitcher = {}
+    for i, p in enumerate(picks):
+        # Only props tied to a specific player_name matter here
+        pt = (p.get('prop_type') or '').lower()
+        # Pitcher prop types (not batter hits)
+        if not any(pt.startswith(x) for x in ('ks_','bb_','er_','ha_','outs_')):
+            continue
+        player = (p.get('player_name') or '').strip().lower()
+        if not player: continue
+        by_pitcher.setdefault(player, []).append((i, p))
+
+    for player, plist in by_pitcher.items():
+        if len(plist) < 2: continue
+        # Collect prop-type descriptors
+        descs = [f"{p.get('prop_type')} {p.get('prop_line','?')} {p.get('side','')}"
+                 for _, p in plist]
+        indices = [i for i, _ in plist]
+        # Highest tier / conviction across the stack
+        max_conv = max((p.get('conviction') or 0) for _, p in plist)
+        severity = _SEVERITY_STRONG if max_conv >= 80 else _SEVERITY_MEDIUM
+        warnings.append({
+            'rule': 'R7_same_pitcher_multi_prop_stack',
+            'severity': severity,
+            'picks': indices,
+            'game_id': plist[0][1].get('game_id'),
+            'note': (f'{player.title()} has {len(plist)} props on card '
+                     f'({", ".join(descs)}). One bad outing cascades into '
+                     f'multiple losses — correlation-adjust units.'),
+        })
+
     return warnings
 
 
