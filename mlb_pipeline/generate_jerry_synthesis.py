@@ -244,6 +244,41 @@ def enrich_struct(struct: dict, game: dict, externals: list,
         "interaction": interaction_notes,  # empty list if no notable interaction
     }
 
+    # SHARP FADE CONTEXT (2026-08-09): compute fade-rule fires for the LIKELY
+    # Jerry pick side so the prompt can see if any ACTIVE rules would cap
+    # this direction. When 1+ ACTIVE rules fire on Jerry's leaning direction,
+    # Jerry has three options: (a) flip the pick to the opposite side, (b)
+    # keep pick but downgrade conviction, (c) explain why the fade doesn't
+    # apply here despite the pattern. Whatever she picks gets capped
+    # mechanically by tier_discipline_gate anyway — this just gives her
+    # narrative awareness of the constraint.
+    try:
+        from sharp_fade_rules import compute_fade_context as _fade_ctx
+        # Try both sides for each market so Jerry sees which direction is safe
+        # and which would trigger caps.
+        fade_ctx_view = {}
+        for mkt in ('ml', 'total'):
+            fade_ctx_view[mkt] = {}
+            for side in (('HOME','AWAY') if mkt == 'ml' else ('OVER','UNDER')):
+                try:
+                    r = _fade_ctx(game, mkt, side)
+                except Exception:
+                    r = None
+                if r and (r.get('triggers') or r.get('active_count', 0) > 0):
+                    fade_ctx_view[mkt][side] = {
+                        'active_rule_count': r.get('active_count', 0),
+                        'cap_directive': r.get('cap_directive'),
+                        'triggers': [{'rule': t['rule'], 'mode': t.get('mode'),
+                                       'reason': t.get('reason','')[:120]}
+                                       for t in r['triggers']],
+                    }
+        # Only surface the block if any triggers fired anywhere; otherwise noise
+        has_signal = any(fade_ctx_view[m] for m in fade_ctx_view)
+        if has_signal:
+            struct["sharp_fade_context"] = fade_ctx_view
+    except Exception:
+        pass
+
     return struct
 
 
@@ -617,6 +652,8 @@ def run(force: bool = False, game_date: str | None = None,
         try:
             from validate_jerry_read import (validate as _validate,
                                               validate_pitcher_names,
+                                              validate_style_rules,
+                                              substitute_generic_pitcher_refs,
                                               build_corrective_prompt,
                                               substitute_hallucinated_names)
             combined_prose = (parsed.get("short_read") or "") + "\n" + (parsed.get("long_read") or "")
@@ -629,15 +666,47 @@ def run(force: bool = False, game_date: str | None = None,
                 'away_team': g.get('away_team'),
                 'home_lineup': g.get('home_lineup'),
                 'away_lineup': g.get('away_lineup'),
+                # 2026-08-08: include umpire name + full derived struct
+                # (lineups, opposing_lineup, weather notes) so umpire
+                # names like "Tom Hanahan" don't get flagged as
+                # hallucinated pitcher names and rewritten by Layer C.
+                'umpire': {'name': g.get('umpire')} if g.get('umpire') else None,
+                'pitchers': (struct.get('pitchers') if isinstance(struct, dict) else None),
+                'batters': (struct.get('batters') if isinstance(struct, dict) else None),
+                'lineup': (struct.get('lineup') if isinstance(struct, dict) else None),
+                'lineups': (struct.get('lineups') if isinstance(struct, dict) else None),
             }
+            # 2026-08-08: pass pitcher names + market into struct-view Jerry
+            # would have used, so style validator can check gap vs market and
+            # generic pitcher references.
+            style_struct = dict(struct) if isinstance(struct, dict) else {}
+            # 2026-08-08: overwrite (not setdefault) — derived struct may
+            # carry a nested pitchers.*.name shape without a flat
+            # home_pitcher key, but if a flat null value slipped in the
+            # setdefault would preserve None and the generic-ref check
+            # skips (tbd branch), letting "the opposing starter" through.
+            style_struct['home_pitcher'] = g.get('home_pitcher') or (
+                (struct.get('pitchers', {}).get('home', {}) or {}).get('name')
+                if isinstance(struct, dict) else None)
+            style_struct['away_pitcher'] = g.get('away_pitcher') or (
+                (struct.get('pitchers', {}).get('away', {}) or {}).get('name')
+                if isinstance(struct, dict) else None)
+            # 2026-08-08 (evening): expose the parsed CALL so
+            # sim_pick_direction_mismatch rule can compare cited runs vs pick
+            style_struct['call_market'] = parsed.get('call_market')
+            style_struct['call_side'] = parsed.get('call_side')
+            style_struct['call_line'] = parsed.get('call_line')
             num_report = _validate(parsed.get("short_read"), parsed.get("long_read"), struct)
             name_report = validate_pitcher_names(combined_prose, name_whitelist)
+            style_report = validate_style_rules(parsed.get("short_read"),
+                                                 parsed.get("long_read"), style_struct)
 
-            if not num_report['is_valid'] or not name_report['valid']:
+            if not num_report['is_valid'] or not name_report['valid'] or not style_report['valid']:
                 # LAYER A: retry once with corrective feedback
+                style_rules = [it.get('rule') for it in (style_report.get('issues') or [])]
                 print(f"  ⚠ hallucination detected (nums={num_report.get('hallucinated_numbers')}, "
-                      f"names={name_report.get('suspects')}) — regen with corrective prompt")
-                corrective = build_corrective_prompt(prompt, num_report, name_report)
+                      f"names={name_report.get('suspects')}, style={style_rules}) — regen with corrective prompt")
+                corrective = build_corrective_prompt(prompt, num_report, name_report, style_report)
                 raw2 = call_claude(corrective)
                 retry_worked = False
                 if raw2:
@@ -650,15 +719,21 @@ def run(force: bool = False, game_date: str | None = None,
                         except ImportError: pass
                         combined2 = (parsed2.get("short_read") or "") + "\n" + (parsed2.get("long_read") or "")
                         num2 = _validate(parsed2.get("short_read"), parsed2.get("long_read"), struct)
-                        name2 = validate_pitcher_names(combined2, struct)
+                        name2 = validate_pitcher_names(combined2, name_whitelist)
+                        style2 = validate_style_rules(parsed2.get("short_read"),
+                                                       parsed2.get("long_read"), style_struct)
                         parsed = parsed2  # accept retry even if imperfect (usually better)
-                        if num2['is_valid'] and name2['valid']:
+                        if num2['is_valid'] and name2['valid'] and style2['valid']:
                             print(f"  ✓ retry succeeded — clean output")
                             retry_worked = True
                         else:
-                            # Update reports to reflect retry state for substitution below
+                            # Update reports to reflect retry state for substitution + logging
                             name_report = name2
                             num_report = num2
+                            style_report = style2
+                            if style2.get('issues'):
+                                print(f"  ⚠ retry still has style issues: "
+                                      f"{[i['rule'] for i in style2['issues']]}")
                 # LAYER C: if still hallucinating names after retry (or retry
                 # produced nothing), substitute with 'the home/away starter'.
                 if not retry_worked and name_report.get('suspects'):
@@ -668,20 +743,101 @@ def run(force: bool = False, game_date: str | None = None,
                         parsed.get('long_read',''), struct, name_report['suspects'])
                     print(f"  🔧 substituted {len(name_report['suspects'])} suspect name(s) with generic form")
 
-                # NUMBER HALLUCINATION HARD-ENFORCE (2026-08-06 v2): names can
-                # be substituted safely (references), but numbers ARE the pitch's
-                # meaning ("0.94 xERA" is not swappable). If retry STILL leaves
-                # hallucinated numbers, we can't publish at full conviction.
-                # Cap at LEAN (55) so downstream sweat card treats as low-conf
-                # and users see the appropriate tier signal. Log for review.
+                # NUMBER HALLUCINATION HARD-ENFORCE (2026-08-06 v2, hardened 2026-08-09).
+                # Names can be substituted safely (references), but numbers ARE the
+                # pitch's meaning ("0.94 xERA" is not swappable). If retry STILL
+                # leaves hallucinated numbers:
+                #   - LIGHT (1-2 unverified numbers): cap conviction 55 + append
+                #     transparency footer to short_read explaining the flag.
+                #   - HEAVY (3+ unverified numbers): downgrade to READ tier +
+                #     scrub the top-line CALL to prevent the read from ranking
+                #     in top_8. Users still see the analysis (analytical take)
+                #     but the pipeline treats it as non-actionable.
+                # Both cases log for morning audit.
                 if not retry_worked and num_report.get('hallucinated_numbers'):
                     orig_conv = parsed.get('conviction') or 0
-                    if orig_conv > 55:
+                    hallus = num_report['hallucinated_numbers']
+                    hallucinated_note = (f"[Numeric integrity flag: {len(hallus)} figure(s) "
+                                         f"in this take couldn't be traced back to source data: "
+                                         f"{', '.join(str(h) for h in hallus[:3])}. "
+                                         f"Read as directional take, not verified numbers.]")
+                    if len(hallus) >= 3:
+                        # HEAVY hallucination — downgrade to READ tier equivalent
+                        # (conv 45 caps below LEAN's 55 floor). Also append
+                        # transparency note to short_read so if the read still
+                        # surfaces anywhere, the user sees why it's demoted.
+                        if orig_conv > 45:
+                            parsed['conviction'] = 45
+                            print(f"  🚨 conviction hard-floored {orig_conv}→45 (READ) — "
+                                  f"{len(hallus)} unverified numbers: {hallus[:5]}")
+                        # Append transparency note (idempotent: don't double-append)
+                        cur_short = parsed.get('short_read') or ''
+                        if 'Numeric integrity flag' not in cur_short:
+                            parsed['short_read'] = f"{cur_short}\n\n{hallucinated_note}"[:2000]
+                    elif orig_conv > 55:
+                        # LIGHT hallucination — LEAN cap + footer note
                         parsed['conviction'] = 55
-                        print(f"  🔒 conviction capped {orig_conv}→55 (LEAN) due to unverified numbers: "
-                              f"{num_report['hallucinated_numbers'][:3]}")
+                        print(f"  🔒 conviction capped {orig_conv}→55 (LEAN) — "
+                              f"unverified: {hallus[:3]}")
+                        cur_short = parsed.get('short_read') or ''
+                        if 'Numeric integrity flag' not in cur_short:
+                            parsed['short_read'] = f"{cur_short}\n\n{hallucinated_note}"[:2000]
+
+                # STYLE HARD-CAP (2026-08-08): sim-vs-market gap + hitter-AB
+                # fabrication + generic pitcher refs after retry all destroy
+                # credibility on a bettor-facing read. Same treatment as
+                # number hallucinations — cap at LEAN so downstream tier
+                # signal warns instead of publishing at PRIME/STRONG.
+                if not retry_worked and style_report.get('issues'):
+                    critical_rules = {'generic_pitcher_ref', 'hitter_l7_ab_fabrication',
+                                       'sim_market_gap_over_cap', 'post_bet_conditional',
+                                       'bullpen_unit_missing', 'sim_pick_direction_mismatch'}
+                    critical_hit = any(it.get('rule') in critical_rules
+                                        for it in style_report['issues'])
+                    if critical_hit:
+                        orig_conv = parsed.get('conviction') or 0
+                        if orig_conv > 55:
+                            parsed['conviction'] = 55
+                            print(f"  🔒 conviction capped {orig_conv}→55 (LEAN) due to style violations: "
+                                  f"{[i['rule'] for i in style_report['issues'][:3]]}")
+
+            # LAYER D (2026-08-09): mechanical scrub of 'the opposing starter'
+            # → real pitcher name. Runs unconditionally after retry — belt-
+            # and-suspenders for cases where LLM keeps the generic phrase
+            # despite corrective prompt. On 2026-08-09, 8/15 games shipped
+            # with 'the opposing starter' leaking past LEAN cap. Also
+            # patches umpire/park hallucinations that Layer C created.
+            sub_struct = dict(style_struct)
+            sub_struct['home_team'] = g.get('home_team') or struct.get('home_team')
+            sub_struct['away_team'] = g.get('away_team') or struct.get('away_team')
+            for key in ('short_read', 'long_read'):
+                before = parsed.get(key) or ''
+                after = substitute_generic_pitcher_refs(before, sub_struct)
+                if before != after:
+                    parsed[key] = after
+                    print(f"  🔧 Layer D scrubbed generic pitcher refs in {key}")
         except ImportError:
             pass
+
+        # 2026-08-09: reconstruct call_text BEFORE upsert (was only fixing
+        # the log line afterwards). Users saw stale "Pass" badges on the
+        # game-list Jerry box for any read where the LLM omitted call_text
+        # but did emit a directional market/side/line. Now the DB always
+        # gets a non-null call_text so the badge renders correctly.
+        if not parsed.get('call_text'):
+            mkt = (parsed.get('call_market') or 'pass').lower()
+            side = parsed.get('call_side') or ''
+            line = parsed.get('call_line')
+            if mkt == 'pass':
+                parsed['call_text'] = 'PASS'
+            elif mkt == 'total' and side:
+                parsed['call_text'] = f"{side.title()} {line or ''}".strip()
+            elif mkt == 'ml' and side:
+                parsed['call_text'] = f"{side.title()} ML"
+            elif mkt == 'rl' and side:
+                parsed['call_text'] = f"{side.title()} RL {line or ''}".strip()
+            elif mkt == 'fight' and side:
+                parsed['call_text'] = f"Fighter {side}"
 
         if upsert_jerry_read_sport(g, parsed, struct, gd, sport):
             # Display fallback: prefer call_text; if missing, reconstruct from

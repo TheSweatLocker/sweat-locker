@@ -178,6 +178,54 @@ def validate_pitcher_names(prose: str, struct: dict) -> dict:
             if len(parts) >= 2:
                 whitelist.add(parts[-1])
 
+    # 2026-08-08: extend whitelist to catch every person-name Jerry might
+    # cite from struct. Prior bug — umpire "Tom Hanahan" got flagged as
+    # a hallucinated pitcher, then Layer C substituted it with "the
+    # opposing starter", producing awkward "(the opposing starter)" prose
+    # inside a sentence that was about the umpire.
+    #
+    # Umpire block (`struct.umpire.name` in real data snapshot).
+    ump = struct.get('umpire')
+    if isinstance(ump, dict):
+        v = ump.get('name')
+        if isinstance(v, str) and v.strip():
+            n = _ascii_lower(v.strip())
+            whitelist.add(n)
+            parts = n.split()
+            if len(parts) >= 2: whitelist.add(parts[-1])
+
+    # Pitchers nested under `struct.pitchers.{home,away}.name` — some
+    # code paths pass the derived struct which has this shape, not the
+    # flat home_pitcher/away_pitcher fields.
+    pitchers = struct.get('pitchers')
+    if isinstance(pitchers, dict):
+        for side_key in ('home', 'away'):
+            sp = pitchers.get(side_key)
+            if isinstance(sp, dict):
+                v = sp.get('name')
+                if isinstance(v, str) and v.strip():
+                    n = _ascii_lower(v.strip())
+                    whitelist.add(n)
+                    parts = n.split()
+                    if len(parts) >= 2: whitelist.add(parts[-1])
+
+    # Batters block — struct.batters.{home,away}[] or struct.lineup.{home,away}[]
+    for container_key in ('batters', 'lineup', 'lineups'):
+        cont = struct.get(container_key)
+        if not isinstance(cont, dict): continue
+        for side_key in ('home', 'away'):
+            side_list = cont.get(side_key)
+            if isinstance(side_list, list):
+                for entry in side_list:
+                    # Each entry can be a name string or a dict with 'name' field
+                    nm = entry if isinstance(entry, str) else (
+                        entry.get('name') if isinstance(entry, dict) else None)
+                    if not (isinstance(nm, str) and nm.strip()): continue
+                    n = _ascii_lower(nm.strip())
+                    whitelist.add(n)
+                    parts = n.split()
+                    if len(parts) >= 2: whitelist.add(parts[-1])
+
     # Team names (Jerry can reference teams)
     for key in ('home_team', 'away_team'):
         v = struct.get(key)
@@ -278,6 +326,145 @@ def validate_pitcher_names(prose: str, struct: dict) -> dict:
     }
 
 
+def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
+    """Layer D (2026-08-09): mechanical scrub of 'the opposing starter' →
+    real pitcher name based on nearby team context.
+
+    Runs unconditionally after retry — belt-and-suspenders for the case
+    where the LLM keeps saying 'the opposing starter' despite corrective
+    prompt. Was previously only conviction-capped, still leaked the phrase
+    into shipped prose (8/15 games on 2026-08-09).
+
+    Heuristic: for each occurrence of `the (opposing|home|away) starter`
+    (without a following parenthetical name), look ~180 chars back for a
+    team name or possessive ("Cleveland lineup", "White Sox offense",
+    "Miami's durability"). If the nearer team is HOME, sub in away
+    pitcher (and vice versa). Falls back to `home_p vs away_p` construct
+    when context is ambiguous.
+
+    Also patches the specific hallucination pattern where an umpire or
+    park factor line contains "(the opposing starter, ...)" — parenthetical
+    entity mismatches — by stripping the misplaced clause.
+    """
+    if not prose:
+        return prose
+    home_p = (struct.get('home_pitcher') or '').strip() if isinstance(struct, dict) else ''
+    away_p = (struct.get('away_pitcher') or '').strip() if isinstance(struct, dict) else ''
+    home_t = (struct.get('home_team') or '').strip() if isinstance(struct, dict) else ''
+    away_t = (struct.get('away_team') or '').strip() if isinstance(struct, dict) else ''
+    if not (home_p or away_p):
+        return prose
+
+    def last_name(full: str) -> str:
+        return full.split()[-1] if full else ''
+
+    def team_keys(full: str) -> list:
+        """Match on last word (Yankees, Dodgers) + city variants."""
+        if not full: return []
+        parts = full.split()
+        keys = [full.lower()]
+        if len(parts) > 1:
+            keys.append(parts[-1].lower())  # 'Yankees'
+            keys.append(' '.join(parts[:-1]).lower())  # 'New York'
+        return [k for k in keys if len(k) >= 3]
+
+    home_keys = team_keys(home_t)
+    away_keys = team_keys(away_t)
+
+    home_last = last_name(home_p)
+    away_last = last_name(away_p)
+
+    def resolve(match_start: int, phrase: str) -> str:
+        window = prose[max(0, match_start - 180):match_start].lower()
+        # Prefer pitcher-name proximity (most reliable), fall back to team keys.
+        # 2026-08-09: if the "lead" pitcher name in the window ISN'T either
+        # home_p or away_p, Jerry hallucinated a name — resolve against the
+        # OTHER position (whichever wasn't just mentioned by nearest name).
+        home_p_pos = window.rfind(home_last.lower()) if home_last else -1
+        away_p_pos = window.rfind(away_last.lower()) if away_last else -1
+        home_pos = max([home_p_pos] + [window.rfind(k) for k in home_keys], default=-1)
+        away_pos = max([away_p_pos] + [window.rfind(k) for k in away_keys], default=-1)
+        # Detect hallucinated-pitcher pattern: window has a capitalized surname
+        # right before the phrase but it's neither home_p nor away_p.
+        # e.g. "Sheehan has been solid... the opposing starter is getting shelled"
+        # when actual pitchers are Wrobleski / Rodriguez.
+        raw_window = prose[max(0, match_start - 180):match_start]
+        m_lead = re.search(r'\b([A-Z][a-z]{3,})\s+(?:has|is|was|allowed|carries|pitches|throws)',
+                            raw_window)
+        if m_lead:
+            lead = m_lead.group(1).lower()
+            if lead and lead != home_last.lower() and lead != away_last.lower():
+                # Lead name isn't in our real pitchers → Jerry hallucinated it.
+                # Since we can't tell which side it stood in for, prefer the
+                # pitcher whose stats-context in the phrase (following text)
+                # matches: default to home_p (arbitrary but consistent).
+                if 'opposing' in phrase.lower() and home_p and away_p:
+                    # Prefer the pitcher that appears LATER in the full prose
+                    # (Jerry often names the "opposing" pitcher explicitly
+                    # further down).
+                    tail = prose[match_start:].lower()
+                    if home_last.lower() in tail and away_last.lower() not in tail:
+                        return home_last
+                    if away_last.lower() in tail and home_last.lower() not in tail:
+                        return away_last
+                    # Both or neither in tail → default to home starter
+                    return home_last
+        if 'opposing' in phrase.lower():
+            # 'the opposing starter' — opposite of the last-mentioned side
+            if home_pos > away_pos and home_pos >= 0 and away_p:
+                return away_last
+            if away_pos > home_pos and away_pos >= 0 and home_p:
+                return home_last
+            # Neither team/pitcher mentioned in window — pick the pitcher whose
+            # name is NOT anywhere in the prose yet (avoids repeating the same
+            # name back-to-back).
+            if home_p and home_last.lower() not in prose.lower():
+                return home_last
+            if away_p and away_last.lower() not in prose.lower():
+                return away_last
+            # Truly ambiguous — name whichever we have.
+            return home_last or away_last or phrase
+        elif 'home' in phrase.lower():
+            return home_last if home_last else phrase
+        elif 'away' in phrase.lower():
+            return away_last if away_last else phrase
+        return phrase
+
+    out = prose
+
+    # Pattern 1: umpire/park lines that got hallucinated with pitcher label
+    # ("The umpire, the opposing starter, runs...", "the park (the opposing
+    # starter, factor 103)"). Strip the misplaced clause.
+    # 1a) Parenthetical: "the park (the opposing starter, factor 103)"
+    #     → "the park (factor 103)"  (preserve balanced parens)
+    out = re.sub(
+        r'\(\s*the opposing starter\s*,\s*',
+        '(',
+        out,
+        flags=re.IGNORECASE,
+    )
+    # 1b) Comma-clause: "The umpire, the opposing starter, runs a neutral zone"
+    #     → "The umpire runs a neutral zone"
+    out = re.sub(
+        r'(umpire|park|weather|stadium)\s*,\s*the opposing starter\s*,\s*',
+        r'\1 ',
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    # Pattern 2: 'the (opposing|home|away) starter' NOT followed by '(Name)'
+    def _sub(m):
+        return resolve(m.start(), m.group(0))
+
+    out = re.sub(
+        r'\bthe (opposing|home|away) starter\b(?!\s*\()',
+        _sub,
+        out,
+        flags=re.IGNORECASE,
+    )
+    return out
+
+
 def substitute_hallucinated_names(prose: str, struct: dict, suspects: list) -> str:
     """Layer C fallback: when retry still leaves hallucinated names in prose,
     substitute them with generic 'home/away starter' phrasing rather than
@@ -307,8 +494,154 @@ def substitute_hallucinated_names(prose: str, struct: dict, suspects: list) -> s
     return out
 
 
+def validate_style_rules(short_read: str, long_read: str, struct: dict) -> dict:
+    """Catch the class of "sounds dumb" errors user flagged on 2026-08-08:
+      - generic pitcher refs ("the opposing starter", "Red Sox starter")
+        that leak past the pitcher-name guard
+      - hitter L7 hallucinations ("hitting in 6-of-7 last 7 at-bats")
+      - simulator vs market gap > 15pp (96% at -250 = 71% implied)
+      - "13 relievers in the last three days" (bullpen unit muddle)
+      - post-bet conditionals ("if X, revisit")
+
+    Returns:
+      {
+        'valid': bool,
+        'issues': [{rule, snippet, suggestion}, ...],
+      }
+    """
+    combined = ((short_read or '') + '\n' + (long_read or '')).strip()
+    if not combined:
+        return {'valid': True, 'issues': []}
+
+    issues = []
+
+    # Rule 1: generic pitcher reference in prose (post-substitution) —
+    # OK if the actual pitcher name literally is "(TBD)"
+    home_p = (struct.get('home_pitcher') or '').strip() if isinstance(struct, dict) else ''
+    away_p = (struct.get('away_pitcher') or '').strip() if isinstance(struct, dict) else ''
+    tbd = (not home_p or home_p == '(TBD)') and (not away_p or away_p == '(TBD)')
+    if not tbd:
+        for pat in (r'\bthe opposing starter\b',
+                    r'\bthe home starter\b(?! \()',
+                    r'\bthe away starter\b(?! \()',
+                    r"\b(?:Red Sox|Yankees|Cubs|Mets|Dodgers|Giants|Astros|Nationals|Braves|Phillies|Angels|Athletics|Rockies|Marlins|Padres|Cardinals|Twins|Guardians|Rangers|Rays|Blue Jays|Orioles|Reds|Brewers|Diamondbacks|Pirates|Mariners|Tigers|Royals) starter\b"):
+            m = re.search(pat, combined, re.IGNORECASE)
+            if m:
+                issues.append({
+                    'rule': 'generic_pitcher_ref',
+                    'snippet': combined[max(0,m.start()-20):m.end()+20],
+                    'suggestion': f'Use pitcher name by real name — {home_p or "(home starter TBD)"} / {away_p or "(away starter TBD)"}',
+                })
+
+    # Rule 2: hitter L7 at-bats phrasing (physically impossible sustained)
+    m = re.search(r'\b\d+[-–—]of[-–—]\d+ (?:last|of the last) \d+ (?:at[- ]bats|ABs|plate appearances)\b',
+                  combined, re.IGNORECASE)
+    if m:
+        issues.append({
+            'rule': 'hitter_l7_ab_fabrication',
+            'snippet': combined[max(0,m.start()-20):m.end()+20],
+            'suggestion': 'Use team-level offense stats or cite prop struct rows — never per-hitter AB rates',
+        })
+    m2 = re.search(r'\bhitting in \d+[-–—]\d+ (?:of )?(?:their|his) last \d+ (?:at[- ]bats|ABs)\b',
+                   combined, re.IGNORECASE)
+    if m2:
+        issues.append({
+            'rule': 'hitter_l7_ab_fabrication',
+            'snippet': combined[max(0,m2.start()-20):m2.end()+20],
+            'suggestion': 'Fabricated per-hitter AB stat — a sustained .857+ BA is impossible',
+        })
+
+    # Rule 3: simulator vs market gap > 15pp.
+    # Apply the FAVORITE'S implied cap (more negative ML). Any sim claim
+    # naturally refers to the winning side, so we check against the
+    # highest reasonable implied win rate.
+    market = struct.get('market') if isinstance(struct, dict) else None
+    if isinstance(market, dict):
+        implieds = []
+        for ml_key in ('home_ml', 'away_ml'):
+            ml = market.get(ml_key)
+            if ml is None: continue
+            try:
+                ml_f = float(ml)
+                imp = 100.0 / (ml_f + 100.0) if ml_f > 0 else -ml_f / (-ml_f + 100.0)
+                implieds.append(imp)
+            except (TypeError, ValueError): continue
+        if implieds:
+            fav_implied = max(implieds)   # the favorite's implied win rate
+            cap_pct = round((fav_implied + 0.15) * 100)
+            for m in re.finditer(r'simulator (?:sees|gives|runs|has) [^.]*?(\d{2,3})\s*%', combined, re.IGNORECASE):
+                pct = int(m.group(1))
+                if pct > cap_pct + 2:  # 2pp forgiveness for rounding
+                    issues.append({
+                        'rule': 'sim_market_gap_over_cap',
+                        'snippet': combined[max(0,m.start()-15):m.end()+15],
+                        'suggestion': f'Simulator claim {pct}% exceeds favorite implied+15pp cap ({cap_pct}%). Cap the reported number.',
+                    })
+                    break  # one flag per read
+
+    # Rule 4: "N relievers" without unit
+    m = re.search(r'\b(\d{2,3}) reliever(?:s)?(?! (?:appearance|IP|innings|pitches|outings))\b',
+                  combined, re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+        if n >= 10:  # 10+ implies unit muddle (teams carry ~8 relievers)
+            issues.append({
+                'rule': 'bullpen_unit_missing',
+                'snippet': combined[max(0,m.start()-15):m.end()+15],
+                'suggestion': f'"{n} relievers" needs a unit — use "{n} reliever appearances", "{n} bullpen IP", or "{n} outings".',
+            })
+
+    # Rule NEW (2026-08-08 evening): SIMULATOR-vs-PICK DIRECTION MISMATCH.
+    # Marlins/Angels caught by user: Jerry cited "simulator expects 10.9 runs"
+    # then picked UNDER 7.5. Reader sees pick contradicting its own cited
+    # number → catastrophic credibility loss. If prose cites a run-total
+    # number that clearly implies OVER (X > line + 1.5) and pick is UNDER,
+    # flag. Same for the reverse.
+    call_market = (struct.get('call_market') or '').lower() if isinstance(struct, dict) else ''
+    call_side = (struct.get('call_side') or '').upper() if isinstance(struct, dict) else ''
+    call_line = struct.get('call_line') if isinstance(struct, dict) else None
+    if call_market == 'total' and call_side in ('OVER', 'UNDER') and call_line is not None:
+        try:
+            line_f = float(call_line)
+        except (TypeError, ValueError):
+            line_f = None
+        if line_f is not None:
+            # Match "simulator (expects|sees|projects|has|runs|is|gets) ... N runs"
+            for m in re.finditer(
+                r'(?:simulator|sim|our model|the model)\s+(?:expects|sees|projects|has|projects|runs|is at|builds to|gives|puts).{0,30}?(\d{1,2}(?:\.\d)?)\s*(?:total\s+)?runs?',
+                combined, re.IGNORECASE):
+                cited = float(m.group(1))
+                # OVER pick but cited number under line-1.5 → mismatch
+                if call_side == 'OVER' and cited < line_f - 1.5:
+                    issues.append({
+                        'rule': 'sim_pick_direction_mismatch',
+                        'snippet': combined[max(0,m.start()-25):m.end()+15],
+                        'suggestion': f'Cited {cited} runs but pick is OVER {line_f} — cited number supports UNDER. Use jerry.pred_total.',
+                    })
+                    break
+                if call_side == 'UNDER' and cited > line_f + 1.5:
+                    issues.append({
+                        'rule': 'sim_pick_direction_mismatch',
+                        'snippet': combined[max(0,m.start()-25):m.end()+15],
+                        'suggestion': f'Cited {cited} runs but pick is UNDER {line_f} — cited number supports OVER. Use jerry.pred_total or MC mean, NOT v4 raw.',
+                    })
+                    break
+
+    # Rule 5: post-bet conditional ("if X, revisit/reconsider")
+    m = re.search(r'\bif [^.,]{5,100}(?:revisit|reconsider|reevaluate|walk (?:it |this )?back|change (?:the |your |our )?take)\b',
+                  combined, re.IGNORECASE)
+    if m:
+        issues.append({
+            'rule': 'post_bet_conditional',
+            'snippet': combined[max(0,m.start()-15):m.end()+15],
+            'suggestion': 'Move risks BEFORE the take — you cannot "revisit" a placed bet',
+        })
+
+    return {'valid': len(issues) == 0, 'issues': issues}
+
+
 def build_corrective_prompt(original_prompt: str, hallucination_report: dict,
-                             name_report: dict) -> str:
+                             name_report: dict, style_report: dict | None = None) -> str:
     """Build the corrective retry prompt when hallucinations are detected.
 
     Layer A of the hallucination-guard shipped 2026-08-06.
@@ -325,6 +658,15 @@ def build_corrective_prompt(original_prompt: str, hallucination_report: dict,
         issues.append(
             f"You referenced these names that are NOT starters/players in this game: {', '.join(suspects)}.\n"
             "Pitchers are struct.home_pitcher and struct.away_pitcher — use those exact names or say 'the home/away starter'."
+        )
+    if style_report and style_report.get('issues'):
+        style_msgs = []
+        for it in style_report['issues'][:5]:
+            style_msgs.append(f'- rule={it["rule"]}: "{it["snippet"]}" → {it["suggestion"]}')
+        issues.append(
+            "Your prose violated these style rules that ship-block credibility:\n"
+            + '\n'.join(style_msgs)
+            + '\nRegenerate strictly following the rules stated in the prompt (pitcher-name, hitter-AB, sim-market-cap, bullpen-unit, no post-bet conditionals).'
         )
     if not issues:
         return original_prompt
