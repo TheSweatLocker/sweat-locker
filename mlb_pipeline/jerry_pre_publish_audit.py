@@ -1,8 +1,8 @@
 """Pre-publish sanity audit for Jerry reads (2026-08-10).
 
 Runs AFTER all collapse scripts (contradictions, pitcher-thesis,
-sharp-fade) and BEFORE generate_sweat_card. Scans today's slate for
-known bug patterns that keep recurring across sessions:
+sharp-fade, refit-override) and BEFORE generate_sweat_card. Scans
+today's slate for known bug patterns that keep recurring across sessions:
 
   1. NULL call_text on non-pass reads
   2. "the opposing starter" / "opposing pitcher" leaks in prose
@@ -11,6 +11,10 @@ known bug patterns that keep recurring across sessions:
   4. Duplicate-pitcher-name hallucinations ("Skubal has been sharp...
      but Skubal is getting rocked")
   5. Numeric integrity flags that should have been demoted but weren't
+  6. [2026-08-10] Refit coverage <95% on BACK/FADE Prop Jerry picks
+  7. [2026-08-10] Refit weights version >14 days stale
+  8. [2026-08-10] BACK verdict with refit <=40 (surviving trap)
+  9. [2026-08-10] FADE verdict with refit >=65 (fighting refit signal)
 
 ## Exit behavior
 
@@ -165,6 +169,92 @@ def audit(sport: str, game_date: str) -> dict:
     }
 
 
+def audit_prop_jerry_refit(game_date: str) -> dict:
+    """2026-08-10: 4 refit-focused sanity gates on prop_jerry_reads + weights.
+
+    Gates:
+      6. Refit coverage <95% on BACK/FADE picks (silent apply_prop_refit failure)
+      7. Refit weights file trained_at >14 days ago (stale calibration)
+      8. Any BACK verdict where refit_conviction <=40 (surviving trap)
+      9. Any FADE verdict where refit_conviction >=65 (fighting refit)
+
+    Returns same {critical, warnings} shape as audit()."""
+    critical, warnings = [], []
+
+    # --- Gate 6 + 8 + 9: check today's prop_jerry_reads state ---
+    reads = requests.get(f'{SB}/rest/v1/prop_jerry_reads', headers=H_READ,
+        params={'game_date': f'eq.{game_date}',
+                'select': 'id,player_name,prop_type,direction,call_verdict,conviction'},
+        timeout=15).json()
+    if isinstance(reads, list):
+        directional = [r for r in reads if (r.get('call_verdict') or '').upper() in ('BACK', 'FADE')]
+        # Refit_conviction lives on the source prop row, not jerry row — cross-join
+        props = requests.get(f'{SB}/rest/v1/mlb_pipeline_props', headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'select': 'player_name,prop_type,prop_line,direction,refit_conviction'},
+            timeout=15).json()
+        prop_by_key = {(p['player_name'], p['prop_type'], p['direction']): p
+                       for p in (props if isinstance(props, list) else [])}
+        # 2026-08-10: count only jerry reads whose underlying prop row EXISTS
+        # in the props table. Prop Jerry sometimes generates BOTH directions
+        # (BACK on over, FADE on under) but mlb_pipeline_props may only carry
+        # one direction. Not-found reads aren't a refit-coverage failure.
+        matched = 0
+        with_refit = 0
+        for r in directional:
+            key = (r['player_name'], r['prop_type'], r['direction'])
+            prop = prop_by_key.get(key)
+            if not prop: continue
+            matched += 1
+            refit = prop.get('refit_conviction')
+            if refit is not None:
+                with_refit += 1
+                verdict = r['call_verdict'].upper()
+                # Gate 8: BACK on refit trap
+                if verdict == 'BACK' and refit <= 40:
+                    critical.append(f'prop_jerry id={r["id"]} {r["player_name"]} {r["prop_type"]} '
+                                    f'{r["direction"]}: BACK on refit={refit} (trap zone, expected FADE '
+                                    f'via override — did apply_refit_verdict_override run?)')
+                # Gate 9: FADE on strong refit
+                if verdict == 'FADE' and refit >= 65:
+                    critical.append(f'prop_jerry id={r["id"]} {r["player_name"]} {r["prop_type"]} '
+                                    f'{r["direction"]}: FADE with refit={refit} (fighting refit '
+                                    f'signal — override should have flipped to BACK)')
+        # Gate 6: coverage (denominator = matched, not all directional)
+        if matched:
+            coverage = with_refit / matched
+            if coverage < 0.95:
+                critical.append(f'refit coverage {coverage*100:.0f}% ({with_refit}/{matched} '
+                                f'jerry reads with matching prop row) — apply_prop_refit likely '
+                                f'failed this cycle. Rerun `python apply_prop_refit.py`.')
+
+    # --- Gate 7: weights file staleness ---
+    from pathlib import Path
+    from datetime import datetime, timedelta, timezone
+    wpath = Path(__file__).parent / 'models' / 'prop_refit_weights_v2.json'
+    if wpath.exists():
+        try:
+            data = json.loads(wpath.read_text())
+            trained = data.get('trained_at')
+            if trained:
+                td = datetime.fromisoformat(trained.replace('Z', '+00:00'))
+                if td.tzinfo is None:
+                    td = td.replace(tzinfo=timezone.utc)
+                age_days = (datetime.now(timezone.utc) - td).days
+                if age_days > 14:
+                    critical.append(f'refit weights are {age_days} days stale (trained {trained[:10]}). '
+                                    f'Weekly Sunday retrain cron missed — rerun '
+                                    f'`python _fit_prop_refit_weights_v2.py`.')
+                elif age_days > 10:
+                    warnings.append(f'refit weights aging: {age_days}d since trained_at')
+        except Exception as e:
+            warnings.append(f'could not parse refit weights: {e}')
+    else:
+        critical.append('refit weights file missing: models/prop_refit_weights_v2.json')
+
+    return {'critical': critical, 'warnings': warnings}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--date')
@@ -175,6 +265,16 @@ def main():
     gd = args.date or _et_today()
     print(f'=== jerry_pre_publish_audit · {args.sport} · {gd} ===')
     report = audit(args.sport, gd)
+
+    # 2026-08-10: also run refit-focused gates on Prop Jerry (MLB only for now
+    # since refit v2 is MLB-only until we ship refit for NFL props).
+    if args.sport == 'MLB':
+        refit_report = audit_prop_jerry_refit(gd)
+        report['critical'].extend(refit_report['critical'])
+        report['warnings'].extend(refit_report['warnings'])
+        report['totals']['critical'] = len(report['critical'])
+        report['totals']['warnings'] = len(report['warnings'])
+
     t = report['totals']
     print(f'  scanned {t["reads"]} reads · {t["critical"]} critical · {t["warnings"]} warnings')
     if report['warnings']:

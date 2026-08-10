@@ -267,6 +267,27 @@ jobs:
       # data-driven negative coefficients naturally penalize L-predictor
       # signal firings. continue-on-error: if refit fails, legacy
       # conviction still populates everything downstream.
+      # 2026-08-10: weekly refit v2 retrain (Sundays only). Runs BEFORE
+      # apply_prop_refit so today's picks use fresh weights. Uses trailing
+      # 120d of graded data. Skips on non-Sunday cron runs. Failure is
+      # non-fatal — apply_prop_refit falls back to prior weights file.
+      # Cadence per project_refit_v2_expansion_810: weekly is right
+      # tradeoff between freshness and sample-size stability.
+      - name: Retrain prop refit v2 weights (Sundays only)
+        if: github.event.schedule == '0 10 * * *' && github.event_name == 'schedule'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          DOW=$(date -u +%u)
+          if [ "$DOW" = "7" ]; then
+            cd mlb_pipeline
+            python _fit_prop_refit_weights_v2.py || echo "refit retrain failed (non-fatal)"
+          else
+            echo "not Sunday (DOW=$DOW) — skipping weekly retrain"
+          fi
+
       - name: Apply prop refit conviction
         continue-on-error: true
         env:
@@ -320,6 +341,25 @@ jobs:
         run: |
           cd mlb_pipeline
           python collapse_pitcher_thesis_contradictions.py || echo "pitcher-thesis collapse failed (non-fatal)"
+
+      # 2026-08-10: refit verdict override — force BACK/FADE/PASS on
+      # prop_jerry_reads when raw and refit disagree materially. Runs
+      # AFTER all other collapse scripts. Wires the refit calibration
+      # into Prop Jerry's BACK/FADE decision (previously refit was
+      # computed but Jerry ignored it). Rules:
+      #   |Δ| >= 30 AND refit <  40  → FORCE FADE (raw fooled by trap)
+      #   |Δ| >= 20 AND refit >= 80  → FORCE BACK (refit boost)
+      #   |Δ| >= 20 AND refit <  45  → FORCE PASS (too conflicted)
+      # No-refit props: cap conviction LEAN 55 with audit tag.
+      # Idempotent + safe to re-run same day.
+      - name: Refit verdict override (Prop Jerry)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python apply_refit_verdict_override.py || echo "refit override failed (non-fatal)"
 
       # Jerry-anchor Daily Degen (2026-07-31 · Tabletop C step 3). Runs
       # AFTER generate_prop_jerry_synthesis so it can pull from both
