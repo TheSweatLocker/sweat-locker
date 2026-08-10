@@ -1,102 +1,359 @@
 {
-  "trained_at": "2026-08-01T15:18:34.508656",
+  "trained_at": "2026-08-10T18:08:24.853500",
   "training_window": "120d",
-  "n_total_rows": 1000,
+  "n_total_rows": 4660,
   "method": "sklearn.LogisticRegression(C=0.3, penalty=l1, solver=liblinear, class_weight=None) + corr>0.9 feature drop + sign-flip warnings",
   "usage": "apply_prop_refit reads this JSON and computes refit_conviction per prop as normalized sum of fired-signal coefficients rescaled to 0-100.",
   "prop_types": {
     "hits_under/under": {
-      "n_training": 323,
-      "baseline_hit": 0.5913312693498453,
-      "intercept": 0.07035112320164792,
+      "n_training": 381,
+      "baseline_hit": 0.5774278215223098,
+      "intercept": 0.0,
       "coefficients": {
-        "opp_starter": 0.0,
-        "l7_avg_cold": 0.12743186944900767,
-        "lineup_spot": 0.0,
+        "opp_starter": 0.047164025332912904,
+        "l7_avg_cold": 0.14982627976875013,
         "l7_cold": 0.0,
+        "lineup_spot": 0.02725061390977938,
         "opp_form_hot": 0.0,
         "opp_k_artist": 0.0,
+        "hitless_streak": 0.30372350930314396,
         "opp_k_heavy": 0.0,
-        "l7_cool": 0.0,
-        "hitless_streak": 0.3884828204323473,
-        "team_cold": 0.17963393240677028,
-        "park": 0.056647982950130744,
+        "l7_cool": -0.026917872744381784,
+        "team_cold": 0.04586742904929862,
         "l14_cold": 0.0,
+        "park": 0.0,
         "team_offense": 0.0,
         "prime_gate": 0.0,
         "opp_vs_team_baa": 0.0,
-        "umpire": 0.0,
         "anticorr_team_individual": 0.0,
+        "umpire": 0.0,
         "team_heat": 0.0,
         "l14_warming": 0.0
       },
-      "score_min": 0.0,
-      "score_max": 0.7521966052382559,
+      "score_min": 0.0003327411653975959,
+      "score_max": 0.573831857363885,
       "features_dropped_correlated": []
     },
     "ks_over/over": {
-      "n_training": 89,
-      "baseline_hit": 0.6853932584269663,
-      "intercept": 0.5498268567999327,
+      "n_training": 359,
+      "baseline_hit": 0.532033426183844,
+      "intercept": 0.0,
       "coefficients": {
-        "xera": 0.0,
+        "xera": 0.10917640132341037,
         "k_artist": 0.0,
+        "bucket_k": 0.47949332574188636,
+        "book_recalibration": -0.40959278309687963,
         "k_gap": 0.0,
-        "bucket_k": 0.11222973668998214,
         "bucket_sustain": 0.0,
+        "l5_confirm": 0.0,
         "opp_k_rate": 0.0,
-        "form_hot": 0.0,
-        "framing": 0.0,
-        "opp_offense": 0.0
+        "form_hot": 0.04737317407346666,
+        "vs_team_k": 0.0011274538245979373,
+        "framing": 0.021589579312437258,
+        "whiff_elite": 0.0,
+        "l3_k": -0.41028223589809387,
+        "slow_start": -0.11174470348957084,
+        "opp_offense": 0.04450413752403431,
+        "umpire": 0.0
       },
-      "score_min": 0.0,
-      "score_max": 0.11222973668998214,
-      "features_dropped_correlated": []
+      "score_min": -0.4121610852630401,
+      "score_max": 0.6805470386627976,
+      "features_dropped_correlated": [
+        "park",
+        "l3_era",
+        "opp_wrc",
+        "projection"
+      ]
     },
     "hits_over/over": {
-      "n_training": 341,
-      "baseline_hit": 0.7155425219941349,
-      "intercept": 0.42298342899518304,
+      "n_training": 1272,
+      "baseline_hit": 0.6808176100628931,
+      "intercept": 0.6745955406276409,
       "coefficients": {
-        "opp_starter": 0.0,
         "lineup_spot": 0.0,
-        "opp_form": 0.1987820928045373,
-        "opp_bullpen": 0.1100880438346325,
-        "l7_hot": 0.5211283925268705,
+        "opp_starter": 0.0,
+        "opp_form": 0.0,
+        "opp_bullpen": 0.0,
+        "l7_hot": 0.12454368962684631,
         "team_offense": 0.0,
-        "l7_avg_hot": 0.0,
-        "park": 0.0,
-        "wind": 0.0,
-        "l7_warm": 0.0,
-        "team_heat": 0.0,
-        "l14_heat": -0.05458767904615205,
-        "l14_warming": 0.0,
+        "team_heat": 0.0762750037518662,
+        "l14_heat": -0.0022189115499017197,
+        "l7_avg_hot": -0.08858722213199907,
+        "park": 0.038808092146602004,
+        "l7_warm": -0.07206204583020795,
+        "wind": 0.3632289908509231,
+        "l14_warming": -0.07178371456054103,
         "l14_reversing": 0.0,
-        "opp_vs_team_baa_anti": 0.0
+        "team_cold": 0.0,
+        "opp_vs_team_baa_anti": -0.376092459408138,
+        "l14_cooling": -0.0002764114998737339,
+        "opp_vs_team_baa": 0.0,
+        "l14_cold": 0.0,
+        "bvp_mastery": 0.0,
+        "bvp_neutral": 0.0,
+        "offense_drift_cold": 0.0
       },
-      "score_min": -0.05458767904615205,
-      "score_max": 0.8299985291660403,
+      "score_min": -0.5322504381790198,
+      "score_max": 0.5640476842296356,
       "features_dropped_correlated": []
     },
     "ks_under/under": {
-      "n_training": 76,
-      "baseline_hit": 0.6052631578947368,
-      "intercept": 0.23180581812481926,
+      "n_training": 575,
+      "baseline_hit": 0.5321739130434783,
+      "intercept": 0.6324725858935256,
       "coefficients": {
         "k_gap_neg": 0.0,
+        "book_recalibration": -0.49023108135505566,
+        "l5_confirm": 0.0,
+        "opp_offense": -0.16291824131145144,
         "low_k_pitcher": 0.0,
-        "bucket_k": 0.0,
         "short_outing": 0.0,
-        "opp_offense": 0.0,
-        "form_struggling": 0.0,
-        "prime_gate": 0.0,
-        "form_cold": 0.04776987760942755,
-        "framing": 0.0
+        "bucket_k": 0.0,
+        "form_struggling": -0.009590998714691991,
+        "form_cold": 0.0,
+        "prime_gate": -0.12968990179685017,
+        "framing": -0.044098790297563965,
+        "vs_team_k": 0.0,
+        "vs_team_k_anti": 0.0,
+        "park": 0.0,
+        "opp_contact_hot": 0.0
+      },
+      "score_min": -0.8365290134756133,
+      "score_max": 0.0,
+      "features_dropped_correlated": [
+        "xera",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ]
+    },
+    "er_over/over": {
+      "n_training": 210,
+      "baseline_hit": 0.5142857142857142,
+      "intercept": 0.0,
+      "coefficients": {
+        "l3": 0.0,
+        "book_recalibration": 0.0,
+        "1st_inn": 0.0404264870031678,
+        "l5_confirm": 0.0,
+        "xera_high": 0.0,
+        "l7_er": 0.0,
+        "xera_avg": 0.0,
+        "park": 0.0,
+        "opp_offense": 0.05182401441915759,
+        "xera": 0.0,
+        "framing_bad": 0.0,
+        "vs_team": 0.0033733560223545337
       },
       "score_min": 0.0,
-      "score_max": 0.04776987760942755,
-      "features_dropped_correlated": []
+      "score_max": 0.09562385744467994,
+      "features_dropped_correlated": [
+        "proj_supports",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ]
+    },
+    "er_under/under": {
+      "n_training": 118,
+      "baseline_hit": 0.4406779661016949,
+      "intercept": 0.0,
+      "coefficients": {
+        "xera": -0.0322087190187885,
+        "park": 0.0,
+        "book_recalibration": 0.0,
+        "nrfi_assist": 0.0,
+        "l3_hot": 0.0,
+        "l5_confirm": -0.3551358623520372,
+        "opp_wrc": 0.0,
+        "vs_team": -0.09726045203084872,
+        "xera_elite": 0.09199810438835539,
+        "opp_weak": 0.0,
+        "framing": 0.0
+      },
+      "score_min": -0.48460503340167443,
+      "score_max": 0.09199810438835539,
+      "features_dropped_correlated": [
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ]
+    },
+    "outs_under/under": {
+      "n_training": 269,
+      "baseline_hit": 0.6654275092936803,
+      "intercept": 0.44489810367111615,
+      "coefficients": {
+        "book_recalibration": 0.193985058688441,
+        "slow_start": 0.0,
+        "l5_confirm": 0.0,
+        "l3_bad": 0.0,
+        "xera_high": 0.0,
+        "short_last": 0.09790583989197311,
+        "opp_wrc": 0.0,
+        "park": -0.01765746418820321,
+        "xera": 0.0
+      },
+      "score_min": -0.01765746418820321,
+      "score_max": 0.2918908985804141,
+      "features_dropped_correlated": [
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ]
+    },
+    "bb_under/under": {
+      "n_training": 372,
+      "baseline_hit": 0.5403225806451613,
+      "intercept": 0.0,
+      "coefficients": {
+        "l7_control": 0.11534540322513837,
+        "book_recalibration": 0.0,
+        "bb_rate": 0.0,
+        "l5_confirm": 0.0,
+        "aggressive_opp": 0.021196914252872935,
+        "clean_start": 0.11443422125101177,
+        "park": 0.0,
+        "last7_control": -0.3538126599076575
+      },
+      "score_min": -0.3538126599076575,
+      "score_max": 0.25097653872902304,
+      "features_dropped_correlated": [
+        "xera",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ]
+    },
+    "ha_under/under": {
+      "n_training": 363,
+      "baseline_hit": 0.5179063360881543,
+      "intercept": 0.0,
+      "coefficients": {
+        "l7_limit": 0.0,
+        "book_recalibration": 0.0,
+        "hits_rate": 0.10432908224788627,
+        "l5_confirm": 0.0,
+        "l3_locked": 0.0,
+        "vs_team_baa": 0.0,
+        "park": -0.08338160889051692,
+        "opp_weak": 0.0
+      },
+      "score_min": -0.08338160889051692,
+      "score_max": 0.10432908224788627,
+      "features_dropped_correlated": [
+        "xera",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ]
+    },
+    "bb_over/over": {
+      "n_training": 403,
+      "baseline_hit": 0.5409429280397022,
+      "intercept": 0.16781618773303367,
+      "coefficients": {
+        "l7_walks": 0.13204478002781028,
+        "book_recalibration": -0.44412419016744337,
+        "bb_rate": -0.02887080087894507,
+        "l5_confirm": 0.2997221774476673,
+        "wild_start": 0.1424650551210005,
+        "rest_rust": 0.0,
+        "park": 0.0,
+        "last7_walks": 0.0
+      },
+      "score_min": -0.4729949910463884,
+      "score_max": 0.5742320125964782,
+      "features_dropped_correlated": [
+        "xera",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ]
+    },
+    "outs_over/over": {
+      "n_training": 139,
+      "baseline_hit": 0.41007194244604317,
+      "intercept": -0.17166962859904994,
+      "coefficients": {
+        "xera": 0.0,
+        "book_recalibration": 0.0,
+        "l5_confirm": -0.20032614551164832,
+        "l3": 0.045293358674358034,
+        "l7_durable": 0.0,
+        "durable": 0.0,
+        "pen_gassed": 0.039928651265914675,
+        "opp_wrc": 0.0,
+        "l3_k": 0.0,
+        "opp_weak": 0.0
+      },
+      "score_min": -0.20032614551164832,
+      "score_max": 0.08522200994027271,
+      "features_dropped_correlated": [
+        "park",
+        "opp_k_rate",
+        "projection",
+        "l3_era"
+      ]
+    },
+    "ha_over/over": {
+      "n_training": 199,
+      "baseline_hit": 0.47738693467336685,
+      "intercept": 0.0,
+      "coefficients": {
+        "l7_hits": 0.0,
+        "hits_rate": 0.0,
+        "l5_confirm": 0.0,
+        "l3_hard": -0.08104063256914311,
+        "opp_offense": 0.0,
+        "park": 0.0,
+        "vs_team_baa": 0.0,
+        "vs_team_baa_anti": 0.0,
+        "l5_fade": 0.0
+      },
+      "score_min": -0.08104063256914311,
+      "score_max": 0.0,
+      "features_dropped_correlated": [
+        "book_recalibration",
+        "xera",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ]
     }
   },
-  "sign_flip_warnings": []
+  "sign_flip_warnings": [
+    {
+      "prop": "ks_over/over",
+      "signal": "book_recalibration",
+      "coef": -0.40959278309687963,
+      "note": "Expected positive per domain \u2014 flip risk"
+    },
+    {
+      "prop": "ks_under/under",
+      "signal": "book_recalibration",
+      "coef": -0.49023108135505566,
+      "note": "Expected positive per domain \u2014 flip risk"
+    },
+    {
+      "prop": "outs_over/over",
+      "signal": "l5_confirm",
+      "coef": -0.20032614551164832,
+      "note": "Expected positive per domain \u2014 flip risk"
+    }
+  ]
 }

@@ -94,7 +94,10 @@ def compute_refit(prop_type: str, direction: str, signals: dict,
     else:
         conv = 100.0 * (raw - score_min) / (score_max - score_min)
     conv = max(0.0, min(100.0, conv))
-    return round(conv, 1), weights.get("trained_at", "v1")
+    # 2026-08-10: prefer v2 trained_at (fresh) over v1's stale stamp.
+    # If v2 was merged in, use its trained_at; else fall back to v1.
+    stamp = weights.get("v2_trained_at") or weights.get("trained_at", "v1")
+    return round(conv, 1), stamp
 
 
 def run(game_date: str | None = None, dry_run: bool = False) -> None:
