@@ -462,6 +462,18 @@ def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
         out,
         flags=re.IGNORECASE,
     )
+
+    # Pattern 3 (2026-08-10): corrupted-prefix cases where the LLM concatenated
+    # a truncated pitcher name with "the opposing starter" (e.g. "Macthe
+    # opposing starter" seen on TEX@LAA read). No leading word boundary —
+    # match "the (opposing|home|away) starter" anywhere it appears, but ONLY
+    # when NOT preceded by whitespace (which pattern 2 already handled).
+    out = re.sub(
+        r'(?<=[A-Za-z])the (opposing|home|away) starter\b(?!\s*\()',
+        _sub,
+        out,
+        flags=re.IGNORECASE,
+    )
     return out
 
 
