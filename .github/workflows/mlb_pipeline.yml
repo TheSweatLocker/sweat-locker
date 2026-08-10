@@ -305,6 +305,22 @@ jobs:
           cd mlb_pipeline
           python collapse_prop_jerry_contradictions.py || echo "prop jerry collapse failed (non-fatal)"
 
+      # 2026-08-09: pitcher-thesis contradiction resolver. Complements the
+      # collapse above (which handles OVER+UNDER paradoxes on same line).
+      # This one handles CROSS-PROP thesis contradictions on same pitcher
+      # — the Cristian Javier bug: outs_under BACK + ha_over BACK (early-
+      # hook thesis) but ks_under FADE (contradicts thesis). Downgrades the
+      # thesis-incoherent verdict to PASS. Runs AFTER above collapse so it
+      # operates on post-cleanup state.
+      - name: Collapse pitcher-thesis contradictions
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python collapse_pitcher_thesis_contradictions.py || echo "pitcher-thesis collapse failed (non-fatal)"
+
       # Jerry-anchor Daily Degen (2026-07-31 · Tabletop C step 3). Runs
       # AFTER generate_prop_jerry_synthesis so it can pull from both
       # jerry_reads (game-level) and prop_jerry_reads (prop-level) to
@@ -962,6 +978,39 @@ jobs:
           cd mlb_pipeline
           python generate_jerry_synthesis.py --force || echo "jerry synthesis failed (non-fatal)"
 
+      # 2026-08-10: Sharp-fade discipline enforcement. Runs AFTER Jerry synth.
+      # Wires the documented sharp-fade + model-consensus rules into the
+      # pipeline (previously the rules lived in memory docs but Jerry synth
+      # didn't enforce them). Flips totals where:
+      #   Rule A: sharp $ >=65% same side + 2+ models on opposite side
+      #   Rule B: all 3 models agree (>=0.5 gap) opposite Jerry's pick
+      # Idempotent (skips already-flipped reads via short_read marker).
+      # non-fatal so a bad DB read doesn't kill the cron — audit step below
+      # will catch anything the collapse missed.
+      - name: Sharp-fade discipline flips (game-level Jerry)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python collapse_sharp_fade_violations.py || echo "sharp-fade collapse failed (non-fatal)"
+
+      # 2026-08-10: Pre-publish sanity audit. Runs AFTER all collapse scripts
+      # + BEFORE generate_sweat_card. Scans today's reads for known bug
+      # patterns (null call_text, opposing-starter leaks, sharp-fade violations
+      # missed by auto-flip, duplicate-pitcher hallucinations, orphan numeric
+      # flags). Exits 1 on critical findings — GHA step fails, we get notified,
+      # sweat card build gets skipped so bad reads don't ship to users.
+      # Use --warn-only for a soft version during initial rollout window.
+      - name: Jerry pre-publish sanity audit
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python jerry_pre_publish_audit.py --sport MLB
+
       # Snapshot game_context (2026-08-02 · adaptive ensemble Phase 1B).
       # Runs AFTER generate_jerry_synthesis so we capture the state Jerry
       # actually saw — mc_probabilities, jerry_pred_*, model_pred_*,
@@ -990,6 +1039,75 @@ jobs:
         run: |
           cd mlb_pipeline
           python compute_model_track_records.py || echo "model track records failed (non-fatal)"
+
+      # ─── SHARP MONEY MONITORING STACK (2026-08-08 → 2026-08-09) ───
+      # Full pipeline: bucket cap → rule cap → per-game audit → self-calibrate.
+      #
+      # 1) Recompute per-bucket hit rates (sharp_20+ / sharp_15+ etc.)
+      # 2) Recompute per-rule hit rates (MODELS_OPPOSE_SHARP / ROAD_TEAM / …)
+      # 3) Write today's audit rows (which rules fired on each Jerry pick)
+      # 4) Backfill outcomes onto previous audit rows
+      # 5) Self-calibrate rule thresholds from full audit trail
+      # 6) [Sundays] emit weekly digest w/ trends + P&L
+      - name: Sharp — recompute bucket stats
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sharp_divergence_tracker.py || echo "bucket stats failed (non-fatal)"
+
+      - name: Sharp — recompute per-rule stats
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sharp_fade_rules_stats.py || echo "per-rule stats failed (non-fatal)"
+
+      - name: Sharp — write today's audit rows
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sharp_fade_audit.py --write-today || echo "audit write failed (non-fatal)"
+
+      - name: Sharp — backfill audit outcomes
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sharp_fade_audit.py --backfill-results || echo "audit backfill failed (non-fatal)"
+
+      - name: Sharp — self-calibrate rule thresholds
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sharp_fade_audit.py --calibrate || echo "calibrate failed (non-fatal)"
+
+      # Weekly sharp-money digest (Sundays only).
+      # Emits week-over-week trend + recency kill switch check +
+      # blind-fade P&L simulation. Stored in
+      # jerry_cache['sharp_money_weekly_digest_YYYY-WW'].
+      # Runs Sundays (day-of-week 0 in cron UTC).
+      - name: Weekly sharp money digest
+        if: (github.event.schedule == '0 18 * * 0' || github.event_name == 'workflow_dispatch')
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sharp_money_weekly_digest.py || echo "weekly sharp digest failed (non-fatal)"
 
       # Weekly refresh of Jerry's prompt MODEL PERFORMANCE CONTEXT block.
       # Interim adaptive weighting (2026-08-02) — pulls current lifetime hit
