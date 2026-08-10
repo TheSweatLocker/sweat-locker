@@ -162,6 +162,28 @@ def audit(sport: str, game_date: str) -> dict:
             warnings.append(f'{matchup} id={r["id"]}: numeric-flag footer present but conv={conv} '
                             f'not capped (expected <=55)')
 
+        # 10. Stat-verifier cross-check against real MLB API (2026-08-10).
+        # Catches the class of bugs from today: "Cameron 4.41 xERA getting
+        # rocked" when L3 is 0.39, "Scott 1.3 IP opener" when he's a
+        # 5-IP starter, "Wesneski 8.83 ERA" when L3 is 4.02.
+        try:
+            from jerry_stat_verifier import verify as stat_verify
+            prose = (r.get('short_read') or '') + '\n' + (r.get('long_read') or '')
+            for pkey in ('home_pitcher', 'away_pitcher'):
+                pname = ctx.get(pkey)
+                if not pname or pname == '(TBD)': continue
+                sv = stat_verify(prose, pname)
+                for v in sv.get('violations', []):
+                    line = (f'{matchup} id={r["id"]} {pname}: '
+                            f'{v["stat_key"]}={v["cited"]} but real is {v["expected"]} '
+                            f'({v.get("reason","numeric drift")})')
+                    if v['severity'] == 'critical':
+                        critical.append(f'STAT_HALLUCINATION · {line}')
+                    else:
+                        warnings.append(f'stat_drift · {line}')
+        except Exception as e:
+            warnings.append(f'stat_verifier failed on id={r["id"]}: {e}')
+
     return {
         'critical': critical,
         'warnings': warnings,
