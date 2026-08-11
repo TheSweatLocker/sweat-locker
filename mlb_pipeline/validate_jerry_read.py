@@ -326,6 +326,125 @@ def validate_pitcher_names(prose: str, struct: dict) -> dict:
     }
 
 
+def substitute_generic_starter_refs(prose: str, struct: dict, sport: str = 'MLB') -> str:
+    """Sport-universal Layer D scrub. Generalizes the MLB "the opposing
+    starter" scrub to other sports where Jerry may leak generic role
+    references instead of using the real player name.
+
+    Per-sport terminology:
+      MLB   → "the opposing starter/pitcher"     → home_pitcher/away_pitcher
+      NFL   → "the opposing QB/quarterback"      → home_qb/away_qb (if in struct)
+      NCAAF → same as NFL
+      UFC   → "the opposing fighter"              → fighter_a/fighter_b
+
+    Falls back to legacy MLB scrub for backward compat.
+    """
+    if sport == 'MLB' or not sport:
+        return substitute_generic_pitcher_refs(prose, struct)
+    if sport in ('NFL', 'NCAAF'):
+        return _substitute_generic_qb_refs(prose, struct)
+    if sport == 'UFC':
+        return _substitute_generic_fighter_refs(prose, struct)
+    if sport == 'NHL':
+        return _substitute_generic_goalie_refs(prose, struct)
+    # NCAAB / NBA — basketball has no single "starter" role like a
+    # pitcher/QB/goalie, so generic-ref scrubbing doesn't apply cleanly.
+    # Team-level references handled by team-name validators elsewhere.
+    return prose
+
+
+def _substitute_generic_qb_refs(prose: str, struct: dict) -> str:
+    """NFL/NCAAF: replace 'the opposing QB/quarterback' with actual
+    home_qb/away_qb from struct. Same proximity resolution as MLB Layer D."""
+    if not prose: return prose
+    home_qb = (struct.get('home_qb') or struct.get('home_starter') or '').strip()
+    away_qb = (struct.get('away_qb') or struct.get('away_starter') or '').strip()
+    if not (home_qb or away_qb):
+        return prose
+
+    def last_name(full: str) -> str:
+        return full.split()[-1] if full else ''
+    home_last = last_name(home_qb); away_last = last_name(away_qb)
+
+    def resolve(match_start, phrase):
+        window = prose[max(0, match_start - 180):match_start].lower()
+        h_pos = window.rfind(home_last.lower()) if home_last else -1
+        a_pos = window.rfind(away_last.lower()) if away_last else -1
+        if 'opposing' in phrase.lower():
+            if h_pos > a_pos and h_pos >= 0 and away_qb: return away_last
+            if a_pos > h_pos and a_pos >= 0 and home_qb: return home_last
+            return home_last or away_last or phrase
+        return phrase
+
+    def _sub(m): return resolve(m.start(), m.group(0))
+    out = re.sub(
+        r'\bthe (opposing|home|away) (?:QB|quarterback)\b(?!\s*\()',
+        _sub, prose, flags=re.IGNORECASE,
+    )
+    # Corrupted-prefix variant (matches Layer D pattern 3)
+    out = re.sub(
+        r'(?<=[A-Za-z])the (opposing|home|away) (?:QB|quarterback)\b(?!\s*\()',
+        _sub, out, flags=re.IGNORECASE,
+    )
+    return out
+
+
+def _substitute_generic_goalie_refs(prose: str, struct: dict) -> str:
+    """NHL: replace 'the opposing goalie/goaltender' with actual starter."""
+    if not prose: return prose
+    home_g = (struct.get('home_goalie') or struct.get('home_starter') or '').strip()
+    away_g = (struct.get('away_goalie') or struct.get('away_starter') or '').strip()
+    if not (home_g or away_g): return prose
+
+    def last_name(full: str) -> str:
+        return full.split()[-1] if full else ''
+    h_last = last_name(home_g); a_last = last_name(away_g)
+
+    def resolve(match_start, phrase):
+        window = prose[max(0, match_start - 180):match_start].lower()
+        h_pos = window.rfind(h_last.lower()) if h_last else -1
+        a_pos = window.rfind(a_last.lower()) if a_last else -1
+        if 'opposing' in phrase.lower():
+            if h_pos > a_pos and h_pos >= 0 and away_g: return a_last
+            if a_pos > h_pos and a_pos >= 0 and home_g: return h_last
+            return h_last or a_last or phrase
+        return phrase
+
+    def _sub(m): return resolve(m.start(), m.group(0))
+    out = re.sub(
+        r'\bthe (opposing|home|away) (?:goalie|goaltender)\b(?!\s*\()',
+        _sub, prose, flags=re.IGNORECASE,
+    )
+    return out
+
+
+def _substitute_generic_fighter_refs(prose: str, struct: dict) -> str:
+    """UFC: replace 'the opposing fighter' with fighter_a or fighter_b."""
+    if not prose: return prose
+    a = (struct.get('fighter_a') or '').strip()
+    b = (struct.get('fighter_b') or '').strip()
+    if not (a or b): return prose
+
+    def last_name(full: str) -> str:
+        return full.split()[-1] if full else ''
+    a_last = last_name(a); b_last = last_name(b)
+
+    def resolve(match_start, phrase):
+        window = prose[max(0, match_start - 180):match_start].lower()
+        a_pos = window.rfind(a_last.lower()) if a_last else -1
+        b_pos = window.rfind(b_last.lower()) if b_last else -1
+        if a_pos > b_pos and a_pos >= 0 and b: return b_last
+        if b_pos > a_pos and b_pos >= 0 and a: return a_last
+        return a_last or b_last or phrase
+
+    def _sub(m): return resolve(m.start(), m.group(0))
+    out = re.sub(
+        r'\bthe opposing fighter\b(?!\s*\()',
+        _sub, prose, flags=re.IGNORECASE,
+    )
+    return out
+
+
 def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
     """Layer D (2026-08-09): mechanical scrub of 'the opposing starter' →
     real pitcher name based on nearby team context.

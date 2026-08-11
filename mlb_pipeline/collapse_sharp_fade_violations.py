@@ -62,6 +62,54 @@ SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
+# 2026-08-10: sport-agnostic registry. Adding a sport = one dict entry.
+# Each sport specifies its ctx table + a "total" market key + column names
+# so the discipline gate works uniformly across MLB/NFL/NCAAF/etc.
+SPORT_CONFIG = {
+    'MLB': {
+        'ctx_table': 'mlb_game_context',
+        'total_col': 'close_total',
+        'jerry_total_col': 'jerry_pred_total',
+        'proj_total_col': 'projected_total',
+    },
+    'NFL': {
+        'ctx_table': 'nfl_game_context',
+        'total_col': 'close_total',
+        'jerry_total_col': 'jerry_pred_total',
+        'proj_total_col': 'projected_total',
+    },
+    'NCAAF': {
+        'ctx_table': 'ncaaf_game_context',
+        'total_col': 'close_total',
+        'jerry_total_col': 'jerry_pred_total',
+        'proj_total_col': 'projected_total',
+    },
+    # 2026-08-10: NCAAB + NHL added per user directive. Same discipline
+    # gate applies — sharp $ on totals is fade material regardless of
+    # sport, model consensus override same shape. Ctx tables + column
+    # names identical convention across sports (established during
+    # multi-sport migrations). Refit values may not exist yet for these
+    # sports — gate will silently no-op on missing columns.
+    'NCAAB': {
+        'ctx_table': 'ncaab_game_context',
+        'total_col': 'close_total',
+        'jerry_total_col': 'jerry_pred_total',
+        'proj_total_col': 'projected_total',
+    },
+    'NHL': {
+        'ctx_table': 'nhl_game_context',
+        'total_col': 'close_total',
+        'jerry_total_col': 'jerry_pred_total',
+        'proj_total_col': 'projected_total',
+    },
+    'NBA': {
+        'ctx_table': 'nba_game_context',
+        'total_col': 'close_total',
+        'jerry_total_col': 'jerry_pred_total',
+        'proj_total_col': 'projected_total',
+    },
+}
+
 # Thresholds (calibrated to feedback_sharp_money_discipline_802 +
 # feedback_sharp_money_fade_808).
 SHARP_HEAVY_PCT     = 65      # Sharp $ >= 65% counts as "heavy" position
@@ -94,19 +142,24 @@ def _model_side(pred, line, gap=MODEL_DISAGREE_GAP):
     return 'FLAT'
 
 
-def evaluate(read: dict, ctx: dict) -> tuple[str, str, dict] | None:
-    """Return (rule_id, new_side, audit) if a violation is found, else None."""
+def evaluate(read: dict, ctx: dict, sport: str = 'MLB') -> tuple[str, str, dict] | None:
+    """Return (rule_id, new_side, audit) if a violation is found, else None.
+
+    Sport-agnostic — reads column names from SPORT_CONFIG so MLB/NFL/
+    NCAAF all use the same discipline gate against their own ctx tables.
+    """
+    cfg = SPORT_CONFIG.get(sport, SPORT_CONFIG['MLB'])
     mkt = (read.get('call_market') or '').lower()
     if mkt != 'total':
         return None  # ML sharp is a POSITIVE signal (73% yesterday) — don't fade
     side = (read.get('call_side') or '').upper()
     if side not in ('OVER', 'UNDER'):
         return None
-    line = ctx.get('close_total')
+    line = ctx.get(cfg['total_col'])
     if line is None:
         return None
-    j_tot = ctx.get('jerry_pred_total')
-    v3_tot = ctx.get('projected_total')
+    j_tot = ctx.get(cfg['jerry_total_col'])
+    v3_tot = ctx.get(cfg['proj_total_col'])
     mc_tot = (ctx.get('mc_probabilities') or {}).get('mc_mean_total')
     j_side = _model_side(j_tot, line)
     v3_side = _model_side(v3_tot, line)
@@ -208,21 +261,43 @@ def sync_primary_play(read: dict, ctx: dict, new_side: str, dry_run: bool = Fals
         print(f'    primary_play patch failed: {pr.status_code}')
 
 
-def run(game_date: str, dry_run: bool = False) -> int:
+def run(game_date: str, sport: str = 'MLB', dry_run: bool = False) -> int:
+    cfg = SPORT_CONFIG.get(sport)
+    if not cfg:
+        print(f'  [{sport}] no config registered — skip'); return 0
+    ctx_table = cfg['ctx_table']
+
     reads = requests.get(f'{SB}/rest/v1/jerry_reads', headers=H_READ,
-        params={'sport': 'eq.MLB', 'game_date': f'eq.{game_date}',
+        params={'sport': f'eq.{sport}', 'game_date': f'eq.{game_date}',
                 'call_market': 'eq.total',
                 'select': 'id,game_id,call_market,call_side,call_line,call_text,'
                           'conviction,short_read'},
         timeout=15).json()
     if not isinstance(reads, list):
         print(f'  fetch failed: {reads}'); return 0
-    ctxs = requests.get(f'{SB}/rest/v1/mlb_game_context', headers=H_READ,
-        params={'game_date': f'eq.{game_date}',
-                'select': 'game_id,away_team,home_team,close_total,jerry_pred_total,'
-                          'projected_total,mc_probabilities,oddscrowd_snapshot,primary_play'},
-        timeout=15).json()
-    ctx_by = {c['game_id']: c for c in ctxs}
+    # 2026-08-10: fallback-safe select — sport ctx tables may not yet
+    # have all columns (e.g. no oddscrowd_snapshot on NHL). Try full
+    # select first, drop unknown columns on 400 error.
+    select_cols = (f'game_id,away_team,home_team,{cfg["total_col"]},'
+                   f'{cfg["jerry_total_col"]},{cfg["proj_total_col"]},'
+                   f'mc_probabilities,oddscrowd_snapshot,primary_play')
+    resp = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
+        params={'game_date': f'eq.{game_date}', 'select': select_cols},
+        timeout=15)
+    if resp.status_code != 200:
+        # Retry with minimal columns — sport ctx table may be sparse
+        resp = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'select': 'game_id,away_team,home_team'},
+            timeout=15)
+        if resp.status_code != 200:
+            print(f'  [{sport}] ctx fetch failed {resp.status_code} — skip')
+            return 0
+    ctxs = resp.json()
+    if not isinstance(ctxs, list):
+        print(f'  [{sport}] unexpected ctx shape — skip')
+        return 0
+    ctx_by = {c['game_id']: c for c in ctxs if isinstance(c, dict) and c.get('game_id')}
 
     flips = 0
     for read in reads:
@@ -231,17 +306,17 @@ def run(game_date: str, dry_run: bool = False) -> int:
             continue
         ctx = ctx_by.get(read['game_id'])
         if not ctx: continue
-        result = evaluate(read, ctx)
+        result = evaluate(read, ctx, sport=sport)
         if not result: continue
         rule_id, new_side, audit = result
         matchup = f'{ctx.get("away_team","?")[:8]}@{ctx.get("home_team","?")[:8]}'
-        print(f'  {matchup:20} {rule_id}: flip {read["call_side"]} -> {new_side}  '
+        print(f'  [{sport}] {matchup:20} {rule_id}: flip {read["call_side"]} -> {new_side}  '
               f'(conv {read.get("conviction")} -> {FLIP_CAP_CONV})')
         if apply_flip(read, ctx, rule_id, new_side, audit, dry_run=dry_run):
             sync_primary_play(read, ctx, new_side, dry_run=dry_run)
             flips += 1
 
-    print(f'\n=== sharp-fade discipline: {flips} flip(s) applied'
+    print(f'\n=== sharp-fade discipline · {sport}: {flips} flip(s)'
           f'{" (dry-run)" if dry_run else ""} ===')
     return flips
 
@@ -249,9 +324,13 @@ def run(game_date: str, dry_run: bool = False) -> int:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--date')
+    p.add_argument('--sport', default='ALL',
+                   help='MLB / NFL / NCAAF / ALL (loops all registered)')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(game_date=args.date or _et_today(), dry_run=args.dry_run)
+    sports = list(SPORT_CONFIG.keys()) if args.sport == 'ALL' else [args.sport]
+    for s in sports:
+        run(game_date=args.date or _et_today(), sport=s, dry_run=args.dry_run)
 
 
 if __name__ == '__main__':

@@ -70,6 +70,24 @@ CACHE_DIR = Path(__file__).parent / '.pitcher_cache'
 CACHE_DIR.mkdir(exist_ok=True)
 CACHE_TTL_HR = 12
 
+# ────────────────────────────────────────────────────────────────────
+# 2026-08-10: sport-pluggable stat provider architecture
+# ────────────────────────────────────────────────────────────────────
+# Every sport surfaces a `PROVIDER` dict in this module that satisfies:
+#
+#   lookup_id(name)     → sport-specific player id or None
+#   fetch_stats(pid)    → normalized stats dict {l3_ip, l3_era, ...}
+#   patterns            → list of (regex, stat_key) tuples for that sport
+#                         (baseball uses IP/ERA/xERA, football uses
+#                         pass_yds/rush_yds, MMA uses striking/takedowns)
+#   directional         → phrases that imply direction + which stat to
+#                         verify against (per-sport)
+#   tolerance           → per-stat allowed drift
+#
+# Adding a new sport = one new PROVIDERS entry. Rest of the API stays
+# unchanged (verify() takes a `sport` kwarg).
+# ────────────────────────────────────────────────────────────────────
+
 MLB_SEARCH = 'https://statsapi.mlb.com/api/v1/people/search'
 MLB_GAMELOG = 'https://statsapi.mlb.com/api/v1/people/{pid}/stats'
 
@@ -210,12 +228,29 @@ def _pull_stats(pid: int) -> dict | None:
         return None
 
 
-def verify(prose: str, pitcher_name: str) -> dict:
-    """Verify numeric claims about `pitcher_name` in `prose`.
-    Returns {ok, violations, pitcher_stats}."""
+def verify(prose: str, pitcher_name: str, sport: str = 'MLB') -> dict:
+    """Verify numeric claims about `pitcher_name` in `prose` for `sport`.
+    Returns {ok, violations, pitcher_stats}.
+
+    Sport dispatch: 'MLB' uses the built-in pitcher API. Other sports plug
+    in via PROVIDERS registry (see module top comment). Unknown sport =
+    silent no-op (returns ok=True) so callers don't need to condition on
+    sport before calling.
+    """
     if not prose or not pitcher_name:
         return {'ok': True, 'violations': [], 'pitcher_stats': None}
 
+    # Dispatch to sport-specific provider when registered
+    if sport != 'MLB':
+        provider = PROVIDERS.get(sport)
+        if not provider:
+            # No provider yet — silent no-op, log for coverage tracking
+            return {'ok': True, 'violations': [],
+                    'pitcher_stats': None,
+                    'note': f'no stat verifier registered for {sport}'}
+        return provider(prose, pitcher_name)
+
+    # MLB path (built-in)
     pid = _lookup_pid(pitcher_name)
     if not pid:
         return {'ok': True, 'violations': [],
@@ -277,6 +312,90 @@ def verify(prose: str, pitcher_name: str) -> dict:
         'violations': violations,
         'pitcher_stats': stats,
     }
+
+
+## ─── SPORT PROVIDERS registry ─────────────────────────────────────
+# 2026-08-10: NFL/UFC/NCAAF stat verifier stubs. Each returns the
+# standard {ok, violations, pitcher_stats} shape. Filled in as we hit
+# real hallucination cases in each sport; skeleton unblocks the
+# universal wire-up in jerry_pre_publish_audit.py + generate_*_game_reads.
+##
+## Contract: provider(prose: str, player_name: str) -> dict
+
+def _verify_nfl(prose: str, player_name: str) -> dict:
+    """NFL stat verifier stub. TODO: wire to ESPN QB game log +
+    directional-phrase checks for pass_yds / rush_yds / TDs.
+
+    Patterns to catch (from real NFL analyst prose we'll see):
+      * "X pass yards last three games"
+      * "X.X yards per attempt"
+      * "X interceptions in last five"
+      * "X sacks allowed last week"
+      * "X.X ANY/A"
+      * directional: "getting torched / carved up / harassed"
+    """
+    return {'ok': True, 'violations': [], 'pitcher_stats': None,
+            'note': f'NFL stat verifier not yet implemented for {player_name}'}
+
+
+def _verify_ncaaf(prose: str, player_name: str) -> dict:
+    """NCAAF QB verifier stub. Would use CFBD API (already integrated
+    for team stats). Same shape as NFL — QB pass/rush metrics.
+    """
+    return {'ok': True, 'violations': [], 'pitcher_stats': None,
+            'note': f'NCAAF stat verifier not yet implemented for {player_name}'}
+
+
+def _verify_ufc(prose: str, fighter_name: str) -> dict:
+    """UFC fighter verifier stub. Would pull from ufc_fighter_stats table
+    + fight_results for L3 record, finish rates, strike accuracy, etc.
+
+    Patterns to catch:
+      * "X-Y record in last five"
+      * "X.X striking accuracy"
+      * "X takedowns per fight"
+      * "X% finish rate"
+      * directional: "getting picked apart / dominating"
+    """
+    return {'ok': True, 'violations': [], 'pitcher_stats': None,
+            'note': f'UFC stat verifier not yet implemented for {fighter_name}'}
+
+
+def _verify_nba(prose: str, player_name: str) -> dict:
+    """NBA verifier stub — nba_api provides recent game logs."""
+    return {'ok': True, 'violations': [], 'pitcher_stats': None,
+            'note': f'NBA stat verifier not yet implemented for {player_name}'}
+
+
+def _verify_nhl(prose: str, player_name: str) -> dict:
+    """NHL verifier stub — NHL Stats API (free) provides goalie game logs.
+
+    Patterns to catch:
+      * "X.XX GAA last 5 starts"
+      * "X.XXX save %"
+      * "X saves in Y shots against"
+      * directional: "getting shelled / standing on his head"
+    """
+    return {'ok': True, 'violations': [], 'pitcher_stats': None,
+            'note': f'NHL stat verifier not yet implemented for {player_name}'}
+
+
+def _verify_ncaab(prose: str, player_name: str) -> dict:
+    """NCAAB verifier stub — KenPom + team-level stats. Player-level
+    verification less common since basketball is more team-driven.
+    """
+    return {'ok': True, 'violations': [], 'pitcher_stats': None,
+            'note': f'NCAAB stat verifier not yet implemented for {player_name}'}
+
+
+PROVIDERS = {
+    'NFL': _verify_nfl,
+    'NCAAF': _verify_ncaaf,
+    'UFC': _verify_ufc,
+    'NBA': _verify_nba,
+    'NHL': _verify_nhl,
+    'NCAAB': _verify_ncaab,
+}
 
 
 def strip_hallucinated_sentences(prose: str, violations: list) -> str:
