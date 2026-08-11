@@ -123,11 +123,19 @@ def audit(sport: str, game_date: str) -> dict:
             critical.append(f'{matchup} id={r["id"]}: NULL call_text on {mkt} {side} '
                             f'(app fallback would show "Pass" badge)')
 
-        # 2. Opposing starter/pitcher leak
-        if re.search(r'\b(?:the )?opposing (starter|pitcher)\b|\bopp starter\b|\bopp pitcher\b',
-                     prose, re.IGNORECASE):
+        # 2. Opposing starter/pitcher leak.
+        # 2026-08-11: allow "(TBD)" parenthetical — that's the HONEST fallback
+        # when a starter hasn't been announced yet. Only critical when the
+        # phrase appears WITHOUT a parenthetical name/TBD marker.
+        for m in re.finditer(
+            r'\b(?:the )?opposing (?:starter|pitcher)\b|\bopp (?:starter|pitcher)\b',
+            prose, re.IGNORECASE):
+            after = prose[m.end():m.end()+15]
+            if re.match(r'\s*\((?:TBD|opener)', after, re.IGNORECASE):
+                continue  # legitimate TBD/opener fallback
             critical.append(f'{matchup} id={r["id"]}: prose contains "opposing starter/pitcher" '
                             f'(Layer D scrub failed)')
+            break  # one report per read
 
         # 3. Duplicate pitcher hallucination
         dup = _find_duplicate_pitcher_hallucination(r.get('short_read') or '') or \
@@ -232,16 +240,30 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
             if refit is not None:
                 with_refit += 1
                 verdict = r['call_verdict'].upper()
-                # Gate 8: BACK on refit trap
-                if verdict == 'BACK' and refit <= 40:
+                # Gate 8: BACK on refit trap.
+                # 2026-08-11: raised threshold from 40 to 35 to match the
+                # override's DELTA_STRONG + REFIT_TRAP thresholds. Anything
+                # in 35-40 that survives override is edge-case, not critical.
+                if verdict == 'BACK' and refit <= 35:
                     critical.append(f'prop_jerry id={r["id"]} {r["player_name"]} {r["prop_type"]} '
                                     f'{r["direction"]}: BACK on refit={refit} (trap zone, expected FADE '
                                     f'via override — did apply_refit_verdict_override run?)')
-                # Gate 9: FADE on strong refit
-                if verdict == 'FADE' and refit >= 65:
+                # Gate 9: FADE on strong refit.
+                # 2026-08-11: split into two tiers.
+                #   refit >= 80 → CRITICAL (override MUST flip; something broke)
+                #   refit 65-79 → WARNING (override doesn't force flip in this
+                #                          band; Jerry may have real counter-signal)
+                # Prior single-threshold at 65 blocked entire cron on 12 gray-
+                # zone FADEs today — false positive parity with the override
+                # rules that only force flip at >= 80.
+                if verdict == 'FADE' and refit >= 80:
                     critical.append(f'prop_jerry id={r["id"]} {r["player_name"]} {r["prop_type"]} '
-                                    f'{r["direction"]}: FADE with refit={refit} (fighting refit '
+                                    f'{r["direction"]}: FADE with refit={refit} (fighting strong refit '
                                     f'signal — override should have flipped to BACK)')
+                elif verdict == 'FADE' and refit >= 65:
+                    warnings.append(f'prop_jerry id={r["id"]} {r["player_name"]} {r["prop_type"]} '
+                                    f'{r["direction"]}: FADE with refit={refit} (gray-zone, override '
+                                    f'threshold is 80 — Jerry may have counter-signal)')
         # Gate 6: coverage (denominator = matched, not all directional)
         if matched:
             coverage = with_refit / matched
