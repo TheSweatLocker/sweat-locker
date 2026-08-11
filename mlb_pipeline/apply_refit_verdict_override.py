@@ -104,32 +104,51 @@ def decide(raw: int, refit: float | None, current_verdict: str,
         if current_verdict == 'BACK':
             return ('FADE', 'FORCE_FADE_TRAP')
         return None
+    # 2026-08-11: Jerry-hallucination catch. When JR conviction is high
+    # (BACK verdict at 55+) but props base scorer + refit BOTH say low
+    # (both < 30 conviction), Jerry is cherry-picking despite dual-signal
+    # rejection. Force PASS at minimum (or FADE if refit is very low).
+    # Catches Dylan Cease er_under BACK conv=58 vs props conv=24 (SKIP)
+    # vs refit=16.9 — Jerry ignored both underlying signals.
+    if current_verdict == 'BACK' and raw < 30 and refit is not None and refit < 30:
+        return ('PASS', 'FORCE_PASS_JERRY_HALLUCINATION')
     if abs_d >= DELTA_BOOST and refit >= REFIT_BOOST:
-        # Sample-size gate — only force BACK when the refit-100 band for
-        # this prop_type has been healthy recently. Otherwise cap at LEAN.
-        #
-        # 2026-08-11 (v3): tightened after 29/29 pitcher ha_over props fired
-        # FORCE_BACK_BOOST today because refit v2 expanded to 12 prop types
-        # 8/10 but only 3 had prior graded samples. New prop types slipped
-        # past the (n>=30 AND hit<55) check because no band existed. Now:
-        # REQUIRE a healthy band (n>=30, hit>=55) BEFORE forcing BACK.
-        # Missing/unhealthy band → LEAN cap, not FORCE_BACK.
+        # 2026-08-11 (v4): FADE-flip must fire REGARDLESS of band health.
+        # FADE verdict + refit=100 means Jerry is fading what the refit
+        # model says is a strong signal — that's a Jerry hallucination
+        # to correct, not a refit boost to validate. The audit gate
+        # (jerry_pre_publish_audit) blocks the pipeline on FADE+refit≥80,
+        # so the LEAN_CAP-only path we shipped earlier ended up blocking
+        # the pipeline. Flip FADE→BACK regardless, and cap conviction
+        # at LEAN if band unproven (so we correct the verdict but don't
+        # over-commit).
+        if current_verdict == 'FADE':
+            band_unproven = False
+            if sample_health and prop_type and direction:
+                band = sample_health.get((prop_type, direction, '80-100'))
+                if not band or band['n'] < 30 or band['hit_pct'] < 55:
+                    band_unproven = True
+            elif not sample_health:
+                band_unproven = True
+            if band_unproven:
+                return ('BACK', 'FORCE_BACK_FLIP_LEAN_CAP')
+            return ('BACK', 'FORCE_BACK_REFIT_OVERRIDE')
+
+        # Sample-size gate — only force BACK-BOOST (raise conviction) when
+        # the refit-100 band has been healthy recently. Otherwise cap at LEAN.
+        # Prior version force-boosted BACK/PASS regardless — 29/29 pitcher
+        # ha_over props today boosted to noise because refit v2's new prop
+        # types had zero graded samples to validate the band.
         if sample_health and prop_type and direction:
             band = sample_health.get((prop_type, direction, '80-100'))
             if not band or band['n'] < 30:
-                # Refit-100 band unproven for this prop_type — no BOOST allowed
                 return ('LEAN_CAP', 'REFIT_BAND_UNPROVEN')
             if band['hit_pct'] < 55:
-                # Band proven UNHEALTHY — cap at LEAN
                 return ('LEAN_CAP', 'REFIT_BAND_UNHEALTHY')
         else:
-            # No sample_health available at all — cannot verify → LEAN cap
             return ('LEAN_CAP', 'REFIT_HEALTH_UNAVAILABLE')
         if current_verdict in ('BACK', 'PASS'):
             return ('BACK', 'FORCE_BACK_BOOST')
-        # FADE with high refit means Jerry is fading a strong signal — flip to BACK
-        if current_verdict == 'FADE':
-            return ('BACK', 'FORCE_BACK_REFIT_OVERRIDE')
     if abs_d >= DELTA_BOOST and refit < REFIT_PASS:
         # Too conflicted — sit out
         return ('PASS', 'FORCE_PASS_CONFLICT')
@@ -357,6 +376,27 @@ def run(game_date: str, dry_run: bool = False) -> int:
         #   REFIT_BAND_UNPROVEN   → 80-100 band has <30 graded samples (new prop type)
         #   REFIT_HEALTH_UNAVAILABLE → couldn't compute band health at all
         # All three collapse to "trust conviction less" — cap at LEAN, keep verdict.
+        # 2026-08-11 (v4): FORCE_BACK_FLIP_LEAN_CAP = FADE→BACK flip with
+        # LEAN cap because refit band is unproven. Verdict CHANGES to BACK
+        # (correcting a Jerry hallucination) but conviction stays capped.
+        if action == 'FORCE_BACK_FLIP_LEAN_CAP':
+            note = (f'[Auto-refit-override 2026-08-11 FORCE_BACK_FLIP_LEAN_CAP: '
+                    f'refit={refit} vs raw={raw} (Δ={refit-raw:+.0f}) — Jerry '
+                    f'was FADEing what refit says LOAD. Flipping FADE→BACK '
+                    f'but capping conviction at LEAN (refit-100 band for '
+                    f'{r["prop_type"]}/{r["direction"]} unproven). '
+                    f'Original take: {(r.get("short_read") or "")[:220]}]')
+            payload = {'call_verdict': 'BACK', 'conviction': 55,
+                       'short_read': note[:1500]}
+            print(f'  {r["player_name"]:22} {r["prop_type"]:12} {r["direction"]:5} '
+                  f'raw={raw} refit={refit} · FADE→BACK LEAN cap [FLIP_LEAN_CAP]')
+            if dry_run: flips += 1; continue
+            pr = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{r["id"]}',
+                                headers=H_WRITE, json=payload, timeout=10)
+            if pr.status_code in (200, 204): flips += 1
+            _sync_props_lean_cap(game_date, r, action, dry_run=dry_run)
+            continue
+
         if action in ('REFIT_BAND_UNHEALTHY', 'REFIT_BAND_UNPROVEN',
                        'REFIT_HEALTH_UNAVAILABLE'):
             reason_txt = {
