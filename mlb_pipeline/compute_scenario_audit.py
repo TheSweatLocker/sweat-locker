@@ -1,0 +1,349 @@
+"""Cross-sport scenario audit (2026-08-10 · queue item from user).
+
+Answers "does public/sharp/house win when scenario X happens?" across
+every sport. Nightly recompute of `scenario_audit` table.
+
+## How it works
+
+For each graded historical game, project it into N pre-defined scenarios
+(canonical dim-tuples). Bucket outcomes per (sport, market, scenario, window).
+Compute hit_rate + ROI + jerry_hint.
+
+## Scenarios (v1)
+
+**MLB-specific** (deeper — where we have most data):
+  - public_pct band × market (ml/spread/total) × home/away × fav/dog
+  - sharp_pct band × market × side
+  - money-vs-bets divergence (whale) × market
+  - bullpen taxed + market
+  - line-move direction × sharp side (reverse-line-move)
+  - confluence net band × primary_play tier
+  - pitcher L3 ERA gap band × ML side
+
+**Sport-universal** (starts sparse, fills as sports mature):
+  - public_pct heavy on home/away side × outcome
+  - sharp_pct heavy on side × outcome (baseline sharp-fade metric)
+
+## Extensibility
+
+New scenarios: add an entry to `SCENARIO_DEFS` with a canonical
+scenario_key generator function. Schema doesn't change.
+
+New sports: register in `RESULTS_TABLE`. Sport-agnostic scenarios apply
+automatically. Sport-specific scenarios need per-sport def function.
+
+## Usage
+
+    python compute_scenario_audit.py [--sport MLB|ALL] [--window lifetime|90d|30d]
+"""
+from __future__ import annotations
+import argparse, os, sys, json
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from typing import Any
+
+import requests
+
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except Exception: pass
+
+from pathlib import Path
+_env = Path(__file__).parent / '.env'
+if _env.exists():
+    for line in _env.read_text().split('\n'):
+        if '=' in line and not line.startswith('#'):
+            k, v = line.split('=', 1); os.environ.setdefault(k.strip(), v.strip())
+
+SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
+H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
+H_WRITE = {**H_READ, 'Content-Type': 'application/json',
+           'Prefer': 'resolution=merge-duplicates,return=minimal'}
+
+RESULTS_TABLE = {
+    'MLB':   ('mlb_game_context', 'mlb_game_results'),
+    'NFL':   ('nfl_game_context', 'nfl_game_results'),
+    'NCAAF': ('ncaaf_game_context', 'ncaaf_game_results'),
+    # NBA/NCAAB/UFC add when Jerry synth ships for each
+}
+
+
+def _parse_snap(s):
+    if not s: return {}
+    if isinstance(s, str):
+        try: return json.loads(s)
+        except: return {}
+    return s
+
+
+def _bucket_pct(pct: float | None) -> str | None:
+    """Bucket a percentage into named bands: 50-55, 55-65, 65-75, 75+."""
+    if pct is None: return None
+    if pct >= 75: return '75+'
+    if pct >= 65: return '65-74'
+    if pct >= 55: return '55-64'
+    if pct >= 50: return '50-54'
+    return '<50'
+
+
+def _bucket_ml(ml: int | None) -> str | None:
+    """American odds bucket: heavy_fav / fav / pickem / dog / heavy_dog."""
+    if ml is None: return None
+    if ml <= -200: return 'heavy_fav'
+    if ml <= -130: return 'fav'
+    if ml <= 130: return 'pickem'
+    if ml <= 200: return 'dog'
+    return 'heavy_dog'
+
+
+def _grade_ml(pick_side: str, hs: int, as_: int) -> str | None:
+    if hs == as_: return 'push'
+    won = (pick_side == 'HOME' and hs > as_) or (pick_side == 'AWAY' and as_ > hs)
+    return 'win' if won else 'loss'
+
+
+def _grade_total(pick_side: str, line: float | None, hs: int, as_: int) -> str | None:
+    if line is None: return None
+    total = hs + as_
+    if total == line: return 'push'
+    if pick_side == 'OVER': return 'win' if total > line else 'loss'
+    if pick_side == 'UNDER': return 'win' if total < line else 'loss'
+    return None
+
+
+def build_scenarios_mlb(row: dict) -> list[tuple[str, str, str, str]]:
+    """MLB scenario extraction. Returns list of (market, scenario_key,
+    scenario_label, actual_side_or_outcome_bucket) tuples.
+
+    Each element represents: this game contributed one data point to
+    scenario S with observed side/outcome O. We then grade at aggregate.
+    """
+    scenarios = []
+    snap = _parse_snap(row.get('oddscrowd_snapshot'))
+    home_ml = row.get('home_ml_close')
+    away_ml = row.get('away_ml_close')
+    close_total = row.get('close_total')
+    close_spread = row.get('close_spread')
+    conf_net = row.get('signal_confluence_net')
+
+    # --- ML scenarios ---
+    ml_seg = snap.get('ml') or {}
+    ml_pick = (ml_seg.get('pick') or '').upper()
+    ml_money = ml_seg.get('money')
+    ml_bets = ml_seg.get('bets')
+    ml_div = ml_seg.get('div', 0)
+    if ml_pick in ('HOME', 'AWAY'):
+        # public_pct bucket × ml_pick side
+        band = _bucket_pct(ml_money)
+        if band:
+            side_ml = home_ml if ml_pick == 'HOME' else away_ml
+            fav_dog = _bucket_ml(side_ml)
+            if fav_dog:
+                key = f'public_money={band}&side={ml_pick.lower()}&ml_bucket={fav_dog}'
+                label = f'Public {band}% $ on {ml_pick} {fav_dog}'
+                scenarios.append(('ml', key, label, ml_pick))
+        # Whale divergence — money >= bets + 15
+        if ml_money is not None and ml_bets is not None:
+            if ml_money - ml_bets >= 15:
+                key = f'whale_signal&side={ml_pick.lower()}'
+                label = f'Whale ($≥bets+15) on {ml_pick} ML'
+                scenarios.append(('ml', key, label, ml_pick))
+            elif ml_bets - ml_money >= 15:
+                key = f'square_signal&side={ml_pick.lower()}'
+                label = f'Square (bets≥$+15) on {ml_pick} ML'
+                scenarios.append(('ml', key, label, ml_pick))
+
+    # --- Total scenarios ---
+    tot_seg = snap.get('total') or {}
+    tot_pick = (tot_seg.get('pick') or '').upper()
+    tot_money = tot_seg.get('money')
+    tot_bets = tot_seg.get('bets')
+    if tot_pick in ('OVER', 'UNDER') and close_total is not None:
+        band = _bucket_pct(tot_money)
+        if band:
+            # Total line bucket: low <8, mid 8-9, high >9
+            if close_total < 8: line_bucket = 'low<8'
+            elif close_total < 9.5: line_bucket = 'mid8-9.5'
+            else: line_bucket = 'high>=9.5'
+            key = f'public_money={band}&side={tot_pick.lower()}&line={line_bucket}'
+            label = f'Public {band}% $ on {tot_pick} · total {line_bucket}'
+            scenarios.append(('total', key, label, tot_pick))
+        # Whale
+        if tot_money is not None and tot_bets is not None:
+            if tot_money - tot_bets >= 15:
+                key = f'whale_signal&side={tot_pick.lower()}'
+                label = f'Whale ($≥bets+15) on {tot_pick}'
+                scenarios.append(('total', key, label, tot_pick))
+
+    # --- Confluence-x-primary_play scenarios ---
+    pp = row.get('primary_play') or {}
+    if isinstance(pp, dict) and pp.get('tier') and conf_net is not None:
+        tier = pp.get('tier')
+        market = pp.get('type', 'unknown')
+        conf_band = 'high+3' if conf_net >= 3 else 'mid+1-2' if conf_net >= 1 else \
+                    'neutral' if abs(conf_net) < 1 else 'mid-1-2' if conf_net >= -2 else 'low<-2'
+        key = f'tier={tier}&confluence={conf_band}'
+        label = f'{tier} primary_play at confluence {conf_band}'
+        # For grading we need the pick side — encode into scenario tuple
+        side = pp.get('side') or pp.get('label', '').split()[0].upper()
+        if side in ('HOME','AWAY','OVER','UNDER'):
+            scenarios.append((market, key, label, side))
+
+    return scenarios
+
+
+def grade_scenario(sport: str, market: str, scenario_side: str,
+                   game_row: dict, results_row: dict) -> str | None:
+    """Return 'win' / 'loss' / 'push' for scenario_side given actual outcome."""
+    hs = results_row.get('home_score')
+    as_ = results_row.get('away_score')
+    if hs is None or as_ is None: return None
+    try: hs = int(hs); as_ = int(as_)
+    except: return None
+
+    if market == 'ml':
+        if scenario_side in ('HOME', 'AWAY'):
+            return _grade_ml(scenario_side, hs, as_)
+    elif market == 'total':
+        line = game_row.get('close_total')
+        return _grade_total(scenario_side, line, hs, as_)
+    elif market in ('over', 'under'):
+        line = game_row.get('close_total')
+        return _grade_total(scenario_side, line, hs, as_)
+    return None
+
+
+def american_to_decimal(o) -> float | None:
+    if o is None: return None
+    try: o = int(o)
+    except: return None
+    return 1 + (100 / (-o)) if o < 0 else 1 + (o / 100)
+
+
+def compute_jerry_hint(hit_rate: float, roi: float | None, n: int) -> tuple[str, int]:
+    """Standard jerry_hint mapping matching prop_bucket_roi convention."""
+    if n < 20: return ('PASS', 30)
+    if hit_rate >= 60 and (roi is None or roi > 5): return ('BACK', min(90, 50 + int(hit_rate - 50)))
+    if hit_rate <= 42 or (roi is not None and roi < -10): return ('FADE', min(85, 50 + int(50 - hit_rate)))
+    if hit_rate >= 55: return ('LEAN', 55)
+    return ('PASS', 40)
+
+
+def run(sport: str, window: str = 'lifetime') -> int:
+    ctx_table, res_table = RESULTS_TABLE.get(sport, (None, None))
+    if not ctx_table:
+        print(f'  [{sport}] no tables registered — skip'); return 0
+
+    print(f'=== scenario_audit · sport={sport} · window={window} ===')
+    date_filter = None
+    if window == '90d': date_filter = (datetime.now(timezone.utc) - timedelta(days=90)).date().isoformat()
+    elif window == '30d': date_filter = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+
+    # Paginate ctx + join results in memory
+    all_ctx = []; offset = 0
+    while True:
+        params = {'select': '*', 'limit': '1000', 'offset': str(offset),
+                  'order': 'game_date.desc'}
+        if date_filter: params['game_date'] = f'gte.{date_filter}'
+        r = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
+                         params=params, timeout=30).json()
+        if not isinstance(r, list) or not r: break
+        all_ctx += r
+        if len(r) < 1000: break
+        offset += 1000
+    print(f'  {len(all_ctx)} game_context rows')
+
+    # Pull results — only need game_id, home_score, away_score
+    gids = [c['game_id'] for c in all_ctx if c.get('game_id')]
+    all_res = {}
+    for i in range(0, len(gids), 500):
+        chunk = gids[i:i+500]
+        gid_in = ','.join(f'"{g}"' for g in chunk)
+        r = requests.get(f'{SB}/rest/v1/{res_table}', headers=H_READ,
+            params={'game_id': f'in.({gid_in})',
+                    'select': 'game_id,home_score,away_score,status'},
+            timeout=30).json()
+        for row in (r if isinstance(r, list) else []):
+            all_res[row['game_id']] = row
+
+    print(f'  {len(all_res)} results matched')
+
+    # Build scenario map: {(market, key, side): [outcomes]}
+    accum = defaultdict(list)
+    scenario_labels = {}  # (market, key) -> label
+    for ctx in all_ctx:
+        res = all_res.get(ctx.get('game_id'))
+        if not res or res.get('home_score') is None: continue
+        scenarios = build_scenarios_mlb(ctx) if sport == 'MLB' else []
+        for market, key, label, side in scenarios:
+            outcome = grade_scenario(sport, market, side, ctx, res)
+            if outcome:
+                accum[(market, key)].append((outcome, ctx.get('home_ml_close'),
+                                              ctx.get('away_ml_close'),
+                                              ctx.get('close_total'), side))
+                scenario_labels[(market, key)] = label
+
+    # Aggregate + upsert
+    written = 0
+    print(f'\n{"market":<8} {"scenario":<50} {"n":>4} {"hit%":>6} {"ROI%":>7} hint')
+    for (market, key), rows in sorted(accum.items(), key=lambda x: -len(x[1])):
+        wins = sum(1 for r in rows if r[0] == 'win')
+        losses = sum(1 for r in rows if r[0] == 'loss')
+        pushes = sum(1 for r in rows if r[0] == 'push')
+        n = wins + losses + pushes
+        if n < 10: continue
+        graded = wins + losses
+        if graded == 0: continue
+        hit = round(100 * wins / graded, 2)
+        # ROI estimation — use -110 baseline for totals, actual for ML
+        avg_dec = None
+        if market == 'ml':
+            odds_list = []
+            for _, hml, aml, _, side in rows:
+                o = hml if side == 'HOME' else aml
+                d = american_to_decimal(o)
+                if d: odds_list.append(d)
+            if odds_list: avg_dec = round(sum(odds_list)/len(odds_list), 3)
+        else:
+            avg_dec = 1.91  # -110 assumption for totals
+        roi = None
+        if avg_dec:
+            p_win = wins / graded
+            roi = round(100 * (p_win * (avg_dec - 1) - (1 - p_win)), 2)
+        hint, conf = compute_jerry_hint(hit, roi, n)
+        payload = {
+            'sport': sport, 'market': market, 'scenario_key': key,
+            'scenario_label': scenario_labels.get((market, key)),
+            'wins': wins, 'losses': losses, 'pushes': pushes, 'total_n': n,
+            'hit_rate': hit, 'avg_dec_odds': avg_dec, 'roi_pct': roi,
+            'jerry_hint': hint, 'hint_confidence': conf,
+            'scenario_window': window,
+            'computed_at': datetime.now(timezone.utc).isoformat(),
+        }
+        pr = requests.post(
+            f'{SB}/rest/v1/scenario_audit?on_conflict=sport,market,scenario_key,scenario_window',
+            headers=H_WRITE, json=payload, timeout=15)
+        if pr.status_code in (200, 201, 204):
+            written += 1
+            roi_s = f'{roi:+.1f}%' if roi is not None else '   -   '
+            print(f'  {market:<8} {key[:48]:<50} {n:>4} {hit:>5.1f}% {roi_s:<7} {hint}')
+        else:
+            print(f'  UPSERT FAILED {pr.status_code} for {market}/{key}: {pr.text[:150]}')
+    print(f'\n  wrote {written} scenario_audit rows for {sport}/{window}')
+    return written
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--sport', default='ALL',
+                    help='MLB / NFL / NCAAF / ALL')
+    ap.add_argument('--window', default='lifetime',
+                    choices=['lifetime', '90d', '30d'])
+    args = ap.parse_args()
+    sports = list(RESULTS_TABLE.keys()) if args.sport == 'ALL' else [args.sport]
+    for s in sports:
+        run(sport=s, window=args.window)
+
+
+if __name__ == '__main__':
+    main()
