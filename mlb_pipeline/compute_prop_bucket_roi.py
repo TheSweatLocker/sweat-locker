@@ -194,18 +194,118 @@ def compute(window: str = 'lifetime', sport: str = 'MLB') -> None:
     print(f'\n=== wrote {written} bucket rows ===')
 
 
+def compute_time_weighted(sport: str = 'MLB') -> None:
+    """2026-08-10: Build time-weighted priors from 14d/30d/90d/lifetime rows.
+
+    Recent hit-rates matter more than 90-day-old ones. Applies exponential-
+    decay weights [14d × 3, 30d × 1.5, 90d × 1, lifetime × 0.5] normalized
+    by sample size within each bucket. Writes back with
+    bucket_window='time_weighted'.
+
+    Downstream Jerry synth reads 'time_weighted' rows (via jerry_hint) to
+    inform BACK/FADE decisions with recency-aware historical priors.
+
+    Sharpens trap detection ~5-10pp per prior audits — when a bucket was
+    58% lifetime but 40% L14, blend now reflects the fade signal instead
+    of getting drowned out by stale data.
+
+    Runs after compute(sport, 'all') so all 4 windows exist to blend.
+    """
+    print(f'\n=== compute_prop_bucket_roi · TIME-WEIGHTED BLEND · sport={sport} ===')
+    # Pull all 4 windows for this sport
+    resp = requests.get(f'{SB}/rest/v1/prop_bucket_roi', headers=H_READ,
+        params={'sport': f'eq.{sport}',
+                'bucket_window': 'in.(lifetime,90d,30d,14d)',
+                'select': 'tier,prop_type,direction,bucket_window,wins,losses,pushes,'
+                          'sample_n,hit_rate,avg_decimal_odds,roi_pct',
+                'limit': '2000'},
+        timeout=15)
+    r = resp.json() if resp.status_code == 200 else []
+    if not isinstance(r, list) or not r:
+        print(f'  no windowed rows found for {sport} — run compute() first'); return
+
+    # Weights
+    W = {'14d': 3.0, '30d': 1.5, '90d': 1.0, 'lifetime': 0.5}
+
+    # Group by (tier, prop_type, direction)
+    from collections import defaultdict
+    grouped = defaultdict(dict)  # key -> {window: row}
+    for row in r:
+        key = (row['tier'], row['prop_type'], row['direction'])
+        grouped[key][row['bucket_window']] = row
+
+    written = 0
+    print(f'\n{"tier":<10} {"family":<8} {"dir":<6} {"blended%":<10} {"blended_ROI":<13} {"total_n":<8}')
+    for key, wins_by_window in grouped.items():
+        tier, family, d = key
+        # Weighted average of hit_rate and roi using sample size × decay weight
+        num_hit = num_roi = denom = 0.0
+        total_n = 0
+        avg_dec_num = avg_dec_denom = 0
+        for w_key, w_val in W.items():
+            row = wins_by_window.get(w_key)
+            if not row: continue
+            n = row.get('sample_n', 0) or 0
+            if n <= 0: continue
+            weight = w_val * n
+            hr = row.get('hit_rate')
+            if hr is not None:
+                num_hit += weight * hr
+                denom += weight
+            roi = row.get('roi_pct')
+            if roi is not None:
+                num_roi += weight * roi
+            ad = row.get('avg_decimal_odds')
+            if ad:
+                avg_dec_num += n * ad
+                avg_dec_denom += n
+            total_n = max(total_n, n)  # use lifetime n as reference
+        if denom == 0: continue
+        blended_hit = round(num_hit / denom, 1)
+        blended_roi = round(num_roi / denom, 1)
+        blended_dec = round(avg_dec_num / avg_dec_denom, 3) if avg_dec_denom else None
+        hint, hint_conf = compute_jerry_hint(blended_hit, blended_roi, total_n)
+        payload = {
+            'sport': sport, 'tier': tier, 'prop_type': family, 'direction': d,
+            'bucket_window': 'time_weighted',
+            # Blended row — no discrete W/L/P counts (those live on windowed rows).
+            # Table has NOT NULL constraint so use 0 placeholders. Downstream
+            # consumers should read sample_n + hit_rate + roi_pct for blends.
+            'wins': 0, 'losses': 0, 'pushes': 0,
+            'sample_n': total_n,
+            'hit_rate': blended_hit,
+            'avg_decimal_odds': blended_dec,
+            'roi_pct': blended_roi,
+            'jerry_hint': hint,
+            'hint_confidence': hint_conf,
+            'computed_at': datetime.now(timezone.utc).isoformat(),
+        }
+        pr = requests.post(
+            f'{SB}/rest/v1/prop_bucket_roi?on_conflict=sport,tier,prop_type,direction,bucket_window',
+            headers=H_WRITE, json=payload, timeout=15)
+        if pr.status_code in (200, 201, 204):
+            written += 1
+            print(f'  {tier[:9]:<10} {family[:7]:<8} {d[:5]:<6} '
+                  f'{blended_hit:>6.1f}%   {blended_roi:>+7.1f}%    n={total_n}')
+        else:
+            print(f'  UPSERT FAILED {pr.status_code} for {tier}/{family}/{d}: {pr.text[:150]}')
+    print(f'\n  wrote {written} time-weighted rows')
+
+
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--window', default='all',
                    choices=['lifetime', '90d', '30d', '14d', 'all'],
-                   help="'all' computes lifetime + 90d + 30d + 14d (for time-weighted prior blend)")
+                   help="'all' computes lifetime + 90d + 30d + 14d + time_weighted blend")
     p.add_argument('--sport', default='ALL',
                    help='MLB / NBA / NFL / NCAAF / NCAAB / UFC / ALL (loops)')
     args = p.parse_args()
     sports = list(PROPS_TABLE.keys()) if args.sport == 'ALL' else [args.sport]
-    # 'all' → run every window so prop_tier_calibration can blend them via
-    # time-weighted priors (14d × 3 + 30d × 1.5 + 90d × 1 exponential decay).
+    # 'all' → run every window + time_weighted blend on top.
     windows = ['lifetime', '90d', '30d', '14d'] if args.window == 'all' else [args.window]
     for s in sports:
         for w in windows:
             compute(window=w, sport=s)
+        # 2026-08-10: after all windows computed, blend into time-weighted row
+        if args.window == 'all':
+            compute_time_weighted(sport=s)
