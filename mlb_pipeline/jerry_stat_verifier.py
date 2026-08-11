@@ -87,8 +87,14 @@ NUMERIC_PATTERNS = [
     (r'\b(?:first[\s-]+inning|1st\s+inning)\s+ERA\s*:?\s*(\d+\.?\d*)', 'first_inning_era'),
     # "xERA X.XX"
     (r'\bxERA\s*:?\s*(\d+\.?\d*)', 'xera'),
-    # "1.3 IP last outing" / "X.X IP as opener"
-    (r'\b(\d+\.?\d*)\s+IP\s+(?:last|as)\s+(?:outing|opener|start)', 'last_ip'),
+    # "1.3 IP last outing" / "2.0 IP as an opener" / "X.X IP as bulk"
+    # 2026-08-10: allow optional article/adjective between "as" and the noun
+    # to catch "as an opener", "as a bulk", "as the starter", etc.
+    (r'\b(\d+\.?\d*)\s+IP\s+(?:last|as\s+(?:an?\s+|the\s+)?)\s*(?:outing|opener|start|bulk|starter)', 'last_ip'),
+    # "lasted X.X innings" / "went X.X innings"
+    (r'\b(?:lasted|went)\s+(\d+\.?\d*)\s+innings\b', 'last_ip'),
+    # "his last outing was X.X" / "his last outing was only X.X IP"
+    (r'\blast\s+(?:outing|start)\s+(?:was\s+only\s+|was\s+just\s+|was\s+)(\d+\.?\d*)(?:\s+IP)?', 'last_ip'),
     # "X.X BB/9" / "walks per 9"
     (r'\b(\d+\.?\d*)\s+BB/9\b', 'bb_per_9'),
     # "X.X K/9"
@@ -271,6 +277,39 @@ def verify(prose: str, pitcher_name: str) -> dict:
         'violations': violations,
         'pitcher_stats': stats,
     }
+
+
+def strip_hallucinated_sentences(prose: str, violations: list) -> str:
+    """Remove sentences that contain critical hallucinations.
+
+    Called when we can't retry generation but want to salvage a mostly-
+    correct read by dropping the fabricated claims. Preserves the rest
+    of the read intact.
+
+    Also normalizes double-spaces created by sentence removal.
+    """
+    if not prose or not violations: return prose
+    bad_sentences = {v.get('sentence') for v in violations
+                     if v.get('severity') == 'critical' and v.get('sentence')}
+    if not bad_sentences: return prose
+    out = prose
+    for bad in bad_sentences:
+        # bad is a truncated snippet — find the full sentence in out
+        # by looking for a substring match
+        import re
+        # First 60 chars of the bad snippet — enough to identify the sentence
+        needle = bad[:60].strip()
+        if not needle: continue
+        # Find sentence containing needle
+        for m in re.finditer(r'[^.!?]*[.!?]', out):
+            if needle in m.group(0):
+                out = out.replace(m.group(0), '', 1)
+                break
+    # Normalize whitespace
+    out = re.sub(r' {2,}', ' ', out)
+    out = re.sub(r'\s+([.!?])', r'\1', out)
+    out = re.sub(r'\.{2,}', '.', out).strip()
+    return out
 
 
 # CLI: `python jerry_stat_verifier.py --game-date 2026-08-10`
