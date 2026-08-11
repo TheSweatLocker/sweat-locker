@@ -54,6 +54,7 @@ if _env.exists():
 
 SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
+H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
 
 def _et_today() -> str:
@@ -348,15 +349,170 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
     return {'critical': critical, 'warnings': warnings}
 
 
+def auto_repair(sport: str, game_date: str) -> dict:
+    """2026-08-11: comprehensive auto-repair layer. Runs BEFORE the fail check
+    so pipeline is self-healing for every known critical class.
+
+    Repairs applied:
+      A. Layer D re-scrub on ALL jerry_reads + prop_jerry_reads prose. Any
+         "opposing starter/pitcher" or "the [team] starter" leaks get
+         mechanically substituted with actual pitcher names.
+      B. L5 trend contradict → force PASS on any BACK pitcher prop where
+         pitcher_trend_gate.check_trend returns contradicts_pick=True with
+         critical severity.
+      C. Duplicate-pitcher hallucination cases could be added here later;
+         currently reported but not auto-repaired (would require regen).
+
+    Returns {'A_scrubbed': N, 'B_trend_pass': N, 'total_repairs': N}.
+    Sport-universal but MLB-first (only MLB has jerry_reads + prop_jerry_reads
+    + pitcher_trend_gate today).
+    """
+    repairs = {'A_layer_d_jerry_reads': 0, 'A_layer_d_prop_jerry': 0,
+               'B_trend_forced_pass': 0}
+
+    # --- A. Layer D re-scrub jerry_reads ---
+    try:
+        from validate_jerry_read import substitute_generic_pitcher_refs
+    except ImportError:
+        substitute_generic_pitcher_refs = None
+
+    if substitute_generic_pitcher_refs:
+        # Fetch game_context for name resolution
+        sport_ctx = {'MLB': ('mlb_game_context', 'home_pitcher', 'away_pitcher'),
+                     'NFL': ('nfl_game_context', 'home_qb', 'away_qb'),
+                     'NCAAF': ('ncaaf_game_context', 'home_qb', 'away_qb')}
+        cfg = sport_ctx.get(sport)
+        if cfg:
+            ctx_table, home_key, away_key = cfg
+            ctx_rows = requests.get(f'{SB}/rest/v1/{ctx_table}',
+                headers=H_READ,
+                params={'game_date': f'eq.{game_date}',
+                        'select': f'game_id,home_team,away_team,{home_key},{away_key}'},
+                timeout=15).json()
+            ctx_by_gid = {c['game_id']: c for c in (ctx_rows if isinstance(ctx_rows, list) else [])}
+
+            # jerry_reads sweep
+            reads = requests.get(f'{SB}/rest/v1/jerry_reads',
+                headers=H_READ,
+                params={'game_date': f'eq.{game_date}',
+                        'sport': f'eq.{sport}',
+                        'select': 'id,game_id,short_read,long_read'},
+                timeout=15).json()
+            for r in (reads if isinstance(reads, list) else []):
+                ctx = ctx_by_gid.get(r.get('game_id'))
+                if not ctx: continue
+                struct = {'home_team': ctx.get('home_team'),
+                          'away_team': ctx.get('away_team'),
+                          'home_pitcher': ctx.get(home_key),
+                          'away_pitcher': ctx.get(away_key)}
+                orig_short = r.get('short_read') or ''
+                orig_long = r.get('long_read') or ''
+                new_short = substitute_generic_pitcher_refs(orig_short, struct)
+                new_long = substitute_generic_pitcher_refs(orig_long, struct)
+                if new_short != orig_short or new_long != orig_long:
+                    payload = {}
+                    if new_short != orig_short: payload['short_read'] = new_short[:2000]
+                    if new_long != orig_long: payload['long_read'] = new_long[:8000]
+                    if payload:
+                        pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
+                                            headers=H_WRITE, json=payload, timeout=10)
+                        if pr.status_code in (200, 204):
+                            repairs['A_layer_d_jerry_reads'] += 1
+
+            # prop_jerry_reads sweep (only if MLB — column has short_read only)
+            if sport == 'MLB':
+                pj_reads = requests.get(f'{SB}/rest/v1/prop_jerry_reads',
+                    headers=H_READ,
+                    params={'game_date': f'eq.{game_date}',
+                            'select': 'id,game_id,short_read'},
+                    timeout=15).json()
+                for r in (pj_reads if isinstance(pj_reads, list) else []):
+                    ctx = ctx_by_gid.get(r.get('game_id'))
+                    if not ctx: continue
+                    struct = {'home_team': ctx.get('home_team'),
+                              'away_team': ctx.get('away_team'),
+                              'home_pitcher': ctx.get(home_key),
+                              'away_pitcher': ctx.get(away_key)}
+                    orig = r.get('short_read') or ''
+                    scrubbed = substitute_generic_pitcher_refs(orig, struct)
+                    if scrubbed != orig:
+                        pr = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{r["id"]}',
+                                            headers=H_WRITE,
+                                            json={'short_read': scrubbed[:1500]}, timeout=10)
+                        if pr.status_code in (200, 204):
+                            repairs['A_layer_d_prop_jerry'] += 1
+
+    # --- B. L5 trend contradict → force PASS (MLB only) ---
+    if sport == 'MLB':
+        try:
+            from pitcher_trend_gate import check_trend
+        except ImportError:
+            check_trend = None
+        if check_trend:
+            pitcher_prop_types = {
+                'ha_under': ('hits_allowed', 'under'), 'ha_over': ('hits_allowed', 'over'),
+                'er_under': ('er', 'under'), 'er_over': ('er', 'over'),
+                'ks_under': ('ks', 'under'), 'ks_over': ('ks', 'over'),
+                'bb_under': ('bb', 'under'), 'bb_over': ('bb', 'over'),
+                'outs_under': ('ip', 'under'), 'outs_over': ('ip', 'over'),
+            }
+            pj_back = requests.get(f'{SB}/rest/v1/prop_jerry_reads',
+                headers=H_READ,
+                params={'game_date': f'eq.{game_date}',
+                        'call_verdict': 'eq.BACK',
+                        'conviction': 'gte.55',
+                        'select': 'id,player_name,prop_type,direction,conviction,short_read'},
+                timeout=15).json()
+            for pj in (pj_back if isinstance(pj_back, list) else []):
+                pt = pj.get('prop_type'); dir_ = pj.get('direction')
+                if pt not in pitcher_prop_types: continue
+                metric, expected_dir = pitcher_prop_types[pt]
+                if dir_ != expected_dir: continue
+                try:
+                    tr = check_trend(pj['player_name'], metric, expected_dir)
+                except Exception:
+                    continue
+                if tr.get('contradicts_pick') and tr.get('severity') == 'critical':
+                    note = (f'[Auto-trend-repair 2026-08-11 TREND_CONTRADICTS_CRITICAL: '
+                            f'{tr["note"]} — forcing PASS. Original take: '
+                            f'{(pj.get("short_read") or "")[:220]}]')
+                    payload = {'call_verdict': 'PASS', 'conviction': 40,
+                               'short_read': note[:1500]}
+                    pr = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{pj["id"]}',
+                                        headers=H_WRITE, json=payload, timeout=10)
+                    if pr.status_code in (200, 204):
+                        repairs['B_trend_forced_pass'] += 1
+
+    repairs['total_repairs'] = sum(v for k, v in repairs.items() if k != 'total_repairs')
+    return repairs
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--date')
     p.add_argument('--sport', default='MLB', help='MLB / UFC / NFL / NCAAF')
     p.add_argument('--warn-only', action='store_true',
                    help='Never exit 1 — log only. Use for dev / manual audits.')
+    p.add_argument('--repair', action='store_true',
+                   help='Auto-repair known critical classes (Layer D scrub + '
+                        'trend-contradict PASS) BEFORE the fail check. Cron '
+                        'should always pass this so pipeline is self-healing.')
     args = p.parse_args()
     gd = args.date or _et_today()
     print(f'=== jerry_pre_publish_audit · {args.sport} · {gd} ===')
+
+    # 2026-08-11: --repair mode auto-fixes every known critical class before
+    # the fail check runs. Cron passes --repair so pipeline is self-healing.
+    # Pattern classes covered:
+    #   * Layer D scrub on all game reads + prop jerry reads
+    #   * L5 trend-contradict → force PASS on BACK pitcher props (critical only)
+    if args.repair:
+        repairs = auto_repair(args.sport, gd)
+        if repairs['total_repairs'] > 0:
+            print(f'  🔧 auto-repair applied: {repairs}')
+        else:
+            print(f'  🔧 auto-repair: no fixes needed')
+
     report = audit(args.sport, gd)
 
     # 2026-08-10: also run refit-focused gates on Prop Jerry (MLB only for now
