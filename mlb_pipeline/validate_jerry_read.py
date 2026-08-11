@@ -594,6 +594,47 @@ def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
         flags=re.IGNORECASE,
     )
 
+    # Pattern 3b (2026-08-11): "opposing starter/pitcher" WITHOUT the leading
+    # "the" (e.g. "weak opposing starter in recent breakdown"). Catches
+    # adjective-preceded variants that pattern 2 misses because it required
+    # "the" as anchor. Same proximity-based resolution.
+    def _sub_no_the(m):
+        # Replace "opposing starter/pitcher" (no "the") with the correct
+        # last name, keeping any preceding adjective (e.g. "weak Whisenhunt")
+        return resolve(m.start(), 'the opposing starter')  # reuse resolver
+    out = re.sub(
+        r'\bopposing (?:starter|pitcher)\b(?!\s*\()',
+        _sub_no_the,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    # Pattern 4 (2026-08-11): "the [Team] starter/pitcher" references. The LLM
+    # sometimes writes "the Giants starter, Carson Whisenhunt" — literally
+    # factual but violates feedback_never_generic_pitcher_ref_809 (never ship
+    # generic starter refs). Match team names from home/away context and
+    # substitute the corresponding pitcher's last name.
+    if home_t and away_t:
+        # Build map: team-key → pitcher last name
+        team_to_pitcher = {}
+        for t, p_last in ((home_t, home_last), (away_t, away_last)):
+            for key in team_keys(t):
+                if p_last and len(key) >= 3:
+                    team_to_pitcher[key.lower()] = p_last
+        def _sub_team(m):
+            team_word = m.group(1).lower()
+            return team_to_pitcher.get(team_word, m.group(0))
+        # Match "the [Team-word] starter/pitcher" where Team-word is one of
+        # the two teams' last-word or full-name keys. Skip if followed by
+        # parenthetical (already qualified).
+        team_pattern = '|'.join(sorted(set(k for k in team_to_pitcher
+                                            if len(k) >= 3), key=len, reverse=True))
+        if team_pattern:
+            out = re.sub(
+                rf'\bthe ({team_pattern}) (?:starter|starting pitcher|pitcher)\b(?!\s*\()',
+                _sub_team, out, flags=re.IGNORECASE,
+            )
+
     # Pattern 4 (2026-08-11): TBD-starter sentence scrub. When a starter is
     # genuinely unconfirmed (home_pitcher IS null), Jerry falls back to
     # phrases like "the Nationals' starter remains TBD" / "the Washington
