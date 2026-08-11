@@ -53,8 +53,12 @@ CREATE TABLE IF NOT EXISTS public.line_snapshot (
 );
 CREATE INDEX IF NOT EXISTS line_snapshot_game_market_idx
   ON public.line_snapshot (sport, game_id, market, snapshot_ts);
-CREATE INDEX IF NOT EXISTS line_snapshot_recent_idx
-  ON public.line_snapshot (snapshot_ts DESC) WHERE snapshot_ts > (NOW() - INTERVAL '30 days');
+-- 2026-08-10 fix: partial index with NOW() predicate fails (functions in
+-- index predicate must be IMMUTABLE). Plain index on snapshot_ts DESC
+-- covers recent-window queries adequately; Postgres will BRIN-scan for
+-- large ranges anyway.
+CREATE INDEX IF NOT EXISTS line_snapshot_ts_idx
+  ON public.line_snapshot (snapshot_ts DESC);
 
 
 CREATE TABLE IF NOT EXISTS public.scenario_audit (
