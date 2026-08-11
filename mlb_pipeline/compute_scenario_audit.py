@@ -211,6 +211,30 @@ def build_scenarios_mlb(row: dict) -> list[tuple[str, str, str, str]]:
                 scenarios.append(('ml', key, label, 'AWAY'))
         except (TypeError, ValueError): pass
 
+    # --- Reverse-line-move outcome tracking (2026-08-11) ---
+    # detect_reverse_line_move.py writes primary_play.rlm_flag when
+    # public 70%+ on side A and line moved AGAINST A → sharp on side B.
+    # This scenario tracks whether the SHARP side (opposite of public)
+    # actually wins. High hit rate here validates the RLM signal.
+    pp_check = row.get('primary_play') or {}
+    if isinstance(pp_check, dict):
+        rlm = pp_check.get('rlm_flag')
+        if isinstance(rlm, dict) and rlm.get('public_side') and rlm.get('market'):
+            rlm_market = rlm['market']
+            public = rlm['public_side'].upper()
+            # Sharp/suggested side is opposite of public
+            if public == 'HOME': sharp_side = 'AWAY'
+            elif public == 'AWAY': sharp_side = 'HOME'
+            elif public == 'OVER': sharp_side = 'UNDER'
+            elif public == 'UNDER': sharp_side = 'OVER'
+            else: sharp_side = None
+            if sharp_side:
+                conf = rlm.get('confidence', 'moderate')
+                key = f'reverse_line_move&market={rlm_market}&confidence={conf}'
+                label = f'Reverse line move · {rlm_market} · sharp {sharp_side} (fade public {public})'
+                # Grade against the SHARP side winning
+                scenarios.append((rlm_market, key, label, sharp_side))
+
     # --- Confluence-x-primary_play scenarios ---
     pp = row.get('primary_play') or {}
     if isinstance(pp, dict) and pp.get('tier') and conf_net is not None:
