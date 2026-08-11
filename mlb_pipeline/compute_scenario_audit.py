@@ -239,31 +239,46 @@ def run(sport: str, window: str = 'lifetime') -> int:
     if window == '90d': date_filter = (datetime.now(timezone.utc) - timedelta(days=90)).date().isoformat()
     elif window == '30d': date_filter = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
 
-    # Paginate ctx + join results in memory
+    # Paginate ctx via Range headers — Supabase default row limit is 1000
+    # but `limit` param isn't enough here (jsonb hydration may cap response
+    # smaller). Range headers are the reliable path.
+    # 2026-08-10 fix: only pull PAST games (game_date < today). Today's + future
+    # games are in ctx but not yet in results — including them here inflates
+    # the row count and produces 0 matches when we join.
+    today = (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
     all_ctx = []; offset = 0
     while True:
-        params = {'select': '*', 'limit': '1000', 'offset': str(offset),
-                  'order': 'game_date.desc'}
-        if date_filter: params['game_date'] = f'gte.{date_filter}'
-        r = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
-                         params=params, timeout=30).json()
+        params = {'select': '*', 'order': 'game_date.desc',
+                  'game_date': f'lt.{today}'}
+        if date_filter: params['and'] = f'(game_date.gte.{date_filter},game_date.lt.{today})'
+        r = requests.get(f'{SB}/rest/v1/{ctx_table}',
+            headers={**H_READ, 'Range': f'{offset}-{offset+999}',
+                     'Range-Unit': 'items'},
+            params=params, timeout=30).json()
         if not isinstance(r, list) or not r: break
         all_ctx += r
         if len(r) < 1000: break
         offset += 1000
-    print(f'  {len(all_ctx)} game_context rows')
+        if offset > 20000: break  # safety cap
+    print(f'  {len(all_ctx)} game_context rows (past-only)')
 
-    # Pull results — only need game_id, home_score, away_score
+    # Pull results — only need game_id, home_score, away_score.
+    # 2026-08-10: cap chunk at 80 game_ids per URL (game_id is 32 chars,
+    # avoids URL-length limits that returned empty results silently).
     gids = [c['game_id'] for c in all_ctx if c.get('game_id')]
     all_res = {}
-    for i in range(0, len(gids), 500):
-        chunk = gids[i:i+500]
-        gid_in = ','.join(f'"{g}"' for g in chunk)
-        r = requests.get(f'{SB}/rest/v1/{res_table}', headers=H_READ,
-            params={'game_id': f'in.({gid_in})',
-                    'select': 'game_id,home_score,away_score,status'},
-            timeout=30).json()
-        for row in (r if isinstance(r, list) else []):
+    # 2026-08-10: use unquoted comma-list; game_ids are hex, no special
+    # chars that require PostgREST double-quoting. Prior quoted variant
+    # was URL-encoding the quotes and returning empty results silently.
+    for i in range(0, len(gids), 80):
+        chunk = gids[i:i+80]
+        gid_in = ','.join(chunk)
+        # 2026-08-10: build URL inline instead of via params dict — requests
+        # url-encodes commas + parens which breaks PostgREST in.() filter.
+        url = (f'{SB}/rest/v1/{res_table}?game_id=in.({gid_in})'
+               f'&select=game_id,home_score,away_score')
+        rr = requests.get(url, headers=H_READ, timeout=30)
+        for row in (rr.json() if rr.status_code == 200 else []):
             all_res[row['game_id']] = row
 
     print(f'  {len(all_res)} results matched')

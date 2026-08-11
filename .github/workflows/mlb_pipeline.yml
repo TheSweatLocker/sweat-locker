@@ -288,6 +288,24 @@ jobs:
             echo "not Sunday (DOW=$DOW) — skipping weekly retrain"
           fi
 
+      # 2026-08-10: Nightly scenario audit recompute. Reads all past
+      # game_context+results, projects into ~30 canonical MLB scenarios
+      # (public-pct bands × side × line/ML bucket, whale signals,
+      # confluence×tier), writes hit-rate + ROI + jerry_hint to
+      # scenario_audit table. Sport-universal — NFL/NCAAF will pick up
+      # their own scenario extraction as those pipelines mature.
+      # Non-fatal so bad ctx data doesn't kill the cron.
+      - name: Compute scenario audit (cross-sport)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_scenario_audit.py --sport MLB --window lifetime || echo "scenario audit lifetime failed"
+          python compute_scenario_audit.py --sport MLB --window 90d || echo "scenario audit 90d failed"
+          python compute_scenario_audit.py --sport MLB --window 30d || echo "scenario audit 30d failed"
+
       - name: Apply prop refit conviction
         continue-on-error: true
         env:
