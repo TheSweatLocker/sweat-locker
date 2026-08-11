@@ -593,6 +593,38 @@ def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
         out,
         flags=re.IGNORECASE,
     )
+
+    # Pattern 4 (2026-08-11): TBD-starter sentence scrub. When a starter is
+    # genuinely unconfirmed (home_pitcher IS null), Jerry falls back to
+    # phrases like "the Nationals' starter remains TBD" / "the Washington
+    # starter is not yet confirmed" / "the starting pitcher remains TBD".
+    # These VIOLATE feedback_never_generic_pitcher_ref_809 which requires
+    # NEVER shipping generic starter references. We can't substitute a name
+    # (there isn't one) — instead strip the entire sentence and let the rest
+    # of the read carry the pick. If Jerry's thesis leans on the confirmed
+    # starter's edge (typical case), the pick still stands.
+    #
+    # Detected patterns:
+    #   "The [Team]'s starter remains TBD."
+    #   "The [Team] starter is not yet confirmed."
+    #   "[Team]'s starter has yet to be announced."
+    #   "The starting pitcher remains TBD."
+    #   "The opposing starter is TBD."
+    tbd_sentence_patterns = [
+        # Team-scoped: "The Nationals' starter remains TBD."
+        r'(?:^|\s)[Tt]he\s+[A-Z][A-Za-z]+(?:\'s|s\')?\s+(?:starter|starting pitcher)\s+'
+        r'(?:remains|is)\s+(?:TBD|not yet (?:confirmed|announced|set)|unconfirmed|unknown)\.?',
+        # Team-scoped with 'has yet to be': "Nationals' starter has yet to be named."
+        r'(?:^|\s)(?:[Tt]he\s+)?[A-Z][A-Za-z]+(?:\'s|s\')?\s+(?:starter|starting pitcher)\s+'
+        r'has yet to be\s+(?:named|confirmed|announced)\.?',
+        # Generic: "The starting pitcher remains TBD."
+        r'(?:^|\s)[Tt]he\s+(?:starting pitcher|opposing starter|home starter|away starter)\s+'
+        r'(?:remains|is)\s+(?:TBD|not yet (?:confirmed|announced|set)|unconfirmed|unknown)\.?',
+    ]
+    for pat in tbd_sentence_patterns:
+        out = re.sub(pat, '', out)
+    # Clean up any resulting double-spaces
+    out = re.sub(r'  +', ' ', out).strip()
     return out
 
 
