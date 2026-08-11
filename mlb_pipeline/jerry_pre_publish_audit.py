@@ -277,6 +277,50 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
                                 f'jerry reads with matching prop row) — apply_prop_refit likely '
                                 f'failed this cycle. Rerun `python apply_prop_refit.py`.')
 
+    # --- Gate 11: L5 trend gate (2026-08-11 · Christian Scott motivator) ---
+    # For each BACK prop_jerry pick on a pitcher metric (hits/er/ks/bb/ip),
+    # check whether the pitcher's L5 trend for that metric contradicts the
+    # pick direction. Warns/critical on contradiction; downstream sizing
+    # should soften picks flagged here.
+    try:
+        from pitcher_trend_gate import check_trend
+        pitcher_prop_types = {
+            'ha_under': ('hits_allowed', 'under'),
+            'ha_over': ('hits_allowed', 'over'),
+            'er_under': ('er', 'under'),
+            'er_over': ('er', 'over'),
+            'ks_under': ('ks', 'under'),
+            'ks_over': ('ks', 'over'),
+            'bb_under': ('bb', 'under'),
+            'bb_over': ('bb', 'over'),
+            'outs_under': ('ip', 'under'),
+            'outs_over': ('ip', 'over'),
+        }
+        pj_back = requests.get(f'{SB}/rest/v1/prop_jerry_reads', headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'call_verdict': 'eq.BACK',
+                    'conviction': 'gte.60',
+                    'select': 'id,player_name,prop_type,direction,conviction'},
+            timeout=15).json()
+        if isinstance(pj_back, list):
+            for pj in pj_back:
+                pt = pj.get('prop_type'); dir_ = pj.get('direction')
+                if pt not in pitcher_prop_types: continue
+                metric, expected_dir = pitcher_prop_types[pt]
+                if dir_ != expected_dir: continue
+                tr = check_trend(pj['player_name'], metric, expected_dir)
+                if tr['contradicts_pick']:
+                    line = (f'prop_jerry id={pj["id"]} {pj["player_name"]} {pt} '
+                            f'{dir_}: L5 trend contradicts BACK — {tr["note"]}')
+                    if tr['severity'] == 'critical':
+                        critical.append(f'TREND_CONTRADICTS · {line}')
+                    else:
+                        warnings.append(f'trend_watch · {line}')
+    except ImportError:
+        pass
+    except Exception as e:
+        warnings.append(f'trend gate failed: {e}')
+
     # --- Gate 7: weights file staleness ---
     from pathlib import Path
     from datetime import datetime, timedelta, timezone
