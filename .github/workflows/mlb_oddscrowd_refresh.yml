@@ -53,3 +53,18 @@ jobs:
         run: |
           cd mlb_pipeline
           python pull_externals_mlb.py --source oddscrowd
+
+      # 2026-08-10: append time-series snapshot to line_snapshot table.
+      # Each poll gets its own row so we build a full trajectory of
+      # sharp/public/line-movement per game over the day. Enables
+      # reverse-line-move detection + sharp-entry timing analytics.
+      # Idempotent — snapshot_ts truncated to minute so same-minute
+      # reruns dedupe. Non-fatal.
+      - name: Append line_snapshot rows
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python write_line_snapshot.py --sport MLB || echo "line_snapshot write failed"
