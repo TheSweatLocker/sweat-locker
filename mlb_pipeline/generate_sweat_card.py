@@ -631,24 +631,74 @@ def top_props_by_type(props, target_type, n=2):
     return out
 
 
+def _odds_within_range(prop, lo: int = -300, hi: int = 150) -> bool:
+    """Per feedback_prop_jerry_odds: only ship props priced in [-300, +150]
+    on the direction we're taking. Outside that band, the juice/payout
+    profile doesn't support recommending regardless of conviction.
+
+    2026-08-11: added after 4 batter hits_over slipped onto today's card at
+    -300 to -475 juice — Aranda -375 with PRIME 77% hit rate is -1.9pt EV
+    even at max conviction. Odds unknown → returns True (don't block on
+    missing data; other gates handle it — _is_high_juice_hits_over defaults
+    conservatively for hits_over 0.5 with null odds).
+
+    Uses over/under odds based on direction. Returns True if:
+      * relevant odds field is null (defer to other gates)
+      * odds ∈ [lo, hi]
+    Returns False if odds fall outside the band.
+    """
+    direction = (prop.get('direction') or '').lower()
+    odds = (prop.get('book_over_odds') if direction == 'over'
+            else prop.get('book_under_odds') if direction == 'under'
+            else None)
+    if odds is None:
+        return True  # unknown → defer to other gates
+    try:
+        odds = int(odds)
+    except (TypeError, ValueError):
+        return True
+    return lo <= odds <= hi
+
+
 def _is_high_juice_hits_over(prop):
     """Heuristic: hits_over 0.5 lines are nearly always priced -250 to -400
-    because 70-80% of MLB starters get a hit. At -300+ juice, a 75-77% hit
-    rate is barely break-even; at -350+ it's -EV. We don't pull prop prices
-    yet, so use the line-based heuristic — hits_over @ 0.5 = high juice.
-    Higher hits_over lines (1.5, 2.5) are +money and unaffected.
+    because 70-80% of MLB starters get a hit. Only returns True (= "apply
+    strict floor") when we're actually in juice-trap territory.
 
-    Why: 30d audit (2026-05-23) showed hits_over PRIME at 77.1% (n=96), which
-    sounds great but at -350 juice you need 77.8% to break even — the apparent
-    edge evaporates once you factor in price. Card-surface gate: require
-    conviction ≥ 95 to publish a PRIME hits_over @ 0.5 (vs 82 elsewhere).
+    2026-08-11 (v2): now odds-aware. Prior version always returned True for
+    hits_over 0.5 regardless of book_odds, which meant a solid pick at
+    -180 juice (well within acceptable range) got treated the same as a
+    -400 juice trap. Result: 4 batter picks today with 8-signal data stacks
+    (Aranda hit 7/7 L7, opp SP 4.42 xERA, opp BP 5.45 ERA) got blocked
+    because they were labeled "high juice" without checking the actual
+    price.
+
+    Rules:
+      * Not hits_over 0.5 → False (no restriction)
+      * book_over_odds ≥ -220 (fair juice) → False (data-quality gate handles it)
+      * book_over_odds <= -220 (juice territory) → True (require conv ≥ 95)
+      * book_over_odds unknown → True (can't verify price, be conservative)
+
+    Also see feedback_prop_jerry_odds: ship props only when odds are in
+    [-300, +150]. Outside that range gets skipped upstream, not here.
     """
     if prop.get('prop_type') != 'hits_over':
         return False
     try:
-        return float(prop.get('prop_line') or 0) <= 0.5
+        if float(prop.get('prop_line') or 0) > 0.5:
+            return False  # 1.5+ lines are typically +money, unaffected
     except (TypeError, ValueError):
         return False
+    odds = prop.get('book_over_odds')
+    if odds is None:
+        return True  # unknown price → treat as juice trap defensively
+    try:
+        odds = int(odds)
+    except (TypeError, ValueError):
+        return True
+    # -220 threshold: at 68.75% break-even, a PRIME hit rate of 77% (from
+    # 30d audit) clears with ~8pt margin. Below -220 the margin evaporates.
+    return odds <= -220
 
 
 # 30d audit (2026-05-23): outs_OVER STRONG is 0-3 lifetime — three pieces of
@@ -1464,6 +1514,9 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             continue
         # Juice gate: hits_over @ 0.5 needs conv >= 95 to make a public card
         # slot (otherwise the 77% hit rate is -EV at typical -350 price).
+        # 2026-08-11: odds-range gate — skip props priced outside [-300, +150]
+        if not _odds_within_range(prop):
+            continue
         if _is_high_juice_hits_over(prop) and (prop.get("conviction") or 0) < HITS_OVER_05_CARD_CONV_FLOOR:
             continue
         player = prop.get("player_name")
@@ -1480,6 +1533,9 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             continue
         # Same juice gate on STRONG hits_over @ 0.5 (lower bar at -300 juice
         # ~75% break-even; STRONG hit rate is 71.3% which is -EV outright).
+        # 2026-08-11: odds-range gate — skip props priced outside [-300, +150]
+        if not _odds_within_range(prop):
+            continue
         if _is_high_juice_hits_over(prop) and (prop.get("conviction") or 0) < HITS_OVER_05_CARD_CONV_FLOOR:
             continue
         player = prop.get("player_name")
@@ -1609,6 +1665,12 @@ def build_card():
         if p.get("tier") not in ("PRIME", "STRONG"):
             continue
         ptype = p.get("prop_type", "?")
+        # 2026-08-11: hard odds-range gate per feedback_prop_jerry_odds.
+        # Props outside [-300, +150] on the direction we're taking are
+        # filtered — juice too heavy at extreme -odds, payout too thin at
+        # extreme +odds. Caught 4 batter hits at -300 to -475 today.
+        if not _odds_within_range(p):
+            continue
         # Juice gate for high-juice hits_over 0.5
         if _is_high_juice_hits_over(p):
             if (p.get("conviction") or 0) < HITS_OVER_05_CARD_CONV_FLOOR:
@@ -1708,6 +1770,13 @@ def build_card():
         before_count = len(top_props_all)
         top_props_all = [p for p in top_props_all if _prop_key(p) not in top_8_prop_keys]
         # Backfill from props_sorted to maintain ~5-7 picks if dedup shrunk us
+        # 2026-08-11: MUST re-apply the same juice gate + eligibility gate as
+        # the initial pass. Prior implementation bypassed both, letting the
+        # 4 batter hits_over 0.5 conv 72-87 picks (below the 95 floor) leak
+        # onto the card today. User feedback: batter hits at -180+ juice is
+        # fine WHEN data quality is really solid — conviction >= 95 encodes
+        # that (base scorer only awards top conv on l7_hot + l14_heat +
+        # lineup_spot + opp_bullpen signal stack).
         if len(top_props_all) < 5 and len(top_props_all) < before_count:
             existing_keys = {_prop_key(p) for p in top_props_all}
             for p in props_sorted:
@@ -1716,6 +1785,19 @@ def build_card():
                     continue
                 k = _prop_key(p)
                 if k in existing_keys or k in top_8_prop_keys:
+                    continue
+                # Odds-range gate — same as initial pass
+                if not _odds_within_range(p):
+                    continue
+                # Juice gate — same as initial pass line 1613
+                if _is_high_juice_hits_over(p):
+                    if (p.get("conviction") or 0) < HITS_OVER_05_CARD_CONV_FLOOR:
+                        continue
+                # Eligibility gate — same as initial pass line 1620
+                elig = _cohort_eligibility(p, gate_window="30d")
+                if elig == "suppress":
+                    continue
+                if elig == "demote" and (p.get("tier") or "").upper() == "STRONG":
                     continue
                 ptype = p.get("prop_type", "?")
                 edge_class = prop_edge_class(ptype, tier=p.get("tier"))
@@ -1788,6 +1870,54 @@ def build_card():
     if density["mode"] in ("thin", "empty"):
         audit_roll_up = fetch_audit_roll_up()
         upcoming_events = fetch_upcoming_events()
+
+    # 2026-08-09: run correlation_check across the finalized card picks so
+    # the app can render "correlation warning" badges on picks that share
+    # a same-game or same-pitcher risk (R1-R7 rules — see correlation_check).
+    # Doesn't remove picks, just annotates. Sport-universal.
+    try:
+        from correlation_check import check_correlations
+        # Build one flat pick list for correlation scan (top_8 + top_props)
+        corr_input = []
+        for entry in (top_8_curated or []) + (top_props_all or []):
+            corr_input.append({
+                'game_id':   entry.get('game_id'),
+                'market':    entry.get('market') or ('prop' if entry.get('prop_type') else None),
+                'side':      entry.get('side') or entry.get('direction'),
+                'line':      entry.get('line') or entry.get('prop_line'),
+                'prop_type': entry.get('prop_type'),
+                'prop_line': entry.get('prop_line'),
+                'player_name': entry.get('player_name'),
+                'conviction': entry.get('conviction') or entry.get('refit_conviction') or 0,
+            })
+        # Build pitcher_map (game_id → home/away pitcher) from games ctx
+        pitcher_map = {}
+        for g in games:
+            gid = g.get('game_id')
+            if gid:
+                pitcher_map[gid] = {'home_pitcher': g.get('home_pitcher'),
+                                    'away_pitcher': g.get('away_pitcher')}
+        corr_warnings = check_correlations(corr_input, pitcher_map=pitcher_map)
+        # Annotate each affected pick with correlation warning
+        for w in corr_warnings:
+            for idx in w.get('picks', []):
+                if idx >= len(corr_input): continue
+                src = corr_input[idx]
+                # Find corresponding entry in top_8_curated or top_props_all
+                targets = [top_8_curated, top_props_all]
+                for tgt_list in targets:
+                    if not tgt_list: continue
+                    if idx < len(tgt_list):
+                        item = tgt_list[idx if idx < len(tgt_list) else 0]
+                        item.setdefault('correlation_warnings', []).append({
+                            'rule': w.get('rule'),
+                            'severity': w.get('severity'),
+                            'note': w.get('note'),
+                        })
+        if corr_warnings:
+            print(f'  ⚠ correlation_check: {len(corr_warnings)} warning(s) tagged onto card picks')
+    except Exception as e:
+        print(f'  ⚠ correlation_check skipped: {e}')
 
     card = {
         "slate_date": today,

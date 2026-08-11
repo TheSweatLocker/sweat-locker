@@ -335,7 +335,12 @@ def run(game_date: str, dry_run: bool = False) -> int:
         # scoring path silently dropped this prop type. Aggregate + report at
         # end of run so we catch the upstream regression before the next
         # nightly override attempts to boost noise.
-        if prop_conv == 0:
+        # 2026-08-11: only flag props.conviction=0 as regression when the
+        # tier is NOT COVERAGE. Coverage stubs (sweep_prop_coverage.py) are
+        # inserted with conv=0 by design — those pass the Jerry edge gate
+        # but the raw scorer never rated them. Real regressions leave conv=0
+        # on non-coverage tiers (LEAN/STRONG/PRIME) which shouldn't happen.
+        if prop_conv == 0 and (prop.get('tier') or '').upper() != 'COVERAGE':
             _raw_zero_counter[r.get('prop_type', '?')] += 1
         refit = prop.get('refit_conviction')
         current = (r.get('call_verdict') or '').upper()
