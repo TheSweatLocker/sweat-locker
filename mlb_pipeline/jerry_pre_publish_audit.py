@@ -241,13 +241,18 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
                 with_refit += 1
                 verdict = r['call_verdict'].upper()
                 # Gate 8: BACK on refit trap.
-                # 2026-08-11: raised threshold from 40 to 35 to match the
-                # override's DELTA_STRONG + REFIT_TRAP thresholds. Anything
-                # in 35-40 that survives override is edge-case, not critical.
-                if verdict == 'BACK' and refit <= 35:
+                # 2026-08-11 (v2): sync with tightened REFIT_TRAP=30 in
+                # apply_refit_verdict_override. Critical only when refit
+                # is truly hammered (<=30). 30-40 band is warning territory
+                # since override no longer force-flips there.
+                if verdict == 'BACK' and refit <= 30:
                     critical.append(f'prop_jerry id={r["id"]} {r["player_name"]} {r["prop_type"]} '
                                     f'{r["direction"]}: BACK on refit={refit} (trap zone, expected FADE '
                                     f'via override — did apply_refit_verdict_override run?)')
+                elif verdict == 'BACK' and refit <= 40:
+                    warnings.append(f'prop_jerry id={r["id"]} {r["player_name"]} {r["prop_type"]} '
+                                    f'{r["direction"]}: BACK with refit={refit} (mild trap zone, '
+                                    f'gray-zone — Jerry may have counter-signal)')
                 # Gate 9: FADE on strong refit.
                 # 2026-08-11: split into two tiers.
                 #   refit >= 80 → CRITICAL (override MUST flip; something broke)

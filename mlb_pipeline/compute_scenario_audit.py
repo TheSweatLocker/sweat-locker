@@ -175,6 +175,42 @@ def build_scenarios_mlb(row: dict) -> list[tuple[str, str, str, str]]:
                 label = f'Whale ($≥bets+15) on {tot_pick}'
                 scenarios.append(('total', key, label, tot_pick))
 
+    # --- Square-signal scenarios (2026-08-11 · post-BAL loss) ---
+    # When public bet% is HIGHER than money% (bets - money >= 5) on the ML
+    # pick, it's a "square-heavy" spot: retail is loaded but sharp isn't
+    # matching. Historically these underperform vs headline. Same for total.
+    if ml_pick in ('HOME', 'AWAY') and ml_money is not None and ml_bets is not None:
+        square_gap = ml_bets - ml_money
+        if square_gap >= 5:
+            side_ml = home_ml if ml_pick == 'HOME' else away_ml
+            fav_dog = _bucket_ml(side_ml)
+            if fav_dog:
+                key = f'square_signal_bets_over_money&side={ml_pick.lower()}&ml_bucket={fav_dog}'
+                label = f'Square ML (bets≥$+{square_gap}) on {ml_pick} {fav_dog}'
+                scenarios.append(('ml', key, label, ml_pick))
+    if tot_pick in ('OVER', 'UNDER') and tot_money is not None and tot_bets is not None:
+        square_gap_t = tot_bets - tot_money
+        if square_gap_t >= 5:
+            key = f'square_signal_bets_over_money&side={tot_pick.lower()}'
+            label = f'Square total (bets≥$+{square_gap_t}) on {tot_pick}'
+            scenarios.append(('total', key, label, tot_pick))
+
+    # --- Road-favorite scenarios (2026-08-11 · post-BAL loss) ---
+    # BAL @ MIN yesterday was a road fav at -108 that lost. Historically
+    # road favorites at thin juice underperform (a "trap" bucket per
+    # sportsbook heuristics). Track separately from public-money scenarios.
+    if away_ml is not None and home_ml is not None:
+        try:
+            away_ml_i = int(away_ml); home_ml_i = int(home_ml)
+            # Road team is favored if their ML is more negative than home's
+            if away_ml_i < 0 and away_ml_i < home_ml_i:
+                juice_bucket = ('thin' if away_ml_i >= -125 else
+                                'mid' if away_ml_i >= -170 else 'heavy')
+                key = f'road_fav_juice={juice_bucket}'
+                label = f'Road favorite (juice {juice_bucket})'
+                scenarios.append(('ml', key, label, 'AWAY'))
+        except (TypeError, ValueError): pass
+
     # --- Confluence-x-primary_play scenarios ---
     pp = row.get('primary_play') or {}
     if isinstance(pp, dict) and pp.get('tier') and conf_net is not None:
