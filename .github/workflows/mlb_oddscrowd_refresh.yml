@@ -68,3 +68,17 @@ jobs:
         run: |
           cd mlb_pipeline
           python write_line_snapshot.py --sport MLB || echo "line_snapshot write failed"
+
+      # 2026-08-11: reverse-line-move detector runs AFTER snapshot writer.
+      # Compares first + latest snapshot per (game, market). Public 70%+
+      # on side A + line moved against A = sharp on B (RLM). Annotates
+      # primary_play.rlm_flag so sweat card + Jerry synth can consult.
+      # Non-fatal — line_snapshot may be thin early in slate window.
+      - name: Detect reverse line moves
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python detect_reverse_line_move.py --sport MLB || echo "RLM detector failed"

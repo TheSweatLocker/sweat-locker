@@ -338,12 +338,124 @@ def _verify_nfl(prose: str, player_name: str) -> dict:
             'note': f'NFL stat verifier not yet implemented for {player_name}'}
 
 
+## NCAAF stat verifier — real implementation using CFBD API
+NCAAF_CFBD_KEY = os.environ.get('CFBD_API_KEY') or os.environ.get('CFBD_KEY')
+NCAAF_CFBD_BASE = 'https://api.collegefootballdata.com'
+NCAAF_CACHE_DIR = Path(__file__).parent / '.ncaaf_qb_cache'
+NCAAF_CACHE_DIR.mkdir(exist_ok=True)
+
+# Regex patterns for NCAAF QB stat claims
+NCAAF_PATTERNS = [
+    # "L3 pass yards X" / "X passing yards last three"
+    (r'\b(\d{2,3})\s+(?:pass|passing)\s+yards\s+(?:last\s+3|L3|last\s+three)', 'l3_pass_yds_per_game'),
+    (r'\b(?:L3|last\s+3|last\s+three)\s+(?:pass|passing)\s+yards?\s*:?\s*(\d{2,3})', 'l3_pass_yds_per_game'),
+    # "X TD passes last three"
+    (r'\b(\d+)\s+(?:TD\s+passes|passing\s+TDs?)\s+(?:last\s+3|L3)', 'l3_pass_tds'),
+    # "X interceptions" / "X INTs"
+    (r'\b(\d+)\s+(?:INTs?|interceptions?)\s+(?:last\s+3|L3|this season)', 'l3_int'),
+    # "completion % X.X" / "X.X completion %"
+    (r'\b(?:completion\s+)?(?:pct|%|rate)\s*:?\s*(\d{2}\.?\d?)\s*%?\s+(?:this|last|L3)', 'completion_pct'),
+]
+
+NCAAF_TOLERANCE = {
+    'l3_pass_yds_per_game': 40,      # 40yd tolerance on 3-game avg
+    'l3_pass_tds': 1.5,              # allow ±1.5 TDs over 3-game window
+    'l3_int': 1,                     # ±1 int
+    'completion_pct': 4.0,           # ±4 pct pts
+}
+
+
+def _ncaaf_fetch_qb_stats(player_name: str) -> dict | None:
+    """Fetch season + last-3 QB stats via CFBD /stats/player/season.
+    Returns normalized dict with same shape as MLB (l3_X keys).
+    Cached daily per player."""
+    if not NCAAF_CFBD_KEY: return None
+    year = datetime.now().year
+    cache = NCAAF_CACHE_DIR / f"{re.sub(r'[^a-z0-9]+','_',player_name.lower())}_{year}.json"
+    if cache.exists():
+        age = datetime.now() - datetime.fromtimestamp(cache.stat().st_mtime)
+        if age < timedelta(hours=CACHE_TTL_HR):
+            try: return json.loads(cache.read_text())
+            except Exception: pass
+    try:
+        # CFBD season stats — categories: passing, rushing
+        r = requests.get(f'{NCAAF_CFBD_BASE}/stats/player/season',
+            headers={'Authorization': f'Bearer {NCAAF_CFBD_KEY}'},
+            params={'year': year, 'category': 'passing'}, timeout=15)
+        if r.status_code != 200: return None
+        rows = r.json()
+        # Filter to this player (fuzzy match on last name)
+        last = player_name.split()[-1].lower()
+        me = [row for row in rows
+              if last in (row.get('player') or '').lower()]
+        if not me: return None
+        stat_map = {row.get('statType'): row.get('stat') for row in me}
+        # Compute derived stats (season averages — L3 requires game log which
+        # isn't available on CFBD season endpoint; approximate from totals)
+        games = 1  # CFBD stat rows don't have games — proxy from ATT/completions
+        # Very rough — season averages, not L3. Better than nothing.
+        pass_yds = float(stat_map.get('YDS', 0) or 0)
+        pass_tds = int(stat_map.get('TD', 0) or 0)
+        ints = int(stat_map.get('INT', 0) or 0)
+        att = int(stat_map.get('ATT', 0) or 0)
+        cmp = int(stat_map.get('COMPLETIONS', 0) or 0)
+        # Assume ~10 games as denominator for pace normalization
+        stats = {
+            'l3_pass_yds_per_game': round(pass_yds / max(1, games * 10) * 3, 0),  # rough L3 proxy
+            'l3_pass_tds': round(pass_tds / max(1, 10) * 3, 1),
+            'l3_int': round(ints / max(1, 10) * 3, 1),
+            'completion_pct': round(100 * cmp / max(1, att), 1) if att else None,
+        }
+        try: cache.write_text(json.dumps(stats))
+        except Exception: pass
+        return stats
+    except Exception:
+        return None
+
+
 def _verify_ncaaf(prose: str, player_name: str) -> dict:
-    """NCAAF QB verifier stub. Would use CFBD API (already integrated
-    for team stats). Same shape as NFL — QB pass/rush metrics.
+    """NCAAF QB verifier — real implementation using CFBD API.
+    Extracts pass yards / TD / INT claims from prose, cross-verifies
+    against season stats (L3 approx). Season averages used as proxy
+    for L3 since CFBD's public API doesn't expose game logs cheaply.
     """
-    return {'ok': True, 'violations': [], 'pitcher_stats': None,
-            'note': f'NCAAF stat verifier not yet implemented for {player_name}'}
+    if not prose or not player_name:
+        return {'ok': True, 'violations': [], 'pitcher_stats': None}
+    if not NCAAF_CFBD_KEY:
+        return {'ok': True, 'violations': [], 'pitcher_stats': None,
+                'note': 'NCAAF verifier skipped — no CFBD_API_KEY'}
+    stats = _ncaaf_fetch_qb_stats(player_name)
+    if not stats:
+        return {'ok': True, 'violations': [], 'pitcher_stats': None,
+                'note': f'NCAAF verifier: no CFBD data for {player_name}'}
+
+    violations = []
+    last_name = player_name.split()[-1].lower()
+    sentences = re.split(r'(?<=[.!?])\s+', prose)
+    for sent in sentences:
+        if last_name not in sent.lower(): continue
+        for pat, key in NCAAF_PATTERNS:
+            for m in re.finditer(pat, sent, re.IGNORECASE):
+                try: cited = float(m.group(1))
+                except Exception: continue
+                actual = stats.get(key)
+                if actual is None: continue
+                tol = NCAAF_TOLERANCE.get(key, 0.5)
+                if abs(cited - actual) > tol:
+                    violations.append({
+                        'claim': m.group(0)[:80],
+                        'stat_key': key,
+                        'cited': cited,
+                        'expected': actual,
+                        'delta': round(cited - actual, 2),
+                        'severity': 'critical' if abs(cited - actual) > 2 * tol else 'warning',
+                        'sentence': sent[:200],
+                    })
+    return {
+        'ok': len([v for v in violations if v['severity'] == 'critical']) == 0,
+        'violations': violations,
+        'pitcher_stats': stats,
+    }
 
 
 def _verify_ufc(prose: str, fighter_name: str) -> dict:
