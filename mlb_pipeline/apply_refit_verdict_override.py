@@ -107,11 +107,24 @@ def decide(raw: int, refit: float | None, current_verdict: str,
     if abs_d >= DELTA_BOOST and refit >= REFIT_BOOST:
         # Sample-size gate — only force BACK when the refit-100 band for
         # this prop_type has been healthy recently. Otherwise cap at LEAN.
+        #
+        # 2026-08-11 (v3): tightened after 29/29 pitcher ha_over props fired
+        # FORCE_BACK_BOOST today because refit v2 expanded to 12 prop types
+        # 8/10 but only 3 had prior graded samples. New prop types slipped
+        # past the (n>=30 AND hit<55) check because no band existed. Now:
+        # REQUIRE a healthy band (n>=30, hit>=55) BEFORE forcing BACK.
+        # Missing/unhealthy band → LEAN cap, not FORCE_BACK.
         if sample_health and prop_type and direction:
             band = sample_health.get((prop_type, direction, '80-100'))
-            if band and band['n'] >= 30 and band['hit_pct'] < 55:
-                # Refit band under-performing recently — downgrade instead of force
+            if not band or band['n'] < 30:
+                # Refit-100 band unproven for this prop_type — no BOOST allowed
+                return ('LEAN_CAP', 'REFIT_BAND_UNPROVEN')
+            if band['hit_pct'] < 55:
+                # Band proven UNHEALTHY — cap at LEAN
                 return ('LEAN_CAP', 'REFIT_BAND_UNHEALTHY')
+        else:
+            # No sample_health available at all — cannot verify → LEAN cap
+            return ('LEAN_CAP', 'REFIT_HEALTH_UNAVAILABLE')
         if current_verdict in ('BACK', 'PASS'):
             return ('BACK', 'FORCE_BACK_BOOST')
         # FADE with high refit means Jerry is fading a strong signal — flip to BACK
@@ -166,7 +179,101 @@ def compute_refit_band_health(days: int = 30) -> dict:
     return health
 
 
+# 2026-08-11: module-level counter for raw-conviction=0 alarms. Populated by
+# run() so we can emit an aggregate summary + optional Slack/audit-table
+# write at the end. Resets per invocation.
+from collections import defaultdict as _dd
+_raw_zero_counter: dict = _dd(int)
+
+
+def _cap_props_trap_directly(game_date: str, dry_run: bool = False) -> int:
+    """Direct props-table trap cap — independent of prop_jerry_reads.
+
+    2026-08-11: high-tier props (STRONG/PRIME) with refit < 30 flag as
+    trap even when Jerry already backed off (verdict = PASS/FADE). The
+    JR verdict downgrade doesn't propagate to props tier, so the sweat
+    card composition still picks them up. This pass caps them at LEAN
+    at the props level.
+
+    Idempotent — skips rows with tier=LEAN or _refit_override_cap already
+    set in signals.
+    """
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                     headers=H_READ,
+                     params={'game_date': f'eq.{game_date}',
+                             'tier': 'in.(STRONG,PRIME)',
+                             'refit_conviction': 'lt.30',
+                             'select': 'id,player_name,prop_type,direction,tier,'
+                                       'conviction,refit_conviction,signals'},
+                     timeout=15)
+    if r.status_code != 200: return 0
+    capped = 0
+    for prop in r.json():
+        sig = prop.get('signals') or {}
+        if isinstance(sig, str):
+            try: sig = json.loads(sig)
+            except: sig = {}
+        if not isinstance(sig, dict): sig = {}
+        if sig.get('_refit_override_cap'): continue  # already tagged
+        sig['_refit_override_cap'] = 'PROPS_TRAP_DIRECT'
+        sig['_refit_override_at'] = _et_today()
+        old_tier = prop.get('tier'); old_conv = prop.get('conviction')
+        print(f'  props-trap: {prop["player_name"]:22} {prop["prop_type"]:10} '
+              f'{prop["direction"]:5} {old_tier}/{old_conv} refit={prop.get("refit_conviction")}'
+              f' -> LEAN/55')
+        if dry_run: capped += 1; continue
+        patch = {'tier': 'LEAN', 'conviction': 55, 'signals': sig}
+        pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+                            headers=H_WRITE, json=patch, timeout=10)
+        if pr.status_code in (200, 204): capped += 1
+    return capped
+
+
+def _sync_props_lean_cap(game_date: str, jr_row: dict, action: str,
+                          dry_run: bool = False) -> None:
+    """Mirror the LEAN cap into mlb_pipeline_props.
+
+    2026-08-11: refit override only patched prop_jerry_reads previously.
+    Sweat card + downstream composition read tier/conviction from
+    mlb_pipeline_props though, so the cap never reached the published
+    card. Ryan Johnson outs_under stayed PRIME (conv=76) on today's
+    sweat card even after JR was capped to LEAN (conv=55).
+
+    Downgrade props row to tier=LEAN + conviction=55 with an audit tag
+    on the signals JSON. Idempotent — skips if already LEAN.
+    """
+    if dry_run: return
+    key_params = {
+        'game_date': f'eq.{game_date}',
+        'player_name': f'eq.{jr_row["player_name"]}',
+        'prop_type': f'eq.{jr_row["prop_type"]}',
+        'prop_line': f'eq.{jr_row["prop_line"]}',
+        'direction': f'eq.{jr_row["direction"]}',
+        'select': 'id,tier,conviction,signals',
+    }
+    pr = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                      headers=H_READ, params=key_params, timeout=10)
+    if pr.status_code != 200: return
+    rows = pr.json()
+    if not rows: return
+    prop = rows[0]
+    if (prop.get('tier') or '').upper() == 'LEAN' and (prop.get('conviction') or 0) <= 55:
+        return  # already capped
+    sig = prop.get('signals') or {}
+    if isinstance(sig, str):
+        try: sig = json.loads(sig)
+        except: sig = {}
+    if not isinstance(sig, dict): sig = {}
+    sig['_refit_override_cap'] = action
+    sig['_refit_override_at'] = _et_today()
+    patch = {'tier': 'LEAN', 'conviction': 55, 'signals': sig}
+    requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+                   headers=H_WRITE, json=patch, timeout=10)
+
+
 def run(game_date: str, dry_run: bool = False) -> int:
+    global _raw_zero_counter
+    _raw_zero_counter = _dd(int)  # reset per-run
     # 2026-08-11: precompute refit band health for the sample-size gate.
     # Skip on failure — decide() gracefully treats missing health as no-gate.
     try:
@@ -202,12 +309,34 @@ def run(game_date: str, dry_run: bool = False) -> int:
 
     flips = 0
     for r in reads:
-        if 'Auto-refit-override 2026-08-10' in (r.get('short_read') or ''):
-            continue  # idempotent
+        # 2026-08-11: date-scoped idempotency. Skip only if today's override
+        # already ran on this row (matches YYYY-MM-DD suffix in tag). Older-
+        # dated tags (from prior override versions) should re-process so that
+        # tightened rules (REFIT_BAND_UNPROVEN cap added 8/11) can retroactively
+        # correct rows that were force-boosted before the fix.
+        today_tag = f'Auto-refit-override {_et_today()}'
+        if today_tag in (r.get('short_read') or ''):
+            continue  # idempotent for THIS day's run
         key = (r['player_name'], r['prop_type'], r['prop_line'], r['direction'])
         prop = prop_lookup.get(key)
         if not prop: continue
-        raw = prop.get('conviction') or r.get('conviction') or 0
+        # 2026-08-11: was `prop.get('conviction') or r.get('conviction') or 0`
+        # which treated raw=0 as missing and fell through to JR's ALREADY-
+        # OVERRIDDEN conviction (typically 85 from prior BOOST). This masked
+        # extreme raw→refit deltas — e.g. all 15 pitcher ha_overs today have
+        # props.conviction=0 vs refit=100 (delta 100!) but the override read
+        # raw as 85 and computed delta 15, missing the BAND_UNPROVEN branch.
+        # Explicit None check preserves genuine raw=0 signals.
+        prop_conv = prop.get('conviction')
+        jr_conv = r.get('conviction')
+        raw = prop_conv if prop_conv is not None else (jr_conv if jr_conv is not None else 0)
+        # 2026-08-11: alarm when props.conviction=0 leaks in. Baseline scorer
+        # should never emit 0 for a prop_jerry_read row — 0 signals the raw
+        # scoring path silently dropped this prop type. Aggregate + report at
+        # end of run so we catch the upstream regression before the next
+        # nightly override attempts to boost noise.
+        if prop_conv == 0:
+            _raw_zero_counter[r.get('prop_type', '?')] += 1
         refit = prop.get('refit_conviction')
         current = (r.get('call_verdict') or '').upper()
         result = decide(raw, refit, current,
@@ -217,23 +346,38 @@ def run(game_date: str, dry_run: bool = False) -> int:
         if not result: continue
         new_verdict, action = result
 
-        # 2026-08-11: REFIT_BAND_UNHEALTHY = downgrade to LEAN cap, no
-        # verdict change. Refit band has been misfiring recently so we
-        # don't fully trust the boost signal; just cap conviction lower.
-        if action == 'REFIT_BAND_UNHEALTHY':
-            note = (f'[Auto-refit-override 2026-08-11 REFIT_BAND_UNHEALTHY: '
+        # 2026-08-11: LEAN_CAP family — downgrade to LEAN cap, no verdict change.
+        # Refit signal exists but the sample-health backing is missing or bad:
+        #   REFIT_BAND_UNHEALTHY  → 80-100 band under-performing recently
+        #   REFIT_BAND_UNPROVEN   → 80-100 band has <30 graded samples (new prop type)
+        #   REFIT_HEALTH_UNAVAILABLE → couldn't compute band health at all
+        # All three collapse to "trust conviction less" — cap at LEAN, keep verdict.
+        if action in ('REFIT_BAND_UNHEALTHY', 'REFIT_BAND_UNPROVEN',
+                       'REFIT_HEALTH_UNAVAILABLE'):
+            reason_txt = {
+                'REFIT_BAND_UNHEALTHY': 'has been unhealthy last 30d',
+                'REFIT_BAND_UNPROVEN':  'has <30 graded samples (new prop type)',
+                'REFIT_HEALTH_UNAVAILABLE': 'band-health computation unavailable',
+            }[action]
+            note = (f'[Auto-refit-override 2026-08-11 {action}: '
                     f'refit={refit} but 80-100 band for {r["prop_type"]}/'
-                    f'{r["direction"]} has been unhealthy last 30d — '
+                    f'{r["direction"]} {reason_txt} — '
                     f'holding verdict at {current}, capping conviction LEAN. '
                     f'Original take: {(r.get("short_read") or "")[:250]}]')
             payload = {'conviction': min(r.get('conviction') or 55, 55),
                        'short_read': note[:1500]}
             print(f'  {r["player_name"]:22} {r["prop_type"]:12} {r["direction"]:5} '
-                  f'raw={raw} refit={refit} · {current} conviction capped LEAN [BAND_UNHEALTHY]')
+                  f'raw={raw} refit={refit} · {current} conviction capped LEAN [{action}]')
             if dry_run: flips += 1; continue
             pr = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{r["id"]}',
                                 headers=H_WRITE, json=payload, timeout=10)
             if pr.status_code in (200, 204): flips += 1
+            # 2026-08-11: also sync the LEAN cap into mlb_pipeline_props so
+            # sweat card composition (which reads tier/conviction from props,
+            # NOT prop_jerry_reads) actually sees the downgrade. Without this
+            # the JR shows PASS/LEAN but props table still says STRONG/PRIME
+            # and the sweat card publishes the un-capped tier.
+            _sync_props_lean_cap(game_date, r, action, dry_run=dry_run)
             continue
 
         # Build the audit note
@@ -267,6 +411,31 @@ def run(game_date: str, dry_run: bool = False) -> int:
             flips += 1
         else:
             print(f'    patch failed: {pr.status_code} {pr.text[:120]}')
+
+    # 2026-08-11: props-table trap-cap pass. Downstream sweat card composition
+    # reads tier/conviction from mlb_pipeline_props (not prop_jerry_reads).
+    # Even when JR verdict is PASS/FADE, if props.tier is STRONG/PRIME with
+    # refit_conviction < 30 (refit says the pick is a TRAP), the sweat card
+    # will still pick it up. Cap those props to LEAN unconditionally so
+    # composition matches the refit signal.
+    trap_capped = _cap_props_trap_directly(game_date, dry_run=dry_run)
+    if trap_capped:
+        print(f'  props-table trap cap: {trap_capped} rows downgraded to LEAN '
+              f'(refit<30 but tier=STRONG/PRIME)')
+
+    # 2026-08-11: raw-conviction=0 alarm summary. When base scorer emits 0
+    # for prop_jerry_reads, refit boost signals are unreliable and the whole
+    # override pipeline can propagate noise. Print prominently so cron logs
+    # surface it. Consider hooking into audit table if this recurs.
+    if _raw_zero_counter:
+        total_zeros = sum(_raw_zero_counter.values())
+        print(f'\n🚨 RAW_CONVICTION=0 ALARM: {total_zeros} prop_jerry_reads had '
+              f'props.conviction=0 today (baseline scorer likely dropped these '
+              f'prop types). Breakdown:')
+        for pt, n in sorted(_raw_zero_counter.items(), key=lambda x: -x[1]):
+            print(f'   {pt}: {n}')
+        print(f'   → Fix upstream base scorer (compute_prop_conviction or similar) '
+              f'before next cron. All these props got LEAN cap defensively.')
 
     print(f'\n=== refit-verdict overrides: {flips} applied{" (dry-run)" if dry_run else ""} ===')
     return flips
