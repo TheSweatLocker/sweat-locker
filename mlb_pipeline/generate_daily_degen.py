@@ -277,6 +277,40 @@ def extract_leg_candidates(games, props):
                 prop_label = f"Under {line} ER  ·  proj {proj_er}" if proj_er is not None else f"Under {line} ER"
             else:
                 prop_label = f"{ptype} {line}"
+        # 2026-08-11: use REAL book_odds when available, fall back to -150.
+        # Also apply the same odds-range gate as sweat card ([-300, +150] per
+        # feedback_prop_jerry_odds) and refit-trap check (skip if refit<30 on
+        # high-tier props). Prevents DD from shipping legs at -400 juice or
+        # trap-zone refits that Jerry would auto-PASS.
+        direction = (p.get('direction') or '').lower()
+        real_odds = (p.get('book_over_odds') if direction == 'over'
+                     else p.get('book_under_odds') if direction == 'under'
+                     else None)
+        # Odds-range gate: skip legs priced outside [-300, +150]
+        if real_odds is not None:
+            try:
+                oi = int(real_odds)
+                if oi < -300 or oi > 150:
+                    continue  # juice too heavy / payout too thin
+            except (TypeError, ValueError):
+                real_odds = None
+        # Refit-trap check: skip if refit_conviction < 30 despite high raw
+        # (Jerry auto-PASSes these — DD shouldn't publish them either)
+        refit_c = p.get('refit_conviction')
+        if refit_c is not None and refit_c < 30 and (p.get('conviction') or 0) >= 55:
+            continue  # refit trap — skip
+        # 2026-08-11: hits_over 0.5 null-odds guard. These props are almost
+        # always priced -250 to -475 at book (batter has ~75% hit rate). If
+        # sweeper didn't PATCH real odds, DEFAULT of -150 is a LIE that
+        # over-promises payout. Skip unless real odds are populated.
+        # feedback_batter_hits_juice_trap_803 documents the trap history.
+        if p.get('prop_type') == 'hits_over' and real_odds is None:
+            try:
+                if float(p.get('prop_line') or 0) <= 0.5:
+                    continue  # skip hits O 0.5 without real odds
+            except (TypeError, ValueError): pass
+        # Odds label: use real if known, otherwise stamped placeholder
+        emit_odds = int(real_odds) if real_odds is not None else -150
         candidates.append({
             'type': 'PROP',
             'sub_type': p.get('prop_type'),
@@ -286,7 +320,8 @@ def extract_leg_candidates(games, props):
             'conviction': p.get('conviction'),
             'tier': p.get('tier'),
             'signals': list((p.get('signals') or {}).values())[:3],
-            'odds_suggestion': -150,  # typical prop range, app can overlay posted odds
+            'odds_suggestion': emit_odds,
+            '_real_odds': real_odds is not None,  # audit tag
         })
 
     # NRFI EMISSION RESHAPED 2026-06-06 after lifetime backtest

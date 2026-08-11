@@ -643,6 +643,70 @@ def score_dawg(g, diag=None, ml_map=None):
     except Exception:
         pass
 
+    # 2026-08-11: enrich signals panel with MC / refit / sharp-money data
+    # so Dawg surfaces the same modern signal stack as sweat card / prop
+    # jerry. Prior version only exposed jerry_pred + confluence + wRC — the
+    # sharp fade + MC probability signals were computed upstream but never
+    # displayed. Keeps existing conviction math intact; purely additive.
+    mc_side = g.get('mc_high_conf_side')
+    mc_pct = g.get('mc_high_conf_pct')
+    if mc_side and mc_pct is not None:
+        # Team is HOME or AWAY? Match mc_side to whether team is home/away
+        is_home = (team == g.get('home_team'))
+        mc_side_norm = 'HOME' if is_home else 'AWAY'
+        if str(mc_side).upper() == mc_side_norm:
+            signals['mc_confirms'] = (
+                f'Monte Carlo backs {team.split()[-1]} at {round(mc_pct*100)}% (high-conf)'
+            )
+        elif str(mc_side).upper() in ('HOME', 'AWAY'):
+            signals['mc_opposes'] = (
+                f'MC leans opposite side at {round(mc_pct*100)}% — signal contradicts (watchout)'
+            )
+
+    # Sharp-money alignment (oddscrowd_snapshot)
+    snap = g.get('oddscrowd_snapshot') or {}
+    if isinstance(snap, str):
+        try: snap = json.loads(snap)
+        except: snap = {}
+    if isinstance(snap, dict):
+        ml_seg = snap.get('ml', {}) or {}
+        ml_pick = (ml_seg.get('pick') or '').upper()
+        ml_money = ml_seg.get('money')
+        ml_bets = ml_seg.get('bets')
+        team_side_norm = 'HOME' if (team == g.get('home_team')) else 'AWAY'
+        if ml_pick == team_side_norm and ml_money is not None:
+            if ml_money - (ml_bets or 0) >= 15:
+                signals['sharp_money'] = (
+                    f'Whale money on {team.split()[-1]} ML: ${ml_money}% vs bets {ml_bets}% '
+                    f'(div +{ml_money-(ml_bets or 0)}) — sharp confirms'
+                )
+            elif ml_money >= 60:
+                signals['public_alignment'] = (
+                    f'Public $ leans {team.split()[-1]} ({ml_money}% $, {ml_bets}% bets) — consensus'
+                )
+
+    # Refit-tier signal — pull refit conviction from prop_jerry_reads for
+    # this game's pitcher props to indicate model-vs-market alignment.
+    # If the opposing pitcher has strong refit signals (e.g. ha_over refit>=80
+    # for opp SP), that's a dog-friendly indicator worth surfacing.
+    try:
+        game_props = requests.get(
+            f'{SUPABASE_URL}/rest/v1/mlb_pipeline_props',
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            params={'game_id': f'eq.{g.get("game_id")}',
+                    'refit_conviction': 'gte.75',
+                    'select': 'player_name,prop_type,direction,refit_conviction'},
+            timeout=8).json()
+        if isinstance(game_props, list) and game_props:
+            # Highlight the strongest refit signal in this game
+            top_refit = max(game_props, key=lambda p: p.get('refit_conviction', 0))
+            signals['refit_alignment'] = (
+                f'Refit model flags {top_refit["player_name"]} {top_refit["prop_type"]} '
+                f'{top_refit["direction"]} at {round(top_refit["refit_conviction"])}/100 conviction'
+            )
+    except Exception:
+        pass
+
     conviction = max(0, min(100, conviction))
     tier = 'PRIME' if conviction >= 80 else 'STRONG' if conviction >= 65 else 'LEAN'
 
