@@ -205,6 +205,48 @@ from collections import defaultdict as _dd
 _raw_zero_counter: dict = _dd(int)
 
 
+def _ensure_refit_populated(game_date: str) -> None:
+    """Defensive: refit_conviction on mlb_pipeline_props keeps getting wiped
+    somewhere in the pipeline (generate_props DELETE+INSERT doesn't include
+    refit column; whatever runs between apply_prop_refit and here can also
+    trigger a fresh generate_props run). Instead of chasing every possible
+    wipe path, check refit null rate on today's props and rerun apply_prop_
+    refit inline if >50% are null. Self-healing.
+    """
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+        headers=H_READ,
+        params={'game_date': f'eq.{game_date}',
+                'select': 'refit_conviction,prop_type'},
+        timeout=15).json()
+    if not isinstance(r, list) or not r:
+        return
+    # Only care about prop types covered by refit v2 (12 types)
+    refitable = {'ks_over', 'ks_under', 'bb_over', 'bb_under',
+                 'ha_over', 'ha_under', 'er_over', 'er_under',
+                 'outs_over', 'outs_under', 'hits_over', 'hits_under'}
+    covered = [x for x in r if x.get('prop_type') in refitable]
+    if not covered: return
+    nulls = sum(1 for x in covered if x.get('refit_conviction') is None)
+    null_pct = 100 * nulls / len(covered)
+    if null_pct < 50:
+        return  # healthy
+    print(f'  🔧 refit self-heal: {nulls}/{len(covered)} refit rows null '
+          f'({null_pct:.0f}%) — invoking apply_prop_refit inline')
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['python', str(Path(__file__).parent / 'apply_prop_refit.py'),
+             '--date', game_date],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            print(f'    ✅ apply_prop_refit re-ran successfully')
+        else:
+            print(f'    ⚠️  apply_prop_refit rerun failed: {result.stderr[:200]}')
+    except Exception as e:
+        print(f'    ⚠️  self-heal invocation failed: {e}')
+
+
 def _cap_props_trap_directly(game_date: str, dry_run: bool = False) -> int:
     """Direct props-table trap cap — independent of prop_jerry_reads.
 
@@ -293,6 +335,13 @@ def _sync_props_lean_cap(game_date: str, jr_row: dict, action: str,
 def run(game_date: str, dry_run: bool = False) -> int:
     global _raw_zero_counter
     _raw_zero_counter = _dd(int)  # reset per-run
+    # 2026-08-11: refit self-heal — check whether refit_conviction was wiped
+    # by a downstream generate_props rerun (happens intermittently) and re-
+    # invoke apply_prop_refit inline if too many nulls. Without this, every
+    # trap-cap check fails silently because refit is None on the props row.
+    if not dry_run:
+        _ensure_refit_populated(game_date)
+
     # 2026-08-11: precompute refit band health for the sample-size gate.
     # Skip on failure — decide() gracefully treats missing health as no-gate.
     try:
