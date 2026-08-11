@@ -396,25 +396,44 @@ def build_scenarios_ncaaf(row: dict) -> list[tuple[str, str, str, str]]:
 def build_scenarios_nhl(row: dict) -> list[tuple[str, str, str, str]]:
     """NHL scenario extractor stub (2026-08-11).
 
-    Fills in once NHL data lands (Oct 8 season). Same pattern as MLB/NCAAF:
+    ## Blocker
+
+    nhl_game_context + nhl_game_results tables do not exist yet (404
+    from PostgREST). Per `project_nhl_scope.md`: NHL FREE stack (NHL
+    API + MoneyPuck), 2026-27 season starts Oct 8. Pipeline is not
+    stood up.
+
+    Fills in once NHL tables ship. Same pattern as MLB/NCAAF:
       * Public money bands × side × ML bucket (once oddscrowd covers NHL)
       * Puck-line scenarios (spread analog)
       * Total OVER/UNDER at 5.5 / 6.0 / 6.5 buckets (hockey-specific)
       * Goalie form scenarios once nhl_goalie_stats populated
+      * B2B-team fatigue × home/away × ML bucket (hockey signature scenario)
     """
-    return []  # empty until NHL data flows
+    return []  # blocked on NHL pipeline standup
 
 
 def build_scenarios_ncaab(row: dict) -> list[tuple[str, str, str, str]]:
     """NCAAB scenario extractor stub (2026-08-11).
 
-    Fills in once NCAAB data lands (Nov 3 season). Scenarios to add:
+    ## Blocker
+
+    ncaab_game_results has 5911 rows BUT close_spread / close_total /
+    home_ml_close / home_adj_em / spread_result / total_result are all
+    NULL across the entire table. Only home_win + scores populated.
+    Cannot build actionable scenarios without odds or efficiency data.
+
+    Pre-launch backfill needed before this fires:
+      * KenPom historical (see `project_kenpom_pull_no_api_key.md`)
+      * Close spread/total from odds provider (Nov 3 season target)
+
+    Scenarios to add once data lands:
       * KenPom rank gap × side (favored by X spots historically hits Y%)
       * Public heavy on home fav × conf/nonconf
       * Total scenarios at basketball line ranges (135 / 145 / 155)
       * Q4 comeback / late-game scenarios (basketball-specific)
     """
-    return []  # empty until NCAAB data flows
+    return []  # blocked on data backfill
 
 
 def american_to_decimal(o) -> float | None:
@@ -444,6 +463,7 @@ def _run_results_primary(sport: str, res_table: str, window: str,
     """
     today = (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
     all_res_rows = []; offset = 0
+    first_status = None
     while True:
         params = {'select': '*', 'order': 'game_date.desc',
                   'game_date': f'lt.{today}'}
@@ -453,13 +473,17 @@ def _run_results_primary(sport: str, res_table: str, window: str,
             headers={**H_READ, 'Range': f'{offset}-{offset+999}',
                      'Range-Unit': 'items'},
             params=params, timeout=30)
-        if r.status_code != 200: break
+        if first_status is None: first_status = r.status_code
+        if r.status_code not in (200, 206): break
         rows = r.json()
         if not isinstance(rows, list) or not rows: break
         all_res_rows += rows
         if len(rows) < 1000: break
         offset += 1000
         if offset > 20000: break
+    # 2026-08-11: 404 = table doesn't exist yet (NHL pre-Oct). Skip cleanly.
+    if first_status == 404:
+        print(f'  {res_table} 404 — table not stood up yet, skip'); return 0
     print(f'  {len(all_res_rows)} result rows (results-primary path)')
 
     accum = defaultdict(list)
