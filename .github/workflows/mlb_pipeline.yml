@@ -1067,6 +1067,22 @@ jobs:
       # flags). Exits 1 on critical findings — GHA step fails, we get notified,
       # sweat card build gets skipped so bad reads don't ship to users.
       # Use --warn-only for a soft version during initial rollout window.
+      # 2026-08-11: post-conviction calibration pass. Runs AFTER refit
+      # override + collapse scripts, BEFORE the pre-publish audit. Applies:
+      #   * 60-64 UNDER hole correction (30d data: 36.4% hit rate)
+      #   * Multi-signal promotion rule (confluence+MC+refit → conv >= 78)
+      #   * Sub-component scoring (_cc_model_agreement / market_edge / etc)
+      #   * Live calibration feedback (recomputes hole detection nightly)
+      # Continue-on-error: calibration failure never blocks the audit.
+      - name: Conviction calibration pass
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python conviction_calibration_pass.py --sport MLB || echo "calibration pass failed (non-fatal)"
+
       - name: Jerry pre-publish sanity audit
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
