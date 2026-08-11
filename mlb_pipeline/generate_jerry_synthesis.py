@@ -816,6 +816,51 @@ def run(force: bool = False, game_date: str | None = None,
                 if before != after:
                     parsed[key] = after
                     print(f"  🔧 Layer D scrubbed generic pitcher refs in {key}")
+
+            # LAYER E (2026-08-10): stat-hallucination cross-check against MLB
+            # Stats API. Catches numeric drift like "2.0 IP as opener" when
+            # actual last outing was 6.0 IP, or "8.83 ERA L3" when real is
+            # 4.02. Runs on BOTH pitchers per game.
+            #
+            # On critical hit → mechanically strip the offending sentence
+            # (auto-repair path). Also cap conviction at LEAN if any critical
+            # hallucinations survived stripping. No retry loop here — the
+            # per-sentence strip is enough; a retry adds latency + cost with
+            # marginal quality lift. If stripping fails, LAYER E logs the
+            # violation and the pre-publish audit gate #10 will block on it.
+            try:
+                from jerry_stat_verifier import verify as _sv, strip_hallucinated_sentences
+                pitchers_to_check = []
+                for pkey in ('home_pitcher', 'away_pitcher'):
+                    pname = sub_struct.get(pkey)
+                    if pname and pname != '(TBD)':
+                        pitchers_to_check.append(pname)
+                halluc_count = 0
+                for pname in pitchers_to_check:
+                    for key in ('short_read', 'long_read'):
+                        prose = parsed.get(key) or ''
+                        if not prose: continue
+                        sv = _sv(prose, pname)
+                        crit = [v for v in sv['violations']
+                                if v.get('severity') == 'critical']
+                        if crit:
+                            halluc_count += len(crit)
+                            new_prose = strip_hallucinated_sentences(prose, crit)
+                            if new_prose != prose:
+                                parsed[key] = new_prose
+                                print(f"  🚨 Layer E stripped {len(crit)} hallucinated "
+                                      f"claim(s) about {pname} from {key}")
+                            else:
+                                print(f"  🚨 Layer E flagged {len(crit)} hallucination(s) "
+                                      f"about {pname} in {key} but strip failed — audit will block")
+                if halluc_count > 0:
+                    orig_conv = parsed.get('conviction') or 0
+                    if orig_conv > 55:
+                        parsed['conviction'] = 55
+                        print(f"  🔒 conviction capped {orig_conv}→55 (LEAN) after "
+                              f"{halluc_count} stat hallucination(s)")
+            except ImportError:
+                pass
         except ImportError:
             pass
 

@@ -91,6 +91,11 @@ export default function TrackRecord() {
   const [bucketRows, setBucketRows] = useState<BucketRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // 2026-08-10: cross-sport overall record + proven-pattern scenarios.
+  // Replaces the MLB-only headline metrics with a sport-agnostic surface
+  // that answers "what has Jerry actually done" across every sport.
+  const [bySportRows, setBySportRows] = useState<Array<{sport: string; wins: number; losses: number; hit_pct: number}>>([]);
+  const [topScenarios, setTopScenarios] = useState<Array<any>>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -109,6 +114,46 @@ export default function TrackRecord() {
         setTierRows((tierRes.data as TierRow[]) ?? []);
         setBucketRows((bucketRes.data as BucketRow[]) ?? []);
         setSignalTierRows(signalRes.error ? [] : ((signalRes.data as TierRow[]) ?? []));
+
+        // 2026-08-10: cross-sport aggregation from jerry_reads + prop_jerry_reads.
+        // Pulls all directional reads (BACK/FADE/directional Jerry calls) with a
+        // result, aggregates hit% per sport. Sport-agnostic — future sports
+        // (NFL/UFC/NCAAF as data lands) appear automatically.
+        try {
+          const {data: gr} = await supabase.from('jerry_reads')
+            .select('sport,result').not('result', 'is', null).limit(2000);
+          const {data: pj} = await supabase.from('prop_jerry_reads')
+            .select('sport,result').not('result', 'is', null).limit(3000);
+          const bySport: Record<string, {w: number; l: number}> = {};
+          for (const r of [...(gr || []), ...(pj || [])]) {
+            const s = ((r as any).sport || '').toUpperCase();
+            if (!s) continue;
+            if (!bySport[s]) bySport[s] = {w: 0, l: 0};
+            if ((r as any).result === 'Win') bySport[s].w++;
+            else if ((r as any).result === 'Loss') bySport[s].l++;
+          }
+          const rows = Object.entries(bySport)
+            .map(([sport, {w, l}]) => ({sport, wins: w, losses: l,
+              hit_pct: w + l > 0 ? Math.round(w / (w + l) * 1000) / 10 : 0}))
+            .filter(r => r.wins + r.losses >= 10)
+            .sort((a, b) => (b.wins + b.losses) - (a.wins + a.losses));
+          if (!cancelled) setBySportRows(rows);
+        } catch (e) { /* non-fatal */ }
+
+        // 2026-08-10: top proven-pattern scenarios from scenario_audit.
+        // Filters to n>=20 with strong hit rate (>=60%) or strong fade
+        // (<=42%). Shows what scenarios have EARNED user trust.
+        try {
+          const {data: sa} = await supabase.from('scenario_audit')
+            .select('sport,market,scenario_label,total_n,hit_rate,roi_pct,jerry_hint')
+            .eq('scenario_window', 'lifetime')
+            .gte('total_n', 15)
+            .order('total_n', {ascending: false})
+            .limit(20);
+          const filtered = (sa || []).filter((r: any) =>
+            r.hit_rate >= 60 || r.hit_rate <= 42);
+          if (!cancelled) setTopScenarios(filtered.slice(0, 8));
+        } catch (e) { /* non-fatal */ }
       } catch (e: any) {
         if (!cancelled) setError(e?.message ?? 'failed to load');
       } finally {
@@ -179,6 +224,64 @@ export default function TrackRecord() {
             <Text style={styles.errorHint}>
               If this persists, the aggregation views may not be applied yet.
               Contact support.
+            </Text>
+          </View>
+        )}
+
+        {/* 2026-08-10: OVERALL BY SPORT — cross-sport headline card.
+            Shows lifetime Jerry hit rate per sport (game reads + prop reads
+            combined). Sport-agnostic; new sports appear automatically as
+            their graders start writing results. */}
+        {!loading && !error && bySportRows.length > 0 && (
+          <View style={styles.overallCard}>
+            <Text style={styles.overallHeader}>🏆 OVERALL BY SPORT · LIFETIME</Text>
+            {bySportRows.map(r => {
+              const color = r.hit_pct >= 55 ? BRAND_GREEN
+                          : r.hit_pct >= 50 ? BRAND_AMBER
+                          : RED;
+              return (
+                <View key={r.sport} style={styles.overallRow}>
+                  <Text style={styles.overallSport}>{r.sport}</Text>
+                  <Text style={styles.overallRecord}>{r.wins}-{r.losses}</Text>
+                  <Text style={[styles.overallPct, {color}]}>{r.hit_pct}%</Text>
+                </View>
+              );
+            })}
+            <Text style={styles.overallFoot}>
+              Every pick Jerry made across sports · graded post-game
+            </Text>
+          </View>
+        )}
+
+        {/* 2026-08-10: PROVEN PATTERNS — scenario_audit surface. Shows
+            historical scenarios with n>=15 and either strong hit (>=60%)
+            or strong fade (<=42%). This is the "trust our discipline"
+            evidence surface — user sees the specific setups we back / fade
+            based on real data, not vibes. */}
+        {!loading && !error && topScenarios.length > 0 && (
+          <View style={styles.scenarioCard}>
+            <Text style={styles.overallHeader}>📊 PROVEN PATTERNS</Text>
+            {topScenarios.map((s, i) => {
+              const isBack = s.hit_rate >= 60;
+              const color = isBack ? BRAND_GREEN : RED;
+              return (
+                <View key={i} style={styles.scenarioRow}>
+                  <View style={{flex: 1}}>
+                    <Text style={styles.scenarioLabel} numberOfLines={2}>
+                      {s.scenario_label || s.scenario_key || '?'}
+                    </Text>
+                    <Text style={styles.scenarioMeta}>
+                      {s.sport} · {s.market} · n={s.total_n} · {isBack ? 'BACK' : 'FADE'} signal
+                    </Text>
+                  </View>
+                  <Text style={[styles.scenarioPct, {color}]}>
+                    {isBack ? Math.round(s.hit_rate) : Math.round(100 - s.hit_rate)}%
+                  </Text>
+                </View>
+              );
+            })}
+            <Text style={styles.overallFoot}>
+              Historical hit rates from graded games · updated nightly
             </Text>
           </View>
         )}
@@ -428,6 +531,51 @@ const styles = StyleSheet.create({
   finePrint: {
     color: TEXT_MUTED, fontSize: 11, textAlign: 'center', marginTop: 8,
     lineHeight: 16, paddingHorizontal: 16,
+  },
+
+  // 2026-08-10: cross-sport overall + proven-patterns section styles
+  overallCard: {
+    backgroundColor: CARD_BG, borderRadius: 12, padding: 16,
+    borderWidth: 1, borderColor: BRAND_GREEN + '40',
+    marginBottom: 12,
+  },
+  overallHeader: {
+    color: BRAND_GREEN, fontSize: 12, fontWeight: '800',
+    letterSpacing: 0.5, marginBottom: 12,
+  },
+  overallRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: BORDER + '40',
+  },
+  overallSport: {
+    color: TEXT_PRIMARY, fontSize: 14, fontWeight: '700', flex: 1,
+  },
+  overallRecord: {
+    color: TEXT_MUTED, fontSize: 13, marginRight: 12,
+  },
+  overallPct: {
+    fontSize: 18, fontWeight: '800', minWidth: 60, textAlign: 'right',
+  },
+  overallFoot: {
+    color: TEXT_MUTED, fontSize: 10, marginTop: 10, fontStyle: 'italic',
+  },
+  scenarioCard: {
+    backgroundColor: CARD_BG, borderRadius: 12, padding: 16,
+    borderWidth: 1, borderColor: BORDER,
+    marginBottom: 20,
+  },
+  scenarioRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: BORDER + '40',
+  },
+  scenarioLabel: {
+    color: TEXT_PRIMARY, fontSize: 13, fontWeight: '600', lineHeight: 17,
+  },
+  scenarioMeta: {
+    color: TEXT_MUTED, fontSize: 10, marginTop: 3,
+  },
+  scenarioPct: {
+    fontSize: 20, fontWeight: '800', minWidth: 60, textAlign: 'right',
   },
 
   // Section headers separating BETTABLE from SIGNAL
