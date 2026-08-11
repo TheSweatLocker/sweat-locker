@@ -302,9 +302,15 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_scenario_audit.py --sport MLB --window lifetime || echo "scenario audit lifetime failed"
-          python compute_scenario_audit.py --sport MLB --window 90d || echo "scenario audit 90d failed"
-          python compute_scenario_audit.py --sport MLB --window 30d || echo "scenario audit 30d failed"
+          python compute_scenario_audit.py --sport MLB --window lifetime || echo "scenario audit MLB lifetime failed"
+          python compute_scenario_audit.py --sport MLB --window 90d || echo "scenario audit MLB 90d failed"
+          python compute_scenario_audit.py --sport MLB --window 30d || echo "scenario audit MLB 30d failed"
+          # 2026-08-11: NCAAF results-primary path (15k+ games via CFBD).
+          # NCAAF ctx is thin — builder pulls scenarios directly from results.
+          # Also touches NHL/NCAAB (no-op until their results tables ship).
+          python compute_scenario_audit.py --sport NCAAF --window lifetime || echo "scenario audit NCAAF lifetime failed"
+          python compute_scenario_audit.py --sport NHL --window lifetime || echo "scenario audit NHL lifetime failed"
+          python compute_scenario_audit.py --sport NCAAB --window lifetime || echo "scenario audit NCAAB lifetime failed"
 
       - name: Apply prop refit conviction
         continue-on-error: true

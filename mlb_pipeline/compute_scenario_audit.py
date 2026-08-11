@@ -64,8 +64,16 @@ RESULTS_TABLE = {
     'MLB':   ('mlb_game_context', 'mlb_game_results'),
     'NFL':   ('nfl_game_context', 'nfl_game_results'),
     'NCAAF': ('ncaaf_game_context', 'ncaaf_game_results'),
-    # NBA/NCAAB/UFC add when Jerry synth ships for each
+    'NHL':   ('nhl_game_context', 'nhl_game_results'),
+    'NCAAB': ('ncaab_game_context', 'ncaab_game_results'),
+    # NBA/UFC add when Jerry synth ships for each
 }
+
+# 2026-08-11: Sports whose RESULTS table is the primary source. Iterate results
+# directly (skip ctx-fetch entirely). Needed for sports with sparse or empty
+# ctx tables but rich historical results — NCAAF has 15k+ games in results
+# but ctx is only populated on gameday going forward. Same eventually for NHL.
+RESULTS_PRIMARY = {'NCAAF', 'NHL', 'NCAAB'}
 
 
 def _parse_snap(s):
@@ -254,7 +262,34 @@ def build_scenarios_mlb(row: dict) -> list[tuple[str, str, str, str]]:
 
 def grade_scenario(sport: str, market: str, scenario_side: str,
                    game_row: dict, results_row: dict) -> str | None:
-    """Return 'win' / 'loss' / 'push' for scenario_side given actual outcome."""
+    """Return 'win' / 'loss' / 'push' for scenario_side given actual outcome.
+
+    Prefer pre-computed grade columns when available on the results row
+    (NCAAF: spread_result / total_result / home_win). Falls back to
+    score-based grading (MLB).
+    """
+    # --- Pre-computed grade path (NCAAF/NHL/NCAAB) ---
+    # NCAAF convention: spread_result = 'home_covered'|'away_covered'|'push'
+    # (lowercase). total_result = 'over'|'under'|'push'. home_win = bool.
+    if market == 'spread' and results_row.get('spread_result') is not None:
+        r = str(results_row['spread_result']).lower()
+        if r == 'push': return 'push'
+        if r in ('home_covered', 'home'):
+            return 'win' if scenario_side == 'HOME' else 'loss'
+        if r in ('away_covered', 'away'):
+            return 'win' if scenario_side == 'AWAY' else 'loss'
+    if market == 'total' and results_row.get('total_result') is not None:
+        r = str(results_row['total_result']).lower()
+        if r == 'push': return 'push'
+        if r == 'over':
+            return 'win' if scenario_side == 'OVER' else 'loss'
+        if r == 'under':
+            return 'win' if scenario_side == 'UNDER' else 'loss'
+    if market == 'ml' and results_row.get('home_win') is not None:
+        winner = 'HOME' if results_row['home_win'] else 'AWAY'
+        return 'win' if winner == scenario_side else 'loss'
+
+    # --- Score-based path (MLB fallback) ---
     hs = results_row.get('home_score')
     as_ = results_row.get('away_score')
     if hs is None or as_ is None: return None
@@ -273,6 +308,115 @@ def grade_scenario(sport: str, market: str, scenario_side: str,
     return None
 
 
+def build_scenarios_ncaaf(row: dict) -> list[tuple[str, str, str, str]]:
+    """NCAAF scenario extraction (2026-08-11).
+
+    NCAAF results table carries close_spread / close_total / close_X_ml
+    directly (rich historical dataset, 15k+ games). Sharp/public data
+    (oddscrowd) not yet integrated for CFB — sharp scenarios will
+    populate once NCAAF oddscrowd puller ships.
+
+    Initial scenarios (from results only):
+      * Home dog ATS by spread bucket
+      * Road favorite ML by juice band
+      * Total OVER/UNDER by line bucket
+      * Conference game × home_ml_bucket
+      * Public-money scenarios — added once oddscrowd_snapshot is populated
+    """
+    scenarios = []
+    close_spread = row.get('close_spread')
+    close_total = row.get('close_total')
+    home_ml = row.get('close_home_ml')
+    away_ml = row.get('close_away_ml')
+    conf_game = row.get('conference_game')
+
+    # --- Home dog ATS scenarios ---
+    if close_spread is not None:
+        try:
+            spr = float(close_spread)
+            # NCAAF convention: positive close_spread = HOME is underdog
+            if spr > 0:
+                if spr >= 14: dog_bucket = 'heavy_dog_14+'
+                elif spr >= 7: dog_bucket = 'mid_dog_7-13'
+                else: dog_bucket = 'small_dog<7'
+                key = f'home_dog_ats&spread={dog_bucket}'
+                label = f'Home dog ATS ({dog_bucket})'
+                scenarios.append(('spread', key, label, 'HOME'))
+            elif spr < 0:
+                if spr <= -14: fav_bucket = 'heavy_fav_-14+'
+                elif spr <= -7: fav_bucket = 'mid_fav_-7to-13'
+                else: fav_bucket = 'small_fav>-7'
+                key = f'home_fav_ats&spread={fav_bucket}'
+                label = f'Home favorite ATS ({fav_bucket})'
+                scenarios.append(('spread', key, label, 'HOME'))
+        except (TypeError, ValueError): pass
+
+    # --- Road favorite ML by juice ---
+    if away_ml is not None and home_ml is not None:
+        try:
+            aml = int(away_ml); hml = int(home_ml)
+            if aml < 0 and aml < hml:
+                juice = ('thin' if aml >= -150 else 'mid' if aml >= -250 else 'heavy')
+                key = f'road_fav_ml&juice={juice}'
+                label = f'CFB road favorite (juice {juice})'
+                scenarios.append(('ml', key, label, 'AWAY'))
+        except (TypeError, ValueError): pass
+
+    # --- Total bucket ---
+    if close_total is not None:
+        try:
+            tot = float(close_total)
+            if tot < 45: line_bucket = 'low<45'
+            elif tot < 55: line_bucket = 'mid_45-54'
+            elif tot < 65: line_bucket = 'high_55-64'
+            else: line_bucket = 'shootout_65+'
+            # We don't know which side to bet without sharp data — track BOTH sides
+            # as historical hit rates for informational purposes
+            for side in ('OVER', 'UNDER'):
+                key = f'total_line_bucket_{side.lower()}&line={line_bucket}'
+                label = f'Total {side} · line {line_bucket}'
+                scenarios.append(('total', key, label, side))
+        except (TypeError, ValueError): pass
+
+    # --- Conference vs non-conf ---
+    if conf_game is not None:
+        conf_str = 'conf' if conf_game else 'nonconf'
+        if home_ml is not None and away_ml is not None:
+            try:
+                hml_i = int(home_ml)
+                if hml_i < 0:  # home favored
+                    key = f'{conf_str}_game_home_fav'
+                    label = f'{conf_str.upper()} game · home favorite ML'
+                    scenarios.append(('ml', key, label, 'HOME'))
+            except (TypeError, ValueError): pass
+
+    return scenarios
+
+
+def build_scenarios_nhl(row: dict) -> list[tuple[str, str, str, str]]:
+    """NHL scenario extractor stub (2026-08-11).
+
+    Fills in once NHL data lands (Oct 8 season). Same pattern as MLB/NCAAF:
+      * Public money bands × side × ML bucket (once oddscrowd covers NHL)
+      * Puck-line scenarios (spread analog)
+      * Total OVER/UNDER at 5.5 / 6.0 / 6.5 buckets (hockey-specific)
+      * Goalie form scenarios once nhl_goalie_stats populated
+    """
+    return []  # empty until NHL data flows
+
+
+def build_scenarios_ncaab(row: dict) -> list[tuple[str, str, str, str]]:
+    """NCAAB scenario extractor stub (2026-08-11).
+
+    Fills in once NCAAB data lands (Nov 3 season). Scenarios to add:
+      * KenPom rank gap × side (favored by X spots historically hits Y%)
+      * Public heavy on home fav × conf/nonconf
+      * Total scenarios at basketball line ranges (135 / 145 / 155)
+      * Q4 comeback / late-game scenarios (basketball-specific)
+    """
+    return []  # empty until NCAAB data flows
+
+
 def american_to_decimal(o) -> float | None:
     if o is None: return None
     try: o = int(o)
@@ -289,6 +433,56 @@ def compute_jerry_hint(hit_rate: float, roi: float | None, n: int) -> tuple[str,
     return ('PASS', 40)
 
 
+def _run_results_primary(sport: str, res_table: str, window: str,
+                          date_filter: str | None) -> int:
+    """Results-primary variant of run() for sports whose ctx is thin/empty
+    but whose results table carries close_spread/total/ml + graded outcomes.
+
+    Iterates results directly. Passes the result row into build_scenarios_X
+    as both `ctx` (for scenario extraction) and `res` (for grading).
+    Historical scenarios only — no sharp/public/whale bands (those need ctx).
+    """
+    today = (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
+    all_res_rows = []; offset = 0
+    while True:
+        params = {'select': '*', 'order': 'game_date.desc',
+                  'game_date': f'lt.{today}'}
+        if date_filter:
+            params['and'] = f'(game_date.gte.{date_filter},game_date.lt.{today})'
+        r = requests.get(f'{SB}/rest/v1/{res_table}',
+            headers={**H_READ, 'Range': f'{offset}-{offset+999}',
+                     'Range-Unit': 'items'},
+            params=params, timeout=30)
+        if r.status_code != 200: break
+        rows = r.json()
+        if not isinstance(rows, list) or not rows: break
+        all_res_rows += rows
+        if len(rows) < 1000: break
+        offset += 1000
+        if offset > 20000: break
+    print(f'  {len(all_res_rows)} result rows (results-primary path)')
+
+    accum = defaultdict(list)
+    scenario_labels = {}
+    dispatch = {'NCAAF': build_scenarios_ncaaf, 'NHL': build_scenarios_nhl,
+                'NCAAB': build_scenarios_ncaab}
+    builder = dispatch.get(sport)
+    if not builder:
+        print(f'  no builder for {sport}'); return 0
+
+    for res in all_res_rows:
+        scenarios = builder(res)
+        for market, key, label, side in scenarios:
+            outcome = grade_scenario(sport, market, side, res, res)
+            if outcome:
+                accum[(market, key)].append((outcome,
+                    res.get('close_home_ml'), res.get('close_away_ml'),
+                    res.get('close_total'), side))
+                scenario_labels[(market, key)] = label
+
+    return _finalize_and_upsert(sport, window, accum, scenario_labels)
+
+
 def run(sport: str, window: str = 'lifetime') -> int:
     ctx_table, res_table = RESULTS_TABLE.get(sport, (None, None))
     if not ctx_table:
@@ -298,6 +492,11 @@ def run(sport: str, window: str = 'lifetime') -> int:
     date_filter = None
     if window == '90d': date_filter = (datetime.now(timezone.utc) - timedelta(days=90)).date().isoformat()
     elif window == '30d': date_filter = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+
+    # 2026-08-11: results-primary path for sports whose ctx table is empty/thin
+    # but whose results table carries the rich betting-line data directly.
+    if sport in RESULTS_PRIMARY:
+        return _run_results_primary(sport, res_table, window, date_filter)
 
     # Paginate ctx via Range headers — Supabase default row limit is 1000
     # but `limit` param isn't enough here (jsonb hydration may cap response
@@ -349,7 +548,24 @@ def run(sport: str, window: str = 'lifetime') -> int:
     for ctx in all_ctx:
         res = all_res.get(ctx.get('game_id'))
         if not res or res.get('home_score') is None: continue
-        scenarios = build_scenarios_mlb(ctx) if sport == 'MLB' else []
+        # 2026-08-11: sport-dispatch scenarios. For sports where the rich
+        # betting-line data lives on RESULTS (NCAAF has close_spread/total/
+        # ml on results, ctx is thin), merge res into ctx before dispatch.
+        merged = dict(ctx)
+        for k in ('close_spread', 'close_total', 'close_home_ml', 'close_away_ml',
+                  'conference_game', 'spread_result', 'total_result'):
+            if k in res and merged.get(k) is None:
+                merged[k] = res[k]
+        if sport == 'MLB':
+            scenarios = build_scenarios_mlb(merged)
+        elif sport == 'NCAAF':
+            scenarios = build_scenarios_ncaaf(merged)
+        elif sport == 'NHL':
+            scenarios = build_scenarios_nhl(merged)
+        elif sport == 'NCAAB':
+            scenarios = build_scenarios_ncaab(merged)
+        else:
+            scenarios = []
         for market, key, label, side in scenarios:
             outcome = grade_scenario(sport, market, side, ctx, res)
             if outcome:
@@ -358,7 +574,15 @@ def run(sport: str, window: str = 'lifetime') -> int:
                                               ctx.get('close_total'), side))
                 scenario_labels[(market, key)] = label
 
-    # Aggregate + upsert
+    return _finalize_and_upsert(sport, window, accum, scenario_labels)
+
+
+def _finalize_and_upsert(sport: str, window: str, accum: dict,
+                          scenario_labels: dict) -> int:
+    """Aggregate accumulated (market, key) → outcomes, compute hit/ROI,
+    and upsert into scenario_audit. Extracted 2026-08-11 so both the
+    ctx-primary run() and the results-primary _run_results_primary()
+    paths share this write logic verbatim."""
     written = 0
     print(f'\n{"market":<8} {"scenario":<50} {"n":>4} {"hit%":>6} {"ROI%":>7} hint')
     for (market, key), rows in sorted(accum.items(), key=lambda x: -len(x[1])):
@@ -370,7 +594,6 @@ def run(sport: str, window: str = 'lifetime') -> int:
         graded = wins + losses
         if graded == 0: continue
         hit = round(100 * wins / graded, 2)
-        # ROI estimation — use -110 baseline for totals, actual for ML
         avg_dec = None
         if market == 'ml':
             odds_list = []
@@ -380,7 +603,7 @@ def run(sport: str, window: str = 'lifetime') -> int:
                 if d: odds_list.append(d)
             if odds_list: avg_dec = round(sum(odds_list)/len(odds_list), 3)
         else:
-            avg_dec = 1.91  # -110 assumption for totals
+            avg_dec = 1.91  # -110 assumption for totals/spreads
         roi = None
         if avg_dec:
             p_win = wins / graded
@@ -411,7 +634,7 @@ def run(sport: str, window: str = 'lifetime') -> int:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sport', default='ALL',
-                    help='MLB / NFL / NCAAF / ALL')
+                    help='MLB / NFL / NCAAF / NHL / NCAAB / ALL')
     ap.add_argument('--window', default='lifetime',
                     choices=['lifetime', '90d', '30d'])
     args = ap.parse_args()
