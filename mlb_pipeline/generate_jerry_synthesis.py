@@ -775,13 +775,17 @@ def run(force: bool = False, game_date: str | None = None,
                         if 'Numeric integrity flag' not in cur_short:
                             parsed['short_read'] = f"{cur_short}\n\n{hallucinated_note}"[:2000]
                     elif orig_conv > 55:
-                        # LIGHT hallucination — LEAN cap + footer note
+                        # LIGHT hallucination — LEAN cap ONLY (no footer).
+                        # 2026-08-12: hide footer for 1-2 flags. These are
+                        # usually derived stats (L5 averages, K/BB ratios)
+                        # that aren't literally in the source struct but
+                        # arithmetically correct. LEAN cap keeps the safety
+                        # net; hiding the footer reduces user-facing noise
+                        # on legitimate derivations. Only 3+ flags (HEAVY
+                        # branch above) still surface the footer to users.
                         parsed['conviction'] = 55
                         print(f"  🔒 conviction capped {orig_conv}→55 (LEAN) — "
-                              f"unverified: {hallus[:3]}")
-                        cur_short = parsed.get('short_read') or ''
-                        if 'Numeric integrity flag' not in cur_short:
-                            parsed['short_read'] = f"{cur_short}\n\n{hallucinated_note}"[:2000]
+                              f"unverified: {hallus[:3]} (footer hidden for LIGHT)")
 
                 # STYLE HARD-CAP (2026-08-08): sim-vs-market gap + hitter-AB
                 # fabrication + generic pitcher refs after retry all destroy
