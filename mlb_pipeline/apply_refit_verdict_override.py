@@ -387,6 +387,27 @@ def run(game_date: str, dry_run: bool = False) -> int:
             continue  # idempotent for THIS day's run
         key = (r['player_name'], r['prop_type'], r['prop_line'], r['direction'])
         prop = prop_lookup.get(key)
+        # 2026-08-12: line-drift fallback. Book sometimes moves the line
+        # between JR generation and props table refresh (e.g. JR wrote
+        # Foster Griffin ha_under 5.5, later scrape shows ha_under 6.5).
+        # Exact-key match fails → override skips → refit trap bypasses →
+        # BACK-on-refit=0 slips past to audit and blocks the pipeline.
+        # Fallback: match on (player, prop_type, direction) with tolerance.
+        if not prop:
+            candidates = [p for p in prop_ids
+                          if p.get('player_name') == r['player_name']
+                          and p.get('prop_type') == r['prop_type']
+                          and p.get('direction') == r['direction']]
+            if candidates:
+                # Prefer nearest line to JR's line if a numeric line exists
+                try:
+                    jr_line = float(r['prop_line']) if r.get('prop_line') is not None else None
+                    if jr_line is not None:
+                        candidates.sort(key=lambda p:
+                            abs(float(p['prop_line']) - jr_line) if p.get('prop_line') is not None else 999)
+                except (TypeError, ValueError):
+                    pass
+                prop = candidates[0]
         if not prop: continue
         # 2026-08-11: was `prop.get('conviction') or r.get('conviction') or 0`
         # which treated raw=0 as missing and fell through to JR's ALREADY-

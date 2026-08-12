@@ -483,6 +483,87 @@ def auto_repair(sport: str, game_date: str) -> dict:
                     if pr.status_code in (200, 204):
                         repairs['B_trend_forced_pass'] += 1
 
+    # --- C + D. Refit-drift correction using PROPS-TABLE refit (source of truth) ---
+    # 2026-08-12 (v2): prop_jerry_reads.refit_conviction is stamped once at
+    # synthesis time and never re-refit — it goes stale within the same day
+    # if apply_prop_refit is re-run. Props table is the source of truth. My
+    # earlier v1 read refit from JR and made wrong decisions (converted a
+    # legitimate BACK to FADE because JR had stale refit=0 while props had
+    # refit=100). Now we cross-join to props table.
+    #
+    # Two classes handled together (single props fetch):
+    #   C. BACK verdict + props.refit <= 30 → force FADE (trap zone)
+    #   D. FADE verdict + props.refit >= 80 → force BACK LEAN cap (Jerry misfire)
+    if sport == 'MLB':
+        repairs['C_trap_forced_fade'] = 0
+        repairs['D_flip_fade_to_back'] = 0
+        # All BACK or FADE JR rows for the day
+        pj_all = requests.get(f'{SB}/rest/v1/prop_jerry_reads',
+            headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'call_verdict': 'in.(BACK,FADE)',
+                    'select': 'id,player_name,prop_type,prop_line,direction,'
+                              'call_verdict,conviction,short_read'},
+            timeout=15).json()
+        # All refit-populated props for the day
+        props_all = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+            headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'refit_conviction': 'not.is.null',
+                    'select': 'player_name,prop_type,prop_line,direction,refit_conviction'},
+            timeout=15).json()
+        # Build lookup with (player, prop_type, prop_line, direction) key
+        prop_lookup = {(p['player_name'], p['prop_type'], p['prop_line'], p['direction']): p
+                       for p in (props_all if isinstance(props_all, list) else [])}
+
+        def _find_fresh_refit(pj):
+            """Exact key match, fall back to nearest-line on (player, prop_type, direction)."""
+            key = (pj['player_name'], pj['prop_type'], pj['prop_line'], pj['direction'])
+            p = prop_lookup.get(key)
+            if p: return p.get('refit_conviction')
+            # Fallback: nearest line on same (player, prop_type, direction)
+            candidates = [pp for pp in (props_all if isinstance(props_all, list) else [])
+                          if pp.get('player_name') == pj['player_name']
+                          and pp.get('prop_type') == pj['prop_type']
+                          and pp.get('direction') == pj['direction']]
+            if not candidates: return None
+            try:
+                jr_line = float(pj['prop_line']) if pj.get('prop_line') is not None else None
+                if jr_line is not None:
+                    candidates.sort(key=lambda p:
+                        abs(float(p['prop_line']) - jr_line) if p.get('prop_line') is not None else 999)
+            except (TypeError, ValueError): pass
+            return candidates[0].get('refit_conviction')
+
+        for pj in (pj_all if isinstance(pj_all, list) else []):
+            verdict = (pj.get('call_verdict') or '').upper()
+            fresh_refit = _find_fresh_refit(pj)
+            if fresh_refit is None: continue
+            # Class C: BACK on trap zone (refit <= 30) → FADE
+            if verdict == 'BACK' and fresh_refit <= 30:
+                note = (f'[Auto-trap-repair 2026-08-12 REFIT_TRAP_FORCE_FADE: '
+                        f'fresh_refit={fresh_refit} in trap zone (<= 30) '
+                        f'but BACK verdict slipped past override. Forcing '
+                        f'FADE. Original take: {(pj.get("short_read") or "")[:200]}]')
+                payload = {'call_verdict': 'FADE', 'conviction': 55,
+                           'short_read': note[:1500]}
+                pr = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{pj["id"]}',
+                                    headers=H_WRITE, json=payload, timeout=10)
+                if pr.status_code in (200, 204):
+                    repairs['C_trap_forced_fade'] += 1
+            # Class D: FADE on strong refit (>= 80) → BACK LEAN cap
+            elif verdict == 'FADE' and fresh_refit >= 80:
+                note = (f'[Auto-flip-repair 2026-08-12 REFIT_FLIP_TO_BACK: '
+                        f'fresh_refit={fresh_refit} says LOAD but Jerry FADEd '
+                        f'— override missed. Flipping FADE→BACK at LEAN cap. '
+                        f'Original take: {(pj.get("short_read") or "")[:200]}]')
+                payload = {'call_verdict': 'BACK', 'conviction': 55,
+                           'short_read': note[:1500]}
+                pr = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{pj["id"]}',
+                                    headers=H_WRITE, json=payload, timeout=10)
+                if pr.status_code in (200, 204):
+                    repairs['D_flip_fade_to_back'] += 1
+
     repairs['total_repairs'] = sum(v for k, v in repairs.items() if k != 'total_repairs')
     return repairs
 
