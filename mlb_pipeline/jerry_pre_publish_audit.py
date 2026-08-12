@@ -564,6 +564,100 @@ def auto_repair(sport: str, game_date: str) -> dict:
                 if pr.status_code in (200, 204):
                     repairs['D_flip_fade_to_back'] += 1
 
+    # --- E. Fabricated-stat scrub (2026-08-12) ---
+    # Jerry occasionally invents historical percentages ("62% in similar
+    # spots", "39 games, +4 delta") that don't come from our data. These
+    # look authoritative but are pure LLM hallucination. Strip the offending
+    # sentence to protect users from fabricated stats.
+    if sport == 'MLB':
+        import re as _re
+        repairs['E_stripped_fabricated_stats'] = 0
+        FAB_PATTERNS = [
+            _re.compile(r'[^.]*\d{1,2}%[^.]*(?:in similar|historically|in these spots|of similar|similar spots|hit\s+(?:under|over)\s+at\s+a?)[^.]*\.',
+                        _re.IGNORECASE),
+            _re.compile(r'[^.]*\(\d+\s*games?[^)]*(?:win|loss|delta|hit)[^)]*\)[^.]*\.',
+                        _re.IGNORECASE),
+        ]
+        reads = requests.get(f'{SB}/rest/v1/jerry_reads',
+            headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'sport': f'eq.{sport}',
+                    'select': 'id,short_read,long_read'},
+            timeout=15).json()
+        for r in (reads if isinstance(reads, list) else []):
+            orig_s = r.get('short_read') or ''
+            orig_l = r.get('long_read') or ''
+            new_s, new_l = orig_s, orig_l
+            for pat in FAB_PATTERNS:
+                new_s = pat.sub('', new_s)
+                new_l = pat.sub('', new_l)
+            new_s = _re.sub(r'  +', ' ', new_s).strip()
+            new_l = _re.sub(r'  +', ' ', new_l).strip()
+            if new_s != orig_s or new_l != orig_l:
+                payload = {}
+                if new_s != orig_s: payload['short_read'] = new_s[:2000]
+                if new_l != orig_l: payload['long_read'] = new_l[:8000]
+                pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
+                                    headers=H_WRITE, json=payload, timeout=10)
+                if pr.status_code in (200, 204):
+                    repairs['E_stripped_fabricated_stats'] += 1
+
+    # --- F. CONTRADICTS_SIM verdict flip (2026-08-12) ---
+    # Jerry sometimes picks UNDER when simulator projects total ABOVE line
+    # (or OVER when below) — directional inconsistency. Prose reasoning
+    # doesn't match the pick. Fix: flip verdict to align with simulator,
+    # cap conviction at 50 (mark as coin-flip, defer to POTD threshold).
+    if sport == 'MLB':
+        repairs['F_contradicts_sim_flip'] = 0
+        # Pull game reads + ctx to check sim vs pick
+        reads = requests.get(f'{SB}/rest/v1/jerry_reads',
+            headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'sport': f'eq.{sport}',
+                    'call_market': 'eq.total',
+                    'select': 'id,game_id,call_side,call_line,conviction,short_read'},
+            timeout=15).json()
+        ctx_rows = requests.get(f'{SB}/rest/v1/mlb_game_context',
+            headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'select': 'game_id,jerry_pred_total,projected_total'},
+            timeout=15).json()
+        sim_by_gid = {c['game_id']: (c.get('jerry_pred_total') or c.get('projected_total'))
+                       for c in (ctx_rows if isinstance(ctx_rows, list) else [])}
+        for r in (reads if isinstance(reads, list) else []):
+            side = (r.get('call_side') or '').upper()
+            line = r.get('call_line')
+            sim = sim_by_gid.get(r.get('game_id'))
+            if not sim or line is None: continue
+            try:
+                l = float(line); s = float(sim)
+            except (TypeError, ValueError): continue
+            # Only flag/flip when gap is meaningful (>= 0.5 runs)
+            contradicts = False
+            new_side = None
+            if side == 'UNDER' and s > l + 0.5:
+                contradicts = True; new_side = 'OVER'
+            elif side == 'OVER' and s < l - 0.5:
+                contradicts = True; new_side = 'UNDER'
+            if not contradicts: continue
+            # 2026-08-12: force to 'pass' market (skip game) rather than flip
+            # side. Flipping caused downstream sharp-fade discipline violations
+            # (e.g. KC/LAD UNDER→OVER triggered sharp-fade critical). If Jerry's
+            # own prose contradicts its pick, the safest move is to skip — not
+            # to trust the opposite side which may have its own issues.
+            note_prefix = (f'[Auto-sim-repair 2026-08-12 CONTRADICTS_SIM: pick {side} '
+                           f'{l} contradicts simulator projection {s:.1f} '
+                           f'(gap {s-l:+.1f}). Forcing PASS (Jerry prose contradicts '
+                           f'own pick — unsafe to publish either side). '
+                           f'Original take: ')
+            new_short = note_prefix + (r.get('short_read') or '')[:200] + ']'
+            payload = {'call_market': 'pass', 'conviction': 40,
+                       'short_read': new_short[:2000]}
+            pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
+                                headers=H_WRITE, json=payload, timeout=10)
+            if pr.status_code in (200, 204):
+                repairs['F_contradicts_sim_flip'] += 1
+
     repairs['total_repairs'] = sum(v for k, v in repairs.items() if k != 'total_repairs')
     return repairs
 

@@ -635,6 +635,21 @@ def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
                 _sub_team, out, flags=re.IGNORECASE,
             )
 
+    # Pattern 3c (2026-08-12): "[Name] an analyst" garble — LLM sometimes
+    # substitutes "an analyst" for the pitcher name after their first name,
+    # producing garbled prose like "David an analyst takes the mound" when
+    # actual SP is "David Peterson". Substitute with the correct full name.
+    if home_p or away_p:
+        def _sub_analyst(m):
+            first = m.group(1)
+            # Match first name against home_p/away_p
+            if home_p and home_p.split()[0].lower() == first.lower():
+                return home_p
+            if away_p and away_p.split()[0].lower() == first.lower():
+                return away_p
+            return m.group(0)
+        out = re.sub(r'\b([A-Z][a-z]+)\s+an\s+analyst\b', _sub_analyst, out)
+
     # Pattern 4 (2026-08-11): TBD-starter sentence scrub. When a starter is
     # genuinely unconfirmed (home_pitcher IS null), Jerry falls back to
     # phrases like "the Nationals' starter remains TBD" / "the Washington
