@@ -81,6 +81,33 @@ if _env.exists():
 SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
+H_UPSERT = {**H_READ, 'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates,return=minimal'}
+
+
+def _log_calibration_event(game_date: str, source_table: str, source_id: int,
+                             rule: str, original_conv: int | None,
+                             new_conv: int | None, original_verdict: str = None,
+                             new_verdict: str = None, note: str = None,
+                             dry_run: bool = False) -> None:
+    """Write a row to conviction_calibration_events for tracking. Non-fatal —
+    a logging failure never blocks the main calibration pass."""
+    if dry_run: return
+    payload = {
+        'game_date': game_date, 'sport': 'MLB',
+        'source_table': source_table, 'source_id': source_id,
+        'rule': rule,
+        'original_conviction': original_conv,
+        'new_conviction': new_conv,
+        'original_verdict': original_verdict,
+        'new_verdict': new_verdict,
+        'note': (note or '')[:500],
+    }
+    try:
+        requests.post(f'{SB}/rest/v1/conviction_calibration_events'
+                      '?on_conflict=game_date,source_table,source_id,rule',
+                      headers=H_UPSERT, json=payload, timeout=10)
+    except Exception: pass  # non-fatal
 
 
 def _et_today() -> str:
@@ -217,6 +244,15 @@ def calibrate_pick(row: dict, ctx: dict, calibration: dict,
                              f'MC {round(mc_pct*100)}% both align on {side} — '
                              f'boosted from {conv} to 78')}
 
+    # ── Move #6: ks_under low-conv floor (added 2026-08-12) ──
+    # 30d data (proper grading via MLB API fallback): ks_under BACK at
+    # conv 55-59 hits 50% (break-even, unprofitable at -110). Above 60
+    # it starts working (57%+ at 70-79 band). Not enough EV to publish
+    # at lower conv. Route these to PASS at conv 40 (below LEAN threshold).
+    # This runs against prop_jerry_reads separately (via caller wiring)
+    # since this function primarily operates on game reads. Kept here as
+    # the rule definition; enforced in the discipline pass at runtime.
+
     # ── Move #1: Fix 60-64 UNDER hole ──
     # 30d data: total/UNDER at conv 60-64 hits 36.4%. Route to 55 or 65.
     if market == 'total' and side == 'UNDER' and 60 <= conv < 65:
@@ -247,6 +283,62 @@ def calibrate_pick(row: dict, ctx: dict, calibration: dict,
                         f'(conf={conf_net:+d}) — defensive LEAN cap'}
 
     return None
+
+
+def apply_prop_discipline_rules(game_date: str, dry_run: bool = False) -> int:
+    """Data-backed prop-side conviction discipline (2026-08-12).
+
+    Runs against prop_jerry_reads separately from the game-read calibration.
+    Applies rules derived from 30d graded performance (post MLB API fallback):
+
+    Rule 1: ks_under BACK at conv 55-59 → force PASS (conv 40)
+        30d data: 55-59 band hits 50% (unprofitable at -110 which needs 52.4%).
+        60+ band hits 57%+. Not enough EV to publish at lower conv.
+
+    Add more rules here as calibration data reveals more bands. Each rule
+    logs to signals JSON so downstream can audit which rule fired.
+    Idempotent — skips rows that already have _prop_discipline_cap tag.
+    """
+    changes = 0
+    # Rule 1: ks_under BACK low-conv
+    reads = requests.get(f'{SB}/rest/v1/prop_jerry_reads',
+        headers=H_READ,
+        params={'game_date': f'eq.{game_date}',
+                'prop_type': 'eq.ks_under',
+                'direction': 'eq.under',
+                'call_verdict': 'eq.BACK',
+                'conviction': 'lt.60',
+                'select': 'id,player_name,prop_line,conviction,short_read'},
+        timeout=15).json()
+    for pj in (reads if isinstance(reads, list) else []):
+        if 'prop_discipline_cap' in (pj.get('short_read') or ''):
+            continue  # idempotent
+        note = (f'[Auto-prop-discipline 2026-08-12 KS_UNDER_LOW_CONV: raw '
+                f'conv {pj.get("conviction")} < 60 threshold. 30d data '
+                f'shows ks_under BACK at conv 55-59 hits 50% (break-even). '
+                f'Forcing PASS. Original take: {(pj.get("short_read") or "")[:200]}]')
+        payload = {'call_verdict': 'PASS', 'conviction': 40,
+                   'short_read': note[:1500]}
+        print(f'  ks_under discipline: {pj.get("player_name"):22} '
+              f'conv={pj.get("conviction")} → PASS')
+        if not dry_run:
+            pr = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{pj["id"]}',
+                                headers=H_WRITE, json=payload, timeout=10)
+            if pr.status_code in (200, 204):
+                changes += 1
+                # 2026-08-12: log rule application for calibration tracking
+                _log_calibration_event(
+                    game_date=game_date, source_table='prop_jerry_reads',
+                    source_id=pj['id'], rule='KS_UNDER_LOW_CONV',
+                    original_conv=pj.get('conviction'), new_conv=40,
+                    original_verdict='BACK', new_verdict='PASS',
+                    note=f'ks_under BACK at conv {pj.get("conviction")} < 60 threshold',
+                    dry_run=dry_run)
+        else:
+            changes += 1
+    if changes:
+        print(f'  Rule 1 (ks_under low-conv): {changes} picks forced PASS')
+    return changes
 
 
 def run(game_date: str, dry_run: bool = False) -> int:
@@ -300,6 +392,13 @@ def run(game_date: str, dry_run: bool = False) -> int:
             if change:
                 desc = f'{r["call_market"]}/{r["call_side"]} conv {r["conviction"]}→{change["new_conviction"]} [{change["source"]}]'
                 changes += 1
+                # 2026-08-12: log rule application for calibration tracking
+                _log_calibration_event(
+                    game_date=game_date, source_table='jerry_reads',
+                    source_id=r['id'], rule=change['source'],
+                    original_conv=r['conviction'],
+                    new_conv=change['new_conviction'],
+                    note=change.get('note'), dry_run=dry_run)
             else:
                 desc = f'{r["call_market"]}/{r["call_side"]} conv {r["conviction"]} (components only)'
             print(f'  {r.get("game_id","?")[:8]} {desc}')
@@ -307,9 +406,13 @@ def run(game_date: str, dry_run: bool = False) -> int:
                 requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
                                headers=H_WRITE, json=payload, timeout=10)
 
-    print(f'\n=== calibration applied: {changes} conviction changes'
+    # ── Prop-side discipline rules (data-backed conv floors per prop type) ──
+    prop_changes = apply_prop_discipline_rules(game_date, dry_run=dry_run)
+
+    print(f'\n=== calibration applied: {changes} conviction changes · '
+          f'{prop_changes} prop discipline changes'
           f'{" (dry-run)" if dry_run else ""} ===')
-    return changes
+    return changes + prop_changes
 
 
 def main():
