@@ -211,20 +211,26 @@ def extract_scenarios(ctx, sport):
                               f'{market_key.upper()} · triple consensus ($+conf+MC) on {pick}',
                               pick))
 
-        # D1. RLM by direction (assumes align_status.lens_side = sharp side)
+        # D1. RLM by direction.
+        # 2026-08-12: use align_status.sharp_side (correct field). Prior
+        # version read lens_side which is the MODEL-LENS consensus side,
+        # not the RLM sharp side. sharp_side is populated by align_status_
+        # common._compute_rlm() when line movement contradicts public $.
+        # 90d verification: RLM_TOTAL sharp_side hits 57.6% (n=33) → real
+        # BACK signal. RLM_ML thin sample (n=19) at 47% neutral.
         seg_align = align.get(market_key) if isinstance(align.get(market_key), dict) else {}
         if seg_align.get('rlm'):
-            lens_side = str(seg_align.get('lens_side') or '').upper()
-            # Normalize lens_side single letters
-            if lens_side == 'H': lens_side = 'HOME'
-            elif lens_side == 'A': lens_side = 'AWAY'
-            elif lens_side == 'O': lens_side = 'OVER'
-            elif lens_side == 'U': lens_side = 'UNDER'
-            if lens_side in ('HOME', 'AWAY', 'OVER', 'UNDER'):
+            sharp_side = str(seg_align.get('sharp_side') or '').upper()
+            # Normalize single letters
+            if sharp_side == 'H': sharp_side = 'HOME'
+            elif sharp_side == 'A': sharp_side = 'AWAY'
+            elif sharp_side == 'O': sharp_side = 'OVER'
+            elif sharp_side == 'U': sharp_side = 'UNDER'
+            if sharp_side in ('HOME', 'AWAY', 'OVER', 'UNDER'):
                 scenarios.append((market_key, 'rlm_alignment',
-                                  f'rlm_sharp_{lens_side.lower()}',
-                                  f'{market_key.upper()} · RLM sharp on {lens_side}',
-                                  lens_side))
+                                  f'rlm_sharp_{sharp_side.lower()}',
+                                  f'{market_key.upper()} · RLM sharp on {sharp_side}',
+                                  sharp_side))
 
     return scenarios
 

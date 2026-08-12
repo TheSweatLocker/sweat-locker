@@ -288,21 +288,51 @@ def score_dawg(g, diag=None, ml_map=None):
         return None
 
     # ML odds REQUIRED — no ML odds = no Dawg eligibility (we can't verify dog status)
-    if not ml_map:
-        if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: no ML map loaded")
-        return None
-    ml_entry = ml_map.get((g.get('home_team'), g.get('away_team')))
-    if not ml_entry:
-        if diag is not None:
-            diag.append(f"  ✗ {matchup_label}: ML odds not found for this matchup")
-        return None
-    home_ml = ml_entry.get('home_ml')
-    away_ml = ml_entry.get('away_ml')
+    # 2026-08-12: DUAL-SOURCE verification. Prior version used only
+    # fetch_ml_odds_map (first bookmaker's h2h line) which was catching
+    # stale/divergent lines from single books — e.g., Detroit shown as
+    # +104 dog when game_context.home_ml_close was -123 (Detroit is the
+    # HOME FAVORITE, not the dog). Fix: prefer game_context's close_ml
+    # (which reflects consensus book + line movement) as source of truth
+    # for dog identification. Fall back to Odds API only if ctx is
+    # missing values entirely.
+    ctx_home_ml = g.get('home_ml_close')
+    ctx_away_ml = g.get('away_ml_close')
+    used_source = None
+    if ctx_home_ml is not None and ctx_away_ml is not None:
+        home_ml = ctx_home_ml; away_ml = ctx_away_ml
+        used_source = 'ctx'
+    else:
+        if not ml_map:
+            if diag is not None:
+                diag.append(f"  ✗ {matchup_label}: no ML in ctx and no ML map loaded")
+            return None
+        ml_entry = ml_map.get((g.get('home_team'), g.get('away_team')))
+        if not ml_entry:
+            if diag is not None:
+                diag.append(f"  ✗ {matchup_label}: no ctx ML and Odds API map missing")
+            return None
+        home_ml = ml_entry.get('home_ml')
+        away_ml = ml_entry.get('away_ml')
+        used_source = 'odds_api_fallback'
+
     if home_ml is None or away_ml is None:
         if diag is not None:
             diag.append(f"  ✗ {matchup_label}: incomplete ML odds (home={home_ml}, away={away_ml})")
         return None
+
+    # 2026-08-12: sanity cross-check. If BOTH ctx and Odds API have values,
+    # and they disagree on who's the favorite (sign flip), the row is stale
+    # somewhere. Skip rather than pick a bad Dawg.
+    if used_source == 'ctx' and ml_map:
+        me = ml_map.get((g.get('home_team'), g.get('away_team')))
+        if me and me.get('home_ml') is not None and me.get('away_ml') is not None:
+            ctx_home_fav = home_ml < 0
+            api_home_fav = me['home_ml'] < 0
+            if ctx_home_fav != api_home_fav:
+                if diag is not None:
+                    diag.append(f"  ⚠ {matchup_label}: ctx says home_ml={home_ml} but Odds API says {me['home_ml']} — favorite disagreement, skipping")
+                return None
 
     # Identify dog by ML — whichever team is plus money. If both negative
     # (rare pick'em with juice), skip — no clear dog.

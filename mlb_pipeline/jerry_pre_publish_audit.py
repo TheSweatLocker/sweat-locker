@@ -57,6 +57,25 @@ H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
 
+def _log_health_event(event_date: str, event_class: str, rule: str = None,
+                       severity: str = 'info', count: int = 1,
+                       context: dict = None, sport: str = 'MLB') -> None:
+    """Emit a row to pipeline_health_events for dashboard tracking.
+    Non-fatal — never blocks audit if logging fails."""
+    if count <= 0: return
+    payload = {
+        'event_date': event_date, 'sport': sport,
+        'event_class': event_class, 'rule': rule,
+        'severity': severity, 'count': count,
+        'context': context or {},
+    }
+    try:
+        requests.post(f'{SB}/rest/v1/pipeline_health_events',
+                      headers=H_WRITE, json=payload, timeout=10)
+    except Exception:
+        pass  # non-fatal — health logging never blocks pipeline
+
+
 def _et_today() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
@@ -783,6 +802,14 @@ def main():
             print(f'  🔧 auto-repair applied: {repairs}')
         else:
             print(f'  🔧 auto-repair: no fixes needed')
+        # 2026-08-12: log each repair class to pipeline_health_events for
+        # dashboard trend tracking. Launch-readiness criterion: 2 weeks
+        # green (no critical + declining repair-fire count).
+        for rule_name, fire_count in repairs.items():
+            if rule_name == 'total_repairs' or fire_count == 0: continue
+            _log_health_event(gd, 'auto_repair', rule=rule_name,
+                              severity='info', count=fire_count,
+                              sport=args.sport)
 
     report = audit(args.sport, gd)
 
@@ -805,12 +832,21 @@ def main():
         print('\n  CRITICAL (block publication):')
         for c in report['critical']:
             print(f'    - {c}')
+        # 2026-08-12: log critical count to health dashboard. Sustained
+        # nonzero critical count = pipeline not launch-ready.
+        _log_health_event(gd, 'critical_block', severity='critical',
+                          count=len(report['critical']),
+                          context={'sample': report['critical'][:3]},
+                          sport=args.sport)
         if not args.warn_only:
             print('\n  Exiting 1 — sweat card build should NOT proceed with these '
                   'reads in the DB. Fix or wait for next Jerry regen.')
             sys.exit(1)
     else:
         print('  ok — no critical issues')
+        # Log clean run so dashboard shows the "green day" streak
+        _log_health_event(gd, 'clean_run', severity='info', count=1,
+                          sport=args.sport)
 
 
 if __name__ == '__main__':
