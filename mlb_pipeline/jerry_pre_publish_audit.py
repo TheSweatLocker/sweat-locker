@@ -658,6 +658,60 @@ def auto_repair(sport: str, game_date: str) -> dict:
             if pr.status_code in (200, 204):
                 repairs['F_contradicts_sim_flip'] += 1
 
+    # --- G. NULL call_text on prop jerry_reads (2026-08-12) ---
+    # Prop reads with call_text=NULL cause the app to fall back to "Pass"
+    # badge display. Recompose call_text from short_read prose + side + line.
+    # If we can't reconstruct a clean label, force PASS at conv 40.
+    if sport == 'MLB':
+        repairs['G_null_call_text_fixed'] = 0
+        import re as _re2
+        null_text_reads = requests.get(f'{SB}/rest/v1/jerry_reads',
+            headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'sport': f'eq.{sport}',
+                    'call_market': 'eq.prop',
+                    'call_text': 'is.null',
+                    'select': 'id,call_side,call_line,call_text,short_read,conviction'},
+            timeout=15).json()
+        for r in (null_text_reads if isinstance(null_text_reads, list) else []):
+            side = r.get('call_side') or ''
+            line = r.get('call_line')
+            prose = r.get('short_read') or ''
+            # Try to extract player name from prose (first "Firstname Lastname" match)
+            m = _re2.match(r'\s*([A-Z][a-z]+(?:\s+[A-Z][a-zé]+)+)', prose)
+            player_name = m.group(1) if m else None
+            # Try to extract prop type from prose keywords
+            pt_match = _re2.search(
+                r'\b(strikeout|K|BB|walk|hits allowed|earned run|ER|outs|IP|hit)s?\b',
+                prose, _re2.IGNORECASE)
+            prop_kw = pt_match.group(1).lower() if pt_match else None
+            prop_label = {
+                'strikeout': 'Ks', 'k': 'Ks',
+                'bb': 'BB', 'walk': 'BB',
+                'hits allowed': 'Hits Allowed',
+                'earned run': 'ER', 'er': 'ER',
+                'outs': 'Outs', 'ip': 'Outs',
+                'hit': 'Hits',
+            }.get(prop_kw, 'prop')
+            if player_name and line is not None and side:
+                new_text = f'{player_name} {side.title()} {line} {prop_label}'
+                payload = {'call_text': new_text[:200]}
+                pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
+                                    headers=H_WRITE, json=payload, timeout=10)
+                if pr.status_code in (200, 204):
+                    repairs['G_null_call_text_fixed'] += 1
+            else:
+                # Can't reconstruct — force PASS to avoid app "Pass" badge on prop
+                note = (f'[Auto-null-text-repair 2026-08-12 NULL_CALL_TEXT: '
+                        f'prop read had NULL call_text and prose parse failed. '
+                        f'Forcing pass market. Original short_read: {prose[:200]}]')
+                payload = {'call_market': 'pass', 'conviction': 40,
+                           'short_read': note[:1500]}
+                pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
+                                    headers=H_WRITE, json=payload, timeout=10)
+                if pr.status_code in (200, 204):
+                    repairs['G_null_call_text_fixed'] += 1
+
     repairs['total_repairs'] = sum(v for k, v in repairs.items() if k != 'total_repairs')
     return repairs
 
