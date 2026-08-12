@@ -2039,12 +2039,16 @@ def _cohort_rate_n(cohort_key):
     return (None, 0)
 
 
-def _cohort_healthy(cohort_key, min_rate=0.48, min_n=15):
+def _cohort_healthy(cohort_key, min_rate=0.52, min_n=15):
     """Return True when a cohort is currently firing above the suppress floor.
 
-    Used to gate primary-play surfacing. Default floor 0.48 (slightly under
-    break-even at -110 = 52.4%, giving a small buffer for noise on cohorts
-    that have drifted but might still be marginally playable).
+    2026-08-12: raised floor from 0.48 → 0.52 (at break-even). Prior 0.48
+    was letting coin-flip cohorts surface as LEAN recommendations. Real
+    example: PHI @ STL 8/12 — xera_gap_2_3_over cohort at 50% n=36 fired
+    LEAN OVER while Jerry + simulator both said UNDER. The 50% cohort
+    hit rate is literally a coin flip — not worth recommending. Floor at
+    0.52 ensures cohorts must at least clear break-even (-110 needs 52.4%)
+    before we surface them.
 
     Returns True when n < min_n — insufficient sample, don't suppress on
     noise. Returns False when rate is non-null AND below floor AND sample
@@ -2062,12 +2066,17 @@ def _cohort_healthy(cohort_key, min_rate=0.48, min_n=15):
 _JERRY_READS_CACHE: dict = {}
 
 
-def _jerry_fallback_for_game(game_id: str, game_date: str) -> Optional[dict]:
+def _jerry_fallback_for_game(game_id: str, game_date: str,
+                              home_team: Optional[str] = None,
+                              away_team: Optional[str] = None) -> Optional[dict]:
     """Return a SOFT primary_play dict from Jerry's read for this game,
     or None if Jerry didn't have a directional take either.
 
     Uses per-date cache — first lookup fetches all reads for the date,
     subsequent lookups hit the cache. Silently no-ops on network errors.
+
+    2026-08-09: pass home_team/away_team so ML labels render as team
+    name (e.g. "Dodgers ML") not "Home ML" — user feedback.
     """
     if not game_id or not game_date: return None
     if not SUPABASE_URL or not SUPABASE_KEY: return None
@@ -2105,7 +2114,13 @@ def _jerry_fallback_for_game(game_id: str, game_date: str) -> Optional[dict]:
     if market == 'total' and line is not None:
         label = f'{"Over" if side == "OVER" else "Under"} {line}'
     elif market in ('ml', 'rl'):
-        label = f'{side.title()} ML'
+        side_upper = (side or '').upper()
+        team = None
+        if side_upper == 'HOME' and home_team:
+            team = home_team
+        elif side_upper == 'AWAY' and away_team:
+            team = away_team
+        label = f'{team} ML' if team else f'{side.title()} ML'
     else:
         label = text or f'{side}'
     # Tier maps: cap at LEAN since this is a fallback (primary path didn't
@@ -2696,7 +2711,11 @@ def compute_primary_play(ctx):
     game_id = ctx.get('game_id')
     game_date = ctx.get('game_date')
     if game_id and game_date:
-        jerry_fb = _jerry_fallback_for_game(game_id, game_date)
+        jerry_fb = _jerry_fallback_for_game(
+            game_id, game_date,
+            home_team=ctx.get('home_team'),
+            away_team=ctx.get('away_team'),
+        )
         if jerry_fb: return jerry_fb
     return None
 
@@ -2756,6 +2775,24 @@ def upload_game_context(context, commence_time=None):
     # an App Store resubmission.
     try:
         context["primary_play"] = compute_primary_play(context)
+        # 2026-08-12: defensive label normalization. compute_primary_play
+        # sometimes emits "Home ML" / "Away ML" when team names weren't
+        # available at compute-time OR when an intermediate path skips the
+        # team-name substitution. Never let these generic labels ship to
+        # the app. Rewrite from ctx.home_team / away_team.
+        pp = context.get("primary_play")
+        if pp and isinstance(pp, dict):
+            label = pp.get('label') or ''
+            home_t = context.get('home_team')
+            away_t = context.get('away_team')
+            if label == 'Home ML' and home_t:
+                pp['label'] = f'{home_t} ML'
+            elif label == 'Away ML' and away_t:
+                pp['label'] = f'{away_t} ML'
+            elif label == 'Home ML lean' and home_t:
+                pp['label'] = f'{home_t} ML lean'
+            elif label == 'Away ML lean' and away_t:
+                pp['label'] = f'{away_t} ML lean'
         # Stamp computation time so the app can suppress stale renders.
         # See 20260604_primary_play_computed_at.sql + app stale-check.
         # When the cron writes a fresh play, this timestamp updates.
