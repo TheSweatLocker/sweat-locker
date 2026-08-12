@@ -311,6 +311,9 @@ jobs:
           python compute_scenario_audit.py --sport NCAAF --window lifetime || echo "scenario audit NCAAF lifetime failed"
           python compute_scenario_audit.py --sport NHL --window lifetime || echo "scenario audit NHL lifetime failed"
           python compute_scenario_audit.py --sport NCAAB --window lifetime || echo "scenario audit NCAAB lifetime failed"
+          # 2026-08-12: sharp scenario matrix — 30+ patterns per sport
+          # tracked with per-game match cache. Sport-universal, MLB first.
+          python compute_sharp_scenario_matrix.py --sport MLB --window 90 || echo "sharp matrix MLB failed"
 
       - name: Apply prop refit conviction
         continue-on-error: true

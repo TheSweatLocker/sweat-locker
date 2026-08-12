@@ -307,7 +307,22 @@ def render_prompt(template: str, game: dict, struct: dict) -> str:
     against pitcher-team misattribution (2026-08-02 · Cole/Yankees hallucination)
     can reference them directly instead of forcing Jerry to dig them out of
     the struct JSON.
+
+    2026-08-12: injects sharp scenario matches for this game so Jerry SEES
+    which historical public/sharp patterns are firing. Adds {SHARP_SCENARIOS}
+    block to struct. Falls back to empty string if lookup fails.
     """
+    # 2026-08-12: inject sharp scenario matches
+    try:
+        from sharp_scenario_lookup import matches_for_game, format_for_prompt
+        matches = matches_for_game(game.get('game_id'), game.get('game_date'))
+        sharp_block = format_for_prompt(matches)
+    except Exception:
+        sharp_block = ''
+    if sharp_block:
+        struct = dict(struct)  # avoid mutating caller
+        struct['_sharp_scenario_matches'] = sharp_block
+
     struct_json = json.dumps(struct, indent=2, default=str)
     return (
         template
@@ -316,6 +331,7 @@ def render_prompt(template: str, game: dict, struct: dict) -> str:
         .replace("{HOME_TEAM}", game.get("home_team", ""))
         .replace("{AWAY_PITCHER}", game.get("away_pitcher") or "(TBD)")
         .replace("{HOME_PITCHER}", game.get("home_pitcher") or "(TBD)")
+        .replace("{SHARP_SCENARIOS}", sharp_block)
     )
 
 

@@ -712,6 +712,48 @@ def auto_repair(sport: str, game_date: str) -> dict:
                 if pr.status_code in (200, 204):
                     repairs['G_null_call_text_fixed'] += 1
 
+    # --- H. Sharp scenario matrix override (2026-08-12) ---
+    # Auto-adjust game-level ML/TOTAL picks when sharp_scenario_matrix
+    # dominant-side vote contradicts Jerry's pick with net_score>=3.
+    # Requires the sharp_scenario_game_matches table to be populated
+    # (via compute_sharp_scenario_matrix.py). Non-fatal if table missing.
+    if sport == 'MLB':
+        repairs['H_scenario_matrix_flip'] = 0
+        repairs['H_scenario_matrix_confirm'] = 0
+        try:
+            from sharp_scenario_lookup import matches_for_game, summary_for_market
+            game_reads = requests.get(f'{SB}/rest/v1/jerry_reads',
+                headers=H_READ,
+                params={'game_date': f'eq.{game_date}',
+                        'sport': f'eq.{sport}',
+                        'call_market': 'in.(ml,total)',
+                        'select': 'id,game_id,call_market,call_side,conviction,short_read'},
+                timeout=15).json()
+            for r in (game_reads if isinstance(game_reads, list) else []):
+                market = r.get('call_market'); side = (r.get('call_side') or '').upper()
+                if market not in ('ml', 'total'): continue
+                matches = matches_for_game(r.get('game_id'), game_date)
+                if not matches: continue
+                summary = summary_for_market(matches, market)
+                dominant = summary.get('dominant_side')
+                # Strong scenario disagreement (net_score >= 3 opposite Jerry's pick)
+                if dominant and dominant != side and abs(summary['net_score']) >= 3:
+                    note_prefix = (f'[Auto-scenario-repair 2026-08-12 SCENARIO_MATRIX_OVERRIDE: '
+                                   f'{market.upper()} pick {side} but historical scenario matches '
+                                   f'lean {dominant} by net {summary["net_score"]:+d} votes '
+                                   f'({summary["home_or_over_votes"]} HOME/OVER vs '
+                                   f'{summary["away_or_under_votes"]} AWAY/UNDER). '
+                                   f'Forcing PASS. Original take: ')
+                    new_short = note_prefix + (r.get('short_read') or '')[:200] + ']'
+                    payload = {'call_market': 'pass', 'conviction': 40,
+                               'short_read': new_short[:2000]}
+                    pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
+                                        headers=H_WRITE, json=payload, timeout=10)
+                    if pr.status_code in (200, 204):
+                        repairs['H_scenario_matrix_flip'] += 1
+        except ImportError: pass  # lookup helper not installed yet
+        except Exception as e: print(f'  H scenario matrix pass failed (non-fatal): {e}')
+
     repairs['total_repairs'] = sum(v for k, v in repairs.items() if k != 'total_repairs')
     return repairs
 
