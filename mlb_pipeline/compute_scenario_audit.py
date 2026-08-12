@@ -150,15 +150,22 @@ def build_scenarios_mlb(row: dict) -> list[tuple[str, str, str, str]]:
                 key = f'public_money={band}&side={ml_pick.lower()}&ml_bucket={fav_dog}'
                 label = f'Public {band}% $ on {ml_pick} {fav_dog}'
                 scenarios.append(('ml', key, label, ml_pick))
-        # Whale divergence — money >= bets + 15
+        # Public-money-heavy divergence — money% >= bets% + 15.
+        # 2026-08-12: RENAMED from "whale_signal" after manual re-check
+        # confirmed this pattern hits only ~28% (n=60 across ML+total).
+        # NOT sharp money — it's public retail money / steam-chasers /
+        # bots that consistently lose. The scenario_audit correctly labels
+        # these as FADE via jerry_hint; only the naming was misleading.
+        # Legacy scenario_key preserved as 'whale_signal' for backward
+        # compat with historical rows; the LABEL is now accurate.
         if ml_money is not None and ml_bets is not None:
             if ml_money - ml_bets >= 15:
                 key = f'whale_signal&side={ml_pick.lower()}'
-                label = f'Whale ($≥bets+15) on {ml_pick} ML'
+                label = f'Public $-heavy ({ml_money}%$/{ml_bets}%bets) on {ml_pick} ML — historical fade'
                 scenarios.append(('ml', key, label, ml_pick))
             elif ml_bets - ml_money >= 15:
                 key = f'square_signal&side={ml_pick.lower()}'
-                label = f'Square (bets≥$+15) on {ml_pick} ML'
+                label = f'Square-heavy (bets≥$+15) on {ml_pick} ML'
                 scenarios.append(('ml', key, label, ml_pick))
 
     # --- Total scenarios ---
@@ -176,11 +183,11 @@ def build_scenarios_mlb(row: dict) -> list[tuple[str, str, str, str]]:
             key = f'public_money={band}&side={tot_pick.lower()}&line={line_bucket}'
             label = f'Public {band}% $ on {tot_pick} · total {line_bucket}'
             scenarios.append(('total', key, label, tot_pick))
-        # Whale
+        # Public-money-heavy on total (renamed 2026-08-12 — see ML block above)
         if tot_money is not None and tot_bets is not None:
             if tot_money - tot_bets >= 15:
                 key = f'whale_signal&side={tot_pick.lower()}'
-                label = f'Whale ($≥bets+15) on {tot_pick}'
+                label = f'Public $-heavy ({tot_money}%$/{tot_bets}%bets) on {tot_pick} — historical fade'
                 scenarios.append(('total', key, label, tot_pick))
 
     # --- Square-signal scenarios (2026-08-11 · post-BAL loss) ---
