@@ -194,15 +194,36 @@ def grade_pick(pick: dict, result: dict, cfg: dict) -> tuple:
 
     # TOTAL
     if surface == 'total':
-        tr = result.get('total_result')
-        if not tr:
-            ct = result.get('close_total')
-            if ct is not None:
-                if total_pts > float(ct):   tr = 'over'
-                elif total_pts < float(ct): tr = 'under'
-                else:                       tr = 'push'
-            else:
-                return None, None, 'no_total_result'
+        # 2026-08-12: grade against pick.pick_line (what the source
+        # actually tracked), NOT close_total. Prior version used the
+        # game_results.total_result field which is derived from close_
+        # total — but external sources like oddscrowd track picks at
+        # their own snapshot time, so their pick_line often DIFFERS
+        # from close_total after book movement. Spot-check of 40 rows
+        # showed 47% mismatch rate (19-17 correct) using close_total.
+        # Grading against pick.pick_line makes grades match reality.
+        pick_line = pick.get('pick_line')
+        if pick_line is None:
+            # No line stored → fall back to close_total (legacy path)
+            tr = result.get('total_result')
+            if not tr:
+                ct = result.get('close_total')
+                if ct is not None:
+                    if total_pts > float(ct):   tr = 'over'
+                    elif total_pts < float(ct): tr = 'under'
+                    else:                       tr = 'push'
+                else:
+                    return None, None, 'no_total_result_no_pick_line'
+        else:
+            # Grade against the line the pick was made against
+            try:
+                pline = float(pick_line)
+            except (TypeError, ValueError):
+                return None, None, 'invalid_pick_line'
+            if total_pts > pline:   tr = 'over'
+            elif total_pts < pline: tr = 'under'
+            else:                   tr = 'push'
+
         if tr in cfg['push_vals']:
             return 'P', float(total_pts), None
         if side == 'OVER':
