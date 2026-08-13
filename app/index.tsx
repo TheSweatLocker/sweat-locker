@@ -10415,7 +10415,30 @@ setJerryHistory(prev => {
       );
     })()}
 
-    {/* 🎯 THE CURATED 8 — lead picks, server-driven from sweatCard.top_8 */}
+    {/* Slow-slate message (2026-08-13): when card is thin (< 3 picks or
+        density='light'), lead with a "sitting on hands" note so users
+        understand it's discipline, not a pipeline failure. Only fires when
+        the pipeline itself has already trimmed to qualified picks — the
+        card size IS the honest signal. */}
+    {(() => {
+      const n = Array.isArray(sweatCard.top_8) ? sweatCard.top_8.length : 0;
+      const isLight = n > 0 && (n < 3 || sweatCard.slate_density === 'light');
+      if (!isLight) return null;
+      return (
+        <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:10,padding:10,marginBottom:12,borderLeftWidth:3,borderLeftColor:THEME.textDim}}>
+          <Text style={{color:THEME.text,fontSize:12,fontWeight:'700',marginBottom:3}}>Slow slate — {n} qualified {n === 1 ? 'play' : 'plays'}.</Text>
+          <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}}>
+            Sitting on hands is a valid play. We won't pad the card with LEAN-tier when the models don't stack.
+          </Text>
+        </View>
+      );
+    })()}
+
+    {/* 🎯 THE CURATED 8 — lead picks, server-driven from sweatCard.top_8.
+        2026-08-13: tap navigates to Game Detail. Helper finds the matching
+        game object by matchup string across current gamesData + mlbGameContext;
+        different-sport picks fall back to switching the Games tab sport
+        and highlighting the game there. */}
     {Array.isArray(sweatCard.top_8) && sweatCard.top_8.length > 0 && (
       <View style={{marginBottom:14}}>
         {sweatCard.top_8.map((pick: any, i: number) => {
@@ -10431,8 +10454,57 @@ setJerryHistory(prev => {
             pick.result === 'Win' ? THEME.win :
             pick.result === 'Loss' ? THEME.loss :
             pick.result === 'Push' ? THEME.textDim : null;
+          // Sport inference from icon — used for cross-sport chip. Falls back
+          // to gamesSport if icon isn't a known sport emoji. Server will emit
+          // pick.sport explicitly once multi-sport card curation lands.
+          const iconToSport: Record<string, string> = {
+            '⚾': 'MLB', '🏈': 'NFL', '🏀': 'NBA', '🏒': 'NHL', '🥊': 'UFC',
+          };
+          const pickSport = pick.sport || iconToSport[pick.icon] || 'MLB';
+          // Find the underlying game object so tap can open Game Detail.
+          // Search current gamesData first (fast path when user's on the
+          // right sport already), then mlbGameContextMap for MLB fallback.
+          const findGame = (): any | null => {
+            if (!pick.game) return null;
+            const [away, home] = pick.game.split(' @ ').map((s: string) => s.trim());
+            const inGames = (gamesData || []).find((g: any) =>
+              g.away_team === away && g.home_team === home);
+            if (inGames) return inGames;
+            // Cross-sport fallback: build a minimal game-like object from
+            // mlbGameContextMap or nflGameContextMap so openGameDetail can
+            // hydrate. If neither matches, return null and disable tap.
+            const ctx: any = Object.values(mlbGameContext || {}).find((c: any) =>
+              c?.away_team === away && c?.home_team === home)
+              || Object.values(nflGameContextMap || {}).find((c: any) =>
+                c?.away_team === away && c?.home_team === home);
+            if (ctx) return {
+              id: ctx.game_id, away_team: away, home_team: home,
+              commence_time: ctx.commence_time || ctx.game_date,
+              bookmakers: [], _fromCard: true,
+            };
+            return null;
+          };
+          const target = findGame();
+          const onTap = () => {
+            if (target) {
+              // Same-sport: open Game Detail directly.
+              if (pickSport === gamesSport) {
+                openGameDetail(target);
+              } else {
+                // Cross-sport: switch to that sport in Games tab first, then
+                // open. User lands in the correct sport context.
+                setGamesSport(pickSport);
+                setActiveTab('games');
+                setTimeout(() => openGameDetail(target), 50);
+              }
+            }
+          };
+          const Row = target ? TouchableOpacity : View;
+          const rowProps: any = target
+            ? {onPress: onTap, activeOpacity: 0.7}
+            : {};
           return (
-            <View key={`top8-${i}`} style={{flexDirection:'row',alignItems:'flex-start',paddingVertical:7,borderTopWidth:i>0?0.5:0,borderTopColor:THEME.surfaceAlt}}>
+            <Row key={`top8-${i}`} {...rowProps} style={{flexDirection:'row',alignItems:'flex-start',paddingVertical:7,borderTopWidth:i>0?0.5:0,borderTopColor:THEME.surfaceAlt}}>
               <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',width:18,marginTop:1}}>{pick.rank}.</Text>
               <Text style={{fontSize:14,marginRight:8}}>{pick.icon}</Text>
               <View style={{flex:1}}>
@@ -10444,6 +10516,11 @@ setJerryHistory(prev => {
               </View>
               <View style={{alignItems:'flex-end',marginLeft:8}}>
                 <View style={{flexDirection:'row',alignItems:'center',gap:6}}>
+                  {/* Sport chip when card blends multiple sports — helps user
+                      instantly parse which sport each pick belongs to. */}
+                  {Array.isArray(sweatCard.active_sports) && sweatCard.active_sports.length > 1 && pickSport && (
+                    <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',letterSpacing:0.5}}>{pickSport}</Text>
+                  )}
                   {pick.tier && (
                     <Text style={{color:tierColor,fontSize:10,fontWeight:'800'}}>{pick.tier}</Text>
                   )}
@@ -10454,8 +10531,11 @@ setJerryHistory(prev => {
                 {pick.conviction != null && (
                   <Text style={{color:THEME.textMuted,fontSize:9,marginTop:1}}>{pick.conviction}</Text>
                 )}
+                {target && (
+                  <Text style={{color:THEME.textMuted,fontSize:8,marginTop:1,opacity:0.5}}>tap →</Text>
+                )}
               </View>
-            </View>
+            </Row>
           );
         })}
         {/* Summary line if resolved */}
