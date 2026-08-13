@@ -82,27 +82,41 @@ def estimate_juice_american(prop_type: str, direction: str, prop_line):
 
 
 def compute_jerry_hint(hit_rate, roi_pct, sample_n):
-    """BACK / FADE / PASS with confidence 0-100."""
+    """BACK / FADE / PASS with confidence 0-100.
+
+    2026-08-12 sample-size discipline (user-caught):
+      * n<30 → LEAN cap only (not full BACK). Even 60% n=20 has ±22pp
+        confidence interval — can't call it a lock.
+      * n<20 → PASS regardless (insufficient data).
+      * Above n>=30, hit-rate + ROI can drive full BACK/FADE.
+    Prior version let n=20 pop as PRIME BACK based on 60% hit rate.
+    """
     if sample_n < 20:
         return 'PASS', 20            # insufficient data → default cautious
     if roi_pct is None:
         # No odds — fall back to hit rate signal only, be conservative
         if hit_rate is None: return 'PASS', 20
-        if hit_rate >= 65: return 'BACK', 55
-        if hit_rate <= 35: return 'FADE', 55
+        if hit_rate >= 65 and sample_n >= 30: return 'BACK', 55
+        if hit_rate <= 35 and sample_n >= 30: return 'FADE', 55
         return 'PASS', 30
 
-    # ROI-driven decision
+    # ROI-driven decision — but cap confidence when sample is thin
     if roi_pct >= 10:
         conf = min(90, 50 + int(roi_pct))                  # +10% ROI → 60 conf, +40% → 90
+        if sample_n < 30: conf = min(conf, 55)  # cap at LEAN when n<30
         return 'BACK', conf
     if roi_pct >= 3:
-        return 'BACK', max(45, 40 + int(roi_pct))
+        conf = max(45, 40 + int(roi_pct))
+        if sample_n < 30: conf = min(conf, 50)
+        return 'BACK', conf
     if roi_pct <= -10:
         conf = min(90, 50 + int(abs(roi_pct)))
+        if sample_n < 30: conf = min(conf, 55)
         return 'FADE', conf
     if roi_pct <= -3:
-        return 'FADE', max(45, 40 + int(abs(roi_pct)))
+        conf = max(45, 40 + int(abs(roi_pct)))
+        if sample_n < 30: conf = min(conf, 50)
+        return 'FADE', conf
     return 'PASS', 30
 
 

@@ -250,10 +250,19 @@ def grade_scenario(sport, market, pick_side, ctx, res):
 
 
 def compute_jerry_hint(hit_rate, n):
-    """Standard hint mapping mirroring scenario_audit convention."""
+    """Standard hint mapping mirroring scenario_audit convention.
+
+    2026-08-12 sample-size discipline: BACK/FADE full confidence requires
+    n>=30. Below that, downgrade to LEAN_* to signal "trend exists but
+    thin sample — treat as directional lean, not lock."
+    """
     if n < 15: return 'PASS', 30
-    if hit_rate >= 60: return 'BACK', min(90, 50 + int(hit_rate - 50))
-    if hit_rate <= 42: return 'FADE', min(85, 50 + int(50 - hit_rate))
+    if hit_rate >= 60:
+        if n < 30: return 'LEAN_BACK', 55  # thin sample, lean only
+        return 'BACK', min(90, 50 + int(hit_rate - 50))
+    if hit_rate <= 42:
+        if n < 30: return 'LEAN_FADE', 55
+        return 'FADE', min(85, 50 + int(50 - hit_rate))
     if hit_rate >= 55: return 'LEAN_BACK', 55
     if hit_rate <= 45: return 'LEAN_FADE', 55
     return 'PASS', 40

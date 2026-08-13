@@ -451,10 +451,21 @@ def american_to_decimal(o) -> float | None:
 
 
 def compute_jerry_hint(hit_rate: float, roi: float | None, n: int) -> tuple[str, int]:
-    """Standard jerry_hint mapping matching prop_bucket_roi convention."""
+    """Standard jerry_hint mapping matching prop_bucket_roi convention.
+
+    2026-08-12 sample-size discipline: full BACK/FADE tier requires
+    n>=30. Below that, cap at LEAN conf 55 even if hit rate looks good.
+    Prevents surfacing 60% n=8 as PRIME-level confidence.
+    """
     if n < 20: return ('PASS', 30)
-    if hit_rate >= 60 and (roi is None or roi > 5): return ('BACK', min(90, 50 + int(hit_rate - 50)))
-    if hit_rate <= 42 or (roi is not None and roi < -10): return ('FADE', min(85, 50 + int(50 - hit_rate)))
+    if hit_rate >= 60 and (roi is None or roi > 5):
+        conf = min(90, 50 + int(hit_rate - 50))
+        if n < 30: conf = min(conf, 55)  # cap at LEAN when sample thin
+        return ('BACK', conf)
+    if hit_rate <= 42 or (roi is not None and roi < -10):
+        conf = min(85, 50 + int(50 - hit_rate))
+        if n < 30: conf = min(conf, 55)
+        return ('FADE', conf)
     if hit_rate >= 55: return ('LEAN', 55)
     return ('PASS', 40)
 
