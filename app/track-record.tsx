@@ -96,6 +96,12 @@ export default function TrackRecord() {
   // that answers "what has Jerry actually done" across every sport.
   const [bySportRows, setBySportRows] = useState<Array<{sport: string; wins: number; losses: number; hit_pct: number}>>([]);
   const [topScenarios, setTopScenarios] = useState<Array<any>>([]);
+  // 2026-08-13: per-sport methodology sub-tabs. `trackSport` drives which
+  // sport's methodology + tier tables render. Defaults to MLB (only sport
+  // with full graded history today). Sport catalog + state pulled from
+  // sport_registry so off-season / preseason renders proper placeholders.
+  const [trackSport, setTrackSport] = useState<string>('MLB');
+  const [sportCatalog, setSportCatalog] = useState<Array<{sport: string; emoji: string; state: string; state_message: string | null; return_date: string | null}>>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -138,6 +144,23 @@ export default function TrackRecord() {
             .filter(r => r.wins + r.losses >= 10)
             .sort((a, b) => (b.wins + b.losses) - (a.wins + a.losses));
           if (!cancelled) setBySportRows(rows);
+        } catch (e) { /* non-fatal */ }
+
+        // 2026-08-13: pull sport catalog + state for the per-sport picker.
+        // We don't share the app/index.tsx sportMeta because track-record.tsx
+        // is a separate Expo route without that state; refetching is cheap
+        // (single row per sport, cached by the CDN edge).
+        try {
+          const {data: sr} = await supabase.from('sport_registry')
+            .select('sport,emoji,state,state_message,return_date,active,display_order')
+            .eq('active', true)
+            .order('display_order', {ascending: true});
+          if (!cancelled && sr) {
+            setSportCatalog(sr.map((r: any) => ({
+              sport: r.sport, emoji: r.emoji, state: r.state,
+              state_message: r.state_message, return_date: r.return_date,
+            })));
+          }
         } catch (e) { /* non-fatal */ }
 
         // 2026-08-10: top proven-pattern scenarios from scenario_audit.
@@ -286,8 +309,82 @@ export default function TrackRecord() {
           </View>
         )}
 
-        {/* Window toggle */}
-        {!loading && !error && (
+        {/* Per-sport methodology picker (2026-08-13). Below the sport-agnostic
+            headline sections; above the sport-specific tier tables. Renders
+            one chip per active sport pulled from sport_registry so new sports
+            appear automatically. */}
+        {!loading && !error && sportCatalog.length > 0 && (
+          <>
+            <Text style={styles.sectionTitle}>How We Pick</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 12}}>
+              <View style={{flexDirection: 'row', gap: 6}}>
+                {sportCatalog.map(s => (
+                  <TouchableOpacity key={s.sport}
+                    onPress={() => setTrackSport(s.sport)}
+                    style={[styles.windowBtn, trackSport === s.sport && styles.windowBtnActive]}>
+                    <Text style={[styles.windowText, trackSport === s.sport && styles.windowTextActive]}>
+                      {s.emoji} {s.sport}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+          </>
+        )}
+
+        {/* Off-season / preseason / returning placeholder for the selected sport.
+            When the sport isn't in season, we render a config-driven card
+            explaining when it returns and skip the graded-tier tables entirely
+            (there's no history to show). Zero hardcodes — pulls from
+            sport_registry.state_message + return_date. */}
+        {!loading && !error && (() => {
+          const cur = sportCatalog.find(s => s.sport === trackSport);
+          if (!cur || cur.state === 'in_season') return null;
+          const returnDateStr = cur.return_date
+            ? new Date(cur.return_date + 'T00:00:00').toLocaleDateString('en-US', {month:'long', day:'numeric', year:'numeric'})
+            : null;
+          const stateLabel = cur.state === 'off_season' ? 'Returns' : cur.state === 'preseason' ? 'Preseason' : 'Returning';
+          return (
+            <View style={[styles.overallCard, {alignItems: 'center'}]}>
+              <Text style={{fontSize: 40, marginBottom: 8}}>{cur.emoji}</Text>
+              <Text style={{color: TEXT_PRIMARY, fontSize: 17, fontWeight: '800', marginBottom: 6, textAlign: 'center'}}>
+                {cur.sport} {stateLabel}{returnDateStr ? ` ${returnDateStr}` : ''}
+              </Text>
+              {cur.state_message && (
+                <Text style={{color: TEXT_MUTED, fontSize: 13, lineHeight: 19, textAlign: 'center', marginBottom: 8}}>
+                  {cur.state_message}
+                </Text>
+              )}
+              <Text style={{color: TEXT_MUTED, fontSize: 11, fontStyle: 'italic', textAlign: 'center'}}>
+                Track record populates as graded picks accumulate.
+              </Text>
+            </View>
+          );
+        })()}
+
+        {/* MLB is the only sport with graded pitcher-prop history today.
+            NBA/NFL/NCAAF/NCAAB tier tables will slot in the same shape once
+            each sport's grader accumulates enough sample (v_prop_track_record
+            is currently MLB-only; future work: v_nba_track_record etc.). */}
+        {!loading && !error && trackSport !== 'MLB' && (() => {
+          const cur = sportCatalog.find(s => s.sport === trackSport);
+          if (!cur || cur.state !== 'in_season') return null; // covered above
+          return (
+            <View style={[styles.overallCard, {alignItems: 'center'}]}>
+              <Text style={{fontSize: 32, marginBottom: 6}}>{cur.emoji}</Text>
+              <Text style={{color: TEXT_PRIMARY, fontSize: 15, fontWeight: '700', marginBottom: 6, textAlign: 'center'}}>
+                {cur.sport} tier tables coming soon
+              </Text>
+              <Text style={{color: TEXT_MUTED, fontSize: 12, lineHeight: 18, textAlign: 'center'}}>
+                Once we've graded 30+ picks at each tier, the {cur.sport} methodology surfaces
+                right here — same shape as MLB below.
+              </Text>
+            </View>
+          );
+        })()}
+
+        {/* Window toggle (only relevant when a graded tier table renders below) */}
+        {!loading && !error && trackSport === 'MLB' && (
           <View style={styles.windowRow}>
             {(['7d', '30d', '90d'] as Window[]).map(w => (
               <TouchableOpacity
@@ -303,8 +400,10 @@ export default function TrackRecord() {
           </View>
         )}
 
-        {/* SECTION 1 — BETTABLE PROPS (pitcher props at book lines) */}
-        {!loading && !error && (
+        {/* SECTION 1 — BETTABLE PROPS (pitcher props at book lines) · MLB-only.
+            When NBA/NFL views ship, wrap each in `trackSport === '<sport>'` so
+            each sport gets its own tier table under the same picker. */}
+        {!loading && !error && trackSport === 'MLB' && (
           <>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionHeaderText}>BETTABLE PROPS</Text>
@@ -344,8 +443,8 @@ export default function TrackRecord() {
           </>
         )}
 
-        {/* Bucket-level truth table */}
-        {!loading && !error && sortedBuckets.length > 0 && (
+        {/* Bucket-level truth table (MLB pitcher props) */}
+        {!loading && !error && trackSport === 'MLB' && sortedBuckets.length > 0 && (
           <>
             <Text style={styles.sectionTitle}>Where the edge lives (30d)</Text>
             <Text style={styles.sectionSubtitle}>
@@ -387,8 +486,8 @@ export default function TrackRecord() {
           </>
         )}
 
-        {/* SECTION 2 — SIGNAL ACCURACY (batter hit projections) */}
-        {!loading && !error && hasSignalData && (
+        {/* SECTION 2 — SIGNAL ACCURACY (batter hit projections · MLB-only) */}
+        {!loading && !error && trackSport === 'MLB' && hasSignalData && (
           <>
             <View style={[styles.sectionHeader, { marginTop: 8 }]}>
               <Text style={styles.sectionHeaderText}>SIGNAL ACCURACY</Text>
