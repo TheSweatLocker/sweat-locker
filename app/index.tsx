@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
+import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, KeyboardAvoidingView, Linking, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Circle, Defs, G, LinearGradient, Path, Rect, Stop, Svg, Line as SvgLine, Text as SvgText } from 'react-native-svg';
@@ -54,16 +55,27 @@ const prettyCohort = (raw: string): string => {
   }).join(' ');
 };
 
-const SPORTS = ['NBA', 'NFL', 'NHL', 'MLB', 'NCAAB', 'NCAAF', 'UFC'];
+// 2026-08-09: SPORTS + SPORT_EMOJI are now backend-driven via sport_registry
+// table (migration 20260809_sport_registry.sql). Constants below are FALLBACK
+// values only — used at cold start before the registry fetch completes, or if
+// the query fails. Adding a new sport = INSERT into sport_registry, no app
+// rebuild. See fetchSportRegistry() below and getSports() / getSportEmoji().
+const SPORTS_FALLBACK = ['NBA', 'NFL', 'NHL', 'MLB', 'NCAAB', 'NCAAF', 'UFC'];
+const SPORT_EMOJI_FALLBACK: Record<string,string> = { NBA:'🏀', NFL:'🏈', NHL:'🏒', MLB:'⚾', NCAAB:'🏀', NCAAF:'🏈', UFC:'🥊' };
 const BET_TYPES = ['Spread', 'Moneyline', 'Total (O/U)', 'Player Prop', 'Parlay'];
 const BOOKS = ['Hard Rock', 'DraftKings', 'FanDuel', 'ESPN Bet', 'BetMGM', 'Caesars', 'Bet365'];
 const RESULTS = ['Pending', 'Win', 'Loss', 'Push'];
+// SPORT_KEYS is Odds-API vendor mapping — pure code concern, stays hardcoded.
 const SPORT_KEYS = {
   NBA:'basketball_nba', NFL:'americanfootball_nfl', NHL:'icehockey_nhl',
   MLB:'baseball_mlb', NCAAB:'basketball_ncaab', NCAAF:'americanfootball_ncaaf',
   UFC:'mma_mixed_martial_arts',
 };
-const SPORT_EMOJI = { NBA:'🏀', NFL:'🏈', NHL:'🏒', MLB:'⚾', NCAAB:'🏀', NCAAF:'🏈', UFC:'🥊' };
+// Live values populated by fetchSportRegistry(); default to fallback until then.
+// Exported as `let` so the fetch can mutate them and any subsequent render
+// sees the updated list. Same pattern the app already uses for feature_flags.
+let SPORTS: string[] = [...SPORTS_FALLBACK];
+let SPORT_EMOJI: Record<string,string> = {...SPORT_EMOJI_FALLBACK};
 const BOOKMAKER_MAP = {
   'draftkings':'DraftKings','fanduel':'FanDuel','espnbet':'ESPN Bet',
   'betmgm':'BetMGM','caesars':'Caesars','bet365':'Bet365',
@@ -1532,6 +1544,7 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
 };
 
   export default function App() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState('home');
   const [mybetsTab, setMybetsTab] = useState('picks');
   const [onboardingDone, setOnboardingDone] = useState(true);
@@ -1591,6 +1604,16 @@ const [sweatCardLoading, setSweatCardLoading] = useState(false);
   // Fail-safe default: missing flag = disabled (launch flow must explicitly
   // enable each sport/feature).
   const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({});
+  // 2026-08-09: sport registry rev-counter. fetchSportRegistry mutates the
+  // module-level SPORTS + SPORT_EMOJI (module-level so any component reading
+  // them sees the update); this counter is only to trigger a re-render on
+  // the mutation. Read at render-time so the component re-runs when it bumps.
+  const [sportRegistryRev, setSportRegistryRev] = useState(0);
+  // Per-sport metadata (state, notes, tab_scope, return_date, ladder_eligible)
+  // Populated by fetchSportRegistry. Keyed by sport code. Enables per-sport
+  // Today/Tomorrow notes + off-season banners + adaptive tab labels without
+  // hardcoding any of it in the component tree.
+  const [sportMeta, setSportMeta] = useState<Record<string, any>>({});
   const isFeatureOn = React.useCallback((sport: string, feature: string) => {
     // Fail-OPEN when the flag map hasn't loaded yet (network delay,
     // pre-fetch first render, offline). Prevents sport tabs from
@@ -1675,6 +1698,10 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [hrWatchOpen, setHrWatchOpen] = useState(false);
   const [ufcEvent, setUfcEvent] = useState<any>(null);
   const [ufcPicks, setUfcPicks] = useState<any[]>([]);
+  // 2026-08-09: keyed by game_id (e.g. "ufc_2026-08-09_5"), value = Jerry
+  // synth row {short_read, conviction, call_verdict, call_side}. Used to
+  // surface Jerry snippet inline on each UFC card fight row.
+  const [ufcJerryByGame, setUfcJerryByGame] = useState<Record<string, any>>({});
   const [expandedPropJerry, setExpandedPropJerry] = useState(null);
   const [roiChartTab, setRoiChartTab] = useState('cumulative');
   const [roiTimeRange, setRoiTimeRange] = useState('all');
@@ -1698,6 +1725,10 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [bartData, setBartData] = useState([]);
   const [gamesSearch, setGamesSearch] = useState('');
   const [gamesSort, setGamesSort] = useState('time');
+  // Prime Only filter (2026-08-13): filters game list to PRIME-tier picks
+  // only, orthogonal to sort mode. Users who want maximum-signal games only
+  // toggle this on; sort mode still determines ordering of what's visible.
+  const [gamesPrimeOnly, setGamesPrimeOnly] = useState(false);
    const [fanmatchData, setFanmatchData] = useState({});
   const [nbaTeamData, setNbaTeamData] = useState({});
   const [nbaInjuryData, setNbaInjuryData] = useState<Record<string, any[]>>({});
@@ -1816,6 +1847,7 @@ useEffect(() => {
     lastMLBRefreshAt.current = Date.now();
     fetchSweatCard();
     fetchFeatureFlags();
+    fetchSportRegistry();
     fetchDailyBestBet();
     fetchDawgOfDay();
     fetchMLBGameContext();  // ← sweat scores per game
@@ -1964,8 +1996,10 @@ useEffect(() => {
     setEvLoading(true);
     try {
       const noHistoryScore = ['soccer_epl','soccer_usa_mls','golf_masters_tournament_winner'].includes(SPORT_KEYS[sport]);
-      const supported = ['NBA','NFL','NHL','MLB','NCAAB','NCAAF'];
-      if(!supported.includes(sport)) return [];
+      // 2026-08-09: source supported list from live SPORTS (fetched from
+      // sport_registry). UFC excluded because Odds API MMA endpoint uses a
+      // different market schema this function doesn't handle.
+      if(!SPORTS.includes(sport) || sport === 'UFC') return [];
       const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
   params: {
     apiKey: ODDS_API_KEY,
@@ -2729,6 +2763,10 @@ if(r.data && r.data.data) {
   const SWEAT_TIER_DISPLAY = {
     PRIME:      {label:'🔥 PRIME PLAY',  color:THEME.loss},
     STRONG:     {label:'✅ STRONG LEAN', color:THEME.accent},
+    LEAN:       {label:'📊 LEAN',        color:THEME.accentDeep},
+    // 2026-08-09: READ = analytical take, thin edge — Jerry has a directional
+    // read but no strong tier signal. Non-actionable but shown for transparency.
+    READ:       {label:'👁️ READ',        color:TIER_COLOR.READ},
     LIGHT_LEAN: {label:'👀 LIGHT LEAN',  color:THEME.push},
     LIGHT:      {label:'👀 LIGHT LEAN',  color:THEME.push},
     PASS:       {label:'❌ PASS',        color:THEME.textMuted},
@@ -5024,7 +5062,7 @@ const fetchJerryRecord = async () => {
     let jerrySynthesis = {
       total: {wins: 0, losses: 0, push: 0, no_action: 0},
       last30: {wins: 0, losses: 0},
-      byMarket: {ml: {wins:0,losses:0}, rl: {wins:0,losses:0}, total: {wins:0,losses:0}},
+      byMarket: {ml: {wins:0,losses:0}, rl: {wins:0,losses:0}, total: {wins:0,losses:0}, fight: {wins:0,losses:0}},
       bySport: {},
     };
     try {
@@ -5062,10 +5100,11 @@ const fetchJerryRecord = async () => {
       total: {wins: 0, losses: 0, push: 0, no_action: 0},
       last30: {wins: 0, losses: 0},
       byVerdict: {BACK: {wins:0,losses:0}, FADE: {wins:0,losses:0}},
+      bySport: {} as Record<string,{wins:number,losses:number}>,
     };
     try {
       const {data: pRows} = await supabase.from('prop_jerry_reads')
-        .select('call_verdict,result,game_date')
+        .select('sport,call_verdict,result,game_date')
         .not('result', 'is', null)
         .order('game_date', {ascending: false}).limit(2000);
       if (pRows) {
@@ -5084,6 +5123,13 @@ const fetchJerryRecord = async () => {
           if ((v === 'BACK' || v === 'FADE') && propJerry.byVerdict[v]) {
             if (w) propJerry.byVerdict[v].wins++;
             else if (l) propJerry.byVerdict[v].losses++;
+          }
+          // 2026-08-09: bySport aggregation for multi-sport receipts card.
+          const sp = (r.sport || '').toUpperCase();
+          if (sp) {
+            if (!propJerry.bySport[sp]) propJerry.bySport[sp] = {wins:0, losses:0};
+            if (w) propJerry.bySport[sp].wins++;
+            else if (l) propJerry.bySport[sp].losses++;
           }
         }
       }
@@ -5140,13 +5186,43 @@ const fetchFeatureFlags = async () => {
   } catch (e) { console.warn('[feature_flags]', (e as any)?.message); }
 };
 
+// Sport registry loader (2026-08-09). Fetches the canonical sport catalog
+// from `sport_registry` table and mutates the module-level SPORTS +
+// SPORT_EMOJI so all downstream renders pick up new sports / emoji changes
+// on the next state update. Non-blocking + fail-safe: if the fetch errors,
+// SPORTS/SPORT_EMOJI keep the FALLBACK constants and the app still works.
+// Bumps sportRegistryRev (a component state, declared alongside featureFlags)
+// to force any dependent render to re-run after the mutation lands.
+const fetchSportRegistry = async () => {
+  try {
+    const {data} = await supabase.from('sport_registry')
+      .select('sport,emoji,display_order,active,state,state_message,today_note,tomorrow_note,tab_scope,return_date,ladder_eligible')
+      .eq('active', true)
+      .order('display_order', {ascending: true});
+    if (data && data.length > 0) {
+      SPORTS = (data as any[]).map(r => r.sport);
+      SPORT_EMOJI = (data as any[]).reduce((acc: Record<string,string>, r: any) => {
+        acc[r.sport] = r.emoji; return acc;
+      }, {});
+      const meta: Record<string,any> = {};
+      (data as any[]).forEach(r => { meta[r.sport] = r; });
+      setSportMeta(meta);
+      setSportRegistryRev(v => v + 1);
+    }
+  } catch (e) { console.warn('[sport_registry]', (e as any)?.message); }
+};
+
 const fetchSweatCard = async () => {
   setSweatCardLoading(true);
   try {
     const { data: rows } = await supabase.rpc('get_todays_sweat_card');
     const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
     if (row?.data) {
-      setSweatCard(row.data);
+      // 2026-08-09: pass through server timestamp so card can render a
+      // "data as of X" freshness stamp. RPC returns `fetched_at` alongside
+      // `data`; embed it in the payload so downstream renders see it via
+      // sweatCard.fetched_at_iso without threading extra state.
+      setSweatCard({...row.data, fetched_at_iso: (row as any).fetched_at || null});
     } else {
       setSweatCard({ noCard: true });
     }
@@ -6761,6 +6837,22 @@ if(mkt.key === 'pitcher_props') {
       setUfcPicks(picks || []);
     } catch {
       setUfcPicks([]);
+    }
+    // 2026-08-09: pull per-fight Jerry synth from jerry_reads (sport=UFC)
+    // for the card date so the UFC card can show Jerry's short_read
+    // inline. Falls back cleanly if no reads exist yet (Wed cron hasn't run).
+    try {
+      const {data: ufcJ} = await supabase.from('jerry_reads')
+        .select('game_id,call_side,call_verdict,conviction,short_read')
+        .eq('sport', 'UFC')
+        .not('short_read', 'is', null)
+        .order('generated_at', {ascending: false})
+        .limit(50);
+      const byGameId: Record<string, any> = {};
+      for (const row of (ufcJ || [])) byGameId[(row as any).game_id] = row;
+      setUfcJerryByGame(byGameId);
+    } catch {
+      setUfcJerryByGame({});
     }
   };
 
@@ -10067,74 +10159,74 @@ setJerryHistory(prev => {
   return(
     <View style={styles.container}>
       {!onboardingDone&&(
+        // 2026-08-09 expanded to 3 steps for launch: Welcome → How to Read the
+        // Card (tier hierarchy visual) → Age Gate. Middle step teaches users
+        // the tier vocabulary before they hit the app so PRIME/STRONG/LEAN/READ
+        // aren't opaque on first render. FAQ still owns the deep-dive.
         <View style={{position:'absolute',top:0,left:0,right:0,bottom:0,backgroundColor:THEME.bgModal,zIndex:999,justifyContent:'space-between',padding:30,paddingTop:80,paddingBottom:50}}>
           {onboardingStep===0&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🔒</Text>
               <Text style={{color:THEME.text,fontWeight:'900',fontSize:34,textAlign:'center',marginBottom:12,letterSpacing:1}}>THE SWEAT LOCKER</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>More Data, Less Sweat.</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>A real sports analytics app. Every model, every external opinion, every market signal — read by one analyst voice, graded every night.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22,marginBottom:24}}>Daily sports analytics. Every model, every external opinion, every market signal — read by one analyst voice, graded every night.</Text>
+              <TouchableOpacity
+                style={{borderWidth:1,borderColor:THEME.accent,borderRadius:12,paddingHorizontal:20,paddingVertical:12}}
+                onPress={async()=>{
+                  await AsyncStorage.setItem('sweatlocker_onboarded','true');
+                  setOnboardingDone(true);
+                  setTimeout(()=>router.push('/faq'),100);
+                }}
+              >
+                <Text style={{color:THEME.accent,fontWeight:'700',fontSize:14}}>📖 Learn how it works</Text>
+              </TouchableOpacity>
             </View>
           )}
           {onboardingStep===1&&(
-            <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>🧠</Text>
-              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Meet Jerry</Text>
-              <Text style={{color:THEME.accent,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Your analyst voice</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>Jerry reads every angle for you:{'\n\n'}📊 Every internal model (Monte Carlo · Panel · V4 · Cohorts){'\n'}🎤 Every external handicapper (17+ sources){'\n'}💰 Sharp money flow · public splits{'\n'}⚾ Sport-specific signals (xERA · L5 form · matchup){'\n\n'}Then he tells you the play — one call per game with conviction 0-100 and a short "why". No touty voice. Analyst voice.</Text>
-            </View>
+            <ScrollView contentContainerStyle={{flexGrow:1,justifyContent:'center'}} showsVerticalScrollIndicator={false}>
+              <View style={{alignItems:'center'}}>
+                <Text style={{fontSize:44,marginBottom:12}}>📊</Text>
+                <Text style={{color:THEME.text,fontWeight:'900',fontSize:26,textAlign:'center',marginBottom:8}}>How to Read a Pick</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:20,paddingHorizontal:10}}>Every pick carries a tier — that's Jerry's conviction level. Higher tier = more signals aligned in the same direction.</Text>
+                {/* Tier hierarchy visual */}
+                <View style={{width:'100%',gap:8,marginBottom:20}}>
+                  {[
+                    {tier:'PRIME',  color:TIER_COLOR.PRIME,  label:'PRIME',  desc:'Top signal · multiple models + audits aligned · rare'},
+                    {tier:'STRONG', color:TIER_COLOR.STRONG, label:'STRONG', desc:'Real edge · 2-3 signals aligned · daily volume'},
+                    {tier:'LEAN',   color:TIER_COLOR.LEAN,   label:'LEAN',   desc:'Soft directional edge worth noting'},
+                    {tier:'READ',   color:TIER_COLOR.READ,   label:'READ',   desc:'Analytical take · thin edge · non-actionable'},
+                  ].map(t=>(
+                    <View key={t.tier} style={{flexDirection:'row',alignItems:'center',backgroundColor:THEME.surface,borderRadius:10,padding:10,borderLeftWidth:4,borderLeftColor:t.color}}>
+                      <View style={{backgroundColor:t.color+'22',paddingHorizontal:10,paddingVertical:4,borderRadius:6,minWidth:70,alignItems:'center'}}>
+                        <Text style={{color:t.color,fontWeight:'900',fontSize:11,letterSpacing:0.5}}>{t.label}</Text>
+                      </View>
+                      <Text style={{color:THEME.textDim,fontSize:11,marginLeft:10,flex:1,lineHeight:15}}>{t.desc}</Text>
+                    </View>
+                  ))}
+                </View>
+                <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16,paddingHorizontal:10}}>Every pick is graded when the game finishes. Check the Receipts tab any time to see the running record.</Text>
+              </View>
+            </ScrollView>
           )}
           {onboardingStep===2&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>📋</Text>
-              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Every Read Graded</Text>
-              <Text style={{color:THEME.win,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Transparency is the moat</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>Every Jerry read gets graded post-game. Wins AND losses shown, no hiding.{'\n\n'}📈 Live 30-day record for every call type{'\n'}🎯 Auto-resolver grades your logged bets too — no click-through-each-one{'\n'}⚖️ Every external source tracked by 30d W/L so Jerry can weigh who's actually right lately{'\n\n'}You bet on people. We track ours in the open.</Text>
-            </View>
-          )}
-          {onboardingStep===3&&(
-            <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>🏟</Text>
-              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Your Daily Slate</Text>
-              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>MLB · NBA · NFL · UFC · NCAAB · NCAAF</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>Every game card shows Jerry's call + conviction + a 40-60 word take. Tap for the deep breakdown:{'\n\n'}🎤 Jerry's full analysis (~200-300 words){'\n'}📊 Model consensus — MC · Panel · V4{'\n'}💰 Money Flow — sharp vs public split{'\n'}📈 Line movement · opening → current{'\n'}⚡ Book comparison across sportsbooks{'\n\n'}One-tap Log Pick or Add to Parlay from any line.</Text>
-            </View>
-          )}
-          {onboardingStep===4&&(
-            <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>🎯</Text>
-              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Prop Jerry + Sweat Card</Text>
-              <Text style={{color:THEME.sharp,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Every angle, ranked</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>🎯 Prop Jerry — 40+ player props daily with Jerry's BACK / FADE / PASS call and conviction. Weights refit weekly against actual outcomes.{'\n\n'}🔥 Sweat Card — Jerry's shortlist: Play of the Day + Dawg + Daily Degen parlay. One curated headline.{'\n\n'}Every pick tracked. Every miss explained.</Text>
-            </View>
-          )}
-          {onboardingStep===5&&(
-            <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <Text style={{fontSize:64,marginBottom:24}}>⏰</Text>
-              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>When to Check</Text>
-              <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>Two locks daily</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>⏰ AM read (by 11am ET){'\n'}Jerry's early call on pre-lineup data. Labeled "AM · updates 2pm ET" so you know it'll refresh.{'\n\n'}⏰ Final read (by 4pm ET){'\n'}Confirmed lineups, late externals, full money flow. This is the definitive call for the night.{'\n\n'}Open anytime — Jerry stays fresh.</Text>
-            </View>
-          )}
-          {onboardingStep===6&&(
-            <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>⚠️</Text>
-              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>One More Thing</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>The Sweat Locker provides data analysis for entertainment purposes only.{'\n\n'}Past performance is not indicative of future results.{'\n\n'}Must be 18+ to use this app. Know your local laws and gamble responsibly.</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Before You Enter</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>The Sweat Locker provides data analysis for entertainment purposes only.{'\n\n'}Past performance is not indicative of future results.{'\n\n'}Must be of legal betting age in your jurisdiction (18-21+ depending on state). Know your local laws and gamble responsibly.{'\n\n'}Need help? 1-800-GAMBLER available 24/7.</Text>
             </View>
           )}
           <View style={{flexDirection:'row',justifyContent:'center',gap:8,marginBottom:28}}>
-            {[0,1,2,3,4,5,6].map(i=>(
+            {[0,1,2].map(i=>(
               <View key={i} style={{width:i===onboardingStep?24:8,height:8,borderRadius:4,backgroundColor:i===onboardingStep?HRB_COLOR:THEME.border}}/>
             ))}
           </View>
           <View style={{gap:12}}>
-            {onboardingStep<6?(
+            {onboardingStep<2?(
               <TouchableOpacity
                 style={{backgroundColor:HRB_COLOR,borderRadius:14,padding:18,alignItems:'center'}}
                 onPress={()=>setOnboardingStep(s=>s+1)}
               >
-                <Text style={{color:'#000',fontWeight:'900',fontSize:17}}>Next →</Text>
+                <Text style={{color:'#000',fontWeight:'900',fontSize:17}}>{onboardingStep===0?'Show me →':'Continue →'}</Text>
               </TouchableOpacity>
             ):(
               <TouchableOpacity
@@ -10144,7 +10236,7 @@ setJerryHistory(prev => {
                   setOnboardingDone(true);
                 }}
               >
-                <Text style={{color:'#000',fontWeight:'900',fontSize:17}}>Let's Sweat 🔒</Text>
+                <Text style={{color:'#000',fontWeight:'900',fontSize:17}}>I'm of legal age · Let's Sweat 🔒</Text>
               </TouchableOpacity>
             )}
             {onboardingStep>0&&(
@@ -10153,17 +10245,6 @@ setJerryHistory(prev => {
                 onPress={()=>setOnboardingStep(s=>s-1)}
               >
                 <Text style={{color:THEME.textMuted,fontSize:13}}>← Back</Text>
-              </TouchableOpacity>
-            )}
-            {onboardingStep<6&&(
-              <TouchableOpacity
-                style={{alignItems:'center',padding:10}}
-                onPress={async()=>{
-                  await AsyncStorage.setItem('sweatlocker_onboarded','true');
-                  setOnboardingDone(true);
-                }}
-              >
-                <Text style={{color:THEME.textMuted,fontSize:13}}>Skip</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -10305,7 +10386,34 @@ setJerryHistory(prev => {
       <Text style={{color:THEME.accent,fontWeight:'800',fontSize:13,letterSpacing:1}}>🔥 TODAY'S SWEAT CARD</Text>
       <Text style={{color:THEME.textDim,fontSize:10}}>{sweatCard.slate_date} • {sweatCard.top_8?.length || 8} picks</Text>
     </View>
-    <Text style={{color:THEME.textMuted,fontSize:10,marginBottom:12,fontStyle:'italic'}}>Curated • backed by audit-driven cohorts • updates as lineups confirm</Text>
+    <Text style={{color:THEME.textMuted,fontSize:10,marginBottom:6,fontStyle:'italic'}}>Curated • backed by audit-driven cohorts • updates as lineups confirm</Text>
+    {/* 2026-08-09 data-freshness stamp: shows relative time since last card
+        build. Uses jerry_cache.fetched_at (server-set on every generate_sweat_card
+        run). Signals to users when a cron miss + stale card is being displayed
+        — critical during GHA outages so users don't act on old lines. Color-
+        graded: <30min = normal, 30min-3h = accent, >3h = warn. */}
+    {sweatCard.fetched_at_iso && (()=>{
+      const then = new Date(sweatCard.fetched_at_iso);
+      const mins = Math.max(0, Math.round((Date.now() - then.getTime())/60000));
+      const label = mins < 1 ? 'just now'
+                  : mins < 60 ? `${mins} min ago`
+                  : mins < 60*24 ? `${Math.floor(mins/60)}h ${mins%60}m ago`
+                  : `${Math.floor(mins/(60*24))}d ago`;
+      const color = mins > 180 ? THEME.warn : mins > 30 ? THEME.textDim : THEME.textMuted;
+      const stale = mins > 180;
+      return (
+        <View style={{flexDirection:'row',alignItems:'center',gap:4,marginBottom:12}}>
+          <Text style={{color, fontSize: 9, fontWeight: '700'}}>
+            {stale ? '⚠ ' : '•'} Data as of {label}
+          </Text>
+          {stale && (
+            <Text style={{color: THEME.warn, fontSize: 9, fontWeight: '700', fontStyle: 'italic'}}>
+              stale — pipeline may have missed a run
+            </Text>
+          )}
+        </View>
+      );
+    })()}
 
     {/* 🎯 THE CURATED 8 — lead picks, server-driven from sweatCard.top_8 */}
     {Array.isArray(sweatCard.top_8) && sweatCard.top_8.length > 0 && (
@@ -10706,7 +10814,7 @@ setJerryHistory(prev => {
         <Text style={{color:THEME.textMuted,fontSize:13}}>Jerry is finding today's best play...</Text>
       </View>
     ) : dailyBestBet?.waiting ? (
-      <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>Jerry's Play of the Day generates after the morning pipeline runs. Data locks in by 11am ET with pitcher matchups and NRFI scores, then refreshes by 4pm ET with confirmed lineups and umpires.</Text>
+      <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>Jerry's Play of the Day generates after the morning pipeline runs. Full data locks in a few hours before first game with confirmed lineups + closing lines.</Text>
     ) : dailyBestBet?.noGames ? (
       <Text style={{color:THEME.textDim,fontSize:13}}>No games on the slate today. Check back tomorrow.</Text>
     ) : dailyBestBet?.noPrime ? (
@@ -11053,22 +11161,50 @@ setJerryHistory(prev => {
           <View>
             <Text style={styles.pageTitle}>Games</Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
-              {/* 'yesterday' removed 2026-05-06 — pipeline doesn't backfill resolved
-                  games into the games view; tab rendered blank. Future work: repurpose
-                  into 'Yesterday's Audit' showing W/L grades on prior-day picks. */}
-              {['today','tomorrow'].map(d=>(
-                <TouchableOpacity key={d} style={[styles.chipBtn,gamesDay===d&&styles.chipBtnActive,{flex:1,alignItems:'center'}]} onPress={()=>setGamesDay(d)}>
-                  <Text style={[styles.chipTxt,gamesDay===d&&styles.chipTxtActive]}>{d.charAt(0).toUpperCase()+d.slice(1)}</Text>
-                </TouchableOpacity>
-              ))}
+              {/* 2026-08-13: tab labels driven by sport_registry.tab_scope
+                  ('daily' → Today/Tomorrow, 'weekly' → This Week/Next Week,
+                  'event' → This Card/Next Card). Falls back to Today/Tomorrow
+                  when the sport's meta hasn't loaded yet. */}
+              {(() => {
+                const scope = sportMeta[gamesSport]?.tab_scope || 'daily';
+                const labels = scope === 'weekly'
+                  ? [{id:'today',label:'This Week'},{id:'tomorrow',label:'Next Week'}]
+                  : scope === 'event'
+                  ? [{id:'today',label:'This Card'},{id:'tomorrow',label:'Next Card'}]
+                  : [{id:'today',label:'Today'},{id:'tomorrow',label:'Tomorrow'}];
+                return labels.map(l => (
+                  <TouchableOpacity key={l.id} style={[styles.chipBtn,gamesDay===l.id&&styles.chipBtnActive,{flex:1,alignItems:'center'}]} onPress={()=>setGamesDay(l.id)}>
+                    <Text style={[styles.chipTxt,gamesDay===l.id&&styles.chipTxtActive]}>{l.label}</Text>
+                  </TouchableOpacity>
+                ));
+              })()}
             </View>
-            {gamesDay==='tomorrow' && (
-              <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:10,padding:10,marginBottom:12,borderLeftWidth:3,borderLeftColor:THEME.textDim}}>
-                <Text style={{color:THEME.textDim,fontSize:11,lineHeight:16}}>
-                  Preview — probable pitchers, opening lines, weather, and stat projections refresh by 4pm ET today. Confirmed lineups, conviction tiers, and final picks land by 11am ET tomorrow.
+            {/* State banner (2026-08-13): renders whenever state_message is set,
+                regardless of state. In-season sports use it for disclaimers
+                (e.g., NHL "market model only"); off-season sports use it for
+                return-date messaging. Zero hardcodes — operator edits the
+                sport_registry row. */}
+            {sportMeta[gamesSport]?.state_message && (
+              <View style={{backgroundColor: sportMeta[gamesSport].state === 'in_season' ? 'rgba(122,146,168,0.1)' : 'rgba(212,163,60,0.1)', borderRadius:10, padding:10, marginBottom:12, borderLeftWidth:3, borderLeftColor: sportMeta[gamesSport].state === 'in_season' ? THEME.textDim : (THEME.gold || '#f5b342')}}>
+                <Text style={{color:THEME.text,fontSize:11.5,lineHeight:16,fontWeight:'600'}}>
+                  {sportMeta[gamesSport].state === 'preseason' ? '🏁' : sportMeta[gamesSport].state === 'off_season' ? '⏸' : sportMeta[gamesSport].state === 'returning' ? '⏳' : 'ℹ️'}  {sportMeta[gamesSport].state_message}
                 </Text>
               </View>
             )}
+            {/* Per-sport Today/Tomorrow notes from config (null = no note rendered) */}
+            {(() => {
+              const note = gamesDay === 'today'
+                ? sportMeta[gamesSport]?.today_note
+                : sportMeta[gamesSport]?.tomorrow_note;
+              if (!note) return null;
+              return (
+                <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:10,padding:10,marginBottom:12,borderLeftWidth:3,borderLeftColor:THEME.textDim}}>
+                  <Text style={{color:THEME.textDim,fontSize:11,lineHeight:16}}>
+                    {note}
+                  </Text>
+                </View>
+              );
+            })()}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
               <View style={{flexDirection:'row',gap:6}}>
                 {SPORTS.filter(s=>isFeatureOn(s,'sport_tab')).map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,gamesSport===s&&styles.chipBtnActive]} onPress={()=>setGamesSport(s)}><Text style={[styles.chipTxt,gamesSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text></TouchableOpacity>))}
@@ -11090,14 +11226,30 @@ setJerryHistory(prev => {
     </TouchableOpacity>
   )}
 </View>
-<View style={{flexDirection:'row',gap:6,marginBottom:14}}>
-  {[{id:'time',label:'⏰ Time'},{id:'score',label:'🔥 Sweat Score'},{id:'hrb',label:'🎸 HRB First'}].map(s=>(
+<View style={{flexDirection:'row',gap:6,marginBottom:8}}>
+  {/* 2026-08-13 filter redesign: sort chips + independent Prime Only toggle.
+      Removed 'HRB First' book-specific sort (moved to per-user setting).
+      Renamed 'Sweat Score' → 'Conviction' to align with the PRIME/STRONG/LEAN
+      language users see everywhere else. Added 'Best Edge' (model-vs-market
+      delta) since Games tab was missing an edge-sorted view. */}
+  {[
+    {id:'time', label:'⏰ Time'},
+    {id:'score', label:'🎯 Conviction'},
+    {id:'edge', label:'📊 Best Edge'},
+  ].map(s=>(
     <TouchableOpacity key={s.id}
       style={[styles.chipBtn,gamesSort===s.id&&styles.chipBtnActive,{flex:1,justifyContent:'center',alignItems:'center'}]}
       onPress={()=>setGamesSort(s.id)}>
       <Text style={[styles.chipTxt,gamesSort===s.id&&styles.chipTxtActive,{textAlign:'center'}]}>{s.label}</Text>
     </TouchableOpacity>
   ))}
+</View>
+<View style={{flexDirection:'row',gap:6,marginBottom:14}}>
+  <TouchableOpacity
+    style={[styles.chipBtn,gamesPrimeOnly&&styles.chipBtnActive,{flex:1,justifyContent:'center',alignItems:'center'}]}
+    onPress={()=>setGamesPrimeOnly(v=>!v)}>
+    <Text style={[styles.chipTxt,gamesPrimeOnly&&styles.chipTxtActive,{textAlign:'center'}]}>🔒 Prime Only {gamesPrimeOnly?'✓':''}</Text>
+  </TouchableOpacity>
 </View>
 
            {/* L1 pre-pipeline banner (2026-05-19): shows during the
@@ -11155,10 +11307,17 @@ setJerryHistory(prev => {
     )}
     <Text style={{color:THEME.textMuted,fontSize:10,marginTop:6}}>{ufcEvent.fight_card?.length || 0}-fight card • Model pick per fight below</Text>
 
-    {/* Full fight-card list (2026-08-01 F): renders every fight on the card
-        with model pick + win% + method distribution. Fills the "UFC tab looks
-        blank" gap when the shared MLB-shaped game card can't populate. Tap
-        a row to see the full fight breakdown. */}
+    {/* 2026-08-09 UFC card redesign: match MLB card polish.
+        Changes from 8/01 F version:
+          - Sort by conviction DESC (best picks first, not card order)
+          - Tier chip using TIER_COLOR palette (matches MLB PRIME/STRONG/LEAN)
+          - Best odds displayed inline (from odds_a_best/odds_b_best)
+          - EV % chip when +EV (from ev_side_a/b matched to recommended_side)
+          - Method breakdown (KO/DEC/SUB) always shown when available
+          - Jerry short_read snippet inline (from jerry_reads sport=UFC, keyed
+            by ufc_<event_date>_<fight_order> convention)
+          - Method + likely round called out on the pick row (e.g. "DEC · R3")
+          - Sharp-fade / SKIP tier flagged (ev_tier=SKIP muted) */}
     {ufcEvent.fight_card && ufcEvent.fight_card.length > 2 && (()=>{
       // Match each fight_card row to a ufc_picks row by last-name pair
       const rows = ufcEvent.fight_card.map((f:any, idx:number) => {
@@ -11170,50 +11329,139 @@ setJerryHistory(prev => {
           const pbLast = String(p.fighter_b || '').split(' ').pop()?.toLowerCase() || '';
           return (paLast === f1Last && pbLast === f2Last) || (paLast === f2Last && pbLast === f1Last);
         });
-        return { f, pick, idx };
+        return { f, pick, cardOrder: idx };
       });
+      // Sort by conviction DESC (best picks first). Rows without conviction
+      // fall to bottom so users see the sharpest edges up top.
+      const sorted = [...rows].sort((a, b) =>
+        (b.pick?.conviction_winner ?? -1) - (a.pick?.conviction_winner ?? -1));
       return (
         <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:THEME.combat + '33'}}>
-          <Text style={{color:THEME.combat,fontSize:10,fontWeight:'800',letterSpacing:0.7,marginBottom:8}}>FULL CARD</Text>
-          {rows.map(({f, pick}:any, idx:number) => {
-            const winPct = pick ? (
-              String(pick.fighter_a || '').toLowerCase() === String(pick.recommended_side || '').toLowerCase() ||
-              String(pick.recommended_side || '').toLowerCase() === 'a'
-                ? Math.round((pick.p_winner_a || 0) * 100)
-                : Math.round((1 - (pick.p_winner_a || 0)) * 100)
-            ) : null;
-            const pickName = pick ? (
-              (pick.recommended_side || '').toLowerCase() === 'a' ? pick.fighter_a : pick.fighter_b
-            ) : null;
+          <Text style={{color:THEME.combat,fontSize:10,fontWeight:'800',letterSpacing:0.7,marginBottom:8}}>
+            FULL CARD  ·  SORTED BY CONVICTION
+          </Text>
+          {sorted.map(({f, pick, cardOrder}:any, idx:number) => {
+            const isMain = cardOrder === 0;
+            const sideA = String(pick?.recommended_side || '').toLowerCase() === 'a';
+            const pickName = pick ? (sideA ? pick.fighter_a : pick.fighter_b) : null;
+            const winPct = pick ? Math.round((sideA ? pick.p_winner_a : (1 - (pick.p_winner_a || 0))) * 100) : null;
             const conv = pick?.conviction_winner;
-            const methodKO = pick?.p_method_ko != null ? Math.round(pick.p_method_ko * 100) : null;
-            const methodDec = pick?.p_method_dec != null ? Math.round(pick.p_method_dec * 100) : null;
+            const tier = pick?.tier_winner as 'PRIME'|'STRONG'|'LEAN'|'PASS'|undefined;
+            // Best odds for the pick side (decimal → american)
+            const oddsDec = pick ? (sideA ? pick.odds_a_best : pick.odds_b_best) : null;
+            const oddsAmerican = oddsDec ? (
+              oddsDec >= 2 ? `+${Math.round((oddsDec - 1) * 100)}`
+                            : `-${Math.round(100 / (oddsDec - 1))}`
+            ) : null;
+            // EV for the pick side
+            const evPct = pick ? (sideA ? pick.ev_side_a : pick.ev_side_b) : null;
+            const isPositiveEV = evPct != null && evPct > 0;
+            const isSkip = pick?.ev_tier === 'SKIP';
+            // Method + likely round
+            const kos = pick?.p_method_ko != null ? Math.round(pick.p_method_ko * 100) : null;
+            const decs = pick?.p_method_dec != null ? Math.round(pick.p_method_dec * 100) : null;
+            const subs = pick?.p_method_sub != null ? Math.round(pick.p_method_sub * 100) : null;
+            const methodMax = pick?.edge_method || (kos && decs && subs
+              ? (kos >= decs && kos >= subs ? 'KO' : decs >= subs ? 'DEC' : 'SUB')
+              : null);
+            const rounds = pick ? [
+              {r:1,p:pick.p_round_1||0},{r:2,p:pick.p_round_2||0},{r:3,p:pick.p_round_3||0},
+              {r:4,p:pick.p_round_4||0},{r:5,p:pick.p_round_5||0},
+            ] : [];
+            const topRound = rounds.length ? rounds.reduce((a,b) => b.p > a.p ? b : a) : null;
+            // Jerry snippet lookup
+            const jerryKey = pick ? `ufc_${pick.event_date}_${pick.fight_order}` : null;
+            const jerry = jerryKey ? (ufcJerryByGame as any)[jerryKey] : null;
+            const tierColor = tier && TIER_COLOR ? (TIER_COLOR as any)[tier] : THEME.textMuted;
             return (
-              <View key={idx} style={{flexDirection:'row',alignItems:'center',paddingVertical:8,borderBottomWidth: idx < rows.length - 1 ? 1 : 0,borderBottomColor:THEME.border + '30'}}>
-                <View style={{flex:1}}>
-                  <Text style={{color:THEME.text,fontSize:12,fontWeight:'600'}} numberOfLines={1}>
-                    {f.fighter1} <Text style={{color:THEME.textMuted}}>vs</Text> {f.fighter2}
-                  </Text>
-                  {pickName && (
-                    <View style={{flexDirection:'row',alignItems:'center',gap:6,marginTop:3}}>
-                      <Text style={{color:THEME.accent,fontSize:11,fontWeight:'700'}}>{pickName}</Text>
-                      {winPct != null && <Text style={{color:THEME.textDim,fontSize:10}}>{winPct}%</Text>}
-                      {methodKO != null && methodDec != null && (
-                        <Text style={{color:THEME.textMuted,fontSize:9}}>
-                          KO {methodKO}% · DEC {methodDec}%
-                        </Text>
+              <View key={idx} style={{
+                paddingVertical:10, paddingHorizontal:isMain ? 10 : 8,
+                borderBottomWidth: idx < sorted.length - 1 ? 1 : 0,
+                borderBottomColor: THEME.border + '30',
+                backgroundColor: isMain ? THEME.combat + '10' : 'transparent',
+                borderRadius: isMain ? 8 : 0,
+                marginTop: isMain ? 2 : 0,
+              }}>
+                {/* Fight header row */}
+                <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between'}}>
+                  <View style={{flex:1,paddingRight:8}}>
+                    <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:2}}>
+                      {isMain && <Text style={{color:THEME.combat,fontSize:9,fontWeight:'800',letterSpacing:0.5}}>MAIN</Text>}
+                      {tier && !isSkip && (
+                        <View style={{backgroundColor: tierColor + '26', paddingHorizontal:6, paddingVertical:1, borderRadius:4}}>
+                          <Text style={{color: tierColor, fontSize:9, fontWeight:'800', letterSpacing:0.4}}>{tier}</Text>
+                        </View>
+                      )}
+                      {isSkip && (
+                        <View style={{backgroundColor: THEME.textMuted + '18', paddingHorizontal:6, paddingVertical:1, borderRadius:4}}>
+                          <Text style={{color: THEME.textMuted, fontSize:9, fontWeight:'700', letterSpacing:0.4}}>SKIP</Text>
+                        </View>
+                      )}
+                      {isPositiveEV && (
+                        <View style={{backgroundColor: THEME.win + '20', paddingHorizontal:6, paddingVertical:1, borderRadius:4}}>
+                          <Text style={{color: THEME.win, fontSize:9, fontWeight:'800'}}>+{evPct!.toFixed(1)}% EV</Text>
+                        </View>
                       )}
                     </View>
-                  )}
-                  {!pickName && (
-                    <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>No model pick</Text>
+                    <Text style={{color:THEME.text,fontSize:12,fontWeight:'600'}} numberOfLines={1}>
+                      {f.fighter1} <Text style={{color:THEME.textMuted}}>vs</Text> {f.fighter2}
+                    </Text>
+                    {pickName ? (
+                      <View style={{flexDirection:'row',alignItems:'center',flexWrap:'wrap',gap:6,marginTop:4}}>
+                        <Text style={{color:THEME.accent,fontSize:12,fontWeight:'700'}}>{pickName}</Text>
+                        {oddsAmerican && (
+                          <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'600'}}>{oddsAmerican}</Text>
+                        )}
+                        {winPct != null && (
+                          <Text style={{color:THEME.textDim,fontSize:10}}>{winPct}% model</Text>
+                        )}
+                        {methodMax && topRound && (
+                          <Text style={{color:THEME.textMuted,fontSize:9}}>
+                            · {methodMax} · R{topRound.r} {Math.round(topRound.p*100)}%
+                          </Text>
+                        )}
+                      </View>
+                    ) : (
+                      <Text style={{color:THEME.textMuted,fontSize:10,marginTop:3}}>No model pick</Text>
+                    )}
+                    {/* Jerry snippet */}
+                    {jerry?.short_read && (
+                      <View style={{marginTop:6,paddingTop:6,borderTopWidth:1,borderTopColor:THEME.border + '30'}}>
+                        <View style={{flexDirection:'row',alignItems:'center',gap:5,marginBottom:2}}>
+                          <Text style={{color:THEME.hrb,fontSize:9,fontWeight:'800',letterSpacing:0.4}}>🎤 JERRY</Text>
+                          {jerry.call_verdict && (
+                            <Text style={{color: jerry.call_verdict==='BACK' ? THEME.win : jerry.call_verdict==='FADE' ? THEME.loss : THEME.textDim, fontSize:9, fontWeight:'700'}}>
+                              {jerry.call_verdict}
+                              {jerry.conviction != null && ` · ${jerry.conviction}`}
+                            </Text>
+                          )}
+                        </View>
+                        <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}} numberOfLines={3}>
+                          {jerry.short_read}
+                        </Text>
+                      </View>
+                    )}
+                    {/* Method breakdown line — always visible when we have data */}
+                    {(kos != null || decs != null || subs != null) && !jerry?.short_read && (
+                      <Text style={{color:THEME.textMuted,fontSize:9,marginTop:3}}>
+                        {kos != null && `KO ${kos}%`}
+                        {decs != null && ` · DEC ${decs}%`}
+                        {subs != null && ` · SUB ${subs}%`}
+                      </Text>
+                    )}
+                  </View>
+                  {conv != null && (
+                    <View style={{
+                      minWidth:44, paddingHorizontal:8, paddingVertical:6,
+                      backgroundColor: tierColor + '20',
+                      borderRadius:8, borderWidth:1.5, borderColor: tierColor + '55',
+                      alignItems:'center',
+                    }}>
+                      <Text style={{color: tierColor, fontSize:14, fontWeight:'900'}}>{conv}</Text>
+                      <Text style={{color: tierColor + 'AA', fontSize:8, fontWeight:'700',letterSpacing:0.3}}>CONV</Text>
+                    </View>
                   )}
                 </View>
-                {conv != null && (
-                  <View style={{paddingHorizontal:8,paddingVertical:3,backgroundColor:conv >= 60 ? THEME.win + '26' : (conv >= 40 ? THEME.sharp + '20' : THEME.surfaceAlt),borderRadius:6}}>
-                    <Text style={{color:conv >= 60 ? THEME.win : (conv >= 40 ? THEME.sharp : THEME.textMuted),fontSize:10,fontWeight:'800'}}>{conv}</Text>
-                  </View>
-                )}
               </View>
             );
           })}
@@ -11363,39 +11611,44 @@ setJerryHistory(prev => {
   </View>
 )}
             {gamesLoading?(<View style={{alignItems:'center',paddingTop:60}}><ActivityIndicator size="large" color={HRB_COLOR}/><Text style={{color:THEME.textDim,marginTop:12}}>Loading games...</Text></View>):
-            gamesData.length===0 && gamesSport==='NCAAB'?(
-              <View style={{alignItems:'center',paddingTop:50,paddingHorizontal:24}}>
-                <Text style={{fontSize:48}}>🏀</Text>
-                <Text style={{color:THEME.text,fontWeight:'800',fontSize:18,marginTop:16,textAlign:'center'}}>NCAAB Returns November 2026</Text>
-                <Text style={{color:THEME.textDim,fontSize:13,marginTop:10,textAlign:'center',lineHeight:20}}>
-                  College basketball season is in recess. Our proprietary efficiency model is ready to go when November tips off.
-                </Text>
-                <View style={{marginTop:20,backgroundColor:THEME.accent + '14',borderRadius:12,padding:14,borderWidth:1,borderColor:THEME.accent + '40',width:'100%'}}>
-                  <Text style={{color:THEME.accent,fontWeight:'700',fontSize:11,letterSpacing:1,marginBottom:8}}>🎯 WHAT TO EXPECT IN NOVEMBER</Text>
-                  <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>
-                    • Adjusted efficiency model (full D1 coverage){'\n'}
-                    • Four-factors deep dive (eFG%, TO%, OR%, FTR){'\n'}
-                    • Spreads / totals / ML with audit-driven cohorts{'\n'}
-                    • Conference / tournament situational layers
-                  </Text>
-                </View>
-                <View style={{marginTop:14,backgroundColor:'rgba(122,146,168,0.06)',borderRadius:10,padding:12,width:'100%'}}>
-                  <Text style={{color:THEME.textDim,fontSize:11,fontStyle:'italic',textAlign:'center'}}>
-                    Your subscription stays active year-round — MLB carries through summer, NCAAB joins in November.
-                  </Text>
-                </View>
-              </View>
+            /* 2026-08-13: replaced hardcoded NCAAB-only empty state with a
+               config-driven universal one. Any sport whose state is off_season
+               / preseason / returning renders here with copy from sport_registry.
+               Off-season subscription reassurance is generic across sports. */
+            gamesData.length===0 && sportMeta[gamesSport] && sportMeta[gamesSport].state !== 'in_season' ? (
+              (() => {
+                const meta = sportMeta[gamesSport];
+                const emoji = SPORT_EMOJI[gamesSport] || '🎯';
+                const stateLabel = meta.state === 'off_season' ? 'Returns' : meta.state === 'preseason' ? 'Preseason' : 'Returning';
+                const returnDateStr = meta.return_date
+                  ? new Date(meta.return_date + 'T00:00:00').toLocaleDateString('en-US', {month:'long', day:'numeric', year:'numeric'})
+                  : null;
+                return (
+                  <View style={{alignItems:'center',paddingTop:50,paddingHorizontal:24}}>
+                    <Text style={{fontSize:48}}>{emoji}</Text>
+                    <Text style={{color:THEME.text,fontWeight:'800',fontSize:18,marginTop:16,textAlign:'center'}}>
+                      {gamesSport} {stateLabel}{returnDateStr ? ` ${returnDateStr}` : ''}
+                    </Text>
+                    {meta.state_message && (
+                      <Text style={{color:THEME.textDim,fontSize:13,marginTop:10,textAlign:'center',lineHeight:20}}>
+                        {meta.state_message}
+                      </Text>
+                    )}
+                    <View style={{marginTop:14,backgroundColor:'rgba(122,146,168,0.06)',borderRadius:10,padding:12,width:'100%'}}>
+                      <Text style={{color:THEME.textDim,fontSize:11,fontStyle:'italic',textAlign:'center'}}>
+                        Your subscription covers every sport we ship — sit tight for {gamesSport}, take advantage of the ones already live.
+                      </Text>
+                    </View>
+                  </View>
+                );
+              })()
             ):
             gamesData.length===0?(<View style={{alignItems:'center',paddingTop:60}}><Text style={{fontSize:40}}>{SPORT_EMOJI[gamesSport]}</Text><Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center'}}>No {gamesSport} games {gamesDay}.{'\n'}Try a different sport or day.</Text></View>):(
               <>
-                {gamesSport==='NHL' && (
-                  <View style={{backgroundColor:THEME.hrb + '14',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:THEME.hrb + '40',flexDirection:'row',alignItems:'center',gap:8}}>
-                    <Text style={{fontSize:14}}>ℹ️</Text>
-                    <Text style={{color:THEME.textDim,fontSize:11,flex:1,lineHeight:16}}>
-                      <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NHL — Market Model Only.</Text> No proprietary NHL pipeline yet. Analysis based on odds movement, public consensus, and goalie matchup. Proprietary model coming later this season.
-                    </Text>
-                  </View>
-                )}
+                {/* NHL "market model only" note is temporary during the model
+                    rollout. Moved to sport_registry.state_message for consistency
+                    once the proprietary model ships (already renders at top via
+                    the state_message banner when sportMeta.NHL.state !== 'in_season'). */}
                  <Text style={styles.sectionLabel}>{gamesData.length} GAMES — {gamesDay.toUpperCase()}</Text>
                 {gamesData.filter((game) => {
   // Hide completed games
@@ -11410,6 +11663,13 @@ setJerryHistory(prev => {
     const fiveHoursAgo = new Date(Date.now() - 5*60*60*1000);
     if(gameTime < fiveHoursAgo) return false;
   }
+  // Prime Only filter (2026-08-13): only surface games with PRIME primary_play
+  // OR sweat score ≥ 80 (PRIME threshold). Uses same score lookup as sort.
+  if(gamesPrimeOnly) {
+    const score = sweatScores[game.id]?.total || getSweatScoreForGame(game, gamesSport)?.total || 0;
+    const tier = sweatScores[game.id]?.tier || getSweatScoreForGame(game, gamesSport)?.tier || '';
+    if(!(tier === 'PRIME' || score >= 80)) return false;
+  }
   // Search filter
   if(gamesSearch === '') return true;
   return game.away_team.toLowerCase().includes(gamesSearch.toLowerCase()) ||
@@ -11417,16 +11677,28 @@ setJerryHistory(prev => {
 }).sort((a, b) => {
   if(gamesSort === 'time') return new Date(a.commence_time) - new Date(b.commence_time);
   if(gamesSort === 'score') {
+    // Conviction = tier weight × 1000 + score. Ensures PRIME > STRONG > LEAN
+    // regardless of raw score; score is a tiebreak within tier.
+    const tierWt = (t: string) => t==='PRIME'?3:t==='STRONG'?2:t==='LEAN'?1:0;
     const scoreA = sweatScores[a.id]?.total || getSweatScoreForGame(a, gamesSport)?.total || 0;
     const scoreB = sweatScores[b.id]?.total || getSweatScoreForGame(b, gamesSport)?.total || 0;
-    return scoreB - scoreA;
+    const tierA = sweatScores[a.id]?.tier || getSweatScoreForGame(a, gamesSport)?.tier || '';
+    const tierB = sweatScores[b.id]?.tier || getSweatScoreForGame(b, gamesSport)?.tier || '';
+    return (tierWt(tierB) * 1000 + scoreB) - (tierWt(tierA) * 1000 + scoreA);
   }
-  if(gamesSort === 'hrb') {
-    const aHasHRB = (a.bookmakers||[]).some(bm => bm.key==='hardrockbet'||bm.key==='hardrock');
-    const bHasHRB = (b.bookmakers||[]).some(bm => bm.key==='hardrockbet'||bm.key==='hardrock');
-    if(aHasHRB && !bHasHRB) return -1;
-    if(!aHasHRB && bHasHRB) return 1;
-    return new Date(a.commence_time) - new Date(b.commence_time);
+  if(gamesSort === 'edge') {
+    // Best Edge = absolute model-vs-market spread delta. Games where our
+    // projection disagrees most with the market land at the top — where
+    // the largest ROI opportunities live regardless of tier.
+    const edgeOf = (g: any) => {
+      const sc = sweatScores[g.id] || getSweatScoreForGame(g, gamesSport);
+      if(sc?.modelMismatch != null) return Math.abs(sc.modelMismatch);
+      const proj = sc?.projectedSpread;
+      const mkt = sc?.marketSpread;
+      if(proj != null && mkt != null) return Math.abs(proj - mkt);
+      return 0;
+    };
+    return edgeOf(b) - edgeOf(a);
   }
   return 0;
 }).map((game, i) => {
@@ -11526,12 +11798,29 @@ setJerryHistory(prev => {
                   : conv >= 75 ? THEME.accent
                   : conv >= 60 ? THEME.sharp
                   : THEME.warn;
+  // 2026-08-09 fix: reconstruct badge text from market/side/line when the
+  // LLM omitted call_text. Previously fell back to the literal string
+  // 'Pass' which misled users into thinking the pick was a PASS when the
+  // read was actually a directional call (e.g. total UNDER 7.5). Only
+  // display 'Pass' when the market IS actually pass.
+  let badgeText: string = jr.call_text || '';
+  if (!badgeText) {
+    const mkt = String(jr.call_market || '').toLowerCase();
+    const side = String(jr.call_side || '');
+    const line = jr.call_line;
+    if (mkt === 'pass' || (!mkt && !side)) badgeText = 'Pass';
+    else if (mkt === 'total') badgeText = `${side.charAt(0) + side.slice(1).toLowerCase()} ${line ?? ''}`.trim();
+    else if (mkt === 'ml') badgeText = side ? `${side.charAt(0) + side.slice(1).toLowerCase()} ML` : 'ML';
+    else if (mkt === 'rl') badgeText = `${side.charAt(0) + side.slice(1).toLowerCase()} RL ${line ?? ''}`.trim();
+    else if (mkt === 'fight') badgeText = side ? `Fighter ${side}` : 'Fight';
+    else badgeText = `${mkt.toUpperCase()} ${side}`.trim() || 'Read';
+  }
   return (
     <View style={{marginBottom:10,padding:10,borderRadius:10,backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border}}>
       <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:6,flexWrap:'wrap'}}>
         <Text style={{color:THEME.textDim,fontWeight:'800',fontSize:10,letterSpacing:0.5}}>🧠 JERRY</Text>
         <View style={{backgroundColor:chipColor + '22',borderColor:chipColor + '44',borderWidth:1,paddingHorizontal:8,paddingVertical:2,borderRadius:6}}>
-          <Text style={{color:chipColor,fontWeight:'800',fontSize:11}}>{jr.call_text || 'Pass'} · {conv}</Text>
+          <Text style={{color:chipColor,fontWeight:'800',fontSize:11}}>{badgeText} · {conv}</Text>
         </View>
         {isAmRead && (
           <Text style={{color:THEME.textMuted,fontSize:9,fontStyle:'italic'}}>AM · updates 2pm ET</Text>
@@ -11713,10 +12002,14 @@ setJerryHistory(prev => {
       </View>
     )}
 
-    {/* Sport Selector - no NCAAB */}
+    {/* Sport Selector — 2026-08-09: driven by SPORTS from sport_registry.
+        Props aren't in scope for college sports per launch decision, so
+        filter out NCAAB/NCAAF here (college prop markets too thin, no
+        fantasy projection source). Wrap this filter in a feature flag
+        if/when college props ship. */}
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
       <View style={{flexDirection:'row',gap:6}}>
-        {['MLB','NBA','NFL','NHL','UFC'].map(s=>(
+        {SPORTS.filter(s=>!['NCAAB','NCAAF'].includes(s)).map(s=>(
           <TouchableOpacity key={s} style={[styles.chipBtn,propJerrySport===s&&styles.chipBtnActive]} onPress={()=>{setPropJerrySport(s);fetchPropJerry(s);}}>
             <Text style={[styles.chipTxt,propJerrySport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text>
           </TouchableOpacity>
@@ -12275,6 +12568,75 @@ setJerryHistory(prev => {
                     ))}
                   </View>
 
+                  {/* ─── BY SPORT SUMMARY (2026-08-09 · multi-sport receipts) ──
+                      Combines game-read Jerry (jerrySynthesis.bySport) + prop
+                      Jerry (propJerry.bySport) + pipeline props (props.bySport)
+                      into one headline row per sport. This is the "which sports
+                      is the product actually working in" surface.
+
+                      DATA: 100% backend — all W/L numbers come from live queries
+                      on jerry_reads, prop_jerry_reads, mlb_pipeline_props tables.
+                      Every cron run refreshes.
+
+                      SPORT LIST: reads top-level SPORTS array (line 58) filtered
+                      by the `receipts_tab` feature flag from `feature_flags` table.
+                      Add a sport row to feature_flags with feature='receipts_tab',
+                      enabled=true to surface it here — no app rebuild required.
+                      Fail-open: if flag not present, sport shows if it has data. */}
+                  {(() => {
+                    const js = (jerryRecord as any).jerrySynthesis || {bySport: {}};
+                    const pj = (jerryRecord as any).propJerry || {bySport: {}};
+                    const pipeBySport = (jerryRecord as any).props?.bySport || {};
+                    // Sport universe = top-level SPORTS array (backend-controlled
+                    // via feature_flags for game_tab). Order preserves the SPORTS
+                    // array order (which is also backend-editable — reorder there).
+                    const sports = SPORTS.filter(s => {
+                      const hasData = (js.bySport?.[s]) || (pj.bySport?.[s]) || (pipeBySport?.[s]);
+                      const flagOn = isFeatureOn(s, 'receipts_tab');
+                      // Show if either: feature flag ON, or actual data exists.
+                      return hasData || flagOn;
+                    });
+                    return (
+                      <View style={[styles.card,{marginBottom:16}]}>
+                        <Text style={{color:THEME.accent,fontWeight:'800',fontSize:12,marginBottom:10,letterSpacing:0.5}}>🏆 BY SPORT — LIFETIME  ·  ALL JERRY CALLS</Text>
+                        {sports.map(sp => {
+                          const gs = js.bySport?.[sp] || {wins:0,losses:0};
+                          const pjS = pj.bySport?.[sp] || {wins:0,losses:0};
+                          // pipeline props already store bySport as {w,l} not {wins,losses}
+                          const ppSraw = pipeBySport?.[sp];
+                          const ppS = ppSraw ? {wins: ppSraw.w ?? ppSraw.wins ?? 0, losses: ppSraw.l ?? ppSraw.losses ?? 0} : {wins:0, losses:0};
+                          const w = (gs.wins||0) + (pjS.wins||0) + (ppS.wins||0);
+                          const l = (gs.losses||0) + (pjS.losses||0) + (ppS.losses||0);
+                          const n = w + l;
+                          const pct = n > 0 ? Math.round((w/n)*100) : 0;
+                          const color = pct>=55 ? THEME.accent : pct>=50 ? HRB_COLOR : pct>=45 ? THEME.textDim : THEME.loss;
+                          const emoji = SPORT_EMOJI[sp] || '•';
+                          return (
+                            <View key={sp} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8,borderBottomWidth:1,borderBottomColor:THEME.border}}>
+                              <View style={{flexDirection:'row',alignItems:'center',flex:1}}>
+                                <Text style={{fontSize:15,marginRight:8}}>{emoji}</Text>
+                                <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>{sp}</Text>
+                              </View>
+                              {n === 0 ? (
+                                <View style={{backgroundColor:THEME.surfaceAlt,paddingHorizontal:8,paddingVertical:3,borderRadius:8}}>
+                                  <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',letterSpacing:0.4}}>NO DATA YET</Text>
+                                </View>
+                              ) : (
+                                <View style={{flexDirection:'row',alignItems:'center',gap:12}}>
+                                  <Text style={{color:THEME.textDim,fontSize:12}}>{w}-{l}</Text>
+                                  <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:color,alignItems:'center',justifyContent:'center'}}>
+                                    <Text style={{color:color,fontWeight:'800',fontSize:12}}>{pct}%</Text>
+                                  </View>
+                                </View>
+                              )}
+                            </View>
+                          );
+                        })}
+                        <Text style={{color:THEME.textMuted,fontSize:10,marginTop:10,lineHeight:14}}>Includes game reads + prop reads + pipeline picks. "No data yet" = sport not in season or not yet launched.</Text>
+                      </View>
+                    );
+                  })()}
+
                   {/* NRFI Model Record — split by tier (PRIME 90-94 vs Mild 70-79) */}
                   {(()=>{
                     const prime = jerryRecord.nrfi.prime || {wins:0, losses:0};
@@ -12492,13 +12854,17 @@ setJerryHistory(prev => {
                                 </View>
                               )}
                             </View>
-                            {/* By market breakdown (ML / RL / Total) */}
+                            {/* By market breakdown (ML / RL / Total / Fight).
+                                2026-08-09: Label the RL row "Run Line / Spread" so the
+                                sport-agnostic view reads correctly (MLB users see run
+                                line, NFL/NBA/NCAAF users see spread — same market). */}
                             <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10}}>
                               <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY MARKET (LIFETIME)</Text>
-                              {([['ml','ML'],['rl','Run Line'],['total','Total']] as [string,string][]).map(([k,label]) => {
+                              {([['ml','ML'],['rl','Run Line / Spread'],['total','Total'],['fight','Fight ML']] as [string,string][]).map(([k,label]) => {
                                 const m = (js.byMarket as any)?.[k] || {wins:0,losses:0};
                                 const mt = m.wins + m.losses;
                                 const mp = mt > 0 ? Math.round((m.wins/mt)*100) : 0;
+                                if (mt === 0 && k === 'fight') return null; // hide fight row until UFC data lands
                                 return (
                                   <View key={k} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
                                     <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600'}}>{label}</Text>
@@ -12510,6 +12876,31 @@ setJerryHistory(prev => {
                                 );
                               })}
                             </View>
+                            {/* 2026-08-09: per-sport breakdown for Jerry game synthesis.
+                                Shows sports with at least 1 graded read. Cleanly
+                                reveals sport parity — when NFL/NCAAF/NBA/NHL start
+                                shipping graded reads, they appear automatically. */}
+                            {js.bySport && Object.keys(js.bySport).length > 0 && (
+                              <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10,marginTop:8}}>
+                                <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY SPORT (LIFETIME)</Text>
+                                {Object.entries(js.bySport as Record<string,{wins:number,losses:number}>)
+                                  .sort((a,b) => (b[1].wins + b[1].losses) - (a[1].wins + a[1].losses))
+                                  .map(([sp,rec]) => {
+                                    const mt = (rec.wins||0) + (rec.losses||0);
+                                    const mp = mt > 0 ? Math.round((rec.wins/mt)*100) : 0;
+                                    if (mt === 0) return null;
+                                    return (
+                                      <View key={sp} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
+                                        <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600'}}>{SPORT_EMOJI[sp]||''} {sp}</Text>
+                                        <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+                                          <Text style={{color:THEME.textDim,fontSize:12}}>{rec.wins}-{rec.losses}</Text>
+                                          <Text style={{color:mp>=55?THEME.accent:mp>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{mp}%</Text>
+                                        </View>
+                                      </View>
+                                    );
+                                  })}
+                              </View>
+                            )}
                           </>
                         )}
                       </View>
@@ -12564,6 +12955,28 @@ setJerryHistory(prev => {
                                 );
                               })}
                             </View>
+                            {/* 2026-08-09: sport breakdown for Prop Jerry too. */}
+                            {pj.bySport && Object.keys(pj.bySport).length > 0 && (
+                              <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10,marginTop:8}}>
+                                <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY SPORT (LIFETIME)</Text>
+                                {Object.entries(pj.bySport as Record<string,{wins:number,losses:number}>)
+                                  .sort((a,b) => (b[1].wins + b[1].losses) - (a[1].wins + a[1].losses))
+                                  .map(([sp,rec]) => {
+                                    const mt = (rec.wins||0) + (rec.losses||0);
+                                    const mp = mt > 0 ? Math.round((rec.wins/mt)*100) : 0;
+                                    if (mt === 0) return null;
+                                    return (
+                                      <View key={sp} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
+                                        <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600'}}>{SPORT_EMOJI[sp]||''} {sp}</Text>
+                                        <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+                                          <Text style={{color:THEME.textDim,fontSize:12}}>{rec.wins}-{rec.losses}</Text>
+                                          <Text style={{color:mp>=55?THEME.accent:mp>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{mp}%</Text>
+                                        </View>
+                                      </View>
+                                    );
+                                  })}
+                              </View>
+                            )}
                           </>
                         )}
                       </View>
@@ -12862,7 +13275,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             {statsTab==='props'&&(
               <>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
-                  <View style={{flexDirection:'row',gap:6}}>{['NBA','NFL','NHL','MLB'].map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,propsSport===s&&styles.chipBtnActive]} onPress={()=>setPropsSport(s)}><Text style={[styles.chipTxt,propsSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text></TouchableOpacity>))}</View>
+                  <View style={{flexDirection:'row',gap:6}}>{SPORTS.filter(s=>!['NCAAB','NCAAF','UFC'].includes(s)).map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,propsSport===s&&styles.chipBtnActive]} onPress={()=>setPropsSport(s)}><Text style={[styles.chipTxt,propsSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text></TouchableOpacity>))}</View>
                 </ScrollView>
                 <View style={{flexDirection:'row',alignItems:'center',backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border,borderRadius:12,paddingHorizontal:12,marginBottom:14}}>
   <Text style={{fontSize:16,marginRight:8}}>🔍</Text>
@@ -13884,40 +14297,25 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                   chips stay visible.
                 </Text>
               </View>
-              {/* How It Works */}
-              <View style={[styles.card,{marginBottom:12}]}>
-                <Text style={{color:THEME.text,fontWeight:'700',fontSize:14,marginBottom:12}}>📖 How It Works</Text>
-                <View style={{gap:12}}>
-                  <View style={{borderLeftWidth:3,borderLeftColor:HRB_COLOR,paddingLeft:10}}>
-                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>🔥 Sweat Score</Text>
-                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Every game graded 0-100. Built on pitcher xERA, K rate gap, L3 form, platoon-adjusted wRC+, team defense (OAA), catcher framing, expected wOBA, park, weather, and umpire tendencies. 68+ is Prime Sweat — multiple strong signals aligning. Updates by 11am and 4pm ET.</Text>
-                  </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:THEME.accent,paddingLeft:10}}>
-                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>⚾ NRFI Model</Text>
-                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>No Run First Inning — tier-based leans. 90-94 = PRIME (highest conviction). 70-79 = Mild lean. 80-89 = neutral (no lean). 95+ = flagged volatile but not leaned. Built on pitcher xERA, K gap, first-inning ERA, rest, weather, park, wRC+.</Text>
-                  </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:THEME.sharp,paddingLeft:10}}>
-                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>🧠 Prop Jerry</Text>
-                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Top 15 prop edges from our pipeline daily. Not an EV scanner — picks come from proprietary matchup signals (K rate gaps, platoon-adjusted offense, L3 pitcher form, catcher framing, bullpen fatigue). Conviction-tiered: PRIME 80+, STRONG 65-79, LEAN 50-64. MLB first; NBA/UFC expand post-launch.</Text>
-                  </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:THEME.loss,paddingLeft:10}}>
-                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>🎲 Daily Degen</Text>
-                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>3-5 leg parlay built once per day from the slate's highest-conviction pipeline picks (top ML leans, PRIME NRFIs, top props). Max 1 leg per game — no correlated legs. Generated server-side — every user sees the same pick.</Text>
-                  </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:THEME.accent,paddingLeft:10}}>
-                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>🐕 Dawg of the Day</Text>
-                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>One underdog ML per day where our model sharply disagrees with the market. Requires 2+ runs of "better than market" edge on the dog. Comes with Jerry's take on why the dog is barking.</Text>
-                  </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:THEME.sharp,paddingLeft:10}}>
-                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>📋 Jerry's Track Record</Text>
-                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Verified model performance: NRFI lean-tier record, Prop Jerry A-grades, Play of the Day history, Dawg of the Day record. Results auto-resolve via MLB Stats API and BDL box scores.</Text>
-                  </View>
-                  <View style={{borderLeftWidth:3,borderLeftColor:THEME.textMuted,paddingLeft:10}}>
-                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13,marginBottom:4}}>⏰ Pipeline Schedule</Text>
-                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>By 11am ET — Pitcher stats, team splits, Savant enrichment, game context, NRFI scores, POTD, Dawg of the Day{'\n'}By 4pm ET — Confirmed lineups, umpire assignments, final weather, Prop Jerry, Daily Degen, HR Watch{'\n'}After 4pm — All pipeline data locked in. Best time for full analysis.</Text>
-                  </View>
+              {/* 2026-08-09: "How It Works" card removed. Was 7 sub-blocks with
+                  stale tier thresholds (Sweat 68+ was old PRIME cut, actual is 80+),
+                  NRFI mispositioning (demoted per project_nrfi_demotion), and
+                  Prop Jerry "Top 15" that no longer matches pipeline. All content
+                  now lives in the FAQ (Reading the Card + How Picks Work sections)
+                  which is auto-current with the code. See the Help & FAQ card
+                  right below. */}
+              {/* FAQ (2026-08-09) — navigates to app/faq.tsx */}
+              <TouchableOpacity
+                style={[styles.card,{marginBottom:12,flexDirection:'row',alignItems:'center',justifyContent:'space-between'}]}
+                onPress={()=>router.push('/faq')}
+                activeOpacity={0.7}
+              >
+                <View>
+                  <Text style={{color:THEME.text,fontWeight:'700',fontSize:14}}>❓ Help & FAQ</Text>
+                  <Text style={{color:THEME.textDim,fontSize:12,marginTop:4,lineHeight:18}}>How picks work · tiers explained · reading the card</Text>
                 </View>
-              </View>
+                <Text style={{color:THEME.accent,fontSize:20}}>›</Text>
+              </TouchableOpacity>
               {/* Responsible Gambling */}
               <View style={[styles.card,{marginBottom:12}]}>
                 <Text style={{color:THEME.text,fontWeight:'700',fontSize:14,marginBottom:12}}>🆘 Responsible Gambling</Text>
@@ -14077,7 +14475,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
               {/* App Version */}
               <View style={{alignItems:'center',paddingVertical:16}}>
                 <Text style={{color:THEME.textMuted,fontSize:11}}>The Sweat Locker v1.0.0 — Beta</Text>
-                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:4}}>Built for Hard Rock Bettors 🎸</Text>
+                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:4}}>More Data, Less Sweat</Text>
                 <Text style={{color:THEME.textMuted,fontSize:10,marginTop:4}}>⚠️ For entertainment only. Not gambling advice.</Text>
               </View>
             </ScrollView>
