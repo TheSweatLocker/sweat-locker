@@ -419,11 +419,14 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sport', default='MLB',
                    help='MLB / NFL / NCAAF / ALL')
-    p.add_argument('--window', type=int, default=90)
+    p.add_argument('--window', type=int, default=None,
+                   help='Rolling window in days. Omit to compute 30/60/90 in one run.')
     args = p.parse_args()
     sports = list(SPORT_CONFIG.keys()) if args.sport == 'ALL' else [args.sport]
+    windows = [args.window] if args.window else [30, 60, 90]
     for s in sports:
-        run(sport=s, window_days=args.window)
+        for w in windows:
+            run(sport=s, window_days=w)
 
 
 if __name__ == '__main__':

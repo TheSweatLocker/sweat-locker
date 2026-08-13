@@ -164,6 +164,10 @@ FADE_COMBOS = {
     ('bb_under',  'SKIP', 'under'):   ('LEAN',   60.0, 25),  # under 40% → over 60%
     ('er_under',  'STRONG', 'under'): ('LEAN',   60.0, 20),  # under 40% → over 60%
     ('er_over',   'STRONG', 'over'):  ('LEAN',   56.1, 41),  # over 44% → under 56% (fade too soft, but flag)
+    # 2026-08-13 morning audit — confirmed persistent losers in 7d graded
+    ('er_over',   'PRIME',  'over'):  ('STRONG', 59.1, 87),  # PRIME over 40.9% n=87 → under 59% (7d n=44 lifetime, 34 30d)
+    ('ha_under',  'STRONG', 'under'): ('LEAN',   52.6, 38),  # under 47.4% n=38 → 52.6% over — mild fade
+    ('outs_over', 'PRIME',  'over'):  ('STRONG', 83.3, 6),   # PRIME over 16.7% n=6 → 83% under (thin sample but persistent losing pattern)
 }
 
 # GOLDMINE — SKIP tier that beats PRIME. Promote to STRONG when Jerry BACKs.
@@ -949,6 +953,28 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None,
                 # borderline: still promotable but never STRONG+
                 new_conv = min(new_conv, 60)
                 jc_reason = (jc_reason + '·' if jc_reason else '') + f'hits_over_juice{o}_cap60'
+        except (TypeError, ValueError): pass
+
+    # 4b. bb_under juice trap (2026-08-09) — mirrors hits_over rule.
+    # 8/8 slate: bb_under at ≤-150 juice went 1-6 (14%). Sample: Pfaadt -190 L,
+    # Bennett -270 L, Kirby -270 L, Sale -150 L, Gasser -195 L, Freeland -200 L;
+    # only Cole -160 W. Command pitchers are book-priced heavy — one walk kills
+    # the prop and juice makes EV negative even at 60% hit rate. Similar shape
+    # to hits_over: high-confidence model call meets juiced book price.
+    # Conservative thresholds — sample is thin (n=7 on 8/8), refine when
+    # rolling 30d audit lands.
+    if pt == 'bb_under' and direction == 'under' and odds is not None:
+        try:
+            o = int(odds)
+            if o <= -250:
+                new_conv = min(new_conv, 40)  # READ max — deep juice
+                jc_reason = (jc_reason + '·' if jc_reason else '') + f'bb_under_deep_juice{o}_capREAD40'
+            elif o <= -200:
+                new_conv = min(new_conv, 55)  # LEAN cap
+                jc_reason = (jc_reason + '·' if jc_reason else '') + f'bb_under_juice{o}_capLEAN55'
+            elif o <= -150:
+                new_conv = min(new_conv, 60)  # never STRONG+
+                jc_reason = (jc_reason + '·' if jc_reason else '') + f'bb_under_juice{o}_cap60'
         except (TypeError, ValueError): pass
 
     # Tier follows conviction (2026-08-07 fix): full ladder walk, not just
