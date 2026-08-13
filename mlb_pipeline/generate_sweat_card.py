@@ -52,41 +52,51 @@ def sb_get(path, params=None):
 
 
 def fetch_tier_rates():
-    """Pull live audited tier rates from mlb_tier_calibration (30d window).
+    """Pull live audited tier rates from mlb_tier_calibration.
 
-    2026-05-22 fix: previously this query hit PostgREST's 1000-row default
-    limit (1,337 active 30d rows across all cohorts × dates), randomly
-    truncating cohorts like yrfi_lean_le40 from the result. The sweat card
-    then shipped `secondary_lock.audited_rate=0, audited_n=null` because
-    the dict lookup returned None, surfacing as "0% audited (n=)" in the
-    YRFI LEAN card section.
+    2026-08-12 REWRITE — HONEST SAMPLE-SIZE FIX:
+    Prior version hardcoded window_label='30d'. That fetched TINY samples
+    for low-volume cohorts (NRFI PRIME 30d = n=8, YRFI 30d = n=41), then
+    surfaced them as PRIME hit rates on the sweat card — 62.5% on n=8 has
+    a ±30pp confidence interval. Misleading users into thinking a coin
+    flip is a PRIME lock.
 
-    Fix: filter to TODAY's computed_date (audit_tier_calibration.py runs
-    daily and writes one row per cohort per window per date — so today's
-    rows are exactly N cohorts × 3 windows = well under any limit).
+    New logic: prefer 'std' (lifetime) window as source of truth. Fall
+    back to 30d only if lifetime is missing. Skip 7d entirely (n<10 for
+    NRFI/YRFI cohorts). Result: sweat card shows honest lifetime hit
+    rates on the samples that are statistically meaningful.
+
+    Also filters to TODAY's computed_date to avoid the 1k-row pagination
+    limit that killed yrfi_lean_le40 lookup in the 5/22 incident.
     """
     today = today_et()
+    # Pull ALL windows for today — prefer std, fall back to 30d
     rows = sb_get("mlb_tier_calibration", {
-        "window_label": "eq.30d",
+        "window_label": "in.(std,30d)",
         "sport": "eq.mlb",
         "computed_date": f"eq.{today}",
-        "select": "tier,hits,total,hit_rate",
+        "select": "tier,hits,total,hit_rate,window_label",
     })
-    # Fallback to most-recent rows if today's calibration hasn't run yet
-    # (e.g. cron hasn't fired). Order by computed_date desc + dedupe by tier.
     if not rows:
         rows = sb_get("mlb_tier_calibration", {
-            "window_label": "eq.30d",
+            "window_label": "in.(std,30d)",
             "sport": "eq.mlb",
-            "select": "tier,hits,total,hit_rate,computed_date",
+            "select": "tier,hits,total,hit_rate,window_label,computed_date",
             "order": "computed_date.desc",
-            "limit": "500",  # bounded so we don't hit the pagination wall again
+            "limit": "500",
         })
+    # Split by window, then prefer std
+    std_rows = {r["tier"]: r for r in rows if r.get("window_label") == "std"}
+    d30_rows = {r["tier"]: r for r in rows if r.get("window_label") == "30d"}
     seen = {}
-    for r in rows:
-        # First row wins (already sorted desc by date when in fallback path;
-        # in primary path all rows share the same date so order doesn't matter)
-        seen.setdefault(r["tier"], r)
+    for tier in set(list(std_rows.keys()) + list(d30_rows.keys())):
+        # std wins if it exists AND has meaningful sample (n>=20)
+        s = std_rows.get(tier)
+        if s and (s.get("total") or 0) >= 20:
+            seen[tier] = s
+        else:
+            # fallback: 30d, or std even if small
+            seen[tier] = d30_rows.get(tier) or s
     return seen
 
 
@@ -460,13 +470,28 @@ def find_bucket_angle(games):
 
 
 def find_nrfi_lock(games, tier_rates):
-    """Find PRIME tier (90-94) NRFI game. Returns dict or None."""
+    """Find PRIME tier (90-94) NRFI game. Returns dict or None.
+
+    2026-08-12 sample-size + break-even discipline:
+      * Require rate_row.total >= 30 (statistical significance)
+      * Require lifetime hit_rate >= 55% (clears typical NRFI juice of
+        -110 to -130 which needs 52.4-56.5% break-even)
+      * If either fails, return None (don't publish as PRIME lock)
+    Prevents surfacing n=8 62.5% coin-flip as a "PRIME" recommendation.
+    """
     candidates = [g for g in games if 90 <= (g.get("nrfi_score") or 0) <= 94]
     if not candidates:
         return None
     candidates.sort(key=lambda g: -(g.get("nrfi_score") or 0))
     g = candidates[0]
-    rate_row = tier_rates.get("nrfi_prime_90_94", {})
+    rate_row = tier_rates.get("nrfi_prime_90_94", {}) or {}
+    n = rate_row.get("total") or 0
+    hr = (rate_row.get("hit_rate") or 0) * 100
+    # Discipline gates — suppress publication if signal is weak/small
+    if n < 30 or hr < 55:
+        print(f"  🚫 NRFI PRIME lock suppressed: n={n} hit={hr:.1f}% "
+              f"(need n>=30 AND hit>=55% to publish)")
+        return None
     _nrfi = g.get("nrfi_score")
     return {
         "game": f"{g.get('away_team')} @ {g.get('home_team')}",
@@ -481,8 +506,8 @@ def find_nrfi_lock(games, tier_rates):
         "score_source": "nrfi_score",
         "tier": "PRIME",
         "tier_source": "nrfi_band",  # explicit attribution
-        "audited_rate": round((rate_row.get("hit_rate") or 0) * 100, 1),
-        "audited_n": rate_row.get("total"),
+        "audited_rate": round(hr, 1),
+        "audited_n": n,
         "context": {
             "home_pitcher": g.get("home_pitcher"),
             "away_pitcher": g.get("away_pitcher"),
@@ -493,13 +518,27 @@ def find_nrfi_lock(games, tier_rates):
 
 
 def find_yrfi_lock(games, tier_rates):
-    """Find YRFI lean games."""
+    """Find YRFI lean games.
+
+    2026-08-12 sample-size + break-even discipline:
+      * Require rate_row.total >= 50 (YRFI markets are common enough that
+        the bar is higher than NRFI)
+      * Require lifetime hit_rate >= 58% (typical YRFI juice is -130 to
+        -150 which needs 56.5-60% break-even). Lifetime YRFI at 57% is
+        essentially break-even at typical juice — don't publish as a lock.
+    """
     candidates = [g for g in games if (g.get("nrfi_score") or 100) <= 40]
     if not candidates:
         return None
     candidates.sort(key=lambda g: g.get("nrfi_score") or 100)  # lowest = strongest YRFI
     g = candidates[0]
-    rate_row = tier_rates.get("yrfi_lean_le40", {})
+    rate_row = tier_rates.get("yrfi_lean_le40", {}) or {}
+    n = rate_row.get("total") or 0
+    hr = (rate_row.get("hit_rate") or 0) * 100
+    if n < 50 or hr < 58:
+        print(f"  🚫 YRFI lock suppressed: n={n} hit={hr:.1f}% "
+              f"(need n>=50 AND hit>=58% to publish)")
+        return None
     _yrfi = g.get("nrfi_score")
     return {
         "game": f"{g.get('away_team')} @ {g.get('home_team')}",
@@ -511,8 +550,8 @@ def find_yrfi_lock(games, tier_rates):
         "score_source": "yrfi_score",
         "tier": "YRFI",
         "tier_source": "yrfi_band",
-        "audited_rate": round((rate_row.get("hit_rate") or 0) * 100, 1),
-        "audited_n": rate_row.get("total"),
+        "audited_rate": round(hr, 1),
+        "audited_n": n,
     }
 
 
