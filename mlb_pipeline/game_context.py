@@ -2297,14 +2297,18 @@ def compute_primary_play(ctx):
                 is_panel = partner == 'panel'
                 tier = 'STRONG' if is_panel else 'LEAN'
                 floor = 72 if is_panel else 62
-                partner_note = f'MC+{partner} alone (' + (
-                    '90% fade rate n=10' if is_panel else '~68% fade rate n=25'
-                ) + ')'
+                # 2026-08-13 (P3): label wording rewrite. Prior sub read
+                # "ANTI-CONSENSUS FADE — MC likes X but only jerry agrees"
+                # which had readers unsure which side was the pick vs the
+                # fade. New copy leads with the PICK team explicitly.
+                mc_team = home_team if mc_side_val == 'H' else away_team
+                hit_rate_note = '90%' if is_panel else '68%'
+                sample_note = 'n=10' if is_panel else 'n=25'
                 return {
                     'type': 'ml',
                     'tier': tier,
                     'label': f'{fade_team} ML',
-                    'sub': f'ANTI-CONSENSUS FADE — MC likes {mc_side_val} but only {partner} agrees; other 3 lens on {fade_team}. {partner_note}.',
+                    'sub': f'Take {fade_team}: 3 of 4 stat lens agree, MC+{partner} alone on {mc_team}. Fading the MC minority wins {hit_rate_note} ({sample_note}).',
                     'signal_floor': floor,
                     'audit_note': f'anti-consensus fade tier · aggregate 9-26 (26% inverse=74%) 30d',
                 }
@@ -2580,14 +2584,39 @@ def compute_primary_play(ctx):
     # hit rate (with hysteresis: only lift when 7d >= 52%, only re-suppress
     # when 7d < 48%). Falls back to True if model_health unreadable.
     # Now used ONLY as fallback when MC unavailable (7/25 promotion).
+    #
+    # 2026-08-13 Jerry-disagreement gate (P1 fix): v4 30d OVER hit rate is
+    # 40% (below break-even). When v4 and Jerry disagree on direction, defer
+    # to Jerry — the Pirates/Marlins case where v4 said Over 8.0 (11.0 pred)
+    # but Jerry said Under 8.0 (7.89 pred) shipped the wrong direction on
+    # the primary_play tile. Now: if Jerry's total pred sits on the opposite
+    # side of the line by >= 0.5 runs, skip v4 and let Jerry fallback own it.
     V4_OVER_SUPPRESSED = is_v4_over_suppressed()
+    jerry_home_r = ctx.get('jerry_pred_home_runs')
+    jerry_away_r = ctx.get('jerry_pred_away_runs')
+    jerry_total_sum = None
+    if jerry_home_r is not None and jerry_away_r is not None:
+        try: jerry_total_sum = float(jerry_home_r) + float(jerry_away_r)
+        except (TypeError, ValueError): pass
     if v4_total is not None and ct is not None:
         try:
             v4_delta = float(v4_total) - float(ct)
         except (TypeError, ValueError):
             v4_delta = None
-        if v4_delta is not None and v4_delta >= 2.5 and not V4_OVER_SUPPRESSED:
-            return {
+        # Jerry-disagreement gate: skip v4 direction when Jerry firmly opposes
+        jerry_delta = (jerry_total_sum - float(ct)) if jerry_total_sum is not None else None
+        v4_over_jerry_under = (v4_delta is not None and v4_delta > 0 and
+                                jerry_delta is not None and jerry_delta <= -0.5)
+        v4_under_jerry_over = (v4_delta is not None and v4_delta < 0 and
+                                jerry_delta is not None and jerry_delta >= 0.5)
+        if v4_delta is not None and v4_delta >= 2.5 and not V4_OVER_SUPPRESSED and not v4_over_jerry_under:
+            # Contradiction flag (P2): note when v4 wins BUT Jerry disagreed
+            # (soft disagreement < 0.5 fell through the gate — record it so
+            # the app can render a warning chip).
+            contradiction = None
+            if jerry_delta is not None and jerry_delta < v4_delta - 1.5:
+                contradiction = f'Jerry pred {jerry_total_sum:.1f} vs v4 {v4_total:.1f} · Δ={v4_delta-jerry_delta:+.1f}'
+            out = {
                 "type": "over",
                 "tier": "STRONG" if v4_delta >= 3.5 else "LEAN",
                 "label": f"Over {ct}",
@@ -2595,9 +2624,14 @@ def compute_primary_play(ctx):
                 "signal_floor": 72 if v4_delta >= 3.5 else 62,
                 "audit_note": "v4 fallback (MC unavailable) · v4 total 40% (30d)",
             }
+            if contradiction: out['contradiction_flag'] = contradiction
+            return out
         # UNDER side stays active — v4 UNDER picks audit at 55% (30d)
-        if v4_delta is not None and v4_delta <= -2.5:
-            return {
+        if v4_delta is not None and v4_delta <= -2.5 and not v4_under_jerry_over:
+            contradiction = None
+            if jerry_delta is not None and jerry_delta > v4_delta + 1.5:
+                contradiction = f'Jerry pred {jerry_total_sum:.1f} vs v4 {v4_total:.1f} · Δ={jerry_delta-v4_delta:+.1f}'
+            out = {
                 "type": "under",
                 "tier": "STRONG" if v4_delta <= -3.5 else "LEAN",
                 "label": f"Under {ct}",
@@ -2605,6 +2639,8 @@ def compute_primary_play(ctx):
                 "signal_floor": 72 if v4_delta <= -3.5 else 62,
                 "audit_note": "v4 UNDER cohort 55.1% (30d, n=49)",
             }
+            if contradiction: out['contradiction_flag'] = contradiction
+            return out
     # Legacy OVER path — v3 xERA gap rule fired (fallback when v4 missing
     # OR v4 edge is in 1.5-2.5 soft zone — v3 confirmation required).
     #
