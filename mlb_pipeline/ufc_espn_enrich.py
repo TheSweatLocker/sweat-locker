@@ -192,23 +192,35 @@ def enrich_fighter(fighter_name: str, name_to_id: dict) -> bool:
 
 
 def enrich_todays_fighters():
-    """Enrich only fighters in today's ufc_picks card."""
-    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    """Enrich fighters on ANY UFC card in the next 3 days (ET-aware).
+
+    2026-08-14 FIX: was using UTC-today and event_date=eq which missed
+    the common case where UFC card is Sat night but pipeline runs on
+    Fri/Sat morning UTC. Widened to look ahead 3 days so Wed-Sun
+    scraper runs all catch the upcoming Saturday card correctly.
+    """
+    from datetime import timedelta as _td
+    et_now = datetime.now(timezone.utc) - _td(hours=4)
+    today_et = et_now.date()
+    horizon = (today_et + _td(days=3)).isoformat()
+    today = today_et.isoformat()
+    # PostgREST needs multiple filters on same column via query string
     r = requests.get(
-        f'{SB}/rest/v1/ufc_picks',
-        headers=H_READ,
-        params={'event_date': f'eq.{today}',
-                'select': 'fighter_a,fighter_b'},
-        timeout=15,
+        f'{SB}/rest/v1/ufc_picks?select=fighter_a,fighter_b,event_date'
+        f'&event_date=gte.{today}&event_date=lte.{horizon}',
+        headers=H_READ, timeout=15,
     )
     if r.status_code != 200:
-        print(f'  ⚠ failed to load ufc_picks for {today}'); return
+        print(f'  ⚠ failed to load ufc_picks for {today}..{horizon}'); return
     picks = r.json()
     names = set()
+    dates_seen = set()
     for p in picks:
         if p.get('fighter_a'): names.add(p['fighter_a'])
         if p.get('fighter_b'): names.add(p['fighter_b'])
-    print(f'  today ({today}) — {len(names)} unique fighters to enrich')
+        if p.get('event_date'): dates_seen.add(p['event_date'])
+    print(f'  window {today}..{horizon} — event dates found: {sorted(dates_seen)}')
+    print(f'  {len(names)} unique fighters to enrich')
     print(f'  building ESPN athlete index...')
     name_to_id = build_espn_athlete_index()
     print(f'  indexed {len(name_to_id)} ESPN athletes')
