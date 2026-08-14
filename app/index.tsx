@@ -2182,13 +2182,16 @@ setEvData(evOpps.slice(0,20));
 
   const fetchGames = async (sport=gamesSport, day=gamesDay, forceRefresh=false) => {
   setGamesLoading(true);
-  const CACHE_KEY = `odds_games_${sport}_${day}`;
+  // 2026-08-13 cache-bust: v2 suffix invalidates the pre-fix NFL empty-list
+  // cache that would otherwise linger for 60 min after the preseason-key
+  // fetch shipped. Any keyed cache change works — v2 is the simplest.
+  const CACHE_KEY = `odds_games_${sport}_${day}_v2`;
   const CACHE_MINUTES = 60;
 
   if(!forceRefresh) {
   // 1. Check AsyncStorage first
   try {
-    const cached = await AsyncStorage.getItem('sweatlocker_games'+'_'+sport+'_'+day);
+    const cached = await AsyncStorage.getItem('sweatlocker_games'+'_'+sport+'_'+day+'_v2');
     if(cached) {
       const parsed = JSON.parse(cached);
       const ageMin = (Date.now() - parsed.timestamp) / 60000;
@@ -2213,7 +2216,7 @@ setEvData(evOpps.slice(0,20));
       if(ageMin < CACHE_MINUTES) {
         const mappedGames = supabaseCache.data;
         setGamesData(mappedGames);
-        await AsyncStorage.setItem('sweatlocker_games'+'_'+sport+'_'+day, JSON.stringify({data:mappedGames, timestamp:Date.now()}));
+        await AsyncStorage.setItem('sweatlocker_games'+'_'+sport+'_'+day+'_v2', JSON.stringify({data:mappedGames, timestamp:Date.now()}));
         setGamesLoading(false);
         setRefreshing(false);
         return;
@@ -2304,10 +2307,16 @@ setEvData(evOpps.slice(0,20));
       // both keys and merge so preseason games actually surface in the
       // Games tab. Same pattern will apply to NCAAF once its preseason
       // sport key is confirmed.
+      // 2026-08-13 update: don't wait on sportMeta race — during the
+      // known preseason window (Aug + first week of Sept) always fetch
+      // the preseason key too. Keeps fetchGames working even when
+      // sport_registry load races with the initial games render.
       const meta = (sportMeta || {})[sport];
       const primarySportKey = SPORT_KEYS[sport];
       const extraSportKeys: string[] = [];
-      if (sport === 'NFL' && meta?.state === 'preseason') {
+      const nowMonth = new Date().getMonth(); // 0-indexed: 7=Aug, 8=Sep
+      const nflPreseasonWindow = (nowMonth === 7) || (nowMonth === 8 && new Date().getDate() < 5);
+      if (sport === 'NFL' && (meta?.state === 'preseason' || nflPreseasonWindow)) {
         extraSportKeys.push('americanfootball_nfl_preseason');
       }
       const allSportKeys = [primarySportKey, ...extraSportKeys];
@@ -2360,7 +2369,7 @@ setEvData(evOpps.slice(0,20));
 
     // Save to AsyncStorage
     try {
-      await AsyncStorage.setItem('sweatlocker_games'+'_'+sport+'_'+day, JSON.stringify({data:mappedGames, timestamp:Date.now()}));
+      await AsyncStorage.setItem('sweatlocker_games'+'_'+sport+'_'+day+'_v2', JSON.stringify({data:mappedGames, timestamp:Date.now()}));
     } catch(e) {}
 
     // Save to Supabase cache
