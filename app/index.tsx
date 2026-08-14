@@ -1704,6 +1704,13 @@ const [sweatCardLoading, setSweatCardLoading] = useState(false);
   // Today/Tomorrow notes + off-season banners + adaptive tab labels without
   // hardcoding any of it in the component tree.
   const [sportMeta, setSportMeta] = useState<Record<string, any>>({});
+  // ── User-facing in-app notes (Session D · 2026-08-14) ────────────
+  // Read from user_notes; dismissed rows tracked in AsyncStorage per-device.
+  // Rendered as dismissible card at top of Home tab. No email, no push —
+  // in-app surface only per positioning guardrails (analytics platform,
+  // not sportsbook advisor).
+  const [userNotes, setUserNotes] = useState<any[]>([]);
+  const [dismissedNoteIds, setDismissedNoteIds] = useState<Set<number>>(new Set());
   const isFeatureOn = React.useCallback((sport: string, feature: string) => {
     // Fail-OPEN when the flag map hasn't loaded yet (network delay,
     // pre-fetch first render, offline). Prevents sport tabs from
@@ -8323,6 +8330,46 @@ setJerryHistory(prev => {
       fetchLadder();
     }
   }, [activeTab, fetchSteamFlags, fetchLadder]);
+
+  // Fetch active user notes + local dismissed-set on mount. Runs once
+  // per app open — notes don't need real-time refresh (published server-side
+  // by dispatch_user_notes.py cron).
+  const fetchUserNotes = React.useCallback(async () => {
+    try {
+      const nowIso = new Date().toISOString();
+      const { data } = await supabase
+        .from('user_notes')
+        .select('id,category,title,body,severity,publish_at,expires_at,context')
+        .gt('expires_at', nowIso)
+        .order('publish_at', { ascending: false })
+        .limit(10);
+      setUserNotes(data || []);
+    } catch (e) { setUserNotes([]); }
+    try {
+      const raw = await AsyncStorage.getItem('sweatlocker_dismissed_notes');
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) setDismissedNoteIds(new Set(arr));
+      }
+    } catch (e) {}
+  }, []);
+
+  useEffect(() => { fetchUserNotes(); }, [fetchUserNotes]);
+
+  const dismissNote = async (noteId: number) => {
+    const next = new Set(dismissedNoteIds); next.add(noteId);
+    setDismissedNoteIds(next);
+    try {
+      await AsyncStorage.setItem('sweatlocker_dismissed_notes',
+        JSON.stringify(Array.from(next)));
+    } catch (e) {}
+    // Also record server-side for potential future analytics — best-effort
+    try {
+      await supabase.from('user_note_dispatch_log').upsert({
+        note_id: noteId, dismissed_at: new Date().toISOString(),
+      }, { onConflict: 'note_id,user_id' });
+    } catch (e) {}
+  };
  useEffect(()=>{
   if(activeTab==='games') {
     fetchGames(gamesSport,gamesDay);
@@ -10559,6 +10606,48 @@ setJerryHistory(prev => {
         {activeTab==='home'&&(
           <View>
            <View style={{marginBottom:12}}>
+
+           {/* USER NOTES · Session D · 2026-08-14
+               Dismissible cards for track-record recaps, model changes,
+               significant losing-streak observations. Data-first tone per
+               LANGUAGE_GUARDRAILS.md — no apologies, no directive language.
+               Frequency-capped 1-per-21-days server-side. Local dismiss
+               persisted in AsyncStorage (per-device, no auth needed). */}
+           {userNotes.filter(n => !dismissedNoteIds.has(n.id)).slice(0,2).map((note: any) => {
+             const sevColor =
+               note.severity === 'important' ? THEME.loss :
+               note.severity === 'notice' ? THEME.hrb :
+               THEME.textDim;
+             return (
+               <View key={note.id} style={{
+                 backgroundColor: sevColor + '10',
+                 borderLeftWidth: 3,
+                 borderLeftColor: sevColor,
+                 borderRadius: 8,
+                 padding: 12,
+                 marginBottom: 10,
+               }}>
+                 <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'flex-start'}}>
+                   <View style={{flex:1, marginRight:8}}>
+                     <Text style={{color:sevColor, fontSize:10, fontWeight:'800', letterSpacing:0.5, marginBottom:4}}>
+                       {String(note.category || '').replace('_',' ').toUpperCase()}
+                     </Text>
+                     <Text style={{color:THEME.text, fontWeight:'700', fontSize:14, marginBottom:6}}>
+                       {note.title}
+                     </Text>
+                     <Text style={{color:THEME.textDim, fontSize:12, lineHeight:17}}>
+                       {note.body}
+                     </Text>
+                   </View>
+                   <TouchableOpacity onPress={() => dismissNote(note.id)}
+                     hitSlop={{top:10,bottom:10,left:10,right:10}}
+                     style={{padding:2}}>
+                     <Text style={{color:THEME.textMuted, fontSize:16, fontWeight:'700'}}>×</Text>
+                   </TouchableOpacity>
+                 </View>
+               </View>
+             );
+           })}
 
            {/* RECEIPTS STRIP — compact, conditional surfacing.
                Default: 30D rolling hit rate (stable, smooths variance).

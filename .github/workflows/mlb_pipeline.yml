@@ -1506,6 +1506,20 @@ jobs:
           cd mlb_pipeline
           python backtest_rules.py || echo "rule backtest failed"
 
+      # 2026-08-14 Session D: in-app user notes dispatcher
+      # Reads monitoring signals + generates notes surfaced as dismissible
+      # cards at top of Home tab. Data-first tone per LANGUAGE_GUARDRAILS.md.
+      # Frequency-capped 1-per-21-days per category. In-app only (no email,
+      # no push per user direction).
+      - name: Monitoring — user notes dispatch
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python dispatch_user_notes.py || echo "user note dispatch failed"
+
       # Pipeline health check — catches silent skips like the 5/19 case
       # where play_of_day.py's late-slate defer was returning before the
       # sweat-score write loop, leaving every game with sweat_score = null.
