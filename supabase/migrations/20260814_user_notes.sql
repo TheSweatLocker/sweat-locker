@@ -46,9 +46,13 @@ CREATE TABLE IF NOT EXISTS public.user_notes (
 );
 
 -- App query: "what notes should this user see right now?"
+-- 2026-08-14 fix: dropped WHERE expires_at > NOW() predicate — Postgres
+-- rejects NOW() in a partial-index predicate (must be IMMUTABLE, NOW() is
+-- STABLE). Same class of bug as line_history_sport_upcoming_idx we hit
+-- earlier tonight. Full index still serves the "active notes" query
+-- efficiently since expires_at is in the sort key.
 CREATE INDEX IF NOT EXISTS user_notes_active_idx
-  ON public.user_notes (publish_at DESC, expires_at)
-  WHERE expires_at > NOW();
+  ON public.user_notes (publish_at DESC, expires_at);
 
 -- Dispatch aggregation: "how many notes per category in last 21 days?"
 CREATE INDEX IF NOT EXISTS user_notes_category_recent_idx
