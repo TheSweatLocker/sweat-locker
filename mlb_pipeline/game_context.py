@@ -1160,8 +1160,17 @@ def get_pitcher_last_outing(pitcher_id):
         splits = r.json().get("stats", [])
         if not splits or not splits[0].get("splits"):
             return None
-        # Most recent game is first in the list
-        last = splits[0]["splits"][0]["stat"]
+        # 2026-08-13 BUG FIX: MLB Stats API gameLog returns splits in
+        # CHRONOLOGICAL ASCENDING order (oldest first). The prior code
+        # took splits[0] thinking that was "most recent" — it was
+        # actually the pitcher's FIRST game of the season. This meant
+        # every "last outing" signal citing IP/pitches/ER was
+        # fabricated from a game months old.
+        # Real example that surfaced this: Drohan (MIL) prop showed
+        # "Last outing 2.7 IP — fragile" — that was his 4/8 debut.
+        # Actual last outing (8/7): 5.0 IP.
+        # Fix: index [-1] to grab the last (most recent) split.
+        last = splits[0]["splits"][-1]["stat"]
         return {
             "pitches": int(last.get("numberOfPitches", 0) or 0),
             "innings": float(last.get("inningsPitched", "0").replace('.1','.33').replace('.2','.67') or "0"),
