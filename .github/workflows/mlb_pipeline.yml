@@ -1386,6 +1386,52 @@ jobs:
           cd mlb_pipeline
           python generate_sweat_card.py
 
+      # ─── Steam Room (2026-08-13) ───────────────────────────────────
+      # write_line_history: per-book odds snapshot (fuels sparklines)
+      # detect_line_movement: steam / RLM / limit pattern detection
+      # steam_room_ladder: evaluate today's plays against strict qualifier
+      #                     gates; sets ladder_state to active|waiting
+      # resolve_ladder_results: backfill W/L on pending rungs after games
+      #                          grade; updates streak counters on state.
+      # Runs across ALL sports (per-sport dispatch inside each script).
+      # Failures non-fatal — Steam Room tab shows empty state, doesn't
+      # break the card generation upstream.
+      - name: Steam Room — per-book line snapshot
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python write_line_history.py --sport ALL || echo "line_history write failed"
+
+      - name: Steam Room — detect line movement patterns
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python detect_line_movement.py --sport ALL --lookback-hours 6 || echo "line detector failed"
+
+      - name: Steam Room — ladder qualifier check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python steam_room_ladder.py || echo "ladder engine failed"
+
+      - name: Steam Room — resolve ladder rung results
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python resolve_ladder_results.py || echo "ladder resolver failed"
+
       # Pipeline health check — catches silent skips like the 5/19 case
       # where play_of_day.py's late-slate defer was returning before the
       # sweat-score write loop, leaving every game with sweat_score = null.
