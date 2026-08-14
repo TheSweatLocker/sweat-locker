@@ -548,12 +548,12 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
                 }
 
         # 2026-08-13 · ANTI-CONSENSUS FADE (NFL) — analog of MLB's rule.
-        # Fires when MC + one partner lens disagree with the other 3 spread-
-        # producing lens. Historical MLB pattern: fade side hits ~74%. NFL
-        # sample smaller (16 games/season) so tier stays LEAN until we
-        # accumulate at least 20 fires for calibration.
-        # Only fires when we have ALL 5 spread lens (MC + EPA + Panel + V3 + V4)
-        # AND their sides are unambiguous.
+        # 2026-08-14 · GATED THROUGH Session C's LOG-ONLY discipline.
+        # Registry mode='shadow' → runner.fire() logs but returns False
+        # so the caller (this function) skips returning the primary_play,
+        # letting the downstream cohort/edge branches take over.
+        # After ~15 shadow fires with graded outcomes, backtest_rules.py
+        # auto-promotes to active if 30d hit_rate beats baseline+3pp.
         def _side_of(spread_val: Optional[float]) -> Optional[str]:
             if spread_val is None: return None
             try: return 'H' if float(spread_val) > 0 else 'A'
@@ -578,15 +578,40 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
                 # Pattern: MC in minority (2 lens) with 3 dissenting = fade signal
                 if mc_in_minority:
                     fade_team = home_team if majority_side == 'H' else away_team
-                    return {
+                    proposal = {
                         'type': 'ml',
-                        'tier': 'LEAN',   # small NFL sample; tighten to STRONG once calibrated
+                        'tier': 'LEAN',
                         'label': f'{fade_team} ML',
                         'sub': f'Anti-consensus: 3 of 5 lens on {fade_team}, MC in minority. '
                                f'Historical MLB pattern ~68-74% inverse (NFL calibration pending).',
                         'signal_floor': 62,
-                        'audit_note': 'NFL anti-consensus fade · calibration pending (needs 20+ fires)',
+                        'audit_note': 'NFL anti-consensus fade · rule_registry-gated',
                     }
+                    # Rule registry gate — see LOG-ONLY discipline (Session C)
+                    try:
+                        from rule_registry import RuleRunner
+                        runner = RuleRunner('NFL_ANTI_CONSENSUS_FADE')
+                        game_id = ctx.get('game_id')
+                        if runner.fire(
+                            sport='NFL',
+                            game_date=str(ctx.get('game_date')) if ctx.get('game_date') else None,
+                            game_id=game_id,
+                            target_table='nfl_game_context',
+                            target_id=str(game_id) if game_id else 'unknown',
+                            proposed_action=f'primary_play=LEAN {fade_team} ML',
+                            before_state={'primary_play': None},
+                            after_state={'primary_play_type': 'ml', 'tier': 'LEAN',
+                                         'label': proposal['label']},
+                            context={'lens_sides': lens_sides,
+                                     'majority': majority_side,
+                                     'minority': minority_side},
+                        ):
+                            return proposal
+                        # shadow mode → log logged, don't return; fall through
+                    except Exception:
+                        # if the registry client fails, preserve pre-Session-C
+                        # behavior (return proposal) — fail-open
+                        return proposal
 
     # 1. HEAVY HOME DOG cohort PRIME override — 63.1% audit hit rate
     if 'nfl_heavy_home_dog' in tags:
