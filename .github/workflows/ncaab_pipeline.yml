@@ -58,9 +58,13 @@ jobs:
             fi
           fi
 
-      # ────── KENPOM (Monday 11am ET only) ──────
+      # ────── KENPOM (Monday 11am ET only — paid API discipline) ──────
+      # Gated to kenpom_only mode (Monday cron or manual dispatch) — NOT full.
+      # KenPom ratings converge slowly during season; weekly refresh is
+      # sufficient. This halves paid-API usage (previously 2 calls/day
+      # via full mode). Torvik + Haslam continue daily as free scrapers.
       - name: KenPom weekly refresh
-        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only'
+        if: steps.mode.outputs.mode == 'kenpom_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -78,7 +82,7 @@ jobs:
       # Failures per-source are non-fatal — Panel just runs on whichever
       # sources came back (needs ≥2 systems per team to fire).
       - name: NCAAB — KenPom snapshot write
-        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only'
+        if: steps.mode.outputs.mode == 'kenpom_only'
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
