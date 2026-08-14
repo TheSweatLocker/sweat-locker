@@ -166,8 +166,25 @@ def decide(raw: int, refit: float | None, current_verdict: str,
         if current_verdict in ('BACK', 'PASS'):
             return ('BACK', 'FORCE_BACK_BOOST')
     if abs_d >= DELTA_BOOST and refit < REFIT_PASS:
-        # Too conflicted — sit out
-        return ('PASS', 'FORCE_PASS_CONFLICT')
+        # 2026-08-14 · DISABLED FORCE_PASS_CONFLICT rule (refit calibration audit).
+        #
+        # 30-day cross-reference: 32 picks hit this rule and got PASSed. Their
+        # underlying prop outcomes went 19-11 (63.3% hit rate). The rule is
+        # killing legitimate winners.
+        #
+        # Root cause: refit's middle band (30-95) is essentially uncalibrated
+        # noise — decile analysis showed refit values in that range range from
+        # 35% to 75% actual hit rate with no monotonic relationship. Using
+        # refit<45 as a "too conflicted, sit out" gate PASSes picks where Jerry
+        # correctly saw edge the refit model failed to capture.
+        #
+        # Keeping FORCE_PASS_JERRY_HALLUCINATION (raw<30 AND refit<30 dual
+        # flag) which is 2-3 (40%) — that one's justified because BOTH signals
+        # agree the pick is weak.
+        #
+        # Return None → HOLD original verdict. Deferred: retrain refit model
+        # with clean training data (post last_outing bug fix).
+        return None
     return None
 
 
