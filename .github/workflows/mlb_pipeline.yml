@@ -1446,6 +1446,40 @@ jobs:
           cd mlb_pipeline
           python resolve_ladder_results.py || echo "ladder resolver failed"
 
+      # ─── Session A monitoring dashboard (2026-08-14) ─────────────
+      # Populates hit_rate_snapshots + rule_fire_stats + dashboard_alerts.
+      # Sport-universal — one nightly run covers every registered sport.
+      # Runs AFTER all sport pipelines finish so today's grades are counted
+      # in the 7d/30d/90d rolling windows. continue-on-error: monitoring
+      # failure never blocks the main pipeline (dashboard staleness would
+      # itself trigger the stale_snapshot alert on the next successful run).
+      - name: Monitoring — hit-rate snapshots
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python compute_hit_rate_dashboard.py --sport ALL || echo "hit-rate compute failed"
+
+      - name: Monitoring — rule-fire stats
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python compute_rule_fire_stats.py --sport ALL || echo "rule-fire compute failed"
+
+      - name: Monitoring — anomaly alerts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python alert_dashboard_anomalies.py || echo "alert engine failed"
+
       # Pipeline health check — catches silent skips like the 5/19 case
       # where play_of_day.py's late-slate defer was returning before the
       # sweat-score write loop, leaving every game with sweat_score = null.
