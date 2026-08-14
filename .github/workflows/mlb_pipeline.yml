@@ -1492,6 +1492,20 @@ jobs:
           cd mlb_pipeline
           python check_data_quality_daily.py || echo "DQ daily failed"
 
+      # 2026-08-14 Session C: rule backtest + auto-promotion
+      # Backfills actual outcomes on rule_shadow_log rows for graded picks,
+      # computes 30d rolling hit rates per rule, promotes shadow→active for
+      # rules that hit their gate, writes regression alerts for active rules
+      # that drift below baseline. Sport-universal.
+      - name: Monitoring — rule backtest + auto-promote
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python backtest_rules.py || echo "rule backtest failed"
+
       # Pipeline health check — catches silent skips like the 5/19 case
       # where play_of_day.py's late-slate defer was returning before the
       # sweat-score write loop, leaving every game with sweat_score = null.

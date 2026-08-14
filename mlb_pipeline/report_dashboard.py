@@ -178,6 +178,42 @@ def section_rule_hotlist(snapshot_date: date):
               f'({h if h is not None else "—"}%) fires={row["fires"]}')
 
 
+def section_rule_registry(snapshot_date: date):
+    """Session C rule state overview."""
+    r = _paginate(f'{SB}/rest/v1/rule_registry',
+        {'select': 'rule_name,rule_class,mode,current_hit_rate,current_sample_n,'
+                   'baseline_hit_rate,promotion_lift_pp',
+         'order': 'mode.asc,rule_name.asc'})
+    print()
+    print('═' * 80)
+    print(f'  ⚙️  RULE REGISTRY — mode + backtest state')
+    print('═' * 80)
+    if not r:
+        print('  no rules registered — apply rule_registry migration'); return
+    print(f'  {"mode":8} {"rule":36} {"n":>5} {"hit%":>7} {"gate":>7} {"status"}')
+    for row in r[:30]:
+        mode = row.get('mode', '?')
+        name = row.get('rule_name', '?')[:36]
+        n = row.get('current_sample_n') or 0
+        h = row.get('current_hit_rate')
+        base = float(row.get('baseline_hit_rate') or 50)
+        lift = float(row.get('promotion_lift_pp') or 2)
+        h_str = f'{h}%' if h is not None else '   —'
+        gate = f'{base+lift:.0f}%' if mode == 'shadow' else f'{base:.0f}%'
+        # Status hint
+        if mode == 'shadow' and h is not None and n >= 30 and h >= base + lift:
+            status = '✓ READY TO PROMOTE'
+        elif mode == 'active' and h is not None and n >= 30 and h < base - 5:
+            status = '🚨 REGRESSION'
+        elif mode == 'active' and h is not None and h >= base + 5:
+            status = '🔥 EXCELLENT'
+        elif mode == 'off':
+            status = 'disabled'
+        else:
+            status = ''
+        print(f'  {mode:8} {name:36} {n:>5} {h_str:>7} {gate:>7}  {status}')
+
+
 def section_data_quality(snapshot_date: date):
     """Recent data-quality event summary (Session B)."""
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
@@ -235,6 +271,7 @@ def main():
     section_headline_hit_rates(sd, sports)
     section_tier_rates(sd, sports)
     section_rule_hotlist(sd)
+    section_rule_registry(sd)
     section_data_quality(sd)
     section_stall_watch(sd)
     print()
