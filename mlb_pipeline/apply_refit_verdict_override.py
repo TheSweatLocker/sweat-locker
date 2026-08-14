@@ -98,11 +98,27 @@ def decide(raw: int, refit: float | None, current_verdict: str,
     delta = refit - raw
     abs_d = abs(delta)
     if abs_d >= DELTA_STRONG and refit < REFIT_TRAP:
-        # Raw was fooled — real play is opposite side. FORCE FADE if raw said BACK
-        # (we now think the OTHER side is real, so fade the currently-stated side).
-        # If raw said FADE and refit is low, that's actually consistent — HOLD.
+        # 2026-08-14 · DISABLED FORCE_FADE_TRAP → converted to FORCE_PASS.
+        #
+        # 30-day audit uncovered this rule was catastrophically wrong:
+        #   refit <20 zone FADEs: 2-14 (12% hit) — blind inversion 88%
+        #   refit 20-39 zone:     7-10 (41%)
+        #   Auto-refit-override FADEs overall: 1-6 (14%)
+        #
+        # The premise ("refit low + raw high = trap, fade the pick") is
+        # backwards for the current calibration. Refit's <30 band signal
+        # is NOT reliably identifying traps — actual outcomes show these
+        # picks hit ~76-88% of the time. Blindly inverting to FORCE_BACK
+        # would over-commit on a small sample (n=16 in the extreme band);
+        # PASS is the safe move — protect users from the wrong FADE
+        # without betting the opposite direction.
+        #
+        # Investigation into why the refit model produces this inverted
+        # signal in the low-conviction band is queued for the refit
+        # calibration audit (deeper piece). Until then: don't act on
+        # the refit-trap signal.
         if current_verdict == 'BACK':
-            return ('FADE', 'FORCE_FADE_TRAP')
+            return ('PASS', 'FORCE_PASS_REFIT_TRAP_DISABLED')
         return None
     # 2026-08-11: Jerry-hallucination catch. When JR conviction is high
     # (BACK verdict at 55+) but props base scorer + refit BOTH say low
