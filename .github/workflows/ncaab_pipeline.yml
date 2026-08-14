@@ -145,7 +145,24 @@ jobs:
           cd mlb_pipeline
           python ncaab_game_context.py || echo "game_context failed"
 
-      # ────── MC SIMULATOR (2026-08-14 Session 2 · lens #2 of 5) ──────
+      # ────── PANEL MODEL (2026-08-14 Session 3 · lens #2 of 5 - MC is #1) ──────
+      # Reads latest ncaab_rating_snapshots (KenPom + Torvik + Haslam) and
+      # averages into panel_prediction JSONB. Requires ≥2 systems per team
+      # to fire — coverage-limited by name-alias gap (S1 followup work).
+      #
+      # Off-season no-op: 0 games → early exit. Fires AFTER MC so both
+      # blobs land on the same PATCH sequence.
+      - name: NCAAB — Panel model (KenPom + Torvik + Haslam average)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaab_panel_predictor.py || echo "ncaab_panel_predictor failed (non-fatal)"
+
+      # ────── MC SIMULATOR (2026-08-14 Session 2 · lens #1 of 5) ──────
       # Reads latest KenPom snapshot from ncaab_team_stats + today's games,
       # runs 10k possession-based sims per game, writes mc_probabilities
       # blob to ncaab_game_context. Anti-consensus rule + MC HIGH-CONF
