@@ -178,7 +178,10 @@ def run():
             skipped += 1
             continue
 
-        rounds_sched = 5 if i == 0 else 3
+        # 2026-08-14 FIX: previously `5 if i == 0` marked opener as main
+        # event. ESPN returns fights prelim→main order so last fight IS
+        # the main event. Use fight_card length to determine.
+        rounds_sched = 5 if i == len(fight_card) - 1 else 3
         pred = predict_fight(a_url, b_url, iso_date, rounds_sched)
         if "error" in pred:
             print(f"  ⚠️ {a_name} vs {b_name}: {pred['error']}")

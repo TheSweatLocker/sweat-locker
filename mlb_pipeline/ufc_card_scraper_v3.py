@@ -104,8 +104,23 @@ def build_fights_array(espn_event: dict) -> list:
     Fighter URLs get resolved at scoring time by ufc_score_card.fetch_fighter_url —
     no need to enrich here.
     """
+    # 2026-08-14 FIX: previously `rounds = 5 if i == 0 else 3` marked the
+    # FIRST enumerated fight as main event (5rd). But ESPN returns fights
+    # in prelim→main event order, so i==0 is the OPENER not the main event.
+    # UFC 330 case: Wells/Orolbai (opener, fight #1) was marked 5rd, and
+    # Makhachev/Garry (actual main event) was marked 3rd — model was
+    # scoring the wrong round-count. Fix: main event is the LAST fight
+    # in the list, so i == last_index gets 5rd.
+    competitions = espn_event.get('competitions') or []
+    valid_indices = [
+        i for i, comp in enumerate(competitions)
+        if len(comp.get('competitors') or []) >= 2
+        and (comp['competitors'][0].get('athlete') or {}).get('displayName')
+        and (comp['competitors'][1].get('athlete') or {}).get('displayName')
+    ]
+    main_event_idx = valid_indices[-1] if valid_indices else -1
     fights = []
-    for i, comp in enumerate(espn_event.get('competitions') or []):
+    for i, comp in enumerate(competitions):
         competitors = comp.get('competitors') or []
         if len(competitors) < 2:
             continue
@@ -115,9 +130,11 @@ def build_fights_array(espn_event: dict) -> list:
         b_name = b_ath.get('displayName') or b_ath.get('fullName') or ''
         if not a_name or not b_name:
             continue
-        # Rounds: main event (fight_order 1) = 5, all others = 3. ESPN
-        # doesn't flag directly; convention is safe (main is always 5rd).
-        rounds = 5 if i == 0 else 3
+        # Main event (last fight) = 5rd, others = 3rd.
+        # PPV title bouts + co-main are also often 5rd, but ESPN doesn't
+        # flag distinctly. Ship the main-event-only rule as the safe
+        # default; co-main override can come as a per-event exception.
+        rounds = 5 if i == main_event_idx else 3
         fights.append({
             'fighter1': a_name,
             'fighter2': b_name,
