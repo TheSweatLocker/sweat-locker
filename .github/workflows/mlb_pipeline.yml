@@ -388,6 +388,20 @@ jobs:
           cd mlb_pipeline
           python apply_refit_verdict_override.py || echo "refit override failed (non-fatal)"
 
+      # 2026-08-14 · FADE→PASS discipline for bomb-list prop_types.
+      # 30d audit showed outs_over / er_under / bb_over / bb_under / ks_under
+      # natural FADEs hit <45% (see apply_fade_type_discipline.py docstring).
+      # Runs AFTER refit override so refit-triggered FADEs get through first,
+      # then bomb-list filter converts them to PASS. Non-fatal.
+      - name: FADE→PASS bomb-list discipline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python apply_fade_type_discipline.py || echo "fade type discipline failed (non-fatal)"
+
       # Jerry-anchor Daily Degen (2026-07-31 · Tabletop C step 3). Runs
       # AFTER generate_prop_jerry_synthesis so it can pull from both
       # jerry_reads (game-level) and prop_jerry_reads (prop-level) to
