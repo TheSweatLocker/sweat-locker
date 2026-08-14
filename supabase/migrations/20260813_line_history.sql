@@ -44,9 +44,13 @@ CREATE INDEX IF NOT EXISTS line_history_game_market_book_side_idx
 CREATE INDEX IF NOT EXISTS line_history_captured_at_idx
   ON public.line_history (captured_at);
 
+-- 2026-08-13: dropped WHERE commence_time > NOW() predicate. Postgres rejects
+-- NOW() in a partial-index predicate (must be IMMUTABLE, NOW() is STABLE).
+-- The unpartitioned index still serves the "upcoming games for this sport"
+-- query fine — 14-day retention keeps the table small enough that a full
+-- (sport, commence_time DESC) scan is cheap.
 CREATE INDEX IF NOT EXISTS line_history_sport_upcoming_idx
-  ON public.line_history (sport, commence_time DESC)
-  WHERE commence_time > NOW();
+  ON public.line_history (sport, commence_time DESC);
 
 -- ─── Steam move / RLM detection ────────────────────────────────────────
 --
