@@ -145,6 +145,23 @@ jobs:
           cd mlb_pipeline
           python ncaab_game_context.py || echo "game_context failed"
 
+      # ────── MC SIMULATOR (2026-08-14 Session 2 · lens #2 of 5) ──────
+      # Reads latest KenPom snapshot from ncaab_team_stats + today's games,
+      # runs 10k possession-based sims per game, writes mc_probabilities
+      # blob to ncaab_game_context. Anti-consensus rule + MC HIGH-CONF
+      # chip both read this field.
+      #
+      # Off-season no-op: ncaab_game_context is empty → 0 games → early exit.
+      - name: NCAAB — Monte Carlo simulator
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaab_mc_simulator.py || echo "ncaab_mc_simulator failed (non-fatal)"
+
       # ────── JERRY GAME READS ──────
       - name: Generate NCAAB game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
