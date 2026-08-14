@@ -194,6 +194,23 @@ jobs:
           cd mlb_pipeline
           python generate_ncaab_game_reads.py || echo "game reads failed (non-fatal)"
 
+      # ────── 4-LENS RESOLVER (2026-08-14 Session 4) ──────
+      # Runs LAST in card-build sequence (after MC + Panel + Jerry).
+      # Reads all 4 lens signals, recomputes sweat_score/tier/primary_play
+      # with lens-agreement logic + confidence caps. PATCHes game_context.
+      #
+      # 4 lenses today: KenPom-in-context + MC + Panel + Jerry.
+      # V4 XGBoost slot reserved for Feb 2027 (project_ncaab_v4_deferred_814).
+      - name: NCAAB — 4-lens primary_play resolver
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaab_resolve_primary_play.py || echo "resolver failed (non-fatal)"
+
       # ────── EXTERNAL PICKS AGGREGATION ──────
       - name: External source aggregation pull
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
