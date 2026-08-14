@@ -71,6 +71,45 @@ jobs:
           if [ -n "$KENPOM_KEY" ]; then echo "KENPOM_KEY length: ${#KENPOM_KEY}"; else echo "KENPOM_KEY not set"; fi
           python ncaab_pipeline.py || echo "KenPom pull failed (non-fatal — game context can run on prior snapshot)"
 
+      # ────── MULTI-SOURCE RATING SNAPSHOTS (2026-08-14 Session 1 · Panel foundation)
+      # Runs 3 rating scrapers in sequence. Each writes to ncaab_rating_snapshots
+      # keyed on (snapshot_date, team, season, rating_system). Panel model
+      # (Session 3) reads this table + averages across systems.
+      # Failures per-source are non-fatal — Panel just runs on whichever
+      # sources came back (needs ≥2 systems per team to fire).
+      - name: NCAAB — KenPom snapshot write
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          KENPOM_KEY:   ${{ secrets.KENPOM_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaab_kenpom_snapshot.py || echo "kenpom snapshot failed"
+
+      - name: NCAAB — Torvik snapshot write
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaab_torvik_pull.py || echo "torvik pull failed"
+
+      - name: NCAAB — Haslam snapshot write
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # Haslam XML uses brotli compression — needed by requests lib
+          pip install --quiet brotli || echo "brotli install non-fatal"
+          python ncaab_haslam_pull.py || echo "haslam pull failed"
+
       # ────── ALIAS ENRICHMENT (weekly on Monday, cheap idempotent) ──────
       # Also fires on manual workflow_dispatch so testing kenpom_only
       # mode runs the full weekly-Monday routine (2026-07-25 fix —

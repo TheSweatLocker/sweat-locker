@@ -6,12 +6,16 @@ Torvik uses a different methodology than KenPom (weighs recent games
 more heavily; different possession-adjustment framework) which makes
 it an INDEPENDENT lens for the Panel model — exactly what we want.
 
-Data endpoint: Barttorvik has a semi-public JSON at:
-    https://barttorvik.com/trank.php?year={YY}&sort=&conlimit=&venue=&type=
+Data endpoint: Barttorvik exposes a clean JSON array at:
+    https://barttorvik.com/{YEAR}_team_results.json
 
-That endpoint returns HTML that embeds a JSON blob in a <script> tag.
-We parse the table row structure directly (more reliable than the
-undocumented JSON).
+Each entry is a positional array of ~45 fields. Column order verified
+2026-08-14 via sample (Houston 2024-25 season):
+    0=rank, 1=team, 2=conf, 3=record, 4=adj_off, 5=rank_adj_off,
+    6=adj_def, 7=rank_adj_def, 8=barthag, 9=rank_barthag,
+    10=wins, 11=losses, ...
+
+adj_em derived as adj_off - adj_def (Torvik doesn't expose EM directly).
 
 Writes to ncaab_rating_snapshots per team. Sport-agnostic table means
 Panel model reads uniformly across rating systems.
@@ -50,7 +54,7 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Sweat Locker · analytics aggregator)'}
-TORVIK_URL = 'https://barttorvik.com/trank.php'
+TORVIK_URL = 'https://barttorvik.com/{year}_team_results.json'
 
 
 def _season_to_year(season: str) -> str:
@@ -63,49 +67,37 @@ def _season_to_year(season: str) -> str:
 
 
 def fetch_torvik(season: str) -> list:
-    """Return list of team-dicts. One row per D-I team."""
+    """Return list of team-dicts from Torvik's JSON endpoint."""
     year = _season_to_year(season)
-    r = requests.get(TORVIK_URL,
-        params={'year': year, 'sort': '', 'conlimit': '',
-                'venue': '', 'type': 'All'},
-        headers=HEADERS, timeout=30)
+    r = requests.get(TORVIK_URL.format(year=year), headers=HEADERS, timeout=30)
     if r.status_code != 200:
         print(f'  ✗ Torvik HTTP {r.status_code}')
         return []
-    html = r.text
-
-    # Torvik's table has rows like:
-    # <tr><td class="teamname"><a href=...>TEAM</a></td>
-    #     <td>CONF</td><td>W-L</td><td>ADJ_EM</td>
-    #     <td>ADJ_OFF</td><td>ADJ_DEF</td><td>...</td>
-    # The most reliable approach: find <tr class="seedrow"> or plain <tr>
-    # blocks and parse cells in order.
-    rows = re.findall(
-        r'<tr[^>]*>\s*<td[^>]*>[^<]*(?:<a[^>]*>)?([^<]+?)(?:</a>)?</td>'  # rank
-        r'\s*<td[^>]*>(?:<a[^>]*>)?([^<]+?)(?:</a>)?</td>'                # team
-        r'\s*<td[^>]*>([^<]+)</td>'                                        # conf
-        r'\s*<td[^>]*>([^<]+)</td>'                                        # W-L
-        r'\s*<td[^>]*>([^<]+)</td>'                                        # ADJ_EM
-        r'\s*<td[^>]*>([^<]+)</td>'                                        # ADJ_OFF
-        r'\s*<td[^>]*>([^<]+)</td>',                                       # ADJ_DEF
-        html, re.DOTALL)
-
+    try:
+        rows = r.json()
+    except ValueError:
+        print(f'  ✗ Torvik JSON parse failed')
+        return []
+    if not isinstance(rows, list):
+        return []
     teams = []
     for row in rows:
+        # Positional layout — indices verified 2026-08-14 on Houston 2024-25
+        if not isinstance(row, list) or len(row) < 8: continue
         try:
-            rank_str, team, conf, wl, em, off, deff = [s.strip() for s in row]
-            # Skip header rows / non-numeric rank
-            if not rank_str.isdigit(): continue
+            rank = int(row[0])
+            team = row[1]
+            conf = row[2]
+            record = row[3]
+            adj_off = float(row[4])
+            adj_def = float(row[6])
+            adj_em = adj_off - adj_def
             teams.append({
-                'team': team,
-                'conference': conf,
-                'record': wl,
-                'adj_em': float(em.replace('+', '')) if em.replace('+', '').replace('.', '').replace('-', '').isdigit() else None,
-                'adj_off': float(off) if off.replace('.', '').isdigit() else None,
-                'adj_def': float(deff) if deff.replace('.', '').isdigit() else None,
-                'em_rank': int(rank_str),
+                'team': team, 'conference': conf, 'record': record,
+                'adj_off': adj_off, 'adj_def': adj_def, 'adj_em': adj_em,
+                'em_rank': rank,
             })
-        except (ValueError, IndexError) as e:
+        except (TypeError, ValueError, IndexError):
             continue
     return teams
 
