@@ -496,7 +496,7 @@ def auto_repair(sport: str, game_date: str) -> dict:
                             f'{tr["note"]} — forcing PASS. Original take: '
                             f'{(pj.get("short_read") or "")[:220]}]')
                     payload = {'call_verdict': 'PASS', 'conviction': 40,
-                               'short_read': note[:1500]}
+                               'audit_notes': note[:1500]}  # 2026-08-13: audit_notes not short_read
                     pr = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{pj["id"]}',
                                         headers=H_WRITE, json=payload, timeout=10)
                     if pr.status_code in (200, 204):
@@ -565,7 +565,7 @@ def auto_repair(sport: str, game_date: str) -> dict:
                         f'but BACK verdict slipped past override. Forcing '
                         f'FADE. Original take: {(pj.get("short_read") or "")[:200]}]')
                 payload = {'call_verdict': 'FADE', 'conviction': 55,
-                           'short_read': note[:1500]}
+                           'audit_notes': note[:1500]}  # 2026-08-13: audit_notes not short_read
                 pr = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{pj["id"]}',
                                     headers=H_WRITE, json=payload, timeout=10)
                 if pr.status_code in (200, 204):
@@ -577,7 +577,7 @@ def auto_repair(sport: str, game_date: str) -> dict:
                         f'— override missed. Flipping FADE→BACK at LEAN cap. '
                         f'Original take: {(pj.get("short_read") or "")[:200]}]')
                 payload = {'call_verdict': 'BACK', 'conviction': 55,
-                           'short_read': note[:1500]}
+                           'audit_notes': note[:1500]}  # 2026-08-13: audit_notes not short_read
                 pr = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{pj["id"]}',
                                     headers=H_WRITE, json=payload, timeout=10)
                 if pr.status_code in (200, 204):
@@ -725,7 +725,7 @@ def auto_repair(sport: str, game_date: str) -> dict:
                         f'prop read had NULL call_text and prose parse failed. '
                         f'Forcing pass market. Original short_read: {prose[:200]}]')
                 payload = {'call_market': 'pass', 'conviction': 40,
-                           'short_read': note[:1500]}
+                           'audit_notes': note[:1500]}  # 2026-08-13: audit_notes not short_read
                 pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
                                     headers=H_WRITE, json=payload, timeout=10)
                 if pr.status_code in (200, 204):

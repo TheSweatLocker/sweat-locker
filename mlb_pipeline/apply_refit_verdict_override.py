@@ -456,8 +456,11 @@ def run(game_date: str, dry_run: bool = False) -> int:
                     f'but capping conviction at LEAN (refit-100 band for '
                     f'{r["prop_type"]}/{r["direction"]} unproven). '
                     f'Original take: {(r.get("short_read") or "")[:220]}]')
+            # 2026-08-13: write to audit_notes NOT short_read (audit-tag leakage
+            # bug fix). short_read stays as the analyst take; audit_notes carries
+            # the repair audit trail for downstream inspection.
             payload = {'call_verdict': 'BACK', 'conviction': 55,
-                       'short_read': note[:1500]}
+                       'audit_notes': note[:1500]}
             print(f'  {r["player_name"]:22} {r["prop_type"]:12} {r["direction"]:5} '
                   f'raw={raw} refit={refit} · FADE→BACK LEAN cap [FLIP_LEAN_CAP]')
             if dry_run: flips += 1; continue
@@ -479,8 +482,9 @@ def run(game_date: str, dry_run: bool = False) -> int:
                     f'{r["direction"]} {reason_txt} — '
                     f'holding verdict at {current}, capping conviction LEAN. '
                     f'Original take: {(r.get("short_read") or "")[:250]}]')
+            # 2026-08-13: audit_notes not short_read
             payload = {'conviction': min(r.get('conviction') or 55, 55),
-                       'short_read': note[:1500]}
+                       'audit_notes': note[:1500]}
             print(f'  {r["player_name"]:22} {r["prop_type"]:12} {r["direction"]:5} '
                   f'raw={raw} refit={refit} · {current} conviction capped LEAN [{action}]')
             if dry_run: flips += 1; continue
@@ -516,7 +520,8 @@ def run(game_date: str, dry_run: bool = False) -> int:
                 new_conv = 50
 
         note = note[:1500]
-        payload = {'call_verdict': new_verdict, 'conviction': new_conv, 'short_read': note}
+        # 2026-08-13: audit_notes not short_read
+        payload = {'call_verdict': new_verdict, 'conviction': new_conv, 'audit_notes': note}
         print(f'  {r["player_name"]:22} {r["prop_type"]:12} {r["direction"]:5} '
               f'raw={raw} refit={refit} · {current}→{new_verdict} [{action}]')
         if dry_run: flips += 1; continue

@@ -318,7 +318,7 @@ def apply_prop_discipline_rules(game_date: str, dry_run: bool = False) -> int:
                 f'shows ks_under BACK at conv 55-59 hits 50% (break-even). '
                 f'Forcing PASS. Original take: {(pj.get("short_read") or "")[:200]}]')
         payload = {'call_verdict': 'PASS', 'conviction': 40,
-                   'short_read': note[:1500]}
+                   'audit_notes': note[:1500]}  # 2026-08-13: audit_notes not short_read
         print(f'  ks_under discipline: {pj.get("player_name"):22} '
               f'conv={pj.get("conviction")} → PASS')
         if not dry_run:

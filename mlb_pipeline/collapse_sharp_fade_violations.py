@@ -223,7 +223,7 @@ def apply_flip(read: dict, ctx: dict, rule_id: str, new_side: str,
         'call_side': new_side,
         'call_text': new_call_text,
         'conviction': new_conv,
-        'short_read': note,
+        'audit_notes': note,  # 2026-08-13: audit_notes not short_read
     }
     if dry_run:
         print(f'    [DRY] {rule_id}: {read["call_text"]}({orig_conv}) -> {new_call_text}({new_conv})')

@@ -174,15 +174,17 @@ def resolve(game_date: str, dry_run: bool = False) -> None:
                   f'(votes {other}) -> FLIP to {new_verdict} conv={flipped_conv} '
                   f'(inherits {dominant} thesis)')
             if dry_run: continue
+            # 2026-08-13: audit_notes not short_read (leakage fix). Same-thesis
+            # flip is a repair-class change; the note goes to audit_notes so
+            # short_read keeps whatever Jerry originally analyzed.
             payload = {
                 'call_verdict': new_verdict,
                 'conviction': flipped_conv,
-                'short_read': f"[Auto-flipped 2026-08-09 pitcher-thesis: "
-                              f"same-pitcher props back a {dominant} read "
-                              f"({counts[dominant]} coherent votes at avg conv {tally[dominant]//counts[dominant]}). "
-                              f"Flipped {orig_verdict}->{new_verdict} to align with thesis; "
-                              f"conviction capped LEAN because inferred not directly analyzed. "
-                              f"Original take: {(row.get('short_read') or '')[:300]}]"[:500],
+                'audit_notes': (f"[Auto-flipped 2026-08-09 pitcher-thesis: "
+                                f"same-pitcher props back a {dominant} read "
+                                f"({counts[dominant]} coherent votes at avg conv {tally[dominant]//counts[dominant]}). "
+                                f"Flipped {orig_verdict}->{new_verdict} to align with thesis; "
+                                f"conviction capped LEAN because inferred not directly analyzed.]")[:1500],
             }
             pu = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{row["id"]}',
                                 headers=H_WRITE, json=payload, timeout=10)
