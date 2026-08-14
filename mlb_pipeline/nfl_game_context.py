@@ -490,6 +490,12 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
     mc_expected_margin = mc_probs.get('mc_expected_margin') if isinstance(mc_probs, dict) else None
     mc_confidence_high = mc_probs.get('mc_confidence_high') if isinstance(mc_probs, dict) else False
 
+    # 2026-08-13 · V3 lens (situational-regression). Written by
+    # nfl_v3_regression.py; represents rest/weather/division adjustments
+    # to the base Matchup-EPA projection.
+    v3_spread = ctx.get('v3_spread')
+    v3_total = ctx.get('v3_total')
+
     # 1a. MC HIGH-CONF headline — fires when MC sim shows a decisive edge
     # AND at least one other lens (EPA model or Panel) agrees on direction.
     # Analog of the MLB MC HIGH-CONF chip; NFL threshold set to 70% (vs
@@ -499,7 +505,9 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
         mc_side = 'HOME' if mc_p_home >= 0.5 else 'AWAY'
         mc_pct = mc_p_home if mc_side == 'HOME' else (1 - mc_p_home)
         if mc_pct >= 0.70:
-            # Count agreeing lens
+            # 2026-08-13: with V3 now shipping, lens_count max = 4 (MC + Matchup-EPA
+            # + Panel + V3). Jerry LLM is the 5th but doesn't produce spread
+            # projection directly, so agreement counting skips it.
             supporting = 1  # MC counts itself
             if proj_spread is not None:
                 model_side = 'HOME' if float(proj_spread) > 0 else 'AWAY'
@@ -507,18 +515,23 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
             if panel_spread is not None:
                 panel_side = 'HOME' if panel_spread > 0 else 'AWAY'
                 if panel_side == mc_side: supporting += 1
-            # Only fire if AT LEAST ONE other lens agrees (2/3 minimum).
+            if v3_spread is not None:
+                v3_side = 'HOME' if float(v3_spread) > 0 else 'AWAY'
+                if v3_side == mc_side: supporting += 1
+            # Only fire if AT LEAST ONE other lens agrees (2/4 minimum).
             # Lone-MC picks were 4-6 (40%) historical per MLB audit — same
             # caution applies here.
             if supporting >= 2:
                 team = home_team if mc_side == 'HOME' else away_team
+                # PRIME needs 3+ lens agreement (of 4 spread-producing lens);
+                # STRONG at 2. Stale stats caps at STRONG regardless.
                 tier = 'PRIME' if (supporting >= 3 and not stats_stale) else 'STRONG'
                 return {
                     'type': 'ml',
                     'tier': tier,
                     'label': f'{team} ML',
                     'sub': f'MC HIGH-CONF: {mc_pct*100:.0f}% win prob (10k sim) · '
-                           f'{supporting}/3 lens confirm · margin {mc_expected_margin:+.1f}',
+                           f'{supporting}/4 lens confirm · margin {mc_expected_margin:+.1f}',
                     'signal_floor': 85 if tier == 'PRIME' else 75,
                     'audit_note': 'MC HIGH-CONF chip · NFL 5-model rollout',
                 }

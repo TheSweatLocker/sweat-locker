@@ -152,6 +152,21 @@ jobs:
           cd mlb_pipeline
           python nfl_mc_simulator.py || echo "NFL MC failed (non-fatal)"
 
+      # 2026-08-13 · 5-lens rollout: V3 situational-regression.
+      # Reads projected_spread/projected_total (Matchup-EPA base) + weather +
+      # rest + division flag, applies additive adjustments. Writes v3_spread
+      # + v3_total + v3_adjustments. Runs AFTER game_context so base
+      # projections + weather/rest fields are populated first.
+      - name: NFL V3 regression model
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_v3_regression.py || echo "NFL V3 failed (non-fatal)"
+
       - name: Generate NFL picks (play-of-day + lock_of_week)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:
