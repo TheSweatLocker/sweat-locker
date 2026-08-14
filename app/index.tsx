@@ -2299,26 +2299,54 @@ setEvData(evOpps.slice(0,20));
 
     } else {
       // ── All other sports: use Odds API as before ──
-      const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
-        params: {
-          apiKey: ODDS_API_KEY,
-          regions: 'us,us2',
-          markets: 'spreads,totals,h2h',
-          oddsFormat: 'american',
-          bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,williamhill_us,bet365'
-        }
-      });
+      // 2026-08-13: NFL preseason lives under a SEPARATE Odds API sport key
+      // (americanfootball_nfl_preseason). During NFL preseason state, fetch
+      // both keys and merge so preseason games actually surface in the
+      // Games tab. Same pattern will apply to NCAAF once its preseason
+      // sport key is confirmed.
+      const meta = (sportMeta || {})[sport];
+      const primarySportKey = SPORT_KEYS[sport];
+      const extraSportKeys: string[] = [];
+      if (sport === 'NFL' && meta?.state === 'preseason') {
+        extraSportKeys.push('americanfootball_nfl_preseason');
+      }
+      const allSportKeys = [primarySportKey, ...extraSportKeys];
+      const oddsResults = await Promise.all(allSportKeys.map(sk =>
+        axios.get('https://api.the-odds-api.com/v4/sports/' + sk + '/odds', {
+          params: {
+            apiKey: ODDS_API_KEY,
+            regions: 'us,us2',
+            markets: 'spreads,totals,h2h',
+            oddsFormat: 'american',
+            bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,williamhill_us,bet365'
+          }
+        }).catch(() => ({data: []}))
+      ));
+      const rData = oddsResults.flatMap(r => r.data || []);
       const now = new Date();
       const todayStart = new Date(now); todayStart.setHours(0,0,0,0);
       const todayEnd = new Date(now); todayEnd.setHours(23,59,59,999);
       const tomorrowStart = new Date(todayEnd); tomorrowStart.setDate(tomorrowStart.getDate()+1); tomorrowStart.setHours(0,0,0,0);
       const tomorrowEnd = new Date(tomorrowStart); tomorrowEnd.setHours(23,59,59,999);
       const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(yesterdayStart.getDate()-1);
-      const filtered = r.data.filter((game: any) => {
+      // 2026-08-13: weekly-scope sports (NFL, NCAAF) widen the day window
+      // to 7 days so the "This Week / Next Week" tabs actually show a week
+      // of games instead of one calendar day. tab_scope from sport_registry.
+      const isWeekly = meta?.tab_scope === 'weekly';
+      const weekTodayEnd = new Date(todayStart);
+      weekTodayEnd.setDate(weekTodayEnd.getDate() + 7);
+      weekTodayEnd.setHours(23,59,59,999);
+      const weekTomorrowStart = new Date(weekTodayEnd);
+      weekTomorrowStart.setDate(weekTomorrowStart.getDate() + 1);
+      weekTomorrowStart.setHours(0,0,0,0);
+      const weekTomorrowEnd = new Date(weekTomorrowStart);
+      weekTomorrowEnd.setDate(weekTomorrowEnd.getDate() + 7);
+      weekTomorrowEnd.setHours(23,59,59,999);
+      const filtered = rData.filter((game: any) => {
         const t = new Date(game.commence_time);
-        if(day==='today') return t>=todayStart && t<=todayEnd;
-        if(day==='tomorrow') return t>=tomorrowStart && t<=tomorrowEnd;
-        if(day==='yesterday') return t>=yesterdayStart && t<todayStart;
+        if (day === 'today') return isWeekly ? (t >= todayStart && t <= weekTodayEnd) : (t >= todayStart && t <= todayEnd);
+        if (day === 'tomorrow') return isWeekly ? (t >= weekTomorrowStart && t <= weekTomorrowEnd) : (t >= tomorrowStart && t <= tomorrowEnd);
+        if (day === 'yesterday') return t >= yesterdayStart && t < todayStart;
         return true;
       });
       mappedGames = filtered.map((g: any) => ({
