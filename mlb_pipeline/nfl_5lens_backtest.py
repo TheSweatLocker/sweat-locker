@@ -99,7 +99,7 @@ def _mc_sim(home_off: float, away_off: float, home_def: float, away_def: float,
     return {
         'mc_p_home': home_wins / n_sims,
         'mc_expected_margin': mean_m,
-        'mc_confidence_high': abs(mean_m) > 6.0 and math.sqrt(max(var_m, 0)) < 10.0,
+        'mc_confidence_high': abs(mean_m) > 6.0 and math.sqrt(max(var_m, 0)) < 15.5,
     }
 
 
@@ -146,11 +146,20 @@ def backtest(seasons: list, rules: list, dry_run: bool = False) -> dict:
     except Exception as e:
         print(f'  pbp load failed: {e}'); return {}
 
+    # 2026-08-14 fix: nfl_data_py pbp doesn't expose pass_epa/rush_epa as
+    # top-level columns. They're derived from `epa` filtered by play_type.
+    # Compute them inline.
+    pbp = pbp[pbp['epa'].notna()].copy()
+    is_pass = pbp['play_type'].isin(['pass'])
+    is_rush = pbp['play_type'].isin(['run'])
+    pbp['_pass_epa'] = pbp['epa'].where(is_pass)
+    pbp['_rush_epa'] = pbp['epa'].where(is_rush)
+
     # Aggregate rolling L4 EPA — offense
     off = (pbp.groupby(['season', 'week', 'posteam'])
              .agg(off_epa=('epa', 'mean'),
-                  pass_epa=('pass_epa', 'mean'),
-                  rush_epa=('rush_epa', 'mean'))
+                  pass_epa=('_pass_epa', 'mean'),
+                  rush_epa=('_rush_epa', 'mean'))
              .reset_index())
     off = off.sort_values(['posteam', 'season', 'week'])
     for col in ('off_epa', 'pass_epa', 'rush_epa'):

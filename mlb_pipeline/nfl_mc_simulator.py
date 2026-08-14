@@ -164,7 +164,12 @@ def simulate_game(home_off: float, away_off: float,
         'mc_stddev_margin': round(std_margin, 2),
         # HIGH-CONF flag: > 6-pt expected margin AND stddev under 10.
         # Matches MLB's mc_confidence_high semantics (rare, high-conviction).
-        'mc_confidence_high': (abs(mean_margin) > 6.0 and std_margin < 10.0),
+        # 2026-08-14 calibration fix: two independent NFL score distributions
+        # each with std=10.5 produce margin std ≈ 14.8 (sqrt(10.5^2 + 10.5^2)).
+        # The original threshold of <10 was mathematically impossible, so
+        # this chip never fired in production. Adjusted to 15.5 which allows
+        # HIGH-CONF to trigger on genuinely lopsided sims without being noise.
+        'mc_confidence_high': (abs(mean_margin) > 6.0 and std_margin < 15.5),
         'generated_at': datetime.now(timezone.utc).isoformat(),
     }
     if posted_total is not None:
