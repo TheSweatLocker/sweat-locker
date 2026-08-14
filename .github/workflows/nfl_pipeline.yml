@@ -97,7 +97,36 @@ jobs:
           python nfl_pipeline.py || echo "nfl_pipeline (team stats) failed"
           python nfl_player_stats.py || echo "nfl_player_stats failed"
 
-      - name: Build NFL game context (projections + confluence + sweat)
+      # 2026-08-09 Phase 2: pull fresh Sleeper + ESPN player projections
+      # BEFORE game_context builds, so Panel model has fresh data. Both
+      # pullers are idempotent (upserts on (source,season,week,player_id)).
+      - name: Pull NFL player projections (Sleeper + ESPN)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # Compute NFL week from date, pull that + next week (bracket lineups changes)
+          SEASON=$(date +%Y)
+          WEEK=$(python -c "
+          from datetime import date
+          d = date.today()
+          y = d.year
+          import calendar
+          sept1 = date(y,9,1)
+          first_thu = (3 - sept1.weekday()) % 7
+          wk1_start = date(y, 9, 1 + first_thu)
+          days = (d - wk1_start).days
+          print(max(1, min(18, days // 7 + 1)) if days >= 0 else 0)
+          ")
+          if [ "$WEEK" -gt 0 ]; then
+            python nfl_sleeper_projections_pull.py --season $SEASON --week $WEEK || echo "sleeper failed"
+            python nfl_espn_projections_pull.py --season $SEASON --week $WEEK || echo "espn failed"
+          fi
+
+      - name: Build NFL game context (projections + confluence + sweat + Panel)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -106,6 +135,22 @@ jobs:
         run: |
           cd mlb_pipeline
           python nfl_game_context.py || echo "game_context failed"
+
+      # 2026-08-13 · 5-model coverage rollout: NFL MC simulator.
+      # Runs AFTER game_context so it can read team stats + close_total,
+      # then writes mc_probabilities blob back. compute_primary_play
+      # (called on next game_context run) picks it up as the 5th lens.
+      # Ordering intentional — the MC output is stored ready for next
+      # cycle's primary_play resolver to consume.
+      - name: NFL Monte Carlo simulator
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_mc_simulator.py || echo "NFL MC failed (non-fatal)"
 
       - name: Generate NFL picks (play-of-day + lock_of_week)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -172,3 +217,26 @@ jobs:
         run: |
           cd mlb_pipeline
           python nfl_cohort_backfill.py || echo "cohort backfill failed"
+
+      # 2026-08-09 Phase 2: sharp-money audit trail for NFL games.
+      # Same infra as MLB — writes per-game rules_triggered + cap outcome
+      # so we can build NFL fade-rule stats over time.
+      - name: NFL — write today's sharp-fade audit rows
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sharp_fade_audit.py --write-today --sport NFL || echo "NFL audit write failed"
+
+      - name: NFL — backfill sharp-fade audit outcomes
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sharp_fade_audit.py --backfill-results || echo "NFL audit backfill failed"

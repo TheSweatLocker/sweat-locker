@@ -107,6 +107,21 @@ def load_team_stats(season: int) -> dict:
     return {row['team']: row for row in r.json()}
 
 
+def load_team_def_stats(season: int) -> dict:
+    """2026-08-09 Phase 2: return dict[team_abbrev → def_stats row].
+    Falls back to prior season if current is empty (preseason case)."""
+    for candidate in (season, season - 1):
+        r = requests.get(
+            f'{SB}/rest/v1/nfl_team_defense_stats?season=eq.{candidate}&season_type=eq.reg&select=*',
+            headers=H_READ, timeout=15,
+        )
+        if r.status_code == 200:
+            rows = r.json()
+            if rows:
+                return {row['team']: row for row in rows}
+    return {}
+
+
 # Minimum games/team avg before we trust current-season stats over prior year.
 # Under this threshold we fall back to prior season (regressed to league mean).
 # 4 games ≈ Week 5 — matches the point where cohort samples are meaningful.
@@ -199,8 +214,22 @@ def compute_off_rating(stats: dict) -> Optional[float]:
 
 
 def compute_projections(home_stats: dict, away_stats: dict, roof: str,
-                        temp: Optional[int], wind: Optional[int]) -> dict:
-    """EPA-based projected spread + total with venue adjustments."""
+                        temp: Optional[int], wind: Optional[int],
+                        home_def: Optional[dict] = None,
+                        away_def: Optional[dict] = None) -> dict:
+    """EPA-based projected spread + total with venue + matchup adjustments.
+
+    2026-08-09 Phase 2: added home_def/away_def params. When defensive
+    stats are available, project total per-matchup instead of flat
+    BASE_TOTAL for every game. Each team's projected points is:
+
+        team_pts = LEAGUE_AVG_PPG × (own_off_index) × (opp_def_index)
+
+    where indices normalize to 1.0 at league average. A top offense
+    (index 1.15) vs a bottom defense (index 1.12) projects ~29 points
+    (25 × 1.15 × 1.12 × pace_adj). Falls back to legacy flat model when
+    defensive stats are missing (preserves behavior for missing seasons).
+    """
     h_rate = compute_off_rating(home_stats)
     a_rate = compute_off_rating(away_stats)
 
@@ -219,23 +248,62 @@ def compute_projections(home_stats: dict, away_stats: dict, roof: str,
     power_diff = round(h_rate - a_rate, 2)
     projected_spread = round(power_diff * K_PTS + HOME_FIELD_PTS, 2)
 
-    # Total = base + venue adjustments
-    total = BASE_TOTAL
-    if roof and roof.lower() in ('dome', 'closed'):
-        total += DOME_ADJ
-    if temp is not None and int(temp) <= 35:
-        total += COLD_ADJ
-    if wind is not None and int(wind) >= 15:
-        total += WIND_ADJ
+    # Venue adjustments (weather/dome apply to both sides equally)
+    venue_adj = 0.0
+    if roof and roof.lower() in ('dome', 'closed'): venue_adj += DOME_ADJ
+    if temp is not None and int(temp) <= 35: venue_adj += COLD_ADJ
+    if wind is not None and int(wind) >= 15: venue_adj += WIND_ADJ
 
-    # Split total using power_diff (favorite gets ~55/45)
-    fav_share = 0.50 + min(0.10, abs(power_diff) * 0.005)
-    if power_diff >= 0:
-        home_pts = total * fav_share
-        away_pts = total * (1 - fav_share)
+    # Matchup-adjusted per-team projection (when defense data available)
+    LEAGUE_AVG_PPG = 22.25   # BASE_TOTAL/2 = each team gets half of the 44.5
+    LEAGUE_AVG_PASS_EPA = 0.10   # rough NFL average pass_epa per play
+    LEAGUE_AVG_RUSH_EPA = -0.05  # rush is slightly negative EPA on average
+    LEAGUE_AVG_DEF_PPG = 22.25   # points allowed on average
+
+    if home_def and away_def:
+        # Build off-index (1.0 = league avg, >1 = above avg)
+        # Tightened 2026-08-09 evening: ±0.15 max (not ±0.5) so extreme teams
+        # don't compound to absurd totals (DET@CIN was projecting 85).
+        def _off_idx(stats):
+            g = float(stats.get('games') or 0) or 1
+            pe = float(stats.get('pass_epa') or 0) / g
+            re = float(stats.get('rush_epa') or 0) / g
+            combined = pe + re
+            # ±0.15 max deviation from 1.0
+            raw = 1.0 + 1.5 * (combined - (LEAGUE_AVG_PASS_EPA + LEAGUE_AVG_RUSH_EPA))
+            return max(0.85, min(1.15, raw))
+        def _def_idx(def_stats):
+            # Def index: >1 means bad defense (allows more). Tighter cap 0.88-1.12
+            ppg = float(def_stats.get('def_ppg') or LEAGUE_AVG_DEF_PPG)
+            raw = ppg / LEAGUE_AVG_DEF_PPG
+            return max(0.88, min(1.12, raw))
+
+        h_off = _off_idx(home_stats); a_off = _off_idx(away_stats)
+        h_def = _def_idx(home_def);   a_def = _def_idx(away_def)
+
+        # 70% matchup-driven, 30% anchored to BASE_TOTAL — prevents runaway
+        # projections while still preserving matchup information
+        raw_home = LEAGUE_AVG_PPG * h_off * a_def
+        raw_away = LEAGUE_AVG_PPG * a_off * h_def
+        anchor_home = LEAGUE_AVG_PPG
+        anchor_away = LEAGUE_AVG_PPG
+        home_pts = 0.7 * raw_home + 0.3 * anchor_home
+        away_pts = 0.7 * raw_away + 0.3 * anchor_away
+
+        total = home_pts + away_pts + venue_adj
+        # HFA bump on home side only
+        home_pts += HOME_FIELD_PTS * 0.5   # ~1.1 pts to home
+        away_pts -= HOME_FIELD_PTS * 0.5
     else:
-        away_pts = total * fav_share
-        home_pts = total * (1 - fav_share)
+        # Legacy fallback: flat BASE_TOTAL + venue
+        total = BASE_TOTAL + venue_adj
+        fav_share = 0.50 + min(0.10, abs(power_diff) * 0.005)
+        if power_diff >= 0:
+            home_pts = total * fav_share
+            away_pts = total * (1 - fav_share)
+        else:
+            away_pts = total * fav_share
+            home_pts = total * (1 - fav_share)
 
     out.update({
         'power_diff': power_diff,
@@ -396,7 +464,64 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
     if proj_total is not None and close_total is not None:
         total_edge = round(float(proj_total) - float(close_total), 2)
 
+    # 2026-08-09 Phase 2: Panel projection as second lens.
+    # panel_pred_total from nfl_panel_projection (fantasy-aggregated).
+    # If Panel + EPA-matchup agree on direction, we boost. If disagree, we
+    # downgrade or fade. Same pattern as MLB Jerry + V4 + Panel.
+    panel_total = ctx.get('panel_pred_total')
+    panel_total_edge = None
+    if panel_total is not None and close_total is not None:
+        panel_total_edge = round(float(panel_total) - float(close_total), 2)
+    panel_home_pts = ctx.get('panel_pred_home_pts')
+    panel_away_pts = ctx.get('panel_pred_away_pts')
+    panel_spread = None
+    if panel_home_pts is not None and panel_away_pts is not None:
+        # Positive = home projected to win by X (nflverse convention)
+        panel_spread = round(float(panel_home_pts) - float(panel_away_pts), 2)
+
     tags = ctx.get('cohort_tags') or []
+
+    # 2026-08-13 · MC lens integration (5-model coverage rollout).
+    # Read the Monte Carlo simulator output written by nfl_mc_simulator.py.
+    # Same shape as MLB's mc_probabilities so downstream lens-count logic
+    # can treat MC as the fifth NFL lens.
+    mc_probs = ctx.get('mc_probabilities') or {}
+    mc_p_home = mc_probs.get('mc_p_home') if isinstance(mc_probs, dict) else None
+    mc_expected_margin = mc_probs.get('mc_expected_margin') if isinstance(mc_probs, dict) else None
+    mc_confidence_high = mc_probs.get('mc_confidence_high') if isinstance(mc_probs, dict) else False
+
+    # 1a. MC HIGH-CONF headline — fires when MC sim shows a decisive edge
+    # AND at least one other lens (EPA model or Panel) agrees on direction.
+    # Analog of the MLB MC HIGH-CONF chip; NFL threshold set to 70% (vs
+    # MLB's 80%) because NFL has more variance per game (16 vs 162 games
+    # of season signal → wider prior).
+    if mc_p_home is not None and mc_confidence_high:
+        mc_side = 'HOME' if mc_p_home >= 0.5 else 'AWAY'
+        mc_pct = mc_p_home if mc_side == 'HOME' else (1 - mc_p_home)
+        if mc_pct >= 0.70:
+            # Count agreeing lens
+            supporting = 1  # MC counts itself
+            if proj_spread is not None:
+                model_side = 'HOME' if float(proj_spread) > 0 else 'AWAY'
+                if model_side == mc_side: supporting += 1
+            if panel_spread is not None:
+                panel_side = 'HOME' if panel_spread > 0 else 'AWAY'
+                if panel_side == mc_side: supporting += 1
+            # Only fire if AT LEAST ONE other lens agrees (2/3 minimum).
+            # Lone-MC picks were 4-6 (40%) historical per MLB audit — same
+            # caution applies here.
+            if supporting >= 2:
+                team = home_team if mc_side == 'HOME' else away_team
+                tier = 'PRIME' if (supporting >= 3 and not stats_stale) else 'STRONG'
+                return {
+                    'type': 'ml',
+                    'tier': tier,
+                    'label': f'{team} ML',
+                    'sub': f'MC HIGH-CONF: {mc_pct*100:.0f}% win prob (10k sim) · '
+                           f'{supporting}/3 lens confirm · margin {mc_expected_margin:+.1f}',
+                    'signal_floor': 85 if tier == 'PRIME' else 75,
+                    'audit_note': 'MC HIGH-CONF chip · NFL 5-model rollout',
+                }
 
     # 1. HEAVY HOME DOG cohort PRIME override — 63.1% audit hit rate
     if 'nfl_heavy_home_dog' in tags:
@@ -413,6 +538,21 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
         tier = 'LEAN' if stats_stale else 'STRONG'
         floor = 60 if stats_stale else 72
         sub = f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f}, conf {conf:+d})'
+        # 2026-08-09 Phase 2: Panel spread confirmation
+        if panel_spread is not None:
+            panel_side = 'HOME' if panel_spread > 0 else 'AWAY'
+            model_side = 'HOME' if proj_spread > 0 else 'AWAY'
+            if panel_side == model_side:
+                # Panel agrees — boost tier one notch
+                if tier == 'STRONG': tier = 'PRIME'
+                elif tier == 'LEAN': tier = 'STRONG'
+                floor += 8
+                sub += f' · Panel confirms ({panel_spread:+.1f})'
+            else:
+                # Panel disagrees — downgrade
+                if tier == 'STRONG': tier = 'LEAN'
+                floor -= 12
+                sub += f' · Panel disagrees ({panel_spread:+.1f}) — downgrade'
         if stats_stale:
             sub += ' · prior-season data, LEAN cap'
         return {
@@ -429,6 +569,18 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
         tier = 'LEAN' if stats_stale else 'STRONG'
         floor = 58 if stats_stale else 70
         sub = f'Model projects {proj_total:.1f} vs market {close_total} ({total_edge:+.1f})'
+        # Panel total confirmation
+        if panel_total_edge is not None:
+            panel_side = 'Over' if panel_total_edge > 0 else 'Under'
+            if panel_side == side:
+                if tier == 'STRONG': tier = 'PRIME'
+                elif tier == 'LEAN': tier = 'STRONG'
+                floor += 8
+                sub += f' · Panel confirms ({panel_total:.1f})'
+            else:
+                if tier == 'STRONG': tier = 'LEAN'
+                floor -= 12
+                sub += f' · Panel disagrees ({panel_total:.1f}) — downgrade'
         if stats_stale:
             sub += ' · prior-season data, LEAN cap'
         return {
@@ -438,6 +590,64 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
             'sub': sub,
             'signal_floor': floor,
         }
+
+    # 3b. Panel-only STRONG total: if EPA-matchup edge is small but Panel
+    # disagrees loudly with market (>=4 pt gap), publish Panel LEAN.
+    # This surfaces games where fantasy-aggregated projections see
+    # something EPA doesn't. Only when Panel confidence >=0.6 (enough
+    # players contributing).
+    panel_conf = ctx.get('panel_confidence') or 0
+    if (panel_total_edge is not None
+            and abs(panel_total_edge) >= 4.0
+            and panel_conf >= 0.6
+            and not stats_stale):
+        side = 'Over' if panel_total_edge > 0 else 'Under'
+        return {
+            'type': 'total',
+            'tier': 'LEAN',
+            'label': f'{side} {close_total}',
+            'sub': f'Panel-driven ({panel_total:.1f} vs {close_total}, conf {panel_conf:.2f}) — EPA model quiet',
+            'signal_floor': 58,
+        }
+
+    # 3c. ML lane (2026-08-09 Phase 2). Emits ML when:
+    #   - Model + Panel both agree on same side by >= 3-pt spread margin
+    #   - Model ML side is a live dog (+100 to +200 range) OR light-fav (-140 to +100)
+    #   - Skips heavy fav (worse than -200) — per feedback_heavy_fav_ml_trap_803
+    home_ml = ctx.get('close_home_ml') or ctx.get('home_ml')
+    away_ml = ctx.get('close_away_ml') or ctx.get('away_ml')
+    model_side = None
+    if proj_spread is not None:
+        # nflverse convention: positive = home fav, so home wins ML if proj_spread > 0
+        model_side = 'HOME' if proj_spread > 0 else 'AWAY'
+    panel_side = None
+    if panel_spread is not None:
+        panel_side = 'HOME' if panel_spread > 0 else 'AWAY'
+    if (model_side and panel_side and model_side == panel_side
+            and abs(proj_spread or 0) >= 3.0
+            and home_ml and away_ml and not stats_stale):
+        ml_price = home_ml if model_side == 'HOME' else away_ml
+        try:
+            price = float(ml_price)
+        except (TypeError, ValueError):
+            price = None
+        if price is not None and -200 <= price <= 200:
+            # Fair-price zone — publish ML
+            team = home_team if model_side == 'HOME' else away_team
+            tier = 'LEAN'
+            floor = 58
+            if abs(proj_spread) >= 5.0 and abs(conf) >= 2:
+                tier = 'STRONG'; floor = 68
+            return {
+                'type': 'ml',
+                'tier': tier,
+                'label': f'{team} ML ({price:+.0f})',
+                'sub': f'Model spread {proj_spread:+.1f} + Panel spread {panel_spread:+.1f} both {model_side} · fair price {price:+.0f}',
+                'signal_floor': floor,
+            }
+        elif price is not None and price < -200:
+            # Heavy-fav trap zone — skip ML, no play
+            pass
 
     # 4. LIGHT spread lean — but cap at LEAN when stale (case 2/3 already did;
     # otherwise a weaker signal could sneak into lock_of_week while the
@@ -476,7 +686,8 @@ def _pick_book(event: dict, market_key: str) -> dict:
     return {}
 
 
-def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 'current') -> Optional[dict]:
+def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 'current',
+               team_def_stats: Optional[dict] = None) -> Optional[dict]:
     home_raw = event.get('home_team'); away_raw = event.get('away_team')
     home = aliases.get(home_raw); away = aliases.get(away_raw)
     if not home or not away:
@@ -490,11 +701,29 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
         dt = _et_now()
         game_date = dt.date().isoformat()
 
+    # 2026-08-09: derive NFL week from kickoff date. NFL Week 1 begins the
+    # first Thursday of September. Preseason weeks 1-3 typically start
+    # in mid-August. We compute both so Panel lookup works.
+    def _nfl_week(kickoff_dt, season):
+        # Find first Thursday of September
+        from datetime import date as _date
+        sept1 = _date(season, 9, 1)
+        first_thu_offset = (3 - sept1.weekday()) % 7  # 3 = Thursday
+        wk1_start = _date(season, 9, 1 + first_thu_offset)
+        days_since_wk1 = (kickoff_dt.date() - wk1_start).days
+        if days_since_wk1 < 0:
+            # Preseason — approximate weeks (Aug is preseason wk 1-3)
+            aug_days = (kickoff_dt.date() - _date(season, 8, 1)).days
+            if aug_days < 0: return None
+            return max(1, aug_days // 7 + 1)
+        return max(1, min(18, days_since_wk1 // 7 + 1))
+
     row = {
         'game_id': event.get('id'),
         'game_date': game_date,
         'season': dt.year,
         'season_type': 'PRE' if stats_source == 'preseason' else 'REG',
+        'week': _nfl_week(dt, dt.year),
         'home_team': home,
         'away_team': away,
         'kickoff_utc': commence,
@@ -529,11 +758,45 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     # Model
     home_stats = team_stats.get(home) or {}
     away_stats = team_stats.get(away) or {}
+    # 2026-08-09 Phase 2: pull defense stats for matchup-adjusted projection
+    tds = team_def_stats or {}
+    home_def = tds.get(home) or {}
+    away_def = tds.get(away) or {}
     proj = compute_projections(
         home_stats, away_stats,
         roof=row.get('roof'), temp=row.get('temp'), wind=row.get('wind'),
+        home_def=home_def, away_def=away_def,
     )
     row.update(proj)
+
+    # 2026-08-09 Phase 2: Panel projection (aggregate fantasy → team pts).
+    # Independent of EPA model_pred — treated as second lens for confluence.
+    # Silently no-ops if projections table empty / player projections not
+    # yet pulled for this season+week. season+week come from the event.
+    try:
+        from nfl_panel_projection import compute_panel_projection
+        # Derive week from kickoff_utc or fall back to row's week
+        season = row.get('season')
+        week = row.get('week')
+        if season and week:
+            panel = compute_panel_projection(
+                home, away, int(season), int(week),
+                season_type='reg' if row.get('season_type','REG').lower() in ('reg','regular') else 'pre',
+                is_division_game=bool(row.get('div_game')),
+            )
+            if not panel.get('error'):
+                row['panel_pred_home_pts'] = panel.get('home_pts')
+                row['panel_pred_away_pts'] = panel.get('away_pts')
+                row['panel_pred_total'] = panel.get('total')
+                row['panel_confidence'] = panel.get('confidence')
+                row['panel_source'] = 'sleeper'
+                row['panel_players_used'] = (panel.get('home_players_used', 0)
+                                              + panel.get('away_players_used', 0))
+                row['panel_injury_outs'] = (panel.get('home_injury_outs', 0)
+                                              + panel.get('away_injury_outs', 0))
+    except Exception as e:
+        # Never block context build on Panel failure
+        print(f'  ⚠ panel projection failed for {away}@{home}: {e}')
 
     conf_net, breakdown = compute_confluence(
         home_stats, away_stats,
@@ -595,6 +858,10 @@ def run(dry_run: bool = False) -> None:
         print(f'  ⚠ neither {season} nor {season-1} has usable team stats — cohort/market signal only')
     print(f'  aliases={len(aliases)}  team_stats={len(team_stats)} teams  source={stats_source}')
 
+    # 2026-08-09 Phase 2: also load defensive stats for matchup adjustment.
+    team_def_stats = load_team_def_stats(season)
+    print(f'  team_def_stats={len(team_def_stats)} teams')
+
     events = []
     for sk in ('americanfootball_nfl', 'americanfootball_nfl_preseason'):
         e = fetch_odds_events(sk)
@@ -611,7 +878,7 @@ def run(dry_run: bool = False) -> None:
     skipped = 0
     for e in events:
         row_source = 'preseason' if e.get('_sweat_phase') == 'preseason' else stats_source
-        r = build_row(e, aliases, team_stats, stats_source=row_source)
+        r = build_row(e, aliases, team_stats, stats_source=row_source, team_def_stats=team_def_stats)
         if r is None:
             skipped += 1
             continue
