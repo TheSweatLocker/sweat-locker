@@ -1819,6 +1819,18 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   // only, orthogonal to sort mode. Users who want maximum-signal games only
   // toggle this on; sort mode still determines ordering of what's visible.
   const [gamesPrimeOnly, setGamesPrimeOnly] = useState(false);
+  // ── Steam Room (2026-08-13) ──────────────────────────────────────────
+  // Line Movement + Ladder tabs. Data pulled from line_history + line_snapshot
+  // (fed by write_line_history.py + write_line_snapshot.py) and line_movement_flags
+  // (populated by detect_line_movement.py). Ladder reads ladder_state + ladder_rung
+  // (populated by steam_room_ladder.py).
+  const [steamSubTab, setSteamSubTab] = useState<'lines'|'ladder'>('lines');
+  const [steamFlags, setSteamFlags] = useState<any[]>([]);
+  const [steamHistorySample, setSteamHistorySample] = useState<Record<string, any[]>>({});
+  const [steamLoading, setSteamLoading] = useState(false);
+  const [ladderState, setLadderState] = useState<any>(null);
+  const [ladderRungs, setLadderRungs] = useState<any[]>([]);
+  const [ladderLoading, setLadderLoading] = useState(false);
    const [fanmatchData, setFanmatchData] = useState({});
   const [nbaTeamData, setNbaTeamData] = useState({});
   const [nbaInjuryData, setNbaInjuryData] = useState<Record<string, any[]>>({});
@@ -8255,6 +8267,62 @@ setJerryHistory(prev => {
   };
 
   useEffect(()=>{if(activeTab==='odds')fetchOdds(oddsSport);},[activeTab,oddsSport]);
+
+  // Steam Room fetchers (2026-08-13). Both sub-tabs preload when the tab
+  // becomes active so switching between them is instant.
+  const fetchSteamFlags = React.useCallback(async () => {
+    setSteamLoading(true);
+    try {
+      const { data } = await supabase
+        .from('line_movement_flags')
+        .select('sport,game_id,market,side,pattern,detail,first_seen_at,last_seen_at')
+        .gte('last_seen_at', new Date(Date.now() - 24*60*60*1000).toISOString())
+        .order('last_seen_at', {ascending: false})
+        .limit(120);
+      const flags = data || [];
+      setSteamFlags(flags);
+      // For each flagged game/market, fetch a small time-series sample from
+      // line_history so we can render a compact sparkline inline.
+      const uniqueGameMarket = Array.from(new Set(flags.map((f:any) => `${f.game_id}::${f.market}`))).slice(0, 30);
+      const samples: Record<string, any[]> = {};
+      await Promise.all(uniqueGameMarket.map(async (gm) => {
+        const [gid, market] = gm.split('::');
+        const { data: hist } = await supabase
+          .from('line_history')
+          .select('side,book,line,price,captured_at')
+          .eq('game_id', gid).eq('market', market)
+          .gte('captured_at', new Date(Date.now() - 48*60*60*1000).toISOString())
+          .order('captured_at', {ascending: true})
+          .limit(200);
+        samples[gm] = hist || [];
+      }));
+      setSteamHistorySample(samples);
+    } catch (e) { setSteamFlags([]); }
+    setSteamLoading(false);
+  }, []);
+
+  const fetchLadder = React.useCallback(async () => {
+    setLadderLoading(true);
+    try {
+      const [{data: state}, {data: rungs}] = await Promise.all([
+        supabase.from('ladder_state').select('*').eq('id', 1).maybeSingle(),
+        supabase.from('ladder_rung')
+          .select('id,qualified_at,game_date,sport,matchup,pick_side,market,odds_american,tier,cohort_hit_rate,cohort_n,edge_pp,result,resolved_at')
+          .order('qualified_at', {ascending: false})
+          .limit(30),
+      ]);
+      setLadderState(state || null);
+      setLadderRungs(rungs || []);
+    } catch (e) { setLadderState(null); setLadderRungs([]); }
+    setLadderLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'steam') {
+      fetchSteamFlags();
+      fetchLadder();
+    }
+  }, [activeTab, fetchSteamFlags, fetchLadder]);
  useEffect(()=>{
   if(activeTab==='games') {
     fetchGames(gamesSport,gamesDay);
@@ -13448,7 +13516,214 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           </View>
         )}
 
-        {activeTab==='odds'&&(
+        {activeTab==='steam'&&(
+          <View>
+            <Text style={styles.pageTitle}>💨 Steam Room</Text>
+            <Text style={{color:THEME.textDim,fontSize:12,marginBottom:14}}>
+              How sharps operate. Line movement + disciplined bankroll ladder.
+            </Text>
+            <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
+              {[{id:'lines',label:'🌊 Line Movement'},{id:'ladder',label:'🪜 Ladder'}].map(s => (
+                <TouchableOpacity key={s.id}
+                  onPress={()=>setSteamSubTab(s.id as any)}
+                  style={[styles.chipBtn, steamSubTab===s.id && styles.chipBtnActive, {flex:1, alignItems:'center'}]}>
+                  <Text style={[styles.chipTxt, steamSubTab===s.id && styles.chipTxtActive]}>{s.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {steamSubTab==='lines' && (
+              <View>
+                {steamLoading ? (
+                  <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/><Text style={{color:THEME.textDim,marginTop:12,fontSize:13}}>Reading line drift...</Text></View>
+                ) : steamFlags.length === 0 ? (
+                  <View style={{alignItems:'center',paddingTop:40,paddingHorizontal:20}}>
+                    <Text style={{fontSize:40}}>🌊</Text>
+                    <Text style={{color:THEME.text,fontWeight:'800',fontSize:15,marginTop:12,textAlign:'center'}}>No movement flags yet</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,marginTop:8,textAlign:'center',lineHeight:18}}>
+                      Sparkline data seeds every 30 min. Steam moves + RLM + limit flags surface here as detected.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={{gap:10}}>
+                    {(() => {
+                      // Group flags per game+market for clean display
+                      const grouped: Record<string, any[]> = {};
+                      steamFlags.forEach((f: any) => {
+                        const key = `${f.game_id}::${f.market}`;
+                        (grouped[key] = grouped[key] || []).push(f);
+                      });
+                      return Object.entries(grouped).slice(0, 20).map(([key, flags]: any, idx: number) => {
+                        const [gid, market] = key.split('::');
+                        // Try to look up matchup from first flag's detail or from sample data
+                        const sample = steamHistorySample[key] || [];
+                        const first = flags[0];
+                        // Compute open→last delta per side to render movement summary
+                        const bySide: Record<string, any[]> = {};
+                        sample.forEach((s: any) => (bySide[s.side] = bySide[s.side] || []).push(s));
+                        return (
+                          <View key={key} style={[styles.card, {padding:12}]}>
+                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6}}>
+                              <Text style={{color:THEME.text, fontWeight:'800', fontSize:13}}>{first.sport} · {market.toUpperCase()}</Text>
+                              <Text style={{color:THEME.textMuted, fontSize:10}}>{gid.slice(0,10)}</Text>
+                            </View>
+                            {/* Pattern chips */}
+                            <View style={{flexDirection:'row', gap:6, flexWrap:'wrap', marginBottom:8}}>
+                              {flags.map((f:any, i:number) => {
+                                const bg = f.pattern === 'steam' ? THEME.accent + '22'
+                                        : f.pattern === 'rlm'   ? THEME.sharp + '22'
+                                        : THEME.hrb + '22';
+                                const fg = f.pattern === 'steam' ? THEME.accent
+                                        : f.pattern === 'rlm'   ? THEME.sharp
+                                        : HRB_COLOR;
+                                const icon = f.pattern === 'steam' ? '💨' : f.pattern === 'rlm' ? '⚡' : '🐋';
+                                return (
+                                  <View key={i} style={{backgroundColor:bg, borderRadius:6, paddingHorizontal:8, paddingVertical:3, borderWidth:1, borderColor:fg+'44'}}>
+                                    <Text style={{color:fg, fontSize:10, fontWeight:'800', letterSpacing:0.4}}>{icon} {f.pattern.toUpperCase()} → {String(f.side).toUpperCase()}</Text>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                            {/* Detail line for the strongest flag */}
+                            <Text style={{color:THEME.textDim, fontSize:11, lineHeight:15}}>{first.detail}</Text>
+                            {/* Per-side movement summary — first vs last snapshot */}
+                            {Object.entries(bySide).length > 0 && (
+                              <View style={{marginTop:8, paddingTop:8, borderTopWidth:1, borderTopColor:THEME.border+'44', gap:3}}>
+                                {Object.entries(bySide).slice(0,4).map(([side, snaps]: any, i: number) => {
+                                  if (snaps.length < 2) return null;
+                                  const openLine = snaps[0].line;
+                                  const lastLine = snaps[snaps.length-1].line;
+                                  const openPrice = snaps[0].price;
+                                  const lastPrice = snaps[snaps.length-1].price;
+                                  const lineChanged = openLine !== lastLine;
+                                  const priceChanged = openPrice !== lastPrice;
+                                  return (
+                                    <View key={i} style={{flexDirection:'row', justifyContent:'space-between'}}>
+                                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.4}}>{String(side).toUpperCase()}</Text>
+                                      <Text style={{color:THEME.textDim, fontSize:10, fontFamily:'monospace' as any}}>
+                                        {lineChanged ? `L: ${openLine} → ${lastLine}` : `L: ${lastLine ?? '—'}`}
+                                        {'  '}
+                                        {priceChanged ? `${openPrice > 0 ? '+' : ''}${openPrice} → ${lastPrice > 0 ? '+' : ''}${lastPrice}` : `${lastPrice > 0 ? '+' : ''}${lastPrice}`}
+                                      </Text>
+                                    </View>
+                                  );
+                                })}
+                              </View>
+                            )}
+                          </View>
+                        );
+                      });
+                    })()}
+                  </View>
+                )}
+              </View>
+            )}
+
+            {steamSubTab==='ladder' && (
+              <View>
+                {ladderLoading ? (
+                  <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/></View>
+                ) : (
+                  <View style={{gap:12}}>
+                    {/* Ladder state hero — active | waiting | reset */}
+                    {(() => {
+                      const s = ladderState;
+                      const status = s?.status || 'waiting';
+                      const bg = status === 'active' ? THEME.accent + '18' : status === 'reset' ? THEME.loss + '18' : THEME.textDim + '18';
+                      const fg = status === 'active' ? THEME.accent : status === 'reset' ? THEME.loss : THEME.textDim;
+                      const icon = status === 'active' ? '🎯' : status === 'reset' ? '💔' : '⏸';
+                      const title = status === 'active' ? 'NEXT RUNG QUEUED' : status === 'reset' ? 'LADDER RESET' : 'LADDER PAUSED';
+                      const activeRung = s?.active_rung_id ? ladderRungs.find(r => r.id === s.active_rung_id) : null;
+                      return (
+                        <View style={{backgroundColor:bg, borderRadius:12, padding:14, borderWidth:1, borderColor:fg+'44'}}>
+                          <View style={{flexDirection:'row', alignItems:'center', gap:8, marginBottom:6}}>
+                            <Text style={{fontSize:22}}>{icon}</Text>
+                            <Text style={{color:fg, fontWeight:'900', fontSize:12, letterSpacing:1}}>{title}</Text>
+                          </View>
+                          {activeRung ? (
+                            <>
+                              <Text style={{color:THEME.text, fontWeight:'800', fontSize:15, marginTop:4}}>{activeRung.pick_side}</Text>
+                              <Text style={{color:THEME.textDim, fontSize:12, marginTop:2}}>{activeRung.matchup}</Text>
+                              <View style={{flexDirection:'row', gap:12, marginTop:8, flexWrap:'wrap'}}>
+                                <Text style={{color:THEME.textDim, fontSize:11}}>{activeRung.tier} · edge {activeRung.edge_pp}pp</Text>
+                                <Text style={{color:THEME.textDim, fontSize:11}}>cohort {activeRung.cohort_hit_rate}% n={activeRung.cohort_n}</Text>
+                                {activeRung.odds_american != null && (
+                                  <Text style={{color:THEME.textDim, fontSize:11}}>{activeRung.odds_american > 0 ? '+' : ''}{activeRung.odds_american}</Text>
+                                )}
+                              </View>
+                            </>
+                          ) : (
+                            <Text style={{color:THEME.textDim, fontSize:13, lineHeight:18}}>
+                              {s?.note || 'Waiting for the right spot. Ladder skips freely — patience is the edge.'}
+                            </Text>
+                          )}
+                        </View>
+                      );
+                    })()}
+
+                    {/* Record card */}
+                    <View style={[styles.card, {padding:14}]}>
+                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>LADDER RECORD</Text>
+                      {(() => {
+                        const resolved = ladderRungs.filter(r => r.result);
+                        const wins = resolved.filter(r => r.result === 'Win').length;
+                        const losses = resolved.filter(r => r.result === 'Loss').length;
+                        const pushes = resolved.filter(r => r.result === 'Push').length;
+                        const hitPct = (wins + losses) > 0 ? Math.round(1000 * wins / (wins + losses)) / 10 : 0;
+                        return (
+                          <View style={{gap:6}}>
+                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                              <Text style={{color:THEME.textDim, fontSize:12}}>Current streak</Text>
+                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>{ladderState?.current_streak ?? 0} rungs</Text>
+                            </View>
+                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                              <Text style={{color:THEME.textDim, fontSize:12}}>Longest streak</Text>
+                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>{ladderState?.longest_streak ?? 0} rungs</Text>
+                            </View>
+                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                              <Text style={{color:THEME.textDim, fontSize:12}}>Record</Text>
+                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
+                                {wins}-{losses}{pushes ? ` (${pushes}P)` : ''}
+                                {(wins+losses) > 0 && <Text style={{color:THEME.textDim, fontWeight:'500'}}> · {hitPct}%</Text>}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })()}
+                    </View>
+
+                    {/* Recent rungs history */}
+                    {ladderRungs.length > 0 && (
+                      <View style={[styles.card, {padding:14}]}>
+                        <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>RECENT RUNGS</Text>
+                        {ladderRungs.slice(0, 10).map((r: any, i: number) => {
+                          const resultColor = r.result === 'Win' ? THEME.win : r.result === 'Loss' ? THEME.loss : r.result === 'Push' ? THEME.textDim : THEME.textMuted;
+                          const resultIcon = r.result === 'Win' ? '✓' : r.result === 'Loss' ? '✗' : r.result === 'Push' ? '=' : '·';
+                          return (
+                            <View key={r.id || i} style={{flexDirection:'row', alignItems:'center', paddingVertical:6, borderTopWidth: i > 0 ? 0.5 : 0, borderTopColor: THEME.border + '44'}}>
+                              <Text style={{color:resultColor, fontWeight:'800', fontSize:14, width:22, textAlign:'center'}}>{resultIcon}</Text>
+                              <View style={{flex:1, marginLeft:6}}>
+                                <Text style={{color:THEME.text, fontWeight:'600', fontSize:12}} numberOfLines={1}>{r.pick_side}</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:1}} numberOfLines={1}>{r.game_date} · {r.matchup}</Text>
+                              </View>
+                              <Text style={{color:THEME.textMuted, fontSize:10, marginLeft:6}}>{r.tier} · {r.edge_pp}pp</Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </View>
+                )}
+              </View>
+            )}
+            <View style={{height:20}}/>
+          </View>
+        )}
+
+        {/* Legacy Odds tab — kept as internal 'odds' state for now but tab
+            bar no longer surfaces it. Preserving the block so future
+            work can restore or repurpose without rebuilding. */}
+        {false && activeTab==='odds'&&(
           <View>
             <Text style={styles.pageTitle}>Live Odds</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
@@ -13716,7 +13991,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             <View style={styles.bottomNavContainer}></View>
       <View style={styles.bottomNavContainer}>
         <View style={{flexDirection:'row',justifyContent:'space-evenly'}}>
-          {[{id:'home',icon:'📊',label:'Home'},{id:'games',icon:'🏟',label:'Games'},{id:'jerry',icon:'🧠',label:'Jerry'},{id:'mybets',icon:'🎯',label:'My Bets'},{id:'odds',icon:'💰',label:'Odds'}].map(tab=>(
+          {[{id:'home',icon:'📊',label:'Home'},{id:'games',icon:'🏟',label:'Games'},{id:'jerry',icon:'🧠',label:'Jerry'},{id:'mybets',icon:'🎯',label:'My Bets'},{id:'steam',icon:'💨',label:'Steam'}].map(tab=>(
             <TouchableOpacity key={tab.id} style={styles.tabItem} onPress={()=>setActiveTab(tab.id)}>
               <Text style={styles.tabIcon}>{tab.icon}</Text>
               {tab.id==='parlay'&&parlayLegs.length>0?(
