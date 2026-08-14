@@ -25,6 +25,96 @@ const supabase = createClient(
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
 );
 const HRB = 'Hard Rock';
+
+/**
+ * Strip internal auto-repair audit prefixes from Jerry short/long reads.
+ * The pipeline's repair passes (apply_refit_verdict_override,
+ * conviction_calibration_pass, jerry_pre_publish_audit --repair,
+ * collapse_sharp_fade_violations, collapse_pitcher_thesis_contradictions)
+ * currently overwrite short_read with an audit-trail note that starts
+ * with "[Auto-<class> YYYY-MM-DD ...".
+ *
+ * That noise ("Auto-sim-repair CONTRADICTS_SIM: forcing PASS") was
+ * meant for pipeline observability, not the user. Until the pipeline
+ * moves those notes to a separate audit_notes column, this scrub
+ * cleans display copy on the way out.
+ *
+ * Behavior:
+ *   - Leading "[Auto-…]" (with or without a closing bracket) stripped.
+ *   - If the note contained "Original take: <text>", we surface the
+ *     original take as the display copy (the actual Jerry prose that
+ *     was intact before the audit fired).
+ *   - If nothing usable remains, returns empty string — caller should
+ *     render a fallback rather than the audit noise.
+ */
+const scrubJerryText = (raw: string | null | undefined): string => {
+  if (!raw) return '';
+  let s = String(raw).trim();
+  if (!s.startsWith('[Auto-')) return s;
+  // Try "Original take: <content>" extraction first — most repair
+  // classes preserve the pre-repair text in that clause.
+  const origMatch = s.match(/Original take:\s*([\s\S]*?)(?:\.\s*(?:Refit|Market|Signal|Verdict|Model|Book|Panel|Confidence)|$)/i);
+  if (origMatch && origMatch[1]) {
+    const orig = origMatch[1].trim().replace(/[\]\s]+$/, '');
+    // If the "original take" is itself a nested audit tag (chained repairs),
+    // recurse to peel the next layer.
+    if (orig.startsWith('[Auto-')) return scrubJerryText(orig);
+    if (orig && orig !== 'PASS' && orig !== 'BACK' && orig !== 'FADE') return orig;
+  }
+  // Fallback: strip the leading tag block and return whatever's after.
+  // Handles both bracketed and unterminated "[Auto- … ]" prefixes.
+  const cleaned = s.replace(/^\[Auto-[^\]]*(?:\]|$)\s*/i, '').trim();
+  return cleaned;
+};
+
+/**
+ * Humanize a prop signal for display.
+ * Pipeline sometimes dumps raw dict-key strings on COVERAGE-stub props
+ * that get promoted to LEAN by the refit engine — those look like
+ * "opp_wrc 110", "l3_k 14.3", "park 96", "xera 4.66" instead of the
+ * prose signals we get on properly-scored PRIME/STRONG picks.
+ *
+ * This detects raw-key-value shorthand and rewrites to human copy.
+ * Prose signals (containing "—" or full-sentence phrasing) pass through
+ * unchanged.
+ */
+const humanizeSignal = (key: string, val: any): string => {
+  const s = String(val ?? '').trim();
+  if (!s) return '';
+  // Prose signals (already user-ready) — pass through
+  if (s.includes('—') || s.includes(':') || s.length > 60 || /[A-Z]{2,}/.test(s.split(' ').slice(0, 2).join(' '))) {
+    return s;
+  }
+  // Try to detect "keyname value" shorthand — split on last space
+  const m = s.match(/^([\w_]+)\s+([\d.\-+%]+)$/);
+  if (!m) return s;
+  const rawKey = m[1].toLowerCase();
+  const value = m[2];
+  const KEY_LABELS: Record<string, {label: string; suffix?: string}> = {
+    'l3_k':       {label: 'L3 K rate', suffix: '%'},
+    'l3_era':     {label: 'L3 ERA'},
+    'l3_bb':      {label: 'L3 BB rate', suffix: '%'},
+    'xera':       {label: 'xERA'},
+    'era':        {label: 'ERA'},
+    'park':       {label: 'Park factor'},
+    'opp_wrc':    {label: 'Opp offense wRC+'},
+    'wrc':        {label: 'wRC+'},
+    'opp_k_rate': {label: 'Opp K rate', suffix: '%'},
+    'k_rate':     {label: 'K rate', suffix: '%'},
+    'bb_rate':    {label: 'BB rate', suffix: '%'},
+    'whiff_rate': {label: 'Whiff rate', suffix: '%'},
+    'gb_rate':    {label: 'GB rate', suffix: '%'},
+    'fb_rate':    {label: 'FB rate', suffix: '%'},
+    'ops':        {label: 'OPS'},
+    'opp_ops':    {label: 'Opp OPS'},
+    'proj':       {label: 'Projection'},
+    'edge':       {label: 'Edge', suffix: '%'},
+  };
+  const meta = KEY_LABELS[rawKey] || KEY_LABELS[key.toLowerCase()];
+  if (!meta) return s; // unknown key — safer to show raw than mislabel
+  const suffix = meta.suffix && !value.endsWith('%') ? meta.suffix : '';
+  return `${meta.label}: ${value}${suffix}`;
+};
 const HRB_COLOR = THEME.hrb;
 
 // Cohort name → user-facing label. Backend tier names use snake_case
@@ -11505,22 +11595,26 @@ setJerryHistory(prev => {
                       <Text style={{color:THEME.textMuted,fontSize:10,marginTop:3}}>No model pick</Text>
                     )}
                     {/* Jerry snippet */}
-                    {jerry?.short_read && (
-                      <View style={{marginTop:6,paddingTop:6,borderTopWidth:1,borderTopColor:THEME.border + '30'}}>
-                        <View style={{flexDirection:'row',alignItems:'center',gap:5,marginBottom:2}}>
-                          <Text style={{color:THEME.hrb,fontSize:9,fontWeight:'800',letterSpacing:0.4}}>🎤 JERRY</Text>
-                          {jerry.call_verdict && (
-                            <Text style={{color: jerry.call_verdict==='BACK' ? THEME.win : jerry.call_verdict==='FADE' ? THEME.loss : THEME.textDim, fontSize:9, fontWeight:'700'}}>
-                              {jerry.call_verdict}
-                              {jerry.conviction != null && ` · ${jerry.conviction}`}
-                            </Text>
-                          )}
+                    {(() => {
+                      const clean = scrubJerryText(jerry?.short_read);
+                      if (!clean) return null;
+                      return (
+                        <View style={{marginTop:6,paddingTop:6,borderTopWidth:1,borderTopColor:THEME.border + '30'}}>
+                          <View style={{flexDirection:'row',alignItems:'center',gap:5,marginBottom:2}}>
+                            <Text style={{color:THEME.hrb,fontSize:9,fontWeight:'800',letterSpacing:0.4}}>🎤 JERRY</Text>
+                            {jerry.call_verdict && (
+                              <Text style={{color: jerry.call_verdict==='BACK' ? THEME.win : jerry.call_verdict==='FADE' ? THEME.loss : THEME.textDim, fontSize:9, fontWeight:'700'}}>
+                                {jerry.call_verdict}
+                                {jerry.conviction != null && ` · ${jerry.conviction}`}
+                              </Text>
+                            )}
+                          </View>
+                          <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}} numberOfLines={3}>
+                            {clean}
+                          </Text>
                         </View>
-                        <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}} numberOfLines={3}>
-                          {jerry.short_read}
-                        </Text>
-                      </View>
-                    )}
+                      );
+                    })()}
                     {/* Method breakdown line — always visible when we have data */}
                     {(kos != null || decs != null || subs != null) && !jerry?.short_read && (
                       <Text style={{color:THEME.textMuted,fontSize:9,marginTop:3}}>
@@ -11868,7 +11962,8 @@ setJerryHistory(prev => {
     so users know it'll refresh with confirmed lineups. */}
 {gamesSport === 'MLB' && game.id && jerryReads[game.id] && (()=>{
   const jr = jerryReads[game.id];
-  if (!jr.short_read) return null;
+  const cleanShort = scrubJerryText(jr.short_read);
+  if (!cleanShort) return null;
   const gen = jr.generated_at ? new Date(jr.generated_at) : null;
   // If generated before 2pm ET, tag as AM read (12pm ET = 16:00 UTC in EDT)
   const isAmRead = gen ? (gen.getUTCHours() < 17) : false;
@@ -11906,7 +12001,7 @@ setJerryHistory(prev => {
           <Text style={{color:THEME.textMuted,fontSize:9,fontStyle:'italic'}}>AM · updates 2pm ET</Text>
         )}
       </View>
-      <Text style={{color:THEME.text,fontSize:12,lineHeight:17}}>{jr.short_read}</Text>
+      <Text style={{color:THEME.text,fontSize:12,lineHeight:17}}>{cleanShort}</Text>
     </View>
   );
 })()}
@@ -12229,22 +12324,38 @@ setJerryHistory(prev => {
                   </View>
                 </View>
 
-                {signalEntries.length > 0 && (
+                {signalEntries.length > 0 && (() => {
+                  // 2026-08-13: humanize raw-key signals before render.
+                  // COVERAGE-stub props that get promoted to LEAN can carry
+                  // dict-key shorthand ("opp_wrc 110") that reads as mumbo
+                  // jumbo. humanizeSignal rewrites to prose or passes
+                  // already-prose signals through.
+                  const humanized = signalEntries
+                    .map(([k, v]) => [k, humanizeSignal(k, v)] as [string, string])
+                    .filter(([, v]) => v && v.length > 0);
+                  if (humanized.length === 0) return null;
+                  return (
                   <View style={{backgroundColor:THEME.surface, borderRadius:10, padding:10, gap:6}}>
                     <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', marginBottom:2, letterSpacing:0.5}}>MODEL SIGNALS</Text>
-                    {signalEntries.slice(0, 5).map(([key, val], j) => (
+                    {humanized.slice(0, 5).map(([key, val], j) => (
                       <View key={j} style={{flexDirection:'row', alignItems:'flex-start', gap:6}}>
                         <Text style={{color:tierColor, fontSize:11, marginTop:1}}>•</Text>
-                        <Text style={{color:THEME.textDim, fontSize:12, flex:1, lineHeight:17}}>{String(val)}</Text>
+                        <Text style={{color:THEME.textDim, fontSize:12, flex:1, lineHeight:17}}>{val}</Text>
                       </View>
                     ))}
                   </View>
-                )}
+                  );
+                })()}
 
                 {/* Prop Jerry synthesis (2026-07-31d). BACK/FADE/PASS chip
-                    + 40-60w take, sport-universal via prop_jerry_reads. */}
-                {(prop as any).prop_jerry?.short_read && (()=>{
+                    + 40-60w take, sport-universal via prop_jerry_reads.
+                    2026-08-13: audit-tag scrub — strip internal
+                    "[Auto-refit-override …]" style prefixes before display. */}
+                {(()=>{
                   const j = (prop as any).prop_jerry;
+                  if (!j) return null;
+                  const cleanShort = scrubJerryText(j.short_read);
+                  if (!cleanShort) return null;
                   const v = String(j.call_verdict || '').toUpperCase();
                   const chipColor = v === 'BACK' ? THEME.win
                                   : v === 'FADE' ? THEME.loss
@@ -12257,7 +12368,7 @@ setJerryHistory(prev => {
                           <Text style={{color:chipColor, fontWeight:'800', fontSize:11}}>{v || 'PASS'} · {j.conviction ?? '-'}</Text>
                         </View>
                       </View>
-                      <Text style={{color:THEME.text, fontSize:12, lineHeight:17}}>{j.short_read}</Text>
+                      <Text style={{color:THEME.text, fontSize:12, lineHeight:17}}>{cleanShort}</Text>
                     </View>
                   );
                 })()}
@@ -13604,8 +13715,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   // if present for this game; else fall back to the legacy
                   // jerry_cache narrative (gameNarrative) so nothing regresses
                   // during the rollout.
+                  // 2026-08-13: run scrubJerryText — long_read can carry the
+                  // same "[Auto-… ]" audit prefixes as short_read, and Game
+                  // Detail is where they show up most prominently.
                   (gamesSport === 'MLB' && jerryReads[selectedGame.id]?.long_read)
-                    ? jerryReads[selectedGame.id].long_read
+                    ? scrubJerryText(jerryReads[selectedGame.id].long_read)
                     : gameNarrative
                 }
                 jerrySynthesis={
