@@ -378,6 +378,30 @@ def get_last_3_starts(player_name, season=2026):
         if len(last_3) < 3:
             return None
 
+        # 2026-08-14 FRESHNESS GATE (stat-date audit finding):
+        # Bassitt 8/14 case — L3 stats correct (5.14 ERA verified live)
+        # but most recent start was 2026-06-03, 72 days ago. Pipeline
+        # projected 5.60 hits allowed for today with no warning. Log
+        # staleness to data_quality_events so audit dashboard surfaces
+        # any pitcher whose L3 window is >30 days old (typically IL,
+        # trade, or role change). Downstream scorer still gets the data
+        # (no behavior change) — this is visibility, not gating, so we
+        # don't accidentally suppress a legit returning starter.
+        latest_start_date = last_3[0].get("date")
+        if latest_start_date:
+            try:
+                from data_quality import DQ
+                _dq = DQ(source='pitcher_stats.get_pitcher_l3', sport='MLB')
+                _dq.assert_freshness_days(
+                    latest_start_date, max_days=30,
+                    check_name='pitcher_l3_last_start_age',
+                    context={'pitcher': player_name,
+                             'latest_start': latest_start_date,
+                             'starts_in_l3': len(last_3)},
+                    severity='warn')
+            except Exception:
+                pass  # DQ never blocks pipeline
+
         total_er = sum(int(g["stat"].get("earnedRuns", 0) or 0) for g in last_3)
         total_ip_str = [str(g["stat"].get("inningsPitched", "0") or "0") for g in last_3]
         total_ip = 0.0
@@ -394,10 +418,23 @@ def get_last_3_starts(player_name, season=2026):
         era = round((total_er * 9) / total_ip, 2) if total_ip > 0 else None
         k_pct = round((total_so / total_bf) * 100, 1) if total_bf > 0 else None
 
+        # Days-since-last-start for downstream freshness checks (2026-08-14)
+        days_since = None
+        if latest_start_date:
+            try:
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                latest = _dt.strptime(latest_start_date[:10], '%Y-%m-%d').date()
+                now_et = (_dt.now(_tz.utc) - _td(hours=4)).date()
+                days_since = (now_et - latest).days
+            except Exception:
+                pass
+
         return {
             "last_3_era": era,
             "last_3_k_pct": k_pct,
             "last_3_ip": round(total_ip, 1),
+            "last_start_date": latest_start_date,
+            "days_since_last_start": days_since,
         }
     except Exception:
         return None

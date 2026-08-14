@@ -210,6 +210,50 @@ class DQ:
                 return False
         return True
 
+    # ─── FRESHNESS assertions (2026-08-14 · stat-date audit) ───────
+    #
+    # Motivated by Bassitt case on 8/14 slate: MLB API returned his L3
+    # correctly (5.14 ERA · verified live), but his last outing was
+    # 2026-06-03 — 72 days ago. Pipeline projected 5.60 hits allowed for
+    # today's start based on that 72-day-old data with no warning.
+    # Ordering assertions catch "wrong direction" bugs; freshness
+    # assertions catch "correct direction but stale" bugs.
+
+    def assert_freshness_days(self, latest_date: Any, max_days: int,
+                               check_name: str,
+                               severity: str = 'warn',
+                               context: Optional[dict] = None,
+                               sport: Optional[str] = None) -> bool:
+        """Passes if latest_date is within max_days of now (ET).
+        latest_date: str 'YYYY-MM-DD', datetime, or date object.
+        Returns False + logs if stale beyond max_days."""
+        try:
+            if isinstance(latest_date, str):
+                from datetime import datetime as _dt
+                latest = _dt.strptime(latest_date[:10], '%Y-%m-%d').date()
+            elif hasattr(latest_date, 'date'):
+                latest = latest_date.date()
+            else:
+                latest = latest_date
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            now_et = (_dt.now(_tz.utc) - _td(hours=4)).date()
+            days_old = (now_et - latest).days
+        except (TypeError, ValueError, AttributeError) as e:
+            self._log('freshness_parse_fail', check_name,
+                      f'could not parse latest_date {latest_date!r}: {e}',
+                      severity=severity, context=context, sport=sport)
+            return False
+        if days_old > max_days:
+            self._log('stale_data', check_name,
+                      f'latest={latest.isoformat()} is {days_old} days old (max {max_days})',
+                      severity=severity,
+                      context={**(context or {}), 'days_old': days_old,
+                               'latest_date': latest.isoformat(),
+                               'max_days': max_days},
+                      sport=sport)
+            return False
+        return True
+
     # ─── CROSS-CHECK assertions ─────────────────────────────────────
 
     def assert_close(self, a: Any, b: Any, tolerance: float,
