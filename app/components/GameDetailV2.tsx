@@ -313,7 +313,7 @@ export default function GameDetailV2({
         )}
 
         <Section title="Money Flow" hint="bets vs money · sharps vs public">
-          <MoneyFlow ctx={ctx} />
+          <MoneyFlow ctx={ctx} sport={gamesSport} />
         </Section>
 
         <Section title="Line Movement" hint="opening → current">
@@ -325,7 +325,7 @@ export default function GameDetailV2({
         </Section>
 
         <Section title="External Handicappers">
-          <HandicappersRow picks={externalPicks} homeTeam={homeTeam} awayTeam={awayTeam} />
+          <HandicappersRow picks={externalPicks} homeTeam={homeTeam} awayTeam={awayTeam} sport={gamesSport} />
         </Section>
 
         <SportSpecificSlot ctx={ctx} gamesSport={gamesSport} game={game} />
@@ -363,7 +363,7 @@ export default function GameDetailV2({
         </Expander>
 
         <Expander title="📐 Numbers" badge="full model dump">
-          <NumbersPanel ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
+          <NumbersPanel ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} />
         </Expander>
 
         <View style={styles.footer}>
@@ -717,7 +717,15 @@ function PitcherCard({name, side, k, er, bb, h, outs}: any) {
 }
 
 // ─── MONEY FLOW ─────────────────────────────────────────────────────────
-function MoneyFlow({ctx}: any) {
+// 2026-08-09: sport-aware "RL/Spread" label. MLB uses "Run Line", NBA/NFL/
+// NCAAF/NCAAB/NHL use "Spread", UFC has no spread market.
+const RL_LABEL_BY_SPORT: Record<string,string> = {
+  MLB: 'Run Line', NFL: 'Spread', NCAAF: 'Spread',
+  NBA: 'Spread', NCAAB: 'Spread', NHL: 'Puck Line',
+};
+const rlLabel = (sport?: string) => RL_LABEL_BY_SPORT[sport || ''] || 'Spread';
+
+function MoneyFlow({ctx, sport}: any) {
   const oc = ctx?.oddscrowd_snapshot;
   if (!oc || typeof oc !== 'object') {
     // No source attribution. When money data is missing, we say nothing about
@@ -727,7 +735,7 @@ function MoneyFlow({ctx}: any) {
   }
   const markets: {key: 'ml'|'rl'|'total'; label: string; data: any}[] = [
     {key: 'ml', label: 'Moneyline', data: oc.ml},
-    {key: 'rl', label: 'Runline/Spread', data: oc.rl},
+    {key: 'rl', label: rlLabel(sport), data: oc.rl},
     {key: 'total', label: 'Total', data: oc.total},
   ].filter(x => x.data);
   return (
@@ -877,7 +885,7 @@ function LensGrid({ctx, gamesSport}: any) {
 }
 
 // ─── HANDICAPPERS ROW ───────────────────────────────────────────────────
-function HandicappersRow({picks, homeTeam, awayTeam}: any) {
+function HandicappersRow({picks, homeTeam, awayTeam, sport}: any) {
   const nonOC = (picks || []).filter((p: any) => p.source !== 'oddscrowd');
   const ml = nonOC.filter((p: any) => p.surface === 'ml');
   const rl = nonOC.filter((p: any) => p.surface === 'rl');
@@ -929,7 +937,7 @@ function HandicappersRow({picks, homeTeam, awayTeam}: any) {
       )}
       {(rlHome.length + rlAway.length) > 0 && (
         <>
-          <Text style={styles.handiGroupLabel}>Runline / Spread</Text>
+          <Text style={styles.handiGroupLabel}>{rlLabel(sport)}</Text>
           {bucketRow(`On ${abbrev3(homeTeam)} (H)`, rlHome)}
           {bucketRow(`On ${abbrev3(awayTeam)} (A)`, rlAway)}
         </>
@@ -1505,7 +1513,7 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
 }
 
 // ─── NUMBERS PANEL ──────────────────────────────────────────────────────
-function NumbersPanel({ctx, awayTeam, homeTeam}: any) {
+function NumbersPanel({ctx, awayTeam, homeTeam, sport}: any) {
   const mc = safeJSON(ctx?.mc_probabilities) || {};
   const rows = [
     ['Panel', ctx?.panel_implied_margin, ctx?.panel_implied_total,
@@ -1548,8 +1556,10 @@ function NumbersPanel({ctx, awayTeam, homeTeam}: any) {
         <MCTile label="Under prob" value={mc.mc_p_under != null ? `${(mc.mc_p_under * 100).toFixed(1)}%` : '—'} />
         <MCTile label="Mean total" value={mc.mc_mean_total != null ? f(mc.mc_mean_total, 2) : '—'} />
         <MCTile label="Std total" value={mc.mc_std_total != null ? f(mc.mc_std_total, 2) : '—'} />
-        <MCTile label="NRFI prob" value={mc.mc_p_nrfi != null ? `${(mc.mc_p_nrfi * 100).toFixed(1)}%` : '—'} />
-        <MCTile label="YRFI prob" value={mc.mc_p_yrfi != null ? `${(mc.mc_p_yrfi * 100).toFixed(1)}%` : '—'} />
+        {/* 2026-08-09: NRFI/YRFI are MLB-only concepts (No Runs First Inning);
+            hide the tiles for other sports where mc_p_nrfi never populates. */}
+        {sport === 'MLB' && <MCTile label="NRFI prob" value={mc.mc_p_nrfi != null ? `${(mc.mc_p_nrfi * 100).toFixed(1)}%` : '—'} />}
+        {sport === 'MLB' && <MCTile label="YRFI prob" value={mc.mc_p_yrfi != null ? `${(mc.mc_p_yrfi * 100).toFixed(1)}%` : '—'} />}
       </View>
 
       {ctx?.signal_confluence_v2_breakdown && (

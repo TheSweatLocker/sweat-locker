@@ -11865,12 +11865,16 @@ setJerryHistory(prev => {
     const fiveHoursAgo = new Date(Date.now() - 5*60*60*1000);
     if(gameTime < fiveHoursAgo) return false;
   }
-  // Prime Only filter (2026-08-13): only surface games with PRIME primary_play
-  // OR sweat score ≥ 80 (PRIME threshold). Uses same score lookup as sort.
+  // Prime Only filter (2026-08-13): only surface games with PRIME tier from
+  // the SERVER-authoritative pipeline. Score-based fallback removed — the
+  // client-side calcGameSweatScore fallback (line ~3273) can hit 80+
+  // artificially when mlb_game_context.sweat_score is missing (using
+  // modelMismatch=45 + situationalEdge=50 placeholders), which was
+  // leaking non-PRIME games into the Prime Only view. Strict tier check
+  // guarantees only games the pipeline itself scored as PRIME show up.
   if(gamesPrimeOnly) {
-    const score = sweatScores[game.id]?.total || getSweatScoreForGame(game, gamesSport)?.total || 0;
-    const tier = sweatScores[game.id]?.tier || getSweatScoreForGame(game, gamesSport)?.tier || '';
-    if(!(tier === 'PRIME' || score >= 80)) return false;
+    const serverTier = sweatScores[game.id]?.tier;
+    if (serverTier !== 'PRIME') return false;
   }
   // Search filter
   if(gamesSearch === '') return true;
