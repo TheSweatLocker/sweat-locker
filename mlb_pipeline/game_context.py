@@ -1148,35 +1148,93 @@ def get_mlb_games(target_date_et=None):
         print(f"Odds API error: {e}")
         return []
 def get_pitcher_last_outing(pitcher_id):
-    """Fetch pitcher's last game pitch count and innings from MLB Stats API"""
+    """Fetch pitcher's last game pitch count and innings from MLB Stats API.
+
+    2026-08-14: instrumented with Session B data-quality assertions. Every
+    fetch validates:
+      * splits list is non-empty
+      * game_date ordering is ascending (verifies our splits[-1] = most
+        recent assumption — this is the assertion that would have caught
+        the 2026-08-13 bug day 1 if we'd had it)
+      * IP within realistic range (0-9)
+      * pitch count within realistic range (0-140)
+    Failures log to data_quality_events but never raise — pipeline continues
+    with best-effort value.
+    """
     if not pitcher_id:
         return None
     try:
+        from data_quality import DQ, get_range
+        dq = DQ(source='game_context.py:get_pitcher_last_outing', sport='MLB')
+        ctx_id = {'pitcher_id': pitcher_id}
+
         r = requests.get(
             f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats",
             params={"stats": "gameLog", "group": "pitching", "season": 2026},
             timeout=10
         )
-        splits = r.json().get("stats", [])
-        if not splits or not splits[0].get("splits"):
+        splits_wrapper = r.json().get("stats", [])
+        if not dq.assert_non_empty(splits_wrapper, 'stats_wrapper',
+                                    context=ctx_id, severity='info'):
             return None
+
+        inner_splits = splits_wrapper[0].get("splits") if splits_wrapper else None
+        if not dq.assert_non_empty(inner_splits, 'gamelog_splits',
+                                    context=ctx_id, severity='info'):
+            return None
+
+        # 2026-08-14: THE ORDERING GUARD. Confirms MLB API returns splits
+        # ascending (oldest → newest), which means splits[-1] is the most
+        # recent game. If MLB ever flips this convention, we detect
+        # immediately — no silent bug lasting months.
+        dates = [s.get('date') for s in inner_splits if s.get('date')]
+        dq.assert_ordering_asc(dates, 'gamelog_dates_ascending',
+                                context={**ctx_id, 'n_games': len(dates)})
+
         # 2026-08-13 BUG FIX: MLB Stats API gameLog returns splits in
-        # CHRONOLOGICAL ASCENDING order (oldest first). The prior code
-        # took splits[0] thinking that was "most recent" — it was
-        # actually the pitcher's FIRST game of the season. This meant
-        # every "last outing" signal citing IP/pitches/ER was
-        # fabricated from a game months old.
-        # Real example that surfaced this: Drohan (MIL) prop showed
-        # "Last outing 2.7 IP — fragile" — that was his 4/8 debut.
-        # Actual last outing (8/7): 5.0 IP.
-        # Fix: index [-1] to grab the last (most recent) split.
-        last = splits[0]["splits"][-1]["stat"]
+        # CHRONOLOGICAL ASCENDING order (oldest first). Index [-1] = most
+        # recent. Bugfix history preserved above ordering assertion which
+        # provides go-forward protection.
+        last = inner_splits[-1]["stat"]
+
+        pitches = int(last.get("numberOfPitches", 0) or 0)
+        raw_ip = last.get("inningsPitched", "0")
+        try:
+            innings = float(raw_ip.replace('.1', '.33').replace('.2', '.67') or "0")
+        except (AttributeError, ValueError):
+            dq._log('fetch_shape', 'ip_parse',
+                    f'inningsPitched not string: {raw_ip!r}',
+                    severity='warn', context=ctx_id, sport='MLB')
+            innings = 0.0
+        earned_runs = int(last.get("earnedRuns", 0) or 0)
+
+        # Range guards
+        ip_rng = get_range('MLB', 'pitcher_ip_single_game')
+        if ip_rng:
+            dq.assert_range(innings, ip_rng[0], ip_rng[1],
+                             'pitcher_last_outing.innings',
+                             context={**ctx_id, 'value': innings, 'date': dates[-1] if dates else None})
+        p_rng = get_range('MLB', 'pitcher_pitches_single_game')
+        if p_rng:
+            dq.assert_range(pitches, p_rng[0], p_rng[1],
+                             'pitcher_last_outing.pitches',
+                             context={**ctx_id, 'value': pitches})
+
         return {
-            "pitches": int(last.get("numberOfPitches", 0) or 0),
-            "innings": float(last.get("inningsPitched", "0").replace('.1','.33').replace('.2','.67') or "0"),
-            "earned_runs": int(last.get("earnedRuns", 0) or 0),
+            "pitches": pitches,
+            "innings": innings,
+            "earned_runs": earned_runs,
         }
-    except:
+    except Exception as e:
+        # Preserve prior fail-open behavior; log unexpected exceptions via DQ
+        try:
+            from data_quality import DQ
+            DQ(source='game_context.py:get_pitcher_last_outing', sport='MLB')._log(
+                'fetch_shape', 'unhandled_exception',
+                f'{type(e).__name__}: {str(e)[:200]}',
+                severity='warn', context={'pitcher_id': pitcher_id})
+        except Exception:
+            pass
         return None
 
 def get_pitcher_vs_team(pitcher_id, opponent_team_id):

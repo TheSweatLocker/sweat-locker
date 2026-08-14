@@ -1480,6 +1480,18 @@ jobs:
           cd mlb_pipeline
           python alert_dashboard_anomalies.py || echo "alert engine failed"
 
+      # 2026-08-14 Session B: data quality event aggregator + sanity checks
+      # Promotes recurring silent-failure trips to dashboard_alerts and runs
+      # spot cross-checks (e.g., ctx.last_ip vs MLB API). Sport-universal.
+      - name: Monitoring — data quality daily
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python check_data_quality_daily.py || echo "DQ daily failed"
+
       # Pipeline health check — catches silent skips like the 5/19 case
       # where play_of_day.py's late-slate defer was returning before the
       # sweat-score write loop, leaving every game with sweat_score = null.

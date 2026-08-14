@@ -178,6 +178,34 @@ def section_rule_hotlist(snapshot_date: date):
               f'({h if h is not None else "—"}%) fires={row["fires"]}')
 
 
+def section_data_quality(snapshot_date: date):
+    """Recent data-quality event summary (Session B)."""
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    r = _paginate(f'{SB}/rest/v1/data_quality_events',
+        {'event_ts': f'gte.{since}', 'select': 'source,check_name,severity',
+         'order': 'event_ts.desc'})
+    print()
+    print('═' * 80)
+    print(f'  🔬 DATA QUALITY — trips last 24h')
+    print('═' * 80)
+    if not r:
+        print('  ✓ no data-quality events logged (or check_data_quality_daily.py hasn\'t run)')
+        return
+    # Bucket by (source, check_name) → count per severity
+    b = defaultdict(lambda: {'critical': 0, 'warn': 0, 'info': 0})
+    for row in r:
+        key = (row.get('source'), row.get('check_name'))
+        sev = row.get('severity', 'info')
+        b[key][sev] += 1
+    # Sort: critical count desc, then warn count desc
+    entries = sorted(b.items(), key=lambda z: (-z[1]['critical'], -z[1]['warn']))
+    for (source, check), counts in entries[:10]:
+        c = counts['critical']; w = counts['warn']; i = counts['info']
+        marker = '🚨' if c else '⚠️' if w >= 3 else '  '
+        print(f'  {marker} {(source or "-")[:32]:32} · {(check or "-")[:35]:35} '
+              f'· crit={c} warn={w} info={i}')
+
+
 def section_stall_watch(snapshot_date: date):
     r = _paginate(f'{SB}/rest/v1/hit_rate_snapshots',
         {'snapshot_date': f'eq.{snapshot_date.isoformat()}',
@@ -207,6 +235,7 @@ def main():
     section_headline_hit_rates(sd, sports)
     section_tier_rates(sd, sports)
     section_rule_hotlist(sd)
+    section_data_quality(sd)
     section_stall_watch(sd)
     print()
 
