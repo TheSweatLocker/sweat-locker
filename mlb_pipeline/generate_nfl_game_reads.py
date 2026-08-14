@@ -79,20 +79,58 @@ def fetch_odds_games():
     if not ODDS_API_KEY:
         print("  No ODDS_API_KEY — can't fetch NFL slate")
         return []
-    r = requests.get(
-        "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds",
-        params={"apiKey": ODDS_API_KEY, "regions": "us", "markets": "h2h,spreads,totals", "oddsFormat": "american"},
-        timeout=20,
-    )
-    if r.status_code != 200:
-        print(f"  Odds API error: {r.status_code}")
-        return []
-    return r.json()
+    # 2026-08-13: fetch preseason key too when in preseason window (Aug + early
+    # Sept). NFL preseason games live under americanfootball_nfl_preseason,
+    # not the regular-season key. Prior code returned an empty list all Aug
+    # long → generate_nfl_game_reads.py wrote zero NFL Jerry reads all
+    # preseason. Merge both keys; downstream Jerry-loop already gates on
+    # panel_pred availability (which is null on preseason) so preseason
+    # games flow through and skip cleanly with a log message.
+    sport_keys = ["americanfootball_nfl"]
+    now_month = datetime.now(timezone.utc).month
+    if now_month == 8 or (now_month == 9 and datetime.now(timezone.utc).day < 5):
+        sport_keys.append("americanfootball_nfl_preseason")
+
+    games: list = []
+    for sk in sport_keys:
+        r = requests.get(
+            f"https://api.the-odds-api.com/v4/sports/{sk}/odds",
+            params={"apiKey": ODDS_API_KEY, "regions": "us",
+                    "markets": "h2h,spreads,totals", "oddsFormat": "american"},
+            timeout=20,
+        )
+        if r.status_code != 200:
+            print(f"  Odds API error for {sk}: {r.status_code}")
+            continue
+        games.extend(r.json() or [])
+    print(f"  fetched {len(games)} NFL games across {len(sport_keys)} sport key(s)")
+    return games
 
 
 def fetch_team_stats():
     rows = sb_get("nfl_team_stats", {"select": "*"})
     return {r.get("team"): r for r in rows}
+
+
+def fetch_nfl_contexts():
+    """2026-08-09 Phase 2: pull nfl_game_context rows with model/panel
+    predictions + primary_play. Keyed by (home_team, away_team) for
+    lookup during struct build."""
+    from datetime import timedelta as _td
+    today = today_et()
+    horizon = (datetime.now(timezone.utc) + _td(days=10) - _td(hours=4)).strftime('%Y-%m-%d')
+    url = (f"{SUPABASE_URL}/rest/v1/nfl_game_context"
+           f"?game_date=gte.{today}&game_date=lte.{horizon}"
+           f"&select=game_id,home_team,away_team,game_date,close_total,close_spread,"
+           f"projected_total,projected_spread,model_pred_home_points,model_pred_away_points,"
+           f"panel_pred_home_pts,panel_pred_away_pts,panel_pred_total,panel_confidence,"
+           f"panel_source,panel_players_used,panel_injury_outs,"
+           f"signal_confluence_net,cohort_tags,sweat_score,sweat_tier,primary_play")
+    r = requests.get(url, headers=SB_READ, timeout=20)
+    if r.status_code != 200: return {}
+    ctxs = r.json()
+    # Key by (home, away) using team abbreviations from the context
+    return {(c.get('home_team'), c.get('away_team')): c for c in ctxs if c.get('home_team')}
 
 
 def median(arr):
@@ -167,7 +205,7 @@ def _build_casual_summary(struct):
     return {"headlines": top, "bottom_line": bottom}
 
 
-def build_struct(game, stats):
+def build_struct(game, stats, contexts=None):
     home, away = game.get("home_team"), game.get("away_team")
     h, a = _team(stats, home), _team(stats, away)
     spread, total, hml, aml = extract_market(game)
@@ -194,15 +232,86 @@ def build_struct(game, stats):
             "game_date": today_et(),
             "game_has_not_been_played": True,
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "phase": "Phase 1 — market + season EPA only; per-game model picks pending Phase 2",
+            "phase": "Phase 2 LIVE — EPA-matchup model + fantasy-aggregated Panel model",
         },
     }
+
+    # 2026-08-09 Phase 2: merge in nfl_game_context predictions if available
+    ctx = None
+    if contexts:
+        ctx = (contexts.get((home, away))
+               or contexts.get((_short_team(home), _short_team(away)))
+               or None)
+    if ctx:
+        struct["models"] = {
+            # EPA-matchup model (per-game total using offense × opp defense)
+            "matchup": {
+                "projected_total": ctx.get('projected_total'),
+                "projected_spread": ctx.get('projected_spread'),
+                "home_pts": ctx.get('model_pred_home_points'),
+                "away_pts": ctx.get('model_pred_away_points'),
+            },
+            # Panel model (fantasy-aggregated per-player projections)
+            "panel": {
+                "total": ctx.get('panel_pred_total'),
+                "home_pts": ctx.get('panel_pred_home_pts'),
+                "away_pts": ctx.get('panel_pred_away_pts'),
+                "confidence": ctx.get('panel_confidence'),
+                "source": ctx.get('panel_source'),
+                "players_used": ctx.get('panel_players_used'),
+                "injury_outs": ctx.get('panel_injury_outs'),
+            },
+        }
+        struct["confluence"] = {
+            "net": ctx.get('signal_confluence_net'),
+            "cohort_tags": ctx.get('cohort_tags'),
+        }
+        struct["sweat"] = {
+            "score": ctx.get('sweat_score'),
+            "tier": ctx.get('sweat_tier'),
+        }
+        pp = ctx.get('primary_play')
+        if pp:
+            struct["primary_play"] = pp
+
     struct["casual_summary"] = _build_casual_summary(struct)
     return struct
 
 
+def _short_team(name):
+    """Bridge full team name → abbrev if needed. Odds API uses full names,
+    nfl_game_context typically stores abbrevs like BAL/PHI."""
+    if not name: return None
+    NAME_TO_ABBR = {
+        'Arizona Cardinals':'ARI','Atlanta Falcons':'ATL','Baltimore Ravens':'BAL',
+        'Buffalo Bills':'BUF','Carolina Panthers':'CAR','Chicago Bears':'CHI',
+        'Cincinnati Bengals':'CIN','Cleveland Browns':'CLE','Dallas Cowboys':'DAL',
+        'Denver Broncos':'DEN','Detroit Lions':'DET','Green Bay Packers':'GB',
+        'Houston Texans':'HOU','Indianapolis Colts':'IND','Jacksonville Jaguars':'JAX',
+        'Kansas City Chiefs':'KC','Las Vegas Raiders':'LV','Los Angeles Chargers':'LAC',
+        'Los Angeles Rams':'LAR','Miami Dolphins':'MIA','Minnesota Vikings':'MIN',
+        'New England Patriots':'NE','New Orleans Saints':'NO','New York Giants':'NYG',
+        'New York Jets':'NYJ','Philadelphia Eagles':'PHI','Pittsburgh Steelers':'PIT',
+        'San Francisco 49ers':'SF','Seattle Seahawks':'SEA','Tampa Bay Buccaneers':'TB',
+        'Tennessee Titans':'TEN','Washington Commanders':'WAS',
+    }
+    return NAME_TO_ABBR.get(name, name)
+
+
 def render_prompt(templates, struct):
-    confidence_tier = "MARKET — NFL Phase 2 model not active yet. Working from market lines + season EPA/efficiency."
+    # 2026-08-09: Phase 2 confidence copy depends on whether per-game models
+    # actually populated (models block present with real numbers).
+    models = struct.get('models') or {}
+    m_total = (models.get('matchup') or {}).get('projected_total')
+    p_total = (models.get('panel') or {}).get('total')
+    if m_total or p_total:
+        confidence_tier = (
+            f"PHASE 2 LIVE — EPA-matchup model total {m_total} · "
+            f"Panel model total {p_total} · confluence {struct.get('confluence',{}).get('net')}. "
+            "Reason across both models + market."
+        )
+    else:
+        confidence_tier = "MARKET — model data not yet available for this game."
     context_block = (
         "NFL GAME CONTEXT (authoritative — analyze this, do not search for scores):\n"
         + json.dumps(struct, indent=2, default=str)
@@ -415,9 +524,13 @@ def run():
     stats = fetch_team_stats()
     print(f"  {len(games)} game(s) | {len(stats)} team stat rows")
 
+    # 2026-08-09 Phase 2: pull per-game context (model + Panel predictions)
+    contexts = fetch_nfl_contexts()
+    print(f"  Phase 2 contexts loaded: {len(contexts)}")
+
     done = 0
     for g in games:
-        struct = build_struct(g, stats)
+        struct = build_struct(g, stats, contexts=contexts)
         away, home = struct["matchup"].split(" @ ")
         key = f"game_read_{g.get('id')}_{today_et()}"
         if not force:
@@ -429,6 +542,33 @@ def run():
         if not narrative:
             print(f"  • {away} @ {home}: no narrative — struct only")
         parsed = parse_nfl_synthesis(narrative) if narrative else {}
+
+        # 2026-08-09: NFL number-hallucination hard-enforce (mirrors MLB
+        # Jerry). Only checks numbers (sport-universal), not pitcher names.
+        # If numbers hallucinated, retry once with corrective prompt; if
+        # still bad, cap conviction to LEAN (55).
+        if narrative and parsed.get('short_read') and parsed.get('long_read'):
+            try:
+                from validate_jerry_read import validate as _validate, build_corrective_prompt
+                num_report = _validate(parsed.get('short_read'), parsed.get('long_read'), struct)
+                if not num_report['is_valid']:
+                    print(f"  ⚠ NFL num hallucination: {num_report.get('hallucinated_numbers',[])[:3]} — retry")
+                    corrective = build_corrective_prompt(prompt, num_report, {'suspects': []})
+                    narrative2 = call_claude(corrective)
+                    if narrative2:
+                        parsed2 = parse_nfl_synthesis(narrative2)
+                        if parsed2.get('short_read') and parsed2.get('long_read'):
+                            num2 = _validate(parsed2.get('short_read'), parsed2.get('long_read'), struct)
+                            narrative = narrative2
+                            parsed = parsed2
+                            if num2['is_valid']:
+                                print(f"  ✓ retry cleaned numbers")
+                            elif (parsed.get('conviction') or 0) > 55:
+                                parsed['conviction'] = 55
+                                print(f"  🔒 conviction capped→55 (LEAN) due to unverified numbers: {num2.get('hallucinated_numbers',[])[:3]}")
+            except ImportError:
+                pass
+
         if upsert_read(g, struct, narrative or "", parsed=parsed):
             call_str = ''
             if parsed.get('call_market'):
