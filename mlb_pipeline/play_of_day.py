@@ -484,18 +484,26 @@ def write_sweat_score(ctx, score, tier, breakdown=None):
     new_rank = _TIER_RANK.get(computed_tier, 0)
     held_rank = _TIER_RANK.get(persisted_tier_max, -1)
     if persisted_tier_max and new_rank < held_rank:
-        # Demotion blocked — hold previous max tier; surface the held-down
-        # state inside the breakdown so the audit can see what the live
-        # scorer would have emitted.
+        # 2026-08-14 FIX (score-tier decoupling bug found on Cubs slate):
+        # Cap the held tier to at most 1 rank above computed. Prevents the
+        # bad UX where a game shows PRIME badge on a score of 70 because the
+        # tier peaked earlier in the day. PRIME → STRONG intraday is
+        # acceptable (users understand tier degradation); PRIME → LEAN was
+        # both jarring and dishonest. Original lock still solves 6AM→2PM
+        # regression case (STRONG → LIGHT would still hold as STRONG).
+        _TIER_BY_RANK = {0: 'PASS', 1: 'LIGHT_LEAN', 2: 'STRONG', 3: 'PRIME'}
+        capped_rank = min(held_rank, new_rank + 1)
+        capped_tier = _TIER_BY_RANK.get(capped_rank, computed_tier)
         if isinstance(breakdown, dict):
             breakdown.setdefault('tier_lock', {})
             breakdown['tier_lock'] = {
-                'held_at': persisted_tier_max,
+                'held_at': capped_tier,
+                'peak_tier': persisted_tier_max,
                 'would_have_been': computed_tier,
-                'reason': 'tier_monotonic_within_day',
+                'reason': 'tier_monotonic_within_day_capped_1_rank',
                 'locked_at': persisted_locked_at,
             }
-        persisted_tier = persisted_tier_max
+        persisted_tier = capped_tier
     else:
         persisted_tier = computed_tier
 

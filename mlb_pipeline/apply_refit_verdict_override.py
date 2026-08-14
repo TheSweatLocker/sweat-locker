@@ -77,7 +77,8 @@ def _et_today() -> str:
 
 def decide(raw: int, refit: float | None, current_verdict: str,
            prop_type: str | None = None, direction: str | None = None,
-           sample_health: dict | None = None) -> tuple[str, str] | None:
+           sample_health: dict | None = None,
+           book_odds: int | None = None) -> tuple[str, str] | None:
     """Return (new_verdict, action_id) or None if HOLD.
 
     2026-08-11: sample_health gate added. When forcing a BACK on refit
@@ -87,9 +88,33 @@ def decide(raw: int, refit: float | None, current_verdict: str,
     over-confident BACKs when the calibration model itself has been
     misfiring on this prop_type recently.
 
+    2026-08-14: juice-trap short-circuit added. hits_over -200+ and
+    bb_under -200+ are known TRAP zones (memory:
+    feedback_batter_hits_juice_trap_803 + feedback_potd_juice_gate_803).
+    The pipeline's prop_tier_calibration.py correctly caps these at
+    conviction 40-55, but refit was overriding to 99+ and boosting past
+    the cap (see Lindor -250 hits_over: raw=40, refit=99.8, Jerry conv=85
+    surfaced). Refit CANNOT override juice-trap gates — return LEAN_CAP.
+
     sample_health dict shape (from compute_refit_band_health):
         {(prop_type, direction, '80-100'): {n: N, hit_pct: float}}
     """
+    # ---- Juice-trap short-circuit (2026-08-14) ----
+    # Fires BEFORE any refit-boost logic. Prevents refit from lifting a
+    # BACK verdict past LEAN when book_odds are in the family's trap zone.
+    if book_odds is not None and prop_type and direction:
+        try:
+            o = int(book_odds)
+            # hits_over trap: memory feedback_batter_hits_juice_trap_803
+            if prop_type == 'hits_over' and direction == 'over' and o <= -200:
+                if current_verdict in ('BACK', 'FADE'):
+                    return ('LEAN_CAP', f'HITS_OVER_JUICE_TRAP_{o}_no_refit_boost')
+            # bb_under trap: memory equivalent from 8/9 (added 8/14 gate)
+            if prop_type == 'bb_under' and direction == 'under' and o <= -200:
+                if current_verdict in ('BACK', 'FADE'):
+                    return ('LEAN_CAP', f'BB_UNDER_JUICE_TRAP_{o}_no_refit_boost')
+        except (TypeError, ValueError): pass
+
     if refit is None:
         # No-refit cap only applies to BACK/FADE
         if current_verdict in ('BACK', 'FADE'):
@@ -469,7 +494,8 @@ def run(game_date: str, dry_run: bool = False) -> int:
         result = decide(raw, refit, current,
                         prop_type=r.get('prop_type'),
                         direction=r.get('direction'),
-                        sample_health=sample_health)
+                        sample_health=sample_health,
+                        book_odds=r.get('book_odds'))
         if not result: continue
         new_verdict, action = result
 
