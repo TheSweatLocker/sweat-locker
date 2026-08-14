@@ -13547,28 +13547,117 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 ) : (
                   <View style={{gap:10}}>
                     {(() => {
-                      // Group flags per game+market for clean display
+                      // Group flags per (game, market)
                       const grouped: Record<string, any[]> = {};
                       steamFlags.forEach((f: any) => {
                         const key = `${f.game_id}::${f.market}`;
                         (grouped[key] = grouped[key] || []).push(f);
                       });
-                      return Object.entries(grouped).slice(0, 20).map(([key, flags]: any, idx: number) => {
+                      // 2026-08-13 gap fix #3: rank groups by strongest pattern.
+                      // STEAM (multi-book coordinated) is the highest-conviction
+                      // sharp signal, then RLM (line vs public divergence),
+                      // then LIMIT (money/bets whale divergence). Sort keys
+                      // reflect that priority so the eye lands on strongest first.
+                      const PATTERN_RANK: Record<string, number> = {steam: 0, rlm: 1, limit: 2};
+                      const groupEntries = Object.entries(grouped);
+                      groupEntries.sort(([, a]: any, [, b]: any) => {
+                        const rankA = Math.min(...a.map((f: any) => PATTERN_RANK[f.pattern] ?? 9));
+                        const rankB = Math.min(...b.map((f: any) => PATTERN_RANK[f.pattern] ?? 9));
+                        if (rankA !== rankB) return rankA - rankB;
+                        return b.length - a.length; // more flags on same game = higher
+                      });
+                      return groupEntries.slice(0, 20).map(([key, flags]: any) => {
                         const [gid, market] = key.split('::');
-                        // Try to look up matchup from first flag's detail or from sample data
                         const sample = steamHistorySample[key] || [];
                         const first = flags[0];
-                        // Compute open→last delta per side to render movement summary
+
+                        // 2026-08-13 gap fix #2: pull matchup from sample data
+                        // so we can show real team names instead of HOME/AWAY.
+                        // Sample comes from line_history which stores the full
+                        // "Away @ Home" matchup string per snapshot.
+                        const matchup = sample[0]?.matchup || '';
+                        const commence = sample[0]?.commence_time;
+                        let awayTeam = '';
+                        let homeTeam = '';
+                        if (matchup.includes(' @ ')) {
+                          const parts = matchup.split(' @ ');
+                          awayTeam = parts[0].trim();
+                          homeTeam = parts[1].trim();
+                        }
+                        const teamForSide = (side: string): string => {
+                          const s = String(side).toLowerCase();
+                          if (s === 'home') return homeTeam || 'HOME';
+                          if (s === 'away') return awayTeam || 'AWAY';
+                          return side.toUpperCase(); // over/under
+                        };
+
+                        // Game time badge (gap fix #4)
+                        let timeBadge = '';
+                        if (commence) {
+                          const gameTime = new Date(commence);
+                          const now = new Date();
+                          const minsUntil = (gameTime.getTime() - now.getTime()) / 60000;
+                          if (minsUntil > 0 && minsUntil < 60) timeBadge = '🔴 STARTING SOON';
+                          else if (minsUntil > 0) timeBadge = gameTime.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', timeZone:'America/New_York'}) + ' ET';
+                          else timeBadge = '⏸ LIVE / STARTED';
+                        }
+
+                        // Compute per-side movement summary
                         const bySide: Record<string, any[]> = {};
                         sample.forEach((s: any) => (bySide[s.side] = bySide[s.side] || []).push(s));
+
+                        // 2026-08-13 gap fix #1: tap card → Game Detail.
+                        // Look up the underlying game object across gamesData,
+                        // mlbGameContext, nflGameContextMap. Same pattern the
+                        // sweat card row tap uses.
+                        const findGameForFlag = (): any | null => {
+                          const inGames = (gamesData || []).find((g: any) =>
+                            g.away_team === awayTeam && g.home_team === homeTeam);
+                          if (inGames) return inGames;
+                          const ctxHit: any = Object.values(mlbGameContext || {}).find((c: any) =>
+                            c?.away_team === awayTeam && c?.home_team === homeTeam)
+                            || Object.values(nflGameContextMap || {}).find((c: any) =>
+                              c?.away_team === awayTeam && c?.home_team === homeTeam);
+                          if (ctxHit) return {
+                            id: ctxHit.game_id, away_team: awayTeam, home_team: homeTeam,
+                            commence_time: ctxHit.commence_time || commence, bookmakers: [],
+                          };
+                          return null;
+                        };
+                        const target = findGameForFlag();
+                        const onTap = () => {
+                          if (!target) return;
+                          const flagSport = first.sport;
+                          if (flagSport && flagSport !== gamesSport) setGamesSport(flagSport);
+                          setActiveTab('games');
+                          setTimeout(() => openGameDetail(target), 50);
+                        };
+                        const CardTag: any = target ? TouchableOpacity : View;
+                        const cardProps: any = target ? {onPress: onTap, activeOpacity: 0.7} : {};
+
                         return (
-                          <View key={key} style={[styles.card, {padding:12}]}>
-                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6}}>
-                              <Text style={{color:THEME.text, fontWeight:'800', fontSize:13}}>{first.sport} · {market.toUpperCase()}</Text>
-                              <Text style={{color:THEME.textMuted, fontSize:10}}>{gid.slice(0,10)}</Text>
+                          <CardTag key={key} {...cardProps} style={[styles.card, {padding:12}]}>
+                            {/* Header: sport · market · matchup · time · tap hint */}
+                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:4}}>
+                              <View style={{flex:1}}>
+                                <Text style={{color:THEME.text, fontWeight:'800', fontSize:13}}>
+                                  {first.sport} · {market.toUpperCase()}
+                                </Text>
+                                {matchup && (
+                                  <Text style={{color:THEME.textDim, fontSize:11, marginTop:2}} numberOfLines={1}>{matchup}</Text>
+                                )}
+                              </View>
+                              <View style={{alignItems:'flex-end'}}>
+                                {timeBadge && (
+                                  <Text style={{color: timeBadge.includes('SOON') || timeBadge.includes('LIVE') ? THEME.loss : THEME.textMuted, fontSize:10, fontWeight:'700'}}>{timeBadge}</Text>
+                                )}
+                                {target && (
+                                  <Text style={{color:THEME.textMuted, fontSize:9, marginTop:2, opacity:0.6}}>tap →</Text>
+                                )}
+                              </View>
                             </View>
-                            {/* Pattern chips */}
-                            <View style={{flexDirection:'row', gap:6, flexWrap:'wrap', marginBottom:8}}>
+                            {/* Pattern chips — now with team names */}
+                            <View style={{flexDirection:'row', gap:6, flexWrap:'wrap', marginTop:6, marginBottom:8}}>
                               {flags.map((f:any, i:number) => {
                                 const bg = f.pattern === 'steam' ? THEME.accent + '22'
                                         : f.pattern === 'rlm'   ? THEME.sharp + '22'
@@ -13577,9 +13666,10 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                         : f.pattern === 'rlm'   ? THEME.sharp
                                         : HRB_COLOR;
                                 const icon = f.pattern === 'steam' ? '💨' : f.pattern === 'rlm' ? '⚡' : '🐋';
+                                const sideLabel = teamForSide(f.side);
                                 return (
                                   <View key={i} style={{backgroundColor:bg, borderRadius:6, paddingHorizontal:8, paddingVertical:3, borderWidth:1, borderColor:fg+'44'}}>
-                                    <Text style={{color:fg, fontSize:10, fontWeight:'800', letterSpacing:0.4}}>{icon} {f.pattern.toUpperCase()} → {String(f.side).toUpperCase()}</Text>
+                                    <Text style={{color:fg, fontSize:10, fontWeight:'800', letterSpacing:0.4}}>{icon} {f.pattern.toUpperCase()} → {sideLabel}</Text>
                                   </View>
                                 );
                               })}
@@ -13597,9 +13687,10 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                   const lastPrice = snaps[snaps.length-1].price;
                                   const lineChanged = openLine !== lastLine;
                                   const priceChanged = openPrice !== lastPrice;
+                                  const sideLabel = teamForSide(side);
                                   return (
                                     <View key={i} style={{flexDirection:'row', justifyContent:'space-between'}}>
-                                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.4}}>{String(side).toUpperCase()}</Text>
+                                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.4}}>{sideLabel}</Text>
                                       <Text style={{color:THEME.textDim, fontSize:10, fontFamily:'monospace' as any}}>
                                         {lineChanged ? `L: ${openLine} → ${lastLine}` : `L: ${lastLine ?? '—'}`}
                                         {'  '}
@@ -13610,7 +13701,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 })}
                               </View>
                             )}
-                          </View>
+                          </CardTag>
                         );
                       });
                     })()}
