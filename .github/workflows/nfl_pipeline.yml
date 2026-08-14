@@ -167,6 +167,21 @@ jobs:
           cd mlb_pipeline
           python nfl_v3_regression.py || echo "NFL V3 failed (non-fatal)"
 
+      # 2026-08-13 · 5-lens rollout: V4 XGBoost inference.
+      # Loads models/nfl_v4_{spread,total}.pkl (trained via nfl_v4_train.py
+      # in an offline job — retrain ~yearly post-season). Runs inference on
+      # tonight's slate, writes v4_spread/v4_total/v4_confidence.
+      # No-op gracefully if models file missing (pre-first-train state).
+      - name: NFL V4 XGBoost inference
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_v4_inference.py || echo "NFL V4 inference failed (non-fatal)"
+
       - name: Generate NFL picks (play-of-day + lock_of_week)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:

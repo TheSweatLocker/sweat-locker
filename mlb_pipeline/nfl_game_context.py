@@ -496,6 +496,13 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
     v3_spread = ctx.get('v3_spread')
     v3_total = ctx.get('v3_total')
 
+    # 2026-08-13 · V4 lens (XGBoost). Trained on 2020-2024 nflverse, inference
+    # via nfl_v4_inference.py. Represents the data-driven "everything else"
+    # signal — learns interactions Matchup-EPA/V3/MC don't model directly.
+    v4_spread = ctx.get('v4_spread')
+    v4_total = ctx.get('v4_total')
+    v4_confidence = ctx.get('v4_confidence')
+
     # 1a. MC HIGH-CONF headline — fires when MC sim shows a decisive edge
     # AND at least one other lens (EPA model or Panel) agrees on direction.
     # Analog of the MLB MC HIGH-CONF chip; NFL threshold set to 70% (vs
@@ -505,9 +512,10 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
         mc_side = 'HOME' if mc_p_home >= 0.5 else 'AWAY'
         mc_pct = mc_p_home if mc_side == 'HOME' else (1 - mc_p_home)
         if mc_pct >= 0.70:
-            # 2026-08-13: with V3 now shipping, lens_count max = 4 (MC + Matchup-EPA
-            # + Panel + V3). Jerry LLM is the 5th but doesn't produce spread
-            # projection directly, so agreement counting skips it.
+            # 2026-08-13: with V3 + V4 both shipping tonight, NFL's spread-
+            # producing lens count is now 5 (MC + Matchup-EPA + Panel + V3 + V4).
+            # Jerry LLM is a 6th synthesis lens but doesn't produce a spread
+            # projection directly; not counted in agreement.
             supporting = 1  # MC counts itself
             if proj_spread is not None:
                 model_side = 'HOME' if float(proj_spread) > 0 else 'AWAY'
@@ -518,23 +526,67 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
             if v3_spread is not None:
                 v3_side = 'HOME' if float(v3_spread) > 0 else 'AWAY'
                 if v3_side == mc_side: supporting += 1
-            # Only fire if AT LEAST ONE other lens agrees (2/4 minimum).
+            if v4_spread is not None:
+                v4_side = 'HOME' if float(v4_spread) > 0 else 'AWAY'
+                if v4_side == mc_side: supporting += 1
+            # Only fire if AT LEAST ONE other lens agrees (2/5 minimum).
             # Lone-MC picks were 4-6 (40%) historical per MLB audit — same
             # caution applies here.
             if supporting >= 2:
                 team = home_team if mc_side == 'HOME' else away_team
-                # PRIME needs 3+ lens agreement (of 4 spread-producing lens);
-                # STRONG at 2. Stale stats caps at STRONG regardless.
-                tier = 'PRIME' if (supporting >= 3 and not stats_stale) else 'STRONG'
+                # PRIME needs 4+ lens agreement (of 5 spread-producing lens),
+                # STRONG at 2-3. Stale stats caps at STRONG regardless.
+                tier = 'PRIME' if (supporting >= 4 and not stats_stale) else 'STRONG'
                 return {
                     'type': 'ml',
                     'tier': tier,
                     'label': f'{team} ML',
                     'sub': f'MC HIGH-CONF: {mc_pct*100:.0f}% win prob (10k sim) · '
-                           f'{supporting}/4 lens confirm · margin {mc_expected_margin:+.1f}',
+                           f'{supporting}/5 lens confirm · margin {mc_expected_margin:+.1f}',
                     'signal_floor': 85 if tier == 'PRIME' else 75,
                     'audit_note': 'MC HIGH-CONF chip · NFL 5-model rollout',
                 }
+
+        # 2026-08-13 · ANTI-CONSENSUS FADE (NFL) — analog of MLB's rule.
+        # Fires when MC + one partner lens disagree with the other 3 spread-
+        # producing lens. Historical MLB pattern: fade side hits ~74%. NFL
+        # sample smaller (16 games/season) so tier stays LEAN until we
+        # accumulate at least 20 fires for calibration.
+        # Only fires when we have ALL 5 spread lens (MC + EPA + Panel + V3 + V4)
+        # AND their sides are unambiguous.
+        def _side_of(spread_val: Optional[float]) -> Optional[str]:
+            if spread_val is None: return None
+            try: return 'H' if float(spread_val) > 0 else 'A'
+            except (TypeError, ValueError): return None
+        mc_side_char = 'H' if (mc_p_home or 0) >= 0.5 else 'A'
+        lens_sides = {
+            'mc':    mc_side_char,
+            'epa':   _side_of(proj_spread),
+            'panel': _side_of(panel_spread),
+            'v3':    _side_of(v3_spread),
+            'v4':    _side_of(v4_spread),
+        }
+        # Only run if ALL 5 lens produced a side
+        if all(v is not None for v in lens_sides.values()):
+            from collections import Counter
+            side_counts = Counter(lens_sides.values())
+            # Fires only when 2-3 pattern (not 1-4 or 4-1; needs meaningful split)
+            if side_counts.most_common(1)[0][1] == 3:
+                minority_side = side_counts.most_common()[-1][0]
+                majority_side = side_counts.most_common(1)[0][0]
+                mc_in_minority = lens_sides['mc'] == minority_side
+                # Pattern: MC in minority (2 lens) with 3 dissenting = fade signal
+                if mc_in_minority:
+                    fade_team = home_team if majority_side == 'H' else away_team
+                    return {
+                        'type': 'ml',
+                        'tier': 'LEAN',   # small NFL sample; tighten to STRONG once calibrated
+                        'label': f'{fade_team} ML',
+                        'sub': f'Anti-consensus: 3 of 5 lens on {fade_team}, MC in minority. '
+                               f'Historical MLB pattern ~68-74% inverse (NFL calibration pending).',
+                        'signal_floor': 62,
+                        'audit_note': 'NFL anti-consensus fade · calibration pending (needs 20+ fires)',
+                    }
 
     # 1. HEAVY HOME DOG cohort PRIME override — 63.1% audit hit rate
     if 'nfl_heavy_home_dog' in tags:
