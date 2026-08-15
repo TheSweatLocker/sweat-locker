@@ -177,6 +177,19 @@ def resolve(game_date: str, dry_run: bool = False) -> None:
             # 2026-08-13: audit_notes not short_read (leakage fix). Same-thesis
             # flip is a repair-class change; the note goes to audit_notes so
             # short_read keeps whatever Jerry originally analyzed.
+            # 2026-08-14 BUG FIX: leaving short_read as Jerry's original
+            # BACK/FADE narrative caused user-visible contradictions with
+            # the flipped call_verdict (Bieber ha_under: verdict=FADE but
+            # text="BACK. Market overweights recent hard contact..."). Now
+            # prepend a REVISED clause so the user-facing narrative starts
+            # with the NEW verdict + one-line reason.
+            _orig_sr = row.get('short_read') or ''
+            _override = (
+                f"{new_verdict}. [REVISED from {orig_verdict} — same-pitcher "
+                f"thesis flip: {counts[dominant]} coherent {dominant} votes on this "
+                f"pitcher's other props override this one.] "
+            )
+            _new_sr = _orig_sr if _orig_sr.lstrip().startswith(f'{new_verdict}. [REVISED') else (_override + _orig_sr)[:2000]
             payload = {
                 'call_verdict': new_verdict,
                 'conviction': flipped_conv,
@@ -185,6 +198,7 @@ def resolve(game_date: str, dry_run: bool = False) -> None:
                                 f"({counts[dominant]} coherent votes at avg conv {tally[dominant]//counts[dominant]}). "
                                 f"Flipped {orig_verdict}->{new_verdict} to align with thesis; "
                                 f"conviction capped LEAN because inferred not directly analyzed.]")[:1500],
+                'short_read': _new_sr,
             }
             pu = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{row["id"]}',
                                 headers=H_WRITE, json=payload, timeout=10)

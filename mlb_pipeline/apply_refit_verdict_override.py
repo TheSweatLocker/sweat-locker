@@ -518,8 +518,13 @@ def run(game_date: str, dry_run: bool = False) -> int:
             # 2026-08-13: write to audit_notes NOT short_read (audit-tag leakage
             # bug fix). short_read stays as the analyst take; audit_notes carries
             # the repair audit trail for downstream inspection.
+            # 2026-08-14: also prepend REVISED clause to short_read so user
+            # sees new verdict + reason, not the original FADE narrative.
+            _orig_sr = r.get('short_read') or ''
+            _override = f'BACK. [REVISED from FADE — flip lean cap (refit boost).] '
+            _new_sr = _orig_sr if _orig_sr.lstrip().startswith('BACK. [REVISED') else (_override + _orig_sr)[:2000]
             payload = {'call_verdict': 'BACK', 'conviction': 55,
-                       'audit_notes': note[:1500]}
+                       'audit_notes': note[:1500], 'short_read': _new_sr}
             print(f'  {r["player_name"]:22} {r["prop_type"]:12} {r["direction"]:5} '
                   f'raw={raw} refit={refit} · FADE→BACK LEAN cap [FLIP_LEAN_CAP]')
             if dry_run: flips += 1; continue
@@ -580,7 +585,27 @@ def run(game_date: str, dry_run: bool = False) -> int:
 
         note = note[:1500]
         # 2026-08-13: audit_notes not short_read
-        payload = {'call_verdict': new_verdict, 'conviction': new_conv, 'audit_notes': note}
+        # 2026-08-14 BUG FIX: previously wrote verdict+conviction+audit_notes
+        # but LEFT short_read unchanged. Jerry's original BACK/FADE reasoning
+        # stuck around, contradicting the new verdict. Result on 8/14 slate:
+        # 60+ props had verdict=PASS with short_read starting "BACK." or
+        # "FADE." Users saw direct contradictions (Freeland outs_under:
+        # verdict=BACK but text starts "FADE. L5 avg opposes..."). Fix:
+        # prepend an override clause to short_read so user-facing narrative
+        # starts with the NEW verdict + one-line reason.
+        original_short = r.get('short_read') or ''
+        override_prefix = (
+            f'{new_verdict}. [REVISED from {current} — {action.replace("_", " ").lower()}. '
+            f'Original analysis below.] '
+        )
+        # Don't double-prepend if we've already flipped this prop today
+        if not original_short.lstrip().startswith(f'{new_verdict}. [REVISED'):
+            new_short = override_prefix + original_short
+            new_short = new_short[:2000]  # cap length
+        else:
+            new_short = original_short  # already flipped today, don't stack
+        payload = {'call_verdict': new_verdict, 'conviction': new_conv,
+                   'audit_notes': note, 'short_read': new_short}
         print(f'  {r["player_name"]:22} {r["prop_type"]:12} {r["direction"]:5} '
               f'raw={raw} refit={refit} · {current}→{new_verdict} [{action}]')
         if dry_run: flips += 1; continue
