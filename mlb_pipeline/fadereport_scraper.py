@@ -1,35 +1,29 @@
-"""Fadereport sharp-signal scraper (2026-08-14).
+"""Fadereport full-slate splits scraper (rewritten 2026-08-15 pm).
 
-Nightly Playwright scrape of fadereport.com per-sport pages. Fadereport
-is a CURATED sharp-signal service — each entry is one game × one market
-where their algo detected sharp action (money% vs bets% divergence).
+PERMANENT FIX for daily puller. Previous version parsed rendered HTML
+text and only captured the visible "sharp signal cards" (~5-10 per sport).
+User confirmed FR has splits for EVERY game on their site — the data was
+being missed because it lives in the Next.js RSC payload, not in the
+rendered card DOM.
 
-Runs across MLB / NCAAB / NHL / NFL / NCAAF (URL pattern /<sport-slug>).
-Writes to fadereport_signals table (sport-universal).
+Fix: extract the RSC JSON directly from `self.__next_f.push()` chunks.
+The payload contains a full games array with public_bets_pct /
+sharp_bets_pct / public_money_pct / sharp_money_pct / sharp_side per
+game×market. No Playwright / no browser rendering required — plain
+HTTP GET.
 
-WHY WE STORE THIS
-  Second opinion alongside our primary OddsCrowd sharp-signal source.
-  When both agree tightly on the same side, high-confidence sharp
-  signal. When they disagree (see 2026-08-14 slate audit: 4 games with
-  opposite money attribution), individual source is book-mix noise.
+Bet types in FR data:
+  'moneyline' → 'ml'
+  'spread'    → 'rl'
+  'ou'        → 'total'
 
-  Real sharp arbiter is Pinnacle line movement (planned separate
-  capture). Once 4-6 weeks of accumulated OC + FR + Pinnacle data,
-  audit which aggregator aligns with actual sharp market movement.
-
-METHODOLOGY
-  1. Playwright loads /<sport-slug> page (JS-toggled tabs)
-  2. Click through Spread / Total tabs (extracts market-specific views)
-  3. Parse visible signal cards: matchup + market + sharp side +
-     strength + bets/money split
-  4. Match teams to today's *_game_context row by fuzzy name (game_id
-     resolution) — NULL game_id acceptable when no match
-  5. Upsert to fadereport_signals
+game_id format: `mlb_<team1>-vs-<team2>_YYYY-MM-DD_<bet_type>`
+Date in game_id is ET-based game_date (source of truth for filtering).
 
 CLI
   python fadereport_scraper.py                     # all sports today
-  python fadereport_scraper.py --sport MLB         # single sport
-  python fadereport_scraper.py --dry-run           # print, don't write
+  python fadereport_scraper.py --sport MLB
+  python fadereport_scraper.py --dry-run
 """
 from __future__ import annotations
 import argparse, os, re, sys, json
@@ -60,30 +54,32 @@ SPORT_URL = {
     'NHL':   'https://www.fadereport.com/nhl',
     'NFL':   'https://www.fadereport.com/nfl',
     'NCAAF': 'https://www.fadereport.com/ncaaf',
+    'NBA':   'https://www.fadereport.com/nba',
 }
 
-# Map sport -> game_context table for game_id resolution
 SPORT_TABLE = {
-    'MLB': 'mlb_game_context',
+    'MLB':   'mlb_game_context',
     'NCAAB': 'ncaab_game_context',
-    'NHL': 'nhl_game_context',
-    'NFL': 'nfl_game_context',
+    'NHL':   'nhl_game_context',
+    'NFL':   'nfl_game_context',
     'NCAAF': 'ncaaf_game_context',
+    'NBA':   'nba_game_context',
 }
+
+BET_TYPE_MAP = {'moneyline': 'ml', 'spread': 'rl', 'ou': 'total'}
 
 
 def _et_today() -> date:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).date()
 
 
-def _load_todays_games(sport: str, snapshot_date: date) -> dict:
-    """Return {(away_last_word, home_last_word): game_id} for fuzzy join.
-    Fadereport uses team short names (Cardinals not St. Louis Cardinals)."""
+def _load_todays_games(sport: str, snap: date) -> dict:
+    """Return {(away_last, home_last): game_id} for fuzzy join."""
     tbl = SPORT_TABLE.get(sport)
     if not tbl: return {}
     r = requests.get(
         f'{SB}/rest/v1/{tbl}?select=game_id,away_team,home_team'
-        f'&game_date=eq.{snapshot_date.isoformat()}',
+        f'&game_date=eq.{snap.isoformat()}',
         headers=H_READ, timeout=15)
     if r.status_code != 200: return {}
     lookup = {}
@@ -92,81 +88,153 @@ def _load_todays_games(sport: str, snapshot_date: date) -> dict:
         gid = row.get('game_id')
         away = (row.get('away_team') or '').lower()
         home = (row.get('home_team') or '').lower()
-        # Fuzzy key = last word of each team name
-        away_key = away.split()[-1] if away else ''
-        home_key = home.split()[-1] if home else ''
-        lookup[(away_key, home_key)] = gid
-        # Also store full-string version for exact matches
+        a_last = away.split()[-1] if away else ''
+        h_last = home.split()[-1] if home else ''
+        lookup[(a_last, h_last)] = gid
         lookup[(away, home)] = gid
     return lookup
 
 
-def _resolve_game_id(away_fr: str, home_fr: str, game_lookup: dict) -> Optional[str]:
-    """Match fadereport team names to our game_id via last-word fuzzy join."""
-    a = away_fr.lower().split()[-1]
-    h = home_fr.lower().split()[-1]
-    # Special aliases (fadereport uses these; our DB uses full)
-    aliases = {'blue': 'blue jays', 'red': 'red sox', 'white': 'white sox'}
-    if a in aliases: a = aliases[a]
-    if h in aliases: h = aliases[h]
-    # Prefer exact-key match
-    if (a, h) in game_lookup: return game_lookup[(a, h)]
-    # Try known variants — fadereport often shows "Blue Jays" but DB has "Toronto Blue Jays"
-    for (ak, hk), gid in game_lookup.items():
-        if a in ak.split() and h in hk.split(): return gid
-        if ak.endswith(a) and hk.endswith(h): return gid
+ALIASES = {'blue': 'jays', 'red': 'sox', 'white': 'sox'}
+def _fuzzy_resolve(a: str, h: str, lookup: dict) -> Optional[str]:
+    a = (a or '').lower(); h = (h or '').lower()
+    a_last = a.split()[-1] if a else ''
+    h_last = h.split()[-1] if h else ''
+    if (a_last, h_last) in lookup: return lookup[(a_last, h_last)]
+    for (ak, hk), gid in lookup.items():
+        if a_last and (a_last in ak.split() or ak.endswith(a_last)) and \
+           h_last and (h_last in hk.split() or hk.endswith(h_last)):
+            return gid
     return None
 
 
-def scrape_sport(sport: str, dry_run: bool = False) -> int:
-    """Scrape one sport page, extract signals, upsert."""
-    from playwright.sync_api import sync_playwright
-    import time
+def _extract_games_json(html: str) -> list:
+    """Parse Next.js self.__next_f.push chunks, extract full game objects.
 
+    The chunk that has the games array contains a JS-escaped RSC string.
+    We unescape it, then extract JSON objects matching the game schema.
+    """
+    pushes = re.findall(r'self\.__next_f\.push\((\[.*?\])\)', html, re.DOTALL)
+    for push in pushes:
+        m = re.match(r'\[\d+,"(.*)"\]$', push, re.DOTALL)
+        if not m: continue
+        try:
+            decoded = m.group(1).encode('utf-8').decode('unicode_escape', errors='replace')
+        except UnicodeDecodeError:
+            continue
+        if '"sharp_money_pct"' not in decoded: continue
+        # Match full game objects: {"id":NNN,"game_id":"...","sport":"...",...,"final_score":<null|...>...}
+        pat = re.compile(
+            r'\{"id":\d+,"game_id":"[^"]+","sport":"[^"]+"[^}]*?"final_score":[^,}]+[^}]*?\}'
+        )
+        games = []
+        for match in pat.finditer(decoded):
+            try:
+                obj = json.loads(match.group(0))
+                games.append(obj)
+            except json.JSONDecodeError:
+                continue
+        if games:
+            return games
+    return []
+
+
+def scrape_sport(sport: str, dry_run: bool = False) -> int:
     url = SPORT_URL.get(sport)
     if not url:
         print(f'  ✗ unknown sport {sport}'); return 0
 
-    snapshot = _et_today()
-    game_lookup = _load_todays_games(sport, snapshot)
+    snap = _et_today()
+    lookup = _load_todays_games(sport, snap)
+    print(f'  · loaded {len(lookup)//2} game_context rows for {snap}')
+
+    # RSC endpoint returns the same HTML page but explicitly typed as RSC —
+    # both work. Direct GET, no browser needed.
+    try:
+        r = requests.get(f'{url}?_rsc=1odh1',
+                         headers={'User-Agent': 'Mozilla/5.0 (SweatLocker)'},
+                         timeout=25)
+    except Exception as e:
+        print(f'  ✗ fetch fail: {e}'); return 0
+    if r.status_code != 200:
+        print(f'  ✗ HTTP {r.status_code}'); return 0
+
+    all_games = _extract_games_json(r.text)
+    print(f'  · {len(all_games)} game rows in RSC payload (all history)')
+
+    snap_str = snap.isoformat()
+    today_games = [g for g in all_games if snap_str in (g.get('game_id') or '')]
+    # Dedupe on (game_id) — same row can appear multiple times
+    seen = set(); dedup = []
+    for g in today_games:
+        gid = g.get('game_id')
+        if gid in seen: continue
+        seen.add(gid); dedup.append(g)
+    today_games = dedup
+    print(f'  · {len(today_games)} unique game×market rows for {snap_str} (post-dedupe)')
 
     signals = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for g in today_games:
+        bt = BET_TYPE_MAP.get(g.get('bet_type'))
+        if not bt: continue
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.set_default_timeout(20000)
-        try:
-            page.goto(url, wait_until='networkidle')
-        except Exception as e:
-            print(f'  ✗ page load fail: {e}')
-            browser.close()
-            return 0
-        time.sleep(3)
+        # Convention observed in FR data: team1 = away, team2 = home
+        away_team = g.get('team1'); home_team = g.get('team2')
 
-        # The DEFAULT "All Sharp Signals" view shows every game × market
-        # with a sharp signal — we don't need to click tabs (each tab
-        # filters the SAME data by market; default view has all markets
-        # already visible).
-        html = page.content()
-        browser.close()
+        sharp_side_raw = g.get('sharp_side') or ''
+        if bt == 'total':
+            sharp_norm = sharp_side_raw.lower() if sharp_side_raw.lower() in ('over','under') else ''
+        else:
+            if sharp_side_raw == away_team: sharp_norm = 'away'
+            elif sharp_side_raw == home_team: sharp_norm = 'home'
+            else: sharp_norm = ''
 
-    signals = _parse_signals(html, sport, snapshot)
-    print(f'  parsed {len(signals)} signals from {sport}')
+        money_side  = g.get('sharp_money_pct')
+        money_other = g.get('public_money_pct')
+        bets_side   = g.get('sharp_bets_pct')
+        bets_other  = g.get('public_bets_pct')
 
-    # Resolve game_ids
-    for sig in signals:
-        sig['game_id'] = _resolve_game_id(
-            sig['away_team'], sig['home_team'], game_lookup)
+        div = g.get('divergence') or 0
+        strength = abs(int(div))
+        tier_bin = 'strong' if strength >= 20 else ('lean' if strength >= 10 else 'weak')
+
+        our_gid = _fuzzy_resolve(away_team, home_team, lookup)
+
+        signals.append({
+            'snapshot_date': snap_str,
+            'sport': sport,
+            'game_id': our_gid,
+            'away_team': (away_team or '')[:100],
+            'home_team': (home_team or '')[:100],
+            'game_time_et': None,
+            'market': bt,
+            'sharp_side_raw': sharp_side_raw[:100],
+            'sharp_side_norm': sharp_norm,
+            'strength_pts': strength,
+            'strength_tier': tier_bin,
+            'bets_side_pct': bets_side,
+            'money_side_pct': money_side,
+            'bets_other_pct': bets_other,
+            'money_other_pct': money_other,
+            'reasoning': (g.get('ai_blurb') or '')[:500] or None,
+            'raw_snapshot': {'fr_id': g.get('id'),
+                             'game_time_raw': g.get('game_time_raw'),
+                             'tier': g.get('tier')},
+            'generated_at': now_iso,
+        })
+
+    print(f'  parsed {len(signals)} signals from full-slate RSC payload')
+    matched = sum(1 for s in signals if s.get('game_id'))
+    print(f'  matched to our game_context: {matched}/{len(signals)}')
 
     if dry_run:
-        print(f'  [DRY] would upsert {len(signals)} rows')
         for s in signals:
-            print(f'    {s.get("away_team")} @ {s.get("home_team")} · {s["market"]:6} · {s["sharp_side_raw"]:20} · '
-                  f'{s.get("strength_pts",0)}pt · bets/money {s.get("bets_side_pct")}/{s.get("money_side_pct")} · game_id={s["game_id"]}')
+            print(f"    {s['away_team']:<20} @ {s['home_team']:<20} · {s['market']:<5} · "
+                  f"sharp={s['sharp_side_norm']:<5} · money% {s['money_side_pct']}/{s['money_other_pct']} · "
+                  f"bets% {s['bets_side_pct']}/{s['bets_other_pct']} · gid={s['game_id']}")
         return len(signals)
 
-    # Upsert
     written = 0
     for i in range(0, len(signals), 100):
         chunk = signals[i:i+100]
@@ -179,165 +247,6 @@ def scrape_sport(sport: str, dry_run: bool = False) -> int:
             print(f'  ✗ chunk {i}: {pr.status_code} {pr.text[:200]}')
     print(f'  ✓ wrote {written} signals')
     return written
-
-
-def _parse_signals(html: str, sport: str, snapshot_date: date) -> list:
-    """Parse rendered HTML for signal cards."""
-    body = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
-    text = re.sub(r'<(br|/div|/p|/tr|/td|/li)[^>]*>', '\n', body)
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'[ \t]+', ' ', text)
-    text = re.sub(r'\n+', '\n', text)
-
-    signals = []
-
-    # Split into signal blocks — each signal starts with "sharp signal +Npt"
-    # Pattern: "🔥/⚠️ Strong/Lean sharp signal +Npt ... % of Bets ... % of Money"
-    blocks = re.split(r'(?:🔥\s*Strong sharp signal|⚠️\s*Lean sharp)', text)
-    for blk in blocks[1:]:  # skip header
-        blk = blk.strip()
-        # Extract strength
-        m = re.match(r'\s*\+?(\d+)pt', blk)
-        if not m: continue
-        strength = int(m.group(1))
-        tier = 'strong' if strength >= 20 else 'lean'
-
-        # Extract market ("mlb · Moneyline" / "mlb · Total" / "mlb · Spread")
-        mkt_m = re.search(r'(?:mlb|ncaab|nhl|nfl|ncaaf)\s*[·•]\s*(Moneyline|Total|Spread)', blk, re.I)
-        if not mkt_m: continue
-        market = {'moneyline':'ml','total':'total','spread':'spread'}.get(mkt_m.group(1).lower())
-
-        # Extract game time  ("8/14, 2:20 PM")
-        time_m = re.search(r'(\d{1,2}/\d{1,2}),?\s*(\d{1,2}:\d{2}\s*[AP]M)', blk)
-        game_time = time_m.group(2).strip() if time_m else None
-
-        # Extract team names — pattern differs by market
-        # For Total: "Team1 vs Team2\nOVER\no<line>\nUNDER\nu<line>"
-        # For ML/Spread stacked: "Team1\n<odds> [◀ sharp]\nmlb · Market\nTIME\nTeam2\n[sharp ▶] <odds>"
-        pre_bets = blk.split('% of Bets')[0]
-
-        vs_m = re.search(r'([A-Z][\w\s\.]*?)\s+vs\s+([A-Z][\w\s\.]*?)\s+(?:OVER|UNDER)', pre_bets)
-        if vs_m:
-            away_team = vs_m.group(1).strip()
-            home_team = vs_m.group(2).strip()
-        else:
-            # ML/Spread stacked layout — split into lines, find team names
-            # Team lines are ones that look like team names (alpha with possible spaces)
-            # NOT: odds (start with +/-/o/u), markers ("mlb · X"), time (contains :), signals (sharp/point)
-            lines = [ln.strip() for ln in pre_bets.split('\n') if ln.strip()]
-            teams = []
-            for ln in lines:
-                if any(sk in ln.lower() for sk in [
-                    'sharp signal', 'point diff', 'sharp ', ' sharp', 'why the',
-                    'mlb', 'nba', 'nhl', 'nfl', 'ncaab', 'ncaaf',
-                    'moneyline', 'total', 'spread', 'am ', 'pm', ' pm', ' am',
-                    'pt ', 'over', 'under',
-                ]):
-                    continue
-                # Skip pure-numeric lines (odds, spreads)
-                if re.match(r'^[+\-]?[\dou\.\s]+$', ln): continue
-                if re.match(r'^[ou][\d\.]+', ln): continue  # o7.5, u8
-                if re.match(r'^[+\-][\d\.]+', ln): continue  # +1.5, -170
-                # Skip lines that are just digits or contain slash (date)
-                if re.match(r'^\d', ln): continue
-                # Must have at least one letter and be short-ish
-                if not re.search(r'[A-Za-z]', ln): continue
-                if len(ln) > 30: continue
-                teams.append(ln)
-            teams = teams[:2]
-            if len(teams) >= 2:
-                away_team, home_team = teams[0], teams[1]
-            elif len(teams) == 1:
-                # Sometimes second team on same line as its odds — try alt regex
-                alt = re.findall(r'\n\s*([A-Z][A-Za-z\s\.]{2,25})\s*\n', pre_bets)
-                alt = [a.strip() for a in alt if not any(sk in a.lower() for sk in ['mlb','sharp','moneyline','total','spread'])]
-                if len(alt) >= 2:
-                    away_team, home_team = alt[0], alt[1]
-                else:
-                    continue
-            else:
-                continue
-
-        # Extract sharp side — indicated by "◀ sharp" or "sharp ▶"
-        sharp_side_raw = ''
-        # Left-arrow sharp = away side (first team in stacked layout)
-        # Right-arrow sharp = home side (second team)
-        pre_time_or_bets = pre_bets
-        if '◀ sharp' in pre_time_or_bets:
-            # sharp is AWAY-side or first-listed
-            if vs_m:
-                # Total: sharp side is OVER or UNDER
-                over_m = re.search(r'(OVER|UNDER)\s+([ou]?[\d\.]+)\s*◀\s*sharp', pre_time_or_bets)
-                if over_m:
-                    sharp_side_raw = f'{over_m.group(1)} {over_m.group(2)}'
-                    sharp_side_norm = over_m.group(1).lower()
-                else:
-                    sharp_side_raw = 'OVER'; sharp_side_norm = 'over'
-            else:
-                sharp_side_raw = away_team
-                sharp_side_norm = 'away'
-        elif 'sharp ▶' in pre_time_or_bets:
-            if vs_m:
-                over_m = re.search(r'sharp\s*▶\s*(OVER|UNDER)?\s*([ou]?[\d\.]+)', pre_time_or_bets)
-                if over_m and over_m.group(1):
-                    sharp_side_raw = f'{over_m.group(1)} {over_m.group(2)}'
-                    sharp_side_norm = over_m.group(1).lower()
-                else:
-                    sharp_side_raw = 'UNDER'; sharp_side_norm = 'under'
-            else:
-                sharp_side_raw = home_team
-                sharp_side_norm = 'home'
-        else:
-            # Fallback: parse from context if arrows missing
-            sharp_side_raw = away_team
-            sharp_side_norm = 'away'
-
-        # Extract splits: "16% % of Bets 84% ... 62% % of Money 38%"
-        # Splits appear duplicated in DOM — take first occurrence
-        bets_m = re.search(r'(\d+)%\s*% of Bets\s*(\d+)%', blk)
-        money_m = re.search(r'(\d+)%\s*% of Money\s*(\d+)%', blk)
-        if not (bets_m and money_m): continue
-
-        left_bets = int(bets_m.group(1)); right_bets = int(bets_m.group(2))
-        left_money = int(money_m.group(1)); right_money = int(money_m.group(2))
-
-        # "left" is the first-listed side (usually AWAY for ML/spread, OVER for total)
-        # Determine which is the SHARP side
-        if sharp_side_norm in ('away', 'over'):
-            bets_side, money_side = left_bets, left_money
-            bets_other, money_other = right_bets, right_money
-        else:
-            bets_side, money_side = right_bets, right_money
-            bets_other, money_other = left_bets, left_money
-
-        # Extract reasoning
-        reason_m = re.search(r'Why the sharps like it:\s*(.{0,500})', blk)
-        reasoning = reason_m.group(1).strip() if reason_m else None
-        # Truncate at next signal marker
-        if reasoning:
-            reasoning = reasoning.split('\n')[0][:500]
-
-        signals.append({
-            'snapshot_date': snapshot_date.isoformat(),
-            'sport': sport,
-            'away_team': away_team[:100],
-            'home_team': home_team[:100],
-            'game_time_et': game_time,
-            'market': market,
-            'sharp_side_raw': sharp_side_raw[:100],
-            'sharp_side_norm': sharp_side_norm,
-            'strength_pts': strength,
-            'strength_tier': tier,
-            'bets_side_pct': bets_side,
-            'money_side_pct': money_side,
-            'bets_other_pct': bets_other,
-            'money_other_pct': money_other,
-            'reasoning': reasoning,
-            'raw_snapshot': {'block_sample': blk[:800]},
-            'generated_at': datetime.now(timezone.utc).isoformat(),
-        })
-
-    return signals
 
 
 def run(sports: list, dry_run: bool = False):
@@ -354,8 +263,7 @@ def run(sports: list, dry_run: bool = False):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--sport', choices=list(SPORT_URL.keys()),
-                   help='Single sport; default all')
+    p.add_argument('--sport', choices=list(SPORT_URL.keys()))
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
     sports = [args.sport] if args.sport else list(SPORT_URL.keys())
