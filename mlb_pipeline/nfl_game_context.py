@@ -902,6 +902,14 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
         row.get('projected_spread'), row.get('close_spread'), conf_net,
         row.get('projected_total'), row.get('close_total'),
     )
+    # 2026-08-14 PRESEASON DISCIPLINE: primary_play is already gated to
+    # None for preseason (compute_primary_play line 446), but the sweat
+    # SCORE + TIER were still being emitted using the normal formula.
+    # Result: PRIME 90 badges on preseason games with no actionable play,
+    # which is confusing UX. Cap preseason at LIGHT_LEAN tier + 60 score
+    # to match the "read but don't act" discipline this phase requires.
+    if stats_source == 'preseason':
+        score = min(score, 60)
     row['sweat_score'] = score
     row['sweat_tier'] = sweat_tier(score)
     row['primary_play'] = compute_primary_play(row)
