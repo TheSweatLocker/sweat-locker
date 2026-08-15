@@ -52,16 +52,17 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 
 SPORT_URL = {
     'MLB':   'https://cleatz.com/public-betting/mlb/',
-    # Cleatz has other sports; add here when ready
-    # 'NFL':   'https://cleatz.com/public-betting/nfl/',
-    # 'NBA':   'https://cleatz.com/public-betting/nba/',
-    # 'NHL':   'https://cleatz.com/public-betting/nhl/',
-    # 'NCAAF': 'https://cleatz.com/public-betting/ncaaf/',
-    # 'NCAAB': 'https://cleatz.com/public-betting/ncaab/',
+    'NFL':   'https://cleatz.com/public-betting/nfl/',
+    'NCAAF': 'https://cleatz.com/public-betting/college-football/',  # CFB — Cleatz URL uses full name
+    # 'NBA':   'https://cleatz.com/public-betting/nba/',  # URL exists but no tab in-season (off-season Aug)
+    # 'NHL':   404 (Cleatz doesn't cover)
+    # 'NCAAB': 404 (Cleatz doesn't cover)
 }
 
 SPORT_TABLE = {
-    'MLB': 'mlb_game_context',
+    'MLB':   'mlb_game_context',
+    'NFL':   'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context',
 }
 
 # Common team-code → full-team-name map for fuzzy join
