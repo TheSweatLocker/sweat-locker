@@ -1,10 +1,13 @@
-"""Compute external_source_records rollup (2026-08-15 pm).
+"""Compute external_source_track_record rollup (2026-08-15 pm).
 
 Nightly job: reads all graded rows from external_picks, groups by
-(source × sport × market × window), computes hit rate + ROI, upserts.
+(source × sport × surface × window), computes hit rate + ROI, upserts
+into external_source_track_record (existing table from
+20260731_jerry_synthesis_tables.sql).
 
-Play_of_day can then read this table to weight external picks by their
-actual track record instead of treating them all as equal-weight votes.
+Play_of_day + Steam Room UI read this table to weight external picks by
+their actual track record instead of treating them all as equal-weight
+votes.
 
 CLI
   python compute_external_source_records.py              # all sports
@@ -103,7 +106,7 @@ def run(sport_filter: str | None = None) -> None:
 
     payloads = []
     now_iso = datetime.now(timezone.utc).isoformat()
-    for (source, sport, market, win_days), items in groups.items():
+    for (source, sport, surface, win_days), items in groups.items():
         w = sum(1 for x in items if x.get('result') == 'Win')
         l = sum(1 for x in items if x.get('result') == 'Loss')
         p = sum(1 for x in items if x.get('result') == 'Push')
@@ -111,12 +114,12 @@ def run(sport_filter: str | None = None) -> None:
         n_graded = w + l  # exclude pushes from hit-rate math
         hit_rate = round(100 * w / n_graded, 2) if n_graded else None
         total_units = sum(pick_roi(x.get('result'), x.get('odds_american')) for x in items)
-        roi_pct = round(100 * total_units / n, 2) if n else None
+        roi = round(100 * total_units / n, 2) if n else None
         payloads.append({
-            'source': source, 'sport': sport, 'market': market,
+            'source': source, 'sport': sport, 'surface': surface,
             'window_days': win_days,
-            'wins': w, 'losses': l, 'pushes': p, 'n_graded': n_graded,
-            'hit_rate': hit_rate, 'roi_pct': roi_pct,
+            'n_picks': n, 'n_wins': w, 'n_losses': l, 'n_pushes': p,
+            'hit_rate': hit_rate, 'roi': roi,
             'computed_at': now_iso,
         })
 
@@ -125,8 +128,8 @@ def run(sport_filter: str | None = None) -> None:
     for i in range(0, len(payloads), 500):
         chunk = payloads[i:i+500]
         pr = requests.post(
-            f'{SB}/rest/v1/external_source_records'
-            f'?on_conflict=source,sport,market,window_days',
+            f'{SB}/rest/v1/external_source_track_record'
+            f'?on_conflict=source,sport,surface,window_days',
             headers=H_WRITE, json=chunk, timeout=30)
         if pr.status_code in (200, 201, 204):
             written += len(chunk)

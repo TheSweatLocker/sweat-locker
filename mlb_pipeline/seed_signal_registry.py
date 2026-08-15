@@ -174,9 +174,17 @@ def run(dry_run: bool = False):
         print(f'  ...+{len(payloads)-5} more')
         return
 
+    # PostgREST batch upsert requires every row to have the same key set
+    # ("All object keys must match"). Union all keys and fill missing with
+    # None so PostgREST maps them cleanly to NULL columns.
+    all_keys = set()
+    for p in payloads:
+        all_keys.update(p.keys())
+    normalized = [{k: p.get(k) for k in all_keys} for p in payloads]
+
     written = 0
-    for i in range(0, len(payloads), 100):
-        chunk = payloads[i:i+100]
+    for i in range(0, len(normalized), 100):
+        chunk = normalized[i:i+100]
         pr = requests.post(
             f'{SB}/rest/v1/signal_registry?on_conflict=signal_name,sport,market_scope',
             headers=H_WRITE, json=chunk, timeout=30)
