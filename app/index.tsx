@@ -1831,7 +1831,10 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   // (fed by write_line_history.py + write_line_snapshot.py) and line_movement_flags
   // (populated by detect_line_movement.py). Ladder reads ladder_state + ladder_rung
   // (populated by steam_room_ladder.py).
-  const [steamSubTab, setSteamSubTab] = useState<'lines'|'ladder'>('lines');
+  const [steamSubTab, setSteamSubTab] = useState<'lines'|'ladder'|'sharp'>('lines');
+  const [sharpPicks, setSharpPicks] = useState<any[]>([]);
+  const [sharpRecord, setSharpRecord] = useState<{w:number,l:number,p:number,unitsNet:number}>({w:0,l:0,p:0,unitsNet:0});
+  const [sharpLoading, setSharpLoading] = useState(false);
   const [steamFlags, setSteamFlags] = useState<any[]>([]);
   const [steamHistorySample, setSteamHistorySample] = useState<Record<string, any[]>>({});
   const [steamPicksIdx, setSteamPicksIdx] = useState<Record<string, {primary:any, supplementary:any}>>({});
@@ -8347,12 +8350,77 @@ setJerryHistory(prev => {
     setLadderLoading(false);
   }, []);
 
+  // The Sharp — flat 1u unit-play track. Pulls today's PRIME/STRONG picks
+  // across all sports (mlb_game_context.primary_play + jerry_reads for UFC)
+  // and computes running record from historical resolved picks. Different
+  // product from Ladder — no compounding, no streak-dependence, just flat
+  // units on every qualified play.
+  const fetchSharp = React.useCallback(async () => {
+    setSharpLoading(true);
+    try {
+      const today = new Date().toISOString().slice(0,10);
+      // Today's PRIME/STRONG MLB picks
+      const {data: mlbCtx} = await supabase
+        .from('mlb_game_context')
+        .select('game_id,home_team,away_team,primary_play,close_total,home_ml_close,away_ml_close')
+        .eq('game_date', today);
+      const mlbPicks = (mlbCtx || []).filter((g: any) => {
+        const pp = g.primary_play || {};
+        return pp?.tier === 'PRIME' || pp?.tier === 'STRONG';
+      }).map((g: any) => ({
+        sport: 'MLB',
+        matchup: `${g.away_team} @ ${g.home_team}`,
+        tier: g.primary_play?.tier,
+        pick: g.primary_play?.label || '—',
+        type: g.primary_play?.type,
+        reason: g.primary_play?.sub || '',
+      }));
+      // UFC PRIME/STRONG jerry BACK picks
+      const {data: ufcReads} = await supabase
+        .from('jerry_reads')
+        .select('game_id,call_side,conviction,input_snapshot')
+        .eq('sport','UFC').eq('game_date', today).eq('call_market','fight')
+        .gte('conviction', 55);
+      const ufcPicks = (ufcReads || []).map((r: any) => {
+        const inp = r.input_snapshot || {};
+        const side = r.call_side;
+        const picked = side === 'A' ? inp.fighter_a : inp.fighter_b;
+        return {
+          sport: 'UFC',
+          matchup: `${inp.fighter_a} vs ${inp.fighter_b}`,
+          tier: inp.ev_tier || '—',
+          pick: `${picked} ML`,
+          type: 'ml',
+          reason: `Win prob ${inp.win_probability_pct}% @ ${inp.odds_picked_side_median}`,
+        };
+      });
+      setSharpPicks([...mlbPicks, ...ufcPicks]);
+      // Historical record — last 30d resolved picks flat 1u
+      const thirty = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+      const {data: hist} = await supabase
+        .from('jerry_reads')
+        .select('result,conviction')
+        .in('sport', ['MLB','UFC']).gte('game_date', thirty)
+        .gte('conviction', 60)
+        .not('result','is',null);
+      let w=0,l=0,p=0,unitsNet=0;
+      (hist||[]).forEach((r:any) => {
+        if (r.result === 'Win') { w++; unitsNet += 0.91; }  // -110 juice
+        else if (r.result === 'Loss') { l++; unitsNet -= 1.0; }
+        else if (r.result === 'Push') p++;
+      });
+      setSharpRecord({w,l,p,unitsNet: Math.round(unitsNet*100)/100});
+    } catch (e) { setSharpPicks([]); setSharpRecord({w:0,l:0,p:0,unitsNet:0}); }
+    setSharpLoading(false);
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'steam') {
       fetchSteamFlags();
       fetchLadder();
+      fetchSharp();
     }
-  }, [activeTab, fetchSteamFlags, fetchLadder]);
+  }, [activeTab, fetchSteamFlags, fetchLadder, fetchSharp]);
 
   // Fetch active user notes + local dismissed-set on mount. Runs once
   // per app open — notes don't need real-time refresh (published server-side
@@ -13630,12 +13698,18 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
 
         {activeTab==='steam'&&(
           <View>
-            <Text style={styles.pageTitle}>💨 Steam Room</Text>
-            <Text style={{color:THEME.textDim,fontSize:12,marginBottom:14}}>
-              How sharps operate. Line movement + disciplined bankroll ladder.
+            <Text style={styles.pageTitle}>💨 The Steam Room</Text>
+            <Text style={{color:THEME.textDim,fontSize:12,marginBottom:4}}>
+              {steamSubTab === 'lines' ? 'How sharps operate — line moves + public splits across sources.' :
+               steamSubTab === 'ladder' ? 'Chase the streak — one pick, full stake, roll the winnings.' :
+               'Disciplined bettor mode — flat 1u per qualified play, long-term ROI.'}
             </Text>
-            <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
-              {[{id:'lines',label:'🌊 Line Movement'},{id:'ladder',label:'🪜 Ladder'}].map(s => (
+            <View style={{flexDirection:'row',gap:6,marginBottom:14,marginTop:10}}>
+              {[
+                {id:'lines',label:'🌊 Line Movement'},
+                {id:'ladder',label:'🪜 The Ladder'},
+                {id:'sharp',label:'🎯 The Sharp'},
+              ].map(s => (
                 <TouchableOpacity key={s.id}
                   onPress={()=>setSteamSubTab(s.id as any)}
                   style={[styles.chipBtn, steamSubTab===s.id && styles.chipBtnActive, {flex:1, alignItems:'center'}]}>
@@ -14062,6 +14136,104 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 )}
               </View>
             )}
+
+            {steamSubTab==='sharp' && (
+              <View>
+                {sharpLoading ? (
+                  <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/></View>
+                ) : (
+                  <View style={{gap:12}}>
+                    {/* Running record card */}
+                    <View style={[styles.card, {padding:14}]}>
+                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>UNIT-PLAY RECORD · LAST 30 DAYS</Text>
+                      {(() => {
+                        const r = sharpRecord;
+                        const total = r.w + r.l;
+                        const hitPct = total > 0 ? Math.round(1000 * r.w / total) / 10 : 0;
+                        const unitsColor = r.unitsNet > 0 ? THEME.win : r.unitsNet < 0 ? THEME.loss : THEME.textDim;
+                        const unitsSign = r.unitsNet > 0 ? '+' : '';
+                        return (
+                          <View style={{gap:6}}>
+                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                              <Text style={{color:THEME.textDim, fontSize:12}}>Record (flat 1u)</Text>
+                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
+                                {r.w}-{r.l}{r.p ? ` (${r.p}P)` : ''}
+                                {total > 0 && <Text style={{color:THEME.textDim, fontWeight:'500'}}> · {hitPct}%</Text>}
+                              </Text>
+                            </View>
+                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                              <Text style={{color:THEME.textDim, fontSize:12}}>Units net (30d)</Text>
+                              <Text style={{color:unitsColor, fontWeight:'800', fontSize:15}}>{unitsSign}{r.unitsNet.toFixed(2)}u</Text>
+                            </View>
+                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                              <Text style={{color:THEME.textDim, fontSize:12}}>ROI</Text>
+                              <Text style={{color:unitsColor, fontWeight:'700', fontSize:13}}>
+                                {total > 0 ? `${((r.unitsNet / total) * 100).toFixed(1)}%` : '—'}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })()}
+                    </View>
+
+                    {/* Today's Sharp plays */}
+                    <View style={[styles.card, {padding:14}]}>
+                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>TODAY · {sharpPicks.length} PLAY{sharpPicks.length !== 1 ? 'S' : ''}</Text>
+                      {sharpPicks.length === 0 ? (
+                        <View style={{alignItems:'center',paddingVertical:20}}>
+                          <Text style={{fontSize:36}}>🎯</Text>
+                          <Text style={{color:THEME.text, fontWeight:'800', fontSize:14, marginTop:10, textAlign:'center'}}>No qualified plays today</Text>
+                          <Text style={{color:THEME.textDim, fontSize:11, marginTop:6, textAlign:'center', lineHeight:16, paddingHorizontal:20}}>
+                            The Sharp only takes PRIME/STRONG plays across MLB, UFC + all sports. Some days = no card.
+                          </Text>
+                        </View>
+                      ) : sharpPicks.map((p: any, i: number) => {
+                        const tierColor = p.tier === 'PRIME' ? THEME.win : p.tier === 'STRONG' ? THEME.sharp : THEME.textDim;
+                        return (
+                          <View key={i} style={{paddingVertical:10, borderTopWidth: i > 0 ? 0.5 : 0, borderTopColor: THEME.border + '44'}}>
+                            <View style={{flexDirection:'row', alignItems:'center', gap:8, marginBottom:4}}>
+                              <View style={{backgroundColor: tierColor + '22', paddingHorizontal:6, paddingVertical:2, borderRadius:4, borderWidth:0.5, borderColor: tierColor + '55'}}>
+                                <Text style={{color: tierColor, fontSize:9, fontWeight:'800', letterSpacing:0.5}}>{p.tier}</Text>
+                              </View>
+                              <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700'}}>{p.sport}</Text>
+                              <Text style={{color:THEME.textMuted, fontSize:10, marginLeft:'auto'}}>1u flat</Text>
+                            </View>
+                            <Text style={{color:THEME.text, fontWeight:'700', fontSize:14}}>{p.pick}</Text>
+                            <Text style={{color:THEME.textDim, fontSize:11, marginTop:2}} numberOfLines={1}>{p.matchup}</Text>
+                            {p.reason && (
+                              <Text style={{color:THEME.textMuted, fontSize:10, marginTop:4, lineHeight:14}} numberOfLines={2}>{p.reason}</Text>
+                            )}
+                          </View>
+                        );
+                      })}
+                    </View>
+
+                    {/* Methodology card */}
+                    <View style={[styles.card, {padding:14, borderLeftWidth:3, borderLeftColor: THEME.accent}]}>
+                      <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:6}}>THE SHARP METHOD</Text>
+                      <View style={{gap:4}}>
+                        {[
+                          ['🎯', 'PRIME/STRONG qualified plays only'],
+                          ['💵', 'Flat 1 unit per play — no compounding'],
+                          ['📊', 'Multi-pick daily (5-10 typical) across sports'],
+                          ['📈', 'Long-term ROI + hit rate transparency'],
+                          ['⏸', 'No streak dependence — one loss doesn\'t reset'],
+                        ].map(([icon, txt], i) => (
+                          <View key={i} style={{flexDirection:'row', alignItems:'center', gap:6}}>
+                            <Text style={{fontSize:11}}>{icon}</Text>
+                            <Text style={{color:THEME.textDim, fontSize:11}}>{txt}</Text>
+                          </View>
+                        ))}
+                      </View>
+                      <Text style={{color:THEME.textMuted, fontSize:10, marginTop:8, fontStyle:'italic', lineHeight:14}}>
+                        Different product from the Ladder. Sharp = disciplined bankroll, edge realized through volume. Ladder = streak-chase, all-or-nothing compounding.
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+            )}
+
             <View style={{height:20}}/>
           </View>
         )}

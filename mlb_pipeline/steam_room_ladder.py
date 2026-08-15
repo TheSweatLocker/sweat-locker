@@ -62,7 +62,7 @@ LADDER_COHORT_HIT_MIN   = 60.0
 LADDER_COHORT_N_MIN     = 30
 LADDER_CONSENSUS_MIN    = 4        # of 5 lens agreeing
 LADDER_EDGE_MIN_PP      = 10.0     # model_win_prob - implied_prob
-LADDER_ABS_JUICE_CAP    = -500     # never lay more than -500
+LADDER_ABS_JUICE_CAP    = -250     # never lay more than -250 (compounding math destroys past this)
 
 # Per-sport context table
 CTX_TABLE = {
