@@ -838,11 +838,15 @@ def score_mlb_game(ctx, game_props=None, track=None):
     elif nrfi <= 40:
         _add(total_drivers, 4, '🔥', 'YRFI lean', f'NRFI score {int(nrfi)}/100', direction='OVER')
 
-    # ---- TOTAL: Pitcher quality mismatch (SIERA-preferred, NEW 2026-08-15) ----
-    # 2026-08-15: full SIERA from Savant now primary quality metric; xERA
-    # is fallback when SIERA missing (rookies, low-BF relievers). SIERA
-    # includes GB-FB-PU interaction terms xERA lacks — better forward pred.
-    # Gap thresholds identical (both scales are ERA units).
+    # ---- TOTAL: Pitcher quality context (SIERA-preferred alias) ----
+    # 2026-08-15 pm REMOVED the SIERA/xERA gap "Pitcher quality mismatch"
+    # driver (was awarding 14/9/6/3 sweat-score points). Backtest:
+    #   SIERA gap ML fav-arm win: 37-48% (anti-validated)
+    #   xERA gap ML fav-arm win:  41-48% (anti-validated)
+    #   Neither predicts total OVER/UNDER cleanly
+    # Only validated use of SIERA/xERA gap is ACE DUEL check below
+    # (both ≤ 3.00 → UNDER 64.7% n=17).
+    # Alias kept for downstream references only (no vote cast).
     def _q(side):
         siera = ctx.get(f'{side}_sp_siera')
         if siera is not None:
@@ -853,25 +857,17 @@ def score_mlb_game(ctx, game_props=None, track=None):
         except (TypeError, ValueError): return 4.5, 'xERA'
     home_q, home_src = _q('home')
     away_q, away_src = _q('away')
-    home_xera = home_q  # kept for downstream refs
+    home_xera = home_q  # alias for downstream refs (no directional vote)
     away_xera = away_q
-    q_gap = abs(home_q - away_q)
     src_note = f'{home_src}/{away_src}'
-    if q_gap >= 2.0:
-        _add(total_drivers, 14, '⚖️', 'Major xERA gap', f'{q_gap:.2f}-run pitcher mismatch ({src_note})')
-    elif q_gap >= 1.5:
-        _add(total_drivers, 9, '⚖️', 'xERA gap', f'{q_gap:.2f}-run pitcher mismatch ({src_note})')
-    elif q_gap >= 1.0:
-        _add(total_drivers, 6, '⚖️', 'xERA gap', f'{q_gap:.2f}-run pitcher mismatch ({src_note})')
-    elif q_gap >= 0.5:
-        _add(total_drivers, 3, '⚖️', 'xERA gap (slim)', f'{q_gap:.2f}-run pitcher mismatch ({src_note})')
 
-    # ---- TOTAL: Both pitchers elite (ace duel — points at UNDER) ----
-    # SIERA-first via home_xera / away_xera aliases above.
+    # ---- TOTAL: Ace duel → UNDER (VALIDATED 2026-08-15: 64.7% n=17) ----
+    # This is the ONLY validated use of the SIERA/xERA metric as a
+    # directional signal. Both starters ≤ 3.00 → UNDER.
     if home_xera <= 3.0 and away_xera <= 3.0:
-        _add(total_drivers, 10, '🎯', 'Ace duel', f'Both starters ≤3.00 ({src_note})', direction='UNDER')
+        _add(total_drivers, 10, '🎯', 'Ace duel', f'Both starters ≤3.00 ({src_note}) — UNDER 64.7% n=17', direction='UNDER')
     elif home_xera <= 3.5 and away_xera <= 3.5:
-        _add(total_drivers, 5, '🎯', 'Quality matchup', 'Both starters ≤3.50 xERA', direction='UNDER')
+        _add(total_drivers, 3, '🎯', 'Quality matchup', 'Both starters ≤3.50 (untested weaker version)', direction='UNDER')
 
     # ---- TOTAL: 1st-inning extremes (NRFI lock or YRFI fade) ----
     h1 = float(ctx.get('home_first_inning_era') or 4.5)
