@@ -104,11 +104,12 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
     tier = pp.get('tier')
     if tier not in LADDER_TIER_MIN: return None
 
-    # Gate 1: sides only (or totals with 5+ signal confluence)
-    market = pp.get('type')  # 'ml' | 'over' | 'under' | 'total' | 'spread'
+    # Gate 1: sides only (or totals/yrfi with signal confluence)
+    market = pp.get('type')  # 'ml' | 'over' | 'under' | 'total' | 'spread' | 'yrfi' | 'nrfi'
     is_side = market in ('ml', 'spread')
     is_total = market in ('over', 'under', 'total')
-    if not (is_side or is_total): return None
+    is_nrfi = market in ('yrfi', 'nrfi')   # 2026-08-14: added YRFI/NRFI as ladder-eligible
+    if not (is_side or is_total or is_nrfi): return None
 
     # For totals, require 5+ sharp-signal confluence from sharp_scenario_matches
     if is_total:
@@ -120,19 +121,48 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
         if not isinstance(sm, list) or len(sm) < 5: return None
 
     # Model win probability
+    # 2026-08-14 BUG FIX: previously read mc_p_home / mc_p_away — but actual
+    # MC blob has mc_p_home_win / mc_p_away_win (see keys dump). Every ML
+    # ladder candidate was returning win_prob=0.0% and getting filtered out
+    # silently. Also totals were skipping win_prob entirely — added mc_p_over
+    # / mc_p_under extraction so totals can qualify. YRFI/NRFI added too.
     mc_probs = row.get('mc_probabilities') or {}
     win_prob = None
-    if is_side and market == 'ml' and isinstance(mc_probs, dict):
-        home_ml = mc_probs.get('mc_p_home')
-        away_ml = mc_probs.get('mc_p_away')
-        # Which side did primary_play take?
-        label = (pp.get('label') or '').lower()
-        home_team = (row.get('home_team') or '').lower()
-        away_team = (row.get('away_team') or '').lower()
-        if home_team and home_team in label:
-            win_prob = home_ml * 100 if home_ml else None
-        elif away_team and away_team in label:
-            win_prob = away_ml * 100 if away_ml else None
+    if isinstance(mc_probs, dict):
+        if is_side and market == 'ml':
+            home_ml = mc_probs.get('mc_p_home_win') or mc_probs.get('mc_p_home')
+            away_ml = mc_probs.get('mc_p_away_win') or mc_probs.get('mc_p_away')
+            label = (pp.get('label') or '').lower()
+            home_team = (row.get('home_team') or '').lower()
+            away_team = (row.get('away_team') or '').lower()
+            if home_team and home_team in label:
+                win_prob = home_ml * 100 if home_ml else None
+            elif away_team and away_team in label:
+                win_prob = away_ml * 100 if away_ml else None
+        elif is_side and market == 'spread':
+            # Use cover probability (with juice sign flipped based on label)
+            home_cov = mc_probs.get('mc_p_home_covers')
+            away_cov = mc_probs.get('mc_p_away_covers')
+            label = (pp.get('label') or '').lower()
+            home_team = (row.get('home_team') or '').lower()
+            away_team = (row.get('away_team') or '').lower()
+            if home_team and home_team in label:
+                win_prob = home_cov * 100 if home_cov else None
+            elif away_team and away_team in label:
+                win_prob = away_cov * 100 if away_cov else None
+        elif is_total:
+            # Total picks: use mc_p_over or mc_p_under matching label
+            label = (pp.get('label') or '').lower()
+            if 'over' in label:
+                win_prob = (mc_probs.get('mc_p_over') or 0) * 100 or None
+            elif 'under' in label:
+                win_prob = (mc_probs.get('mc_p_under') or 0) * 100 or None
+        elif is_nrfi:
+            # YRFI/NRFI: use mc_p_yrfi / mc_p_nrfi
+            if market == 'yrfi':
+                win_prob = (mc_probs.get('mc_p_yrfi') or 0) * 100 or None
+            elif market == 'nrfi':
+                win_prob = (mc_probs.get('mc_p_nrfi') or 0) * 100 or None
     if win_prob is None or win_prob < LADDER_WIN_PROB_MIN:
         return None
 
