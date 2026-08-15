@@ -350,6 +350,22 @@ def fetch_batter_stats(name):
             # If response was already MLB-only, mlb_games may be empty due to
             # missing nested fields; fall back to all splits.
             source = mlb_games or gsplits
+            # 2026-08-14 DQ ORDERING GUARD (stat-date audit followup):
+            # source[-15:] assumes MLB API returns gameLog ASC (oldest first).
+            # This IS correct today but has no assertion protecting it — if
+            # MLB flips ordering, we'd silently pull oldest 15 games (Dohran
+            # bug class). Add DQ ordering assertion so any flip surfaces to
+            # data_quality_events immediately.
+            try:
+                from data_quality import DQ as _DQ
+                _dates = [g.get('date') for g in source if g.get('date')]
+                if len(_dates) >= 2:
+                    _DQ(source='build_hr_watch.hr_watch_gamelog', sport='MLB'
+                        ).assert_ordering_asc(
+                        _dates, 'hr_watch_gamelog_ascending',
+                        context={'batter': name, 'n_games': len(_dates)})
+            except Exception:
+                pass  # DQ never blocks pipeline
             recent_15 = source[-15:]
             recent_7 = source[-7:]
             recent_5 = source[-5:]
