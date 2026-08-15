@@ -1492,6 +1492,35 @@ jobs:
           cd mlb_pipeline
           python classify_line_moves.py --sport ALL || echo "line classifier failed"
 
+      # Archive both public split sources side-by-side per snapshot
+      # (2026-08-15). Feeds the living pattern-discovery engine below —
+      # nothing is meaningful the day it happens; it's the cumulative
+      # archive that surfaces edge over time.
+      - name: Line movement — archive public splits
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python archive_public_splits.py --sport ALL || echo "splits archive failed"
+
+      # Living pattern engine — refresh registered hypotheses nightly
+      # + aggressive background discovery scan. Sport-universal. Only
+      # patterns that clear VALIDATED tier get consumed downstream by
+      # play_of_day drivers. DISCOVERY tier is where auto-surfaced
+      # candidates land; they need to accumulate n>=50 + edge>=5pp
+      # before promoting.
+      - name: Line movement — mine patterns (refresh + discover)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python mine_line_patterns.py --refresh --sport ALL || echo "pattern refresh failed"
+          python mine_line_patterns.py --discover --sport ALL || echo "pattern discover failed"
+
       # Freeze TRUE closing lines at T-Xmin (per line_movement_config).
       # Distinguishes "close_total was set by most recent pull" from
       # "close_total is the actual line at first pitch minus X min."
