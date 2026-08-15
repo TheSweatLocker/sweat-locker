@@ -1834,6 +1834,7 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [steamSubTab, setSteamSubTab] = useState<'lines'|'ladder'>('lines');
   const [steamFlags, setSteamFlags] = useState<any[]>([]);
   const [steamHistorySample, setSteamHistorySample] = useState<Record<string, any[]>>({});
+  const [steamPicksIdx, setSteamPicksIdx] = useState<Record<string, {primary:any, supplementary:any}>>({});
   const [steamLoading, setSteamLoading] = useState(false);
   const [ladderState, setLadderState] = useState<any>(null);
   const [ladderRungs, setLadderRungs] = useState<any[]>([]);
@@ -8305,6 +8306,27 @@ setJerryHistory(prev => {
         samples[gm] = hist || [];
       }));
       setSteamHistorySample(samples);
+      // Pull our picks for the flagged games so we can render an
+      // alignment tag on each Steam Room card (NEW 2026-08-15).
+      // primary_play + supplementary_play are already on mlb_game_context;
+      // pull them for the games we're flagging so we can compare pick side
+      // vs sharp-classified side.
+      try {
+        const uniqueGids = Array.from(new Set(flags.map((f:any) => f.game_id))).slice(0, 40);
+        if (uniqueGids.length) {
+          const {data: ourPicks} = await supabase
+            .from('mlb_game_context')
+            .select('game_id,primary_play,supplementary_play')
+            .in('game_id', uniqueGids);
+          const picksIdx: Record<string, any> = {};
+          (ourPicks || []).forEach((row: any) => {
+            picksIdx[row.game_id] = {
+              primary: row.primary_play, supplementary: row.supplementary_play
+            };
+          });
+          setSteamPicksIdx(picksIdx);
+        }
+      } catch (e) { setSteamPicksIdx({}); }
     } catch (e) { setSteamFlags([]); }
     setSteamLoading(false);
   }, []);
@@ -13825,6 +13847,65 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 Split sources disagree on direction — pattern flagged for visibility only.
                               </Text>
                             )}
+                            {/* Alignment with our pick (NEW 2026-08-15).
+                                Reads primary_play / supplementary_play on the flagged
+                                game; compares direction of the strongest CONFIRMED
+                                flag (or first if none confirmed) vs the side we picked.
+                                Shows GREEN "aligns" / RED "sharp fading us" / GREY "no pick". */}
+                            {(() => {
+                              const picks = steamPicksIdx[gid];
+                              const strongest = flags.find((f:any) =>
+                                String(f.classification || '').endsWith('_CONFIRMED')) || flags[0];
+                              if (!strongest) return null;
+                              const flagSide = String(strongest.side || '').toUpperCase();
+                              // Determine what the sharp move POINTS AT
+                              const cls = String(strongest.classification || '');
+                              let sharpSide = flagSide;
+                              if (cls.startsWith('RLM')) {
+                                // RLM: side field = public side; sharps are on opposite
+                                sharpSide = flagSide === 'HOME' ? 'AWAY'
+                                          : flagSide === 'AWAY' ? 'HOME'
+                                          : flagSide === 'OVER' ? 'UNDER'
+                                          : flagSide === 'UNDER' ? 'OVER' : flagSide;
+                              } else if (cls.startsWith('PUBLIC_MOVE')) {
+                                // Public MOVED to side; treat as fade signal → sharp on other
+                                sharpSide = flagSide === 'HOME' ? 'AWAY'
+                                          : flagSide === 'AWAY' ? 'HOME'
+                                          : flagSide === 'OVER' ? 'UNDER'
+                                          : flagSide === 'UNDER' ? 'OVER' : flagSide;
+                              }
+                              const mkt = String(strongest.market || '').toLowerCase();
+                              const pickSideFromPlay = (play: any): string | null => {
+                                if (!play || typeof play !== 'object') return null;
+                                const ptype = String(play.type || play.market || '').toLowerCase();
+                                const psideRaw = String(play.side || play.pick_side || '').toUpperCase();
+                                if (!psideRaw) return null;
+                                // Only same-market comparisons
+                                if (mkt === 'total' && ptype !== 'total') return null;
+                                if (mkt !== 'total' && !['ml','spread','rl','runline','pl','puckline'].includes(ptype)) return null;
+                                return psideRaw;
+                              };
+                              const primarySide = picks ? pickSideFromPlay(picks.primary) : null;
+                              const suppSide    = picks ? pickSideFromPlay(picks.supplementary) : null;
+                              const ourSide = primarySide || suppSide;
+                              if (!ourSide) {
+                                return (
+                                  <Text style={{color:THEME.textMuted, fontSize:10, marginTop:4, fontWeight:'600', letterSpacing:0.3}}>
+                                    ⚪ No pick on this game
+                                  </Text>
+                                );
+                              }
+                              const aligns = ourSide === sharpSide;
+                              const fg = aligns ? THEME.win : THEME.loss;
+                              const label = aligns
+                                ? `✅ Aligns with our ${ourSide} pick`
+                                : `⚠️ Sharp fading our ${ourSide} pick (points ${sharpSide})`;
+                              return (
+                                <Text style={{color:fg, fontSize:10, marginTop:4, fontWeight:'800', letterSpacing:0.3}}>
+                                  {label}
+                                </Text>
+                              );
+                            })()}
                             {/* Per-side movement summary — first vs last snapshot */}
                             {Object.entries(bySide).length > 0 && (
                               <View style={{marginTop:8, paddingTop:8, borderTopWidth:1, borderTopColor:THEME.border+'44', gap:3}}>

@@ -1258,6 +1258,21 @@ jobs:
           cd mlb_pipeline
           python sharp_money_weekly_digest.py || echo "weekly sharp digest failed (non-fatal)"
 
+      # Weekly CLV rollup (Sundays only, 2026-08-15).
+      # Aggregates clv_snapshots by sport × window (7d/30d/90d) with
+      # per-market/tier/model breakdown. Appends to clv_weekly_rollup
+      # so we retain the trajectory of model CLV performance over time.
+      # CLV is the best proxy for pick quality independent of W/L variance.
+      - name: Weekly CLV rollup
+        if: (github.event.schedule == '0 18 * * 0' || github.event_name == 'workflow_dispatch')
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python clv_weekly_rollup.py --sport ALL || echo "clv rollup failed (non-fatal)"
+
       # Weekly refresh of Jerry's prompt MODEL PERFORMANCE CONTEXT block.
       # Interim adaptive weighting (2026-08-02) — pulls current lifetime hit
       # rates from model_track_records + live-computes MONEY hit rate from

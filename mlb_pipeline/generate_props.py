@@ -872,10 +872,20 @@ def _blended_projected_hits(l7, g, side):
     n = l7.get('n_starts') or 0
     proj_ip = l7.get('avg_ip') or 5.5
 
-    # Season-anchored baseline. Prefer BAA if available; fall back to xERA proxy
-    # (BAA ≈ 0.045 * xERA + 0.055 fits across a season with r²≈0.62).
+    # Season-anchored baseline.
+    # 2026-08-15: prefer xba_allowed (Statcast expected BA) — strips luck
+    # noise vs raw baa_allowed. baa fallback when xba missing (rookies).
+    # xERA-derived proxy is last resort.
+    pitcher_name = g.get(f'{side}_pitcher')
+    contact = fetch_pitcher_contact_quality(pitcher_name) or {}
+    xba = contact.get('xba_allowed')
+    baa = contact.get('baa_allowed')
     xera = _f(g.get(f'{side}_sp_xera'))
-    if xera is not None and 2.0 <= xera <= 8.0:
+    if xba is not None and 0.15 <= float(xba) <= 0.35:
+        season_h = float(xba) * proj_ip * 4.3
+    elif baa is not None and 0.15 <= float(baa) <= 0.35:
+        season_h = float(baa) * proj_ip * 4.3
+    elif xera is not None and 2.0 <= xera <= 8.0:
         season_baa = 0.045 * float(xera) + 0.055
         season_h = season_baa * proj_ip * 4.3
     else:
@@ -1332,6 +1342,38 @@ def fetch_projected_lineup(team_name, season=2026):
         pass
     _PROJECTED_LINEUP_CACHE[team_name] = []
     return []
+
+
+_PITCHER_CONTACT_CACHE = {}
+
+def fetch_pitcher_contact_quality(pitcher_name):
+    """Lookup xba_allowed + baa_allowed from mlb_pitcher_stats. Cached per run.
+
+    Used by _blended_projected_hits (2026-08-15 wire-up). xba_allowed is
+    Statcast expected batting average — strips luck/BABIP noise from raw
+    baa_allowed. Prefer xba when present; fall back to baa when missing
+    (rookies, low-BF relievers)."""
+    if not pitcher_name:
+        return None
+    if pitcher_name in _PITCHER_CONTACT_CACHE:
+        return _PITCHER_CONTACT_CACHE[pitcher_name]
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats",
+            params={
+                'player_name': f'eq.{pitcher_name}',
+                'select': 'xba_allowed,baa_allowed',
+                'limit': '1',
+            },
+            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
+            timeout=10,
+        )
+        rows = r.json() if r.status_code == 200 else []
+        out = rows[0] if rows else None
+    except Exception:
+        out = None
+    _PITCHER_CONTACT_CACHE[pitcher_name] = out
+    return out
 
 
 def fetch_pitcher_buckets(pitcher_name):

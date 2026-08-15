@@ -838,24 +838,38 @@ def score_mlb_game(ctx, game_props=None, track=None):
     elif nrfi <= 40:
         _add(total_drivers, 4, '🔥', 'YRFI lean', f'NRFI score {int(nrfi)}/100', direction='OVER')
 
-    # ---- TOTAL: Pitcher xERA mismatch ----
-    # Moved from side bucket 2026-05-29 — a 2-run xERA gap is a TOTAL signal
-    # (one side scores, one doesn't) not a side signal (no direct ML edge).
-    home_xera = float(ctx.get('home_sp_xera') or 4.5)
-    away_xera = float(ctx.get('away_sp_xera') or 4.5)
-    xera_gap = abs(home_xera - away_xera)
-    if xera_gap >= 2.0:
-        _add(total_drivers, 14, '⚖️', 'Major xERA gap', f'{xera_gap:.2f}-run pitcher mismatch')
-    elif xera_gap >= 1.5:
-        _add(total_drivers, 9, '⚖️', 'xERA gap', f'{xera_gap:.2f}-run pitcher mismatch')
-    elif xera_gap >= 1.0:
-        _add(total_drivers, 6, '⚖️', 'xERA gap', f'{xera_gap:.2f}-run pitcher mismatch')
-    elif xera_gap >= 0.5:
-        _add(total_drivers, 3, '⚖️', 'xERA gap (slim)', f'{xera_gap:.2f}-run pitcher mismatch')
+    # ---- TOTAL: Pitcher quality mismatch (SIERA-preferred, NEW 2026-08-15) ----
+    # 2026-08-15: full SIERA from Savant now primary quality metric; xERA
+    # is fallback when SIERA missing (rookies, low-BF relievers). SIERA
+    # includes GB-FB-PU interaction terms xERA lacks — better forward pred.
+    # Gap thresholds identical (both scales are ERA units).
+    def _q(side):
+        siera = ctx.get(f'{side}_sp_siera')
+        if siera is not None:
+            try: return float(siera), 'SIERA'
+            except (TypeError, ValueError): pass
+        xera = ctx.get(f'{side}_sp_xera')
+        try: return (float(xera) if xera is not None else 4.5), 'xERA'
+        except (TypeError, ValueError): return 4.5, 'xERA'
+    home_q, home_src = _q('home')
+    away_q, away_src = _q('away')
+    home_xera = home_q  # kept for downstream refs
+    away_xera = away_q
+    q_gap = abs(home_q - away_q)
+    src_note = f'{home_src}/{away_src}'
+    if q_gap >= 2.0:
+        _add(total_drivers, 14, '⚖️', 'Major xERA gap', f'{q_gap:.2f}-run pitcher mismatch ({src_note})')
+    elif q_gap >= 1.5:
+        _add(total_drivers, 9, '⚖️', 'xERA gap', f'{q_gap:.2f}-run pitcher mismatch ({src_note})')
+    elif q_gap >= 1.0:
+        _add(total_drivers, 6, '⚖️', 'xERA gap', f'{q_gap:.2f}-run pitcher mismatch ({src_note})')
+    elif q_gap >= 0.5:
+        _add(total_drivers, 3, '⚖️', 'xERA gap (slim)', f'{q_gap:.2f}-run pitcher mismatch ({src_note})')
 
     # ---- TOTAL: Both pitchers elite (ace duel — points at UNDER) ----
+    # SIERA-first via home_xera / away_xera aliases above.
     if home_xera <= 3.0 and away_xera <= 3.0:
-        _add(total_drivers, 10, '🎯', 'Ace duel', 'Both starters ≤3.00 xERA', direction='UNDER')
+        _add(total_drivers, 10, '🎯', 'Ace duel', f'Both starters ≤3.00 ({src_note})', direction='UNDER')
     elif home_xera <= 3.5 and away_xera <= 3.5:
         _add(total_drivers, 5, '🎯', 'Quality matchup', 'Both starters ≤3.50 xERA', direction='UNDER')
 
