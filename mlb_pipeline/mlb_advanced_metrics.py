@@ -237,38 +237,86 @@ def compute_effective_bp_era(bp_era: Optional[float],
 # GB% is estimated from pitcher's ground_out ratio.
 
 def compute_siera(k_pct: Optional[float], bb_pct: Optional[float],
-                   gb_pct: Optional[float] = None) -> Optional[float]:
-    """Simplified SIERA. Percentages should be as decimals (0.25 not 25.0).
+                   gb_pct: Optional[float] = None,
+                   fb_pct: Optional[float] = None,
+                   pu_pct: Optional[float] = None) -> Optional[float]:
+    """SIERA. Percentages accepted as either decimal (0.25) or 0-100 (25.0).
 
-    If GB% is unavailable, uses league-avg 0.43 as fallback."""
+    Full formula when GB/FB/PU provided; falls back to simplified
+    (league-avg 0.43 GB, no interaction) when only K/BB known. The
+    simplified path lost 23% vs xERA in the 2026-08-15 backtest, so it
+    is a last-resort fallback — prefer prefetched savant_pitcher_stats."""
     if k_pct is None or bb_pct is None: return None
     try:
         k = float(k_pct); bb = float(bb_pct)
-        gb = float(gb_pct) if gb_pct is not None else 0.43  # league avg
     except (TypeError, ValueError):
         return None
-    # Normalize: if given as percentage (25.5), convert to decimal
     if k > 1.0: k /= 100.0
     if bb > 1.0: bb /= 100.0
-    if gb > 1.0: gb /= 100.0
-    # Simplified formula (drop the GB-FB-PU interaction terms for now)
-    siera = (6.145
-             - 16.986 * k
-             + 11.434 * bb
-             - 1.858 * gb
-             + 7.653 * (k ** 2))
-    # Floor at 0.50 — negative SIERA is nonsensical (can't have neg ERA).
-    # Happens when simplified formula over-extrapolates on very high K%
-    # without the GB-FB-PU interaction terms. Cap at reasonable elite floor.
-    siera = max(0.50, siera)
-    return round(siera, 2)
+
+    if gb_pct is not None and fb_pct is not None and pu_pct is not None:
+        try:
+            gb = float(gb_pct); fb = float(fb_pct); pu = float(pu_pct)
+        except (TypeError, ValueError):
+            return None
+        if gb > 1.0: gb /= 100.0
+        if fb > 1.0: fb /= 100.0
+        if pu > 1.0: pu /= 100.0
+        diff = gb - fb - pu
+        interaction = (-6.664 * (diff ** 2)) if diff < 0 else (6.664 * (diff ** 2))
+        siera = (6.145
+                 - 16.986 * k
+                 + 11.434 * bb
+                 - 1.858  * gb
+                 + 7.653  * (k ** 2)
+                 + interaction
+                 + 10.130 * k * diff)
+    else:
+        gb = float(gb_pct) if gb_pct is not None else 0.43
+        if gb > 1.0: gb /= 100.0
+        siera = (6.145
+                 - 16.986 * k
+                 + 11.434 * bb
+                 - 1.858  * gb
+                 + 7.653  * (k ** 2))
+
+    return round(max(0.50, siera), 2)
+
+
+def load_savant_siera_index() -> dict:
+    """Return {mlb_id: siera_full, name_lower: siera_full} for current season."""
+    idx = {}
+    season = datetime.now().year
+    r = requests.get(
+        f'{SB}/rest/v1/savant_pitcher_stats'
+        f'?select=mlb_id,pitcher_name,siera_full&season=eq.{season}',
+        headers=H_READ, timeout=15)
+    if r.status_code != 200:
+        print(f'  ⚠ savant_pitcher_stats fetch failed: {r.status_code}')
+        return idx
+    for row in r.json() or []:
+        sf = row.get('siera_full')
+        if sf is None: continue
+        mid = row.get('mlb_id')
+        if mid is not None:
+            idx[int(mid)] = float(sf)
+        pn = (row.get('pitcher_name') or '').strip().lower()
+        if pn:
+            idx[pn] = float(sf)
+    return idx
 
 
 # ─── ORCHESTRATOR ──────────────────────────────────────────────────
 
-def enrich_row(row: dict) -> dict:
-    """Compute all 5 metrics for one game_context row. Returns patch payload."""
+def enrich_row(row: dict, savant_idx: Optional[dict] = None) -> dict:
+    """Compute all 5 metrics for one game_context row. Returns patch payload.
+
+    savant_idx: {mlb_id: siera_full, name_lower: siera_full} from
+    load_savant_siera_index(). When provided, full-formula SIERA is
+    used from the prefetched dict; otherwise falls back to simplified
+    computation from projected BB rate."""
     patch = {}
+    savant_idx = savant_idx or {}
 
     # #1 TTTO
     # Use L3 IP if available (home_pitcher_last_ip / away_pitcher_last_ip
@@ -329,26 +377,45 @@ def enrich_row(row: dict) -> dict:
         eff = compute_effective_bp_era(a_bp_era, a_avail)
         if eff is not None: patch['away_bullpen_effective_era'] = eff
 
-    # #5 SIERA
-    # Uses last_3 K% + BB% (proxy for talent). Some fields may be null.
+    # #5 SIERA — prefer full-formula from Savant, fall back to simplified.
+    def _savant_lookup(pid, pname):
+        if pid is not None:
+            try:
+                s = savant_idx.get(int(pid))
+                if s is not None: return float(s)
+            except (TypeError, ValueError):
+                pass
+        if pname:
+            s = savant_idx.get(pname.strip().lower())
+            if s is not None: return float(s)
+        return None
+
+    h_pid  = row.get('home_pitcher_id');  h_pname = row.get('home_pitcher')
+    a_pid  = row.get('away_pitcher_id');  a_pname = row.get('away_pitcher')
+    h_full = _savant_lookup(h_pid, h_pname)
+    a_full = _savant_lookup(a_pid, a_pname)
+    if h_full is not None:
+        patch['home_sp_siera'] = round(h_full, 2)
+    if a_full is not None:
+        patch['away_sp_siera'] = round(a_full, 2)
+
+    # Fallback to simplified only if Savant miss (rookies, low-BF relievers)
     h_k = row.get('home_pitcher_last_3_k_pct')
     a_k = row.get('away_pitcher_last_3_k_pct')
-    # BB% not directly in schema — approximate from projected_bb / projected_outs
     h_bb_proj = row.get('home_pitcher_projected_bb')
     h_out_proj = row.get('home_pitcher_projected_outs')
     a_bb_proj = row.get('away_pitcher_projected_bb')
     a_out_proj = row.get('away_pitcher_projected_outs')
     def _bb_pct(bb, outs):
         if bb is None or outs is None or outs <= 0: return None
-        # BB per BF ≈ BB / (outs/3 × 4.2 BF/IP)
         bf = (outs / 3) * 4.2
         return round(bb / bf, 3) if bf > 0 else None
     h_bb_pct = _bb_pct(h_bb_proj, h_out_proj)
     a_bb_pct = _bb_pct(a_bb_proj, a_out_proj)
-    if h_k is not None and h_bb_pct is not None:
+    if h_full is None and h_k is not None and h_bb_pct is not None:
         s = compute_siera(h_k, h_bb_pct)
         if s is not None: patch['home_sp_siera'] = s
-    if a_k is not None and a_bb_pct is not None:
+    if a_full is None and a_k is not None and a_bb_pct is not None:
         s = compute_siera(a_k, a_bb_pct)
         if s is not None: patch['away_sp_siera'] = s
 
@@ -360,9 +427,13 @@ def run(game_date: Optional[str] = None, dry_run: bool = False) -> int:
         game_date = (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
     print(f'=== mlb_advanced_metrics · {game_date} ===')
 
+    savant_idx = load_savant_siera_index()
+    print(f'  savant siera index: {len(savant_idx)} entries')
+
     r = requests.get(
         f'{SB}/rest/v1/mlb_game_context'
         f'?select=game_id,home_team,away_team,'
+        f'home_pitcher,away_pitcher,'
         f'home_catcher_framing,away_catcher_framing,'
         f'home_bp_relievers_3d,away_bp_relievers_3d,'
         f'home_bullpen_era,away_bullpen_era,'
@@ -383,7 +454,7 @@ def run(game_date: Optional[str] = None, dry_run: bool = False) -> int:
     for row in rows:
         if not isinstance(row, dict): continue
         gid = row.get('game_id')
-        patch = enrich_row(row)
+        patch = enrich_row(row, savant_idx=savant_idx)
         if not patch:
             print(f'  skip {row.get("away_team","?")}@{row.get("home_team","?")}: no fields to compute')
             continue

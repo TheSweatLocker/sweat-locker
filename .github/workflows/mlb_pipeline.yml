@@ -92,6 +92,20 @@ jobs:
       #   - home/away_sp_siera (Skill-Interactive ERA)
       # Downstream layers can consume these to refine projections; leaving
       # them off = no behavior change (non-blocking, non-breaking).
+      # Pull Baseball Savant per-pitcher batted-ball rates for FULL SIERA
+      # (K%, BB%, GB%, FB%, LD%, PU%). Simplified formula lost 23% vs xERA
+      # in 2026-08-15 backtest — full formula requires the GB-FB-PU
+      # interaction terms that only per-pitcher Savant data provides.
+      # Runs BEFORE advanced-metrics so the SIERA lookup index is warm.
+      - name: Pull Savant pitcher arsenal (full SIERA source)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python savant_pitcher_arsenal.py || echo "savant arsenal pull failed (non-fatal)"
+
       - name: Compute advanced sabermetrics (TTTO, framing, BABIP, bullpen, SIERA)
         continue-on-error: true
         env:

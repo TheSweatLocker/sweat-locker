@@ -757,6 +757,13 @@ def score_mlb_game(ctx, game_props=None, track=None):
     if track is None:
         track = {'contributions': [], 'evidence': []}
 
+    # Enrich ctx with team-offense bucket / recency fields (formerly only
+    # populated inside _v2_total_edge). These fields drive the handedness,
+    # late-inning, and momentum cohorts wired in 2026-08-15 — without this
+    # step those drivers would silently no-op because mlb_game_context
+    # doesn't carry innings_7_9_wrc_plus, last10_run_diff, ops_last7, etc.
+    _enrich_ctx_with_team_offense(ctx)
+
     # Per-dimension driver lists (independent of the legacy
     # contributions/evidence lists). Each driver is {label, points, detail}.
     side_drivers, total_drivers, prop_drivers = [], [], []
@@ -1334,6 +1341,96 @@ def score_mlb_game(ctx, game_props=None, track=None):
         if ao_h > 0 and ho_h > 0 and (ao_h + ho_h) / 2 >= 0.75:
             _add(total_drivers, 4, '🪑', 'OPS vs opp hand loud',
                  f'avg OPS vs opp hand {(ao_h+ho_h)/2:.2f} — 55% OVER hist (n=84)',
+                 direction='OVER')
+    except (TypeError, ValueError):
+        pass
+
+    # ---- SIDE: Handedness asymmetric edge — TIGHT THRESHOLD (NEW 2026-08-15) ----
+    # Backtest 90d: delta>=15 + edge>=105 = 50.0% n=32 (coinflip, DROPPED)
+    #               delta>=15 + edge>=110 = 63.6% n=22 (KEEP)
+    # Small sample but the tighter edge>=110 threshold is a real edge.
+    # Kept at 3pt (LEAN-worthy) — will re-evaluate at n=50+.
+    try:
+        h_wrc = float(ctx.get('home_wrc_vs_opp_hand') or 0)
+        a_wrc = float(ctx.get('away_wrc_vs_opp_hand') or 0)
+        if h_wrc > 0 and a_wrc > 0:
+            delta = h_wrc - a_wrc
+            if delta >= 15 and h_wrc >= 110:
+                _add(side_drivers, 3, '⚖️', 'Home lineup elite vs opp hand',
+                     f'HOME wRC+ vs opp hand {h_wrc:.0f} vs AWAY {a_wrc:.0f} — 63.6% n=22 hist',
+                     direction='HOME')
+            elif delta <= -15 and a_wrc >= 110:
+                _add(side_drivers, 3, '⚖️', 'Away lineup elite vs opp hand',
+                     f'AWAY wRC+ vs opp hand {a_wrc:.0f} vs HOME {h_wrc:.0f} — 63.6% n=22 hist',
+                     direction='AWAY')
+    except (TypeError, ValueError):
+        pass
+
+    # ---- TOTAL: Dual L14 OPS drought → UNDER (VALIDATED 2026-08-15) ----
+    # Backtest 90d: both teams ops_last14 <= 0.70 = 93-72 (56.4%) n=165
+    #               tighter cut <=0.65 = 22-12 (64.7%) n=34
+    # Consistent across windows. Uses previously-DEAD ops_last14 field.
+    try:
+        h_ops14 = float(ctx.get('home_ops_last14')) if ctx.get('home_ops_last14') is not None else None
+        a_ops14 = float(ctx.get('away_ops_last14')) if ctx.get('away_ops_last14') is not None else None
+        if h_ops14 is not None and a_ops14 is not None and h_ops14 > 0 and a_ops14 > 0:
+            if max(h_ops14, a_ops14) <= 0.65:
+                _add(total_drivers, 5, '🥶', 'Both bats ice-cold (L14)',
+                     f'both OPS L14 ≤ .650 (H {h_ops14:.3f} / A {a_ops14:.3f}) — 64.7% UNDER n=34',
+                     direction='UNDER')
+            elif max(h_ops14, a_ops14) <= 0.70:
+                _add(total_drivers, 4, '🥶', 'Both bats cold (L14)',
+                     f'both OPS L14 ≤ .700 (H {h_ops14:.3f} / A {a_ops14:.3f}) — 56.4% UNDER n=165',
+                     direction='UNDER')
+    except (TypeError, ValueError):
+        pass
+
+    # ---- TOTAL: Dual L14 OPS hot → UNDER (fade, VALIDATED 2026-08-15) ----
+    # Backtest 90d: both teams ops_last14 >= 0.78 → 27-41 OVER = 60.3% UNDER n=68
+    # Mirrors BABIP regression flag (project_advanced_metrics_backtest_815):
+    # hot bats REGRESS. This is a fade — hot dual OPS points at UNDER.
+    try:
+        h_ops14 = float(ctx.get('home_ops_last14')) if ctx.get('home_ops_last14') is not None else None
+        a_ops14 = float(ctx.get('away_ops_last14')) if ctx.get('away_ops_last14') is not None else None
+        if h_ops14 is not None and a_ops14 is not None:
+            if min(h_ops14, a_ops14) >= 0.78:
+                _add(total_drivers, 4, '📉', 'Dual bats hot — regression fade',
+                     f'both OPS L14 ≥ .780 (H {h_ops14:.3f} / A {a_ops14:.3f}) — 60.3% UNDER n=68',
+                     direction='UNDER')
+    except (TypeError, ValueError):
+        pass
+
+    # ---- TOTAL: TTTO exposure penalty (NEW 2026-08-15) ----
+    # 3rd-time-through-the-order effect: batters hit ~50pp better vs a
+    # starter on their 3rd look. When BOTH starters expected to go deep
+    # (combined penalty ≥ 0.60 R), it's an OVER tailwind. Uses previously-
+    # DEAD ttto_penalty_runs from 8/15 advanced-metrics pack.
+    try:
+        ttto = float(ctx.get('ttto_penalty_runs') or 0)
+        if ttto >= 0.60:
+            _add(total_drivers, 3, '🔁', 'TTTO exposure penalty',
+                 f'combined TTTO penalty {ttto:.2f} R (both SPs deep)',
+                 direction='OVER')
+    except (TypeError, ValueError):
+        pass
+
+    # ---- TOTAL: Late-inning offense × bullpen fatigue (NEW 2026-08-15) ----
+    # Combines PREVIOUSLY-DEAD innings_7_9_wrc_plus with new
+    # bullpen_effective_era from 8/15 pack. UNTESTABLE historically —
+    # bullpen_effective_era only exists on today+ rows. Low weight (3pt)
+    # pending 30-day live A/B accumulation.
+    try:
+        h_lateoff = float(ctx.get('home_innings_7_9_wrc_plus') or 0)
+        a_lateoff = float(ctx.get('away_innings_7_9_wrc_plus') or 0)
+        h_bp_eff  = float(ctx.get('home_bullpen_effective_era') or 0)
+        a_bp_eff  = float(ctx.get('away_bullpen_effective_era') or 0)
+        if h_lateoff >= 115 and a_bp_eff >= 4.50:
+            _add(total_drivers, 3, '🌙', 'Late-inning offense vs bad BP',
+                 f'HOME late wRC+ {h_lateoff:.0f} vs AWAY BP effERA {a_bp_eff:.2f}',
+                 direction='OVER')
+        if a_lateoff >= 115 and h_bp_eff >= 4.50:
+            _add(total_drivers, 3, '🌙', 'Late-inning offense vs bad BP',
+                 f'AWAY late wRC+ {a_lateoff:.0f} vs HOME BP effERA {h_bp_eff:.2f}',
                  direction='OVER')
     except (TypeError, ValueError):
         pass
@@ -2481,6 +2578,43 @@ def score_nba_game(game, nba_teams):
 _V2_BUCKET_CACHE = {}
 
 
+def _enrich_ctx_with_team_offense(ctx):
+    """Populate ctx with team-offense bucket / recency fields IN-PLACE.
+
+    Reuses _V2_BUCKET_CACHE — populated on first call by _v2_total_edge or
+    by this helper if it fires first. Idempotent; safe to call multiple
+    times per game. Wired 2026-08-15 to feed handedness / late-inning /
+    momentum drivers that reference innings_7_9_wrc_plus, last10_run_diff,
+    ops_last7, wrc_proxy_l14 — fields that live on mlb_team_offense but
+    are NOT stored on mlb_game_context.
+    """
+    global _V2_BUCKET_CACHE
+    cache = _V2_BUCKET_CACHE
+    if 'teams' not in cache:
+        try:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_team_offense?select=team,innings_1_3_runs_per_game,innings_4_6_runs_per_game,innings_7_9_runs_per_game,innings_1_3_wrc_plus,innings_4_6_wrc_plus,innings_7_9_wrc_plus,last5_runs_per_game,last10_runs_per_game,last20_runs_per_game,last5_run_diff,last10_run_diff,last20_run_diff,ops_last7,ops_last14,wrc_proxy_l14",
+                headers=HEADERS, timeout=15,
+            )
+            cache['teams'] = {t['team']: t for t in (r.json() or [])}
+        except Exception:
+            cache['teams'] = {}
+    home_team = ctx.get('home_team')
+    away_team = ctx.get('away_team')
+    for side, team in (('home', home_team), ('away', away_team)):
+        if not team or team not in cache.get('teams', {}):
+            continue
+        tb = cache['teams'][team]
+        for field in ('innings_1_3_runs_per_game', 'innings_4_6_runs_per_game',
+                      'innings_7_9_runs_per_game', 'innings_1_3_wrc_plus',
+                      'innings_4_6_wrc_plus', 'innings_7_9_wrc_plus',
+                      'last5_runs_per_game', 'last10_runs_per_game',
+                      'last20_runs_per_game', 'last5_run_diff',
+                      'last10_run_diff', 'last20_run_diff',
+                      'ops_last7', 'ops_last14', 'wrc_proxy_l14'):
+            ctx.setdefault(f'{side}_{field}', tb.get(field))
+
+
 _UMP_CACHE = {}
 
 
@@ -2563,7 +2697,7 @@ def _v2_total_edge(ctx):
             cache['pitchers'] = {}
         try:
             r = requests.get(
-                f"{SUPABASE_URL}/rest/v1/mlb_team_offense?select=team,innings_1_3_runs_per_game,innings_4_6_runs_per_game,innings_7_9_runs_per_game,last10_runs_per_game",
+                f"{SUPABASE_URL}/rest/v1/mlb_team_offense?select=team,innings_1_3_runs_per_game,innings_4_6_runs_per_game,innings_7_9_runs_per_game,innings_1_3_wrc_plus,innings_4_6_wrc_plus,innings_7_9_wrc_plus,last5_runs_per_game,last10_runs_per_game,last20_runs_per_game,last5_run_diff,last10_run_diff,last20_run_diff,ops_last7,ops_last14,wrc_proxy_l14",
                 headers=HEADERS, timeout=15,
             )
             cache['teams'] = {t['team']: t for t in (r.json() or [])}
@@ -2601,12 +2735,35 @@ def _v2_total_edge(ctx):
         enriched['home_innings_1_3_runs_per_game'] = tb.get('innings_1_3_runs_per_game')
         enriched['home_innings_4_6_runs_per_game'] = tb.get('innings_4_6_runs_per_game')
         enriched['home_innings_7_9_runs_per_game'] = tb.get('innings_7_9_runs_per_game')
+        enriched['home_innings_1_3_wrc_plus']       = tb.get('innings_1_3_wrc_plus')
+        enriched['home_innings_4_6_wrc_plus']       = tb.get('innings_4_6_wrc_plus')
+        enriched['home_innings_7_9_wrc_plus']       = tb.get('innings_7_9_wrc_plus')
+        enriched['home_last5_runs_per_game']  = tb.get('last5_runs_per_game')
         enriched['home_last10_runs_per_game'] = tb.get('last10_runs_per_game')
+        enriched['home_last20_runs_per_game'] = tb.get('last20_runs_per_game')
+        enriched['home_last5_run_diff']       = tb.get('last5_run_diff')
+        enriched['home_last10_run_diff']      = tb.get('last10_run_diff')
+        enriched['home_last20_run_diff']      = tb.get('last20_run_diff')
+        enriched['home_ops_last7']            = tb.get('ops_last7')
+        enriched['home_ops_last14']           = tb.get('ops_last14')
+        enriched['home_wrc_proxy_l14']        = tb.get('wrc_proxy_l14')
     if away_team in cache.get('teams', {}):
         tb = cache['teams'][away_team]
         enriched['away_innings_1_3_runs_per_game'] = tb.get('innings_1_3_runs_per_game')
         enriched['away_innings_4_6_runs_per_game'] = tb.get('innings_4_6_runs_per_game')
         enriched['away_innings_7_9_runs_per_game'] = tb.get('innings_7_9_runs_per_game')
+        enriched['away_innings_1_3_wrc_plus']       = tb.get('innings_1_3_wrc_plus')
+        enriched['away_innings_4_6_wrc_plus']       = tb.get('innings_4_6_wrc_plus')
+        enriched['away_innings_7_9_wrc_plus']       = tb.get('innings_7_9_wrc_plus')
+        enriched['away_last5_runs_per_game']  = tb.get('last5_runs_per_game')
+        enriched['away_last10_runs_per_game'] = tb.get('last10_runs_per_game')
+        enriched['away_last20_runs_per_game'] = tb.get('last20_runs_per_game')
+        enriched['away_last5_run_diff']       = tb.get('last5_run_diff')
+        enriched['away_last10_run_diff']      = tb.get('last10_run_diff')
+        enriched['away_last20_run_diff']      = tb.get('last20_run_diff')
+        enriched['away_ops_last7']            = tb.get('ops_last7')
+        enriched['away_ops_last14']           = tb.get('ops_last14')
+        enriched['away_wrc_proxy_l14']        = tb.get('wrc_proxy_l14')
         enriched['away_last10_runs_per_game'] = tb.get('last10_runs_per_game')
 
     try:
