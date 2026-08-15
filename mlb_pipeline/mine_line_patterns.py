@@ -192,6 +192,40 @@ SEEDED_PATTERNS = [
         ],
         'bet_direction': 'FADE',
     },
+
+    # ─── FADE-SHARP family (seeded 2026-08-15 pm from empirical analysis) ─
+    # Historical cut on n=172 OC-graded rows revealed:
+    #   ML market money%≥80: BACK 36% / FADE 64% (n=36) → FADE_edge +11.5pp
+    #   Divergence≥20 (money-bets): BACK 38% / FADE 62% (n=29) → +9.7pp
+    #   money%≥70 + bets% 50-59 (moderate divergence): FADE 61.5% (n=13)
+    # These contradict the "follow sharp $" seed patterns above. Seeded
+    # here so miner tracks both directions; whichever accumulates larger
+    # sample + higher hit rate becomes VALIDATED and gets the driver.
+    {
+        'name': 'oc_ml_extreme_money_gte_80_fade',
+        'description': 'Loud sharp $ on ML (money%≥80) — fade beats follow historically (64% n=36)',
+        'conditions': [
+            {'field': 'oc_money_pct', 'op': '>=', 'value': 80},
+        ],
+        'bet_direction': 'FADE',
+    },
+    {
+        'name': 'oc_divergence_gte_20_fade',
+        'description': 'Money% - bets% ≥ 20 (big sharp divergence) — fade beats follow (62% n=29)',
+        'conditions': [
+            {'field': 'oc_divergence', 'op': '>=', 'value': 20},
+        ],
+        'bet_direction': 'FADE',
+    },
+    {
+        'name': 'oc_money_gte_70_bets_lt_60_fade',
+        'description': 'Mid-divergence zone (money≥70, bets<60) — fade edge (61% n=13)',
+        'conditions': [
+            {'field': 'oc_money_pct', 'op': '>=', 'value': 70},
+            {'field': 'oc_bets_pct',  'op': '<',  'value': 60},
+        ],
+        'bet_direction': 'FADE',
+    },
 ]
 
 

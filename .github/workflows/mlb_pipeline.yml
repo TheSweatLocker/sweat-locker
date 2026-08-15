@@ -1463,6 +1463,20 @@ jobs:
           cd mlb_pipeline
           python generate_sweat_card.py
 
+      # Post-build refit re-hydration (2026-08-15 pm fix). Refit_conviction
+      # gets partially wiped during downstream card-build steps (some prop
+      # regen / patch cycles leave rows with null refit). Re-run at very
+      # end of pipeline so app reads see fully-hydrated refit values.
+      # Idempotent — upserts on (game_id, prop_id).
+      - name: Re-apply prop refit (post-card hydration)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python apply_prop_refit.py || echo "post-card refit re-apply failed (non-fatal)"
+
       # ─── Steam Room (2026-08-13) ───────────────────────────────────
       # write_line_history: per-book odds snapshot (fuels sparklines)
       # detect_line_movement: steam / RLM / limit pattern detection

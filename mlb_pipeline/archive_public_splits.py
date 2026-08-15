@@ -57,20 +57,36 @@ def latest_oc(sport: str, since_hrs: int = 6) -> dict:
 
 
 def latest_fr(sport: str, since_hrs: int = 6) -> dict:
-    """Same shape for fadereport_signals; returns empty dict if table missing."""
-    since = (datetime.now(timezone.utc) - timedelta(hours=since_hrs)).isoformat().replace('+', '%2B')
+    """Read fadereport_signals with the REAL schema (bug fix 2026-08-15).
+
+    Actual FR columns: money_side_pct / money_other_pct / bets_side_pct /
+    bets_other_pct / sharp_side_norm / snapshot_date / fetched_at.
+    (Previous version read handle_pct/bettors_pct which don't exist —
+    caused every game to show 'no FR data' and killed cross-source gate.)
+
+    Returns index keyed on (game_id, market, sharp_side) with normalized
+    handle_pct/bettors_pct pass-through so downstream archive schema
+    stays consistent. Market 'spread' aliased to 'rl' for join.
+    """
+    since_date = (datetime.now(timezone.utc) - timedelta(hours=since_hrs)).date().isoformat()
     r = requests.get(
         f'{SB}/rest/v1/fadereport_signals'
-        f'?sport=eq.{sport}&captured_at=gte.{since}'
-        f'&select=game_id,market,pick_side,handle_pct,bettors_pct,captured_at'
-        f'&order=captured_at.desc&limit=3000',
+        f'?sport=eq.{sport}&snapshot_date=gte.{since_date}'
+        f'&select=game_id,market,sharp_side_norm,money_side_pct,bets_side_pct,fetched_at'
+        f'&order=fetched_at.desc&limit=3000',
         headers=H_READ, timeout=15)
     if r.status_code != 200: return {}
     idx = {}
     for row in (r.json() or []):
-        key = (row.get('game_id'), (row.get('market') or '').lower(),
-               (row.get('pick_side') or '').upper())
-        if key not in idx: idx[key] = row
+        mkt = (row.get('market') or '').lower()
+        if mkt == 'spread': mkt = 'rl'
+        side = (row.get('sharp_side_norm') or '').upper()
+        key = (row.get('game_id'), mkt, side)
+        if key not in idx:
+            idx[key] = {
+                'handle_pct':  row.get('money_side_pct'),  # money on sharp side
+                'bettors_pct': row.get('bets_side_pct'),   # tickets on sharp side
+            }
     return idx
 
 
