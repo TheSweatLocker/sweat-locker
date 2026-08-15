@@ -44,6 +44,10 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'return=minimal'}
 
 from line_movement_config import get_config, classify_split, combine_classifications
+# 3rd source: Cleatz (added 2026-08-15 pm)
+# Cleatz publishes full-slate splits with both handle% and bets% per side
+# for MLB / NFL / CFB. When all 3 sources (OC + FR + Cleatz) agree on
+# sharp side → SHARP_TRIPLE_CONFIRMED tier (highest possible confidence).
 
 SUPPORTED_SPORTS = ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC']
 
@@ -81,7 +85,7 @@ def _fetch_fadereport_split(game_id: str, market: str) -> dict | None:
     r = requests.get(
         f'{SB}/rest/v1/fadereport_signals'
         f'?game_id=eq.{game_id}&market=eq.{market}'
-        f'&order=captured_at.desc&limit=1',
+        f'&order=fetched_at.desc&limit=1',
         headers=H_READ, timeout=10)
     if r.status_code == 404:
         return None
@@ -89,6 +93,43 @@ def _fetch_fadereport_split(game_id: str, market: str) -> dict | None:
         return None
     rows = r.json() or []
     return rows[0] if rows else None
+
+
+def _fetch_cleatz_split(game_id: str, market: str) -> dict | None:
+    """Return latest cleatz snapshot for (game, market). 3rd public-splits
+    source added 2026-08-15. Table has sharp_side_norm + sharp/other
+    bets% + handle% + divergence."""
+    r = requests.get(
+        f'{SB}/rest/v1/cleatz_signals'
+        f'?game_id=eq.{game_id}&market=eq.{market}'
+        f'&order=fetched_at.desc&limit=1',
+        headers=H_READ, timeout=10)
+    if r.status_code == 404 or r.status_code != 200:
+        return None
+    rows = r.json() or []
+    return rows[0] if rows else None
+
+
+def _cleatz_split_on_side(cleatz: dict | None, side: str) -> tuple:
+    """Cleatz schema differs — sharp side has money_side_pct/bets_side_pct
+    ON the sharp side, other has the other side. Returns (money%, bets%)
+    for the requested side after flipping if needed."""
+    if not cleatz: return (None, None)
+    sharp_norm = (cleatz.get('sharp_side_norm') or '').upper()
+    side_up = (side or '').upper()
+    sharp_money = cleatz.get('sharp_handle_pct')
+    sharp_bets = cleatz.get('sharp_bets_pct')
+    other_money = cleatz.get('other_handle_pct')
+    other_bets = cleatz.get('other_bets_pct')
+    if sharp_money is None or sharp_bets is None:
+        return (None, None)
+    same_side_pairs = {('HOME','HOME'), ('AWAY','AWAY'),
+                       ('OVER','OVER'), ('UNDER','UNDER')}
+    if (sharp_norm, side_up) in same_side_pairs:
+        return (float(sharp_money), float(sharp_bets))
+    if other_money is None or other_bets is None:
+        return (None, None)
+    return (float(other_money), float(other_bets))
 
 
 def _split_on_side(snap: dict | None, side: str, key_money: str, key_bets: str) -> tuple:
@@ -121,9 +162,11 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
 
     oc = _fetch_oddscrowd_split(gid, market)
     fr = _fetch_fadereport_split(gid, market)
+    cz = _fetch_cleatz_split(gid, market)
 
     oc_money, oc_bets = _split_on_side(oc, side, 'money_pct', 'bets_pct')
-    fr_handle, fr_bettors = _split_on_side(fr, side, 'handle_pct', 'bettors_pct')
+    fr_handle, fr_bettors = _split_on_side(fr, side, 'money_side_pct', 'bets_side_pct')
+    cz_money, cz_bets = _cleatz_split_on_side(cz, side)
 
     # RLM: line moved AWAY from the side that had heavy public money.
     # Other patterns (steam/limit): line moved TOWARD the side listed.
@@ -134,19 +177,29 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
              if oc_money is not None else None
     fr_cls = classify_split(sport, fr_handle, fr_bettors, line_moved_toward) \
              if fr_handle is not None else None
+    cz_cls = classify_split(sport, cz_money, cz_bets, line_moved_toward) \
+             if cz_money is not None else None
 
-    # Combine via cross-source agreement — only *_CONFIRMED classifications
-    # come from BOTH sources agreeing. Everything else muted (_LEAN, SPLIT,
-    # PATTERN_ONLY, NEUTRAL) so we don't surface false certainty.
-    classification, _ = combine_classifications(oc_cls, fr_cls)
+    # 3-SOURCE COMBINATION (added 2026-08-15 pm)
+    # Highest tier: SHARP_TRIPLE_CONFIRMED when all 3 sources agree on a
+    # loud tag. Falls back to 2-source combine_classifications when only
+    # 2 sources published (which is common because FR is curated).
+    loud_tags = {'SHARP_MOVE', 'PUBLIC_MOVE', 'RLM', 'CONSENSUS'}
+    three_agree = (oc_cls in loud_tags and oc_cls == fr_cls == cz_cls)
+    if three_agree:
+        classification = oc_cls + '_TRIPLE_CONFIRMED'
+    else:
+        # Fall back to 2-source (OC + best available of FR/CZ)
+        classification, _ = combine_classifications(oc_cls, fr_cls if fr_cls else cz_cls)
 
-    # Only surface split numbers when they carry weight: CONFIRMED shows
-    # both sources (they agreed); LEAN shows whichever source spoke; SPLIT
-    # shows both so user sees the disagreement; PATTERN_ONLY/NEUTRAL don't
-    # surface any numbers (would mislead).
-    show_numbers = classification.endswith('_CONFIRMED') or \
-                   classification.endswith('_LEAN') or \
-                   classification == 'SOURCES_SPLIT'
+    # Only surface split numbers when they carry weight: CONFIRMED/TRIPLE
+    # shows both sources (they agreed); LEAN shows whichever source spoke;
+    # SPLIT shows both so user sees the disagreement; PATTERN_ONLY/NEUTRAL
+    # don't surface any numbers (would mislead).
+    show_numbers = ('_CONFIRMED' in classification or
+                    '_TRIPLE_CONFIRMED' in classification or
+                    classification.endswith('_LEAN') or
+                    classification == 'SOURCES_SPLIT')
 
     payload = {
         'classification': classification,

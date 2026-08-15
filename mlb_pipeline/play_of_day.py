@@ -2299,63 +2299,59 @@ def score_mlb_game(ctx, game_props=None, track=None):
                     if d.get('direction') in dir_b_vals)
         return min(100, max(0, 30 + neutral_pts + abs(a_pts - b_pts)))
 
-    # ---- BABIP regression flag (2026-08-15 · validated 94-96% hit rate) ----
-    # Backtest (project_advanced_metrics_backtest_815): teams with L14 RPG
-    # >1 R/G above season (hot) regressed 94% of the time by mean -1.89 R
-    # over next 10 games. Cold teams (<1 R/G below) rebounded 96% by +1.65.
-    #
-    # Apply as directional drivers:
-    #   home_team hot → fade HOME offense → +points UNDER (total)
-    #                    AND +points AWAY (side, since fading home = leaning away)
-    #   away_team hot → fade AWAY offense → +points UNDER (total)
-    #                    AND +points HOME (side)
-    #   home_team cold → back HOME offense → +points OVER (total)
-    #                    AND +points HOME (side)
-    #   away_team cold → back AWAY offense → +points OVER (total)
-    #                    AND +points AWAY (side)
-    #
-    # Weight: 8pts per flagged team. Two teams flagged in opposing directions
-    # will net toward zero (correctly — signals cancel). Both teams flagged
-    # same direction (e.g. both hot on total) reinforces UNDER lean.
+    # ---- BABIP regression flag (2026-08-15 pm REVISED per Playbook) ----
+    # PRIOR INCORRECT USE: BABIP flag was cast as directional OVER/UNDER
+    # driver worth 8pt total + 6pt side. Backtest says 94-96% is "runs
+    # regressed direction" — that's NOT the same as "OVER hits" or "team
+    # loses game." Adjustment is ~1.65-1.89 R over next 10 games spread.
+    # Correct usage: use as R/G ADJUSTER on projected_total, then compare
+    # adjusted projection vs close. If adjusted delta ≥ 0.75R, cast a
+    # small directional vote based on that delta (not on the flag itself).
+    # Weight lowered from 8 → 3 (indirect signal, not primary edge).
     def _babip_num(x):
         try: return float(x) if x is not None else None
         except (TypeError, ValueError): return None
-    home_babip_hot = _babip_num(ctx.get('home_team_babip_l14'))
-    away_babip_hot = _babip_num(ctx.get('away_team_babip_l14'))
-    # Use RPG-proxy fields instead if available (more direct signal); fallback
-    # to babip_regression_flag which is set by mlb_advanced_metrics.py
+    home_babip = _babip_num(ctx.get('home_team_babip_l14'))
+    away_babip = _babip_num(ctx.get('away_team_babip_l14'))
     _babip_flag = (ctx.get('babip_regression_flag') or '').lower()
-    if _babip_flag in ('hot', 'cold', 'mixed'):
-        # Home team flag
-        if home_babip_hot is not None and home_babip_hot > 0.320:
-            _add(total_drivers, 8, '📉', 'BABIP regression risk (home hot)',
-                 f'HOME L14 BABIP {home_babip_hot:.3f} > .320 · 94% regress hist',
-                 direction='UNDER')
-            _add(side_drivers, 6, '📉', 'HOME bat regression',
-                 f'HOME L14 BABIP {home_babip_hot:.3f} — hot streak due to cool',
-                 direction='AWAY')
-        elif home_babip_hot is not None and home_babip_hot < 0.280:
-            _add(total_drivers, 8, '📈', 'BABIP rebound (home cold)',
-                 f'HOME L14 BABIP {home_babip_hot:.3f} < .280 · 96% rebound hist',
-                 direction='OVER')
-            _add(side_drivers, 6, '📈', 'HOME bat rebound',
-                 f'HOME L14 BABIP {home_babip_hot:.3f} — cold streak due to warm',
-                 direction='HOME')
-        # Away team flag
-        if away_babip_hot is not None and away_babip_hot > 0.320:
-            _add(total_drivers, 8, '📉', 'BABIP regression risk (away hot)',
-                 f'AWAY L14 BABIP {away_babip_hot:.3f} > .320 · 94% regress hist',
-                 direction='UNDER')
-            _add(side_drivers, 6, '📉', 'AWAY bat regression',
-                 f'AWAY L14 BABIP {away_babip_hot:.3f} — hot streak due to cool',
-                 direction='HOME')
-        elif away_babip_hot is not None and away_babip_hot < 0.280:
-            _add(total_drivers, 8, '📈', 'BABIP rebound (away cold)',
-                 f'AWAY L14 BABIP {away_babip_hot:.3f} < .280 · 96% rebound hist',
-                 direction='OVER')
-            _add(side_drivers, 6, '📈', 'AWAY bat rebound',
-                 f'AWAY L14 BABIP {away_babip_hot:.3f} — cold streak due to warm',
-                 direction='AWAY')
+    proj_total = None
+    try:
+        pt_raw = ctx.get('projected_total')
+        proj_total = float(pt_raw) if pt_raw is not None else None
+    except (TypeError, ValueError):
+        pass
+    close_total = None
+    try:
+        ct_raw = ctx.get('close_total')
+        close_total = float(ct_raw) if ct_raw is not None else None
+    except (TypeError, ValueError):
+        pass
+
+    if _babip_flag in ('hot', 'cold', 'mixed') and proj_total is not None and close_total is not None:
+        rg_adj = 0.0
+        note_parts = []
+        # Apply per-team adjustment
+        if home_babip is not None:
+            if home_babip > 0.320:
+                rg_adj -= 1.89 / 2   # per-team share of team-level projection adjustment
+                note_parts.append(f'HOME hot BABIP {home_babip:.3f} → -0.95R')
+            elif home_babip < 0.280:
+                rg_adj += 1.65 / 2
+                note_parts.append(f'HOME cold BABIP {home_babip:.3f} → +0.83R')
+        if away_babip is not None:
+            if away_babip > 0.320:
+                rg_adj -= 1.89 / 2
+                note_parts.append(f'AWAY hot BABIP {away_babip:.3f} → -0.95R')
+            elif away_babip < 0.280:
+                rg_adj += 1.65 / 2
+                note_parts.append(f'AWAY cold BABIP {away_babip:.3f} → +0.83R')
+        adj_proj = proj_total + rg_adj
+        delta_vs_close = adj_proj - close_total
+        if abs(delta_vs_close) >= 0.75:
+            side_dir = 'OVER' if delta_vs_close > 0 else 'UNDER'
+            _add(total_drivers, 3, '📐', 'BABIP-adjusted total lean',
+                 f'{" · ".join(note_parts)} → adj_proj {adj_proj:.2f} vs close {close_total:.1f} (Δ{delta_vs_close:+.2f}R)',
+                 direction=side_dir)
 
     side_score = _net_directional_score(side_drivers, ('HOME',), ('AWAY',))
     total_score = _net_directional_score(total_drivers, ('OVER',), ('UNDER',))

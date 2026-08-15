@@ -13843,14 +13843,16 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               </View>
                             </View>
                             {/* Classification-aware flag chips (2026-08-15).
-                                CONFIRMED = both split sources agreed (loud).
+                                TRIPLE_CONFIRMED = OC + FR + Cleatz all agree (highest).
+                                CONFIRMED = 2 sources agreed (loud).
                                 LEAN = only one source; hidden numbers.
                                 SOURCES_SPLIT = disagree; user-visible caveat.
                                 PATTERN_ONLY / null = raw pattern only. */}
                             <View style={{flexDirection:'row', gap:6, flexWrap:'wrap', marginTop:6, marginBottom:8}}>
                               {flags.map((f:any, i:number) => {
                                 const cls: string = String(f.classification || 'PATTERN_ONLY');
-                                const isConfirmed = cls.endsWith('_CONFIRMED');
+                                const isTriple = cls.endsWith('_TRIPLE_CONFIRMED');
+                                const isConfirmed = cls.endsWith('_CONFIRMED') && !isTriple;
                                 const isLean = cls.endsWith('_LEAN');
                                 const isSplit = cls === 'SOURCES_SPLIT';
                                 const family = cls.startsWith('SHARP_MOVE') ? 'sharp'
@@ -13876,16 +13878,16 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                           : family === 'consensus' ? '🤝'
                                           : family === 'split' ? '❓'
                                           : '·';
-                                const label = family === 'sharp' ? (isConfirmed ? 'SHARP CONFIRMED' : 'SHARP LEAN')
-                                            : family === 'public' ? (isConfirmed ? 'PUBLIC CONFIRMED' : 'PUBLIC LEAN')
-                                            : family === 'rlm' ? (isConfirmed ? 'RLM CONFIRMED' : 'RLM LEAN')
+                                const label = family === 'sharp' ? (isTriple ? '🔥 SHARP TRIPLE' : isConfirmed ? 'SHARP CONFIRMED' : 'SHARP LEAN')
+                                            : family === 'public' ? (isTriple ? '🔥 PUBLIC TRIPLE' : isConfirmed ? 'PUBLIC CONFIRMED' : 'PUBLIC LEAN')
+                                            : family === 'rlm' ? (isTriple ? '🔥 RLM TRIPLE' : isConfirmed ? 'RLM CONFIRMED' : 'RLM LEAN')
                                             : family === 'consensus' ? 'CONSENSUS'
                                             : family === 'split' ? 'SOURCES DISAGREE'
                                             : f.pattern ? String(f.pattern).toUpperCase() : 'PATTERN';
                                 const sideLabel = teamForSide(f.side);
                                 return (
                                   <View key={i} style={{backgroundColor:bg, borderRadius:6, paddingHorizontal:8, paddingVertical:3,
-                                                        borderWidth: isConfirmed ? 1.5 : 0.5, borderColor:fg+'66'}}>
+                                                        borderWidth: isTriple ? 2 : (isConfirmed ? 1.5 : 0.5), borderColor:fg+'66'}}>
                                     <Text style={{color:fg, fontSize:10, fontWeight:'800', letterSpacing:0.4}}>
                                       {icon} {label}{family !== 'split' ? ` → ${sideLabel}` : ''}
                                     </Text>
@@ -13895,23 +13897,25 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                             </View>
                             {/* Detail line for the strongest flag */}
                             <Text style={{color:THEME.textDim, fontSize:11, lineHeight:15}}>{first.detail}</Text>
-                            {/* Split numbers — ONLY when at least one flag carries CONFIRMED (both
-                                sources agreed). LEAN / SOURCES_SPLIT / PATTERN_ONLY don't surface
-                                percentages to avoid false certainty. */}
+                            {/* Split numbers — surface when TRIPLE_CONFIRMED (all 3 sources
+                                agreed, highest confidence) or CONFIRMED (2 sources agreed).
+                                LEAN / SOURCES_SPLIT / PATTERN_ONLY don't surface numbers. */}
                             {(() => {
-                              const confirmed = flags.find((f:any) => String(f.classification || '').endsWith('_CONFIRMED'));
+                              const triple = flags.find((f:any) => String(f.classification || '').endsWith('_TRIPLE_CONFIRMED'));
+                              const confirmed = triple || flags.find((f:any) => String(f.classification || '').endsWith('_CONFIRMED'));
                               if (!confirmed) return null;
                               const parts: string[] = [];
-                              if (confirmed.money_pct != null) parts.push(`money% ${confirmed.money_pct.toFixed(0)}`);
+                              if (confirmed.money_pct != null) parts.push(`OC money% ${confirmed.money_pct.toFixed(0)}`);
                               if (confirmed.bets_pct != null)  parts.push(`bets% ${confirmed.bets_pct.toFixed(0)}`);
-                              if (confirmed.handle_pct != null && confirmed.money_pct == null)
-                                parts.push(`handle% ${confirmed.handle_pct.toFixed(0)}`);
-                              if (confirmed.bettors_pct != null && confirmed.bets_pct == null)
+                              if (confirmed.handle_pct != null)
+                                parts.push(`FR handle% ${confirmed.handle_pct.toFixed(0)}`);
+                              if (confirmed.bettors_pct != null)
                                 parts.push(`bettors% ${confirmed.bettors_pct.toFixed(0)}`);
                               if (!parts.length) return null;
+                              const prefix = triple ? '🔥 all 3 sources agree' : '📊 both split sources agree';
                               return (
                                 <Text style={{color:THEME.sharp, fontSize:10, fontWeight:'700', marginTop:4, letterSpacing:0.3}}>
-                                  📊 both split sources agree · {parts.join(' · ')}
+                                  {prefix} · {parts.join(' · ')}
                                 </Text>
                               );
                             })()}
