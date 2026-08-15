@@ -387,7 +387,33 @@ def auto_repair(sport: str, game_date: str) -> dict:
     + pitcher_trend_gate today).
     """
     repairs = {'A_layer_d_jerry_reads': 0, 'A_layer_d_prop_jerry': 0,
-               'B_trend_forced_pass': 0}
+               'B_trend_forced_pass': 0,
+               'Z_refit_reapplied': 0}
+
+    # --- Z. Refit self-heal (2026-08-15) ---
+    # Before any other repair or the coverage gate runs, ALWAYS re-apply
+    # prop refits. This makes refit-coverage failures self-healing instead
+    # of blocking the entire pipeline (previously caused 40-min pipelines
+    # to hard-exit at Jerry pre-publish, forcing full re-run). Idempotent
+    # since apply_prop_refit upserts on (game_id, prop_id).
+    if sport == 'MLB':
+        try:
+            import subprocess
+            here = os.path.dirname(os.path.abspath(__file__))
+            r = subprocess.run(
+                [sys.executable, os.path.join(here, 'apply_prop_refit.py')],
+                capture_output=True, text=True, timeout=180, env=os.environ.copy())
+            # Extract "N refit_conviction rows written" line if present
+            for line in (r.stdout or '').splitlines():
+                if 'refit_conviction rows written' in line:
+                    try:
+                        n_written = int(line.strip().split()[1])
+                        repairs['Z_refit_reapplied'] = n_written
+                    except (ValueError, IndexError):
+                        repairs['Z_refit_reapplied'] = 1
+                    break
+        except Exception as e:
+            print(f'  ⚠ refit self-heal failed: {e}')
 
     # --- A. Layer D re-scrub jerry_reads ---
     try:
