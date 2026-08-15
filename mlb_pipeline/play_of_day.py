@@ -2044,6 +2044,64 @@ def score_mlb_game(ctx, game_props=None, track=None):
                     if d.get('direction') in dir_b_vals)
         return min(100, max(0, 30 + neutral_pts + abs(a_pts - b_pts)))
 
+    # ---- BABIP regression flag (2026-08-15 · validated 94-96% hit rate) ----
+    # Backtest (project_advanced_metrics_backtest_815): teams with L14 RPG
+    # >1 R/G above season (hot) regressed 94% of the time by mean -1.89 R
+    # over next 10 games. Cold teams (<1 R/G below) rebounded 96% by +1.65.
+    #
+    # Apply as directional drivers:
+    #   home_team hot → fade HOME offense → +points UNDER (total)
+    #                    AND +points AWAY (side, since fading home = leaning away)
+    #   away_team hot → fade AWAY offense → +points UNDER (total)
+    #                    AND +points HOME (side)
+    #   home_team cold → back HOME offense → +points OVER (total)
+    #                    AND +points HOME (side)
+    #   away_team cold → back AWAY offense → +points OVER (total)
+    #                    AND +points AWAY (side)
+    #
+    # Weight: 8pts per flagged team. Two teams flagged in opposing directions
+    # will net toward zero (correctly — signals cancel). Both teams flagged
+    # same direction (e.g. both hot on total) reinforces UNDER lean.
+    def _babip_num(x):
+        try: return float(x) if x is not None else None
+        except (TypeError, ValueError): return None
+    home_babip_hot = _babip_num(ctx.get('home_team_babip_l14'))
+    away_babip_hot = _babip_num(ctx.get('away_team_babip_l14'))
+    # Use RPG-proxy fields instead if available (more direct signal); fallback
+    # to babip_regression_flag which is set by mlb_advanced_metrics.py
+    _babip_flag = (ctx.get('babip_regression_flag') or '').lower()
+    if _babip_flag in ('hot', 'cold', 'mixed'):
+        # Home team flag
+        if home_babip_hot is not None and home_babip_hot > 0.320:
+            _add(total_drivers, 8, '📉', 'BABIP regression risk (home hot)',
+                 f'HOME L14 BABIP {home_babip_hot:.3f} > .320 · 94% regress hist',
+                 direction='UNDER')
+            _add(side_drivers, 6, '📉', 'HOME bat regression',
+                 f'HOME L14 BABIP {home_babip_hot:.3f} — hot streak due to cool',
+                 direction='AWAY')
+        elif home_babip_hot is not None and home_babip_hot < 0.280:
+            _add(total_drivers, 8, '📈', 'BABIP rebound (home cold)',
+                 f'HOME L14 BABIP {home_babip_hot:.3f} < .280 · 96% rebound hist',
+                 direction='OVER')
+            _add(side_drivers, 6, '📈', 'HOME bat rebound',
+                 f'HOME L14 BABIP {home_babip_hot:.3f} — cold streak due to warm',
+                 direction='HOME')
+        # Away team flag
+        if away_babip_hot is not None and away_babip_hot > 0.320:
+            _add(total_drivers, 8, '📉', 'BABIP regression risk (away hot)',
+                 f'AWAY L14 BABIP {away_babip_hot:.3f} > .320 · 94% regress hist',
+                 direction='UNDER')
+            _add(side_drivers, 6, '📉', 'AWAY bat regression',
+                 f'AWAY L14 BABIP {away_babip_hot:.3f} — hot streak due to cool',
+                 direction='HOME')
+        elif away_babip_hot is not None and away_babip_hot < 0.280:
+            _add(total_drivers, 8, '📈', 'BABIP rebound (away cold)',
+                 f'AWAY L14 BABIP {away_babip_hot:.3f} < .280 · 96% rebound hist',
+                 direction='OVER')
+            _add(side_drivers, 6, '📈', 'AWAY bat rebound',
+                 f'AWAY L14 BABIP {away_babip_hot:.3f} — cold streak due to warm',
+                 direction='AWAY')
+
     side_score = _net_directional_score(side_drivers, ('HOME',), ('AWAY',))
     total_score = _net_directional_score(total_drivers, ('OVER',), ('UNDER',))
     # Props: drivers are aligned with the surfaced pick — net not meaningful
