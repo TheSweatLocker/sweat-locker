@@ -182,6 +182,37 @@ def detect_rlm_and_limit(sport: str, lookback_hours: int, now_iso: str,
     for row in lh_rows:
         grouped[(row['game_id'], row['market'], row['side'])].append(row)
 
+    # 2026-08-14 STEAM ROOM UX FIX: build matchup lookup so LIMIT/RLM
+    # flags display "TB @ BAL — sharp $ on over" instead of a raw
+    # game_id fragment. User feedback: "limit/whale on over" with no
+    # game name is pointless. Matchups come from line_history.matchup
+    # (populated by the poller).
+    matchup_by_gid = {}
+    for row in lh_rows:
+        gid_ = row.get('game_id')
+        mu = row.get('matchup')
+        if gid_ and mu and gid_ not in matchup_by_gid:
+            matchup_by_gid[gid_] = mu
+    # 2026-08-14 FALLBACK: line_history poller cadence can lag 24h+ vs
+    # line_snapshot. Do a broader matchup lookup for any gids in flags
+    # that aren't in the 6h line_history window.
+    unresolved_gids = [gid for (gid, _) in latest_by_gm.keys() if gid not in matchup_by_gid]
+    if unresolved_gids:
+        # Batch query line_history WITHOUT time filter for these gids
+        gids_csv = ','.join(unresolved_gids[:100])  # cap batch
+        lh_wide = requests.get(f'{SB}/rest/v1/line_history', headers=H_READ,
+            params={'sport': f'eq.{sport}',
+                    'game_id': f'in.({gids_csv})',
+                    'select': 'game_id,matchup',
+                    'order': 'captured_at.desc', 'limit': 500},
+            timeout=15)
+        if lh_wide.status_code == 200:
+            for row in lh_wide.json() or []:
+                gid_ = row.get('game_id')
+                mu = row.get('matchup')
+                if gid_ and mu and gid_ not in matchup_by_gid:
+                    matchup_by_gid[gid_] = mu
+
     flags = []
     for (gid, market), snap_row in latest_by_gm.items():
         pick_side = (snap_row.get('pick_side') or '').lower()
@@ -204,8 +235,13 @@ def detect_rlm_and_limit(sport: str, lookback_hours: int, now_iso: str,
             if bets_pct is not None and moved_toward:
                 bets_other = 100 - bets_pct if pick_side.upper() != (snap_row.get('pick_side') or '').upper() else bets_pct
                 if (100 - bets_other) >= (50 + RLM_DIVERGE_MIN):
-                    matchup = picks_snaps[0].get('matchup') or f'{gid[:8]}'
-                    detail = f'Line moved toward {pick_side} while bets% on {other_side} ({100 - bets_other:.0f}%)'
+                    matchup = picks_snaps[0].get('matchup') or matchup_by_gid.get(gid) or 'game'
+                    market_label = {'ml': 'ML', 'rl': 'run line', 'total': 'total'}.get(market, market)
+                    detail = (
+                        f'{matchup} · {market_label}: '
+                        f'Line moved toward {pick_side} while bets% on {other_side} '
+                        f'({100 - bets_other:.0f}%) — reverse line movement signal'
+                    )
                     flags.append({
                         'sport': sport, 'game_id': gid, 'market': market, 'side': pick_side,
                         'pattern': 'rlm', 'detail': detail,
@@ -218,7 +254,15 @@ def detect_rlm_and_limit(sport: str, lookback_hours: int, now_iso: str,
         # LIMIT: money%-bets% divergence ≥ LIMIT_DIVERGE_MIN
         if div is not None and money_pct is not None and bets_pct is not None:
             if abs(div) >= LIMIT_DIVERGE_MIN and money_pct > bets_pct:
-                detail = f'Money% {money_pct:.0f} vs bets% {bets_pct:.0f} (Δ+{money_pct-bets_pct:.0f}pp) — limit/whale on {pick_side}'
+                # 2026-08-14: include matchup in detail so users see
+                # "TB @ BAL — sharp $ on over" not just "sharp $ on over"
+                matchup = matchup_by_gid.get(gid) or 'game'
+                market_label = {'ml': 'ML', 'rl': 'run line', 'total': 'total'}.get(market, market)
+                detail = (
+                    f'{matchup} · {market_label}: '
+                    f'Money% {money_pct:.0f} vs bets% {bets_pct:.0f} '
+                    f'(Δ+{money_pct-bets_pct:.0f}pp) — sharp $ on {pick_side}'
+                )
                 flags.append({
                     'sport': sport, 'game_id': gid, 'market': market, 'side': pick_side,
                     'pattern': 'limit', 'detail': detail,
@@ -226,7 +270,7 @@ def detect_rlm_and_limit(sport: str, lookback_hours: int, now_iso: str,
                     'last_seen_at': now_iso,
                 })
                 if dry_run:
-                    print(f'  [DRY limit] {gid[:8]} · {market}/{pick_side} · {detail}')
+                    print(f'  [DRY limit] {matchup} · {market}/{pick_side} · {detail}')
     return flags
 
 
