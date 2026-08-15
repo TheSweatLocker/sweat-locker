@@ -1795,6 +1795,15 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [hrWatchOpen, setHrWatchOpen] = useState(false);
   const [ufcEvent, setUfcEvent] = useState<any>(null);
   const [ufcPicks, setUfcPicks] = useState<any[]>([]);
+  // 2026-08-15 fight-detail expansion: per-card-order idx of the expanded fight
+  // (only one open at a time). null = collapsed. Enables tap-through fight
+  // detail with head-to-head stats, method/round bars, full Jerry, externals.
+  const [expandedUfcFight, setExpandedUfcFight] = useState<number|null>(null);
+  // Cache: {fighterNameLower: statsRow}. Bulk-fetched on event load so
+  // expansion is instant. See fetchUfcEvent.
+  const [ufcFighterStats, setUfcFighterStats] = useState<Record<string, any>>({});
+  // Cache: {game_id: externalPicksArray}. Also bulk-fetched with event load.
+  const [ufcExternals, setUfcExternals] = useState<Record<string, any[]>>({});
   // 2026-08-09: keyed by game_id (e.g. "ufc_2026-08-09_5"), value = Jerry
   // synth row {short_read, conviction, call_verdict, call_side}. Used to
   // surface Jerry snippet inline on each UFC card fight row.
@@ -1834,7 +1843,7 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [steamSubTab, setSteamSubTab] = useState<'lines'|'ladder'|'sharp'>('lines');
   const [sharpPicks, setSharpPicks] = useState<any[]>([]);
   const [sharpRecord, setSharpRecord] = useState<{w:number,l:number,p:number,unitsNet:number}>({w:0,l:0,p:0,unitsNet:0});
-  const [sharpLoading, setSharpLoading] = useState(false);
+  const [sharpTabLoading, setSharpTabLoading] = useState(false);
   const [steamFlags, setSteamFlags] = useState<any[]>([]);
   const [steamHistorySample, setSteamHistorySample] = useState<Record<string, any[]>>({});
   const [steamPicksIdx, setSteamPicksIdx] = useState<Record<string, {primary:any, supplementary:any}>>({});
@@ -6993,7 +7002,7 @@ if(mkt.key === 'pitcher_props') {
     // inline. Falls back cleanly if no reads exist yet (Wed cron hasn't run).
     try {
       const {data: ufcJ} = await supabase.from('jerry_reads')
-        .select('game_id,call_side,call_verdict,conviction,short_read')
+        .select('game_id,call_side,call_verdict,conviction,short_read,long_read')
         .eq('sport', 'UFC')
         .not('short_read', 'is', null)
         .order('generated_at', {ascending: false})
@@ -7004,6 +7013,54 @@ if(mkt.key === 'pitcher_props') {
     } catch {
       setUfcJerryByGame({});
     }
+    // 2026-08-15: bulk-fetch fighter stats + externals for tap-to-expand
+    // detail panel. Uses last-name ilike since ufc_upcoming_event.fight_card
+    // stores display names and ufc_fighter_stats stores canonical names
+    // (occasional accent/spelling diff).
+    try {
+      const evData = await supabase
+        .from('ufc_upcoming_event')
+        .select('fight_card,event_date')
+        .order('updated_at', { ascending: false })
+        .limit(1);
+      const evRow = evData.data?.[0];
+      if (evRow) {
+        let card: any[] = [];
+        try {
+          card = typeof evRow.fight_card === 'string' ? JSON.parse(evRow.fight_card) : (evRow.fight_card || []);
+        } catch { card = []; }
+        // Collect unique last names across all fights
+        const lastNames = new Set<string>();
+        for (const f of card) {
+          const f1last = String(f.fighter1 || '').split(' ').pop()?.toLowerCase();
+          const f2last = String(f.fighter2 || '').split(' ').pop()?.toLowerCase();
+          if (f1last) lastNames.add(f1last);
+          if (f2last) lastNames.add(f2last);
+        }
+        // Fetch each in parallel — small N (10-14 fighters per card)
+        const statsByLast: Record<string, any> = {};
+        await Promise.all(Array.from(lastNames).map(async (last) => {
+          try {
+            const { data } = await supabase.from('ufc_fighter_stats')
+              .select('*').ilike('fighter_name', `%${last}%`).limit(1);
+            if (data && data[0]) statsByLast[last] = data[0];
+          } catch {}
+        }));
+        setUfcFighterStats(statsByLast);
+        // Externals: pull all UFC picks for the event date
+        try {
+          const { data: ext } = await supabase.from('external_picks')
+            .select('*').eq('sport','UFC').eq('game_date', evRow.event_date)
+            .limit(300);
+          const byFight: Record<string, any[]> = {};
+          for (const row of (ext || [])) {
+            const gid = (row as any).game_id || (row as any).matchup || 'ALL';
+            (byFight[gid] = byFight[gid] || []).push(row);
+          }
+          setUfcExternals(byFight);
+        } catch { setUfcExternals({}); }
+      }
+    } catch {}
   };
 
   const fetchPropOfDay = async () => {
@@ -8355,8 +8412,8 @@ setJerryHistory(prev => {
   // and computes running record from historical resolved picks. Different
   // product from Ladder — no compounding, no streak-dependence, just flat
   // units on every qualified play.
-  const fetchSharp = React.useCallback(async () => {
-    setSharpLoading(true);
+  const fetchSharpTab = React.useCallback(async () => {
+    setSharpTabLoading(true);
     try {
       const today = new Date().toISOString().slice(0,10);
       // Today's PRIME/STRONG MLB picks
@@ -8411,16 +8468,16 @@ setJerryHistory(prev => {
       });
       setSharpRecord({w,l,p,unitsNet: Math.round(unitsNet*100)/100});
     } catch (e) { setSharpPicks([]); setSharpRecord({w:0,l:0,p:0,unitsNet:0}); }
-    setSharpLoading(false);
+    setSharpTabLoading(false);
   }, []);
 
   useEffect(() => {
     if (activeTab === 'steam') {
       fetchSteamFlags();
       fetchLadder();
-      fetchSharp();
+      fetchSharpTab();
     }
-  }, [activeTab, fetchSteamFlags, fetchLadder, fetchSharp]);
+  }, [activeTab, fetchSteamFlags, fetchLadder, fetchSharpTab]);
 
   // Fetch active user notes + local dismissed-set on mount. Runs once
   // per app open — notes don't need real-time refresh (published server-side
@@ -11828,13 +11885,22 @@ setJerryHistory(prev => {
             const jerryKey = pick ? `ufc_${pick.event_date}_${pick.fight_order}` : null;
             const jerry = jerryKey ? (ufcJerryByGame as any)[jerryKey] : null;
             const tierColor = tier && TIER_COLOR ? (TIER_COLOR as any)[tier] : THEME.textMuted;
+            const isExpanded = expandedUfcFight === cardOrder;
+            // Lookup fighter stats via last-name (matches bulk-fetch key)
+            const f1last = String(f.fighter1 || '').split(' ').pop()?.toLowerCase() || '';
+            const f2last = String(f.fighter2 || '').split(' ').pop()?.toLowerCase() || '';
+            const f1Stats = ufcFighterStats[f1last];
+            const f2Stats = ufcFighterStats[f2last];
+            const fightExternals = pick?.game_id ? (ufcExternals[pick.game_id] || []) : [];
             return (
-              <View key={idx} style={{
+              <TouchableOpacity key={idx} activeOpacity={0.75}
+                onPress={() => setExpandedUfcFight(isExpanded ? null : cardOrder)}
+                style={{
                 paddingVertical:10, paddingHorizontal:isMain ? 10 : 8,
                 borderBottomWidth: idx < sorted.length - 1 ? 1 : 0,
                 borderBottomColor: THEME.border + '30',
-                backgroundColor: isMain ? THEME.combat + '10' : 'transparent',
-                borderRadius: isMain ? 8 : 0,
+                backgroundColor: isExpanded ? THEME.combat + '1F' : (isMain ? THEME.combat + '10' : 'transparent'),
+                borderRadius: (isMain || isExpanded) ? 8 : 0,
                 marginTop: isMain ? 2 : 0,
               }}>
                 {/* Fight header row */}
@@ -11910,18 +11976,169 @@ setJerryHistory(prev => {
                     )}
                   </View>
                   {conv != null && (
-                    <View style={{
-                      minWidth:44, paddingHorizontal:8, paddingVertical:6,
-                      backgroundColor: tierColor + '20',
-                      borderRadius:8, borderWidth:1.5, borderColor: tierColor + '55',
-                      alignItems:'center',
-                    }}>
-                      <Text style={{color: tierColor, fontSize:14, fontWeight:'900'}}>{conv}</Text>
-                      <Text style={{color: tierColor + 'AA', fontSize:8, fontWeight:'700',letterSpacing:0.3}}>CONV</Text>
+                    <View style={{alignItems:'center',gap:3}}>
+                      <View style={{
+                        minWidth:44, paddingHorizontal:8, paddingVertical:6,
+                        backgroundColor: tierColor + '20',
+                        borderRadius:8, borderWidth:1.5, borderColor: tierColor + '55',
+                        alignItems:'center',
+                      }}>
+                        <Text style={{color: tierColor, fontSize:14, fontWeight:'900'}}>{conv}</Text>
+                        <Text style={{color: tierColor + 'AA', fontSize:8, fontWeight:'700',letterSpacing:0.3}}>CONV</Text>
+                      </View>
+                      <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'700'}}>{isExpanded ? '▾' : '▸'}</Text>
                     </View>
                   )}
+                  {conv == null && (
+                    <Text style={{color:THEME.textMuted,fontSize:13,fontWeight:'700'}}>{isExpanded ? '▾' : '▸'}</Text>
+                  )}
                 </View>
-              </View>
+                {/* ═══ FIGHT DETAIL — expanded on tap ═══
+                    Head-to-head stats grid, method + round distribution bars,
+                    full Jerry read, and external picks scoped to this fight.
+                    All data bulk-fetched on ufcEvent load so expansion is
+                    instant. */}
+                {isExpanded && (
+                  <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:THEME.combat + '55'}}>
+                    {/* --- Head-to-head stats grid --- */}
+                    {(f1Stats || f2Stats) && (() => {
+                      const rows: {label:string; f1:any; f2:any; higherWins?:boolean; fmt?:(v:any)=>string}[] = [
+                        {label:'Record',  f1:f1Stats?.record,   f2:f2Stats?.record},
+                        {label:'SLpM',    f1:f1Stats?.slpm,     f2:f2Stats?.slpm,     higherWins:true},
+                        {label:'Str Acc', f1:f1Stats?.str_acc,  f2:f2Stats?.str_acc,  higherWins:true, fmt:(v)=>v!=null?`${v}%`:'—'},
+                        {label:'Str Def', f1:f1Stats?.str_def,  f2:f2Stats?.str_def,  higherWins:true, fmt:(v)=>v!=null?`${v}%`:'—'},
+                        {label:'SApM',    f1:f1Stats?.sapm,     f2:f2Stats?.sapm,     higherWins:false},
+                        {label:'TD Avg',  f1:f1Stats?.td_avg,   f2:f2Stats?.td_avg,   higherWins:true},
+                        {label:'TD Acc',  f1:f1Stats?.td_acc,   f2:f2Stats?.td_acc,   higherWins:true, fmt:(v)=>v!=null?`${v}%`:'—'},
+                        {label:'TD Def',  f1:f1Stats?.td_def,   f2:f2Stats?.td_def,   higherWins:true, fmt:(v)=>v!=null?`${v}%`:'—'},
+                        {label:'Sub Avg', f1:f1Stats?.sub_avg,  f2:f2Stats?.sub_avg,  higherWins:true},
+                        {label:'Finish %',f1:f1Stats?.finishing_rate,f2:f2Stats?.finishing_rate,higherWins:true,fmt:(v)=>v!=null?`${v}%`:'—'},
+                        {label:'Stance',  f1:f1Stats?.stance,   f2:f2Stats?.stance},
+                        {label:'Reach',   f1:f1Stats?.reach,    f2:f2Stats?.reach,    higherWins:true, fmt:(v)=>v!=null?`${v}"`:'—'},
+                        {label:'Height',  f1:f1Stats?.height,   f2:f2Stats?.height},
+                        {label:'Age',     f1:f1Stats?.age,      f2:f2Stats?.age,      higherWins:false},
+                      ];
+                      const validRows = rows.filter(r => r.f1 != null || r.f2 != null);
+                      if (!validRows.length) return null;
+                      return (
+                        <View style={{marginBottom:12}}>
+                          <Text style={{color:THEME.combat,fontSize:10,fontWeight:'800',letterSpacing:0.6,marginBottom:6}}>
+                            HEAD-TO-HEAD
+                          </Text>
+                          <View style={{flexDirection:'row',paddingBottom:5,borderBottomWidth:1,borderBottomColor:THEME.border+'40'}}>
+                            <Text style={{flex:1,color:THEME.text,fontSize:11,fontWeight:'700'}} numberOfLines={1}>{f.fighter1}</Text>
+                            <Text style={{width:70,color:THEME.textMuted,fontSize:9,fontWeight:'700',textAlign:'center',letterSpacing:0.3}}>STAT</Text>
+                            <Text style={{flex:1,color:THEME.text,fontSize:11,fontWeight:'700',textAlign:'right'}} numberOfLines={1}>{f.fighter2}</Text>
+                          </View>
+                          {validRows.map((row, ri) => {
+                            const v1 = row.f1; const v2 = row.f2;
+                            const fmt = row.fmt || ((v:any)=>v!=null?String(v):'—');
+                            let adv: 1|2|null = null;
+                            if (row.higherWins != null && typeof v1 === 'number' && typeof v2 === 'number' && v1 !== v2) {
+                              adv = row.higherWins ? (v1 > v2 ? 1 : 2) : (v1 < v2 ? 1 : 2);
+                            }
+                            return (
+                              <View key={ri} style={{flexDirection:'row',paddingVertical:4,borderBottomWidth: ri < validRows.length-1 ? 1 : 0, borderBottomColor:THEME.border+'20'}}>
+                                <Text style={{flex:1,color: adv===1 ? THEME.win : THEME.textDim, fontSize:11, fontWeight: adv===1 ? '800' : '600'}}>{fmt(v1)}</Text>
+                                <Text style={{width:70,color:THEME.textMuted,fontSize:9,fontWeight:'700',textAlign:'center',letterSpacing:0.3}}>{row.label.toUpperCase()}</Text>
+                                <Text style={{flex:1,color: adv===2 ? THEME.win : THEME.textDim, fontSize:11, fontWeight: adv===2 ? '800' : '600',textAlign:'right'}}>{fmt(v2)}</Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      );
+                    })()}
+                    {/* --- Method distribution --- */}
+                    {(kos != null || decs != null || subs != null) && (
+                      <View style={{marginBottom:12}}>
+                        <Text style={{color:THEME.combat,fontSize:10,fontWeight:'800',letterSpacing:0.6,marginBottom:6}}>METHOD DISTRIBUTION</Text>
+                        {[
+                          {label:'KO/TKO', pct:kos, color:'#ff6b6b'},
+                          {label:'Decision', pct:decs, color:'#5ea9e6'},
+                          {label:'Submission', pct:subs, color:'#a78bfa'},
+                        ].filter(m => m.pct != null).map((m, mi) => (
+                          <View key={mi} style={{marginBottom:5}}>
+                            <View style={{flexDirection:'row',justifyContent:'space-between',marginBottom:2}}>
+                              <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700'}}>{m.label}</Text>
+                              <Text style={{color:m.color,fontSize:10,fontWeight:'800'}}>{m.pct}%</Text>
+                            </View>
+                            <View style={{height:5,backgroundColor:THEME.border+'40',borderRadius:3,overflow:'hidden'}}>
+                              <View style={{height:'100%',width:`${Math.min(100,m.pct!)}%`,backgroundColor:m.color,borderRadius:3}} />
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                    {/* --- Round distribution --- */}
+                    {rounds.some(r => r.p > 0) && (
+                      <View style={{marginBottom:12}}>
+                        <Text style={{color:THEME.combat,fontSize:10,fontWeight:'800',letterSpacing:0.6,marginBottom:6}}>LIKELY ROUND ENDED</Text>
+                        <View style={{flexDirection:'row',gap:6,alignItems:'flex-end'}}>
+                          {rounds.map((r, ri) => {
+                            const pct = Math.round(r.p * 100);
+                            const isTop = topRound && r.r === topRound.r;
+                            return (
+                              <View key={ri} style={{flex:1,alignItems:'center'}}>
+                                <Text style={{color:isTop?THEME.combat:THEME.textMuted,fontSize:9,fontWeight:'800',marginBottom:3}}>{pct}%</Text>
+                                <View style={{width:'100%',height:36,backgroundColor:THEME.border+'30',borderRadius:4,overflow:'hidden',justifyContent:'flex-end'}}>
+                                  <View style={{width:'100%',height:`${Math.max(4,Math.min(100,pct*2))}%`,backgroundColor:isTop?THEME.combat:THEME.textDim+'88'}} />
+                                </View>
+                                <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginTop:3}}>R{r.r}</Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    )}
+                    {/* --- Full Jerry read (unclamped) --- */}
+                    {(() => {
+                      const full = scrubJerryText(jerry?.long_read) || scrubJerryText(jerry?.short_read);
+                      if (!full) return null;
+                      return (
+                        <View style={{marginBottom:12,padding:10,backgroundColor:THEME.hrb+'0F',borderRadius:8,borderLeftWidth:3,borderLeftColor:THEME.hrb}}>
+                          <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:5}}>
+                            <Text style={{color:THEME.hrb,fontSize:10,fontWeight:'800',letterSpacing:0.5}}>🎤 JERRY'S FULL READ</Text>
+                            {jerry?.call_verdict && (
+                              <Text style={{color: jerry.call_verdict==='BACK' ? THEME.win : jerry.call_verdict==='FADE' ? THEME.loss : THEME.textDim, fontSize:9, fontWeight:'700'}}>
+                                {jerry.call_verdict}{jerry.conviction != null && ` · ${jerry.conviction}`}
+                              </Text>
+                            )}
+                          </View>
+                          <Text style={{color:THEME.text,fontSize:12,lineHeight:17}}>{full}</Text>
+                        </View>
+                      );
+                    })()}
+                    {/* --- External picks for this fight --- */}
+                    {fightExternals.length > 0 && (
+                      <View style={{marginBottom:6}}>
+                        <Text style={{color:THEME.combat,fontSize:10,fontWeight:'800',letterSpacing:0.6,marginBottom:6}}>
+                          EXTERNAL PICKS ({fightExternals.length})
+                        </Text>
+                        {fightExternals.slice(0,6).map((ep:any, ei:number) => (
+                          <View key={ei} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:4,borderBottomWidth: ei < Math.min(5,fightExternals.length-1) ? 1 : 0, borderBottomColor:THEME.border+'20'}}>
+                            <View style={{flex:1}}>
+                              <Text style={{color:THEME.text,fontSize:11,fontWeight:'700'}} numberOfLines={1}>
+                                {ep.source || 'source'} · {ep.side || ep.pick_side || 'pick'}
+                              </Text>
+                              {ep.rationale && (
+                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}} numberOfLines={2}>{ep.rationale}</Text>
+                              )}
+                            </View>
+                            {ep.odds_american != null && (
+                              <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',marginLeft:8}}>
+                                {ep.odds_american > 0 ? `+${ep.odds_american}` : ep.odds_american}
+                              </Text>
+                            )}
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                    <Text style={{color:THEME.textMuted,fontSize:9,textAlign:'center',marginTop:4,fontStyle:'italic'}}>
+                      tap again to collapse
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
             );
           })}
         </View>
@@ -14143,7 +14360,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
 
             {steamSubTab==='sharp' && (
               <View>
-                {sharpLoading ? (
+                {sharpTabLoading ? (
                   <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/></View>
                 ) : (
                   <View style={{gap:12}}>
