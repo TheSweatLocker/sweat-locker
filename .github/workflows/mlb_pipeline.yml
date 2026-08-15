@@ -81,6 +81,26 @@ jobs:
           cd mlb_pipeline
           python game_context.py
 
+      # ── ADVANCED METRICS (2026-08-15) — 5-part refinement pack ──
+      # Runs AFTER game_context.py so base fields (catcher_framing,
+      # bp_relievers_3d, pitcher L3 K%, projected_bb/outs) are populated.
+      # Additive-only — writes new columns to mlb_game_context:
+      #   - expected_starter_ip_home/away + ttto_penalty_runs
+      #   - home/away_framing_k_bonus (elite framers → K prop lift)
+      #   - home/away_team_babip_l14 + babip_regression_flag
+      #   - home/away_bullpen_availability + effective_era (rest-adjusted)
+      #   - home/away_sp_siera (Skill-Interactive ERA)
+      # Downstream layers can consume these to refine projections; leaving
+      # them off = no behavior change (non-blocking, non-breaking).
+      - name: Compute advanced sabermetrics (TTTO, framing, BABIP, bullpen, SIERA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python mlb_advanced_metrics.py || echo "advanced metrics failed (non-fatal)"
+
       # Verify starters against MLB Stats API probablePitcher feed (2026-05-27).
       # Catches late lineup changes / surprise debuts / scratched starters that
       # the game_context.py upsert missed. Three attribution slips in 4 days
