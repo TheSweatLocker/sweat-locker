@@ -1400,6 +1400,55 @@ def score_mlb_game(ctx, game_props=None, track=None):
     except (TypeError, ValueError):
         pass
 
+    # ---- LINE MOVEMENT: sharp-classified moves (NEW 2026-08-15) ----
+    # Reads line_movement_flags for this game where classification is
+    # SHARP_MOVE or RLM (both are sharp indicators). Casts a directional
+    # vote toward the side sharp $ backs. If our engine lands on the
+    # opposite side, net-by-direction scoring naturally subtracts this
+    # vote as a warning. Per user directive 8/15: "flag but don't act."
+    try:
+        gid = ctx.get('game_id')
+        if gid:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/line_movement_flags"
+                f"?game_id=eq.{gid}"
+                f"&classification=in.(SHARP_MOVE,RLM)"
+                f"&select=market,side,pattern,classification,money_pct,bets_pct"
+                f"&order=classified_at.desc&limit=6",
+                headers=HEADERS, timeout=8,
+            )
+            for flag in (r.json() if r.status_code == 200 else []) or []:
+                mkt   = (flag.get('market') or '').lower()
+                side  = (flag.get('side') or '').upper()
+                cls   = flag.get('classification')
+                money = flag.get('money_pct'); bets = flag.get('bets_pct')
+                if not side: continue
+                money_str = f'{money:.0f}%' if money is not None else '—'
+                bets_str  = f'{bets:.0f}%'  if bets  is not None else '—'
+                # For RLM the side field is the public side; line moved AWAY.
+                # Flip to point AT the sharp side.
+                target_side = side
+                if cls == 'RLM':
+                    target_side = 'AWAY' if side == 'HOME' else \
+                                  'HOME' if side == 'AWAY' else \
+                                  'UNDER' if side == 'OVER' else \
+                                  'OVER' if side == 'UNDER' else side
+                # Route to correct bucket
+                if mkt in ('ml', 'spread', 'runline', 'puckline'):
+                    if target_side in ('HOME', 'AWAY'):
+                        _add(side_drivers, 3, '🎯',
+                             f'{cls.replace("_", " ").title()} · {target_side}',
+                             f'{mkt.upper()} · money% {money_str} / bets% {bets_str}',
+                             direction=target_side)
+                elif mkt == 'total':
+                    if target_side in ('OVER', 'UNDER'):
+                        _add(total_drivers, 3, '🎯',
+                             f'{cls.replace("_", " ").title()} · {target_side}',
+                             f'TOTAL · money% {money_str} / bets% {bets_str}',
+                             direction=target_side)
+    except Exception:
+        pass
+
     # ---- TOTAL: TTTO exposure penalty (NEW 2026-08-15) ----
     # 3rd-time-through-the-order effect: batters hit ~50pp better vs a
     # starter on their 3rd look. When BOTH starters expected to go deep

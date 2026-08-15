@@ -768,6 +768,20 @@ jobs:
           cd mlb_pipeline
           python grade_daily_card.py || echo "grade_daily_card non-fatal"
 
+      # CLV computation (NEW 2026-08-15). Runs AFTER grading so every pick
+      # has a resolved close_total / close_spread / close_home_ml + our
+      # picked line/odds. Computes per-pick closing line value + upserts
+      # to clv_snapshots. CLV is the industry-standard proxy for pick
+      # quality that's independent of W/L variance. Sport-universal.
+      - name: Line movement — compute CLV per pick
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_clv.py --sport ALL || echo "compute_clv non-fatal"
+
       # Jerry synthesis graders (2026-07-31 · Tier 3). Runs alongside
       # legacy grade_daily_card. Populates jerry_reads.result +
       # prop_jerry_reads.result so the Receipts tab can show live
@@ -1461,6 +1475,36 @@ jobs:
         run: |
           cd mlb_pipeline
           python detect_line_movement.py --sport ALL --lookback-hours 6 || echo "line detector failed"
+
+      # ─── Line movement intelligence (NEW 2026-08-15) ──────────────
+      # Cross-references the raw steam/RLM/limit flags detected above with
+      # oddscrowd money%/bets% + fadereport bettors%/handle% to classify
+      # each move as SHARP_MOVE / PUBLIC_MOVE / RLM / CONSENSUS. This
+      # classification is what turns "line moved 0.5pt" from noise into
+      # a real signal — used by play_of_day's sharp-conflict driver.
+      # Sport-universal (--sport ALL).
+      - name: Line movement — classify sharp vs public
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python classify_line_moves.py --sport ALL || echo "line classifier failed"
+
+      # Freeze TRUE closing lines at T-Xmin (per line_movement_config).
+      # Distinguishes "close_total was set by most recent pull" from
+      # "close_total is the actual line at first pitch minus X min."
+      # Stamps close_locked_at on <sport>_game_context so downstream
+      # CLV computation knows the freeze is real.
+      - name: Line movement — freeze true closing lines
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python freeze_closing_lines.py --sport ALL || echo "close freezer failed"
 
       - name: Steam Room — ladder qualifier check
         env:
