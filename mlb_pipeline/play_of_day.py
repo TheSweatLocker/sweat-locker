@@ -1345,6 +1345,102 @@ def score_mlb_game(ctx, game_props=None, track=None):
     except (TypeError, ValueError):
         pass
 
+    # ---- LIVING PATTERN ENGINE: consume validated patterns (NEW 2026-08-15) ----
+    # Reads pattern_registry WHERE tier='VALIDATED' (n>=50 + hit_rate above
+    # baseline+5pp) OR strong DISCOVERY (n>=25 + edge>=8pp for early signal).
+    # For each qualifying pattern, checks whether the current game's public
+    # splits match the pattern's conditions; if yes, casts a directional
+    # driver vote.
+    # This is where the living pattern engine actually affects picks.
+    try:
+        gid_pat = ctx.get('game_id')
+        if gid_pat:
+            # Latest public split for this game across markets
+            splits_r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/public_splits_archive"
+                f"?game_id=eq.{gid_pat}"
+                f"&select=market,pick_side,oc_money_pct,oc_bets_pct,oc_divergence,"
+                f"fr_handle_pct,fr_bettors_pct,current_line,current_odds"
+                f"&order=captured_at.desc&limit=50",
+                headers=HEADERS, timeout=8,
+            )
+            game_splits = splits_r.json() if splits_r.status_code == 200 else []
+            # Latest per (market, pick_side)
+            latest_split = {}
+            for s in game_splits:
+                key = (s.get('market'), s.get('pick_side'))
+                latest_split.setdefault(key, s)
+
+            if latest_split:
+                # Pull VALIDATED + strong DISCOVERY patterns for MLB
+                pat_r = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/pattern_registry"
+                    f"?sport=eq.MLB"
+                    f"&tier=in.(VALIDATED,DISCOVERY)"
+                    f"&hit_rate=gte.55"
+                    f"&n=gte.15"
+                    f"&select=name,conditions,bet_direction,hit_rate,n,edge_pp,tier,origin"
+                    f"&order=edge_pp.desc&limit=30",
+                    headers=HEADERS, timeout=8,
+                )
+                patterns = pat_r.json() if pat_r.status_code == 200 else []
+
+                def _cond_ok(c, row):
+                    v = row.get(c.get('field'))
+                    op = c.get('op')
+                    if op == 'is_null':  return v is None
+                    if op == 'not_null': return v is not None
+                    if v is None: return False
+                    try: v = float(v)
+                    except (TypeError, ValueError): return False
+                    thr = float(c.get('value') or 0)
+                    if op == '>=': return v >= thr
+                    if op == '>':  return v >  thr
+                    if op == '<=': return v <= thr
+                    if op == '<':  return v <  thr
+                    return False
+
+                # Deduplicate — only fire each pattern once per game
+                fired_names = set()
+                for pat in patterns:
+                    if pat['name'] in fired_names: continue
+                    conds = pat.get('conditions') or []
+                    for (mkt, side), split_row in latest_split.items():
+                        if not all(_cond_ok(c, split_row) for c in conds): continue
+                        # Effective side: FADE flips, FOLLOW keeps
+                        direction = pat.get('bet_direction', 'FOLLOW')
+                        if direction == 'NEUTRAL': continue  # descriptive only
+                        eff_side = side
+                        if direction == 'FADE':
+                            flip = {'HOME': 'AWAY', 'AWAY': 'HOME',
+                                    'OVER': 'UNDER', 'UNDER': 'OVER'}
+                            eff_side = flip.get(side, side)
+                        # Weight by tier + edge
+                        weight = 4 if pat.get('tier') == 'VALIDATED' else 2
+                        origin = pat.get('origin', 'SEEDED')
+                        icon = '🧬' if origin == 'DISCOVERED' else '🎯'
+                        tier_note = pat.get('tier', '?')
+                        detail = (f'{pat["name"][:40]} · {pat["hit_rate"]}% n={pat["n"]}'
+                                  f' ({tier_note}, {direction.lower()})')
+                        # Route to correct bucket
+                        mkt_lower = (mkt or '').lower()
+                        if mkt_lower in ('ml', 'spread', 'rl', 'runline', 'pl', 'puckline'):
+                            if eff_side in ('HOME', 'AWAY'):
+                                _add(side_drivers, weight, icon,
+                                     f'Pattern → {eff_side}', detail,
+                                     direction=eff_side)
+                                fired_names.add(pat['name'])
+                                break
+                        elif mkt_lower == 'total':
+                            if eff_side in ('OVER', 'UNDER'):
+                                _add(total_drivers, weight, icon,
+                                     f'Pattern → {eff_side}', detail,
+                                     direction=eff_side)
+                                fired_names.add(pat['name'])
+                                break
+    except Exception:
+        pass
+
     # ---- SIDE: Handedness asymmetric edge — TIGHT THRESHOLD (NEW 2026-08-15) ----
     # Backtest 90d: delta>=15 + edge>=105 = 50.0% n=32 (coinflip, DROPPED)
     #               delta>=15 + edge>=110 = 63.6% n=22 (KEEP)

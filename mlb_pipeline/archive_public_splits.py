@@ -40,7 +40,7 @@ SUPPORTED_SPORTS = ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC']
 
 def latest_oc(sport: str, since_hrs: int = 6) -> dict:
     """Return {(game_id, market, side): row} latest OC snapshot per key."""
-    since = (datetime.now(timezone.utc) - timedelta(hours=since_hrs)).isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(hours=since_hrs)).isoformat().replace('+', '%2B')
     r = requests.get(
         f'{SB}/rest/v1/line_snapshot'
         f'?sport=eq.{sport}&source=eq.oddscrowd&snapshot_ts=gte.{since}'
@@ -58,7 +58,7 @@ def latest_oc(sport: str, since_hrs: int = 6) -> dict:
 
 def latest_fr(sport: str, since_hrs: int = 6) -> dict:
     """Same shape for fadereport_signals; returns empty dict if table missing."""
-    since = (datetime.now(timezone.utc) - timedelta(hours=since_hrs)).isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(hours=since_hrs)).isoformat().replace('+', '%2B')
     r = requests.get(
         f'{SB}/rest/v1/fadereport_signals'
         f'?sport=eq.{sport}&captured_at=gte.{since}'

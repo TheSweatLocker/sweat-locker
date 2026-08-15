@@ -50,7 +50,7 @@ SUPPORTED_SPORTS = ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC']
 
 def fetch_flags(sport: str, since_hours: int = 24) -> list:
     """Pull unclassified (or recently re-fired) line_movement_flags for sport."""
-    since = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat().replace('+', '%2B')
     r = requests.get(
         f'{SB}/rest/v1/line_movement_flags'
         f'?sport=eq.{sport}&first_seen_at=gte.{since}'

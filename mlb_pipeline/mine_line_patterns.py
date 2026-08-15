@@ -226,20 +226,60 @@ def eval_conditions(conditions: list, row: dict) -> bool:
 _RESULTS_CACHE = {}
 
 def _load_results(sport: str) -> dict:
-    """{(game_id): result_row} — cached per run."""
+    """{(game_id): result_row} — cached per run. Schema per sport:
+       MLB    → run_line_result ('home_cover'|'away_cover'|'push'), total_result
+       NFL    → spread_result / home_spread_covered
+       NCAAF  → same as NFL
+       NCAAB  → same
+       NHL    → puck_line_result
+    """
     if sport in _RESULTS_CACHE: return _RESULTS_CACHE[sport]
     tbl = RESULTS_TABLE.get(sport)
     if not tbl:
         _RESULTS_CACHE[sport] = {}; return {}
-    r = requests.get(
-        f'{SB}/rest/v1/{tbl}?select=game_id,game_date,home_score,away_score,'
-        f'close_total,close_spread,total_result,ats_result&limit=10000',
-        headers=H_READ, timeout=45)
-    if r.status_code != 200:
-        _RESULTS_CACHE[sport] = {}; return {}
-    idx = {r['game_id']: r for r in (r.json() or []) if r.get('game_id')}
+    # Superset of columns across sports — request only known-safe fields.
+    idx = {}
+    for page in range(200):  # up to 200k rows
+        r = requests.get(
+            f'{SB}/rest/v1/{tbl}?select=*&limit=1000&offset={page*1000}',
+            headers=H_READ, timeout=60)
+        if r.status_code != 200: break
+        chunk = r.json() or []
+        if not chunk: break
+        for row in chunk:
+            if row.get('game_id'): idx[row['game_id']] = row
+        if len(chunk) < 1000: break
     _RESULTS_CACHE[sport] = idx
     return idx
+
+
+def _spread_hit_side(sport: str, r: dict) -> str | None:
+    """Return 'HOME' or 'AWAY' or 'PUSH' for the spread outcome. Handles
+    per-sport schema differences (run_line_result / spread_result /
+    home_spread_covered / puck_line_result)."""
+    # MLB
+    rlr = (r.get('run_line_result') or '').strip().lower()
+    if rlr:
+        if 'push' in rlr: return 'PUSH'
+        if 'home' in rlr: return 'HOME'
+        if 'away' in rlr: return 'AWAY'
+    # NHL
+    plr = (r.get('puck_line_result') or '').strip().lower()
+    if plr:
+        if 'push' in plr: return 'PUSH'
+        if 'home' in plr: return 'HOME'
+        if 'away' in plr: return 'AWAY'
+    # NFL/NCAAF/NCAAB — spread_result
+    sr = (r.get('spread_result') or '').strip().lower()
+    if sr:
+        if 'push' in sr: return 'PUSH'
+        if 'home' in sr: return 'HOME'
+        if 'away' in sr: return 'AWAY'
+    # Fallback — home_spread_covered boolean
+    hsc = r.get('home_spread_covered')
+    if hsc is True:  return 'HOME'
+    if hsc is False: return 'AWAY'
+    return None
 
 
 def _score_outcome(sport: str, game_id: str, market: str,
@@ -269,12 +309,10 @@ def _score_outcome(sport: str, game_id: str, market: str,
         tr = (r.get('total_result') or '').lower()
         if tr not in ('over', 'under'): return None
         return 'HIT' if tr == effective_side.lower() else 'MISS'
-    if market in ('spread', 'runline', 'puckline'):
-        ats = (r.get('ats_result') or '').strip().lower()
-        if not ats: return None
-        # ats_result is 'Home Cover' or 'Away Cover' or 'Push'
-        if 'push' in ats: return 'PUSH'
-        actual = 'HOME' if 'home' in ats else 'AWAY'
+    if market in ('spread', 'runline', 'puckline', 'rl', 'pl'):
+        actual = _spread_hit_side(sport, r)
+        if actual is None: return None
+        if actual == 'PUSH': return 'PUSH'
         return 'HIT' if actual == effective_side else 'MISS'
     return None
 
@@ -284,16 +322,22 @@ def _score_outcome(sport: str, game_id: str, market: str,
 # ──────────────────────────────────────────────────────────────────────
 
 def _pull_archive_since(sport: str, days: int) -> list:
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    r = requests.get(
-        f'{SB}/rest/v1/public_splits_archive'
-        f'?sport=eq.{sport}&captured_at=gte.{since}'
-        f'&select=game_id,market,pick_side,oc_money_pct,oc_bets_pct,oc_divergence,'
-        f'fr_handle_pct,fr_bettors_pct,current_line,current_odds,captured_at'
-        f'&order=captured_at.desc&limit=50000',
-        headers=H_READ, timeout=60)
-    if r.status_code != 200: return []
-    return r.json() or []
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace('+', '%2B')
+    rows = []
+    for page in range(200):  # up to 200k rows
+        r = requests.get(
+            f'{SB}/rest/v1/public_splits_archive'
+            f'?sport=eq.{sport}&captured_at=gte.{since}'
+            f'&select=game_id,market,pick_side,oc_money_pct,oc_bets_pct,oc_divergence,'
+            f'fr_handle_pct,fr_bettors_pct,current_line,current_odds,captured_at'
+            f'&order=captured_at.desc&limit=1000&offset={page*1000}',
+            headers=H_READ, timeout=60)
+        if r.status_code != 200: break
+        chunk = r.json() or []
+        if not chunk: break
+        rows.extend(chunk)
+        if len(chunk) < 1000: break
+    return rows
 
 
 def _dedupe_latest_per_game(rows: list) -> list:

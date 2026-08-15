@@ -80,14 +80,15 @@ def fetch_upcoming_games(sport: str, window_hrs: int = 2) -> list:
     close_cols   = fields['close_cols']
 
     now = datetime.now(timezone.utc)
-    window_end = (now + timedelta(hours=window_hrs)).isoformat()
+    window_end = (now + timedelta(hours=window_hrs)).isoformat().replace('+', '%2B')
+    now_q = now.isoformat().replace('+', '%2B')
     select_cols = ','.join(['game_id', commence_col, 'close_locked_at'] + close_cols)
 
     r = requests.get(
         f'{SB}/rest/v1/{tbl}?select={select_cols}'
         f'&close_locked_at=is.null'
         f'&{commence_col}=lte.{window_end}'
-        f'&{commence_col}=gte.{now.isoformat()}',
+        f'&{commence_col}=gte.{now_q}',
         headers=H_READ, timeout=20)
     if r.status_code != 200:
         # Column might not exist on this sport yet — non-fatal
