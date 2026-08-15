@@ -1507,6 +1507,21 @@ jobs:
           cd mlb_pipeline
           python classify_line_moves.py --sport ALL || echo "line classifier failed"
 
+      # Fadereport sharp-signal scrape (Playwright). Second source of
+      # public splits (handle%/bettors%) alongside OddsCrowd. Cross-source
+      # agreement is the quality gate for classify_line_moves — only fires
+      # loud SHARP_CONFIRMED / PUBLIC_CONFIRMED when both sources agree.
+      # Without FR flowing, everything falls to _LEAN and pattern engine
+      # "both_sources_*" seeds never accumulate. Wired 2026-08-15 pm.
+      - name: Fadereport — scrape sharp signals (all sports)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python fadereport_scraper.py || echo "fadereport scraper failed (non-fatal)"
+
       # Archive both public split sources side-by-side per snapshot
       # (2026-08-15). Feeds the living pattern-discovery engine below —
       # nothing is meaningful the day it happens; it's the cumulative
