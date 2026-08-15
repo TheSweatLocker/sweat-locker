@@ -1670,6 +1670,20 @@ def score_pitcher_ks(g, side):
     elif pitcher_k_pct is not None:
         signals['_projected_ks'] = round(pitcher_k_pct / 100 * 22 - K_PROJECTION_SHIFT, 1)
 
+    # Catcher framing bonus (NEW 2026-08-15). Elite framer behind starter
+    # steals ~5-8 called strikes per game vs replacement → ~+0.8 K/game.
+    # Computed by mlb_advanced_metrics.py from savant framing_runs; graceful
+    # skip when framing data missing (catcher not yet named, etc.).
+    framing_bonus_raw = g.get(f'{side}_framing_k_bonus')
+    try:
+        framing_bonus = float(framing_bonus_raw) if framing_bonus_raw is not None else None
+    except (TypeError, ValueError):
+        framing_bonus = None
+    if framing_bonus is not None and signals.get('_projected_ks') is not None:
+        signals['_projected_ks_pre_framing'] = signals['_projected_ks']
+        signals['_projected_ks'] = round(signals['_projected_ks'] + framing_bonus, 1)
+        signals['_framing_k_bonus'] = round(framing_bonus, 2)
+
     # Suggested line — aim for ~1.5 K cushion below projection so the line
     # we surface is a CLEAR Over edge (not 0.5-juiced). Snap to X.5 because
     # books only post X.5 K lines. Bounds 3.5-7.5 match book distribution.
@@ -1903,6 +1917,20 @@ def score_pitcher_ks_under(g, side):
             signals['_projected_ks_season'] = round(season_k, 2)
     elif pitcher_k_pct is not None:
         signals['_projected_ks'] = round(pitcher_k_pct / 100 * 18 - K_PROJECTION_SHIFT, 1)
+
+    # Catcher framing bonus (NEW 2026-08-15). Elite framer raises
+    # expected Ks, which for UNDER scoring means the projected total
+    # goes UP → suggested UNDER line goes UP → book UNDER at old line
+    # becomes less attractive. Symmetric to K-Over path.
+    framing_bonus_raw = g.get(f'{side}_framing_k_bonus')
+    try:
+        framing_bonus = float(framing_bonus_raw) if framing_bonus_raw is not None else None
+    except (TypeError, ValueError):
+        framing_bonus = None
+    if framing_bonus is not None and signals.get('_projected_ks') is not None:
+        signals['_projected_ks_pre_framing'] = signals['_projected_ks']
+        signals['_projected_ks'] = round(signals['_projected_ks'] + framing_bonus, 1)
+        signals['_framing_k_bonus'] = round(framing_bonus, 2)
 
     # Suggested Under line — aim for ~1.5 K cushion ABOVE projection so the
     # line we surface is a CLEAR Under edge (book line above projection by
