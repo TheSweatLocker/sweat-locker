@@ -1536,6 +1536,20 @@ jobs:
           cd mlb_pipeline
           python fadereport_scraper.py || echo "fadereport scraper failed (non-fatal)"
 
+      # Cleatz.com public splits scraper (2026-08-15 pm) — 3rd public-splits
+      # source alongside OddsCrowd + Fadereport. Full-slate coverage with
+      # both handle% and bets% per side across ML/RL/Total. Cross-source
+      # agreement across all 3 = highest confidence signal (SHARP_TRIPLE_
+      # CONFIRMED once classifier extended). Writes to cleatz_signals table.
+      - name: Cleatz — scrape full-slate public splits (MLB/NFL/CFB)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python cleatz_scraper.py || echo "cleatz scraper failed (non-fatal)"
+
       # Archive both public split sources side-by-side per snapshot
       # (2026-08-15). Feeds the living pattern-discovery engine below —
       # nothing is meaningful the day it happens; it's the cumulative
