@@ -8282,7 +8282,8 @@ setJerryHistory(prev => {
     try {
       const { data } = await supabase
         .from('line_movement_flags')
-        .select('sport,game_id,market,side,pattern,detail,first_seen_at,last_seen_at')
+        .select('sport,game_id,market,side,pattern,detail,first_seen_at,last_seen_at,' +
+                'classification,money_pct,bets_pct,handle_pct,bettors_pct,classified_at')
         .gte('last_seen_at', new Date(Date.now() - 24*60*60*1000).toISOString())
         .order('last_seen_at', {ascending: false})
         .limit(120);
@@ -13745,26 +13746,85 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 )}
                               </View>
                             </View>
-                            {/* Pattern chips — now with team names */}
+                            {/* Classification-aware flag chips (2026-08-15).
+                                CONFIRMED = both split sources agreed (loud).
+                                LEAN = only one source; hidden numbers.
+                                SOURCES_SPLIT = disagree; user-visible caveat.
+                                PATTERN_ONLY / null = raw pattern only. */}
                             <View style={{flexDirection:'row', gap:6, flexWrap:'wrap', marginTop:6, marginBottom:8}}>
                               {flags.map((f:any, i:number) => {
-                                const bg = f.pattern === 'steam' ? THEME.accent + '22'
-                                        : f.pattern === 'rlm'   ? THEME.sharp + '22'
-                                        : THEME.hrb + '22';
-                                const fg = f.pattern === 'steam' ? THEME.accent
-                                        : f.pattern === 'rlm'   ? THEME.sharp
-                                        : HRB_COLOR;
-                                const icon = f.pattern === 'steam' ? '💨' : f.pattern === 'rlm' ? '⚡' : '🐋';
+                                const cls: string = String(f.classification || 'PATTERN_ONLY');
+                                const isConfirmed = cls.endsWith('_CONFIRMED');
+                                const isLean = cls.endsWith('_LEAN');
+                                const isSplit = cls === 'SOURCES_SPLIT';
+                                const family = cls.startsWith('SHARP_MOVE') ? 'sharp'
+                                            : cls.startsWith('PUBLIC_MOVE') ? 'public'
+                                            : cls.startsWith('RLM') ? 'rlm'
+                                            : cls === 'CONSENSUS' ? 'consensus'
+                                            : isSplit ? 'split'
+                                            : 'pattern';
+                                const bg = family === 'sharp' ? THEME.sharp + (isConfirmed ? '33' : '18')
+                                        : family === 'public' ? THEME.loss + (isConfirmed ? '33' : '18')
+                                        : family === 'rlm' ? THEME.accent + (isConfirmed ? '33' : '18')
+                                        : family === 'consensus' ? HRB_COLOR + '22'
+                                        : family === 'split' ? THEME.textDim + '22'
+                                        : THEME.textDim + '18';
+                                const fg = family === 'sharp' ? THEME.sharp
+                                        : family === 'public' ? THEME.loss
+                                        : family === 'rlm' ? THEME.accent
+                                        : family === 'consensus' ? HRB_COLOR
+                                        : THEME.textDim;
+                                const icon = family === 'sharp' ? '🎯'
+                                          : family === 'public' ? '👥'
+                                          : family === 'rlm' ? '⚡'
+                                          : family === 'consensus' ? '🤝'
+                                          : family === 'split' ? '❓'
+                                          : '·';
+                                const label = family === 'sharp' ? (isConfirmed ? 'SHARP CONFIRMED' : 'SHARP LEAN')
+                                            : family === 'public' ? (isConfirmed ? 'PUBLIC CONFIRMED' : 'PUBLIC LEAN')
+                                            : family === 'rlm' ? (isConfirmed ? 'RLM CONFIRMED' : 'RLM LEAN')
+                                            : family === 'consensus' ? 'CONSENSUS'
+                                            : family === 'split' ? 'SOURCES DISAGREE'
+                                            : f.pattern ? String(f.pattern).toUpperCase() : 'PATTERN';
                                 const sideLabel = teamForSide(f.side);
                                 return (
-                                  <View key={i} style={{backgroundColor:bg, borderRadius:6, paddingHorizontal:8, paddingVertical:3, borderWidth:1, borderColor:fg+'44'}}>
-                                    <Text style={{color:fg, fontSize:10, fontWeight:'800', letterSpacing:0.4}}>{icon} {f.pattern.toUpperCase()} → {sideLabel}</Text>
+                                  <View key={i} style={{backgroundColor:bg, borderRadius:6, paddingHorizontal:8, paddingVertical:3,
+                                                        borderWidth: isConfirmed ? 1.5 : 0.5, borderColor:fg+'66'}}>
+                                    <Text style={{color:fg, fontSize:10, fontWeight:'800', letterSpacing:0.4}}>
+                                      {icon} {label}{family !== 'split' ? ` → ${sideLabel}` : ''}
+                                    </Text>
                                   </View>
                                 );
                               })}
                             </View>
                             {/* Detail line for the strongest flag */}
                             <Text style={{color:THEME.textDim, fontSize:11, lineHeight:15}}>{first.detail}</Text>
+                            {/* Split numbers — ONLY when at least one flag carries CONFIRMED (both
+                                sources agreed). LEAN / SOURCES_SPLIT / PATTERN_ONLY don't surface
+                                percentages to avoid false certainty. */}
+                            {(() => {
+                              const confirmed = flags.find((f:any) => String(f.classification || '').endsWith('_CONFIRMED'));
+                              if (!confirmed) return null;
+                              const parts: string[] = [];
+                              if (confirmed.money_pct != null) parts.push(`money% ${confirmed.money_pct.toFixed(0)}`);
+                              if (confirmed.bets_pct != null)  parts.push(`bets% ${confirmed.bets_pct.toFixed(0)}`);
+                              if (confirmed.handle_pct != null && confirmed.money_pct == null)
+                                parts.push(`handle% ${confirmed.handle_pct.toFixed(0)}`);
+                              if (confirmed.bettors_pct != null && confirmed.bets_pct == null)
+                                parts.push(`bettors% ${confirmed.bettors_pct.toFixed(0)}`);
+                              if (!parts.length) return null;
+                              return (
+                                <Text style={{color:THEME.sharp, fontSize:10, fontWeight:'700', marginTop:4, letterSpacing:0.3}}>
+                                  📊 both split sources agree · {parts.join(' · ')}
+                                </Text>
+                              );
+                            })()}
+                            {/* Split disagreement notice */}
+                            {flags.some((f:any) => f.classification === 'SOURCES_SPLIT') && (
+                              <Text style={{color:THEME.textDim, fontSize:10, fontStyle:'italic', marginTop:4}}>
+                                Split sources disagree on direction — pattern flagged for visibility only.
+                              </Text>
+                            )}
                             {/* Per-side movement summary — first vs last snapshot */}
                             {Object.entries(bySide).length > 0 && (
                               <View style={{marginTop:8, paddingTop:8, borderTopWidth:1, borderTopColor:THEME.border+'44', gap:3}}>
@@ -13833,9 +13893,34 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               </View>
                             </>
                           ) : (
-                            <Text style={{color:THEME.textDim, fontSize:13, lineHeight:18}}>
-                              {s?.note || 'Waiting for the right spot. Ladder skips freely — patience is the edge.'}
-                            </Text>
+                            <>
+                              <Text style={{color:THEME.textDim, fontSize:13, lineHeight:18, marginBottom:10}}>
+                                {s?.note || 'Waiting for the right spot. Ladder skips freely — patience is the edge.'}
+                              </Text>
+                              {/* Explicit qualifier gates — makes "waiting" mean something */}
+                              <View style={{backgroundColor:THEME.bg + '77', borderRadius:8, padding:10, borderWidth:0.5, borderColor:THEME.border + '55'}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:1, marginBottom:6}}>
+                                  WHAT QUALIFIES A RUNG
+                                </Text>
+                                <View style={{gap:3}}>
+                                  {[
+                                    ['🎯', 'PRIME or STRONG tier'],
+                                    ['📊', 'Model win prob ≥ 60%'],
+                                    ['⚖️', 'Cohort hit rate ≥ 60% (n ≥ 30)'],
+                                    ['🤝', '4-of-5 lens consensus'],
+                                    ['📈', 'Edge ≥ 10pp vs implied line'],
+                                  ].map(([icon, txt], i) => (
+                                    <View key={i} style={{flexDirection:'row', alignItems:'center', gap:6}}>
+                                      <Text style={{fontSize:11}}>{icon}</Text>
+                                      <Text style={{color:THEME.textDim, fontSize:11}}>{txt}</Text>
+                                    </View>
+                                  ))}
+                                </View>
+                                <Text style={{color:THEME.textMuted, fontSize:10, marginTop:8, fontStyle:'italic', lineHeight:14}}>
+                                  All 5 gates must hit. Most days zero picks clear — that's the point. Ladder trades volume for hit rate.
+                                </Text>
+                              </View>
+                            </>
                           )}
                         </View>
                       );

@@ -165,9 +165,10 @@ def is_move_meaningful(sport: str, market: str, delta_abs: float) -> bool:
 
 def classify_split(sport: str, money_pct: float | None, bets_pct: float | None,
                    line_moved_toward_side: bool) -> str:
-    """Classify a line move given the public split on the side it moved TO.
+    """Classify a line move from a SINGLE source's split. Returns one of:
+    SHARP_MOVE | PUBLIC_MOVE | RLM | CONSENSUS | NEUTRAL.
 
-    Returns one of: SHARP_MOVE | PUBLIC_MOVE | RLM | CONSENSUS | NEUTRAL
+    For the multi-source confirmed variant use combine_classifications().
     """
     if money_pct is None or bets_pct is None:
         return 'NEUTRAL'
@@ -175,15 +176,11 @@ def classify_split(sport: str, money_pct: float | None, bets_pct: float | None,
     sharp_thr = cfg['sharp_money_threshold']
     pub_thr   = cfg['public_bets_threshold']
     div_thr   = cfg['divergence_threshold']
-    # money%  = share of DOLLARS (sharp weight)
-    # bets%   = share of TICKETS (public weight)
-    # Line moved TOWARD the side we're evaluating (True) or AWAY (False, = RLM candidate)
     if not line_moved_toward_side:
         # Line moved AWAY from the side that has public $ → classic RLM
         if bets_pct >= pub_thr:
             return 'RLM'
         return 'NEUTRAL'
-    # Line moved TOWARD the side. Classify by who's on it.
     if money_pct >= sharp_thr and bets_pct < pub_thr:
         return 'SHARP_MOVE'
     if bets_pct >= pub_thr and money_pct < sharp_thr:
@@ -191,6 +188,66 @@ def classify_split(sport: str, money_pct: float | None, bets_pct: float | None,
     if money_pct >= sharp_thr and bets_pct >= pub_thr:
         return 'CONSENSUS'
     if abs(money_pct - bets_pct) >= div_thr:
-        # Divergence but neither hits the strong threshold — softer sharp lean
         return 'SHARP_MOVE' if money_pct > bets_pct else 'PUBLIC_MOVE'
     return 'NEUTRAL'
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Multi-source combination (cross-verification quality gate)
+# ──────────────────────────────────────────────────────────────────────
+#
+# We have TWO public split sources (OddsCrowd + Fadereport) which
+# routinely disagree on any given game. If we surfaced "SHARP: money% 68"
+# to users from just one source, we'd be asserting false certainty.
+# Solution: use cross-source AGREEMENT as the quality gate.
+#
+# Combined classification hierarchy (loudest → quietest):
+#   *_CONFIRMED — both sources agree, high confidence, surface numbers
+#   *_LEAN      — only one source available OR only one says the tag,
+#                 muted badge, DO NOT surface individual %s
+#   SOURCES_SPLIT — sources disagree on direction (one says sharp, other
+#                   says public) — grey badge, "sources disagree"
+#   PATTERN_ONLY  — no split data available at all, raw pattern only
+#   NEUTRAL       — both sources present but neither meaningful
+
+_LOUD_TAGS = {'SHARP_MOVE', 'PUBLIC_MOVE', 'RLM', 'CONSENSUS'}
+
+
+def combine_classifications(oddscrowd_cls: str | None,
+                             fadereport_cls: str | None) -> tuple[str, str]:
+    """Combine two source classifications into (final_tag, confidence).
+
+    Returns (classification, confidence_level) where confidence is one of:
+      'CONFIRMED'    — both sources agree on a loud tag
+      'LEAN'         — only one loud tag; the other is missing or NEUTRAL
+      'SPLIT'        — sources disagree on which loud tag applies
+      'PATTERN_ONLY' — neither source available
+      'NEUTRAL'      — both sources say NEUTRAL
+    """
+    oc = oddscrowd_cls or None
+    fr = fadereport_cls or None
+    both_missing = oc is None and fr is None
+    if both_missing:
+        return ('PATTERN_ONLY', 'PATTERN_ONLY')
+    # Only one source available
+    if oc is None or fr is None:
+        present = oc or fr
+        if present in _LOUD_TAGS:
+            return (present + '_LEAN', 'LEAN')
+        return ('NEUTRAL', 'NEUTRAL')
+    # Both sources present
+    if oc == fr:
+        if oc in _LOUD_TAGS:
+            return (oc + '_CONFIRMED', 'CONFIRMED')
+        return ('NEUTRAL', 'NEUTRAL')
+    # They differ — check for split conflicts
+    oc_loud = oc in _LOUD_TAGS
+    fr_loud = fr in _LOUD_TAGS
+    if oc_loud and fr_loud:
+        # Both loud but disagree → true SOURCES_SPLIT
+        return ('SOURCES_SPLIT', 'SPLIT')
+    if oc_loud or fr_loud:
+        # One loud, other neutral → lean toward the loud one
+        loud = oc if oc_loud else fr
+        return (loud + '_LEAN', 'LEAN')
+    return ('NEUTRAL', 'NEUTRAL')

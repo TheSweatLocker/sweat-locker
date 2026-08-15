@@ -1409,10 +1409,13 @@ def score_mlb_game(ctx, game_props=None, track=None):
     try:
         gid = ctx.get('game_id')
         if gid:
+            # Only trust _CONFIRMED classifications (both split sources
+            # agreed). _LEAN / SOURCES_SPLIT / PATTERN_ONLY get ignored
+            # so the engine doesn't vote on ambiguous sharp signal.
             r = requests.get(
                 f"{SUPABASE_URL}/rest/v1/line_movement_flags"
                 f"?game_id=eq.{gid}"
-                f"&classification=in.(SHARP_MOVE,RLM)"
+                f"&classification=in.(SHARP_MOVE_CONFIRMED,RLM_CONFIRMED)"
                 f"&select=market,side,pattern,classification,money_pct,bets_pct"
                 f"&order=classified_at.desc&limit=6",
                 headers=HEADERS, timeout=8,
@@ -1425,26 +1428,26 @@ def score_mlb_game(ctx, game_props=None, track=None):
                 if not side: continue
                 money_str = f'{money:.0f}%' if money is not None else '—'
                 bets_str  = f'{bets:.0f}%'  if bets  is not None else '—'
-                # For RLM the side field is the public side; line moved AWAY.
-                # Flip to point AT the sharp side.
+                # RLM_CONFIRMED: side field is the public side; line moved AWAY.
+                # Flip target to sharp side.
                 target_side = side
-                if cls == 'RLM':
+                if cls == 'RLM_CONFIRMED':
                     target_side = 'AWAY' if side == 'HOME' else \
                                   'HOME' if side == 'AWAY' else \
                                   'UNDER' if side == 'OVER' else \
                                   'OVER' if side == 'UNDER' else side
-                # Route to correct bucket
+                short_label = 'Sharp' if 'SHARP' in cls else 'RLM'
                 if mkt in ('ml', 'spread', 'runline', 'puckline'):
                     if target_side in ('HOME', 'AWAY'):
                         _add(side_drivers, 3, '🎯',
-                             f'{cls.replace("_", " ").title()} · {target_side}',
-                             f'{mkt.upper()} · money% {money_str} / bets% {bets_str}',
+                             f'{short_label} confirmed · {target_side}',
+                             f'{mkt.upper()} · both split sources agree · money% {money_str} bets% {bets_str}',
                              direction=target_side)
                 elif mkt == 'total':
                     if target_side in ('OVER', 'UNDER'):
                         _add(total_drivers, 3, '🎯',
-                             f'{cls.replace("_", " ").title()} · {target_side}',
-                             f'TOTAL · money% {money_str} / bets% {bets_str}',
+                             f'{short_label} confirmed · {target_side}',
+                             f'TOTAL · both split sources agree · money% {money_str} bets% {bets_str}',
                              direction=target_side)
     except Exception:
         pass

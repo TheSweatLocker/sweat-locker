@@ -43,7 +43,7 @@ H_READ  = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'return=minimal'}
 
-from line_movement_config import get_config, classify_split
+from line_movement_config import get_config, classify_split, combine_classifications
 
 SUPPORTED_SPORTS = ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC']
 
@@ -125,29 +125,35 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
     oc_money, oc_bets = _split_on_side(oc, side, 'money_pct', 'bets_pct')
     fr_handle, fr_bettors = _split_on_side(fr, side, 'handle_pct', 'bettors_pct')
 
-    # For classification we prefer OddsCrowd (larger sample). Fadereport is
-    # cross-verification.
-    money_pct = oc_money if oc_money is not None else fr_handle
-    bets_pct  = oc_bets  if oc_bets  is not None else fr_bettors
+    # RLM: line moved AWAY from the side that had heavy public money.
+    # Other patterns (steam/limit): line moved TOWARD the side listed.
+    line_moved_toward = pattern != 'rlm'
 
-    # Line moved TOWARD this side iff pattern is 'steam' or 'limit' (both
-    # imply money flowed to `side`) — the write path in detect_line_movement
-    # sets side to the direction the line moved TO.
-    # For RLM specifically, pattern comes in as 'rlm' with side = the side
-    # money was pushing but the line moved AWAY from.
-    if pattern == 'rlm':
-        line_moved_toward = False
-    else:
-        line_moved_toward = True
+    # Classify from each source independently.
+    oc_cls = classify_split(sport, oc_money, oc_bets, line_moved_toward) \
+             if oc_money is not None else None
+    fr_cls = classify_split(sport, fr_handle, fr_bettors, line_moved_toward) \
+             if fr_handle is not None else None
 
-    classification = classify_split(sport, money_pct, bets_pct, line_moved_toward)
+    # Combine via cross-source agreement — only *_CONFIRMED classifications
+    # come from BOTH sources agreeing. Everything else muted (_LEAN, SPLIT,
+    # PATTERN_ONLY, NEUTRAL) so we don't surface false certainty.
+    classification, _ = combine_classifications(oc_cls, fr_cls)
+
+    # Only surface split numbers when they carry weight: CONFIRMED shows
+    # both sources (they agreed); LEAN shows whichever source spoke; SPLIT
+    # shows both so user sees the disagreement; PATTERN_ONLY/NEUTRAL don't
+    # surface any numbers (would mislead).
+    show_numbers = classification.endswith('_CONFIRMED') or \
+                   classification.endswith('_LEAN') or \
+                   classification == 'SOURCES_SPLIT'
 
     payload = {
         'classification': classification,
-        'money_pct':     round(oc_money, 1) if oc_money is not None else None,
-        'bets_pct':      round(oc_bets, 1)  if oc_bets  is not None else None,
-        'handle_pct':    round(fr_handle, 1)   if fr_handle   is not None else None,
-        'bettors_pct':   round(fr_bettors, 1)  if fr_bettors  is not None else None,
+        'money_pct':     round(oc_money, 1) if show_numbers and oc_money is not None else None,
+        'bets_pct':      round(oc_bets, 1)  if show_numbers and oc_bets  is not None else None,
+        'handle_pct':    round(fr_handle, 1)   if show_numbers and fr_handle   is not None else None,
+        'bettors_pct':   round(fr_bettors, 1)  if show_numbers and fr_bettors  is not None else None,
         'classified_at': datetime.now(timezone.utc).isoformat(),
     }
     return payload
@@ -166,8 +172,7 @@ def run_sport(sport: str, dry_run: bool = False) -> tuple:
     if not flags:
         return (0, 0)
 
-    counts = {'SHARP_MOVE': 0, 'PUBLIC_MOVE': 0, 'RLM': 0,
-              'CONSENSUS': 0, 'NEUTRAL': 0}
+    counts = {}
     written = 0
     for flag in flags:
         payload = classify_flag(sport, flag)
