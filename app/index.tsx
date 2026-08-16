@@ -14,6 +14,7 @@ import GameDetailV2 from './components/GameDetailV2';
 import UfcFightDetail from './components/UfcFightDetail';
 import Explainer from './components/Explainer';
 import TierChip from './components/TierChip';
+import LineMovementTab from './components/LineMovementTab';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Sport } from './lib/sportPeriods';
 
@@ -1853,6 +1854,11 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [steamFlags, setSteamFlags] = useState<any[]>([]);
   const [steamHistorySample, setSteamHistorySample] = useState<Record<string, any[]>>({});
   const [steamPicksIdx, setSteamPicksIdx] = useState<Record<string, {primary:any, supplementary:any}>>({});
+  // 2026-08-15 Line Movement redesign: external_source_track_record rows
+  // per (source, sport, market, window). Rendered inline on each card as
+  // the "how do we know this isn't noise" ribbon. Bulk-fetched once with
+  // the steam flags; cheap query (128 rows total).
+  const [steamSourceRecords, setSteamSourceRecords] = useState<any[]>([]);
   const [steamLoading, setSteamLoading] = useState(false);
   const [ladderState, setLadderState] = useState<any>(null);
   const [ladderRungs, setLadderRungs] = useState<any[]>([]);
@@ -8393,6 +8399,20 @@ setJerryHistory(prev => {
           setSteamPicksIdx(picksIdx);
         }
       } catch (e) { setSteamPicksIdx({}); }
+      // 2026-08-15: pull the per-source track record rollup so each
+      // signal card can show "this source hits X% over 30d n=N" inline.
+      // Populated nightly by compute_external_source_records.py.
+      try {
+        const {data: recs} = await supabase.from('external_source_track_record')
+          .select('source,sport,market,surface,window_days,hit_rate,n_graded,n_wins,n_losses,n_pushes')
+          .limit(500);
+        // Column is `surface` in the underlying table but LineMovementTab
+        // expects `market` — normalize here so the component stays clean.
+        const normalized = (recs || []).map((r: any) => ({
+          ...r, market: r.market || r.surface,
+        }));
+        setSteamSourceRecords(normalized);
+      } catch { setSteamSourceRecords([]); }
     } catch (e) { setSteamFlags([]); }
     setSteamLoading(false);
   }, []);
@@ -13990,303 +14010,28 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             </View>
 
             {steamSubTab==='lines' && (
-              <View>
-                {steamLoading ? (
-                  <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/><Text style={{color:THEME.textDim,marginTop:12,fontSize:13}}>Reading line drift...</Text></View>
-                ) : steamFlags.length === 0 ? (
-                  <View style={{alignItems:'center',paddingTop:40,paddingHorizontal:20}}>
-                    <Text style={{fontSize:40}}>🌊</Text>
-                    <Text style={{color:THEME.text,fontWeight:'800',fontSize:15,marginTop:12,textAlign:'center'}}>No movement flags yet</Text>
-                    <Text style={{color:THEME.textDim,fontSize:12,marginTop:8,textAlign:'center',lineHeight:18}}>
-                      Sparkline data seeds every 30 min. Steam moves + RLM + limit flags surface here as detected.
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={{gap:10}}>
-                    {(() => {
-                      // Group flags per (game, market)
-                      const grouped: Record<string, any[]> = {};
-                      steamFlags.forEach((f: any) => {
-                        const key = `${f.game_id}::${f.market}`;
-                        (grouped[key] = grouped[key] || []).push(f);
-                      });
-                      // 2026-08-13 gap fix #3: rank groups by strongest pattern.
-                      // STEAM (multi-book coordinated) is the highest-conviction
-                      // sharp signal, then RLM (line vs public divergence),
-                      // then LIMIT (money/bets whale divergence). Sort keys
-                      // reflect that priority so the eye lands on strongest first.
-                      const PATTERN_RANK: Record<string, number> = {steam: 0, rlm: 1, limit: 2};
-                      const groupEntries = Object.entries(grouped);
-                      groupEntries.sort(([, a]: any, [, b]: any) => {
-                        const rankA = Math.min(...a.map((f: any) => PATTERN_RANK[f.pattern] ?? 9));
-                        const rankB = Math.min(...b.map((f: any) => PATTERN_RANK[f.pattern] ?? 9));
-                        if (rankA !== rankB) return rankA - rankB;
-                        return b.length - a.length; // more flags on same game = higher
-                      });
-                      return groupEntries.slice(0, 20).map(([key, flags]: any) => {
-                        const [gid, market] = key.split('::');
-                        const sample = steamHistorySample[key] || [];
-                        const first = flags[0];
-
-                        // 2026-08-13 gap fix #2: pull matchup from sample data
-                        // so we can show real team names instead of HOME/AWAY.
-                        // Sample comes from line_history which stores the full
-                        // "Away @ Home" matchup string per snapshot.
-                        const matchup = sample[0]?.matchup || '';
-                        const commence = sample[0]?.commence_time;
-                        let awayTeam = '';
-                        let homeTeam = '';
-                        if (matchup.includes(' @ ')) {
-                          const parts = matchup.split(' @ ');
-                          awayTeam = parts[0].trim();
-                          homeTeam = parts[1].trim();
-                        }
-                        const teamForSide = (side: string): string => {
-                          const s = String(side).toLowerCase();
-                          if (s === 'home') return homeTeam || 'HOME';
-                          if (s === 'away') return awayTeam || 'AWAY';
-                          return side.toUpperCase(); // over/under
-                        };
-
-                        // Game time badge (gap fix #4)
-                        let timeBadge = '';
-                        if (commence) {
-                          const gameTime = new Date(commence);
-                          const now = new Date();
-                          const minsUntil = (gameTime.getTime() - now.getTime()) / 60000;
-                          if (minsUntil > 0 && minsUntil < 60) timeBadge = '🔴 STARTING SOON';
-                          else if (minsUntil > 0) timeBadge = gameTime.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', timeZone:'America/New_York'}) + ' ET';
-                          else timeBadge = '⏸ LIVE / STARTED';
-                        }
-
-                        // Compute per-side movement summary
-                        const bySide: Record<string, any[]> = {};
-                        sample.forEach((s: any) => (bySide[s.side] = bySide[s.side] || []).push(s));
-
-                        // 2026-08-13 gap fix #1: tap card → Game Detail.
-                        // Look up the underlying game object across gamesData,
-                        // mlbGameContext, nflGameContextMap. Same pattern the
-                        // sweat card row tap uses.
-                        const findGameForFlag = (): any | null => {
-                          const inGames = (gamesData || []).find((g: any) =>
-                            g.away_team === awayTeam && g.home_team === homeTeam);
-                          if (inGames) return inGames;
-                          const ctxHit: any = Object.values(mlbGameContext || {}).find((c: any) =>
-                            c?.away_team === awayTeam && c?.home_team === homeTeam)
-                            || Object.values(nflGameContextMap || {}).find((c: any) =>
-                              c?.away_team === awayTeam && c?.home_team === homeTeam);
-                          if (ctxHit) return {
-                            id: ctxHit.game_id, away_team: awayTeam, home_team: homeTeam,
-                            commence_time: ctxHit.commence_time || commence, bookmakers: [],
-                          };
-                          return null;
-                        };
-                        const target = findGameForFlag();
-                        const onTap = () => {
-                          if (!target) return;
-                          const flagSport = first.sport;
-                          if (flagSport && flagSport !== gamesSport) setGamesSport(flagSport);
-                          setActiveTab('games');
-                          setTimeout(() => openGameDetail(target), 50);
-                        };
-                        const CardTag: any = target ? TouchableOpacity : View;
-                        const cardProps: any = target ? {onPress: onTap, activeOpacity: 0.7} : {};
-
-                        return (
-                          <CardTag key={key} {...cardProps} style={[styles.card, {padding:12}]}>
-                            {/* Header: sport · market · matchup · time · tap hint */}
-                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:4}}>
-                              <View style={{flex:1}}>
-                                <Text style={{color:THEME.text, fontWeight:'800', fontSize:13}}>
-                                  {first.sport} · {market.toUpperCase()}
-                                </Text>
-                                {matchup && (
-                                  <Text style={{color:THEME.textDim, fontSize:11, marginTop:2}} numberOfLines={1}>{matchup}</Text>
-                                )}
-                              </View>
-                              <View style={{alignItems:'flex-end'}}>
-                                {timeBadge && (
-                                  <Text style={{color: timeBadge.includes('SOON') || timeBadge.includes('LIVE') ? THEME.loss : THEME.textMuted, fontSize:10, fontWeight:'700'}}>{timeBadge}</Text>
-                                )}
-                                {target && (
-                                  <Text style={{color:THEME.textMuted, fontSize:9, marginTop:2, opacity:0.6}}>tap →</Text>
-                                )}
-                              </View>
-                            </View>
-                            {/* Classification-aware flag chips (2026-08-15).
-                                TRIPLE_CONFIRMED = OC + FR + Cleatz all agree (highest).
-                                CONFIRMED = 2 sources agreed (loud).
-                                LEAN = only one source; hidden numbers.
-                                SOURCES_SPLIT = disagree; user-visible caveat.
-                                PATTERN_ONLY / null = raw pattern only. */}
-                            <View style={{flexDirection:'row', gap:6, flexWrap:'wrap', marginTop:6, marginBottom:8}}>
-                              {flags.map((f:any, i:number) => {
-                                const cls: string = String(f.classification || 'PATTERN_ONLY');
-                                const isTriple = cls.endsWith('_TRIPLE_CONFIRMED');
-                                const isConfirmed = cls.endsWith('_CONFIRMED') && !isTriple;
-                                const isLean = cls.endsWith('_LEAN');
-                                const isSplit = cls === 'SOURCES_SPLIT';
-                                const family = cls.startsWith('SHARP_MOVE') ? 'sharp'
-                                            : cls.startsWith('PUBLIC_MOVE') ? 'public'
-                                            : cls.startsWith('RLM') ? 'rlm'
-                                            : cls === 'CONSENSUS' ? 'consensus'
-                                            : isSplit ? 'split'
-                                            : 'pattern';
-                                const bg = family === 'sharp' ? THEME.sharp + (isConfirmed ? '33' : '18')
-                                        : family === 'public' ? THEME.loss + (isConfirmed ? '33' : '18')
-                                        : family === 'rlm' ? THEME.accent + (isConfirmed ? '33' : '18')
-                                        : family === 'consensus' ? HRB_COLOR + '22'
-                                        : family === 'split' ? THEME.textDim + '22'
-                                        : THEME.textDim + '18';
-                                const fg = family === 'sharp' ? THEME.sharp
-                                        : family === 'public' ? THEME.loss
-                                        : family === 'rlm' ? THEME.accent
-                                        : family === 'consensus' ? HRB_COLOR
-                                        : THEME.textDim;
-                                const icon = family === 'sharp' ? '🎯'
-                                          : family === 'public' ? '👥'
-                                          : family === 'rlm' ? '⚡'
-                                          : family === 'consensus' ? '🤝'
-                                          : family === 'split' ? '❓'
-                                          : '·';
-                                const label = family === 'sharp' ? (isTriple ? '🔥 SHARP TRIPLE' : isConfirmed ? 'SHARP CONFIRMED' : 'SHARP LEAN')
-                                            : family === 'public' ? (isTriple ? '🔥 PUBLIC TRIPLE' : isConfirmed ? 'PUBLIC CONFIRMED' : 'PUBLIC LEAN')
-                                            : family === 'rlm' ? (isTriple ? '🔥 RLM TRIPLE' : isConfirmed ? 'RLM CONFIRMED' : 'RLM LEAN')
-                                            : family === 'consensus' ? 'CONSENSUS'
-                                            : family === 'split' ? 'SOURCES DISAGREE'
-                                            : f.pattern ? String(f.pattern).toUpperCase() : 'PATTERN';
-                                const sideLabel = teamForSide(f.side);
-                                return (
-                                  <View key={i} style={{backgroundColor:bg, borderRadius:6, paddingHorizontal:8, paddingVertical:3,
-                                                        borderWidth: isTriple ? 2 : (isConfirmed ? 1.5 : 0.5), borderColor:fg+'66'}}>
-                                    <Text style={{color:fg, fontSize:10, fontWeight:'800', letterSpacing:0.4}}>
-                                      {icon} {label}{family !== 'split' ? ` → ${sideLabel}` : ''}
-                                    </Text>
-                                  </View>
-                                );
-                              })}
-                            </View>
-                            {/* Detail line for the strongest flag */}
-                            <Text style={{color:THEME.textDim, fontSize:11, lineHeight:15}}>{first.detail}</Text>
-                            {/* Split numbers — surface when TRIPLE_CONFIRMED (all 3 sources
-                                agreed, highest confidence) or CONFIRMED (2 sources agreed).
-                                LEAN / SOURCES_SPLIT / PATTERN_ONLY don't surface numbers. */}
-                            {(() => {
-                              const triple = flags.find((f:any) => String(f.classification || '').endsWith('_TRIPLE_CONFIRMED'));
-                              const confirmed = triple || flags.find((f:any) => String(f.classification || '').endsWith('_CONFIRMED'));
-                              if (!confirmed) return null;
-                              const parts: string[] = [];
-                              if (confirmed.money_pct != null) parts.push(`OC money% ${confirmed.money_pct.toFixed(0)}`);
-                              if (confirmed.bets_pct != null)  parts.push(`bets% ${confirmed.bets_pct.toFixed(0)}`);
-                              if (confirmed.handle_pct != null)
-                                parts.push(`FR handle% ${confirmed.handle_pct.toFixed(0)}`);
-                              if (confirmed.bettors_pct != null)
-                                parts.push(`bettors% ${confirmed.bettors_pct.toFixed(0)}`);
-                              if (!parts.length) return null;
-                              const prefix = triple ? '🔥 all 3 sources agree' : '📊 both split sources agree';
-                              return (
-                                <Text style={{color:THEME.sharp, fontSize:10, fontWeight:'700', marginTop:4, letterSpacing:0.3}}>
-                                  {prefix} · {parts.join(' · ')}
-                                </Text>
-                              );
-                            })()}
-                            {/* Split disagreement notice */}
-                            {flags.some((f:any) => f.classification === 'SOURCES_SPLIT') && (
-                              <Text style={{color:THEME.textDim, fontSize:10, fontStyle:'italic', marginTop:4}}>
-                                Split sources disagree on direction — pattern flagged for visibility only.
-                              </Text>
-                            )}
-                            {/* Alignment with our pick (NEW 2026-08-15).
-                                Reads primary_play / supplementary_play on the flagged
-                                game; compares direction of the strongest CONFIRMED
-                                flag (or first if none confirmed) vs the side we picked.
-                                Shows GREEN "aligns" / RED "sharp fading us" / GREY "no pick". */}
-                            {(() => {
-                              const picks = steamPicksIdx[gid];
-                              const strongest = flags.find((f:any) =>
-                                String(f.classification || '').endsWith('_CONFIRMED')) || flags[0];
-                              if (!strongest) return null;
-                              const flagSide = String(strongest.side || '').toUpperCase();
-                              // Determine what the sharp move POINTS AT
-                              const cls = String(strongest.classification || '');
-                              let sharpSide = flagSide;
-                              if (cls.startsWith('RLM')) {
-                                // RLM: side field = public side; sharps are on opposite
-                                sharpSide = flagSide === 'HOME' ? 'AWAY'
-                                          : flagSide === 'AWAY' ? 'HOME'
-                                          : flagSide === 'OVER' ? 'UNDER'
-                                          : flagSide === 'UNDER' ? 'OVER' : flagSide;
-                              } else if (cls.startsWith('PUBLIC_MOVE')) {
-                                // Public MOVED to side; treat as fade signal → sharp on other
-                                sharpSide = flagSide === 'HOME' ? 'AWAY'
-                                          : flagSide === 'AWAY' ? 'HOME'
-                                          : flagSide === 'OVER' ? 'UNDER'
-                                          : flagSide === 'UNDER' ? 'OVER' : flagSide;
-                              }
-                              const mkt = String(strongest.market || '').toLowerCase();
-                              const pickSideFromPlay = (play: any): string | null => {
-                                if (!play || typeof play !== 'object') return null;
-                                const ptype = String(play.type || play.market || '').toLowerCase();
-                                const psideRaw = String(play.side || play.pick_side || '').toUpperCase();
-                                if (!psideRaw) return null;
-                                // Only same-market comparisons
-                                if (mkt === 'total' && ptype !== 'total') return null;
-                                if (mkt !== 'total' && !['ml','spread','rl','runline','pl','puckline'].includes(ptype)) return null;
-                                return psideRaw;
-                              };
-                              const primarySide = picks ? pickSideFromPlay(picks.primary) : null;
-                              const suppSide    = picks ? pickSideFromPlay(picks.supplementary) : null;
-                              const ourSide = primarySide || suppSide;
-                              if (!ourSide) {
-                                return (
-                                  <Text style={{color:THEME.textMuted, fontSize:10, marginTop:4, fontWeight:'600', letterSpacing:0.3}}>
-                                    ⚪ No pick on this game
-                                  </Text>
-                                );
-                              }
-                              const aligns = ourSide === sharpSide;
-                              const fg = aligns ? THEME.win : THEME.loss;
-                              const label = aligns
-                                ? `✅ Aligns with our ${ourSide} pick`
-                                : `⚠️ Sharp fading our ${ourSide} pick (points ${sharpSide})`;
-                              return (
-                                <Text style={{color:fg, fontSize:10, marginTop:4, fontWeight:'800', letterSpacing:0.3}}>
-                                  {label}
-                                </Text>
-                              );
-                            })()}
-                            {/* Per-side movement summary — first vs last snapshot */}
-                            {Object.entries(bySide).length > 0 && (
-                              <View style={{marginTop:8, paddingTop:8, borderTopWidth:1, borderTopColor:THEME.border+'44', gap:3}}>
-                                {Object.entries(bySide).slice(0,4).map(([side, snaps]: any, i: number) => {
-                                  if (snaps.length < 2) return null;
-                                  const openLine = snaps[0].line;
-                                  const lastLine = snaps[snaps.length-1].line;
-                                  const openPrice = snaps[0].price;
-                                  const lastPrice = snaps[snaps.length-1].price;
-                                  const lineChanged = openLine !== lastLine;
-                                  const priceChanged = openPrice !== lastPrice;
-                                  const sideLabel = teamForSide(side);
-                                  return (
-                                    <View key={i} style={{flexDirection:'row', justifyContent:'space-between'}}>
-                                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.4}}>{sideLabel}</Text>
-                                      <Text style={{color:THEME.textDim, fontSize:10, fontFamily:'monospace' as any}}>
-                                        {lineChanged ? `L: ${openLine} → ${lastLine}` : `L: ${lastLine ?? '—'}`}
-                                        {'  '}
-                                        {priceChanged ? `${openPrice > 0 ? '+' : ''}${openPrice} → ${lastPrice > 0 ? '+' : ''}${lastPrice}` : `${lastPrice > 0 ? '+' : ''}${lastPrice}`}
-                                      </Text>
-                                    </View>
-                                  );
-                                })}
-                              </View>
-                            )}
-                          </CardTag>
-                        );
-                      });
-                    })()}
-                  </View>
-                )}
-              </View>
+              <LineMovementTab
+                loading={steamLoading}
+                flags={steamFlags}
+                historySample={steamHistorySample}
+                picksIdx={steamPicksIdx}
+                sourceRecords={steamSourceRecords}
+                onTapGame={(matchup, sport, gid) => {
+                  // Best-effort: match the flagged game to a full game
+                  // object in the current games list; if the sport differs
+                  // from what's currently loaded, switch first.
+                  if (sport && sport !== gamesSport) setGamesSport(sport);
+                  setActiveTab('games');
+                  setTimeout(() => {
+                    const [awayTeam, homeTeam] = matchup.includes(' @ ')
+                      ? matchup.split(' @ ').map((s: string) => s.trim())
+                      : ['', ''];
+                    const target = (gamesData || []).find((g: any) =>
+                      g.away_team === awayTeam && g.home_team === homeTeam);
+                    if (target) openGameDetail(target);
+                  }, 80);
+                }}
+              />
             )}
 
             {steamSubTab==='ladder' && (
