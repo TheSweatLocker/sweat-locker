@@ -829,6 +829,19 @@ jobs:
           cd mlb_pipeline
           python backfill_signal_tiers.py --days 60 || echo "backfill_signal_tiers non-fatal"
 
+      # 2026-08-16: nightly ensemble health check. Replays the last 30d,
+      # computes rolling hit rate + ROI, sets status_flag on ensemble_health.
+      # ensemble_scorer reads that at score time — auto-tightens or hard-
+      # suppresses when cold. Self-regulation without human intervention.
+      - name: Monitor ensemble health (MLB)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python monitor_ensemble_health.py --sport MLB --window 30 || echo "monitor_ensemble_health non-fatal"
+
       # POTD auto-resolver — reads jerry_cache best_bet_* entries, looks
       # up game outcomes via mlb_game_results, writes Win/Loss/Push back
       # to data.result. Idempotent + backfills any unresolved historic

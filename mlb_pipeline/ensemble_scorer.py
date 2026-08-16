@@ -69,12 +69,49 @@ CANDIDATES_BY_MARKET = {
     'total': ['OVER', 'UNDER'],
 }
 
-# Tier thresholds — v2 defaults, tune after backtest
+# Tier thresholds — v2 defaults, tune after backtest.
+# Note: LEAN.min_score can be overridden at runtime via ensemble_health
+# soft_tighten status (see _current_health_state).
 TIER_THRESHOLDS = {
     'PRIME':  {'min_score': 2.0, 'min_classes': 3, 'min_margin': 0.6},
     'STRONG': {'min_score': 1.2, 'min_classes': 2, 'min_margin': 0.35},
     'LEAN':   {'min_score': 0.5, 'min_classes': 1, 'min_margin': 0.15},
 }
+
+_HEALTH_STATE_CACHE: dict = {}
+
+
+def _current_health_state(sport: str) -> dict:
+    """Read latest ensemble_health row for a sport (cached per-run).
+
+    Returns {'status_flag': str, 'lean_threshold_override': float|None,
+             'suppressed': bool}. Defaults to healthy when no row present."""
+    if sport in _HEALTH_STATE_CACHE:
+        return _HEALTH_STATE_CACHE[sport]
+    default = {'status_flag': 'healthy', 'lean_threshold_override': None, 'suppressed': False}
+    if not _SB:
+        _HEALTH_STATE_CACHE[sport] = default
+        return default
+    try:
+        r = requests.get(f'{_SB}/rest/v1/ensemble_health'
+                         f'?sport=eq.{sport}&order=computed_date.desc&limit=1'
+                         '&select=status_flag,lean_threshold_override,cold_streak_days',
+                         headers=_H_READ, timeout=5)
+        rows = r.json() if r.status_code == 200 else []
+        if not rows:
+            _HEALTH_STATE_CACHE[sport] = default
+            return default
+        row = rows[0]
+        state = {
+            'status_flag': row.get('status_flag') or 'healthy',
+            'lean_threshold_override': row.get('lean_threshold_override'),
+            'suppressed': row.get('status_flag') == 'hard_suppress',
+        }
+        _HEALTH_STATE_CACHE[sport] = state
+        return state
+    except Exception:
+        _HEALTH_STATE_CACHE[sport] = default
+        return default
 
 # Class-balance rule: no single class contributes more than 40% of the
 # winning candidate's total score. Prevents sharp-only or model-only
@@ -504,9 +541,13 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
     return out
 
 
-def _score_market(market: str, opinions: list[Opinion], ctx: dict) -> MarketDecision:
+def _score_market(market: str, opinions: list[Opinion], ctx: dict,
+                   lean_override: Optional[float] = None) -> MarketDecision:
     """Score one market (ml/rl/total) from the opinion pool.
-    Filters opinions to those relevant to this market's candidates."""
+    Filters opinions to those relevant to this market's candidates.
+
+    lean_override: when set, raises the LEAN min_score threshold. Used
+    by soft_tighten status when ensemble is on a cold streak."""
     candidates = CANDIDATES_BY_MARKET[market]
     market_ops = [op for op in opinions if op.side in candidates]
 
@@ -556,7 +597,8 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict) -> MarketDeci
     margin = win_score - runner_score
 
     # No pick if below LEAN floor
-    if win_score < TIER_THRESHOLDS['LEAN']['min_score']:
+    lean_floor = lean_override if lean_override is not None else TIER_THRESHOLDS['LEAN']['min_score']
+    if win_score < lean_floor:
         return _no_pick(market, ctx)
 
     # Tier assignment: must clear score, class count, AND margin
@@ -628,11 +670,22 @@ def _label_from_candidate(candidate: str, ctx: dict) -> tuple[str, Optional[str]
 
 def score_game(sport: str, ctx: dict) -> PerGameDecision:
     """Score a game across ML, RL, and Total. Returns three MarketDecisions
-    + a top_market pointer to the highest-conviction one."""
+    + a top_market pointer to the highest-conviction one.
+
+    2026-08-16: reads ensemble_health for the sport. If status is
+    'hard_suppress' (rolling ROI has been negative 10+ days), returns
+    None to trigger the legacy fallback in the game_context caller.
+    If 'soft_tighten', passes a raised LEAN threshold to _score_market."""
+    health = _current_health_state(sport)
+    if health.get('suppressed'):
+        return None  # caller falls back to legacy compute_primary_play
+
+    lean_override = health.get('lean_threshold_override')
+
     opinions = gather_opinions(sport, ctx)
-    ml_dec = _score_market('ml', opinions, ctx)
-    rl_dec = _score_market('rl', opinions, ctx)
-    total_dec = _score_market('total', opinions, ctx)
+    ml_dec = _score_market('ml', opinions, ctx, lean_override=lean_override)
+    rl_dec = _score_market('rl', opinions, ctx, lean_override=lean_override)
+    total_dec = _score_market('total', opinions, ctx, lean_override=lean_override)
 
     # Determine top market (highest conviction with a pick)
     picks = [(m, d) for m, d in [('ml', ml_dec), ('rl', rl_dec), ('total', total_dec)]
