@@ -798,6 +798,21 @@ jobs:
           python grade_jerry_reads.py || echo "grade_jerry_reads non-fatal"
           python grade_prop_jerry_reads.py || echo "grade_prop_jerry_reads non-fatal"
 
+      # 2026-08-16: nightly Playbook rescore. Reads resolved evidence from
+      # the past 30 days and refreshes signal_registry hit rates + tiers +
+      # weights. Runs after grading so newest results are in the pool.
+      # Sport-universal writes but signal handlers are MLB-scoped today
+      # (refit bands, mc_ml_high_conf). Non-fatal — registry stays stale
+      # rather than blocking cron on any single-signal query failure.
+      - name: Rescore signal_registry (Playbook refresh)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python rescore_signal_registry.py || echo "rescore_signal_registry non-fatal"
+
       # POTD auto-resolver — reads jerry_cache best_bet_* entries, looks
       # up game outcomes via mlb_game_results, writes Win/Loss/Push back
       # to data.result. Idempotent + backfills any unresolved historic
