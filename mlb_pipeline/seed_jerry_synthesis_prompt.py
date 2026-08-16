@@ -115,6 +115,15 @@ Game: {AWAY_TEAM} at {HOME_TEAM}
 Struct (every signal we have — do not reference anything not in here):
 {STRUCT}
 
+--- SIGNAL PLAYBOOK (audited historical evidence for signals in the struct) ---
+Use this to weight what you see in the struct above. VALIDATED signals have
+proven edge — cite them by name when they fire ("the mc_high_conf pattern hit
+71% in similar spots"). ANTI_VALIDATED signals are below-baseline — treat as
+fade indicators or drop entirely, NEVER as the primary basis for a PRIME pick.
+Empty when no signals in the registry apply to this game.
+
+{SIGNAL_PLAYBOOK}
+
 Output format — return EXACTLY this structure, no extras:
 
 ---SHORT---
@@ -153,6 +162,8 @@ RULES:
 - MARKET: pass is RARE. Any game with a market + starters + models has a directional take.
 - Never emit MARKET: pass with CONVICTION > 30.
 - No emoji, no "🎯" or "🔥" headers. No brand names. No metric abbreviations users won't know.
+- SIGNAL PLAYBOOK is the source of truth for what has hit historically. If a struct field lines up with a VALIDATED signal, use it as your PRIMARY basis and cite the hit rate. If the only lens supporting a PRIME conviction is ANTI_VALIDATED, downgrade the tier — no exceptions.
+- Playbook attribution is EVIDENCE, not brand chatter. "the refit_band_75_84 pattern hits 63%" not "our proprietary Playbook says". Say the pattern name + the number, then move on.
 """
 
 

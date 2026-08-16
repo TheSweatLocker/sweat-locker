@@ -2936,6 +2936,30 @@ def upload_game_context(context, commence_time=None):
     # an App Store resubmission.
     try:
         context["primary_play"] = compute_primary_play(context)
+        # 2026-08-16 Bundle H: Playbook tier gate. Scan the primary_play's
+        # sub/audit_note for any ANTI_VALIDATED signal names from the
+        # registry. If PRIME earned solely on an ANTI signal, demote to
+        # STRONG + append the audit reason. Silently no-ops when the
+        # registry is empty or lookup fails — never blocks the pipeline.
+        try:
+            pp = context.get("primary_play")
+            if pp and isinstance(pp, dict) and pp.get('tier') == 'PRIME':
+                from signal_registry_lookup import signals_for_scope, is_anti_validated
+                # Get all ANTI_VALIDATED signal names for this sport
+                anti_names = [s['signal_name']
+                              for s in signals_for_scope(sport='MLB',
+                                                          min_tier='ANTI_VALIDATED')
+                              if s.get('tier') == 'ANTI_VALIDATED']
+                sub_txt = (pp.get('sub') or '') + ' ' + (pp.get('audit_note') or '')
+                fired_anti = [n for n in anti_names if n and n in sub_txt]
+                if fired_anti:
+                    pp['tier'] = 'STRONG'
+                    pp['_playbook_gate'] = 'PRIME_DOWNGRADE_ANTI_VALIDATED'
+                    pp['_anti_signals'] = fired_anti
+                    orig_sub = pp.get('sub') or ''
+                    pp['sub'] = f"{orig_sub} [Playbook: PRIME demoted to STRONG — leaned on ANTI_VALIDATED {'/'.join(fired_anti)}]"
+        except Exception:
+            pass  # registry unavailable — leave primary_play untouched
         # 2026-08-12: defensive label normalization. compute_primary_play
         # sometimes emits "Home ML" / "Away ML" when team names weren't
         # available at compute-time OR when an intermediate path skips the

@@ -323,6 +323,20 @@ def render_prompt(template: str, game: dict, struct: dict) -> str:
         struct = dict(struct)  # avoid mutating caller
         struct['_sharp_scenario_matches'] = sharp_block
 
+    # 2026-08-16: inject signal_registry (Playbook) as evidence Jerry can
+    # cite by name. Bundle G — closes the loop between the Playbook doc
+    # and the actual synthesis prompt. Filters to MLB-scope signals plus
+    # universal ones (sport='*'), sorted by tier + hit_rate.
+    try:
+        from signal_registry_lookup import signals_for_scope, format_for_prompt as _reg_fmt
+        sport_hint = (game.get('sport') or 'MLB').upper()
+        # Pull all tiers so Jerry sees VALIDATED, DISCOVERY, AND ANTI_VALIDATED
+        # — the ANTI ones tell Jerry what NOT to lean on as primary basis.
+        reg_entries = signals_for_scope(sport=sport_hint, min_tier='ANTI_VALIDATED')
+        registry_block = _reg_fmt(reg_entries)
+    except Exception:
+        registry_block = ''
+
     struct_json = json.dumps(struct, indent=2, default=str)
     return (
         template
@@ -332,6 +346,7 @@ def render_prompt(template: str, game: dict, struct: dict) -> str:
         .replace("{AWAY_PITCHER}", game.get("away_pitcher") or "(TBD)")
         .replace("{HOME_PITCHER}", game.get("home_pitcher") or "(TBD)")
         .replace("{SHARP_SCENARIOS}", sharp_block)
+        .replace("{SIGNAL_PLAYBOOK}", registry_block)
     )
 
 
