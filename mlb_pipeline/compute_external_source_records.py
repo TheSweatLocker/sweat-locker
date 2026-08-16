@@ -47,11 +47,23 @@ def american_to_decimal(am):
     return None
 
 
+def _norm_result(r: str | None) -> str:
+    """Normalize result to WIN/LOSS/PUSH/None. external_picks uses
+    single-letter W/L/P; some sources may write full words."""
+    if r is None: return ''
+    r = str(r).strip().upper()
+    if r in ('W', 'WIN'): return 'WIN'
+    if r in ('L', 'LOSS'): return 'LOSS'
+    if r in ('P', 'PUSH'): return 'PUSH'
+    return ''
+
+
 def pick_roi(result: str, odds_american) -> float:
     """1u flat stake ROI."""
-    if result == 'Push': return 0.0
-    if result == 'Loss': return -1.0
-    if result == 'Win':
+    r = _norm_result(result)
+    if r == 'PUSH': return 0.0
+    if r == 'LOSS': return -1.0
+    if r == 'WIN':
         d = american_to_decimal(odds_american)
         if d: return d - 1.0
         return 0.91  # default -110 assumption
@@ -107,9 +119,9 @@ def run(sport_filter: str | None = None) -> None:
     payloads = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for (source, sport, surface, win_days), items in groups.items():
-        w = sum(1 for x in items if x.get('result') == 'Win')
-        l = sum(1 for x in items if x.get('result') == 'Loss')
-        p = sum(1 for x in items if x.get('result') == 'Push')
+        w = sum(1 for x in items if _norm_result(x.get('result')) == 'WIN')
+        l = sum(1 for x in items if _norm_result(x.get('result')) == 'LOSS')
+        p = sum(1 for x in items if _norm_result(x.get('result')) == 'PUSH')
         n = w + l + p
         n_graded = w + l  # exclude pushes from hit-rate math
         hit_rate = round(100 * w / n_graded, 2) if n_graded else None

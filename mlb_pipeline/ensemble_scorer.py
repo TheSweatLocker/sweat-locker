@@ -240,6 +240,14 @@ def _load_registry() -> dict:
 
 
 def _load_track_records() -> dict:
+    """Load external handicapper track records.
+
+    2026-08-16 bug fix: the table column is `n_picks` (from
+    20260731_jerry_synthesis_tables.sql) — earlier code asked for
+    `n_graded` which doesn't exist, and the PostgREST 400 silently
+    zeroed the whole lookup. Also normalize n from wins+losses+pushes
+    so the ensemble can compute proper weights from n_dec = wins+losses.
+    """
     global _TRACK_CACHE
     if _TRACK_CACHE is not None:
         return _TRACK_CACHE
@@ -248,11 +256,14 @@ def _load_track_records() -> dict:
         try:
             r = requests.get(f'{_SB}/rest/v1/external_source_track_record',
                              headers=_H_READ,
-                             params={'select': 'source,sport,surface,window_days,hit_rate,n_graded'},
+                             params={'select': 'source,sport,surface,window_days,hit_rate,n_picks,n_wins,n_losses,n_pushes'},
                              timeout=10)
             for row in (r.json() if r.status_code == 200 else []):
                 key = (row['source'], row['sport'], row['surface'])
                 prio = {30: 3, 90: 2, 9999: 1}.get(row.get('window_days'), 0)
+                # Normalize n_graded (wins + losses, excluding pushes) so
+                # downstream weight math is consistent with hit_rate meaning.
+                row['n_graded'] = int(row.get('n_wins') or 0) + int(row.get('n_losses') or 0)
                 existing = out.get(key)
                 if existing is None or prio > existing.get('_prio', 0):
                     row['_prio'] = prio
