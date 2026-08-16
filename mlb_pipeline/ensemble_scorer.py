@@ -229,8 +229,12 @@ def _load_track_records() -> dict:
 def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[str]]:
     """Get (hit_rate as fraction, n, tier) for a signal_sources row.
 
-    Priority: inline hit_rate_pct/sample_n on the row → signal_registry
-    lookup via weight_registry_key → None."""
+    Priority (in order):
+      1. inline hit_rate_pct/sample_n on the row
+      2. signal_registry lookup by weight_registry_key (explicit link)
+      3. signal_registry lookup by signal_key itself (default — backfill
+         writes to registry using signal_key as the row name)
+      4. None (floor weight)"""
     inline_hr = source_row.get('hit_rate_pct')
     inline_n = source_row.get('sample_n')
     if inline_hr is not None:
@@ -238,9 +242,10 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
         except (TypeError, ValueError): hr = None
         return (hr, int(inline_n or 0), None)
 
-    reg_key = source_row.get('weight_registry_key')
-    if reg_key:
-        reg = _load_registry().get(reg_key)
+    registry = _load_registry()
+    for lookup_key in (source_row.get('weight_registry_key'), source_row.get('signal_key')):
+        if not lookup_key: continue
+        reg = registry.get(lookup_key)
         if reg:
             hr = reg.get('hit_rate')
             if hr is not None:
