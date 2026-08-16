@@ -13960,8 +13960,8 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
               ].map(s => (
                 <TouchableOpacity key={s.id}
                   onPress={()=>setSteamSubTab(s.id as any)}
-                  style={[styles.chipBtn, steamSubTab===s.id && styles.chipBtnActive, {flex:1, alignItems:'center'}]}>
-                  <Text style={[styles.chipTxt, steamSubTab===s.id && styles.chipTxtActive]}>{s.label}</Text>
+                  style={[styles.chipBtn, steamSubTab===s.id && styles.chipBtnActive, {flex:1, alignItems:'center', justifyContent:'center'}]}>
+                  <Text style={[styles.chipTxt, steamSubTab===s.id && styles.chipTxtActive, {textAlign:'center'}]}>{s.label}</Text>
                 </TouchableOpacity>
               ))}
             </View>

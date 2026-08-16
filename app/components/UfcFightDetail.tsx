@@ -13,6 +13,7 @@
  */
 import React from 'react';
 import {View, Text, TouchableOpacity, ScrollView} from 'react-native';
+import {explain} from '../lib/glossary';
 
 // Local palette — matches app THEME. Kept inline so this component is
 // self-contained (same pattern as GameDetailV2).
@@ -39,25 +40,8 @@ const scrubJerry = (t?: string | null): string => {
   return String(t).replace(/\[Auto-[^\]]*\]\s*/g, '').replace(/\s+/g, ' ').trim();
 };
 
-// Plain-english explanations of every MMA stat abbreviation. Tapped from
-// the H2H grid — casuals don't know what SLpM/SApM/TD Def mean and the
-// grid is useless to them without a translator.
-const STAT_HELP: Record<string, string> = {
-  'Record':   'Career MMA record: wins-losses-draws.',
-  'SLpM':     'Significant Strikes Landed per Minute. Higher = more active + effective striker.',
-  'Str Acc':  'Striking accuracy — % of significant strikes attempted that actually land. Higher = more precise.',
-  'Str Def':  "Striking defense — % of opponent's significant strikes avoided. Higher = harder to hit.",
-  'SApM':     'Significant Strikes Absorbed per Minute — how often they get hit. LOWER is better.',
-  'TD Avg':   'Takedowns landed per 15 minutes (avg 3-round fight). Higher = more wrestling-heavy.',
-  'TD Acc':   'Takedown accuracy — % of takedown attempts that succeed. Higher = better shot / setup.',
-  'TD Def':   "Takedown defense — % of opponent's takedown attempts stuffed. Higher = harder to grapple.",
-  'Sub Avg':  'Submission attempts per 15 minutes. High = active submission threat, not necessarily finishes.',
-  'Finish %': 'Career wins that ended by KO/TKO or submission (not decision). Higher = finisher, not point-fighter.',
-  'Stance':   'Orthodox (right-handed, left foot forward), Southpaw (left-handed, right foot forward), or Switch.',
-  'Reach':    'Arm span in inches, fingertip to fingertip. Longer reach = jab + kick from safer distance.',
-  'Height':   'Fighter height. Not always the reach advantage — check reach separately.',
-  'Age':      'Fighter age. Prime for most is 27-33; older can mean slower recovery + longer camps to peak.',
-};
+// Stat help now lives in app/lib/glossary.ts alongside every other
+// jargon term in the app. Explainer resolves labels against that map.
 
 type Props = {
   game: any;                                  // has home_team + away_team = fighter names
@@ -222,7 +206,7 @@ export default function UfcFightDetail({
         )}
 
         {/* Head-to-head stats grid — stat labels are tappable and
-            reveal a plain-english explanation row below (STAT_HELP).
+            reveal a plain-english explanation row below (glossary.ts).
             Casuals don't know what SLpM or TD Def mean. */}
         {hasStats && (
           <View style={{marginBottom:14, backgroundColor: T.surface, borderRadius:10, padding:12}}>
@@ -246,7 +230,7 @@ export default function UfcFightDetail({
               if (row.higherWins != null && typeof v1 === 'number' && typeof v2 === 'number' && v1 !== v2) {
                 adv = row.higherWins ? (v1 > v2 ? 1 : 2) : (v1 < v2 ? 1 : 2);
               }
-              const help = STAT_HELP[row.label];
+              const help = explain(row.label);
               const isHelpOpen = helpStat === row.label;
               const hasBorder = ri < validH2H.length - 1;
               return (
