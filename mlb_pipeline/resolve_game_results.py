@@ -103,15 +103,26 @@ def _backfill_score_to_results(game_id, home_team, away_team, game_date_str, sco
     if not (game_id and home_team and away_team and score_dict):
         return False
     try:
+        hs = score_dict.get('home_score')
+        as_ = score_dict.get('away_score')
+        # 2026-08-16 morning-audit fix: prior payload omitted total_runs and
+        # margin, leaving them NULL on every self-heal row. Downstream
+        # audits that group by total (e.g. project_totals_cohort_framework)
+        # dropped those games from every histogram. Compute + write here
+        # whenever both scores are present.
+        total = hs + as_ if (hs is not None and as_ is not None) else None
+        mgn = abs(hs - as_) if (hs is not None and as_ is not None) else None
         payload = {
             'game_id': game_id,
             'game_date': game_date_str,
             'season': 2026,
             'home_team': home_team,
             'away_team': away_team,
-            'home_score': score_dict.get('home_score'),
-            'away_score': score_dict.get('away_score'),
+            'home_score': hs,
+            'away_score': as_,
             'home_win': score_dict.get('home_win'),
+            'total_runs': total,
+            'margin': mgn,
         }
         r = requests.post(
             f'{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id',
