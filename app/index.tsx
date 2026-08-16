@@ -11998,8 +11998,37 @@ setJerryHistory(prev => {
                     full Jerry read, and external picks scoped to this fight.
                     All data bulk-fetched on ufcEvent load so expansion is
                     instant. */}
-                {isExpanded && (
+                {isExpanded && (() => {
+                  // Compute what data we actually have so we can either
+                  // render sections or a helpful fallback that tells the
+                  // user WHAT is missing (thin ufc_fighter_stats, no jerry
+                  // read yet, no externals for this fight). Silent-nothing
+                  // is worse than "Stats not loaded".
+                  const hasStats = !!(f1Stats || f2Stats);
+                  const hasMethod = kos != null || decs != null || subs != null;
+                  const hasRounds = rounds.some(r => r.p > 0);
+                  const jerryFullText = scrubJerryText(jerry?.long_read) || scrubJerryText(jerry?.short_read);
+                  const hasJerry = !!jerryFullText;
+                  const hasExternals = fightExternals.length > 0;
+                  const nothing = !hasStats && !hasMethod && !hasRounds && !hasJerry && !hasExternals;
+                  return (
                   <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:THEME.combat + '55'}}>
+                    {/* Diagnostic fallback — data-thin fights get an
+                        explanation instead of blank space so the tap
+                        never feels broken. */}
+                    {nothing && (
+                      <View style={{padding:12,backgroundColor:THEME.border + '18',borderRadius:8,borderWidth:1,borderColor:THEME.border+'44'}}>
+                        <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'700',marginBottom:6}}>
+                          No additional data loaded for this fight yet
+                        </Text>
+                        <Text style={{color:THEME.textMuted,fontSize:11,lineHeight:16}}>
+                          Model pick, fighter stats, Jerry read, and externals will populate as the event approaches. Check back closer to fight night — thin data is common for prelims until Wednesday.
+                        </Text>
+                        <Text style={{color:THEME.textMuted,fontSize:10,marginTop:8,fontStyle:'italic'}}>
+                          Debug · stats={hasStats?'Y':'N'} model={hasMethod?'Y':'N'} jerry={hasJerry?'Y':'N'} ext={hasExternals?'Y':'N'} · looked up {f1last} / {f2last}
+                        </Text>
+                      </View>
+                    )}
                     {/* --- Head-to-head stats grid --- */}
                     {(f1Stats || f2Stats) && (() => {
                       const rows: {label:string; f1:any; f2:any; higherWins?:boolean; fmt?:(v:any)=>string}[] = [
@@ -12137,7 +12166,8 @@ setJerryHistory(prev => {
                       tap again to collapse
                     </Text>
                   </View>
-                )}
+                  );
+                })()}
               </TouchableOpacity>
             );
           })}
