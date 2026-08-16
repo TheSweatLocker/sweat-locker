@@ -1,49 +1,44 @@
-"""Ensemble Scorer — evidence-weighted decision engine (2026-08-16).
+"""Ensemble Scorer v2 — auto-discovered evidence-weighted decision engine.
 
-The Sweat Locker's moat: we collect every projection, split, cohort match,
-sharp signal, and external pick. The old `compute_primary_play` used a
-hand-tuned decision tree on a subset of that data. This module replaces
-that with a proper weighted-ensemble scorer that uses EVERY signal we
-have, with each signal weighted by its own proven historical track record.
+v2 (2026-08-16): rebuilt to iterate `signal_sources` rows instead of
+hardcoding signal handlers. Every signal is a plug-in row in the table.
+Adding one now = INSERT row, no code change to this file.
 
 Architecture:
-  For each game, enumerate candidates (HOME_ML, AWAY_ML, OVER, UNDER,
-  HOME_RL, AWAY_RL). For each candidate, gather every source that has
-  an opinion — model prediction, cohort match, sharp scenario, public
-  split classification, external pick, signal-registry signal. Weight
-  each opinion by the source's hit rate over its own historical window
-  (from signal_registry, external_source_track_record, sharp_scenarios,
-  or the cohort's own recorded hit_rate). Sum to a candidate score.
-  Pick the candidate with the highest positive score. Tier from score +
-  count of VALIDATED sources agreeing. Return the full breakdown.
+  For each game:
+    1. Fetch every signal_sources row for the sport (universal + sport-specific)
+    2. For each source:
+       a. If class is expression-based (model/pitcher/offense/etc.):
+          - Evaluate condition_expr against ctx. Skip if False.
+          - Evaluate side_expr → candidate label.
+          - Evaluate strength_expr → [0, 1].
+       b. If class is handler-based (split/scenario/external_pick):
+          - Dispatch to _handler_split / _handler_scenario / _handler_external.
+          - Handler fetches supplementary tables + returns list[Opinion].
+    3. Weight each opinion by its historical hit_rate (from signal_registry
+       or the row's inline hit_rate_pct/sample_n).
+    4. Aggregate per (market, candidate) with class-balance rule.
+    5. Score three separate market decisions (ml / rl / total) and a top pick.
 
-Sport-universal:
-  * Core (this module) is sport-agnostic — takes a struct of opinions,
-    returns a decision.
-  * Sport-specific adapters (gather_opinions_mlb, _nfl, _ncaaf, _ufc)
-    know how to read each sport's game_context table and translate the
-    raw fields into standardized Opinion records.
-  * Only MLB adapter shipped in this pass — NFL/NCAAF/UFC drop in with
-    identical output shape.
+Output: PerGameDecision with three DecisionPerMarket + top_market pointer +
+full audit trail (which sources fired, each contribution, prose narration
+Jerry can quote).
 
-Backtest before ship:
-  backtest_ensemble_scorer.py replays the last 30-60d of resolved games
-  and compares per-tier hit rate + ROI vs current compute_primary_play.
-  Ship only if it beats baseline.
+Sport-universal: only signal_sources rows for the target sport are loaded,
+so NFL/NCAAF/UFC drop in by seeding their own rows.
 
-Not shipped yet:
-  * External picks per-handicapper weighting (data is in external_picks
-    + external_source_track_record but adapter for gathering per-game
-    picks not built here — first pass focuses on model + cohort +
-    sharp-split + line-movement signals).
-  * Prop-market candidates (ML/RL/Total only in v1).
+CLI:
+  python ensemble_scorer.py --sport MLB --date 2026-08-16
+  python ensemble_scorer.py --sport MLB --date 2026-08-16 --limit 3
+  python ensemble_scorer.py --sport MLB --date 2026-08-16 --game-id XYZ --verbose
 """
 from __future__ import annotations
-import math, os, json, sys
+import argparse, os, sys, json, math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 from datetime import date
+from collections import defaultdict
 
 import requests
 
@@ -58,277 +53,134 @@ _SB = os.environ.get('SUPABASE_URL')
 _KEY = os.environ.get('SUPABASE_KEY')
 _H_READ = {'apikey': _KEY, 'Authorization': f'Bearer {_KEY}'} if _KEY else {}
 
+from signal_expr import evaluate, evaluate_bool, evaluate_str, evaluate_float, render_prose, AttrDict
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════
+
+BREAKEVEN = 0.524  # -110 breakeven
+
+# Candidate labels by market
+CANDIDATES_BY_MARKET = {
+    'ml':    ['HOME_ML', 'AWAY_ML'],
+    'rl':    ['HOME_RL', 'AWAY_RL'],
+    'total': ['OVER', 'UNDER'],
+}
+
+# Tier thresholds — v2 defaults, tune after backtest
+TIER_THRESHOLDS = {
+    'PRIME':  {'min_score': 2.0, 'min_classes': 3, 'min_margin': 0.6},
+    'STRONG': {'min_score': 1.2, 'min_classes': 2, 'min_margin': 0.35},
+    'LEAN':   {'min_score': 0.5, 'min_classes': 1, 'min_margin': 0.15},
+}
+
+# Class-balance rule: no single class contributes more than 40% of the
+# winning candidate's total score. Prevents sharp-only or model-only
+# picks from earning tier without diverse evidence.
+MAX_CLASS_SHARE = 0.40
+
+# Handler class markers
+HANDLER_CLASSES = {'split', 'scenario', 'external_pick'}
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # DATA MODEL
 # ═══════════════════════════════════════════════════════════════════════
 
-# Standard candidate labels — sport-agnostic
-CANDIDATES_TEAM = ['HOME_ML', 'AWAY_ML', 'HOME_RL', 'AWAY_RL', 'OVER', 'UNDER']
-CANDIDATES_FIGHT = ['FIGHTER_A_ML', 'FIGHTER_B_ML']
-
-# Breakeven for -110 juice
-BREAKEVEN = 0.524
-
-
 @dataclass
 class Opinion:
-    """One source's opinion about one candidate.
-
-    - side: which candidate this opinion supports (must be in CANDIDATES_*).
-    - strength: normalized to [-1, +1]. +1 = maximally confident this side
-      wins. Negative would mean 'confident against' (rare, used for
-      cross-check gates).
-    - source: source identifier (e.g. 'mc', 'panel', 'v4', 'cohort:home_bp',
-      'oddscrowd_split', 'sharp_scenario_home_dog_+7', 'external:actionpicks').
-    - hit_rate: source's historical hit rate as a fraction (0.62 = 62%).
-      None = no proven track record yet.
-    - sample_n: sample size behind hit_rate. Bigger n = more trustworthy.
-    - tier: signal_registry tier if applicable (VALIDATED / DISCOVERY /
-      UNVALIDATED / ANTI_VALIDATED). None if not in registry.
-    - note: short human-readable note ("MC 62% OVER").
-    """
-    side: str
-    strength: float
-    source: str
-    hit_rate: Optional[float] = None
-    sample_n: int = 0
-    tier: Optional[str] = None
-    note: str = ''
+    """One source's opinion on one candidate."""
+    signal_key: str           # unique source key
+    signal_class: str         # class from signal_sources
+    side: str                 # candidate label
+    strength: float           # [0, 1]
+    hit_rate: Optional[float] # historical hit rate as fraction (0.62 = 62%)
+    sample_n: int
+    tier: Optional[str]       # VALIDATED/DISCOVERY/UNVALIDATED/ANTI_VALIDATED
+    display_prose: str        # reader-friendly narration
 
 
 @dataclass
 class Contribution:
     """One source's weighted contribution to a candidate's score."""
-    source: str
+    signal_key: str
+    signal_class: str
     side: str
-    weight: float          # derived from hit_rate + sample_n + tier
-    strength: float        # raw strength [-1, +1]
+    weight: float
+    strength: float
     n: int
-    contribution: float    # weight * strength * sample-dampener
-    note: str
+    contribution: float
+    display_prose: str
 
 
 @dataclass
-class Decision:
-    """Final output of the scorer for one game.
-
-    - pick: candidate label (e.g. 'OVER', 'HOME_ML')
-    - display_label: human-readable ('Over 8.5', 'Dodgers ML')
-    - type: 'ml' | 'rl' | 'total' | 'fight'
-    - side: 'HOME' | 'AWAY' | 'OVER' | 'UNDER' | 'A' | 'B' | None
-    - line: numeric line if applicable (total or spread)
-    - tier: 'PRIME' | 'STRONG' | 'LEAN' | 'PASS'
-    - conviction: 0-100
-    - score: raw ensemble score (for debugging / thresholding)
-    - contributions: list of Contribution — the audit trail of why this
-      pick was made. Jerry narrates this list.
-    - competing_score: score of the second-best candidate (for margin display)
-    """
-    pick: str
-    display_label: str
-    type: str
-    side: Optional[str]
+class MarketDecision:
+    """One market's decision (ml, rl, or total)."""
+    market: str                # 'ml' | 'rl' | 'total'
+    pick: Optional[str]        # candidate label or None (no pick)
+    display_label: Optional[str]
+    side: Optional[str]        # HOME/AWAY/OVER/UNDER
     line: Optional[float]
-    tier: str
-    conviction: int
+    tier: str                  # PRIME/STRONG/LEAN/PASS
+    conviction: int            # 0-100
     score: float
+    margin: float              # score vs runner-up
     contributions: list = field(default_factory=list)
-    competing_score: float = 0.0
+    class_share: dict = field(default_factory=dict)  # {class_name: total_contribution}
 
-    def to_primary_play_dict(self) -> dict:
-        """Convert to the primary_play dict shape mlb_game_context stores."""
-        return {
-            'type': self.type,
-            'tier': self.tier,
-            'label': self.display_label,
-            'side': self.side,
-            'line': self.line,
-            'conviction': self.conviction,
-            'score': round(self.score, 2),
-            'sub': self._compose_sub(),
-            'audit_note': f'ensemble_scorer v1 · {len(self.contributions)} sources fired · score={self.score:.2f} · margin={self.score - self.competing_score:.2f}',
-            '_ensemble_sources': [
-                {'source': c.source, 'side': c.side, 'weight': round(c.weight, 2),
-                 'n': c.n, 'contribution': round(c.contribution, 2), 'note': c.note}
-                for c in self.contributions[:8]
-            ],
-        }
-
-    def _compose_sub(self) -> str:
-        """One-line summary of the top-3 supporting signals."""
-        supporting = [c for c in self.contributions if c.side == self.pick and c.contribution > 0]
-        supporting.sort(key=lambda c: -c.contribution)
-        if not supporting:
-            return f'{self.pick} — ensemble score {self.score:.2f}'
-        top = supporting[:3]
-        parts = [c.note for c in top if c.note]
-        return f'{self.pick}: ' + ' · '.join(parts)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# WEIGHT COMPUTATION
-# ═══════════════════════════════════════════════════════════════════════
-
-def edge_weight(hit_rate: Optional[float], n: int,
-                tier: Optional[str] = None,
-                baseline: float = BREAKEVEN) -> float:
-    """Translate (hit_rate, sample_n, tier) -> weight in [0, 1].
-
-    Weight = 0 when source is at or below breakeven (no edge).
-    Weight scales linearly from breakeven to +12pp above breakeven.
-    Weight is dampened by sample size via ln(1+n)/ln(101) — a source
-    with n=100 gets full weight; n=10 gets ~0.5x weight; n=1 gets ~0.15.
-
-    Tier override: ANTI_VALIDATED forces weight to 0 regardless of hit_rate
-    (the pattern is a fade signal, not evidence to follow). UNVALIDATED
-    with no hit rate defaults to a small floor (0.15) so untested signals
-    still contribute a whisper — but never more than a proven one.
-    """
-    if tier == 'ANTI_VALIDATED':
-        return 0.0
-    if hit_rate is None or n <= 0:
-        # No historical evidence — small floor if signal is at least on
-        # the registry (i.e. we know about it), otherwise zero.
-        return 0.15 if tier in ('DISCOVERY', 'UNVALIDATED', 'VALIDATED') else 0.0
-
-    edge_pp = hit_rate - baseline
-    if edge_pp <= 0:
-        return 0.0
-    edge_component = min(edge_pp / 0.12, 1.0)  # cap at +12pp above breakeven
-    n_component = math.log1p(n) / math.log(101)  # n=100 -> 1.0
-    n_component = min(n_component, 1.0)
-    return round(edge_component * n_component, 4)
-
-
-def score_contributions(opinions: list[Opinion]) -> dict[str, list[Contribution]]:
-    """Group opinions by candidate side and compute weighted contributions."""
-    per_side: dict[str, list[Contribution]] = {}
-    for op in opinions:
-        w = edge_weight(op.hit_rate, op.sample_n, op.tier)
-        if w == 0 and op.strength == 0:
-            continue
-        # Sample-dampener applied both to weight (in edge_weight) and to
-        # contribution — a whisper source shouldn't overwhelm a proven one.
-        # Contribution sign follows strength (positive = supports side).
-        contribution = round(w * op.strength, 4)
-        chip = Contribution(
-            source=op.source, side=op.side, weight=w, strength=op.strength,
-            n=op.sample_n, contribution=contribution, note=op.note,
+    def prose_signals(self, max_shown: int = 5) -> list[str]:
+        """Ordered list of reader-friendly signal quotes Jerry can use."""
+        if not self.contributions: return []
+        supporting = sorted(
+            [c for c in self.contributions if c.side == self.pick and c.contribution > 0],
+            key=lambda c: -c.contribution,
         )
-        per_side.setdefault(op.side, []).append(chip)
-    return per_side
+        return [c.display_prose for c in supporting[:max_shown] if c.display_prose]
+
+
+@dataclass
+class PerGameDecision:
+    """Full ensemble output for one game — three markets + top pick."""
+    game_id: str
+    sport: str
+    home_team: str
+    away_team: str
+    ml: MarketDecision
+    rl: MarketDecision
+    total: MarketDecision
+    top_market: str            # 'ml' | 'rl' | 'total'
+
+    def top(self) -> MarketDecision:
+        return getattr(self, self.top_market)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# DECISION
+# CACHES (per-run) — signal_sources, signal_registry, external_source_track_record
 # ═══════════════════════════════════════════════════════════════════════
 
-# Tier thresholds (calibrated to backtest — v1 defaults, will tune)
-TIER_THRESHOLDS = {
-    'PRIME':  {'min_score': 2.5,  'min_validated_sources': 2},
-    'STRONG': {'min_score': 1.5,  'min_validated_sources': 1},
-    'LEAN':   {'min_score': 0.6,  'min_validated_sources': 0},
-}
-
-
-def decide(opinions: list[Opinion], ctx: dict,
-            candidate_set: list[str] = CANDIDATES_TEAM) -> Optional[Decision]:
-    """Score all candidates, return the winning Decision or None."""
-    per_side = score_contributions(opinions)
-    if not per_side:
-        return None
-
-    # Sum score per candidate side
-    scored: dict[str, tuple[float, list[Contribution], int]] = {}
-    for side in candidate_set:
-        chips = per_side.get(side, [])
-        total = sum(c.contribution for c in chips)
-        validated = sum(1 for c in chips
-                        if c.contribution > 0
-                        and any(op.side == side and op.source == c.source
-                                and op.tier == 'VALIDATED'
-                                for op in opinions))
-        scored[side] = (total, chips, validated)
-
-    # Rank
-    ranked = sorted(scored.items(), key=lambda kv: -kv[1][0])
-    if not ranked:
-        return None
-    winner, (win_score, win_chips, win_validated) = ranked[0]
-    runner_up_score = ranked[1][1][0] if len(ranked) > 1 else 0.0
-    margin = win_score - runner_up_score
-
-    if win_score < TIER_THRESHOLDS['LEAN']['min_score']:
-        return None  # no candidate cleared the LEAN floor — PASS
-
-    # Assign tier
-    tier = 'LEAN'
-    for candidate_tier in ('PRIME', 'STRONG'):
-        th = TIER_THRESHOLDS[candidate_tier]
-        if (win_score >= th['min_score']
-                and win_validated >= th['min_validated_sources']
-                and margin >= 0.4):  # margin gate — no razor-thin PRIMEs
-            tier = candidate_tier
-            break
-
-    # Conviction 0-100 mapping (score 0 = 50, score 3+ = 90)
-    conviction = int(round(50 + min(win_score * 13, 40)))
-    conviction = max(50, min(95, conviction))
-
-    # Build display label from candidate + ctx
-    display_label, type_, side, line = _label_from_candidate(winner, ctx)
-
-    return Decision(
-        pick=winner,
-        display_label=display_label,
-        type=type_,
-        side=side,
-        line=line,
-        tier=tier,
-        conviction=conviction,
-        score=round(win_score, 2),
-        contributions=sorted(win_chips, key=lambda c: -c.contribution),
-        competing_score=round(runner_up_score, 2),
-    )
-
-
-def _label_from_candidate(candidate: str, ctx: dict) -> tuple[str, str, Optional[str], Optional[float]]:
-    """Turn a candidate label + game context into (display, type, side, line)."""
-    home = ctx.get('home_team') or 'HOME'
-    away = ctx.get('away_team') or 'AWAY'
-    close_spread = ctx.get('close_spread')  # negative = home favored
-    close_total = ctx.get('close_total')
-
-    if candidate == 'HOME_ML':
-        return (f'{home} ML', 'ml', 'HOME', None)
-    if candidate == 'AWAY_ML':
-        return (f'{away} ML', 'ml', 'AWAY', None)
-    if candidate == 'HOME_RL':
-        line = None
-        if close_spread is not None:
-            try: line = float(close_spread)
-            except (TypeError, ValueError): pass
-        return (f'{home} {line:+g}' if line is not None else f'{home} RL', 'rl', 'HOME', line)
-    if candidate == 'AWAY_RL':
-        line = None
-        if close_spread is not None:
-            try: line = -float(close_spread)
-            except (TypeError, ValueError): pass
-        return (f'{away} {line:+g}' if line is not None else f'{away} RL', 'rl', 'AWAY', line)
-    if candidate == 'OVER':
-        return (f'Over {close_total}' if close_total is not None else 'Over', 'total', 'OVER', close_total)
-    if candidate == 'UNDER':
-        return (f'Under {close_total}' if close_total is not None else 'Under', 'total', 'UNDER', close_total)
-    return (candidate, 'unknown', None, None)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# SIGNAL REGISTRY + TRACK RECORD LOOKUPS (cached per run)
-# ═══════════════════════════════════════════════════════════════════════
-
+_SOURCES_CACHE: Optional[list] = None
 _REGISTRY_CACHE: Optional[dict] = None
 _TRACK_CACHE: Optional[dict] = None
+
+
+def _load_sources(sport: str) -> list[dict]:
+    """Load all enabled signal_sources for a sport (+ universal '*')."""
+    global _SOURCES_CACHE
+    if _SOURCES_CACHE is None:
+        if not _SB:
+            _SOURCES_CACHE = []
+            return _SOURCES_CACHE
+        try:
+            r = requests.get(f'{_SB}/rest/v1/signal_sources',
+                             headers=_H_READ,
+                             params={'select': '*', 'enabled': 'eq.true'},
+                             timeout=10)
+            _SOURCES_CACHE = r.json() if r.status_code == 200 else []
+        except Exception:
+            _SOURCES_CACHE = []
+    return [s for s in _SOURCES_CACHE if s.get('sport') in (sport, '*')]
 
 
 def _load_registry() -> dict:
@@ -362,11 +214,10 @@ def _load_track_records() -> dict:
                              params={'select': 'source,sport,surface,window_days,hit_rate,n_graded'},
                              timeout=10)
             for row in (r.json() if r.status_code == 200 else []):
-                # Prefer 30d window (freshest sample); fall back to 90d / lifetime
                 key = (row['source'], row['sport'], row['surface'])
                 prio = {30: 3, 90: 2, 9999: 1}.get(row.get('window_days'), 0)
                 existing = out.get(key)
-                if existing is None or prio > existing['_prio']:
+                if existing is None or prio > existing.get('_prio', 0):
                     row['_prio'] = prio
                     out[key] = row
         except Exception:
@@ -375,226 +226,218 @@ def _load_track_records() -> dict:
     return out
 
 
-def _registry_lookup(name: str) -> tuple[Optional[float], int, Optional[str]]:
-    """Return (hit_rate as fraction, sample_n, tier) for a signal name."""
-    row = _load_registry().get(name)
-    if not row:
-        return (None, 0, None)
-    hr = row.get('hit_rate')
-    if hr is not None:
-        try: hr = float(hr) / 100.0  # registry stores %; scorer wants fraction
+def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[str]]:
+    """Get (hit_rate as fraction, n, tier) for a signal_sources row.
+
+    Priority: inline hit_rate_pct/sample_n on the row → signal_registry
+    lookup via weight_registry_key → None."""
+    inline_hr = source_row.get('hit_rate_pct')
+    inline_n = source_row.get('sample_n')
+    if inline_hr is not None:
+        try: hr = float(inline_hr) / 100.0
         except (TypeError, ValueError): hr = None
-    return (hr, int(row.get('sample_n') or 0), row.get('tier'))
+        return (hr, int(inline_n or 0), None)
 
-
-def _track_lookup(source: str, sport: str, market: str) -> tuple[Optional[float], int]:
-    """Return (hit_rate as fraction, n_graded) for a source × sport × market."""
-    # Try market-specific first, fall back to 'ALL' surface
-    for surface in (market.lower(), 'ALL'):
-        row = _load_track_records().get((source.lower(), sport, surface))
-        if row:
-            hr = row.get('hit_rate')
+    reg_key = source_row.get('weight_registry_key')
+    if reg_key:
+        reg = _load_registry().get(reg_key)
+        if reg:
+            hr = reg.get('hit_rate')
             if hr is not None:
                 try: hr = float(hr) / 100.0
                 except (TypeError, ValueError): hr = None
-            return (hr, int(row.get('n_graded') or 0))
-    return (None, 0)
+            return (hr, int(reg.get('sample_n') or 0), reg.get('tier'))
+
+    return (None, 0, None)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# MLB ADAPTER — turn mlb_game_context row into a list of Opinions
+# WEIGHT COMPUTATION
 # ═══════════════════════════════════════════════════════════════════════
 
-def _mc_probs(ctx: dict) -> Optional[dict]:
-    v = ctx.get('mc_probabilities')
-    if isinstance(v, str):
-        try: return json.loads(v)
-        except Exception: return None
-    return v if isinstance(v, dict) else None
+def edge_weight(hit_rate: Optional[float], n: int,
+                tier: Optional[str] = None) -> float:
+    """Translate (hit_rate, n, tier) into weight in [0, 1].
+
+    ANTI_VALIDATED → 0 (fade signal, not evidence).
+    Below breakeven → 0.
+    Otherwise: linear scale from breakeven to +12pp * sample dampener."""
+    if tier == 'ANTI_VALIDATED':
+        return 0.0
+    if hit_rate is None or n <= 0:
+        # No proven track record — small floor if registry knows about it
+        return 0.20 if tier in ('DISCOVERY', 'UNVALIDATED', 'VALIDATED') else 0.15
+    edge_pp = hit_rate - BREAKEVEN
+    if edge_pp <= 0:
+        return 0.0
+    edge_component = min(edge_pp / 0.12, 1.0)
+    n_component = min(math.log1p(n) / math.log(101), 1.0)
+    return round(edge_component * n_component, 4)
 
 
-def _opinion_from_model(source_name: str, prob_home: Optional[float],
-                        market: str, side_side: dict[bool, str],
-                        registry_key: str,
-                        strength_scale: float = 1.0) -> Optional[Opinion]:
-    """Common helper: turn a model's home-win probability into an Opinion
-    for that side. If prob_home < 0.5, opinion is for the AWAY side.
-    Strength = |prob - 0.5| * 2 (0 = coinflip, 1 = certain), scaled."""
-    if prob_home is None:
-        return None
-    try: p = float(prob_home)
-    except (TypeError, ValueError): return None
-    side = side_side[p >= 0.5]
-    strength = min(abs(p - 0.5) * 2 * strength_scale, 1.0)
-    if strength == 0:
-        return None
-    hr, n, tier = _registry_lookup(registry_key)
-    return Opinion(side=side, strength=strength, source=source_name,
-                   hit_rate=hr, sample_n=n, tier=tier,
-                   note=f'{source_name} {int(p*100)}% {side}')
+# ═══════════════════════════════════════════════════════════════════════
+# HANDLER-CLASS DISPATCH
+# ═══════════════════════════════════════════════════════════════════════
 
+def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
+    """Fetch line_movement_flags for the game and emit one Opinion per
+    flag whose classification matches the source_row's signal_key intent
+    (triple_confirmed / confirmed / lean)."""
+    gid = ctx.get('game_id')
+    if not gid or not _SB: return []
+    try:
+        r = requests.get(f'{_SB}/rest/v1/line_movement_flags',
+                         headers=_H_READ,
+                         params={'game_id': f'eq.{gid}',
+                                 'select': 'market,side,classification,money_pct,bets_pct,handle_pct,bettors_pct'},
+                         timeout=8)
+        flags = r.json() if r.status_code == 200 else []
+    except Exception:
+        flags = []
+    if not flags: return []
 
-def gather_opinions_mlb(ctx: dict) -> list[Opinion]:
-    """Turn a full mlb_game_context row into every Opinion the ensemble
-    can read. Sport-specific — knows MLB column names + registry keys."""
-    ops: list[Opinion] = []
+    signal_key = source_row.get('signal_key', '')
+    prose_tmpl = source_row.get('display_prose_template') or ''
+    hr, n, tier = _resolve_weight(source_row)
 
-    close_total = ctx.get('close_total')
-    close_spread = ctx.get('close_spread')
-
-    # ── MODELS: ML direction (via spread — negative = home favored) ──
-    for source_name, spread_field, reg_key in [
-        ('MC', None, 'mc_ml_high_conf'),  # MC handled via probabilities below
-        ('Panel', 'panel_implied_margin', 'panel_ml'),
-        ('V4', 'model_pred_spread', 'v4_ml'),
-        ('V3', 'projected_spread', 'v3_ml'),
-        ('JerryPred', 'jerry_pred_spread', 'jerry_pred_ml'),
-    ]:
-        if spread_field is None:
-            continue
-        v = ctx.get(spread_field)
-        if v is None:
-            continue
-        try: spread = float(v)
-        except (TypeError, ValueError): continue
-        # Model says home favored if implied_margin > 0
-        side = 'HOME_ML' if spread > 0 else 'AWAY_ML' if spread < 0 else None
-        if side is None:
-            continue
-        strength = min(abs(spread) / 3.0, 1.0)  # 3+ run edge = max strength
-        hr, n, tier = _registry_lookup(reg_key)
-        ops.append(Opinion(
-            side=side, strength=strength, source=source_name,
-            hit_rate=hr, sample_n=n, tier=tier,
-            note=f'{source_name} sees {side.replace("_ML","")} by {abs(spread):.1f}',
-        ))
-
-    # ── MODELS: MC via probability ──
-    mc = _mc_probs(ctx) or {}
-    op = _opinion_from_model('MC', mc.get('mc_home_win_prob'), 'ml',
-                              {True: 'HOME_ML', False: 'AWAY_ML'},
-                              'mc_ml_high_conf', strength_scale=1.5)
-    if op: ops.append(op)
-
-    # ── MODELS: totals ──
-    if close_total is not None:
-        for source_name, total_field, reg_key in [
-            ('Panel', 'panel_implied_total', 'panel_implied_total'),
-            ('V4', 'model_pred_total', 'v4_projected_total'),
-            ('V3', 'projected_total', 'v4_projected_total'),
-            ('JerryPred', 'jerry_pred_total', 'jerry_pred_total'),
-        ]:
-            v = ctx.get(total_field)
-            if v is None: continue
-            try:
-                model_total = float(v)
-                ct = float(close_total)
-            except (TypeError, ValueError): continue
-            delta = model_total - ct
-            if abs(delta) < 0.3: continue
-            side = 'OVER' if delta > 0 else 'UNDER'
-            strength = min(abs(delta) / 2.0, 1.0)
-            hr, n, tier = _registry_lookup(reg_key)
-            ops.append(Opinion(
-                side=side, strength=strength, source=source_name,
-                hit_rate=hr, sample_n=n, tier=tier,
-                note=f'{source_name} {model_total:.1f} vs {ct:.1f} ({delta:+.1f})',
-            ))
-
-    # ── MC totals via probability ──
-    mc_over = mc.get('mc_over_prob')
-    if mc_over is not None:
-        op = _opinion_from_model('MC', mc_over, 'total',
-                                  {True: 'OVER', False: 'UNDER'},
-                                  'mc_total_high_conf', strength_scale=1.5)
-        if op: ops.append(op)
-
-    # ── PUBLIC SPLITS (OC + FR + Cleatz classification) ──
-    line_flags = _fetch_line_flags(ctx.get('game_id'), ctx.get('game_date'))
-    for flag in line_flags:
+    out: list[Opinion] = []
+    for flag in flags:
         cls = str(flag.get('classification') or '')
-        if not cls or cls in ('PATTERN_ONLY', 'NEUTRAL'):
+        if not cls or cls in ('PATTERN_ONLY', 'NEUTRAL', 'SOURCES_SPLIT'):
             continue
-        flag_side = str(flag.get('side') or '').upper()
-        # Convert flag side -> candidate side
-        # RLM: line moved against public side — sharp is on the OPPOSITE
-        # SHARP_MOVE/CONSENSUS: sharp is on the LISTED side
-        # PUBLIC_MOVE: public is on listed -> sharp is on OPPOSITE
+        # Match source_row to classification tier
+        if signal_key == 'sharp_split_triple_confirmed' and '_TRIPLE_CONFIRMED' not in cls:
+            continue
+        if signal_key == 'sharp_split_confirmed' and ('_TRIPLE_CONFIRMED' in cls or '_CONFIRMED' not in cls):
+            continue
+
         market = str(flag.get('market') or '').lower()
+        flag_side = str(flag.get('side') or '').upper()
         invert = cls.startswith('RLM') or cls.startswith('PUBLIC_MOVE')
         cand = _flag_to_candidate(market, flag_side, invert)
         if not cand: continue
 
-        # Weight by classification tier
-        if '_TRIPLE_CONFIRMED' in cls:
-            reg_key = 'cross_source_sharp_confirmed'
-            strength = 0.9
-        elif '_CONFIRMED' in cls:
-            reg_key = 'cross_source_sharp_confirmed'
-            strength = 0.7
-        else:  # _LEAN
-            reg_key = 'cross_source_sharp_confirmed'
-            strength = 0.4
-
-        hr, n, tier = _registry_lookup(reg_key)
-        ops.append(Opinion(
-            side=cand, strength=strength, source=f'line_flag_{cls}',
-            hit_rate=hr, sample_n=n, tier=tier,
-            note=f'{cls} -> {flag_side}',
+        strength = 0.9 if '_TRIPLE_CONFIRMED' in cls else 0.7 if '_CONFIRMED' in cls else 0.4
+        prose = prose_tmpl or f'{cls} on this side'
+        out.append(Opinion(
+            signal_key=signal_key, signal_class='split', side=cand,
+            strength=strength, hit_rate=hr, sample_n=n, tier=tier,
+            display_prose=prose,
         ))
+    return out
 
-    # ── SHARP SCENARIOS (per-game matches) ──
+
+def _handler_scenario(source_row: dict, ctx: dict) -> list[Opinion]:
+    """Sharp scenario matches with per-scenario hit_rate + n from
+    sharp_scenario_game_matches. Each match is its own Opinion so a
+    game with 5 matches produces 5 (potentially-differently-weighted)
+    opinions instead of one collapsed signal."""
+    gid = ctx.get('game_id')
+    game_date = ctx.get('game_date')
+    if not gid: return []
     try:
         from sharp_scenario_lookup import matches_for_game
-        matches = matches_for_game(ctx.get('game_id'), ctx.get('game_date'))
-        for m in matches:
-            side = str(m.get('side') or '').upper()
-            market = str(m.get('market') or '').lower()
-            bof = m.get('back_or_fade')
-            if bof == 'NEUTRAL' or not side:
-                continue
-            invert = bof == 'FADE'
-            cand = _flag_to_candidate(market, side, invert)
-            if not cand: continue
-            hr = m.get('hit_rate')
-            if hr is not None:
-                try: hr = float(hr) / 100.0
-                except (TypeError, ValueError): hr = None
-            n = int(m.get('n') or 0)
-            confidence = m.get('hint_confidence') or 50
-            strength = min(confidence / 100.0, 1.0)
-            ops.append(Opinion(
-                side=cand, strength=strength, source=f'scenario:{m.get("scenario_key")}',
-                hit_rate=hr, sample_n=n, tier='DISCOVERY' if n >= 15 else 'UNVALIDATED',
-                note=f'scenario {m.get("scenario_key")} {int((hr or 0)*100)}% n={n}',
-            ))
+        matches = matches_for_game(gid, game_date)
     except Exception:
-        pass
+        matches = []
 
-    # ── COHORT SIGNALS (from signal_confluence_* on ctx) ──
-    # signal_confluence_home / signal_confluence_away are net signal counts.
-    # signal_confluence_net is home - away. This is a rollup of many cohorts.
-    net = ctx.get('signal_confluence_net')
-    if net is not None:
-        try: net = int(net)
-        except (TypeError, ValueError): net = None
-    if net is not None and abs(net) >= 2:
-        side = 'HOME_ML' if net > 0 else 'AWAY_ML'
-        strength = min(abs(net) / 6.0, 1.0)
-        ops.append(Opinion(
-            side=side, strength=strength, source='confluence_net',
-            hit_rate=None, sample_n=0, tier='UNVALIDATED',
-            note=f'cohort confluence {net:+d}',
+    prose_tmpl = source_row.get('display_prose_template') or 'historical pattern hit {hit_rate}% in {sample_n} spots'
+    out: list[Opinion] = []
+    for m in matches:
+        side = str(m.get('side') or '').upper()
+        market = str(m.get('market') or '').lower()
+        bof = m.get('back_or_fade')
+        if bof == 'NEUTRAL' or not side: continue
+        invert = bof == 'FADE'
+        cand = _flag_to_candidate(market, side, invert)
+        if not cand: continue
+        hr = m.get('hit_rate')
+        try: hr = float(hr) / 100.0 if hr is not None else None
+        except (TypeError, ValueError): hr = None
+        n = int(m.get('n') or 0)
+        confidence = m.get('hint_confidence') or 50
+        strength = min(float(confidence) / 100.0, 1.0)
+        tier = 'DISCOVERY' if n >= 15 else 'UNVALIDATED'
+        scenario_key = str(m.get('scenario_key') or 'unnamed')
+        # Render prose with scenario data (not ctx — scenario has its own vars)
+        scen_ctx = AttrDict({'hit_rate': round((hr or 0) * 100, 1), 'sample_n': n,
+                             'scenario': scenario_key})
+        prose = render_prose(prose_tmpl, scen_ctx)
+        out.append(Opinion(
+            signal_key=f'{source_row["signal_key"]}:{scenario_key}',
+            signal_class='scenario', side=cand, strength=strength,
+            hit_rate=hr, sample_n=n, tier=tier,
+            display_prose=prose,
         ))
+    return out
 
-    return ops
+
+def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
+    """External handicapper picks for this game, each weighted by that
+    handicapper's own track record (external_source_track_record)."""
+    gid = ctx.get('game_id')
+    game_date = ctx.get('game_date')
+    if not gid or not _SB: return []
+    try:
+        r = requests.get(f'{_SB}/rest/v1/external_picks',
+                         headers=_H_READ,
+                         params={'game_id': f'eq.{gid}',
+                                 'select': 'source,surface,pick_side,pick_line,fade_flag'},
+                         timeout=8)
+        picks = r.json() if r.status_code == 200 else []
+    except Exception:
+        picks = []
+    if not picks: return []
+
+    sport = ctx.get('sport') or 'MLB'
+    tracks = _load_track_records()
+    out: list[Opinion] = []
+    for p in picks:
+        src = (p.get('source') or '').lower()
+        surface = (p.get('surface') or '').lower()
+        pick_side = (p.get('pick_side') or '').upper()
+        if not src or not surface or not pick_side: continue
+
+        # Convert surface → market
+        market = surface if surface in ('ml', 'rl', 'total') else None
+        if market is None: continue
+
+        # Fade flag on the source means we invert
+        invert = bool(p.get('fade_flag'))
+        cand = _flag_to_candidate(market, pick_side, invert)
+        if not cand: continue
+
+        # Look up source track record
+        rec = tracks.get((src, sport, surface)) or tracks.get((src, sport, 'ALL'))
+        hr = rec.get('hit_rate') if rec else None
+        if hr is not None:
+            try: hr = float(hr) / 100.0
+            except (TypeError, ValueError): hr = None
+        n = int(rec.get('n_graded', 0)) if rec else 0
+        tier = 'VALIDATED' if (hr and hr >= 0.57 and n >= 50) \
+               else 'DISCOVERY' if (hr and hr >= 0.55 and n >= 20) \
+               else 'UNVALIDATED'
+
+        out.append(Opinion(
+            signal_key=f'external:{src}',
+            signal_class='external_pick', side=cand, strength=0.5,
+            hit_rate=hr, sample_n=n, tier=tier,
+            display_prose=f'{src} is on this side ({int((hr or 0)*100)}% {n}-pick track)',
+        ))
+    return out
+
+
+HANDLERS: dict[str, Callable[[dict, dict], list[Opinion]]] = {
+    'split': _handler_split,
+    'scenario': _handler_scenario,
+    'external_pick': _handler_external,
+}
 
 
 def _flag_to_candidate(market: str, side: str, invert: bool = False) -> Optional[str]:
-    """Map (market, side, invert) -> standardized candidate label."""
+    """Map (market, side, invert) → standardized candidate label."""
     side = side.upper()
     m = market.lower()
-    # Apply invert
     if invert:
         side = {'HOME': 'AWAY', 'AWAY': 'HOME',
                 'OVER': 'UNDER', 'UNDER': 'OVER'}.get(side, side)
@@ -607,67 +450,244 @@ def _flag_to_candidate(market: str, side: str, invert: bool = False) -> Optional
     return None
 
 
-def _fetch_line_flags(game_id: Optional[str], game_date: Optional[str]) -> list[dict]:
-    """Read line_movement_flags for a game/date. Small query, cached
-    per-run isn't necessary because scorer usually runs one game at a time."""
-    if not game_id or not _SB:
+# ═══════════════════════════════════════════════════════════════════════
+# CORE: gather + score
+# ═══════════════════════════════════════════════════════════════════════
+
+def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
+    """Iterate all enabled signal_sources for the sport, evaluate each
+    against ctx (or dispatch to handler), return every Opinion emitted."""
+    sources = _load_sources(sport)
+    if not sources:
         return []
-    try:
-        r = requests.get(f'{_SB}/rest/v1/line_movement_flags',
-                         headers=_H_READ,
-                         params={'game_id': f'eq.{game_id}',
-                                 'select': 'market,side,classification,money_pct,bets_pct,handle_pct,bettors_pct'},
-                         timeout=8)
-        return r.json() if r.status_code == 200 else []
-    except Exception:
-        return []
+    ctx_attr = AttrDict(ctx)
+    out: list[Opinion] = []
+
+    for source in sources:
+        cls = source.get('class', '')
+        # Handler-based
+        if cls in HANDLERS:
+            try:
+                out.extend(HANDLERS[cls](source, ctx))
+            except Exception:
+                pass
+            continue
+
+        # Expression-based
+        condition = source.get('condition_expr', '')
+        if not evaluate_bool(condition, ctx_attr):
+            continue
+
+        side = evaluate_str(source.get('side_expr', ''), ctx_attr)
+        if not side:
+            continue
+
+        strength = evaluate_float(source.get('strength_expr', '0.5'), ctx_attr, default=0.5)
+        if strength <= 0:
+            continue
+
+        hr, n, tier = _resolve_weight(source)
+        prose = render_prose(source.get('display_prose_template') or '', ctx_attr)
+
+        out.append(Opinion(
+            signal_key=source['signal_key'],
+            signal_class=cls,
+            side=side, strength=strength,
+            hit_rate=hr, sample_n=n, tier=tier,
+            display_prose=prose or source['signal_key'],
+        ))
+    return out
+
+
+def _score_market(market: str, opinions: list[Opinion], ctx: dict) -> MarketDecision:
+    """Score one market (ml/rl/total) from the opinion pool.
+    Filters opinions to those relevant to this market's candidates."""
+    candidates = CANDIDATES_BY_MARKET[market]
+    market_ops = [op for op in opinions if op.side in candidates]
+
+    if not market_ops:
+        return _no_pick(market, ctx)
+
+    # Aggregate per candidate
+    per_side: dict[str, list[Contribution]] = defaultdict(list)
+    for op in market_ops:
+        w = edge_weight(op.hit_rate, op.sample_n, op.tier)
+        if w == 0 and op.strength == 0:
+            continue
+        c = Contribution(
+            signal_key=op.signal_key, signal_class=op.signal_class,
+            side=op.side, weight=w, strength=op.strength, n=op.sample_n,
+            contribution=round(w * op.strength, 4),
+            display_prose=op.display_prose,
+        )
+        per_side[op.side].append(c)
+
+    if not per_side:
+        return _no_pick(market, ctx)
+
+    # Sum per candidate + apply class-balance
+    scored: list[tuple[str, float, list[Contribution], dict, int]] = []
+    for cand in candidates:
+        chips = per_side.get(cand, [])
+        raw_total = sum(c.contribution for c in chips)
+        class_share: dict[str, float] = defaultdict(float)
+        for c in chips:
+            class_share[c.signal_class] += c.contribution
+        # Class-balance penalty: cap any single class at MAX_CLASS_SHARE of total
+        adjusted_total = raw_total
+        if raw_total > 0:
+            max_allowed = raw_total * MAX_CLASS_SHARE
+            for cls_name, share in class_share.items():
+                if share > max_allowed:
+                    # Cap this class's contribution
+                    overflow = share - max_allowed
+                    adjusted_total -= overflow * 0.5  # soft penalty, not hard cut
+        classes_fired = len([c for c in class_share.keys() if class_share[c] > 0])
+        scored.append((cand, adjusted_total, chips, dict(class_share), classes_fired))
+
+    scored.sort(key=lambda t: -t[1])
+    winner_cand, win_score, win_chips, win_shares, win_classes = scored[0]
+    runner_score = scored[1][1] if len(scored) > 1 else 0.0
+    margin = win_score - runner_score
+
+    # No pick if below LEAN floor
+    if win_score < TIER_THRESHOLDS['LEAN']['min_score']:
+        return _no_pick(market, ctx)
+
+    # Tier assignment: must clear score, class count, AND margin
+    tier = 'LEAN'
+    for candidate_tier in ('PRIME', 'STRONG'):
+        th = TIER_THRESHOLDS[candidate_tier]
+        if (win_score >= th['min_score']
+                and win_classes >= th['min_classes']
+                and margin >= th['min_margin']):
+            tier = candidate_tier
+            break
+
+    conviction = int(round(50 + min(win_score * 12, 45)))
+    conviction = max(50, min(95, conviction))
+
+    display_label, side, line = _label_from_candidate(winner_cand, ctx)
+
+    return MarketDecision(
+        market=market,
+        pick=winner_cand, display_label=display_label,
+        side=side, line=line,
+        tier=tier, conviction=conviction,
+        score=round(win_score, 2), margin=round(margin, 2),
+        contributions=sorted(win_chips, key=lambda c: -c.contribution),
+        class_share=win_shares,
+    )
+
+
+def _no_pick(market: str, ctx: dict) -> MarketDecision:
+    return MarketDecision(
+        market=market, pick=None, display_label=None,
+        side=None, line=None,
+        tier='PASS', conviction=50, score=0.0, margin=0.0,
+    )
+
+
+def _label_from_candidate(candidate: str, ctx: dict) -> tuple[str, Optional[str], Optional[float]]:
+    home = ctx.get('home_team') or 'HOME'
+    away = ctx.get('away_team') or 'AWAY'
+    close_spread = ctx.get('close_spread')
+    close_total = ctx.get('close_total')
+
+    if candidate == 'HOME_ML':
+        return (f'{home} ML', 'HOME', None)
+    if candidate == 'AWAY_ML':
+        return (f'{away} ML', 'AWAY', None)
+    if candidate == 'HOME_RL':
+        try: line = float(close_spread)
+        except (TypeError, ValueError): line = None
+        return (f'{home} {line:+g}' if line is not None else f'{home} RL', 'HOME', line)
+    if candidate == 'AWAY_RL':
+        try: line = -float(close_spread)
+        except (TypeError, ValueError): line = None
+        return (f'{away} {line:+g}' if line is not None else f'{away} RL', 'AWAY', line)
+    if candidate == 'OVER':
+        try: line = float(close_total)
+        except (TypeError, ValueError): line = None
+        return (f'Over {line}' if line is not None else 'Over', 'OVER', line)
+    if candidate == 'UNDER':
+        try: line = float(close_total)
+        except (TypeError, ValueError): line = None
+        return (f'Under {line}' if line is not None else 'Under', 'UNDER', line)
+    return (candidate, None, None)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# TOP-LEVEL API
+# TOP-LEVEL: score a whole game across all 3 markets
 # ═══════════════════════════════════════════════════════════════════════
 
-_ADAPTERS = {
-    'MLB': gather_opinions_mlb,
-    # 'NFL':  gather_opinions_nfl,   # Phase 2
-    # 'NCAAF': gather_opinions_ncaaf,
-    # 'UFC':  gather_opinions_ufc,   # different candidate set (fight)
-}
+def score_game(sport: str, ctx: dict) -> PerGameDecision:
+    """Score a game across ML, RL, and Total. Returns three MarketDecisions
+    + a top_market pointer to the highest-conviction one."""
+    opinions = gather_opinions(sport, ctx)
+    ml_dec = _score_market('ml', opinions, ctx)
+    rl_dec = _score_market('rl', opinions, ctx)
+    total_dec = _score_market('total', opinions, ctx)
 
+    # Determine top market (highest conviction with a pick)
+    picks = [(m, d) for m, d in [('ml', ml_dec), ('rl', rl_dec), ('total', total_dec)]
+             if d.pick is not None]
+    if picks:
+        top_market = max(picks, key=lambda p: p[1].conviction)[0]
+    else:
+        top_market = 'total'  # arbitrary default when all pass
 
-def score_game(sport: str, ctx: dict) -> Optional[Decision]:
-    """Top-level: score one game context via the sport-appropriate adapter."""
-    adapter = _ADAPTERS.get(sport.upper())
-    if adapter is None:
-        return None
-    opinions = adapter(ctx)
-    if not opinions:
-        return None
-    return decide(opinions, ctx, candidate_set=CANDIDATES_TEAM)
+    return PerGameDecision(
+        game_id=ctx.get('game_id', ''),
+        sport=sport,
+        home_team=ctx.get('home_team', ''),
+        away_team=ctx.get('away_team', ''),
+        ml=ml_dec, rl=rl_dec, total=total_dec,
+        top_market=top_market,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# CLI: score a single game for spot-checking
+# CLI
 # ═══════════════════════════════════════════════════════════════════════
 
-def _dump_decision(d: Optional[Decision]) -> None:
-    if d is None:
-        print('  -> PASS (no candidate cleared LEAN floor)')
-        return
-    print(f'  PICK: {d.display_label}  [{d.tier} · conv={d.conviction} · score={d.score:.2f}]')
-    print(f'  margin over runner-up: {d.score - d.competing_score:.2f}')
-    print(f'  contributions:')
-    for c in d.contributions[:8]:
-        print(f'    {c.source:<40} {c.side:<10} w={c.weight:.2f} n={c.n:<4} contrib={c.contribution:+.2f} · {c.note}')
+def _fmt_market(md: MarketDecision) -> str:
+    if md.pick is None:
+        return f'  {md.market.upper():<5} PASS'
+    return (f'  {md.market.upper():<5} {md.display_label:<25} '
+            f'[{md.tier:<6} conv={md.conviction} score={md.score:.2f} margin={md.margin:+.2f}]')
+
+
+def _fmt_decision(d: PerGameDecision, verbose: bool = False) -> str:
+    lines = [f'{d.away_team} @ {d.home_team}']
+    lines.append(_fmt_market(d.ml))
+    lines.append(_fmt_market(d.rl))
+    lines.append(_fmt_market(d.total))
+    top = d.top()
+    if top.pick:
+        lines.append(f'  TOP:  {top.market.upper()} - {top.display_label}  ({top.tier}, conv={top.conviction})')
+    if verbose:
+        for market_name in ['ml', 'rl', 'total']:
+            md = getattr(d, market_name)
+            if md.pick is None: continue
+            lines.append(f'  --- {market_name.upper()} contributions ---')
+            for c in md.contributions[:6]:
+                lines.append(f'    {c.signal_key:<40} [{c.signal_class:<12}] {c.side:<10} '
+                             f'w={c.weight:.2f} n={c.n:<4} contrib={c.contribution:+.2f}')
+                if c.display_prose:
+                    lines.append(f'      "{c.display_prose}"')
+            if md.class_share:
+                lines.append(f'  class share: {", ".join(f"{k}={v:.2f}" for k,v in md.class_share.items() if v>0)}')
+    return '\n'.join(lines)
 
 
 def main():
-    import argparse
     p = argparse.ArgumentParser()
     p.add_argument('--sport', default='MLB')
     p.add_argument('--date', default=date.today().isoformat())
     p.add_argument('--limit', type=int, default=None)
     p.add_argument('--game-id', default=None)
+    p.add_argument('--verbose', action='store_true')
     args = p.parse_args()
 
     table = 'mlb_game_context' if args.sport == 'MLB' else f'{args.sport.lower()}_game_context'
@@ -678,13 +698,10 @@ def main():
     rows = r.json() if r.status_code == 200 else []
     if args.limit: rows = rows[:args.limit]
 
-    print(f'=== ensemble_scorer · {args.sport} · {args.date} · {len(rows)} games ===\n')
+    print(f'=== ensemble_scorer v2 · {args.sport} · {args.date} · {len(rows)} games ===\n')
     for ctx in rows:
-        away = ctx.get('away_team', '?')
-        home = ctx.get('home_team', '?')
-        print(f'{away} @ {home}')
         d = score_game(args.sport, ctx)
-        _dump_decision(d)
+        print(_fmt_decision(d, verbose=args.verbose))
         print()
 
 
