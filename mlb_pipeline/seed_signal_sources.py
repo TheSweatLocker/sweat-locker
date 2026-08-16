@@ -389,6 +389,64 @@ SIGNALS = [
         'display_prose_template': 'pitcher-friendly park (run factor {park_run_factor})',
     },
 
+    # ── RUN-LINE CLASS (derives from model spread + juice traps) ───
+    # Rationale: RL isn't a native output of most models — it's derived
+    # from ML strength + spread magnitude. Heavy favorites tend to cover
+    # -1.5 poorly (documented juice_fav_rl_trap: -200+ favs cover 29%);
+    # underdog +1.5 in tight lines is real value.
+    {
+        'signal_key': 'home_rl_fav_covers',
+        'class': 'model', 'market_scope': 'rl',
+        'condition_expr': 'ctx.model_pred_spread is not None and ctx.home_ml_close is not None and float(ctx.model_pred_spread) >= 2.0 and int(ctx.home_ml_close) > -180',
+        'side_expr': '"HOME_RL"',
+        'strength_expr': 'min((float(ctx.model_pred_spread) - 1.5) / 2.5, 1.0)',
+        'weight_registry_key': 'v4_ml',
+        'display_prose_template': 'model projects home wins by {model_pred_spread} runs and price is affordable',
+        'description': 'Home favored by >= 2 runs at reasonable juice — RL -1.5 has value.',
+    },
+    {
+        'signal_key': 'away_rl_dog_+1.5',
+        'class': 'situational', 'market_scope': 'rl',
+        'condition_expr': 'ctx.close_spread is not None and float(ctx.close_spread) >= -1.5 and float(ctx.close_spread) <= 1.5 and ctx.away_ml_close is not None and int(ctx.away_ml_close) > 100',
+        'side_expr': '"AWAY_RL"',
+        'strength_expr': '0.35',
+        'display_prose_template': '{away_team} +1.5 is live — tight line means a one-run loss still pays',
+        'description': 'Away dog in a tight line — +1.5 covers frequently.',
+    },
+    {
+        'signal_key': 'juice_fav_ml_fade_rl',
+        'class': 'situational', 'market_scope': 'rl',
+        'condition_expr': 'ctx.home_ml_close is not None and int(ctx.home_ml_close) <= -200',
+        'side_expr': '"AWAY_RL"',
+        'strength_expr': '0.5',
+        'display_prose_template': 'home is priced at heavy juice ({home_ml_close}) — historically -200+ favs cover -1.5 only 29% of the time',
+        'description': 'Documented juice_fav_rl_trap. Take the +1.5 dog when home is a heavy fav.',
+    },
+    {
+        'signal_key': 'juice_fav_ml_fade_rl_away',
+        'class': 'situational', 'market_scope': 'rl',
+        'condition_expr': 'ctx.away_ml_close is not None and int(ctx.away_ml_close) <= -200',
+        'side_expr': '"HOME_RL"',
+        'strength_expr': '0.5',
+        'display_prose_template': 'away is priced at heavy juice ({away_ml_close}) — historically -200+ favs cover -1.5 only 29% of the time',
+    },
+    {
+        'signal_key': 'confluence_strong_home_rl',
+        'class': 'cohort', 'market_scope': 'rl',
+        'condition_expr': 'ctx.signal_confluence_net is not None and int(ctx.signal_confluence_net) >= 4 and ctx.close_spread is not None and float(ctx.close_spread) <= -1.5',
+        'side_expr': '"HOME_RL"',
+        'strength_expr': 'min(int(ctx.signal_confluence_net) / 6.0, 1.0)',
+        'display_prose_template': 'cohort confluence strong home ({signal_confluence_net}) with home laying {close_spread}',
+    },
+    {
+        'signal_key': 'confluence_strong_away_rl',
+        'class': 'cohort', 'market_scope': 'rl',
+        'condition_expr': 'ctx.signal_confluence_net is not None and int(ctx.signal_confluence_net) <= -4 and ctx.close_spread is not None and float(ctx.close_spread) >= 1.5',
+        'side_expr': '"AWAY_RL"',
+        'strength_expr': 'min(abs(int(ctx.signal_confluence_net)) / 6.0, 1.0)',
+        'display_prose_template': 'cohort confluence strong away ({signal_confluence_net}) with away laying {close_spread}',
+    },
+
     # ── COHORT CLASS ─────────────────────────────────────────────────
     {
         'signal_key': 'confluence_home_lean',
