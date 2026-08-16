@@ -1588,6 +1588,58 @@ def get_team_woba_wrc(team_name):
 
 
 _V4_OVER_SUPPRESSED_CACHE = None
+_V4_OVER_CALL_RATE_CACHE = None
+
+
+def v4_over_call_rate_14d():
+    """Return the fraction of the last 14 days' MLB games where v4 called
+    OVER vs the close total. This is the CALL-FREQUENCY bias — separate
+    from HIT-RATE bias tracked by is_v4_over_suppressed().
+
+    2026-08-16 morning audit found v4 called OVER on 93% of 8/15 games,
+    which even at neutral hit-rate is not useful signal — it's just
+    "v4 always says OVER". This function surfaces that bias so play_of_day
+    can dampen v4's OVER contribution more aggressively when the model
+    is spraying OVER calls indiscriminately.
+
+    Returns None if data unavailable. Cached per-run.
+    """
+    global _V4_OVER_CALL_RATE_CACHE
+    if _V4_OVER_CALL_RATE_CACHE is not None:
+        return _V4_OVER_CALL_RATE_CACHE
+    try:
+        from datetime import date, timedelta
+        cutoff = (date.today() - timedelta(days=14)).isoformat()
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_game_context"
+            f"?game_date=gte.{cutoff}"
+            f"&model_pred_total=not.is.null&close_total=not.is.null"
+            f"&select=model_pred_total,close_total&limit=500",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+            timeout=10,
+        )
+        data = r.json() if r.status_code == 200 else []
+        if not data:
+            _V4_OVER_CALL_RATE_CACHE = None
+            return None
+        overs = sum(1 for row in data
+                    if row.get('model_pred_total') is not None
+                    and row.get('close_total') is not None
+                    and float(row['model_pred_total']) > float(row['close_total']))
+        rate = overs / len(data)
+        _V4_OVER_CALL_RATE_CACHE = rate
+        return rate
+    except Exception:
+        _V4_OVER_CALL_RATE_CACHE = None
+        return None
+
+
+def v4_over_bias_severe():
+    """True when v4's 14d OVER call-rate exceeds 75% — model is spraying
+    OVER calls without discrimination, so its OVER vote is uninformative.
+    Play_of_day should drop v4's OVER contribution entirely when severe."""
+    rate = v4_over_call_rate_14d()
+    return rate is not None and rate > 0.75
 
 
 def is_v4_over_suppressed():

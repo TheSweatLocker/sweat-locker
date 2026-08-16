@@ -1700,13 +1700,22 @@ def score_mlb_game(ctx, game_props=None, track=None):
             except (TypeError, ValueError):
                 v4_over_agrees = None
             v4_over_suppressed_flag = False
+            v4_over_bias_severe_flag = False
             try:
-                from game_context import is_v4_over_suppressed
+                from game_context import is_v4_over_suppressed, v4_over_bias_severe
                 v4_over_suppressed_flag = is_v4_over_suppressed()
+                v4_over_bias_severe_flag = v4_over_bias_severe()
             except Exception:
                 pass
-            # Cross-model disagreement OR v4 OVER suppressed → discount
-            if v4_over_agrees is False or v4_over_suppressed_flag:
+            # 2026-08-16 morning-audit rule: v4 called OVER on 93% of 8/15
+            # games (bias, not hit-rate driven). When call-rate exceeds 75%
+            # over 14d, drop v4's OVER contribution HARDER — its OVER vote
+            # carries no signal because it's baseline behavior.
+            if v4_over_bias_severe_flag:
+                over_skeptic_mult = 0.3
+                _evidence('🚨', 'OVER skepticism (severe v4 bias)',
+                          'v4 called OVER on >75% of 14d games — contribution ×0.3')
+            elif v4_over_agrees is False or v4_over_suppressed_flag:
                 over_skeptic_mult = 0.6
                 reason = 'cross-model disagree' if v4_over_agrees is False else 'v4 OVER auto-suppressed'
                 _evidence('⚠️', 'OVER skepticism applied',
