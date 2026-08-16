@@ -12,7 +12,8 @@ on:
   schedule:
     - cron: '0 22 * * 3'   # Wed 6pm ET  — primary pull (score + odds + EV)
     - cron: '0 14 * * 5'   # Fri 10am ET — line-move refresh + weekly card
-    - cron: '0 14 * * 0'   # Sun 10am ET — resolver (grade Saturday fights)
+    - cron: '0 14 * * 6'   # Sat 10am ET — early grader (catches Fri-night prelim card + Contender Series)
+    - cron: '0 14 * * 0'   # Sun 10am ET — resolver (grade main Saturday card)
   workflow_dispatch:
     inputs:
       mode:
@@ -55,6 +56,7 @@ jobs:
             # Sun 14:00 UTC → resolver_only; Fri 14:00 UTC → card refresh only;
             # Wed 22:00 UTC → full (fresh pull).
             if [ "$DOW" = "7" ] && [ "$HOUR" = "14" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
+            elif [ "$DOW" = "6" ] && [ "$HOUR" = "14" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT  # Sat early grader
             elif [ "$DOW" = "5" ] && [ "$HOUR" = "14" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
             else echo "mode=full" >> $GITHUB_OUTPUT
             fi
@@ -156,3 +158,30 @@ jobs:
         run: |
           cd mlb_pipeline
           python generate_ufc_fight_synthesis.py || echo "UFC Jerry synth failed (non-fatal)"
+
+      # UFC picks grader (2026-08-09). Runs after ESPN results are available.
+      # Backfills winner_actual / method_actual / pick_result onto ufc_picks
+      # so track record + audit trail work for UFC. Idempotent: only touches
+      # ungraded picks (graded_at IS NULL). Never blocks pipeline.
+      - name: UFC grader (backfill results)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ufc_grader.py --backfill-all || echo "UFC grader failed (non-fatal)"
+
+      # 2026-08-09: UFC jerry_reads grader (separate table from ufc_picks).
+      # jerry_reads holds the per-fight synthesis output with call_side A/B
+      # and needs its own result column populated for the Receipts tab +
+      # public track record to display Jerry's UFC record. 60d backfill
+      # every run so late-resolved fights get picked up.
+      - name: UFC jerry_reads grader
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python grade_ufc_jerry_reads.py --backfill-days 60 || echo "UFC jerry grader failed (non-fatal)"

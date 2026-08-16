@@ -50,18 +50,39 @@ def compute_ev(p_win: float, decimal_odds: float) -> float:
     return round(p_win * (decimal_odds - 1) * 100 - (1 - p_win) * 100, 2)
 
 
-def ev_tier(ev: float | None, conviction: float | None) -> str:
+def ev_tier(ev: float | None, conviction: float | None,
+             odds_dec: float | None = None) -> str:
     if ev is None:
         return 'SKIP'
     if conviction is not None and conviction < 25:
         return 'SKIP'
+    # 2026-08-16 morning-audit rule: 90%+ model win-prob favorites went 2-6
+    # over 30d — model overweights win probability in a single-round-KO
+    # sport. Require odds >= 1.5 (roughly +/- even money or better) to
+    # earn PRIME, so we skip -200+ juice traps regardless of EV.
     if ev >= 8 and (conviction is None or conviction >= 30):
+        if odds_dec is not None and odds_dec < 1.5:
+            return 'STRONG'  # good edge but juice trap → cap at STRONG
         return 'PRIME'
     if ev >= 4:
         return 'STRONG'
     if ev >= 2:
         return 'LEAN'
     return 'SKIP'
+
+
+# 2026-08-16 morning-audit rule: 90%+ model win-prob picks went 2-6 over
+# 30d. Single KO ends any skill gap in MMA — the win-prob calibration
+# just doesn't hold at extremes. Cap the win-prob we display + hand to
+# downstream tiering at 80%. EV math still uses the raw probability so
+# we don't over-recommend, but users don't see 91% and think it's locked.
+UFC_WIN_PROB_DISPLAY_CAP = 0.80
+
+
+def clamp_display_win_prob(p: float | None) -> float | None:
+    if p is None:
+        return None
+    return min(p, UFC_WIN_PROB_DISPLAY_CAP)
 
 
 def load_picks(event_date: str) -> list:
@@ -125,7 +146,9 @@ def run(event_date: str | None = None, dry_run: bool = False):
                 if ev_b > 0: rec_side, best_ev = 'b', ev_b
                 elif ev_a > 0: rec_side, best_ev = 'a', ev_a
 
-        tier = ev_tier(best_ev, conv) if best_ev is not None else 'SKIP'
+        # Pass odds_dec so ev_tier can apply the juice-trap PRIME cap
+        rec_odds = odds_a if rec_side == 'a' else (odds_b if rec_side == 'b' else None)
+        tier = ev_tier(best_ev, conv, rec_odds) if best_ev is not None else 'SKIP'
         tier_counts[tier] = tier_counts.get(tier, 0) + 1
 
         payload = {
@@ -157,6 +180,11 @@ def run(event_date: str | None = None, dry_run: bool = False):
             refresh_for_event(event_date)
         except Exception as e:
             print(f'  ⚠ display_labels refresh failed (non-fatal): {e}')
+        try:
+            from ufc_detail_view import refresh_for_event as refresh_detail
+            refresh_detail(event_date)
+        except Exception as e:
+            print(f'  ⚠ detail_view refresh failed (non-fatal): {e}')
 
 
 if __name__ == '__main__':
