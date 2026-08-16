@@ -337,6 +337,48 @@ def render_prompt(template: str, game: dict, struct: dict) -> str:
     except Exception:
         registry_block = ''
 
+    # 2026-08-16 CUTOVER: inject ensemble pick + supporting-signal prose.
+    # ensemble_scorer v2 is now the DECISION authority. Jerry narrates.
+    # If primary_play._engine == 'ensemble_v2', pass the pick + top
+    # contributions into the prompt so Jerry writes prose about THIS pick
+    # instead of re-deciding via the LLM.
+    ensemble_block = ''
+    try:
+        pp = struct.get('primary_play') if isinstance(struct, dict) else None
+        if isinstance(pp, dict) and pp.get('_engine') == 'ensemble_v2':
+            label = pp.get('label') or '?'
+            tier = pp.get('tier') or 'LEAN'
+            conv = pp.get('conviction')
+            score = pp.get('score')
+            all_markets = pp.get('_ensemble_all_markets') or {}
+            sources = pp.get('_ensemble_sources') or []
+            lines = [
+                f'ENSEMBLE DECISION (mechanical scorer authority — this is the pick):',
+                f'  Pick:       {label}',
+                f'  Tier:       {tier}   conviction: {conv}   raw score: {score}',
+            ]
+            # Also show other markets that had a pick
+            other_picks = [
+                f'  {m.upper()}: {v.get("label")} ({v.get("tier")}, conv {v.get("conviction")})'
+                for m, v in all_markets.items()
+                if v.get('pick') is not None and v.get('label') != label
+            ]
+            if other_picks:
+                lines.append('')
+                lines.append('  Secondary market picks (available if you want to note):')
+                lines.extend(other_picks)
+            if sources:
+                lines.append('')
+                lines.append('  Supporting signals (weighted by historical hit rate):')
+                for s in sources[:6]:
+                    prose = s.get('prose') or s.get('signal_key', '')
+                    weight = s.get('weight', 0)
+                    n = s.get('n', 0)
+                    lines.append(f'    - {prose}  [weight {weight:.2f}, n={n}]')
+            ensemble_block = '\n'.join(lines)
+    except Exception:
+        pass
+
     struct_json = json.dumps(struct, indent=2, default=str)
     return (
         template
@@ -347,6 +389,7 @@ def render_prompt(template: str, game: dict, struct: dict) -> str:
         .replace("{HOME_PITCHER}", game.get("home_pitcher") or "(TBD)")
         .replace("{SHARP_SCENARIOS}", sharp_block)
         .replace("{SIGNAL_PLAYBOOK}", registry_block)
+        .replace("{ENSEMBLE_DECISION}", ensemble_block)
     )
 
 

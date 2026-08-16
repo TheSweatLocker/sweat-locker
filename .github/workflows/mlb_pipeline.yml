@@ -813,6 +813,22 @@ jobs:
           cd mlb_pipeline
           python rescore_signal_registry.py || echo "rescore_signal_registry non-fatal"
 
+      # 2026-08-16: backfill signal_sources → signal_registry tiers from
+      # the past 60 days of resolved games. Every signal_sources row
+      # gets its tier (VALIDATED / DISCOVERY / UNVALIDATED / ANTI_VALIDATED)
+      # + recommended_weight refreshed based on actual predictive
+      # performance. This is what keeps the ensemble scorer's weights
+      # honest — a signal that stops working gets auto-demoted. Runs
+      # after rescore so the registry is fresh first. Non-fatal.
+      - name: Backfill signal_sources tiers (60d replay)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_signal_tiers.py --days 60 || echo "backfill_signal_tiers non-fatal"
+
       # POTD auto-resolver — reads jerry_cache best_bet_* entries, looks
       # up game outcomes via mlb_game_results, writes Win/Loss/Push back
       # to data.result. Idempotent + backfills any unresolved historic

@@ -124,6 +124,29 @@ Empty when no signals in the registry apply to this game.
 
 {SIGNAL_PLAYBOOK}
 
+{ENSEMBLE_DECISION}
+
+NARRATOR MODE (2026-08-16):
+When ENSEMBLE DECISION is present above, your ONLY job is to write the SHORT
+and LONG prose narrating THAT pick. The mechanical ensemble scorer has already
+decided the market/side/conviction based on the weighted historical evidence
+of every signal. Your MARKET / SIDE / LINE / CALL_TEXT / CONVICTION output
+values must EXACTLY MATCH the ENSEMBLE DECISION above. Do not second-guess.
+Do not pick a different market. Do not raise or lower conviction. Translate.
+
+If ENSEMBLE DECISION is empty (rare — happens when signal_sources
+registry hasn't populated for this game), fall back to your prior
+handicapper role: read the struct, weigh signals, land on a directional
+take yourself, and output CALL fields as before.
+
+For the prose (SHORT + LONG) when narrating an ensemble pick:
+  - Quote the supporting-signal prose given to you above. It's already in
+    reader-friendly language — no translation needed.
+  - Never mention "ensemble", "scorer", "weighted", "signal registry", or
+    any internal system name. The user sees plain analysis, not machinery.
+  - If a supporting signal fires an ANTI_VALIDATED tag on it, leave it out
+    of the prose — cite validated signals only.
+
 Output format — return EXACTLY this structure, no extras:
 
 ---SHORT---
