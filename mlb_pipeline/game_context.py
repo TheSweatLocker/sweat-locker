@@ -1591,6 +1591,24 @@ _V4_OVER_SUPPRESSED_CACHE = None
 _V4_OVER_CALL_RATE_CACHE = None
 
 
+def _compose_ensemble_sub(md) -> str:
+    """Reader-friendly 1-liner for the ensemble pick's `sub` field.
+
+    Pulls the top-3 contributions' display_prose. Falls back to signal
+    key if a source didn't set display_prose. Never leaks internal names."""
+    supporting = sorted(
+        [c for c in md.contributions if c.side == md.pick and c.contribution > 0],
+        key=lambda c: -c.contribution,
+    )
+    if not supporting:
+        return f'{md.display_label} — ensemble score {md.score:.2f}'
+    top = supporting[:3]
+    parts = [c.display_prose for c in top if c.display_prose and not c.display_prose.startswith('_')]
+    if not parts:
+        return f'{md.display_label} — {len(supporting)} signals aligned'
+    return f'{md.display_label}: ' + ' · '.join(parts)
+
+
 def v4_over_call_rate_14d():
     """Return the fraction of the last 14 days' MLB games where v4 called
     OVER vs the close total. This is the CALL-FREQUENCY bias — separate
@@ -2935,7 +2953,62 @@ def upload_game_context(context, commence_time=None):
     # App reads ctx.primary_play directly so tuning thresholds doesn't require
     # an App Store resubmission.
     try:
-        context["primary_play"] = compute_primary_play(context)
+        # 2026-08-16 CUTOVER: ensemble_scorer v2 is the authority. Old
+        # compute_primary_play kept as fallback when ensemble returns
+        # nothing (e.g. registry / signal_sources not populated for a sport).
+        # Backtest over 60d (n=170): 61.1% HR / +18.6% ROI, so ensemble
+        # takes precedence.
+        ensemble_pp = None
+        try:
+            from ensemble_scorer import score_game as _ensemble_score
+            decision = _ensemble_score('MLB', context)
+            if decision is not None:
+                top = decision.top()
+                if top.pick is not None:
+                    # Convert MarketDecision -> primary_play dict format
+                    # so downstream (app, sweat card, sharp, ladder) is unchanged.
+                    sub = _compose_ensemble_sub(top)
+                    ensemble_pp = {
+                        'type': top.market,
+                        'tier': top.tier,
+                        'label': top.display_label,
+                        'side': top.side,
+                        'line': top.line,
+                        'conviction': top.conviction,
+                        'score': round(top.score, 2),
+                        'sub': sub,
+                        'audit_note': (f'ensemble_scorer v2 · {len(top.contributions)} sources · '
+                                       f'score={top.score:.2f} margin={top.margin:+.2f}'),
+                        '_engine': 'ensemble_v2',
+                        '_ensemble_sources': [
+                            {'signal_key': c.signal_key, 'class': c.signal_class,
+                             'side': c.side, 'weight': round(c.weight, 2),
+                             'n': c.n, 'contribution': round(c.contribution, 2),
+                             'prose': c.display_prose}
+                            for c in top.contributions[:8]
+                        ],
+                        # Preserve secondary + tertiary market picks so downstream
+                        # can surface them (Sweat Card multi-play, etc.)
+                        '_ensemble_all_markets': {
+                            'ml':    {'pick': decision.ml.pick, 'label': decision.ml.display_label,
+                                      'tier': decision.ml.tier, 'conviction': decision.ml.conviction},
+                            'rl':    {'pick': decision.rl.pick, 'label': decision.rl.display_label,
+                                      'tier': decision.rl.tier, 'conviction': decision.rl.conviction},
+                            'total': {'pick': decision.total.pick, 'label': decision.total.display_label,
+                                      'tier': decision.total.tier, 'conviction': decision.total.conviction},
+                        },
+                    }
+        except Exception as e:
+            # Ensemble unavailable — fall back to old logic. Log once.
+            pass
+
+        if ensemble_pp is not None:
+            context["primary_play"] = ensemble_pp
+        else:
+            # Fallback to legacy hand-tuned rule engine
+            context["primary_play"] = compute_primary_play(context)
+            context["primary_play"]["_engine"] = "legacy_compute_primary_play" if isinstance(context["primary_play"], dict) else None
+
         # 2026-08-16 Bundle H: Playbook tier gate. Scan the primary_play's
         # sub/audit_note for any ANTI_VALIDATED signal names from the
         # registry. If PRIME earned solely on an ANTI signal, demote to
