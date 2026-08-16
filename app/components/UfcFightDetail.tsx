@@ -12,7 +12,7 @@
  * bulk-loaded already via fetchUfcEvent.
  */
 import React from 'react';
-import {View, Text, TouchableOpacity, ScrollView, Platform} from 'react-native';
+import {View, Text, TouchableOpacity, ScrollView} from 'react-native';
 
 // Local palette — matches app THEME. Kept inline so this component is
 // self-contained (same pattern as GameDetailV2).
@@ -39,6 +39,26 @@ const scrubJerry = (t?: string | null): string => {
   return String(t).replace(/\[Auto-[^\]]*\]\s*/g, '').replace(/\s+/g, ' ').trim();
 };
 
+// Plain-english explanations of every MMA stat abbreviation. Tapped from
+// the H2H grid — casuals don't know what SLpM/SApM/TD Def mean and the
+// grid is useless to them without a translator.
+const STAT_HELP: Record<string, string> = {
+  'Record':   'Career MMA record: wins-losses-draws.',
+  'SLpM':     'Significant Strikes Landed per Minute. Higher = more active + effective striker.',
+  'Str Acc':  'Striking accuracy — % of significant strikes attempted that actually land. Higher = more precise.',
+  'Str Def':  "Striking defense — % of opponent's significant strikes avoided. Higher = harder to hit.",
+  'SApM':     'Significant Strikes Absorbed per Minute — how often they get hit. LOWER is better.',
+  'TD Avg':   'Takedowns landed per 15 minutes (avg 3-round fight). Higher = more wrestling-heavy.',
+  'TD Acc':   'Takedown accuracy — % of takedown attempts that succeed. Higher = better shot / setup.',
+  'TD Def':   "Takedown defense — % of opponent's takedown attempts stuffed. Higher = harder to grapple.",
+  'Sub Avg':  'Submission attempts per 15 minutes. High = active submission threat, not necessarily finishes.',
+  'Finish %': 'Career wins that ended by KO/TKO or submission (not decision). Higher = finisher, not point-fighter.',
+  'Stance':   'Orthodox (right-handed, left foot forward), Southpaw (left-handed, right foot forward), or Switch.',
+  'Reach':    'Arm span in inches, fingertip to fingertip. Longer reach = jab + kick from safer distance.',
+  'Height':   'Fighter height. Not always the reach advantage — check reach separately.',
+  'Age':      'Fighter age. Prime for most is 27-33; older can mean slower recovery + longer camps to peak.',
+};
+
 type Props = {
   game: any;                                  // has home_team + away_team = fighter names
   ufcPicks: any[];                            // all picks for the event
@@ -51,6 +71,9 @@ type Props = {
 export default function UfcFightDetail({
   game, ufcPicks, ufcJerryByGame, ufcFighterStats, ufcExternals, onClose,
 }: Props) {
+  // Which stat label is currently showing its plain-english help row.
+  // Null = none open. One at a time to keep the grid compact.
+  const [helpStat, setHelpStat] = React.useState<string | null>(null);
   const fighter1 = game?.away_team || '';
   const fighter2 = game?.home_team || '';
   const f1last = String(fighter1).split(' ').pop()?.toLowerCase() || '';
@@ -198,12 +221,19 @@ export default function UfcFightDetail({
           </View>
         )}
 
-        {/* Head-to-head stats grid */}
+        {/* Head-to-head stats grid — stat labels are tappable and
+            reveal a plain-english explanation row below (STAT_HELP).
+            Casuals don't know what SLpM or TD Def mean. */}
         {hasStats && (
           <View style={{marginBottom:14, backgroundColor: T.surface, borderRadius:10, padding:12}}>
-            <Text style={{color: T.combat, fontSize:11, fontWeight:'800', letterSpacing:0.6, marginBottom:8}}>
-              HEAD-TO-HEAD
-            </Text>
+            <View style={{flexDirection:'row', alignItems:'center', gap:6, marginBottom:8}}>
+              <Text style={{color: T.combat, fontSize:11, fontWeight:'800', letterSpacing:0.6}}>
+                HEAD-TO-HEAD
+              </Text>
+              <Text style={{color: T.textMuted, fontSize:9, fontWeight:'600', fontStyle:'italic'}}>
+                tap any stat name to learn what it means
+              </Text>
+            </View>
             <View style={{flexDirection:'row', paddingBottom:6, borderBottomWidth:1, borderBottomColor: T.border + '55'}}>
               <Text style={{flex:1, color: T.text, fontSize:12, fontWeight:'700'}} numberOfLines={1}>{fighter1}</Text>
               <Text style={{width:80, color: T.textMuted, fontSize:10, fontWeight:'700', textAlign:'center', letterSpacing:0.3}}>STAT</Text>
@@ -216,13 +246,44 @@ export default function UfcFightDetail({
               if (row.higherWins != null && typeof v1 === 'number' && typeof v2 === 'number' && v1 !== v2) {
                 adv = row.higherWins ? (v1 > v2 ? 1 : 2) : (v1 < v2 ? 1 : 2);
               }
+              const help = STAT_HELP[row.label];
+              const isHelpOpen = helpStat === row.label;
+              const hasBorder = ri < validH2H.length - 1;
               return (
-                <View key={ri} style={{flexDirection:'row', paddingVertical:5,
-                                        borderBottomWidth: ri < validH2H.length - 1 ? 1 : 0,
+                <View key={ri} style={{borderBottomWidth: hasBorder && !isHelpOpen ? 1 : 0,
                                         borderBottomColor: T.border + '22'}}>
-                  <Text style={{flex:1, color: adv === 1 ? T.win : T.textDim, fontSize:12, fontWeight: adv === 1 ? '800' : '600'}}>{fmt(v1)}</Text>
-                  <Text style={{width:80, color: T.textMuted, fontSize:10, fontWeight:'700', textAlign:'center', letterSpacing:0.3}}>{row.label.toUpperCase()}</Text>
-                  <Text style={{flex:1, color: adv === 2 ? T.win : T.textDim, fontSize:12, fontWeight: adv === 2 ? '800' : '600', textAlign:'right'}}>{fmt(v2)}</Text>
+                  <View style={{flexDirection:'row', paddingVertical:5, alignItems:'center'}}>
+                    <Text style={{flex:1, color: adv === 1 ? T.win : T.textDim, fontSize:12, fontWeight: adv === 1 ? '800' : '600'}}>{fmt(v1)}</Text>
+                    {/* Tappable label. Underlined + info dot so the tap
+                        affordance is obvious without shouting. */}
+                    <TouchableOpacity
+                      onPress={() => setHelpStat(isHelpOpen ? null : row.label)}
+                      disabled={!help}
+                      style={{width:80, alignItems:'center', paddingVertical:2}}
+                      hitSlop={{top:6, bottom:6, left:6, right:6}}
+                    >
+                      <View style={{flexDirection:'row', alignItems:'center', gap:3}}>
+                        <Text style={{
+                          color: isHelpOpen ? T.combat : T.textMuted,
+                          fontSize:10, fontWeight:'700', letterSpacing:0.3,
+                          textDecorationLine: help ? 'underline' : 'none',
+                          textDecorationStyle: 'dotted',
+                          textDecorationColor: T.textMuted + '77',
+                        }}>{row.label.toUpperCase()}</Text>
+                        {help && (
+                          <Text style={{color: isHelpOpen ? T.combat : T.textMuted + '99', fontSize:9, fontWeight:'700'}}>ⓘ</Text>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                    <Text style={{flex:1, color: adv === 2 ? T.win : T.textDim, fontSize:12, fontWeight: adv === 2 ? '800' : '600', textAlign:'right'}}>{fmt(v2)}</Text>
+                  </View>
+                  {isHelpOpen && help && (
+                    <View style={{paddingVertical:6, paddingHorizontal:10, marginBottom:4,
+                                  backgroundColor: T.combat + '12', borderRadius:6,
+                                  borderLeftWidth:2, borderLeftColor: T.combat}}>
+                      <Text style={{color: T.textDim, fontSize:11, lineHeight:15}}>{help}</Text>
+                    </View>
+                  )}
                 </View>
               );
             })}
