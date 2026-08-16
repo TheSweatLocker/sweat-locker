@@ -11,6 +11,7 @@ import { CohortDashboard } from './components/CohortDashboard';
 import { ExternalPicksPanel } from './components/ExternalPicksPanel';
 import { TierIntegrityBadge } from './components/TierIntegrityBadge';
 import GameDetailV2 from './components/GameDetailV2';
+import UfcFightDetail from './components/UfcFightDetail';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Sport } from './lib/sportPeriods';
 
@@ -14779,6 +14780,16 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
         <Modal visible={gameDetailModal} animationType="slide" transparent>
           <View style={styles.modalOverlay}>
             <View style={[styles.modalSheet,{height:'92%',maxHeight:'92%',padding:0,overflow:'hidden'}]}>
+              {gamesSport === 'UFC' ? (
+                <UfcFightDetail
+                  game={selectedGame}
+                  ufcPicks={ufcPicks}
+                  ufcJerryByGame={ufcJerryByGame}
+                  ufcFighterStats={ufcFighterStats}
+                  ufcExternals={ufcExternals}
+                  onClose={() => setGameDetailModal(false)}
+                />
+              ) : (
               <GameDetailV2
                 game={selectedGame}
                 ctx={
@@ -14850,6 +14861,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   setModalVisible(true);
                 }}
               />
+              )}
             </View>
           </View>
         </Modal>
