@@ -2177,6 +2177,12 @@ def _jerry_fallback_for_game(game_id: str, game_date: str,
     type_map = {'ml': 'ml', 'rl': 'ml', 'total': 'total', 'prop': 'prop'}
     pp_type = type_map.get(market)
     if not pp_type: return None
+    # 2026-08-15 morning-audit rule: Jerry MLB was 0-2 on ML conv=55 on 8/15
+    # and the ML surface is under-water rolling. Raise the ML floor above
+    # the total floor. Totals stayed profitable at conv 55; MLs did not.
+    # PASS on ML fallbacks below 60 rather than shipping a soft take.
+    if pp_type == 'ml' and conv < 60:
+        return None
     # Build display label
     if market == 'total' and line is not None:
         label = f'{"Over" if side == "OVER" else "Under"} {line}'

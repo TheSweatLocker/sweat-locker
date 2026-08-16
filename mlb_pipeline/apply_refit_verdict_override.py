@@ -348,6 +348,109 @@ def _cap_props_trap_directly(game_date: str, dry_run: bool = False) -> int:
     return capped
 
 
+def _cap_ha_over_no_signal(game_date: str, dry_run: bool = False) -> int:
+    """Gate ha_over props on the 2026-08-15 morning-audit finding.
+
+    ha_over went 1-4 on 8/15 (20% hit) and Prop Jerry BACK on ha_over sits
+    at 5-7 (42% n=12) rolling. The prop only earns publication when EITHER
+    the refit says the model got more confident (refit_conviction >= base)
+    OR the signals JSON carries a sharp-market lift (sharp_confirmed /
+    consensus / triple_confirmed). Anything else: cap to LEAN.
+
+    Idempotent — skips rows already tagged with _ha_over_gate.
+    """
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                     headers=H_READ,
+                     params={'game_date': f'eq.{game_date}',
+                             'prop_type': 'eq.ha_over',
+                             'tier': 'in.(STRONG,PRIME)',
+                             'select': 'id,player_name,prop_type,direction,tier,'
+                                       'conviction,refit_conviction,signals'},
+                     timeout=15)
+    if r.status_code != 200: return 0
+    gated = 0
+    for prop in r.json():
+        sig = prop.get('signals') or {}
+        if isinstance(sig, str):
+            try: sig = json.loads(sig)
+            except: sig = {}
+        if not isinstance(sig, dict): sig = {}
+        if sig.get('_ha_over_gate'): continue
+
+        base = prop.get('conviction') or 0
+        refit = prop.get('refit_conviction')
+        refit_up = refit is not None and refit >= base
+
+        # Sharp-market lift check — any of these signal keys constitute a lift
+        SHARP_KEYS = ('sharp_confirmed', 'sharp_triple_confirmed',
+                      'consensus', 'rlm_confirmed', '_sharp_lift')
+        has_sharp_lift = any(sig.get(k) for k in SHARP_KEYS)
+
+        if refit_up or has_sharp_lift:
+            continue  # earned publication
+
+        sig['_ha_over_gate'] = 'NO_REFIT_UP_NO_SHARP_LIFT'
+        sig['_refit_override_at'] = _et_today()
+        print(f'  ha_over-gate: {prop["player_name"]:22} '
+              f'{prop["tier"]}/{base} refit={refit} -> LEAN/55')
+        if dry_run: gated += 1; continue
+        patch = {'tier': 'LEAN', 'conviction': 55, 'signals': sig}
+        pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+                            headers=H_WRITE, json=patch, timeout=10)
+        if pr.status_code in (200, 204): gated += 1
+    return gated
+
+
+def _demote_refit_up_traps(game_date: str, dry_run: bool = False) -> int:
+    """Refit-UP demotion (2026-08-15 morning-audit finding).
+
+    Rolling pattern: refits that raise conviction by >=10pts ran 5-10 (33%)
+    on 8/15, mirroring 8/14. When base conviction is already >=70 AND the
+    refit boosted it by >=10pts, the "more confident" recal is actually a
+    fade signal. Demote one tier: PRIME->STRONG, STRONG->LEAN.
+
+    Skips rows already tagged with _refit_up_demote.
+    """
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                     headers=H_READ,
+                     params={'game_date': f'eq.{game_date}',
+                             'tier': 'in.(STRONG,PRIME)',
+                             'conviction': 'gte.70',
+                             'select': 'id,player_name,prop_type,direction,tier,'
+                                       'conviction,refit_conviction,signals'},
+                     timeout=15)
+    if r.status_code != 200: return 0
+    demoted = 0
+    for prop in r.json():
+        base = prop.get('conviction') or 0
+        refit = prop.get('refit_conviction')
+        if refit is None: continue
+        if refit - base < 10: continue  # not a big upward refit
+
+        sig = prop.get('signals') or {}
+        if isinstance(sig, str):
+            try: sig = json.loads(sig)
+            except: sig = {}
+        if not isinstance(sig, dict): sig = {}
+        if sig.get('_refit_up_demote'): continue
+
+        old_tier = prop['tier']
+        new_tier = 'LEAN' if old_tier == 'STRONG' else 'STRONG'  # PRIME->STRONG
+        new_conv = 55 if new_tier == 'LEAN' else 65
+
+        sig['_refit_up_demote'] = f'{old_tier}_TO_{new_tier}_REFIT_UP_{int(refit - base)}'
+        sig['_refit_override_at'] = _et_today()
+        print(f'  refit-up-demote: {prop["player_name"]:22} '
+              f'{prop["prop_type"]:10} {old_tier}/{base} refit={refit:.0f} '
+              f'-> {new_tier}/{new_conv}')
+        if dry_run: demoted += 1; continue
+        patch = {'tier': new_tier, 'conviction': new_conv, 'signals': sig}
+        pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+                            headers=H_WRITE, json=patch, timeout=10)
+        if pr.status_code in (200, 204): demoted += 1
+    return demoted
+
+
 def _sync_props_lean_cap(game_date: str, jr_row: dict, action: str,
                           dry_run: bool = False) -> None:
     """Mirror the LEAN cap into mlb_pipeline_props.
@@ -626,6 +729,20 @@ def run(game_date: str, dry_run: bool = False) -> int:
     if trap_capped:
         print(f'  props-table trap cap: {trap_capped} rows downgraded to LEAN '
               f'(refit<30 but tier=STRONG/PRIME)')
+
+    # 2026-08-15 morning-audit passes: ha_over gate + refit-up demotion.
+    # See morning audit notes — ha_over 20% on the day (1-4), refit-up
+    # ≥10pts went 5-10 (33%). Both patterns are direction-of-flow filters,
+    # applied after the base trap cap so they compound cleanly.
+    ha_gated = _cap_ha_over_no_signal(game_date, dry_run=dry_run)
+    if ha_gated:
+        print(f'  ha_over gate: {ha_gated} rows capped to LEAN '
+              f'(no refit-up and no sharp lift)')
+
+    refit_up_demoted = _demote_refit_up_traps(game_date, dry_run=dry_run)
+    if refit_up_demoted:
+        print(f'  refit-up demote: {refit_up_demoted} rows dropped one tier '
+              f'(base>=70 + refit_up>=10pts)')
 
     # 2026-08-11: raw-conviction=0 alarm summary. When base scorer emits 0
     # for prop_jerry_reads, refit boost signals are unreliable and the whole
