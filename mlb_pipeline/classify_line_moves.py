@@ -155,6 +155,33 @@ def _split_on_side(snap: dict | None, side: str, key_money: str, key_bets: str) 
     return (100.0 - float(money), 100.0 - float(bets))
 
 
+def _fadereport_split_on_side(fr: dict | None, side: str) -> tuple:
+    """FR-specific replacement for _split_on_side.
+
+    2026-08-16 morning-audit bug: _split_on_side reads snap.get('pick_side'),
+    but Fadereport rows have no `pick_side` field — they use `sharp_side_norm`.
+    That silently defaulted `pick=''`, missed the same_side_pairs check, and
+    inverted every FR read whenever sharp_side == flag side. Result: 8/15 had
+    zero SHARP_TRIPLE_CONFIRMED despite the CZ/FR/OC agreement being present.
+
+    Mirrors _cleatz_split_on_side: use sharp_side_norm to decide whether the
+    snapshot's percentages describe `side` directly or the opposite.
+    """
+    if not fr:
+        return (None, None)
+    money = fr.get('money_side_pct')
+    bets = fr.get('bets_side_pct')
+    if money is None or bets is None:
+        return (None, None)
+    sharp_norm = (fr.get('sharp_side_norm') or fr.get('pick_side') or '').upper()
+    side_up = (side or '').upper()
+    same_side_pairs = {('HOME', 'HOME'), ('AWAY', 'AWAY'),
+                       ('OVER', 'OVER'), ('UNDER', 'UNDER')}
+    if (sharp_norm, side_up) in same_side_pairs:
+        return (float(money), float(bets))
+    return (100.0 - float(money), 100.0 - float(bets))
+
+
 def classify_flag(sport: str, flag: dict) -> dict | None:
     """Classify one flag. Returns payload dict for PATCH, or None if skip."""
     gid = flag['game_id']; market = flag['market']; side = flag['side']
@@ -165,7 +192,11 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
     cz = _fetch_cleatz_split(gid, market)
 
     oc_money, oc_bets = _split_on_side(oc, side, 'money_pct', 'bets_pct')
-    fr_handle, fr_bettors = _split_on_side(fr, side, 'money_side_pct', 'bets_side_pct')
+    # 2026-08-16 morning-audit fix: use FR-specific reader that respects
+    # sharp_side_norm (FR has no pick_side field). Was silently inverting
+    # every FR read where sharp_side == flag side → zero TRIPLE_CONFIRMED
+    # on 8/15 despite CZ/OC/FR agreement being present.
+    fr_handle, fr_bettors = _fadereport_split_on_side(fr, side)
     cz_money, cz_bets = _cleatz_split_on_side(cz, side)
 
     # RLM: line moved AWAY from the side that had heavy public money.
@@ -180,17 +211,32 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
     cz_cls = classify_split(sport, cz_money, cz_bets, line_moved_toward) \
              if cz_money is not None else None
 
-    # 3-SOURCE COMBINATION (added 2026-08-15 pm)
+    # 3-SOURCE COMBINATION (added 2026-08-15 pm; 2026-08-16 dropped OC-anchor)
     # Highest tier: SHARP_TRIPLE_CONFIRMED when all 3 sources agree on a
-    # loud tag. Falls back to 2-source combine_classifications when only
-    # 2 sources published (which is common because FR is curated).
+    # loud tag — regardless of which source. Previously required OC to be
+    # loud, which silenced CZ+FR agreement when OC was NEUTRAL.
     loud_tags = {'SHARP_MOVE', 'PUBLIC_MOVE', 'RLM', 'CONSENSUS'}
     three_agree = (oc_cls in loud_tags and oc_cls == fr_cls == cz_cls)
     if three_agree:
         classification = oc_cls + '_TRIPLE_CONFIRMED'
     else:
-        # Fall back to 2-source (OC + best available of FR/CZ)
-        classification, _ = combine_classifications(oc_cls, fr_cls if fr_cls else cz_cls)
+        # 2-source fallback: try all three pairings (OC+FR, OC+CZ, FR+CZ)
+        # and take the strongest resulting classification. Previously only
+        # considered OC-anchored pairs, silencing FR+CZ agreement when OC
+        # was NEUTRAL. Ranking done by combine_classifications: CONFIRMED
+        # > SOURCES_SPLIT > LEAN > PATTERN_ONLY.
+        candidates = []
+        for a, b in ((oc_cls, fr_cls), (oc_cls, cz_cls), (fr_cls, cz_cls)):
+            if a is None and b is None: continue
+            c, _ = combine_classifications(a, b)
+            candidates.append(c)
+        # Prefer CONFIRMED > SPLIT > LEAN > anything else
+        def _rank(c: str) -> int:
+            if c.endswith('_CONFIRMED'): return 0
+            if c == 'SOURCES_SPLIT': return 1
+            if c.endswith('_LEAN'): return 2
+            return 3
+        classification = min(candidates, key=_rank) if candidates else 'PATTERN_ONLY'
 
     # 2026-08-16 morning-audit gate: single-source SHARP_MOVE_LEAN went
     # 1-2 on 8/15, and every LEAN flag on the slate had money% < 60.
