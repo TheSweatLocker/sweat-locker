@@ -10898,13 +10898,111 @@ setJerryHistory(prev => {
                top_8 array is the auditable receipts unit — every pick has a
                source_table + source_key the resolver uses to mark Win/Loss
                nightly. Same set we post on social. */}
+           {/* DAILY BEST BET */}
+{(dailyBestBetLoading || dailyBestBet) && (() => {
+  // 3-tier POTD render — driven by server-side `confidence` field
+  // (play_of_day.py writes 'elite'/'high'/'solid' for cohort-audit picks,
+  // 'secondary' for resolver LEAN, 'tertiary'/'value' for resolver LIGHT
+  // / passthrough fallback). HEADLINE always exists in audit_pool;
+  // SECONDARY + BEST AVAILABLE come from the value_pool fallback so the
+  // card never goes dark even on no-strong-play days.
+  const conf = (dailyBestBet?.confidence || 'standard').toLowerCase();
+  const potdTier =
+    (conf === 'elite' || conf === 'high' || conf === 'solid' || conf === 'standard')
+      ? { name: 'HEADLINE',       badge: '🔒', color: HRB_COLOR,  bgColor: THEME.hrb + '26', subhead: null }
+    : (conf === 'secondary')
+      ? { name: 'SECONDARY',      badge: '🥈', color: THEME.accent,  bgColor: THEME.accent + '1A',  subhead: 'No headline conviction — best available secondary lean' }
+      : { name: 'BEST AVAILABLE', badge: '🥉', color: THEME.sharp,  bgColor: THEME.sharp + '1A',  subhead: 'Below-conviction lean — model edge present but light' };
+  return (
+  // 2026-08-16 POTD merge: reduced marginBottom (16 -> 8) so this hero
+  // hugs the "REST OF TODAY'S CARD" list below it — reads as one card
+  // experience rather than two separate products.
+  <View style={{backgroundColor:THEME.surfaceHero,borderRadius:16,padding:16,borderWidth:1.5,borderColor:potdTier.color,marginBottom:8,shadowColor:potdTier.color,shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
+    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:potdTier.subhead ? 4 : 10}}>
+      <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+        <Text style={{color:potdTier.color,fontWeight:'800',fontSize:12,letterSpacing:1}}>{potdTier.badge} PLAY OF THE DAY</Text>
+        <View style={{backgroundColor:potdTier.bgColor,borderRadius:6,paddingHorizontal:6,paddingVertical:2}}>
+          <Text style={{color:potdTier.color,fontSize:9,fontWeight:'800'}}>{potdTier.name}</Text>
+        </View>
+      </View>
+      {dailyBestBet?.score && (
+        <View style={{
+  backgroundColor:potdTier.bgColor,
+  borderRadius:8,paddingHorizontal:8,paddingVertical:3,borderWidth:1,
+  borderColor:potdTier.color
+}}>
+  <Text style={{
+    color:potdTier.color,
+    fontSize:10,fontWeight:'800'
+  }}>{dailyBestBet.score?.total || dailyBestBet.score}</Text>
+</View>
+      )}
+    </View>
+    {potdTier.subhead && (
+      <Text style={{color:THEME.textMuted,fontSize:10,fontStyle:'italic',marginBottom:10}}>{potdTier.subhead}</Text>
+    )}
+
+    {dailyBestBetLoading ? (
+      <View style={{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:8}}>
+        <ActivityIndicator size='small' color={HRB_COLOR}/>
+        <Text style={{color:THEME.textMuted,fontSize:13}}>Jerry is finding today's best play...</Text>
+      </View>
+    ) : dailyBestBet?.waiting ? (
+      <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>Jerry's Play of the Day generates after the morning pipeline runs. Full data locks in a few hours before first game with confirmed lineups + closing lines.</Text>
+    ) : dailyBestBet?.noGames ? (
+      <Text style={{color:THEME.textDim,fontSize:13}}>No games on the slate today. Check back tomorrow.</Text>
+    ) : dailyBestBet?.noPrime ? (
+      <Text style={{color:THEME.textDim,fontSize:13}}>No prime plays today — top game scores {dailyBestBet.topScore}/100. Jerry says wait for a better spot.</Text>
+    ) : dailyBestBet?.noPlay ? (
+      <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>{dailyBestBet.narrative || "No play cleared the discipline gate tonight. Model, cohort engine, and Panel didn't converge — we sit out rather than force one. Dawg of the Day + bucket angles are still in the app."}</Text>
+    ) : dailyBestBet?.game ? (
+      <View>
+{isPlayoffMode && dailyBestBet?.sport === 'NBA' && (
+  <View style={{backgroundColor:THEME.hrb + '1A',borderRadius:6,paddingHorizontal:8,paddingVertical:3,marginBottom:8,borderWidth:1,borderColor:THEME.hrb + '4C'}}>
+    <Text style={{color:THEME.hrb,fontSize:11,fontWeight:'700'}}>🏆 NBA PLAYOFFS</Text>
+  </View>
+)}
+        <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',letterSpacing:0.5,marginBottom:6}}>
+          {SPORT_EMOJI[dailyBestBet.sport] || '🎯'} {dailyBestBet.sport} — {new Date(dailyBestBet.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} ET
+        </Text>
+        <Text style={{color:THEME.text,fontWeight:'800',fontSize:15,marginBottom:8}}>
+          {dailyBestBet.game.away_team} @ {dailyBestBet.game.home_team}
+        </Text>
+        {/* 2026-08-04: BOOK tile removed (hardcoded '🎸 HRB' didn't reflect
+            any real book selection). SWEAT tile renamed to CONVICTION and
+            given room to breathe since we deleted BOOK. Number is Jerry's
+            0-100 conviction score. */}
+        <View style={{flexDirection:'row',alignItems:'center',gap:10,marginBottom:12}}>
+          <View style={{backgroundColor:potdTier.bgColor,borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:potdTier.color,flex:2}}>
+            <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>TOP PLAY</Text>
+            <Text style={{color:potdTier.color,fontWeight:'800',fontSize:16}}>
+  {dailyBestBet.leanDisplay || 'Top Model Edge'}
+</Text>
+          </View>
+          <View style={{backgroundColor:THEME.accent + '1A',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:THEME.accent + '4C',alignItems:'center',minWidth:80}}>
+            <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>CONVICTION</Text>
+            <Text style={{color:THEME.accent,fontWeight:'800',fontSize:20}}>{dailyBestBet.score?.total || '--'}</Text>
+            <Text style={{color:THEME.textMuted,fontSize:8,fontWeight:'600',letterSpacing:0.5,marginTop:1}}>/100</Text>
+          </View>
+        </View>
+        <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>
+      </View>
+    ) : null}
+  </View>
+  );
+})()}
+
 {sweatCard && !sweatCard.noCard && (
   <View style={{backgroundColor:THEME.surfaceHero,borderRadius:16,padding:16,borderWidth:1.5,borderColor:THEME.accent,marginBottom:16,shadowColor:THEME.accent,shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
-      <Text style={{color:THEME.accent,fontWeight:'800',fontSize:13,letterSpacing:1}}>🔥 TODAY'S SWEAT CARD</Text>
+      {/* 2026-08-16 POTD merge: renamed header from "TODAY'S SWEAT CARD" so
+          the POTD hero above + this list below read as one continuous
+          experience — POTD is the featured card of today's slate, not a
+          separate product. */}
+      <Text style={{color:THEME.accent,fontWeight:'800',fontSize:13,letterSpacing:1}}>📋 REST OF TODAY'S CARD</Text>
       <Text style={{color:THEME.textDim,fontSize:10}}>{sweatCard.slate_date} • {sweatCard.top_8?.length || 8} picks</Text>
     </View>
-    <Text style={{color:THEME.textMuted,fontSize:10,marginBottom:6,fontStyle:'italic'}}>Curated • backed by audit-driven cohorts • updates as lineups confirm</Text>
+    <Text style={{color:THEME.textMuted,fontSize:10,marginBottom:6,fontStyle:'italic'}}>The rest of the curated card — same discipline gate as POTD, ranked below</Text>
     {/* 2026-08-09 data-freshness stamp: shows relative time since last card
         build. Uses jerry_cache.fetched_at (server-set on every generate_sweat_card
         run). Signals to users when a cron miss + stale card is being displayed
@@ -11369,96 +11467,6 @@ setJerryHistory(prev => {
   </View>
 )}
 
-           {/* DAILY BEST BET */}
-{(dailyBestBetLoading || dailyBestBet) && (() => {
-  // 3-tier POTD render — driven by server-side `confidence` field
-  // (play_of_day.py writes 'elite'/'high'/'solid' for cohort-audit picks,
-  // 'secondary' for resolver LEAN, 'tertiary'/'value' for resolver LIGHT
-  // / passthrough fallback). HEADLINE always exists in audit_pool;
-  // SECONDARY + BEST AVAILABLE come from the value_pool fallback so the
-  // card never goes dark even on no-strong-play days.
-  const conf = (dailyBestBet?.confidence || 'standard').toLowerCase();
-  const potdTier =
-    (conf === 'elite' || conf === 'high' || conf === 'solid' || conf === 'standard')
-      ? { name: 'HEADLINE',       badge: '🔒', color: HRB_COLOR,  bgColor: THEME.hrb + '26', subhead: null }
-    : (conf === 'secondary')
-      ? { name: 'SECONDARY',      badge: '🥈', color: THEME.accent,  bgColor: THEME.accent + '1A',  subhead: 'No headline conviction — best available secondary lean' }
-      : { name: 'BEST AVAILABLE', badge: '🥉', color: THEME.sharp,  bgColor: THEME.sharp + '1A',  subhead: 'Below-conviction lean — model edge present but light' };
-  return (
-  <View style={{backgroundColor:THEME.surfaceHero,borderRadius:16,padding:16,borderWidth:1.5,borderColor:potdTier.color,marginBottom:16,shadowColor:potdTier.color,shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
-    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:potdTier.subhead ? 4 : 10}}>
-      <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-        <Text style={{color:potdTier.color,fontWeight:'800',fontSize:12,letterSpacing:1}}>{potdTier.badge} JERRY'S PLAY OF THE DAY</Text>
-        <View style={{backgroundColor:potdTier.bgColor,borderRadius:6,paddingHorizontal:6,paddingVertical:2}}>
-          <Text style={{color:potdTier.color,fontSize:9,fontWeight:'800'}}>{potdTier.name}</Text>
-        </View>
-      </View>
-      {dailyBestBet?.score && (
-        <View style={{
-  backgroundColor:potdTier.bgColor,
-  borderRadius:8,paddingHorizontal:8,paddingVertical:3,borderWidth:1,
-  borderColor:potdTier.color
-}}>
-  <Text style={{
-    color:potdTier.color,
-    fontSize:10,fontWeight:'800'
-  }}>{dailyBestBet.score?.total || dailyBestBet.score}</Text>
-</View>
-      )}
-    </View>
-    {potdTier.subhead && (
-      <Text style={{color:THEME.textMuted,fontSize:10,fontStyle:'italic',marginBottom:10}}>{potdTier.subhead}</Text>
-    )}
-
-    {dailyBestBetLoading ? (
-      <View style={{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:8}}>
-        <ActivityIndicator size='small' color={HRB_COLOR}/>
-        <Text style={{color:THEME.textMuted,fontSize:13}}>Jerry is finding today's best play...</Text>
-      </View>
-    ) : dailyBestBet?.waiting ? (
-      <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>Jerry's Play of the Day generates after the morning pipeline runs. Full data locks in a few hours before first game with confirmed lineups + closing lines.</Text>
-    ) : dailyBestBet?.noGames ? (
-      <Text style={{color:THEME.textDim,fontSize:13}}>No games on the slate today. Check back tomorrow.</Text>
-    ) : dailyBestBet?.noPrime ? (
-      <Text style={{color:THEME.textDim,fontSize:13}}>No prime plays today — top game scores {dailyBestBet.topScore}/100. Jerry says wait for a better spot.</Text>
-    ) : dailyBestBet?.noPlay ? (
-      <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>{dailyBestBet.narrative || "No play cleared the discipline gate tonight. Model, cohort engine, and Panel didn't converge — we sit out rather than force one. Dawg of the Day + bucket angles are still in the app."}</Text>
-    ) : dailyBestBet?.game ? (
-      <View>
-{isPlayoffMode && dailyBestBet?.sport === 'NBA' && (
-  <View style={{backgroundColor:THEME.hrb + '1A',borderRadius:6,paddingHorizontal:8,paddingVertical:3,marginBottom:8,borderWidth:1,borderColor:THEME.hrb + '4C'}}>
-    <Text style={{color:THEME.hrb,fontSize:11,fontWeight:'700'}}>🏆 NBA PLAYOFFS</Text>
-  </View>
-)}
-        <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',letterSpacing:0.5,marginBottom:6}}>
-          {SPORT_EMOJI[dailyBestBet.sport] || '🎯'} {dailyBestBet.sport} — {new Date(dailyBestBet.game.commence_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} ET
-        </Text>
-        <Text style={{color:THEME.text,fontWeight:'800',fontSize:15,marginBottom:8}}>
-          {dailyBestBet.game.away_team} @ {dailyBestBet.game.home_team}
-        </Text>
-        {/* 2026-08-04: BOOK tile removed (hardcoded '🎸 HRB' didn't reflect
-            any real book selection). SWEAT tile renamed to CONVICTION and
-            given room to breathe since we deleted BOOK. Number is Jerry's
-            0-100 conviction score. */}
-        <View style={{flexDirection:'row',alignItems:'center',gap:10,marginBottom:12}}>
-          <View style={{backgroundColor:potdTier.bgColor,borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:potdTier.color,flex:2}}>
-            <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>TOP PLAY</Text>
-            <Text style={{color:potdTier.color,fontWeight:'800',fontSize:16}}>
-  {dailyBestBet.leanDisplay || 'Top Model Edge'}
-</Text>
-          </View>
-          <View style={{backgroundColor:THEME.accent + '1A',borderRadius:10,paddingHorizontal:12,paddingVertical:8,borderWidth:1,borderColor:THEME.accent + '4C',alignItems:'center',minWidth:80}}>
-            <Text style={{color:THEME.textDim,fontSize:9,fontWeight:'700',letterSpacing:1,marginBottom:2}}>CONVICTION</Text>
-            <Text style={{color:THEME.accent,fontWeight:'800',fontSize:20}}>{dailyBestBet.score?.total || '--'}</Text>
-            <Text style={{color:THEME.textMuted,fontSize:8,fontWeight:'600',letterSpacing:0.5,marginTop:1}}>/100</Text>
-          </View>
-        </View>
-        <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>
-      </View>
-    ) : null}
-  </View>
-  );
-})()}
 
   {/* Jerry's Morning Read panel removed 2026-06-01 — pulled from Odds API
       not our pipeline, generated LLM hallucinations (UFC matchup error
