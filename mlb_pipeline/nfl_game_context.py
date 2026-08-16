@@ -912,7 +912,54 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
         score = min(score, 60)
     row['sweat_score'] = score
     row['sweat_tier'] = sweat_tier(score)
-    row['primary_play'] = compute_primary_play(row)
+
+    # 2026-08-16 CUTOVER: ensemble_scorer v2 authority (per-sport, NFL).
+    # Same pattern as mlb_game_context — ensemble first, legacy fallback.
+    ensemble_pp = None
+    try:
+        from ensemble_scorer import score_game as _ensemble_score
+        from game_context import _compose_ensemble_sub
+        decision = _ensemble_score('NFL', row)
+        if decision is not None:
+            top = decision.top()
+            if top.pick is not None:
+                ensemble_pp = {
+                    'type': top.market,
+                    'tier': top.tier,
+                    'label': top.display_label,
+                    'side': top.side,
+                    'line': top.line,
+                    'conviction': top.conviction,
+                    'score': round(top.score, 2),
+                    'sub': _compose_ensemble_sub(top),
+                    'audit_note': (f'ensemble_scorer v2 · NFL · {len(top.contributions)} sources · '
+                                   f'score={top.score:.2f} margin={top.margin:+.2f}'),
+                    '_engine': 'ensemble_v2',
+                    '_ensemble_sources': [
+                        {'signal_key': c.signal_key, 'class': c.signal_class,
+                         'side': c.side, 'weight': round(c.weight, 2),
+                         'n': c.n, 'contribution': round(c.contribution, 2),
+                         'prose': c.display_prose}
+                        for c in top.contributions[:8]
+                    ],
+                    '_ensemble_all_markets': {
+                        'ml':    {'pick': decision.ml.pick, 'label': decision.ml.display_label,
+                                  'tier': decision.ml.tier, 'conviction': decision.ml.conviction},
+                        'rl':    {'pick': decision.rl.pick, 'label': decision.rl.display_label,
+                                  'tier': decision.rl.tier, 'conviction': decision.rl.conviction},
+                        'total': {'pick': decision.total.pick, 'label': decision.total.display_label,
+                                  'tier': decision.total.tier, 'conviction': decision.total.conviction},
+                    },
+                }
+    except Exception:
+        pass
+
+    if ensemble_pp is not None:
+        row['primary_play'] = ensemble_pp
+    else:
+        row['primary_play'] = compute_primary_play(row)
+        if isinstance(row['primary_play'], dict):
+            row['primary_play']['_engine'] = 'legacy_nfl_compute_primary_play'
 
     return row
 

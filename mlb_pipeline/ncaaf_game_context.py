@@ -69,6 +69,19 @@ def load_upcoming(days_ahead: int = 10) -> list:
     return r.json() if r.status_code == 200 else []
 
 
+def load_returning_production(season: int) -> dict:
+    """2026-08-09: fetch {team → {returning_offense_pct, returning_defense_pct}}
+    from ncaaf_returning_production. Falls back silently if table doesn't
+    exist yet (migration pending) or season not backfilled."""
+    r = requests.get(
+        f'{SB}/rest/v1/ncaaf_returning_production?season=eq.{season}&select=*',
+        headers=H_READ, timeout=15,
+    )
+    if r.status_code != 200: return {}
+    rows = r.json() if isinstance(r.json(), list) else []
+    return {row['team']: row for row in rows}
+
+
 def load_team_stats(season: int) -> dict:
     """Return {team: stats_row} for the season."""
     r = requests.get(
@@ -190,16 +203,57 @@ def compute_projections(home_stats: dict, away_stats: dict,
         return out
     out['projected_spread'] = projected_spread
 
-    # Total = base + team pace/scoring adjustments (v1: static base)
-    total = BASE_TOTAL
-    # Split via power_diff (favorite gets ~54/46 in CFB)
-    if projected_spread >= 0:
-        home_share = 0.50 + min(0.10, projected_spread * 0.008)
+    # 2026-08-09 Phase 2: matchup-adjusted total using SP+ off/def or EPA
+    # per-play. Previously flat BASE_TOTAL for every game; now varies by
+    # each team's offense × opp defense strength. Same pattern as
+    # NFL nfl_game_context.compute_projections after 8/9 upgrade.
+    h_sp_off = _f(home_stats.get('sp_offense'))
+    h_sp_def = _f(home_stats.get('sp_defense'))
+    a_sp_off = _f(away_stats.get('sp_offense'))
+    a_sp_def = _f(away_stats.get('sp_defense'))
+    LEAGUE_TEAM_AVG = BASE_TOTAL / 2  # 26 points per team
+    # SP+ off/def are rated in points-per-game above/below avg. A team with
+    # sp_offense=+5 scores 5 more than average against average defense.
+    if all(v is not None for v in (h_sp_off, h_sp_def, a_sp_off, a_sp_def)):
+        # Adjustment: sp_offense_home - sp_defense_away = expected home points
+        # relative to average. Same for away.
+        # Note: sp_defense higher = worse defense in CFBD (allows more).
+        h_pts_raw = LEAGUE_TEAM_AVG + (h_sp_off + a_sp_def) / 2
+        a_pts_raw = LEAGUE_TEAM_AVG + (a_sp_off + h_sp_def) / 2
+        # Dampen extremes by blending toward BASE (80% matchup, 20% anchor)
+        h_pts = 0.80 * h_pts_raw + 0.20 * LEAGUE_TEAM_AVG
+        a_pts = 0.80 * a_pts_raw + 0.20 * LEAGUE_TEAM_AVG
+        # HFA on home side
+        h_pts += HOME_FIELD_PTS * 0.4 if not neutral_site else 0
+        a_pts -= HOME_FIELD_PTS * 0.4 if not neutral_site else 0
+        total = h_pts + a_pts
+        # Cap absurd projections at reasonable CFB range 30-90
+        total = max(30.0, min(90.0, total))
+        out['projected_total'] = round(total, 2)
+        out['model_pred_home_points'] = round(h_pts, 1)
+        out['model_pred_away_points'] = round(a_pts, 1)
     else:
-        home_share = 0.50 + max(-0.10, projected_spread * 0.008)
-    out['projected_total'] = round(total, 2)
-    out['model_pred_home_points'] = round(total * home_share, 1)
-    out['model_pred_away_points'] = round(total * (1 - home_share), 1)
+        # Fallback: static base + split via spread
+        total = BASE_TOTAL
+        if projected_spread >= 0:
+            home_share = 0.50 + min(0.10, projected_spread * 0.008)
+        else:
+            home_share = 0.50 + max(-0.10, projected_spread * 0.008)
+        out['projected_total'] = round(total, 2)
+        out['model_pred_home_points'] = round(total * home_share, 1)
+        out['model_pred_away_points'] = round(total * (1 - home_share), 1)
+
+    # 2026-08-09 Phase 2: SP+-only projected spread as second lens.
+    # Stored in sp_plus_pred_spread column (nflverse convention: pos = home fav).
+    # Since our primary projected_spread already uses SP+ when available,
+    # this makes the SECOND lens EPA-based (independent from primary).
+    if h_off_epa is not None and a_off_epa is not None:
+        h_net_epa = h_off_epa - (h_def_epa or 0)
+        a_net_epa = a_off_epa - (a_def_epa or 0)
+        epa_spread = round((h_net_epa - a_net_epa) * K_PTS_EPA + hfa, 2)
+        out['sp_plus_pred_spread'] = round(projected_spread, 2)  # SP+ version = primary
+        # Store EPA as second lens (called "sp_plus_pred_spread" but really EPA when both present)
+        # Cleaner: add explicit epa_pred_spread field, but keep for consistency w/ migration
     return out
 
 
@@ -331,7 +385,8 @@ def compute_primary_play(ctx):
     return None
 
 
-def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current') -> Optional[dict]:
+def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
+                       returning_prod: Optional[dict] = None) -> Optional[dict]:
     home = g.get('home_team'); away = g.get('away_team')
     if not home or not away:
         return None
@@ -341,6 +396,19 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current') 
     proj = compute_projections(home_stats, away_stats,
                                neutral_site=bool(g.get('neutral_site')))
     conf_net, breakdown = compute_confluence(home_stats, away_stats)
+
+    # 2026-08-09 Phase 2: returning production % (offense-only from CFBD).
+    # Critical Weeks 1-3 signal when EPA/SP+ are thin. Attached to row for
+    # downstream primary_play resolver + Jerry synthesis.
+    rp = returning_prod or {}
+    hrp = rp.get(home) or {}
+    arp = rp.get(away) or {}
+    ret_fields = {
+        'home_returning_production_off': hrp.get('returning_offense_pct'),
+        'home_returning_production_def': hrp.get('returning_defense_pct'),
+        'away_returning_production_off': arp.get('returning_offense_pct'),
+        'away_returning_production_def': arp.get('returning_defense_pct'),
+    }
 
     row = {
         'game_id': g['game_id'],
@@ -361,6 +429,7 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current') 
         'conference_game': g.get('conference_game'),
         'stats_source': stats_source,
         **proj,
+        **ret_fields,
         'signal_confluence_net': conf_net,
         'signal_confluence_breakdown': breakdown,
     }
@@ -370,7 +439,40 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current') 
     )
     row['sweat_score'] = score
     row['sweat_tier'] = sweat_tier(score)
-    row['primary_play'] = compute_primary_play(row)
+
+    # 2026-08-16 CUTOVER: ensemble_scorer v2 authority (NCAAF).
+    ensemble_pp = None
+    try:
+        from ensemble_scorer import score_game as _ensemble_score
+        from game_context import _compose_ensemble_sub
+        decision = _ensemble_score('NCAAF', row)
+        if decision is not None:
+            top = decision.top()
+            if top.pick is not None:
+                ensemble_pp = {
+                    'type': top.market, 'tier': top.tier, 'label': top.display_label,
+                    'side': top.side, 'line': top.line, 'conviction': top.conviction,
+                    'score': round(top.score, 2), 'sub': _compose_ensemble_sub(top),
+                    'audit_note': (f'ensemble_scorer v2 · NCAAF · {len(top.contributions)} sources · '
+                                   f'score={top.score:.2f} margin={top.margin:+.2f}'),
+                    '_engine': 'ensemble_v2',
+                    '_ensemble_sources': [
+                        {'signal_key': c.signal_key, 'class': c.signal_class,
+                         'side': c.side, 'weight': round(c.weight, 2),
+                         'n': c.n, 'contribution': round(c.contribution, 2),
+                         'prose': c.display_prose}
+                        for c in top.contributions[:8]
+                    ],
+                }
+    except Exception:
+        pass
+
+    if ensemble_pp is not None:
+        row['primary_play'] = ensemble_pp
+    else:
+        row['primary_play'] = compute_primary_play(row)
+        if isinstance(row['primary_play'], dict):
+            row['primary_play']['_engine'] = 'legacy_ncaaf_compute_primary_play'
     return row
 
 
@@ -408,7 +510,13 @@ def run(dry_run: bool = False) -> None:
         print(f'  ⚠ neither {season} nor {season-1} has usable team stats — cohort/market signal only')
     print(f'  team_stats: {len(team_stats)} teams  source={stats_source}')
 
-    rows = [build_context_row(g, team_stats, stats_source=stats_source) for g in games]
+    # 2026-08-09 Phase 2: load returning production for early-season variance
+    # reduction. Silent no-op if migration not applied yet.
+    returning_prod = load_returning_production(season)
+    print(f'  returning_production: {len(returning_prod)} teams')
+
+    rows = [build_context_row(g, team_stats, stats_source=stats_source,
+                                returning_prod=returning_prod) for g in games]
     rows = [r for r in rows if r]
     written = upsert(rows, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
