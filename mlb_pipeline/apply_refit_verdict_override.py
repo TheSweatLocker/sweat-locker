@@ -348,6 +348,70 @@ def _cap_props_trap_directly(game_date: str, dry_run: bool = False) -> int:
     return capped
 
 
+def _cap_hits_over_juice_trap(game_date: str, dry_run: bool = False) -> int:
+    """Gate hits_over PRIME props on the juice-trap rule.
+
+    Per feedback_batter_hits_juice_trap_803 + feedback_prop_jerry_odds:
+    hits_over 0.5 at -200+ juice is a documented trap (PRIME ~69% but the
+    juice eats the edge; you need ~67% just to break even at -200).
+    Filter zone: keep props in the -300 to +150 range only.
+
+    Cap PRIME hits_over to STRONG when book_line is worse than -200.
+    Cap STRONG/PRIME hits_over to LEAN when book_line is -300+.
+
+    Idempotent — skips rows tagged with _hits_over_juice_gate.
+    """
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                     headers=H_READ,
+                     params={'game_date': f'eq.{game_date}',
+                             'prop_type': 'eq.hits_over',
+                             'tier': 'in.(STRONG,PRIME)',
+                             'select': 'id,player_name,prop_type,direction,tier,'
+                                       'conviction,refit_conviction,book_line,signals'},
+                     timeout=15)
+    if r.status_code != 200: return 0
+    capped = 0
+    for prop in r.json():
+        sig = prop.get('signals') or {}
+        if isinstance(sig, str):
+            try: sig = json.loads(sig)
+            except: sig = {}
+        if not isinstance(sig, dict): sig = {}
+        if sig.get('_hits_over_juice_gate'): continue
+
+        odds = prop.get('book_line')
+        if odds is None:
+            continue  # can't gate without odds
+        try:
+            odds = int(odds)
+        except (TypeError, ValueError):
+            continue
+        # -200 or worse = trap zone; -300 or worse = hard drop to LEAN
+        old_tier = prop.get('tier')
+        if odds <= -300:
+            new_tier = 'LEAN'; new_conv = 55
+            tag = f'HITS_OVER_HARD_JUICE_{odds}'
+        elif odds <= -200:
+            if old_tier == 'PRIME':
+                new_tier = 'STRONG'; new_conv = 65
+                tag = f'HITS_OVER_PRIME_JUICE_TRAP_{odds}'
+            else:
+                continue  # STRONG at -200 to -300 stays (edge might hold)
+        else:
+            continue  # inside publish zone (-200 to +?)
+
+        sig['_hits_over_juice_gate'] = tag
+        sig['_refit_override_at'] = _et_today()
+        print(f'  hits_over-juice: {prop["player_name"]:22} '
+              f'{old_tier}/{prop.get("conviction")} @ {odds} -> {new_tier}/{new_conv}')
+        if dry_run: capped += 1; continue
+        patch = {'tier': new_tier, 'conviction': new_conv, 'signals': sig}
+        pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+                            headers=H_WRITE, json=patch, timeout=10)
+        if pr.status_code in (200, 204): capped += 1
+    return capped
+
+
 def _cap_ha_over_no_signal(game_date: str, dry_run: bool = False) -> int:
     """Gate ha_over props on the 2026-08-15 morning-audit finding.
 
@@ -730,10 +794,15 @@ def run(game_date: str, dry_run: bool = False) -> int:
         print(f'  props-table trap cap: {trap_capped} rows downgraded to LEAN '
               f'(refit<30 but tier=STRONG/PRIME)')
 
-    # 2026-08-15 morning-audit passes: ha_over gate + refit-up demotion.
-    # See morning audit notes — ha_over 20% on the day (1-4), refit-up
-    # ≥10pts went 5-10 (33%). Both patterns are direction-of-flow filters,
-    # applied after the base trap cap so they compound cleanly.
+    # 2026-08-15 morning-audit passes + 2026-08-16 hits_over juice gate.
+    # ha_over 20% on the day (1-4), refit-up >=10pts went 5-10 (33%).
+    # hits_over PRIME today all posted at -200+ juice — documented trap
+    # per feedback_batter_hits_juice_trap_803.
+    hits_gated = _cap_hits_over_juice_trap(game_date, dry_run=dry_run)
+    if hits_gated:
+        print(f'  hits_over juice gate: {hits_gated} rows demoted '
+              f'(book_line worse than -200)')
+
     ha_gated = _cap_ha_over_no_signal(game_date, dry_run=dry_run)
     if ha_gated:
         print(f'  ha_over gate: {ha_gated} rows capped to LEAN '

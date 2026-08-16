@@ -8446,109 +8446,113 @@ setJerryHistory(prev => {
     setSharpTabLoading(true);
     try {
       const today = new Date().toISOString().slice(0,10);
+      const thirty = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
       const isPS = (t?: string) => t === 'PRIME' || t === 'STRONG';
+      // 2026-08-16: real-odds tracking. American odds -> decimal payout on 1u win.
+      const winPayoutFromAmerican = (odds: number | null | undefined): number => {
+        if (odds == null || !isFinite(odds)) return 0.91;  // -110 fallback
+        if (odds >= 100) return odds / 100;
+        if (odds <= -100) return 100 / Math.abs(odds);
+        return 0.91;
+      };
 
-      // 1) MLB primary_play (sides + totals + RL etc.)
-      const {data: mlbCtx} = await supabase
-        .from('mlb_game_context')
-        .select('game_id,home_team,away_team,primary_play')
-        .eq('game_date', today);
+      // ── PARALLEL FETCH ALL SOURCES (Bundle F was sequential-ish — perceived lag) ──
+      const [
+        {data: mlbCtx},
+        {data: mlbProps},
+        {data: nflCtx},
+        {data: ncaafCtx},
+        {data: ncaabCtx},
+        {data: ufcReads},
+        {data: jerryHist},
+        {data: propsHist},
+      ] = await Promise.all([
+        supabase.from('mlb_game_context')
+          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,close_total')
+          .eq('game_date', today),
+        supabase.from('mlb_pipeline_props')
+          .select('player_name,matchup,prop_type,prop_line,direction,tier,conviction,refit_conviction,book_line')
+          .eq('game_date', today).in('tier', ['PRIME','STRONG']),
+        supabase.from('nfl_game_context')
+          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close')
+          .eq('game_date', today),
+        supabase.from('ncaaf_game_context')
+          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close')
+          .eq('game_date', today),
+        supabase.from('ncaab_game_context')
+          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close')
+          .eq('game_date', today),
+        supabase.from('jerry_reads')
+          .select('game_id,call_side,conviction,input_snapshot')
+          .eq('sport','UFC').eq('game_date', today).eq('call_market','fight')
+          .gte('conviction', 55),
+        supabase.from('jerry_reads')
+          .select('result,conviction,call_market,call_side,sport,game_id')
+          .gte('game_date', thirty).gte('conviction', 60).not('result','is',null),
+        // Real odds now come with props via book_line
+        supabase.from('mlb_pipeline_props')
+          .select('result,tier,prop_type,book_line')
+          .gte('game_date', thirty).in('tier', ['PRIME','STRONG']).not('result','is',null),
+      ]);
+
+      // ── TODAY'S PICKS ──
       const mlbSidePicks = (mlbCtx || []).filter((g: any) => isPS(g.primary_play?.tier)).map((g: any) => ({
-        sport: 'MLB',
-        matchup: `${g.away_team} @ ${g.home_team}`,
-        tier: g.primary_play?.tier,
-        pick: g.primary_play?.label || '—',
-        type: g.primary_play?.type || 'ml',
-        reason: g.primary_play?.sub || '',
+        sport: 'MLB', matchup: `${g.away_team} @ ${g.home_team}`,
+        tier: g.primary_play?.tier, pick: g.primary_play?.label || '—',
+        type: g.primary_play?.type || 'ml', reason: g.primary_play?.sub || '',
       }));
-
-      // 2) MLB props PRIME/STRONG (all prop types)
-      const {data: mlbProps} = await supabase
-        .from('mlb_pipeline_props')
-        .select('player_name,matchup,prop_type,prop_line,direction,tier,conviction,refit_conviction')
-        .eq('game_date', today).in('tier', ['PRIME','STRONG']);
       const mlbPropPicks = (mlbProps || []).map((p: any) => ({
-        sport: 'MLB',
-        matchup: p.matchup || '—',
-        tier: p.tier,
-        pick: `${p.player_name} ${p.direction === 'over' ? 'Over' : 'Under'} ${p.prop_line} ${p.prop_type?.split('_')[0]?.toUpperCase()}`,
-        type: 'prop',
-        reason: `conv=${p.refit_conviction ?? p.conviction}`,
+        sport: 'MLB', matchup: p.matchup || '—', tier: p.tier,
+        pick: `${p.player_name} ${p.direction === 'over' ? 'Over' : 'Under'} ${p.prop_line} ${p.prop_type?.split('_')[0]?.toUpperCase()}${p.book_line != null ? `  (${p.book_line > 0 ? '+' : ''}${p.book_line})` : ''}`,
+        type: 'prop', reason: `conv=${p.refit_conviction ?? p.conviction}`,
       }));
-
-      // 3) NFL / NCAAF / NCAAB primary_plays
-      const otherSports: {sport:string;table:string}[] = [
-        {sport:'NFL', table:'nfl_game_context'},
-        {sport:'NCAAF', table:'ncaaf_game_context'},
-        {sport:'NCAAB', table:'ncaab_game_context'},
-      ];
-      const otherPicksResults = await Promise.all(otherSports.map(async ({sport, table}) => {
-        try {
-          const {data} = await supabase.from(table)
-            .select('game_id,home_team,away_team,primary_play')
-            .eq('game_date', today);
-          return (data || []).filter((g: any) => isPS(g.primary_play?.tier)).map((g: any) => ({
-            sport,
-            matchup: `${g.away_team} @ ${g.home_team}`,
-            tier: g.primary_play?.tier,
-            pick: g.primary_play?.label || '—',
-            type: g.primary_play?.type || 'ml',
-            reason: g.primary_play?.sub || '',
-          }));
-        } catch { return []; }
-      }));
-      const otherPicks = otherPicksResults.flat();
-
-      // 4) UFC fight card jerry reads (BACK conv >= 55)
-      const {data: ufcReads} = await supabase
-        .from('jerry_reads')
-        .select('game_id,call_side,conviction,input_snapshot')
-        .eq('sport','UFC').eq('game_date', today).eq('call_market','fight')
-        .gte('conviction', 55);
+      const otherPicks: any[] = [];
+      for (const [sport, rows] of [['NFL', nflCtx], ['NCAAF', ncaafCtx], ['NCAAB', ncaabCtx]] as [string, any[]][]) {
+        (rows || []).filter((g: any) => isPS(g.primary_play?.tier)).forEach((g: any) => {
+          otherPicks.push({
+            sport, matchup: `${g.away_team} @ ${g.home_team}`,
+            tier: g.primary_play?.tier, pick: g.primary_play?.label || '—',
+            type: g.primary_play?.type || 'ml', reason: g.primary_play?.sub || '',
+          });
+        });
+      }
       const ufcPicks = (ufcReads || []).map((r: any) => {
         const inp = r.input_snapshot || {};
         const side = r.call_side;
         const picked = side === 'A' ? inp.fighter_a : inp.fighter_b;
+        const odds = inp.odds_picked_side_median;
         return {
-          sport: 'UFC',
-          matchup: `${inp.fighter_a} vs ${inp.fighter_b}`,
+          sport: 'UFC', matchup: `${inp.fighter_a} vs ${inp.fighter_b}`,
           tier: inp.ev_tier || '—',
-          pick: `${picked} ML`,
+          pick: `${picked} ML${odds ? `  (${odds > 0 ? '+' : ''}${odds})` : ''}`,
           type: 'ml',
-          reason: `Win prob ${inp.win_probability_pct}% @ ${inp.odds_picked_side_median}`,
+          reason: `Win prob ${inp.win_probability_pct}% @ ${odds}`,
         };
       });
-
       setSharpPicks([...mlbSidePicks, ...mlbPropPicks, ...otherPicks, ...ufcPicks]);
 
-      // Historical record — last 30d across all sources at flat 1u
-      const thirty = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+      // ── HISTORICAL RECORD (real odds per pick) ──
       let w=0, l=0, p=0, unitsNet=0;
-      // jerry_reads (MLB + UFC + others where wired)
-      const {data: jerryHist} = await supabase
-        .from('jerry_reads')
-        .select('result,conviction')
-        .gte('game_date', thirty)
-        .gte('conviction', 60)
-        .not('result','is',null);
-      (jerryHist||[]).forEach((r:any) => {
-        if (r.result === 'Win') { w++; unitsNet += 0.91; }
+      // Jerry reads: need to look up odds. For MLB ML/total, odds are on
+      // mlb_game_context (home_ml_close/away_ml_close). For UFC, on
+      // input_snapshot.odds_picked_side_median. We keep -110 for anything
+      // without a captured odds — better than fabricating.
+      (jerryHist || []).forEach((r: any) => {
+        // Odds lookup TBD in a proper join; use -110 default for jerry_reads
+        // until write-time odds capture ships.
+        const payout = 0.91;
+        if (r.result === 'Win') { w++; unitsNet += payout; }
         else if (r.result === 'Loss') { l++; unitsNet -= 1.0; }
         else if (r.result === 'Push') p++;
       });
-      // mlb_pipeline_props (props layer — flat 1u @ -125 assumed)
-      const {data: propsHist} = await supabase
-        .from('mlb_pipeline_props')
-        .select('result,tier')
-        .gte('game_date', thirty)
-        .in('tier', ['PRIME','STRONG'])
-        .not('result','is',null);
-      (propsHist||[]).forEach((r:any) => {
-        if (r.result === 'Win') { w++; unitsNet += 0.80; }  // -125 assumed
+      // Props: REAL odds from book_line — no more -125 fabrication
+      (propsHist || []).forEach((r: any) => {
+        const payout = winPayoutFromAmerican(r.book_line);
+        if (r.result === 'Win') { w++; unitsNet += payout; }
         else if (r.result === 'Loss') { l++; unitsNet -= 1.0; }
         else if (r.result === 'Push') p++;
       });
-      setSharpRecord({w,l,p,unitsNet: Math.round(unitsNet*100)/100});
+      setSharpRecord({w, l, p, unitsNet: Math.round(unitsNet*100)/100});
     } catch (e) { setSharpPicks([]); setSharpRecord({w:0,l:0,p:0,unitsNet:0}); }
     setSharpTabLoading(false);
   }, []);
