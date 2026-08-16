@@ -27,6 +27,7 @@
 import React, {useState, useMemo, useEffect} from 'react';
 import {View, Text, TouchableOpacity, ScrollView, StyleSheet, Platform} from 'react-native';
 import {createClient} from '@supabase/supabase-js';
+import Explainer from './Explainer';
 
 // Standard sport-league abbreviations — Dodgers → LAD (not DOD)
 const TEAM_ABBREV: Record<string, string> = {
@@ -415,9 +416,13 @@ function VerdictCard({ctx, awayTeam, homeTeam}: any) {
   const tierStyle = tierBadgeStyle(tier);
   return (
     <View style={styles.verdict}>
-      <View style={[styles.verdictTierPill, tierStyle]}>
+      <View style={[styles.verdictTierPill, tierStyle, {flexDirection:'row', alignItems:'center', gap:6}]}>
+        <Explainer term={String(tier).toUpperCase()}
+          color={tierStyle.color} activeColor={tierStyle.color} helpColor={C.text}
+          helpBg={tierStyle.color + '18'}
+          textStyle={{color: tierStyle.color, fontSize: 12, fontWeight: '800', letterSpacing: 0.6}} />
         <Text style={[styles.verdictTierText, {color: tierStyle.color}]}>
-          {tier} · {String(play.type || '').toUpperCase()}
+          · {String(play.type || '').toUpperCase()}
         </Text>
       </View>
       <Text style={styles.verdictPlay}>{label}</Text>
@@ -868,7 +873,11 @@ function LensGrid({ctx, gamesSport}: any) {
               {borderTopColor: missing ? C.border : sideColor(mgnSide), opacity: missing ? 0.5 : 1},
             ]}
           >
-            <Text style={styles.lensName}>{r.name}</Text>
+            <Explainer term={r.name.toUpperCase()}
+              color={C.textDim} activeColor={C.accent} helpColor={C.text}
+              helpBg={C.accent + '15'}
+              textStyle={styles.lensName} />
+
             <Text style={[styles.lensMargin, {color: missing ? C.textDim : sideColor(mgnSide)}]}>
               {missing ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2))}
             </Text>

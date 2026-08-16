@@ -12,6 +12,8 @@ import { ExternalPicksPanel } from './components/ExternalPicksPanel';
 import { TierIntegrityBadge } from './components/TierIntegrityBadge';
 import GameDetailV2 from './components/GameDetailV2';
 import UfcFightDetail from './components/UfcFightDetail';
+import Explainer from './components/Explainer';
+import TierChip from './components/TierChip';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Sport } from './lib/sportPeriods';
 
@@ -79,16 +81,19 @@ const scrubJerryText = (raw: string | null | undefined): string => {
  * Prose signals (containing "—" or full-sentence phrasing) pass through
  * unchanged.
  */
-const humanizeSignal = (key: string, val: any): string => {
+// 2026-08-15: returns structured {label, value, suffix, prose} instead of
+// a formatted string so callers can wrap the label with <Explainer>.
+// Backward-compat: callers can still `${r.prose || `${r.label}: ${r.value}${r.suffix}`}`.
+type SignalChip = {label: string; value?: string; suffix?: string; prose?: string};
+const humanizeSignal = (key: string, val: any): SignalChip | null => {
   const s = String(val ?? '').trim();
-  if (!s) return '';
-  // Prose signals (already user-ready) — pass through
+  if (!s) return null;
+  // Prose signals (already user-ready) — pass through as `prose`, no tap.
   if (s.includes('—') || s.includes(':') || s.length > 60 || /[A-Z]{2,}/.test(s.split(' ').slice(0, 2).join(' '))) {
-    return s;
+    return {label: '', prose: s};
   }
-  // Try to detect "keyname value" shorthand — split on last space
   const m = s.match(/^([\w_]+)\s+([\d.\-+%]+)$/);
-  if (!m) return s;
+  if (!m) return {label: '', prose: s};
   const rawKey = m[1].toLowerCase();
   const value = m[2];
   const KEY_LABELS: Record<string, {label: string; suffix?: string}> = {
@@ -112,9 +117,9 @@ const humanizeSignal = (key: string, val: any): string => {
     'edge':       {label: 'Edge', suffix: '%'},
   };
   const meta = KEY_LABELS[rawKey] || KEY_LABELS[key.toLowerCase()];
-  if (!meta) return s; // unknown key — safer to show raw than mislabel
+  if (!meta) return {label: '', prose: s};
   const suffix = meta.suffix && !value.endsWith('%') ? meta.suffix : '';
-  return `${meta.label}: ${value}${suffix}`;
+  return {label: meta.label, value, suffix};
 };
 const HRB_COLOR = THEME.hrb;
 
@@ -10955,7 +10960,7 @@ setJerryHistory(prev => {
                     <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',letterSpacing:0.5}}>{pickSport}</Text>
                   )}
                   {pick.tier && (
-                    <Text style={{color:tierColor,fontSize:10,fontWeight:'800'}}>{pick.tier}</Text>
+                    <TierChip tier={pick.tier} size="sm" outlined color={tierColor} />
                   )}
                   {resultColor && (
                     <Text style={{color:resultColor,fontSize:11,fontWeight:'900'}}>{resultIcon}</Text>
@@ -11080,7 +11085,11 @@ setJerryHistory(prev => {
                 <Text style={{color:'#fff',fontSize:12,fontWeight:'600'}}>{p.player_name} {renderLine(p)}</Text>
                 <Text style={{color:THEME.textDim,fontSize:10}}>{p.matchup}</Text>
               </View>
-              <Text style={{color:p.tier==='PRIME'?THEME.accent:THEME.textDim,fontSize:11,fontWeight:'700'}}>{p.tier} {p.conviction}</Text>
+              <View style={{flexDirection:'row', alignItems:'center', gap:4}}>
+                <TierChip tier={p.tier} size="sm" outlined
+                  color={p.tier==='PRIME'?THEME.accent:THEME.textDim} />
+                <Text style={{color:p.tier==='PRIME'?THEME.accent:THEME.textDim,fontSize:11,fontWeight:'700'}}>{p.conviction}</Text>
+              </View>
             </View>
           ))}
         </View>
@@ -12854,7 +12863,9 @@ setJerryHistory(prev => {
                       {/* Refit conviction preferred (2026-07-31); falls back to legacy conviction */}
                       <Text style={{color:tierColor, fontWeight:'900', fontSize:20}}>{Math.round(prop.display_conviction ?? prop.conviction)}</Text>
                     </View>
-                    <Text style={{color:tierColor, fontSize:9, fontWeight:'800', marginTop:3, letterSpacing:0.5}}>{prop.tier}</Text>
+                    <View style={{marginTop:3}}>
+                      <TierChip tier={prop.tier} size="sm" outlined color={tierColor} />
+                    </View>
                     {prop.refit_conviction != null && (
                       <Text style={{color:THEME.textMuted, fontSize:8, fontWeight:'700', marginTop:2, letterSpacing:0.4}}>REFIT v1</Text>
                     )}
@@ -12863,21 +12874,33 @@ setJerryHistory(prev => {
 
                 {signalEntries.length > 0 && (() => {
                   // 2026-08-13: humanize raw-key signals before render.
-                  // COVERAGE-stub props that get promoted to LEAN can carry
-                  // dict-key shorthand ("opp_wrc 110") that reads as mumbo
-                  // jumbo. humanizeSignal rewrites to prose or passes
-                  // already-prose signals through.
+                  // 2026-08-15: humanizeSignal now returns structured
+                  // {label, value, suffix, prose} — label is wrapped in
+                  // <Explainer> so users can tap "xERA" / "wRC+" / etc.
+                  // for a one-sentence definition.
                   const humanized = signalEntries
-                    .map(([k, v]) => [k, humanizeSignal(k, v)] as [string, string])
-                    .filter(([, v]) => v && v.length > 0);
+                    .map(([k, v]) => humanizeSignal(k, v))
+                    .filter((r): r is SignalChip => r != null);
                   if (humanized.length === 0) return null;
                   return (
                   <View style={{backgroundColor:THEME.surface, borderRadius:10, padding:10, gap:6}}>
                     <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', marginBottom:2, letterSpacing:0.5}}>MODEL SIGNALS</Text>
-                    {humanized.slice(0, 5).map(([key, val], j) => (
+                    {humanized.slice(0, 5).map((chip, j) => (
                       <View key={j} style={{flexDirection:'row', alignItems:'flex-start', gap:6}}>
                         <Text style={{color:tierColor, fontSize:11, marginTop:1}}>•</Text>
-                        <Text style={{color:THEME.textDim, fontSize:12, flex:1, lineHeight:17}}>{val}</Text>
+                        {chip.prose ? (
+                          <Text style={{color:THEME.textDim, fontSize:12, flex:1, lineHeight:17}}>{chip.prose}</Text>
+                        ) : (
+                          <View style={{flex:1, flexDirection:'row', alignItems:'flex-start', gap:4, flexWrap:'wrap'}}>
+                            <Explainer term={chip.label}
+                              color={THEME.textDim} activeColor={THEME.accent}
+                              helpColor={THEME.textDim} helpBg={THEME.accent + '15'}
+                              textStyle={{fontSize:12, lineHeight:17, fontWeight:'700'}} />
+                            <Text style={{color:THEME.textDim, fontSize:12, lineHeight:17}}>
+                              {chip.value}{chip.suffix || ''}
+                            </Text>
+                          </View>
+                        )}
                       </View>
                     ))}
                   </View>
