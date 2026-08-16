@@ -192,6 +192,23 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
         # Fall back to 2-source (OC + best available of FR/CZ)
         classification, _ = combine_classifications(oc_cls, fr_cls if fr_cls else cz_cls)
 
+    # 2026-08-16 morning-audit gate: single-source SHARP_MOVE_LEAN went
+    # 1-2 on 8/15, and every LEAN flag on the slate had money% < 60.
+    # Sub-60 single-source "sharp" is noise — demote to PATTERN_ONLY so
+    # it does not surface a loud SHARP badge in the app.
+    # Publication requires EITHER money% >= 60 OR |money% - bets%| >= 25pp.
+    if classification.endswith('_LEAN'):
+        # The winning source is whichever one produced the LEAN tag
+        winning_money = oc_money if oc_cls == classification.rsplit('_', 1)[0] + '_LEAN' or oc_cls else None
+        # Fall back: try OC first, then FR (handle), then CZ
+        chk_money = oc_money if oc_money is not None else (fr_handle if fr_handle is not None else cz_money)
+        chk_bets = oc_bets if oc_bets is not None else (fr_bettors if fr_bettors is not None else cz_bets)
+        magnitude_ok = chk_money is not None and chk_money >= 60
+        delta_ok = (chk_money is not None and chk_bets is not None
+                    and abs(chk_money - chk_bets) >= 25)
+        if not (magnitude_ok or delta_ok):
+            classification = 'PATTERN_ONLY'
+
     # Only surface split numbers when they carry weight: CONFIRMED/TRIPLE
     # shows both sources (they agreed); LEAN shows whichever source spoke;
     # SPLIT shows both so user sees the disagreement; PATTERN_ONLY/NEUTRAL
