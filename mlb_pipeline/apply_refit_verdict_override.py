@@ -465,6 +465,105 @@ def _cap_ha_over_no_signal(game_date: str, dry_run: bool = False) -> int:
     return gated
 
 
+def _cap_under_juice_trap(game_date: str, dry_run: bool = False) -> int:
+    """Symmetric UNDER-juice gate (2026-08-17 morning-audit finding).
+
+    Yesterday's props: bb_under -37% ROI, outs_under -36%, ha_under -30%.
+    Same juice-trap pattern as hits_over: heavy juice on UNDER props
+    means the model's edge doesn't cover the vig even when it hits ~55%.
+
+    Rule: cap PRIME/STRONG UNDER props (bb_under, ha_under, outs_under,
+    ks_under, er_under) when book_line is worse than -140.
+      * PRIME at book_line <= -140 → STRONG
+      * PRIME/STRONG at book_line <= -180 → LEAN
+
+    Idempotent via _under_juice_gate tag.
+    """
+    UNDER_TYPES = 'in.(bb_under,ha_under,outs_under,ks_under,er_under)'
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                     headers=H_READ,
+                     params={'game_date': f'eq.{game_date}',
+                             'prop_type': UNDER_TYPES,
+                             'tier': 'in.(STRONG,PRIME)',
+                             'select': 'id,player_name,prop_type,direction,tier,'
+                                       'conviction,refit_conviction,book_line,signals'},
+                     timeout=15)
+    if r.status_code != 200: return 0
+    capped = 0
+    for prop in r.json():
+        sig = prop.get('signals') or {}
+        if isinstance(sig, str):
+            try: sig = json.loads(sig)
+            except: sig = {}
+        if not isinstance(sig, dict): sig = {}
+        if sig.get('_under_juice_gate'): continue
+
+        odds = prop.get('book_line')
+        if odds is None: continue
+        try: odds = int(odds)
+        except (TypeError, ValueError): continue
+        if odds > -140: continue  # inside publishable juice range
+
+        old_tier = prop.get('tier')
+        if odds <= -180:
+            new_tier = 'LEAN'; new_conv = 55
+            tag = f'UNDER_HARD_JUICE_{odds}'
+        elif old_tier == 'PRIME':
+            new_tier = 'STRONG'; new_conv = 65
+            tag = f'UNDER_PRIME_JUICE_TRAP_{odds}'
+        else:
+            continue  # STRONG at -140 to -180 stays
+
+        sig['_under_juice_gate'] = tag
+        sig['_refit_override_at'] = _et_today()
+        print(f'  under-juice: {prop["player_name"]:22} {prop["prop_type"]:12} '
+              f'{old_tier}/{prop.get("conviction")} @ {odds} -> {new_tier}/{new_conv}')
+        if dry_run: capped += 1; continue
+        patch = {'tier': new_tier, 'conviction': new_conv, 'signals': sig}
+        pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+                            headers=H_WRITE, json=patch, timeout=10)
+        if pr.status_code in (200, 204): capped += 1
+    return capped
+
+
+def _demote_coverage_tier(game_date: str, dry_run: bool = False) -> int:
+    """Kill COVERAGE tier from publishable stack (2026-08-17 audit).
+
+    COVERAGE tier is a -11% ROI drag over 216 stakes (8/16 audit). These
+    are fallback fills that got promoted for card coverage without real
+    conviction. Cap all COVERAGE props at LEAN so downstream (sweat card,
+    the sharp, etc.) treats them as internal-only, not publishable.
+
+    Idempotent via _coverage_kill_gate tag.
+    """
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                     headers=H_READ,
+                     params={'game_date': f'eq.{game_date}',
+                             'tier': 'eq.COVERAGE',
+                             'select': 'id,player_name,prop_type,tier,conviction,signals'},
+                     timeout=15)
+    if r.status_code != 200: return 0
+    demoted = 0
+    for prop in r.json():
+        sig = prop.get('signals') or {}
+        if isinstance(sig, str):
+            try: sig = json.loads(sig)
+            except: sig = {}
+        if not isinstance(sig, dict): sig = {}
+        if sig.get('_coverage_kill_gate'): continue
+
+        sig['_coverage_kill_gate'] = 'COVERAGE_TIER_UNPUBLISHABLE'
+        sig['_refit_override_at'] = _et_today()
+        print(f'  coverage-kill: {prop["player_name"]:22} {prop["prop_type"]:12} '
+              f'COVERAGE/{prop.get("conviction")} -> LEAN/55')
+        if dry_run: demoted += 1; continue
+        patch = {'tier': 'LEAN', 'conviction': 55, 'signals': sig}
+        pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+                            headers=H_WRITE, json=patch, timeout=10)
+        if pr.status_code in (200, 204): demoted += 1
+    return demoted
+
+
 def _playbook_gate_props(game_date: str, dry_run: bool = False) -> int:
     """Prop playbook phase 2: demote PRIME/STRONG props whose stack is
     dominated by ANTI_VALIDATED signals from the prop signal_registry.
@@ -928,6 +1027,19 @@ def run(game_date: str, dry_run: bool = False) -> int:
     if playbook_demoted:
         print(f'  playbook prop-gate: {playbook_demoted} rows demoted '
               f'(stack dominated by ANTI_VALIDATED signals)')
+
+    # 2026-08-17 morning-audit gates: UNDER-juice trap + COVERAGE-kill.
+    # UNDER props at -140+ juice went -30 to -37% ROI yesterday; COVERAGE
+    # tier -11% ROI over 216 stakes. Both bleed the aggregate.
+    under_capped = _cap_under_juice_trap(game_date, dry_run=dry_run)
+    if under_capped:
+        print(f'  under-juice: {under_capped} PRIME/STRONG UNDER props demoted '
+              f'(book_line worse than -140)')
+
+    coverage_killed = _demote_coverage_tier(game_date, dry_run=dry_run)
+    if coverage_killed:
+        print(f'  coverage-kill: {coverage_killed} COVERAGE rows demoted to LEAN '
+              f'(tier ran -11% ROI; unpublishable)')
 
     # 2026-08-11: raw-conviction=0 alarm summary. When base scorer emits 0
     # for prop_jerry_reads, refit boost signals are unreliable and the whole

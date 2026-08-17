@@ -255,6 +255,14 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
         if not (magnitude_ok or delta_ok):
             classification = 'PATTERN_ONLY'
 
+    # 2026-08-17 morning-audit gate: SOURCES_SPLIT went 1-2 (33%) on 8/16,
+    # 3-2 (60%) on 8/15 — n small but consistently at-or-under breakeven
+    # across two days. Demote to PATTERN_ONLY so the app doesn't render
+    # a loud SOURCES DISAGREE badge that reads as actionable. Pattern
+    # still flagged in the row for internal audit; just not published.
+    if classification == 'SOURCES_SPLIT':
+        classification = 'PATTERN_ONLY'
+
     # Only surface split numbers when they carry weight: CONFIRMED/TRIPLE
     # shows both sources (they agreed); LEAN shows whichever source spoke;
     # SPLIT shows both so user sees the disagreement; PATTERN_ONLY/NEUTRAL
