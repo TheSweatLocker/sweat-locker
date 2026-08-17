@@ -133,6 +133,15 @@ def run(date_str: str, dry_run: bool = False) -> None:
         new_key = f"{(new_pp or {}).get('tier')}·{(new_pp or {}).get('label')}·{(new_pp or {}).get('type')}"
         pp_changed = old_key != new_key
 
+        # 2026-08-17: also patch when the ensemble engine tag needs updating.
+        # Without this, unchanged picks keep their old un-tagged (or legacy-
+        # tagged) primary_play, so telemetry can't tell what actually ran.
+        old_engine = old_pp.get('_engine')
+        new_engine = (new_pp or {}).get('_engine')
+        engine_changed = old_engine != new_engine and new_pp is not None
+        if engine_changed and not pp_changed:
+            pp_changed = True  # trigger patch below to stamp the fresh engine
+
         # NRFI ensemble uses mc_p_nrfi + sklearn nrfi_score
         mc = c.get('mc_probabilities') or {}
         mc_p_nrfi = mc.get('mc_p_nrfi') if isinstance(mc, dict) else None
