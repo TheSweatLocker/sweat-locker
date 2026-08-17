@@ -54,6 +54,7 @@ SPORT_TABLES = {
     'NFL':   ('nfl_game_context',   'nfl_game_results'),
     'NCAAF': ('ncaaf_game_context', 'ncaaf_game_results'),
     'NCAAB': ('ncaab_game_context', 'ncaab_game_results'),
+    'NHL':   ('nhl_game_context',   'nhl_game_results'),
 }
 
 

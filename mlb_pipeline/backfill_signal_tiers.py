@@ -65,6 +65,7 @@ SPORT_TABLES = {
     'NFL':   ('nfl_game_context',   'nfl_game_results'),
     'NCAAF': ('ncaaf_game_context', 'ncaaf_game_results'),
     'NCAAB': ('ncaab_game_context', 'ncaab_game_results'),
+    'NHL':   ('nhl_game_context',   'nhl_game_results'),
 }
 
 
@@ -361,10 +362,10 @@ def main():
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--signal-key', default=None)
     p.add_argument('--sport', default='MLB',
-                   choices=['MLB', 'NFL', 'NCAAF', 'NCAAB', 'UFC', 'ALL'])
+                   choices=['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC', 'ALL'])
     args = p.parse_args()
     if args.sport == 'ALL':
-        for s in ('MLB', 'NFL', 'NCAAF', 'NCAAB', 'UFC'):
+        for s in ('MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC'):
             try:
                 run(days=args.days, dry_run=args.dry_run,
                     signal_key_filter=args.signal_key, sport=s)
