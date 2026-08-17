@@ -154,7 +154,8 @@ def run(days: int = 60, top_only: bool = False):
                 elif res == 'P':
                     ens_top['p'] += 1
 
-        # Grade current primary_play
+        # Grade current primary_play — parse side from label when 'side'
+        # field is missing (Jerry-fallback primary_play rows don't set it).
         cur_pp = ctx.get('primary_play')
         if isinstance(cur_pp, str):
             try: cur_pp = json.loads(cur_pp)
@@ -162,7 +163,25 @@ def run(days: int = 60, top_only: bool = False):
         if cur_pp and isinstance(cur_pp, dict):
             cur_type = cur_pp.get('type')
             cur_side = cur_pp.get('side')
+            cur_label = cur_pp.get('label') or ''
             cur_tier = cur_pp.get('tier', 'OTHER')
+
+            # Fallback: derive side from label
+            if not cur_side and cur_label:
+                lbl_low = cur_label.lower()
+                if lbl_low.startswith('over ') or ' over ' in lbl_low:
+                    cur_side = 'OVER'
+                elif lbl_low.startswith('under ') or ' under ' in lbl_low:
+                    cur_side = 'UNDER'
+                else:
+                    # e.g. "Dodgers ML" → match team names
+                    home = str(ctx.get('home_team') or '')
+                    away = str(ctx.get('away_team') or '')
+                    if home and home in cur_label:
+                        cur_side = 'HOME'
+                    elif away and away in cur_label:
+                        cur_side = 'AWAY'
+
             if cur_type in ('ml', 'rl', 'total') and cur_side:
                 cand = f'{cur_side}_{cur_type.upper()}' if cur_type != 'total' else cur_side
                 cand = cand.replace('_TOTAL', '')  # OVER/UNDER stay
