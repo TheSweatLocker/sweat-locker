@@ -78,11 +78,57 @@ def run(date_str: str, dry_run: bool = False) -> None:
         old_pp = c.get('primary_play') or {}
         old_key = f"{old_pp.get('tier')}·{old_pp.get('label')}·{old_pp.get('type')}"
 
+        # 2026-08-17 cutover fix: try ensemble_scorer first (mirror of the
+        # upload_game_context wrapper), fall back to legacy compute_primary_play
+        # if ensemble returns None. Previously this script always called the
+        # raw legacy path, silently CLOBBERING ensemble output from
+        # upload_game_context. Every day since the 8/16 cutover, the
+        # workflow ran game_context.py (writes ensemble output) then
+        # recompute_primary_play.py (overwrites with legacy) — leaving
+        # 0 rows with _engine='ensemble_v2'. Fix: same ensemble→fallback
+        # pattern here.
+        new_pp = None
         try:
-            new_pp = compute_primary_play(ctx_merged)
-        except Exception as e:
-            print(f'  ✗ {away} @ {home}: compute_primary_play failed — {e}')
-            continue
+            from ensemble_scorer import score_game as _ensemble_score
+            from game_context import _compose_ensemble_sub
+            decision = _ensemble_score('MLB', ctx_merged)
+            if decision is not None:
+                top = decision.top()
+                if top.pick is not None:
+                    new_pp = {
+                        'type': top.market, 'tier': top.tier, 'label': top.display_label,
+                        'side': top.side, 'line': top.line, 'conviction': top.conviction,
+                        'score': round(top.score, 2), 'sub': _compose_ensemble_sub(top),
+                        'audit_note': (f'ensemble_scorer v2 · recompute · {len(top.contributions)} sources · '
+                                       f'score={top.score:.2f} margin={top.margin:+.2f}'),
+                        '_engine': 'ensemble_v2',
+                        '_ensemble_sources': [
+                            {'signal_key': c.signal_key, 'class': c.signal_class,
+                             'side': c.side, 'weight': round(c.weight, 2),
+                             'n': c.n, 'contribution': round(c.contribution, 2),
+                             'prose': c.display_prose}
+                            for c in top.contributions[:8]
+                        ],
+                        '_ensemble_all_markets': {
+                            'ml':    {'pick': decision.ml.pick, 'label': decision.ml.display_label,
+                                      'tier': decision.ml.tier, 'conviction': decision.ml.conviction},
+                            'rl':    {'pick': decision.rl.pick, 'label': decision.rl.display_label,
+                                      'tier': decision.rl.tier, 'conviction': decision.rl.conviction},
+                            'total': {'pick': decision.total.pick, 'label': decision.total.display_label,
+                                      'tier': decision.total.tier, 'conviction': decision.total.conviction},
+                        },
+                    }
+        except Exception:
+            pass  # ensemble unavailable — fall back below
+
+        if new_pp is None:
+            try:
+                new_pp = compute_primary_play(ctx_merged)
+                if isinstance(new_pp, dict):
+                    new_pp['_engine'] = 'legacy_compute_primary_play'
+            except Exception as e:
+                print(f'  ✗ {away} @ {home}: compute_primary_play failed — {e}')
+                continue
 
         new_key = f"{(new_pp or {}).get('tier')}·{(new_pp or {}).get('label')}·{(new_pp or {}).get('type')}"
         pp_changed = old_key != new_key
