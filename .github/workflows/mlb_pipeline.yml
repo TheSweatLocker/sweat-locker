@@ -829,6 +829,20 @@ jobs:
           cd mlb_pipeline
           python backfill_signal_tiers.py --days 60 --sport ALL || echo "backfill_signal_tiers non-fatal"
 
+      # 2026-08-16: prop signal audit — mines signals JSON on resolved props
+      # to auto-tier which prop signals actually predict. Companion to
+      # backfill_signal_tiers (which handles game-level signals).
+      # Runs both MLB (mlb_pipeline_props) and NFL (nfl_props). Once NFL
+      # season starts + week 1 resolves, NFL will start producing rows.
+      - name: Audit prop signals (all sports)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_prop_signals.py --days 90 --sport ALL || echo "audit_prop_signals non-fatal"
+
       # 2026-08-16: nightly ensemble health check. Replays the last 30d,
       # computes rolling hit rate + ROI, sets status_flag on ensemble_health.
       # ensemble_scorer reads that at score time — auto-tightens or hard-

@@ -64,16 +64,31 @@ def is_prediction_signal(name: str) -> bool:
     return True
 
 
-def fetch_resolved_props(days: int) -> list[dict]:
+SPORT_TABLES = {
+    'MLB': {
+        'table': 'mlb_pipeline_props',
+        'select': 'prop_type,direction,tier,result,signals,book_line',
+        'signals_are_boolean': True,  # signals JSON is {name: True/count/text}
+    },
+    'NFL': {
+        'table': 'nfl_props',
+        'select': 'prop_type,pick_side,tier,conviction,result,signals,odds_american',
+        'signals_are_boolean': False,  # signals JSON is numeric features
+    },
+}
+
+
+def fetch_resolved_props(days: int, sport: str = 'MLB') -> list[dict]:
+    cfg = SPORT_TABLES.get(sport, SPORT_TABLES['MLB'])
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     rows = []
     for off in range(0, 30000, 1000):
         r = requests.get(
-            f'{SB}/rest/v1/mlb_pipeline_props'
+            f'{SB}/rest/v1/{cfg["table"]}'
             f'?game_date=gte.{cutoff}&game_date=lte.{yesterday}'
             f'&result=not.is.null'
-            f'&select=prop_type,direction,tier,result,signals,book_line'
+            f'&select={cfg["select"]}'
             f'&limit=1000&offset={off}',
             headers=H_READ, timeout=30)
         chunk = r.json() if r.status_code == 200 else []
@@ -175,11 +190,69 @@ def write(rows: list[dict], dry_run: bool = False):
     print(f'  ✓ wrote {written} prop_signal registry rows{" (dry-run)" if dry_run else ""}')
 
 
-def run(days: int = 90, by_prop_type: bool = False, dry_run: bool = False):
-    print(f'=== audit prop signals · MLB · last {days} days ===')
-    props = fetch_resolved_props(days)
+def audit_nfl(props: list[dict]) -> list[dict]:
+    """NFL prop audit: bucket by (prop_type × pick_side × tier) since
+    NFL prop signals are numeric context not boolean flags.
+    Produces registry rows like `prop:nfl_pass_yds_OVER_STRONG` etc."""
+    buckets: dict = defaultdict(lambda: [0, 0, 0])
+    for p in props:
+        result = str(p.get('result') or '').strip().upper()
+        if result in ('W', 'WIN'): idx = 0
+        elif result in ('L', 'LOSS'): idx = 1
+        elif result in ('P', 'PUSH'): idx = 2
+        else: continue
+
+        prop_type = p.get('prop_type') or 'unknown'
+        pick_side = str(p.get('pick_side') or 'UNK').upper()
+        tier = str(p.get('tier') or 'LEAN').upper()
+
+        # Bucket 1: (prop_type × pick_side × tier)
+        buckets[('nfl', prop_type, pick_side, tier)][idx] += 1
+        # Bucket 2: aggregate (prop_type × pick_side, any tier)
+        buckets[('nfl', prop_type, pick_side, 'ANY')][idx] += 1
+        # Bucket 3: aggregate (prop_type, any side, any tier)
+        buckets[('nfl', prop_type, 'ANY', 'ANY')][idx] += 1
+
+    rows = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for (_, prop_type, side, tier), (w, l, p) in buckets.items():
+        n_dec = w + l
+        if n_dec == 0: continue
+        hit_rate = round(100 * w / n_dec, 1)
+        edge_pp = round(hit_rate - 52.4, 1)
+
+        if n_dec < 15: reg_tier = 'UNVALIDATED'
+        elif n_dec >= 25 and hit_rate <= 48.0: reg_tier = 'ANTI_VALIDATED'
+        elif n_dec >= 50 and hit_rate >= 55.0: reg_tier = 'VALIDATED'
+        elif hit_rate >= 52.4: reg_tier = 'DISCOVERY'
+        else: reg_tier = 'UNVALIDATED'
+
+        weight = {'VALIDATED': 1.0, 'DISCOVERY': 0.5,
+                  'UNVALIDATED': 0.3, 'ANTI_VALIDATED': 0.0}[reg_tier]
+
+        signal_name = f'prop_nfl:{prop_type}_{side}_{tier}'
+        rows.append({
+            'signal_name': signal_name, 'sport': 'NFL', 'market_scope': 'prop',
+            'category': 'prop_bucket',
+            'description': f'NFL {prop_type} {side} tier={tier}',
+            'hit_rate': hit_rate, 'sample_n': n_dec, 'edge_pp': edge_pp,
+            'tier': reg_tier, 'recommended_weight': weight,
+            'direction_hint': 'FADE' if reg_tier == 'ANTI_VALIDATED' else 'FOLLOW',
+            'origin': f'NFL_PROP_AUDIT_{date.today().isoformat()}',
+            'last_computed_at': now_iso, 'updated_at': now_iso,
+        })
+    return rows
+
+
+def run(days: int = 90, by_prop_type: bool = False, dry_run: bool = False,
+         sport: str = 'MLB'):
+    print(f'=== audit prop signals · {sport} · last {days} days ===')
+    props = fetch_resolved_props(days, sport=sport)
     print(f'  {len(props)} resolved props')
-    rows = audit(props, by_prop_type=by_prop_type)
+    if sport == 'NFL':
+        rows = audit_nfl(props)
+    else:
+        rows = audit(props, by_prop_type=by_prop_type)
     print(f'  {len(rows)} unique signals aggregated ({("per prop_type" if by_prop_type else "global")})\n')
 
     # Summary counts
@@ -210,8 +283,18 @@ def main():
     p.add_argument('--days', type=int, default=90)
     p.add_argument('--by-prop-type', action='store_true')
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--sport', default='MLB', choices=['MLB', 'NFL', 'ALL'])
     args = p.parse_args()
-    run(days=args.days, by_prop_type=args.by_prop_type, dry_run=args.dry_run)
+    if args.sport == 'ALL':
+        for s in ('MLB', 'NFL'):
+            try:
+                run(days=args.days, by_prop_type=args.by_prop_type,
+                    dry_run=args.dry_run, sport=s)
+            except Exception as e:
+                print(f'  ✗ {s} failed: {e}')
+    else:
+        run(days=args.days, by_prop_type=args.by_prop_type,
+            dry_run=args.dry_run, sport=args.sport)
 
 
 if __name__ == '__main__':
