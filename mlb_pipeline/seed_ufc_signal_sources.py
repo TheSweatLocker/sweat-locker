@@ -155,10 +155,11 @@ UFC_SIGNALS = [
     {
         'signal_key': 'ufc_5rd_conditioning_a',
         'class': 'cardio', 'market_scope': 'fight',
-        'condition_expr': 'ctx.fight_order == 1 and ctx.total_fights_a is not None and int(ctx.total_fights_a) >= 15 and ctx.total_fights_b is not None and int(ctx.total_fights_b) < 10',
+        # total_fights approx = wins + losses + draws (no direct column)
+        'condition_expr': 'ctx.fight_order == 1 and ctx.total_wins_a is not None and (int(ctx.total_wins_a or 0) + int(ctx.total_losses_a or 0)) >= 15 and (int(ctx.total_wins_b or 0) + int(ctx.total_losses_b or 0)) < 10',
         'side_expr': '"FIGHTER_A_ML"',
         'strength_expr': '0.3',
-        'display_prose_template': '{fighter_a} has 5-round experience ({total_fights_a} fights) vs {fighter_b} ({total_fights_b}) — cardio edge in main event',
+        'display_prose_template': '{fighter_a} has 5-round experience vs {fighter_b} — cardio edge in main event',
     },
 
     # ── HANDLER-BASED (external + scenarios if UFC ever has them) ───

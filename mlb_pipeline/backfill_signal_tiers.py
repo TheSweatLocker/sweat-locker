@@ -114,8 +114,9 @@ def fetch_games_with_results(days: int, sport: str = 'MLB') -> list[dict]:
 
 
 def fetch_ufc_fights(days: int) -> list[dict]:
-    """Pull graded UFC fights from ufc_picks. Different shape than
-    game sports — each row is a fight with winner_actual + pick_result."""
+    """Pull graded UFC fights + enrich each fight with fighter stats
+    (SLpM, str_def, td_acc/def, etc.) so signal_sources referencing
+    ctx.slpm_a / ctx.str_def_b etc. can fire during backfill."""
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     rows = []
     for off in range(0, 10000, 1000):
@@ -127,13 +128,46 @@ def fetch_ufc_fights(days: int) -> list[dict]:
         chunk = r.json() if r.status_code == 200 else []
         rows += chunk
         if len(chunk) < 1000: break
-    # Normalize: add _winner ('A'|'B') so grade_side works
+
+    # Bulk-fetch ALL fighter stats once — much faster than per-game HTTP
+    fighter_stats: dict[str, dict] = {}
+    try:
+        for off in range(0, 5000, 1000):
+            r = requests.get(f'{SB}/rest/v1/ufc_fighter_stats'
+                             '?select=fighter_name,slpm,str_acc,str_def,sapm,'
+                             'td_avg,td_acc,td_def,sub_avg,total_wins,total_losses,'
+                             'total_draws,wins_by_dec,finishing_rate,reach,height,stance'
+                             f'&limit=1000&offset={off}',
+                             headers=H_READ, timeout=30)
+            chunk = r.json() if r.status_code == 200 else []
+            for f in chunk:
+                key = str(f.get('fighter_name') or '').strip().lower()
+                if key: fighter_stats[key] = f
+            if len(chunk) < 1000: break
+    except Exception:
+        pass
+
+    def _lookup_by_name(name: str) -> dict:
+        if not name: return {}
+        n = name.strip().lower()
+        if n in fighter_stats: return fighter_stats[n]
+        # Fallback: match by last name
+        last = n.split(' ')[-1]
+        for k, v in fighter_stats.items():
+            if k.endswith(' ' + last): return v
+        return {}
+
+    # Enrich each fight with fighter A/B stats + normalize _winner
     out = []
     for c in rows:
         winner = c.get('winner_actual')
         if not winner: continue
-        # winner_actual is fighter name; compare to fighter_a
         c['_winner'] = 'A' if str(winner).strip().lower() == str(c.get('fighter_a') or '').strip().lower() else 'B'
+        for suffix, name in (('a', c.get('fighter_a')), ('b', c.get('fighter_b'))):
+            fs = _lookup_by_name(name)
+            for k, v in fs.items():
+                if k == 'fighter_name': continue
+                c[f'{k}_{suffix}'] = v
         out.append(c)
     return out
 

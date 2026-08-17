@@ -520,12 +520,49 @@ def _flag_to_candidate(market: str, side: str, invert: bool = False) -> Optional
 # CORE: gather + score
 # ═══════════════════════════════════════════════════════════════════════
 
+def _enrich_ctx_for_sport(sport: str, ctx: dict) -> dict:
+    """Add sport-specific derived fields before signal evaluation.
+
+    UFC: pull fighter stats from ufc_fighter_stats (SLpM, str_def, td_acc,
+    td_def, total_fights) and flatten as ctx.slpm_a, ctx.str_def_a, etc.
+    UFC signal_sources rows reference these directly, so this enrichment
+    is what lets striking/grappling signals actually fire.
+    """
+    if sport.upper() != 'UFC' or not _SB:
+        return ctx
+    fa = ctx.get('fighter_a')
+    fb = ctx.get('fighter_b')
+    if not fa or not fb:
+        return ctx
+    enriched = dict(ctx)
+    for suffix, name in (('a', fa), ('b', fb)):
+        try:
+            r = requests.get(f'{_SB}/rest/v1/ufc_fighter_stats',
+                             headers=_H_READ,
+                             params={'fighter_name': f'ilike.%{name.split(chr(32))[-1]}%',
+                                     'select': 'slpm,str_acc,str_def,sapm,td_avg,td_acc,td_def,'
+                                               'sub_avg,total_wins,total_losses,wins_by_dec,'
+                                               'finishing_rate,reach,height,stance',
+                                     'limit': '1'},
+                             timeout=5)
+            data = r.json() if r.status_code == 200 else []
+            if data:
+                stats = data[0]
+                for k, v in stats.items():
+                    enriched[f'{k}_{suffix}'] = v
+        except Exception:
+            pass
+    return enriched
+
+
 def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
     """Iterate all enabled signal_sources for the sport, evaluate each
     against ctx (or dispatch to handler), return every Opinion emitted."""
     sources = _load_sources(sport)
     if not sources:
         return []
+    # Enrich ctx with sport-specific derived fields (fighter stats for UFC etc.)
+    ctx = _enrich_ctx_for_sport(sport, ctx)
     ctx_attr = AttrDict(ctx)
     out: list[Opinion] = []
 
