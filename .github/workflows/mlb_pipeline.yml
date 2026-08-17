@@ -842,6 +842,19 @@ jobs:
           cd mlb_pipeline
           python monitor_ensemble_health.py --sport MLB --window 30 || echo "monitor_ensemble_health non-fatal"
 
+      # 2026-08-16: ensemble wiring verifier. Catches silent bugs like
+      # zeroed track records, unloaded registries, weight-lookup mismatches.
+      # Exits non-zero if any critical check fails — surfaces in GHA logs.
+      # continue-on-error so a wiring alarm doesn't kill the rest of the run.
+      - name: Verify ensemble wiring (MLB)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python verify_ensemble_wiring.py --sport MLB || echo "verify_ensemble_wiring found issues — inspect logs"
+
       # POTD auto-resolver — reads jerry_cache best_bet_* entries, looks
       # up game outcomes via mlb_game_results, writes Win/Loss/Push back
       # to data.result. Idempotent + backfills any unresolved historic
