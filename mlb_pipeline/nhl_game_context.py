@@ -234,8 +234,50 @@ def enrich_rest_and_travel(rows: list[dict]) -> None:
 # Upsert
 # ═══════════════════════════════════════════════════════════════════════
 
+def _apply_ensemble(row: dict) -> None:
+    """Ensemble cutover (mirror of nfl_game_context / ncaaf_game_context).
+    Runs ensemble_scorer.score_game('NHL', row) and writes result to
+    row['primary_play'] in the same shape the app already reads. Legacy
+    fallback: leaves primary_play None if ensemble returns nothing."""
+    try:
+        from ensemble_scorer import score_game as _ensemble_score
+        from game_context import _compose_ensemble_sub
+        decision = _ensemble_score('NHL', row)
+        if decision is None: return
+        top = decision.top()
+        if top.pick is None: return
+        row['primary_play'] = {
+            'type': top.market, 'tier': top.tier, 'label': top.display_label,
+            'side': top.side, 'line': top.line, 'conviction': top.conviction,
+            'score': round(top.score, 2), 'sub': _compose_ensemble_sub(top),
+            'audit_note': (f'ensemble_scorer v2 · NHL · {len(top.contributions)} sources · '
+                           f'score={top.score:.2f} margin={top.margin:+.2f}'),
+            '_engine': 'ensemble_v2',
+            '_ensemble_sources': [
+                {'signal_key': c.signal_key, 'class': c.signal_class,
+                 'side': c.side, 'weight': round(c.weight, 2),
+                 'n': c.n, 'contribution': round(c.contribution, 2),
+                 'prose': c.display_prose}
+                for c in top.contributions[:8]
+            ],
+            '_ensemble_all_markets': {
+                'ml':    {'pick': decision.ml.pick, 'label': decision.ml.display_label,
+                          'tier': decision.ml.tier, 'conviction': decision.ml.conviction},
+                'rl':    {'pick': decision.rl.pick, 'label': decision.rl.display_label,
+                          'tier': decision.rl.tier, 'conviction': decision.rl.conviction},
+                'total': {'pick': decision.total.pick, 'label': decision.total.display_label,
+                          'tier': decision.total.tier, 'conviction': decision.total.conviction},
+            },
+        }
+    except Exception:
+        pass  # ensemble unavailable — leave primary_play alone
+
+
 def upsert_context(rows: list[dict], dry_run: bool = False) -> int:
     if not rows: return 0
+    # Ensemble scoring pass (writes primary_play in-place)
+    for row in rows:
+        _apply_ensemble(row)
     # Normalize date to string
     for row in rows:
         d = row.get('game_date')

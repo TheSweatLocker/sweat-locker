@@ -582,6 +582,94 @@ SIGNALS = [
         'display_prose_template': '{home_pitcher} L3 ERA matches his stuff (xERA {home_sp_xera}) — no regression bias',
     },
 
+    # ── TEAM ATS / O/U TENDENCY (2026-08-16 pm) ─────────────────────
+    # User's manual NCAAB system: mine per-team ATS + O/U patterns from
+    # L10-L20 history + this-season splits. These signals replicate that
+    # process across sports. Field-dependent — will fire when
+    # mlb_game_context has these columns populated (some may need
+    # backfill_team_tendencies.py, TBD).
+    {
+        'signal_key': 'home_team_ats_hot',
+        'class': 'team_form', 'market_scope': 'rl',
+        'condition_expr': 'ctx.home_ats_last10 is not None and int(ctx.home_ats_last10) >= 7',
+        'side_expr': '"HOME_RL"',
+        'strength_expr': 'min((int(ctx.home_ats_last10) - 5) / 4.0, 1.0)',
+        'display_prose_template': '{home_team} covering ATS {home_ats_last10}-{home_ats_last10_losses} L10 — hot cover trend',
+        'description': "User's manual system: teams on ATS heaters keep covering.",
+    },
+    {
+        'signal_key': 'home_team_ats_cold',
+        'class': 'team_form', 'market_scope': 'rl',
+        'condition_expr': 'ctx.home_ats_last10 is not None and int(ctx.home_ats_last10) <= 3',
+        'side_expr': '"AWAY_RL"',
+        'strength_expr': 'min((5 - int(ctx.home_ats_last10)) / 4.0, 1.0)',
+        'display_prose_template': '{home_team} only covering ATS {home_ats_last10}-{home_ats_last10_losses} L10 — cold ATS',
+    },
+    {
+        'signal_key': 'away_team_ats_hot',
+        'class': 'team_form', 'market_scope': 'rl',
+        'condition_expr': 'ctx.away_ats_last10 is not None and int(ctx.away_ats_last10) >= 7',
+        'side_expr': '"AWAY_RL"',
+        'strength_expr': 'min((int(ctx.away_ats_last10) - 5) / 4.0, 1.0)',
+        'display_prose_template': '{away_team} covering ATS {away_ats_last10}-{away_ats_last10_losses} L10 — hot cover trend',
+    },
+    {
+        'signal_key': 'home_team_over_trend',
+        'class': 'team_form', 'market_scope': 'total',
+        'condition_expr': 'ctx.home_ou_last10_overs is not None and int(ctx.home_ou_last10_overs) >= 7',
+        'side_expr': '"OVER"',
+        'strength_expr': 'min((int(ctx.home_ou_last10_overs) - 5) / 4.0, 1.0)',
+        'display_prose_template': '{home_team} games going OVER {home_ou_last10_overs}/10 recently',
+    },
+    {
+        'signal_key': 'home_team_under_trend',
+        'class': 'team_form', 'market_scope': 'total',
+        'condition_expr': 'ctx.home_ou_last10_overs is not None and int(ctx.home_ou_last10_overs) <= 3',
+        'side_expr': '"UNDER"',
+        'strength_expr': 'min((5 - int(ctx.home_ou_last10_overs)) / 4.0, 1.0)',
+        'display_prose_template': '{home_team} games staying UNDER {home_ou_last10_overs}/10 overs recently',
+    },
+    {
+        'signal_key': 'away_team_over_trend',
+        'class': 'team_form', 'market_scope': 'total',
+        'condition_expr': 'ctx.away_ou_last10_overs is not None and int(ctx.away_ou_last10_overs) >= 7',
+        'side_expr': '"OVER"',
+        'strength_expr': 'min((int(ctx.away_ou_last10_overs) - 5) / 4.0, 1.0)',
+        'display_prose_template': '{away_team} games going OVER {away_ou_last10_overs}/10 recently',
+    },
+    {
+        'signal_key': 'away_team_under_trend',
+        'class': 'team_form', 'market_scope': 'total',
+        'condition_expr': 'ctx.away_ou_last10_overs is not None and int(ctx.away_ou_last10_overs) <= 3',
+        'side_expr': '"UNDER"',
+        'strength_expr': 'min((5 - int(ctx.away_ou_last10_overs)) / 4.0, 1.0)',
+        'display_prose_template': '{away_team} games staying UNDER {away_ou_last10_overs}/10 overs recently',
+    },
+    {
+        'signal_key': 'home_covers_as_fav',
+        'class': 'team_form', 'market_scope': 'rl',
+        'condition_expr': 'ctx.home_covers_as_fav_pct is not None and float(ctx.home_covers_as_fav_pct) >= 60 and ctx.close_spread is not None and float(ctx.close_spread) < 0',
+        'side_expr': '"HOME_RL"',
+        'strength_expr': '0.4',
+        'display_prose_template': '{home_team} covers as favorite {home_covers_as_fav_pct}% this season',
+    },
+    {
+        'signal_key': 'away_covers_as_dog',
+        'class': 'team_form', 'market_scope': 'rl',
+        'condition_expr': 'ctx.away_covers_as_dog_pct is not None and float(ctx.away_covers_as_dog_pct) >= 60 and ctx.close_spread is not None and float(ctx.close_spread) < 0',
+        'side_expr': '"AWAY_RL"',
+        'strength_expr': '0.4',
+        'display_prose_template': '{away_team} covers as underdog {away_covers_as_dog_pct}% this season',
+    },
+    {
+        'signal_key': 'home_fades_own_ml_hot',
+        'class': 'team_form', 'market_scope': 'ml',
+        'condition_expr': 'ctx.home_ml_last10 is not None and int(ctx.home_ml_last10) >= 7',
+        'side_expr': '"HOME_ML"',
+        'strength_expr': 'min((int(ctx.home_ml_last10) - 5) / 4.0, 1.0)',
+        'display_prose_template': '{home_team} {home_ml_last10}-{home_ml_last10_losses} straight up L10 — hot form',
+    },
+
     # ── COHORT CLASS ─────────────────────────────────────────────────
     {
         'signal_key': 'confluence_home_lean',
