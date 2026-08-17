@@ -62,11 +62,24 @@ from signal_expr import evaluate, evaluate_bool, evaluate_str, evaluate_float, r
 
 BREAKEVEN = 0.524  # -110 breakeven
 
-# Candidate labels by market
+# Candidate labels by market (per-sport where markets differ)
 CANDIDATES_BY_MARKET = {
     'ml':    ['HOME_ML', 'AWAY_ML'],
     'rl':    ['HOME_RL', 'AWAY_RL'],
     'total': ['OVER', 'UNDER'],
+    'fight': ['FIGHTER_A_ML', 'FIGHTER_B_ML'],   # UFC / MMA
+}
+
+# Sport → which markets are scored. Team sports get ml/rl/total.
+# Combat sports get fight only (props layer handles method/rounds/etc.).
+MARKETS_BY_SPORT = {
+    'MLB':   ['ml', 'rl', 'total'],
+    'NFL':   ['ml', 'rl', 'total'],
+    'NCAAF': ['ml', 'rl', 'total'],
+    'NCAAB': ['ml', 'rl', 'total'],
+    'NBA':   ['ml', 'rl', 'total'],
+    'NHL':   ['ml', 'rl', 'total'],
+    'UFC':   ['fight'],
 }
 
 # Tier thresholds — v2 defaults, tune after backtest.
@@ -652,6 +665,12 @@ def _label_from_candidate(candidate: str, ctx: dict) -> tuple[str, Optional[str]
     close_spread = ctx.get('close_spread')
     close_total = ctx.get('close_total')
 
+    # UFC / MMA fight candidates
+    if candidate == 'FIGHTER_A_ML':
+        return (f'{ctx.get("fighter_a") or "Fighter A"} ML', 'A', None)
+    if candidate == 'FIGHTER_B_ML':
+        return (f'{ctx.get("fighter_b") or "Fighter B"} ML', 'B', None)
+
     if candidate == 'HOME_ML':
         return (f'{home} ML', 'HOME', None)
     if candidate == 'AWAY_ML':
@@ -694,9 +713,17 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
     lean_override = health.get('lean_threshold_override')
 
     opinions = gather_opinions(sport, ctx)
-    ml_dec = _score_market('ml', opinions, ctx, lean_override=lean_override)
-    rl_dec = _score_market('rl', opinions, ctx, lean_override=lean_override)
-    total_dec = _score_market('total', opinions, ctx, lean_override=lean_override)
+
+    # Score only markets applicable to this sport (UFC = fight only, etc.)
+    markets = MARKETS_BY_SPORT.get(sport.upper(), ['ml', 'rl', 'total'])
+    ml_dec = _score_market('ml', opinions, ctx, lean_override=lean_override) if 'ml' in markets else _no_pick('ml', ctx)
+    rl_dec = _score_market('rl', opinions, ctx, lean_override=lean_override) if 'rl' in markets else _no_pick('rl', ctx)
+    total_dec = _score_market('total', opinions, ctx, lean_override=lean_override) if 'total' in markets else _no_pick('total', ctx)
+    # Combat sports: fight-market decision replaces ML
+    if 'fight' in markets:
+        ml_dec = _score_market('fight', opinions, ctx, lean_override=lean_override)
+        # Convert fight to 'ml' shape for downstream since app reads primary_play.type=='ml' universally
+        ml_dec.market = 'ml'
 
     # Determine top market (highest conviction with a pick)
     picks = [(m, d) for m, d in [('ml', ml_dec), ('rl', rl_dec), ('total', total_dec)]
