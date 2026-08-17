@@ -51,24 +51,36 @@ from signal_expr import evaluate_bool, evaluate_str, AttrDict
 HANDLER_CLASSES = {'split', 'scenario', 'external_pick'}
 
 
-def fetch_signals() -> list[dict]:
+def fetch_signals(sport: str = 'MLB') -> list[dict]:
     r = requests.get(f'{SB}/rest/v1/signal_sources',
                      headers=H_READ,
-                     params={'select': '*', 'sport': 'eq.MLB', 'enabled': 'eq.true'},
+                     params={'select': '*', 'sport': f'eq.{sport}', 'enabled': 'eq.true'},
                      timeout=15)
     return r.json() if r.status_code == 200 else []
 
 
-def fetch_games_with_results(days: int) -> list[dict]:
-    """Pull mlb_game_context joined with mlb_game_results for the window."""
+# Sport → (context_table, results_table)
+SPORT_TABLES = {
+    'MLB':   ('mlb_game_context',   'mlb_game_results'),
+    'NFL':   ('nfl_game_context',   'nfl_game_results'),
+    'NCAAF': ('ncaaf_game_context', 'ncaaf_game_results'),
+    'NCAAB': ('ncaab_game_context', 'ncaab_game_results'),
+}
+
+
+def fetch_games_with_results(days: int, sport: str = 'MLB') -> list[dict]:
+    """Pull sport-appropriate game_context joined with results for window."""
+    if sport == 'UFC':
+        return fetch_ufc_fights(days)
+
+    ctx_table, res_table = SPORT_TABLES.get(sport, SPORT_TABLES['MLB'])
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     yesterday = (date.today() - timedelta(days=1)).isoformat()
 
-    # Fetch context rows
     ctx_rows = []
     for off in range(0, 10000, 1000):
         r = requests.get(
-            f'{SB}/rest/v1/mlb_game_context'
+            f'{SB}/rest/v1/{ctx_table}'
             f'?game_date=gte.{cutoff}&game_date=lte.{yesterday}'
             f'&select=*&limit=1000&offset={off}',
             headers=H_READ, timeout=30)
@@ -76,11 +88,10 @@ def fetch_games_with_results(days: int) -> list[dict]:
         ctx_rows += chunk
         if len(chunk) < 1000: break
 
-    # Fetch results
     results_rows = []
     for off in range(0, 10000, 1000):
         r = requests.get(
-            f'{SB}/rest/v1/mlb_game_results'
+            f'{SB}/rest/v1/{res_table}'
             f'?game_date=gte.{cutoff}&game_date=lte.{yesterday}'
             f'&select=game_id,home_score,away_score&limit=1000&offset={off}',
             headers=H_READ, timeout=30)
@@ -89,7 +100,6 @@ def fetch_games_with_results(days: int) -> list[dict]:
         if len(chunk) < 1000: break
 
     results = {r['game_id']: r for r in results_rows}
-    # Join: attach home_score + away_score onto each ctx row
     out = []
     for c in ctx_rows:
         r = results.get(c.get('game_id'))
@@ -103,8 +113,40 @@ def fetch_games_with_results(days: int) -> list[dict]:
     return out
 
 
+def fetch_ufc_fights(days: int) -> list[dict]:
+    """Pull graded UFC fights from ufc_picks. Different shape than
+    game sports — each row is a fight with winner_actual + pick_result."""
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    rows = []
+    for off in range(0, 10000, 1000):
+        r = requests.get(
+            f'{SB}/rest/v1/ufc_picks'
+            f'?event_date=gte.{cutoff}&graded_at=not.is.null'
+            f'&select=*&limit=1000&offset={off}',
+            headers=H_READ, timeout=30)
+        chunk = r.json() if r.status_code == 200 else []
+        rows += chunk
+        if len(chunk) < 1000: break
+    # Normalize: add _winner ('A'|'B') so grade_side works
+    out = []
+    for c in rows:
+        winner = c.get('winner_actual')
+        if not winner: continue
+        # winner_actual is fighter name; compare to fighter_a
+        c['_winner'] = 'A' if str(winner).strip().lower() == str(c.get('fighter_a') or '').strip().lower() else 'B'
+        out.append(c)
+    return out
+
+
 def grade_side(side: str, ctx: dict) -> str | None:
     """Grade a candidate side against the game result. Returns 'W'|'L'|'P'|None."""
+    # UFC fight candidates use _winner ('A'|'B')
+    if side in ('FIGHTER_A_ML', 'FIGHTER_B_ML'):
+        winner = ctx.get('_winner')
+        if winner is None: return None
+        want = 'A' if side == 'FIGHTER_A_ML' else 'B'
+        return 'W' if winner == want else 'L'
+
     hs = ctx.get('_home_score')
     as_ = ctx.get('_away_score')
     if hs is None or as_ is None:
@@ -232,14 +274,15 @@ def write_registry(source: dict, stats: dict, dry_run: bool = False) -> bool:
     return True
 
 
-def run(days: int = 60, dry_run: bool = False, signal_key_filter: str | None = None):
-    print(f'=== signal backfill-to-tier · MLB · last {days} days ===\n')
-    signals = fetch_signals()
+def run(days: int = 60, dry_run: bool = False,
+         signal_key_filter: str | None = None, sport: str = 'MLB'):
+    print(f'=== signal backfill-to-tier · {sport} · last {days} days ===\n')
+    signals = fetch_signals(sport=sport)
     if signal_key_filter:
         signals = [s for s in signals if s['signal_key'] == signal_key_filter]
     print(f'  {len(signals)} signal_sources rows to evaluate')
 
-    games = fetch_games_with_results(days)
+    games = fetch_games_with_results(days, sport=sport)
     print(f'  {len(games)} games with results in window\n')
     if not games:
         print('  no games — abort')
@@ -283,8 +326,19 @@ def main():
     p.add_argument('--days', type=int, default=60)
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--signal-key', default=None)
+    p.add_argument('--sport', default='MLB',
+                   choices=['MLB', 'NFL', 'NCAAF', 'NCAAB', 'UFC', 'ALL'])
     args = p.parse_args()
-    run(days=args.days, dry_run=args.dry_run, signal_key_filter=args.signal_key)
+    if args.sport == 'ALL':
+        for s in ('MLB', 'NFL', 'NCAAF', 'NCAAB', 'UFC'):
+            try:
+                run(days=args.days, dry_run=args.dry_run,
+                    signal_key_filter=args.signal_key, sport=s)
+            except Exception as e:
+                print(f'  ✗ {s} failed: {e}')
+    else:
+        run(days=args.days, dry_run=args.dry_run,
+            signal_key_filter=args.signal_key, sport=args.sport)
 
 
 if __name__ == '__main__':

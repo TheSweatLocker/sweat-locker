@@ -820,14 +820,14 @@ jobs:
       # performance. This is what keeps the ensemble scorer's weights
       # honest — a signal that stops working gets auto-demoted. Runs
       # after rescore so the registry is fresh first. Non-fatal.
-      - name: Backfill signal_sources tiers (60d replay)
+      - name: Backfill signal_sources tiers (60d replay, all sports)
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_signal_tiers.py --days 60 || echo "backfill_signal_tiers non-fatal"
+          python backfill_signal_tiers.py --days 60 --sport ALL || echo "backfill_signal_tiers non-fatal"
 
       # 2026-08-16: nightly ensemble health check. Replays the last 30d,
       # computes rolling hit rate + ROI, sets status_flag on ensemble_health.
