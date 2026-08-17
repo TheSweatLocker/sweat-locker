@@ -2450,9 +2450,14 @@ def score_mlb_game(ctx, game_props=None, track=None):
     # NRFI / YRFI no longer fill total_play — they go to supplementary_play
     # exclusively (5/30 demotion).
     total_play = None
+    # 2026-08-17 belt-and-suspenders: check close_total is not None BEFORE
+    # doing > 0 comparison. Even with the open_total fallback at line 2334,
+    # some games (especially early morning cron before ANY odds are pulled)
+    # have BOTH close_total AND open_total as None. That was the actual
+    # crash today: TypeError comparing None to int.
     if pp and isinstance(pp, dict) and (pp.get('type') or '').lower() in ('over', 'under', 'total'):
         total_play = {'type': (pp.get('type') or '').upper(), 'label': pp.get('label'), 'tier': pp.get('tier')}
-    elif prop_dir is not None and (prop_dir_prime + prop_dir_strong) >= 4 and close_total > 0:
+    elif prop_dir is not None and (prop_dir_prime + prop_dir_strong) >= 4 and close_total is not None and close_total > 0:
         # Prop confluence drives the total play only with 4+ distinct
         # PLAYERS aligned (raised from 3 on 5/30 after MIA/NYM bug). At 2-3
         # aligned players, prop_dir still adds to the sub-score but doesn't
@@ -2464,7 +2469,7 @@ def score_mlb_game(ctx, game_props=None, track=None):
             'edge': total_delta_signed if not total_delta_suppressed else None,
             'source': 'prop_confluence',
         }
-    elif total_delta_abs >= 0.5 and close_total > 0 and not total_delta_suppressed:
+    elif total_delta_abs >= 0.5 and close_total is not None and close_total > 0 and not total_delta_suppressed:
         direction = 'OVER' if total_delta_signed > 0 else 'UNDER'
         total_play = {
             'type': f'TOTAL_{direction}',
