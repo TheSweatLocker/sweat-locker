@@ -2331,7 +2331,12 @@ def score_mlb_game(ctx, game_props=None, track=None):
         pass
     close_total = None
     try:
-        ct_raw = ctx.get('close_total')
+        # 2026-08-17 fix: fall back to open_total when close_total is null,
+        # mirroring the outer close_total resolution at line 1664. Without
+        # this fallback, morning cron runs (before lines close) fail with
+        # TypeError comparing None to numeric in the elif chain below —
+        # was a silent regression from the 2026-08-15 BABIP rewrite (84008c28).
+        ct_raw = ctx.get('close_total') or ctx.get('open_total')
         close_total = float(ct_raw) if ct_raw is not None else None
     except (TypeError, ValueError):
         pass
