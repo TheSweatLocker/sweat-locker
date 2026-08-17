@@ -465,6 +465,116 @@ def _cap_ha_over_no_signal(game_date: str, dry_run: bool = False) -> int:
     return gated
 
 
+def _playbook_gate_props(game_date: str, dry_run: bool = False) -> int:
+    """Prop playbook phase 2: demote PRIME/STRONG props whose stack is
+    dominated by ANTI_VALIDATED signals from the prop signal_registry.
+
+    Reads signal_registry rows with market_scope='prop' and matches them
+    against each prop's `signals` JSON. A signal in the prop is
+    ANTI_VALIDATED if the registry lookup for `prop:<signal_name>` OR
+    `prop:<signal_name>:<prop_type>` returns tier=ANTI_VALIDATED.
+
+    Demote rule:
+      * If >= 50% of the prop's positive numeric contribution comes
+        from ANTI_VALIDATED signals → demote one tier (PRIME→STRONG,
+        STRONG→LEAN).
+      * If ALL matched signals in the prop's stack are ANTI or
+        UNVALIDATED and the prop is PRIME → cap at LEAN (no proven
+        evidence for a PRIME call).
+
+    Idempotent — skips rows tagged with _playbook_prop_gate.
+    """
+    # Load prop signal registry once
+    reg_map: dict = {}
+    try:
+        r = requests.get(f'{SB}/rest/v1/signal_registry'
+                         '?market_scope=eq.prop&select=signal_name,tier',
+                         headers=H_READ, timeout=10)
+        for row in (r.json() if r.status_code == 200 else []):
+            reg_map[row['signal_name']] = row.get('tier')
+    except Exception:
+        return 0
+
+    if not reg_map:
+        return 0  # registry empty, no gate to apply
+
+    # Read STRONG/PRIME props for date
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                     headers=H_READ,
+                     params={'game_date': f'eq.{game_date}',
+                             'tier': 'in.(STRONG,PRIME)',
+                             'select': 'id,player_name,prop_type,tier,conviction,'
+                                       'refit_conviction,signals'},
+                     timeout=15)
+    if r.status_code != 200: return 0
+
+    def _tier_of_prop_signal(name: str, prop_type: str) -> str:
+        # Try prop_type-scoped first (more specific), then global
+        scoped = f'prop:{name}:{prop_type}'
+        if scoped in reg_map: return reg_map[scoped] or 'UNVALIDATED'
+        return reg_map.get(f'prop:{name}') or 'UNVALIDATED'
+
+    demoted = 0
+    for prop in r.json():
+        sig = prop.get('signals') or {}
+        if isinstance(sig, str):
+            try: sig = json.loads(sig)
+            except: sig = {}
+        if not isinstance(sig, dict): sig = {}
+        if sig.get('_playbook_prop_gate'): continue
+
+        prop_type = prop.get('prop_type') or ''
+        anti_contrib = 0.0
+        total_positive = 0.0
+        matched_tiers: list[str] = []
+        for name, val in sig.items():
+            if name.startswith('_'): continue
+            # Convert value to positive contribution
+            contrib = 0.0
+            if isinstance(val, (int, float)) and val > 0: contrib = float(val)
+            elif isinstance(val, bool) and val: contrib = 1.0
+            elif isinstance(val, str) and val: contrib = 1.0
+            if contrib <= 0: continue
+            total_positive += contrib
+            tier = _tier_of_prop_signal(name, prop_type)
+            matched_tiers.append(tier)
+            if tier == 'ANTI_VALIDATED':
+                anti_contrib += contrib
+
+        if total_positive <= 0: continue
+
+        anti_share = anti_contrib / total_positive
+        old_tier = prop['tier']
+        no_proven = all(t in ('ANTI_VALIDATED', 'UNVALIDATED') for t in matched_tiers) if matched_tiers else True
+
+        should_demote = False
+        reason = None
+        new_tier = None; new_conv = None
+        if anti_share >= 0.5:
+            should_demote = True
+            reason = f'ANTI_SHARE_{int(anti_share*100)}pct'
+            new_tier = 'STRONG' if old_tier == 'PRIME' else 'LEAN'
+            new_conv = 65 if new_tier == 'STRONG' else 55
+        elif old_tier == 'PRIME' and no_proven:
+            should_demote = True
+            reason = 'NO_VALIDATED_SIGNALS'
+            new_tier = 'LEAN'
+            new_conv = 55
+
+        if not should_demote: continue
+
+        sig['_playbook_prop_gate'] = reason
+        sig['_refit_override_at'] = _et_today()
+        print(f'  playbook-gate: {prop["player_name"]:22} {prop["prop_type"]:10} '
+              f'{old_tier}/{prop.get("conviction")} -> {new_tier}/{new_conv} ({reason})')
+        if dry_run: demoted += 1; continue
+        patch = {'tier': new_tier, 'conviction': new_conv, 'signals': sig}
+        pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+                            headers=H_WRITE, json=patch, timeout=10)
+        if pr.status_code in (200, 204): demoted += 1
+    return demoted
+
+
 def _demote_refit_up_traps(game_date: str, dry_run: bool = False) -> int:
     """Refit-UP demotion (2026-08-15 morning-audit finding).
 
@@ -812,6 +922,12 @@ def run(game_date: str, dry_run: bool = False) -> int:
     if refit_up_demoted:
         print(f'  refit-up demote: {refit_up_demoted} rows dropped one tier '
               f'(base>=70 + refit_up>=10pts)')
+
+    # 2026-08-16 prop playbook phase 2: registry-driven gate.
+    playbook_demoted = _playbook_gate_props(game_date, dry_run=dry_run)
+    if playbook_demoted:
+        print(f'  playbook prop-gate: {playbook_demoted} rows demoted '
+              f'(stack dominated by ANTI_VALIDATED signals)')
 
     # 2026-08-11: raw-conviction=0 alarm summary. When base scorer emits 0
     # for prop_jerry_reads, refit boost signals are unreliable and the whole
