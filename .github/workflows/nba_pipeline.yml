@@ -1,0 +1,128 @@
+name: NBA Pipeline Daily
+
+on:
+  schedule:
+    # 2026-08-17 rebuild: NBA v1.0 scaffolding. Season opener Oct 22.
+    # Preseason ~early Oct. Daily cron so preseason data flows in.
+    - cron: '0 12 * * *'   # 8:00am EDT — before tip
+    - cron: '0 22 * * *'   # 6:00pm EDT — post-market refresh
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Target game_date (YYYY-MM-DD, default: today ET)'
+        required: false
+
+jobs:
+  nba-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install deps
+        run: pip install requests python-dotenv
+
+      # ─── Yesterday's results ───────────────────────────────────
+      - name: Resolve yesterday's NBA results
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_resolve_results.py || echo "nba resolver failed (non-fatal, likely offseason)"
+
+      # ─── Today's context (schedule + odds + rest) ──────────────
+      - name: Build NBA game context (today + next 3 days)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_game_context.py --days 4 || echo "nba game_context failed (non-fatal, likely offseason)"
+
+      # ─── L10 team tendencies backfill ──────────────────────────
+      - name: Backfill NBA team tendencies (L10)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_nba_team_tendencies.py || echo "nba tendencies backfill failed (non-fatal)"
+
+      # ─── Season-trend pull + enrichment (teamrankings) ─────────
+      - name: Pull NBA season trends from teamrankings
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_teamrankings_trends.py --sport NBA || echo "NBA teamrankings pull failed (non-fatal)"
+
+      - name: Enrich NBA game context with season trends
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_team_trends.py --sport NBA || echo "NBA trend enrichment failed (non-fatal)"
+
+      # 2026-08-18: universal team-form (venue-split L10 + H2H last 5)
+      - name: Enrich team form — venue split + H2H
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_team_form_universal.py --sport NBA || echo "team_form_universal non-fatal"
+
+      # ─── NBA prop pipeline (2026-08-17) ────────────────────────────
+      - name: Generate NBA player props
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_generate_props.py || echo "nba props failed (non-fatal, likely offseason)"
+
+      # ─── Sleeper NBA projections (2026-08-17) ─────────────────────
+      # Weekly refresh good enough — projections update slowly. Runs
+      # here for cheap on daily cron. Requires no API key.
+      - name: Pull Sleeper NBA projections
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_sleeper_projections_pull.py || echo "nba sleeper failed (non-fatal)"
+
+      - name: Enrich NBA props with Sleeper projections
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_nba_prop_projections.py || echo "nba proj enrich failed (non-fatal)"
+
+      - name: NBA prop playbook scorer (shadow mode)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python prop_ensemble_scorer.py --sport NBA || echo "NBA prop playbook failed (non-fatal)"
+
+      # Model / card generation: Elo model runs inside nba_game_context.py
+      # (enrich_elo). Card generation deferred until preseason validates.

@@ -1,0 +1,103 @@
+name: NHL Pipeline Daily
+
+on:
+  schedule:
+    # 2026-08-17: NHL v1.0 scaffolding. Preseason typically late Sept,
+    # regular season starts Oct 7. Daily cron so preseason data flows
+    # in automatically once games post.
+    - cron: '0 12 * * *'  # 8:00am EDT (12:00 UTC) — before puck drop
+    - cron: '0 20 * * *'  # 4:00pm EDT (20:00 UTC) — post-market refresh
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Target game_date (YYYY-MM-DD, default: today ET)'
+        required: false
+
+jobs:
+  nhl-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          pip install requests python-dotenv
+
+      # ─── Yesterday's results (resolve completed games) ───────────
+      - name: Resolve yesterday's NHL results
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nhl_resolve_results.py || echo "nhl resolver failed (non-fatal, likely offseason)"
+
+      # ─── Today's game context (schedule + odds + rest) ───────────
+      - name: Build NHL game context
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nhl_game_context.py --days 7 || echo "nhl game_context failed (non-fatal, likely offseason)"
+
+      # 2026-08-18: universal team-form (venue-split L10 + H2H last 5)
+      - name: Enrich team form — venue split + H2H
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_team_form_universal.py --sport NHL || echo "team_form_universal non-fatal"
+
+      # ─── Backfill L5 team tendencies onto today's rows ───────────
+      # Populates ATS / O/U / ML tendency fields so team_form signals
+      # in signal_sources can fire. Runs AFTER game_context.py (rows
+      # must exist to patch) and BEFORE any downstream scorer.
+      # Non-fatal — signals just evaluate to None if backfill fails.
+      - name: Backfill NHL team tendencies
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_nhl_team_tendencies.py || echo "nhl tendencies backfill failed (non-fatal)"
+
+      # ─── NHL prop pipeline (2026-08-17) ────────────────────────────
+      # Sweeps Odds API for goalie + skater props, upserts stubs into
+      # nhl_pipeline_props. Playbook scorer (shared with MLB/NFL) runs
+      # against them for shadow-mode scoring.
+      - name: Generate NHL player props
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nhl_generate_props.py || echo "nhl props failed (non-fatal, likely offseason)"
+
+      - name: NHL prop playbook scorer (shadow mode)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python prop_ensemble_scorer.py --sport NHL || echo "NHL prop playbook failed (non-fatal)"
+
+      # Note: NHL ensemble scoring happens inside nhl_game_context.py's
+      # upsert path via _apply_ensemble (same as MLB pattern). Signals
+      # in signal_sources (sport='NHL') fire automatically once tendency
+      # backfill lands + ensemble_scorer runs.

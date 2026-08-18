@@ -99,6 +99,20 @@ jobs:
           cd mlb_pipeline
           python backfill_team_tendencies.py || echo "tendencies backfill failed (non-fatal — signals will pass on None)"
 
+      # 2026-08-18: universal team-form enricher — computes venue-split
+      # L10 records (home team's L10 AT HOME, away team's L10 ON ROAD)
+      # + H2H last-5 meetings. Feeds 11 new signal_sources rows per sport.
+      # Requires migration 20260818_team_form_venue_split_h2h.sql + signals
+      # migration 20260818_team_form_venue_h2h_signals.sql.
+      - name: Enrich team form — venue split + H2H (universal)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_team_form_universal.py --sport MLB || echo "team_form_universal non-fatal"
+
       # 2026-08-17: teamrankings season aggregates for MLB. Stacks with
       # per-game rolling tendencies — season signals catch persistent
       # patterns, rolling catches recent form. Both fire when they agree.

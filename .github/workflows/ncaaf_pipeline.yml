@@ -55,17 +55,31 @@ jobs:
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only' || steps.mode.outputs.mode == 'card_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
           python ncaaf_odds_pull.py || echo "ncaaf_odds_pull failed (non-fatal)"
 
+      # 2026-08-09 Phase 2: refresh returning production % from CFBD.
+      # Weekly (Tue) refresh is enough — this is a season-level number.
+      - name: Refresh returning production (Tue only)
+        if: github.event.schedule == '0 15 * * 2' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          SEASON=$(date +%Y)
+          python ncaaf_returning_production_pull.py --season $SEASON || echo "returning production pull failed"
+
       - name: Refresh CFBD team stats (Tue only)
         if: (steps.mode.outputs.mode == 'full') && github.event.schedule == '0 15 * * 2'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -79,16 +93,69 @@ jobs:
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python ncaaf_game_context.py || echo "game_context failed"
+
+      # Backfill L5 team ATS / O/U / ML tendencies onto today's rows
+      # (2026-08-17). Populates home/away_ats_last5, ou_last5_overs/unders,
+      # covers_as_fav/dog%, ml_last5. Activates the 10 NCAAF team_form
+      # signals seeded in signal_sources. Runs AFTER ncaaf_game_context.py
+      # (rows must exist) and BEFORE game reads / sharp fade / external
+      # aggregation so tendencies are on the ctx when downstream consumers
+      # read it. Non-fatal — a tendencies failure just means team_form
+      # signals evaluate to None and pass; ensemble still scores from
+      # other signal classes.
+      - name: Backfill NCAAF team ATS/OU tendencies
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_ncaaf_team_tendencies.py || echo "ncaaf tendencies backfill failed (non-fatal)"
+
+      # 2026-08-17: pull season aggregates from teamrankings then enrich
+      # today's ctx rows with home/away season cover_pct + over_pct.
+      # Activates the 10 team_form_season signals for NCAAF. Runs AFTER
+      # rolling tendencies so both signal sets stack. Non-fatal.
+      - name: Pull NCAAF season trends from teamrankings
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_teamrankings_trends.py --sport NCAAF || echo "teamrankings pull failed (non-fatal)"
+
+      - name: Enrich NCAAF game context with season trends
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_team_trends.py --sport NCAAF || echo "trend enrichment failed (non-fatal)"
+
+      # 2026-08-18: universal team-form (venue-split L10 + H2H last 5)
+      - name: Enrich team form — venue split + H2H
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_team_form_universal.py --sport NCAAF || echo "team_form_universal non-fatal"
 
       - name: Generate NCAAF game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -99,7 +166,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           # Sat cron uses --refresh mode (subset of sources for late-week updates)
@@ -114,7 +181,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python detect_consensus_fade.py --sport NCAAF || echo "fade detector failed"
@@ -124,7 +191,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python resolve_externals.py --sport NCAAF --days 14 || echo "resolver failed"
@@ -133,7 +200,7 @@ jobs:
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -143,7 +210,29 @@ jobs:
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python ncaaf_cohort_backfill.py || echo "cohort backfill failed"
+
+      # 2026-08-09: NCAAF sharp-money audit trail. Same infra as MLB/NFL.
+      # Rules start in LOG mode until n≥12 accumulates per rule.
+      - name: NCAAF — write today's sharp-fade audit rows
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sharp_fade_audit.py --write-today --sport NCAAF || echo "NCAAF audit write failed"
+
+      - name: NCAAF — backfill sharp-fade audit outcomes
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sharp_fade_audit.py --backfill-results || echo "NCAAF audit backfill failed"
