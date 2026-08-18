@@ -1211,7 +1211,7 @@ def _read_lineup_cache(team_name):
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/jerry_cache",
             params={
-                "cache_key": f"eq.projected_lineup_{team_name.replace(' ', '_')}",
+                "cache_key": f"eq.projected_lineup_v2_{team_name.replace(' ', '_')}",
                 "select": "data,fetched_at",
             },
             headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
@@ -1241,8 +1241,8 @@ def _write_lineup_cache(team_name, names):
             headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
             params={"on_conflict": "cache_key"},
             json={
-                "cache_key": f"projected_lineup_{team_name.replace(' ', '_')}",
-                "game_id": f"projected_lineup_{team_name.replace(' ', '_')}",
+                "cache_key": f"projected_lineup_v2_{team_name.replace(' ', '_')}",
+                "game_id": f"projected_lineup_v2_{team_name.replace(' ', '_')}",
                 "sport": "MLB",
                 "narrative": f"Projected lineup for {team_name}",
                 "data": {"lineup": names, "team": team_name},
@@ -1289,11 +1289,33 @@ def fetch_projected_lineup(team_name, season=2026):
             )
             _TEAMS_LOOKUP_CACHE = tr.json().get("teams", []) if tr else []
         teams = _TEAMS_LOOKUP_CACHE
-        last = team_name.split()[-1].lower()
+        # 2026-08-18 BUG FIX: previously matched on `last = team_name.split()[-1].lower()`
+        # which collided on 'sox' between "Boston Red Sox" and "Chicago White Sox".
+        # Result: fetch_projected_lineup('Boston Red Sox') could return the White Sox
+        # lineup (Meidroth showed up as a BOS "leadoff" prop when he plays for CWS).
+        # Fix: prefer FULL team name match; fall back to teamName (nickname); last
+        # resort is last-word match ONLY if it doesn't collide with another team.
+        tn_lc = team_name.lower()
+        # 1. Full name exact match
         team = next(
-            (t for t in teams if last in (t.get("name") or "").lower() or last == (t.get("teamName") or "").lower()),
+            (t for t in teams if (t.get("name") or "").lower() == tn_lc),
             None,
         )
+        # 2. teamName (nickname, e.g. "Red Sox") exact match
+        if not team:
+            nickname = team_name.split()[-2:] if len(team_name.split()) > 2 else team_name.split()[-1:]
+            nickname_str = ' '.join(nickname).lower()
+            team = next(
+                (t for t in teams if (t.get("teamName") or "").lower() == nickname_str),
+                None,
+            )
+        # 3. Fallback: last-word only if no ambiguity (single match)
+        if not team:
+            last = team_name.split()[-1].lower()
+            hits = [t for t in teams
+                    if last == (t.get("teamName") or "").lower()
+                    or last in (t.get("name") or "").lower().split()]
+            team = hits[0] if len(hits) == 1 else None
         if not team:
             _PROJECTED_LINEUP_CACHE[team_name] = []
             return []
@@ -1322,10 +1344,12 @@ def fetch_projected_lineup(team_name, season=2026):
             timeout=12,
         )
         box = bx.json() if bx else {}
+        # 2026-08-18 BUG FIX: also fix side-picking to use exact team match
+        # (was `if last in t_name.lower()` — same 'sox' collision).
         for side in ("home", "away"):
             t = box.get("teams", {}).get(side, {})
             t_name = t.get("team", {}).get("name", "")
-            if last in t_name.lower():
+            if t_name and t_name.lower() == team_name.lower():
                 batter_ids = t.get("batters", [])[:9]
                 players = t.get("players", {}) or {}
                 names = []
