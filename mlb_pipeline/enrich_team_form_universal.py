@@ -295,13 +295,49 @@ def run(sport: str = None, game_date: str = None, dry_run: bool = False):
         print(f'  {s}: enriched {ok}/{len(games)}')
 
 
+def backfill_days(sport: str, days: int, dry_run: bool = False):
+    """Populate the venue-split + H2H columns for the last N days of games.
+    Needed after the migration lands so backfill_signal_tiers can grade the
+    new signals against real historical fire data (otherwise every new
+    signal has n=0 and stays UNVALIDATED forever)."""
+    from datetime import date as _date
+    sports = [sport] if sport else list(SPORT_CFG.keys())
+    print(f'=== enrich_team_form_universal BACKFILL · last {days} days · '
+          f'{"/".join(sports)}{" [DRY]" if dry_run else ""} ===')
+    for s in sports:
+        ctx_t = SPORT_CFG[s][0]
+        total_enriched = 0
+        total_days = 0
+        for d_off in range(1, days + 1):
+            gd = (_date.today() - timedelta(days=d_off)).isoformat()
+            r = requests.get(
+                f'{SB}/rest/v1/{ctx_t}',
+                headers=H_READ,
+                params={'game_date': f'eq.{gd}',
+                        'select': 'game_id,game_date,home_team,away_team',
+                        'limit': '200'},
+                timeout=20,
+            )
+            games = r.json() if r.status_code == 200 else []
+            if not games: continue
+            for g in games:
+                if enrich_game(s, g, dry_run=dry_run): total_enriched += 1
+            total_days += 1
+        print(f'  {s}: enriched {total_enriched} games across {total_days} dates')
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sport', choices=list(SPORT_CFG.keys()))
     p.add_argument('--date', help='YYYY-MM-DD (default: today ET)')
+    p.add_argument('--backfill-days', type=int,
+                   help='Populate the last N days retroactively (for signal_tiers backfill priming)')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(sport=args.sport, game_date=args.date, dry_run=args.dry_run)
+    if args.backfill_days:
+        backfill_days(sport=args.sport, days=args.backfill_days, dry_run=args.dry_run)
+    else:
+        run(sport=args.sport, game_date=args.date, dry_run=args.dry_run)
 
 
 if __name__ == '__main__':
