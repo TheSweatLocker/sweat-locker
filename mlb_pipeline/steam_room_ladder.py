@@ -56,13 +56,13 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 # Qualifier gates — see project_steam_room_ladder for tuning history.
-LADDER_TIER_MIN         = {'PRIME', 'STRONG'}
-LADDER_WIN_PROB_MIN     = 60.0
-LADDER_COHORT_HIT_MIN   = 60.0
-LADDER_COHORT_N_MIN     = 30
-LADDER_CONSENSUS_MIN    = 4        # of 5 lens agreeing
-LADDER_EDGE_MIN_PP      = 10.0     # model_win_prob - implied_prob
-LADDER_ABS_JUICE_CAP    = -250     # never lay more than -250 (compounding math destroys past this)
+LADDER_TIER_MIN         = {'PRIME', 'STRONG', 'LEAN'}  # 2026-08-18: LEAN eligible if all other gates pass
+LADDER_WIN_PROB_MIN     = 58.0     # 2026-08-18 loosened from 60 → 58 (still +EV, unfroze ladder)
+LADDER_COHORT_HIT_MIN   = 55.0     # 2026-08-18 loosened from 60 → 55 (near BE, all other gates carry weight)
+LADDER_COHORT_N_MIN     = 25       # 2026-08-18 loosened from 30 → 25 (2wk MLB sample)
+LADDER_CONSENSUS_MIN    = 3        # 2026-08-18 loosened from 4 → 3 (3-of-5 lens, was too strict)
+LADDER_EDGE_MIN_PP      = 6.0      # 2026-08-18 loosened from 10 → 6 (still meaningful edge)
+LADDER_ABS_JUICE_CAP    = -250     # unchanged — compounding math destroys past -250
 
 # Per-sport context table
 CTX_TABLE = {
