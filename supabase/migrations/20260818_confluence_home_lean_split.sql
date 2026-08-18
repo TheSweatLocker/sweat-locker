@@ -20,6 +20,17 @@
 
 BEGIN;
 
+-- signal_sources doesn't have a unique constraint on (signal_key, sport),
+-- so ON CONFLICT can't reference one. Delete-then-insert is fully
+-- idempotent for this use case.
+DELETE FROM signal_sources
+ WHERE sport = 'MLB'
+   AND signal_key IN (
+     'confluence_home_lean_as_fav',
+     'confluence_home_lean_as_dog',
+     'confluence_home_lean_as_coin'
+   );
+
 INSERT INTO signal_sources (
   signal_key, class, sport, market_scope, subject_scope,
   condition_expr, side_expr, strength_expr,
@@ -81,14 +92,7 @@ INSERT INTO signal_sources (
     'been HOME-adverse at baseline.',
     'cohort favors home in slight-fav or pickem regime',
     TRUE
-  )
-ON CONFLICT (signal_key, sport) DO UPDATE SET
-  condition_expr = EXCLUDED.condition_expr,
-  side_expr = EXCLUDED.side_expr,
-  strength_expr = EXCLUDED.strength_expr,
-  description = EXCLUDED.description,
-  display_prose_template = EXCLUDED.display_prose_template,
-  enabled = EXCLUDED.enabled;
+  );
 
 COMMIT;
 
