@@ -3581,7 +3581,28 @@ def run(target_date=None):
     games = get_mlb_games(target_date_et=today)
 
     if not games:
-        print("No MLB games found")
+        # 2026-08-18 FAIL-LOUD: differentiate real off-day from Odds API blip.
+        # Cross-check against MLB Stats API — if games exist there but Odds
+        # returned empty, sys.exit(1) so the whole workflow aborts at this
+        # step instead of running 122 downstream no-ops and only surfacing
+        # at the health check 30 min later. This is what happened 8/18 AM
+        # (Odds API blip, silent no-op cascade, health check flagged 15/15
+        # missing sweat_score — pipeline showed 124 green steps + 1 red).
+        try:
+            r = requests.get(
+                "https://statsapi.mlb.com/api/v1/schedule",
+                params={"sportId": 1, "date": today}, timeout=10,
+            )
+            scheduled = sum(len(d.get("games", [])) for d in r.json().get("dates", []))
+        except Exception as _e:
+            scheduled = -1  # unknown
+        if scheduled > 0:
+            print(f"❌ ODDS API BLIP — MLB Stats API confirms {scheduled} games "
+                  f"for {today} but Odds API returned empty. Aborting pipeline "
+                  f"so downstream steps don't silently no-op. Retry the workflow.")
+            import sys; sys.exit(1)
+        # Real off-day (0 games on MLB schedule) — exit clean
+        print(f"No MLB games found (MLB schedule also empty for {today} — genuine off-day)")
         return
 
     processed = 0
