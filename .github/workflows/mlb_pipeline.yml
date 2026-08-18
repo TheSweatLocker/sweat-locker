@@ -793,6 +793,11 @@ jobs:
           # fallback for 3-5 days of parallel run before retirement.
           python grade_props.py || echo "grade_props non-fatal"
           python resolve_props.py || echo "resolve_props non-fatal (fallback)"
+          # 2026-08-18: copy result + compute unit_pnl using SNAPSHOTTED
+          # odds so historical PnL uses the odds at card-lock, not whatever
+          # was live at grade time. Backfills last 7 days each run so late
+          # settles catch up automatically.
+          python grade_pick_snapshots.py --days 7 || echo "grade_pick_snapshots non-fatal"
 
       # Prop playbook shadow audit (2026-08-17). Compares legacy prop
       # scoring vs plug-in playbook decisions over rolling 14-day window
@@ -1630,6 +1635,22 @@ jobs:
         run: |
           cd mlb_pipeline
           python apply_prop_refit.py || echo "post-card refit re-apply failed (non-fatal)"
+
+      # 2026-08-18: prop_pick_snapshots — IMMUTABLE snapshot of every
+      # shipping pick's odds/tier at card-lock time. Fixes the accountability
+      # gap where book_over_odds on mlb_pipeline_props can be overwritten by
+      # later cron runs, so historical PnL was using flat -110 fallback and
+      # overstating results by ~46%. Runs LAST so we capture the final
+      # settled state the user actually sees. Requires migration
+      # 20260818_prop_pick_snapshots.sql to have been applied.
+      - name: Snapshot picks at card-lock (accountability)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python snapshot_pick_lock.py --sport MLB --source card_lock || echo "snapshot non-fatal"
 
       # ─── Steam Room (2026-08-13) ───────────────────────────────────
       # write_line_history: per-book odds snapshot (fuels sparklines)
