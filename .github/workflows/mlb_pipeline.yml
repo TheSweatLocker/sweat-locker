@@ -1262,6 +1262,23 @@ jobs:
           cd mlb_pipeline
           python collapse_sharp_fade_violations.py || echo "sharp-fade collapse failed (non-fatal)"
 
+      # 2026-08-18: reconcile Jerry call_side to primary_play.side when the
+      # ensemble is the authority. Fixes the UI mismatch where the tier
+      # pill above the analysis says "HOME ML" but Jerry's prose below
+      # argues for the opposite team (STL@CIN 8/18: pp=HOME Reds,
+      # jerry_reads=AWAY Cardinals). Runs AFTER all synthesis + fade flips
+      # so we reconcile the final Jerry take, not an intermediate one.
+      # continue-on-error: reconciler failure never blocks the pipeline;
+      # worst case the UI shows the pre-existing mismatch.
+      - name: Reconcile Jerry call_side to primary_play
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python reconcile_jerry_to_primary.py --sport MLB || echo "jerry reconcile failed (non-fatal)"
+
       # 2026-08-10: Pre-publish sanity audit. Runs AFTER all collapse scripts
       # + BEFORE generate_sweat_card. Scans today's reads for known bug
       # patterns (null call_text, opposing-starter leaks, sharp-fade violations

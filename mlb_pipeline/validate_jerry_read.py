@@ -627,6 +627,26 @@ def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
         flags=re.IGNORECASE,
     )
 
+    # Pattern 3d (2026-08-18): strip `(home starter)` / `(away starter)` /
+    # `(starting pitcher)` parenthetical tags after pitcher names. LLM
+    # occasionally emits them as clarifiers — "Kyle Harrison (home starter)
+    # has been sharp" — but they read as template artifacts to users. The
+    # pitcher name alone is enough; the surrounding sentence already makes
+    # the role clear. Preserves other parentheticals (stats, records).
+    out = re.sub(
+        r'\s*\(\s*(?:home|away)\s+(?:starter|pitcher|starting\s+pitcher)\s*\)',
+        '',
+        out,
+        flags=re.IGNORECASE,
+    )
+    # Also the bare "(starting pitcher)" / "(the starter)" variants
+    out = re.sub(
+        r'\s*\(\s*(?:the\s+)?(?:starting\s+pitcher|starter)\s*\)',
+        '',
+        out,
+        flags=re.IGNORECASE,
+    )
+
     # Pattern 4 (2026-08-11): "the [Team] starter/pitcher" references. The LLM
     # sometimes writes "the Giants starter, Carson Whisenhunt" — literally
     # factual but violates feedback_never_generic_pitcher_ref_809 (never ship
