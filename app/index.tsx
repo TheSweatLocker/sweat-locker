@@ -8483,6 +8483,42 @@ setJerryHistory(prev => {
       // "8 plays at 1u each" is a valid day per user 2026-08-17.
       const unitsForTier = (t?: string): number =>
         (t === 'PRIME' || t === 'STRONG') ? 2 : 1;
+
+      // 2026-08-18: dynamic sizing that respects juice traps + regime
+      // context. Flat 2u for every STRONG makes obvious traps read as
+      // sloppy (2u on Rockies+172 heavy-dog, 2u on Burleson -350 juice
+      // trap, 2u on Freeman NO_ODDS). Adjustments:
+      //   - NO ODDS captured        → 0u (can't grade, don't ship)
+      //   - odds <= -250            → halve (juice trap, per feedback_batter_hits_juice_trap_803)
+      //   - odds >= +250            → halve (long-dog trap)
+      //   - ML pick, own-side ML <= -200 → halve (heavy-fav ML trap, feedback_heavy_fav_ml_trap_803)
+      //   - ML pick, own-side ML >= +200 → halve (heavy-dog ML trap)
+      // Floor at 0. Never exceeds tier base.
+      const unitsForPick = (opts: {
+        tier?: string; type?: string; prop_type?: string;
+        odds?: number | null; sidePriceAmerican?: number | null;
+      }): number => {
+        const base = unitsForTier(opts.tier);
+        if (base === 0) return 0;
+        const o = opts.odds;
+        // Data gap: prop has no captured odds → skip until backfilled
+        if (o == null && (opts.type === 'prop' || (opts.type == null && opts.prop_type))) return 0;
+        let stake = base;
+        // Juice traps (any pick type)
+        if (o != null && o <= -250) stake = stake / 2;
+        else if (o != null && o >= 250) stake = stake / 2;
+        // ML regime traps (side ML close price when we know the side)
+        if (opts.type === 'ml' && opts.sidePriceAmerican != null) {
+          const ml = opts.sidePriceAmerican;
+          if (ml <= -200 || ml >= 200) stake = stake / 2;
+        }
+        // Batter hits O 0.5 with -200+ juice — documented trap
+        if (opts.prop_type && /^hits_over$/.test(opts.prop_type) && o != null && o <= -200) {
+          stake = stake / 2;
+        }
+        // Never negative, never exceed base
+        return Math.max(0, Math.min(base, Math.round(stake * 2) / 2));
+      };
       // Include picks with any real ensemble tier (PRIME/STRONG/LEAN);
       // exclude PASS or missing. Props keep their own tighter gate
       // (PRIME/STRONG only) since prop refit discipline is separate.
@@ -8541,12 +8577,17 @@ setJerryHistory(prev => {
       ]);
 
       // ── TODAY'S PICKS ──
-      const mlbSidePicks = (mlbCtx || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).map((g: any) => ({
-        sport: 'MLB', matchup: `${g.away_team} @ ${g.home_team}`,
-        tier: g.primary_play?.tier, pick: g.primary_play?.label || '—',
-        type: g.primary_play?.type || 'ml', reason: g.primary_play?.sub || '',
-        units: unitsForTier(g.primary_play?.tier),
-      }));
+      const mlbSidePicks = (mlbCtx || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).map((g: any) => {
+        const pp = g.primary_play || {};
+        // Resolve which side's ML price is relevant to trap check
+        const sideML = pp.side === 'HOME' ? g.home_ml_close : pp.side === 'AWAY' ? g.away_ml_close : null;
+        return {
+          sport: 'MLB', matchup: `${g.away_team} @ ${g.home_team}`,
+          tier: pp.tier, pick: pp.label || '—',
+          type: pp.type || 'ml', reason: pp.sub || '',
+          units: unitsForPick({tier: pp.tier, type: pp.type || 'ml', sidePriceAmerican: sideML}),
+        };
+      });
       // 2026-08-17: Prop playbook shadow lookup. When PROP_PLAYBOOK_ENABLED
       // is true (post 14d shadow validation), we prefer playbook_tier when
       // it's higher than legacy tier. Playbook decisions are always
@@ -8566,24 +8607,29 @@ setJerryHistory(prev => {
         const pbKey = `${p.player_name}|${p.prop_type}|${p.direction}|${p.prop_line}`;
         const pb = playbookByKey[pbKey];
         const effectiveTier = resolveTier(p.tier, pb?.playbook_tier);
+        // Direction-specific book odds (fallback null → unitsForPick returns 0)
+        const propOdds = p.direction === 'over' ? p.book_over_odds : p.book_under_odds;
         return {
           sport: 'MLB', matchup: p.matchup || '—', tier: effectiveTier,
           pick: `${p.player_name} ${p.direction === 'over' ? 'Over' : 'Under'} ${p.prop_line} ${p.prop_type?.split('_')[0]?.toUpperCase()}${p.book_line != null ? `  (${p.book_line > 0 ? '+' : ''}${p.book_line})` : ''}`,
           type: 'prop', reason: `conv=${p.refit_conviction ?? p.conviction}`,
-          units: unitsForTier(effectiveTier),
+          units: unitsForPick({tier: effectiveTier, type: 'prop', prop_type: p.prop_type, odds: propOdds}),
           // Track whether playbook lifted this pick — useful for debug + UI badge later
           playbook_lifted: PROP_PLAYBOOK_ENABLED && pb?.playbook_tier && effectiveTier !== p.tier,
         };
-      // Filter to PRIME/STRONG only for Sharp Card (either from legacy OR playbook lift)
-      }).filter((pick: any) => isPS(pick.tier));
+      // Filter to PRIME/STRONG only for Sharp Card AND drop picks that got sized to 0u
+      // (NO ODDS captured — no accountability, don't ship)
+      }).filter((pick: any) => isPS(pick.tier) && pick.units > 0);
       const otherPicks: any[] = [];
       for (const [sport, rows] of [['NFL', nflCtx], ['NCAAF', ncaafCtx], ['NCAAB', ncaabCtx]] as [string, any[]][]) {
         (rows || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).forEach((g: any) => {
+          const pp = g.primary_play || {};
+          const sideML = pp.side === 'HOME' ? g.home_ml_close : pp.side === 'AWAY' ? g.away_ml_close : null;
           otherPicks.push({
             sport, matchup: `${g.away_team} @ ${g.home_team}`,
-            tier: g.primary_play?.tier, pick: g.primary_play?.label || '—',
-            type: g.primary_play?.type || 'ml', reason: g.primary_play?.sub || '',
-            units: unitsForTier(g.primary_play?.tier),
+            tier: pp.tier, pick: pp.label || '—',
+            type: pp.type || 'ml', reason: pp.sub || '',
+            units: unitsForPick({tier: pp.tier, type: pp.type || 'ml', sidePriceAmerican: sideML}),
           });
         });
       }
