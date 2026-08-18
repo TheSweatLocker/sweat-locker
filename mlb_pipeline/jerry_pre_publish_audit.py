@@ -368,6 +368,78 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
     return {'critical': critical, 'warnings': warnings}
 
 
+def audit_engine_breakdown(sport: str, game_date: str) -> dict:
+    """2026-08-17: report primary_play._engine tag distribution.
+
+    Post-cutover, every primary_play should have _engine set. Two failure
+    modes we care about:
+      * missing tag on any row → recompute_primary_play didn't propagate
+      * ensemble_v2 count of 0 → ensemble silently disabled/erroring;
+        recompute fell back to legacy for every game
+
+    Returns {critical, warnings} — WARN-only for the missing-tag case
+    (visibility, not blocking) until we've had 2 weeks of clean days.
+    """
+    critical, warnings = [], []
+    if sport != 'MLB':  # ensemble is MLB-only right now
+        return {'critical': critical, 'warnings': warnings}
+
+    ctx_table = 'mlb_game_context'
+    try:
+        r = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'primary_play': 'not.is.null',
+                    'select': 'game_id,primary_play'},
+            timeout=15)
+        rows = r.json() if r.status_code == 200 else []
+    except Exception as e:
+        warnings.append(f'engine breakdown: fetch failed: {e}')
+        return {'critical': critical, 'warnings': warnings}
+
+    if not rows: return {'critical': critical, 'warnings': warnings}
+
+    counts = {'ensemble_v2': 0, 'legacy_compute_primary_play': 0, 'other': 0, 'missing': 0}
+    missing_gids = []
+    for row in rows:
+        pp = row.get('primary_play')
+        if isinstance(pp, str):
+            try: pp = json.loads(pp)
+            except: pp = None
+        if not isinstance(pp, dict):
+            counts['missing'] += 1; missing_gids.append(row.get('game_id'))
+            continue
+        eng = pp.get('_engine')
+        if eng == 'ensemble_v2': counts['ensemble_v2'] += 1
+        elif eng == 'legacy_compute_primary_play': counts['legacy_compute_primary_play'] += 1
+        elif eng: counts['other'] += 1
+        else: counts['missing'] += 1; missing_gids.append(row.get('game_id'))
+
+    total = sum(counts.values())
+    ens_pct = round(100 * counts['ensemble_v2'] / total, 1) if total else 0
+    print(f'  primary_play engine: ensemble={counts["ensemble_v2"]} '
+          f'legacy={counts["legacy_compute_primary_play"]} '
+          f'other={counts["other"]} missing={counts["missing"]} '
+          f'({ens_pct}% ensemble)')
+
+    if counts['missing'] > 0:
+        warnings.append(f'engine_breakdown: {counts["missing"]}/{total} primary_play rows '
+                        f'missing _engine tag (recompute_primary_play didn\'t propagate). '
+                        f'Sample gids: {missing_gids[:3]}')
+    if total >= 5 and counts['ensemble_v2'] == 0:
+        critical.append(f'engine_breakdown: 0/{total} rows on ensemble_v2 — ensemble silently '
+                        f'disabled. Check ensemble_scorer import + score_game exceptions in '
+                        f'recompute_primary_play logs.')
+
+    _log_health_event(game_date, 'engine_breakdown', rule='ensemble_share',
+                      severity='info', count=counts['ensemble_v2'],
+                      context={'legacy': counts['legacy_compute_primary_play'],
+                               'missing': counts['missing'], 'total': total,
+                               'ensemble_pct': ens_pct},
+                      sport=sport)
+
+    return {'critical': critical, 'warnings': warnings}
+
+
 def auto_repair(sport: str, game_date: str) -> dict:
     """2026-08-11: comprehensive auto-repair layer. Runs BEFORE the fail check
     so pipeline is self-healing for every known critical class.
@@ -513,10 +585,24 @@ def auto_repair(sport: str, game_date: str) -> dict:
                 if pt not in pitcher_prop_types: continue
                 metric, expected_dir = pitcher_prop_types[pt]
                 if dir_ != expected_dir: continue
-                try:
-                    tr = check_trend(pj['player_name'], metric, expected_dir)
-                except Exception:
-                    continue
+                # 2026-08-18: retry check_trend once on transient MLB Stats API
+                # failures. Previously the try/except silently swallowed the
+                # error, leaving the pick as BACK — Gate 11 would then re-run
+                # check_trend seconds later, get a successful response, and
+                # fire TREND_CONTRADICTS critical. That's the 8/17 PM Bratt
+                # HA_over pattern: auto-repair skipped due to transient API
+                # error, audit caught it. Log + retry so this doesn't recur.
+                tr = None
+                for attempt in (1, 2):
+                    try:
+                        tr = check_trend(pj['player_name'], metric, expected_dir)
+                        break
+                    except Exception as _e:
+                        if attempt == 2:
+                            print(f'  ⚠ auto-repair check_trend failed '
+                                  f'({pj["player_name"]} {metric} {expected_dir}): {_e}. '
+                                  f'Gate 11 may re-fire.')
+                if tr is None: continue
                 if tr.get('contradicts_pick') and tr.get('severity') == 'critical':
                     note = (f'[Auto-trend-repair 2026-08-11 TREND_CONTRADICTS_CRITICAL: '
                             f'{tr["note"]} — forcing PASS. Original take: '
@@ -847,6 +933,14 @@ def main():
         report['warnings'].extend(refit_report['warnings'])
         report['totals']['critical'] = len(report['critical'])
         report['totals']['warnings'] = len(report['warnings'])
+
+    # 2026-08-17: engine breakdown — catches silent regression where
+    # recompute_primary_play falls back to legacy or drops the _engine tag.
+    eb = audit_engine_breakdown(args.sport, gd)
+    report['critical'].extend(eb['critical'])
+    report['warnings'].extend(eb['warnings'])
+    report['totals']['critical'] = len(report['critical'])
+    report['totals']['warnings'] = len(report['warnings'])
 
     t = report['totals']
     print(f'  scanned {t["reads"]} reads · {t["critical"]} critical · {t["warnings"]} warnings')

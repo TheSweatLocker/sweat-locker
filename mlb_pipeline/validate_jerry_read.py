@@ -575,8 +575,15 @@ def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
     def _sub(m):
         return resolve(m.start(), m.group(0))
 
+    # 2026-08-18: widened noun set from `starter` only to `(starter|pitcher|
+    # starting pitcher)`. Prior patterns 2/3 caught "the opposing starter"
+    # but LEAKED "the opposing pitcher" — which was the gap the 8/17 PM
+    # jerry_pre_publish_audit crash surfaced (Marlins@Phillies id=1137,
+    # Tigers@Pirates id=1138). Also widened to include the `opp` abbreviation
+    # matched by the audit's detector (jerry_pre_publish_audit.py:151).
+    _NOUN = r'(?:starter|starting\s+pitcher|pitcher)'
     out = re.sub(
-        r'\bthe (opposing|home|away) starter\b(?!\s*\()',
+        rf'\bthe (opposing|home|away) {_NOUN}\b(?!\s*\()',
         _sub,
         out,
         flags=re.IGNORECASE,
@@ -585,10 +592,10 @@ def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
     # Pattern 3 (2026-08-10): corrupted-prefix cases where the LLM concatenated
     # a truncated pitcher name with "the opposing starter" (e.g. "Macthe
     # opposing starter" seen on TEX@LAA read). No leading word boundary —
-    # match "the (opposing|home|away) starter" anywhere it appears, but ONLY
-    # when NOT preceded by whitespace (which pattern 2 already handled).
+    # match "the (opposing|home|away) (starter|pitcher)" anywhere it appears,
+    # but ONLY when NOT preceded by whitespace (which pattern 2 already handled).
     out = re.sub(
-        r'(?<=[A-Za-z])the (opposing|home|away) starter\b(?!\s*\()',
+        rf'(?<=[A-Za-z])the (opposing|home|away) {_NOUN}\b(?!\s*\()',
         _sub,
         out,
         flags=re.IGNORECASE,
@@ -603,7 +610,18 @@ def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
         # last name, keeping any preceding adjective (e.g. "weak Whisenhunt")
         return resolve(m.start(), 'the opposing starter')  # reuse resolver
     out = re.sub(
-        r'\bopposing (?:starter|pitcher)\b(?!\s*\()',
+        r'\bopposing (?:starter|starting\s+pitcher|pitcher)\b(?!\s*\()',
+        _sub_no_the,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    # Pattern 3c (2026-08-18): `opp starter` / `opp pitcher` abbreviated
+    # form — matches the audit's detector at jerry_pre_publish_audit.py:151.
+    # Previously only long-form was scrubbed, so the abbreviated form
+    # slipped through auto-repair and re-triggered the audit gate.
+    out = re.sub(
+        r'\bopp\.?\s+(?:starter|pitcher)\b(?!\s*\()',
         _sub_no_the,
         out,
         flags=re.IGNORECASE,
@@ -679,6 +697,23 @@ def substitute_generic_pitcher_refs(prose: str, struct: dict) -> str:
     ]
     for pat in tbd_sentence_patterns:
         out = re.sub(pat, '', out)
+
+    # 2026-08-17 last-resort: after every substitution pattern above has
+    # run, if "opposing starter/pitcher" STILL exists in the prose, the
+    # LLM is using it in a context that substitution can't fix coherently
+    # (seen today: "the opposing starter (park factor 107)" and
+    # "opposing starter (both hitting in the heart of Detroit's order)"
+    # — nonsense substitutions would result). Strip the containing
+    # sentence entirely — losing one sentence beats shipping garbage
+    # or hard-failing the pipeline on it. Preserves the rest of the
+    # take intact. TBD parentheticals are already excluded above.
+    if re.search(r'\b(?:the )?opposing (?:starter|pitcher)\b', out, re.IGNORECASE):
+        parts = re.split(r'(?<=[.!?])\s+', out)
+        kept = [p for p in parts
+                if not re.search(r'\b(?:the )?opposing (?:starter|pitcher)\b(?!\s*\(TBD)',
+                                 p, re.IGNORECASE)]
+        out = ' '.join(kept).strip()
+
     # Clean up any resulting double-spaces
     out = re.sub(r'  +', ' ', out).strip()
     return out
