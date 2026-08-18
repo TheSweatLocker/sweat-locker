@@ -1847,10 +1847,15 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   // (fed by write_line_history.py + write_line_snapshot.py) and line_movement_flags
   // (populated by detect_line_movement.py). Ladder reads ladder_state + ladder_rung
   // (populated by steam_room_ladder.py).
-  const [steamSubTab, setSteamSubTab] = useState<'lines'|'ladder'|'sharp'>('lines');
+  const [steamSubTab, setSteamSubTab] = useState<'lines'|'ladder'|'sharp'|'ledger'>('lines');
   const [sharpPicks, setSharpPicks] = useState<any[]>([]);
-  const [sharpRecord, setSharpRecord] = useState<{w:number,l:number,p:number,unitsNet:number}>({w:0,l:0,p:0,unitsNet:0});
+  const [sharpRecord, setSharpRecord] = useState<{w:number,l:number,p:number,unitsNet:number,wPrev:number,lPrev:number,pPrev:number,unitsNetPrev:number}>({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0});
   const [sharpTabLoading, setSharpTabLoading] = useState(false);
+  // 2026-08-17: The Ledger — auto-suggested chalk parlays + teasers.
+  // Populated by generate_ledger.py from today's ensemble picks across
+  // all sports. User can edit legs (Phase 2).
+  const [ledgerSuggestions, setLedgerSuggestions] = useState<any[]>([]);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
   const [steamFlags, setSteamFlags] = useState<any[]>([]);
   const [steamHistorySample, setSteamHistorySample] = useState<Record<string, any[]>>({});
   const [steamPicksIdx, setSteamPicksIdx] = useState<Record<string, {primary:any, supplementary:any}>>({});
@@ -8445,9 +8450,44 @@ setJerryHistory(prev => {
   const fetchSharpTab = React.useCallback(async () => {
     setSharpTabLoading(true);
     try {
-      const today = new Date().toISOString().slice(0,10);
-      const thirty = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+      // 2026-08-18: use ET, not UTC. Prior code used
+      // new Date().toISOString().slice(0,10) which is UTC and after ~8pm ET
+      // has already rolled to tomorrow — surfaced NYY/BAL 8/18 game on 8/17
+      // Sharp Card. en-CA locale returns YYYY-MM-DD in the requested TZ.
+      const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+      const thirty = new Date(Date.now() - 30*86400000)
+        .toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+      // 2026-08-17: Prop playbook cutover flag. When PLAYBOOK_ENABLED=false
+      // (default until 14d shadow validation clears), Sharp Card uses
+      // legacy tier + refit_conviction. When true, we prefer playbook_tier
+      // when it's PRIME/STRONG (playbook was validated to meet or beat
+      // legacy hit-rate). Flip to true after audit_prop_playbook_shadow.py
+      // shows 14 clean days. See project_prop_playbook_design_817 memory
+      // for cutover criteria.
+      const PROP_PLAYBOOK_ENABLED = false;
       const isPS = (t?: string) => t === 'PRIME' || t === 'STRONG';
+      // Return the tier the Sharp Card should surface: playbook when
+      // enabled AND playbook tier is PRIME/STRONG, else legacy tier.
+      // Never downgrades — playbook can lift a LEAN legacy to STRONG
+      // but can't demote a PRIME legacy.
+      const resolveTier = (legacy?: string, playbook?: string): string | undefined => {
+        if (!PROP_PLAYBOOK_ENABLED) return legacy;
+        const rank = (t?: string) => t === 'PRIME' ? 3 : t === 'STRONG' ? 2 : t === 'LEAN' ? 1 : 0;
+        return rank(playbook) > rank(legacy) ? playbook : legacy;
+      };
+      // 2026-08-17: Sharp unit-sizing. PRIME + STRONG = 2u (real signal
+      // alignment), LEAN = 1u (still worth a shot). Ensemble tier is
+      // already 60d-backtested at +10.7% ROI, so we defer to its own
+      // classification instead of inventing new thresholds. LEAN picks
+      // now flow through so the Sharp isn't vacant on quiet days —
+      // "8 plays at 1u each" is a valid day per user 2026-08-17.
+      const unitsForTier = (t?: string): number =>
+        (t === 'PRIME' || t === 'STRONG') ? 2 : 1;
+      // Include picks with any real ensemble tier (PRIME/STRONG/LEAN);
+      // exclude PASS or missing. Props keep their own tighter gate
+      // (PRIME/STRONG only) since prop refit discipline is separate.
+      const isAnyTier = (t?: string): boolean =>
+        t === 'PRIME' || t === 'STRONG' || t === 'LEAN';
       // 2026-08-16: real-odds tracking. American odds -> decimal payout on 1u win.
       const winPayoutFromAmerican = (odds: number | null | undefined): number => {
         if (odds == null || !isFinite(odds)) return 0.91;  // -110 fallback
@@ -8470,9 +8510,13 @@ setJerryHistory(prev => {
         supabase.from('mlb_game_context')
           .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,close_total')
           .eq('game_date', today),
+        // 2026-08-17: pull today's props for Sharp Card. Include ALL
+        // tiers now (LEAN + PRIME + STRONG) so playbook can lift LEAN
+        // legacy picks to STRONG when playbook validates them. Filter
+        // downstream via resolveTier() → isPS() below.
         supabase.from('mlb_pipeline_props')
-          .select('player_name,matchup,prop_type,prop_line,direction,tier,conviction,refit_conviction,book_line')
-          .eq('game_date', today).in('tier', ['PRIME','STRONG']),
+          .select('player_name,matchup,prop_type,prop_line,direction,tier,conviction,refit_conviction,book_line,game_id')
+          .eq('game_date', today).in('tier', ['PRIME','STRONG','LEAN']),
         supabase.from('nfl_game_context')
           .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close')
           .eq('game_date', today),
@@ -8487,32 +8531,59 @@ setJerryHistory(prev => {
           .eq('sport','UFC').eq('game_date', today).eq('call_market','fight')
           .gte('conviction', 55),
         supabase.from('jerry_reads')
-          .select('result,conviction,call_market,call_side,sport,game_id')
+          .select('result,conviction,call_market,call_side,sport,game_id,game_date')
           .gte('game_date', thirty).gte('conviction', 60).not('result','is',null),
-        // Real odds now come with props via book_line
+        // Real odds now come with props via book_line. Include game_date
+        // for monthly bucketing + conviction so we can filter COVERAGE stubs.
         supabase.from('mlb_pipeline_props')
-          .select('result,tier,prop_type,book_line')
+          .select('result,tier,conviction,prop_type,book_line,game_date')
           .gte('game_date', thirty).in('tier', ['PRIME','STRONG']).not('result','is',null),
       ]);
 
       // ── TODAY'S PICKS ──
-      const mlbSidePicks = (mlbCtx || []).filter((g: any) => isPS(g.primary_play?.tier)).map((g: any) => ({
+      const mlbSidePicks = (mlbCtx || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).map((g: any) => ({
         sport: 'MLB', matchup: `${g.away_team} @ ${g.home_team}`,
         tier: g.primary_play?.tier, pick: g.primary_play?.label || '—',
         type: g.primary_play?.type || 'ml', reason: g.primary_play?.sub || '',
+        units: unitsForTier(g.primary_play?.tier),
       }));
-      const mlbPropPicks = (mlbProps || []).map((p: any) => ({
-        sport: 'MLB', matchup: p.matchup || '—', tier: p.tier,
-        pick: `${p.player_name} ${p.direction === 'over' ? 'Over' : 'Under'} ${p.prop_line} ${p.prop_type?.split('_')[0]?.toUpperCase()}${p.book_line != null ? `  (${p.book_line > 0 ? '+' : ''}${p.book_line})` : ''}`,
-        type: 'prop', reason: `conv=${p.refit_conviction ?? p.conviction}`,
-      }));
+      // 2026-08-17: Prop playbook shadow lookup. When PROP_PLAYBOOK_ENABLED
+      // is true (post 14d shadow validation), we prefer playbook_tier when
+      // it's higher than legacy tier. Playbook decisions are always
+      // fetched so we can compare in dev logs, but only surface when the
+      // flag is on. Match key: (player, prop_type, direction, prop_line).
+      const {data: mlbPlaybookDecisions} = await supabase
+        .from('prop_playbook_decisions')
+        .select('player_name,prop_type,direction,prop_line,playbook_tier,playbook_side')
+        .eq('sport', 'MLB')
+        .eq('game_date', today);
+      const playbookByKey: Record<string, any> = {};
+      (mlbPlaybookDecisions || []).forEach((d: any) => {
+        const k = `${d.player_name}|${d.prop_type}|${d.direction}|${d.prop_line}`;
+        playbookByKey[k] = d;
+      });
+      const mlbPropPicks = (mlbProps || []).map((p: any) => {
+        const pbKey = `${p.player_name}|${p.prop_type}|${p.direction}|${p.prop_line}`;
+        const pb = playbookByKey[pbKey];
+        const effectiveTier = resolveTier(p.tier, pb?.playbook_tier);
+        return {
+          sport: 'MLB', matchup: p.matchup || '—', tier: effectiveTier,
+          pick: `${p.player_name} ${p.direction === 'over' ? 'Over' : 'Under'} ${p.prop_line} ${p.prop_type?.split('_')[0]?.toUpperCase()}${p.book_line != null ? `  (${p.book_line > 0 ? '+' : ''}${p.book_line})` : ''}`,
+          type: 'prop', reason: `conv=${p.refit_conviction ?? p.conviction}`,
+          units: unitsForTier(effectiveTier),
+          // Track whether playbook lifted this pick — useful for debug + UI badge later
+          playbook_lifted: PROP_PLAYBOOK_ENABLED && pb?.playbook_tier && effectiveTier !== p.tier,
+        };
+      // Filter to PRIME/STRONG only for Sharp Card (either from legacy OR playbook lift)
+      }).filter((pick: any) => isPS(pick.tier));
       const otherPicks: any[] = [];
       for (const [sport, rows] of [['NFL', nflCtx], ['NCAAF', ncaafCtx], ['NCAAB', ncaabCtx]] as [string, any[]][]) {
-        (rows || []).filter((g: any) => isPS(g.primary_play?.tier)).forEach((g: any) => {
+        (rows || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).forEach((g: any) => {
           otherPicks.push({
             sport, matchup: `${g.away_team} @ ${g.home_team}`,
             tier: g.primary_play?.tier, pick: g.primary_play?.label || '—',
             type: g.primary_play?.type || 'ml', reason: g.primary_play?.sub || '',
+            units: unitsForTier(g.primary_play?.tier),
           });
         });
       }
@@ -8527,34 +8598,71 @@ setJerryHistory(prev => {
           pick: `${picked} ML${odds ? `  (${odds > 0 ? '+' : ''}${odds})` : ''}`,
           type: 'ml',
           reason: `Win prob ${inp.win_probability_pct}% @ ${odds}`,
+          units: unitsForTier(inp.ev_tier),
         };
       });
       setSharpPicks([...mlbSidePicks, ...mlbPropPicks, ...otherPicks, ...ufcPicks]);
 
-      // ── HISTORICAL RECORD (real odds per pick) ──
-      let w=0, l=0, p=0, unitsNet=0;
-      // Jerry reads: need to look up odds. For MLB ML/total, odds are on
-      // mlb_game_context (home_ml_close/away_ml_close). For UFC, on
-      // input_snapshot.odds_picked_side_median. We keep -110 for anything
-      // without a captured odds — better than fabricating.
+      // ── HISTORICAL RECORD (real odds per pick, unit-weighted) ──
+      // 2026-08-17: rolling calendar-month windowing. Sharp record shows
+      // current month + previous month tallies separately. Prevents
+      // recency bias vs old picks and gives a comparable "how are we
+      // doing THIS month vs LAST month" view.
+      const nowD = new Date();
+      const curMonthStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().slice(0,10);
+      const prevMonthStart = new Date(nowD.getFullYear(), nowD.getMonth()-1, 1).toISOString().slice(0,10);
+      const prevMonthEnd = new Date(nowD.getFullYear(), nowD.getMonth(), 0).toISOString().slice(0,10);
+
+      let w=0, l=0, p=0, unitsNet=0;               // current month
+      let wPrev=0, lPrev=0, pPrev=0, unitsNetPrev=0;  // previous month
+
+      const bump = (r: any, payout: number, curBucket: boolean) => {
+        // Skip COVERAGE stubs (conviction=0 = un-scored sweep stub, not a real pick)
+        if (r.conviction === 0 || r.tier === 'COVERAGE') return;
+        const stake = unitsForTier(r.tier);
+        if (r.result === 'Win') {
+          if (curBucket) { w++; unitsNet += payout * stake; }
+          else { wPrev++; unitsNetPrev += payout * stake; }
+        } else if (r.result === 'Loss') {
+          if (curBucket) { l++; unitsNet -= 1.0 * stake; }
+          else { lPrev++; unitsNetPrev -= 1.0 * stake; }
+        } else if (r.result === 'Push') {
+          if (curBucket) p++; else pPrev++;
+        }
+      };
+
       (jerryHist || []).forEach((r: any) => {
-        // Odds lookup TBD in a proper join; use -110 default for jerry_reads
-        // until write-time odds capture ships.
-        const payout = 0.91;
-        if (r.result === 'Win') { w++; unitsNet += payout; }
-        else if (r.result === 'Loss') { l++; unitsNet -= 1.0; }
-        else if (r.result === 'Push') p++;
+        const gd = r.game_date || '';
+        if (gd >= curMonthStart) bump(r, 0.91, true);
+        else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, 0.91, false);
       });
-      // Props: REAL odds from book_line — no more -125 fabrication
       (propsHist || []).forEach((r: any) => {
+        const gd = r.game_date || '';
         const payout = winPayoutFromAmerican(r.book_line);
-        if (r.result === 'Win') { w++; unitsNet += payout; }
-        else if (r.result === 'Loss') { l++; unitsNet -= 1.0; }
-        else if (r.result === 'Push') p++;
+        if (gd >= curMonthStart) bump(r, payout, true);
+        else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, payout, false);
       });
-      setSharpRecord({w, l, p, unitsNet: Math.round(unitsNet*100)/100});
-    } catch (e) { setSharpPicks([]); setSharpRecord({w:0,l:0,p:0,unitsNet:0}); }
+      setSharpRecord({w, l, p, unitsNet: Math.round(unitsNet*100)/100,
+                      wPrev, lPrev, pPrev, unitsNetPrev: Math.round(unitsNetPrev*100)/100} as any);
+    } catch (e) { setSharpPicks([]); setSharpRecord({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0}); }
     setSharpTabLoading(false);
+  }, []);
+
+  // 2026-08-17: Fetch today's Ledger suggestions (chalk parlays + teasers).
+  // Populated nightly by generate_ledger.py from ensemble picks across sports.
+  const fetchLedger = React.useCallback(async () => {
+    setLedgerLoading(true);
+    try {
+      // 2026-08-18: use ET, not UTC (same fix as fetchSharpTab).
+      const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+      const {data} = await supabase
+        .from('ledger_suggestions')
+        .select('id,kind,sport_scope,legs,combined_odds,combined_prob,reasoning,rank,auto_generated')
+        .eq('game_date', today)
+        .order('rank', {ascending: true});
+      setLedgerSuggestions(data || []);
+    } catch (e) { setLedgerSuggestions([]); }
+    setLedgerLoading(false);
   }, []);
 
   useEffect(() => {
@@ -8562,8 +8670,9 @@ setJerryHistory(prev => {
       fetchSteamFlags();
       fetchLadder();
       fetchSharpTab();
+      fetchLedger();
     }
-  }, [activeTab, fetchSteamFlags, fetchLadder, fetchSharpTab]);
+  }, [activeTab, fetchSteamFlags, fetchLadder, fetchSharpTab, fetchLedger]);
 
   // Fetch active user notes + local dismissed-set on mount. Runs once
   // per app open — notes don't need real-time refresh (published server-side
@@ -14061,18 +14170,20 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             <Text style={{color:THEME.textDim,fontSize:12,marginBottom:4}}>
               {steamSubTab === 'lines' ? 'How sharps operate — line moves + public splits across sources.' :
                steamSubTab === 'ladder' ? 'Chase the streak — one pick, full stake, roll the winnings.' :
+               steamSubTab === 'ledger' ? 'Combos + teasers — chalk parlays and line-move plays across the slate.' :
                'Disciplined bettor mode — flat 1u per qualified play, long-term ROI.'}
             </Text>
-            <View style={{flexDirection:'row',gap:6,marginBottom:14,marginTop:10}}>
+            <View style={{flexDirection:'row',gap:6,marginBottom:14,marginTop:10,flexWrap:'wrap'}}>
               {[
-                {id:'lines',label:'🌊 Line Movement'},
-                {id:'ladder',label:'🪜 The Ladder'},
-                {id:'sharp',label:'🎯 The Sharp'},
+                {id:'lines',label:'🌊 Lines'},
+                {id:'ladder',label:'🪜 Ladder'},
+                {id:'sharp',label:'🎯 Sharp'},
+                {id:'ledger',label:'🧾 Ledger'},
               ].map(s => (
                 <TouchableOpacity key={s.id}
                   onPress={()=>setSteamSubTab(s.id as any)}
-                  style={[styles.chipBtn, steamSubTab===s.id && styles.chipBtnActive, {flex:1, alignItems:'center', justifyContent:'center'}]}>
-                  <Text style={[styles.chipTxt, steamSubTab===s.id && styles.chipTxtActive, {textAlign:'center'}]}>{s.label}</Text>
+                  style={[styles.chipBtn, steamSubTab===s.id && styles.chipBtnActive, {flex:1, minWidth:70, alignItems:'center', justifyContent:'center'}]}>
+                  <Text style={[styles.chipTxt, steamSubTab===s.id && styles.chipTxtActive, {textAlign:'center', fontSize:11}]}>{s.label}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -14231,33 +14342,63 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/></View>
                 ) : (
                   <View style={{gap:12}}>
-                    {/* Running record card */}
+                    {/* Running record card — current month + previous month tallies */}
                     <View style={[styles.card, {padding:14}]}>
-                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>UNIT-PLAY RECORD · LAST 30 DAYS</Text>
                       {(() => {
                         const r = sharpRecord;
                         const total = r.w + r.l;
+                        const totalPrev = r.wPrev + r.lPrev;
                         const hitPct = total > 0 ? Math.round(1000 * r.w / total) / 10 : 0;
+                        const hitPctPrev = totalPrev > 0 ? Math.round(1000 * r.wPrev / totalPrev) / 10 : 0;
                         const unitsColor = r.unitsNet > 0 ? THEME.win : r.unitsNet < 0 ? THEME.loss : THEME.textDim;
-                        const unitsSign = r.unitsNet > 0 ? '+' : '';
+                        const unitsColorPrev = r.unitsNetPrev > 0 ? THEME.win : r.unitsNetPrev < 0 ? THEME.loss : THEME.textDim;
+                        const monthName = new Date().toLocaleDateString('en-US', {month: 'long'});
+                        const prevMonthName = new Date(new Date().setMonth(new Date().getMonth()-1)).toLocaleDateString('en-US', {month: 'long'});
                         return (
-                          <View style={{gap:6}}>
-                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                              <Text style={{color:THEME.textDim, fontSize:12}}>Record (flat 1u)</Text>
-                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
-                                {r.w}-{r.l}{r.p ? ` (${r.p}P)` : ''}
-                                {total > 0 && <Text style={{color:THEME.textDim, fontWeight:'500'}}> · {hitPct}%</Text>}
-                              </Text>
+                          <View style={{gap:10}}>
+                            {/* Current month header + tally */}
+                            <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1}}>
+                              {monthName.toUpperCase()} · UNIT-WEIGHTED
+                            </Text>
+                            <View style={{gap:6}}>
+                              <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                                <Text style={{color:THEME.textDim, fontSize:12}}>Record</Text>
+                                <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
+                                  {r.w}-{r.l}{r.p ? ` (${r.p}P)` : ''}
+                                  {total > 0 && <Text style={{color:THEME.textDim, fontWeight:'500'}}> · {hitPct}%</Text>}
+                                </Text>
+                              </View>
+                              <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                                <Text style={{color:THEME.textDim, fontSize:12}}>Units net</Text>
+                                <Text style={{color:unitsColor, fontWeight:'800', fontSize:15}}>
+                                  {r.unitsNet > 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u
+                                </Text>
+                              </View>
+                              <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                                <Text style={{color:THEME.textDim, fontSize:12}}>ROI</Text>
+                                <Text style={{color:unitsColor, fontWeight:'700', fontSize:13}}>
+                                  {total > 0 ? `${((r.unitsNet / total) * 100).toFixed(1)}%` : '—'}
+                                </Text>
+                              </View>
                             </View>
-                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                              <Text style={{color:THEME.textDim, fontSize:12}}>Units net (30d)</Text>
-                              <Text style={{color:unitsColor, fontWeight:'800', fontSize:15}}>{unitsSign}{r.unitsNet.toFixed(2)}u</Text>
-                            </View>
-                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                              <Text style={{color:THEME.textDim, fontSize:12}}>ROI</Text>
-                              <Text style={{color:unitsColor, fontWeight:'700', fontSize:13}}>
-                                {total > 0 ? `${((r.unitsNet / total) * 100).toFixed(1)}%` : '—'}
+                            {/* Divider */}
+                            <View style={{height:0.5, backgroundColor:THEME.border + '55', marginVertical:4}} />
+                            {/* Previous month recap */}
+                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
+                              <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.5}}>
+                                {prevMonthName.toUpperCase()} · final
                               </Text>
+                              {totalPrev > 0 ? (
+                                <Text style={{color:THEME.text, fontSize:11}}>
+                                  <Text style={{color:THEME.textDim}}>{r.wPrev}-{r.lPrev}{r.pPrev ? `-${r.pPrev}` : ''} · </Text>
+                                  <Text style={{color:unitsColorPrev, fontWeight:'700'}}>
+                                    {r.unitsNetPrev > 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u
+                                  </Text>
+                                  <Text style={{color:THEME.textDim}}> · {hitPctPrev}%</Text>
+                                </Text>
+                              ) : (
+                                <Text style={{color:THEME.textDim, fontSize:11, fontStyle:'italic'}}>no data yet</Text>
+                              )}
                             </View>
                           </View>
                         );
@@ -14272,7 +14413,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           <Text style={{fontSize:36}}>🎯</Text>
                           <Text style={{color:THEME.text, fontWeight:'800', fontSize:14, marginTop:10, textAlign:'center'}}>No qualified plays today</Text>
                           <Text style={{color:THEME.textDim, fontSize:11, marginTop:6, textAlign:'center', lineHeight:16, paddingHorizontal:20}}>
-                            The Sharp only takes PRIME/STRONG plays across MLB, UFC + all sports. Some days = no card.
+                            The ensemble found no edge across MLB, UFC + all sports. Some slates are like that — no bets is a bet.
                           </Text>
                         </View>
                       ) : sharpPicks.map((p: any, i: number) => {
@@ -14284,7 +14425,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 <Text style={{color: tierColor, fontSize:9, fontWeight:'800', letterSpacing:0.5}}>{p.tier}</Text>
                               </View>
                               <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700'}}>{p.sport}</Text>
-                              <Text style={{color:THEME.textMuted, fontSize:10, marginLeft:'auto'}}>1u flat</Text>
+                              <Text style={{color:p.units >= 2 ? THEME.sharp : THEME.textMuted, fontWeight: p.units >= 2 ? '800' : '600', fontSize:10, marginLeft:'auto'}}>{p.units || 1}u</Text>
                             </View>
                             <Text style={{color:THEME.text, fontWeight:'700', fontSize:14}}>{p.pick}</Text>
                             <Text style={{color:THEME.textDim, fontSize:11, marginTop:2}} numberOfLines={1}>{p.matchup}</Text>
@@ -14301,10 +14442,10 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:6}}>THE SHARP METHOD</Text>
                       <View style={{gap:4}}>
                         {[
-                          ['🎯', 'PRIME/STRONG qualified plays only'],
-                          ['💵', 'Flat 1 unit per play — no compounding'],
-                          ['📊', 'Multi-pick daily (5-10 typical) across sports'],
-                          ['📈', 'Long-term ROI + hit rate transparency'],
+                          ['🎯', 'Every ensemble-qualified play across MLB, UFC + all sports'],
+                          ['💵', 'PRIME/STRONG = 2u · LEAN = 1u — sizing follows conviction'],
+                          ['📊', 'Play count varies with the slate — no artificial cap'],
+                          ['📈', 'Long-term ROI + hit rate transparency, unit-weighted'],
                           ['⏸', 'No streak dependence — one loss doesn\'t reset'],
                         ].map(([icon, txt], i) => (
                           <View key={i} style={{flexDirection:'row', alignItems:'center', gap:6}}>
@@ -14316,6 +14457,82 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       <Text style={{color:THEME.textMuted, fontSize:10, marginTop:8, fontStyle:'italic', lineHeight:14}}>
                         Different product from the Ladder. Sharp = disciplined bankroll, edge realized through volume. Ladder = streak-chase, all-or-nothing compounding.
                       </Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* 🧾 THE LEDGER — auto-suggested chalk parlays + teasers (2026-08-17) */}
+            {steamSubTab==='ledger' && (
+              <View>
+                {ledgerLoading ? (
+                  <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/></View>
+                ) : (
+                  <View style={{gap:12}}>
+                    {ledgerSuggestions.length === 0 ? (
+                      <View style={[styles.card, {padding:20, alignItems:'center'}]}>
+                        <Text style={{fontSize:36}}>🧾</Text>
+                        <Text style={{color:THEME.text, fontWeight:'800', fontSize:14, marginTop:10, textAlign:'center'}}>No combos today</Text>
+                        <Text style={{color:THEME.textDim, fontSize:11, marginTop:6, textAlign:'center', lineHeight:16, paddingHorizontal:20}}>
+                          The Ledger auto-suggests chalk parlays + teasers from today&apos;s ensemble picks. Some slates don&apos;t have the right mix — check back tomorrow.
+                        </Text>
+                      </View>
+                    ) : ledgerSuggestions.map((s: any, i: number) => {
+                      const kindColor = s.kind === 'chalk_parlay' ? THEME.win : THEME.accent;
+                      const kindLabel = s.kind === 'chalk_parlay' ? '🏆 CHALK PARLAY' : '🎯 TEASER';
+                      const oddsFmt = s.combined_odds > 0 ? `+${s.combined_odds}` : `${s.combined_odds}`;
+                      return (
+                        <View key={i} style={[styles.card, {padding:14, borderLeftWidth:3, borderLeftColor: kindColor}]}>
+                          <View style={{flexDirection:'row', alignItems:'center', gap:8, marginBottom:8}}>
+                            <Text style={{color: kindColor, fontSize:10, fontWeight:'800', letterSpacing:1}}>{kindLabel}</Text>
+                            <Text style={{color:THEME.textMuted, fontSize:10}}>· {s.sport_scope}</Text>
+                            <Text style={{color: THEME.win, fontWeight:'800', fontSize:16, marginLeft:'auto'}}>{oddsFmt}</Text>
+                          </View>
+                          <View style={{gap:6, marginBottom:8}}>
+                            {(s.legs || []).map((leg: any, j: number) => {
+                              const legOdds = leg.teased_odds ?? leg.original_odds;
+                              const legOddsFmt = legOdds > 0 ? `+${legOdds}` : `${legOdds}`;
+                              return (
+                                <View key={j} style={{flexDirection:'row', alignItems:'center', gap:6}}>
+                                  <Text style={{color:THEME.textDim, fontSize:11, width:14}}>{j+1}.</Text>
+                                  <View style={{flex:1}}>
+                                    <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
+                                      {leg.pick}
+                                      {leg.teased_line != null && (
+                                        <Text style={{color:THEME.accent, fontWeight:'700'}}> → {leg.teased_line}</Text>
+                                      )}
+                                    </Text>
+                                    <Text style={{color:THEME.textDim, fontSize:10}} numberOfLines={1}>{leg.matchup}</Text>
+                                  </View>
+                                  <Text style={{color:THEME.textMuted, fontWeight:'700', fontSize:11}}>{legOddsFmt}</Text>
+                                </View>
+                              );
+                            })}
+                          </View>
+                          {s.reasoning && (
+                            <Text style={{color:THEME.textMuted, fontSize:11, lineHeight:15, marginTop:6, fontStyle:'italic'}} numberOfLines={3}>
+                              {s.reasoning}
+                            </Text>
+                          )}
+                        </View>
+                      );
+                    })}
+                    <View style={[styles.card, {padding:14, borderLeftWidth:3, borderLeftColor: THEME.accent}]}>
+                      <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:6}}>THE LEDGER METHOD</Text>
+                      <View style={{gap:4}}>
+                        {[
+                          ['🏆', 'Chalk parlays — 2-3 mid-tier ML favorites for even-money math'],
+                          ['🎯', 'Teasers — move a total or spread into higher-hit-% zone, pair for even money'],
+                          ['📊', 'Auto-generated from today\'s ensemble picks (PRIME/STRONG only)'],
+                          ['✏️', 'Editable builder coming soon — pick your own legs'],
+                        ].map(([icon, txt], k) => (
+                          <View key={k} style={{flexDirection:'row', alignItems:'center', gap:6}}>
+                            <Text style={{fontSize:11}}>{icon}</Text>
+                            <Text style={{color:THEME.textDim, fontSize:11}}>{txt}</Text>
+                          </View>
+                        ))}
+                      </View>
                     </View>
                   </View>
                 )}
