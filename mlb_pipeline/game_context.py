@@ -3585,24 +3585,35 @@ def run(target_date=None):
         # Cross-check against MLB Stats API — if games exist there but Odds
         # returned empty, sys.exit(1) so the whole workflow aborts at this
         # step instead of running 122 downstream no-ops and only surfacing
-        # at the health check 30 min later. This is what happened 8/18 AM
-        # (Odds API blip, silent no-op cascade, health check flagged 15/15
-        # missing sweat_score — pipeline showed 124 green steps + 1 red).
-        try:
-            r = requests.get(
-                "https://statsapi.mlb.com/api/v1/schedule",
-                params={"sportId": 1, "date": today}, timeout=10,
-            )
-            scheduled = sum(len(d.get("games", [])) for d in r.json().get("dates", []))
-        except Exception as _e:
-            scheduled = -1  # unknown
-        if scheduled > 0:
-            print(f"❌ ODDS API BLIP — MLB Stats API confirms {scheduled} games "
-                  f"for {today} but Odds API returned empty. Aborting pipeline "
-                  f"so downstream steps don't silently no-op. Retry the workflow.")
-            import sys; sys.exit(1)
-        # Real off-day (0 games on MLB schedule) — exit clean
-        print(f"No MLB games found (MLB schedule also empty for {today} — genuine off-day)")
+        # at the health check 30 min later.
+        #
+        # 2026-08-18 REVISION: only apply this gate when target_date is
+        # TODAY (or the past). For future dates (e.g. "Build tomorrow
+        # preview slate" step which passes --date "$TOMORROW"), Odds API
+        # legitimately doesn't post odds until ~24hr before game time —
+        # empty return is EXPECTED, not a blip. Applying the gate to
+        # tomorrow-preview killed the 14:37 workflow_dispatch run today.
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        today_et = (_dt.now(_tz.utc) - _td(hours=4)).date().isoformat()
+        gate_active = today <= today_et  # today or backfill; skip for future
+        if gate_active:
+            try:
+                r = requests.get(
+                    "https://statsapi.mlb.com/api/v1/schedule",
+                    params={"sportId": 1, "date": today}, timeout=10,
+                )
+                scheduled = sum(len(d.get("games", [])) for d in r.json().get("dates", []))
+            except Exception as _e:
+                scheduled = -1
+            if scheduled > 0:
+                print(f"❌ ODDS API BLIP — MLB Stats API confirms {scheduled} games "
+                      f"for {today} but Odds API returned empty. Aborting pipeline "
+                      f"so downstream steps don't silently no-op. Retry the workflow.")
+                import sys; sys.exit(1)
+            print(f"No MLB games found (MLB schedule also empty for {today} — genuine off-day)")
+        else:
+            # Future date + empty odds = expected (odds not posted yet).
+            print(f"No MLB games found for {today} — future date, odds not yet posted (expected). Skipping preview build.")
         return
 
     processed = 0
