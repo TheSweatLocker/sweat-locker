@@ -41,7 +41,7 @@ jobs:
       - name: Run pitcher stats update
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python pitcher_stats.py
@@ -49,7 +49,7 @@ jobs:
       - name: Run bullpen stats update
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python bullpen_stats.py
@@ -57,7 +57,7 @@ jobs:
       - name: Run team offense stats
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python team_stats.py
@@ -65,7 +65,7 @@ jobs:
       - name: Run Savant enrichment (OAA, xwOBA, barrel%, catcher framing)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python savant_enrichment.py
@@ -73,13 +73,52 @@ jobs:
       - name: Run game context pipeline
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
           BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
         run: |
           cd mlb_pipeline
           python game_context.py
+
+      # Backfill L10 team ATS / O/U / ML tendencies onto today's rows
+      # (2026-08-17). Populates home/away_ats_last10, ou_last10_overs/unders,
+      # covers_as_fav/dog%, ml_last10. Activates the 10 team_form signals
+      # in signal_sources — first day fired 14 chips across 9/11 games at
+      # DISCOVERY weight. Runs AFTER game_context.py (rows must exist to
+      # patch) and BEFORE recompute_primary_play (so ensemble sees the
+      # tendencies on its second pass). Non-fatal — a tendencies failure
+      # just means today's team_form signals evaluate to None and pass;
+      # ensemble still scores the game from other signal classes.
+      - name: Backfill team ATS/OU tendencies
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_team_tendencies.py || echo "tendencies backfill failed (non-fatal — signals will pass on None)"
+
+      # 2026-08-17: teamrankings season aggregates for MLB. Stacks with
+      # per-game rolling tendencies — season signals catch persistent
+      # patterns, rolling catches recent form. Both fire when they agree.
+      - name: Pull MLB season trends from teamrankings
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_teamrankings_trends.py --sport MLB || echo "MLB teamrankings pull failed (non-fatal)"
+
+      - name: Enrich MLB game context with season trends
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_team_trends.py --sport MLB || echo "MLB trend enrichment failed (non-fatal)"
 
       # ── ADVANCED METRICS (2026-08-15) — 5-part refinement pack ──
       # Runs AFTER game_context.py so base fields (catcher_framing,
@@ -101,7 +140,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python savant_pitcher_arsenal.py || echo "savant arsenal pull failed (non-fatal)"
@@ -110,7 +149,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python mlb_advanced_metrics.py || echo "advanced metrics failed (non-fatal)"
@@ -125,7 +164,7 @@ jobs:
       - name: Verify starting pitchers vs MLB API
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python verify_starters.py
@@ -145,7 +184,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python _data_quality_audit.py
@@ -153,7 +192,7 @@ jobs:
       - name: Update team HR threats
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python team_hr_threats.py
@@ -161,7 +200,7 @@ jobs:
       - name: Compute pitcher offense-class projections (before props — props read this)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python compute_pitcher_class_projections.py
@@ -176,7 +215,7 @@ jobs:
       - name: Patch projected_ks onto mlb_game_context
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python patch_projected_ks.py
@@ -191,7 +230,7 @@ jobs:
       - name: Enrich Monte Carlo (mc_probabilities + high_conf + NRFI ensemble)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python enrich_monte_carlo.py
@@ -207,7 +246,7 @@ jobs:
       - name: Recompute primary_play + NRFI ensemble post-MC
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python recompute_primary_play.py
@@ -226,7 +265,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python compute_l5_pitcher_actuals.py
@@ -234,7 +273,7 @@ jobs:
       - name: Build HR Watch
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -243,7 +282,7 @@ jobs:
       - name: Generate pipeline props
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           # 5/30 fix: this was missing the Odds API key, which silently broke
           # Phase 1 (K book lines, 5/28) AND Phase 2 (HA/ER/Outs/BB, 5/29)
           # recalibration for the entire interval. attach_book_lines printed
@@ -269,7 +308,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -285,7 +324,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python compute_prop_bucket_roi.py || echo "prop bucket recompute failed (non-fatal)"
@@ -312,7 +351,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           DOW=$(date -u +%u)
           if [ "$DOW" = "7" ]; then
@@ -333,7 +372,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python compute_scenario_audit.py --sport MLB --window lifetime || echo "scenario audit MLB lifetime failed"
@@ -353,10 +392,42 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python apply_prop_refit.py || echo "prop refit failed (non-fatal)"
+
+      # Backfill L5/L10 player-vs-line lookback on today's props
+      # (2026-08-17). Populates player_l5_hit_count / player_l10_hit_count
+      # via MLB Stats API. Powers the player_l10_vs_line_extreme playbook
+      # signal. Runs AFTER apply_prop_refit + BEFORE prop_ensemble_scorer
+      # so the scorer sees fresh L10 data. Non-fatal — the L10-based
+      # signals just don't fire if this step fails.
+      - name: Backfill prop L5/L10 lookback
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_prop_lookback.py --sport MLB || echo "prop lookback backfill failed (non-fatal)"
+
+      # Prop ensemble scorer — SHADOW MODE (2026-08-17). Reads
+      # signal_sources rows with subject_scope IN ('prop','player_prop')
+      # and writes plug-in playbook decisions to prop_playbook_decisions
+      # WITHOUT touching legacy mlb_pipeline_props.tier / .conviction.
+      # Legacy stays authoritative until 14d of shadow data proves
+      # playbook meets/beats legacy hit-rate. See
+      # project_prop_playbook_design_817 for the cutover criteria.
+      # Non-fatal — playbook failure never blocks pipeline.
+      - name: Prop playbook scorer (shadow mode)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python prop_ensemble_scorer.py --sport MLB || echo "prop playbook scorer failed (non-fatal, shadow-mode)"
 
       # Prop Jerry synthesis (2026-07-31 · sport-universal). Runs AFTER
       # apply_prop_refit so Jerry sees refit_conviction. Writes 40-60w
@@ -366,7 +437,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -382,7 +453,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python collapse_prop_jerry_contradictions.py || echo "prop jerry collapse failed (non-fatal)"
@@ -398,7 +469,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python collapse_pitcher_thesis_contradictions.py || echo "pitcher-thesis collapse failed (non-fatal)"
@@ -417,7 +488,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python apply_refit_verdict_override.py || echo "refit override failed (non-fatal)"
@@ -430,7 +501,7 @@ jobs:
       - name: FADE→PASS bomb-list discipline
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -447,7 +518,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python jerry_anchor_daily_degen.py || echo "degen jerry anchor failed (non-fatal)"
@@ -464,7 +535,7 @@ jobs:
       - name: Apply prop-signal override to v4 totals
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python apply_prop_signal_override.py
@@ -479,7 +550,7 @@ jobs:
       - name: Compute prop-reverse signals
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python write_prop_reverse_signals.py
@@ -487,7 +558,7 @@ jobs:
       - name: Generate Daily Degen
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -496,7 +567,7 @@ jobs:
       - name: Generate Dawg of the Day
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
@@ -511,7 +582,7 @@ jobs:
       - name: Pull NFL team stats (Tuesdays during season)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           DAY=$(date -u -d '-4 hours' +%u)
           MONTH=$(date -u -d '-4 hours' +%m)
@@ -531,7 +602,7 @@ jobs:
       - name: Pull NCAAB KenPom snapshot (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           KENPOM_KEY: ${{ secrets.KENPOM_KEY }}
         run: |
           DAY=$(date -u -d '-4 hours' +%u)
@@ -555,7 +626,7 @@ jobs:
       - name: HR Watch audit
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python audit_hr_watch.py
@@ -568,7 +639,7 @@ jobs:
       - name: CLV history logger
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python log_clv_history.py
@@ -583,7 +654,7 @@ jobs:
       - name: Starter-change detection
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python check_starter_changes.py
@@ -598,7 +669,7 @@ jobs:
       - name: Retry missing starters + downstream recompute
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python retry_missing_starters.py || echo "retry_missing_starters non-fatal"
@@ -616,7 +687,7 @@ jobs:
       - name: v5 nightly retrain
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           HOUR_UTC=$(date -u +%H)
@@ -632,7 +703,7 @@ jobs:
       - name: Update umpire database (Mondays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           DAY=$(date -u -d '-4 hours' +%u)
           if [ "$DAY" = "1" ]; then
@@ -646,7 +717,7 @@ jobs:
       - name: Run UFC card scraper (Thursdays only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           DAY=$(date -u -d '-4 hours' +%u)
           if [ "$DAY" = "4" ]; then
@@ -663,7 +734,7 @@ jobs:
       - name: Score UFC card (Thursdays only, post-scraper)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           DAY=$(date -u -d '-4 hours' +%u)
           if [ "$DAY" = "4" ]; then
@@ -675,7 +746,7 @@ jobs:
       - name: Resolve UFC fights (Sundays/Mondays after weekend cards)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           DAY=$(date -u -d '-4 hours' +%u)
           if [ "$DAY" = "7" ] || [ "$DAY" = "1" ]; then
@@ -690,7 +761,7 @@ jobs:
       - name: Generate UFC fight reads
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -701,7 +772,7 @@ jobs:
       - name: Generate NFL game reads
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
@@ -711,7 +782,7 @@ jobs:
       - name: Resolve prop grades
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -723,6 +794,24 @@ jobs:
           python grade_props.py || echo "grade_props non-fatal"
           python resolve_props.py || echo "resolve_props non-fatal (fallback)"
 
+      # Prop playbook shadow audit (2026-08-17). Compares legacy prop
+      # scoring vs plug-in playbook decisions over rolling 14-day window
+      # using freshly-graded results from grade_props.py above. Reports:
+      #   * Agreement rate (both same tier / same side)
+      #   * Disagreement wins (playbook right vs legacy right)
+      #   * Hit-rate + ROI per tier for each system
+      # Non-fatal — runs daily but the CUTOVER criterion is 14 consecutive
+      # days of playbook meeting or beating legacy ROI. See project_prop
+      # _playbook_design_817 memory.
+      - name: Prop playbook shadow audit
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_prop_playbook_shadow.py --days 14 || echo "shadow audit failed (non-fatal)"
+
       # Resolve yesterday's Daily Degen parlay. Runs after resolve_props +
       # resolve_game_results so leg outcomes (props via mlb_pipeline_props.result;
       # ML via mlb_game_results.spread_result / home_win) are already graded.
@@ -733,7 +822,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python resolve_daily_degen.py
@@ -741,7 +830,7 @@ jobs:
       - name: Resolve NRFI results
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python resolve_nrfi.py
@@ -749,7 +838,7 @@ jobs:
       - name: Resolve game results
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python resolve_game_results.py
@@ -763,7 +852,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python grade_daily_card.py || echo "grade_daily_card non-fatal"
@@ -777,7 +866,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python compute_clv.py --sport ALL || echo "compute_clv non-fatal"
@@ -792,7 +881,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python grade_jerry_reads.py || echo "grade_jerry_reads non-fatal"
@@ -808,7 +897,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python rescore_signal_registry.py || echo "rescore_signal_registry non-fatal"
@@ -824,7 +913,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python backfill_signal_tiers.py --days 60 --sport ALL || echo "backfill_signal_tiers non-fatal"
@@ -838,10 +927,28 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python audit_prop_signals.py --days 90 --sport ALL || echo "audit_prop_signals non-fatal"
+
+      # 2026-08-18: prop signal_sources rule backfill — grades the plug-in
+      # rules the playbook ensemble consumes (e.g. `batter_l14_heat` with
+      # condition `"l14_heat" in p.signals`) against 60d of resolved props.
+      # Complements audit_prop_signals.py which grades raw signal keys.
+      # This one is what promotes signal_sources rules to VALIDATED so the
+      # playbook can give them real weight instead of the 0.15 default.
+      # Without this, playbook can't reach STRONG on any pick — first run
+      # 2026-08-18 promoted 10 rules to VALIDATED, 2 to DISCOVERY,
+      # 1 to ANTI_VALIDATED (batter_l14_cold — invert or drop).
+      - name: Backfill prop signal_sources tiers (60d)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_prop_signal_tiers.py --days 60 --sport ALL || echo "backfill_prop_signal_tiers non-fatal"
 
       # 2026-08-16: nightly ensemble health check. Replays the last 30d,
       # computes rolling hit rate + ROI, sets status_flag on ensemble_health.
@@ -851,7 +958,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python monitor_ensemble_health.py --sport MLB --window 30 || echo "monitor_ensemble_health non-fatal"
@@ -864,7 +971,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python verify_ensemble_wiring.py --sport MLB || echo "verify_ensemble_wiring found issues — inspect logs"
@@ -876,7 +983,7 @@ jobs:
       - name: Resolve Play of the Day
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python resolve_potd.py
@@ -889,7 +996,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python resolve_externals.py --sport MLB --days 7 || echo "external resolver failed (non-fatal)"
@@ -901,7 +1008,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python audit_external_source_calibration.py --sport MLB || echo "external calibration audit failed (non-fatal)"
@@ -913,7 +1020,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python audit_consensus_bucket_calibration.py --sport MLB || echo "consensus bucket audit failed (non-fatal)"
@@ -927,7 +1034,7 @@ jobs:
       - name: Re-walk Sweat Card (post-POTD)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python resolve_game_results.py --card-only
@@ -944,7 +1051,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python cohort_stats.py
@@ -966,7 +1073,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python refresh_cohort_signals.py
@@ -983,7 +1090,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python cohort_calibration_report.py
@@ -1001,63 +1108,22 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python buy_down_calibration.py
 
-      - name: Run NBA team stats update
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
-        run: |
-          cd mlb_pipeline
-          python nba_pipeline.py
-
-      - name: Log NBA picks (per-game features + market lines)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: |
-          cd mlb_pipeline
-          python nba_pick_logger.py
-
-      - name: Generate NBA conviction-tier picks
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: |
-          cd mlb_pipeline
-          python nba_picks_generator.py
-
-      # Server-side Jerry NBA game reads — one structured read per game (model
-      # spread/total edge, efficiency splits, recency drift, injuries, picks)
-      # written to jerry_cache. Prompts come from the prompt_templates table.
-      - name: Generate NBA game reads
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          cd mlb_pipeline
-          python generate_nba_game_reads.py --force
-
-      - name: Resolve NBA results (BDL boxscores)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
-        run: |
-          cd mlb_pipeline
-          python nba_pick_logger.py --resolve
+      # 2026-08-17: NBA pipeline steps DELETED. User decision to reset NBA
+      # from scratch. Legacy scripts (nba_pipeline.py, nba_pick_logger.py,
+      # nba_picks_generator.py, generate_nba_game_reads.py) removed.
+      # BDL data source killed. New nba_data_client.py uses stats.nba.com.
+      # Rebuild scheduled for pre-season (Oct 22). See
+      # project_nba_reset_817 memo for status.
 
       - name: Generate Play of the Day
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -1071,7 +1137,7 @@ jobs:
       - name: v7 total shadow inference
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python shadow_total_inference.py || echo "shadow inference failed, continuing"
@@ -1083,7 +1149,7 @@ jobs:
       - name: v1 ML shadow inference
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python shadow_ml_inference.py || echo "ML shadow inference failed, continuing"
@@ -1097,7 +1163,7 @@ jobs:
       - name: Generate POTD narrative
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -1116,7 +1182,7 @@ jobs:
       - name: Generate MLB game reads
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -1134,7 +1200,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           if [ "${{ github.event.schedule }}" = "0 18 * * *" ]; then
@@ -1150,7 +1216,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python detect_consensus_fade.py --sport MLB || echo "fade detector failed (non-fatal)"
@@ -1172,7 +1238,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -1191,7 +1257,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python collapse_sharp_fade_violations.py || echo "sharp-fade collapse failed (non-fatal)"
@@ -1214,7 +1280,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python conviction_calibration_pass.py --sport MLB || echo "calibration pass failed (non-fatal)"
@@ -1222,7 +1288,7 @@ jobs:
       - name: Jerry pre-publish sanity audit
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           # 2026-08-11: --repair mode auto-fixes known critical classes
@@ -1242,7 +1308,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python snapshot_mlb_game_context.py || echo "context snapshot failed (non-fatal)"
@@ -1255,7 +1321,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python compute_model_track_records.py || echo "model track records failed (non-fatal)"
@@ -1273,7 +1339,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python sharp_divergence_tracker.py || echo "bucket stats failed (non-fatal)"
@@ -1282,7 +1348,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python sharp_fade_rules_stats.py || echo "per-rule stats failed (non-fatal)"
@@ -1291,7 +1357,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python sharp_fade_audit.py --write-today || echo "audit write failed (non-fatal)"
@@ -1300,7 +1366,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python sharp_fade_audit.py --backfill-results || echo "audit backfill failed (non-fatal)"
@@ -1309,7 +1375,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python sharp_fade_audit.py --calibrate || echo "calibrate failed (non-fatal)"
@@ -1324,7 +1390,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python sharp_money_weekly_digest.py || echo "weekly sharp digest failed (non-fatal)"
@@ -1339,7 +1405,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python clv_weekly_rollup.py --sport ALL || echo "clv rollup failed (non-fatal)"
@@ -1358,7 +1424,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           if [ "$(date -u +%u)" = "7" ]; then
@@ -1379,7 +1445,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python jerry_anchor_potd.py --threshold 70 || echo "jerry POTD anchor failed (non-fatal)"
@@ -1391,7 +1457,7 @@ jobs:
         if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python generate_tonight_card.py
@@ -1414,7 +1480,7 @@ jobs:
         if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
         run: |
@@ -1431,7 +1497,7 @@ jobs:
       - name: Refresh tier calibration audit
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python audit_tier_calibration.py
@@ -1446,7 +1512,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python audit_tier_integrity.py
@@ -1460,7 +1526,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python audit_v4_health.py
@@ -1476,7 +1542,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python audit_v4_totals.py
@@ -1489,7 +1555,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python audit_signal_attribution.py
@@ -1503,7 +1569,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python enrich_team_recency.py
@@ -1516,7 +1582,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python enrich_team_vs_opp.py
@@ -1529,7 +1595,7 @@ jobs:
       - name: Generate Sweat Card
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python generate_sweat_card.py
@@ -1543,7 +1609,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python apply_prop_refit.py || echo "post-card refit re-apply failed (non-fatal)"
@@ -1561,7 +1627,7 @@ jobs:
       - name: Steam Room — per-book line snapshot
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1570,7 +1636,7 @@ jobs:
       - name: Steam Room — detect line movement patterns
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1586,7 +1652,7 @@ jobs:
       - name: Line movement — classify sharp vs public
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1601,7 +1667,7 @@ jobs:
       - name: Fadereport — scrape sharp signals (all sports)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1615,7 +1681,7 @@ jobs:
       - name: Cleatz — scrape full-slate public splits (MLB/NFL/CFB)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1628,7 +1694,7 @@ jobs:
       - name: Line movement — archive public splits
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1643,7 +1709,7 @@ jobs:
       - name: Line movement — mine patterns (refresh + discover)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1658,7 +1724,7 @@ jobs:
       - name: Line movement — freeze true closing lines
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1667,7 +1733,7 @@ jobs:
       - name: Steam Room — ladder qualifier check
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1676,11 +1742,25 @@ jobs:
       - name: Steam Room — resolve ladder rung results
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
           python resolve_ladder_results.py || echo "ladder resolver failed"
+
+      # The Ledger — auto-generate today's chalk parlays + teasers
+      # (2026-08-17). Cross-sport: reads MLB + NFL + NCAAF + NCAAB
+      # ensemble picks and produces 2-4 suggested combos for the
+      # Steam Room's 4th sub-tab. Non-fatal — Ledger empty just
+      # means no eligible combos today.
+      - name: Steam Room — generate Ledger suggestions
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python generate_ledger.py || echo "ledger generator failed"
 
       # ─── Session A monitoring dashboard (2026-08-14) ─────────────
       # Populates hit_rate_snapshots + rule_fire_stats + dashboard_alerts.
@@ -1692,7 +1772,7 @@ jobs:
       - name: Monitoring — hit-rate snapshots
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1701,7 +1781,7 @@ jobs:
       - name: Monitoring — rule-fire stats
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1710,7 +1790,7 @@ jobs:
       - name: Monitoring — anomaly alerts
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1722,7 +1802,7 @@ jobs:
       - name: Monitoring — data quality daily
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1736,7 +1816,7 @@ jobs:
       - name: Monitoring — rule backtest + auto-promote
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1750,7 +1830,7 @@ jobs:
       - name: Monitoring — user notes dispatch
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         continue-on-error: true
         run: |
           cd mlb_pipeline
@@ -1764,7 +1844,7 @@ jobs:
       - name: Pipeline health check
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python check_pipeline_health.py
