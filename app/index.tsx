@@ -8486,13 +8486,17 @@ setJerryHistory(prev => {
 
       // 2026-08-18: dynamic sizing that respects juice traps + regime
       // context. Flat 2u for every STRONG makes obvious traps read as
-      // sloppy (2u on Rockies+172 heavy-dog, 2u on Burleson -350 juice
-      // trap, 2u on Freeman NO_ODDS). Adjustments:
+      // sloppy. Adjustments:
       //   - NO ODDS captured        → 0u (can't grade, don't ship)
       //   - odds <= -250            → halve (juice trap, per feedback_batter_hits_juice_trap_803)
       //   - odds >= +250            → halve (long-dog trap)
-      //   - ML pick, own-side ML <= -200 → halve (heavy-fav ML trap, feedback_heavy_fav_ml_trap_803)
-      //   - ML pick, own-side ML >= +200 → halve (heavy-dog ML trap)
+      //   - ML pick, own-side ML <= -180 → halve (heavy-fav ML trap band widened
+      //     2026-08-18: was -200. Baseline analysis shows the -150 to -199 mod-fav
+      //     bucket is -7.2pp EV, so even -180 belongs in the halve band.)
+      //   - ML pick, own-side ML >= +150 → halve (mod-dog trap widened 2026-08-18:
+      //     was +200. Rockies+172 spot exposed the gap — home dog +150+ at Coors
+      //     etc. deserves 1u not 2u even when the ensemble likes the spot.)
+      //   - Batter hits O with juice <= -200 → halve (documented trap)
       // Floor at 0. Never exceeds tier base.
       const unitsForPick = (opts: {
         tier?: string; type?: string; prop_type?: string;
@@ -8507,10 +8511,10 @@ setJerryHistory(prev => {
         // Juice traps (any pick type)
         if (o != null && o <= -250) stake = stake / 2;
         else if (o != null && o >= 250) stake = stake / 2;
-        // ML regime traps (side ML close price when we know the side)
+        // ML regime traps (wider band per 8/18 baseline: heavy fav -180+, mod dog +150+)
         if (opts.type === 'ml' && opts.sidePriceAmerican != null) {
           const ml = opts.sidePriceAmerican;
-          if (ml <= -200 || ml >= 200) stake = stake / 2;
+          if (ml <= -180 || ml >= 150) stake = stake / 2;
         }
         // Batter hits O 0.5 with -200+ juice — documented trap
         if (opts.prop_type && /^hits_over$/.test(opts.prop_type) && o != null && o <= -200) {
@@ -14221,10 +14225,10 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             </Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14,marginTop:10,flexWrap:'wrap'}}>
               {[
-                {id:'lines',label:'🌊 Lines'},
-                {id:'ladder',label:'🪜 Ladder'},
-                {id:'sharp',label:'🎯 Sharp'},
-                {id:'ledger',label:'🧾 Ledger'},
+                {id:'lines',label:'🌊 The Lines'},
+                {id:'ladder',label:'🪜 The Ladder'},
+                {id:'sharp',label:'🎯 The Sharp'},
+                {id:'ledger',label:'🧾 The Ledger'},
               ].map(s => (
                 <TouchableOpacity key={s.id}
                   onPress={()=>setSteamSubTab(s.id as any)}
