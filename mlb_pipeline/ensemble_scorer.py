@@ -420,6 +420,15 @@ def _handler_scenario(source_row: dict, ctx: dict) -> list[Opinion]:
         hr = m.get('hit_rate')
         try: hr = float(hr) / 100.0 if hr is not None else None
         except (TypeError, ValueError): hr = None
+        # 2026-08-18 BUG FIX: when back_or_fade=FADE we invert the SIDE (above)
+        # but were NOT inverting the hit_rate. Result: a "FADE Cards at 37% HR"
+        # produced (side=HOME_ML, hit_rate=0.37) — edge_weight(0.37, ...) returns
+        # 0 because 0.37 is below breakeven, so every FADE scenario silently
+        # contributed 0 to the ensemble. Real edge on the inverted side is
+        # 1.0 - 0.37 = 0.63 → edge_weight ~0.58 → real contribution.
+        # This affected every FADE scenario across every sport.
+        if invert and hr is not None:
+            hr = 1.0 - hr
         n = int(m.get('n') or 0)
         confidence = m.get('hint_confidence') or 50
         strength = min(float(confidence) / 100.0, 1.0)
@@ -657,10 +666,14 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     runner_score = scored[1][1] if len(scored) > 1 else 0.0
     margin = win_score - runner_score
 
-    # No pick if below LEAN floor
-    lean_floor = lean_override if lean_override is not None else TIER_THRESHOLDS['LEAN']['min_score']
-    if win_score < lean_floor:
-        return _no_pick(market, ctx)
+    # 2026-08-17: LEAN floor gate REMOVED. Ensemble must publish an opinion
+    # on every game (Jerry-picks-every-game architecture — see
+    # [[project-jerry-vs-sharp-card-817]]). Sharp Card filters PRIME/STRONG
+    # only downstream. Fallback to legacy compute_primary_play only fires
+    # when the opinion pool is literally empty (per_side dict was empty
+    # → returned _no_pick above), NOT because signal strength was weak.
+    # lean_override kept as informational (no longer gates PASS).
+    _ = lean_override  # unused post-8/17 but preserved for future tightening
 
     # Tier assignment: must clear score, class count, AND margin
     tier = 'LEAN'
