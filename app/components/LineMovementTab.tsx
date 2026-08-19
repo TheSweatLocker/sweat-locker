@@ -107,11 +107,15 @@ export default function LineMovementTab({
     return ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NBA', 'NHL'];
   }, []);
 
-  // Group flags per (game, market)
+  // 2026-08-18: consolidate — group by GAME (was game::market). Prior
+  // grouping produced two cards for one game when both ML and RL fired,
+  // and the two often pointed opposite ways (Athletics ML + Royals RL).
+  // Now: one card per game, showing all market flags together, with the
+  // strongest classification featured as the lead + others chipped below.
   const groups = React.useMemo(() => {
     const g: Record<string, any[]> = {};
     flags.forEach((f: any) => {
-      const key = `${f.game_id}::${f.market}`;
+      const key = f.game_id;
       (g[key] = g[key] || []).push(f);
     });
     return g;
@@ -148,17 +152,10 @@ export default function LineMovementTab({
     const entries = Object.entries(groups);
     const triples = entries.filter(([, gs]) => gs.some((f: any) => String(f.classification || '').endsWith('_TRIPLE_CONFIRMED')));
     const confirmed = entries.filter(([, gs]) => gs.some((f: any) => String(f.classification || '').endsWith('_CONFIRMED') && !String(f.classification || '').endsWith('_TRIPLE_CONFIRMED')));
-    const seen = new Set<string>();
-    const dedup: any[] = [];
-    for (const entry of [...triples, ...confirmed]) {
-      const [key] = entry as [string, any[]];
-      const gid = key.split('::')[0];
-      if (seen.has(gid)) continue;
-      seen.add(gid);
-      dedup.push(entry);
-      if (dedup.length >= 3) break;
-    }
-    return dedup;
+    // 2026-08-18: groups now keyed by game_id (post-consolidation), so
+    // dedupe is implicit — one entry per game already. Still slice to
+    // the top 3 by tier rank.
+    return [...triples, ...confirmed].slice(0, 3);
   }, [groups]);
 
   if (loading) {
@@ -234,14 +231,21 @@ export default function LineMovementTab({
         </View>
       ) : (
         <View style={{gap: 10}}>
-          {filteredGroups.slice(0, 20).map(([key, gs]: any) => (
-            <LineMovementCard key={key} groupKey={key} flags={gs}
-              sample={historySample[key] || []}
-              picks={picksIdx[gs[0].game_id]}
-              rawSigs={rawSigsIdx?.[gs[0].game_id]}
-              sourceRecordIdx={sourceRecordIdx}
-              onTap={onTapGame} />
-          ))}
+          {filteredGroups.slice(0, 20).map(([key, gs]: any) => {
+            // 2026-08-18: groups are per-game now — historySample is still
+            // keyed per game+market so merge all markets' samples for this game
+            const merged = Object.entries(historySample)
+              .filter(([k]) => k.startsWith(key + '::'))
+              .flatMap(([, arr]) => arr);
+            return (
+              <LineMovementCard key={key} groupKey={key} flags={gs}
+                sample={merged}
+                picks={picksIdx[gs[0].game_id]}
+                rawSigs={rawSigsIdx?.[gs[0].game_id]}
+                sourceRecordIdx={sourceRecordIdx}
+                onTap={onTapGame} />
+            );
+          })}
         </View>
       )}
     </View>
@@ -353,9 +357,15 @@ function SharpMoneyChip({rawSigs, market}: {rawSigs?: {cleatz: any[]; fadereport
 }
 
 // ─── FULL LINE MOVEMENT CARD ────────────────────────────────────────
+// 2026-08-18: groupKey is now `game_id` (was `game_id::market`).
+// `flags` contains ALL market flags for this game — we feature the
+// strongest as the lead + chip the others below.
 function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawSigs, onTap}: any) {
   const first = flags[0];
-  const [gid, market] = groupKey.split('::');
+  const gid = groupKey;  // key is now just game_id
+  // `market` for the LEAD signal (extracted after strongest is picked below)
+  // — kept as `strongest.market` per usage sites so the section that renders
+  // per-source rows references the strongest signal's market.
   // 2026-08-18 fix: fall back to picks metadata when sample has no history
   // (some games flagged today have no line_history sample yet — showed as
   // "matchup pending sample" placeholder to users).
@@ -383,10 +393,14 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
     else { timeBadge = '⏸ LIVE / STARTED'; timeIsHot = true; }
   }
 
-  // Identify the strongest classification for the lead signal
+  // Identify the strongest classification across ALL markets for this game
   const strongest = flags.find((f: any) => String(f.classification || '').endsWith('_TRIPLE_CONFIRMED'))
                  || flags.find((f: any) => String(f.classification || '').endsWith('_CONFIRMED'))
                  || flags[0];
+  // Market for the LEAD signal (used by sourceRecordIdx lookups + header render)
+  const market = String(strongest.market || 'ml');
+  // Other markets flagged for this game (rendered as secondary chips)
+  const otherFlags = flags.filter((f: any) => f !== strongest && f.market !== strongest.market);
   const strongCls = String(strongest.classification || '');
   const isTriple = strongCls.endsWith('_TRIPLE_CONFIRMED');
   const isConfirmed = strongCls.endsWith('_CONFIRMED');
@@ -512,6 +526,46 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
         </Text>
       </View>
       <Text style={{color: T.textDim, fontSize: 11, lineHeight: 15, marginBottom: 10}}>{strongest.detail}</Text>
+
+      {/* 2026-08-18 consolidation: chip other markets flagged on this
+          same game. E.g., lead is ML sharp on Athletics, chip below
+          shows RL public-side on Royals too — user sees the full picture
+          instead of two conflicting cards. */}
+      {otherFlags.length > 0 && (
+        <View style={{flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginBottom: 10}}>
+          <Text style={{color: T.textMuted, fontSize: 9, fontWeight: '700', letterSpacing: 0.5, alignSelf: 'center'}}>
+            ALSO ON THIS GAME:
+          </Text>
+          {otherFlags.map((f: any, idx: number) => {
+            const fCls = String(f.classification || '');
+            const fFamily = fCls.startsWith('SHARP_MOVE') ? 'sharp'
+                          : fCls.startsWith('RLM') ? 'rlm'
+                          : fCls.startsWith('PUBLIC_MOVE') ? 'public'
+                          : 'other';
+            const fColor = fFamily === 'sharp' ? T.sharp
+                         : fFamily === 'rlm' ? T.accent
+                         : fFamily === 'public' ? T.loss
+                         : T.textMuted;
+            const fInvert = fCls.startsWith('RLM') || fCls.startsWith('PUBLIC_MOVE');
+            const fSideRaw = String(f.side || '').toUpperCase();
+            const fSide = fInvert
+              ? (fSideRaw === 'HOME' ? 'AWAY' : fSideRaw === 'AWAY' ? 'HOME'
+                 : fSideRaw === 'OVER' ? 'UNDER' : fSideRaw === 'UNDER' ? 'OVER' : fSideRaw)
+              : fSideRaw;
+            const fMkt = String(f.market || '').toUpperCase();
+            return (
+              <View key={idx} style={{
+                backgroundColor: fColor + '18', paddingHorizontal: 6, paddingVertical: 2,
+                borderRadius: 4, borderWidth: 0.5, borderColor: fColor + '55',
+              }}>
+                <Text style={{color: fColor, fontSize: 9, fontWeight: '700'}}>
+                  {fMkt} → {teamForSide(fSide)}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      )}
 
       {/* 2026-08-18: unbranded sharp $ readout (aggregates cleatz + fadereport
           per feedback_brand_attribution_803 — no source names in user copy) */}
