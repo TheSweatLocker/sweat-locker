@@ -200,7 +200,7 @@ export default function LineMovementTab({
               <StrongestSignalCard key={key} groupKey={key} flags={gs}
                 sample={historySample[key] || []}
                 picks={picksIdx[gs[0].game_id]}
-                onTap={(matchup, sport, gid) => onTapGame(matchup, sport, gid)} />
+                onTap={(matchup: string, sport: string, gid: string) => onTapGame(matchup, sport, gid)} />
             ))}
           </ScrollView>
         </View>
@@ -265,7 +265,7 @@ function FilterPill({label, active, onPress}: {label: string; active: boolean; o
 }
 
 // ─── STRONGEST SIGNAL CARD (horizontal strip) ───────────────────────
-function StrongestSignalCard({groupKey, flags, sample, picks, onTap}: any) {
+function StrongestSignalCard({flags, sample, onTap}: any) {
   const first = flags[0];
   const matchup = sample[0]?.matchup || '';
   const [awayTeam, homeTeam] = matchup.includes(' @ ') ? matchup.split(' @ ').map((s: string) => s.trim()) : ['', ''];
