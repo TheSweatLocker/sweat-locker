@@ -1856,6 +1856,8 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   // all sports. User can edit legs (Phase 2).
   const [ledgerSuggestions, setLedgerSuggestions] = useState<any[]>([]);
   const [ledgerLoading, setLedgerLoading] = useState(false);
+  // 2026-08-18: transparency parity with Sharp Card — MTD + prev-month record
+  const [ledgerRecord, setLedgerRecord] = useState<{w:number,l:number,p:number,unitsNet:number,wPrev:number,lPrev:number,pPrev:number,unitsNetPrev:number}>({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0});
   const [steamFlags, setSteamFlags] = useState<any[]>([]);
   const [steamHistorySample, setSteamHistorySample] = useState<Record<string, any[]>>({});
   const [steamPicksIdx, setSteamPicksIdx] = useState<Record<string, {primary:any, supplementary:any}>>({});
@@ -8741,15 +8743,39 @@ setJerryHistory(prev => {
   const fetchLedger = React.useCallback(async () => {
     setLedgerLoading(true);
     try {
-      // 2026-08-18: use ET, not UTC (same fix as fetchSharpTab).
       const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
-      const {data} = await supabase
-        .from('ledger_suggestions')
-        .select('id,kind,sport_scope,legs,combined_odds,combined_prob,reasoning,rank,auto_generated')
-        .eq('game_date', today)
-        .order('rank', {ascending: true});
-      setLedgerSuggestions(data || []);
-    } catch (e) { setLedgerSuggestions([]); }
+      // Suggestions + record fetched in parallel
+      const nowD = new Date();
+      const curMonthStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().slice(0,10);
+      const prevMonthStart = new Date(nowD.getFullYear(), nowD.getMonth()-1, 1).toISOString().slice(0,10);
+      const prevMonthEnd = new Date(nowD.getFullYear(), nowD.getMonth(), 0).toISOString().slice(0,10);
+
+      const [{data: suggs}, {data: snaps}] = await Promise.all([
+        supabase.from('ledger_suggestions')
+          .select('id,kind,sport_scope,legs,combined_odds,combined_prob,reasoning,rank,auto_generated')
+          .eq('game_date', today)
+          .order('rank', {ascending: true}),
+        // Historical W/L from ledger_snapshots (populated by grade_ledger_snapshots)
+        supabase.from('ledger_snapshots')
+          .select('game_date,result,unit_pnl')
+          .gte('game_date', prevMonthStart)
+          .not('result','is',null),
+      ]);
+      setLedgerSuggestions(suggs || []);
+      // Tally record
+      let w=0,l=0,p=0,unitsNet=0, wPrev=0,lPrev=0,pPrev=0,unitsNetPrev=0;
+      (snaps || []).forEach((s: any) => {
+        const gd = s.game_date || '';
+        const cur = gd >= curMonthStart;
+        const prev = !cur && gd >= prevMonthStart && gd <= prevMonthEnd;
+        const pnl = Number(s.unit_pnl) || 0;
+        if (s.result === 'W') { if (cur) { w++; unitsNet += pnl; } else if (prev) { wPrev++; unitsNetPrev += pnl; } }
+        else if (s.result === 'L') { if (cur) { l++; unitsNet += pnl; } else if (prev) { lPrev++; unitsNetPrev += pnl; } }
+        else if (s.result === 'Push') { if (cur) p++; else if (prev) pPrev++; }
+      });
+      setLedgerRecord({w,l,p, unitsNet: Math.round(unitsNet*100)/100,
+                       wPrev,lPrev,pPrev, unitsNetPrev: Math.round(unitsNetPrev*100)/100});
+    } catch (e) { setLedgerSuggestions([]); setLedgerRecord({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0}); }
     setLedgerLoading(false);
   }, []);
 
@@ -14585,22 +14611,82 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/></View>
                 ) : (
                   <View style={{gap:12}}>
+                    {/* 2026-08-18: Ledger record card — MTD + prev-month, parity with The Sharp */}
+                    <View style={[styles.card, {padding:14}]}>
+                      {(() => {
+                        const r = ledgerRecord;
+                        const total = r.w + r.l;
+                        const totalPrev = r.wPrev + r.lPrev;
+                        const hitPct = total > 0 ? Math.round(1000 * r.w / total) / 10 : 0;
+                        const hitPctPrev = totalPrev > 0 ? Math.round(1000 * r.wPrev / totalPrev) / 10 : 0;
+                        const uColor = r.unitsNet > 0 ? THEME.win : r.unitsNet < 0 ? THEME.loss : THEME.textDim;
+                        const uColorPrev = r.unitsNetPrev > 0 ? THEME.win : r.unitsNetPrev < 0 ? THEME.loss : THEME.textDim;
+                        const monthName = new Date().toLocaleDateString('en-US', {month: 'long'});
+                        const prevMonthName = new Date(new Date().setMonth(new Date().getMonth()-1)).toLocaleDateString('en-US', {month: 'long'});
+                        return (
+                          <View style={{gap:10}}>
+                            <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1}}>
+                              {monthName.toUpperCase()} · 1u PER COMBO · MONTH-TO-DATE
+                            </Text>
+                            <View style={{gap:6}}>
+                              <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                                <Text style={{color:THEME.textDim, fontSize:12}}>Record</Text>
+                                <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
+                                  {r.w}-{r.l}{r.p ? ` (${r.p}P)` : ''}
+                                  {total > 0 && <Text style={{color:THEME.textDim, fontWeight:'500'}}> · {hitPct}%</Text>}
+                                </Text>
+                              </View>
+                              <View style={{flexDirection:'row', justifyContent:'space-between'}}>
+                                <Text style={{color:THEME.textDim, fontSize:12}}>Units Net</Text>
+                                <Text style={{color:uColor, fontWeight:'800', fontSize:15}}>
+                                  {r.unitsNet > 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u
+                                </Text>
+                              </View>
+                            </View>
+                            <View style={{height:0.5, backgroundColor:THEME.border + '55', marginVertical:4}} />
+                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
+                              <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.5}}>
+                                {prevMonthName.toUpperCase()} · FINAL
+                              </Text>
+                              {totalPrev > 0 ? (
+                                <Text style={{color:THEME.text, fontSize:11}}>
+                                  <Text style={{color:THEME.textDim}}>{r.wPrev}-{r.lPrev}{r.pPrev ? `-${r.pPrev}` : ''} · </Text>
+                                  <Text style={{color:uColorPrev, fontWeight:'700'}}>
+                                    {r.unitsNetPrev > 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u
+                                  </Text>
+                                  <Text style={{color:THEME.textDim}}> · {hitPctPrev}%</Text>
+                                </Text>
+                              ) : (
+                                <Text style={{color:THEME.textDim, fontSize:11, fontStyle:'italic'}}>no data yet</Text>
+                              )}
+                            </View>
+                          </View>
+                        );
+                      })()}
+                    </View>
+
                     {ledgerSuggestions.length === 0 ? (
                       <View style={[styles.card, {padding:20, alignItems:'center'}]}>
                         <Text style={{fontSize:36}}>🧾</Text>
                         <Text style={{color:THEME.text, fontWeight:'800', fontSize:14, marginTop:10, textAlign:'center'}}>No combos today</Text>
                         <Text style={{color:THEME.textDim, fontSize:11, marginTop:6, textAlign:'center', lineHeight:16, paddingHorizontal:20}}>
-                          The Ledger auto-suggests chalk parlays + teasers from today&apos;s ensemble picks. Some slates don&apos;t have the right mix — check back tomorrow.
+                          The Ledger auto-suggests chalk trios + teased combos from today&apos;s ensemble picks. Some slates don&apos;t have the right mix — check back tomorrow.
                         </Text>
                       </View>
                     ) : ledgerSuggestions.map((s: any, i: number) => {
-                      const kindColor = s.kind === 'chalk_parlay' ? THEME.win : THEME.accent;
-                      const kindLabel = s.kind === 'chalk_parlay' ? '🏆 CHALK PARLAY' : '🎯 TEASER';
+                      // 2026-08-18: expanded kind map for new combo types
+                      const KIND_META: Record<string, {label: string; color: string}> = {
+                        'chalk_parlay':          {label: '🏆 CHALK TRIO',          color: THEME.win},
+                        'teased_totals_combo':   {label: '📊 TEASED TOTALS COMBO', color: THEME.accent},
+                        'teased_spreads_combo':  {label: '📐 TEASED SPREADS COMBO', color: THEME.hrb},
+                        'teaser':                {label: '🎯 TEASER',              color: THEME.accent},
+                      };
+                      const meta = KIND_META[s.kind] || {label: (s.kind || 'COMBO').toUpperCase(), color: THEME.textMuted};
                       const oddsFmt = s.combined_odds > 0 ? `+${s.combined_odds}` : `${s.combined_odds}`;
                       return (
-                        <View key={i} style={[styles.card, {padding:14, borderLeftWidth:3, borderLeftColor: kindColor}]}>
+                        <View key={i} style={[styles.card, {padding:14, borderLeftWidth:3, borderLeftColor: meta.color}]}>
                           <View style={{flexDirection:'row', alignItems:'center', gap:8, marginBottom:8}}>
-                            <Text style={{color: kindColor, fontSize:10, fontWeight:'800', letterSpacing:1}}>{kindLabel}</Text>
+                            <Text style={{color: meta.color, fontSize:10, fontWeight:'800', letterSpacing:1}}>{meta.label}</Text>
                             <Text style={{color:THEME.textMuted, fontSize:10}}>· {s.sport_scope}</Text>
                             <Text style={{color: THEME.win, fontWeight:'800', fontSize:16, marginLeft:'auto'}}>{oddsFmt}</Text>
                           </View>
@@ -14608,16 +14694,27 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                             {(s.legs || []).map((leg: any, j: number) => {
                               const legOdds = leg.teased_odds ?? leg.original_odds;
                               const legOddsFmt = legOdds > 0 ? `+${legOdds}` : `${legOdds}`;
+                              const isBook = leg.price_source === 'book';
                               return (
                                 <View key={j} style={{flexDirection:'row', alignItems:'center', gap:6}}>
                                   <Text style={{color:THEME.textDim, fontSize:11, width:14}}>{j+1}.</Text>
                                   <View style={{flex:1}}>
-                                    <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
-                                      {leg.pick}
+                                    <View style={{flexDirection:'row', alignItems:'baseline', gap:6, flexWrap:'wrap'}}>
+                                      <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
+                                        {leg.pick}
+                                        {leg.teased_line != null && (
+                                          <Text style={{color:THEME.accent, fontWeight:'700'}}> → {leg.teased_line}</Text>
+                                        )}
+                                      </Text>
+                                      {/* 2026-08-18: book-vs-estimator provenance badge on teased legs */}
                                       {leg.teased_line != null && (
-                                        <Text style={{color:THEME.accent, fontWeight:'700'}}> → {leg.teased_line}</Text>
+                                        <View style={{backgroundColor: (isBook ? THEME.win : THEME.textMuted) + '22', paddingHorizontal:4, paddingVertical:1, borderRadius:3}}>
+                                          <Text style={{color: isBook ? THEME.win : THEME.textMuted, fontSize:8, fontWeight:'800', letterSpacing:0.3}}>
+                                            {isBook ? 'BOOK' : 'EST'}
+                                          </Text>
+                                        </View>
                                       )}
-                                    </Text>
+                                    </View>
                                     <Text style={{color:THEME.textDim, fontSize:10}} numberOfLines={1}>{leg.matchup}</Text>
                                   </View>
                                   <Text style={{color:THEME.textMuted, fontWeight:'700', fontSize:11}}>{legOddsFmt}</Text>
