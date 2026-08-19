@@ -14261,7 +14261,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             </Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14,marginTop:10,flexWrap:'wrap'}}>
               {[
-                {id:'lines',label:'💦 The Split'},
+                {id:'lines',label:'📊 The Split'},
                 {id:'ladder',label:'🪜 The Ladder'},
                 {id:'sharp',label:'🎯 The Sharp'},
                 {id:'ledger',label:'🧾 The Ledger'},

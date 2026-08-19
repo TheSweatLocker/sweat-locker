@@ -141,11 +141,24 @@ export default function LineMovementTab({
   }, [groups, sportFilter, tierFilter]);
 
   const topSignals = React.useMemo(() => {
-    // Strongest 3 groups from the unfiltered pool, TRIPLE-preferred
+    // 2026-08-18: dedupe by game_id so the top strip doesn't show the
+    // SAME game twice (once as ML sharp side, once as RL — was confusing
+    // users who saw "OAK away" in top strip vs "KC home" in list below).
+    // Now: for each game, pick its strongest market signal for the strip.
     const entries = Object.entries(groups);
     const triples = entries.filter(([, gs]) => gs.some((f: any) => String(f.classification || '').endsWith('_TRIPLE_CONFIRMED')));
     const confirmed = entries.filter(([, gs]) => gs.some((f: any) => String(f.classification || '').endsWith('_CONFIRMED') && !String(f.classification || '').endsWith('_TRIPLE_CONFIRMED')));
-    return [...triples, ...confirmed].slice(0, 3);
+    const seen = new Set<string>();
+    const dedup: any[] = [];
+    for (const entry of [...triples, ...confirmed]) {
+      const [key, gs] = entry as [string, any[]];
+      const gid = key.split('::')[0];
+      if (seen.has(gid)) continue;
+      seen.add(gid);
+      dedup.push(entry);
+      if (dedup.length >= 3) break;
+    }
+    return dedup;
   }, [groups]);
 
   if (loading) {
