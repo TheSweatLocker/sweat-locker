@@ -2950,6 +2950,23 @@ if(r.data && r.data.data) {
     LIGHT:      {label:'👀 LIGHT LEAN',  color:THEME.push},
     PASS:       {label:'❌ PASS',        color:THEME.textMuted},
   } as const;
+  // 2026-08-18: sweat_tier fallback cutoffs — sourced from sweat_tier_config
+  // (singleton row, migration 20260818_sweat_tier_config.sql). Kills the
+  // 80/65/50 hardcode so calibration shifts don't need an App Store resubmit.
+  // Defaults match prior hardcode in case fetch fails (offline / RLS blip).
+  const [sweatCutoffs, setSweatCutoffs] = useState<{prime:number,strong:number,light:number}>({prime:80,strong:65,light:50});
+  useEffect(() => {
+    (async () => {
+      try {
+        const {data} = await supabase.from('sweat_tier_config').select('prime_cutoff,strong_cutoff,light_cutoff').eq('id', 1).maybeSingle();
+        if (data) setSweatCutoffs({
+          prime: data.prime_cutoff ?? 80,
+          strong: data.strong_cutoff ?? 65,
+          light: data.light_cutoff ?? 50,
+        });
+      } catch { /* fall through to defaults */ }
+    })();
+  }, []);
   const getSweatTier = (score, serverTier?: string) => {
     // Prefer server tier when provided — MLB games ship sweat_tier in
     // mlb_game_context (computed by play_of_day._sweat_tier with full
@@ -2958,9 +2975,9 @@ if(r.data && r.data.data) {
     if(serverTier && SWEAT_TIER_DISPLAY[serverTier]) {
       return SWEAT_TIER_DISPLAY[serverTier];
     }
-    if(score >= 80) return SWEAT_TIER_DISPLAY.PRIME;
-    if(score >= 65) return SWEAT_TIER_DISPLAY.STRONG;
-    if(score >= 50) return SWEAT_TIER_DISPLAY.LIGHT;
+    if(score >= sweatCutoffs.prime)  return SWEAT_TIER_DISPLAY.PRIME;
+    if(score >= sweatCutoffs.strong) return SWEAT_TIER_DISPLAY.STRONG;
+    if(score >= sweatCutoffs.light)  return SWEAT_TIER_DISPLAY.LIGHT;
     return SWEAT_TIER_DISPLAY.PASS;
   };
 
