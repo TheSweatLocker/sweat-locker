@@ -8392,14 +8392,20 @@ setJerryHistory(prev => {
       try {
         const uniqueGids = Array.from(new Set(flags.map((f:any) => f.game_id))).slice(0, 40);
         if (uniqueGids.length) {
+          // 2026-08-18: include away_team/home_team so LineMovementCard has
+          // a matchup fallback when line_history sample is empty (some
+          // flagged games rendered as "matchup pending sample" placeholder).
+          // Also pull commence_time for the time-badge fallback.
           const {data: ourPicks} = await supabase
             .from('mlb_game_context')
-            .select('game_id,primary_play,supplementary_play')
+            .select('game_id,away_team,home_team,commence_time,primary_play,supplementary_play')
             .in('game_id', uniqueGids);
           const picksIdx: Record<string, any> = {};
           (ourPicks || []).forEach((row: any) => {
             picksIdx[row.game_id] = {
-              primary: row.primary_play, supplementary: row.supplementary_play
+              primary: row.primary_play, supplementary: row.supplementary_play,
+              away_team: row.away_team, home_team: row.home_team,
+              commence_time: row.commence_time,
             };
           });
           setSteamPicksIdx(picksIdx);
@@ -14255,7 +14261,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             </Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14,marginTop:10,flexWrap:'wrap'}}>
               {[
-                {id:'lines',label:'🌊 The Lines'},
+                {id:'lines',label:'💦 The Split'},
                 {id:'ladder',label:'🪜 The Ladder'},
                 {id:'sharp',label:'🎯 The Sharp'},
                 {id:'ledger',label:'🧾 The Ledger'},

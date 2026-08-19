@@ -99,11 +99,13 @@ export default function LineMovementTab({
     return idx;
   }, [sourceRecords]);
 
+  // 2026-08-18 fix: don't derive sports from flags (would collapse to
+  // only MLB on days when other sports have no flagged games). Use a
+  // fixed list of live sports; filter still applies to whatever flags
+  // are in-window, so an empty NFL filter shows the "no matches" state.
   const availableSports = React.useMemo(() => {
-    const set = new Set<string>();
-    flags.forEach(f => f.sport && set.add(f.sport));
-    return Array.from(set);
-  }, [flags]);
+    return ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NBA', 'NHL'];
+  }, []);
 
   // Group flags per (game, market)
   const groups = React.useMemo(() => {
@@ -295,41 +297,60 @@ function StrongestSignalCard({groupKey, flags, sample, picks, onTap}: any) {
   );
 }
 
-// ─── PER-SOURCE SHARP $ CHIPS (2026-08-18) ──────────────────────────
-// Render inline chips showing raw sharp/handle divergence per source
-// so the user sees WHY line_movement_flags classified this game as
-// sharp/RLM/public (instead of trusting the aggregated label alone).
-function RawSigsChips({rawSigs, market}: {rawSigs?: {cleatz: any[]; fadereport: any[]}; market: string}) {
+// ─── SHARP $ SUMMARY CHIP (2026-08-18) ──────────────────────────────
+// Aggregates raw source rows into an UNBRANDED sharp$ readout. Per
+// feedback_brand_attribution_803 we don't expose data-provider names
+// in user-facing UI. Instead we show the number: sharp is on this side
+// with N% of the money vs M% of the bets → divergence Xpp. Uses the
+// strongest source per market so users see the peak signal, not the
+// average.
+function SharpMoneyChip({rawSigs, market}: {rawSigs?: {cleatz: any[]; fadereport: any[]}; market: string}) {
   if (!rawSigs) return null;
-  const cleatzMatch = (rawSigs.cleatz || []).find(c => String(c.market).toLowerCase() === market.toLowerCase());
-  const fadeMatch = (rawSigs.fadereport || []).find(f => String(f.market).toLowerCase() === market.toLowerCase());
-  if (!cleatzMatch && !fadeMatch) return null;
+  const mkt = market.toLowerCase();
+  const cleatzMatch = (rawSigs.cleatz || []).find((c: any) => String(c.market).toLowerCase() === mkt);
+  const fadeMatch = (rawSigs.fadereport || []).find((f: any) => String(f.market).toLowerCase() === mkt);
+  // Normalize both into a common shape then pick the one with biggest divergence
+  const c1 = cleatzMatch ? {
+    side: cleatzMatch.sharp_side_norm,
+    money: cleatzMatch.sharp_handle_pct,
+    bets: cleatzMatch.sharp_bets_pct,
+    div: cleatzMatch.divergence,
+  } : null;
+  const c2 = fadeMatch ? {
+    side: fadeMatch.sharp_side_norm,
+    money: fadeMatch.money_side_pct,
+    bets: fadeMatch.bets_side_pct,
+    div: (fadeMatch.money_side_pct != null && fadeMatch.bets_side_pct != null)
+      ? Math.abs(fadeMatch.money_side_pct - fadeMatch.bets_side_pct) : 0,
+  } : null;
+  const best = [c1, c2].filter(Boolean).sort((a: any, b: any) => (b.div || 0) - (a.div || 0))[0] as any;
+  if (!best || best.money == null || best.bets == null) return null;
+  const sideDisp = String(best.side || '').toUpperCase();
   return (
-    <View style={{flexDirection: 'row', gap: 6, marginTop: 6, flexWrap: 'wrap'}}>
-      {cleatzMatch && (
-        <View style={{backgroundColor: T.sharp + '18', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, borderWidth: 0.5, borderColor: T.sharp + '55'}}>
-          <Text style={{color: T.sharp, fontSize: 9, fontWeight: '700'}}>
-            🎯 cleatz {String(cleatzMatch.sharp_side_norm).toUpperCase()} · {cleatzMatch.sharp_handle_pct}% $ vs {cleatzMatch.sharp_bets_pct}% bets (div {cleatzMatch.divergence})
-          </Text>
-        </View>
-      )}
-      {fadeMatch && (
-        <View style={{backgroundColor: T.hrb + '18', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, borderWidth: 0.5, borderColor: T.hrb + '55'}}>
-          <Text style={{color: T.hrb, fontSize: 9, fontWeight: '700'}}>
-            📈 fadereport {String(fadeMatch.sharp_side_norm).toUpperCase()} · {fadeMatch.money_side_pct}% $ vs {fadeMatch.bets_side_pct}% bets · {String(fadeMatch.strength_tier || '').toUpperCase()}
-          </Text>
-        </View>
-      )}
+    <View style={{marginTop: 6, backgroundColor: T.sharp + '14', borderRadius: 6,
+      paddingHorizontal: 8, paddingVertical: 4, borderWidth: 0.5, borderColor: T.sharp + '55',
+      alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 4}}>
+      <Text style={{fontSize: 10}}>💰</Text>
+      <Text style={{color: T.sharp, fontSize: 10, fontWeight: '700'}}>
+        Sharp $ on {sideDisp} — {best.money}% money vs {best.bets}% bets
+        {best.div ? ` · +${best.div}pp divergence` : ''}
+      </Text>
     </View>
   );
 }
 
 // ─── FULL LINE MOVEMENT CARD ────────────────────────────────────────
-function LineMovementCard({flags, sample, sourceRecordIdx, rawSigs, onTap}: any) {
+function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawSigs, onTap}: any) {
   const first = flags[0];
   const [gid, market] = groupKey.split('::');
-  const matchup = sample[0]?.matchup || '';
-  const commence = sample[0]?.commence_time;
+  // 2026-08-18 fix: fall back to picks metadata when sample has no history
+  // (some games flagged today have no line_history sample yet — showed as
+  // "matchup pending sample" placeholder to users).
+  const matchupRaw = sample[0]?.matchup || '';
+  const matchupFromPicks = picks && picks.away_team && picks.home_team
+    ? `${picks.away_team} @ ${picks.home_team}` : '';
+  const matchup = matchupRaw || matchupFromPicks;
+  const commence = sample[0]?.commence_time || picks?.commence_time;
   const [awayTeam, homeTeam] = matchup.includes(' @ ') ? matchup.split(' @ ').map((s: string) => s.trim()) : ['', ''];
   const teamForSide = (side: string): string => {
     const s = String(side).toLowerCase();
@@ -476,8 +497,9 @@ function LineMovementCard({flags, sample, sourceRecordIdx, rawSigs, onTap}: any)
       </View>
       <Text style={{color: T.textDim, fontSize: 11, lineHeight: 15, marginBottom: 10}}>{strongest.detail}</Text>
 
-      {/* 2026-08-18: raw per-source sharp$ chips (cleatz + fadereport) */}
-      <RawSigsChips rawSigs={rawSigs} market={String(strongest.market)} />
+      {/* 2026-08-18: unbranded sharp $ readout (aggregates cleatz + fadereport
+          per feedback_brand_attribution_803 — no source names in user copy) */}
+      <SharpMoneyChip rawSigs={rawSigs} market={String(strongest.market)} />
 
       {/* ── SOURCE AGREEMENT + TRACK RECORDS (the "how do we know?" answer) ── */}
       {perSourceRows.length > 0 && (
