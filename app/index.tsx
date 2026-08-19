@@ -8619,12 +8619,14 @@ setJerryHistory(prev => {
       // ── TODAY'S PICKS ──
       const mlbSidePicks = (mlbCtx || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).map((g: any) => {
         const pp = g.primary_play || {};
-        // Resolve which side's ML price is relevant to trap check
         const sideML = pp.side === 'HOME' ? g.home_ml_close : pp.side === 'AWAY' ? g.away_ml_close : null;
         return {
           sport: 'MLB', matchup: `${g.away_team} @ ${g.home_team}`,
           tier: pp.tier, pick: pp.label || '—',
           type: pp.type || 'ml', reason: pp.sub || '',
+          // 2026-08-18: attach the actual odds so the play card can render them
+          odds: pp.type === 'ml' ? sideML : null,
+          line: pp.line ?? g.close_spread ?? g.close_total,
           units: unitsForPick({tier: pp.tier, type: pp.type || 'ml', sidePriceAmerican: sideML}),
         };
       });
@@ -8647,18 +8649,16 @@ setJerryHistory(prev => {
         const pbKey = `${p.player_name}|${p.prop_type}|${p.direction}|${p.prop_line}`;
         const pb = playbookByKey[pbKey];
         const effectiveTier = resolveTier(p.tier, pb?.playbook_tier);
-        // Direction-specific book odds (fallback null → unitsForPick returns 0)
         const propOdds = p.direction === 'over' ? p.book_over_odds : p.book_under_odds;
         return {
           sport: 'MLB', matchup: p.matchup || '—', tier: effectiveTier,
-          pick: `${p.player_name} ${p.direction === 'over' ? 'Over' : 'Under'} ${p.prop_line} ${p.prop_type?.split('_')[0]?.toUpperCase()}${p.book_line != null ? `  (${p.book_line > 0 ? '+' : ''}${p.book_line})` : ''}`,
+          pick: `${p.player_name} ${p.direction === 'over' ? 'Over' : 'Under'} ${p.prop_line} ${p.prop_type?.split('_')[0]?.toUpperCase()}`,
           type: 'prop', reason: `conv=${p.refit_conviction ?? p.conviction}`,
+          odds: propOdds,
+          line: p.prop_line,
           units: unitsForPick({tier: effectiveTier, type: 'prop', prop_type: p.prop_type, odds: propOdds}),
-          // Track whether playbook lifted this pick — useful for debug + UI badge later
           playbook_lifted: PROP_PLAYBOOK_ENABLED && pb?.playbook_tier && effectiveTier !== p.tier,
         };
-      // Filter to PRIME/STRONG only for Sharp Card AND drop picks that got sized to 0u
-      // (NO ODDS captured — no accountability, don't ship)
       }).filter((pick: any) => isPS(pick.tier) && pick.units > 0);
       const otherPicks: any[] = [];
       for (const [sport, rows] of [['NFL', nflCtx], ['NCAAF', ncaafCtx], ['NCAAB', ncaabCtx]] as [string, any[]][]) {
@@ -8669,6 +8669,8 @@ setJerryHistory(prev => {
             sport, matchup: `${g.away_team} @ ${g.home_team}`,
             tier: pp.tier, pick: pp.label || '—',
             type: pp.type || 'ml', reason: pp.sub || '',
+            odds: pp.type === 'ml' ? sideML : null,
+            line: pp.line ?? null,
             units: unitsForPick({tier: pp.tier, type: pp.type || 'ml', sidePriceAmerican: sideML}),
           });
         });
@@ -14464,7 +14466,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           <View style={{gap:10}}>
                             {/* Current month header + tally */}
                             <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1}}>
-                              {monthName.toUpperCase()} · UNIT-WEIGHTED
+                              {monthName.toUpperCase()} · UNIT-WEIGHTED · MONTH-TO-DATE
                             </Text>
                             <View style={{gap:6}}>
                               <View style={{flexDirection:'row', justifyContent:'space-between'}}>
@@ -14475,7 +14477,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 </Text>
                               </View>
                               <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                                <Text style={{color:THEME.textDim, fontSize:12}}>Units net</Text>
+                                <Text style={{color:THEME.textDim, fontSize:12}}>Units Net</Text>
                                 <Text style={{color:unitsColor, fontWeight:'800', fontSize:15}}>
                                   {r.unitsNet > 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u
                                 </Text>
@@ -14492,7 +14494,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                             {/* Previous month recap */}
                             <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
                               <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.5}}>
-                                {prevMonthName.toUpperCase()} · final
+                                {prevMonthName.toUpperCase()} · FINAL
                               </Text>
                               {totalPrev > 0 ? (
                                 <Text style={{color:THEME.text, fontSize:11}}>
@@ -14533,7 +14535,14 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700'}}>{p.sport}</Text>
                               <Text style={{color:p.units >= 2 ? THEME.sharp : THEME.textMuted, fontWeight: p.units >= 2 ? '800' : '600', fontSize:10, marginLeft:'auto'}}>{p.units || 1}u</Text>
                             </View>
-                            <Text style={{color:THEME.text, fontWeight:'700', fontSize:14}}>{p.pick}</Text>
+                            <View style={{flexDirection:'row', alignItems:'baseline', gap:8, flexWrap:'wrap'}}>
+                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:14}}>{p.pick}</Text>
+                              {p.odds != null && (
+                                <Text style={{color: p.odds > 0 ? THEME.win : THEME.sharp, fontWeight:'800', fontSize:13}}>
+                                  {p.odds > 0 ? '+' : ''}{p.odds}
+                                </Text>
+                              )}
+                            </View>
                             <Text style={{color:THEME.textDim, fontSize:11, marginTop:2}} numberOfLines={1}>{p.matchup}</Text>
                             {p.reason && (
                               <Text style={{color:THEME.textMuted, fontSize:10, marginTop:4, lineHeight:14}} numberOfLines={2}>{p.reason}</Text>
