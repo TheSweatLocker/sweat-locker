@@ -151,7 +151,7 @@ export default function LineMovementTab({
     const seen = new Set<string>();
     const dedup: any[] = [];
     for (const entry of [...triples, ...confirmed]) {
-      const [key, gs] = entry as [string, any[]];
+      const [key] = entry as [string, any[]];
       const gid = key.split('::')[0];
       if (seen.has(gid)) continue;
       seen.add(gid);
@@ -430,13 +430,17 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
   const ourSide = picks ? (pickSideFromPlay(picks.primary) || pickSideFromPlay(picks.supplementary)) : null;
   const alignment: 'aligns' | 'fades' | 'neutral' = !ourSide ? 'neutral' : (ourSide === sharpSide ? 'aligns' : 'fades');
 
-  // Per-source numbers with track-record lookup
+  // Per-source numbers with track-record lookup.
+  // 2026-08-18 (brand): render sources as generic numbered Splits with
+  // distinct colors instead of vendor names — feedback_brand_attribution_803.
+  const SPLIT_COLORS = [T.sharp, T.accent, T.hrb];  // Split 1/2/3
   const perSourceRows = React.useMemo(() => {
-    const rows: {source: string; label: string; pct: number; hitRate: number|null; n: number|null; window: number|null}[] = [];
+    const rows: {source: string; label: string; color: string; pct: number; hitRate: number|null; n: number|null; window: number|null}[] = [];
+    let idx = 0;
     if (strongest.money_pct != null || strongest.bets_pct != null) {
       const rec = sourceRecordIdx[`oddscrowd::${first.sport}::${market}`];
       rows.push({
-        source: 'OC', label: 'OddsCrowd',
+        source: 'S1', label: 'Split 1', color: SPLIT_COLORS[idx++ % 3],
         pct: strongest.money_pct ?? strongest.bets_pct,
         hitRate: rec?.hit_rate ?? null, n: rec?.n_graded ?? null, window: rec?.window_days ?? null,
       });
@@ -444,18 +448,17 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
     if (strongest.handle_pct != null || strongest.bettors_pct != null) {
       const rec = sourceRecordIdx[`fadereport::${first.sport}::${market}`];
       rows.push({
-        source: 'FR', label: 'Fadereport',
+        source: 'S2', label: 'Split 2', color: SPLIT_COLORS[idx++ % 3],
         pct: strongest.handle_pct ?? strongest.bettors_pct,
         hitRate: rec?.hit_rate ?? null, n: rec?.n_graded ?? null, window: rec?.window_days ?? null,
       });
     }
-    // Cleatz appears via TRIPLE_CONFIRMED classification (no dedicated pct
-    // columns yet) — surface source badge only if triple
+    // 3rd Split shows on TRIPLE_CONFIRMED (agreement badge, no numeric %)
     if (isTriple) {
       const rec = sourceRecordIdx[`cleatz::${first.sport}::${market}`];
       rows.push({
-        source: 'CZ', label: 'Cleatz',
-        pct: 0,  // no numeric %; rendered as agreement badge
+        source: 'S3', label: 'Split 3', color: SPLIT_COLORS[idx++ % 3],
+        pct: 0,
         hitRate: rec?.hit_rate ?? null, n: rec?.n_graded ?? null, window: rec?.window_days ?? null,
       });
     }
@@ -521,19 +524,21 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
         }}>
           <View style={{flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6}}>
             <Text style={{color: T.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 0.5}}>
-              SOURCE AGREEMENT
+              THE SPLIT
             </Text>
             {isTriple && (
-              <Text style={{color: T.sharp, fontSize: 9, fontWeight: '800'}}>· 3 of 3</Text>
+              <Text style={{color: T.sharp, fontSize: 9, fontWeight: '800'}}>· 3 of 3 confirm</Text>
             )}
             {!isTriple && isConfirmed && (
-              <Text style={{color: T.accent, fontSize: 9, fontWeight: '800'}}>· 2 of 3</Text>
+              <Text style={{color: T.accent, fontSize: 9, fontWeight: '800'}}>· 2 of 3 confirm</Text>
             )}
           </View>
           {perSourceRows.map((row, i) => (
             <View key={i} style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 3}}>
-              <View style={{flexDirection: 'row', alignItems: 'baseline', gap: 6, flex: 1}}>
-                <Text style={{color: T.text, fontSize: 11, fontWeight: '700', width: 80}}>{row.label}</Text>
+              <View style={{flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1}}>
+                {/* Distinct color dot per Split — visual confirmation stacking */}
+                <View style={{width: 8, height: 8, borderRadius: 4, backgroundColor: row.color}} />
+                <Text style={{color: row.color, fontSize: 11, fontWeight: '800', width: 60}}>{row.label}</Text>
                 {row.pct > 0 ? (
                   <Text style={{color: T.textDim, fontSize: 11, fontWeight: '700'}}>{row.pct.toFixed(0)}%</Text>
                 ) : (

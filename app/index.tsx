@@ -14283,19 +14283,38 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 sourceRecords={steamSourceRecords}
                 rawSigsIdx={steamRawSigsIdx}
                 onTapGame={(matchup, sport, gid) => {
-                  // Best-effort: match the flagged game to a full game
-                  // object in the current games list; if the sport differs
-                  // from what's currently loaded, switch first.
+                  // 2026-08-18: robust deep-link to the flagged game.
+                  //   1. Switch sport tab if needed (async — needs gamesData to reload)
+                  //   2. Switch to Games tab
+                  //   3. Try to open modal at 250ms, 800ms, 2000ms — one of these
+                  //      should catch gamesData once it's loaded, even on cold start
+                  //   4. Match by game_id first (guaranteed), fall back to team names
+                  //      with normalization (strips accents / extra spaces)
                   if (sport && sport !== gamesSport) setGamesSport(sport);
                   setActiveTab('games');
-                  setTimeout(() => {
-                    const [awayTeam, homeTeam] = matchup.includes(' @ ')
-                      ? matchup.split(' @ ').map((s: string) => s.trim())
-                      : ['', ''];
-                    const target = (gamesData || []).find((g: any) =>
-                      g.away_team === awayTeam && g.home_team === homeTeam);
-                    if (target) openGameDetail(target);
-                  }, 80);
+                  const normalize = (s: string) => (s || '').toLowerCase()
+                    .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+                  const [awayTeam, homeTeam] = matchup.includes(' @ ')
+                    ? matchup.split(' @ ').map((s: string) => s.trim())
+                    : ['', ''];
+                  const awayN = normalize(awayTeam);
+                  const homeN = normalize(homeTeam);
+                  let opened = false;
+                  const tryOpen = () => {
+                    if (opened) return;
+                    const list = (gamesData || []);
+                    // Match by game_id first (most reliable)
+                    let target = gid ? list.find((g: any) => g.id === gid || g.game_id === gid) : null;
+                    // Fall back to normalized team-name match
+                    if (!target && awayN && homeN) {
+                      target = list.find((g: any) =>
+                        normalize(g.away_team) === awayN && normalize(g.home_team) === homeN);
+                    }
+                    if (target) { openGameDetail(target); opened = true; }
+                  };
+                  setTimeout(tryOpen, 250);
+                  setTimeout(tryOpen, 800);
+                  setTimeout(tryOpen, 2000);
                 }}
               />
             )}
