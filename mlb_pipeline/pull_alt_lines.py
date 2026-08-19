@@ -57,60 +57,60 @@ def _et_today() -> str:
 
 
 def fetch_alt_markets_for_sport(sport_key: str, target_game_ids: set[str]) -> list[dict]:
-    """One Odds API call for alt totals + alt spreads across today's games
-    at DraftKings. Returns list of (game_id, market, side, line, price) rows."""
+    """Fetch alt totals + alt spreads via Odds API PER-EVENT endpoint.
+    2026-08-18 fix: bulk /sports/{sport}/odds does NOT support alternate_*
+    markets (HTTP 422 INVALID_MARKET). Only /events/{event_id}/odds does.
+
+    Cost per game = 1 call × 2 markets × 1 region × 1 book = 2 credits.
+    We restrict to target_game_ids so we only spend on games we care about.
+    Typical MLB slate = 15 games × 2 credits = 30 credits/day for MLB alt lines.
+    """
     if not ODDS_KEY:
         print(f'  ⚠ ODDS_API_KEY missing — skipping {sport_key}')
         return []
-    now_et = datetime.now(timezone.utc) - timedelta(hours=4)
-    time_from = f"{now_et.strftime('%Y-%m-%d')}T04:00:00Z"
-    time_to = f"{(now_et + timedelta(days=1)).strftime('%Y-%m-%d')}T03:59:59Z"
 
     rows = []
-    for market_name in ('alternate_totals', 'alternate_spreads'):
+    calls_made = 0
+    for gid in target_game_ids:
         try:
             r = requests.get(
-                f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds',
+                f'https://api.the-odds-api.com/v4/sports/{sport_key}/events/{gid}/odds',
                 params={
                     'apiKey': ODDS_KEY,
                     'regions': 'us',
-                    'markets': market_name,
+                    'markets': 'alternate_totals,alternate_spreads',
                     'oddsFormat': 'american',
                     'bookmakers': 'draftkings',
-                    'commenceTimeFrom': time_from,
-                    'commenceTimeTo': time_to,
-                }, timeout=20)
+                }, timeout=15)
+            calls_made += 1
             if r.status_code != 200:
-                print(f'  ⚠ {market_name} {sport_key}: HTTP {r.status_code} {r.text[:150]}')
+                if r.status_code != 404:  # 404 just means no alt markets posted for this game
+                    print(f'  ⚠ event {gid[:12]}: HTTP {r.status_code} {r.text[:120]}')
                 continue
-            games = r.json() if isinstance(r.json(), list) else []
+            g = r.json() if isinstance(r.json(), dict) else {}
         except Exception as e:
-            print(f'  ⚠ {market_name} {sport_key}: {e}')
+            print(f'  ⚠ event {gid[:12]}: {e}')
             continue
 
-        for g in games:
-            gid = g.get('id')
-            if gid not in target_game_ids: continue
-            for bm in g.get('bookmakers', []):
-                for m in bm.get('markets', []):
-                    if m.get('key') != market_name: continue
-                    for outcome in m.get('outcomes', []):
-                        side_raw = outcome.get('name', '')
-                        line = outcome.get('point')
-                        price = outcome.get('price')
-                        if line is None or price is None: continue
-                        # Normalize side
-                        if market_name == 'alternate_totals':
-                            side = 'OVER' if 'over' in side_raw.lower() else 'UNDER'
-                        else:  # alternate_spreads
-                            side = 'HOME' if side_raw.strip().lower() == g.get('home_team','').lower() else 'AWAY'
-                        rows.append({
-                            'game_id': gid,
-                            'market': market_name,
-                            'side': side,
-                            'line': float(line),
-                            'price': int(price),
-                        })
+        home_team = (g.get('home_team') or '').lower()
+        for bm in g.get('bookmakers', []):
+            for m in bm.get('markets', []):
+                market_name = m.get('key')
+                if market_name not in ('alternate_totals', 'alternate_spreads'): continue
+                for outcome in m.get('outcomes', []):
+                    side_raw = outcome.get('name', '')
+                    line = outcome.get('point')
+                    price = outcome.get('price')
+                    if line is None or price is None: continue
+                    if market_name == 'alternate_totals':
+                        side = 'OVER' if 'over' in side_raw.lower() else 'UNDER'
+                    else:
+                        side = 'HOME' if side_raw.strip().lower() == home_team else 'AWAY'
+                    rows.append({
+                        'game_id': gid, 'market': market_name, 'side': side,
+                        'line': float(line), 'price': int(price),
+                    })
+    print(f'    ({calls_made} per-event calls to Odds API)')
     return rows
 
 
