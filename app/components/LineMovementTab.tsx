@@ -287,11 +287,23 @@ function StrongestSignalCard({flags, sample, onTap}: any) {
               : family === 'rlm' ? T.accent
               : family === 'public' ? T.loss
               : T.hrb;
+  // 2026-08-18 BUG FIX: previously showed raw strongest.side as the team,
+  // but PUBLIC_MOVE_CONFIRMED and RLM_CONFIRMED classifications mean
+  // sharps are on the OPPOSITE side (line moved with public / against
+  // public respectively → the sharp play is the other team). The list
+  // card already inverts; the strip did not. Result: strip showed
+  // public side for OAK/KC RL (Athletics) while list correctly showed
+  // sharp side (Royals). Both now agree.
+  const invert = cls.startsWith('RLM') || cls.startsWith('PUBLIC_MOVE');
+  const rawSide = String(strongest.side || '').toLowerCase();
+  const sharpSide = invert
+    ? (rawSide === 'home' ? 'away' : rawSide === 'away' ? 'home'
+       : rawSide === 'over' ? 'under' : rawSide === 'under' ? 'over' : rawSide)
+    : rawSide;
   const sideDisplay = (() => {
-    const s = String(strongest.side || '').toLowerCase();
-    if (s === 'home') return homeTeam || 'HOME';
-    if (s === 'away') return awayTeam || 'AWAY';
-    return s.toUpperCase();
+    if (sharpSide === 'home') return homeTeam || 'HOME';
+    if (sharpSide === 'away') return awayTeam || 'AWAY';
+    return sharpSide.toUpperCase();
   })();
   return (
     <TouchableOpacity onPress={() => onTap(matchup, first.sport, first.game_id)} activeOpacity={0.75}
