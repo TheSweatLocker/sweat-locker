@@ -1805,6 +1805,21 @@ jobs:
       # ensemble picks and produces 2-4 suggested combos for the
       # Steam Room's 4th sub-tab. Non-fatal — Ledger empty just
       # means no eligible combos today.
+      # 2026-08-18: alt-line puller BEFORE ledger so teased combos use
+      # real book prices (Over 6.5 @ -280 actual) instead of teaser_price
+      # estimator. Only runs on the morning cron (10 UTC = 6am ET) to
+      # keep Odds API cost low — alt lines don't need per-cron refresh.
+      - name: Pull alt-line prices (morning only, all sports)
+        if: github.event.schedule == '0 10 * * *' || github.event_name == 'workflow_dispatch'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python pull_alt_lines.py || echo "alt lines fetch failed (Ledger falls back to estimator)"
+
       - name: Steam Room — generate Ledger suggestions
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -1813,6 +1828,28 @@ jobs:
         run: |
           cd mlb_pipeline
           python generate_ledger.py || echo "ledger generator failed"
+
+      # 2026-08-18: snapshot every shipped Ledger suggestion IMMUTABLY —
+      # transparency parity with Sharp Card / prop_pick_snapshots.
+      # Grader (grade_ledger_snapshots) backfills W/L + unit_pnl.
+      - name: Snapshot Ledger suggestions (accountability)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python snapshot_ledger.py || echo "ledger snapshot failed (non-fatal)"
+
+      # Ledger grader — runs after grade_props to catch newly-resolved games
+      - name: Grade Ledger snapshots (last 7 days)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python grade_ledger_snapshots.py --days 7 || echo "ledger grader failed (non-fatal)"
 
       # ─── Session A monitoring dashboard (2026-08-14) ─────────────
       # Populates hit_rate_snapshots + rule_fire_stats + dashboard_alerts.

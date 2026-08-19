@@ -303,6 +303,30 @@ def build_chalk_parlay(picks: list[dict], target_odds_range: tuple = (-180, 175)
     return None
 
 
+def fetch_alt_line(game_id: str, market: str, side: str, target_line: float,
+                    game_date: str) -> Optional[int]:
+    """Look up real Odds API alt-line price at target_line (exact match).
+    Returns None if not cached — caller falls back to teaser_price estimator.
+    market: 'alternate_totals' | 'alternate_spreads'
+    side:   'OVER' | 'UNDER' | 'HOME' | 'AWAY'
+    """
+    try:
+        r = requests.get(f'{SB}/rest/v1/alt_line_snapshots',
+                         headers=H_READ,
+                         params={
+                             'game_id': f'eq.{game_id}',
+                             'market': f'eq.{market}',
+                             'side': f'eq.{side}',
+                             'line': f'eq.{target_line}',
+                             'snapshot_date': f'eq.{game_date}',
+                             'select': 'price', 'limit': '1'},
+                         timeout=8)
+        rows = r.json() if r.status_code == 200 else []
+        return int(rows[0]['price']) if rows else None
+    except Exception:
+        return None
+
+
 def build_teased_totals_combo(picks: list[dict], exclude_games: set = None) -> Optional[dict]:
     """Pair TWO total picks — tease each by 1.5-2 into higher-hit zones —
     combined for near-even money. 2026-08-18 per user: 'Red Sox game
@@ -325,28 +349,37 @@ def build_teased_totals_combo(picks: list[dict], exclude_games: set = None) -> O
     tease_candidates.sort(key=lambda p: (tier_rank.get(p['tier'], 9), -p.get('conviction', 0)))
     if len(tease_candidates) < 2: return None
 
-    def tease_leg(p):
+    def tease_leg(p, game_date):
         sport = p['sport']
         step = TEASER_STEP.get(sport, 1.5)
         orig_line = float(p['original_line'])
         orig_odds = p['original_odds']
         side = (p.get('side') or '').upper()
-        if side == 'OVER': teased_line = orig_line - step  # easier over
-        else:              teased_line = orig_line + step  # easier under
-        teased_odds = teaser_price(sport, 'total', orig_odds, step)
-        return {
+        if side == 'OVER': teased_line = orig_line - step
+        else:              teased_line = orig_line + step
+        # 2026-08-18: prefer REAL alt-line price from cache (pull_alt_lines.py)
+        # over teaser_price estimator. Falls back to estimator if not cached.
+        real_price = fetch_alt_line(p.get('game_id',''), 'alternate_totals',
+                                     side, teased_line, game_date)
+        teased_odds = real_price if real_price is not None \
+                     else teaser_price(sport, 'total', orig_odds, step)
+        price_source = 'book' if real_price is not None else 'estimator'
+        return ({
             'sport': sport, 'game_id': p.get('game_id'),
             'matchup': p['matchup'], 'market': 'total',
-            'pick': p['pick'], 'original_odds': orig_odds,
+            'pick': p['pick'], 'side': side,
+            'original_odds': orig_odds,
             'original_line': orig_line, 'teased_line': teased_line,
-            'teased_odds': teased_odds, 'tier': p['tier'],
-            'conviction': p.get('conviction'),
-        }
+            'teased_odds': teased_odds, 'price_source': price_source,
+            'tier': p['tier'], 'conviction': p.get('conviction'),
+        })
 
-    leg_a = tease_leg(tease_candidates[0])
-    leg_b = tease_leg(tease_candidates[1])
+    gd = tease_candidates[0].get('game_date') or _et_today()
+    leg_a = tease_leg(tease_candidates[0], gd)
+    leg_b = tease_leg(tease_candidates[1], gd)
     combined = combined_american_odds([leg_a['teased_odds'], leg_b['teased_odds']])
     sports_in = {leg_a['sport'], leg_b['sport']}
+    real_count = sum(1 for l in (leg_a, leg_b) if l.get('price_source') == 'book')
     return {
         'kind': 'teased_totals_combo',
         'sport_scope': next(iter(sports_in)) if len(sports_in) == 1 else 'MULTI',
@@ -354,7 +387,8 @@ def build_teased_totals_combo(picks: list[dict], exclude_games: set = None) -> O
         'combined_odds': combined,
         'reasoning': f'Teased totals combo: {leg_a["pick"]} → {leg_a["teased_line"]} + '
                      f'{leg_b["pick"]} → {leg_b["teased_line"]}. '
-                     f'Both PRIME/STRONG picks moved to easier zones. Combined {combined:+d}.',
+                     f'Combined {combined:+d}. '
+                     f'({real_count}/2 legs at real book prices, rest estimated.)',
     }
 
 
@@ -378,30 +412,35 @@ def build_teased_spreads_combo(picks: list[dict], exclude_games: set = None) -> 
     tease_candidates.sort(key=lambda p: (tier_rank.get(p['tier'], 9), -p.get('conviction', 0)))
     if len(tease_candidates) < 2: return None
 
-    def tease_leg(p):
+    def tease_leg(p, game_date):
         sport = p['sport']
         step = TEASER_STEP.get(sport, 1.5)
         orig_line = float(p['original_line'])
         orig_odds = p['original_odds']
-        # Line always moves toward MORE cover:
-        #   fav (line<0) → less negative (closer to 0 / into +)
-        #   dog (line>0) → more positive
-        if orig_line < 0: teased_line = orig_line + step
-        else:              teased_line = orig_line + step
-        teased_odds = teaser_price(sport, p['market'], orig_odds, step)
+        # Line always moves toward MORE cover
+        teased_line = orig_line + step
+        side = (p.get('side') or '').upper()
+        real_price = fetch_alt_line(p.get('game_id',''), 'alternate_spreads',
+                                     side, teased_line, game_date)
+        teased_odds = real_price if real_price is not None \
+                     else teaser_price(sport, p['market'], orig_odds, step)
+        price_source = 'book' if real_price is not None else 'estimator'
         return {
             'sport': sport, 'game_id': p.get('game_id'),
             'matchup': p['matchup'], 'market': p['market'],
-            'pick': p['pick'], 'original_odds': orig_odds,
+            'pick': p['pick'], 'side': side,
+            'original_odds': orig_odds,
             'original_line': orig_line, 'teased_line': teased_line,
-            'teased_odds': teased_odds, 'tier': p['tier'],
-            'conviction': p.get('conviction'),
+            'teased_odds': teased_odds, 'price_source': price_source,
+            'tier': p['tier'], 'conviction': p.get('conviction'),
         }
 
-    leg_a = tease_leg(tease_candidates[0])
-    leg_b = tease_leg(tease_candidates[1])
+    gd = tease_candidates[0].get('game_date') or _et_today()
+    leg_a = tease_leg(tease_candidates[0], gd)
+    leg_b = tease_leg(tease_candidates[1], gd)
     combined = combined_american_odds([leg_a['teased_odds'], leg_b['teased_odds']])
     sports_in = {leg_a['sport'], leg_b['sport']}
+    real_count = sum(1 for l in (leg_a, leg_b) if l.get('price_source') == 'book')
     return {
         'kind': 'teased_spreads_combo',
         'sport_scope': next(iter(sports_in)) if len(sports_in) == 1 else 'MULTI',
@@ -409,7 +448,8 @@ def build_teased_spreads_combo(picks: list[dict], exclude_games: set = None) -> 
         'combined_odds': combined,
         'reasoning': f'Teased spreads combo: {leg_a["pick"]} → {leg_a["teased_line"]:+g} + '
                      f'{leg_b["pick"]} → {leg_b["teased_line"]:+g}. '
-                     f'Both moved to easier coverage. Combined {combined:+d}.',
+                     f'Combined {combined:+d}. '
+                     f'({real_count}/2 legs at real book prices.)',
     }
 
 
