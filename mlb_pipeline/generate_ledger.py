@@ -128,6 +128,69 @@ def teaser_price(sport: str, market: str, original_odds: int | float,
 # FETCH TODAY'S PICKS
 # ═══════════════════════════════════════════════════════════════════════
 
+def fetch_chalk_candidates(game_date: str, sports: list[str]) -> list[dict]:
+    """Pull every game's chalk favorite ML (regardless of ensemble pick side).
+    Feeds build_chalk_parlay so we can compose chalk trios even when the
+    ensemble is backing dogs. 2026-08-18 addition per user redesign.
+
+    Excludes games where the chalk ML is a coin flip (-100 to -124) — those
+    aren't real chalk. Also excludes games with no close ML posted."""
+    out = []
+    for sport in sports:
+        table = CTX_TABLE.get(sport)
+        if not table: continue
+        try:
+            r = requests.get(
+                f'{SB}/rest/v1/{table}',
+                headers=H_READ,
+                params={'game_date': f'eq.{game_date}',
+                        'select': 'game_id,home_team,away_team,'
+                                  'home_ml_close,away_ml_close,primary_play'},
+                timeout=15)
+            rows = r.json() if r.status_code == 200 else []
+        except Exception:
+            continue
+        for row in rows:
+            hml = row.get('home_ml_close'); aml = row.get('away_ml_close')
+            if hml is None or aml is None: continue
+            try: hml_i = int(hml); aml_i = int(aml)
+            except (TypeError, ValueError): continue
+            # Determine chalk side
+            if hml_i < aml_i:
+                chalk_side, chalk_odds = 'HOME', hml_i
+                chalk_team = row.get('home_team')
+            else:
+                chalk_side, chalk_odds = 'AWAY', aml_i
+                chalk_team = row.get('away_team')
+            # Only include actual chalk (-125 or more juice)
+            if chalk_odds > -125: continue
+            # Determine a proxy tier: if ensemble picked the SAME side, promote;
+            # if ensemble picked the DOG side, mark as CHALK_ONLY (not our edge
+            # but a real chalk stack candidate).
+            pp = row.get('primary_play') or {}
+            if isinstance(pp, str):
+                try: pp = json.loads(pp)
+                except: pp = {}
+            pp_side = (pp.get('side') or '').upper() if isinstance(pp, dict) else ''
+            pp_type = (pp.get('type') or '').lower() if isinstance(pp, dict) else ''
+            aligned = pp_type == 'ml' and pp_side == chalk_side
+            tier = pp.get('tier') if aligned else 'CHALK_ONLY'
+            conviction = pp.get('conviction', 0) if aligned else 55  # neutral proxy
+            out.append({
+                'sport': sport,
+                'game_id': row.get('game_id'),
+                'matchup': f"{row.get('away_team')} @ {row.get('home_team')}",
+                'market': 'ml',
+                'pick': f'{chalk_team} ML',
+                'side': chalk_side,
+                'original_line': None,
+                'original_odds': chalk_odds,
+                'tier': tier if tier in ('PRIME','STRONG','LEAN','CHALK_ONLY') else 'CHALK_ONLY',
+                'conviction': conviction,
+            })
+    return out
+
+
 def fetch_picks(game_date: str, sports: list[str]) -> list[dict]:
     """Pull all PRIME/STRONG picks with a real primary_play across sports.
     Returns list of leg-shaped dicts."""
@@ -188,22 +251,35 @@ def fetch_picks(game_date: str, sports: list[str]) -> list[dict]:
 # BUILDER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_chalk_parlay(picks: list[dict], target_odds_range: tuple = (100, 200)) -> Optional[dict]:
-    """Combine 2-3 ML favorites into a parlay landing in target_odds_range.
+def build_chalk_parlay(picks: list[dict], target_odds_range: tuple = (-180, 175),
+                        exclude_games: set = None) -> Optional[dict]:
+    """Combine 2-3 ML CHALK favorites into a parlay near even money.
+    2026-08-18 REDESIGN per user: 'high-confidence chalky parlays that
+    roughly equal even money, -140 even alright' — not longshot dogs.
 
-    Prefers highest-tier picks first. Skips longshots (+odds) and heavy
-    chalk (-300+) since combining chalk gives bad math."""
-    # Filter to ML picks only with reasonable odds (-250 to -110)
+    Target: 2-3 favorites at -125 to -300 each → combined -180 to -100.
+    Prior version targeted +100 to +200 (light dog territory) which
+    conflicts with the Ledger's chalk-confidence identity. Bold-dog
+    combos live nowhere now (dog_parlay killed 2026-08-18).
+
+    exclude_games: set of game_ids already used in prior suggestions this
+    run — prevents Reds appearing in multiple suggestions."""
+    exclude_games = exclude_games or set()
+    # 2026-08-18: accept CHALK_ONLY tier alongside PRIME/STRONG/LEAN so
+    # the trio composes even on nights where ensemble backs the dog side
+    # of every game. Ledger's chalk product is about HIT-RATE stacks, not
+    # ensemble edge — chalk favorites are inherently high hit-rate.
     candidates = [p for p in picks
                   if p['market'] == 'ml'
                   and p['original_odds'] is not None
-                  and -250 <= float(p['original_odds']) <= -110
-                  and p['tier'] in ('PRIME', 'STRONG')]
-    # Sort by tier + conviction
-    tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
+                  and -300 <= float(p['original_odds']) <= -125
+                  and p['tier'] in ('PRIME', 'STRONG', 'LEAN', 'CHALK_ONLY')
+                  and p.get('game_id') not in exclude_games]
+    # Prefer ensemble-aligned chalks first, then CHALK_ONLY
+    tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2, 'CHALK_ONLY': 3}
     candidates.sort(key=lambda p: (tier_rank.get(p['tier'], 9), -p.get('conviction', 0)))
 
-    # Try 3-leg first, then 2-leg
+    # Try 3-leg first (bigger chalk stack), then 2-leg
     for n_legs in (3, 2):
         if len(candidates) < n_legs: continue
         legs = candidates[:n_legs]
@@ -221,19 +297,133 @@ def build_chalk_parlay(picks: list[dict], target_odds_range: tuple = (100, 200))
                     'tier': l['tier'], 'conviction': l.get('conviction'),
                 } for l in legs],
                 'combined_odds': combined,
-                'reasoning': f'{n_legs}-leg chalk: {" · ".join(l["pick"] for l in legs)}. '
-                             f'Combined {"+" if combined > 0 else ""}{combined} — even-money adjacent.',
+                'reasoning': f'{n_legs}-leg chalk stack: {" · ".join(l["pick"] for l in legs)}. '
+                             f'Combined {combined:+d} — chalk favorites at near-even money.',
             }
     return None
 
 
-def build_dog_parlay(picks: list[dict], target_odds_range: tuple = (250, 700)) -> Optional[dict]:
-    """Combine 2-3 plus-money ML dogs into a parlay landing in target_odds_range.
-    Complements build_chalk_parlay (which requires fav ML only). On dog-heavy
-    slates (like 2026-08-18 where Twins+116, Reds+106, Rockies+172 all shipped
-    STRONG), chalk parlays don't compose and Ledger was empty. Dog parlays fill
-    the gap — smaller strike zone but higher payoff, tier-gated so we only
-    combine ensemble-endorsed dogs."""
+def build_teased_totals_combo(picks: list[dict], exclude_games: set = None) -> Optional[dict]:
+    """Pair TWO total picks — tease each by 1.5-2 into higher-hit zones —
+    combined for near-even money. 2026-08-18 per user: 'Red Sox game
+    teased down to O 6.5 or 5.5 depending on value with another total
+    we liked teased up or down.'
+
+    This is the highest-EV Ledger product because both legs move to
+    easier lines simultaneously. Only PRIME/STRONG total picks eligible."""
+    exclude_games = exclude_games or set()
+    # 2026-08-18: include LEAN totals — playbook total picks land LEAN on
+    # v4-fallback games where MC probabilities are unavailable. Teasing
+    # LEAN totals to easier lines still produces a defensible combo since
+    # the tease itself moves us into higher-hit-rate territory.
+    tease_candidates = [p for p in picks
+                        if p['market'] == 'total'
+                        and p['original_line'] is not None
+                        and p['tier'] in ('PRIME', 'STRONG', 'LEAN')
+                        and p.get('game_id') not in exclude_games]
+    tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
+    tease_candidates.sort(key=lambda p: (tier_rank.get(p['tier'], 9), -p.get('conviction', 0)))
+    if len(tease_candidates) < 2: return None
+
+    def tease_leg(p):
+        sport = p['sport']
+        step = TEASER_STEP.get(sport, 1.5)
+        orig_line = float(p['original_line'])
+        orig_odds = p['original_odds']
+        side = (p.get('side') or '').upper()
+        if side == 'OVER': teased_line = orig_line - step  # easier over
+        else:              teased_line = orig_line + step  # easier under
+        teased_odds = teaser_price(sport, 'total', orig_odds, step)
+        return {
+            'sport': sport, 'game_id': p.get('game_id'),
+            'matchup': p['matchup'], 'market': 'total',
+            'pick': p['pick'], 'original_odds': orig_odds,
+            'original_line': orig_line, 'teased_line': teased_line,
+            'teased_odds': teased_odds, 'tier': p['tier'],
+            'conviction': p.get('conviction'),
+        }
+
+    leg_a = tease_leg(tease_candidates[0])
+    leg_b = tease_leg(tease_candidates[1])
+    combined = combined_american_odds([leg_a['teased_odds'], leg_b['teased_odds']])
+    sports_in = {leg_a['sport'], leg_b['sport']}
+    return {
+        'kind': 'teased_totals_combo',
+        'sport_scope': next(iter(sports_in)) if len(sports_in) == 1 else 'MULTI',
+        'legs': [leg_a, leg_b],
+        'combined_odds': combined,
+        'reasoning': f'Teased totals combo: {leg_a["pick"]} → {leg_a["teased_line"]} + '
+                     f'{leg_b["pick"]} → {leg_b["teased_line"]}. '
+                     f'Both PRIME/STRONG picks moved to easier zones. Combined {combined:+d}.',
+    }
+
+
+def build_teased_spreads_combo(picks: list[dict], exclude_games: set = None) -> Optional[dict]:
+    """Pair TWO spread/RL picks — tease each into safer coverage zone.
+    2026-08-18 per user: 'Could also tease spreads across sports like
+    Reds +2.5.' Mirror of teased_totals_combo for run-line / point-spread.
+
+    Tease direction:
+      Favorite (line < 0): move toward 0 or positive (e.g., -1.5 → +0.5)
+      Dog (line > 0):     move to more coverage (e.g., +1.5 → +3.0)
+    Cross-sport eligible (MLB RL, NFL/NCAAF/NCAAB spread) — TEASER_STEP
+    per sport keeps the math sane."""
+    exclude_games = exclude_games or set()
+    tease_candidates = [p for p in picks
+                        if p['market'] in ('rl', 'spread', 'runline')
+                        and p['original_line'] is not None
+                        and p['tier'] in ('PRIME', 'STRONG', 'LEAN')
+                        and p.get('game_id') not in exclude_games]
+    tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
+    tease_candidates.sort(key=lambda p: (tier_rank.get(p['tier'], 9), -p.get('conviction', 0)))
+    if len(tease_candidates) < 2: return None
+
+    def tease_leg(p):
+        sport = p['sport']
+        step = TEASER_STEP.get(sport, 1.5)
+        orig_line = float(p['original_line'])
+        orig_odds = p['original_odds']
+        # Line always moves toward MORE cover:
+        #   fav (line<0) → less negative (closer to 0 / into +)
+        #   dog (line>0) → more positive
+        if orig_line < 0: teased_line = orig_line + step
+        else:              teased_line = orig_line + step
+        teased_odds = teaser_price(sport, p['market'], orig_odds, step)
+        return {
+            'sport': sport, 'game_id': p.get('game_id'),
+            'matchup': p['matchup'], 'market': p['market'],
+            'pick': p['pick'], 'original_odds': orig_odds,
+            'original_line': orig_line, 'teased_line': teased_line,
+            'teased_odds': teased_odds, 'tier': p['tier'],
+            'conviction': p.get('conviction'),
+        }
+
+    leg_a = tease_leg(tease_candidates[0])
+    leg_b = tease_leg(tease_candidates[1])
+    combined = combined_american_odds([leg_a['teased_odds'], leg_b['teased_odds']])
+    sports_in = {leg_a['sport'], leg_b['sport']}
+    return {
+        'kind': 'teased_spreads_combo',
+        'sport_scope': next(iter(sports_in)) if len(sports_in) == 1 else 'MULTI',
+        'legs': [leg_a, leg_b],
+        'combined_odds': combined,
+        'reasoning': f'Teased spreads combo: {leg_a["pick"]} → {leg_a["teased_line"]:+g} + '
+                     f'{leg_b["pick"]} → {leg_b["teased_line"]:+g}. '
+                     f'Both moved to easier coverage. Combined {combined:+d}.',
+    }
+
+
+def _dead_dog_parlay_KILLED(picks: list[dict], target_odds_range: tuple = (250, 700)) -> Optional[dict]:
+    """DEPRECATED 2026-08-18: user feedback: 'bold dog does not make the
+    cut in what should be chalky high confidence parlays and plays.'
+    Kept only as a marker so future me doesn't reintroduce dog parlays.
+    Ledger is the CHALK CONFIDENCE product. Dog moonshots don't fit."""
+    return None
+
+
+def _dead_dog_parlay_original(picks: list[dict], target_odds_range: tuple = (250, 700)) -> Optional[dict]:
+    """Placeholder for the deleted dog-parlay body — real code lived here.
+    See _dead_dog_parlay_KILLED for the rationale."""
     candidates = [p for p in picks
                   if p['market'] == 'ml'
                   and p['original_odds'] is not None
@@ -437,8 +627,12 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
     print(f'=== generate_ledger · {gd} · {"/".join(sports)}{" [DRY]" if dry_run else ""} ===\n')
 
     picks = fetch_picks(gd, sports)
-    print(f'  fetched {len(picks)} PRIME/STRONG/LEAN picks across sports')
-    if not picks:
+    chalk_pool = fetch_chalk_candidates(gd, sports)
+    # Union: ensemble picks (for teasers + non-chalk) + chalk candidates
+    # (for chalk trio when ensemble didn't back the fav side).
+    combined_pool = picks + chalk_pool
+    print(f'  fetched {len(picks)} ensemble picks + {len(chalk_pool)} chalk candidates')
+    if not combined_pool:
         print('  no picks to build combos from — skipping')
         return
 
@@ -446,49 +640,62 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
         clear_todays(gd)
 
     suggestions = []
+    # Track games used across suggestions so Reds ML doesn't appear in
+    # 3 different combos when the slate has other viable picks (user's
+    # 8/18 feedback: "two teaser options both on Reds when idk if Reds
+    # was that high confident").
+    used_games: set = set()
 
-    # 1. Chalk parlay (any sports, prefer mid-tier chalk) — only fires when
-    # slate has 2-3 favorites at -110 to -250. On dog-heavy nights returns None.
-    chalk = build_chalk_parlay(picks)
+    def register(sugg):
+        for l in sugg.get('legs', []):
+            gid = l.get('game_id')
+            if gid: used_games.add(gid)
+
+    # 1. Chalk trio — 2-3 heavy favorites, combined near even money.
+    # THIS IS THE FLAGSHIP LEDGER PRODUCT per 2026-08-18 user redesign.
+    chalk = build_chalk_parlay(combined_pool, exclude_games=used_games)
     if chalk:
-        suggestions.append(chalk)
-        print(f'  ✓ CHALK PARLAY: {chalk["combined_odds"]:+d} · {len(chalk["legs"])} legs')
+        suggestions.append(chalk); register(chalk)
+        print(f'  ✓ CHALK TRIO: {chalk["combined_odds"]:+d} · {len(chalk["legs"])} legs')
 
-    # 2. Dog parlay — 2-3 plus-money ML dogs from ensemble-endorsed picks.
-    # Complement to chalk: when the slate skews to home dogs (like 2026-08-18
-    # w/ Twins+116, Reds+106, Rockies+172 all STRONG), chalk parlays fail
-    # to compose. Dog parlays fill the gap with smaller hit rate + higher payoff.
-    dogs = build_dog_parlay(picks)
-    if dogs:
-        suggestions.append(dogs)
-        print(f'  ✓ DOG PARLAY: +{dogs["combined_odds"]} · {len(dogs["legs"])} legs')
+    # 2. Teased totals combo — pair two PRIME/STRONG totals, each teased
+    # 1.5-2 runs to easier zone. High-EV per user vision: "Red Sox game
+    # teased down to O 6.5 or 5.5 with another total we liked teased."
+    teased_totals = build_teased_totals_combo(picks, exclude_games=used_games)
+    if teased_totals:
+        suggestions.append(teased_totals); register(teased_totals)
+        print(f'  ✓ TEASED TOTALS COMBO: {teased_totals["combined_odds"]:+d}')
 
-    # 3. Mixed parlay — filler for slates where neither chalk nor dog specific
-    # parlays compose. Cross-market, cross-game (no 2 legs from same game).
-    mixed = build_mixed_parlay(picks)
-    if mixed:
-        suggestions.append(mixed)
-        print(f'  ✓ MIXED PARLAY: {mixed["combined_odds"]:+d} · {len(mixed["legs"])} legs')
+    # 3. Teased spreads combo — 2026-08-18 per user: "Could also tease
+    # spreads across sports like Reds +2.5." Mirror of totals combo for
+    # RL/spread picks (MLB RL, NFL/NCAAF/NCAAB spreads).
+    teased_spreads = build_teased_spreads_combo(picks, exclude_games=used_games)
+    if teased_spreads:
+        suggestions.append(teased_spreads); register(teased_spreads)
+        print(f'  ✓ TEASED SPREADS COMBO: {teased_spreads["combined_odds"]:+d}')
 
-    # 4. MLB teaser
+    # 3. Single-sport teaser (spread/total tease + strong pair leg). Kept
+    # as fallback when neither trio nor totals-combo composes.
     mlb_teaser = build_teaser(picks, sport_filter='MLB')
-    if mlb_teaser:
-        suggestions.append(mlb_teaser)
+    if mlb_teaser and all(l.get('game_id') not in used_games for l in mlb_teaser['legs']):
+        suggestions.append(mlb_teaser); register(mlb_teaser)
         print(f'  ✓ MLB TEASER: {mlb_teaser["combined_odds"]:+d} · '
               f'{mlb_teaser["legs"][0]["pick"]} → {mlb_teaser["legs"][0]["teased_line"]}')
 
-    # 5. NFL teaser (when NFL running)
     nfl_teaser = build_teaser(picks, sport_filter='NFL')
-    if nfl_teaser:
-        suggestions.append(nfl_teaser)
-        print(f'  ✓ NFL TEASER: {nfl_teaser["combined_odds"]:+d} · '
-              f'{nfl_teaser["legs"][0]["pick"]} → {nfl_teaser["legs"][0]["teased_line"]}')
+    if nfl_teaser and all(l.get('game_id') not in used_games for l in nfl_teaser['legs']):
+        suggestions.append(nfl_teaser); register(nfl_teaser)
+        print(f'  ✓ NFL TEASER: {nfl_teaser["combined_odds"]:+d}')
 
-    # 6. NCAAF teaser
     ncaaf_teaser = build_teaser(picks, sport_filter='NCAAF')
-    if ncaaf_teaser:
-        suggestions.append(ncaaf_teaser)
+    if ncaaf_teaser and all(l.get('game_id') not in used_games for l in ncaaf_teaser['legs']):
+        suggestions.append(ncaaf_teaser); register(ncaaf_teaser)
         print(f'  ✓ NCAAF TEASER: {ncaaf_teaser["combined_odds"]:+d}')
+
+    ncaab_teaser = build_teaser(picks, sport_filter='NCAAB')
+    if ncaab_teaser and all(l.get('game_id') not in used_games for l in ncaab_teaser['legs']):
+        suggestions.append(ncaab_teaser); register(ncaab_teaser)
+        print(f'  ✓ NCAAB TEASER: {ncaab_teaser["combined_odds"]:+d}')
 
     written = 0
     for i, sugg in enumerate(suggestions, 1):
