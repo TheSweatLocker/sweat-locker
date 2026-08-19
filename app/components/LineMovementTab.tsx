@@ -73,6 +73,7 @@ type Props = {
   historySample: Record<string, any[]>;     // keyed by "gid::market"
   picksIdx: Record<string, {primary: any; supplementary: any}>;
   sourceRecords: SourceRecord[];            // external_source_track_record rows
+  rawSigsIdx?: Record<string, {cleatz: any[]; fadereport: any[]}>;  // 2026-08-18 per-source raw sharp$
   onTapGame: (matchup: string, sport: string, gid: string) => void;
 };
 
@@ -80,7 +81,7 @@ type SportFilter = 'ALL' | 'MLB' | 'NFL' | 'NCAAF' | 'NCAAB' | 'NBA' | 'NHL' | '
 type TierFilter = 'ALL' | 'CONFIRMED' | 'TRIPLE';
 
 export default function LineMovementTab({
-  loading, flags, historySample, picksIdx, sourceRecords, onTapGame,
+  loading, flags, historySample, picksIdx, sourceRecords, rawSigsIdx, onTapGame,
 }: Props) {
   const [sportFilter, setSportFilter] = React.useState<SportFilter>('ALL');
   const [tierFilter, setTierFilter] = React.useState<TierFilter>('ALL');
@@ -222,6 +223,7 @@ export default function LineMovementTab({
             <LineMovementCard key={key} groupKey={key} flags={gs}
               sample={historySample[key] || []}
               picks={picksIdx[gs[0].game_id]}
+              rawSigs={rawSigsIdx?.[gs[0].game_id]}
               sourceRecordIdx={sourceRecordIdx}
               onTap={onTapGame} />
           ))}
@@ -293,8 +295,37 @@ function StrongestSignalCard({groupKey, flags, sample, picks, onTap}: any) {
   );
 }
 
+// ─── PER-SOURCE SHARP $ CHIPS (2026-08-18) ──────────────────────────
+// Render inline chips showing raw sharp/handle divergence per source
+// so the user sees WHY line_movement_flags classified this game as
+// sharp/RLM/public (instead of trusting the aggregated label alone).
+function RawSigsChips({rawSigs, market}: {rawSigs?: {cleatz: any[]; fadereport: any[]}; market: string}) {
+  if (!rawSigs) return null;
+  const cleatzMatch = (rawSigs.cleatz || []).find(c => String(c.market).toLowerCase() === market.toLowerCase());
+  const fadeMatch = (rawSigs.fadereport || []).find(f => String(f.market).toLowerCase() === market.toLowerCase());
+  if (!cleatzMatch && !fadeMatch) return null;
+  return (
+    <View style={{flexDirection: 'row', gap: 6, marginTop: 6, flexWrap: 'wrap'}}>
+      {cleatzMatch && (
+        <View style={{backgroundColor: T.sharp + '18', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, borderWidth: 0.5, borderColor: T.sharp + '55'}}>
+          <Text style={{color: T.sharp, fontSize: 9, fontWeight: '700'}}>
+            🎯 cleatz {String(cleatzMatch.sharp_side_norm).toUpperCase()} · {cleatzMatch.sharp_handle_pct}% $ vs {cleatzMatch.sharp_bets_pct}% bets (div {cleatzMatch.divergence})
+          </Text>
+        </View>
+      )}
+      {fadeMatch && (
+        <View style={{backgroundColor: T.hrb + '18', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, borderWidth: 0.5, borderColor: T.hrb + '55'}}>
+          <Text style={{color: T.hrb, fontSize: 9, fontWeight: '700'}}>
+            📈 fadereport {String(fadeMatch.sharp_side_norm).toUpperCase()} · {fadeMatch.money_side_pct}% $ vs {fadeMatch.bets_side_pct}% bets · {String(fadeMatch.strength_tier || '').toUpperCase()}
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
 // ─── FULL LINE MOVEMENT CARD ────────────────────────────────────────
-function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, onTap}: any) {
+function LineMovementCard({flags, sample, sourceRecordIdx, rawSigs, onTap}: any) {
   const first = flags[0];
   const [gid, market] = groupKey.split('::');
   const matchup = sample[0]?.matchup || '';
@@ -444,6 +475,9 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, onTa
         </Text>
       </View>
       <Text style={{color: T.textDim, fontSize: 11, lineHeight: 15, marginBottom: 10}}>{strongest.detail}</Text>
+
+      {/* 2026-08-18: raw per-source sharp$ chips (cleatz + fadereport) */}
+      <RawSigsChips rawSigs={rawSigs} market={String(strongest.market)} />
 
       {/* ── SOURCE AGREEMENT + TRACK RECORDS (the "how do we know?" answer) ── */}
       {perSourceRows.length > 0 && (
