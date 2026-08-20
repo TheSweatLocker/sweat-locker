@@ -90,11 +90,26 @@ def resolve(game_date: str, dry_run: bool = False) -> None:
               f'winner: {winner["direction"]} {winner["call_verdict"]} conv {winner.get("conviction")} · '
               f'downgrade: {loser["direction"]} → PASS (was {loser["call_verdict"]} conv {loser.get("conviction")})')
         if dry_run: continue
-        # Update loser to PASS with a note
+        # 2026-08-20: user-facing short_read now carries a clean take.
+        # Full audit diagnostic (winner conv, original take) stashed
+        # elsewhere for support visibility if the table has a long_read
+        # column, else discarded — user visible copy takes priority.
+        user_short = (
+            f"Data pushes the other direction on this one — the "
+            f"opposite-side read on the same prop scored higher "
+            f"conviction. Skipping rather than run two contradictory "
+            f"takes on the same player."
+        )
+        audit_note = (
+            f'[Auto-collapsed C: opposite-direction {winner["call_verdict"]} '
+            f'at higher conviction ({winner.get("conviction")}).] '
+            f'Original take: {loser.get("short_read","")[:400]}'
+        )
         payload = {
             'call_verdict': 'PASS',
             'conviction': loser.get('conviction'),   # preserve original score for audit
-            'short_read': f"[Auto-collapsed 2026-08-01 C — opposite-direction {winner['call_verdict']} at higher conviction ({winner.get('conviction')}). Original take: {loser.get('short_read','')}]"[:500],
+            'short_read': user_short[:500],
+            'long_read': audit_note[:1000],
         }
         pu = requests.patch(f'{SB}/rest/v1/prop_jerry_reads?id=eq.{loser["id"]}',
                             headers=H_WRITE, json=payload, timeout=10)
