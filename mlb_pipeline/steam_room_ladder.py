@@ -499,13 +499,43 @@ def set_state_waiting(dry_run: bool = False) -> None:
     print('  ladder_state → waiting')
 
 
+def already_locked_today(game_date: str) -> bool:
+    """2026-08-20: no mid-day swaps. If a rung already exists for
+    game_date, keep it. User caught 4 swaps in one day (Milwaukee →
+    Grayson → Nats → Grayson) as recompute picked different tops as
+    data freshened. Ladder is a "step of the day" product — one pick
+    per day, no rethink. Once a game grades LOSS, THAT'S when we allow
+    the next day's pick to be different.
+
+    Returns True if a rung for this date exists (regardless of result).
+    """
+    r = requests.get(f'{SB}/rest/v1/ladder_rung',
+        params={'game_date': f'eq.{game_date}', 'select': 'id,pick_side'},
+        headers=H_READ, timeout=10)
+    if r.status_code != 200: return False
+    rows = r.json()
+    if isinstance(rows, list) and rows:
+        print(f'  🔒 ladder already locked for {game_date}: '
+              f'{rows[0].get("pick_side")} (id={rows[0].get("id")}) — no swap')
+        return True
+    return False
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--date', help='YYYY-MM-DD; defaults to today ET')
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--force', action='store_true',
+                   help='Bypass the day-lock and pick a new rung (dev / recovery only)')
     args = p.parse_args()
     game_date = args.date or _et_today()
     print(f'=== Steam Room Ladder · {game_date} ===')
+
+    # Day-lock: skip re-picking if today already has a rung. Prevents the
+    # every-30-min-recompute swap thrashing that hit today.
+    if not args.force and not args.dry_run and already_locked_today(game_date):
+        return
+
     rung = scan_and_maybe_qualify(game_date, dry_run=args.dry_run)
     if rung:
         upsert_rung_and_state(rung, dry_run=args.dry_run)
