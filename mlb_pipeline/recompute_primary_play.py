@@ -64,6 +64,8 @@ def run(date_str: str, dry_run: bool = False) -> None:
     patched = 0
     changed_pp = 0
     changed_ens = 0
+    engine_counts = {'ensemble_v2': 0, 'legacy_fallback': 0}
+    fallback_reasons: dict[str, int] = {}
     for c in ctxs:
         gid = c.get('game_id')
         if not gid:
@@ -88,44 +90,108 @@ def run(date_str: str, dry_run: bool = False) -> None:
         # 0 rows with _engine='ensemble_v2'. Fix: same ensemble→fallback
         # pattern here.
         new_pp = None
-        try:
-            from ensemble_scorer import score_game as _ensemble_score
-            from game_context import _compose_ensemble_sub
-            decision = _ensemble_score('MLB', ctx_merged)
-            if decision is not None:
-                top = decision.top()
-                if top.pick is not None:
-                    new_pp = {
-                        'type': top.market, 'tier': top.tier, 'label': top.display_label,
-                        'side': top.side, 'line': top.line, 'conviction': top.conviction,
-                        'score': round(top.score, 2), 'sub': _compose_ensemble_sub(top),
-                        'audit_note': (f'ensemble_scorer v2 · recompute · {len(top.contributions)} sources · '
-                                       f'score={top.score:.2f} margin={top.margin:+.2f}'),
-                        '_engine': 'ensemble_v2',
-                        '_ensemble_sources': [
-                            {'signal_key': c.signal_key, 'class': c.signal_class,
-                             'side': c.side, 'weight': round(c.weight, 2),
-                             'n': c.n, 'contribution': round(c.contribution, 2),
-                             'prose': c.display_prose}
-                            for c in top.contributions[:8]
-                        ],
-                        '_ensemble_all_markets': {
-                            'ml':    {'pick': decision.ml.pick, 'label': decision.ml.display_label,
-                                      'tier': decision.ml.tier, 'conviction': decision.ml.conviction},
-                            'rl':    {'pick': decision.rl.pick, 'label': decision.rl.display_label,
-                                      'tier': decision.rl.tier, 'conviction': decision.rl.conviction},
-                            'total': {'pick': decision.total.pick, 'label': decision.total.display_label,
-                                      'tier': decision.total.tier, 'conviction': decision.total.conviction},
-                        },
-                    }
-        except Exception:
-            pass  # ensemble unavailable — fall back below
+        ensemble_error = None
+        ensemble_no_pick_reason = None
+        # 2026-08-19: previously wrapped the ensemble call in a bare
+        # `except Exception: pass` — on 8/18, 7/15 games silently fell
+        # back to legacy because of transient errors (registry cache warm,
+        # PostgREST hiccup, etc). Rerunning the same rows the next day all
+        # succeeded. Fix: retry once on exception, capture the reason so
+        # the aggregate counter can surface it, don't hide silently.
+        from ensemble_scorer import score_game as _ensemble_score
+        from game_context import _compose_ensemble_sub
+        import time as _time
+        decision = None
+        for attempt in (1, 2):
+            try:
+                decision = _ensemble_score('MLB', ctx_merged)
+                break
+            except Exception as e:
+                ensemble_error = f'{type(e).__name__}: {e}'
+                if attempt == 1:
+                    _time.sleep(0.5)  # brief cooldown, then retry
+                    continue
+        if decision is not None:
+            top = decision.top()
+            if top.pick is None:
+                ensemble_no_pick_reason = (
+                    f'all markets returned _no_pick '
+                    f'(ml={decision.ml.tier}, rl={decision.rl.tier}, total={decision.total.tier})'
+                )
+            else:
+                new_pp = {
+                    'type': top.market, 'tier': top.tier, 'label': top.display_label,
+                    'side': top.side, 'line': top.line, 'conviction': top.conviction,
+                    'score': round(top.score, 2), 'sub': _compose_ensemble_sub(top),
+                    'audit_note': (f'ensemble_scorer v2 · recompute · {len(top.contributions)} sources · '
+                                   f'score={top.score:.2f} margin={top.margin:+.2f}'),
+                    '_engine': 'ensemble_v2',
+                    '_ensemble_sources': [
+                        {'signal_key': c.signal_key, 'class': c.signal_class,
+                         'side': c.side, 'weight': round(c.weight, 2),
+                         'n': c.n, 'contribution': round(c.contribution, 2),
+                         'prose': c.display_prose}
+                        for c in top.contributions[:8]
+                    ],
+                    '_ensemble_all_markets': {
+                        'ml':    {'pick': decision.ml.pick, 'label': decision.ml.display_label,
+                                  'tier': decision.ml.tier, 'conviction': decision.ml.conviction},
+                        'rl':    {'pick': decision.rl.pick, 'label': decision.rl.display_label,
+                                  'tier': decision.rl.tier, 'conviction': decision.rl.conviction},
+                        'total': {'pick': decision.total.pick, 'label': decision.total.display_label,
+                                  'tier': decision.total.tier, 'conviction': decision.total.conviction},
+                    },
+                }
+
+        # If ensemble didn't produce a pick, log why (loud, not silent) so
+        # slate-wide fallback patterns surface in the run log instead of
+        # being invisible until someone checks the DB.
+        if new_pp is None:
+            _reason = ensemble_error or ensemble_no_pick_reason or 'ensemble returned None (hard_suppress?)'
+            print(f'  ⚠️  ensemble fallback {ctx_merged.get("away_team","?")[:12]} @ {ctx_merged.get("home_team","?")[:12]}: {_reason}')
+            # Bucket the reason so the summary shows which failure mode dominated
+            _bucket = _reason.split(':')[0][:40] if ':' in _reason else _reason[:40]
+            fallback_reasons[_bucket] = fallback_reasons.get(_bucket, 0) + 1
+            engine_counts['legacy_fallback'] += 1
+        else:
+            engine_counts['ensemble_v2'] += 1
 
         if new_pp is None:
             try:
                 new_pp = compute_primary_play(ctx_merged)
                 if isinstance(new_pp, dict):
                     new_pp['_engine'] = 'legacy_compute_primary_play'
+                    # 2026-08-19: legacy compute_primary_play emits label but
+                    # often leaves `side` null (bug: side is embedded in the
+                    # `type` field for totals, and derived from label for ml/rl).
+                    # The app's Sharp Card reads pp.side to look up odds, so
+                    # null side → null odds → no card display. Backfill side
+                    # from the label + type here so downstream is stable.
+                    if not new_pp.get('side'):
+                        _mkt = str(new_pp.get('type') or '').lower()
+                        _label = str(new_pp.get('label') or '').lower()
+                        if _mkt in ('over', 'under'):
+                            new_pp['side'] = _mkt.upper()
+                            new_pp['type'] = 'total'
+                        elif 'over' in _label:
+                            new_pp['side'] = 'OVER'; new_pp['type'] = new_pp.get('type') or 'total'
+                        elif 'under' in _label:
+                            new_pp['side'] = 'UNDER'; new_pp['type'] = new_pp.get('type') or 'total'
+                        else:
+                            _home = (c.get('home_team') or '').lower()
+                            _away = (c.get('away_team') or '').lower()
+                            if _home and _home in _label:
+                                new_pp['side'] = 'HOME'
+                            elif _away and _away in _label:
+                                new_pp['side'] = 'AWAY'
+                            else:
+                                # Last-word fallback (skip 'sox' — collides Bos/CWS)
+                                _hk = _home.split()[-1] if _home else ''
+                                _ak = _away.split()[-1] if _away else ''
+                                if _hk and _hk != 'sox' and _hk in _label:
+                                    new_pp['side'] = 'HOME'
+                                elif _ak and _ak != 'sox' and _ak in _label:
+                                    new_pp['side'] = 'AWAY'
             except Exception as e:
                 print(f'  ✗ {away} @ {home}: compute_primary_play failed — {e}')
                 continue
@@ -191,6 +257,21 @@ def run(date_str: str, dry_run: bool = False) -> None:
 
     print(f'\n{"[DRY] " if dry_run else "✓ "}patched={patched}/{len(ctxs)}  '
           f'primary_play changed={changed_pp}  nrfi_ensemble changed={changed_ens}')
+    total = engine_counts['ensemble_v2'] + engine_counts['legacy_fallback']
+    if total:
+        pct = 100.0 * engine_counts['ensemble_v2'] / total
+        print(f'  engine attribution: ensemble_v2={engine_counts["ensemble_v2"]}  '
+              f'legacy_fallback={engine_counts["legacy_fallback"]}  ({pct:.0f}% ensemble)')
+        if fallback_reasons:
+            print('  fallback reasons:')
+            for reason, cnt in sorted(fallback_reasons.items(), key=lambda x: -x[1]):
+                print(f'    {cnt}x  {reason}')
+        # Watchdog: if >30% of games fell back, that's a systemic issue worth
+        # calling out visibly (the whole point of this exercise — 8/18 hit
+        # 47% fallback silently because errors were swallowed).
+        if engine_counts['legacy_fallback'] and pct < 70.0:
+            print(f'  🚨 WATCHDOG: only {pct:.0f}% of games ran ensemble_v2 — '
+                  f'expected ≥90%. Investigate fallback reasons above.')
 
 
 def main():
