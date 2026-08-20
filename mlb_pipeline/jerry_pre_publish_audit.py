@@ -776,14 +776,31 @@ def auto_repair(sport: str, game_date: str) -> dict:
             # (e.g. KC/LAD UNDER→OVER triggered sharp-fade critical). If Jerry's
             # own prose contradicts its pick, the safest move is to skip — not
             # to trust the opposite side which may have its own issues.
-            note_prefix = (f'[Auto-sim-repair 2026-08-12 CONTRADICTS_SIM: pick {side} '
-                           f'{l} contradicts simulator projection {s:.1f} '
-                           f'(gap {s-l:+.1f}). Forcing PASS (Jerry prose contradicts '
-                           f'own pick — unsafe to publish either side). '
-                           f'Original take: ')
-            new_short = note_prefix + (r.get('short_read') or '')[:200] + ']'
+            #
+            # 2026-08-20: user-facing short_read must NOT expose raw
+            # diagnostic text ("Auto-sim-repair 2026-08-12 CONTRADICTS_SIM"
+            # etc.). Prior version dumped the internal audit note into the
+            # user-visible short_read field which read as broken system
+            # output. Now: write a clean take that explains the pass in
+            # user terms, and stash the diagnostic in long_read for
+            # internal audit only.
+            gap = s - l
+            gap_direction = 'higher' if s > l else 'lower'
+            user_short = (
+                f"Our model has this total closer to {s:.1f} runs while the "
+                f"take had it going {side.lower()} {l}. When our own numbers "
+                f"disagree with the read that much, no edge is defensible "
+                f"on either side — sitting this one out."
+            )
+            audit_note = (
+                f'[Auto-sim-repair CONTRADICTS_SIM: pick {side} {l} vs '
+                f'sim {s:.1f} (gap {gap:+.1f}). Forced PASS — Jerry prose '
+                f'contradicts own pick, unsafe to publish either side.] '
+                f'Original take: ' + (r.get('short_read') or '')[:400]
+            )
             payload = {'call_market': 'pass', 'conviction': 40,
-                       'short_read': new_short[:2000]}
+                       'short_read': user_short[:2000],
+                       'long_read': audit_note[:2000]}
             pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
                                 headers=H_WRITE, json=payload, timeout=10)
             if pr.status_code in (200, 204):
@@ -869,15 +886,33 @@ def auto_repair(sport: str, game_date: str) -> dict:
                 dominant = summary.get('dominant_side')
                 # Strong scenario disagreement (net_score >= 3 opposite Jerry's pick)
                 if dominant and dominant != side and abs(summary['net_score']) >= 3:
-                    note_prefix = (f'[Auto-scenario-repair 2026-08-12 SCENARIO_MATRIX_OVERRIDE: '
-                                   f'{market.upper()} pick {side} but historical scenario matches '
-                                   f'lean {dominant} by net {summary["net_score"]:+d} votes '
-                                   f'({summary["home_or_over_votes"]} HOME/OVER vs '
-                                   f'{summary["away_or_under_votes"]} AWAY/UNDER). '
-                                   f'Forcing PASS. Original take: ')
-                    new_short = note_prefix + (r.get('short_read') or '')[:200] + ']'
+                    # 2026-08-20: user-facing short_read no longer exposes
+                    # raw audit diagnostic. Clean take goes to short_read,
+                    # diagnostic goes to long_read for internal audit.
+                    dom_readable = 'the other side' if dominant != side else 'this side'
+                    if market == 'ml':
+                        side_readable = 'home' if side == 'HOME' else 'away'
+                        opp_readable = 'away' if side == 'HOME' else 'home'
+                    else:  # total
+                        side_readable = side.lower()
+                        opp_readable = 'under' if side == 'OVER' else 'over'
+                    user_short = (
+                        f"Our historical scenario matches lean {opp_readable} "
+                        f"here — the take was on {side_readable} but the "
+                        f"pattern data disagrees strongly. Skipping rather "
+                        f"than force a pick against our own base."
+                    )
+                    audit_note = (
+                        f'[Auto-scenario-repair SCENARIO_MATRIX_OVERRIDE: '
+                        f'{market.upper()} pick {side} but historical matches '
+                        f'lean {dominant} by net {summary["net_score"]:+d} '
+                        f'({summary["home_or_over_votes"]} HOME/OVER vs '
+                        f'{summary["away_or_under_votes"]} AWAY/UNDER).] '
+                        f'Original take: ' + (r.get('short_read') or '')[:400]
+                    )
                     payload = {'call_market': 'pass', 'conviction': 40,
-                               'short_read': new_short[:2000]}
+                               'short_read': user_short[:2000],
+                               'long_read': audit_note[:2000]}
                     pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
                                         headers=H_WRITE, json=payload, timeout=10)
                     if pr.status_code in (200, 204):
