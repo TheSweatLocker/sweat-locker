@@ -8571,6 +8571,16 @@ setJerryHistory(prev => {
         const o = opts.odds;
         // Data gap: prop has no captured odds → skip until backfilled
         if (o == null && (opts.type === 'prop' || (opts.type == null && opts.prop_type))) return 0;
+        // 2026-08-20 hard gate: props outside [-300, +150] are filtered
+        // OUT per user's feedback_prop_jerry_odds memory. Prior version
+        // only halved the stake for deep juice — Chandler Simpson at
+        // -425 juice + others leaked onto Sharp Card yesterday because
+        // half-sized non-zero units still passed the .units>0 filter.
+        // Zero it out so the caller's filter removes the pick entirely.
+        // Only applies to PROP type — ML picks have their own regime
+        // handling below (halving for -180+ / +150+).
+        const isPropCtx = opts.type === 'prop' || (opts.type == null && opts.prop_type);
+        if (isPropCtx && o != null && (o < -300 || o > 150)) return 0;
         let stake = base;
         // Juice traps (any pick type)
         if (o != null && o <= -250) stake = stake / 2;
