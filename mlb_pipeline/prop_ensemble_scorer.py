@@ -383,11 +383,58 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
 # WRITER
 # ═══════════════════════════════════════════════════════════════════════
 
+def _american_to_implied_prob(odds) -> Optional[float]:
+    """American odds → implied probability (0-100). Fair value, no vig removed."""
+    if odds is None: return None
+    try: o = int(odds)
+    except (TypeError, ValueError): return None
+    return 100.0 * (100.0 / (o + 100)) if o >= 0 else 100.0 * (abs(o) / (abs(o) + 100.0))
+
+
+def _compute_edge_and_rec(decision: PropDecision, prop: dict) -> tuple:
+    """Prop Playbook V2 market-check gate (2026-08-20 per user vision).
+
+    Compare our playbook_conviction (0-100) to the book's implied probability.
+    If our score materially beats implied, that's edge — recommend BACK.
+    If the market has priced our edge away, no bet regardless of raw score.
+
+    Recommendation ladder (user-approved thresholds):
+      BACK      edge_pp >= +8  AND playbook_conviction >= 65
+      LEAN      edge_pp >= +3  AND playbook_conviction >= 55
+      NO_PLAY   else (still shown in DB for audit but hidden from UI)
+
+    Returns (market_implied_prob, edge_pp, recommendation).
+    """
+    # Pick odds side matching the winning direction
+    side = (decision.side or '').lower()
+    over_o = prop.get('book_over_odds')
+    under_o = prop.get('book_under_odds')
+    odds = over_o if side == 'over' else under_o if side == 'under' else None
+    implied = _american_to_implied_prob(odds)
+    if implied is None or decision.conviction is None:
+        return (None, None, 'NO_PLAY')
+    edge_pp = round(decision.conviction - implied, 2)
+    conv = decision.conviction
+    if edge_pp >= 8 and conv >= 65:
+        rec = 'BACK'
+    elif edge_pp >= 3 and conv >= 55:
+        rec = 'LEAN'
+    else:
+        rec = 'NO_PLAY'
+    return (round(implied, 2), edge_pp, rec)
+
+
 def write_decision(prop: dict, decision: PropDecision, dry_run: bool = False) -> bool:
     """Insert one row into prop_playbook_decisions.
 
     Captures legacy tier/conviction/refit alongside playbook output
-    so audit can compare them without joins."""
+    so audit can compare them without joins.
+
+    2026-08-20: writes V2 fields (market_implied_prob, edge_pp,
+    recommendation) alongside legacy. Once app cutover flips, these
+    become the authoritative UI outputs and legacy_* fields become
+    audit-only."""
+    market_implied, edge_pp, rec = _compute_edge_and_rec(decision, prop)
     payload = {
         'sport': decision.sport,
         'game_date': decision.game_date,
@@ -413,13 +460,28 @@ def write_decision(prop: dict, decision: PropDecision, dry_run: bool = False) ->
         # Cast to int — schema is INT but prop table stores conviction as numeric
         'legacy_conviction': int(float(prop['conviction'])) if prop.get('conviction') is not None else None,
         'legacy_refit_conviction': int(float(prop['refit_conviction'])) if prop.get('refit_conviction') is not None else None,
+        # V2 outputs (nullable until migration lands)
+        'market_implied_prob': market_implied,
+        'edge_pp': edge_pp,
+        'recommendation': rec,
     }
     if dry_run: return True
+    # Try full V2 payload first. If migration 20260820_prop_playbook_v2_fields
+    # hasn't been applied, strip V2 fields and retry so shadow writes keep
+    # working. Once user applies migration, V2 fields land + retry never fires.
     try:
         pr = requests.post(
             f'{SB}/rest/v1/prop_playbook_decisions'
             f'?on_conflict=sport,game_date,player_name,prop_type,direction,prop_line',
             headers=H_WRITE, json=payload, timeout=10)
+        if pr.status_code == 400 and 'recommendation' in (pr.text or ''):
+            # V2 migration not applied yet — retry without new columns
+            legacy_payload = {k: v for k, v in payload.items()
+                              if k not in ('market_implied_prob','edge_pp','recommendation')}
+            pr = requests.post(
+                f'{SB}/rest/v1/prop_playbook_decisions'
+                f'?on_conflict=sport,game_date,player_name,prop_type,direction,prop_line',
+                headers=H_WRITE, json=legacy_payload, timeout=10)
         if pr.status_code not in (200, 201, 204):
             print(f'    ✗ write {decision.player_name} {decision.prop_type}: {pr.status_code} {pr.text[:150]}')
             return False
