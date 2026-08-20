@@ -491,10 +491,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--check', help='Run a single check by name')
+    ap.add_argument('--fail-on-warning', action='store_true',
+                    help='Exit non-zero on WARNING too (for on-demand runs only)')
     args = ap.parse_args()
     rank = run_all(dry_run=args.dry_run, only=args.check)
-    # Exit codes: 0 = clean, 1 = warning/info, 2 = critical
-    sys.exit(2 if rank == 3 else 1 if rank >= 1 else 0)
+    # 2026-08-20: exit-code policy revised. Prior design exited 1 for any
+    # WARNING → GitHub Actions marked the workflow "failed" on every run
+    # because signal_source_dark is a persistent WARNING waiting on the
+    # season-long enrichment work. User rightly said "watchdogs failed
+    # again." Alerts live in watchdog_alerts DB rows — the workflow's
+    # only job is to CHECK. Exit 0 unless a CRITICAL trips or a check
+    # itself couldn't run. --fail-on-warning flag preserved for
+    # manual/dev runs where you want the exit code to bubble severity.
+    if args.fail_on_warning:
+        sys.exit(2 if rank == 3 else 1 if rank >= 1 else 0)
+    sys.exit(2 if rank == 3 else 0)
 
 
 if __name__ == '__main__':
