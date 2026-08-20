@@ -404,12 +404,18 @@ def _compute_edge_and_rec(decision: PropDecision, prop: dict) -> tuple:
       NO_PLAY   else (still shown in DB for audit but hidden from UI)
 
     Returns (market_implied_prob, edge_pp, recommendation).
+
+    2026-08-20 bug fix: decision.side is 'BACK' or 'FADE' (verdict), NOT
+    'over' or 'under'. Direction of the prop line comes from prop.direction
+    (over/under) — that's what selects which book odds side to use. Prior
+    version compared decision.side.lower() to 'over'/'under' which never
+    matched → all 30 fresh V2 rows landed with implied=None → all NO_PLAY.
     """
-    # Pick odds side matching the winning direction
-    side = (decision.side or '').lower()
+    # Direction of the prop = which side we're betting = over or under
+    direction = (prop.get('direction') or '').lower()
     over_o = prop.get('book_over_odds')
     under_o = prop.get('book_under_odds')
-    odds = over_o if side == 'over' else under_o if side == 'under' else None
+    odds = over_o if direction == 'over' else under_o if direction == 'under' else None
     implied = _american_to_implied_prob(odds)
     if implied is None or decision.conviction is None:
         return (None, None, 'NO_PLAY')
