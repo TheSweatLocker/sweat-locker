@@ -304,11 +304,19 @@ def check_signal_source_dark() -> Optional[dict]:
             if sk:
                 # Strip __fade suffix so a fade-flipped signal counts
                 fired.add(sk.replace('__fade', ''))
-    # Handler classes (external_pick, split, scenario) contribute via handlers
-    # so they may not appear in _ensemble_sources — skip those.
-    handler_classes = {'external_pick', 'split', 'scenario'}
+    # 2026-08-20: exclusions expanded after first live run flagged 89
+    # "dark" signals with 25+ false positives.
+    #   - external_pick / split / scenario are HANDLER classes — contribute
+    #     via HANDLERS[cls] pipeline, not signal_sources.
+    #   - prop_trend / prop_form / prop_environment / prop_matchup /
+    #     prop_model score into prop_playbook_decisions (props surface),
+    #     NOT into game_context.primary_play._ensemble_sources. Their
+    #     absence from game ctx is expected, not dark.
+    skip_classes = {'external_pick', 'split', 'scenario',
+                    'prop_trend', 'prop_form', 'prop_environment',
+                    'prop_matchup', 'prop_model'}
     dark = sorted([s['signal_key'] for s in all_sigs
-                   if s.get('class') not in handler_classes
+                   if s.get('class') not in skip_classes
                    and s['signal_key'] not in fired])
     if not dark or len(dark) < 5:  # a few is normal; alert only on wave
         return None
@@ -366,17 +374,27 @@ def check_prime_hit_crash() -> Optional[dict]:
         if result == 'W': wins += 1
         elif result == 'L': losses += 1
     dec = wins + losses
-    if dec < 5:
+    # 2026-08-20: minimum sample tightened after first live run flagged
+    # 33% at n=6 as CRITICAL. That's well within normal variance for a
+    # 55-60% edge tier — 4-loss streaks happen regularly at n<15. Now:
+    #   n < 10: no alert (too thin to distinguish variance from drift)
+    #   n 10-19: WARNING only (thin sample, worth noting)
+    #   n 20+:   CRITICAL below 40%, WARNING below 50%
+    if dec < 10:
         return None
     hr = 100.0 * wins / dec
     if hr >= 50:
         return None
+    if dec < 20:
+        severity = 'WARNING'  # thin sample — mention but don't page
+    else:
+        severity = 'CRITICAL' if hr < 40 else 'WARNING'
     return {
         'check_name': 'prime_hit_crash',
-        'severity': 'CRITICAL' if hr < 40 else 'WARNING',
-        'message': f'PRIME hit rate last 7 days: {wins}-{losses} ({hr:.0f}%). '
+        'severity': severity,
+        'message': f'PRIME hit rate last 7 days: {wins}-{losses} ({hr:.0f}%, n={dec}). '
                    f'Below the 50% floor — investigate signal drift or tier gate.',
-        'detail': {'since': since, 'wins': wins, 'losses': losses, 'hit_rate': round(hr, 1)},
+        'detail': {'since': since, 'wins': wins, 'losses': losses, 'hit_rate': round(hr, 1), 'n': dec},
     }
 
 
