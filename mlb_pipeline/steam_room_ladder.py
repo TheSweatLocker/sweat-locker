@@ -63,6 +63,7 @@ LADDER_COHORT_N_MIN     = 25       # 2026-08-18 loosened from 30 → 25 (2wk MLB
 LADDER_CONSENSUS_MIN    = 3        # 2026-08-18 loosened from 4 → 3 (3-of-5 lens, was too strict)
 LADDER_EDGE_MIN_PP      = 6.0      # 2026-08-18 loosened from 10 → 6 (still meaningful edge)
 LADDER_ABS_JUICE_CAP    = -250     # unchanged — compounding math destroys past -250
+LADDER_MIN_GATES        = 3        # 3-of-5 required; relaxed_scan drops this to 2
 
 # Per-sport context table
 CTX_TABLE = {
@@ -243,7 +244,7 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
         gate_notes.append(f'cohort={cohort_hit}%')
 
     # Must clear at least 3 of 5 gates (matches UI copy)
-    if gates_passed < 3:
+    if gates_passed < LADDER_MIN_GATES:
         return None
 
     # Hard blockers: sharp-fade / refit-trap always kill the pick
@@ -350,7 +351,7 @@ def check_prop_qualifier(prop: dict, sport: str = 'MLB') -> Optional[dict]:
         gates_passed += 1
         gate_notes.append('playbook✓')
 
-    if gates_passed < 3:
+    if gates_passed < LADDER_MIN_GATES:
         return None
 
     # Compose display label
@@ -438,6 +439,17 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
             rung = check_qualifier(row, sport)
             if rung: candidates.append(rung)
     if not candidates:
+        # 2026-08-20: skip-day loosening. User: "ladder can skip one day but
+        # shouldn't skip more than two." If no qualifier fires AND the last
+        # 2 game_dates already had no rung, drop back to relaxed thresholds
+        # and pick the BEST-available candidate even if it doesn't clear
+        # the standard 3-of-5 gate.
+        if _days_since_last_rung(game_date) >= 2:
+            print('  ⚠️ 2+ days since last ladder rung — running RELAXED scan')
+            relaxed = _relaxed_scan(game_date, sports)
+            if relaxed:
+                print(f'  🎯 Relaxed qualifier: {relaxed["matchup"]} · {relaxed["pick_side"]}')
+                return relaxed
         print('  no qualifier fired — ladder stays parked')
         return None
     # Rank by (gates_passed DESC, tier PRIME>STRONG>LEAN, edge_pp DESC).
@@ -453,6 +465,84 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
     print(f'  🎯 Ladder qualifier: {winner["matchup"]} · {winner["pick_side"]} '
           f'({winner["gates_passed"]}/5 gates, edge {edge_str})')
     return winner
+
+
+def _days_since_last_rung(game_date: str) -> int:
+    """How many calendar days since the last ladder_rung fired (any sport).
+    Returns 0 if a rung exists for today OR yesterday, 1 for two days ago,
+    etc. Used for skip-day loosening — after 2+ dry days, we relax gates."""
+    r = requests.get(f'{SB}/rest/v1/ladder_rung', headers=H_READ,
+        params={'select': 'game_date', 'order': 'game_date.desc', 'limit': '1'},
+        timeout=10)
+    if r.status_code != 200: return 0
+    rows = r.json()
+    if not isinstance(rows, list) or not rows: return 99  # never fired
+    last = rows[0].get('game_date')
+    if not last: return 0
+    try:
+        from datetime import date
+        gd = date.fromisoformat(game_date)
+        ld = date.fromisoformat(last)
+        return (gd - ld).days
+    except Exception:
+        return 0
+
+
+def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
+    """Relaxed re-scan when ladder has been dark 2+ days. Drops the 3/5
+    gate requirement AND lowers edge threshold to +2pp. Picks the best-
+    scoring candidate that clears the minimal safety bar (no sharp-fade,
+    real odds, not a refit-trap). Ensures ladder never sits empty >2 days.
+
+    Universal across sports — same signal reads, just softer gates.
+    """
+    from copy import deepcopy
+    original_edge = globals()['LADDER_EDGE_MIN_PP']
+    original_consensus = globals()['LADDER_CONSENSUS_MIN']
+    original_cohort_hit = globals()['LADDER_COHORT_HIT_MIN']
+    original_cohort_n = globals()['LADDER_COHORT_N_MIN']
+    original_min_gates = globals()['LADDER_MIN_GATES']
+    try:
+        globals()['LADDER_EDGE_MIN_PP'] = 2.0
+        globals()['LADDER_CONSENSUS_MIN'] = 1
+        globals()['LADDER_COHORT_HIT_MIN'] = 50.0
+        globals()['LADDER_COHORT_N_MIN'] = 10
+        globals()['LADDER_MIN_GATES'] = 2  # 2 of 5 in relaxed mode
+        candidates = []
+        for sport in sports:
+            ctx_tbl = CTX_TABLE.get(sport)
+            if not ctx_tbl: continue
+            r = requests.get(f'{SB}/rest/v1/{ctx_tbl}', headers=H_READ,
+                params={'game_date': f'eq.{game_date}',
+                        'select': 'game_id,game_date,home_team,away_team,primary_play,'
+                                  'mc_probabilities,signal_confluence_support,'
+                                  'home_ml_close,away_ml_close,consensus_fade_flag'},
+                timeout=15).json()
+            if not isinstance(r, list): continue
+            for row in r:
+                pp = row.get('primary_play') or {}
+                # In relaxed mode, accept any picked play with a tier + label
+                # that has real odds and isn't sharp-fade flagged.
+                if not pp.get('tier') or not pp.get('label'): continue
+                if row.get('consensus_fade_flag') is True: continue
+                rung = check_qualifier(row, sport)
+                if rung:
+                    rung['qualification_notes'] = '[RELAXED · 2+ dry days] ' + (rung.get('qualification_notes') or '')
+                    candidates.append(rung)
+        if not candidates: return None
+        tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
+        candidates.sort(key=lambda c: (
+            -(c.get('gates_passed') or 0),
+            tier_rank.get(c.get('tier'), 9),
+            -(c.get('edge_pp') or -999),
+        ))
+        return candidates[0]
+    finally:
+        globals()['LADDER_EDGE_MIN_PP'] = original_edge
+        globals()['LADDER_CONSENSUS_MIN'] = original_consensus
+        globals()['LADDER_COHORT_HIT_MIN'] = original_cohort_hit
+        globals()['LADDER_COHORT_N_MIN'] = original_cohort_n
+        globals()['LADDER_MIN_GATES'] = original_min_gates
 
 
 def upsert_rung_and_state(rung: dict, dry_run: bool = False) -> None:
