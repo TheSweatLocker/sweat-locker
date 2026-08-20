@@ -56,6 +56,14 @@ def ev_tier(ev: float | None, conviction: float | None,
         return 'SKIP'
     if conviction is not None and conviction < 25:
         return 'SKIP'
+    # 2026-08-20: dog trap gate. UFC v2 ROI backtest on fair OOS window
+    # (n=50, event_date > 2026-05-06) showed picked-side at odds >= +150
+    # went 0-4 for -100% ROI. Model is broken on real underdogs — bets
+    # its own biases against the market's edge. Filter to SKIP regardless
+    # of EV signal. Data-proven across BOTH v1 and v2. See
+    # _ufc_v2_roi_backtest_2026-08-20.md cohort table.
+    if odds_dec is not None and odds_dec >= 2.5:  # +150 American = 2.5 decimal
+        return 'SKIP'
     # 2026-08-16 morning-audit rule: 90%+ model win-prob favorites went 2-6
     # over 30d — model overweights win probability in a single-round-KO
     # sport. Require odds >= 1.5 (roughly +/- even money or better) to
@@ -122,8 +130,20 @@ def run(event_date: str | None = None, dry_run: bool = False):
         print('  no picks')
         return
 
+    # 2026-08-17 SHARP-FADE EXPERIMENT (project-ufc-model-broken-817):
+    # UFC XGBoost model is severely miscalibrated — PRIMEs 3-7 (30%) over
+    # 60d, model 85%+ band hits 40% actual. If calibration is truly
+    # inverted, betting OPPOSITE of the model should hit ~60% at PRIME
+    # tier. Env-flag controlled. When on, we flip rec_side + recompute EV
+    # against the OPPOSING odds so tier gate reflects the actual side
+    # we'd back.
+    SHARP_FADE = os.environ.get('UFC_SHARP_FADE_MODE', '').lower() == 'true'
+    if SHARP_FADE:
+        print('  🔀 SHARP-FADE MODE ENABLED — will flip model picks and recompute EV')
+
     scored = 0
     updated = 0
+    flipped = 0
     tier_counts = {'PRIME': 0, 'STRONG': 0, 'LEAN': 0, 'SKIP': 0}
     for pick in picks:
         p_a = pick.get('p_winner_a')
@@ -146,6 +166,26 @@ def run(event_date: str | None = None, dry_run: bool = False):
                 if ev_b > 0: rec_side, best_ev = 'b', ev_b
                 elif ev_a > 0: rec_side, best_ev = 'a', ev_a
 
+        # 2026-08-17 sharp-fade: flip to the OPPOSITE side. Recompute EV
+        # against the opposing odds using the historically-observed
+        # inverted rate. Approximation: if raw model p_a is 0.85, actual
+        # rate is ~0.40. Mapped via linear inversion around 0.5. This is
+        # a coarse mapping — real fix is the calibration layer, this is
+        # the safety-net experiment.
+        experiment_flag = None
+        if SHARP_FADE and rec_side is not None:
+            original_side = rec_side
+            rec_side = 'b' if rec_side == 'a' else 'a'
+            # Approximate the actual probability of the flipped side
+            # using observed calibration: model 85% → actual 40% suggests
+            # flip probability = 1 - (raw_model_prob * 0.5 + 0.25).
+            raw_p_flipped = p_b if rec_side == 'b' else p_a
+            approx_actual_p = max(0.35, min(0.75, 1 - (raw_p_flipped * 0.5 + 0.25)))
+            flipped_odds = odds_b if rec_side == 'b' else odds_a
+            best_ev = compute_ev(approx_actual_p, flipped_odds)
+            experiment_flag = f'sharp_fade_from_{original_side}'
+            flipped += 1
+
         # Pass odds_dec so ev_tier can apply the juice-trap PRIME cap
         rec_odds = odds_a if rec_side == 'a' else (odds_b if rec_side == 'b' else None)
         tier = ev_tier(best_ev, conv, rec_odds) if best_ev is not None else 'SKIP'
@@ -157,6 +197,8 @@ def run(event_date: str | None = None, dry_run: bool = False):
             'ev_tier': tier,
             'ev_recommended_side': rec_side,
         }
+        if experiment_flag:
+            payload['experiment_flag'] = experiment_flag
         fname = pick['fighter_a'] if rec_side == 'a' else (pick['fighter_b'] if rec_side == 'b' else '-')
         odds_pick = odds_a if rec_side == 'a' else (odds_b if rec_side == 'b' else '-')
         print(f'  {tier:6s} {ev_a!s:>7} / {ev_b!s:>7}  '
@@ -168,6 +210,8 @@ def run(event_date: str | None = None, dry_run: bool = False):
                 updated += 1
 
     print(f'\nSummary: {scored} scored · {updated} updated')
+    if SHARP_FADE:
+        print(f'  🔀 SHARP-FADE: {flipped} picks flipped to opposite side')
     print(f'Tier distribution: {tier_counts}')
 
     # 2026-08-08 auto-refresh display labels after EV compute.
