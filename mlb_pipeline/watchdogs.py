@@ -422,8 +422,12 @@ def write_alert(alert: dict, run_date: str, dry_run: bool = False) -> None:
         'detail': alert.get('detail'),
         'last_seen_at': datetime.now(timezone.utc).isoformat(),
     }
-    r = requests.post(f'{SB}/rest/v1/watchdog_alerts', headers=H_WRITE,
-                      json=payload, timeout=10)
+    # 2026-08-20 bug fix: on_conflict target must be explicit for
+    # PostgREST upsert. Without it, POST with resolution=merge-duplicates
+    # 409s on the UNIQUE (run_date, check_name) constraint when re-running
+    # the same day (which the workflow does every 2 hrs).
+    r = requests.post(f'{SB}/rest/v1/watchdog_alerts?on_conflict=run_date,check_name',
+                      headers=H_WRITE, json=payload, timeout=10)
     if r.status_code not in (200, 201, 204):
         print(f'    ✗ write failed {r.status_code}: {r.text[:150]}')
 
