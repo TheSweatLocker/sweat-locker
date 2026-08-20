@@ -44,13 +44,18 @@ H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
 # Per-sport results source. Each returns {game_id: (home_score, away_score)}.
+# 2026-08-20: fixed table names — the *_pipeline_results tables never
+# existed. Real tables are *_game_results. This bug silently produced
+# "loaded 0 MLB results" every day since 8/13 → NO ladder rungs ever
+# graded → streak counter stuck at 0. Caught during today's audit
+# when user noticed ladder result=None on the Brewers pick.
 RESULTS_TABLE = {
-    'MLB': 'mlb_pipeline_results',
-    'NFL': 'nfl_pipeline_results',
-    'NCAAF': 'ncaaf_pipeline_results',
-    'NCAAB': 'ncaab_pipeline_results',
-    'NBA': 'nba_pipeline_results',
-    'NHL': 'nhl_pipeline_results',
+    'MLB': 'mlb_game_results',
+    'NFL': 'nfl_game_results',
+    'NCAAF': 'ncaaf_game_results',
+    'NCAAB': 'ncaab_game_results',
+    'NBA': 'nba_game_results',
+    'NHL': 'nhl_game_results',
 }
 
 
