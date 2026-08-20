@@ -813,6 +813,45 @@ def run():
     candidates = extract_leg_candidates(games, props)
     print(f"  Candidate legs before selection: {len(candidates)}")
 
+    # 2026-08-19: primary_play conflict filter. Drop legs that contradict
+    # a STRONG+ ensemble_v2 primary_play in the same game. Prevents Ledger
+    # parlay from including "Diamondbacks +1.5" when Sharp Card has locked
+    # in "Boston Red Sox ML STRONG" for the same matchup.
+    try:
+        from primary_play_gate import primary_play_conflicts
+        games_by_id = {g.get('game_id'): g for g in games if g.get('game_id')}
+        pre_ct = len(candidates)
+        clean = []
+        for c in candidates:
+            gid = c.get('game_id')
+            g = games_by_id.get(gid)
+            # Map DD candidate types to markets recognized by the gate
+            ctype = (c.get('type') or '').lower()
+            sub = (c.get('sub_type') or '').lower()
+            if ctype == 'prop':
+                # Props aren't a side/total pick — pass through.
+                clean.append(c); continue
+            if ctype == 'ml':
+                market = 'rl' if sub == 'runline' else 'ml'
+            elif ctype == 'total':
+                market = 'over' if sub == 'over' else 'under' if sub == 'under' else 'total'
+            elif ctype in ('nrfi',):
+                # NRFI/YRFI live outside standard side/total taxonomy.
+                clean.append(c); continue
+            else:
+                clean.append(c); continue
+            side_label = c.get('pick') or ''
+            conflict = primary_play_conflicts(market, side_label, g or {})
+            if conflict:
+                print(f"  ⚠️ Dropping {c['type']}: {c['pick']} — {conflict}")
+                continue
+            clean.append(c)
+        candidates = clean
+        if pre_ct != len(candidates):
+            print(f"  primary_play filter: {pre_ct} → {len(candidates)}")
+    except ImportError:
+        pass
+
     legs = select_diverse_legs(candidates, tier_rates=tier_rates)
 
     if len(legs) < MIN_LEGS:

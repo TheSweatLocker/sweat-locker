@@ -98,15 +98,28 @@ def get_ladder_eligible_sports() -> list:
 
 
 def check_qualifier(row: dict, sport: str) -> Optional[dict]:
-    """Return a candidate rung dict if the play qualifies, else None.
-    Reads primary_play from the ctx row + scenario/consensus signals."""
+    """Return a candidate step dict if the play qualifies, else None.
+
+    2026-08-19: rewritten to SOFT SCORING. Prior version required ALL 5 gates
+    to pass — the "3 of 5" copy in the UI was already accurate for what we
+    intended, but the backend was actually enforcing 5 of 5. Days with any
+    single mid-tier signal (e.g. Boston ML at 47% MC prob vs 58 threshold)
+    silently rejected every candidate and the ladder sat parked for weeks.
+
+    New behavior: count gates passed, keep the pick, let caller pick the
+    highest-scoring one. Must clear at least 3 of 5 gates (matches UI copy)
+    AND must not trigger a hard blocker (deep juice, sharp-fade, trap flag).
+    """
     pp = row.get('primary_play') or {}
     tier = pp.get('tier')
     if tier not in LADDER_TIER_MIN: return None
 
     # Gate 1: sides only (or totals/yrfi with signal confluence)
-    market = pp.get('type')  # 'ml' | 'over' | 'under' | 'total' | 'spread' | 'yrfi' | 'nrfi'
-    is_side = market in ('ml', 'spread')
+    # 2026-08-20: added 'rl' to is_side alongside 'spread' — ensemble emits
+    # 'rl' as the market for run-line picks, not 'spread'. Prior bug: EVERY
+    # RL-tiered pick got rejected here silently.
+    market = pp.get('type')  # 'ml' | 'over' | 'under' | 'total' | 'spread' | 'rl' | 'yrfi' | 'nrfi'
+    is_side = market in ('ml', 'spread', 'rl')
     is_total = market in ('over', 'under', 'total')
     is_nrfi = market in ('yrfi', 'nrfi')   # 2026-08-14: added YRFI/NRFI as ladder-eligible
     if not (is_side or is_total or is_nrfi): return None
@@ -163,12 +176,25 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
                 win_prob = (mc_probs.get('mc_p_yrfi') or 0) * 100 or None
             elif market == 'nrfi':
                 win_prob = (mc_probs.get('mc_p_nrfi') or 0) * 100 or None
-    if win_prob is None or win_prob < LADDER_WIN_PROB_MIN:
-        return None
+    # Gate scoring — count how many of the 5 gates this pick clears.
+    # Tier is gate #1 (already passed above — we're here because tier is
+    # PRIME/STRONG/LEAN). Others are win_prob, consensus, edge, cohort.
+    gates_passed = 1  # tier
+    gate_notes = [f'tier={tier}']
+
+    if win_prob is not None and win_prob >= LADDER_WIN_PROB_MIN:
+        gates_passed += 1
+        gate_notes.append(f'MC={win_prob:.0f}%✓')
+    else:
+        gate_notes.append(f'MC={win_prob:.0f}%' if win_prob else 'MC=?')
 
     # Consensus check — count lens agreement from signal_confluence_support
     consensus = row.get('signal_confluence_support') or 0
-    if consensus < LADDER_CONSENSUS_MIN: return None
+    if consensus >= LADDER_CONSENSUS_MIN:
+        gates_passed += 1
+        gate_notes.append(f'consensus={consensus}/5✓')
+    else:
+        gate_notes.append(f'consensus={consensus}/5')
 
     # Odds + edge
     home_ml_odds = row.get('home_ml_close') or row.get('home_ml')
@@ -179,20 +205,28 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
         home_team = (row.get('home_team') or '').lower()
         if home_team and home_team in label: odds = home_ml_odds
         else: odds = away_ml_odds
-    if odds is None: return None
+    if odds is None: return None  # hard: can't size without odds
     try: odds_int = int(odds)
     except (TypeError, ValueError): return None
-    if odds_int < LADDER_ABS_JUICE_CAP: return None  # too deep juice
+    if odds_int < LADDER_ABS_JUICE_CAP: return None  # hard: too deep juice
 
     implied = _implied_prob(odds_int)
     if implied is None: return None
-    edge_pp = win_prob - implied
-    if edge_pp < LADDER_EDGE_MIN_PP: return None
+    edge_pp = (win_prob - implied) if win_prob is not None else -999
+    if edge_pp >= LADDER_EDGE_MIN_PP:
+        gates_passed += 1
+        gate_notes.append(f'edge={edge_pp:+.1f}pp✓')
+    else:
+        gate_notes.append(f'edge={edge_pp:+.1f}pp')
 
-    # Cohort backing — pull from primary_play.audit_note if it references a
-    # cohort, or read scenario_audit for the market. Simple pass: if the play
-    # has ANY cohort reference in audit_note, we assume it's backed. Tighten
-    # later once we have per-play cohort attribution stored.
+    # 2026-08-20: cohort backing is now OPTIONAL (bonus signal, not a hard
+    # gate). Prior behavior required regex match on primary_play.audit_note
+    # for "X% n=Y" cohort pattern — but ensemble_v2 audit_notes have a
+    # different format ("ensemble_scorer v2 · N sources · score=... margin=...")
+    # that never matches this regex. Result: EVERY ensemble-tiered pick got
+    # silently rejected by this gate, ladder sat empty for weeks. Now:
+    # try to parse cohort but don't require it; the other 4 gates (tier +
+    # win_prob + consensus + edge) carry the qualification weight.
     cohort_hit = None
     cohort_n = None
     audit = pp.get('audit_note') or ''
@@ -201,11 +235,18 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
     if m:
         cohort_hit = float(m.group(1))
         cohort_n = int(m.group(2))
-    if cohort_hit is None or cohort_hit < LADDER_COHORT_HIT_MIN: return None
-    if cohort_n is None or cohort_n < LADDER_COHORT_N_MIN: return None
+    if (cohort_hit is not None and cohort_hit >= LADDER_COHORT_HIT_MIN
+            and cohort_n is not None and cohort_n >= LADDER_COHORT_N_MIN):
+        gates_passed += 1
+        gate_notes.append(f'cohort={cohort_hit}%✓')
+    elif cohort_hit is not None:
+        gate_notes.append(f'cohort={cohort_hit}%')
 
-    # Sharp-fade / refit-trap check — skip if consensus_fade_flag=true or
-    # primary_play has trap flags
+    # Must clear at least 3 of 5 gates (matches UI copy)
+    if gates_passed < 3:
+        return None
+
+    # Hard blockers: sharp-fade / refit-trap always kill the pick
     if row.get('consensus_fade_flag') is True: return None
     if 'refit_trap' in audit.lower() or 'trap_cap' in audit.lower(): return None
 
@@ -225,11 +266,11 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
         'cohort_hit_rate': cohort_hit,
         'cohort_n': cohort_n,
         'consensus_lens': consensus,
-        'edge_pp': round(edge_pp, 1),
+        'edge_pp': round(edge_pp, 1) if win_prob is not None else None,
+        'gates_passed': gates_passed,
         'qualification_notes': (
-            f'tier={tier} · MC={win_prob:.0f}% vs implied={implied:.0f}% · '
-            f'edge={edge_pp:+.1f}pp · cohort={cohort_hit}% n={cohort_n} · '
-            f'consensus={consensus}/5 · audit={audit[:80]}'
+            f'{gates_passed}/5 gates · ' + ' · '.join(gate_notes) +
+            f' · audit={audit[:60]}'
         ),
     }
 
@@ -242,29 +283,38 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
     for sport in sports:
         ctx_tbl = CTX_TABLE.get(sport)
         if not ctx_tbl: continue
+        # 2026-08-19 bug fix: prior select included home_ml/away_ml which
+        # don't exist in mlb_game_context (only _close columns) — whole query
+        # returned a PostgREST error dict instead of a list, isinstance list
+        # check silently skipped every sport, ladder never fired.
         r = requests.get(f'{SB}/rest/v1/{ctx_tbl}', headers=H_READ,
             params={'game_date': f'eq.{game_date}',
                     'select': 'game_id,game_date,home_team,away_team,primary_play,'
                               'mc_probabilities,signal_confluence_support,'
-                              'home_ml_close,away_ml_close,home_ml,away_ml,'
+                              'home_ml_close,away_ml_close,'
                               'consensus_fade_flag'},
             timeout=15).json()
-        if not isinstance(r, list): continue
+        if not isinstance(r, list):
+            print(f'  ⚠️  {sport} query failed: {r}')
+            continue
         for row in r:
             rung = check_qualifier(row, sport)
             if rung: candidates.append(rung)
     if not candidates:
         print('  no qualifier fired — ladder stays parked')
         return None
-    # Rank by (tier PRIME > STRONG, then edge_pp, then cohort_hit_rate)
+    # Rank by (gates_passed DESC, tier PRIME>STRONG>LEAN, edge_pp DESC).
+    # Highest confluence wins; ties break to stronger tier then bigger edge.
+    tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
     candidates.sort(key=lambda c: (
-        0 if c['tier'] == 'PRIME' else 1,
-        -(c.get('edge_pp') or 0),
-        -(c.get('cohort_hit_rate') or 0),
+        -(c.get('gates_passed') or 0),
+        tier_rank.get(c.get('tier'), 9),
+        -(c.get('edge_pp') or -999),
     ))
     winner = candidates[0]
+    edge_str = f'{winner["edge_pp"]:+.1f}pp' if winner.get('edge_pp') is not None else 'n/a'
     print(f'  🎯 Ladder qualifier: {winner["matchup"]} · {winner["pick_side"]} '
-          f'(edge {winner["edge_pp"]:+.1f}pp, cohort {winner["cohort_hit_rate"]}%)')
+          f'({winner["gates_passed"]}/5 gates, edge {edge_str})')
     return winner
 
 
@@ -272,10 +322,16 @@ def upsert_rung_and_state(rung: dict, dry_run: bool = False) -> None:
     if dry_run:
         print(f'  [DRY] would upsert rung: {rung}')
         return
-    # Insert rung
+    # Insert rung. gates_passed is only in the payload once its migration
+    # (20260819_ladder_gates_passed.sql) is applied — strip it if the column
+    # isn't there yet so this doesn't 400 on days migration hasn't shipped.
+    write_row = {k: v for k, v in rung.items() if k != 'gates_passed'}
+    write_row['qualification_notes'] = (
+        f"[gates={rung.get('gates_passed')}/5] " + (rung.get('qualification_notes') or '')
+    )[:500]
     pr = requests.post(f'{SB}/rest/v1/ladder_rung',
         headers={**H_WRITE, 'Prefer': 'return=representation'},
-        json=rung, timeout=15)
+        json=write_row, timeout=15)
     if pr.status_code not in (200, 201, 204):
         print(f'  rung insert failed: {pr.status_code} {pr.text[:200]}')
         return

@@ -85,10 +85,22 @@ MARKETS_BY_SPORT = {
 # Tier thresholds — v2 defaults, tune after backtest.
 # Note: LEAN.min_score can be overridden at runtime via ensemble_health
 # soft_tighten status (see _current_health_state).
+#
+# 2026-08-19 retune: post-calibration score distribution over 3d (8/17-8/19)
+# was 0 PRIME / 3 STRONG / 29 LEAN / 0 PASS. Top score = 1.05 (TOR RL). Old
+# STRONG bar 1.2 was set for pre-calibration signal environment when raw
+# scores stacked higher; with calibrated weights (edge_weight scales
+# contributions by historical hit_rate above breakeven), the distribution
+# compressed and effectively nothing hits STRONG. Retune:
+#   PRIME 2.0 → 1.5    (still rare, still requires 3+ classes + 0.5 margin)
+#   STRONG 1.2 → 0.7   (14 STRONG on 3d vs 3 before — real tier hierarchy)
+#   LEAN 0.5 → 0.3     (12 LEAN + 6 PASS vs 29 LEAN — filters lowest-conviction)
+# Class + margin gates unchanged — those enforce breadth-of-agreement,
+# threshold retune only reflects the compressed score scale post-calibration.
 TIER_THRESHOLDS = {
-    'PRIME':  {'min_score': 2.0, 'min_classes': 3, 'min_margin': 0.6},
-    'STRONG': {'min_score': 1.2, 'min_classes': 2, 'min_margin': 0.35},
-    'LEAN':   {'min_score': 0.5, 'min_classes': 1, 'min_margin': 0.15},
+    'PRIME':  {'min_score': 1.5, 'min_classes': 3, 'min_margin': 0.5},
+    'STRONG': {'min_score': 0.7, 'min_classes': 2, 'min_margin': 0.3},
+    'LEAN':   {'min_score': 0.3, 'min_classes': 1, 'min_margin': 0.1},
 }
 
 _HEALTH_STATE_CACHE: dict = {}
@@ -685,8 +697,32 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
             tier = candidate_tier
             break
 
-    conviction = int(round(50 + min(win_score * 12, 45)))
-    conviction = max(50, min(95, conviction))
+    # 2026-08-19: PRIME breadth lane. Traditional PRIME requires score≥1.5
+    # (rare — today's Toronto pick at 1.39/1.04/9-sources is just shy).
+    # Second lane: a pick with 5+ independent source classes agreeing AND
+    # margin ≥ 0.7 also earns PRIME even if score is 1.2-1.5. Rewards
+    # broad multi-source confluence, not just single-source magnitude.
+    # This is the "solid pick with solid foundation of data" upgrade —
+    # user asked ensemble to signal high conviction when it's earned.
+    if tier == 'STRONG' and win_score >= 1.2 and win_classes >= 5 and margin >= 0.7:
+        tier = 'PRIME'
+
+    # 2026-08-19: conviction rewritten to widen distribution + weight
+    # margin/class-confluence. Prior formula was `50 + win_score*12` capped
+    # at 95, which pinned nearly every pick into 52-62. User feedback:
+    # "if we are listing the majority of plays at 55ish what are we doing…
+    # looks cheap, feel like we never have conviction." Under the new
+    # formula, a decisive multi-source pick (score 1.5, margin 1.0,
+    # 6 classes) now scores ~88 instead of 68, while marginal picks
+    # (score 0.2, margin 0.1, 2 classes) stay near 54 as they should.
+    #   base:          raw win-score signal    →  50-80
+    #   margin_boost:  how decisive the win    →  +0-15
+    #   classes_boost: how many source classes →  +0-10
+    base = 50 + min(win_score * 10, 30)
+    margin_boost = min(max(margin, 0) * 20, 15)
+    classes_boost = min(max(0, win_classes - 2) * 2, 10)
+    conviction = int(round(base + margin_boost + classes_boost))
+    conviction = max(45, min(97, conviction))
 
     display_label, side, line = _label_from_candidate(winner_cand, ctx)
 

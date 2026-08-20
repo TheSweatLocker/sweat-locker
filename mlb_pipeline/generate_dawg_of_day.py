@@ -865,6 +865,7 @@ def run():
     for g in games:
         d = score_dawg(g, diag=diag, ml_map=ml_map)
         if d:
+            d['_ctx_row'] = g  # stash for primary_play filter below
             dawg_candidates.append(d)
 
     if not dawg_candidates:
@@ -872,6 +873,28 @@ def run():
         for line in diag[:20]:
             print(line)
         return
+
+    # 2026-08-19: primary_play conflict filter. If ensemble_v2 tagged the
+    # FAVORITE (opposite side) as PRIME/STRONG, the Dawg candidate's dog
+    # side directly contradicts the authoritative Sharp Card decision.
+    # Drop it — better to have no Dawg today than one that fights the
+    # ensemble. This is the "sync with playbook/ensemble" fix.
+    try:
+        from primary_play_gate import primary_play_conflicts
+        filtered = []
+        for d in dawg_candidates:
+            g = d.pop('_ctx_row', None)
+            conflict = primary_play_conflicts('ml', f"{d['team']} ML", g or {})
+            if conflict:
+                print(f"  ⚠️ Dropping {d['team']} — {conflict}")
+                continue
+            filtered.append(d)
+        dawg_candidates = filtered
+        if not dawg_candidates:
+            print("  All Dawg candidates conflict with ensemble primary_play — no publish today")
+            return
+    except ImportError:
+        for d in dawg_candidates: d.pop('_ctx_row', None)
 
     dawg_candidates.sort(key=lambda d: d['conviction'], reverse=True)
     top = dawg_candidates[0]
