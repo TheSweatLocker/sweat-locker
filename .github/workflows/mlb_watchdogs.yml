@@ -1,0 +1,43 @@
+name: MLB Watchdogs
+
+# 2026-08-20: silent-failure alerting. Runs every 2 hours during
+# active game hours (12pm-11pm ET), writes tripped alerts to
+# watchdog_alerts table. Every check here catches a real leak the
+# user has personally been the alerting layer for.
+#
+# Exit codes: 0 = clean, 1 = warning/info, 2 = critical
+# GitHub Actions surfaces exit != 0 as a red X — see the run tab.
+
+on:
+  schedule:
+    # Every 2 hours 12pm-10pm ET = 16, 18, 20, 22, 00, 02 UTC
+    - cron: '0 16,18,20,22 * * *'
+    - cron: '0 0,2 * * *'
+  workflow_dispatch:
+
+jobs:
+  watchdogs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      - name: Run watchdogs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python watchdogs.py
