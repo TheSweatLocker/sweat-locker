@@ -4465,8 +4465,27 @@ def run():
             # Defensive: never let gate failure kill POTD entirely
             print(f"  tier gate evaluation error (skipping gate): {_e}")
 
+    # 2026-08-20 always-emit fallback: it's called "Play OF THE DAY" — user
+    # asked why some days it's "no play." Instead of a null result, fall back
+    # to the highest-scoring candidate (any tier) tagged as VALUE. The card
+    # shows the same info, just with a "value pick" label so users know it's
+    # not a PRIME/STRONG. This preserves the daily commitment without
+    # inflating tier claims.
+    if not pick and candidates:
+        pick = candidates[0]  # already sorted by score desc
+        pick['_gate_tier'] = 'VALUE'
+        pick['_gate_direction'] = pick.get('resolver_side', {}).get('direction')
+        pick['_gate_reason'] = (
+            f"No candidate cleared the standard POTD gate today (highest conviction "
+            f"{pick.get('score', 0):.0f}). Falling back to the top-scoring option "
+            f"as the day's value play — sized accordingly."
+        )
+        confidence = 'value'
+        print(f"⚠️ NO STRONG POTD — falling back to top-scoring VALUE pick: "
+              f"{pick.get('away_team')} @ {pick.get('home_team')} score={pick.get('score')}")
+
     if not pick:
-        print("🚫 No model-supported lean anywhere on the board — no POTD posted today.")
+        print("🚫 No candidates on the board at all — no POTD possible.")
         try:
             requests.post(
                 f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport",
@@ -4476,11 +4495,9 @@ def run():
                     "game_id": f"best_bet_{today}",
                     "sport": "none",
                     "narrative": (
-                        "No play on the board today. The slate didn't generate any "
-                        "leans the model has conviction on. Bucket angles + Dawg of "
-                        "the Day are still in the app."
+                        "No games on the board today. Check back when the next slate loads."
                     ),
-                    "data": {"noPlay": True, "reason": "no_model_supported_lean"},
+                    "data": {"noPlay": True, "reason": "no_candidates_at_all"},
                     "fetched_at": datetime.now(timezone.utc).isoformat(),
                 }
             )

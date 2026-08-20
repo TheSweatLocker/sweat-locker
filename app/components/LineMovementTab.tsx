@@ -85,6 +85,38 @@ export default function LineMovementTab({
 }: Props) {
   const [sportFilter, setSportFilter] = React.useState<SportFilter>('ALL');
   const [tierFilter, setTierFilter] = React.useState<TierFilter>('ALL');
+  // 2026-08-20: rolling per-source + agreement-bucket calibration
+  // (sharp_source_calibration + sharp_agreement_calibration tables,
+  // populated nightly by audit_sharp_source_calibration.py).
+  // See project_per_source_tracker_moat_818 — this surfaces the moat.
+  const [sourceCal, setSourceCal] = React.useState<any[]>([]);
+  const [agreementCal, setAgreementCal] = React.useState<any[]>([]);
+  React.useEffect(() => {
+    // Fetch 30d MLB calibration (window covers the effective moat sample)
+    (async () => {
+      try {
+        const {supabase} = require('../lib/supabase');
+        const [{data: src}, {data: agr}] = await Promise.all([
+          supabase.from('sharp_source_calibration')
+            .select('source,market,hit_rate,sample_n,edge_pp,window_label')
+            .eq('sport', 'MLB').eq('window_label', '30d').eq('market', 'ALL'),
+          supabase.from('sharp_agreement_calibration')
+            .select('bucket,market,hit_rate,sample_n,edge_pp,window_label')
+            .eq('sport', 'MLB').eq('window_label', '30d').eq('market', 'ALL'),
+        ]);
+        if (Array.isArray(src)) setSourceCal(src);
+        if (Array.isArray(agr)) setAgreementCal(agr);
+      } catch { /* table not yet migrated — silent fail, header just hides */ }
+    })();
+  }, []);
+  const bestDissentBucket = React.useMemo(() => {
+    // Find the highest-edge DISSENT_ bucket with real n; used for the
+    // header rec ("Following OC dissent wins 77% n=22 last 30d").
+    const dissents = agreementCal.filter((r: any) =>
+      String(r.bucket || '').startsWith('DISSENT_') && (r.sample_n || 0) >= 15);
+    dissents.sort((a: any, b: any) => (b.edge_pp || 0) - (a.edge_pp || 0));
+    return dissents[0] || null;
+  }, [agreementCal]);
 
   // Index source records by source + sport + market for O(1) lookup
   const sourceRecordIdx = React.useMemo(() => {
@@ -183,6 +215,43 @@ export default function LineMovementTab({
 
   return (
     <View>
+      {/* ─── ROLLING PER-SOURCE TRACK RECORD (moat) ───────────────
+          2026-08-20: surface FR/CZ/OC rolling hit rates + best dissent
+          bucket. This is the moat per project_per_source_tracker_moat_818
+          — users see WHICH source has been sharp lately + when to follow
+          the dissenter. Only renders when calibration data has loaded. */}
+      {sourceCal.length > 0 && (
+        <View style={{marginBottom: 14, backgroundColor: T.surface, borderRadius: 10, padding: 10, borderWidth: 1, borderColor: T.border}}>
+          <Text style={{color: T.textDim, fontSize: 10, fontWeight: '800', letterSpacing: 0.6, marginBottom: 6}}>
+            📊 30-DAY SOURCE TRACK RECORD (MLB)
+          </Text>
+          <View style={{flexDirection: 'row', gap: 10, flexWrap: 'wrap'}}>
+            {['FR', 'CZ', 'OC'].map(src => {
+              const row = sourceCal.find((r: any) => r.source === src);
+              if (!row) return null;
+              const hr = row.hit_rate; const n = row.sample_n; const edge = row.edge_pp;
+              const color = hr >= 55 ? T.sharp : hr >= 50 ? T.hrb : T.loss;
+              return (
+                <View key={src} style={{flex: 1, minWidth: 90, backgroundColor: T.surfaceAlt, borderRadius: 8, padding: 8, borderLeftWidth: 2, borderLeftColor: color}}>
+                  <Text style={{color: T.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 0.5}}>{src}</Text>
+                  <Text style={{color: color, fontSize: 16, fontWeight: '900', marginTop: 2}}>{hr != null ? hr.toFixed(1) + '%' : '—'}</Text>
+                  <Text style={{color: T.textDim, fontSize: 10, marginTop: 1}}>n={n}  {edge != null ? (edge >= 0 ? '+' : '') + edge.toFixed(1) + 'pp' : ''}</Text>
+                </View>
+              );
+            })}
+          </View>
+          {bestDissentBucket && bestDissentBucket.edge_pp >= 5 && (
+            <View style={{marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: T.border, flexDirection: 'row', alignItems: 'flex-start', gap: 6}}>
+              <Text style={{color: T.hrb, fontSize: 12, marginTop: 1}}>💡</Text>
+              <Text style={{color: T.textDim, fontSize: 11, flex: 1, lineHeight: 15}}>
+                <Text style={{color: T.sharp, fontWeight: '800'}}>Moat insight: </Text>
+                When only {bestDissentBucket.bucket.replace('DISSENT_', '')} dissents from the other two, following {bestDissentBucket.bucket.replace('DISSENT_', '')} wins <Text style={{color: T.sharp, fontWeight: '700'}}>{bestDissentBucket.hit_rate.toFixed(1)}%</Text> (n={bestDissentBucket.sample_n}, {(bestDissentBucket.edge_pp >= 0 ? '+' : '')}{bestDissentBucket.edge_pp.toFixed(1)}pp edge)
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+
       {/* ─── STRONGEST SIGNALS STRIP ─────────────────────────────── */}
       {topSignals.length > 0 && (
         <View style={{marginBottom: 14}}>
@@ -537,6 +606,27 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
           → {teamForSide(sharpSide)}
         </Text>
       </View>
+      {/* 2026-08-20: MINORITY DISSENT badge. Fires on CONFIRMED (not TRIPLE)
+          because CONFIRMED means 2 of 3 sources agreed and 1 dissented.
+          Per project_per_source_tracker_moat_818: on 30d MLB, the DISSENT
+          side hits 60-77% depending on which source dissents. Users should
+          be aware that this classification has a documented moat when the
+          minority pipes up. Suppressed on TRIPLE (no dissenter). */}
+      {isConfirmed && !isTriple && (
+        <View style={{
+          flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+          paddingVertical: 6, paddingHorizontal: 8, marginBottom: 8,
+          backgroundColor: T.hrb + '18', borderRadius: 6, borderLeftWidth: 2, borderLeftColor: T.hrb,
+        }}>
+          <Text style={{color: T.hrb, fontSize: 11, marginTop: 1}}>💡</Text>
+          <Text style={{color: T.textDim, fontSize: 11, flex: 1, lineHeight: 15}}>
+            <Text style={{color: T.hrb, fontWeight: '800'}}>MINORITY DISSENT: </Text>
+            2 of 3 sources agree here — the 3rd disagrees. Historical pattern
+            (30d MLB): when only OC dissents, OC has been right 77% (n=22).
+            Consider whether the dissenter's side is worth a look.
+          </Text>
+        </View>
+      )}
       <Text style={{color: T.textDim, fontSize: 11, lineHeight: 15, marginBottom: 10}}>{strongest.detail}</Text>
 
       {/* 2026-08-18 consolidation: chip other markets flagged on this
@@ -621,34 +711,35 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
                   <Text style={{color: T.textMuted, fontSize: 9}}>n={row.n}</Text>
                 </View>
               ) : (
-                <Text style={{color: T.textMuted, fontSize: 9, fontStyle: 'italic'}}>track record pending</Text>
+                // 2026-08-20: softer copy — "pending" read as broken/missing.
+                // Aggregate track record IS visible in the header strip at top
+                // of tab (sharp_source_calibration 30d hit rates). Per-market
+                // rate builds up as this source × market accumulates n.
+                <Text style={{color: T.textMuted, fontSize: 9, fontStyle: 'italic'}}>rate building</Text>
               )}
             </View>
           ))}
         </View>
       )}
 
-      {/* ── MODEL ALIGNMENT (kills the "no pick on this game" phantom) ── */}
-      <View style={{
-        flexDirection: 'row', alignItems: 'center', gap: 6,
-        paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6,
-        backgroundColor: alignment === 'aligns' ? T.win + '18'
-                     : alignment === 'fades'  ? T.loss + '18'
-                     : T.border + '22',
-      }}>
-        <Text style={{
-          color: alignment === 'aligns' ? T.win : alignment === 'fades' ? T.loss : T.textMuted,
-          fontSize: 11, fontWeight: '800',
+      {/* ── MODEL ALIGNMENT ── show only when we HAVE a pick on this market.
+          2026-08-19: "No pick published on this market" row removed per user
+          feedback — reads as noise when it fires. If alignment is neither
+          'aligns' nor 'fades' (i.e. we don't have a pick to compare vs the
+          sharp side), skip the row entirely. */}
+      {(alignment === 'aligns' || alignment === 'fades') && (
+        <View style={{
+          flexDirection: 'row', alignItems: 'center', gap: 6,
+          paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6,
+          backgroundColor: alignment === 'aligns' ? T.win + '18' : T.loss + '18',
         }}>
-          {alignment === 'aligns' ? '✅ Model agrees with sharps'
-           : alignment === 'fades' ? '⚠️ Model conflicts — sharp fading our pick'
-           : '⚪ Model neutral on this game'}
-        </Text>
-      </View>
-      {alignment === 'neutral' && (
-        <Text style={{color: T.textMuted, fontSize: 10, marginTop: 4, lineHeight: 14, fontStyle: 'italic'}}>
-          We didn't publish a pick here. Sharp side may still be worth a tail — cross-check the deep dive.
-        </Text>
+          <Text style={{
+            color: alignment === 'aligns' ? T.win : T.loss,
+            fontSize: 11, fontWeight: '800',
+          }}>
+            {alignment === 'aligns' ? '✅ Our pick aligns with sharps' : '⚠️ Our pick opposes the sharps'}
+          </Text>
+        </View>
       )}
 
       {/* ── TAP HINT ─────────────────────────────────────────────── */}

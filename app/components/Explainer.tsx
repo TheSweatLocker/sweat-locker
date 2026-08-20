@@ -73,12 +73,12 @@ export default function Explainer({
     <View>
       <TouchableOpacity onPress={toggle} hitSlop={{top:6,bottom:6,left:6,right:6}}
                         style={{flexDirection:'row', alignItems:'center', gap:3}}>
+        {/* 2026-08-20: dropped dotted-underline styling — read as "weird
+            underscores" under xERA / wRC+ etc labels. The ⓘ icon alone
+            signals tap-to-explain, cleaner visual. */}
         {children ? children : (
           <Text style={[{
             color: open ? activeColor : color,
-            textDecorationLine: 'underline',
-            textDecorationStyle: 'dotted',
-            textDecorationColor: color + '88',
           }, textStyle]}>{term}</Text>
         )}
         <Text style={{color: open ? activeColor : color + 'AA', fontSize:10, fontWeight:'700'}}>ⓘ</Text>

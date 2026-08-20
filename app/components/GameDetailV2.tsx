@@ -487,15 +487,16 @@ function JerryReadSection({narrative, loading, synthesis}: {
       <View style={styles.jerryHeader}>
         <Text style={styles.jerryTitle}>🧠 JERRY'S READ</Text>
       </View>
-      {synthesis?.call_text && (
-        <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8,flexWrap:'wrap'}}>
-          <View style={{backgroundColor:chipColor + '22',borderColor:chipColor + '44',borderWidth:1,paddingHorizontal:10,paddingVertical:4,borderRadius:8}}>
-            <Text style={{color:chipColor,fontWeight:'800',fontSize:13}}>{synthesis.call_text} · {conv}</Text>
-          </View>
-          {isAmRead && (
-            <Text style={{color:C.textMuted,fontSize:10,fontStyle:'italic'}}>AM read · refreshes 2pm ET</Text>
-          )}
-        </View>
+      {/* 2026-08-20: removed the synthesis chip ({call_text · conviction}).
+          Post-ensemble cutover (8/17), primary_play IS the authoritative pick
+          and it's already rendered prominently in the "🔒 THE PLAY" card
+          above. Showing the same tier/pick again inside JERRY'S READ was
+          duplicative and confusing users (e.g., "why is there STRONG Boston
+          ML twice on this screen"). Kept only the AM-read timestamp hint. */}
+      {isAmRead && (
+        <Text style={{color:C.textMuted,fontSize:10,fontStyle:'italic',marginBottom:8}}>
+          AM read · refreshes 2pm ET
+        </Text>
       )}
       <Text style={styles.jerryBody}>{shown}</Text>
       {isLong && (

@@ -279,6 +279,18 @@ def build_chalk_parlay(picks: list[dict], target_odds_range: tuple = (-180, 175)
     tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2, 'CHALK_ONLY': 3}
     candidates.sort(key=lambda p: (tier_rank.get(p['tier'], 9), -p.get('conviction', 0)))
 
+    # 2026-08-20: dedupe by game_id BEFORE slicing. Bug: chalk trio could
+    # pick 'Tampa Bay Rays ML' twice if the pool had multiple rows for the
+    # same game (e.g., ensemble output surfacing both primary_play and
+    # supplementary market on same game). One team per trio.
+    seen_games = set()
+    dedup_candidates = []
+    for c in candidates:
+        gid = c.get('game_id')
+        if gid and gid in seen_games: continue
+        if gid: seen_games.add(gid)
+        dedup_candidates.append(c)
+    candidates = dedup_candidates
     # Try 3-leg first (bigger chalk stack), then 2-leg
     for n_legs in (3, 2):
         if len(candidates) < n_legs: continue

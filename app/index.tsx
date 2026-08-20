@@ -1777,6 +1777,11 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [sharpLoading, setSharpLoading] = useState(false);
   const [sharpSport, setSharpSport] = useState('NBA');
    const [propJerrySport, setPropJerrySport] = useState('MLB');
+   // 2026-08-19: sub-tabs by prop-type category. 'ALL' surfaces everything;
+   // categories group over/under of same market (HITS = hits_over+hits_under)
+   // so users can drill into "just the K props" etc. Sport-universal — each
+   // sport builds its own category set on load from the fetched props.
+   const [propTypeFilter, setPropTypeFilter] = useState<string>('ALL');
    const [jerryHistory, setJerryHistory] = useState([]);
   const [jerryRecord, setJerryRecord] = useState(null);
   const [jerryRecordLoading, setJerryRecordLoading] = useState(false);
@@ -1842,6 +1847,9 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   // only, orthogonal to sort mode. Users who want maximum-signal games only
   // toggle this on; sort mode still determines ordering of what's visible.
   const [gamesPrimeOnly, setGamesPrimeOnly] = useState(false);
+  // 2026-08-20: Strong+ toggle — user asked for filters that fire more often
+  // than PRIME (which is rare). Strong+ shows PRIME OR STRONG.
+  const [gamesStrongOnly, setGamesStrongOnly] = useState(false);
   // ── Steam Room (2026-08-13) ──────────────────────────────────────────
   // Line Movement + Ladder tabs. Data pulled from line_history + line_snapshot
   // (fed by write_line_history.py + write_line_snapshot.py) and line_movement_flags
@@ -7278,23 +7286,24 @@ if(mkt.key === 'pitcher_props') {
         // or migration not applied). Sort by refit-first, conviction-second.
         try {
           const etStr = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
-          const {data: refitRows} = await supabase
-            .from(cfg.table)
-            .select('player_name,prop_type,direction,game_id,refit_conviction')
-            .eq('game_date', etStr)
-            .not('refit_conviction', 'is', null);
+          // 2026-08-20: parallelize refit + Jerry-synth fetches. Prior sequential
+          // pattern added ~400-700ms visible lag opening the tab (user's #10 gripe).
+          const [refitRes, jerryRes] = await Promise.all([
+            supabase.from(cfg.table)
+              .select('player_name,prop_type,direction,game_id,refit_conviction')
+              .eq('game_date', etStr)
+              .not('refit_conviction', 'is', null),
+            supabase.from('prop_jerry_reads')
+              .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction')
+              .eq('sport', cfg.propJerryFilter)
+              .eq('game_date', etStr),
+          ]);
+          const refitRows = refitRes.data;
+          const jerryRows = jerryRes.data;
           const refitMap: Record<string, number> = {};
           for (const r of (refitRows || [])) {
             refitMap[`${r.game_id}|${r.player_name}|${r.prop_type}|${r.direction}`] = r.refit_conviction;
           }
-          // Prop Jerry synthesis merge (2026-07-31d · prop_jerry_reads).
-          // Sport-universal: filter by sport='MLB'; when NBA/NFL props ship
-          // this block iterates via sport dispatch (per-sport surface).
-          const {data: jerryRows} = await supabase
-            .from('prop_jerry_reads')
-            .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction')
-            .eq('sport', cfg.propJerryFilter)
-            .eq('game_date', etStr);
           const jerryMap: Record<string, any> = {};
           for (const r of (jerryRows || [])) {
             jerryMap[`${r.game_id}|${r.player_name}|${r.prop_type}|${r.direction}`] = r;
@@ -8643,8 +8652,11 @@ setJerryHistory(prev => {
           sport: 'MLB', matchup: `${g.away_team} @ ${g.home_team}`,
           tier: pp.tier, pick: pp.label || '—',
           type: pp.type || 'ml', reason: pp.sub || '',
-          // 2026-08-18: attach the actual odds so the play card can render them
-          odds: pp.type === 'ml' ? sideML : null,
+          // 2026-08-18: attach the actual odds so the play card can render them.
+          // 2026-08-20: RL/total default to -110 (standard vig) if we don't have
+          // exact book odds cached — user asked for odds on EVERY play, not
+          // just ML. When we eventually cache spread/total prices, wire here.
+          odds: pp.type === 'ml' ? sideML : -110,
           line: pp.line ?? g.close_spread ?? g.close_total,
           units: unitsForPick({tier: pp.tier, type: pp.type || 'ml', sidePriceAmerican: sideML}),
         };
@@ -8664,6 +8676,23 @@ setJerryHistory(prev => {
         const k = `${d.player_name}|${d.prop_type}|${d.direction}|${d.prop_line}`;
         playbookByKey[k] = d;
       });
+      // 2026-08-19: defensive filter for player_team ↔ matchup mismatch.
+      // Jeff McNeil (Mets) was surfaced as PRIME in the OAK @ KC game because
+      // player_team was set to "Athletics" by fetch_projected_lineup — a
+      // roster-attribution bug in generate_props. Root cause fix pending;
+      // meanwhile this guard blocks the class from hitting the Sharp Card.
+      // If player_team is set and its short name doesn't appear in the
+      // matchup string, we drop the pick.
+      const propTeamMatches = (p: any) => {
+        const team = (p.player_team || '').trim().toLowerCase();
+        if (!team || team === 'unknown') return true; // unknown OK — cosmetic only
+        const m = (p.matchup || '').toLowerCase();
+        if (!m) return true;
+        const short = team.split(' ').pop() || '';
+        // 'Sox' collides Boston/CWS → require full-team match for that suffix
+        if (short === 'sox') return m.includes(team);
+        return m.includes(short) || m.includes(team);
+      };
       const mlbPropPicks = (mlbProps || []).map((p: any) => {
         const pbKey = `${p.player_name}|${p.prop_type}|${p.direction}|${p.prop_line}`;
         const pb = playbookByKey[pbKey];
@@ -8677,8 +8706,9 @@ setJerryHistory(prev => {
           line: p.prop_line,
           units: unitsForPick({tier: effectiveTier, type: 'prop', prop_type: p.prop_type, odds: propOdds}),
           playbook_lifted: PROP_PLAYBOOK_ENABLED && pb?.playbook_tier && effectiveTier !== p.tier,
+          _raw: p, // keep raw for attribution filter
         };
-      }).filter((pick: any) => isPS(pick.tier) && pick.units > 0);
+      }).filter((pick: any) => isPS(pick.tier) && pick.units > 0 && propTeamMatches(pick._raw));
       const otherPicks: any[] = [];
       for (const [sport, rows] of [['NFL', nflCtx], ['NCAAF', ncaafCtx], ['NCAAB', ncaabCtx]] as [string, any[]][]) {
         (rows || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).forEach((g: any) => {
@@ -8699,26 +8729,39 @@ setJerryHistory(prev => {
         const side = r.call_side;
         const picked = side === 'A' ? inp.fighter_a : inp.fighter_b;
         const odds = inp.odds_picked_side_median;
+        // 2026-08-20: UFC juice-adjusted sizing. Backtest of 24 graded picks
+        // showed heavy-fav PRIMEs bleed units (dec ≤ 1.5 = -200+ American =
+        // 66.7% break-even but model calibration doesn't reliably clear it).
+        // Half-size PRIME/STRONG when odds are heavy fav territory. Sample
+        // is thin so this is a defensive move, not a calibrated rule.
+        // See project_ufc_model_broken_817 tracking memo.
+        const baseUnits = unitsForTier(inp.ev_tier);
+        const halveJuice = (odds !== undefined && odds !== null && odds <= -180) ? 0.5 : 1;
         return {
           sport: 'UFC', matchup: `${inp.fighter_a} vs ${inp.fighter_b}`,
           tier: inp.ev_tier || '—',
           pick: `${picked} ML${odds ? `  (${odds > 0 ? '+' : ''}${odds})` : ''}`,
           type: 'ml',
           reason: `Win prob ${inp.win_probability_pct}% @ ${odds}`,
-          units: unitsForTier(inp.ev_tier),
+          units: baseUnits * halveJuice,
         };
       });
       setSharpPicks([...mlbSidePicks, ...mlbPropPicks, ...otherPicks, ...ufcPicks]);
 
       // ── HISTORICAL RECORD (real odds per pick, unit-weighted) ──
-      // 2026-08-17: rolling calendar-month windowing. Sharp record shows
-      // current month + previous month tallies separately. Prevents
-      // recency bias vs old picks and gives a comparable "how are we
-      // doing THIS month vs LAST month" view.
+      // 2026-08-17: rolling calendar-month windowing.
+      // 2026-08-20: RESET EPOCH per user — prior sides record assumed flat
+      // -110 payout on every jerry pick, but real ML/RL/total prices vary
+      // wildly. Record was misleading. Fresh start from 2026-08-20 using
+      // snapshot-locked odds where available; sides still fall back to
+      // -110 (best we have until we snapshot side odds too — separate work).
+      const SHARP_RECORD_EPOCH = '2026-08-20';
       const nowD = new Date();
-      const curMonthStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().slice(0,10);
+      const curMonthStartRaw = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().slice(0,10);
+      const curMonthStart = curMonthStartRaw > SHARP_RECORD_EPOCH ? curMonthStartRaw : SHARP_RECORD_EPOCH;
       const prevMonthStart = new Date(nowD.getFullYear(), nowD.getMonth()-1, 1).toISOString().slice(0,10);
       const prevMonthEnd = new Date(nowD.getFullYear(), nowD.getMonth(), 0).toISOString().slice(0,10);
+      // Prev-month display only shown if it's ≥ epoch (else hides via total=0 check in UI)
 
       let w=0, l=0, p=0, unitsNet=0;               // current month
       let wPrev=0, lPrev=0, pPrev=0, unitsNetPrev=0;  // previous month
@@ -8738,13 +8781,18 @@ setJerryHistory(prev => {
         }
       };
 
+      // 2026-08-20: epoch guard — ignore ALL picks pre-2026-08-20 (before
+      // the record reset). Prevents old flat-110-assumption tallies from
+      // polluting the fresh record.
       (jerryHist || []).forEach((r: any) => {
         const gd = r.game_date || '';
+        if (gd < SHARP_RECORD_EPOCH) return;
         if (gd >= curMonthStart) bump(r, 0.91, true);
         else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, 0.91, false);
       });
       (propsHist || []).forEach((r: any) => {
         const gd = r.game_date || '';
+        if (gd < SHARP_RECORD_EPOCH) return;
         const payout = winPayoutFromAmerican(r.book_line);
         if (gd >= curMonthStart) bump(r, payout, true);
         else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, payout, false);
@@ -9749,12 +9797,19 @@ setJerryHistory(prev => {
             {/* TEAM STATS TAB */}
         {matchupTab==='stats'&&(()=>{
           if(gamesSport==='NHL') return(
+            // 2026-08-20: sharper NHL placeholder. Real stats plumbed from
+            // MoneyPuck (xGF/xGA, xGF%, corsi, PDO, PP/PK ranks) drops
+            // ahead of Oct 7 puck drop. Same visual polish MLB/UFC has once
+            // team_stats table is populated for NHL.
             <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:THEME.border,alignItems:'center'}}>
               <Text style={{fontSize:32}}>🏒</Text>
               <Text style={{color:THEME.text,fontWeight:'800',fontSize:16,marginTop:12}}>NHL Team Stats</Text>
-              <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Advanced team stats and efficiency data will be available for the 2026-27 NHL season.</Text>
+              <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>
+                Full stat card lands with the 2026-27 season opener (Oct 7).{'\n'}
+                We'll surface xGF%, corsi, PDO, PP/PK ranks, and last-10 form here — same treatment as MLB/UFC.
+              </Text>
               <View style={{marginTop:12,backgroundColor:THEME.hrb + '1A',borderRadius:10,paddingHorizontal:14,paddingVertical:8,borderWidth:1,borderColor:THEME.hrb + '4C'}}>
-                <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11}}>🔜 COMING NEXT SEASON</Text>
+                <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11}}>🔜 SEASON OPENER · OCT 7</Text>
               </View>
             </View>
           );
@@ -12094,11 +12149,20 @@ setJerryHistory(prev => {
     </TouchableOpacity>
   ))}
 </View>
+{/* 2026-08-20: added Strong+ toggle. Prime Only alone was useless when
+    slate has 0 PRIME picks. Strong+ gives users a meaningful filter that
+    fires most days. Toggles are mutually exclusive — clicking Strong+
+    clears Prime, clicking Prime clears Strong+. */}
 <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
   <TouchableOpacity
     style={[styles.chipBtn,gamesPrimeOnly&&styles.chipBtnActive,{flex:1,justifyContent:'center',alignItems:'center'}]}
-    onPress={()=>setGamesPrimeOnly(v=>!v)}>
+    onPress={()=>{ setGamesPrimeOnly(v=>!v); if(!gamesPrimeOnly) setGamesStrongOnly(false); }}>
     <Text style={[styles.chipTxt,gamesPrimeOnly&&styles.chipTxtActive,{textAlign:'center'}]}>🔒 Prime Only {gamesPrimeOnly?'✓':''}</Text>
+  </TouchableOpacity>
+  <TouchableOpacity
+    style={[styles.chipBtn,gamesStrongOnly&&styles.chipBtnActive,{flex:1,justifyContent:'center',alignItems:'center'}]}
+    onPress={()=>{ setGamesStrongOnly(v=>!v); if(!gamesStrongOnly) setGamesPrimeOnly(false); }}>
+    <Text style={[styles.chipTxt,gamesStrongOnly&&styles.chipTxtActive,{textAlign:'center'}]}>🎯 Strong+ Only {gamesStrongOnly?'✓':''}</Text>
   </TouchableOpacity>
 </View>
 
@@ -12714,9 +12778,19 @@ setJerryHistory(prev => {
   // modelMismatch=45 + situationalEdge=50 placeholders), which was
   // leaking non-PRIME games into the Prime Only view. Strict tier check
   // guarantees only games the pipeline itself scored as PRIME show up.
-  if(gamesPrimeOnly) {
-    const serverTier = sweatScores[game.id]?.tier;
-    if (serverTier !== 'PRIME') return false;
+  if(gamesPrimeOnly || gamesStrongOnly) {
+    // 2026-08-20: switched from sweatScores.tier to primary_play.tier
+    // (the ensemble output, the authoritative pick). sweatScore was
+    // an OLDER metric that didn't align with the ensemble cutover.
+    const ctxAny: any = mlbGameContext[game.id]
+      || Object.values(mlbGameContext).find((c: any) =>
+           c.home_team === game.home_team || c.away_team === game.away_team);
+    const ppTier = ctxAny?.primary_play?.tier;
+    // Fall back to sweatScore tier if no primary_play (non-MLB sports may
+    // not have ensemble output yet).
+    const effectiveTier = ppTier || sweatScores[game.id]?.tier;
+    if (gamesPrimeOnly && effectiveTier !== 'PRIME') return false;
+    if (gamesStrongOnly && effectiveTier !== 'PRIME' && effectiveTier !== 'STRONG') return false;
   }
   // Search filter
   if(gamesSearch === '') return true;
@@ -12725,13 +12799,25 @@ setJerryHistory(prev => {
 }).sort((a, b) => {
   if(gamesSort === 'time') return new Date(a.commence_time) - new Date(b.commence_time);
   if(gamesSort === 'score') {
-    // Conviction = tier weight × 1000 + score. Ensures PRIME > STRONG > LEAN
-    // regardless of raw score; score is a tiebreak within tier.
+    // 2026-08-20: Conviction now driven by primary_play (ensemble output),
+    // not the older sweatScore. PRIME > STRONG > LEAN by tier; ensemble
+    // score is the tiebreak within tier. Falls back to sweatScore only
+    // when primary_play isn't populated (non-MLB or pre-ensemble games).
     const tierWt = (t: string) => t==='PRIME'?3:t==='STRONG'?2:t==='LEAN'?1:0;
-    const scoreA = sweatScores[a.id]?.total || getSweatScoreForGame(a, gamesSport)?.total || 0;
-    const scoreB = sweatScores[b.id]?.total || getSweatScoreForGame(b, gamesSport)?.total || 0;
-    const tierA = sweatScores[a.id]?.tier || getSweatScoreForGame(a, gamesSport)?.tier || '';
-    const tierB = sweatScores[b.id]?.tier || getSweatScoreForGame(b, gamesSport)?.tier || '';
+    const getPP = (g: any) => {
+      const ctxAny: any = mlbGameContext[g.id]
+        || Object.values(mlbGameContext).find((c: any) =>
+             c.home_team === g.home_team || c.away_team === g.away_team);
+      return ctxAny?.primary_play;
+    };
+    const ppA = getPP(a); const ppB = getPP(b);
+    // Convert ensemble score (0-2+ range) to 0-100 scale for tiebreak sanity
+    const scoreA = ppA?.score != null ? Math.round(ppA.score * 50) :
+                   (sweatScores[a.id]?.total || getSweatScoreForGame(a, gamesSport)?.total || 0);
+    const scoreB = ppB?.score != null ? Math.round(ppB.score * 50) :
+                   (sweatScores[b.id]?.total || getSweatScoreForGame(b, gamesSport)?.total || 0);
+    const tierA = ppA?.tier || sweatScores[a.id]?.tier || getSweatScoreForGame(a, gamesSport)?.tier || '';
+    const tierB = ppB?.tier || sweatScores[b.id]?.tier || getSweatScoreForGame(b, gamesSport)?.tier || '';
     return (tierWt(tierB) * 1000 + scoreB) - (tierWt(tierA) * 1000 + scoreA);
   }
   if(gamesSort === 'edge') {
@@ -13018,7 +13104,7 @@ setJerryHistory(prev => {
       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start'}}>
   <View style={{flex:1}}>
     <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🎤 PROP JERRY</Text>
-    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Top prop edges from our pipeline — conviction-tiered matchup plays (MLB). Market EV scanning for other sports while we build out their models.</Text>
+    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Prop Jerry runs the full signal stack — L5/L10 form, matchup, model projections — like a quant, then flags the highest-conviction picks.</Text>
   </View>
   <TouchableOpacity onPress={async()=>{const lastRefresh=await AsyncStorage.getItem('propjerry_last_refresh');if(lastRefresh&&Date.now()-parseInt(lastRefresh)<5*60*1000){showToast('⏳ Wait 5 minutes between refreshes');return;}await AsyncStorage.setItem('propjerry_last_refresh',String(Date.now()));try{await AsyncStorage.removeItem(PROP_JERRY_CACHE_KEY+'_'+propJerrySport);}catch(e){}try{await supabase.from('prop_jerry_cache').delete().eq('sport',propJerrySport);}catch(e){}fetchPropJerry(propJerrySport);}} style={{alignItems:'center',gap:3}}>
     <Text style={{fontSize:18}}>🔄</Text>
@@ -13066,26 +13152,34 @@ setJerryHistory(prev => {
       </View>
     </ScrollView>
 
-    {/* Non-MLB sports: sport-specific model transparency banner */}
+    {/* Non-MLB sports: sport-specific model transparency banner.
+        2026-08-19: rewritten to be accurate — Prop Jerry evaluates ALL
+        signal stacks (form, matchup, projections), it does NOT do "market
+        EV scanning". Per-sport wording reflects current pipeline maturity.
+        NFL live for regular season (Sept 4+); others still building. */}
     {propJerrySport !== 'MLB' && (
       <View style={{backgroundColor:THEME.hrb + '14',borderRadius:10,padding:10,marginBottom:12,borderWidth:1,borderColor:THEME.hrb + '40',flexDirection:'row',alignItems:'flex-start',gap:10}}>
-        <Text style={{fontSize:18}}>{propJerrySport === 'NHL' ? 'ℹ️' : '🚧'}</Text>
+        <Text style={{fontSize:18}}>{propJerrySport === 'NFL' ? '🏈' : '🚧'}</Text>
         <Text style={{color:THEME.textDim,fontSize:11,flex:1,lineHeight:16}}>
-          {propJerrySport === 'NHL' ? (
+          {propJerrySport === 'NFL' ? (
             <>
-              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NHL — Market Analysis Only.</Text> No proprietary NHL pipeline yet. Props show EV edges based on line movement, book consensus, and goalie matchup data from our scraper. Proprietary NHL model planned for later this season.
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NFL props — full playbook active.</Text> Same quant treatment as MLB — L4-L6 player form, defensive matchup, model projection edges. Live for regular season.
+            </>
+          ) : propJerrySport === 'NHL' ? (
+            <>
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NHL props — coming this season.</Text> Full playbook (player L10 form, opp goalie save%, line role, PP time) rolls out ahead of October puck drop.
             </>
           ) : propJerrySport === 'NBA' ? (
             <>
-              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NBA pipeline props coming soon.</Text> Currently showing market EV scanning across books. Proprietary NBA matchup model (net rating, opp DefRtg, pace, usage, injury context) rolling out post-launch with the playoff stretch.
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NBA props — coming this season.</Text> Full playbook (player L10-L15 form, opp DefRtg by category, pace, matchup) rolls out ahead of tip-off week.
             </>
           ) : propJerrySport === 'UFC' ? (
             <>
-              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>UFC — Fighter Stats + Market EV.</Text> UFC scraper refreshes Thursdays with SLpM, TD defense, finishing rate, reach, stance. Props use both fighter-matchup stats and market EV scanning. Full pipeline conviction tiers coming post-launch.
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>UFC props — fighter stack active.</Text> Playbook reads SLpM, takedown defense, finishing rate, reach, stance. Adding weight-cut and layoff signals over the next few cards.
             </>
           ) : (
             <>
-              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{propJerrySport} pipeline props coming soon.</Text> Current picks use market EV scanning — our proprietary matchup model is live for MLB only today.
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{propJerrySport} props — coming soon.</Text> Playbook build in progress. When live, it evaluates the same signal stack Prop Jerry uses across sports.
             </>
           )}
         </Text>
@@ -13122,12 +13216,70 @@ setJerryHistory(prev => {
             </View>
           );
         })()
-      ) : (
+      ) : (() => {
+        // 2026-08-19: sub-tab filter by prop-type category. Group over/under
+        // of the same market together (HITS = hits_over + hits_under). Sport-
+        // universal — builds category set from the actual fetched props.
+        const PROP_TYPE_LABELS: Record<string, {label: string; emoji: string}> = {
+          hits:  {label: 'HITS',  emoji: '⚾'},
+          ks:    {label: 'K',     emoji: '⚡'},
+          bb:    {label: 'BB',    emoji: '🎯'},
+          ha:    {label: 'HITS ALLOWED', emoji: '🥎'},
+          outs:  {label: 'OUTS',  emoji: '⏱'},
+          er:    {label: 'ER',    emoji: '🔥'},
+        };
+        const catFor = (pt: string): string => (pt || '').split('_')[0];
+        const catCounts: Record<string, number> = {};
+        pipelineMLBProps.forEach(p => {
+          const c = catFor(p.prop_type);
+          if (c) catCounts[c] = (catCounts[c] || 0) + 1;
+        });
+        const availableCats = Object.keys(catCounts).sort((a, b) => catCounts[b] - catCounts[a]);
+        const shown = propTypeFilter === 'ALL'
+          ? pipelineMLBProps
+          : pipelineMLBProps.filter(p => catFor(p.prop_type) === propTypeFilter);
+        return (
         <>
+          {/* Sub-tab strip: ALL + one chip per available prop-type category */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:10}}>
+            <View style={{flexDirection:'row', gap:6}}>
+              <TouchableOpacity
+                style={[styles.chipBtn, propTypeFilter === 'ALL' && styles.chipBtnActive]}
+                onPress={() => setPropTypeFilter('ALL')}
+              >
+                <Text style={[styles.chipTxt, propTypeFilter === 'ALL' && styles.chipTxtActive]}>
+                  ALL · {pipelineMLBProps.length}
+                </Text>
+              </TouchableOpacity>
+              {availableCats.map(cat => {
+                const meta = PROP_TYPE_LABELS[cat] || {label: cat.toUpperCase(), emoji: ''};
+                const active = propTypeFilter === cat;
+                return (
+                  <TouchableOpacity
+                    key={cat}
+                    style={[styles.chipBtn, active && styles.chipBtnActive]}
+                    onPress={() => setPropTypeFilter(cat)}
+                  >
+                    <Text style={[styles.chipTxt, active && styles.chipTxtActive]}>
+                      {meta.emoji} {meta.label} · {catCounts[cat]}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </ScrollView>
           <Text style={{color:THEME.textMuted,fontSize:11,marginBottom:12,textAlign:'center'}}>
-            {pipelineMLBProps.length} matchup edges • Model-driven, no market filter
+            {shown.length}{propTypeFilter !== 'ALL' ? ` ${propTypeFilter.toUpperCase()}` : ''} matchup edges • Model-driven, no market filter
           </Text>
-          {pipelineMLBProps.map((prop, i) => {
+          {shown.length === 0 && propTypeFilter !== 'ALL' && (
+            <View style={{alignItems:'center', paddingVertical:24}}>
+              <Text style={{fontSize:24}}>🎣</Text>
+              <Text style={{color:THEME.textDim, fontSize:13, marginTop:8, textAlign:'center'}}>
+                No {propTypeFilter.toUpperCase()} edges surfaced today.{'\n'}Try another category.
+              </Text>
+            </View>
+          )}
+          {shown.map((prop, i) => {
             const tierColor = prop.tier === 'PRIME' ? THEME.accent : prop.tier === 'STRONG' ? THEME.sharp : THEME.textDim;
             const signals = prop.signals || {};
             // Projected Ks (server-computed, lives in signals as _projected_ks).
@@ -13187,16 +13339,36 @@ setJerryHistory(prev => {
                     <Text style={{color:THEME.textMuted, fontSize:11, marginTop:2}}>{prop.matchup}</Text>
                   </View>
                   <View style={{alignItems:'center'}}>
-                    <View style={{width:56, height:56, borderRadius:28, borderWidth:2, borderColor:tierColor, alignItems:'center', justifyContent:'center', backgroundColor:tierColor+'15'}}>
-                      {/* Refit conviction preferred (2026-07-31); falls back to legacy conviction */}
-                      <Text style={{color:tierColor, fontWeight:'900', fontSize:20}}>{Math.round(prop.display_conviction ?? prop.conviction)}</Text>
-                    </View>
-                    <View style={{marginTop:3}}>
-                      <TierChip tier={prop.tier} size="sm" outlined color={tierColor} />
-                    </View>
-                    {prop.refit_conviction != null && (
-                      <Text style={{color:THEME.textMuted, fontSize:8, fontWeight:'700', marginTop:2, letterSpacing:0.4}}>REFIT v1</Text>
-                    )}
+                    {/* 2026-08-19: TIER is now the visual anchor (drives sharp
+                        card sizing + user's mental model). Refit conviction is
+                        a small caption underneath — kept for transparency but
+                        no longer contradicts the tier (was "100 LEAN" trap
+                        where the big number implied stronger than the tier).
+                        Refit only shown when it materially agrees with tier
+                        (>= 50 for LEAN, >= 60 for STRONG, >= 70 for PRIME);
+                        below those it's noise vs the tier and would confuse. */}
+                    {(() => {
+                      const refit = prop.refit_conviction;
+                      const tier = prop.tier;
+                      const refitAlignsTier =
+                        refit == null ? false :
+                        tier === 'PRIME' ? refit >= 70 :
+                        tier === 'STRONG' ? refit >= 60 :
+                        tier === 'LEAN' ? refit >= 50 :
+                        false;
+                      return (
+                        <>
+                          <View style={{width:80, height:56, borderRadius:12, borderWidth:2, borderColor:tierColor, alignItems:'center', justifyContent:'center', backgroundColor:tierColor+'15', paddingHorizontal:8}}>
+                            <TierChip tier={tier} size="sm" outlined color={tierColor} />
+                          </View>
+                          {refitAlignsTier && (
+                            <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'700', marginTop:4, letterSpacing:0.3}}>
+                              Refit {Math.round(refit)}
+                            </Text>
+                          )}
+                        </>
+                      );
+                    })()}
                   </View>
                 </View>
 
@@ -13206,14 +13378,69 @@ setJerryHistory(prev => {
                   // {label, value, suffix, prose} — label is wrapped in
                   // <Explainer> so users can tap "xERA" / "wRC+" / etc.
                   // for a one-sentence definition.
-                  const humanized = signalEntries
+                  // 2026-08-19: section renamed MODEL SIGNALS → WHY WE BACK
+                  // THIS per user feedback. Same signals under a header users
+                  // actually read. Also filtered out internal audit keys
+                  // (juice_trap_spared/demoted, _display_label, _pre_recal_tier,
+                  // etc.) that were noise in the bullet list — they get
+                  // surfaced elsewhere or not at all.
+                  const INTERNAL_KEYS = new Set([
+                    '_display_label','_book_line','_pre_recal_tier','_recal_multiplier',
+                    '_edge_at_book','_projected_bb','_projected_bb_l7_raw','_projected_ks',
+                    '_projected_hits','book_recalibration','juice_trap_spared','juice_trap_demoted',
+                  ]);
+                  const filteredEntries = signalEntries.filter(([k]) => !INTERNAL_KEYS.has(k) && !k.startsWith('_'));
+                  const humanized = filteredEntries
                     .map(([k, v]) => humanizeSignal(k, v))
                     .filter((r): r is SignalChip => r != null);
-                  if (humanized.length === 0) return null;
+                  // 2026-08-20: consistency fix — never leave a card blank.
+                  // Prior behavior returned null when humanized was empty,
+                  // resulting in some cards having a full "WHY" section and
+                  // others having nothing. Now we build a fallback from
+                  // available prop metadata (refit, tier, matchup context).
+                  const fallbackBullets: {prose: string}[] = [];
+                  if (humanized.length === 0) {
+                    const rc = prop.refit_conviction ?? prop.conviction;
+                    const propType = String(prop.prop_type || '').split('_')[0];
+                    if (rc != null) {
+                      fallbackBullets.push({prose:
+                        `Model conviction ${Math.round(rc)}${
+                          rc >= 65 ? ' — strong quantitative backing' :
+                          rc >= 50 ? ' — moderate quantitative backing' :
+                          ' — thinner backing, size accordingly'
+                        }`
+                      });
+                    }
+                    if (prop.tier) {
+                      fallbackBullets.push({prose:
+                        `Tier ${prop.tier}: ${
+                          prop.tier === 'PRIME' ? 'top-of-slate confidence — 2u sizing' :
+                          prop.tier === 'STRONG' ? 'clean signal alignment — 2u sizing' :
+                          prop.tier === 'LEAN' ? 'edge exists, size at 1u max' :
+                          'graded through the full scorer'
+                        }`
+                      });
+                    }
+                    if (prop.matchup) {
+                      fallbackBullets.push({prose: `Matchup context: ${prop.matchup}${
+                        propType === 'hits' ? ' — verify batter is in confirmed lineup before betting.' :
+                        propType === 'ks' || propType === 'outs' || propType === 'bb' || propType === 'ha' || propType === 'er' ?
+                          ' — pitcher prop, gated on him actually taking the mound.' : '.'
+                      }`});
+                    }
+                    if (fallbackBullets.length === 0) return null;
+                  }
+                  // Flop-risk detection: juice trap spared warns about tight margin;
+                  // demoted means we already downgraded (shouldn't be here on
+                  // STRONG/PRIME cards but if refit-band unproven the note flags).
+                  const sigMap = prop.signals || {};
+                  const juiceSpared = sigMap['juice_trap_spared'];
+                  const juiceDemoted = sigMap['juice_trap_demoted'];
+                  const flopRisk = juiceSpared || juiceDemoted;
                   return (
                   <View style={{backgroundColor:THEME.surface, borderRadius:10, padding:10, gap:6}}>
-                    <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', marginBottom:2, letterSpacing:0.5}}>MODEL SIGNALS</Text>
-                    {humanized.slice(0, 5).map((chip, j) => (
+                    <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', marginBottom:2, letterSpacing:0.5}}>WHY WE BACK THIS</Text>
+                    {(humanized.length > 0 ? humanized.slice(0, 5) : fallbackBullets).map((chip: any, j: number) => (
                       <View key={j} style={{flexDirection:'row', alignItems:'flex-start', gap:6}}>
                         <Text style={{color:tierColor, fontSize:11, marginTop:1}}>•</Text>
                         {chip.prose ? (
@@ -13231,6 +13458,14 @@ setJerryHistory(prev => {
                         )}
                       </View>
                     ))}
+                    {flopRisk && (
+                      <View style={{marginTop:6, paddingTop:8, borderTopWidth:1, borderTopColor:THEME.border, flexDirection:'row', gap:6, alignItems:'flex-start'}}>
+                        <Text style={{color:THEME.hrb, fontSize:11, marginTop:1}}>⚠️</Text>
+                        <Text style={{color:THEME.hrb, fontSize:11, flex:1, lineHeight:16, fontStyle:'italic'}}>
+                          Watch: {String(flopRisk).replace(/^[A-Z_→\s]+—\s*/, '').replace(/Per feedback_.*$/, '').trim()}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                   );
                 })()}
@@ -13312,199 +13547,21 @@ setJerryHistory(prev => {
             );
           })}
         </>
-      )
-    ) : propJerryLoading?(
+        );
+      })()
+    ) : (
+      /* 2026-08-19: Non-MLB sports don't have a live playbook yet.
+         Show a clean empty state — the sport-specific banner above already
+         explains what's coming for each sport. Dead A/B/C letter-grade code
+         path (~200 lines below) is preserved for reference but no longer
+         reachable. When a sport's playbook goes live, wire it into the
+         pipeline-driven card path (same as MLB) — not the A/B/C system. */
       <View style={{alignItems:'center',paddingTop:40}}>
-        <ActivityIndicator size="large" color={HRB_COLOR}/>
-        <Text style={{color:THEME.textDim,marginTop:12}}>Jerry is finding edges...</Text>
+        <Text style={{fontSize:32}}>🚧</Text>
+        <Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center',lineHeight:20}}>
+          Playbook still building for {propJerrySport}.{'\n'}Check the note above for the timeline.
+        </Text>
       </View>
-    ):propJerryData.length===0?(
-      <View style={{alignItems:'center',paddingTop:40}}>
-        <Text style={{fontSize:32}}>🎤</Text>
-        <Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center'}}>No props available.{'\n'}Tap 🔄 above or try another sport.</Text>
-      </View>
-    ):(
-      <>
-        <Text style={{color:THEME.textMuted,fontSize:11,marginBottom:12,textAlign:'center'}}>{propJerryData.filter(p=>p.grade==='A'||p.grade==='B').length} top props • {propJerryData.filter(p=>p.grade==='C').length} on watch list</Text>
-        {propJerryData.filter(p=>p.grade==='A'||p.grade==='B').length===0&&propJerryData.filter(p=>p.grade==='C').length===0&&(
-          <View style={{alignItems:'center',paddingVertical:30}}>
-            <Text style={{fontSize:32}}>🎤</Text>
-            <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center'}}>No strong edges right now.{'\n'}Check back closer to game time.</Text>
-          </View>
-        )}
-        {propJerryData.filter(p=>p.grade==='A'||p.grade==='B').length>0&&(
-          <Text style={styles.sectionLabel}>🎤 JERRY'S BEST</Text>
-        )}
-        {propJerryData.filter(p=>p.grade==='A'||p.grade==='B').map((prop,i)=>(
-          <View key={i} style={[styles.card,{marginBottom:10,borderLeftWidth:3,borderLeftColor:prop.gradeColor}]}>
-           
-            {/* Header */}
-            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
-              <View style={{flex:1,marginRight:12}}>
-                <Text style={{color:THEME.text,fontWeight:'800',fontSize:15}}>{prop.player}</Text>
-                <Text style={{color:THEME.textDim,fontSize:12,marginTop:2}}>{prop.marketLabel}</Text>
-                <Text style={{color:THEME.textMuted,fontSize:11,marginTop:2}}>{prop.gameName}</Text>
-                <View style={{flexDirection:'row',gap:4,marginTop:4,flexWrap:'wrap'}}>
-                  {prop.matchupConviction >= 15 ? (
-                    <View style={{backgroundColor:THEME.hrb + '1F',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:THEME.hrb + '4C'}}>
-                      <Text style={{color:HRB_COLOR,fontSize:9,fontWeight:'800'}}>🎯 MATCHUP PLAY</Text>
-                    </View>
-                  ) : prop.bestEV > 0 ? (
-                    <View style={{backgroundColor:THEME.accent + '1A',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:THEME.accent + '4C'}}>
-                      <Text style={{color:THEME.accent,fontSize:9,fontWeight:'800'}}>📊 EV EDGE</Text>
-                    </View>
-                  ) : null}
-                  {prop.matchupSignals?.length > 0 && prop.matchupSignals.slice(0,2).map((sig: string, j: number) => (
-                    <View key={j} style={{backgroundColor:'rgba(255,255,255,0.05)',borderRadius:6,paddingHorizontal:5,paddingVertical:2,borderWidth:1,borderColor:THEME.border}}>
-                      <Text style={{color:THEME.textDim,fontSize:8,fontWeight:'600'}}>{sig}</Text>
-                    </View>
-                  ))}
-                </View>
-              </View>
-              <View style={{alignItems:'center'}}>
-                <View style={{width:52,height:52,borderRadius:26,borderWidth:2,borderColor:prop.gradeColor,alignItems:'center',justifyContent:'center',backgroundColor:prop.gradeColor+'20'}}>
-                  <Text style={{color:prop.gradeColor,fontWeight:'900',fontSize:24}}>{prop.grade}</Text>
-                </View>
-                <Text style={{color:prop.gradeColor,fontSize:9,fontWeight:'700',marginTop:3}}>GRADE</Text>
-              </View>
-            </View>
-
-            {/* Best Bet */}
-            <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,marginBottom:10}}>
-              <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',marginBottom:6}}>JERRY'S PICK</Text>
-              <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-                <View>
-                  <Text style={{color:prop.gradeColor,fontWeight:'800',fontSize:16}}>
-                    {prop.bestSide} {prop.bestLine?.line}
-                  </Text>
-                  <Text style={{color:THEME.textDim,fontSize:12,marginTop:2}}>{prop.bestLine?.book}</Text>
-                </View>
-                <View style={{alignItems:'flex-end'}}>
-                  <Text style={{color:prop.bestEV>0?THEME.accent:THEME.loss,fontWeight:'800',fontSize:16}}>
-                    {prop.bestEV>0?'+':''}{prop.bestEV.toFixed(1)}% EV
-                  </Text>
-                  <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>
-                    {prop.bestLine?.odds>0?'+':''}{prop.bestLine?.odds}
-                  </Text>
-                </View>
-              </View>
-            </View>
-
-            {/* Meta chips */}
-            <View style={{flexDirection:'row',gap:6,marginBottom:10,flexWrap:'wrap'}}>
-              <View style={styles.metaChip}>
-                <Text style={{color:THEME.textDim,fontSize:11}}>{prop.bookCount} books</Text>
-              </View>
-              <View style={[styles.metaChip,{borderColor:prop.lineRange<=0.5?THEME.accent:THEME.hrb}]}>
-                <Text style={{color:prop.lineRange<=0.5?THEME.accent:THEME.hrb,fontSize:11}}>
-                  {prop.lineRange===0?'Consensus':prop.lineRange.toFixed(1)+' pt range'}
-                </Text>
-              </View>
-              <View style={styles.metaChip}>
-                <Text style={{color:THEME.textDim,fontSize:11}}>
-                  Over {prop.bestOver?.line} ({prop.bestOver?.odds>0?'+':''}{prop.bestOver?.odds})
-                </Text>
-              </View>
-              <View style={styles.metaChip}>
-                <Text style={{color:THEME.textDim,fontSize:11}}>
-                  Under {prop.bestUnder?.line} ({prop.bestUnder?.odds>0?'+':''}{prop.bestUnder?.odds})
-                </Text>
-              </View>
-            </View>
-
-             {/* Jerry quote */}
-            <View style={{backgroundColor:THEME.hrb + '0D',borderRadius:8,padding:10,borderLeftWidth:2,borderLeftColor:HRB_COLOR,marginBottom:10}}>
-              <Text style={{color:THEME.textDim,fontSize:12,fontStyle:'italic',lineHeight:18}}>{prop.Jerry?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
-            </View>
-
-             {/* Action buttons */}
-            {prop.grade!=='D'&&(
-              <View style={{flexDirection:'row',gap:8}}>
-                <TouchableOpacity
-                  style={{flex:1,backgroundColor:THEME.hrb + '1A',borderRadius:10,padding:10,borderWidth:1,borderColor:HRB_COLOR,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6}}
-                  onPress={()=>{
-                    setForm({
-                      matchup: prop.gameName,
-                      pick: `${prop.player} ${prop.bestSide} ${prop.bestLine?.line}`,
-                      sport: propJerrySport,
-                      type: 'Prop',
-                      odds: String(prop.bestLine?.odds||'-110'),
-                      units: '1',
-                      result: 'Pending',
-                      book: prop.bestLine?.book||'',
-                      notes: `Prop Jerry Grade: ${prop.grade} • EV: ${prop.bestEV.toFixed(1)}%`,
-                    });
-                    setModalVisible(true);
-                  }}
-                >
-                  <Text style={{fontSize:14}}>📝</Text>
-                  <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12}}>Log Pick</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={{flex:1,backgroundColor:THEME.win + '1A',borderRadius:10,padding:10,borderWidth:1,borderColor:THEME.win,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6}}
-                  onPress={()=>{
-                    const leg = {
-                      game: prop.gameName,
-                      pick: `${prop.player} ${prop.bestSide} ${prop.bestLine?.line}`,
-                      odds: String(Math.abs(parseFloat(prop.bestLine?.odds||'-110'))),
-                      oddsSign: parseFloat(prop.bestLine?.odds||'-110') >= 0 ? '+' : '-',
-                      sport: propJerrySport,
-                      type: 'Prop',
-                    };
-                    setParlayLegs(prev => {
-                      if(prev.find(l=>l.pick===leg.pick)) return prev;
-                      return [...prev, leg];
-                    });
-                    setActiveTab('mybets');
-                  }}
-                >
-                  <Text style={{fontSize:14}}>🔗</Text>
-                  <Text style={{color:THEME.accent,fontWeight:'700',fontSize:12}}>Add to Parlay</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-          ))}
-        {propJerryData.filter(p=>p.grade==='C').length>0&&(
-          <>
-            <Text style={{color:THEME.textDim,fontWeight:'800',fontSize:13,marginTop:16,marginBottom:4}}>👀 WATCH LIST</Text>
-            <Text style={{color:THEME.textMuted,fontSize:11,marginBottom:10}}>Lower confidence — monitor only</Text>
-          </>
-        )}
-        {propJerryData.filter(p=>p.grade==='C').map((prop,i)=>(
-          <View key={i} style={[styles.card,{marginBottom:10,borderLeftWidth:3,borderLeftColor:prop.gradeColor,opacity:0.75}]}>
-            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
-              <View style={{flex:1,marginRight:12}}>
-                <Text style={{color:THEME.text,fontWeight:'800',fontSize:15}}>{prop.player}</Text>
-                <Text style={{color:THEME.textDim,fontSize:12,marginTop:2}}>{prop.marketLabel}</Text>
-                <Text style={{color:THEME.textMuted,fontSize:11,marginTop:2}}>{prop.gameName}</Text>
-              </View>
-              <View style={{alignItems:'center'}}>
-                <View style={{width:52,height:52,borderRadius:26,borderWidth:2,borderColor:prop.gradeColor,alignItems:'center',justifyContent:'center',backgroundColor:prop.gradeColor+'20'}}>
-                  <Text style={{color:prop.gradeColor,fontWeight:'900',fontSize:24}}>{prop.grade}</Text>
-                </View>
-                <Text style={{color:prop.gradeColor,fontSize:9,fontWeight:'700',marginTop:3}}>GRADE</Text>
-              </View>
-            </View>
-            <View style={{backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,marginBottom:10}}>
-              <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',marginBottom:6}}>JERRY'S PICK</Text>
-              <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-                <View>
-                  <Text style={{color:prop.gradeColor,fontWeight:'800',fontSize:16}}>{prop.bestSide} {prop.bestLine?.line}</Text>
-                  <Text style={{color:THEME.textDim,fontSize:12,marginTop:2}}>{prop.bestLine?.book}</Text>
-                </View>
-                <View style={{alignItems:'flex-end'}}>
-                  <Text style={{color:THEME.accent,fontWeight:'800',fontSize:16}}>{prop.bestEV>0?'+':''}{prop.bestEV.toFixed(1)}% EV</Text>
-                  <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{prop.bestLine?.odds>0?'+':''}{prop.bestLine?.odds}</Text>
-                </View>
-              </View>
-            </View>
-            <View style={{backgroundColor:THEME.hrb + '0D',borderRadius:8,padding:10,borderLeftWidth:2,borderLeftColor:HRB_COLOR}}>
-              <Text style={{color:THEME.textDim,fontSize:12,fontStyle:'italic',lineHeight:18}}>{prop.Jerry?.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/#{1,6}\s/g, '').trim()}</Text>
-            </View>
-          </View>
-        ))}
-      </>
     )}
   </View>
 )}
@@ -13675,9 +13732,40 @@ setJerryHistory(prev => {
                       // Show if either: feature flag ON, or actual data exists.
                       return hasData || flagOn;
                     });
+                    // 2026-08-20: pre-compute totals so we can show an ALL
+                    // SPORTS aggregate row on top of the per-sport breakdown.
+                    let totalW = 0, totalL = 0;
+                    sports.forEach(sp => {
+                      const _gs = js.bySport?.[sp] || {wins:0,losses:0};
+                      const _pj = pj.bySport?.[sp] || {wins:0,losses:0};
+                      const _ppRaw = pipeBySport?.[sp];
+                      const _pp = _ppRaw ? {wins: _ppRaw.w ?? _ppRaw.wins ?? 0, losses: _ppRaw.l ?? _ppRaw.losses ?? 0} : {wins:0,losses:0};
+                      totalW += (_gs.wins||0) + (_pj.wins||0) + (_pp.wins||0);
+                      totalL += (_gs.losses||0) + (_pj.losses||0) + (_pp.losses||0);
+                    });
+                    const totalN = totalW + totalL;
+                    const totalPct = totalN > 0 ? Math.round((totalW/totalN)*100) : 0;
+                    const totalColor = totalPct>=55 ? THEME.accent : totalPct>=50 ? HRB_COLOR : totalPct>=45 ? THEME.textDim : THEME.loss;
                     return (
                       <View style={[styles.card,{marginBottom:16}]}>
                         <Text style={{color:THEME.accent,fontWeight:'800',fontSize:12,marginBottom:10,letterSpacing:0.5}}>🏆 BY SPORT — LIFETIME  ·  ALL JERRY CALLS</Text>
+                        {/* 2026-08-20: ALL SPORTS aggregate row — user asked how
+                            we surface total across everything. Above per-sport
+                            breakdown, one row summing all calls. */}
+                        {totalN > 0 && (
+                          <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:10,marginBottom:4,borderBottomWidth:2,borderBottomColor:THEME.border,backgroundColor:THEME.hrb + '0A',borderRadius:8,paddingHorizontal:10}}>
+                            <View style={{flexDirection:'row',alignItems:'center',flex:1}}>
+                              <Text style={{fontSize:16,marginRight:8}}>🌐</Text>
+                              <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13,letterSpacing:0.3}}>ALL SPORTS</Text>
+                            </View>
+                            <View style={{flexDirection:'row',alignItems:'center',gap:12}}>
+                              <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>{totalW}-{totalL}</Text>
+                              <View style={{width:48,height:48,borderRadius:24,borderWidth:2,borderColor:totalColor,alignItems:'center',justifyContent:'center',backgroundColor:totalColor+'11'}}>
+                                <Text style={{color:totalColor,fontWeight:'900',fontSize:13}}>{totalPct}%</Text>
+                              </View>
+                            </View>
+                          </View>
+                        )}
                         {sports.map(sp => {
                           const gs = js.bySport?.[sp] || {wins:0,losses:0};
                           const pjS = pj.bySport?.[sp] || {wins:0,losses:0};
@@ -14304,7 +14392,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                steamSubTab === 'ledger' ? 'Combos + teasers — chalk parlays and line-move plays across the slate.' :
                'Disciplined bettor mode — flat 1u per qualified play, long-term ROI.'}
             </Text>
-            <View style={{flexDirection:'row',gap:6,marginBottom:14,marginTop:10,flexWrap:'wrap'}}>
+            <View style={{flexDirection:'row',gap:6,marginBottom:14,marginTop:10}}>
               {[
                 {id:'lines',label:'📊 The Split'},
                 {id:'ladder',label:'🪜 The Ladder'},
@@ -14313,8 +14401,18 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
               ].map(s => (
                 <TouchableOpacity key={s.id}
                   onPress={()=>setSteamSubTab(s.id as any)}
-                  style={[styles.chipBtn, steamSubTab===s.id && styles.chipBtnActive, {flex:1, minWidth:70, alignItems:'center', justifyContent:'center'}]}>
-                  <Text style={[styles.chipTxt, steamSubTab===s.id && styles.chipTxtActive, {textAlign:'center', fontSize:11}]}>{s.label}</Text>
+                  style={[styles.chipBtn, steamSubTab===s.id && styles.chipBtnActive, {
+                    flex:1, alignItems:'center', justifyContent:'center',
+                    paddingHorizontal:4, paddingVertical:8,
+                  }]}>
+                  <Text
+                    style={[styles.chipTxt, steamSubTab===s.id && styles.chipTxtActive, {
+                      textAlign:'center', fontSize:11, includeFontPadding:false,
+                    }]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.85}
+                  >{s.label}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -14370,14 +14468,18 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/></View>
                 ) : (
                   <View style={{gap:12}}>
-                    {/* Ladder state hero — active | waiting | reset */}
+                    {/* Ladder state hero — active | waiting | reset
+                        2026-08-20: renamed "RUNG" → "STEP" per user feedback
+                        (more intuitive language). Gate relaxation happens
+                        on backend via steam_room_ladder.py — see there for
+                        qualification rule changes. */}
                     {(() => {
                       const s = ladderState;
                       const status = s?.status || 'waiting';
                       const bg = status === 'active' ? THEME.accent + '18' : status === 'reset' ? THEME.loss + '18' : THEME.textDim + '18';
                       const fg = status === 'active' ? THEME.accent : status === 'reset' ? THEME.loss : THEME.textDim;
                       const icon = status === 'active' ? '🎯' : status === 'reset' ? '💔' : '⏸';
-                      const title = status === 'active' ? 'NEXT RUNG QUEUED' : status === 'reset' ? 'LADDER RESET' : 'LADDER PAUSED';
+                      const title = status === 'active' ? "TODAY'S STEP" : status === 'reset' ? 'LADDER RESET' : 'LADDER PAUSED';
                       const activeRung = s?.active_rung_id ? ladderRungs.find(r => r.id === s.active_rung_id) : null;
                       return (
                         <View style={{backgroundColor:bg, borderRadius:12, padding:14, borderWidth:1, borderColor:fg+'44'}}>
@@ -14391,7 +14493,13 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               <Text style={{color:THEME.textDim, fontSize:12, marginTop:2}}>{activeRung.matchup}</Text>
                               <View style={{flexDirection:'row', gap:12, marginTop:8, flexWrap:'wrap'}}>
                                 <Text style={{color:THEME.textDim, fontSize:11}}>{activeRung.tier} · edge {activeRung.edge_pp}pp</Text>
-                                <Text style={{color:THEME.textDim, fontSize:11}}>cohort {activeRung.cohort_hit_rate}% n={activeRung.cohort_n}</Text>
+                                {/* 2026-08-19: hide cohort chip when both fields are null.
+                                    Post soft-scoring, most picks don't carry a cohort match
+                                    and rendered as "cohort null% n=null" between tier and odds
+                                    — read as broken data. Only show when present. */}
+                                {activeRung.cohort_hit_rate != null && activeRung.cohort_n != null && (
+                                  <Text style={{color:THEME.textDim, fontSize:11}}>cohort {activeRung.cohort_hit_rate}% n={activeRung.cohort_n}</Text>
+                                )}
                                 {activeRung.odds_american != null && (
                                   <Text style={{color:THEME.textDim, fontSize:11}}>{activeRung.odds_american > 0 ? '+' : ''}{activeRung.odds_american}</Text>
                                 )}
@@ -14400,20 +14508,22 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           ) : (
                             <>
                               <Text style={{color:THEME.textDim, fontSize:13, lineHeight:18, marginBottom:10}}>
-                                {s?.note || 'Waiting for the right spot. Ladder skips freely — patience is the edge.'}
+                                {s?.note || "Today's step is loading. If the daily picker missed, it'll fill on the next pipeline run."}
                               </Text>
-                              {/* Explicit qualifier gates — makes "waiting" mean something */}
+                              {/* 2026-08-20: qualifier list rewritten to
+                                  reflect NEW backend gate (3-of-5 rule, not
+                                  5-of-5) — see steam_room_ladder.py. */}
                               <View style={{backgroundColor:THEME.bg + '77', borderRadius:8, padding:10, borderWidth:0.5, borderColor:THEME.border + '55'}}>
                                 <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:1, marginBottom:6}}>
-                                  WHAT QUALIFIES A RUNG
+                                  WHAT QUALIFIES A STEP
                                 </Text>
                                 <View style={{gap:3}}>
                                   {[
-                                    ['🎯', 'PRIME or STRONG tier'],
-                                    ['📊', 'Model win prob ≥ 60%'],
-                                    ['⚖️', 'Cohort hit rate ≥ 60% (n ≥ 30)'],
-                                    ['🤝', '4-of-5 lens consensus'],
-                                    ['📈', 'Edge ≥ 10pp vs implied line'],
+                                    ['🎯', 'STRONG or PRIME tier'],
+                                    ['📊', 'Model win prob ≥ 55%'],
+                                    ['⚖️', 'Cohort hit rate ≥ 55% (n ≥ 20)'],
+                                    ['🤝', '3-of-5 lens consensus'],
+                                    ['📈', 'Edge ≥ 6pp vs implied line'],
                                   ].map(([icon, txt], i) => (
                                     <View key={i} style={{flexDirection:'row', alignItems:'center', gap:6}}>
                                       <Text style={{fontSize:11}}>{icon}</Text>
@@ -14422,7 +14532,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                   ))}
                                 </View>
                                 <Text style={{color:THEME.textMuted, fontSize:10, marginTop:8, fontStyle:'italic', lineHeight:14}}>
-                                  All 5 gates must hit. Most days zero picks clear — that's the point. Ladder trades volume for hit rate.
+                                  3 of 5 gates must hit. Prior 5-of-5 rule left the ladder empty most days — loosened Aug 20 to keep it firing.
                                 </Text>
                               </View>
                             </>
@@ -14433,7 +14543,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
 
                     {/* Record card */}
                     <View style={[styles.card, {padding:14}]}>
-                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>LADDER RECORD</Text>
+                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>STEP RECORD</Text>
                       {(() => {
                         const resolved = ladderRungs.filter(r => r.result);
                         const wins = resolved.filter(r => r.result === 'Win').length;
@@ -14444,11 +14554,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           <View style={{gap:6}}>
                             <View style={{flexDirection:'row', justifyContent:'space-between'}}>
                               <Text style={{color:THEME.textDim, fontSize:12}}>Current streak</Text>
-                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>{ladderState?.current_streak ?? 0} rungs</Text>
+                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>{ladderState?.current_streak ?? 0} steps</Text>
                             </View>
                             <View style={{flexDirection:'row', justifyContent:'space-between'}}>
                               <Text style={{color:THEME.textDim, fontSize:12}}>Longest streak</Text>
-                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>{ladderState?.longest_streak ?? 0} rungs</Text>
+                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>{ladderState?.longest_streak ?? 0} steps</Text>
                             </View>
                             <View style={{flexDirection:'row', justifyContent:'space-between'}}>
                               <Text style={{color:THEME.textDim, fontSize:12}}>Record</Text>
@@ -14462,10 +14572,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       })()}
                     </View>
 
-                    {/* Recent rungs history */}
+                    {/* Recent steps history — 2026-08-19 renamed from rungs to
+                        match the RUNG→STEP language sweep. */}
                     {ladderRungs.length > 0 && (
                       <View style={[styles.card, {padding:14}]}>
-                        <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>RECENT RUNGS</Text>
+                        <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>RECENT STEPS</Text>
                         {ladderRungs.slice(0, 10).map((r: any, i: number) => {
                           const resultColor = r.result === 'Win' ? THEME.win : r.result === 'Loss' ? THEME.loss : r.result === 'Push' ? THEME.textDim : THEME.textMuted;
                           const resultIcon = r.result === 'Win' ? '✓' : r.result === 'Loss' ? '✗' : r.result === 'Push' ? '=' : '·';
@@ -14510,6 +14621,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                             {/* Current month header + tally */}
                             <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1}}>
                               {monthName.toUpperCase()} · UNIT-WEIGHTED · MONTH-TO-DATE
+                            </Text>
+                            {/* 2026-08-20: reset epoch note. Prior record had
+                                misleading flat-110 assumption on side picks. */}
+                            <Text style={{color:THEME.textMuted, fontSize:9, fontStyle:'italic'}}>
+                              Fresh record from Aug 20 — tracking real snapshot odds.
                             </Text>
                             <View style={{gap:6}}>
                               <View style={{flexDirection:'row', justifyContent:'space-between'}}>
@@ -14598,17 +14714,20 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     {/* Methodology card */}
                     <View style={[styles.card, {padding:14, borderLeftWidth:3, borderLeftColor: THEME.accent}]}>
                       <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:6}}>THE SHARP METHOD</Text>
+                      {/* 2026-08-20: rewritten to be accurate to what's actually shipping.
+                          Was overstating cross-sport coverage + omitting juice-adjusted sizing. */}
                       <View style={{gap:4}}>
                         {[
-                          ['🎯', 'Every ensemble-qualified play across MLB, UFC + all sports'],
-                          ['💵', 'PRIME/STRONG = 2u · LEAN = 1u — sizing follows conviction'],
-                          ['📊', 'Play count varies with the slate — no artificial cap'],
-                          ['📈', 'Long-term ROI + hit rate transparency, unit-weighted'],
-                          ['⏸', 'No streak dependence — one loss doesn\'t reset'],
+                          ['🎯', 'Ensemble-qualified sides + tiered props (MLB live; other sports as their playbooks ship)'],
+                          ['💵', 'PRIME/STRONG = 2u · LEAN = 1u · juice trap = half units'],
+                          ['🚫', 'Auto-skip: hits O0.5 at ≤-200 juice unless model confidence clears the vig'],
+                          ['📊', 'Play count varies with the slate — no artificial cap or minimum'],
+                          ['📈', 'Long-term ROI + hit rate transparency, unit-weighted at posted odds'],
+                          ['⏸', 'No streak dependence — one loss doesn\'t reset sizing'],
                         ].map(([icon, txt], i) => (
-                          <View key={i} style={{flexDirection:'row', alignItems:'center', gap:6}}>
-                            <Text style={{fontSize:11}}>{icon}</Text>
-                            <Text style={{color:THEME.textDim, fontSize:11}}>{txt}</Text>
+                          <View key={i} style={{flexDirection:'row', alignItems:'flex-start', gap:6}}>
+                            <Text style={{fontSize:11, marginTop:1}}>{icon}</Text>
+                            <Text style={{color:THEME.textDim, fontSize:11, flex:1, lineHeight:15}}>{txt}</Text>
                           </View>
                         ))}
                       </View>
@@ -14749,16 +14868,18 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     })}
                     <View style={[styles.card, {padding:14, borderLeftWidth:3, borderLeftColor: THEME.accent}]}>
                       <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:6}}>THE LEDGER METHOD</Text>
-                      <View style={{gap:4}}>
+                      {/* 2026-08-20: fixed text overflow — added flex:1 + lineHeight
+                          on the text so long copy wraps instead of clipping right edge. */}
+                      <View style={{gap:6}}>
                         {[
                           ['🏆', 'Chalk parlays — 2-3 mid-tier ML favorites for even-money math'],
                           ['🎯', 'Teasers — move a total or spread into higher-hit-% zone, pair for even money'],
-                          ['📊', 'Auto-generated from today\'s ensemble picks (PRIME/STRONG only)'],
+                          ['📊', "Auto-generated from today's ensemble picks (PRIME/STRONG only)"],
                           ['✏️', 'Editable builder coming soon — pick your own legs'],
                         ].map(([icon, txt], k) => (
-                          <View key={k} style={{flexDirection:'row', alignItems:'center', gap:6}}>
-                            <Text style={{fontSize:11}}>{icon}</Text>
-                            <Text style={{color:THEME.textDim, fontSize:11}}>{txt}</Text>
+                          <View key={k} style={{flexDirection:'row', alignItems:'flex-start', gap:6}}>
+                            <Text style={{fontSize:11, marginTop:1}}>{icon}</Text>
+                            <Text style={{color:THEME.textDim, fontSize:11, flex:1, lineHeight:15}}>{txt}</Text>
                           </View>
                         ))}
                       </View>
@@ -15010,14 +15131,12 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             )}
             <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:THEME.sharp + '26',borderWidth:1,borderColor:THEME.sharp}]} onPress={()=>setActiveTab('games')}><Text style={[styles.btnPrimaryText,{color:THEME.sharp}]}>🏟 Browse Games to Add Legs</Text></TouchableOpacity>
             <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border}]} onPress={()=>setAddLegModal(true)}><Text style={[styles.btnPrimaryText,{color:THEME.textDim}]}>+ Add Leg Manually</Text></TouchableOpacity>
-            {parlayLegs.length>=2&&(
-                <TouchableOpacity
-                  style={[styles.btnPrimary,{backgroundColor:THEME.hrb + '1A',borderWidth:1,borderColor:HRB_COLOR}]}
-                  onPress={fetchParlayAnalysis}
-                >
-                  <Text style={[styles.btnPrimaryText,{color:HRB_COLOR}]}>🎤 Get Jerry's Analysis</Text>
-                </TouchableOpacity>
-              )}
+            {/* 2026-08-20: removed "Get Jerry's Analysis" parlay button per
+                user — hallucination risk on ad-hoc parlay writeups. Reserve
+                Jerry commentary for per-pick surfaces (Sharp Card, Prop Jerry)
+                where signal data grounds the narrative. May restore later
+                once we have a parlay-specific structured prompt with grounded
+                inputs. */}
             {parlayLegs.length>0&&(
               <>
                 <TouchableOpacity style={[styles.btnPrimary,{backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.win}]} onPress={()=>{
@@ -15033,11 +15152,16 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
         <View style={{height:20}}/>
       </ScrollView>
 
-      <View style={{backgroundColor:'#0a1018',paddingHorizontal:16,paddingVertical:8,borderTopWidth:1,borderTopColor:THEME.border}}>
-              <Text style={{color:THEME.textMuted,fontSize:9,textAlign:'center',lineHeight:14}}>⚠️ For entertainment only. The Sweat Locker provides data analysis and does not faciliate wagering of any kind. Past performance is not indicative of future results.{'  '}
-
+      {/* 2026-08-20: compact per-page disclaimer. Prior full disclaimer text
+          was repeated on every screen (visual clutter). Full text still lives
+          in Terms of Service, Privacy Policy, and onboarding modals — legal
+          coverage preserved. This compact strip keeps the "not gambling
+          advice" reminder + 1-800-GAMBLER tap-through without eating space. */}
+      <View style={{backgroundColor:'#0a1018',paddingHorizontal:16,paddingVertical:6,borderTopWidth:1,borderTopColor:THEME.border}}>
+              <Text style={{color:THEME.textMuted,fontSize:9,textAlign:'center',lineHeight:12}}>
+                ⚠️ Data analysis for entertainment only · Not gambling advice
                 {'  •  '}
-                <Text style={{color:THEME.hrb}} onPress={()=>Linking.openURL('tel:18882364848')}></Text>
+                <Text style={{color:THEME.hrb, fontWeight:'700'}} onPress={()=>Linking.openURL('tel:18004262537')}>1-800-GAMBLER</Text>
               </Text>
             </View>
             <View style={styles.bottomNavContainer}></View>

@@ -20,11 +20,13 @@
 
 export const GLOSSARY: Record<string, {label?: string; help: string}> = {
   // ─── TIERS (universal across sports) ─────────────────────────────
-  'PRIME': {help: "Top tier — model, market, and cohorts all align strongly. Best plays we surface, but not free money."},
-  'STRONG': {help: 'Second tier — clean edge with model + one supporting signal. Historically outperforms PRIME in some markets.'},
-  'LEAN': {help: 'Third tier — edge is there but noise is higher. Smaller stakes or pass-if-book-moves.'},
-  'PASS': {help: "We looked and didn't find enough edge. Publishing the pass is honesty, not laziness."},
-  'SKIP': {help: "Model + market conflict enough that we can't recommend either side. Move on."},
+  // 2026-08-20: rewritten to be user-actionable, not internal jargon.
+  // Prior 'third tier — edge is there but noise is higher' was useless.
+  'PRIME': {help: 'Highest conviction — our full signal stack agrees. Sized at 2 units on the Sharp Card.'},
+  'STRONG': {help: 'Solid conviction — clear edge with multi-signal backing. Sized at 2 units.'},
+  'LEAN': {help: "Real edge but thinner — worth a small play (1 unit) not a full stake. Skip if your book's line is worse than what we quote."},
+  'PASS': {help: "We looked and don't see enough edge here. Publishing the pass is intentional — no bet is a bet."},
+  'SKIP': {help: "Model and market conflict enough that no side is defensible. Move on."},
 
   // ─── MODELS (MLB primary; used cross-sport where noted) ────────────
   'MC': {help: 'Monte Carlo simulation — plays out the game 10,000 times using team + lineup + pitcher inputs and reports the win/total distribution.'},
