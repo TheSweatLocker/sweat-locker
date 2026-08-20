@@ -34,7 +34,25 @@ jobs:
       - name: Refresh imminent-game lineups + umpires
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python refresh_imminent_games.py
+
+      # 2026-08-20: recompute primary_play every 30 min so late-arriving
+      # data (external_pick feeds, sharp_source_calibration, refit updates,
+      # OddsCrowd refresh) actually flows into the tier + label. Audit on
+      # 8/20 caught 3/9 games with STALE primary_play — Yankees/Orioles
+      # was on the wrong side entirely (persisted Yankees ML but live
+      # ensemble picked Orioles ML after external picks landed). The AM
+      # pipeline run computes primary_play once and never revisits it, so
+      # the app renders an increasingly stale snapshot as the day
+      # progresses. This step closes the loop — cheap (~1 min for 9-15
+      # games, no external API calls beyond Supabase).
+      - name: Recompute primary_play (catch late-arriving signal data)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python recompute_primary_play.py
