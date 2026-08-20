@@ -9205,11 +9205,22 @@ setJerryHistory(prev => {
             if (pp) {
               return (
                 <View style={{marginHorizontal:16,marginTop:4,marginBottom:12,backgroundColor:tierBg,borderRadius:14,padding:16,borderWidth:1.5,borderColor:tierBorder}}>
+                  {/* 2026-08-20: tier chip removed from game analysis surface
+                      per user feedback. The pick label stays (users see
+                      "Boston Red Sox ML" — the take). The tier confidence
+                      chip only appears on curated pick surfaces (Sharp Card,
+                      Sweat Card, Ladder, POTD). Rationale: forcing every
+                      game into LEAN/STRONG/PRIME made 90% of games render
+                      "LEAN" (honest signal reality) which read as "our
+                      take is weak" instead of "here's the data — decide
+                      yourself." Reasoning below IS the confidence signal. */}
                   <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
                     <Text style={{color:tierColor,fontSize:11,fontWeight:'800',letterSpacing:1}}>🔒 THE PLAY</Text>
-                    <View style={{backgroundColor:tierColor,borderRadius:10,paddingHorizontal:8,paddingVertical:3}}>
-                      <Text style={{color:THEME.surfaceHero,fontSize:10,fontWeight:'800'}}>{pp.tier}</Text>
-                    </View>
+                    {pp.type ? (
+                      <View style={{backgroundColor:THEME.border+'33',borderRadius:10,paddingHorizontal:8,paddingVertical:3}}>
+                        <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'800',letterSpacing:0.4}}>{String(pp.type).toUpperCase()}</Text>
+                      </View>
+                    ) : null}
                   </View>
                   <Text style={{color:THEME.text,fontSize:22,fontWeight:'800',marginBottom:6,letterSpacing:0.3}}>{pp.label}</Text>
                   {pp.sub ? (
@@ -12984,17 +12995,25 @@ setJerryHistory(prev => {
   const alML: any = al?.ml;
   const jr = game.id ? jerryReads[game.id] : null;
   const chips: React.ReactNode[] = [];
+  // 2026-08-20: dropped the "TIER · label" prefix on the game-card chip
+  // per user feedback. Show the PICK label only ("Boston Red Sox ML",
+  // "Over 7.5", etc.) — no tier confidence label. Tier chips remain on
+  // curated pick surfaces (Sharp Card, Sweat Card, Ladder, POTD, DoD, DD).
+  // The chip still keeps its color-coded tier styling (green PRIME, etc.)
+  // so users can differentiate visually without reading a label they
+  // said felt cheap when everything reads LEAN.
   if (pp?.tier && pp?.label) {
-    chips.push(<StatusChip key="pp" variant="tier" tier={pp.tier} label={`${pp.tier} · ${pp.label}`} />);
+    chips.push(<StatusChip key="pp" variant="tier" tier={pp.tier} label={pp.label} />);
   } else if (jr?.call_text && jr?.conviction != null &&
              String(jr.call_market || '').toLowerCase() !== 'pass') {
-    // Derive tier from Jerry conviction so headline matches the take.
+    // Use Jerry's take verbatim when there's no primary_play. Still
+    // color-tint by derived tier for visual differentiation.
     const conv = jr.conviction;
     const derivedTier = conv >= 80 ? 'PRIME'
                        : conv >= 70 ? 'STRONG'
                        : conv >= 60 ? 'LEAN' : 'LIGHT';
     chips.push(<StatusChip key="pp" variant="tier" tier={derivedTier as any}
-                            label={`${derivedTier} · ${jr.call_text}`} />);
+                            label={jr.call_text} />);
   }
   if (alML?.verdict && alML.verdict !== 'no_data') {
     chips.push(<StatusChip key="al" variant="alignment" alignment={alML.verdict} />);

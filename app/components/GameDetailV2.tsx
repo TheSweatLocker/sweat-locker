@@ -410,21 +410,25 @@ function VerdictCard({ctx, awayTeam, homeTeam}: any) {
       </View>
     );
   }
-  const tier = play.tier || '—';
   const label = play.label || '';
   const sub = play.sub || '';
-  const tierStyle = tierBadgeStyle(tier);
+  // 2026-08-20: tier badge REMOVED from game analysis surface per user
+  // feedback. Tier chips (LEAN/STRONG/PRIME) only appear on curated pick
+  // surfaces (Sharp Card, Sweat Card, Ladder, POTD, Dawg of Day, Daily
+  // Degen). The game analysis card keeps the pick label + market type
+  // + reasoning, but drops the confidence chip because forcing every
+  // game into a tier label was making 90% of games render as "LEAN"
+  // (honest data reality — most games don't have a strong edge) which
+  // read as "our take is weak" instead of "here's the data, decide
+  // yourself." Reasoning is the confidence signal now.
+  const marketLabel = String(play.type || '').toUpperCase();
   return (
     <View style={styles.verdict}>
-      <View style={[styles.verdictTierPill, tierStyle, {flexDirection:'row', alignItems:'center', gap:6}]}>
-        <Explainer term={String(tier).toUpperCase()}
-          color={tierStyle.color} activeColor={tierStyle.color} helpColor={C.text}
-          helpBg={tierStyle.color + '18'}
-          textStyle={{color: tierStyle.color, fontSize: 12, fontWeight: '800', letterSpacing: 0.6}} />
-        <Text style={[styles.verdictTierText, {color: tierStyle.color}]}>
-          · {String(play.type || '').toUpperCase()}
-        </Text>
-      </View>
+      {marketLabel && (
+        <View style={[styles.verdictTierPill, {backgroundColor: C.border + '22', flexDirection:'row', alignItems:'center'}]}>
+          <Text style={[styles.verdictTierText, {color: C.textMuted}]}>{marketLabel}</Text>
+        </View>
+      )}
       <Text style={styles.verdictPlay}>{label}</Text>
       {sub ? <Text style={styles.verdictWhy}>{sub}</Text> : null}
     </View>
