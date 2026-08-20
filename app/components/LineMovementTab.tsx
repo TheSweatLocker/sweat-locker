@@ -485,10 +485,18 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
   const strongCls = String(strongest.classification || '');
   const isTriple = strongCls.endsWith('_TRIPLE_CONFIRMED');
   const isConfirmed = strongCls.endsWith('_CONFIRMED');
+  // 2026-08-19: two bugs fixed here —
+  //   1. `strongCls === 'CONSENSUS'` missed CONSENSUS_CONFIRMED /
+  //      CONSENSUS_TRIPLE_CONFIRMED (equality vs startsWith), so those rows
+  //      fell through to 'pattern' family and rendered raw pattern field.
+  //   2. NEUTRAL and PATTERN_ONLY classifications rendered the raw
+  //      `strongest.pattern` field ("limit", "steam", "rlm") which shows
+  //      up as "LIMIT" / "STEAM" / "RLM" in the app — meaningless to
+  //      users. Translate to human labels here.
   const strongFamily = strongCls.startsWith('SHARP_MOVE') ? 'sharp'
                     : strongCls.startsWith('RLM') ? 'rlm'
                     : strongCls.startsWith('PUBLIC_MOVE') ? 'public'
-                    : strongCls === 'CONSENSUS' ? 'consensus'
+                    : strongCls.startsWith('CONSENSUS') ? 'consensus'
                     : strongCls === 'SOURCES_SPLIT' ? 'split'
                     : 'pattern';
   const familyColor = strongFamily === 'sharp' ? T.sharp
@@ -496,12 +504,23 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
                     : strongFamily === 'public' ? T.loss
                     : strongFamily === 'consensus' ? T.hrb
                     : T.textMuted;
+  // Humanize raw pattern fields for the pattern-family fallback.
+  //   'limit'  = book raised max-bet limits (sharp signal)
+  //   'steam'  = simultaneous line movement across many books (sharp money)
+  //   'rlm'    = reverse line movement (line moves against public %)
+  const patternLabelMap: Record<string, string> = {
+    limit: 'LIMIT RAISED',
+    steam: 'STEAM MOVE',
+    rlm: 'REVERSE LINE MOVE',
+  };
+  const patternRaw = String(strongest.pattern || '').toLowerCase();
+  const patternLabel = patternLabelMap[patternRaw] || (patternRaw ? patternRaw.toUpperCase() : 'PATTERN');
   const strongLabel = strongFamily === 'sharp' ? (isTriple ? '🔥 SHARP TRIPLE' : isConfirmed ? 'SHARP CONFIRMED' : 'SHARP LEAN')
                     : strongFamily === 'rlm' ? (isTriple ? '🔥 RLM TRIPLE' : isConfirmed ? 'RLM CONFIRMED' : 'RLM LEAN')
                     : strongFamily === 'public' ? (isTriple ? '🔥 PUBLIC TRIPLE' : isConfirmed ? 'PUBLIC CONFIRMED' : 'PUBLIC LEAN')
-                    : strongFamily === 'consensus' ? 'CONSENSUS'
+                    : strongFamily === 'consensus' ? (isTriple ? '🔥 CONSENSUS TRIPLE' : isConfirmed ? 'CONSENSUS CONFIRMED' : 'CONSENSUS')
                     : strongFamily === 'split' ? 'SOURCES DISAGREE'
-                    : strongest.pattern ? String(strongest.pattern).toUpperCase() : 'PATTERN';
+                    : patternLabel;
 
   // Determine what the sharp move POINTS AT (RLM + PUBLIC_MOVE invert)
   const strongSideRaw = String(strongest.side || '').toUpperCase();
