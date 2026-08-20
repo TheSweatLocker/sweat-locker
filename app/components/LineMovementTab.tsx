@@ -606,12 +606,13 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
           → {teamForSide(sharpSide)}
         </Text>
       </View>
-      {/* 2026-08-20: MINORITY DISSENT badge. Fires on CONFIRMED (not TRIPLE)
+      {/* 2026-08-19: MINORITY DISSENT badge. Fires on CONFIRMED (not TRIPLE)
           because CONFIRMED means 2 of 3 sources agreed and 1 dissented.
-          Per project_per_source_tracker_moat_818: on 30d MLB, the DISSENT
-          side hits 60-77% depending on which source dissents. Users should
-          be aware that this classification has a documented moat when the
-          minority pipes up. Suppressed on TRIPLE (no dissenter). */}
+          Removed the hardcoded "77% n=22" stat — it was frozen text, not
+          pulled from live sharp_source_calibration (current 30d OC ML is
+          48%, not 77%). Once we compute per-source DISSENT buckets, wire
+          this back to live numbers. Until then: educational only, no
+          fabricated stat. */}
       {isConfirmed && !isTriple && (
         <View style={{
           flexDirection: 'row', alignItems: 'flex-start', gap: 6,
@@ -621,9 +622,8 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
           <Text style={{color: T.hrb, fontSize: 11, marginTop: 1}}>💡</Text>
           <Text style={{color: T.textDim, fontSize: 11, flex: 1, lineHeight: 15}}>
             <Text style={{color: T.hrb, fontWeight: '800'}}>MINORITY DISSENT: </Text>
-            2 of 3 sources agree here — the 3rd disagrees. Historical pattern
-            (30d MLB): when only OC dissents, OC has been right 77% (n=22).
-            Consider whether the dissenter's side is worth a look.
+            2 of 3 sharp sources agree here — 1 disagrees. Worth noting the
+            dissenter's side if you're weighing a contrarian angle.
           </Text>
         </View>
       )}
