@@ -70,3 +70,16 @@ jobs:
         run: |
           cd mlb_pipeline
           python classify_line_moves.py --sport ALL || echo "line classifier warned"
+
+      # 2026-08-20: also re-apply prop refit each cycle. Today's audit
+      # found every prop with refit_conviction=NULL — main pipeline runs
+      # apply_prop_refit once in AM but props get regenerated later
+      # (lineup confirmations, odds sweeps) which wipes refit values.
+      # Re-applying keeps refit_conviction fresh alongside primary_play.
+      - name: Re-apply prop refit (keep refit_conviction fresh)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python apply_prop_refit.py || echo "prop refit warned"
