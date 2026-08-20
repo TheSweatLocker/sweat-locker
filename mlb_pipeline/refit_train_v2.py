@@ -200,7 +200,9 @@ for pt, d in targets:
     weights['sign_flip_warnings'].extend(warnings)
     print(f'  fit {pt}/{d}: n={len(subset)} baseline={y.mean():.1%} keys={len(keys)}')
 
-out = Path(r'C:\Users\gomez\SweatShop\mlb_pipeline\models\prop_refit_weights_v2.json')
+# 2026-08-20: cross-platform path (was hardcoded Windows). Enables
+# scheduled runs on Linux GitHub Actions runner.
+out = Path(__file__).parent / 'models' / 'prop_refit_weights_v2.json'
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(json.dumps(weights, indent=2))
 print(f'\n  saved -> {out}')
