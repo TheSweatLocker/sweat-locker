@@ -56,3 +56,17 @@ jobs:
         run: |
           cd mlb_pipeline
           python recompute_primary_play.py
+
+      # 2026-08-20: classify line moves every 30 min. Prior state — Split
+      # classifier only ran once in AM main pipeline. New sharp signals
+      # landing via oddscrowd_refresh (which runs 6x/day) sat unclassified
+      # until next morning. Audit caught today's Split showing zero fresh
+      # flags at 4pm ET even though OC pulled 5 hrs earlier. This step
+      # keeps The Split up-to-date throughout gameday.
+      - name: Classify fresh line moves (Split refresh)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python classify_line_moves.py --sport ALL || echo "line classifier warned"

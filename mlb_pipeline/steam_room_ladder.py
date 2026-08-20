@@ -275,11 +275,148 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
     }
 
 
+def check_prop_qualifier(prop: dict, sport: str = 'MLB') -> Optional[dict]:
+    """Emit a ladder rung candidate from a graded prop pick.
+
+    2026-08-20: props added to ladder pool per user request. Prop
+    qualification uses different signals than games (no MC prob, no
+    consensus lens) so gates are re-mapped:
+
+      1. tier ∈ PRIME/STRONG (playbook or legacy)
+      2. book odds in [-300, +150]  ← user's feedback_prop_jerry_odds gate
+      3. refit_conviction >= 40      ← not a trap
+      4. playbook conviction >= 60   ← real ensemble backing
+      5. NOT a hits_over_0.5 with null odds  ← user's juice-trap memo
+
+    Same soft-scoring rule as games — need >= 3/5 to qualify.
+    """
+    playbook_tier = (prop.get('playbook_tier') or '').upper()
+    legacy_tier = (prop.get('legacy_tier') or '').upper()
+    effective_tier = playbook_tier if playbook_tier in ('PRIME','STRONG') else legacy_tier
+    if effective_tier not in ('PRIME','STRONG'):
+        return None
+
+    prop_type = prop.get('prop_type') or ''
+    direction = (prop.get('direction') or '').lower()
+    line = prop.get('prop_line')
+    player = prop.get('player_name') or '?'
+
+    # Odds — try both playbook_side + legacy fields
+    odds = None
+    for key in ('book_over_odds' if direction == 'over' else 'book_under_odds',):
+        v = prop.get(key)
+        if v is not None:
+            try: odds = int(v); break
+            except (TypeError, ValueError): pass
+
+    gates_passed = 1  # tier
+    gate_notes = [f'tier={effective_tier}']
+
+    # Gate 2: odds range
+    if odds is not None and -300 <= odds <= 150:
+        gates_passed += 1
+        gate_notes.append(f'odds={odds:+d}✓')
+    elif odds is not None:
+        gate_notes.append(f'odds={odds:+d} OUT-OF-RANGE')
+        return None  # hard block per feedback_prop_jerry_odds
+    else:
+        gate_notes.append('odds=?')
+        # Hits over 0.5 with null odds is documented trap
+        if prop_type == 'hits_over' and (line or 0) <= 0.5:
+            return None
+
+    # Gate 3: refit conviction
+    refit = prop.get('legacy_refit_conviction') or prop.get('refit_conviction')
+    try: refit_i = int(refit) if refit is not None else None
+    except (TypeError, ValueError): refit_i = None
+    if refit_i is not None and refit_i >= 40:
+        gates_passed += 1
+        gate_notes.append(f'refit={refit_i}✓')
+    elif refit_i is not None:
+        gate_notes.append(f'refit={refit_i}')
+
+    # Gate 4: ensemble/playbook conviction
+    pb_conv = prop.get('playbook_conviction') or prop.get('legacy_conviction')
+    try: pb_conv_i = int(pb_conv) if pb_conv is not None else None
+    except (TypeError, ValueError): pb_conv_i = None
+    if pb_conv_i is not None and pb_conv_i >= 60:
+        gates_passed += 1
+        gate_notes.append(f'conv={pb_conv_i}✓')
+    elif pb_conv_i is not None:
+        gate_notes.append(f'conv={pb_conv_i}')
+
+    # Gate 5: playbook backing (STRONG playbook independent of legacy)
+    if playbook_tier in ('PRIME','STRONG'):
+        gates_passed += 1
+        gate_notes.append('playbook✓')
+
+    if gates_passed < 3:
+        return None
+
+    # Compose display label
+    dir_word = 'Over' if direction == 'over' else 'Under'
+    pretty_type = prop_type.replace('_', ' ').replace(' over', '').replace(' under', '')
+    pick_label = f'{player} {dir_word} {line} {pretty_type.upper()}'
+
+    return {
+        'game_date': prop.get('game_date'),
+        'sport': sport,
+        'game_id': prop.get('game_id'),
+        'matchup': prop.get('matchup') or 'Prop',
+        'pick_side': pick_label,
+        'market': 'prop',
+        'odds_american': odds,
+        'tier': effective_tier,
+        'conviction': pb_conv_i,
+        'model_win_prob': None,      # props don't have MC prob
+        'cohort_hit_rate': None,
+        'cohort_n': None,
+        'consensus_lens': None,
+        'edge_pp': None,
+        'gates_passed': gates_passed,
+        'qualification_notes': (
+            f'PROP · {gates_passed}/5 gates · ' + ' · '.join(gate_notes)
+        ),
+    }
+
+
 def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[dict]:
     """Iterate ladder-eligible sports; return first qualifying rung or None."""
     sports = get_ladder_eligible_sports()
     print(f'  ladder-eligible sports: {sports or "NONE (all off-season/preseason)"}')
     candidates = []
+
+    # 2026-08-20: pool props from playbook (shadow) + legacy tiers.
+    # Props are ladder-eligible per user request. Only run for MLB since
+    # other sports don't have prop_playbook_decisions rows yet.
+    if 'MLB' in sports:
+        pb = requests.get(f'{SB}/rest/v1/prop_playbook_decisions', headers=H_READ,
+            params={'game_date': f'eq.{game_date}', 'sport': 'eq.MLB',
+                    'playbook_tier': 'in.(PRIME,STRONG)',
+                    'select': '*'}, timeout=15).json()
+        if isinstance(pb, list):
+            # Join to mlb_pipeline_props to get book odds + refit_conviction
+            legacy = requests.get(f'{SB}/rest/v1/mlb_pipeline_props', headers=H_READ,
+                params={'game_date': f'eq.{game_date}',
+                        'select': 'player_name,prop_type,direction,prop_line,book_over_odds,book_under_odds,refit_conviction,tier,matchup,game_id'},
+                timeout=15).json()
+            legacy_map = {}
+            if isinstance(legacy, list):
+                for p in legacy:
+                    k = (p.get('player_name'), p.get('prop_type'), p.get('direction'), p.get('prop_line'))
+                    legacy_map[k] = p
+            prop_qualifiers = 0
+            for pb_row in pb:
+                k = (pb_row.get('player_name'), pb_row.get('prop_type'), pb_row.get('direction'), pb_row.get('prop_line'))
+                lg = legacy_map.get(k, {})
+                merged = {**lg, **pb_row}  # playbook wins on shared keys
+                # Rename for check_prop_qualifier
+                if 'tier' in lg and 'legacy_tier' not in merged: merged['legacy_tier'] = lg['tier']
+                rung = check_prop_qualifier(merged, 'MLB')
+                if rung:
+                    candidates.append(rung); prop_qualifiers += 1
+            print(f'  props evaluated: {len(pb)} playbook PRIME/STRONG · {prop_qualifiers} qualified for ladder')
+
     for sport in sports:
         ctx_tbl = CTX_TABLE.get(sport)
         if not ctx_tbl: continue
