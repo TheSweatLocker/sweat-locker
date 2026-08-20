@@ -65,6 +65,23 @@ LADDER_EDGE_MIN_PP      = 6.0      # 2026-08-18 loosened from 10 → 6 (still me
 LADDER_ABS_JUICE_CAP    = -250     # unchanged — compounding math destroys past -250
 LADDER_MIN_GATES        = 3        # 3-of-5 required; relaxed_scan drops this to 2
 
+# 2026-08-20: cross-sport edge normalization. Different sports have different
+# base-rate variance in edge_pp — a +7pp MLB edge is NOT the same as a +7pp
+# NHL edge because puckline math + hockey scoring compress edges. Multipliers
+# scale raw edge_pp into a common ranking metric so cross-sport candidates
+# compare fairly. Starts at 1.0 for all — will tune once we have live
+# multi-sport data (Oct+ when NFL/NCAAF/NHL/NBA come online). Values below
+# are best-first-guess based on typical sport-book edge dispersion.
+SPORT_EDGE_MULTIPLIER = {
+    'MLB':   1.00,   # baseline — most historical data, calibrate others against this
+    'NFL':   0.90,   # bigger spreads, edges compress — slightly discount
+    'NCAAF': 0.90,   # same shape as NFL
+    'NCAAB': 0.85,   # very high variance, edges harder to trust
+    'NBA':   0.95,   # deep signal but tight lines
+    'NHL':   1.10,   # puckline math means small edges more meaningful
+    'UFC':   0.80,   # single-KO variance kills edge reliability
+}
+
 # Per-sport context table
 CTX_TABLE = {
     'MLB':   'mlb_game_context',
@@ -452,16 +469,25 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
                 return relaxed
         print('  no qualifier fired — ladder stays parked')
         return None
-    # Rank by (gates_passed DESC, tier PRIME>STRONG>LEAN, edge_pp DESC).
-    # Highest confluence wins; ties break to stronger tier then bigger edge.
+    # Rank by (gates_passed DESC, tier PRIME>STRONG>LEAN, normalized edge DESC).
+    # 2026-08-20: edge_pp normalized via SPORT_EDGE_MULTIPLIER so cross-sport
+    # candidates compare fairly. NHL +7pp edge > MLB +7pp edge because puckline
+    # math compresses edges — multipliers correct that.
     tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
+    def _norm_edge(c):
+        e = c.get('edge_pp')
+        if e is None: return -999
+        return e * SPORT_EDGE_MULTIPLIER.get(c.get('sport'), 1.0)
     candidates.sort(key=lambda c: (
         -(c.get('gates_passed') or 0),
         tier_rank.get(c.get('tier'), 9),
-        -(c.get('edge_pp') or -999),
+        -_norm_edge(c),
     ))
     winner = candidates[0]
-    edge_str = f'{winner["edge_pp"]:+.1f}pp' if winner.get('edge_pp') is not None else 'n/a'
+    edge_raw = winner.get('edge_pp')
+    mult = SPORT_EDGE_MULTIPLIER.get(winner.get('sport'), 1.0)
+    edge_str = (f'{edge_raw:+.1f}pp × {mult} = {edge_raw*mult:+.1f}'
+                if edge_raw is not None else 'n/a')
     print(f'  🎯 Ladder qualifier: {winner["matchup"]} · {winner["pick_side"]} '
           f'({winner["gates_passed"]}/5 gates, edge {edge_str})')
     return winner
