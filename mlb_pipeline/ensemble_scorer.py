@@ -613,6 +613,37 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
         hr, n, tier = _resolve_weight(source)
         prose = render_prose(source.get('display_prose_template') or '', ctx_attr)
 
+        # 2026-08-20: ANTI_VALIDATED FADE mode. Signals with proven fade
+        # edge (hr well below breakeven with meaningful n) are inverted
+        # instead of being zeroed out — we bet the OTHER side. Example:
+        # home_ats_hot_at_home fires on side=HOME_RL with hr=37.3% n=59.
+        # Prior behavior: edge_weight returned 0, signal contributed
+        # nothing. Now: flip side to AWAY_RL, use fade_hr = 1 - hr = 62.7%,
+        # tier promoted to VALIDATED so edge_weight assigns real weight.
+        # This exploits real edges the ensemble was silently discarding.
+        # Guard: only flip when n >= 25 AND hr <= 0.47 — thin-sample fades
+        # aren't reliable enough to bet, and marginal negatives (48-52%)
+        # aren't clear edges.
+        if tier == 'ANTI_VALIDATED' and hr is not None and n >= 25 and hr <= 0.47:
+            flip_map = {'HOME_ML':'AWAY_ML','AWAY_ML':'HOME_ML',
+                        'HOME_RL':'AWAY_RL','AWAY_RL':'HOME_RL',
+                        'OVER':'UNDER','UNDER':'OVER'}
+            flipped_side = flip_map.get(side)
+            if flipped_side:
+                fade_hr = 1.0 - hr
+                # Promote to VALIDATED if fade edge is meaningful (>= 55%)
+                # AND sample is decent, else DISCOVERY.
+                fade_tier = 'VALIDATED' if (fade_hr >= 0.55 and n >= 50) else 'DISCOVERY'
+                fade_prose = f'[fade] {prose or source["signal_key"]}'
+                out.append(Opinion(
+                    signal_key=f'{source["signal_key"]}__fade',
+                    signal_class=cls,
+                    side=flipped_side, strength=strength,
+                    hit_rate=fade_hr, sample_n=n, tier=fade_tier,
+                    display_prose=fade_prose,
+                ))
+                continue  # skip emitting the original (zero-weight) opinion
+
         out.append(Opinion(
             signal_key=source['signal_key'],
             signal_class=cls,
