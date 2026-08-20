@@ -398,6 +398,43 @@ def check_prime_hit_crash() -> Optional[dict]:
     }
 
 
+def check_prop_volume_thin() -> Optional[dict]:
+    """Alert if today's legacy prop count is <50 (normal is 100-300).
+    Caught during 8/20 audit: today produced 29 props while 8/19 had 290.
+    Volume drops of that scale usually mean a scoring step broke silently
+    or the raw prop-line feed is starved. Not always a bug — some days
+    genuinely have thin signal — but worth a watchdog so it doesn't
+    surprise the operator."""
+    today = _et_today()
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+        headers={**H_READ, 'Prefer': 'count=exact'},
+        params={'game_date': f'eq.{today}', 'select': 'count'},
+        timeout=8)
+    ct = r.headers.get('content-range', '?/0')
+    try: n = int(ct.split('/')[-1])
+    except (ValueError, IndexError): return None
+    # Also check ctx game count — if 0 games, no props expected (off-day)
+    g = requests.get(f'{SB}/rest/v1/mlb_game_context',
+        headers={**H_READ, 'Prefer': 'count=exact'},
+        params={'game_date': f'eq.{today}', 'select': 'count'},
+        timeout=8)
+    gc = g.headers.get('content-range', '?/0')
+    try: games = int(gc.split('/')[-1])
+    except (ValueError, IndexError): games = 0
+    if games == 0: return None  # off-day
+    props_per_game = n / games if games else 0
+    if n >= 50 and props_per_game >= 3:
+        return None
+    return {
+        'check_name': 'prop_volume_thin',
+        'severity': 'CRITICAL' if n < 15 else 'WARNING',
+        'message': f'Legacy prop volume thin: {n} props on {games} games ({props_per_game:.1f}/game). '
+                   f'Normal is 100-300/day. Check generate_props.py + apply_prop_refit.py ran cleanly.',
+        'detail': {'today': today, 'prop_count': n, 'game_count': games,
+                   'props_per_game': round(props_per_game, 2)},
+    }
+
+
 CHECKS = [
     check_ladder_empty,
     check_ensemble_engine_share,
@@ -408,6 +445,7 @@ CHECKS = [
     check_jerry_diagnostic_leak,
     check_signal_source_dark,
     check_prime_hit_crash,
+    check_prop_volume_thin,
 ]
 
 
