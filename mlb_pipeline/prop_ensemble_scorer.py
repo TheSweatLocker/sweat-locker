@@ -367,6 +367,36 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
     conviction = int(round(base + margin_boost + classes_boost))
     conviction = max(45, min(97, conviction))
 
+    # 2026-08-21: BOOK-EDGE RECALIBRATION (ported from legacy
+    # generate_props.py::recalibrate_props_with_book_lines).
+    # Audit revealed that playbook was blindly promoting props to PRIME
+    # based on refit_conviction=100 signals WITHOUT checking whether the
+    # book had already priced in the same signal. Legacy scorer had this
+    # check and correctly demoted; playbook overrode legacy and lost.
+    # Specific case: Grayson Rodriguez outs_under 15.5 — projection 13.8
+    # vs line 15.5 = only +1.7 outs edge (thin). Legacy demoted conv
+    # 64→48 (SKIP). Playbook cranked to PRIME 95 anyway → picked BACK →
+    # Grayson pitched 21 outs → LOSS.
+    #
+    # 21-day backtest of legacy-vs-playbook disagreements confirmed:
+    #   Legacy STRONG → Playbook LEAN: 9-1 (90% win) — playbook demoted winners
+    #   Legacy SKIP → Playbook LEAN/STRONG: 24-29 (45% win) — playbook picked losers
+    #
+    # This function replicates legacy's edge-band multiplier: if projection
+    # vs book edge is THIN (0.5 outs for K's, 1.0 for outs, etc), the
+    # conviction gets multiplied down. Same math legacy has used since
+    # 2026-05-29 with proven predictive value.
+    conviction = _apply_book_edge_calibration(conviction, prop, winner_side)
+
+    # Re-derive tier from post-recal conviction. If book demote pushed us
+    # below LEAN, drop to PASS (equivalent to legacy's SKIP after recal).
+    if conviction < 55:
+        tier = 'PASS'
+    elif tier == 'PRIME' and conviction < 75:
+        tier = 'STRONG'
+    elif tier == 'STRONG' and conviction < 60:
+        tier = 'LEAN'
+
     return PropDecision(
         sport=sport, game_date=prop.get('game_date',''),
         game_id=prop.get('game_id'), player_name=prop.get('player_name',''),
@@ -377,6 +407,69 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
         contributions=sorted(win_chips, key=lambda c: -c.contribution),
         class_share=win_shares,
     )
+
+
+# Ported from generate_props.py::EDGE_BANDS (line 3329). Same tuned bands
+# legacy has used since 2026-05-29. Each entry: (edge_threshold, multiplier, label).
+# Walked top-down: first threshold met wins. Anything below smallest → 0.30 (no edge).
+_BOOK_EDGE_BANDS = {
+    'ks':   [(1.5, 1.00, 'real edge'), (1.0, 0.90, 'moderate edge'),
+             (0.5, 0.75, 'thin edge'), (0.0, 0.55, 'minimal edge')],
+    'ha':   [(1.5, 1.00, 'real edge'), (1.0, 0.90, 'moderate edge'),
+             (0.5, 0.75, 'thin edge'), (0.0, 0.55, 'minimal edge')],
+    'outs': [(3.0, 1.00, 'real edge'), (2.0, 0.90, 'moderate edge'),
+             (1.0, 0.75, 'thin edge'), (0.0, 0.55, 'minimal edge')],
+    'bb':   [(0.5, 1.00, 'real edge'), (0.3, 0.90, 'moderate edge'),
+             (0.1, 0.75, 'thin edge'), (0.0, 0.55, 'minimal edge')],
+    'er':   [(1.0, 1.00, 'real edge'), (0.5, 0.90, 'moderate edge'),
+             (0.3, 0.75, 'thin edge'), (0.0, 0.55, 'minimal edge')],
+}
+_PROP_PROJ_KEY = {
+    'ks': '_projected_ks', 'bb': '_projected_bb',
+    'ha': '_projected_hits', 'outs': '_projected_outs', 'er': '_projected_er',
+}
+
+
+def _apply_book_edge_calibration(conviction: int, prop: dict, winner_side: str) -> int:
+    """Demote conviction when book edge on the picked direction is thin.
+    Returns the recalibrated conviction. If we can't compute (missing
+    projection or book line), returns conviction unchanged.
+
+    Reads prop.signals dict which is populated by legacy scorer with
+    projection values (_projected_ks etc.) — since legacy runs first in
+    the pipeline, these fields are available for us to use.
+    """
+    ptype = prop.get('prop_type') or ''
+    group = ptype.split('_')[0]  # ks / bb / ha / outs / er
+    if group not in _BOOK_EDGE_BANDS:
+        return conviction
+    signals = prop.get('signals') or {}
+    proj = signals.get(_PROP_PROJ_KEY.get(group))
+    if proj is None:
+        return conviction  # no projection available — can't calibrate
+    book_line = prop.get('book_line') or prop.get('prop_line')
+    if book_line is None:
+        return conviction
+    try:
+        proj_f = float(proj); book_f = float(book_line)
+    except (TypeError, ValueError):
+        return conviction
+    direction = (prop.get('direction') or '').lower()
+    # Edge from bettor's perspective on the picked direction.
+    # If we're picking UNDER, positive edge = book line > projection.
+    # If we're picking OVER, positive edge = projection > book line.
+    is_under = direction == 'under'
+    edge = (book_f - proj_f) if is_under else (proj_f - book_f)
+    bands = _BOOK_EDGE_BANDS[group]
+    mult = 0.30
+    for thr, m, _ in bands:
+        if edge >= thr:
+            mult = m
+            break
+    if mult >= 1.0:
+        return conviction  # no penalty
+    new_conv = max(0, int(round(conviction * mult)))
+    return new_conv
 
 
 # ═══════════════════════════════════════════════════════════════════════
