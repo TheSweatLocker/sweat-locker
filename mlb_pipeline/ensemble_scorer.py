@@ -246,6 +246,15 @@ def _load_sources(sport: str) -> list[dict]:
 
 
 def _load_registry() -> dict:
+    """Load signal_registry keyed by (signal_name, sport) tuple.
+
+    2026-08-21 CROSS-SPORT CONTAMINATION FIX: prior version keyed by
+    signal_name alone. Many signals exist for multiple sports (e.g.
+    away_ats_cold_on_road for MLB AND NHL). Last-loaded wins meant
+    MLB scorer often got NHL weights. Example caught: away_ats_cold_on_road
+    MLB=56.1% n=41 vs NHL=36.9% n=575 → scorer used NHL number → signal
+    was silently treated as anti-signal on MLB games for weeks.
+    """
     global _REGISTRY_CACHE
     if _REGISTRY_CACHE is not None:
         return _REGISTRY_CACHE
@@ -254,10 +263,11 @@ def _load_registry() -> dict:
         try:
             r = requests.get(f'{_SB}/rest/v1/signal_registry',
                              headers=_H_READ,
-                             params={'select': 'signal_name,tier,recommended_weight,hit_rate,sample_n'},
+                             params={'select': 'signal_name,sport,tier,recommended_weight,hit_rate,sample_n'},
                              timeout=10)
             for row in (r.json() if r.status_code == 200 else []):
-                out[row['signal_name']] = row
+                key = (row['signal_name'], row.get('sport') or '*')
+                out[key] = row
         except Exception:
             pass
     _REGISTRY_CACHE = out
@@ -304,10 +314,13 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
 
     Priority (in order):
       1. inline hit_rate_pct/sample_n on the row
-      2. signal_registry lookup by weight_registry_key (explicit link)
-      3. signal_registry lookup by signal_key itself (default — backfill
-         writes to registry using signal_key as the row name)
-      4. None (floor weight)"""
+      2. signal_registry lookup by (weight_registry_key, sport)
+      3. signal_registry lookup by (signal_key, sport)
+      4. None (floor weight)
+
+    2026-08-21: sport is now part of the lookup key (was just signal_name).
+    Prevents NHL/NFL registry rows from bleeding into MLB score weights.
+    """
     inline_hr = source_row.get('hit_rate_pct')
     inline_n = source_row.get('sample_n')
     if inline_hr is not None:
@@ -316,9 +329,11 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
         return (hr, int(inline_n or 0), None)
 
     registry = _load_registry()
+    sport = source_row.get('sport') or '*'
     for lookup_key in (source_row.get('weight_registry_key'), source_row.get('signal_key')):
         if not lookup_key: continue
-        reg = registry.get(lookup_key)
+        # Try sport-specific first, then wildcard
+        reg = registry.get((lookup_key, sport)) or registry.get((lookup_key, '*'))
         if reg:
             hr = reg.get('hit_rate')
             if hr is not None:
