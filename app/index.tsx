@@ -6586,8 +6586,8 @@ LEAD SIGNAL HIERARCHY:
 
 STRUCTURE (3 sentences — hard cap):
 - Sentence 1: What the MODEL says — cite specific numbers from UFC FIGHT CONTEXT (SLpM, finishing rate, TD defense, reach, win profile). Reference actual values, not generic descriptions.
-- Sentence 2: What PUBLIC ANALYSTS say (web search Doc Sports, Covers MMA, MMA Fighting, MMA Decisions, BestFightOdds — name source when possible).
-- Sentence 3: Where model and analysts AGREE or DISAGREE. If they diverge, explain why. THAT is the edge.
+- Sentence 2: What the public/analyst consensus reads (from web search of MMA analysis sites — describe the LEAN generically, e.g. "analyst consensus leans X" or "public read has been Y". NEVER name specific sites — ToS avoidance).
+- Sentence 3: Where model and consensus AGREE or DISAGREE. If they diverge, explain why. THAT is the edge.
 
 LENGTH: 3 sentences. Hard cap.`,
 
@@ -16166,7 +16166,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                   - Refunds are handled by Apple per their standard refund policy — we do not process refunds directly{'\n'}
                   - Prices are in USD and subject to change with reasonable notice{'\n\n'}
                   <Text style={{color:THEME.text,fontWeight:'700'}}>6. DATA ACCURACY{'\n'}</Text>
-                  We aggregate data from various public sports statistics providers, odds APIs, weather services, external handicapper picks (Doc Sports, Pickswise, VSiN, PickDawgz, Action Network, BettingPros, Covers, OddsCrowd, BestFightOdds), and betting-market percentages. We make no warranty that data is complete, accurate, or current at all times. Pipeline data is updated multiple times daily; oddscrowd bets%/money% data refreshes at higher cadence during game hours. External handicapper picks reflect the opinions of those third parties, not endorsements from us. Always verify odds, lines, and picks with your sportsbook and the original source before placing any wager.{'\n\n'}
+                  We aggregate data from various public sports statistics providers, odds APIs, weather services, third-party handicapper picks (aggregated from multiple industry sources — codes shown in-app), and betting-market percentages. We make no warranty that data is complete, accurate, or current at all times. Pipeline data is updated multiple times daily; betting-market percentage data refreshes at higher cadence during game hours. Third-party handicapper picks reflect the opinions of those third parties, not endorsements from us. Always verify odds, lines, and picks with your sportsbook and the original source before placing any wager.{'\n\n'}
                   <Text style={{color:THEME.text,fontWeight:'700'}}>7. AI-GENERATED CONTENT{'\n'}</Text>
                   Jerry AI is powered by Anthropic's Claude AI model. AI-generated analysis may contain errors, omissions, or outdated information. We are not responsible for decisions made based on AI-generated content. Jerry AI analysis is clearly labeled as AI-generated throughout the App.{'\n\n'}
                   <Text style={{color:THEME.text,fontWeight:'700'}}>8. RESPONSIBLE GAMBLING{'\n'}</Text>

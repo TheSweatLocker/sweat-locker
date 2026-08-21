@@ -55,20 +55,24 @@ type SourceCalibration = {
   losses: number;
 };
 
+// 2026-08-21: names abbreviated per ToS-avoidance policy (mirrors LineMovementTab
+// FR/CZ/OC pattern for split sources). Displaying full brand names in-app risks
+// scraping-ToS violations from source sites. Users see hit rates + codes;
+// key mapping stays internal.
 const SOURCE_LABEL: Record<string, string> = {
-  action: 'Action Network',
-  dimers: 'Dimers',
-  covers: 'Covers',
-  vsin: 'VSiN',
-  pickswise: 'Pickswise',
-  pickdawgz: 'PickDawgz',
-  bettingpros: 'BettingPros',
-  docsports: 'Doc Sports',
-  cbs: 'CBS Sports',
-  oddsshark: 'OddsShark',
-  fangraphs: 'Fangraphs',
-  ballparkpal: 'Ballpark Pal',
-  scp: 'Sports Chat Place',
+  action: 'AN',
+  dimers: 'DM',
+  covers: 'CV',
+  vsin: 'VS',
+  pickswise: 'PW',
+  pickdawgz: 'PD',
+  bettingpros: 'BP',
+  docsports: 'DS',
+  cbs: 'CBS',
+  oddsshark: 'OS',
+  fangraphs: 'FG',
+  ballparkpal: 'BPP',
+  scp: 'SCP',
 };
 
 const flagColor = (flag: string | null): string => {
