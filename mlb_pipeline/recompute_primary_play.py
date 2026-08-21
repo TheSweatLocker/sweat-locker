@@ -255,6 +255,39 @@ def run(date_str: str, dry_run: bool = False) -> None:
         else:
             print(f'    ✗ patch failed {r.status_code}: {r.text[:150]}')
 
+        # 2026-08-21: snapshot the NEW primary_play so signal-level audits
+        # have a permanent record. Prior state: primary_play was overwritten
+        # in place on every recompute — only 12 of 30d survived. See migration
+        # 20260821_primary_play_snapshots.sql. Fails soft if table missing.
+        if pp_changed and new_pp:
+            snap = {
+                'sport': 'MLB',
+                'game_date': date_str,
+                'game_id': gid,
+                'snapshot_source': 'recompute',
+                'home_team': home,
+                'away_team': away,
+                'primary_play': new_pp,
+                'pick_type': new_pp.get('type'),
+                'pick_label': new_pp.get('label'),
+                'pick_side': new_pp.get('side'),
+                'pick_line': new_pp.get('line'),
+                'tier': new_pp.get('tier'),
+                'conviction': new_pp.get('conviction'),
+                'score': new_pp.get('score'),
+            }
+            snap_hw = {**HW, 'Prefer': 'resolution=merge-duplicates,return=minimal'}
+            try:
+                sr = requests.post(
+                    f'{SB}/rest/v1/primary_play_snapshots?on_conflict=game_id,snapshot_source',
+                    headers=snap_hw, json=snap, timeout=10,
+                )
+                # Silent unless failure (avoids noise); 404 = migration not applied yet
+                if sr.status_code >= 400 and sr.status_code != 404:
+                    print(f'    ⚠ snapshot write {sr.status_code}: {sr.text[:80]}')
+            except Exception:
+                pass  # snapshot is best-effort, don't break recompute if it fails
+
     print(f'\n{"[DRY] " if dry_run else "✓ "}patched={patched}/{len(ctxs)}  '
           f'primary_play changed={changed_pp}  nrfi_ensemble changed={changed_ens}')
     total = engine_counts['ensemble_v2'] + engine_counts['legacy_fallback']
