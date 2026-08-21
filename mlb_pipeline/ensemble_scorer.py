@@ -728,14 +728,17 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
         for c in chips:
             class_share[c.signal_class] += c.contribution
         # Class-balance penalty: cap any single class at MAX_CLASS_SHARE of total
+        # 2026-08-21: changed from soft (overflow*0.5) to HARD cap. Soft penalty
+        # let scenario class hit ~70% of Braves 8/20 pick score (0.75/0.98)
+        # despite 40% cap — half the overflow slipped through. Hard cap makes
+        # the class-diversity gate actually enforced.
         adjusted_total = raw_total
         if raw_total > 0:
             max_allowed = raw_total * MAX_CLASS_SHARE
             for cls_name, share in class_share.items():
                 if share > max_allowed:
-                    # Cap this class's contribution
                     overflow = share - max_allowed
-                    adjusted_total -= overflow * 0.5  # soft penalty, not hard cut
+                    adjusted_total -= overflow  # HARD cap (was overflow*0.5)
         classes_fired = len([c for c in class_share.keys() if class_share[c] > 0])
         scored.append((cand, adjusted_total, chips, dict(class_share), classes_fired))
 
