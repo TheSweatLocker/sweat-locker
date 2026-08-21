@@ -386,6 +386,20 @@ def run(sport='MLB', window_days=90):
         matrix[(row['market'], row['scenario_key'])] = row
 
     matches_written = 0
+    # 2026-08-21 FIX: clear stale scenario matches per game before re-inserting.
+    # Previously scenarios accumulated across intraday snapshots — e.g. Braves
+    # 8/20 had bets_55-64_under (from 15:46 snap) AND bets_40-54_under (from
+    # 18:52 snap) both persisting because scenario_key differed. Result:
+    # ensemble double-counted the same pattern across snapshots.
+    game_ids_to_clear = [c.get('game_id') for c in tr if c.get('game_id')]
+    if game_ids_to_clear:
+        _in = ','.join(game_ids_to_clear)
+        dr = requests.delete(
+            f'{SB}/rest/v1/sharp_scenario_game_matches?game_id=in.({_in})&sport=eq.{sport}',
+            headers=H_WRITE, timeout=30)
+        if dr.status_code not in (200, 204):
+            print(f'  ⚠️  stale-match clear returned {dr.status_code}')
+
     for c in tr:
         gid = c.get('game_id')
         if not gid: continue

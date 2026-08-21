@@ -407,9 +407,15 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
 
 def _handler_scenario(source_row: dict, ctx: dict) -> list[Opinion]:
     """Sharp scenario matches with per-scenario hit_rate + n from
-    sharp_scenario_game_matches. Each match is its own Opinion so a
-    game with 5 matches produces 5 (potentially-differently-weighted)
-    opinions instead of one collapsed signal."""
+    sharp_scenario_game_matches.
+
+    2026-08-21 FIX (Braves-ChiSox 8/20 audit): scenarios were triple-counting
+    the same underlying public-split pattern. `whale_div15+_under`,
+    `bets_55-64_under`, `bets_40-54_under` all fired on the same
+    (money>>bets on UNDER) pattern → 0.75 of 0.98 total OVER-side score
+    came from 3 correlated derivatives of one signal. Fix: group scenarios
+    by (market, family) — one strongest per family. Also n_min gate raised:
+    scenarios with n<30 get strength floored to 0.35 (was full)."""
     gid = ctx.get('game_id')
     game_date = ctx.get('game_date')
     if not gid: return []
@@ -419,8 +425,23 @@ def _handler_scenario(source_row: dict, ctx: dict) -> list[Opinion]:
     except Exception:
         matches = []
 
+    def _family(key: str) -> str:
+        """Group scenario keys that measure the same underlying pattern.
+        Prevents triple-counting (bets_40-54 + bets_55-64 + whale_div15 all
+        fire on same public-split moment)."""
+        k = key.lower()
+        if k.startswith('whale_') or k.startswith('square_'): return 'divergence'
+        if k.startswith('bets_'): return 'bets_bucket'
+        if k.startswith('money_') and 'mc' not in k: return 'money_bucket'
+        if k.startswith('grid_'): return 'money_x_bets_grid'
+        if k.startswith('balanced_'): return 'balanced'
+        if k.startswith('money65+_mc') or k.startswith('triple_consensus'): return 'money_x_model'
+        if k.startswith('rlm_'): return 'rlm'
+        return k  # unknown families stay as themselves
+
     prose_tmpl = source_row.get('display_prose_template') or 'historical pattern hit {hit_rate}% in {sample_n} spots'
-    out: list[Opinion] = []
+    # Build all candidate Opinions first, then dedupe per (market, family)
+    per_family: dict[tuple, list[dict]] = {}
     for m in matches:
         side = str(m.get('side') or '').upper()
         market = str(m.get('market') or '').lower()
@@ -432,29 +453,43 @@ def _handler_scenario(source_row: dict, ctx: dict) -> list[Opinion]:
         hr = m.get('hit_rate')
         try: hr = float(hr) / 100.0 if hr is not None else None
         except (TypeError, ValueError): hr = None
-        # 2026-08-18 BUG FIX: when back_or_fade=FADE we invert the SIDE (above)
-        # but were NOT inverting the hit_rate. Result: a "FADE Cards at 37% HR"
-        # produced (side=HOME_ML, hit_rate=0.37) — edge_weight(0.37, ...) returns
-        # 0 because 0.37 is below breakeven, so every FADE scenario silently
-        # contributed 0 to the ensemble. Real edge on the inverted side is
-        # 1.0 - 0.37 = 0.63 → edge_weight ~0.58 → real contribution.
-        # This affected every FADE scenario across every sport.
         if invert and hr is not None:
             hr = 1.0 - hr
         n = int(m.get('n') or 0)
         confidence = m.get('hint_confidence') or 50
         strength = min(float(confidence) / 100.0, 1.0)
-        tier = 'DISCOVERY' if n >= 15 else 'UNVALIDATED'
+        # 2026-08-21 VERIFIER ROLE: scenarios were dominating 76% of scores
+        # (Braves 8/20: 0.75/0.98 from 3 correlated scenario chips).
+        # Scenarios now capped hard so they can only CONFIRM other signals,
+        # never lead. n>=30: max 0.25. n<30: max 0.15. This drops peak
+        # scenario contribution from ~0.36 → ~0.10 per chip.
+        if n >= 30:
+            strength = min(strength, 0.25)
+        else:
+            strength = min(strength, 0.15)
+        tier = 'DISCOVERY' if n >= 30 else 'UNVALIDATED'
         scenario_key = str(m.get('scenario_key') or 'unnamed')
-        # Render prose with scenario data (not ctx — scenario has its own vars)
-        scen_ctx = AttrDict({'hit_rate': round((hr or 0) * 100, 1), 'sample_n': n,
-                             'scenario': scenario_key})
+        # Score for family-dedupe: bigger sample × edge = stronger evidence.
+        # Winning scenario in each family is the one with best edge×n.
+        edge_pp = (hr - 0.524) if hr is not None else 0.0
+        family_score = max(0.0, edge_pp) * min(n, 100)
+        per_family.setdefault((market, cand, _family(scenario_key)), []).append({
+            'signal_key': f'{source_row["signal_key"]}:{scenario_key}',
+            'cand': cand, 'hr': hr, 'n': n, 'strength': strength, 'tier': tier,
+            'scenario_key': scenario_key, 'family_score': family_score,
+        })
+
+    out: list[Opinion] = []
+    for (market, cand, family), opinions in per_family.items():
+        # Keep the strongest opinion per (market, cand, family)
+        top = max(opinions, key=lambda x: x['family_score'])
+        scen_ctx = AttrDict({'hit_rate': round((top['hr'] or 0) * 100, 1),
+                             'sample_n': top['n'], 'scenario': top['scenario_key']})
         prose = render_prose(prose_tmpl, scen_ctx)
         out.append(Opinion(
-            signal_key=f'{source_row["signal_key"]}:{scenario_key}',
-            signal_class='scenario', side=cand, strength=strength,
-            hit_rate=hr, sample_n=n, tier=tier,
-            display_prose=prose,
+            signal_key=top['signal_key'], signal_class='scenario', side=top['cand'],
+            strength=top['strength'], hit_rate=top['hr'], sample_n=top['n'],
+            tier=top['tier'], display_prose=prose,
         ))
     return out
 
