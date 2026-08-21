@@ -129,31 +129,43 @@ def grade_rung(rung: dict, res: dict) -> Optional[str]:
 
 def update_state_from_rungs():
     """Recompute ladder_state.current_streak / longest_streak / last_result
-    from all graded ladder_rung rows (chronological)."""
+    from all graded ladder_rung rows (chronological).
+
+    2026-08-21 BUG FIX: prior version reset the state to 'reset' whenever
+    the latest-graded result was Loss, even if the CURRENT active rung is
+    a NEW rung locked after the loss and still in flight. Consequence:
+    tonight's E-Rod Over 5.5 HA (rung 6) got flipped to reset because
+    yesterday's Grayson rung 5 late-graded as Loss. Fix: only reset if
+    the graded LOSS is on the currently-active rung id.
+    """
     r = requests.get(f'{SB}/rest/v1/ladder_rung', headers=H_READ,
         params={'result': 'not.is.null', 'order': 'qualified_at.asc',
-                'select': 'result,qualified_at'}, timeout=15)
+                'select': 'id,result,qualified_at'}, timeout=15)
     if r.status_code != 200: return
     rows = r.json()
     if not isinstance(rows, list): return
-    current = 0; longest = 0; last_result = None
+    current = 0; longest = 0; last_result = None; last_rung_id = None
     for row in rows:
         res = row.get('result')
         last_result = res
+        last_rung_id = row.get('id')
         if res == 'Win':
             current += 1
             longest = max(longest, current)
         elif res == 'Loss':
             current = 0
         # Push: neither reset nor extend
-    # Determine status transition — if latest was Loss AND ladder_state was
-    # 'active', flip to 'reset'. Otherwise leave existing status intact.
     st = requests.get(f'{SB}/rest/v1/ladder_state?id=eq.1', headers=H_READ,
         timeout=10).json()
     cur_state = st[0] if isinstance(st, list) and st else {}
     new_status = cur_state.get('status') or 'waiting'
     note = cur_state.get('note') or ''
-    if last_result == 'Loss' and cur_state.get('status') == 'active':
+    active_rung_id = cur_state.get('active_rung_id')
+    if (last_result == 'Loss' and cur_state.get('status') == 'active'
+            and last_rung_id == active_rung_id):
+        # Only reset when the graded LOSS is on the currently-active rung.
+        # If a newer rung has been locked, keep the active status — the
+        # loss on the older rung is history, not the current in-flight play.
         new_status = 'reset'
         note = f'Reset after loss. New run starts on next qualifier.'
     payload = {
