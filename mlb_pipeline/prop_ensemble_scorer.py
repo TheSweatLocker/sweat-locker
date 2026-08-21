@@ -635,6 +635,13 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False, limit: Opti
             continue
         if d.tier == 'PASS':
             passed += 1
+            # 2026-08-21: still write PASS decisions so stale prior rows
+            # get OVERWRITTEN. Bug caught during audit: book_recalibration
+            # correctly demoted Tanner Gordon outs_under 14.5 from PRIME
+            # to PASS, but writer skipped → the old PRIME 97 row persisted
+            # in DB and Sharp Card kept surfacing the losing pick. Now the
+            # PASS overwrites the PRIME → app hides it (per NO_PLAY logic).
+            write_decision(prop, d, dry_run=dry_run)
             continue
         write_decision(prop, d, dry_run=dry_run)
         scored += 1
