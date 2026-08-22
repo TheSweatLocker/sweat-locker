@@ -120,10 +120,28 @@ def run(game_date: str | None = None, dry_run: bool = False) -> None:
         print(f'  ✕ DEMOTE {p["player_name"]:<22} @{odds}  refit={refit}  {prev_tier} → LEAN ({band})')
         if dry_run:
             demoted += 1; continue
-        pr = requests.patch(
-            f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{p["id"]}',
-            headers=H_WRITE, json=payload, timeout=10,
+        # 2026-08-22 ROOT-CAUSE FIX: PATCH ALL COPIES of this prop, not just the
+        # id with juice-populated odds. Prior code filtered `WHERE book_over_odds
+        # <= JUICE_CAP` (line 83) and PATCHed only that id — but the props table
+        # has duplicate rows (same player+prop_type+direction+line, some with
+        # book_over_odds attached, some NULL). The odds-NULL copy escaped the
+        # gate and stayed at PRIME/STRONG. Sweat Card then picked the un-demoted
+        # copy. Root cause: dedup happens PRE-scoring but sweep_prop_coverage
+        # re-adds coverage stubs post-scoring. Fix: patch on natural key so ALL
+        # copies of the same prop get demoted uniformly. Bandaid-free: even if
+        # dedup fails somewhere upstream, this ensures the demote is complete.
+        import urllib.parse as _up
+        pn = _up.quote(p['player_name'], safe='')
+        patch_url = (
+            f'{SB}/rest/v1/mlb_pipeline_props'
+            f'?game_date=eq.{gd}'
+            f'&player_name=eq.{pn}'
+            f'&prop_type=eq.{p["prop_type"]}'
+            f'&direction=eq.{p["direction"]}'
+            f'&prop_line=eq.{p["prop_line"]}'
+            f'&tier=in.(PRIME,STRONG)'  # only touch tier if still elevated
         )
+        pr = requests.patch(patch_url, headers=H_WRITE, json=payload, timeout=10)
         if pr.status_code in (200, 204):
             demoted += 1
         else:

@@ -422,6 +422,27 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
     except (TypeError, ValueError):
         pass  # missing L10 data — normal path
 
+    # 2026-08-22 ROOKIE FLOOR GUARD: if the prop has NO L10 hit count AND
+    # NO season hit rate populated at all, the player has no MLB game log
+    # to grade the line against. This is a rookie / callup case (tonight:
+    # Andrew Painter er_over 2.5 landed as PRIME conv=94 with zero crossing
+    # history — ensemble signals were fine but we had no way to know how
+    # often he actually hits 2.5+ ER because he's never pitched enough MLB
+    # innings). Cap tier at LEAN — signals still support the pick,
+    # but PRIME/STRONG shouldn't ride on projections alone without a
+    # historical baseline. LEAN keeps it in the pool without top-tier
+    # over-confidence. Enrichment path (backfill_prop_lookback) tries
+    # exact + diacritic-normalized names — if BOTH still return empty,
+    # it's genuinely a no-history player, not a lookup miss.
+    try:
+        l10_val = prop.get('player_l10_hit_count')
+        season_val = prop.get('player_season_hit_pct')
+        if l10_val is None and season_val is None and tier in ('PRIME', 'STRONG'):
+            tier = 'LEAN'
+            conviction = min(conviction, 60)
+    except Exception:
+        pass
+
     return PropDecision(
         sport=sport, game_date=prop.get('game_date',''),
         game_id=prop.get('game_id'), player_name=prop.get('player_name',''),
