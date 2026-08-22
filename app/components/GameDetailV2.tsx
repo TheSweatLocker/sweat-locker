@@ -895,6 +895,16 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
 }
 
 // ─── LENS GRID ──────────────────────────────────────────────────────────
+// 2026-08-22: popover-width bug — Explainer inside each flex:1 lens cell
+// rendered its help text INSIDE the cell (~60-80px wide on mobile), so
+// tapping JERRY / PANEL / MC produced a tall+narrow column of text that
+// looked bad. Fix: lift the "which lens is open" state to LensGrid,
+// render the lens header as a plain tappable (no popover), and put ONE
+// full-width popover row BELOW the grid that shows the open lens's help.
+// One popover open at a time (tap same lens to close, tap different lens
+// to switch). Same UX as before, actually readable.
+import {explain as _explainGlossary} from '../lib/glossary';
+
 function LensGrid({ctx, gamesSport}: any) {
   const mc = safeJSON(ctx?.mc_probabilities) || {};
   const rows = gamesSport === 'MLB' ? [
@@ -911,39 +921,63 @@ function LensGrid({ctx, gamesSport}: any) {
   ];
 
   const closeTot = ctx?.close_total;
+  const [openLens, setOpenLens] = useState<string | null>(null);
+  const openHelp = openLens ? _explainGlossary(openLens.toUpperCase()) : null;
 
   return (
-    <View style={styles.lensGrid}>
-      {rows.map((r, i) => {
-        const mgnSide = signSide(r.m);
-        const totDir = r.t != null && closeTot != null
-          ? (r.t > closeTot ? 'O' : r.t < closeTot ? 'U' : '=')
-          : null;
-        const missing = r.m == null;
-        return (
-          <View
-            key={i}
-            style={[
-              styles.lens,
-              {borderTopColor: missing ? C.border : sideColor(mgnSide), opacity: missing ? 0.5 : 1},
-            ]}
-          >
-            <Explainer term={r.name.toUpperCase()}
-              color={C.textDim} activeColor={C.accent} helpColor={C.text}
-              helpBg={C.accent + '15'}
-              textStyle={styles.lensName} />
+    <View>
+      <View style={styles.lensGrid}>
+        {rows.map((r, i) => {
+          const mgnSide = signSide(r.m);
+          const totDir = r.t != null && closeTot != null
+            ? (r.t > closeTot ? 'O' : r.t < closeTot ? 'U' : '=')
+            : null;
+          const missing = r.m == null;
+          const isOpen = openLens === r.name.toUpperCase();
+          const nameUp = r.name.toUpperCase();
+          const helpAvailable = !!_explainGlossary(nameUp);
+          return (
+            <TouchableOpacity
+              key={i}
+              activeOpacity={helpAvailable ? 0.7 : 1}
+              onPress={() => helpAvailable && setOpenLens(isOpen ? null : nameUp)}
+              style={[
+                styles.lens,
+                {borderTopColor: missing ? C.border : sideColor(mgnSide), opacity: missing ? 0.5 : 1},
+                isOpen && {backgroundColor: C.accent + '18'},
+              ]}
+            >
+              <View style={{flexDirection:'row', alignItems:'center', gap:2}}>
+                <Text style={[styles.lensName, isOpen && {color: C.accent}]}>{nameUp}</Text>
+                {helpAvailable && (
+                  <Text style={{color: (isOpen ? C.accent : C.textMuted) + 'CC', fontSize:8, fontWeight:'700'}}>ⓘ</Text>
+                )}
+              </View>
 
-            <Text style={[styles.lensMargin, {color: missing ? C.textDim : sideColor(mgnSide)}]}>
-              {missing ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2))}
-            </Text>
-            <Text style={[styles.lensTotal, {
-              color: totDir === 'O' ? C.accent : totDir === 'U' ? C.sharp : C.textMuted,
-            }]}>
-              {r.t == null ? '—' : `${totDir ?? '='} ${f(r.t, 1)}`}
-            </Text>
-          </View>
-        );
-      })}
+              <Text style={[styles.lensMargin, {color: missing ? C.textDim : sideColor(mgnSide)}]}>
+                {missing ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2))}
+              </Text>
+              <Text style={[styles.lensTotal, {
+                color: totDir === 'O' ? C.accent : totDir === 'U' ? C.sharp : C.textMuted,
+              }]}>
+                {r.t == null ? '—' : `${totDir ?? '='} ${f(r.t, 1)}`}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+      {openLens && openHelp && (
+        <View style={{
+          marginTop: 6, paddingVertical: 8, paddingHorizontal: 12,
+          backgroundColor: C.accent + '12', borderRadius: 6,
+          borderLeftWidth: 2, borderLeftColor: C.accent,
+        }}>
+          <Text style={{color: C.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.5, marginBottom:3}}>
+            {openLens} lens
+          </Text>
+          <Text style={{color: C.text, fontSize:12, lineHeight:17}}>{openHelp}</Text>
+        </View>
+      )}
     </View>
   );
 }
