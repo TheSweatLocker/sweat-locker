@@ -232,9 +232,16 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
     critical, warnings = [], []
 
     # --- Gate 6 + 8 + 9: check today's prop_jerry_reads state ---
+    # 2026-08-22: prop_line MUST be in the join key. A single (player,
+    # prop_type, direction) can carry multiple line variants (Hunter Brown
+    # 8/22: bb_over 1.5 refit=71 AND bb_over 2.5 refit=28.6). Prior code
+    # dropped prop_line from the dict key so whichever line loaded last
+    # silently won, producing false-positive CRITICAL when Jerry backed
+    # the safe line but audit read the trap-line's refit → sanity check
+    # tanked the whole pipeline for a bogus reason.
     reads = requests.get(f'{SB}/rest/v1/prop_jerry_reads', headers=H_READ,
         params={'game_date': f'eq.{game_date}',
-                'select': 'id,player_name,prop_type,direction,call_verdict,conviction'},
+                'select': 'id,player_name,prop_type,prop_line,direction,call_verdict,conviction'},
         timeout=15).json()
     if isinstance(reads, list):
         directional = [r for r in reads if (r.get('call_verdict') or '').upper() in ('BACK', 'FADE')]
@@ -243,7 +250,8 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
             params={'game_date': f'eq.{game_date}',
                     'select': 'player_name,prop_type,prop_line,direction,refit_conviction'},
             timeout=15).json()
-        prop_by_key = {(p['player_name'], p['prop_type'], p['direction']): p
+        # Key now includes prop_line to prevent line-collapse ambiguity.
+        prop_by_key = {(p['player_name'], p['prop_type'], p['direction'], p.get('prop_line')): p
                        for p in (props if isinstance(props, list) else [])}
         # 2026-08-10: count only jerry reads whose underlying prop row EXISTS
         # in the props table. Prop Jerry sometimes generates BOTH directions
@@ -252,7 +260,7 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
         matched = 0
         with_refit = 0
         for r in directional:
-            key = (r['player_name'], r['prop_type'], r['direction'])
+            key = (r['player_name'], r['prop_type'], r['direction'], r.get('prop_line'))
             prop = prop_by_key.get(key)
             if not prop: continue
             matched += 1
