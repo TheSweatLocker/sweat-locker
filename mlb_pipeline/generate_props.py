@@ -4047,13 +4047,22 @@ def run():
         # box score. Mark the prop with lineup_state=projected so the app can
         # show a PROJECTED tag (and the next pipeline run with confirmed
         # lineups overwrites the row with state=confirmed).
-        confirmed = bool(g.get('lineup_confirmed'))
+        # 2026-08-21 FIX: per-side fallback. Prior logic used a game-level
+        # `lineup_confirmed` flag to decide confirmed-vs-projected for BOTH
+        # sides. In practice the upstream lineup writer sometimes sets the
+        # flag=True while only one side's lineup string is populated
+        # (Washington/Pittsburgh/NY Mets away lineups empty on 8/21). Result:
+        # confirmed branch reads '' → 0 batters → skips → no batter props
+        # for half the slate. Fixed volume collapse from ~20/g to ~3/g.
+        # Now: check EACH side's lineup string independently; fall back to
+        # projected when a side is empty even if game-level flag is True.
+        confirmed_game = bool(g.get('lineup_confirmed'))
         for side, lineup_field in (('home', 'home_lineup'), ('away', 'away_lineup')):
             team_name = g.get(f'{side}_team')
-            if confirmed:
-                lineup_str = g.get(lineup_field) or ''
-                batters = [b.strip() for b in lineup_str.split(',') if b.strip()][:9]
-                lineup_state = 'confirmed'
+            lineup_str = g.get(lineup_field) or ''
+            batters = [b.strip() for b in lineup_str.split(',') if b.strip()][:9]
+            if batters:
+                lineup_state = 'confirmed' if confirmed_game else 'projected'
             else:
                 batters = fetch_projected_lineup(team_name)
                 lineup_state = 'projected'
