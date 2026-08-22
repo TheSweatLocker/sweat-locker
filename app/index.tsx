@@ -1859,6 +1859,15 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [steamSubTab, setSteamSubTab] = useState<'lines'|'ladder'|'sharp'|'ledger'>('lines');
   const [sharpPicks, setSharpPicks] = useState<any[]>([]);
   const [sharpRecord, setSharpRecord] = useState<{w:number,l:number,p:number,unitsNet:number,wPrev:number,lPrev:number,pPrev:number,unitsNetPrev:number}>({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0});
+  // 2026-08-22: Split records per tier (triple / confirmed / lean). Reads
+  // daily_surface_records rows written by aggregate_daily_records.py::agg_split.
+  // User ask: 'every single sub tab in the steam room should have records to
+  // let users know if they work or not' — Split had no track record surface.
+  const [splitRecord, setSplitRecord] = useState<{
+    triple:{w:number,l:number,unitsNet:number},
+    confirmed:{w:number,l:number,unitsNet:number},
+    lean:{w:number,l:number,unitsNet:number},
+  }>({triple:{w:0,l:0,unitsNet:0}, confirmed:{w:0,l:0,unitsNet:0}, lean:{w:0,l:0,unitsNet:0}});
   const [sharpTabLoading, setSharpTabLoading] = useState(false);
   // 2026-08-17: The Ledger — auto-suggested chalk parlays + teasers.
   // Populated by generate_ledger.py from today's ensemble picks across
@@ -8483,6 +8492,28 @@ setJerryHistory(prev => {
         }));
         setSteamSourceRecords(normalized);
       } catch { setSteamSourceRecords([]); }
+
+      // 2026-08-22: Split record — sharp-signal historical performance by
+      // tier (triple / confirmed / lean) from daily_surface_records.
+      // Written by aggregate_daily_records.py::agg_split. Rolling 30d.
+      try {
+        const thirty = new Date(Date.now() - 30*86400000)
+          .toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+        const {data: splitRecs} = await supabase.from('daily_surface_records')
+          .select('surface,wins,losses,units_won')
+          .in('surface', ['split_sharp_triple','split_sharp_confirmed','split_sharp_lean'])
+          .gte('record_date', thirty);
+        const agg = {triple:{w:0,l:0,unitsNet:0}, confirmed:{w:0,l:0,unitsNet:0}, lean:{w:0,l:0,unitsNet:0}};
+        (splitRecs || []).forEach((r: any) => {
+          const bucket = r.surface.replace('split_sharp_','') as 'triple'|'confirmed'|'lean';
+          if (!agg[bucket]) return;
+          agg[bucket].w += r.wins || 0;
+          agg[bucket].l += r.losses || 0;
+          agg[bucket].unitsNet += Number(r.units_won) || 0;
+        });
+        Object.values(agg).forEach(v => v.unitsNet = Math.round(v.unitsNet * 100) / 100);
+        setSplitRecord(agg);
+      } catch { /* keep zeros — best-effort */ }
     } catch (e) { setSteamFlags([]); }
     setSteamLoading(false);
   }, []);
@@ -14480,6 +14511,33 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             </View>
 
             {steamSubTab==='lines' && (
+              <>
+                {/* 2026-08-22: Sharp-signal 30d record card by tier so users
+                    see if triple / confirmed / lean actually cash. */}
+                {(splitRecord.triple.w + splitRecord.triple.l +
+                  splitRecord.confirmed.w + splitRecord.confirmed.l +
+                  splitRecord.lean.w + splitRecord.lean.l) > 0 && (
+                  <View style={{backgroundColor:THEME.surface,borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:THEME.border}}>
+                    <Text style={{color:THEME.accent,fontSize:10,fontWeight:'800',letterSpacing:1,marginBottom:8}}>SHARP SIGNAL RECORD · 30d</Text>
+                    <View style={{flexDirection:'row',justifyContent:'space-between',gap:8}}>
+                      {(['triple','confirmed','lean'] as const).map(bkt => {
+                        const r = splitRecord[bkt];
+                        const wl = r.w + r.l;
+                        const pct = wl ? Math.round(100*r.w/wl) : 0;
+                        const label = bkt === 'triple' ? '🔥 TRIPLE' : bkt === 'confirmed' ? 'CONFIRMED' : 'LEAN';
+                        const netColor = r.unitsNet > 0 ? THEME.win : r.unitsNet < 0 ? THEME.loss : THEME.textMuted;
+                        return (
+                          <View key={bkt} style={{flex:1,alignItems:'center'}}>
+                            <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'800',letterSpacing:0.6,marginBottom:4}}>{label}</Text>
+                            <Text style={{color:THEME.text,fontSize:15,fontWeight:'800'}}>{r.w}-{r.l}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:10,marginTop:2}}>{wl ? `${pct}%` : '—'}</Text>
+                            <Text style={{color:netColor,fontSize:11,fontWeight:'700',marginTop:2}}>{r.unitsNet >= 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u</Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </View>
+                )}
               <LineMovementTab
                 loading={steamLoading}
                 flags={steamFlags}
@@ -14522,6 +14580,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   setTimeout(tryOpen, 2000);
                 }}
               />
+              </>
             )}
 
             {steamSubTab==='ladder' && (
