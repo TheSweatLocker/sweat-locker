@@ -72,6 +72,7 @@ PROP_CONFIG = {
         'league_baseline': 235.0,     # league avg per game
         'opp_col': 'def_pass_def',    # higher pass_def = tougher for QB
         'label': 'Pass Yds',
+        'fantasy_col': 'proj_pass_yds',  # 2026-08-09: Sleeper/ESPN projection field
     },
     'player_rush_yds': {
         'col': 'rushing_yards',
@@ -79,6 +80,7 @@ PROP_CONFIG = {
         'league_baseline': 55.0,
         'opp_col': 'def_sacks',       # loose proxy — sackier defenses stop the run too
         'label': 'Rush Yds',
+        'fantasy_col': 'proj_rush_yds',
     },
     'player_reception_yds': {
         'col': 'receiving_yards',
@@ -86,6 +88,7 @@ PROP_CONFIG = {
         'league_baseline': 42.0,
         'opp_col': 'def_pass_def',
         'label': 'Rec Yds',
+        'fantasy_col': 'proj_rec_yds',
     },
     'player_receptions': {
         'col': 'receptions',
@@ -93,8 +96,60 @@ PROP_CONFIG = {
         'league_baseline': 3.2,
         'opp_col': 'def_pass_def',
         'label': 'Receptions',
+        'fantasy_col': 'proj_receptions',
     },
 }
+
+
+# 2026-08-09 Phase 3 Panel-informed props: cache per-week projections
+_FANTASY_PROJ_CACHE = {}
+
+
+def load_fantasy_projections(season: int, week: int) -> dict:
+    """Return {(name_lower, position): {stat_field: avg_value}} — ensemble
+    averaged across Sleeper + ESPN if both present. Cached per (season, week)."""
+    key = (season, week)
+    if key in _FANTASY_PROJ_CACHE:
+        return _FANTASY_PROJ_CACHE[key]
+    r = requests.get(f'{SB}/rest/v1/nfl_player_projections', headers=H_READ,
+        params={'season': f'eq.{season}', 'week': f'eq.{week}',
+                'select': '*'}, timeout=15)
+    rows = r.json() if isinstance(r.json(), list) else []
+    if not rows:
+        _FANTASY_PROJ_CACHE[key] = {}
+        return {}
+    # Group by player name → merge across sources
+    import re, unicodedata as ud
+    def _key(name):
+        n = ud.normalize('NFKD', name or '').encode('ascii','ignore').decode('ascii')
+        n = re.sub(r'\b(jr|iii|ii|iv|sr)\b\.?', '', n.lower())
+        n = re.sub(r'[^a-z0-9\s]', '', n).strip()
+        return re.sub(r'\s+', ' ', n)
+    by_player = {}
+    stat_fields = ['proj_pass_yds','proj_rush_yds','proj_rec_yds','proj_receptions',
+                    'proj_pass_tds','proj_rush_tds','proj_rec_tds']
+    for row in rows:
+        k = (_key(row.get('player_name')), row.get('position'))
+        if not k[0]: continue
+        slot = by_player.setdefault(k, {'_n': 0, **{f: [] for f in stat_fields},
+                                          'team': row.get('team')})
+        slot['_n'] += 1
+        for f in stat_fields:
+            v = row.get(f)
+            if v is not None:
+                try: slot[f].append(float(v))
+                except: pass
+    # Reduce lists → averages
+    out = {}
+    for k, slot in by_player.items():
+        merged = {'team': slot['team'], '_n': slot['_n']}
+        for f in stat_fields:
+            vals = slot[f]
+            if vals:
+                merged[f] = round(sum(vals) / len(vals), 2)
+        out[k] = merged
+    _FANTASY_PROJ_CACHE[key] = out
+    return out
 
 
 def _et_now():
@@ -179,13 +234,29 @@ def player_rolling(player_id: str, prop_col: str, current_season: int) -> tuple:
 
 
 def project(l4_avg: Optional[float], season_avg: Optional[float],
-            league_baseline: float, opp_rank_pct: Optional[float]) -> Optional[float]:
-    """Blend L4 (60%) + season (35%) + league baseline (5%), then opp-adjust."""
-    if l4_avg is None and season_avg is None:
+            league_baseline: float, opp_rank_pct: Optional[float],
+            fantasy_proj_stat: Optional[float] = None) -> Optional[float]:
+    """Blend model — 2026-08-09 Phase 3 upgrade adds fantasy_proj_stat lens.
+
+    OLD (still fallback): 0.60 L4 + 0.35 season + 0.05 baseline
+    NEW (when fantasy_proj_stat present): 0.50 fantasy_ensemble + 0.30 L4 + 0.15 season + 0.05 baseline
+
+    The `fantasy_proj_stat` param is the ensemble-averaged projection for
+    this stat from `nfl_player_projections` (Sleeper + ESPN). It's the
+    freshest signal (injury-aware, week-specific) so gets the largest
+    weight when available.
+    """
+    if l4_avg is None and season_avg is None and fantasy_proj_stat is None:
         return None
     l4 = l4_avg if l4_avg is not None else (season_avg or league_baseline)
     season = season_avg if season_avg is not None else (l4_avg or league_baseline)
-    base = 0.60 * l4 + 0.35 * season + 0.05 * league_baseline
+    if fantasy_proj_stat is not None:
+        base = (0.50 * fantasy_proj_stat
+                + 0.30 * l4
+                + 0.15 * season
+                + 0.05 * league_baseline)
+    else:
+        base = 0.60 * l4 + 0.35 * season + 0.05 * league_baseline
     if opp_rank_pct is not None:
         opp_adj = 1.0 + (opp_rank_pct - 0.5) * 0.15
         base *= opp_adj
@@ -282,10 +353,41 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     opp_team = away_canon if player_team == home_canon else home_canon
 
     l4, season_avg, gp = player_rolling(player_id, cfg['col'], season)
-    if l4 is None and season_avg is None:
+    # 2026-08-09 Phase 3: fantasy-informed projection lookup.
+    # week is derived per-event; keep simple fallback (season=season, week=1).
+    fantasy_proj_stat = None
+    try:
+        # Derive week from commence_time — same logic as nfl_game_context._nfl_week
+        commence = event.get('commence_time') or ''
+        from datetime import datetime as _dt, date as _date
+        dt = _dt.fromisoformat(commence.replace('Z','+00:00')) if commence else None
+        if dt:
+            year = dt.year
+            sept1 = _date(year, 9, 1)
+            first_thu = (3 - sept1.weekday()) % 7
+            wk1_start = _date(year, 9, 1 + first_thu)
+            days = (dt.date() - wk1_start).days
+            wk = max(1, min(18, days // 7 + 1)) if days >= 0 else 1
+        else:
+            wk = 1
+        fp_map = load_fantasy_projections(season, wk)
+        import re, unicodedata as ud
+        def _nk(name):
+            n = ud.normalize('NFKD', name or '').encode('ascii','ignore').decode('ascii')
+            n = re.sub(r'\b(jr|iii|ii|iv|sr)\b\.?', '', n.lower())
+            n = re.sub(r'[^a-z0-9\s]', '', n).strip()
+            return re.sub(r'\s+', ' ', n)
+        pkey = (_nk(player['player_name']), position)
+        pdata = fp_map.get(pkey)
+        if pdata:
+            fantasy_proj_stat = pdata.get(cfg.get('fantasy_col'))
+    except Exception:
+        pass
+    if l4 is None and season_avg is None and fantasy_proj_stat is None:
         return None
     opp_pct = opp_rank(opp_map, opp_team, cfg['opp_col'])
-    proj = project(l4, season_avg, cfg['league_baseline'], opp_pct)
+    proj = project(l4, season_avg, cfg['league_baseline'], opp_pct,
+                    fantasy_proj_stat=fantasy_proj_stat)
     if proj is None: return None
 
     edge = round(proj - line, 2)
@@ -334,6 +436,46 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     }
 
 
+def _to_pipeline_props_shape(row: dict) -> dict:
+    """Map nfl_props row shape → nfl_pipeline_props schema (2026-08-22 bridge).
+
+    nfl_props uses pick_side + pick_line + bare prop_type ('pass_yds').
+    nfl_pipeline_props (canonical cross-sport table) uses direction +
+    prop_line + suffixed prop_type ('pass_yds_over'). Cross-sport tooling
+    (prop_ensemble_scorer, backfill_prop_lookback, snapshot_pick_lock,
+    grade_prop_jerry_reads) reads nfl_pipeline_props exclusively — without
+    this bridge NFL props are invisible to the ensemble framework.
+
+    Bridge is dual-write, not a table rename — nfl_weekly_card.py and
+    resolve_nfl_results.py still read from nfl_props unchanged.
+    """
+    direction = (row.get('pick_side') or '').lower()
+    if direction not in ('over', 'under'):
+        return None
+    prop_type_base = row.get('prop_type') or ''
+    return {
+        'game_date': row.get('game_date'),
+        'game_id': row.get('game_id'),
+        'week': row.get('week'),
+        'season_phase': 'regular',   # NFL prop pipeline currently regular-season only
+        'player_name': row.get('player_name'),
+        'player_team': row.get('team'),
+        'position': row.get('position'),
+        'opp_team': row.get('opponent_team'),
+        'home_away': 'HOME' if row.get('team') == row.get('home_team') else 'AWAY',
+        'matchup': f"{row.get('away_team','')} @ {row.get('home_team','')}",
+        'prop_type': f'{prop_type_base}_{direction}',
+        'prop_line': row.get('pick_line'),
+        'direction': direction,
+        'conviction': row.get('conviction', 0),
+        'tier': row.get('tier'),
+        'signals': row.get('signals') or {},
+        'book_line': row.get('pick_line'),
+        'book_over_odds': row.get('odds_american') if direction == 'over' else None,
+        'book_under_odds': row.get('odds_american') if direction == 'under' else None,
+    }
+
+
 def upsert_props(rows: list, dry_run: bool = False) -> int:
     if not rows: return 0
     if dry_run:
@@ -343,6 +485,24 @@ def upsert_props(rows: list, dry_run: bool = False) -> int:
                   f"proj={r['projected']:>5.1f} edge={r['edge']:+.1f}  "
                   f"tier={r['tier']:<6} conv={r['conviction']}")
         return len(rows)
+    # Bridge (2026-08-22): dual-write to nfl_pipeline_props so cross-sport
+    # tooling (ensemble_scorer, backfill_prop_lookback, etc.) can see NFL
+    # props. Fire-and-log — nfl_props write is authoritative.
+    try:
+        bridge_rows = [b for b in (_to_pipeline_props_shape(r) for r in rows) if b]
+        if bridge_rows:
+            br = requests.post(
+                f'{SB}/rest/v1/nfl_pipeline_props?on_conflict=game_date,game_id,player_name,prop_type,direction,prop_line',
+                headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+                json=bridge_rows, timeout=30,
+            )
+            if br.status_code in (200, 201, 204):
+                print(f'  ↔ bridge: {len(bridge_rows)} rows mirrored to nfl_pipeline_props')
+            else:
+                print(f'  ⚠ bridge failed (non-fatal): {br.status_code} {br.text[:150]}')
+    except Exception as _e:
+        print(f'  ⚠ bridge write raised (non-fatal): {_e}')
+
     r = requests.post(
         f'{SB}/rest/v1/nfl_props?on_conflict=game_id,player_name,prop_type,pick_side',
         headers=H_WRITE, json=rows, timeout=30,
