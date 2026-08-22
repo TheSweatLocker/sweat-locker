@@ -3044,6 +3044,80 @@ def upload_game_context(context, commence_time=None):
             context["primary_play"] = compute_primary_play(context)
             context["primary_play"]["_engine"] = "legacy_compute_primary_play" if isinstance(context["primary_play"], dict) else None
 
+        # 2026-08-22 OC-DISSENT AUTO-FLIP (Option B). Empirical from 14d
+        # audit: when ensemble picks ML side X and OC has money% >= 60 on
+        # the OPPOSITE side, our pick loses 81% (7-30 n=37). Flipping to
+        # OC's side would win 30-7 = 81%. Same principle applies to RL
+        # and TOTAL — OC dissent w/ money conviction is a real reversal
+        # signal (memory: feedback_sharp_money_discipline_802 +
+        # project_sharp_money_fade_808). Applied post-ensemble so the
+        # audit trail preserves the ensemble's raw pick alongside the
+        # flipped output.
+        try:
+            pp = context.get("primary_play")
+            oc = context.get("oddscrowd_snapshot")
+            if (pp and isinstance(pp, dict) and isinstance(oc, dict)
+                    and pp.get("_engine") == "ensemble_v2"):
+                mkt = str(pp.get("type", "")).lower()
+                cur_side = str(pp.get("side", "")).upper()
+                seg = oc.get(mkt) if mkt in ("ml", "rl", "total") else None
+                if isinstance(seg, dict) and seg.get("pick") and cur_side:
+                    oc_pick = str(seg.get("pick", "")).upper()
+                    oc_money = float(seg.get("money") or 0)
+                    # For ML/RL sides use HOME/AWAY; for total use OVER/UNDER
+                    if oc_pick and oc_pick != cur_side and oc_money >= 60:
+                        # OC dissents with money conviction — flip.
+                        # Preserve original pick for audit + downgrade tier
+                        # one notch so users know the flip is a defensive
+                        # move (not the ensemble's original conviction).
+                        orig_side = cur_side
+                        orig_label = pp.get("label")
+                        orig_tier = pp.get("tier")
+                        # Flip side + relabel
+                        flip_map = {"HOME": "AWAY", "AWAY": "HOME",
+                                    "OVER": "UNDER", "UNDER": "OVER"}
+                        new_side = flip_map.get(cur_side, cur_side)
+                        # Build a new label matching the flipped side
+                        home = context.get("home_team", "HOME")
+                        away = context.get("away_team", "AWAY")
+                        cs = context.get("close_spread")
+                        ct = context.get("close_total")
+                        if mkt == "ml":
+                            new_label = f"{home} ML" if new_side == "HOME" else f"{away} ML"
+                        elif mkt == "rl":
+                            try:
+                                line = float(cs) if new_side == "HOME" else -float(cs)
+                                new_label = f"{home if new_side=='HOME' else away} {line:+g}"
+                            except (TypeError, ValueError):
+                                new_label = f"{home if new_side=='HOME' else away} RL"
+                        elif mkt == "total":
+                            try:
+                                new_label = f"{'Over' if new_side=='OVER' else 'Under'} {float(ct)}"
+                            except (TypeError, ValueError):
+                                new_label = "Over" if new_side == "OVER" else "Under"
+                        else:
+                            new_label = pp.get("label")
+                        # Downgrade tier one step
+                        tier_step = {"PRIME": "STRONG", "STRONG": "LEAN", "LEAN": "LEAN"}
+                        new_tier = tier_step.get(orig_tier or "LEAN", "LEAN")
+                        pp["side"] = new_side
+                        pp["label"] = new_label
+                        pp["tier"] = new_tier
+                        pp["_oc_flipped"] = {
+                            "orig_side": orig_side, "orig_label": orig_label,
+                            "orig_tier": orig_tier,
+                            "oc_pick": oc_pick, "oc_money_pct": oc_money,
+                            "reason": (f"OC dissent flip: money% {oc_money:.0f} "
+                                       f"on {oc_pick} vs our {orig_side}. "
+                                       f"14d dissent-band record 7-30 (81% fade edge)."),
+                        }
+                        # Also flip the "sub" narrative if present to reflect new pick
+                        pp["sub"] = (f"OC-dissent flip. Ensemble had {orig_label}; "
+                                     f"OC has {oc_money:.0f}% money on the other side.")
+        except Exception as _oc_flip_err:
+            # Never block pipeline on flip logic
+            pass
+
         # 2026-08-16 Bundle H: Playbook tier gate. Scan the primary_play's
         # sub/audit_note for any ANTI_VALIDATED signal names from the
         # registry. If PRIME earned solely on an ANTI signal, demote to
