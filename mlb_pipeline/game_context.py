@@ -5505,6 +5505,38 @@ def run(target_date=None):
                 "away_bullpen_era": away_bullpen['bullpen_era'] if away_bullpen else None,
                 "home_save_pct": home_bullpen['save_pct'] if home_bullpen else None,
                 "away_save_pct": away_bullpen['save_pct'] if away_bullpen else None,
+                # 2026-08-22 LATE-INNING BULLPEN ERA — 7th-9th inning ERA is
+                # the key signal for late-game props (outs_over, ha at high
+                # lines) and total late-game modeling. get_bullpen_stats
+                # already fetches this via select=*; audit found it was
+                # threaded into Jerry ctx but never persisted to the main
+                # row. Now available for prop scorer, template coverage
+                # check, and ensemble late-inning signals.
+                "home_bullpen_late_era": home_bullpen.get('pitching_7_9_era') if home_bullpen else None,
+                "away_bullpen_late_era": away_bullpen.get('pitching_7_9_era') if away_bullpen else None,
+                "home_bullpen_late_k_pct": home_bullpen.get('pitching_7_9_k_pct') if home_bullpen else None,
+                "away_bullpen_late_k_pct": away_bullpen.get('pitching_7_9_k_pct') if away_bullpen else None,
+                # 2026-08-22 OPENERS — detect_opener() returns True/False
+                # and was ONLY consumed by calc_nrfi_score inline. Now
+                # persisted so prop scorer knows to demote outs_over /
+                # ks_over lines when a starter is actually functioning as
+                # a bullpen game (pulled after 2-3 IP). User-flagged
+                # short-outing risk vector.
+                "home_is_opener": bool(home_is_opener),
+                "away_is_opener": bool(away_is_opener),
+                # 2026-08-22 UMPIRE NUMERIC FIELDS — get_umpire_stats
+                # returns full row (over_rate, k_rate_above_avg, nrfi_rate,
+                # run_factor) but only umpire NAME + umpire_note STRING
+                # were persisted. Prop template coverage chip couldn't
+                # verify K-friendly-ump signal without string-parsing the
+                # note. Now surfaced numerically for both the ensemble
+                # signal_sources ("umpire_k >= 15%" etc.) and the prop
+                # coverage check.
+                "umpire_over_rate": (ump_stats or {}).get('over_rate'),
+                "umpire_k_rate_above_avg": (ump_stats or {}).get('k_rate_above_avg'),
+                "umpire_nrfi_rate": (ump_stats or {}).get('nrfi_rate'),
+                "umpire_run_factor": (ump_stats or {}).get('run_factor'),
+                "umpire_games_sampled": (ump_stats or {}).get('games_sampled'),
                 "home_last_pitch_count": home_last_outing['pitches'] if home_last_outing else None,
                 "away_last_pitch_count": away_last_outing['pitches'] if away_last_outing else None,
                 "home_last_ip": home_last_outing['innings'] if home_last_outing else None,
