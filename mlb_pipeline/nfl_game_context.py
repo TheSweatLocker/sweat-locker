@@ -1154,4 +1154,14 @@ def main():
 
 
 if __name__ == '__main__':
+    # 2026-08-22: season gate. Matches the same gate on generate_nfl_game_reads.py
+    # (ee4b69e2). Was previously only guarded there but the context builder
+    # was still running year-round — 9 rows from prior preseason runs sitting
+    # in nfl_game_context confirm the drift. Off-season top-exit avoids Odds
+    # API calls + player/stats pulls that produce zero-value rows.
+    try:
+        from season_gate import season_gate_or_exit
+        season_gate_or_exit('NFL')
+    except ImportError:
+        pass
     main()
