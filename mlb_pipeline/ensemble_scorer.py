@@ -162,6 +162,11 @@ class Opinion:
     sample_n: int
     tier: Optional[str]       # VALIDATED/DISCOVERY/UNVALIDATED/ANTI_VALIDATED
     display_prose: str        # reader-friendly narration
+    # 2026-08-21: is_recent enables the cold-start ramp-up prior. Signals
+    # created within RAMP_UP_DAYS get a competitive weight (0.50) instead
+    # of the untested-signal floor (0.20) so newly-shipped analytics can
+    # actually influence picks before accumulating 50+ graded observations.
+    is_recent: bool = False
 
 
 @dataclass
@@ -317,6 +322,25 @@ def _load_track_records() -> dict:
     return out
 
 
+def _is_recent_signal(source_row: dict) -> bool:
+    """True when a signal_sources row was created within the ramp-up
+    window (RAMP_UP_DAYS). Used by edge_weight to grant a competitive
+    prior to freshly-shipped signals while they accumulate a graded
+    track record. Robust to missing/malformed created_at."""
+    from datetime import datetime, timezone, timedelta
+    created_at = source_row.get('created_at')
+    if not created_at: return False
+    try:
+        # PostgREST returns ISO 8601 with Z or +00:00; both handled here.
+        s = str(created_at).replace('Z', '+00:00')
+        ts = datetime.fromisoformat(s)
+        if ts.tzinfo is None: ts = ts.replace(tzinfo=timezone.utc)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=RAMP_UP_DAYS)
+        return ts >= cutoff
+    except Exception:
+        return False
+
+
 def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[str]]:
     """Get (hit_rate as fraction, n, tier) for a signal_sources row.
 
@@ -356,16 +380,37 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
 # WEIGHT COMPUTATION
 # ═══════════════════════════════════════════════════════════════════════
 
+# Ramp-up prior for freshly-shipped signals. Sits roughly at the weight a
+# mature signal would earn at 58-59% hit rate — competitive with graded
+# analytics without dominating. Drops to registry-derived weight once the
+# signal ages past RAMP_UP_DAYS (proven or not).
+RAMP_UP_PRIOR = 0.50
+RAMP_UP_DAYS = 30
+
+
 def edge_weight(hit_rate: Optional[float], n: int,
-                tier: Optional[str] = None) -> float:
+                tier: Optional[str] = None,
+                is_recent: bool = False) -> float:
     """Translate (hit_rate, n, tier) into weight in [0, 1].
 
     ANTI_VALIDATED → 0 (fade signal, not evidence).
     Below breakeven → 0.
-    Otherwise: linear scale from breakeven to +12pp * sample dampener."""
+    Otherwise: linear scale from breakeven to +12pp * sample dampener.
+
+    2026-08-21: is_recent enables the cold-start ramp-up prior. A signal
+    added in the last RAMP_UP_DAYS with no registry track record gets
+    RAMP_UP_PRIOR (~mature 58% signal weight) instead of the 0.20 floor
+    so newly-shipped analytics can actually compete with older signals
+    before accumulating a graded sample. After RAMP_UP_DAYS the earned
+    (or lack of earned) rate takes over — a fresh signal that fires
+    strongly early and turns out bad drops to 0 once registry data
+    catches up.
+    """
     if tier == 'ANTI_VALIDATED':
         return 0.0
     if hit_rate is None or n <= 0:
+        if is_recent:
+            return RAMP_UP_PRIOR
         # No proven track record — small floor if registry knows about it
         return 0.20 if tier in ('DISCOVERY', 'UNVALIDATED', 'VALIDATED') else 0.15
     edge_pp = hit_rate - BREAKEVEN
@@ -400,6 +445,7 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
     signal_key = source_row.get('signal_key', '')
     prose_tmpl = source_row.get('display_prose_template') or ''
     hr, n, tier = _resolve_weight(source_row)
+    is_recent = _is_recent_signal(source_row)
 
     out: list[Opinion] = []
     for flag in flags:
@@ -423,7 +469,7 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
         out.append(Opinion(
             signal_key=signal_key, signal_class='split', side=cand,
             strength=strength, hit_rate=hr, sample_n=n, tier=tier,
-            display_prose=prose,
+            display_prose=prose, is_recent=is_recent,
         ))
     return out
 
@@ -502,6 +548,7 @@ def _handler_scenario(source_row: dict, ctx: dict) -> list[Opinion]:
             'scenario_key': scenario_key, 'family_score': family_score,
         })
 
+    is_recent = _is_recent_signal(source_row)
     out: list[Opinion] = []
     for (market, cand, family), opinions in per_family.items():
         # Keep the strongest opinion per (market, cand, family)
@@ -512,7 +559,7 @@ def _handler_scenario(source_row: dict, ctx: dict) -> list[Opinion]:
         out.append(Opinion(
             signal_key=top['signal_key'], signal_class='scenario', side=top['cand'],
             strength=top['strength'], hit_rate=top['hr'], sample_n=top['n'],
-            tier=top['tier'], display_prose=prose,
+            tier=top['tier'], display_prose=prose, is_recent=is_recent,
         ))
     return out
 
@@ -669,6 +716,7 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
             continue
 
         hr, n, tier = _resolve_weight(source)
+        is_recent = _is_recent_signal(source)
         prose = render_prose(source.get('display_prose_template') or '', ctx_attr)
 
         # 2026-08-20: ANTI_VALIDATED FADE mode. Signals with proven fade
@@ -698,7 +746,7 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
                     signal_class=cls,
                     side=flipped_side, strength=strength,
                     hit_rate=fade_hr, sample_n=n, tier=fade_tier,
-                    display_prose=fade_prose,
+                    display_prose=fade_prose, is_recent=is_recent,
                 ))
                 continue  # skip emitting the original (zero-weight) opinion
 
@@ -708,6 +756,7 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
             side=side, strength=strength,
             hit_rate=hr, sample_n=n, tier=tier,
             display_prose=prose or source['signal_key'],
+            is_recent=is_recent,
         ))
     return out
 
@@ -728,7 +777,7 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     # Aggregate per candidate
     per_side: dict[str, list[Contribution]] = defaultdict(list)
     for op in market_ops:
-        w = edge_weight(op.hit_rate, op.sample_n, op.tier)
+        w = edge_weight(op.hit_rate, op.sample_n, op.tier, is_recent=op.is_recent)
         if w == 0 and op.strength == 0:
             continue
         c = Contribution(
