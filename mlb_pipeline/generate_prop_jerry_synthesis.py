@@ -273,6 +273,10 @@ def parse_synthesis(raw: str, prop_type: str | None = None) -> dict:
 
 
 def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: str) -> bool:
+    # 2026-08-22: 'source' field distinguishes 'llm' (Jerry Claude synth) from
+    # 'template' (render_prop_template.py deterministic renderer). If parsed
+    # already carries source, honor it; else default to 'llm' for LLM-path calls.
+    source = parsed.get('source') or 'llm'
     payload = {
         'sport': sport,
         'game_id': prop.get('game_id'),
@@ -281,12 +285,13 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
         'prop_type': prop.get('prop_type'),
         'direction': prop.get('direction'),
         'generated_at': datetime.now(timezone.utc).isoformat(),
-        'prompt_version': PROMPT_VERSION,
+        'prompt_version': PROMPT_VERSION if source == 'llm' else 'template_v1',
         'prop_line': prop.get('prop_line'),
         'book_odds': prop.get('book_over_odds') if prop.get('direction') == 'over' else prop.get('book_under_odds'),
         'refit_conviction': prop.get('refit_conviction'),
-        'input_snapshot': {'signals': prop.get('signals'), 'conviction': prop.get('conviction')},
-        **parsed,
+        'input_snapshot': {'signals': prop.get('signals'), 'conviction': prop.get('conviction'),
+                           'source': source},
+        **{k: v for k, v in parsed.items() if k != 'source'},
     }
     r = requests.post(
         f'{SUPABASE_URL}/rest/v1/prop_jerry_reads?on_conflict=sport,game_id,player_name,prop_type,direction,game_date',
@@ -294,6 +299,15 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
     )
     if r.status_code in (200, 201, 204):
         return True
+    # If the 'source' column doesn't exist yet (pre-migration), retry without it
+    if r.status_code == 400 and 'source' in (r.text or ''):
+        payload2 = {k: v for k, v in payload.items() if k != 'source'}
+        r = requests.post(
+            f'{SUPABASE_URL}/rest/v1/prop_jerry_reads?on_conflict=sport,game_id,player_name,prop_type,direction,game_date',
+            headers=H_WRITE, json=payload2, timeout=20,
+        )
+        if r.status_code in (200, 201, 204):
+            return True
     print(f'  ⚠ upsert {r.status_code}: {r.text[:200]}')
     return False
 
@@ -436,17 +450,78 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     except ImportError:
         pass  # calibration module optional; earlier pipeline unaffected
 
-    # 2026-08-22 tier-gate filter — applied LAST (after all tier calibration).
+    # 2026-08-22 tier-gate + template renderer split:
     # When --tier-gate PRIME,STRONG is passed, LLM narration only fires for
-    # card-worthy tiers. Below-gate props keep their ensemble decision + signals
-    # but skip the Claude call. Non-card props still show tier + conviction
-    # + signal chips in the app without expensive prose.
+    # card-worthy tiers. Below-gate props get deterministic template-rendered
+    # short_read from render_prop_template.py — same output shape as LLM,
+    # zero Claude cost, no hallucination risk. Every prop still lands in
+    # prop_jerry_reads so downstream (grader, refit override, sweat card)
+    # sees a uniform table.
+    props_for_llm = props
+    props_for_template = []
     if tier_gate:
-        before_gate = len(props)
-        props = [p for p in props if (p.get('tier') or '').upper() in tier_gate]
+        props_for_llm = [p for p in props if (p.get('tier') or '').upper() in tier_gate]
+        props_for_template = [p for p in props if (p.get('tier') or '').upper() not in tier_gate]
         print(f'  [{sport}] tier-gate {sorted(tier_gate)}: '
-              f'{len(props)}/{before_gate} props kept for LLM narration')
+              f'{len(props_for_llm)} LLM · {len(props_for_template)} template')
 
+    # Batch-fetch playbook decisions so template renderer gets rich chip data
+    # without per-prop DB round-trips.
+    playbook_by_key: dict = {}
+    if props_for_template:
+        try:
+            pb_r = requests.get(f'{SUPABASE_URL}/rest/v1/prop_playbook_decisions',
+                headers=H_READ,
+                params={'sport': f'eq.{sport}', 'game_date': f'eq.{game_date}',
+                        'select': 'player_name,prop_type,direction,prop_line,'
+                                  'playbook_side,playbook_sources'},
+                timeout=15)
+            if pb_r.status_code == 200:
+                for row in pb_r.json() or []:
+                    k = (row.get('player_name'), row.get('prop_type'),
+                         row.get('direction'), row.get('prop_line'))
+                    playbook_by_key[k] = row
+        except Exception as _e:
+            print(f'  [{sport}] playbook fetch failed (template will use signals dict): {_e}')
+
+    # Render templates for below-gate props FIRST — fast, no LLM
+    tmpl_done = 0
+    if props_for_template:
+        try:
+            from render_prop_template import render_prop_template
+            for prop in props_for_template:
+                if not force:
+                    check = requests.get(f'{SUPABASE_URL}/rest/v1/prop_jerry_reads',
+                        headers=H_READ, params={
+                            'sport': f'eq.{sport}', 'game_id': f'eq.{prop["game_id"]}',
+                            'player_name': f'eq.{prop["player_name"]}',
+                            'prop_type': f'eq.{prop["prop_type"]}',
+                            'direction': f'eq.{prop["direction"]}',
+                            'game_date': f'eq.{game_date}', 'select': 'id,source'}, timeout=10)
+                    existing = check.json() if check.status_code == 200 else []
+                    # Only re-render templates over templates; don't clobber an LLM read.
+                    if existing and existing[0].get('source') not in (None, 'template'):
+                        continue
+                pb_key = (prop.get('player_name'), prop.get('prop_type'),
+                          prop.get('direction'), prop.get('prop_line'))
+                pb_row = playbook_by_key.get(pb_key)
+                rendered = render_prop_template(prop, pb_row)
+                # Map template output → same parsed shape as LLM path
+                parsed = {
+                    'short_read': rendered.get('short_read'),
+                    'long_read': '',  # template path is short-only; app renders chips for detail
+                    'call_verdict': rendered.get('verdict'),
+                    'conviction': rendered.get('conviction'),
+                    'source': 'template',
+                }
+                if upsert_read(sport, prop, parsed, '', game_date):
+                    tmpl_done += 1
+            print(f'  [{sport}] template rendered {tmpl_done}/{len(props_for_template)} below-gate props')
+        except ImportError as _e:
+            print(f'  [{sport}] render_prop_template unavailable — below-gate props skipped ({_e})')
+
+    # Then LLM path for card-worthy props (existing loop)
+    props = props_for_llm
     done = 0
     for prop in props:
         if limit and done >= limit: break
