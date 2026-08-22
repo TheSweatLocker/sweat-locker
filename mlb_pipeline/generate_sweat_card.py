@@ -1150,6 +1150,12 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         import re as _re
         norm_label = label.replace(" lean", "").strip()
         norm_label = _re.sub(r"\s*\(jerry\s+\d+/\d+\)\s*$", "", norm_label).strip()
+        # 2026-08-22: also strip any trailing "(anything)" suffix — POTD path
+        # was writing "Arizona Diamondbacks ML (resolver STRONG)" while the
+        # ML slot writes "Arizona Diamondbacks ML" plain. Different signatures
+        # → both surfaced → Arizona ML duplicated on today's card. Generic
+        # parenthetical strip covers this + any future annotation pattern.
+        norm_label = _re.sub(r"\s*\([^)]*\)\s*$", "", norm_label).strip()
         # For props, include the player name (already in label) so two
         # different players on the same team don't collide.
         if ptype.startswith("prop_"):
@@ -1254,11 +1260,24 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             'value': 'STRONG',
         }
         potd_tier = _potd_tier_map.get(confidence or '', 'STRONG')
+        # 2026-08-22: POTD's data.game shape is {away_team, home_team,
+        # commence_time} with NO matchup key. Prior fallback chain both
+        # returned None so POTD's game field was null in top_8 → dedup
+        # signature couldn't match the ML slot's game and Arizona ML
+        # duplicated (POTD + ML slot). Build matchup from away/home when
+        # explicit key missing.
+        _game_obj = pd.get("game") or {}
+        _game_str = (
+            pd.get("matchup")
+            or _game_obj.get("matchup")
+            or (f"{_game_obj.get('away_team')} @ {_game_obj.get('home_team')}"
+                if _game_obj.get('away_team') and _game_obj.get('home_team') else None)
+        )
         add({
             "type": "POTD",
             "icon": "🏆",
             "label": (pick.get("label") or pd.get("leanDisplay") or "POTD"),
-            "game": pd.get("matchup") or pd.get("game", {}).get("matchup"),
+            "game": _game_str,
             "conviction": pd.get("score", {}).get("total"),
             "tier": potd_tier,
             "tier_source": "potd_confidence_map",  # explicit attribution
