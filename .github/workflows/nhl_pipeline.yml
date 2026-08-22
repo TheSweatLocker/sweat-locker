@@ -95,7 +95,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python prop_ensemble_scorer.py --sport NHL || echo "NHL prop playbook failed (non-fatal)"
+          python prop_ensemble_scorer.py --sport NHL --refresh-existing || echo "NHL prop playbook failed (non-fatal)"
 
       # Note: NHL ensemble scoring happens inside nhl_game_context.py's
       # upsert path via _apply_ensemble (same as MLB pattern). Signals

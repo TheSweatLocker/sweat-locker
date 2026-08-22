@@ -122,7 +122,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python prop_ensemble_scorer.py --sport NBA || echo "NBA prop playbook failed (non-fatal)"
+          python prop_ensemble_scorer.py --sport NBA --refresh-existing || echo "NBA prop playbook failed (non-fatal)"
 
       # Model / card generation: Elo model runs inside nba_game_context.py
       # (enrich_elo). Card generation deferred until preseason validates.

@@ -328,6 +328,20 @@ jobs:
           cd mlb_pipeline
           python sweep_prop_coverage.py || echo "prop coverage sweep failed (non-fatal)"
 
+      # 2026-08-19: Juice-trap gate — hits_over 0.5 STRONG/PRIME at ≤-200
+      # juice get demoted to LEAN. Runs AFTER sweep (needs book_over_odds
+      # populated) and BEFORE refit/jerry-synth (so downstream sees the
+      # demoted tier). Per feedback_batter_hits_juice_trap_803: PRIME
+      # hits_over hits ~69% but break-even at -200 is 66.7% — no margin.
+      - name: Apply juice-trap gate
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python apply_juice_trap_gate.py || echo "juice-trap gate failed (non-fatal)"
+
       # Recompute prop + game bucket ROI (2026-08-01 R-6). Nightly
       # rebuild of prop_bucket_roi + game_bucket_roi from graded rows so
       # Jerry synth sees the freshest juice-adjusted edge per bucket.
@@ -434,6 +448,12 @@ jobs:
       # playbook meets/beats legacy hit-rate. See
       # project_prop_playbook_design_817 for the cutover criteria.
       # Non-fatal — playbook failure never blocks pipeline.
+      # 2026-08-21: --refresh-existing added. Any prop_playbook_decisions
+      # row whose source prop was pruned between morning-lock and this
+      # run gets re-evaluated against the CURRENT signal set. Ensures
+      # signals ported mid-day (e.g., pitcher_vs_team_ip_below_outs_line
+      # added at 17:23 UTC on 8/21) actually reach already-scored
+      # decisions instead of waiting until tomorrow's fresh score pass.
       - name: Prop playbook scorer (shadow mode)
         continue-on-error: true
         env:
@@ -441,7 +461,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python prop_ensemble_scorer.py --sport MLB || echo "prop playbook scorer failed (non-fatal, shadow-mode)"
+          python prop_ensemble_scorer.py --sport MLB --refresh-existing || echo "prop playbook scorer failed (non-fatal, shadow-mode)"
 
       # Prop Jerry synthesis (2026-07-31 · sport-universal). Runs AFTER
       # apply_prop_refit so Jerry sees refit_conviction. Writes 40-60w
@@ -1031,6 +1051,20 @@ jobs:
         run: |
           cd mlb_pipeline
           python audit_external_source_calibration.py --sport MLB || echo "external calibration audit failed (non-fatal)"
+
+      # 2026-08-20: Sharp-source rolling calibration (FR / CZ / OC hit rates +
+      # 3/3-agree vs dissent buckets). The moat table pair per
+      # project_per_source_tracker_moat_818. Runs after finals grade so
+      # per-source rows and agreement buckets stay current for The Split tab
+      # (in-app track-record display + MINORITY DISSENT badge).
+      - name: Refresh sharp-source calibration
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_sharp_source_calibration.py --sport MLB || echo "sharp-source calibration failed (non-fatal)"
 
       # Consensus-bucket audit (substantiates consensus_fade detector).
       # Without this the detector has no bucket calibration and every
