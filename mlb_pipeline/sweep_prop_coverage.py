@@ -58,8 +58,18 @@ MARKET_MAP = {
     # here closes the "PRIME hits_over @ NULL odds" trap that shipped -300
     # juice batter picks all summer.
     'batter_hits':         'hits',
+    # 2026-08-17: expand batter coverage for prop playbook scoring. Every
+    # additional market means the playbook can evaluate more book-listed
+    # props. Legacy scorer will simply not surface these (no score_*
+    # function exists), so they stay COVERAGE-tier for legacy — but the
+    # plug-in playbook can still fire signals on them for shadow-mode.
+    'batter_total_bases':  'total_bases',
+    'batter_home_runs':    'hr',
+    'batter_runs_scored':  'runs',
+    'batter_rbis':         'rbis',
+    'batter_strikeouts':   'batter_ks',
 }
-BATTER_PREFIXES = {'hits'}  # markets that map to batter prop families
+BATTER_PREFIXES = {'hits', 'total_bases', 'hr', 'runs', 'rbis', 'batter_ks'}
 
 PREFERRED_BOOKS = ['hardrockbet', 'hardrockbet_oh', 'draftkings', 'betmgm',
                    'fanduel', 'bovada', 'espnbet', 'betrivers']
@@ -80,9 +90,23 @@ def today_et() -> str:
 
 
 def fetch_upcoming_events() -> list:
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    """Fetch today's MLB events from The Odds API.
+
+    2026-08-17 BUG FIX: was passing commenceTimeFrom=now which DROPPED
+    any game already commenced. Confirmed via BAL @ TB (Brandon Young)
+    today — game started 22:05 UTC, sweep running at 22:30 UTC missed
+    it entirely, so 8 books × 5 prop markets of coverage were lost.
+    Fix: filter to today+tomorrow window in local time, no time-of-day
+    filter. Callers already filter by game_date on ctx-side.
+    Widened regions to 'us,us2,eu,uk,au' — some books (Fanatics, Fliff,
+    Hard Rock) sit in the us2 region and were being missed by 'us' only."""
+    from_iso = (datetime.now(timezone.utc) - timedelta(hours=8)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    to_iso = (datetime.now(timezone.utc) + timedelta(hours=36)).strftime('%Y-%m-%dT%H:%M:%SZ')
     r = requests.get('https://api.the-odds-api.com/v4/sports/baseball_mlb/events',
-                     params={'apiKey': ODDS_API_KEY, 'commenceTimeFrom': now}, timeout=15)
+                     params={'apiKey': ODDS_API_KEY,
+                             'commenceTimeFrom': from_iso,
+                             'commenceTimeTo': to_iso},
+                     timeout=15)
     return r.json() if r.status_code == 200 else []
 
 
@@ -153,17 +177,24 @@ def fetch_player_props(event_id: str) -> dict:
         pool = both_sided or entries
         # Sort by tightness (line closest to 50/50 — the "standard" line for that market)
         pool_sorted = sorted(pool, key=_tightness)
-        # Pick a preferred book and return ALL lines that book offers so the
-        # caller can line-match against an existing DB row's prop_line rather
-        # than being locked into the tightest-line default.
-        chosen_book = None
-        for pref in PREFERRED_BOOKS:
-            if any(e['book'] == pref for e in pool_sorted):
-                chosen_book = pref; break
-        if chosen_book:
-            out[key] = [e for e in pool_sorted if e['book'] == chosen_book]
+        # 2026-08-08 fix: return entries from ALL preferred books that offer
+        # this prop, not just the highest-priority one. When scorer wants a
+        # specific alt line (batter_hits 0.5) but the top-priority book only
+        # offers the standard line (1.5), caller's line-matcher would fall
+        # back to tightest → wrong line → silent skip. Missed 7/15 hits
+        # PRIMEs on 8/8 slate (Rafaela, Durbin, PCA, Suzuki, Contreras,
+        # Stewart, Harper). Now the caller sees every preferred book's
+        # menu, so it can pick whichever one has the target line.
+        # Order by preferred-book priority THEN tightness within book so
+        # INSERT default (entries[0]) still gets the top preferred book's
+        # tightest line, matching legacy behavior.
+        pref_rank = {b: i for i, b in enumerate(PREFERRED_BOOKS)}
+        preferred_entries = [e for e in pool_sorted if e['book'] in pref_rank]
+        preferred_entries.sort(key=lambda e: (pref_rank[e['book']], _tightness(e)))
+        if preferred_entries:
+            out[key] = preferred_entries
         else:
-            # Fall back to all pool entries (may span multiple books)
+            # No preferred book offered — fall back to full sorted pool
             out[key] = pool_sorted
     return out
 
@@ -377,10 +408,28 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                     if dry_run:
                         patched += 1
                         continue
-                    pr = requests.patch(
-                        f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{existing["id"]}',
-                        headers=H_WRITE, json=patch, timeout=15,
+                    # 2026-08-22 ROOT-CAUSE FIX: patch ALL duplicate rows of
+                    # this prop, not just the one existing['id']. The props
+                    # table historically had duplicate rows per prop (fixed at
+                    # write-time by dedup in 8cf25efc, but existing DB rows
+                    # aren't rewritten by that fix). Sweep patched only one id
+                    # per (player,type,dir,line) so other copies stayed with
+                    # null book_over_odds. That in turn:
+                    #   - broke juice_trap_gate (only fires on odds-attached rows)
+                    #   - broke template renderer (needs odds for implied prob)
+                    #   - broke app display (users see "no juice" on card)
+                    # Fix: PATCH on natural key so every copy gets odds.
+                    import urllib.parse as _up
+                    pn = _up.quote(existing.get('player_name', ''), safe='')
+                    patch_url = (
+                        f'{SB}/rest/v1/mlb_pipeline_props'
+                        f'?game_date=eq.{game_date}'
+                        f'&player_name=eq.{pn}'
+                        f'&prop_type=eq.{existing.get("prop_type")}'
+                        f'&direction=eq.{existing.get("direction")}'
+                        f'&prop_line=eq.{existing.get("prop_line")}'
                     )
+                    pr = requests.patch(patch_url, headers=H_WRITE, json=patch, timeout=15)
                     if pr.status_code in (200, 201, 204):
                         patched += 1
                     else:
@@ -388,17 +437,24 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                         if skipped <= 3: print(f'  ⚠ patch {pr.status_code}: {pr.text[:180]}')
                     continue
 
-                # PATH B: no existing row. Insert stub only for pitcher families.
-                # Batter families are PATCH-only: generate_props gates on lineup+
-                # sample, so an un-scored batter shouldn't be back-doored here.
-                if is_batter:
-                    continue
-
+                # PATH B: no existing row → insert COVERAGE stub.
+                # 2026-08-17: batter stubs ENABLED (was pitcher-only). Rationale:
+                # the prop playbook (shadow-mode) needs coverage of every book-
+                # listed prop to score against, not just what generate_props
+                # opinionated its way into. COVERAGE tier is auto-demoted to
+                # LEAN by apply_refit_verdict_override for the legacy path, so
+                # this doesn't back-door batter picks into Jerry synthesis —
+                # the edge gate there still filters. For batters, signals=None
+                # on the stub (no legacy narrative bag); the playbook still
+                # scores via player_l10_vs_line_extreme + refit_conviction_strong
+                # which read prop-row fields directly.
+                # Team defaults to batter's team via later lineup enrichment
+                # since we don't have batter→team mapping at sweep time.
                 payload = {
                     'game_date': game_date,
                     'game_id': ctx['game_id'],
                     'player_name': display,
-                    'player_team': team,
+                    'player_team': team,   # None for batter stubs
                     'matchup': matchup,
                     'prop_type': full_type,
                     'direction': direction,
@@ -407,7 +463,7 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                     'book_over_odds': entry.get('over_odds'),
                     'book_under_odds': entry.get('under_odds'),
                     'book_source': entry['book'],
-                    'signals': signals,
+                    'signals': signals,   # None for batter stubs
                     'tier': 'COVERAGE',
                     'conviction': 0,
                     'lineup_state': 'coverage_stub',
