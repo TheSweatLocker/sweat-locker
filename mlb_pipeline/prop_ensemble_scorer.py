@@ -598,7 +598,36 @@ def _et_today() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
 
 
-def run_for_sport(sport: str, game_date: str, dry_run: bool = False, limit: Optional[int] = None) -> dict:
+def _load_decisions_as_props(sport: str, game_date: str) -> list[dict]:
+    """Reconstruct minimal prop dicts from existing prop_playbook_decisions.
+
+    Used by --refresh-existing to re-score decisions whose source prop has
+    been pruned from the live props table. Every decision row already
+    carries the identifying fields (player, prop_type, direction, line,
+    game_id) needed to run the scorer — we just wrap them in prop-shaped
+    dicts so score_prop() can consume them unchanged.
+    """
+    # NOTE: prop_playbook_decisions carries only the identifying fields plus
+    # scoring output. It doesn't carry player_team or book odds (those live on
+    # mlb_pipeline_props). That's fine for re-scoring: signals read team from
+    # ctx.home_pitcher/away_pitcher matching, and the scorer's book-edge step
+    # is a NO-OP when odds are absent. Downstream write_decision just persists
+    # tier/conviction — book odds columns default to NULL.
+    r = requests.get(f'{SB}/rest/v1/prop_playbook_decisions',
+                     headers=H_READ,
+                     params={'sport': f'eq.{sport}',
+                             'game_date': f'eq.{game_date}',
+                             'select': 'game_id,player_name,prop_type,direction,prop_line'},
+                     timeout=30)
+    if r.status_code != 200:
+        print(f'  [{sport}] refresh-existing query failed {r.status_code}: {r.text[:200]}')
+        return []
+    rows = r.json() or []
+    return [{**row, 'game_date': game_date} for row in rows]
+
+
+def run_for_sport(sport: str, game_date: str, dry_run: bool = False,
+                  limit: Optional[int] = None, refresh_existing: bool = False) -> dict:
     table = PROPS_TABLE.get(sport)
     ctx_table = CTX_TABLE.get(sport)
     if not table or not ctx_table:
@@ -610,13 +639,31 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False, limit: Opti
                      headers=H_READ, timeout=15)
     ctxs = {c.get('game_id'): c for c in (r.json() if r.status_code == 200 else [])}
 
-    # Load props
+    # Load props — from live table + (optionally) union with existing decisions
     r = requests.get(f'{SB}/rest/v1/{table}',
                      headers=H_READ,
                      params={'game_date': f'eq.{game_date}',
                              'select': '*', 'limit': limit or 500},
                      timeout=30)
-    props = r.json() if r.status_code == 200 else []
+    live_props = r.json() if r.status_code == 200 else []
+
+    if refresh_existing:
+        # Union live props with previously-decided props whose source row
+        # may have been pruned. Dedup on natural key so we don't score twice.
+        decision_props = _load_decisions_as_props(sport, game_date)
+        seen = {(p.get('game_id'), p.get('player_name'), p.get('prop_type'),
+                 p.get('direction'), p.get('prop_line')) for p in live_props}
+        added = 0
+        for dp in decision_props:
+            key = (dp.get('game_id'), dp.get('player_name'), dp.get('prop_type'),
+                   dp.get('direction'), dp.get('prop_line'))
+            if key not in seen:
+                live_props.append(dp)
+                seen.add(key)
+                added += 1
+        print(f'  [{sport}] refresh-existing added {added} orphaned decisions to score set')
+    props = live_props
+
     if not props:
         print(f'  [{sport}] no props on {game_date}')
         return {'scored': 0, 'passed': 0, 'ranked': {}}
@@ -661,15 +708,21 @@ def main():
     p.add_argument('--date', help='YYYY-MM-DD (default: today ET)')
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--limit', type=int)
+    p.add_argument('--refresh-existing', action='store_true',
+                   help='Also re-score any prop_playbook_decisions rows whose '
+                        'source prop was pruned. Use after porting a new signal '
+                        'mid-day so it retroactively touches already-scored props.')
     args = p.parse_args()
 
     gd = args.date or _et_today()
     sports = [args.sport] if args.sport else list(PROPS_TABLE.keys())
-    print(f'=== prop_ensemble_scorer · {gd} · {"/".join(sports)}{" [DRY]" if args.dry_run else ""} ===\n')
+    mode = ' [REFRESH-EXISTING]' if args.refresh_existing else ''
+    print(f'=== prop_ensemble_scorer · {gd} · {"/".join(sports)}{" [DRY]" if args.dry_run else ""}{mode} ===\n')
 
     total = {'scored': 0, 'passed': 0}
     for sport in sports:
-        result = run_for_sport(sport, gd, dry_run=args.dry_run, limit=args.limit)
+        result = run_for_sport(sport, gd, dry_run=args.dry_run, limit=args.limit,
+                                refresh_existing=args.refresh_existing)
         print(f'  [{sport}] scored={result["scored"]} passed={result["passed"]} ranked={result["ranked"]}\n')
         total['scored'] += result['scored']
         total['passed'] += result['passed']

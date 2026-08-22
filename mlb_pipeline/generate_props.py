@@ -3278,26 +3278,50 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
     }
 
 
-def wipe_todays_props(skip_live_game_ids=None):
-    """Delete today's prop rows so the next upsert is a clean rewrite.
+def wipe_todays_props(skip_live_game_ids=None, max_stale_hours: int = 6):
+    """Prune STALE prop rows for today; preserve fresh ones so downstream
+    decisions (prop_playbook_decisions) don't get orphaned mid-day.
 
-    2026-05-31 — added `skip_live_game_ids`. Games that have already started
-    by cron time don't have fresh pre-game markets at the Odds API; the PM
-    cron was wiping morning book-attached props (Misiorowski K Over ✓book
-    STRONG 75) and re-publishing them at the internal line with inflated
-    PRIME conviction. When `skip_live_game_ids` is passed, those games are
-    excluded from the wipe so the morning state is preserved for the rest
-    of the night.
+    2026-08-21 — replaced blanket DELETE with staleness-based prune. The
+    old behavior wiped every non-live prop for today and let the upsert
+    rewrite from scratch. That worked in isolation but stranded any
+    `prop_playbook_decisions` row whose source prop got wiped between
+    morning scoring and evening publish (Cameron outs_over 17.5 case:
+    STRONG BACK decision scored at 10:43 UTC survived, but its source
+    prop got wiped, so the 5:23 PM signal port never reached it).
+
+    New behavior: only prune props whose `last_attached_at` is older than
+    `max_stale_hours` (default 6) or NULL. The next `attach_book_lines`
+    pass restamps `last_attached_at=now()` for every fresh generation,
+    so props re-touched this run are kept. Anything not re-touched for
+    6+ hours is genuinely stale (line pulled, batter scratched, market
+    dropped) and safe to remove.
+
+    2026-05-31 — `skip_live_game_ids` preserved. Games already started
+    at cron time don't have fresh pre-game markets; the PM cron was
+    wiping morning book-attached props (Misiorowski K Over ✓book STRONG
+    75) and re-publishing them at the internal line with inflated PRIME
+    conviction. Live games still exempt from prune here.
     """
+    from datetime import datetime, timezone, timedelta
     gd = today_et()
-    base = f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{gd}"
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_stale_hours)).isoformat()
+    # Build filter: game_date=today AND last_attached_at IS NULL or older than cutoff
+    base = (f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
+            f"?game_date=eq.{gd}"
+            f"&or=(last_attached_at.is.null,last_attached_at.lt.{cutoff})")
     if skip_live_game_ids:
-        # PostgREST `not.in.(a,b,c)` — only delete pre-game rows.
         ids_csv = ','.join(f'"{gid}"' for gid in skip_live_game_ids)
         url = f"{base}&game_id=not.in.({ids_csv})"
     else:
         url = base
-    requests.delete(url, headers=HEADERS, timeout=15)
+    try:
+        r = requests.delete(url, headers=HEADERS, timeout=15)
+        # Response body is empty w/ Prefer=return=minimal; we only care about status
+        if r.status_code not in (200, 204):
+            print(f"  ! prune_stale_props returned {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"  ! prune_stale_props error: {e}")
 
 
 # Phase 2 (2026-05-29) — book-line recalibration maps. Each pitcher prop
