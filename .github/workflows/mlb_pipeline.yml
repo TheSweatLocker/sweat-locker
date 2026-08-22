@@ -389,6 +389,28 @@ jobs:
             echo "not Sunday (DOW=$DOW) — skipping weekly retrain"
           fi
 
+      # 2026-08-21: Weekly signal_registry refit — computes per-signal
+      # hit_rate + tier from last 90d of graded prop_playbook_decisions +
+      # mlb_game_results.primary_play._ensemble_sources. Feeds edge_weight()
+      # so signals graduate from RAMP_UP_PRIOR (0.50) to their measured
+      # rate after 30 days, and ANTI_VALIDATED fade signals get flipped by
+      # the ensemble's sharp-fade branch. First live run 2026-08-21 caught
+      # refit_conviction_strong at 46.97% on n=264 (real fade edge).
+      - name: Refit signal_registry from graded history (Sundays only)
+        if: github.event.schedule == '0 10 * * *' && github.event_name == 'schedule'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          DOW=$(date -u +%u)
+          if [ "$DOW" = "7" ]; then
+            cd mlb_pipeline
+            python refit_signal_registry.py --days 90 --min-n 10 || echo "signal registry refit failed (non-fatal)"
+          else
+            echo "not Sunday (DOW=$DOW) — skipping signal registry refit"
+          fi
+
       # 2026-08-10: Nightly scenario audit recompute. Reads all past
       # game_context+results, projects into ~30 canonical MLB scenarios
       # (public-pct bands × side × line/ML bucket, whale signals,
