@@ -8412,9 +8412,12 @@ setJerryHistory(prev => {
       const samples: Record<string, any[]> = {};
       await Promise.all(uniqueGameMarket.map(async (gm) => {
         const [gid, market] = gm.split('::');
+        // 2026-08-22: added 'matchup' to select so sample[0].matchup
+        // fallback in LineMovementCard actually works. Prior select
+        // omitted matchup entirely — silent fallback failure.
         const { data: hist } = await supabase
           .from('line_history')
-          .select('side,book,line,price,captured_at')
+          .select('side,book,line,price,captured_at,matchup')
           .eq('game_id', gid).eq('market', market)
           .gte('captured_at', new Date(Date.now() - 48*60*60*1000).toISOString())
           .order('captured_at', {ascending: true})

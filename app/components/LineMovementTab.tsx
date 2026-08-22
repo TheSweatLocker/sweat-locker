@@ -453,13 +453,35 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
   // `market` for the LEAD signal (extracted after strongest is picked below)
   // — kept as `strongest.market` per usage sites so the section that renders
   // per-source rows references the strongest signal's market.
-  // 2026-08-18 fix: fall back to picks metadata when sample has no history
-  // (some games flagged today have no line_history sample yet — showed as
-  // "matchup pending sample" placeholder to users).
-  const matchupRaw = sample[0]?.matchup || '';
+  // 2026-08-22 ROOT CAUSE FIX: every flag's `detail` field starts with the
+  // matchup ("Washington Nationals @ New York Mets · ML: Money% 80..."),
+  // written by detect_line_movement.py at classification time. That's the
+  // most reliable source — it's on the flag row itself, no join needed.
+  // Fallback chain now: flag.detail parse → line_history sample.matchup →
+  // picks.away/home_team from ctx. Prior code had two fallback bugs:
+  //   1. line_history .select() didn't include the 'matchup' column, so
+  //      sample[0]?.matchup was ALWAYS undefined (silent).
+  //   2. picks-based fallback depended on ctx being present AND async
+  //      race where picksIdx populated after first render. Both edge-cases
+  //      landed users on the "matchup pending sample" placeholder.
+  // Parsing the detail prefix eliminates both dependencies.
+  const parseMatchupFromDetail = (flag: any): string => {
+    const detail = String(flag?.detail || '');
+    // Format: "<matchup> · <market>: <rest>"  OR sometimes just "<market>: ..."
+    if (detail.includes(' · ') && detail.includes(' @ ')) {
+      const prefix = detail.split(' · ')[0].trim();
+      if (prefix.includes(' @ ')) return prefix;
+    }
+    return '';
+  };
+  const matchupFromDetail =
+    parseMatchupFromDetail(first) ||
+    parseMatchupFromDetail(flags.find((f:any) => String(f?.detail || '').includes(' @ '))) ||
+    '';
+  const matchupFromSample = sample[0]?.matchup || '';
   const matchupFromPicks = picks && picks.away_team && picks.home_team
     ? `${picks.away_team} @ ${picks.home_team}` : '';
-  const matchup = matchupRaw || matchupFromPicks;
+  const matchup = matchupFromDetail || matchupFromSample || matchupFromPicks;
   const commence = sample[0]?.commence_time || picks?.commence_time;
   const [awayTeam, homeTeam] = matchup.includes(' @ ') ? matchup.split(' @ ').map((s: string) => s.trim()) : ['', ''];
   const teamForSide = (side: string): string => {
