@@ -124,6 +124,90 @@ def grade_rung(rung: dict, res: dict) -> Optional[str]:
             adj = (aws + line) - hs
         if abs(adj) < 0.01: return 'Push'
         return 'Win' if adj > 0 else 'Loss'
+
+    if market == 'prop':
+        # 2026-08-22: prop-market ladder rungs (E-Rod Over 5.5 HA, etc)
+        # weren't handled — grader returned None for every prop rung. That
+        # caused ladder record to freeze (rungs displayed as "ungraded" even
+        # when the underlying prop had been graded in mlb_pipeline_props /
+        # prop_playbook_decisions). Now: parse (player, direction, line,
+        # prop_type) from pick_side and look up the graded result.
+        return _grade_prop_rung(rung)
+    return None
+
+
+_PROP_TYPE_MAP = {
+    'ks': 'ks', 'k': 'ks', 'ha': 'ha', 'outs': 'outs', 'er': 'er', 'bb': 'bb',
+    'hits': 'hits', 'points': 'points', 'reb': 'reb', 'ast': 'ast',
+    'pass_yds': 'pass_yds', 'rush_yds': 'rush_yds', 'rec_yds': 'rec_yds',
+    'receptions': 'receptions',
+}
+
+
+def _grade_prop_rung(rung: dict) -> Optional[str]:
+    """Parse rung.pick_side + look up graded prop result.
+
+    pick_side examples:
+      "Eduardo Rodriguez Over 5.5 HA"
+      "Grayson Rodriguez Under 15.5 OUTS"
+      "Jordan Walker Over 0.5 HITS"
+    Format: <player_name> <Over|Under> <line> <PROP_TYPE_TOKEN>
+    """
+    pick = str(rung.get('pick_side') or '').strip()
+    # Match: name (greedy up to Over/Under) + direction + line + prop_type
+    m = re.match(r'^(.+?)\s+(over|under)\s+(\d+(?:\.\d+)?)\s+([A-Za-z_]+)\s*$',
+                 pick, re.I)
+    if not m: return None
+    player_name = m.group(1).strip()
+    direction = m.group(2).lower()
+    line_val = float(m.group(3))
+    prop_type_raw = m.group(4).lower()
+    prop_family = _PROP_TYPE_MAP.get(prop_type_raw)
+    if not prop_family: return None
+    prop_type = f'{prop_family}_{direction}'  # e.g. ha_over, ks_under
+
+    gd = rung.get('game_date')
+    # Lookup 1: mlb_pipeline_props (legacy grader writes here)
+    try:
+        r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props', headers=H_READ,
+            params={'player_name': f'ilike.{player_name}',
+                    'game_date': f'eq.{gd}',
+                    'prop_type': f'eq.{prop_type}',
+                    'prop_line': f'eq.{line_val}',
+                    'direction': f'eq.{direction}',
+                    'select': 'result,final_value',
+                    'limit': '1'},
+            timeout=10)
+        rows = r.json() if r.status_code == 200 else []
+        if rows and rows[0].get('result'):
+            res_str = str(rows[0]['result']).upper()
+            if res_str in ('W', 'WIN'):   return 'Win'
+            if res_str in ('L', 'LOSS'):  return 'Loss'
+            if res_str in ('P', 'PUSH', 'V', 'VOID'): return 'Push'
+    except Exception:
+        pass
+
+    # Lookup 2: prop_playbook_decisions (2nd fallback, persistent table)
+    try:
+        r = requests.get(f'{SB}/rest/v1/prop_playbook_decisions', headers=H_READ,
+            params={'player_name': f'ilike.{player_name}',
+                    'game_date': f'eq.{gd}',
+                    'prop_type': f'eq.{prop_type}',
+                    'prop_line': f'eq.{line_val}',
+                    'direction': f'eq.{direction}',
+                    'result': 'not.is.null',
+                    'select': 'result',
+                    'limit': '1'},
+            timeout=10)
+        rows = r.json() if r.status_code == 200 else []
+        if rows and rows[0].get('result'):
+            res_str = str(rows[0]['result']).upper()
+            if res_str in ('W', 'WIN'):   return 'Win'
+            if res_str in ('L', 'LOSS'):  return 'Loss'
+            if res_str in ('P', 'PUSH', 'V'): return 'Push'
+    except Exception:
+        pass
+
     return None
 
 
