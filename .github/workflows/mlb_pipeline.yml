@@ -183,6 +183,22 @@ jobs:
           cd mlb_pipeline
           python verify_starters.py
 
+      # 2026-08-22: PARALLEL warmup of inning bucket splits for tonight's
+      # starters. Before this step, game_context.py would discover late-
+      # confirmed starters missing bucket data and refresh each one
+      # SERIALLY inline (3-6 min added per slate). Now warmup runs in
+      # 6-way parallel here, so game_context finds them all pre-populated.
+      # Non-fatal: any warmup miss just falls back to game_context inline
+      # refresh (existing behavior).
+      - name: Warmup pitcher inning buckets (parallel)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python warmup_pitcher_buckets.py --workers 6 || echo "bucket warmup non-fatal"
+
       # Data-quality self-audit (2026-05-27). Built after the Matz vs-BAL
       # incident — we publicly cited 0.93 ERA / .200 BAA on 9.7 IP as
       # "mastery" (actual career: 4.23 / 38.3 IP). Audit catches:
@@ -1573,6 +1589,9 @@ jobs:
           echo "Tomorrow ET: $TOMORROW"
           python game_context.py --date "$TOMORROW"
           python verify_starters.py "$TOMORROW"
+          # 2026-08-22: parallel bucket warmup (same fix as main run) so
+          # tomorrow's context build doesn't inline-refresh serially.
+          python warmup_pitcher_buckets.py --date "$TOMORROW" --workers 6 || echo "tomorrow bucket warmup non-fatal"
           python patch_projected_ks.py --date "$TOMORROW"
 
       # Auto tier calibration — runs daily, computes rolling 7d/30d/STD hit rates
