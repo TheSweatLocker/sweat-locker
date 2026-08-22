@@ -257,11 +257,17 @@ def fetch_team_quality_of_contact():
     return team_qoc
 
 def fetch_catcher_framing():
-    """Catcher framing runs per catcher"""
+    """Catcher framing runs per catcher.
+
+    2026-08-22: reordered URLs so the KNOWN-WORKING endpoint is first.
+    Prior order: services/... (404) → catcher_framing (tokenization err)
+    → leaderboard/catcher-framing (200). Wasted ~30s on 2 failed
+    attempts every pipeline run. Now: try the working one first, then
+    the historical fallbacks in case Savant flips endpoints again."""
     urls = [
+        f"https://baseballsavant.mlb.com/leaderboard/catcher-framing?year={SEASON}&csv=true",
         f"https://baseballsavant.mlb.com/leaderboard/services/catcher-framing?year={SEASON}&min=q&csv=true",
         f"https://baseballsavant.mlb.com/catcher_framing?year={SEASON}&csv=true",
-        f"https://baseballsavant.mlb.com/leaderboard/catcher-framing?year={SEASON}&csv=true",
     ]
     df = None
     for url in urls:
@@ -369,10 +375,21 @@ def upsert_catcher(catcher):
 def run():
     print(f"=== Savant enrichment {SEASON} ===")
 
-    defense = fetch_team_defense()
-    expected = fetch_team_expected_offense()
-    qoc = fetch_team_quality_of_contact()
-    catchers = fetch_catcher_framing()
+    # 2026-08-22: parallelize the 4 fetches. Each hits Baseball Savant
+    # with independent CSVs — no shared state. Prior serial version took
+    # ~4m 36s per pipeline run. Parallel: bounded by slowest fetch
+    # (catcher framing with its 404→retry chain, ~1m) instead of sum.
+    # ThreadPoolExecutor is safe here because all four are pure I/O.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f_defense  = ex.submit(fetch_team_defense)
+        f_expected = ex.submit(fetch_team_expected_offense)
+        f_qoc      = ex.submit(fetch_team_quality_of_contact)
+        f_catchers = ex.submit(fetch_catcher_framing)
+        defense  = f_defense.result()
+        expected = f_expected.result()
+        qoc      = f_qoc.result()
+        catchers = f_catchers.result()
 
     # Merge team data and upsert
     all_teams = set(defense.keys()) | set(expected.keys()) | set(qoc.keys())

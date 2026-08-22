@@ -16,16 +16,23 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 def fetch_pitcher_stats():
     print("Fetching 2026 pitcher stats...")
-    # Try FanGraphs via pybaseball first (has xERA, K%, GB%, etc.)
-    try:
-        stats = pitching_stats(2026, qual=1)
-        print(f"Fetched {len(stats)} pitchers from FanGraphs")
-        return stats, 'fangraphs'
-    except Exception as e:
-        print(f"FanGraphs failed: {e}")
+    # 2026-08-22: skip FanGraphs by default. leaders-legacy endpoint has
+    # been returning 403 consistently in GHA (Cloudflare blocks the
+    # runner IPs). Every pipeline run was wasting ~5-10s on the failed
+    # attempt + print. Set MLB_PIPELINE_TRY_FANGRAPHS=1 to re-enable
+    # once FanGraphs cooperates or we route through a proxy.
+    if os.environ.get('MLB_PIPELINE_TRY_FANGRAPHS', '0') == '1':
+        try:
+            stats = pitching_stats(2026, qual=1)
+            print(f"Fetched {len(stats)} pitchers from FanGraphs")
+            return stats, 'fangraphs'
+        except Exception as e:
+            print(f"FanGraphs failed: {e}")
 
-    # Fallback: MLB Stats API — free, never blocks, has K%, BB%, ERA, WHIP
-    print("Falling back to MLB Stats API...")
+    # Primary: MLB Stats API — free, never blocks, has K%, BB%, ERA, WHIP
+    # (FanGraphs would add xERA + advanced but Baseball Savant fills
+    # xERA separately in savant_enrichment.py so we're not losing signal.)
+    print("Fetching from MLB Stats API...")
     try:
         all_pitchers = []
         teams_resp = requests.get('https://statsapi.mlb.com/api/v1/teams?sportId=1', timeout=15)
@@ -526,12 +533,19 @@ def get_first_inning_splits(player_name):
 
 def get_inning_bucket_splits(player_name):
     """Fetch pitcher inning splits and aggregate to 1-3, 4-6, 7-9 buckets.
-    Returns ERA/WHIP/K% per bucket plus IP and batters faced for sample-size context."""
+    Returns ERA/WHIP/K% per bucket plus IP and batters faced for sample-size context.
+
+    2026-08-22: bumped timeouts 10s -> 30s on both statsapi calls. Root
+    cause of 6 pitchers needing inline auto-refresh in game_context: this
+    call was timing out silently, pitcher_stats uploaded without buckets,
+    game_context then refreshed inline (adding 3-6 min to pipeline per
+    slate). Stats API statSplits endpoint is genuinely slow for pitchers
+    with many season splits — 10s was too aggressive."""
     try:
         search_resp = requests.get(
             "https://statsapi.mlb.com/api/v1/people/search",
             params={"names": player_name, "sportId": 1},
-            timeout=10
+            timeout=30
         )
         people = search_resp.json().get("people", [])
         if not people:
@@ -547,7 +561,7 @@ def get_inning_bucket_splits(player_name):
                     "season": year,
                     "sitCodes": "i01,i02,i03,i04,i05,i06,i07,i08,i09,ig07"
                 },
-                timeout=10
+                timeout=30
             )
             return resp.json().get("stats", [])
 

@@ -770,11 +770,14 @@ def _refresh_pitcher_inning_buckets(pitcher_name, existing_row):
             "Prefer": "return=minimal",
         }
         encoded = requests.utils.quote(existing_row.get('player_name', pitcher_name))
+        # 2026-08-22: 30s to match bumped statsapi timeout in
+        # pitcher_stats.get_inning_bucket_splits — the fetch step is what
+        # takes long; PATCH is fast but stays consistent.
         r = requests.patch(
             f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=eq.{encoded}&season=eq.2026",
             headers=headers,
             json=buckets,
-            timeout=10,
+            timeout=30,
         )
         if r.status_code in (200, 204):
             print(f"  🔄 Auto-refreshed inning buckets for {pitcher_name} (was missing in DB)")
