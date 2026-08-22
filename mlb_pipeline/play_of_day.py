@@ -3471,6 +3471,76 @@ def run():
         # Re-sort in case ordering shifted
         candidates.sort(key=lambda c: c['score'], reverse=True)
 
+    # ────────────────────────────────────────────────────────────────
+    # 2026-08-22 POTD SAFETY GUARDS (added after Yankees NRFI 89 POTD
+    # was picked and lost — Toronto 1 in 1st while POTD still showed
+    # "Pending"). Two protections:
+    #
+    # (1) GAME-STARTED FILTER for time-sensitive markets
+    #     NRFI / YRFI / first_5 resolve within ~30 min of first pitch.
+    #     If commence_time is <90 min out OR in the past, exclude these
+    #     from POTD pool. ML / spread / total pick markets that resolve
+    #     at game end aren't affected — they have full-game hold window.
+    #
+    # (2) BARE NRFI GATE
+    #     Per user memory feedback_no_nrfi_on_cards: bare NRFI should
+    #     only POTD if extreme (95+) + companion signal. Score 89
+    #     supplementary NRFI without companion is LEAN — shouldn't be
+    #     in POTD pool at all. Downstream VALUE fallback was elevating
+    #     these to POTD when nothing cleared STRONG gate.
+    # ────────────────────────────────────────────────────────────────
+    try:
+        _now_utc = datetime.now(timezone.utc)
+        _guarded = []
+        _dropped_started = 0
+        _dropped_bare_nrfi = 0
+        for _c in candidates:
+            lean = str(_c.get('lean_bet') or '').lower()
+            is_time_sensitive = lean in ('nrfi', 'yrfi', 'first_5', 'f5')
+            # (1) commence_time filter for time-sensitive picks
+            if is_time_sensitive:
+                ct = _c.get('commence_time')
+                if ct:
+                    try:
+                        _ct = datetime.fromisoformat(str(ct).replace('Z', '+00:00'))
+                        # Reject if game starts within 90 min OR has already started
+                        if (_ct - _now_utc).total_seconds() < 90 * 60:
+                            _dropped_started += 1
+                            print(f"  🚫 POTD guard: {_c.get('away_team')} @ {_c.get('home_team')} "
+                                  f"NRFI/1st market rejected — game starts in "
+                                  f"{int((_ct - _now_utc).total_seconds()/60)}min "
+                                  f"(insufficient hold window)")
+                            continue
+                    except (ValueError, TypeError):
+                        pass  # bad commence_time — let it through, better to have POTD than lose to parse error
+            # (2) bare NRFI gate — require 95+ AND companion for POTD
+            if lean == 'nrfi':
+                nrfi_score = _c.get('nrfi_score') or _c.get('score') or 0
+                try: nrfi_score = int(nrfi_score)
+                except (TypeError, ValueError): nrfi_score = 0
+                # Companion detection mirrors _compute_supplementary_play companions list
+                supp = _c.get('supplementary_play') or {}
+                has_companion = isinstance(supp, dict) and (
+                    'ace duel' in (supp.get('sub') or '').lower()
+                    or 'cold' in (supp.get('sub') or '').lower()
+                    or 'pitcher park' in (supp.get('sub') or '').lower()
+                    or 'nrfi-friendly umpire' in (supp.get('sub') or '').lower()
+                    or supp.get('tier') == 'STRONG'  # STRONG supplementary already implies companion
+                )
+                if nrfi_score < 95 and not has_companion:
+                    _dropped_bare_nrfi += 1
+                    print(f"  🚫 POTD guard: {_c.get('away_team')} @ {_c.get('home_team')} "
+                          f"bare NRFI {nrfi_score} rejected — needs score>=95 OR companion signal "
+                          f"(per feedback_no_nrfi_on_cards). Still displayed as supplementary.")
+                    continue
+            _guarded.append(_c)
+        if _dropped_started or _dropped_bare_nrfi:
+            print(f"  POTD guards: dropped {_dropped_started} started-game NRFI + "
+                  f"{_dropped_bare_nrfi} bare-NRFI-below-95 · {len(_guarded)}/{len(candidates)} remain")
+            candidates = _guarded
+    except Exception as _e:
+        print(f"  ⚠ POTD safety guard error (continuing without filter): {_e}")
+
     # Late-slate POTD defer — sweat scores are already written above; just
     # skip the POTD lock/selection logic until the 2pm run.
     if defer_potd:
