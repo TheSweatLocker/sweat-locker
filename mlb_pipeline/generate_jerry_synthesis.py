@@ -542,9 +542,53 @@ def parse_synthesis(raw: str) -> dict:
     }
 
 
+# ─── Ensemble-authority defer ─────────────────────────────────────────────
+# 2026-08-22 Option C consolidation: ensemble is the pick authority.
+# Jerry writes prose but the CALL fields (call_market/side/text/line/
+# conviction) come from primary_play so game detail hero + Jerry writeup
+# always agree.
+#
+# Audit 8/22: yesterday 12/15 games had ensemble ML pick contradicting
+# Jerry's writeup call (e.g. Braves@Brewers ensemble backed Brewers ML W,
+# Jerry writeup called Over 6.0 L). Users saw the ensemble pick on the
+# game card badge + Hero verdict card but Jerry prose recommended a
+# different bet. Real cost of the divergence: Jerry graded 7-7-1 (50%)
+# yesterday while ensemble ML went 11-1 (91.7%).
+#
+# Fix: after LLM writes prose, overwrite the parsed call_* fields with
+# whatever ensemble_scorer picked. Prose stays as-is (the LLM was already
+# prompted with the ensemble pick as authoritative — see ENSEMBLE_DECISION
+# block in render_prompt). If ensemble has no pick / PASS, preserve
+# Jerry's read as-is so we don't lose the read entirely.
+_VALID_MARKETS = {'ml', 'rl', 'total', 'nrfi', 'yrfi', 'fight'}
+
+
+def defer_call_to_ensemble(parsed: dict, struct: dict) -> dict:
+    """Overwrite parsed call_* with ensemble primary_play values. Idempotent."""
+    pp = (struct or {}).get('primary_play')
+    if not isinstance(pp, dict) or pp.get('_engine') != 'ensemble_v2':
+        return parsed  # no ensemble to defer to — keep LLM output
+    market = str(pp.get('type') or '').lower()
+    side = pp.get('side')
+    label = pp.get('label')
+    conviction = pp.get('conviction')
+    line = pp.get('line')
+    if market not in _VALID_MARKETS or not side or not label:
+        return parsed  # ensemble PASS / malformed — keep LLM output
+    parsed['call_market'] = market
+    parsed['call_side'] = str(side).upper()
+    parsed['call_line'] = line
+    parsed['call_text'] = label  # human-readable e.g. "Brewers ML"
+    if isinstance(conviction, (int, float)):
+        parsed['conviction'] = max(0, min(100, int(conviction)))
+    return parsed
+
+
 # ─── Persist ─────────────────────────────────────────────────────────────
 def upsert_jerry_read(game: dict, parsed: dict, struct: dict,
                      game_date: str) -> bool:
+    # 2026-08-22 Option C: force call_* to ensemble pick before persist
+    parsed = defer_call_to_ensemble(parsed, struct)
     # 2026-08-07 filter: skip empty PASS reads to prevent PASS-badge
     # pollution on graded games. If Jerry has no directional take AND
     # no call text, don't persist the row — the app's grading view
@@ -1013,6 +1057,8 @@ def upsert_jerry_read_sport(game: dict, parsed: dict, struct: dict,
                              game_date: str, sport: str) -> bool:
     """Sport-universal upsert — same schema as upsert_jerry_read but writes
     the sport tag correctly for non-MLB sports."""
+    # 2026-08-22 Option C: force call_* to ensemble pick before persist
+    parsed = defer_call_to_ensemble(parsed, struct)
     payload = {
         "sport": sport,
         "game_id": game.get("game_id"),
