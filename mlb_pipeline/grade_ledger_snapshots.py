@@ -63,11 +63,39 @@ def _fetch_result(sport: str, game_id: str) -> dict | None:
     r = requests.get(f'{SB}/rest/v1/{table}',
                      headers=H_READ,
                      params={'game_id': f'eq.{game_id}',
-                             'select': 'game_id,home_score,away_score',
+                             'select': 'game_id,home_score,away_score,home_team,away_team',
                              'limit': '1'},
                      timeout=10)
     rows = r.json() if r.status_code == 200 else []
     return rows[0] if rows else None
+
+
+def _resolve_pick_side(leg: dict, result: dict) -> str | None:
+    """Return 'HOME' or 'AWAY' for the pick, or None if unresolvable.
+
+    2026-08-22: prior grader defaulted to 'AWAY' whenever `leg.side` was
+    missing AND 'home' wasn't literally in the pick label ('Philadelphia
+    Phillies ML' contains neither 'home' nor 'HOME'). Every chalk_parlay
+    leg had no `side` field so ALL ML picks were graded as AWAY picks —
+    home wins showed as leg losses, home losses showed as leg wins.
+
+    Fix: prefer explicit leg.side; fall back to matching the team name
+    embedded in leg.pick against result.home_team / result.away_team.
+    """
+    side = (leg.get('side') or '').upper()
+    if side in ('HOME', 'AWAY'): return side
+    pick_label = (leg.get('pick') or '').strip()
+    if not pick_label: return None
+    # Strip trailing " ML" / " RL" / " +/-N.N" / " Over/Under N.N" tokens
+    import re
+    label_clean = re.sub(r'\s+(ML|RL|[+-]?\d+(\.\d+)?|Over|Under)\s*$', '', pick_label, flags=re.I).strip()
+    home_team = str(result.get('home_team') or '').strip()
+    away_team = str(result.get('away_team') or '').strip()
+    if home_team and label_clean.lower() in home_team.lower(): return 'HOME'
+    if away_team and label_clean.lower() in away_team.lower(): return 'AWAY'
+    if home_team and home_team.lower() in label_clean.lower(): return 'HOME'
+    if away_team and away_team.lower() in label_clean.lower(): return 'AWAY'
+    return None
 
 
 def _grade_leg(leg: dict, result: dict) -> str:
@@ -77,30 +105,34 @@ def _grade_leg(leg: dict, result: dict) -> str:
     market = str(leg.get('market') or '').lower()
     # Use teased line if present, else original_line
     line = leg.get('teased_line') if leg.get('teased_line') is not None else leg.get('original_line')
-    side = (leg.get('pick') or '').upper()
     if market == 'ml':
-        home_won = hs > as_
-        pick_side = 'HOME' if 'home' in side.lower() or leg.get('side') == 'HOME' else 'AWAY'
-        # Extract side from label — 'X ML' where X is a team name
-        # Use `side` field from snapshot if present
-        pick_side = (leg.get('side') or pick_side).upper()
+        pick_side = _resolve_pick_side(leg, result)
+        if pick_side is None: return 'NR'
         actual = 'HOME' if hs > as_ else 'AWAY' if as_ > hs else 'PUSH'
         if actual == 'PUSH': return 'P'
         return 'W' if pick_side == actual else 'L'
     if market in ('rl', 'spread', 'runline'):
         if line is None: return 'NR'
-        pick_side = (leg.get('side') or '').upper() or ('HOME' if 'home' in side.lower() else 'AWAY')
+        pick_side = _resolve_pick_side(leg, result)
+        if pick_side is None: return 'NR'
+        # 2026-08-22 FIX: line is stored PICK-perspective (+3 means the
+        # pick side gets +3), not HOME-perspective. Prior code assumed
+        # home-perspective and produced opposite-sign results for AWAY
+        # picks with positive lines — Pirates +3 covering easily was
+        # graded L. Now: line_home = line if pick=HOME else -line.
+        line_home = float(line) if pick_side == 'HOME' else -float(line)
         margin_home = hs - as_
-        # Line is HOME's line (negative if home favored)
-        # If pick_side=HOME, home covers if margin_home + line > 0
-        # If pick_side=AWAY, away covers if margin_home + line < 0 (i.e. -line > margin_home)
-        cover = margin_home + float(line)
+        cover = margin_home + line_home
         if abs(cover) < 0.01: return 'P'
         if pick_side == 'HOME': return 'W' if cover > 0 else 'L'
         else:                    return 'W' if cover < 0 else 'L'
     if market == 'total':
         if line is None: return 'NR'
-        pick_side = (leg.get('side') or '').upper() or ('OVER' if 'over' in side.lower() else 'UNDER')
+        side_label = (leg.get('side') or '').upper()
+        pick_label = (leg.get('pick') or '').upper()
+        pick_side = side_label if side_label in ('OVER', 'UNDER') \
+                    else ('OVER' if 'OVER' in pick_label else 'UNDER' if 'UNDER' in pick_label else None)
+        if pick_side is None: return 'NR'
         actual = hs + as_
         if abs(actual - float(line)) < 0.01: return 'P'
         return ('W' if actual > float(line) else 'L') if pick_side == 'OVER' \
