@@ -94,18 +94,40 @@ def _nfl_stat_key(prop_type: str) -> str | None:
 _PLAYER_ID_CACHE: dict = {}
 
 
+def _norm_name(name: str) -> str:
+    """Strip diacritics (Jesús Luzardo → Jesus Luzardo) so MLB API lookups
+    succeed for players whose names include accented chars in the sportsbook
+    feed but not in the MLB Stats API index. 2026-08-22 fix: same pattern
+    that was landed in grade_prop_playbook.py — apply here so L10 lookback
+    doesn't silently return empty vals for accented names, contributing to
+    the 25% L10 coverage gap."""
+    if not name:
+        return name
+    import unicodedata
+    return unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('ASCII')
+
+
 def _mlb_player_id(player_name: str) -> Optional[int]:
-    """Look up MLB player ID via statsapi.mlb.com (mirrors generate_props._lookup_player_id)."""
+    """Look up MLB player ID via statsapi.mlb.com (mirrors generate_props._lookup_player_id).
+
+    Tries exact name first; if no match and the name has diacritics, retries
+    with the ASCII-normalized form."""
     if player_name in _PLAYER_ID_CACHE:
         return _PLAYER_ID_CACHE[player_name]
-    try:
-        r = requests.get('https://statsapi.mlb.com/api/v1/people/search',
-                         params={'names': player_name, 'active': 'true'},
-                         timeout=8)
-        people = r.json().get('people', []) if r.status_code == 200 else []
-        pid = people[0]['id'] if people else None
-    except Exception:
-        pid = None
+    def _search(nm):
+        try:
+            r = requests.get('https://statsapi.mlb.com/api/v1/people/search',
+                             params={'names': nm, 'active': 'true'},
+                             timeout=8)
+            return r.json().get('people', []) if r.status_code == 200 else []
+        except Exception:
+            return []
+    people = _search(player_name)
+    if not people:
+        normalized = _norm_name(player_name)
+        if normalized and normalized != player_name:
+            people = _search(normalized)
+    pid = people[0]['id'] if people else None
     _PLAYER_ID_CACHE[player_name] = pid
     return pid
 
