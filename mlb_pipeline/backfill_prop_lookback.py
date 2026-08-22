@@ -132,16 +132,24 @@ def _mlb_player_id(player_name: str) -> Optional[int]:
     return pid
 
 
-# MLB Stats API stat field names per prop_type base
+# MLB Stats API stat field names.
+# 2026-08-22 CRITICAL FIX: keys MUST match the values produced by MLB_STAT_MAP
+# (line 52), NOT the prop_type base tokens. Prior version was keyed by
+# `ks`/`ha`/`bb`/`er` but _mlb_stat_key returns the MAPPED value
+# (`strikeouts`/`hits_allowed`/`walks`/`earned_runs`), so every pitcher prop
+# lookup silently returned None → api_key = None → empty vals → L10 NULL.
+# This bug broke ~75% of L10 coverage (only 'hits'/'outs' happened to have
+# matching keys). Andrew Painter er_over 2.5 landed PRIME conv=94 with NULL
+# L10 because of this — he actually has 18 games in 2026 gameLog.
 _MLB_API_STAT = {
     # batter — hitting group
-    'hits':  ('hitting', 'hits'),
+    'hits':         ('hitting', 'hits'),
     # pitcher — pitching group
-    'ks':    ('pitching', 'strikeOuts'),
-    'ha':    ('pitching', 'hits'),
-    'bb':    ('pitching', 'baseOnBalls'),
-    'outs':  ('pitching', 'outs'),
-    'er':    ('pitching', 'earnedRuns'),
+    'strikeouts':   ('pitching', 'strikeOuts'),
+    'hits_allowed': ('pitching', 'hits'),
+    'walks':        ('pitching', 'baseOnBalls'),
+    'outs':         ('pitching', 'outs'),
+    'earned_runs':  ('pitching', 'earnedRuns'),
 }
 
 
