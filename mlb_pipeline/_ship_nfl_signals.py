@@ -137,7 +137,11 @@ SIGNALS = [
 ]
 
 for sig in SIGNALS:
-    r = requests.post(f'{SB}/rest/v1/signal_sources', headers=HW, json=sig, timeout=10)
+    # 2026-08-22: on_conflict required for UPSERT behavior on re-runs
+    r = requests.post(
+        f'{SB}/rest/v1/signal_sources?on_conflict=signal_key,sport,market_scope',
+        headers=HW, json=sig, timeout=10,
+    )
     marker = '+' if r.status_code == 201 else '.' if r.status_code == 204 else '!'
     print(f'  {marker} {sig["signal_key"]:38s}: {r.status_code}')
 
