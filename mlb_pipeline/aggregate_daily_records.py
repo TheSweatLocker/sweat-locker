@@ -297,6 +297,109 @@ def agg_daily_degen(date: str) -> dict | None:
             'detail':{'legs':row.get('legs') or [],'combined_est_payout':payout_est}}
 
 
+def agg_split(date: str) -> list[dict]:
+    """Split — grades sharp-signal flags against game outcomes.
+
+    2026-08-22: builds a historical record for the Split sub-tab so users
+    can see if triple-confirmed / confirmed / lean signals actually cash
+    when surfaced. Prior: Split showed live signals but no track record —
+    users had no way to gauge signal reliability.
+
+    Grades each SHARP_MOVE_* flag by comparing the sharp side against
+    the actual market winner (ml/rl/total from mlb_game_results). One
+    record per tier level: split_sharp_triple, split_sharp_confirmed,
+    split_sharp_lean. -110 assumed vig.
+    """
+    # 2026-08-22: filter by first_seen_at instead of classified_at.
+    # classified_at gets refreshed whenever the classifier reruns, so an
+    # 8/21 flag re-classified on 8/22 would be counted on 8/22 not 8/21.
+    # first_seen_at is when the movement was detected — the honest date.
+    # Multiple filters on same column require PostgREST's and=(...) syntax
+    # since dict keys can't repeat.
+    and_filter = (f'(classification.like.SHARP_MOVE_*,'
+                  f'first_seen_at.gte.{date}T00:00:00,'
+                  f'first_seen_at.lt.{date}T23:59:59)')
+    r = requests.get(f'{SB}/rest/v1/line_movement_flags',
+        headers=H_READ,
+        params={'select': 'game_id,sport,market,side,classification',
+                'and': and_filter},
+        timeout=15).json()
+    if not isinstance(r, list) or not r: return []
+
+    # Pull results for these games (MLB only for now; extend as other sports
+    # accumulate line-movement history).
+    mlb_gids = list({f['game_id'] for f in r if f.get('sport') == 'MLB'})
+    if not mlb_gids: return []
+    ids_csv = ','.join(f'"{g}"' for g in mlb_gids)
+    res = requests.get(f'{SB}/rest/v1/mlb_game_results',
+        headers=H_READ,
+        params={'game_id': f'in.({ids_csv})',
+                'select': 'game_id,home_score,away_score,close_spread,close_total'},
+        timeout=15).json()
+    res_by_gid = {row['game_id']: row for row in (res if isinstance(res, list) else [])}
+
+    def _sharp_side_won(flag: dict) -> str | None:
+        """Return 'W' if the sharp side won its market, 'L' if lost, None if push/unresolved."""
+        g = res_by_gid.get(flag['game_id'])
+        if not g: return None
+        hs, as_ = g.get('home_score'), g.get('away_score')
+        if hs is None or as_ is None: return None
+        market = str(flag.get('market') or '').lower()
+        side = str(flag.get('side') or '').lower()
+        if market == 'ml':
+            if hs > as_: winner = 'home'
+            elif as_ > hs: winner = 'away'
+            else: return None
+            return 'W' if side == winner else 'L'
+        if market == 'rl':
+            cs = g.get('close_spread')
+            if cs is None: return None
+            try: cs = float(cs)
+            except: return None
+            margin = hs - as_ + cs
+            if abs(margin) < 0.01: return None
+            home_covers = margin > 0
+            return 'W' if (side == 'home' and home_covers) or (side == 'away' and not home_covers) else 'L'
+        if market == 'total':
+            ct = g.get('close_total')
+            if ct is None: return None
+            try: ct = float(ct)
+            except: return None
+            total = hs + as_
+            if abs(total - ct) < 0.01: return None
+            went_over = total > ct
+            return 'W' if (side == 'over' and went_over) or (side == 'under' and not went_over) else 'L'
+        return None
+
+    # Bucket by classification tier
+    tier_agg = defaultdict(lambda: {'w': 0, 'l': 0})
+    for flag in r:
+        result = _sharp_side_won(flag)
+        if result not in ('W', 'L'): continue
+        cls = str(flag.get('classification') or '')
+        if 'TRIPLE_CONFIRMED' in cls: bucket = 'triple'
+        elif '_CONFIRMED' in cls:      bucket = 'confirmed'
+        elif '_LEAN' in cls:           bucket = 'lean'
+        else: continue
+        tier_agg[bucket][result.lower()] += 1
+
+    out = []
+    for bucket, agg in tier_agg.items():
+        w, l = agg['w'], agg['l']
+        stake = 1.0
+        # -110 standard vig (Split signals are always +/-110 range for
+        # ML/RL/Total sharp side; approximation for units math)
+        units_won = round((w * (100/110)) - l, 2) if (w or l) else 0
+        out.append({
+            'surface': f'split_sharp_{bucket}', 'sport': 'MLB', 'record_date': date,
+            'wins': w, 'losses': l, 'pushes': 0,
+            'units_bet': float(w + l), 'units_won': units_won,
+            'pick_count': w + l,
+            'detail': {'tier': bucket, 'assumed_odds': -110},
+        })
+    return out
+
+
 AGGREGATORS = [
     ('sharp_card', agg_sharp_card),
     ('ledger', agg_ledger),        # returns LIST
@@ -304,6 +407,7 @@ AGGREGATORS = [
     ('potd', agg_potd),
     ('dawg_of_day', agg_dawg_of_day),
     ('daily_degen', agg_daily_degen),
+    ('split', agg_split),          # returns LIST — 2026-08-22
 ]
 
 
