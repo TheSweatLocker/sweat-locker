@@ -390,6 +390,12 @@ function StrongestSignalCard({flags, sample, onTap}: any) {
         <Text style={{color: T.textMuted, fontSize: 9, fontWeight: '700'}}>{String(first.market).toUpperCase()}</Text>
       </View>
       <Text style={{color: T.text, fontSize: 12, fontWeight: '700'}} numberOfLines={1}>{sideDisplay}</Text>
+      {/* 2026-08-21: matchup line — was missing per user report. Split scroll
+          strip showed sideDisplay + detail but no team names, making it
+          impossible to know WHICH game the sharp signal was for. */}
+      {matchup ? (
+        <Text style={{color: T.textMuted, fontSize: 10, marginTop: 2, fontWeight: '600'}} numberOfLines={1}>{matchup}</Text>
+      ) : null}
       <Text style={{color: T.textDim, fontSize: 10, marginTop: 3}} numberOfLines={2}>{first.detail}</Text>
     </TouchableOpacity>
   );
