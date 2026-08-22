@@ -187,10 +187,27 @@ def predict_game(home_panel: dict, away_panel: dict,
 
 
 def _write_panel(game_id, blob: dict) -> bool:
+    # 2026-08-22 (silent-bug audit finding #15): also surface panel_pred_total
+    # + panel_pred_spread at top-level so ncaab_panel_total signal can read
+    # ctx.panel_pred_total (previously read the field but nothing wrote it —
+    # signal was dead). Panel_prediction JSONB blob kept intact for existing
+    # readers.
+    payload = {
+        'panel_prediction':  blob,
+        'panel_pred_total':  blob.get('panel_projected_total'),
+        'panel_pred_spread': blob.get('panel_projected_margin'),
+    }
     r = requests.patch(
         f'{SB}/rest/v1/ncaab_game_context?game_id=eq.{game_id}',
-        headers=H_WRITE, json={'panel_prediction': blob}, timeout=15)
+        headers=H_WRITE, json=payload, timeout=15)
     if r.status_code not in (200, 204):
+        # Retry without top-level fields in case schema lacks them (pre-migration)
+        if r.status_code == 400 and ('panel_pred_total' in (r.text or '') or 'panel_pred_spread' in (r.text or '')):
+            r = requests.patch(
+                f'{SB}/rest/v1/ncaab_game_context?game_id=eq.{game_id}',
+                headers=H_WRITE, json={'panel_prediction': blob}, timeout=15)
+            if r.status_code in (200, 204):
+                return True
         print(f'  ✗ write game {game_id}: {r.status_code} {r.text[:150]}')
         return False
     return True
