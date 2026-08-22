@@ -344,8 +344,13 @@ def render_prompt(template: str, game: dict, struct: dict) -> str:
     # instead of re-deciding via the LLM.
     ensemble_block = ''
     try:
-        pp = struct.get('primary_play') if isinstance(struct, dict) else None
-        if isinstance(pp, dict) and pp.get('_engine') == 'ensemble_v2':
+        # 2026-08-22 same nested-path bug as defer_call_to_ensemble — the
+        # ENSEMBLE DECISION block never rendered because primary_play is
+        # at struct['full_models']['primary_play'], not top-level. Now
+        # the LLM actually receives the ensemble pick as narrator input
+        # instead of silently falling back to handicapper mode.
+        pp = _extract_primary_play(struct)
+        if pp is not None and pp.get('_engine') == 'ensemble_v2':
             label = pp.get('label') or '?'
             tier = pp.get('tier') or 'LEAN'
             conv = pp.get('conviction')
@@ -563,10 +568,37 @@ def parse_synthesis(raw: str) -> dict:
 _VALID_MARKETS = {'ml', 'rl', 'total', 'nrfi', 'yrfi', 'fight'}
 
 
+def _extract_primary_play(struct: dict) -> dict | None:
+    """Locate primary_play regardless of where it's nested in the struct.
+
+    2026-08-22 bug: build_struct at line 165 puts primary_play at
+    struct['full_models']['primary_play']. defer_call_to_ensemble was
+    looking at struct.get('primary_play') top-level — always None, so
+    defer silently no-op'd for every game. Result: 4 of 25 Jerry rows
+    tonight had a market pick different from ensemble's primary_play
+    (Detroit RL vs Jerry TOTAL, Rockies ML vs Jerry TOTAL, etc.).
+    """
+    if not isinstance(struct, dict): return None
+    # Preferred: top-level (future-proof if we ever add it there)
+    pp = struct.get('primary_play')
+    if isinstance(pp, dict): return pp
+    # Actual location today
+    fm = struct.get('full_models')
+    if isinstance(fm, dict):
+        pp = fm.get('primary_play')
+        if isinstance(pp, dict): return pp
+    # Legacy: confluence.primary_play (generate_mlb_game_reads.py:914)
+    conf = struct.get('confluence')
+    if isinstance(conf, dict):
+        pp = conf.get('primary_play')
+        if isinstance(pp, dict): return pp
+    return None
+
+
 def defer_call_to_ensemble(parsed: dict, struct: dict) -> dict:
     """Overwrite parsed call_* with ensemble primary_play values. Idempotent."""
-    pp = (struct or {}).get('primary_play')
-    if not isinstance(pp, dict) or pp.get('_engine') != 'ensemble_v2':
+    pp = _extract_primary_play(struct)
+    if pp is None or pp.get('_engine') != 'ensemble_v2':
         return parsed  # no ensemble to defer to — keep LLM output
     market = str(pp.get('type') or '').lower()
     side = pp.get('side')
