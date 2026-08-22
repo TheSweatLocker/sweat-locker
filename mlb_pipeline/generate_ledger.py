@@ -145,13 +145,19 @@ def fetch_chalk_candidates(game_date: str, sports: list[str]) -> list[dict]:
                 headers=H_READ,
                 params={'game_date': f'eq.{game_date}',
                         'select': 'game_id,home_team,away_team,'
-                                  'home_ml_close,away_ml_close,primary_play'},
+                                  'home_ml_close,away_ml_close,'
+                                  'home_ml_odds,away_ml_odds,primary_play'},
                 timeout=15)
             rows = r.json() if r.status_code == 200 else []
         except Exception:
             continue
         for row in rows:
-            hml = row.get('home_ml_close'); aml = row.get('away_ml_close')
+            # 2026-08-22: fall back to live ml_odds when close hasn't
+            # snapshotted yet (close only populates at game start; pre-game
+            # ledger generation was silently returning 0 chalk candidates
+            # because every row had ml_close=None).
+            hml = row.get('home_ml_close') if row.get('home_ml_close') is not None else row.get('home_ml_odds')
+            aml = row.get('away_ml_close') if row.get('away_ml_close') is not None else row.get('away_ml_odds')
             if hml is None or aml is None: continue
             try: hml_i = int(hml); aml_i = int(aml)
             except (TypeError, ValueError): continue
