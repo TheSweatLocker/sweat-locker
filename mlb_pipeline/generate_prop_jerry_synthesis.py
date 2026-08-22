@@ -277,6 +277,12 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
     # 'template' (render_prop_template.py deterministic renderer). If parsed
     # already carries source, honor it; else default to 'llm' for LLM-path calls.
     source = parsed.get('source') or 'llm'
+    # 2026-08-22 v3: template renderer emits structured `sections` payload
+    # under key '_render_sections' — stash it inside input_snapshot JSONB
+    # (schema-free) so app can render styled sections without adding a DB
+    # column. Also pop it out of the parsed spread below so it doesn't
+    # try to write to a non-existent column.
+    render_sections = parsed.pop('_render_sections', None)
     payload = {
         'sport': sport,
         'game_id': prop.get('game_id'),
@@ -289,8 +295,12 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
         'prop_line': prop.get('prop_line'),
         'book_odds': prop.get('book_over_odds') if prop.get('direction') == 'over' else prop.get('book_under_odds'),
         'refit_conviction': prop.get('refit_conviction'),
-        'input_snapshot': {'signals': prop.get('signals'), 'conviction': prop.get('conviction'),
-                           'source': source},
+        'input_snapshot': {
+            'signals': prop.get('signals'),
+            'conviction': prop.get('conviction'),
+            'source': source,
+            **({'render_sections': render_sections} if render_sections else {}),
+        },
         **{k: v for k, v in parsed.items() if k != 'source'},
     }
     r = requests.post(
@@ -529,11 +539,17 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                 # 2026-08-22: dropped long_read='' (column doesn't exist on
                 # prop_jerry_reads schema and PostgREST rejects with PGRST204).
                 # The card only needs short_read.
+                # 2026-08-22 v3: attach `sections` structured payload so
+                # app can render styled sections (color-graded coverage
+                # pill, recent-form table, verdict-oriented chip lists)
+                # instead of the plaintext short_read. Piggybacked on
+                # input_snapshot (JSONB) so no schema change needed.
                 parsed = {
                     'short_read': rendered.get('short_read'),
                     'call_verdict': rendered.get('verdict'),
                     'conviction': rendered.get('conviction'),
                     'source': 'template',
+                    '_render_sections': rendered.get('sections'),
                 }
                 if upsert_read(sport, prop, parsed, '', game_date):
                     tmpl_done += 1

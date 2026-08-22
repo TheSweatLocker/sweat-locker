@@ -412,11 +412,61 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None,
     # confusion (tier/verdict/refit all different).
 
     short_read = '\n'.join(lines).rstrip()
+
+    # ─── STRUCTURED SECTIONS (2026-08-22 v3) ────────────────────────
+    # App-side renderer parses this instead of plaintext short_read so
+    # each section can be styled (coverage pill color-graded, recent-form
+    # as a proper table, favoring/risk as colored chip lists) and each
+    # section collapsible independently. Falls back to short_read when
+    # rendering in legacy consumers that don't know about sections.
+    sections = {
+        'header': {
+            'player': player,
+            'stat_label': label,
+            'direction': direction.upper(),
+            'line': line,
+            'odds': side_odds,
+            'implied_pct': implied,
+            'avg_l5': avg_l5,
+            'avg_l10': avg_l10,
+            'avg_season': avg_season,
+        },
+        'coverage': {
+            'covered': covered,
+            'total': len(checklist),
+            'pct': coverage_pct,
+            'missing': missing,
+            # severity → app can color-grade the pill
+            #   'full' = green ✅ (0 missing)
+            #   'partial' = yellow ⚠️ (1-2 missing, correctable)
+            #   'sparse' = red 🚨 (3+ missing, structural gap)
+            'severity': 'full' if not missing else ('partial' if len(missing) <= 2 else 'sparse'),
+        } if checklist else None,
+        'recent_form': {
+            'rows': stat_rows[:10] if stat_rows else [],
+            'over_count': sum(1 for r in (stat_rows or [])[:10] if float(r.get('value', 0) or 0) >= line_f),
+            'under_count': sum(1 for r in (stat_rows or [])[:10] if float(r.get('value', 0) or 0) < line_f),
+            'line': line_f,
+            'direction': direction,
+        } if stat_rows else None,
+        'reasoning': {
+            # verdict-relative headers so the app doesn't have to derive them
+            'why_header': why_header,
+            'why_bullets': why_list,
+            'risk_header': risk_header,
+            'risk_bullets': risk_list,
+            'is_fade': verdict == 'FADE',
+        },
+        'verdict': verdict,
+        'conviction_display': int(float(refit_conv)) if refit_conv is not None else conviction,
+    }
+
     return {
-        'short_read': short_read,
+        'short_read': short_read,      # backward-compat plaintext
         'verdict': verdict,
         'conviction': conviction,
         'source': 'template',
+        'sections': sections,           # structured payload for styled render
     }
 
 

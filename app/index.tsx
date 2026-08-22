@@ -7304,7 +7304,7 @@ if(mkt.key === 'pitcher_props') {
               .eq('game_date', etStr)
               .not('refit_conviction', 'is', null),
             supabase.from('prop_jerry_reads')
-              .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction')
+              .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction,input_snapshot')
               .eq('sport', cfg.propJerryFilter)
               .eq('game_date', etStr),
           ]);
@@ -13566,19 +13566,111 @@ setJerryHistory(prev => {
                   );
                 })()}
 
-                {/* Prop analysis panel — 2026-08-22 v3 template-driven card.
-                    - Removed the JERRY verdict chip (was a THIRD label
-                      alongside tier caption + big REFIT number, causing
-                      3-way disagreement when juice-trap gate demoted conv).
-                    - Removed the 🧠 JERRY header — the tier + refit number
-                      up top already tell you it's a model-driven card.
-                    - Cleaner monospace-friendly rendering of the template
-                      text so ESPN-style stat tables line up. */}
+                {/* Prop analysis panel — 2026-08-22 v4 structured section
+                    renderer. render_prop_template.py emits a `sections`
+                    JSON payload stashed in prop_jerry_reads.input_snapshot.
+                    render_sections. When present, we render styled
+                    sections (color-graded coverage pill, recent-form
+                    table, verdict-oriented chip lists). When absent
+                    (legacy LLM rows), fall back to plaintext short_read. */}
                 {(()=>{
                   const j = (prop as any).prop_jerry;
                   if (!j) return null;
+                  const sections = j?.input_snapshot?.render_sections;
                   const cleanShort = scrubJerryText(j.short_read);
-                  if (!cleanShort) return null;
+                  if (!sections && !cleanShort) return null;
+
+                  // ── STRUCTURED PATH ─────────────────────────────
+                  if (sections) {
+                    const cov = sections.coverage;
+                    const rf = sections.recent_form;
+                    const rz = sections.reasoning;
+                    const covColors = cov?.severity === 'full'
+                      ? {bg: THEME.win + '22', border: THEME.win + '55', text: THEME.win, icon: '✓'}
+                      : cov?.severity === 'partial'
+                        ? {bg: THEME.accent + '22', border: THEME.accent + '55', text: THEME.accent, icon: '!'}
+                        : {bg: THEME.loss + '22', border: THEME.loss + '55', text: THEME.loss, icon: '⚠'};
+                    return (
+                      <View style={{marginTop:10, padding:12, borderRadius:10, backgroundColor:THEME.surface, borderWidth:1, borderColor:THEME.border, gap:12}}>
+                        {/* COVERAGE PILL */}
+                        {cov && (
+                          <View style={{flexDirection:'row', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+                            <View style={{backgroundColor: covColors.bg, borderColor: covColors.border, borderWidth:1, borderRadius:6, paddingHorizontal:8, paddingVertical:4, flexDirection:'row', alignItems:'center', gap:5}}>
+                              <Text style={{color: covColors.text, fontSize:10, fontWeight:'800'}}>{covColors.icon}</Text>
+                              <Text style={{color: covColors.text, fontSize:10, fontWeight:'800', letterSpacing:0.4}}>
+                                SIGNAL COVERAGE {cov.covered}/{cov.total} ({cov.pct}%)
+                              </Text>
+                            </View>
+                            {cov.missing && cov.missing.length > 0 && (
+                              <Text style={{color:THEME.textDim, fontSize:10, flex:1}}>
+                                gaps: {cov.missing.join(', ')}
+                              </Text>
+                            )}
+                          </View>
+                        )}
+
+                        {/* RECENT FORM TABLE */}
+                        {rf && rf.rows && rf.rows.length > 0 && (
+                          <View style={{gap:4}}>
+                            <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:0.5}}>
+                              LAST {rf.rows.length} · {rf.over_count}/{rf.rows.length} OVER {rf.line}
+                            </Text>
+                            <View style={{backgroundColor:THEME.surface2 || THEME.bgAlt || '#0f1720', borderRadius:6, padding:6}}>
+                              {rf.rows.map((r: any, ri: number) => {
+                                const hit = rf.direction === 'over' ? (Number(r.value)||0) >= rf.line : (Number(r.value)||0) < rf.line;
+                                const d = String(r.date || '').slice(-5);
+                                return (
+                                  <View key={ri} style={{flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingVertical:2}}>
+                                    <View style={{flexDirection:'row', gap:4, alignItems:'center', flex:1}}>
+                                      <Text style={{color:THEME.textDim, fontSize:11, fontFamily:'Menlo', width:36}}>{d}</Text>
+                                      <Text style={{color:THEME.textMuted, fontSize:11, fontFamily:'Menlo', width:24}}>{r.home ? 'vs' : '@'}</Text>
+                                      <Text style={{color:THEME.text, fontSize:11, fontFamily:'Menlo', width:34}}>{r.opp}</Text>
+                                    </View>
+                                    <Text style={{color:THEME.text, fontSize:11, fontFamily:'Menlo', width:36, textAlign:'right'}}>{r.value}{r.ip ? ` (${r.ip})` : ''}</Text>
+                                    <Text style={{color: hit ? THEME.win : THEME.loss, fontSize:11, fontWeight:'800', width:18, textAlign:'center'}}>
+                                      {hit ? '✓' : '✗'}
+                                    </Text>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        )}
+
+                        {/* REASONING — WHY */}
+                        {rz && rz.why_bullets && rz.why_bullets.length > 0 && (
+                          <View style={{gap:4}}>
+                            <Text style={{color: rz.is_fade ? THEME.loss : THEME.win, fontSize:10, fontWeight:'800', letterSpacing:0.5}}>
+                              {rz.why_header?.toUpperCase()}
+                            </Text>
+                            {rz.why_bullets.map((b: string, bi: number) => (
+                              <View key={bi} style={{flexDirection:'row', gap:6, alignItems:'flex-start'}}>
+                                <Text style={{color: rz.is_fade ? THEME.loss : THEME.win, fontSize:11}}>•</Text>
+                                <Text style={{color:THEME.text, fontSize:12, lineHeight:17, flex:1}}>{b}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+
+                        {/* REASONING — RISKS */}
+                        {rz && rz.risk_bullets && rz.risk_bullets.length > 0 && (
+                          <View style={{gap:4}}>
+                            <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:0.5}}>
+                              {rz.risk_header?.toUpperCase()}
+                            </Text>
+                            {rz.risk_bullets.map((b: string, bi: number) => (
+                              <View key={bi} style={{flexDirection:'row', gap:6, alignItems:'flex-start'}}>
+                                <Text style={{color:THEME.textDim, fontSize:11}}>•</Text>
+                                <Text style={{color:THEME.textDim, fontSize:12, lineHeight:17, flex:1}}>{b}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                    );
+                  }
+
+                  // ── LEGACY PLAINTEXT FALLBACK ────────────────────
                   return (
                     <View style={{marginTop:10, padding:10, borderRadius:10, backgroundColor:THEME.surface, borderWidth:1, borderColor:THEME.border}}>
                       <Text style={{color:THEME.text, fontSize:12, lineHeight:17, fontFamily:'Menlo'}}>{cleanShort}</Text>
