@@ -115,6 +115,20 @@ jobs:
           cd mlb_pipeline
           python enrich_nba_prop_projections.py || echo "nba proj enrich failed (non-fatal)"
 
+      # 2026-08-22 (silent-bug audit finding #7): NBA prop L10 backfill.
+      # Fetches ESPN game logs per player, computes L5/L10/season hit rates
+      # vs line. Unblocks 5 NBA prop signals (l10_extreme, l5_hot, l5_cold,
+      # season_hit_pct_high, minutes_low_fade) that were reading fields
+      # nothing populated. Non-fatal (season starts Oct — no impact yet).
+      - name: Backfill NBA prop L10 lookback (ESPN game logs)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_prop_lookback.py --sport NBA || echo "NBA prop lookback failed (non-fatal)"
+
       - name: NBA prop playbook scorer (shadow mode)
         continue-on-error: true
         env:

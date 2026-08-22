@@ -88,6 +88,19 @@ jobs:
           cd mlb_pipeline
           python nhl_generate_props.py || echo "nhl props failed (non-fatal, likely offseason)"
 
+      # 2026-08-22 (silent-bug audit finding #8): NHL prop L10 backfill.
+      # Fetches ESPN game logs per player, computes L5/L10/season hit rates.
+      # Unblocks 4 NHL prop signals (l10_extreme, l5_hot, l5_cold,
+      # season_hit_pct_high). Non-fatal (season starts Oct).
+      - name: Backfill NHL prop L10 lookback (ESPN game logs)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_prop_lookback.py --sport NHL || echo "NHL prop lookback failed (non-fatal)"
+
       - name: NHL prop playbook scorer (shadow mode)
         continue-on-error: true
         env:

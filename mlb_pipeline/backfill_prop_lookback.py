@@ -300,12 +300,199 @@ def run(game_date: str | None = None, sport: str | None = None, dry_run: bool = 
         elif s == 'NFL':
             print(f'  NFL: skipped — nfl_player_game_logs backfill not yet built\n')
         elif s == 'NHL':
-            print(f'  NHL: skipped — NHL player game log fetcher not yet built. '
-                  f'Playbook still fires other 4 NHL signals (goalie GSAA, pace, juice_trap, legacy_conviction).\n')
+            n = backfill_nba_nhl(gd, sport='NHL', dry_run=dry_run)
+            print(f'  NHL: updated {n} props with lookback\n')
         elif s == 'NBA':
-            print(f'  NBA: skipped — NBA player game log fetcher not yet built. '
-                  f'Playbook fires 5 other NBA signals PLUS Sleeper projections '
-                  f'(enrich_nba_prop_projections.py).\n')
+            n = backfill_nba_nhl(gd, sport='NBA', dry_run=dry_run)
+            print(f'  NBA: updated {n} props with lookback\n')
+
+
+# ─── NBA / NHL backfill via ESPN game-log endpoints ────────────────────
+# ESPN /apis/site/v2/sports/{sport}/{league}/athletes/{id}/gamelog
+# Free, no key needed. Player ID resolved via ESPN search.
+# Same shape as MLB backfill: last 30 → compute L5/L10/season hit counts.
+
+_NBA_STAT_KEY = {  # prop_type family → ESPN stat name
+    'points':      'points',
+    'pts':         'points',
+    'rebounds':    'rebounds',
+    'reb':         'rebounds',
+    'assists':     'assists',
+    'ast':         'assists',
+    'threes':      'threePointFieldGoalsMade',
+    'threes_made': 'threePointFieldGoalsMade',
+    'steals':      'steals',
+    'stl':         'steals',
+    'blocks':      'blocks',
+    'blk':         'blocks',
+    'pra':         '_composite_pra',   # points + rebounds + assists
+    'pr':          '_composite_pr',    # points + rebounds
+    'pa':          '_composite_pa',    # points + assists
+}
+_NHL_STAT_KEY = {
+    'sog':          'shotsOnGoal',
+    'shots':        'shotsOnGoal',
+    'points':       'points',
+    'goals':        'goals',
+    'assists':      'assists',
+    'saves':        'saves',
+    'blocks':       'blocks',
+    'blk':          'blocks',
+    'hits':         'hits',
+}
+
+_NBA_ESPN_SPORT = ('basketball', 'nba')
+_NHL_ESPN_SPORT = ('hockey', 'nhl')
+
+
+def _espn_player_id(sport_tuple: tuple, player_name: str) -> Optional[int]:
+    """ESPN search API (public). Returns first athlete id or None."""
+    if not player_name: return None
+    try:
+        q = requests.utils.quote(player_name)
+        # ESPN's search endpoint — league-specific
+        sport, league = sport_tuple
+        r = requests.get(
+            f'https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/athletes',
+            params={'search': player_name, 'limit': 5}, timeout=10)
+        if r.status_code != 200: return None
+        for a in (r.json() or {}).get('athletes', []):
+            if a.get('displayName', '').lower() == player_name.lower():
+                return a.get('id')
+        # Fall back to first result
+        athletes = (r.json() or {}).get('athletes', [])
+        return athletes[0].get('id') if athletes else None
+    except Exception:
+        return None
+
+
+def _espn_gamelog(sport_tuple: tuple, player_id: int, n: int = 30) -> list:
+    """Return raw ESPN gamelog events (list of dicts)."""
+    sport, league = sport_tuple
+    try:
+        r = requests.get(
+            f'https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/athletes/{player_id}/gamelog',
+            timeout=15)
+        if r.status_code != 200: return []
+        data = r.json() or {}
+        events = []
+        for season in (data.get('seasonTypes') or []):
+            for cat in (season.get('categories') or []):
+                for ev in (cat.get('events') or []):
+                    events.append(ev)
+        return events[:n]
+    except Exception:
+        return []
+
+
+def _extract_stat(event: dict, sport: str, stat_field: str, stat_labels: list) -> Optional[float]:
+    """Pull a numeric stat from an ESPN gamelog event, matching stat label."""
+    # Composite calcs
+    if stat_field == '_composite_pra':
+        p = _extract_stat(event, sport, 'points', stat_labels)
+        r_ = _extract_stat(event, sport, 'rebounds', stat_labels)
+        a = _extract_stat(event, sport, 'assists', stat_labels)
+        if None in (p, r_, a): return None
+        return p + r_ + a
+    if stat_field == '_composite_pr':
+        p = _extract_stat(event, sport, 'points', stat_labels)
+        r_ = _extract_stat(event, sport, 'rebounds', stat_labels)
+        return (p + r_) if p is not None and r_ is not None else None
+    if stat_field == '_composite_pa':
+        p = _extract_stat(event, sport, 'points', stat_labels)
+        a = _extract_stat(event, sport, 'assists', stat_labels)
+        return (p + a) if p is not None and a is not None else None
+    # ESPN stats come as parallel arrays keyed by labels
+    stats = event.get('stats') or []
+    label_lower = [str(l).lower() for l in stat_labels]
+    try:
+        idx = label_lower.index(stat_field.lower())
+    except ValueError:
+        return None
+    if idx < len(stats):
+        try: return float(stats[idx])
+        except (TypeError, ValueError): return None
+    return None
+
+
+def backfill_nba_nhl(game_date: str, sport: str, dry_run: bool = False) -> int:
+    """NBA/NHL backfill: fetch ESPN game logs per player, compute L5/L10/season
+    hit counts vs each prop line, patch back to *_pipeline_props."""
+    table = PROPS_TABLE.get(sport)
+    if not table:
+        print(f'  {sport}: no PROPS_TABLE mapping'); return 0
+    sport_tuple = _NBA_ESPN_SPORT if sport == 'NBA' else _NHL_ESPN_SPORT
+    stat_map = _NBA_STAT_KEY if sport == 'NBA' else _NHL_STAT_KEY
+
+    r = requests.get(f'{SB}/rest/v1/{table}',
+                     headers=H_READ,
+                     params={'game_date': f'eq.{game_date}',
+                             'select': 'id,player_name,prop_type,direction,prop_line',
+                             'limit': '500'}, timeout=30)
+    props = r.json() if r.status_code == 200 else []
+    if not props:
+        print(f'  {sport}: no props on {game_date}'); return 0
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    recent_cache: dict = {}   # (pname, stat_field) → list[float]
+    labels_cache: dict = {}   # player_id → stat labels list (per ESPN response)
+    updated = 0
+    for prop in props:
+        pname = prop.get('player_name')
+        ptype = prop.get('prop_type', '')
+        pdir  = prop.get('direction')
+        pline = prop.get('prop_line')
+        if not (pname and ptype and pdir is not None and pline is not None): continue
+        # Strip _over/_under suffix
+        base = ptype
+        for suf in ('_over', '_under'):
+            if base.endswith(suf): base = base[:-len(suf)]; break
+        stat_field = stat_map.get(base)
+        if not stat_field: continue
+        try: pline = float(pline)
+        except (TypeError, ValueError): continue
+
+        # Try exact + normalized name lookup
+        cache_key = (pname, stat_field)
+        if cache_key not in recent_cache:
+            pid = _espn_player_id(sport_tuple, pname)
+            if not pid:
+                nn = _norm_name(pname)
+                if nn and nn != pname:
+                    pid = _espn_player_id(sport_tuple, nn)
+            if not pid:
+                recent_cache[cache_key] = []
+            else:
+                events = _espn_gamelog(sport_tuple, pid, n=30)
+                if pid not in labels_cache and events:
+                    # ESPN puts labels on categories — try first event's stat labels
+                    labels_cache[pid] = events[0].get('_labels') or ['points','rebounds','assists']
+                labels = labels_cache.get(pid, [])
+                vals = []
+                for ev in events:
+                    v = _extract_stat(ev, sport, stat_field, labels)
+                    if v is not None: vals.append(v)
+                recent_cache[cache_key] = vals
+
+        recent = recent_cache[cache_key]
+        if not recent: continue
+        lb = compute_lookback(recent, pline, pdir)
+        if lb['l10'] is None: continue
+
+        patch = {
+            'player_l5_hit_count':   lb['l5'],
+            'player_l10_hit_count':  lb['l10'],
+            'player_season_hit_pct': lb['season_pct'],
+            'player_l5_extreme_flag':  lb['l5_extreme'],
+            'player_l10_extreme_flag': lb['l10_extreme'],
+            'player_lookback_updated_at': now_iso,
+        }
+        if not dry_run:
+            pr = requests.patch(f'{SB}/rest/v1/{table}?id=eq.{prop["id"]}',
+                                headers=H_WRITE, json=patch, timeout=10)
+            if pr.status_code not in (200, 204): continue
+        updated += 1
+    return updated
 
 
 def main():
