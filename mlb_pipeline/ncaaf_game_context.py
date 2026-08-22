@@ -171,6 +171,12 @@ def compute_projections(home_stats: dict, away_stats: dict,
         'home_off_epa_pp': None, 'away_off_epa_pp': None,
         'home_def_epa_pp': None, 'away_def_epa_pp': None,
         'home_sp_overall': None, 'away_sp_overall': None,
+        # 2026-08-22 (silent-bug audit finding #13): expose per-team SP+ under
+        # the names the signal_sources rows actually read. sp_overall was the
+        # internal name; ncaaf_sp_plus_edge_home/_away expects home_sp_plus.
+        # Same value, aliased so signals can read + trend calls can too.
+        'home_sp_plus': None, 'away_sp_plus': None,
+        'sp_plus_matchup_total': None,  # sum for over/under signal
         'sp_gap': None,
         'projected_spread': None, 'projected_total': None,
         'model_pred_home_points': None, 'model_pred_away_points': None,
@@ -187,6 +193,11 @@ def compute_projections(home_stats: dict, away_stats: dict,
     out['away_def_epa_pp'] = a_def_epa
     out['home_sp_overall'] = h_sp
     out['away_sp_overall'] = a_sp
+    # 2026-08-22: aliased for signal_sources readers (finding #13)
+    out['home_sp_plus'] = h_sp
+    out['away_sp_plus'] = a_sp
+    if h_sp is not None and a_sp is not None:
+        out['sp_plus_matchup_total'] = round(float(h_sp) + float(a_sp), 2)
 
     hfa = 0 if neutral_site else HOME_FIELD_PTS
     # Prefer SP+ when both teams have it
@@ -403,11 +414,21 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
     rp = returning_prod or {}
     hrp = rp.get(home) or {}
     arp = rp.get(away) or {}
+    # 2026-08-22 (silent-bug audit finding #12): derive combined field so the
+    # ncaaf_returning_prod_home / _away signals can read ctx.home_returning_production
+    # (previously read from a field that never existed). Blended off+def average.
+    def _blend(off, deff):
+        vals = [v for v in (off, deff) if v is not None]
+        return sum(vals) / len(vals) if vals else None
     ret_fields = {
         'home_returning_production_off': hrp.get('returning_offense_pct'),
         'home_returning_production_def': hrp.get('returning_defense_pct'),
         'away_returning_production_off': arp.get('returning_offense_pct'),
         'away_returning_production_def': arp.get('returning_defense_pct'),
+        'home_returning_production': _blend(
+            hrp.get('returning_offense_pct'), hrp.get('returning_defense_pct')),
+        'away_returning_production': _blend(
+            arp.get('returning_offense_pct'), arp.get('returning_defense_pct')),
     }
 
     row = {

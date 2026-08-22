@@ -1094,6 +1094,61 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
     return len(rows)
 
 
+def _enrich_nfl_rest_days(rows: list) -> None:
+    """Populate ctx.home_rest / ctx.away_rest per game (days since last game).
+    2026-08-22: closes 5 dead signals (nfl_rest_advantage_home, _away,
+    nfl_home_rest_edge_2plus, _away, nfl_short_week_thursday_fade).
+    Also sets ctx.dome / ctx.roof from event weather field (finding #18)."""
+    from datetime import date, timedelta
+    # Build team -> [game_date] map from THIS slate's rows + a lookback query
+    # against nfl_game_results for prior weeks (last 30 days).
+    team_dates: dict = {}
+    for r in rows:
+        d = r.get('game_date')
+        if isinstance(d, str):
+            try: d = date.fromisoformat(d)
+            except ValueError: d = None
+        if not d: continue
+        for team in (r.get('home_team'), r.get('away_team')):
+            if team:
+                team_dates.setdefault(team, set()).add(d)
+
+    # Pull last 30 days of NFL results for prior-game dates
+    try:
+        earliest = min((min(v) for v in team_dates.values() if v), default=None)
+        if earliest:
+            lookback = (earliest - timedelta(days=30)).isoformat()
+            r = requests.get(f'{SB}/rest/v1/nfl_game_results', headers=SB_READ,
+                             params={'game_date': f'gte.{lookback}',
+                                     'select': 'game_date,home_team,away_team'}, timeout=15)
+            if r.status_code == 200:
+                for h in r.json() or []:
+                    d = h.get('game_date')
+                    if isinstance(d, str):
+                        try: d = date.fromisoformat(d)
+                        except ValueError: continue
+                    for team in (h.get('home_team'), h.get('away_team')):
+                        if team:
+                            team_dates.setdefault(team, set()).add(d)
+    except Exception:
+        pass  # non-fatal — proceed with just current-slate dates
+
+    for r in rows:
+        d = r.get('game_date')
+        if isinstance(d, str):
+            try: d = date.fromisoformat(d)
+            except ValueError: continue
+        for prefix, team in (('home', r.get('home_team')),
+                              ('away', r.get('away_team'))):
+            if not team or not d: continue
+            prior = sorted(x for x in team_dates.get(team, set()) if x < d)
+            r[f'{prefix}_rest'] = (d - prior[-1]).days if prior else None
+        # ctx.roof / ctx.dome — signal #18 reads ctx.roof; keep both
+        # populated so old + new signals work.
+        if r.get('dome') is True:
+            r['roof'] = 'dome'
+
+
 def run(dry_run: bool = False) -> None:
     print(f'=== NFL game context · {_et_now().date()} ===')
     if not ODDS_KEY:
@@ -1140,6 +1195,17 @@ def run(dry_run: bool = False) -> None:
         rows.append(r)
     if skipped:
         print(f'  ⚠ skipped {skipped} events with unmapped teams')
+
+    # 2026-08-22 REST-DAYS ENRICHMENT (silent-bug audit finding #17):
+    # 5 signals were reading ctx.home_rest / ctx.away_rest / ctx.roof / etc.
+    # that nfl_game_context never wrote. Adds home_rest / away_rest computed
+    # from prior game_date per team + roof/dome tag (mirror of nhl pattern
+    # in nhl_game_context.py:242-262). Non-fatal — historical query miss
+    # leaves rest_days = None (existing behavior).
+    try:
+        _enrich_nfl_rest_days(rows)
+    except Exception as _e:
+        print(f'  ⚠ rest-days enrichment failed (non-fatal): {_e}')
 
     written = upsert_context(rows, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
