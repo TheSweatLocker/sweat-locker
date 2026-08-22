@@ -136,6 +136,41 @@ jobs:
           cd mlb_pipeline
           python nfl_game_context.py || echo "game_context failed"
 
+      # 2026-08-22: LIVE ORPHAN WIRES — these scripts existed but had no
+      # cron caller despite SQL migrations and app code (GameDetailV2.tsx)
+      # depending on their output tables. Adding them now so NFL launch
+      # 9/4 has weather + injuries + starters populated for game reads.
+      - name: Pull NFL weather (OpenWeather, next 7 days)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_weather_pull.py || echo "NFL weather pull failed (non-fatal)"
+
+      - name: Pull NFL injuries (nfl_data_py)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_injuries_pull.py || echo "NFL injuries pull failed (non-fatal)"
+
+      - name: Pull NFL starters (ESPN scoreboard)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_weekly_starters.py || echo "NFL starters pull failed (non-fatal)"
+
       # Backfill L4 team ATS / O/U / ML tendencies on today's rows
       # (2026-08-17). Activates the 10 NFL team_form signals in
       # signal_sources. Runs AFTER nfl_game_context.py (rows must
