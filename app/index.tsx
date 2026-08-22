@@ -13566,28 +13566,22 @@ setJerryHistory(prev => {
                   );
                 })()}
 
-                {/* Prop Jerry synthesis (2026-07-31d). BACK/FADE/PASS chip
-                    + 40-60w take, sport-universal via prop_jerry_reads.
-                    2026-08-13: audit-tag scrub — strip internal
-                    "[Auto-refit-override …]" style prefixes before display. */}
+                {/* Prop analysis panel — 2026-08-22 v3 template-driven card.
+                    - Removed the JERRY verdict chip (was a THIRD label
+                      alongside tier caption + big REFIT number, causing
+                      3-way disagreement when juice-trap gate demoted conv).
+                    - Removed the 🧠 JERRY header — the tier + refit number
+                      up top already tell you it's a model-driven card.
+                    - Cleaner monospace-friendly rendering of the template
+                      text so ESPN-style stat tables line up. */}
                 {(()=>{
                   const j = (prop as any).prop_jerry;
                   if (!j) return null;
                   const cleanShort = scrubJerryText(j.short_read);
                   if (!cleanShort) return null;
-                  const v = String(j.call_verdict || '').toUpperCase();
-                  const chipColor = v === 'BACK' ? THEME.win
-                                  : v === 'FADE' ? THEME.loss
-                                  : THEME.textDim;
                   return (
                     <View style={{marginTop:10, padding:10, borderRadius:10, backgroundColor:THEME.surface, borderWidth:1, borderColor:THEME.border}}>
-                      <View style={{flexDirection:'row', alignItems:'center', gap:6, marginBottom:6, flexWrap:'wrap'}}>
-                        <Text style={{color:THEME.textDim, fontWeight:'800', fontSize:10, letterSpacing:0.5}}>🧠 JERRY</Text>
-                        <View style={{backgroundColor:chipColor + '22', borderColor:chipColor + '44', borderWidth:1, paddingHorizontal:8, paddingVertical:2, borderRadius:6}}>
-                          <Text style={{color:chipColor, fontWeight:'800', fontSize:11}}>{v || 'PASS'} · {j.conviction ?? '-'}</Text>
-                        </View>
-                      </View>
-                      <Text style={{color:THEME.text, fontSize:12, lineHeight:17}}>{cleanShort}</Text>
+                      <Text style={{color:THEME.text, fontSize:12, lineHeight:17, fontFamily:'Menlo'}}>{cleanShort}</Text>
                     </View>
                   );
                 })()}

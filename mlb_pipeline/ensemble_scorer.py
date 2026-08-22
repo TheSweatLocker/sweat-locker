@@ -740,7 +740,19 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
                 # Promote to VALIDATED if fade edge is meaningful (>= 55%)
                 # AND sample is decent, else DISCOVERY.
                 fade_tier = 'VALIDATED' if (fade_hr >= 0.55 and n >= 50) else 'DISCOVERY'
-                fade_prose = f'[fade] {prose or source["signal_key"]}'
+                # 2026-08-22 user feedback on Detroit @ KC primary_play:
+                # "[fade] home covering at home (L10 at-home ATS)" reads
+                # like debug output. Bracketed [fade] is model jargon
+                # leaking to users. Replaced with "Fade:" prefix (English
+                # verb form). Downstream _compose_ensemble_sub joins the
+                # prose with ' · ' so multiple fade signals still read
+                # cleanly: "Fade: X · Fade: Y".
+                raw = prose or source["signal_key"]
+                # Sentence-case the raw prose so bulleted lists look
+                # consistent (was: "home covering at home"; now: "Home ...")
+                if raw and raw[0].isalpha() and raw[0].islower():
+                    raw = raw[0].upper() + raw[1:]
+                fade_prose = f'Fade: {raw}'
                 out.append(Opinion(
                     signal_key=f'{source["signal_key"]}__fade',
                     signal_class=cls,

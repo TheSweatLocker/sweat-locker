@@ -1610,7 +1610,9 @@ def _compose_ensemble_sub(md) -> str:
     """Reader-friendly 1-liner for the ensemble pick's `sub` field.
 
     Pulls the top-3 contributions' display_prose. Falls back to signal
-    key if a source didn't set display_prose. Never leaks internal names."""
+    key if a source didn't set display_prose. Never leaks internal names.
+    2026-08-22: sentence-case every chip so bulleted list looks consistent
+    (mix of "Fade: Home ..." and "K-friendly ump" was reading sloppy)."""
     supporting = sorted(
         [c for c in md.contributions if c.side == md.pick and c.contribution > 0],
         key=lambda c: -c.contribution,
@@ -1618,7 +1620,15 @@ def _compose_ensemble_sub(md) -> str:
     if not supporting:
         return f'{md.display_label} — ensemble score {md.score:.2f}'
     top = supporting[:3]
-    parts = [c.display_prose for c in top if c.display_prose and not c.display_prose.startswith('_')]
+    def _title(s: str) -> str:
+        if not s: return s
+        s = s.strip()
+        # Fade: prefix is already handled upstream; don't double-case
+        if s.startswith('Fade:'): return s
+        if s and s[0].isalpha() and s[0].islower():
+            return s[0].upper() + s[1:]
+        return s
+    parts = [_title(c.display_prose) for c in top if c.display_prose and not c.display_prose.startswith('_')]
     if not parts:
         return f'{md.display_label} — {len(supporting)} signals aligned'
     return f'{md.display_label}: ' + ' · '.join(parts)

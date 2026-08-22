@@ -80,25 +80,54 @@ def _implied_prob_pct(odds) -> Optional[int]:
 def _verdict(tier: str, conviction: int, side: str = '') -> str:
     """Return the SINGLE-word stance for this prop.
 
-    2026-08-22: killed the dual-label "LEAN BACK" bug — user was reading
-    the card and seeing both tier=LEAN and verdict='LEAN BACK' which
-    forced them to reconcile two labels for one decision. Now the tier
-    IS the stance:
-        PRIME  → play it (highest conviction bucket)
-        STRONG → play it
-        LEAN   → lean, size down
-        PASS   → skip
-    'FADE' overrides when playbook signals contrarian direction.
-
-    Preserves receipts vocabulary — PRIME/STRONG/LEAN unchanged in DB.
+    2026-08-22 v2: verdict = tier verbatim. Do NOT re-threshold against
+    conviction — the juice-trap gate already down-scores conv from 55 to
+    52 which used to fall through to PASS while the DB tier stayed LEAN.
+    Result: card showed tier=LEAN AND verdict=PASS AND refit=100 — three
+    contradictory labels. Now: tier is the authority, period. If tier
+    got demoted, DB tier is demoted; verdict follows.
     """
     tier = (tier or '').upper(); side = (side or '').upper()
-    conv = int(conviction or 0)
     if side == 'FADE': return 'FADE'
-    if tier == 'PRIME' and conv >= 70: return 'PRIME'
-    if tier == 'STRONG' and conv >= 60: return 'STRONG'
-    if tier == 'LEAN' and conv >= 55: return 'LEAN'
+    if tier in ('PRIME', 'STRONG', 'LEAN'): return tier
     return 'PASS'
+
+
+def _clean_prose(s: str) -> str:
+    """Prose scrubber — kill jargon, sentence-case, humanize.
+
+    Input signal prose comes from playbook_sources / signal registry and
+    is stat-notation dense: "career BAA vs opp >= .270 (15+ IP) — gets hit".
+    Output: "Gets hit by this lineup historically (.270 career BAA)".
+
+    Rules:
+      - Strip parenthetical sample thresholds "(15+ IP)", "(2+ starts)"
+      - Convert ">= .270" / "<= 3.0" comparison syntax to a stat
+      - Capitalize first character
+      - No trailing em-dash phrase (redundant with the stat)
+    """
+    import re
+    if not s: return s
+    s = str(s).strip()
+    # Drop sample-size parentheticals
+    s = re.sub(r'\s*\((?:\d+\+?\s*(?:IP|starts|PA|AB|games|min|snaps|shots|K|BB))\)\s*', ' ', s)
+    # Comparison shorthand — "K% <= 20" → "K% 20% or lower"; ">= X" → "X or higher"
+    s = re.sub(r'>=\s*(\.\d+|\d+(?:\.\d+)?)', r'\1+', s)
+    s = re.sub(r'<=\s*(\.\d+|\d+(?:\.\d+)?)', r'\1 or lower', s)
+    # Common jargon substitutions
+    s = re.sub(r'\bBAA\b', 'batting avg', s)
+    s = re.sub(r'\bopp lineup\b', 'opposing lineup', s)
+    s = re.sub(r'\bwRC\+\b', 'wRC+', s)  # keep — well-known metric
+    s = re.sub(r'\bxERA\b', 'xERA', s)   # keep — well-known metric
+    s = re.sub(r'\bATS\b', 'ATS', s)     # keep
+    # Collapse double spaces from prior substitutions
+    s = re.sub(r'\s+', ' ', s).strip()
+    # Sentence case: uppercase first letter without touching acronyms
+    if s and s[0].isalpha() and s[0].islower():
+        s = s[0].upper() + s[1:]
+    # Strip trailing period + em-dash noise
+    s = s.rstrip('.').strip()
+    return s
 
 
 def _format_stat_table(rows: list, line: float, direction: str) -> list[str]:
@@ -119,22 +148,41 @@ def _format_stat_table(rows: list, line: float, direction: str) -> list[str]:
     return out
 
 
-def _categorize_signals(sources: list, prop_signals: dict) -> dict:
-    """Group signals into positive (supporting direction) / negative (against).
-    Prefer playbook_sources chip data; fall back to signals dict."""
-    positive, negative = [], []
+def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str = '',
+                         playbook_side: str = '') -> dict:
+    """Group signals into FOR / AGAINST the CARD's shown direction.
+
+    2026-08-22 v2: previously always labeled "FAVORING <prop_direction>"
+    regardless of which side the playbook actually supported. Example:
+    prop=Weathers HA UNDER, playbook_side=OVER (FADE the under), signals
+    with positive contribution supported OVER — but card labeled them
+    "FAVORING UNDER" (wrong).
+
+    Now: contribution sign is relative to playbook_side. Card is oriented
+    to prop_direction (what the user sees the line on). If playbook_side
+    disagrees with prop_direction, we flip the label — positive
+    contribution supporting playbook_side is actually AGAINST the card's
+    shown direction.
+    """
+    pd = (prop_direction or '').upper()
+    ps = (playbook_side or '').upper()
+    # If playbook picks the opposite of the card's direction, flip sign meaning
+    flip = (pd in ('OVER', 'UNDER') and ps in ('OVER', 'UNDER') and pd != ps)
+    for_side, against_side = [], []
     for s in (sources or []):
         contrib = float(s.get('contribution') or 0)
-        prose = s.get('prose') or s.get('signal_key', '')
-        (positive if contrib >= 0 else negative).append((abs(contrib), prose))
-    # If no playbook sources, extract from signals dict
+        prose = _clean_prose(s.get('prose') or s.get('signal_key', ''))
+        supports_shown = (contrib >= 0) ^ flip  # XOR: flip inverts
+        (for_side if supports_shown else against_side).append((abs(contrib), prose))
+    # Fallback for props without playbook chips
     if not sources and prop_signals:
         for k, v in prop_signals.items():
             if k.startswith('_'): continue
-            positive.append((0.5, f'{k}: {str(v)[:80]}'))
-    positive.sort(key=lambda x: -x[0])
-    negative.sort(key=lambda x: -x[0])
-    return {'positive': [p for _, p in positive[:5]], 'negative': [p for _, p in negative[:3]]}
+            prose = _clean_prose(str(v) if isinstance(v, str) and len(str(v)) > len(k) else f'{k.replace("_", " ")}')
+            for_side.append((0.5, prose))
+    for_side.sort(key=lambda x: -x[0])
+    against_side.sort(key=lambda x: -x[0])
+    return {'positive': [p for _, p in for_side[:5]], 'negative': [p for _, p in against_side[:3]]}
 
 
 def _coverage_from_ctx(checklist: list, ctx: dict, prop_signals: dict, sources: list) -> tuple[int, list]:
@@ -280,11 +328,13 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None,
     pb_side = (playbook_decision or {}).get('playbook_side') if playbook_decision else ''
     verdict = _verdict(tier, conviction, side=pb_side or prop.get('side', ''))
 
-    # Signal categorization
+    # Signal categorization — pass direction + playbook_side so FAVORING/
+    # AGAINST labels correctly reflect what the model supports vs the
+    # card's shown direction.
     sources = (playbook_decision or {}).get('playbook_sources') if playbook_decision else None
     if not isinstance(sources, list): sources = []
     prop_signals = prop.get('signals') if isinstance(prop.get('signals'), dict) else {}
-    cats = _categorize_signals(sources, prop_signals)
+    cats = _categorize_signals(sources, prop_signals, direction, pb_side)
 
     # Recent form — from signals._stat_last10 (backfill_prop_lookback populates)
     stat_rows = prop_signals.get('_stat_last10') or []
@@ -326,29 +376,38 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None,
         lines.extend(_format_stat_table(stat_rows, line_f, direction))
         lines.append('')
 
-    # Signal breakdown — positive + negative
-    if cats['positive']:
-        lines.append(f'▲ FAVORING {direction.upper()}')
-        for p in cats['positive']:
+    # Signal breakdown — headers reflect model stance:
+    #   verdict = FADE  → "Why fade the OVER" (opposite of shown)
+    #   verdict = play  → "Why UNDER works" (same as shown)
+    # 'positive' and 'negative' lists are always oriented to the card's
+    # shown direction. When verdict is FADE, the model actually likes the
+    # OPPOSITE side, so what looks "against the UNDER" is really the
+    # model's supporting case — swap the labels.
+    dir_label = direction.upper()
+    opp_label = 'OVER' if direction == 'under' else 'UNDER'
+    if verdict == 'FADE':
+        # positive-for-shown-direction becomes "why the FADE risks" and
+        # negative-for-shown-direction becomes "why FADE" (supports opposite)
+        why_header, risk_header = f'Why FADE (take the {opp_label})', f'Why the {dir_label} could still hit'
+        why_list, risk_list = cats['negative'], cats['positive']
+    else:
+        why_header, risk_header = f'Why {dir_label}', f'Why {dir_label} risks'
+        why_list, risk_list = cats['positive'], cats['negative']
+    if why_list:
+        lines.append(why_header)
+        for p in why_list:
             lines.append(f'  · {p[:110]}')
-    if cats['negative']:
-        lines.append(f'')
-        lines.append(f'▼ AGAINST {direction.upper()}')
-        for n in cats['negative']:
+    if risk_list:
+        lines.append('')
+        lines.append(risk_header)
+        for n in risk_list:
             lines.append(f'  · {n[:110]}')
-    lines.append('')
 
-    # Verdict = tier. Show ONE label + one score (refit if available).
-    # Score priority: refit_conviction (model-of-record) > legacy conviction.
-    # Legacy conviction retired from display 2026-08-22.
-    display_score = None
-    if refit_conv is not None:
-        try: display_score = int(float(refit_conv))
-        except (TypeError, ValueError): display_score = conviction
-    if display_score is None: display_score = conviction
-    lines.append(f'{verdict}   ·   Score: {display_score}')
+    # No footer duplicating the tier/score — app-side chip + big number
+    # already display these. Duplicating them here created 3-way mismatch
+    # confusion (tier/verdict/refit all different).
 
-    short_read = '\n'.join(lines)
+    short_read = '\n'.join(lines).rstrip()
     return {
         'short_read': short_read,
         'verdict': verdict,
