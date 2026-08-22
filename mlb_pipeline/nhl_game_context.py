@@ -108,10 +108,14 @@ def _season_for_date(d: date) -> int:
 # ═══════════════════════════════════════════════════════════════════════
 
 def enrich_team_stats(rows: list[dict], season: int) -> None:
-    """In-place: add home/away team season stats from NHL API + MoneyPuck."""
+    """In-place: add home/away team season stats from NHL API + MoneyPuck.
+    2026-08-22 (silent-bug audit finding #9): also compute L10 goals/game
+    from nhl_game_results so ctx.home_l10_goals_per_game / _away fires
+    (4 dead signals: nhl_home_offense_hot / _away / _cold / _away_cold)."""
     # Cache per-team so we don't refetch
     team_stats_cache: dict = {}
     team_analytics_cache: dict = {}
+    l10_gpg_cache: dict = _load_l10_gpg_per_team()
     for row in rows:
         for prefix, abbrev in (('home', row.get('home_team_abbrev')),
                                 ('away', row.get('away_team_abbrev'))):
@@ -131,6 +135,33 @@ def enrich_team_stats(rows: list[dict], season: int) -> None:
             row[f'{prefix}_high_danger_for'] = ta.get('high_danger_for')
             row[f'{prefix}_high_danger_against'] = ta.get('high_danger_against')
             row[f'{prefix}_5v5_cf'] = ta.get('corsi_for_pct')
+            # L10 GPG for offense-hot/cold signals
+            row[f'{prefix}_l10_goals_per_game'] = l10_gpg_cache.get(abbrev)
+
+
+def _load_l10_gpg_per_team() -> dict:
+    """Return {team_abbrev: avg_goals_per_game over last 10 completed games}.
+    Non-fatal on query miss."""
+    try:
+        r = requests.get(f'{SB}/rest/v1/nhl_game_results', headers=SB_READ,
+                         params={'select': 'home_team_abbrev,away_team_abbrev,home_score,away_score,game_date',
+                                 'order': 'game_date.desc',
+                                 'limit': '400'}, timeout=15)
+        if r.status_code != 200:
+            return {}
+        rows = r.json() or []
+        # per-team goals-scored in the games they played
+        from collections import defaultdict
+        team_recent_goals: dict = defaultdict(list)
+        for h in rows:
+            ha = h.get('home_team_abbrev'); aa = h.get('away_team_abbrev')
+            hs = h.get('home_score'); as_ = h.get('away_score')
+            if ha and hs is not None: team_recent_goals[ha].append(hs)
+            if aa and as_ is not None: team_recent_goals[aa].append(as_)
+        return {team: round(sum(goals[:10]) / min(10, len(goals)), 2)
+                for team, goals in team_recent_goals.items() if goals}
+    except Exception:
+        return {}
 
 
 def enrich_goalies(rows: list[dict], season: int) -> None:
