@@ -108,15 +108,57 @@ The specific factors differ by sport but the philosophy is universal:
 | 18 | External handicapper picks | `external_handicapper_pick_nfl` |
 
 **Data gaps (backlog):**
-- QB career vs specific defense (need `nfl_qb_vs_team` table)
+- QB career vs specific defense (migration + backfill script shipped 8/21, awaiting apply)
 - RB YPC vs run defense
 - Receiver vs coverage type
 - Divisional rivalry intensity beyond binary flag
-- Umpire/ref crew tendencies
+- Ref crew tendencies
 
-## NBA — Player Props + Sides / Totals (design pending)
+## NFL — Player Props Checklist (10 factors)
 
-Same discipline: pace mismatch, off/def ratings, back-to-back fatigue, star status, player vs team scoring history, matchup at position, home/away splits.
+| # | Factor | Signal example |
+|---|---|---|
+| 1 | Player L10 hit count (extreme 8+/2-) | `nfl_prop_l10_extreme_extreme` |
+| 2 | L5 hot / cold streak | `nfl_prop_l5_hot/cold_streak` |
+| 3 | Season hit % consistency | `nfl_prop_season_hit_pct_high` |
+| 4 | Projection edge (supports/opposes/strong) | `nfl_prop_projection_edge_*` / `_strong` |
+| 5 | Weather — wind suppresses passing | `nfl_prop_wind_suppresses_pass` |
+| 6 | Weather — cold boosts rushing | `nfl_prop_freezing_rush_boost` |
+| 7 | Dome game — passing boost | `nfl_prop_dome_pass_boost` |
+| 8 | QB career vs defense (blocked — needs backfill) | ⚠️ pending nfl_qb_vs_team backfill |
+| 9 | Opp defense strength vs prop type | ⚠️ needs nfl_team_defense join |
+| 10 | Lineup / injury status | ⚠️ needs nfl_injuries_pull integration |
+
+## NCAAF — Sides / Totals Checklist (18 factors)
+
+Mirror of NFL 18-factor checklist adapted for college:
+- Signals: direct OC (ml/rl/total), extreme weather (wind/cold), SP+ home/away dominant, SP+ off-vs-D gap over, dual-D under, projection sanity, returning-production mismatch, home dog bark cover.
+
+## NCAAF — Player Props Checklist (10 factors)
+
+Same 10-factor structure as NFL props:
+- Signals: L10 extreme, L5 hot/cold, projection edge (supports/opposes/strong), season hit%, wind suppresses pass, freezing rush boost, consensus edge, dome (not applicable, indoor stadiums rare in CFB).
+
+## NBA — Sides / Totals Checklist (12 factors)
+
+| # | Factor | Signal example |
+|---|---|---|
+| 1 | Direct oddscrowd (ml + total) | `oddscrowd_ml/total_fade_boost_nba` |
+| 2 | Back-to-back fatigue (both sides) | `nba_home/away_b2b_fade` |
+| 3 | Offense vs Defense rating mismatch | `nba_offense_mismatch_home/away` |
+| 4 | Pace mismatch → total | `nba_pace_both_fast_over` / `_slow_under` |
+| 5 | Star player OUT | `nba_home/away_star_out_fade` |
+| 6 | Projection sanity guards | `nba_projection_contradicts_total_over/under` |
+| 7 | Team ATS L10 | ⚠️ needs season data |
+| 8 | Home/road splits | ⚠️ needs season data |
+| 9 | H2H recent (small sample in NBA) | ⚠️ backlog |
+| 10 | Public/sharp scenario matching | ⚠️ scenario handler needs NBA data |
+| 11 | Model consensus (V4 + panel) | ⚠️ NBA V4 model TBD |
+| 12 | External handicapper picks | Existing pattern |
+
+## NBA — Player Props (design pending, Nov 3 launch target)
+
+Similar 10-factor pattern to NFL: L10 extreme, L5 hot/cold, projection edge, season hit%, matchup at position (need `nba_player_vs_team` backfill), back-to-back fatigue, opponent pace impact, minutes projection sanity.
 
 ## NHL — Sides / Totals (design pending)
 
