@@ -484,6 +484,24 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
         except Exception as _e:
             print(f'  [{sport}] playbook fetch failed (template will use signals dict): {_e}')
 
+    # 2026-08-22 Batch-fetch game context rows so template can do REAL
+    # coverage check (raw data availability, not just fired-signal presence).
+    # A neutral umpire never fires a signal but the ctx has ump data — old
+    # check falsely flagged it missing. Now every ks_over card sees its own
+    # game_context row and coverage reflects data availability.
+    ctx_by_game: dict = {}
+    if props_for_template and sport.lower() == 'mlb':
+        try:
+            ctx_r = requests.get(f'{SUPABASE_URL}/rest/v1/mlb_game_context',
+                headers=H_READ,
+                params={'game_date': f'eq.{game_date}', 'select': '*'},
+                timeout=15)
+            if ctx_r.status_code == 200:
+                for row in ctx_r.json() or []:
+                    ctx_by_game[row.get('game_id')] = row
+        except Exception as _e:
+            print(f'  [{sport}] ctx fetch failed (coverage will use signals-dict fallback): {_e}')
+
     # Render templates for below-gate props FIRST — fast, no LLM
     tmpl_done = 0
     if props_for_template:
@@ -505,7 +523,8 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                 pb_key = (prop.get('player_name'), prop.get('prop_type'),
                           prop.get('direction'), prop.get('prop_line'))
                 pb_row = playbook_by_key.get(pb_key)
-                rendered = render_prop_template(prop, pb_row)
+                ctx_row = ctx_by_game.get(prop.get('game_id'))
+                rendered = render_prop_template(prop, pb_row, ctx=ctx_row)
                 # Map template output → same parsed shape as LLM path
                 parsed = {
                     'short_read': rendered.get('short_read'),

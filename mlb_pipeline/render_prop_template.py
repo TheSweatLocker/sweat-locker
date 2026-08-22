@@ -137,12 +137,124 @@ def _categorize_signals(sources: list, prop_signals: dict) -> dict:
     return {'positive': [p for _, p in positive[:5]], 'negative': [p for _, p in negative[:3]]}
 
 
-def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None) -> dict:
+def _coverage_from_ctx(checklist: list, ctx: dict, prop_signals: dict, sources: list) -> tuple[int, list]:
+    """Coverage-check every checklist item against RAW DATA in the ctx row.
+
+    2026-08-22: the old check looked for fired signal keys, which
+    under-reports coverage — a K-neutral umpire never triggers a 'umpire'
+    signal even though the data was fetched and evaluated. That produced
+    false gap warnings on 4/5 items for a typical MLB pitcher prop.
+
+    New rule: coverage = raw data reachable, not signal fired. Check ctx
+    row for the field feeding each checklist item. Fall back to signal
+    key presence when ctx wasn't provided.
+    """
+    ctx = ctx or {}
+    sig_keys = set(k for k in (prop_signals or {}).keys() if not k.startswith('_'))
+    if isinstance(sources, list):
+        for s in sources:
+            sk = s.get('signal_key') if isinstance(s, dict) else None
+            if sk: sig_keys.add(sk)
+    # ctx field(s) that satisfy each checklist item — "data was available"
+    ctx_check = {
+        'opp_k_pct':          ['home_team_k_pct', 'away_team_k_pct'],
+        'opp_k_pct_vs_hand':  ['home_ops_vs_opp_hand', 'away_ops_vs_opp_hand',
+                               'home_wrc_vs_opp_hand', 'away_wrc_vs_opp_hand'],
+        'opp_wrc':            ['home_wrc_plus', 'away_wrc_plus'],
+        'opp_wrc_recent':     ['home_last10_runs_per_game', 'away_last10_runs_per_game'],
+        'opp_starter_xera':   ['home_sp_xera', 'away_sp_xera'],
+        'opp_starter_form':   ['home_pitcher_last_3_era', 'away_pitcher_last_3_era'],
+        'opp_starter_hr_rate':['home_pitcher_hr_per_9', 'away_pitcher_hr_per_9'],
+        'opp_bb_pct':         ['home_team_bb_pct', 'away_team_bb_pct'],
+        'park':               ['park_run_factor', 'venue'],
+        'weather':            ['temperature', 'wind_speed', 'wind_direction'],
+        'umpire_k':           ['umpire', 'umpire_note'],
+        'catcher_framing':    ['home_catcher_framing', 'away_catcher_framing'],
+        'lineup_slot':        ['home_lineup', 'away_lineup', 'lineup_confirmed'],
+        'platoon':            ['home_platoon_advantage', 'away_platoon_advantage'],
+        'bvp':                ['bvp_mastery'],  # per-batter, not usually on ctx
+        'vs_team_history':    ['home_pitcher_vs_team_era', 'away_pitcher_vs_team_era'],
+        'fatigue':            ['home_days_rest', 'away_days_rest',
+                               'home_pitcher_last_outing_pitches',
+                               'away_pitcher_last_outing_pitches'],
+        'bullpen_taxed':      ['home_bp_relievers_3d', 'away_bp_relievers_3d'],
+        'pitcher_1st_inn_era':['home_first_inning_era', 'away_first_inning_era'],
+        # Non-MLB fields — ctx keys vary by sport but same detection pattern
+        'pace':               ['home_pace', 'away_pace'],
+        'minutes_projected':  ['minutes_proj'],
+        'usage':              ['usage_rate'],
+        'b2b':                ['back_to_back'],
+        'target_share':       ['target_share'],
+        'game_script':        ['projected_spread', 'close_spread'],
+        'shot_volume':        ['fga_projected'],
+        'teammate_scoring':   ['teammate_scoring'],
+        'line_projection':    ['line_proj'],
+        'toi':                ['toi_projected'],
+        'team_defense':       ['team_defense_rating'],
+        'team_run_env':       ['home_runs_per_game', 'away_runs_per_game'],
+        'barrel_rate':        ['home_team_barrel_pct', 'away_team_barrel_pct'],
+        'opp_def_rating':     ['opp_def_rating'],
+        'opp_rebound_rate':   ['opp_rebound_rate'],
+        'opp_3p_defense':     ['opp_3p_defense'],
+        'opp_pass_def':       ['opp_pass_def'],
+        'opp_run_def':        ['opp_run_def'],
+        'opp_goalie_sv':      ['opp_goalie_sv'],
+        'opp_shots_per60':    ['opp_shots_per60'],
+    }
+    # Legacy fuzzy match on signal keys — used when ctx not provided
+    sig_check = {
+        'opp_k_pct':          ['opp_k_rate', 'opp_k_pct', 'opp_hand_k', 'opp_k_heavy', 'opp_k_artist'],
+        'opp_k_pct_vs_hand':  ['opp_hand_k', 'opp_k_vs_hand'],
+        'opp_wrc':            ['opp_wrc', 'opp_offense'],
+        'opp_wrc_recent':     ['opp_l14', 'opp_recent', 'opp_contact_hot', 'opp_contact_cold'],
+        'opp_starter_xera':   ['opp_starter', 'opp_xera', 'xera'],
+        'opp_starter_form':   ['opp_form'],
+        'park':               ['park'],
+        'weather':            ['weather', 'temp', 'wind'],
+        'umpire_k':           ['umpire', 'ump'],
+        'catcher_framing':    ['framing'],
+        'lineup_slot':        ['lineup_spot', 'lineup_slot'],
+        'platoon':            ['platoon'],
+        'bvp':                ['bvp'],
+        'vs_team_history':    ['vs_team', 'pitcher_vs_team'],
+        'fatigue':            ['fatigue', 'days_rest', 'last_outing', 'short_outing'],
+        'bullpen_taxed':      ['bullpen_taxed', 'bp_taxed', 'opp_bullpen'],
+        'pitcher_1st_inn_era':['first_inn', 'slow_start'],
+    }
+    missing = []
+    for req in checklist:
+        covered = False
+        if ctx:
+            for f in ctx_check.get(req, [req]):
+                v = ctx.get(f)
+                if v is not None and v != '':
+                    covered = True; break
+        if not covered:
+            for kw in sig_check.get(req, [req]):
+                if any(kw in k for k in sig_keys):
+                    covered = True; break
+        if not covered:
+            missing.append(req)
+    covered_n = len(checklist) - len(missing)
+    return covered_n, missing
+
+
+def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None,
+                          ctx: Optional[dict] = None) -> dict:
     """Render a full analytical prop card.
+
+    Args:
+        prop: prop row (dict). Must include prop_type, direction, prop_line,
+              tier, conviction, refit_conviction, signals dict.
+        playbook_decision: optional prop_playbook_decisions row (rich chips).
+        ctx: optional mlb_game_context row for this prop's game_id. When
+             provided, coverage check inspects raw data availability rather
+             than only whether signals fired — kills false "missing" flags
+             when data was fetched but the reading was neutral.
 
     Returns dict with:
         short_read: multi-line str (the full card body, plain text)
-        verdict:    'BACK' | 'FADE' | 'LEAN BACK' | 'PASS'
+        verdict:    'PRIME' | 'STRONG' | 'LEAN' | 'PASS' | 'FADE'
         conviction: int (0-95)
         source:     'template'
     """
@@ -180,68 +292,12 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None) -
     avg_l10 = prop_signals.get('_stat_avg_l10')
     avg_season = prop_signals.get('_stat_avg_season')
 
-    # Coverage audit — compute EARLY so it can header the card. Every prop
-    # family declares its relevant_ctx checklist in _STAT_META. For each
-    # required signal, check whether it appears in signals dict OR playbook
-    # sources OR raw prop payload. Any missing item = gap.
-    # Rationale (2026-08-22, user PARAMOUNT concern): "it is paramount we
-    # are tracking every relevant signal for each prop and it is getting
-    # assessed." Old code buried this as a warning below the score. New:
-    # every card headers with COVERAGE: N/M so gaps are visible before
-    # the reader reaches the verdict.
-    ctx_keys_in_signals = set(k for k in prop_signals.keys() if not k.startswith('_'))
-    if isinstance(sources, list):
-        for s in sources:
-            sk = s.get('signal_key') if isinstance(s, dict) else None
-            if sk: ctx_keys_in_signals.add(sk)
-    relevance_check = {
-        'opp_k_pct':          {'opp_k_rate', 'opp_k_pct', 'opp_hand_k'},
-        'opp_k_pct_vs_hand':  {'opp_hand_k', 'opp_k_vs_hand'},
-        'opp_wrc':            {'opp_wrc', 'opp_team_wrc'},
-        'opp_wrc_recent':     {'opp_l14_ops', 'opp_l14_wrc', 'opp_recent'},
-        'opp_starter_xera':   {'opp_starter', 'opp_xera', 'xera'},
-        'opp_starter_form':   {'opp_form', 'opp_starter_form'},
-        'opp_starter_hr_rate': {'opp_hr_rate', 'opp_starter_hr'},
-        'opp_bb_pct':         {'opp_bb_rate', 'opp_bb_pct'},
-        'opp_def_rating':     {'opp_def', 'opp_def_rating'},
-        'opp_rebound_rate':   {'opp_rebound'},
-        'opp_3p_defense':     {'opp_3p_def'},
-        'opp_pass_def':       {'opp_pass_def'},
-        'opp_run_def':        {'opp_run_def'},
-        'opp_goalie_sv':      {'goalie_sv', 'opp_goalie'},
-        'opp_shots_per60':    {'opp_shots'},
-        'park':               {'park', 'park_factor'},
-        'weather':            {'weather', 'temp', 'wind'},
-        'umpire_k':           {'umpire', 'ump'},
-        'catcher_framing':    {'catcher_framing', 'framing'},
-        'lineup_slot':        {'lineup_spot', 'lineup_slot'},
-        'platoon':            {'platoon', 'wrc_hand'},
-        'bvp':                {'bvp_mastery', 'bvp'},
-        'vs_team_history':    {'vs_team', 'pitcher_vs_team'},
-        'fatigue':            {'fatigue', 'days_rest', 'pitch_count_last', 'last_outing'},
-        'bullpen_taxed':      {'bullpen_taxed', 'bp_taxed', 'opp_bullpen'},
-        'pitcher_1st_inn_era': {'first_inn', 'first_inning'},
-        'pace':               {'pace'},
-        'minutes_projected':  {'minutes', 'minutes_proj'},
-        'usage':              {'usage_rate', 'usage'},
-        'b2b':                {'b2b', 'back_to_back'},
-        'target_share':       {'target_share', 'targets'},
-        'game_script':        {'game_script', 'spread'},
-        'shot_volume':        {'shot_volume', 'fga'},
-        'teammate_scoring':   {'teammate'},
-        'line_projection':    {'line_proj'},
-        'toi':                {'toi', 'ice_time'},
-        'team_defense':       {'team_def'},
-        'team_run_env':       {'team_runs', 'implied_team_total'},
-        'barrel_rate':        {'barrel_rate', 'barrels'},
-    }
+    # Coverage audit — every prop family declares a checklist in _STAT_META.
+    # When ctx is provided, coverage = raw data availability (correct — a
+    # neutral umpire is still covered). When ctx is absent, fall back to
+    # signal-key fuzzy match (over-flags but better than nothing).
     checklist = meta.get('relevant_ctx', []) or []
-    missing = []
-    for req in checklist:
-        expected_keys = relevance_check.get(req, {req})
-        if not any(any(ek in k for ek in expected_keys) for k in ctx_keys_in_signals):
-            missing.append(req)
-    covered = len(checklist) - len(missing)
+    covered, missing = _coverage_from_ctx(checklist, ctx or {}, prop_signals, sources)
     coverage_pct = int(100 * covered / max(1, len(checklist)))
 
     # ─── COMPOSE THE CARD ───────────────────────────────────────────
@@ -330,3 +386,17 @@ if __name__ == '__main__':
         },
     }
     print(render_prop_template(demo_prop)['short_read'])
+    print()
+    print('=' * 60)
+    print('WITH CTX (real-pipeline coverage):')
+    print('=' * 60)
+    demo_ctx = {
+        'game_id': 'abc', 'home_team': 'MIL', 'away_team': 'ATL',
+        'home_team_k_pct': 24.0, 'away_team_k_pct': 22.5,
+        'home_wrc_plus': 106, 'home_ops_vs_opp_hand': 0.712,
+        'home_sp_xera': 2.7, 'home_pitcher_last_3_era': 3.1,
+        'umpire': 'Angel Hernandez', 'umpire_note': 'K-friendly',
+        'home_catcher_framing': 3.5, 'temperature': 78, 'wind_speed': 8,
+        'wind_direction': 'out to right', 'park_run_factor': 97,
+    }
+    print(render_prop_template(demo_prop, ctx=demo_ctx)['short_read'])
