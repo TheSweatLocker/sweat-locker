@@ -93,7 +93,15 @@ def compute_refit(prop_type: str, direction: str, signals: dict,
         conv = 50.0
     else:
         conv = 100.0 * (raw - score_min) / (score_max - score_min)
-    conv = max(0.0, min(100.0, conv))
+    # 2026-08-22: cap at 95 (never 100). User flagged: seeing 100s across
+    # the app is a credibility hit — nothing in real prop betting hits at
+    # 100%. Also today: 30 pitcher props saturated to 100 because their
+    # default 6-signal pattern (l3_k, park, xera, l3_era, opp_wrc, opp_k_rate)
+    # tops the training-time observed score_max. This is model overfitting,
+    # not real 100% confidence. Cap at 95 preserves ordering + relative
+    # ranking but ends the "100" display bug. Retrain with broader feature
+    # diversity is a bigger task queued in the tier-calibration merge.
+    conv = max(0.0, min(95.0, conv))
     # 2026-08-10: prefer v2 trained_at (fresh) over v1's stale stamp.
     # If v2 was merged in, use its trained_at; else fall back to v1.
     stamp = weights.get("v2_trained_at") or weights.get("trained_at", "v1")
