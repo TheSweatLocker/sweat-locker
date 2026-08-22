@@ -9,11 +9,12 @@ Usage from game_context.py:
     if MODELS_LOADED:
         home_exp, away_exp = predict_runs(feature_dict)
 
+Where feature_dict matches the keys expected by engineer_features() in
+train_runs_model.py — same RAW_FEATURES + engineered ones.
+
 2026-08-22: suppress sklearn InconsistentVersionWarning from pickle-loaded
 Ridge/XGBoost estimators. Models were pickled with sklearn 1.8; runtime is
-sklearn 1.9. No functional impact — warning was pure log noise (~60 lines
-per cron cycle). If model API actually breaks between minor versions,
-callers still handle via MODELS_LOADED=False path.
+sklearn 1.9. Zero functional impact — warning was pure log noise.
 """
 import warnings
 try:
@@ -22,9 +23,6 @@ try:
 except Exception:
     warnings.filterwarnings('ignore', message='.*Trying to unpickle estimator.*')
 
-Where feature_dict matches the keys expected by engineer_features() in
-train_runs_model.py — same RAW_FEATURES + engineered ones.
-"""
 import os
 import pickle
 
