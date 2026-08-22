@@ -338,16 +338,18 @@ function FilterPill({label, active, onPress}: {label: string; active: boolean; o
 }
 
 // ─── STRONGEST SIGNAL CARD (horizontal strip) ───────────────────────
-function StrongestSignalCard({flags, sample, onTap}: any) {
+function StrongestSignalCard({flags, sample, picks, onTap}: any) {
+  // 2026-08-22 BUG FIX (5th user report on missing matchup):
+  // Function signature was ignoring the `picks` prop that the caller
+  // passes at line ~268 (`picks={picksIdx[gs[0].game_id]}`). When ALL
+  // flags in the group had 'game · ...' as their detail prefix (bad
+  // backend write from before c68b2b61) AND sample was empty, the
+  // fallback chain hit empty string. Picks was the reliable source
+  // sitting right there. Adding it as the highest-priority fallback.
   const first = flags[0];
   const strongest = flags.find((f: any) => String(f.classification || '').endsWith('_TRIPLE_CONFIRMED'))
                  || flags.find((f: any) => String(f.classification || '').endsWith('_CONFIRMED'))
                  || flags[0];
-  // 2026-08-22 parse matchup from flag.detail prefix
-  //   "Cubs @ Mariners · total: Sharps on OVER..."
-  // Skips the literal placeholder "game" that older detect_line_movement
-  // runs wrote when matchup_by_gid missed the game_id. Falls through the
-  // full group looking for ANY flag with a real matchup, then sample lookup.
   const parseMatchupFromDetail = (flag: any): string => {
     const detail = String(flag?.detail || '');
     if (!detail.includes(' · ')) return '';
@@ -356,10 +358,13 @@ function StrongestSignalCard({flags, sample, onTap}: any) {
     if (prefix.toLowerCase() === 'game') return '';
     return prefix;
   };
+  const matchupFromPicks = picks && picks.away_team && picks.home_team
+    ? `${picks.away_team} @ ${picks.home_team}` : '';
   const matchup =
     parseMatchupFromDetail(strongest) ||
     parseMatchupFromDetail(first) ||
     (flags.map(parseMatchupFromDetail).find((m: string) => m) || '') ||
+    matchupFromPicks ||
     sample[0]?.matchup ||
     '';
   const [awayTeam, homeTeam] = matchup.includes(' @ ') ? matchup.split(' @ ').map((s: string) => s.trim()) : ['', ''];
