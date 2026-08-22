@@ -191,6 +191,14 @@ class MarketDecision:
     margin: float              # score vs runner-up
     contributions: list = field(default_factory=list)
     class_share: dict = field(default_factory=dict)  # {class_name: total_contribution}
+    # 2026-08-21: Top contributions on the runner-up side within THIS market
+    # (e.g., AWAY_RL signals when HOME_RL wins the RL market). Powers the
+    # "losing_market_notes" chip on game detail so signals that fire on a
+    # losing side still surface as context — matches the Rockies ATS_cold
+    # scenario where 39.4% season cover pct fires FADE-home-spread but gets
+    # outvoted by HOME_RL signals on the same market.
+    runner_up_side: Optional[str] = None
+    runner_up_contributions: list = field(default_factory=list)
 
     def prose_signals(self, max_shown: int = 5) -> list[str]:
         """Ordered list of reader-friendly signal quotes Jerry can use."""
@@ -761,6 +769,11 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     winner_cand, win_score, win_chips, win_shares, win_classes = scored[0]
     runner_score = scored[1][1] if len(scored) > 1 else 0.0
     margin = win_score - runner_score
+    # 2026-08-21: capture runner-up side + its top 3 contribs for
+    # losing_market_notes surface (Rockies ATS_cold-style signals that
+    # fire on the losing side of a market and were previously invisible).
+    runner_side = scored[1][0] if len(scored) > 1 else None
+    runner_chips = sorted(scored[1][2], key=lambda c: -c.contribution)[:3] if len(scored) > 1 else []
 
     # 2026-08-17: LEAN floor gate REMOVED. Ensemble must publish an opinion
     # on every game (Jerry-picks-every-game architecture — see
@@ -818,6 +831,8 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
         score=round(win_score, 2), margin=round(margin, 2),
         contributions=sorted(win_chips, key=lambda c: -c.contribution),
         class_share=win_shares,
+        runner_up_side=runner_side,
+        runner_up_contributions=runner_chips,
     )
 
 

@@ -3009,6 +3009,26 @@ def upload_game_context(context, commence_time=None):
                             'total': {'pick': decision.total.pick, 'label': decision.total.display_label,
                                       'tier': decision.total.tier, 'conviction': decision.total.conviction},
                         },
+                        # 2026-08-21: signals that fired on the LOSING side of each
+                        # market. Powers the "context chips" surface in game detail —
+                        # e.g., Rockies ATS_cold_season fires FADE-home-spread but
+                        # HOME_RL still won the RL market. Chip renders as
+                        # informational context, not a pick. Empty array when no
+                        # meaningful losing-side signals fired on that market.
+                        '_losing_market_notes': [
+                            {'market': md.market,
+                             'losing_side': md.runner_up_side,
+                             'top_signals': [
+                                 {'signal_key': c.signal_key,
+                                  'class': c.signal_class,
+                                  'side': c.side,
+                                  'contribution': round(c.contribution, 2),
+                                  'prose': c.display_prose}
+                                 for c in md.runner_up_contributions
+                             ]}
+                            for md in (decision.ml, decision.rl, decision.total)
+                            if md.runner_up_contributions
+                        ],
                     }
         except Exception as e:
             # Ensemble unavailable — fall back to old logic. Log once.

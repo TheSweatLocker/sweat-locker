@@ -291,6 +291,7 @@ export default function GameDetailV2({
 
       <ScrollView style={{flex: 1}} contentContainerStyle={{paddingBottom: 24}}>
         <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
+        <LosingMarketChips ctx={ctx} />
         <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} synthesis={jerrySynthesis} />
         <AlignmentStrip ctx={ctx} />
 
@@ -431,6 +432,55 @@ function VerdictCard({ctx, awayTeam, homeTeam}: any) {
       )}
       <Text style={styles.verdictPlay}>{label}</Text>
       {sub ? <Text style={styles.verdictWhy}>{sub}</Text> : null}
+    </View>
+  );
+}
+
+// ─── LOSING-MARKET CONTEXT CHIPS ────────────────────────────────────────
+// Surfaces signals that fired on the losing side of a market (e.g., Rockies
+// ATS_cold_season fires FADE-home-spread but HOME_RL still wins the RL
+// market → the ATS signal was doing its job, just outvoted). Rendered as
+// muted informational chips, NOT as picks. Only shows on markets where
+// runner-up signals actually fired (empty array on primary_play = no
+// render).
+//
+// Data source: primary_play._losing_market_notes[] built server-side by
+// ensemble_scorer._score_market (2026-08-21). Each entry:
+//   { market: 'ml'|'rl'|'total',
+//     losing_side: 'HOME_ML'|'AWAY_RL'|'OVER'|...,
+//     top_signals: [{ signal_key, class, side, contribution, prose }] }
+function LosingMarketChips({ctx}: any) {
+  const notes = ctx?.primary_play?._losing_market_notes;
+  if (!Array.isArray(notes) || notes.length === 0) return null;
+  // Filter: only render entries with at least one signal that has readable prose
+  const usable = notes.filter((n: any) =>
+    Array.isArray(n?.top_signals) &&
+    n.top_signals.some((s: any) => s?.prose && String(s.prose).trim())
+  );
+  if (!usable.length) return null;
+
+  const marketLabel: Record<string, string> = { ml: 'ML', rl: 'SPREAD', total: 'TOTAL' };
+
+  return (
+    <View style={styles.losingChipsWrap}>
+      <Text style={styles.losingChipsHint}>ALSO WORTH KNOWING</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{gap: 8, paddingHorizontal: 12}}>
+        {usable.flatMap((note: any) =>
+          note.top_signals
+            .filter((s: any) => s?.prose && String(s.prose).trim())
+            .map((s: any, i: number) => (
+              <View key={`${note.market}-${i}-${s.signal_key}`} style={styles.losingChip}>
+                <Text style={styles.losingChipMarket}>
+                  {marketLabel[note.market] || note.market.toUpperCase()}
+                </Text>
+                <Text style={styles.losingChipProse} numberOfLines={2}>
+                  {s.prose}
+                </Text>
+              </View>
+            ))
+        )}
+      </ScrollView>
     </View>
   );
 }
@@ -1701,6 +1751,31 @@ const styles = StyleSheet.create({
   verdictPlay: {fontSize: 22, fontWeight: '700', color: C.text, letterSpacing: -0.4, lineHeight: 26, marginBottom: 4},
   verdictWhy: {fontSize: 13, color: C.textMuted, lineHeight: 19, marginTop: 6},
   verdictNoPlay: {fontSize: 12, color: C.textMuted, fontStyle: 'italic'},
+
+  // Losing-market context chips (signals that fired on a market's losing side)
+  losingChipsWrap: {
+    paddingTop: 6, paddingBottom: 10,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+    backgroundColor: C.surface2,
+  },
+  losingChipsHint: {
+    fontSize: 10, fontWeight: '700', letterSpacing: 1.2,
+    color: C.textMuted, paddingHorizontal: 18, marginBottom: 6,
+  },
+  losingChip: {
+    backgroundColor: C.surface,
+    borderWidth: 1, borderColor: C.border,
+    borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 6,
+    maxWidth: 220,
+  },
+  losingChipMarket: {
+    fontSize: 9, fontWeight: '800', letterSpacing: 1,
+    color: C.textMuted, marginBottom: 2,
+  },
+  losingChipProse: {
+    fontSize: 12, color: C.textDim, lineHeight: 15,
+  },
 
   // Jerry read
   jerrySection: {
