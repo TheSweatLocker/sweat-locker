@@ -166,8 +166,12 @@ def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str =
     """
     pd = (prop_direction or '').upper()
     ps = (playbook_side or '').upper()
-    # If playbook picks the opposite of the card's direction, flip sign meaning
-    flip = (pd in ('OVER', 'UNDER') and ps in ('OVER', 'UNDER') and pd != ps)
+    # Flip is on when playbook fades the shown direction. Two encodings:
+    #   ps='FADE' — playbook_decisions convention (most common)
+    #   ps='OVER'/'UNDER' with pd opposite — legacy encoding
+    flip = (ps == 'FADE') or (
+        pd in ('OVER', 'UNDER') and ps in ('OVER', 'UNDER') and pd != ps
+    )
     for_side, against_side = [], []
     for s in (sources or []):
         contrib = float(s.get('contribution') or 0)
