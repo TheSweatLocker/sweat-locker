@@ -4054,18 +4054,6 @@ def run(target_date=None):
                 print(f"  {home_pitcher} last outing: {home_last_outing['pitches']} pitches, {home_last_outing['innings']} IP")
             if away_last_outing:
                 print(f"  {away_pitcher} last outing: {away_last_outing['pitches']} pitches, {away_last_outing['innings']} IP")
-            # 2026-08-22 PERSIST FATIGUE SIGNALS onto context so game Jerry +
-            # prop scorer + template can reference them. Previously only
-            # printed to stdout — data lost between game_context and every
-            # downstream reader. Same class of gap as pitcher_vs_team data
-            # (fixed earlier). Fatigue is the user-flagged "Cameron 5-day
-            # rest after 9 innings" analysis vector.
-            if home_last_outing:
-                context['home_pitcher_last_outing_pitches'] = home_last_outing.get('pitches')
-                context['home_pitcher_last_outing_ip'] = home_last_outing.get('innings')
-            if away_last_outing:
-                context['away_pitcher_last_outing_pitches'] = away_last_outing.get('pitches')
-                context['away_pitcher_last_outing_ip'] = away_last_outing.get('innings')
 
             # Pitcher vs team history
             # Get opponent team IDs
@@ -5315,6 +5303,17 @@ def run(target_date=None):
                 "away_throws": away_throws,
                 "home_days_rest": home_days_rest,
                 "away_days_rest": away_days_rest,
+                # 2026-08-22 FATIGUE — pitch count + IP from previous outing.
+                # get_pitcher_last_outing() was being called + printed for
+                # months but the result was thrown away. Now persisted so
+                # ensemble scorer, prop template, and game Jerry can cite:
+                # "Skubal threw 108 pitches over 7.2 IP on 4 days rest —
+                # elevated fatigue for a K prop OVER". User-flagged
+                # "Cameron 5-day rest after 9 innings" analysis vector.
+                "home_pitcher_last_outing_pitches": home_last_outing.get('pitches') if home_last_outing else None,
+                "home_pitcher_last_outing_ip": home_last_outing.get('innings') if home_last_outing else None,
+                "away_pitcher_last_outing_pitches": away_last_outing.get('pitches') if away_last_outing else None,
+                "away_pitcher_last_outing_ip": away_last_outing.get('innings') if away_last_outing else None,
                 "home_pitcher_home_era": home_pitcher_splits.get('home_era') if home_pitcher_splits else None,
                 "home_pitcher_away_era": home_pitcher_splits.get('away_era') if home_pitcher_splits else None,
                 "away_pitcher_home_era": away_pitcher_splits.get('home_era') if away_pitcher_splits else None,
