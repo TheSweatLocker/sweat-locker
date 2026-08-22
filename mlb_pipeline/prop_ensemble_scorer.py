@@ -126,6 +126,23 @@ class PropDecision:
 _SOURCES_CACHE: dict = {}  # keyed by sport
 _REGISTRY_CACHE: dict = {}
 
+# 2026-08-22 META FIX (silent-bug audit finding #20):
+# Log signal_expr eval failures once per (signal_key, kind) per run so
+# broken signals become visible instead of silently returning None.
+_LOGGED_EVAL_ERRORS: set = set()
+
+
+def _record_eval_error(signal_key: str, kind: str, exc: Exception, source_row: dict) -> None:
+    """Log a signal_expr eval failure exactly once per (signal, kind) per run."""
+    dedup_key = (signal_key, kind, type(exc).__name__)
+    if dedup_key in _LOGGED_EVAL_ERRORS:
+        return
+    _LOGGED_EVAL_ERRORS.add(dedup_key)
+    expr = (source_row.get(f'{kind.split("_")[0]}_expr') or
+            source_row.get('condition_expr') or '')
+    print(f'  ⚠ signal[{signal_key}] {kind} eval failed: '
+          f'{type(exc).__name__}: {str(exc)[:100]}  expr={str(expr)[:100]}')
+
 
 def _load_prop_sources(sport: str) -> list[dict]:
     """Fetch prop signal_sources rows for a sport (cached per-run)."""
@@ -231,16 +248,25 @@ def _evaluate_signal(source_row: dict, ctx: dict, p: dict) -> Optional[PropContr
     # Environment for expressions: ctx + p available as top-level names
     p = _coerce_prop(p)
     env = {'ctx': _CtxProxy(ctx), 'p': p}
+    signal_key = source_row.get('signal_key') or '?'
     try:
         matched = _safe_eval(source_row.get('condition_expr') or '', env)
-    except Exception:
+    except Exception as _e:
+        # 2026-08-22 META FIX: log eval failures once per signal per run.
+        # Prior code silently swallowed every broken expression — a single
+        # `ctx.foo` where the ctx column is named `ctx.foo_bar` returned
+        # None with no trace. The silent-bug audit found 19 dead signals
+        # hidden this way (findings #4-#18). Log makes future breakage
+        # visible without spamming (dedup via _LOGGED_EVAL_ERRORS set).
+        _record_eval_error(signal_key, 'condition', _e, source_row)
         return None
     if not matched: return None
 
     try:
         side_raw = _safe_eval(source_row.get('side_expr') or '""', env)
         strength = _safe_eval(source_row.get('strength_expr') or '0.5', env)
-    except Exception:
+    except Exception as _e:
+        _record_eval_error(signal_key, 'side_or_strength', _e, source_row)
         return None
 
     side = str(side_raw).upper() if side_raw else 'PASS'

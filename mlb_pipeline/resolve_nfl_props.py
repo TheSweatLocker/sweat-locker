@@ -49,13 +49,20 @@ except ImportError:
     NFL_AVAILABLE = False
 
 # prop_type family → nfl_data_py column
+# 2026-08-22 FIX (silent-bug audit finding #2): nfl_generate_props writes
+# prop_type as `reception_yds_over`/`reception_yds_under` (see
+# nfl_generate_props.py:417 which does `market_key.replace('player_','')`),
+# but this dict was keyed by `rec_yds`. Every reception-yards prop was
+# silently marked UNGRADEABLE. Adding both keys for safety in case any
+# legacy rows still use `rec_yds`.
 STAT_MAP = {
     'pass_yds':      'passing_yards',
     'pass_tds':      'passing_tds',
     'ints':          'interceptions',
     'pass_attempts': 'attempts',
     'rush_yds':      'rushing_yards',
-    'rec_yds':       'receiving_yards',
+    'reception_yds': 'receiving_yards',
+    'rec_yds':       'receiving_yards',   # legacy row support
     'receptions':    'receptions',
     # anytime_td handled specially (sum of rush+rec TDs)
 }

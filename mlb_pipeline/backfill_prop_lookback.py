@@ -58,20 +58,27 @@ MLB_STAT_MAP = {
     'er':    'earned_runs',
 }
 NFL_STAT_MAP = {
-    # NFL props — matches nfl_data_py per-game log fields (2026-08-17).
-    # Applies to prop_type BASE (strip _over/_under suffix in fetcher).
-    'passing_yards':   'passing_yards',
-    'rushing_yards':   'rushing_yards',
-    'receiving_yards': 'receiving_yards',
-    'receptions':      'receptions',
-    'passing_tds':     'passing_tds',
-    'passing_completions': 'completions',
-    'passing_attempts':    'attempts',
-    'passing_interceptions': 'interceptions',
-    'rushing_attempts':    'carries',
-    'anytime_td':          'td_any',   # combined rushing_tds + receiving_tds + passing_tds (rush + rec for skill)
-    'longest_reception':   'longest_reception',
-    'longest_rush':        'longest_rush',
+    # 2026-08-22 CRITICAL FIX (silent-bug audit finding #3): keys MUST match
+    # what nfl_generate_props actually writes as prop_type. Prior version was
+    # keyed by long names (`passing_yards`, `receiving_yards`) but the
+    # production prop_types are short-form (`pass_yds`, `rush_yds`, etc.)
+    # — see nfl_generate_props.py:417 `market_key.replace('player_', '')`.
+    # Every NFL prop L10 lookup would silently return None the moment NFL
+    # backfill enables. Latent launch-blocker until fixed.
+    #
+    # Keys here match the prop-type FAMILY (post strip of _over/_under suffix).
+    'pass_yds':      'passing_yards',
+    'rush_yds':      'rushing_yards',
+    'reception_yds': 'receiving_yards',
+    'receptions':    'receptions',
+    'pass_tds':      'passing_tds',
+    'pass_attempts': 'attempts',
+    'pass_completions': 'completions',
+    'ints':          'interceptions',
+    'rush_attempts': 'carries',
+    'anytime_td':    'td_any',
+    'longest_reception':          'longest_reception',
+    'longest_rush':               'longest_rush',
     'passing_longest_completion': 'longest_completion',
 }
 
@@ -88,7 +95,15 @@ def _mlb_stat_key(prop_type: str) -> str | None:
 
 
 def _nfl_stat_key(prop_type: str) -> str | None:
-    return NFL_STAT_MAP.get(prop_type)
+    """Convert prop_type ('pass_yds_over','reception_yds_under') → stat field.
+    2026-08-22: strip _over/_under suffix same as MLB path (finding #3)."""
+    if not prop_type: return None
+    base = prop_type
+    for suffix in ('_over', '_under'):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+    return NFL_STAT_MAP.get(base)
 
 
 _PLAYER_ID_CACHE: dict = {}
