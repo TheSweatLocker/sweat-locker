@@ -26,9 +26,11 @@ CREATE TABLE IF NOT EXISTS public.admin_notice (
 
 -- Active-window index — the app query pattern is:
 --   SELECT ... WHERE starts_at <= NOW() AND (expires_at IS NULL OR expires_at > NOW())
+-- No WHERE predicate: partial-index predicates require IMMUTABLE expressions
+-- and NOW() is STABLE. A plain btree on (starts_at, expires_at) still serves
+-- the query well since active rows are the recent tail of the table.
 CREATE INDEX IF NOT EXISTS admin_notice_active_window_idx
-  ON public.admin_notice (starts_at, expires_at)
-  WHERE expires_at IS NULL OR expires_at > NOW();
+  ON public.admin_notice (starts_at, expires_at);
 
 -- RLS: anon can read active notices (needed for app); only service_role writes.
 ALTER TABLE public.admin_notice ENABLE ROW LEVEL SECURITY;
