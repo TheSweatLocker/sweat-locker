@@ -186,6 +186,34 @@ jobs:
           cd mlb_pipeline
           python detect_consensus_fade.py --sport NCAAF || echo "fade detector failed"
 
+      # 2026-08-22: Compute alignment + write oddscrowd_snapshot to
+      # ncaaf_game_context. Prerequisite for sharp-split signals to fire
+      # on NCAAF games (registry exists but was silent because
+      # oddscrowd_snapshot was never populated). Runs after externals
+      # pull so OC data is fresh in external_picks.
+      - name: Compute alignment + oddscrowd snapshot
+        if: steps.mode.outputs.mode == 'full'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_align_status_ncaaf.py || echo "align status failed (non-fatal)"
+
+      # 2026-08-22: Flatten oddscrowd_snapshot into line_snapshot so the
+      # cross-sport classify_line_moves.py --sport ALL step can generate
+      # line_movement_flags for NCAAF.
+      - name: Write line_snapshot from oddscrowd data
+        if: steps.mode.outputs.mode == 'full'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python write_line_snapshot.py --sport NCAAF || echo "write_line_snapshot NCAAF failed (non-fatal)"
+
       - name: Resolve NCAAF external picks (post-game)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
         continue-on-error: true

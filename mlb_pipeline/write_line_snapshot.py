@@ -49,8 +49,13 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 CTX_TABLE = {
-    'MLB': 'mlb_game_context',
-    # Add other sports once their ctx tables carry oddscrowd_snapshot
+    'MLB':   'mlb_game_context',
+    # 2026-08-22: NFL + NCAAF added once compute_align_status_{nfl,ncaaf}.py
+    # was wired into their pipelines. Both ctx tables already carry the
+    # oddscrowd_snapshot column (schema shipped earlier); pipeline just
+    # wasn't populating it because compute_align_status was orphaned.
+    'NFL':   'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context',
 }
 
 

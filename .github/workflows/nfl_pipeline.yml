@@ -286,6 +286,34 @@ jobs:
           cd mlb_pipeline
           python pull_externals_nfl.py || echo "external pull failed (non-fatal)"
 
+      # 2026-08-22: Compute alignment + write oddscrowd_snapshot to
+      # nfl_game_context. Required prerequisite for the sharp-split
+      # signals to fire on NFL games (registry exists but was silent
+      # because oddscrowd_snapshot was never populated). Runs after
+      # external pull so OC data is fresh in external_picks.
+      - name: Compute alignment + oddscrowd snapshot
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_align_status_nfl.py || echo "align status failed (non-fatal)"
+
+      # 2026-08-22: Flatten oddscrowd_snapshot into line_snapshot so the
+      # cross-sport classify_line_moves.py --sport ALL step (in
+      # mlb_pipeline.yml) can generate line_movement_flags for NFL.
+      - name: Write line_snapshot from oddscrowd data
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python write_line_snapshot.py --sport NFL || echo "write_line_snapshot NFL failed (non-fatal)"
+
       - name: Generate NFL game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:
