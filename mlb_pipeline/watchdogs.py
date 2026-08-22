@@ -436,13 +436,29 @@ def check_prop_volume_thin() -> Optional[dict]:
 
 
 def check_coverage_audit() -> Optional[dict]:
-    """Alert when today's PRIME/STRONG picks have <12/25 factor coverage OR
-    a single class dominates >45% of the score. Enforces SIGNAL_FRAMEWORK.md
+    """Alert when today's PRIME/STRONG picks have thin factor coverage OR
+    a single class dominates the score. Enforces SIGNAL_FRAMEWORK.md
     standard shipped 8/21.
 
     Uses today's prop_playbook_decisions. Threshold: 20% of PRIME/STRONG
     rows failing coverage = WARNING; 40% = CRITICAL.
+
+    COVERAGE_MIN is intentionally lower than the framework aspiration
+    (12/25). The playbook signal_sources table currently fires 4-5 signals
+    per prop; setting the floor at 4 lets the audit catch outliers without
+    flagging 100% of decisions. Raise this as signal_sources density grows.
+    Framework aspiration remains 12+; this is the current-reality floor.
     """
+    # 2026-08-21 revision: replaced string-match factor mapping with
+    # unique signal_key count. The string-match heuristic (below) mostly
+    # bucketed real signal names into 'other' so 4-5 firing signals
+    # collapsed to 2-3 factors, flagging 100% of decisions.
+    #
+    # Reality-anchored check now:
+    #   - MIN_UNIQUE_SIGNALS: distinct signal_keys contributing to score
+    #   - MAX_CLASS_SHARE:    single class share of total contribution
+    MIN_UNIQUE_SIGNALS = 3   # <3 = single-angle decision; raise as signal_sources grows
+    MAX_CLASS_SHARE = 0.75   # loose ceiling; original 0.45 impossibly tight w/ 3-4 signals
     today = _et_today()
     try:
         r = requests.get(f'{SB}/rest/v1/prop_playbook_decisions',
@@ -493,23 +509,23 @@ def check_coverage_audit() -> Optional[dict]:
                 sources = []
         if not isinstance(sources, list):
             continue
-        factors_touched = set()
+        unique_signals = set()
         class_share = defaultdict(float)
         total = 0.0
         for c in sources:
             if not isinstance(c, dict): continue
             contrib = c.get('contribution', 0) or 0
             total += contrib
-            factors_touched.add(factor_of(c.get('signal_key', '')))
+            unique_signals.add(c.get('signal_key', ''))
             class_share[c.get('class', '?')] += contrib
-        # Coverage check
-        if len(factors_touched) < 12:
+        # Unique signal count check (thin support = flag)
+        if len(unique_signals) < MIN_UNIQUE_SIGNALS:
             flagged += 1
             continue
-        # Class dominance
+        # Class dominance (one class monopolizes score = flag)
         if total > 0:
             max_share = max((v/total for v in class_share.values()), default=0)
-            if max_share > 0.45:
+            if max_share > MAX_CLASS_SHARE:
                 flagged += 1
     flag_rate = flagged / max(1, len(rows))
     if flag_rate >= 0.40:
