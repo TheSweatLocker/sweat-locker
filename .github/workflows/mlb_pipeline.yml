@@ -854,6 +854,13 @@ jobs:
           # was live at grade time. Backfills last 7 days each run so late
           # settles catch up automatically.
           python grade_pick_snapshots.py --days 7 || echo "grade_pick_snapshots non-fatal"
+          # 2026-08-22: grade prop_playbook_decisions (root cause: this
+          # grader shipped 8/17 but was never wired into cron — 342 8/21
+          # decisions all sat result=NULL until manual catchup. Fixes:
+          # every signal_registry refit + Sharp Card track record + shadow
+          # audit all depend on this table's result field being fresh.
+          # 21-day backfill matches the shadow audit window.
+          python grade_prop_playbook.py --backfill 21 || echo "grade_prop_playbook non-fatal"
 
       # Prop playbook shadow audit (2026-08-17). Compares legacy prop
       # scoring vs plug-in playbook decisions over rolling 14-day window
