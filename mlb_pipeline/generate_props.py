@@ -3771,6 +3771,45 @@ def upsert_props(props):
     vs CONFIRMED tags on hits props.)"""
     if not props:
         return 0
+    # 2026-08-22 DEDUP GUARD: same (game_date, player_name, prop_type, direction,
+    # prop_line) was landing in the DB 2-4× today (Andrew Painter er_over 2.5
+    # appeared 4× as PRIME c=94, Willi Castro / Cole Carrigg hits_over 0.5
+    # appeared 2×). Root cause: multiple call sites emit rows for the same
+    # prop from different code paths and no on_conflict resolution was set
+    # on the POST. Fix here (defense-in-depth) collapses dupes in-Python
+    # before write, keeping the row with the highest conviction (or first
+    # populated L10 if conviction is tied) so downstream sees exactly one
+    # authoritative row per prop.
+    _dedup_seen = {}
+    for p in props:
+        key = (p.get('game_date'), (p.get('player_name') or '').lower(),
+               p.get('prop_type'), p.get('direction'),
+               p.get('prop_line'))
+        if None in key[:4]:
+            # missing critical field — keep unique via id path (rare)
+            continue
+        existing = _dedup_seen.get(key)
+        if existing is None:
+            _dedup_seen[key] = p
+            continue
+        # Prefer higher conviction; break ties on L10 presence, then last write.
+        cur_conv = float(p.get('conviction') or 0)
+        exist_conv = float(existing.get('conviction') or 0)
+        if cur_conv > exist_conv:
+            _dedup_seen[key] = p
+        elif cur_conv == exist_conv:
+            cur_l10 = p.get('player_l10_hit_count')
+            exist_l10 = existing.get('player_l10_hit_count')
+            if cur_l10 is not None and exist_l10 is None:
+                _dedup_seen[key] = p
+    _before_dedup = len(props)
+    props = list(_dedup_seen.values()) + [p for p in props if None in (
+        p.get('game_date'), (p.get('player_name') or '').lower(),
+        p.get('prop_type'), p.get('direction'))]
+    if _before_dedup != len(props):
+        print(f"  🧹 dedup collapsed {_before_dedup - len(props)} duplicate props "
+              f"({_before_dedup} → {len(props)})")
+
     # Normalize keys across the batch — PostgREST rejects mixed schemas with
     # "All object keys must match" when a column is on some records but not
     # others. Pitcher props pick up book_line / book_*_odds via attach_book_lines
