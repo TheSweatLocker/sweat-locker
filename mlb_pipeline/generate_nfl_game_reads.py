@@ -9,7 +9,12 @@ ML) and per-team EPA/efficiency, feeds it to Claude with the NFL prompt
 template, writes {narrative, struct} to jerry_cache keyed
 game_read_<odds-api-id>_<ET date>, sport='nfl'.
 
-Usage: python generate_nfl_game_reads.py [--force] [--limit N]
+Usage: python generate_nfl_game_reads.py [--force] [--limit N] [--force-offseason]
+
+Season gate (2026-08-22): exits 0 immediately if NFL is off-season (March-
+August) unless --force-offseason is passed. Removes the every-cron waste
+where this script fetched preseason odds + iterated preseason games only
+to skip them via panel_pred null checks downstream.
 """
 import os
 import sys
@@ -20,6 +25,13 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Season gate — must come before any imports/setup that hit APIs.
+try:
+    from season_gate import season_gate_or_exit
+    season_gate_or_exit('NFL')
+except ImportError:
+    pass  # helper is new — if missing, fall through to legacy behavior
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -79,17 +91,12 @@ def fetch_odds_games():
     if not ODDS_API_KEY:
         print("  No ODDS_API_KEY — can't fetch NFL slate")
         return []
-    # 2026-08-13: fetch preseason key too when in preseason window (Aug + early
-    # Sept). NFL preseason games live under americanfootball_nfl_preseason,
-    # not the regular-season key. Prior code returned an empty list all Aug
-    # long → generate_nfl_game_reads.py wrote zero NFL Jerry reads all
-    # preseason. Merge both keys; downstream Jerry-loop already gates on
-    # panel_pred availability (which is null on preseason) so preseason
-    # games flow through and skip cleanly with a log message.
+    # 2026-08-22: preseason merge REMOVED. The 8/13 change fetched preseason
+    # odds and iterated preseason games only to skip them via panel_pred null
+    # checks — pure waste. Betting edge on preseason games (starters play a
+    # quarter) is near-zero and not worth Claude tokens.
+    # Regular season only. Playoffs use the same 'americanfootball_nfl' key.
     sport_keys = ["americanfootball_nfl"]
-    now_month = datetime.now(timezone.utc).month
-    if now_month == 8 or (now_month == 9 and datetime.now(timezone.utc).day < 5):
-        sport_keys.append("americanfootball_nfl_preseason")
 
     games: list = []
     for sk in sport_keys:

@@ -497,7 +497,13 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
-          python generate_prop_jerry_synthesis.py --force || echo "prop jerry synthesis failed (non-fatal)"
+          # 2026-08-22: --tier-gate PRIME,STRONG caps LLM narration to card-worthy
+          # props only (~61 calls = ~4 min vs ~332 calls = ~25 min for every non-SKIP
+          # prop). Below-gate props still have their ensemble decision + signals;
+          # they render deterministically from tier + conviction + signals dict
+          # without Claude tokens. Template renderer will land in follow-up commit
+          # to fill deterministic short_read for below-gate props.
+          python generate_prop_jerry_synthesis.py --force --tier-gate PRIME,STRONG || echo "prop jerry synthesis failed (non-fatal)"
 
       # Collapse Prop Jerry contradictions (2026-08-01 C). Runs AFTER
       # generate_prop_jerry_synthesis. Kills Skenes-style BACK+BACK /
@@ -667,13 +673,13 @@ jobs:
           # so we can tell empty-string vs actually-populated at a glance.
           # Remove this echo once the KenPom pull is confirmed working.
           echo "KENPOM_KEY length: ${#KENPOM_KEY}"
-          if [ "$DAY" = "1" ]; then
-            echo "Monday — pulling KenPom snapshot"
-            cd mlb_pipeline
-            python ncaab_pipeline.py
-          else
-            echo "Not Monday (day=$DAY) — skipping NCAAB pull (but length probe still ran)"
-          fi
+          # 2026-08-22: KenPom Monday pull REMOVED from MLB cron. This was
+          # duplicating the identical paid-API call already running in
+          # ncaab_pipeline.yml Monday cron (which writes to ncaab_team_stats
+          # AND ncaab_rating_snapshots). Paying twice for the same snapshot.
+          # If ncaab_pipeline.yml is down, trigger it manually via
+          # workflow_dispatch rather than reintroducing this duplicate.
+          echo "KenPom pull is owned by ncaab_pipeline.yml — not re-running here"
 
       # HR Watch audit (2026-06-01) — resolves prior days' predictions
       # against MLB Stats API gameLog, computes hit rate by score band,
@@ -812,28 +818,13 @@ jobs:
           fi
 
       # Server-side Jerry UFC fight reads — runs every cron, self-no-ops when
-      # there's no upcoming card. Pulls ufc_picks + recent fighter form into a
-      # struct, narrates with the UFC prompt template, writes to jerry_cache.
-      - name: Generate UFC fight reads
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          cd mlb_pipeline
-          python generate_ufc_game_reads.py --force
-
-      # Server-side Jerry NFL game reads — Phase 1 (market + season EPA only;
-      # gets richer when Phase 2 picks pipeline ships). Self-no-ops in offseason.
-      - name: Generate NFL game reads
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          cd mlb_pipeline
-          python generate_nfl_game_reads.py --force
+      # 2026-08-22: UFC + NFL game-reads MOVED OUT of MLB cron.
+      # UFC reads now run from ufc_pipeline.yml (Wed/Fri/Sat/Sun crons).
+      # NFL reads run from nfl_pipeline.yml (weekly slate cadence) with
+      # its own season gate — this cron was blindly firing --force every
+      # cycle year-round, including off-season and preseason. Waste eliminated.
+      # If UFC/NFL reads need to run outside their own workflow's cron,
+      # trigger those workflows manually (workflow_dispatch).
 
       - name: Resolve prop grades
         env:

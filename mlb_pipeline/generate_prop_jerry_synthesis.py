@@ -68,12 +68,68 @@ def load_prompt() -> str | None:
     return rows[0]['template'] if rows else None
 
 
+def _fetch_playbook_decision(sport: str, prop: dict) -> dict | None:
+    """2026-08-17: fetch the prop playbook's shadow decision for this prop.
+    Returned dict has playbook_tier / playbook_side / playbook_score /
+    playbook_sources (signal contribution list).
+
+    Playbook is shadow-mode — reading its decision here just gives Jerry
+    additional structured reasoning to ground prose on, without changing
+    the pick outcome (legacy tier still authoritative in Jerry's verdict)."""
+    try:
+        r = requests.get(f'{SUPABASE_URL}/rest/v1/prop_playbook_decisions',
+                         headers=H_READ,
+                         params={'sport': f'eq.{sport}',
+                                 'player_name': f'eq.{prop.get("player_name", "")}',
+                                 'prop_type': f'eq.{prop.get("prop_type", "")}',
+                                 'direction': f'eq.{prop.get("direction", "")}',
+                                 'game_date': f'eq.{prop.get("game_date", "")}',
+                                 'select': 'playbook_tier,playbook_side,playbook_score,playbook_conviction,playbook_sources',
+                                 'order': 'scored_at.desc',
+                                 'limit': '1'},
+                         timeout=5)
+        rows = r.json() if r.status_code == 200 else []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def _format_playbook_prose(pb: dict | None) -> str:
+    """Convert playbook decision + signal contributions into a compact
+    Jerry-readable brief. Only surface signals with real contribution."""
+    if not pb or not pb.get('playbook_sources'):
+        return ''
+    sources = pb.get('playbook_sources') or []
+    real = [s for s in sources if s.get('contribution', 0) > 0]
+    if not real:
+        return ''
+    lines = [
+        f'\n\n=== PLAYBOOK CROSS-CHECK (structured signals — shadow mode) ===',
+        f'Playbook tier: {pb.get("playbook_tier", "?")} · side: {pb.get("playbook_side", "?")} · '
+        f'aggregate score: {pb.get("playbook_score", 0):.2f}',
+        f'Fired signals contributing to this side:',
+    ]
+    for s in real[:6]:
+        lines.append(f'  · {s.get("signal_key", "?"):<32}  contrib={s.get("contribution", 0):+.2f}  → {s.get("prose", "")[:120]}')
+    lines.append(
+        'Use these plug-in signals as concrete evidence to ANCHOR your prose. '
+        'They ARE data-backed reasons (not guesses). Cite the top 2-3 in your writeup. '
+        'DO NOT invent stats not present in these signals or in the legacy signals below.'
+    )
+    return '\n'.join(lines)
+
+
 def render_prompt(template: str, prop: dict, sport: str,
                   bucket_roi: dict | None = None) -> str:
     odds = prop.get('book_over_odds') if prop.get('direction') == 'over' else prop.get('book_under_odds')
     implied = _implied_prob(odds)
     sigs = prop.get('signals') or {}
     sig_lines = '\n'.join(f'  - {k}: {v}' for k, v in sigs.items() if not k.startswith('_'))[:2000]
+
+    # 2026-08-17: Fetch playbook decision + signals to ground Jerry prose
+    # in structured plug-in reasoning. Shadow-mode — doesn't change verdict.
+    playbook_decision = _fetch_playbook_decision(sport, prop)
+    playbook_prose = _format_playbook_prose(playbook_decision)
 
     # CALIBRATION SIGNAL SURFACE (2026-08-05). apply_calibration stores its
     # fade/flip reason under signals['_calibration_fade']. The underscore
@@ -134,6 +190,15 @@ def render_prompt(template: str, prop: dict, sport: str,
     # Jerry sees. Highest-priority context = highest place in prompt tail.
     if calibration_directive:
         rendered = f'{rendered}{calibration_directive}'
+
+    # 2026-08-17: append playbook signal grounding LAST. Placed after
+    # calibration directive so it doesn't override picks but IS the most
+    # recent structured evidence Jerry sees when drafting prose. Since
+    # playbook is shadow-mode, this doesn't change the verdict — just
+    # grounds the LANGUAGE in real signals (reducing hallucination risk).
+    if playbook_prose:
+        rendered = f'{rendered}{playbook_prose}'
+
     return rendered
 
 
@@ -233,10 +298,50 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
     return False
 
 
-def run_for_sport(sport: str, game_date: str, template: str, force: bool = False, limit: int | None = None):
+def _refit_self_heal_if_stale(sport: str, game_date: str, table: str) -> None:
+    """2026-08-17: fail-safe against pipeline sequencing gaps.
+
+    If today's props have >5% missing refit_conviction, invoke
+    apply_prop_refit.py directly before Jerry synthesizes. Prevents
+    the class of failure where user's manual pipeline run skips
+    apply_prop_refit and Jerry proceeds with stale conviction values,
+    producing prop takes that ignore the calibration layer entirely.
+
+    MLB-only for now (refit v2 is MLB-only per project_prop_edge_calibration_july).
+    Non-fatal — a self-heal failure just means Jerry runs with whatever
+    refit coverage exists today; not worse than the old behavior."""
+    if sport != 'MLB': return
+    try:
+        r = requests.get(f'{SUPABASE_URL}/rest/v1/{table}',
+                         headers=H_READ,
+                         params={'game_date': f'eq.{game_date}',
+                                 'select': 'refit_conviction',
+                                 'limit': 500},
+                         timeout=15)
+        rows = r.json() if r.status_code == 200 else []
+        if not rows: return
+        missing = sum(1 for row in rows if row.get('refit_conviction') is None)
+        coverage_pct = 100.0 * (len(rows) - missing) / len(rows)
+        if missing / len(rows) > 0.05:  # >5% missing = sequencing gap
+            print(f'  [{sport}] refit_conviction coverage {coverage_pct:.1f}% ({missing}/{len(rows)} missing) — '
+                  f'firing apply_prop_refit.py as self-heal')
+            import subprocess
+            here = os.path.dirname(os.path.abspath(__file__))
+            subprocess.run([sys.executable, os.path.join(here, 'apply_prop_refit.py')],
+                           capture_output=True, text=True, timeout=180, env=os.environ.copy())
+            print(f'  [{sport}] refit self-heal complete')
+    except Exception as e:
+        print(f'  [{sport}] refit self-heal failed (non-fatal): {e}')
+
+
+def run_for_sport(sport: str, game_date: str, template: str, force: bool = False,
+                  limit: int | None = None, tier_gate: set[str] | None = None):
     table = PROPS_TABLE.get(sport)
     if not table:
         print(f'  [{sport}] no props table registered — skip'); return 0
+    # 2026-08-17: refit self-heal before Jerry runs — catches sequencing
+    # gaps where apply_prop_refit was skipped in the pipeline.
+    _refit_self_heal_if_stale(sport, game_date, table)
     # Fetch today's props for this sport
     r = requests.get(f'{SUPABASE_URL}/rest/v1/{table}',
                      headers=H_READ,
@@ -330,6 +435,17 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                   f'· juice-capped {capped} · goldmine-promoted {promoted}')
     except ImportError:
         pass  # calibration module optional; earlier pipeline unaffected
+
+    # 2026-08-22 tier-gate filter — applied LAST (after all tier calibration).
+    # When --tier-gate PRIME,STRONG is passed, LLM narration only fires for
+    # card-worthy tiers. Below-gate props keep their ensemble decision + signals
+    # but skip the Claude call. Non-card props still show tier + conviction
+    # + signal chips in the app without expensive prose.
+    if tier_gate:
+        before_gate = len(props)
+        props = [p for p in props if (p.get('tier') or '').upper() in tier_gate]
+        print(f'  [{sport}] tier-gate {sorted(tier_gate)}: '
+              f'{len(props)}/{before_gate} props kept for LLM narration')
 
     done = 0
     for prop in props:
@@ -455,16 +571,19 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
 
 
 def main(force: bool = False, sport: str | None = None,
-         game_date: str | None = None, limit: int | None = None):
+         game_date: str | None = None, limit: int | None = None,
+         tier_gate: set[str] | None = None):
     gd = game_date or today_et()
     print(f'=== generate_prop_jerry_synthesis · {gd} ===')
+    if tier_gate:
+        print(f'  tier-gate active: only synthesizing {sorted(tier_gate)}')
     template = load_prompt()
     if not template:
         print('  ⛔ no prop_jerry_synthesis prompt — run seed_prop_jerry_prompt.py first'); return
     sports = [sport] if sport else list(PROPS_TABLE.keys())
     total = 0
     for s in sports:
-        total += run_for_sport(s, gd, template, force=force, limit=limit)
+        total += run_for_sport(s, gd, template, force=force, limit=limit, tier_gate=tier_gate)
     print(f'\n=== wrote {total} prop_jerry_reads ===')
 
 
@@ -474,5 +593,18 @@ if __name__ == '__main__':
     p.add_argument('--sport', help='MLB only for now; others when their pipelines ship')
     p.add_argument('--date')
     p.add_argument('--limit', type=int)
+    # 2026-08-22: --tier-gate caps LLM narration to specified tiers only.
+    # Default (no flag) preserves legacy behavior — every non-SKIP prop gets
+    # a Claude call (~332 calls/night = ~25 min). With --tier-gate PRIME,STRONG
+    # only card-worthy props get LLM prose (~61 calls = ~4 min). Below-gate
+    # props still get graded and scored — they just skip the LLM narration
+    # step (their tier + conviction + signals dict is already the pick).
+    # Post-launch: pair with render_prop_template.py to fill deterministic
+    # short_read for the skipped props so app renders cleanly.
+    p.add_argument('--tier-gate', help='Comma-separated tiers to synthesize (e.g. PRIME,STRONG). Others skipped.')
     args = p.parse_args()
-    main(force=args.force, sport=args.sport, game_date=args.date, limit=args.limit)
+    gate = None
+    if args.tier_gate:
+        gate = {t.strip().upper() for t in args.tier_gate.split(',') if t.strip()}
+    main(force=args.force, sport=args.sport, game_date=args.date,
+         limit=args.limit, tier_gate=gate)
