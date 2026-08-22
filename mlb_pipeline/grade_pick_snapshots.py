@@ -59,15 +59,22 @@ def _unit_pnl(tier: str, odds, result: str) -> float | None:
 
 
 def grade_date(gd: str, dry_run: bool = False) -> tuple[int, int]:
-    """Return (graded, skipped)."""
-    # Pull snapshots that need grading + their live-prop results
+    """Return (graded, skipped).
+
+    2026-08-21 FIX: fallback lookup when prop_id row is missing from
+    mlb_pipeline_props (source table gets pruned intraday; 596 snapshots
+    were stuck ungraded because their prop_id rows were gone). Fallback:
+    match by (game_date, player_name, prop_type, prop_line, direction)
+    which any equivalent row will satisfy.
+    """
+    # Pull snapshots that need grading + FULL identifying fields for fallback
     snaps = requests.get(
         f'{SB}/rest/v1/prop_pick_snapshots',
         headers=H_READ,
         params={
             'game_date': f'eq.{gd}',
             'result': 'is.null',
-            'select': 'id,prop_id,legacy_tier,direction,book_over_odds,book_under_odds',
+            'select': 'id,prop_id,legacy_tier,direction,book_over_odds,book_under_odds,player_name,prop_type,prop_line',
         },
         timeout=30,
     ).json()
@@ -75,7 +82,7 @@ def grade_date(gd: str, dry_run: bool = False) -> tuple[int, int]:
         return 0, 0
     prop_ids = {s['prop_id'] for s in snaps if s.get('prop_id')}
 
-    # Batch fetch results from live table
+    # Primary lookup: by prop_id
     prop_results = {}
     if prop_ids:
         ids_csv = ','.join(f'"{pid}"' for pid in prop_ids)
@@ -91,10 +98,42 @@ def grade_date(gd: str, dry_run: bool = False) -> tuple[int, int]:
         for row in (pr.json() or []):
             prop_results[row['id']] = row.get('result')
 
+    # 2026-08-21 FALLBACK: for snapshots whose prop_id lookup missed OR
+    # returned null result, try matching by identifying fields. Handles
+    # pruned source rows.
+    fallback_results = {}
+    unresolved = [s for s in snaps
+                  if s.get('prop_id') is None
+                  or prop_results.get(s.get('prop_id')) not in ('Win', 'Loss', 'Push')]
+    if unresolved:
+        # Fetch all graded props for the date (small enough to batch)
+        fb = requests.get(
+            f'{SB}/rest/v1/mlb_pipeline_props',
+            headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-4999'},
+            params={
+                'game_date': f'eq.{gd}',
+                'result': 'not.is.null',
+                'select': 'player_name,prop_type,prop_line,direction,result',
+            },
+            timeout=30,
+        )
+        graded_props = fb.json() if fb.status_code in (200, 206) else []
+        # Index by (player, type, line, direction)
+        for row in graded_props:
+            if not isinstance(row, dict): continue
+            key = (row.get('player_name'), row.get('prop_type'),
+                   row.get('prop_line'), row.get('direction'))
+            fallback_results[key] = row.get('result')
+
     graded = skipped = 0
     now_iso = datetime.now(timezone.utc).isoformat()
     for s in snaps:
         res = prop_results.get(s.get('prop_id'))
+        # Fallback if primary lookup missed
+        if res not in ('Win', 'Loss', 'Push'):
+            fb_key = (s.get('player_name'), s.get('prop_type'),
+                      s.get('prop_line'), s.get('direction'))
+            res = fallback_results.get(fb_key)
         if res not in ('Win', 'Loss', 'Push'):
             skipped += 1
             continue
