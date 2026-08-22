@@ -8623,7 +8623,7 @@ setJerryHistory(prev => {
         {data: propsHist},
       ] = await Promise.all([
         supabase.from('mlb_game_context')
-          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,close_total')
+          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds,close_spread,close_total')
           .eq('game_date', today),
         // 2026-08-17: pull today's props for Sharp Card. Include ALL
         // tiers now (LEAN + PRIME + STRONG) so playbook can lift LEAN
@@ -8633,13 +8633,13 @@ setJerryHistory(prev => {
           .select('player_name,matchup,prop_type,prop_line,direction,tier,conviction,refit_conviction,book_line,game_id')
           .eq('game_date', today).in('tier', ['PRIME','STRONG','LEAN']),
         supabase.from('nfl_game_context')
-          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close')
+          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
           .eq('game_date', today),
         supabase.from('ncaaf_game_context')
-          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close')
+          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
           .eq('game_date', today),
         supabase.from('ncaab_game_context')
-          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close')
+          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
           .eq('game_date', today),
         supabase.from('jerry_reads')
           .select('game_id,call_side,conviction,input_snapshot')
@@ -8656,17 +8656,22 @@ setJerryHistory(prev => {
       ]);
 
       // ── TODAY'S PICKS ──
+      // 2026-08-22: ML side odds now fall back to _odds (live) when _close
+      // is null. Prior code only read _close which snapshots at game start,
+      // so pre-game Sharp tab showed EVERY ML pick as -110 default instead
+      // of real prices. RL/Total still use -110 fallback until per-side
+      // spread/total prices get cached on ctx (currently only ML odds are
+      // on the ctx row; book_lines table has per-book RL/Total prices but
+      // that requires a joined query — deferred).
       const mlbSidePicks = (mlbCtx || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).map((g: any) => {
         const pp = g.primary_play || {};
-        const sideML = pp.side === 'HOME' ? g.home_ml_close : pp.side === 'AWAY' ? g.away_ml_close : null;
+        const homeML = g.home_ml_close ?? g.home_ml_odds;
+        const awayML = g.away_ml_close ?? g.away_ml_odds;
+        const sideML = pp.side === 'HOME' ? homeML : pp.side === 'AWAY' ? awayML : null;
         return {
           sport: 'MLB', matchup: `${g.away_team} @ ${g.home_team}`,
           tier: pp.tier, pick: pp.label || '—',
           type: pp.type || 'ml', reason: pp.sub || '',
-          // 2026-08-18: attach the actual odds so the play card can render them.
-          // 2026-08-20: RL/total default to -110 (standard vig) if we don't have
-          // exact book odds cached — user asked for odds on EVERY play, not
-          // just ML. When we eventually cache spread/total prices, wire here.
           odds: pp.type === 'ml' ? sideML : -110,
           line: pp.line ?? g.close_spread ?? g.close_total,
           units: unitsForPick({tier: pp.tier, type: pp.type || 'ml', sidePriceAmerican: sideML}),
@@ -8724,7 +8729,10 @@ setJerryHistory(prev => {
       for (const [sport, rows] of [['NFL', nflCtx], ['NCAAF', ncaafCtx], ['NCAAB', ncaabCtx]] as [string, any[]][]) {
         (rows || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).forEach((g: any) => {
           const pp = g.primary_play || {};
-          const sideML = pp.side === 'HOME' ? g.home_ml_close : pp.side === 'AWAY' ? g.away_ml_close : null;
+          // 2026-08-22: same _close -> _odds fallback as MLB above.
+          const homeML = g.home_ml_close ?? g.home_ml_odds;
+          const awayML = g.away_ml_close ?? g.away_ml_odds;
+          const sideML = pp.side === 'HOME' ? homeML : pp.side === 'AWAY' ? awayML : null;
           otherPicks.push({
             sport, matchup: `${g.away_team} @ ${g.home_team}`,
             tier: pp.tier, pick: pp.label || '—',
