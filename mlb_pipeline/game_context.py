@@ -4054,6 +4054,18 @@ def run(target_date=None):
                 print(f"  {home_pitcher} last outing: {home_last_outing['pitches']} pitches, {home_last_outing['innings']} IP")
             if away_last_outing:
                 print(f"  {away_pitcher} last outing: {away_last_outing['pitches']} pitches, {away_last_outing['innings']} IP")
+            # 2026-08-22 PERSIST FATIGUE SIGNALS onto context so game Jerry +
+            # prop scorer + template can reference them. Previously only
+            # printed to stdout — data lost between game_context and every
+            # downstream reader. Same class of gap as pitcher_vs_team data
+            # (fixed earlier). Fatigue is the user-flagged "Cameron 5-day
+            # rest after 9 innings" analysis vector.
+            if home_last_outing:
+                context['home_pitcher_last_outing_pitches'] = home_last_outing.get('pitches')
+                context['home_pitcher_last_outing_ip'] = home_last_outing.get('innings')
+            if away_last_outing:
+                context['away_pitcher_last_outing_pitches'] = away_last_outing.get('pitches')
+                context['away_pitcher_last_outing_ip'] = away_last_outing.get('innings')
 
             # Pitcher vs team history
             # Get opponent team IDs
