@@ -712,14 +712,11 @@ jobs:
       # Skenes/Sugano + Connelly Early incidents). Writes findings to
       # jerry_cache.starter_changes_<date> so downstream tools (morning
       # audit, engine_tier_brief, validators) can read "data freshness"
-      # before publishing.
-      - name: Starter-change detection
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python check_starter_changes.py
+      # 2026-08-22: check_starter_changes.py step REMOVED. Redundant with
+      # verify_starters.py which also compares stored starters vs MLB API
+      # AND patches drift (check_starter_changes only logs). Detection is
+      # covered by verify_starters + retry_missing_starters chain. Script
+      # moved to _legacy/ for reference.
 
       # Late-announce starter retry (added 2026-07-25). Some teams
       # announce home starter after 12pm cron — we get context rows
@@ -833,13 +830,11 @@ jobs:
           BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
         run: |
           cd mlb_pipeline
-          # 2026-08-08: grade_props.py replaces resolve_props.py — the latter
-          # had a silent bug where get_pitcher_outs wrote final_value=0 when
-          # player-name matching failed. grade_props uses a single-pass MLB
-          # API fetch with correct IP-to-outs parsing. resolve_props kept as
-          # fallback for 3-5 days of parallel run before retirement.
+          # 2026-08-08 / retired 2026-08-22: grade_props.py is authoritative.
+          # resolve_props.py fallback removed after 14-day parallel-run window
+          # closed cleanly (grade_props no known misses). File moved to
+          # _legacy/resolve_props.py for reference.
           python grade_props.py || echo "grade_props non-fatal"
-          python resolve_props.py || echo "resolve_props non-fatal (fallback)"
           # 2026-08-18: copy result + compute unit_pnl using SNAPSHOTTED
           # odds so historical PnL uses the odds at card-lock, not whatever
           # was live at grade time. Backfills last 7 days each run so late

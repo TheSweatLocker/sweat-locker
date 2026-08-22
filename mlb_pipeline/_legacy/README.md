@@ -17,6 +17,8 @@ so their code + git history remain available if needed.
 | `resolve_external_picks.py` | `resolve_externals.py` | Older name for the same grader. All workflows call `resolve_externals.py`. Zero callers. |
 | `grade_ledger_suggestions.py` | `grade_ledger_snapshots.py` | Snapshots version uses locked odds (correct). Suggestions version predates the snapshot lock. Zero callers. |
 | `compute_cohorts_v2.py` | `ensemble_scorer.py` | v2 cohort shadow computer. Superseded by ensemble_v2 which subsumes the cohort logic via signal_sources. Zero callers. |
+| `resolve_props.py` | `grade_props.py` | Legacy prop grader with silent bug (`get_pitcher_outs` wrote `final_value=0` on name-match failure). Retirement window (14d parallel-run vs grade_props) closed clean 8/22. Workflow call removed same commit. |
+| `check_starter_changes.py` | `verify_starters.py` + `retry_missing_starters.py` | Redundant detect-only script. `verify_starters.py` compares stored vs MLB API AND patches drift. `retry_missing_starters.py` covers the late-announce case. Workflow step removed same commit. |
 
 **NOT moved (still worth keeping in main pipeline):**
 - `read_live_tier_record.py` — module imported by `generate_sweat_card.py:1705`
