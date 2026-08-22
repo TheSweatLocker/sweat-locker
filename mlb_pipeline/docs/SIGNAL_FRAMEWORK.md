@@ -160,9 +160,50 @@ Same 10-factor structure as NFL props:
 
 Similar 10-factor pattern to NFL: L10 extreme, L5 hot/cold, projection edge, season hit%, matchup at position (need `nba_player_vs_team` backfill), back-to-back fatigue, opponent pace impact, minutes projection sanity.
 
-## NHL — Sides / Totals (design pending)
+## NHL — Sides / Totals Checklist (12 factors)
 
-Goalie vs opponent shots-against, PP/PK matchup, back-to-back, home ice, save % trends.
+| # | Factor | Signal example |
+|---|---|---|
+| 1 | Direct oddscrowd (ml + puckline + total) | `oddscrowd_ml/puckline/total_fade_boost_nhl` |
+| 2 | Back-to-back fatigue (both sides) | `nhl_home/away_b2b_fade` |
+| 3 | Elite starting goalie (SV% >= .920) | `nhl_home/away_goalie_elite` |
+| 4 | Dual elite goalies → under | `nhl_both_goalies_elite_under` |
+| 5 | Power play vs weak penalty kill | `nhl_home/away_pp_vs_weak_pk` |
+| 6 | Projection sanity total over/under | `nhl_projection_contradicts_total_over/under` |
+| 7 | Team ATS home/road | ⚠️ needs season data |
+| 8 | Team form L10 (5-4-1 = normalize) | ⚠️ needs season data |
+| 9 | H2H recent | ⚠️ needs backfill |
+| 10 | Model consensus (once NHL V4 exists) | ⚠️ pending |
+| 11 | External handicapper picks | Existing pattern |
+| 12 | Sharp scenario matching | ⚠️ scenario handler needs NHL data |
+
+## NCAAB — Sides / Totals Checklist (12 factors)
+
+| # | Factor | Signal example |
+|---|---|---|
+| 1 | Direct oddscrowd | `oddscrowd_ml/spread/total_fade_boost_ncaab` |
+| 2 | Efficiency model dominant (home/away) | `ncaab_efficiency_home/away_dominant` |
+| 3 | Pace mismatch (both fast → over) | `ncaab_pace_both_fast_over` / `_slow_under` |
+| 4 | 3PT shooting vs def gap | `ncaab_3pt_shooting_gap_home` |
+| 5 | Home court advantage (strong home record) | `ncaab_home_court_advantage` |
+| 6 | Conference game dog cover | `ncaab_conference_dog_cover` |
+| 7 | Projection sanity | `ncaab_projection_contradicts_total_*` |
+| 8 | Team form L10 | ⚠️ scoped season data |
+| 9 | KenPom / SP+ style ratings | Use "efficiency model" branding |
+| 10 | H2H recent (small NCAAB sample) | ⚠️ backlog |
+| 11 | External handicapper picks | Existing pattern |
+| 12 | Sharp scenario matching | ⚠️ scenario handler needs NCAAB data |
+
+## NFL — QB vs Defense Career Signals (6, pending wire-up)
+
+`nfl_qb_vs_team` table populated 8/21 (1425 rows across 2021-2025 via nflverse). Signal definitions shipped:
+- `nfl_qb_owns_defense_career` (career QB rating >= 100 vs opp, 3+ starts)
+- `nfl_qb_owned_by_defense_career` (rating <= 75)
+- `nfl_qb_high/low_yds_vs_team` (recent avg vs prop line ±30 yds)
+- `nfl_qb_int_prone_vs_team` (recent 1.5+ INT avg)
+- `nfl_qb_td_prolific_vs_team` (recent 2+ TD avg)
+
+**Follow-up wire-up needed:** either (a) join `qb_vs_team_*` fields onto `nfl_game_context` at build time, OR (b) add `_handler_nfl_qb` in ensemble_scorer.py. Signals are defined but won't fire until one of these ships.
 
 ## Cross-Sport Philosophy
 
