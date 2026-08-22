@@ -98,6 +98,23 @@ jobs:
           cd mlb_pipeline
           python ncaaf_game_context.py || echo "game_context failed"
 
+      # 2026-08-22 (silent-bug audit finding #14): NCAAF weather pull.
+      # Populates temp / wind / wind_speed / dome / weather_source columns
+      # so ncaaf_extreme_wind_under, ncaaf_high_wind_under,
+      # ncaaf_freezing_cold_under, ncaaf_prop_freezing_rush_boost signals
+      # can fire. Uses ~80-team stadium coord table + OpenWeather; unknown
+      # venues + neutral sites skip cleanly.
+      - name: Pull NCAAF weather (OpenWeather)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_weather_pull.py || echo "NCAAF weather pull failed (non-fatal)"
+
       # Backfill L5 team ATS / O/U / ML tendencies onto today's rows
       # (2026-08-17). Populates home/away_ats_last5, ou_last5_overs/unders,
       # covers_as_fav/dog%, ml_last5. Activates the 10 NCAAF team_form
