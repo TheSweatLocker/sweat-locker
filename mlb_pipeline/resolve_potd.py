@@ -132,7 +132,21 @@ def compute_outcome(lean, gr, away_team, home_team):
     # juiced)") which would false-match the ML branch and fail name resolution.
     # spread_result lives on mlb_game_results as 'home_covered'/'away_covered'/'push'.
     import re
+    # 2026-08-22: accept BOTH formats for run-line lean:
+    #   "Team +1.5" / "Team -1.5"  (canonical with sign)
+    #   "Team RL 1.5"              (jerry_anchor_potd's current format)
+    # Prior regex only matched the signed form; RL-form POTDs stayed
+    # Pending forever (yesterday's Pirates RL 1.5 covered but wasn't graded).
     rl_match = re.search(r'^(.+?)\s+([+\-]1\.5)\b', lean.strip())
+    if not rl_match:
+        rl_form = re.search(r'^(.+?)\s+RL\s+([+\-]?1\.5)\b', lean.strip(), re.IGNORECASE)
+        if rl_form:
+            picked = rl_form.group(1).strip()
+            line_raw = rl_form.group(2)
+            # Infer sign from home/away later — but for +1.5 covers formula
+            # we treat unsigned '1.5' as +1.5 (underdog form), '-1.5' as fav
+            signed = line_raw if line_raw.startswith(('+','-')) else f'+{line_raw}'
+            rl_match = re.match(r'^(.+?)\s+([+\-]1\.5)\s*$', f'{picked} {signed}')
     if rl_match:
         sr = (gr.get('spread_result') or '').lower()
         if sr not in ('home_covered', 'away_covered', 'push'):
