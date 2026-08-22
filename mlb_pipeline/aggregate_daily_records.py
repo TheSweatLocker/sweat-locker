@@ -151,31 +151,52 @@ def agg_sharp_card(date: str) -> dict | None:
 
 
 def agg_ledger(date: str) -> list[dict]:
-    """Ledger — one record per kind (chalk_parlay, teased_*)."""
-    rows = requests.get(f'{SB}/rest/v1/ledger_suggestions',
+    """Ledger — one record per kind (chalk_parlay, teased_*).
+
+    2026-08-22: read from ledger_SNAPSHOTS not ledger_suggestions.
+    Snapshots is the graded persistent table (result + unit_pnl written
+    by grade_ledger_snapshots.py). Suggestions is the pre-game combo
+    proposals — never graded, so agg was always returning empty.
+    """
+    rows = requests.get(f'{SB}/rest/v1/ledger_snapshots',
         headers=H_READ,
         params={'game_date': f'eq.{date}',
-                'select': 'kind,result,legs,combined_odds'},
+                'result': 'not.is.null',
+                'select': 'kind,result,legs,combined_odds,unit_pnl'},
         timeout=15).json()
     if not isinstance(rows, list) or not rows: return []
-    out = []
+    # 2026-08-22: collapse by kind so we get ONE record per ledger surface
+    # per date (chalk_parlay, teased_spreads, teased_totals, etc), even
+    # when multiple snapshots exist for the same kind on one day.
+    from collections import defaultdict as _dd
+    by_kind = _dd(lambda: {'w': 0, 'l': 0, 'p': 0, 'units_bet': 0.0,
+                            'units_won': 0.0, 'legs_all': []})
     for r in rows:
         v = (r.get('result') or '').upper()
         if v not in ('W','L','P'): continue
-        stake = 1.0  # ledger is 1u standard
+        stake = 1.0
         odds = r.get('combined_odds')
-        units_won = 0.0
-        if v == 'W': units_won = stake * _american_payout(odds)
-        elif v == 'L': units_won = -stake
-        surface = f'ledger_{r.get("kind","unknown").replace("_combo","")}'
+        pnl = r.get('unit_pnl')
+        if pnl is None:
+            pnl = stake * _american_payout(odds) if v == 'W' else -stake if v == 'L' else 0
+        kind = r.get('kind','unknown').replace('_combo','')
+        agg = by_kind[kind]
+        agg['units_bet'] += stake
+        agg['units_won'] += float(pnl)
+        if v == 'W': agg['w'] += 1
+        elif v == 'L': agg['l'] += 1
+        else: agg['p'] += 1
+        agg['legs_all'].append({'legs': r.get('legs') or [], 'odds': odds, 'result': v})
+
+    out = []
+    for kind, agg in by_kind.items():
         out.append({
-            'surface': surface, 'sport': 'MLB', 'record_date': date,
-            'wins': 1 if v == 'W' else 0,
-            'losses': 1 if v == 'L' else 0,
-            'pushes': 1 if v == 'P' else 0,
-            'units_bet': stake, 'units_won': round(units_won, 2),
-            'pick_count': 1,
-            'detail': {'legs': r.get('legs') or [], 'combined_odds': odds},
+            'surface': f'ledger_{kind}', 'sport': 'MLB', 'record_date': date,
+            'wins': agg['w'], 'losses': agg['l'], 'pushes': agg['p'],
+            'units_bet': round(agg['units_bet'], 2),
+            'units_won': round(agg['units_won'], 2),
+            'pick_count': agg['w'] + agg['l'] + agg['p'],
+            'detail': {'combos': agg['legs_all']},
         })
     return out
 
@@ -291,9 +312,20 @@ def write_record(rec: dict, dry_run: bool = False) -> None:
         icon = '✓' if rec['units_won'] > 0 else '✗' if rec['units_won'] < 0 else '='
         print(f'  {icon} {rec["surface"]:22s} {rec["sport"]:5s} {rec["wins"]}-{rec["losses"]}-{rec["pushes"]} units {rec["units_won"]:+.2f}u [DRY]')
         return
+    # 2026-08-22: delete-then-insert to keep this idempotent. Table has no
+    # unique constraint on (surface, sport, record_date) so repeated cron
+    # runs would otherwise stack duplicate rows and inflate the record.
+    # Delete existing row for the key, then insert fresh — simpler than
+    # a PATCH+POST dance and keeps computed_at reflecting the latest run.
+    try:
+        del_url = (f'{SB}/rest/v1/daily_surface_records'
+                   f'?surface=eq.{rec["surface"]}'
+                   f'&sport=eq.{rec["sport"]}'
+                   f'&record_date=eq.{rec["record_date"]}')
+        requests.delete(del_url, headers=H_WRITE, timeout=10)
+    except Exception:
+        pass  # best-effort — insert will still work, may just create dup
     payload = {**rec, 'computed_at': datetime.now(timezone.utc).isoformat()}
-    if isinstance(payload.get('detail'), (dict, list)):
-        pass  # PostgREST handles JSONB
     r = requests.post(f'{SB}/rest/v1/daily_surface_records',
         headers=H_WRITE, json=payload, timeout=10)
     if r.status_code not in (200, 201, 204):

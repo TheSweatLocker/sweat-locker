@@ -1914,6 +1914,24 @@ jobs:
           cd mlb_pipeline
           python grade_ledger_snapshots.py --days 7 || echo "ledger grader failed (non-fatal)"
 
+      # 2026-08-22: aggregate daily records for every surface (sharp_card,
+      # ledger_*, ladder, potd, dawg_of_day, daily_degen) into
+      # daily_surface_records. Root cause: script existed since 8/20 but was
+      # never in cron so the table was empty and app record cards for every
+      # sub-tab were computed on the fly (fragile / inconsistent) or showed
+      # stale/wrong numbers. Runs AFTER all graders so today's outcomes are
+      # counted. Backfills 3 days each run so late-graded rows catch up.
+      # Idempotent — writer deletes existing (surface, sport, date) row
+      # before insert.
+      - name: Aggregate daily surface records
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python aggregate_daily_records.py --backfill 3 || echo "daily records aggregator failed (non-fatal)"
+
       # ─── Session A monitoring dashboard (2026-08-14) ─────────────
       # Populates hit_rate_snapshots + rule_fire_stats + dashboard_alerts.
       # Sport-universal — one nightly run covers every registered sport.
