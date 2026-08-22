@@ -854,13 +854,12 @@ jobs:
           # was live at grade time. Backfills last 7 days each run so late
           # settles catch up automatically.
           python grade_pick_snapshots.py --days 7 || echo "grade_pick_snapshots non-fatal"
-          # 2026-08-22: grade prop_playbook_decisions (root cause: this
-          # grader shipped 8/17 but was never wired into cron — 342 8/21
-          # decisions all sat result=NULL until manual catchup. Fixes:
-          # every signal_registry refit + Sharp Card track record + shadow
-          # audit all depend on this table's result field being fresh.
-          # 21-day backfill matches the shadow audit window.
-          python grade_prop_playbook.py --backfill 21 || echo "grade_prop_playbook non-fatal"
+          # 2026-08-22: grade prop_playbook_decisions. Was --backfill 21
+          # for one-shot catchup; trimmed to 3 for steady-state. Grader
+          # runs every cron cycle so a 3-day window is more than enough
+          # to catch late grades — 21 was adding ~8 min of MLB stats API
+          # calls per cron for zero incremental benefit after catchup.
+          python grade_prop_playbook.py --backfill 3 || echo "grade_prop_playbook non-fatal"
 
       # Prop playbook shadow audit (2026-08-17). Compares legacy prop
       # scoring vs plug-in playbook decisions over rolling 14-day window
@@ -1930,7 +1929,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python aggregate_daily_records.py --backfill 3 || echo "daily records aggregator failed (non-fatal)"
+          python aggregate_daily_records.py --backfill 1 || echo "daily records aggregator failed (non-fatal)"
 
       # ─── Session A monitoring dashboard (2026-08-14) ─────────────
       # Populates hit_rate_snapshots + rule_fire_stats + dashboard_alerts.
