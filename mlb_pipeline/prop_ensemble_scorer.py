@@ -397,6 +397,31 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
     elif tier == 'STRONG' and conviction < 60:
         tier = 'LEAN'
 
+    # 2026-08-22 COLD-STREAK GUARD: if the player has been ice cold recently
+    # AND the season hit rate is low AND we're saying BACK on the OVER — that
+    # combination was landing as LEAN c=55 tonight (Drew Anderson outs_over
+    # 14.5 with L10=1/10, season=3.3% got LEAN, Ryan Johnson outs_over 15.5
+    # at L10=2/10 season=13.3% also LEAN). The scorer treated these as
+    # "no signal" (defaulted mid-band) instead of "strong FADE signal".
+    #
+    # Fix: force PASS when cold-and-cold-and-BACKing-OVER hits all three.
+    # Downstream Jerry synth will then either skip (PASS tier is not in
+    # tier-gate) or render a template chip noting the cold streak.
+    try:
+        l10_raw = prop.get('player_l10_hit_count')
+        season_raw = prop.get('player_season_hit_pct')
+        direction = (prop.get('direction') or '').lower()
+        if (l10_raw is not None and season_raw is not None
+                and float(l10_raw) <= 2
+                and float(season_raw) < 25
+                and winner_side == 'BACK'
+                and direction == 'over'):
+            tier = 'PASS'
+            conviction = max(30, conviction - 25)
+            winner_side = 'PASS'
+    except (TypeError, ValueError):
+        pass  # missing L10 data — normal path
+
     return PropDecision(
         sport=sport, game_date=prop.get('game_date',''),
         game_id=prop.get('game_id'), player_name=prop.get('player_name',''),
