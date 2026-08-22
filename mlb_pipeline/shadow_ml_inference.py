@@ -6,10 +6,18 @@ writes predictions to jerry_cache under key ml_v1_shadow_<date>.
 import os
 import sys
 import pickle
+import warnings
 from datetime import date, datetime
 from pathlib import Path
 import requests
 from dotenv import load_dotenv
+
+# 2026-08-22: suppress sklearn version warning noise (see predict_runs.py)
+try:
+    from sklearn.exceptions import InconsistentVersionWarning  # type: ignore
+    warnings.filterwarnings('ignore', category=InconsistentVersionWarning)
+except Exception:
+    warnings.filterwarnings('ignore', message='.*Trying to unpickle estimator.*')
 
 load_dotenv()
 SU = os.environ['SUPABASE_URL']

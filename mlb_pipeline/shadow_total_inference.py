@@ -14,10 +14,18 @@ import os
 import sys
 import json
 import pickle
+import warnings
 from datetime import date
 from pathlib import Path
 import requests
 from dotenv import load_dotenv
+
+# 2026-08-22: sklearn 1.8 → 1.9 pickle warning suppression (see predict_runs.py)
+try:
+    from sklearn.exceptions import InconsistentVersionWarning  # type: ignore
+    warnings.filterwarnings('ignore', category=InconsistentVersionWarning)
+except Exception:
+    warnings.filterwarnings('ignore', message='.*Trying to unpickle estimator.*')
 
 load_dotenv()
 SU = os.environ['SUPABASE_URL']
