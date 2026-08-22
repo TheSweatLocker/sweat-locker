@@ -84,15 +84,47 @@ The specific factors differ by sport but the philosophy is universal:
 
 ---
 
+## NFL — Sides / Totals Checklist (18 factors)
+
+| # | Factor | Signal example |
+|---|---|---|
+| 1 | Team ATS L10 (home + away) | `home/away_ats_hot/cold*` |
+| 2 | Season ATS trends | `*_team_ats_hot/cold_season` |
+| 3 | Home/road split (ML + ATS) | `home_ml_hot_at_home`, `away_ml_hot_on_road` |
+| 4 | Rest advantage (home + away) | `nfl_home/away_rest_edge_2plus` |
+| 5 | Short-week fatigue | `nfl_short_week_thursday_fade` |
+| 6 | Division game (dogs cover ~53%) | `nfl_division_game`, `nfl_division_underdog_cover` |
+| 7 | Weather — wind | `nfl_high_wind_under`, `nfl_extreme_wind_under` |
+| 8 | Weather — cold | `nfl_cold_under`, `nfl_freezing_cold_under` |
+| 9 | Dome game | `nfl_dome_over` |
+| 10 | Offense mismatch | `nfl_offense_mismatch_home/away_edge` |
+| 11 | Both offenses hot | `nfl_both_offenses_hot_over` |
+| 12 | Model consensus (V4 + Panel) | `nfl_model_consensus_home/away_spread` |
+| 13 | Projection sanity guard | `nfl_projection_contradicts_total_over/under` |
+| 14 | Public split — ML/RL/total | `oddscrowd_ml/rl/total_fade_boost_nfl` |
+| 15 | Sharp scenario match | `sharp_scenario_match_nfl` |
+| 16 | Sharp split confirmed | `sharp_split_confirmed_nfl` |
+| 17 | H2H recent trends | `h2h_*_dominant`, `h2h_over/under_streak` |
+| 18 | External handicapper picks | `external_handicapper_pick_nfl` |
+
+**Data gaps (backlog):**
+- QB career vs specific defense (need `nfl_qb_vs_team` table)
+- RB YPC vs run defense
+- Receiver vs coverage type
+- Divisional rivalry intensity beyond binary flag
+- Umpire/ref crew tendencies
+
+## NBA — Player Props + Sides / Totals (design pending)
+
+Same discipline: pace mismatch, off/def ratings, back-to-back fatigue, star status, player vs team scoring history, matchup at position, home/away splits.
+
+## NHL — Sides / Totals (design pending)
+
+Goalie vs opponent shots-against, PP/PK matchup, back-to-back, home ice, save % trends.
+
 ## Cross-Sport Philosophy
 
-**NFL:** QB vs specific defense history, offense vs D scheme, RB vs run defense YPC, receiver vs coverage type, home/road, weather (esp cold/wind), rest, division rival intensity.
-
-**NBA:** Player vs team scoring history, pace mismatch, offensive/defensive ratings, back-to-back fatigue, star player status, matchup at position.
-
-**NHL:** Goalie vs opponent shots-against, PP/PK matchup, back-to-back, home ice.
-
-**Same principle every sport:** every factor that a smart bettor would ask should have a signal firing (or a documented ctx gap noted as backlog).
+**Same principle every sport:** every factor that a smart bettor would ask should have a signal firing (or a documented ctx gap noted as backlog). The MLB 25-factor pitcher prop checklist is the template — adapt per sport with the specific factors that matter for that game.
 
 ---
 
