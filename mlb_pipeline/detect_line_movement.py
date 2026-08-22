@@ -212,6 +212,32 @@ def detect_rlm_and_limit(sport: str, lookback_hours: int, now_iso: str,
                 mu = row.get('matchup')
                 if gid_ and mu and gid_ not in matchup_by_gid:
                     matchup_by_gid[gid_] = mu
+    # 2026-08-22 FINAL FALLBACK: game_context tables are the authoritative
+    # source of home_team + away_team. If line_history still doesn't cover a
+    # game_id, look it up here so the flag.detail NEVER ends up with the
+    # 'game' placeholder that showed up as literal "game · total: Sharps on
+    # OVER" on the Steam Room strip. User flagged this 5+ times.
+    still_unresolved = [gid for (gid, _) in latest_by_gm.keys() if gid not in matchup_by_gid]
+    if still_unresolved:
+        ctx_table = {'MLB': 'mlb_game_context', 'NFL': 'nfl_game_context',
+                     'NCAAF': 'ncaaf_game_context', 'NBA': 'nba_game_context',
+                     'NHL': 'nhl_game_context', 'NCAAB': 'ncaab_game_context'}.get(sport)
+        if ctx_table:
+            try:
+                gids_csv = ','.join(still_unresolved[:100])
+                ctx_r = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
+                    params={'game_id': f'in.({gids_csv})',
+                            'select': 'game_id,home_team,away_team'},
+                    timeout=15)
+                if ctx_r.status_code == 200:
+                    for row in ctx_r.json() or []:
+                        gid_ = row.get('game_id')
+                        home = row.get('home_team')
+                        away = row.get('away_team')
+                        if gid_ and home and away and gid_ not in matchup_by_gid:
+                            matchup_by_gid[gid_] = f'{away} @ {home}'
+            except Exception as _e:
+                print(f'  matchup ctx fallback failed (non-fatal): {_e}')
 
     flags = []
     for (gid, market), snap_row in latest_by_gm.items():
@@ -235,10 +261,14 @@ def detect_rlm_and_limit(sport: str, lookback_hours: int, now_iso: str,
             if bets_pct is not None and moved_toward:
                 bets_other = 100 - bets_pct if pick_side.upper() != (snap_row.get('pick_side') or '').upper() else bets_pct
                 if (100 - bets_other) >= (50 + RLM_DIVERGE_MIN):
-                    matchup = picks_snaps[0].get('matchup') or matchup_by_gid.get(gid) or 'game'
+                    matchup = picks_snaps[0].get('matchup') or matchup_by_gid.get(gid) or ''
                     market_label = {'ml': 'ML', 'rl': 'run line', 'total': 'total'}.get(market, market)
+                    # 2026-08-22 UX fix: emit prefix only if we have a real matchup.
+                    # Prior code emitted 'game · total: ...' when matchup was missing,
+                    # which surfaced as literal "game" text on Steam Room cards.
+                    prefix = f'{matchup} · {market_label}: ' if matchup else f'{market_label}: '
                     detail = (
-                        f'{matchup} · {market_label}: '
+                        f'{prefix}'
                         f'Line moved toward {pick_side} while bets% on {other_side} '
                         f'({100 - bets_other:.0f}%) — reverse line movement signal'
                     )
@@ -256,10 +286,12 @@ def detect_rlm_and_limit(sport: str, lookback_hours: int, now_iso: str,
             if abs(div) >= LIMIT_DIVERGE_MIN and money_pct > bets_pct:
                 # 2026-08-14: include matchup in detail so users see
                 # "TB @ BAL — sharp $ on over" not just "sharp $ on over"
-                matchup = matchup_by_gid.get(gid) or 'game'
+                matchup = matchup_by_gid.get(gid) or ''
                 market_label = {'ml': 'ML', 'rl': 'run line', 'total': 'total'}.get(market, market)
+                # Same UX fix as above — no matchup means no bogus prefix.
+                prefix = f'{matchup} · {market_label}: ' if matchup else f'{market_label}: '
                 detail = (
-                    f'{matchup} · {market_label}: '
+                    f'{prefix}'
                     f'Money% {money_pct:.0f} vs bets% {bets_pct:.0f} '
                     f'(Δ+{money_pct-bets_pct:.0f}pp) — sharp $ on {pick_side}'
                 )

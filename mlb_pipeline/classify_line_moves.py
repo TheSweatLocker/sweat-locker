@@ -272,8 +272,66 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
                     classification.endswith('_LEAN') or
                     classification == 'SOURCES_SPLIT')
 
+    # 2026-08-20: rewrite the flag's `detail` text to match the final
+    # classification. detect_line_movement writes detail at detect-time
+    # from OC-only data ("Money% 51 vs bets% 35 — sharp $ on away"). When
+    # classify then flips to PUBLIC_MOVE_CONFIRMED using FR+CZ, the stale
+    # detect-time text contradicts the classification — this bit us on
+    # OAK/KC 8/18 where users saw "sharp $ on away" alongside a badge
+    # meaning "public on away". Now the detail is rebuilt from the
+    # classification + side + strongest source's numbers.
+    matchup, market_label = _parse_matchup_market(flag.get('detail') or '')
+    inv = {'HOME': 'AWAY', 'AWAY': 'HOME', 'OVER': 'UNDER', 'UNDER': 'OVER'}
+    side_up = str(side or '').upper()
+    other_side = inv.get(side_up, side_up)
+    prefix = f'{matchup} · {market_label}: ' if matchup else ''
+
+    if '_TRIPLE_CONFIRMED' in classification:
+        base = classification.replace('_TRIPLE_CONFIRMED', '')
+        if base == 'SHARP_MOVE':
+            new_detail = f'{prefix}Sharps on {side_up} — all 3 sources confirm (FR + CZ + OC)'
+        elif base == 'PUBLIC_MOVE':
+            new_detail = f'{prefix}Public stacked on {side_up} — sharp side is {other_side} (all 3 sources)'
+        elif base == 'RLM':
+            new_detail = f'{prefix}RLM: line moved off {side_up} while public sits on it — sharp signal (all 3)'
+        elif base == 'CONSENSUS':
+            new_detail = f'{prefix}Sharps + public both on {side_up} — heavy-agreement play (all 3 sources)'
+        else:
+            new_detail = flag.get('detail') or ''
+    elif '_CONFIRMED' in classification:
+        base = classification.replace('_CONFIRMED', '')
+        if base == 'SHARP_MOVE':
+            new_detail = f'{prefix}Sharps on {side_up} — 2 of 3 sources confirm'
+        elif base == 'PUBLIC_MOVE':
+            new_detail = f'{prefix}Public stacked on {side_up} — sharp side is {other_side} (2 of 3 sources)'
+        elif base == 'RLM':
+            new_detail = f'{prefix}RLM: line moved off {side_up} while public sits on it — sharp signal (2 of 3)'
+        elif base == 'CONSENSUS':
+            new_detail = f'{prefix}Sharps + public both on {side_up} — heavy agreement (2 of 3 sources)'
+        else:
+            new_detail = flag.get('detail') or ''
+    elif classification.endswith('_LEAN'):
+        base = classification.replace('_LEAN', '')
+        if base == 'SHARP_MOVE':
+            new_detail = f'{prefix}Sharp lean on {side_up} — single-source read'
+        elif base == 'PUBLIC_MOVE':
+            new_detail = f'{prefix}Public leaning {side_up} — sharp side is {other_side} (single-source)'
+        elif base == 'RLM':
+            new_detail = f'{prefix}RLM lean: line off {side_up} while public sits — single-source'
+        elif base == 'CONSENSUS':
+            new_detail = f'{prefix}Sharps + public both leaning {side_up} — single-source'
+        else:
+            new_detail = flag.get('detail') or ''
+    elif classification == 'SOURCES_SPLIT':
+        new_detail = f'{prefix}Sources disagree on {market_label or "this market"} — mixed signal, no clear side'
+    else:
+        # PATTERN_ONLY / NEUTRAL — keep original detail (it's just the raw
+        # pattern text like "2 books shifted toward away within 0 min").
+        new_detail = flag.get('detail') or ''
+
     payload = {
         'classification': classification,
+        'detail':        new_detail[:400],  # cap length; matches DB column bounds
         'money_pct':     round(oc_money, 1) if show_numbers and oc_money is not None else None,
         'bets_pct':      round(oc_bets, 1)  if show_numbers and oc_bets  is not None else None,
         'handle_pct':    round(fr_handle, 1)   if show_numbers and fr_handle   is not None else None,
@@ -281,6 +339,36 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
         'classified_at': datetime.now(timezone.utc).isoformat(),
     }
     return payload
+
+
+def _parse_matchup_market(detail: str) -> tuple:
+    """Extract '{matchup} · {market_label}' prefix from detect-time detail.
+
+    detect_line_movement writes detail like
+      'Toronto Blue Jays @ Tampa Bay Rays · run line: Money% 51 vs bets% 35 — sharp $ on away'
+    We split on ' · ' and then on ': ' to recover the matchup + market label
+    so classify can rebuild the tail with accurate wording. If parsing fails
+    (older flags or unusual formats), returns ('', '') and downstream falls
+    back to the original detail text.
+
+    2026-08-22: historic flags may have the literal string 'game' as the
+    matchup prefix (fallback when matchup_by_gid didn't cover the game_id).
+    Treat 'game' as no-matchup so classify rebuilds without the placeholder
+    and downstream frontends look up the matchup another way.
+    """
+    if not detail or ' · ' not in detail:
+        return ('', '')
+    try:
+        prefix, _rest = detail.split(': ', 1)
+    except ValueError:
+        return ('', '')
+    parts = prefix.split(' · ', 1)
+    if len(parts) != 2:
+        return ('', '')
+    matchup, market_label = parts[0].strip(), parts[1].strip()
+    if matchup.lower() == 'game':
+        matchup = ''
+    return (matchup, market_label)
 
 
 def patch_flag(flag_id: int, payload: dict) -> bool:

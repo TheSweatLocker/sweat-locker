@@ -343,19 +343,25 @@ function StrongestSignalCard({flags, sample, onTap}: any) {
   const strongest = flags.find((f: any) => String(f.classification || '').endsWith('_TRIPLE_CONFIRMED'))
                  || flags.find((f: any) => String(f.classification || '').endsWith('_CONFIRMED'))
                  || flags[0];
-  // 2026-08-22 SAME FIX AS LineMovementCard: parse matchup from flag.detail
-  // prefix ("Cubs @ Mariners · total: Sharps on OVER..."). sample[0]?.matchup
-  // silently returned undefined because line_history select didn't include
-  // matchup column. Parsing from detail is deterministic + zero dependencies.
+  // 2026-08-22 parse matchup from flag.detail prefix
+  //   "Cubs @ Mariners · total: Sharps on OVER..."
+  // Skips the literal placeholder "game" that older detect_line_movement
+  // runs wrote when matchup_by_gid missed the game_id. Falls through the
+  // full group looking for ANY flag with a real matchup, then sample lookup.
   const parseMatchupFromDetail = (flag: any): string => {
     const detail = String(flag?.detail || '');
-    if (detail.includes(' · ')) {
-      const prefix = detail.split(' · ')[0].trim();
-      if (prefix.includes(' @ ')) return prefix;
-    }
-    return '';
+    if (!detail.includes(' · ')) return '';
+    const prefix = detail.split(' · ')[0].trim();
+    if (!prefix.includes(' @ ')) return '';
+    if (prefix.toLowerCase() === 'game') return '';
+    return prefix;
   };
-  const matchup = parseMatchupFromDetail(strongest) || parseMatchupFromDetail(first) || sample[0]?.matchup || '';
+  const matchup =
+    parseMatchupFromDetail(strongest) ||
+    parseMatchupFromDetail(first) ||
+    (flags.map(parseMatchupFromDetail).find((m: string) => m) || '') ||
+    sample[0]?.matchup ||
+    '';
   const [awayTeam, homeTeam] = matchup.includes(' @ ') ? matchup.split(' @ ').map((s: string) => s.trim()) : ['', ''];
   const cls = String(strongest.classification || '');
   const isTriple = cls.endsWith('_TRIPLE_CONFIRMED');
@@ -480,11 +486,12 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
   const parseMatchupFromDetail = (flag: any): string => {
     const detail = String(flag?.detail || '');
     // Format: "<matchup> · <market>: <rest>"  OR sometimes just "<market>: ..."
-    if (detail.includes(' · ') && detail.includes(' @ ')) {
-      const prefix = detail.split(' · ')[0].trim();
-      if (prefix.includes(' @ ')) return prefix;
-    }
-    return '';
+    // Also filters literal "game" placeholder from historic detect runs.
+    if (!detail.includes(' · ')) return '';
+    const prefix = detail.split(' · ')[0].trim();
+    if (!prefix.includes(' @ ')) return '';
+    if (prefix.toLowerCase() === 'game') return '';
+    return prefix;
   };
   const matchupFromDetail =
     parseMatchupFromDetail(first) ||
