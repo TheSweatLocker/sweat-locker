@@ -90,23 +90,37 @@ def get_gamecenter(game_id: str) -> Optional[dict]:
 
 def get_scoreboard(game_date: str) -> list[dict]:
     """Final scores for resolver. Returns list of {game_id, home_score,
-    away_score, went_to_ot, went_to_so}."""
-    data = _get(f'{NHL_API_BASE}/scoreboard/{game_date}')
-    if not data:
-        return []
+    away_score, went_to_ot, went_to_so, home_team, away_team}.
+
+    2026-08-17 FIX: /v1/scoreboard/{date} returns empty for historical
+    dates. Switched to /v1/schedule/{date} which returns a full week
+    view (weekly gameWeek array); we filter to the target date + only
+    OFF/FINAL states. Adds home_team + away_team to help resolver
+    populate results without a separate ctx lookup for retro-backfill."""
+    data = _get(f'{NHL_API_BASE}/schedule/{game_date}')
+    if not data: return []
     out = []
-    for g in data.get('games', []):
-        state = g.get('gameState', '')
-        if state not in ('OFF', 'FINAL', 'OFFICIAL'):
-            continue  # still in progress or scheduled
-        period = g.get('periodDescriptor', {}).get('periodType', 'REG')
-        out.append({
-            'game_id': str(g.get('id')),
-            'home_score': g.get('homeTeam', {}).get('score'),
-            'away_score': g.get('awayTeam', {}).get('score'),
-            'went_to_ot': period == 'OT',
-            'went_to_so': period == 'SO',
-        })
+    for day in data.get('gameWeek', []):
+        if day.get('date') != game_date: continue
+        for g in day.get('games', []):
+            state = g.get('gameState', '')
+            if state not in ('OFF', 'FINAL', 'OFFICIAL'):
+                continue
+            period = g.get('gameOutcome', {}).get('lastPeriodType') \
+                or g.get('periodDescriptor', {}).get('periodType', 'REG')
+            home = g.get('homeTeam', {})
+            away = g.get('awayTeam', {})
+            out.append({
+                'game_id':    str(g.get('id')),
+                'home_score': home.get('score'),
+                'away_score': away.get('score'),
+                'went_to_ot': period == 'OT',
+                'went_to_so': period == 'SO',
+                'home_team':  home.get('placeName', {}).get('default') or home.get('abbrev'),
+                'away_team':  away.get('placeName', {}).get('default') or away.get('abbrev'),
+                'home_abbrev': home.get('abbrev'),
+                'away_abbrev': away.get('abbrev'),
+            })
     return out
 
 
@@ -137,34 +151,65 @@ def get_team_stats(team_abbrev: str, season: int) -> Optional[dict]:
 
 def get_goalie_stats(goalie_name: str, season: int) -> Optional[dict]:
     """Look up goalie season stats + L5 form. Returns dict with sv_pct,
-    gsaa, l5_sv_pct. Best-effort — NHL API endpoint changes seasonally."""
-    # NHL API doesn't have a direct name-lookup — need player_id first.
-    # For MVP, fall back to MoneyPuck goalie CSV which has fuzzy names.
+    gsaa, last5_sv_pct. Best-effort — NHL API endpoint changes seasonally.
+    2026-08-22 (silent-bug audit #10): actually implement last5_sv_pct via
+    NHL API player/{id}/gameLog. Prior code documented the field but never
+    populated it — nhl_home_goalie_l5_heater signal was dead.
+    """
+    result: dict = {}
+    # Season stats from MoneyPuck
     try:
         season_str = f'{season}' if season >= 3000 else f'{season}'
         url = f'{MP_BASE}/{season_str}/regular/goalies.csv'
         r = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=15)
-        if r.status_code != 200:
-            return None
-        reader = csv.DictReader(io.StringIO(r.text))
-        goalie_last = goalie_name.split()[-1].lower()
-        for row in reader:
-            row_name = (row.get('name') or '').lower()
-            if goalie_last in row_name:
-                # MoneyPuck fields: 'GSAx' (goals saved above expected), 'ice_situation'
-                # Filter to 'all' situations
-                if row.get('situation') and row['situation'] != 'all': continue
-                try:
-                    return {
-                        'sv_pct': float(row.get('savePercentage', 0) or 0),
-                        'gsaa': float(row.get('goalsSavedAboveExpected', 0) or 0),
-                        'games': int(row.get('gamesPlayed', 0) or 0),
-                    }
-                except (TypeError, ValueError):
-                    continue
-        return None
+        if r.status_code == 200:
+            reader = csv.DictReader(io.StringIO(r.text))
+            goalie_last = goalie_name.split()[-1].lower()
+            for row in reader:
+                row_name = (row.get('name') or '').lower()
+                if goalie_last in row_name:
+                    if row.get('situation') and row['situation'] != 'all': continue
+                    try:
+                        result.update({
+                            'sv_pct': float(row.get('savePercentage', 0) or 0),
+                            'gsaa': float(row.get('goalsSavedAboveExpected', 0) or 0),
+                            'games': int(row.get('gamesPlayed', 0) or 0),
+                        })
+                    except (TypeError, ValueError):
+                        pass
+                    break
     except Exception:
-        return None
+        pass
+
+    # L5 SV% — need player_id first, then walk gameLog
+    try:
+        # NHL API search for player_id by name
+        sr = requests.get(
+            f'https://api-web.nhle.com/v1/search/player?q={requests.utils.quote(goalie_name)}&limit=5',
+            timeout=10)
+        pid = None
+        if sr.status_code == 200:
+            hits = sr.json() or []
+            for h in hits:
+                if h.get('positionCode') == 'G':
+                    pid = h.get('playerId') or h.get('id')
+                    break
+        if pid:
+            # Walk gameLog for the season
+            lg = requests.get(
+                f'https://api-web.nhle.com/v1/player/{pid}/game-log/{season-1}{season % 100:02d}/2',
+                timeout=10)
+            if lg.status_code == 200:
+                games = (lg.json() or {}).get('gameLog', [])[:5]
+                shots_faced = sum(int(g.get('shotsAgainst') or 0) for g in games)
+                goals_against = sum(int(g.get('goalsAgainst') or 0) for g in games)
+                if shots_faced > 0:
+                    result['last5_sv_pct'] = round(1 - (goals_against / shots_faced), 4)
+                    result['last5_games'] = len(games)
+    except Exception:
+        pass
+
+    return result or None
 
 
 def get_team_analytics_mp(team_abbrev: str, season: int) -> Optional[dict]:

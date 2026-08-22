@@ -190,6 +190,8 @@ def enrich_goalies(rows: list[dict], season: int) -> None:
             gs = goalie_cache[home_g]
             row['home_goalie_sv_pct'] = gs.get('sv_pct')
             row['home_goalie_gsaa'] = gs.get('gsaa')
+            # 2026-08-22 (silent-bug audit #10): L5 SV% for goalie heater signal
+            row['home_goalie_last5_sv_pct'] = gs.get('last5_sv_pct')
         if away_g:
             row['away_goalie'] = away_g
             row['away_goalie_confirmed'] = True
@@ -198,6 +200,7 @@ def enrich_goalies(rows: list[dict], season: int) -> None:
             gs = goalie_cache[away_g]
             row['away_goalie_sv_pct'] = gs.get('sv_pct')
             row['away_goalie_gsaa'] = gs.get('gsaa')
+            row['away_goalie_last5_sv_pct'] = gs.get('last5_sv_pct')
 
 
 def enrich_market(rows: list[dict]) -> None:
@@ -291,9 +294,30 @@ def enrich_rest_and_travel(rows: list[dict]) -> None:
             else:
                 row[f'{prefix}_rest_days'] = None
                 row[f'{prefix}_back_to_back'] = False
-            # Consecutive road games: for away team, count how many recent games
-            # were also on the road (we don't have h/a per historical entry
-            # cleanly — approximation for MVP)
+            # 2026-08-22 (silent-bug audit #11): compute consecutive road games
+            # for the away team so nhl_away_long_road_trip signal fires. We
+            # DO have h/a per historical entry (home_team_abbrev / away_team_abbrev
+            # in the history query) — walk backwards through prior_games and
+            # count how many were AWAY games for this team.
+            if prefix == 'away':
+                # Reconstruct h/a per prior game for this team
+                consecutive_away = 0
+                for prior_d in reversed(prior_games):
+                    # Find the history entry for this team on prior_d
+                    was_away = False
+                    for h in history:
+                        d_h = h.get('game_date')
+                        if isinstance(d_h, str):
+                            try: d_h = date.fromisoformat(d_h)
+                            except ValueError: continue
+                        if d_h == prior_d and h.get('away_team_abbrev') == abbrev:
+                            was_away = True
+                            break
+                    if was_away:
+                        consecutive_away += 1
+                    else:
+                        break  # streak broken by a home game
+                row['away_consecutive_road_games'] = consecutive_away
 
 
 # ═══════════════════════════════════════════════════════════════════════

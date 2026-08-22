@@ -483,6 +483,58 @@ def build_context_row(event, team_stats, alias_map):
     return row
 
 
+def _enrich_ncaab_rest_days(rows: list) -> None:
+    """Populate home_days_rest / away_days_rest by walking recent
+    ncaab_game_results (mirrors NHL / NFL pattern)."""
+    from datetime import date, timedelta
+    if not rows: return
+    dates_in_slate = [r.get('game_date') for r in rows if r.get('game_date')]
+    if not dates_in_slate: return
+    # Coerce to date objects
+    dobjs = []
+    for d in dates_in_slate:
+        if isinstance(d, str):
+            try: dobjs.append(date.fromisoformat(d))
+            except ValueError: continue
+        elif isinstance(d, date):
+            dobjs.append(d)
+    if not dobjs: return
+    lookback = (min(dobjs) - timedelta(days=14)).isoformat()
+
+    # Bulk pull prior 14 days of results for date lookup
+    try:
+        r = requests.get(f'{SUPABASE_URL}/rest/v1/ncaab_game_results',
+                         headers=READ_HEADERS,
+                         params={'game_date': f'gte.{lookback}',
+                                 'select': 'game_date,home_team,away_team'}, timeout=15)
+        history = r.json() if r.status_code == 200 else []
+    except Exception:
+        history = []
+
+    team_dates: dict = {}
+    for h in history + rows:
+        d = h.get('game_date')
+        if isinstance(d, str):
+            try: d = date.fromisoformat(d)
+            except ValueError: continue
+        if not d: continue
+        for team in (h.get('home_team'), h.get('away_team')):
+            if team:
+                team_dates.setdefault(team, set()).add(d)
+
+    for row in rows:
+        d = row.get('game_date')
+        if isinstance(d, str):
+            try: d = date.fromisoformat(d)
+            except ValueError: continue
+        if not d: continue
+        for prefix, team in (('home', row.get('home_team')),
+                              ('away', row.get('away_team'))):
+            if not team: continue
+            prior = sorted(x for x in team_dates.get(team, set()) if x < d)
+            row[f'{prefix}_days_rest'] = (d - prior[-1]).days if prior else None
+
+
 def upsert_context(rows):
     if not rows:
         return 0
@@ -521,6 +573,13 @@ def run():
         row = build_context_row(event, team_stats, alias_map)
         if row:
             rows.append(row)
+
+    # 2026-08-22 (silent-bug audit #15b): enrich home_days_rest / away_days_rest
+    # so the ncaab_home_rest_edge signal (reads ctx.home_days_rest) can fire.
+    try:
+        _enrich_ncaab_rest_days(rows)
+    except Exception as _e:
+        print(f'  ⚠ NCAAB rest-days enrichment failed (non-fatal): {_e}')
 
     n = upsert_context(rows)
     print(f"  ✓ upserted {n}/{len(rows)} rows")

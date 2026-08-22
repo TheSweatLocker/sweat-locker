@@ -2023,6 +2023,25 @@ jobs:
           cd mlb_pipeline
           python check_pipeline_health.py
 
+      # 2026-08-22: signal-wiring verifier (soft-warn) — walks every enabled
+      # signal_sources row, regex-extracts ctx.X references, compares against
+      # actual game_context columns per sport. Reports any signal reading a
+      # missing ctx column. Silent-bug audit 8/22 found 19 signals broken
+      # this way (see project_pipeline_audit_822). This step catches
+      # regressions immediately in the workflow log instead of them
+      # silently returning None for months.
+      # Non-fatal (continue-on-error) so warnings surface without red-X-ing
+      # the workflow — the check_pipeline_health above is authoritative for
+      # workflow status.
+      - name: Signal wiring verifier (soft-warn)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python verify_signal_wiring.py || echo "verify_signal_wiring reported issues (non-fatal, see log)"
+
       # Commit the generated content card so Andy can pull it locally.
       # 5/29 incident: two parallel runs both generated the same dated
       # card file; second run hit `CONFLICT (add/add)` on rebase and
