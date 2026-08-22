@@ -180,10 +180,80 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None) -
     avg_l10 = prop_signals.get('_stat_avg_l10')
     avg_season = prop_signals.get('_stat_avg_season')
 
+    # Coverage audit — compute EARLY so it can header the card. Every prop
+    # family declares its relevant_ctx checklist in _STAT_META. For each
+    # required signal, check whether it appears in signals dict OR playbook
+    # sources OR raw prop payload. Any missing item = gap.
+    # Rationale (2026-08-22, user PARAMOUNT concern): "it is paramount we
+    # are tracking every relevant signal for each prop and it is getting
+    # assessed." Old code buried this as a warning below the score. New:
+    # every card headers with COVERAGE: N/M so gaps are visible before
+    # the reader reaches the verdict.
+    ctx_keys_in_signals = set(k for k in prop_signals.keys() if not k.startswith('_'))
+    if isinstance(sources, list):
+        for s in sources:
+            sk = s.get('signal_key') if isinstance(s, dict) else None
+            if sk: ctx_keys_in_signals.add(sk)
+    relevance_check = {
+        'opp_k_pct':          {'opp_k_rate', 'opp_k_pct', 'opp_hand_k'},
+        'opp_k_pct_vs_hand':  {'opp_hand_k', 'opp_k_vs_hand'},
+        'opp_wrc':            {'opp_wrc', 'opp_team_wrc'},
+        'opp_wrc_recent':     {'opp_l14_ops', 'opp_l14_wrc', 'opp_recent'},
+        'opp_starter_xera':   {'opp_starter', 'opp_xera', 'xera'},
+        'opp_starter_form':   {'opp_form', 'opp_starter_form'},
+        'opp_starter_hr_rate': {'opp_hr_rate', 'opp_starter_hr'},
+        'opp_bb_pct':         {'opp_bb_rate', 'opp_bb_pct'},
+        'opp_def_rating':     {'opp_def', 'opp_def_rating'},
+        'opp_rebound_rate':   {'opp_rebound'},
+        'opp_3p_defense':     {'opp_3p_def'},
+        'opp_pass_def':       {'opp_pass_def'},
+        'opp_run_def':        {'opp_run_def'},
+        'opp_goalie_sv':      {'goalie_sv', 'opp_goalie'},
+        'opp_shots_per60':    {'opp_shots'},
+        'park':               {'park', 'park_factor'},
+        'weather':            {'weather', 'temp', 'wind'},
+        'umpire_k':           {'umpire', 'ump'},
+        'catcher_framing':    {'catcher_framing', 'framing'},
+        'lineup_slot':        {'lineup_spot', 'lineup_slot'},
+        'platoon':            {'platoon', 'wrc_hand'},
+        'bvp':                {'bvp_mastery', 'bvp'},
+        'vs_team_history':    {'vs_team', 'pitcher_vs_team'},
+        'fatigue':            {'fatigue', 'days_rest', 'pitch_count_last', 'last_outing'},
+        'bullpen_taxed':      {'bullpen_taxed', 'bp_taxed', 'opp_bullpen'},
+        'pitcher_1st_inn_era': {'first_inn', 'first_inning'},
+        'pace':               {'pace'},
+        'minutes_projected':  {'minutes', 'minutes_proj'},
+        'usage':              {'usage_rate', 'usage'},
+        'b2b':                {'b2b', 'back_to_back'},
+        'target_share':       {'target_share', 'targets'},
+        'game_script':        {'game_script', 'spread'},
+        'shot_volume':        {'shot_volume', 'fga'},
+        'teammate_scoring':   {'teammate'},
+        'line_projection':    {'line_proj'},
+        'toi':                {'toi', 'ice_time'},
+        'team_defense':       {'team_def'},
+        'team_run_env':       {'team_runs', 'implied_team_total'},
+        'barrel_rate':        {'barrel_rate', 'barrels'},
+    }
+    checklist = meta.get('relevant_ctx', []) or []
+    missing = []
+    for req in checklist:
+        expected_keys = relevance_check.get(req, {req})
+        if not any(any(ek in k for ek in expected_keys) for k in ctx_keys_in_signals):
+            missing.append(req)
+    covered = len(checklist) - len(missing)
+    coverage_pct = int(100 * covered / max(1, len(checklist)))
+
     # ─── COMPOSE THE CARD ───────────────────────────────────────────
     lines = []
     lines.append(f'{player} · {label} {direction.upper()} {line}  @  {side_odds if side_odds is not None else "—"}')
     lines.append(f'{"─" * 60}')
+    # Signal coverage chip — prominent, right below the header.
+    if checklist:
+        cov_flag = '✅' if not missing else ('⚠️' if len(missing) <= 2 else '🚨')
+        lines.append(f'  {cov_flag} SIGNAL COVERAGE: {covered}/{len(checklist)} ({coverage_pct}%)')
+        if missing:
+            lines.append(f'     missing: {", ".join(missing)}')
     # Header stats
     header_bits = []
     if avg_l5 is not None: header_bits.append(f'L5 avg {avg_l5}')
@@ -211,34 +281,6 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None) -
         for n in cats['negative']:
             lines.append(f'  · {n[:110]}')
     lines.append('')
-
-    # Coverage audit — flag signals we SHOULD have but DON'T
-    missing = []
-    ctx_keys_in_signals = set(k for k in prop_signals.keys() if not k.startswith('_'))
-    relevance_check = {
-        'opp_k_pct':          {'opp_k_rate', 'opp_k_pct', 'opp_hand_k'},
-        'opp_wrc':            {'opp_wrc', 'opp_team_wrc'},
-        'opp_wrc_recent':     {'opp_l14_ops', 'opp_l14_wrc', 'opp_recent'},
-        'opp_starter_xera':   {'opp_starter', 'opp_xera', 'xera'},
-        'opp_starter_form':   {'opp_form'},
-        'park':               {'park', 'park_factor'},
-        'weather':            {'weather', 'temp', 'wind'},
-        'umpire_k':           {'umpire', 'ump'},
-        'catcher_framing':    {'catcher_framing', 'framing'},
-        'lineup_slot':        {'lineup_spot', 'lineup_slot'},
-        'platoon':            {'platoon', 'wrc_hand'},
-        'bvp':                {'bvp_mastery', 'bvp'},
-        'vs_team_history':    {'vs_team', 'pitcher_vs_team'},
-        'fatigue':            {'fatigue', 'days_rest', 'pitch_count_last'},
-        'bullpen_taxed':      {'bullpen_taxed', 'bp_taxed', 'opp_bullpen'},
-    }
-    for req in meta.get('relevant_ctx', []):
-        expected_keys = relevance_check.get(req, {req})
-        if not (expected_keys & ctx_keys_in_signals):
-            missing.append(req)
-    if missing:
-        lines.append(f'⚠ Signal gaps (should be checked but not surfaced): {", ".join(missing)}')
-        lines.append('')
 
     # Verdict = tier. Show ONE label + one score (refit if available).
     # Score priority: refit_conviction (model-of-record) > legacy conviction.
