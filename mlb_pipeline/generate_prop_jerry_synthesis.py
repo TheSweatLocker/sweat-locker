@@ -525,10 +525,12 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                 pb_row = playbook_by_key.get(pb_key)
                 ctx_row = ctx_by_game.get(prop.get('game_id'))
                 rendered = render_prop_template(prop, pb_row, ctx=ctx_row)
-                # Map template output → same parsed shape as LLM path
+                # Map template output → same parsed shape as LLM path.
+                # 2026-08-22: dropped long_read='' (column doesn't exist on
+                # prop_jerry_reads schema and PostgREST rejects with PGRST204).
+                # The card only needs short_read.
                 parsed = {
                     'short_read': rendered.get('short_read'),
-                    'long_read': '',  # template path is short-only; app renders chips for detail
                     'call_verdict': rendered.get('verdict'),
                     'conviction': rendered.get('conviction'),
                     'source': 'template',
