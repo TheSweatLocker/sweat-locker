@@ -14662,56 +14662,97 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       );
                     })()}
 
-                    {/* Record card */}
+                    {/* 2026-08-22: Record card visual polish. 3-column glance
+                        (current / longest / record) with color-coded values
+                        matches the pattern set in the Split record card so all
+                        Steam Room sub-tabs share the same record surface style. */}
                     <View style={[styles.card, {padding:14}]}>
-                      <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>STEP RECORD</Text>
+                      <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>STEP RECORD</Text>
                       {(() => {
                         const resolved = ladderRungs.filter(r => r.result);
                         const wins = resolved.filter(r => r.result === 'Win').length;
                         const losses = resolved.filter(r => r.result === 'Loss').length;
                         const pushes = resolved.filter(r => r.result === 'Push').length;
-                        const hitPct = (wins + losses) > 0 ? Math.round(1000 * wins / (wins + losses)) / 10 : 0;
+                        const wl = wins + losses;
+                        const hitPct = wl > 0 ? Math.round(1000 * wins / wl) / 10 : 0;
+                        const cur = ladderState?.current_streak ?? 0;
+                        const best = ladderState?.longest_streak ?? 0;
+                        const curColor = cur > 0 ? THEME.win : cur < 0 ? THEME.loss : THEME.textMuted;
                         return (
-                          <View style={{gap:6}}>
-                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                              <Text style={{color:THEME.textDim, fontSize:12}}>Current streak</Text>
-                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>{ladderState?.current_streak ?? 0} steps</Text>
+                          <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
+                            <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                              <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>CURRENT</Text>
+                              <Text style={{color:curColor, fontSize:20, fontWeight:'800'}}>{cur}</Text>
+                              <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>step{Math.abs(cur) === 1 ? '' : 's'}</Text>
                             </View>
-                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                              <Text style={{color:THEME.textDim, fontSize:12}}>Longest streak</Text>
-                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>{ladderState?.longest_streak ?? 0} steps</Text>
+                            <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
+                            <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                              <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>BEST</Text>
+                              <Text style={{color:THEME.accent, fontSize:20, fontWeight:'800'}}>{best}</Text>
+                              <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>step{best === 1 ? '' : 's'}</Text>
                             </View>
-                            <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                              <Text style={{color:THEME.textDim, fontSize:12}}>Record</Text>
-                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
-                                {wins}-{losses}{pushes ? ` (${pushes}P)` : ''}
-                                {(wins+losses) > 0 && <Text style={{color:THEME.textDim, fontWeight:'500'}}> · {hitPct}%</Text>}
-                              </Text>
+                            <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
+                            <View style={{flex:1.2, alignItems:'center', paddingVertical:4}}>
+                              <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>RECORD</Text>
+                              <Text style={{color:THEME.text, fontSize:20, fontWeight:'800'}}>{wins}-{losses}{pushes ? `-${pushes}` : ''}</Text>
+                              <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{wl > 0 ? `${hitPct}%` : '—'}</Text>
                             </View>
                           </View>
                         );
                       })()}
                     </View>
 
-                    {/* Recent steps history — 2026-08-19 renamed from rungs to
-                        match the RUNG→STEP language sweep. */}
+                    {/* 2026-08-22: Recent steps redesigned. Prior version was
+                        cramped rows with null-prone metadata ('LEAN · null pp')
+                        and a colored icon that got lost. Now: left color strip
+                        tinted by result, pick prominent, matchup underneath,
+                        odds + tier badges right-aligned. Null tier/edge simply
+                        omitted instead of showing 'null'. */}
                     {ladderRungs.length > 0 && (
                       <View style={[styles.card, {padding:14}]}>
-                        <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>RECENT STEPS</Text>
-                        {ladderRungs.slice(0, 10).map((r: any, i: number) => {
-                          const resultColor = r.result === 'Win' ? THEME.win : r.result === 'Loss' ? THEME.loss : r.result === 'Push' ? THEME.textDim : THEME.textMuted;
-                          const resultIcon = r.result === 'Win' ? '✓' : r.result === 'Loss' ? '✗' : r.result === 'Push' ? '=' : '·';
-                          return (
-                            <View key={r.id || i} style={{flexDirection:'row', alignItems:'center', paddingVertical:6, borderTopWidth: i > 0 ? 0.5 : 0, borderTopColor: THEME.border + '44'}}>
-                              <Text style={{color:resultColor, fontWeight:'800', fontSize:14, width:22, textAlign:'center'}}>{resultIcon}</Text>
-                              <View style={{flex:1, marginLeft:6}}>
-                                <Text style={{color:THEME.text, fontWeight:'600', fontSize:12}} numberOfLines={1}>{r.pick_side}</Text>
-                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:1}} numberOfLines={1}>{r.game_date} · {r.matchup}</Text>
+                        <View style={{flexDirection:'row', alignItems:'baseline', justifyContent:'space-between', marginBottom:10}}>
+                          <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1}}>RECENT STEPS</Text>
+                          <Text style={{color:THEME.textMuted, fontSize:9}}>{ladderRungs.length} total</Text>
+                        </View>
+                        <View style={{gap:6}}>
+                          {ladderRungs.slice(0, 10).map((r: any, i: number) => {
+                            const isWin = r.result === 'Win';
+                            const isLoss = r.result === 'Loss';
+                            const isPush = r.result === 'Push';
+                            const isPending = !r.result;
+                            const stripColor = isWin ? THEME.win : isLoss ? THEME.loss : isPush ? THEME.push : THEME.warn;
+                            const stripBg = isWin ? THEME.win + '10' : isLoss ? THEME.loss + '10' : isPush ? THEME.push + '10' : THEME.warn + '10';
+                            const resultLabel = isWin ? 'WIN' : isLoss ? 'LOSS' : isPush ? 'PUSH' : 'PENDING';
+                            const odds = r.odds_american;
+                            const oddsStr = (odds != null) ? (odds > 0 ? `+${odds}` : `${odds}`) : null;
+                            return (
+                              <View key={r.id || i} style={{
+                                backgroundColor: stripBg, borderRadius:8,
+                                borderLeftWidth:3, borderLeftColor:stripColor,
+                                paddingVertical:8, paddingHorizontal:10,
+                                flexDirection:'row', alignItems:'center', gap:10,
+                              }}>
+                                <View style={{flex:1, minWidth:0}}>
+                                  <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}} numberOfLines={1}>{r.pick_side}</Text>
+                                  <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}} numberOfLines={1}>{r.game_date} · {r.matchup}</Text>
+                                  <View style={{flexDirection:'row', gap:6, marginTop:4, alignItems:'center'}}>
+                                    {r.tier && <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6}}>{r.tier}</Text>}
+                                    {r.tier && (r.edge_pp != null || oddsStr) && <Text style={{color:THEME.border, fontSize:9}}>·</Text>}
+                                    {r.edge_pp != null && <Text style={{color:THEME.textMuted, fontSize:9}}>{r.edge_pp}pp edge</Text>}
+                                    {r.edge_pp != null && oddsStr && <Text style={{color:THEME.border, fontSize:9}}>·</Text>}
+                                    {oddsStr && <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'700'}}>{oddsStr}</Text>}
+                                  </View>
+                                </View>
+                                <View style={{
+                                  backgroundColor: stripColor, borderRadius:4,
+                                  paddingVertical:2, paddingHorizontal:6, minWidth:52, alignItems:'center',
+                                }}>
+                                  <Text style={{color:'#fff', fontSize:9, fontWeight:'800', letterSpacing:0.6}}>{resultLabel}</Text>
+                                </View>
                               </View>
-                              <Text style={{color:THEME.textMuted, fontSize:10, marginLeft:6}}>{r.tier} · {r.edge_pp}pp</Text>
-                            </View>
-                          );
-                        })}
+                            );
+                          })}
+                        </View>
                       </View>
                     )}
                   </View>
@@ -14725,7 +14766,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/></View>
                 ) : (
                   <View style={{gap:12}}>
-                    {/* Running record card — current month + previous month tallies */}
+                    {/* 2026-08-22: 3-column glance matches Ladder + Split
+                        pattern. Prior version was 3-row stat table + separate
+                        prev-month footer — too much vertical real estate for
+                        what's essentially 3 numbers. Now: RECORD / UNITS / ROI
+                        big up top; prev-month recap as a single subtle footer. */}
                     <View style={[styles.card, {padding:14}]}>
                       {(() => {
                         const r = sharpRecord;
@@ -14736,57 +14781,41 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         const unitsColor = r.unitsNet > 0 ? THEME.win : r.unitsNet < 0 ? THEME.loss : THEME.textDim;
                         const unitsColorPrev = r.unitsNetPrev > 0 ? THEME.win : r.unitsNetPrev < 0 ? THEME.loss : THEME.textDim;
                         const monthName = new Date().toLocaleDateString('en-US', {month: 'long'});
-                        const prevMonthName = new Date(new Date().setMonth(new Date().getMonth()-1)).toLocaleDateString('en-US', {month: 'long'});
+                        const prevMonthName = new Date(new Date().setMonth(new Date().getMonth()-1)).toLocaleDateString('en-US', {month: 'short'});
+                        const roi = total > 0 ? (r.unitsNet / total) * 100 : null;
                         return (
-                          <View style={{gap:10}}>
-                            {/* Current month header + tally */}
-                            <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1}}>
-                              {monthName.toUpperCase()} · UNIT-WEIGHTED · MONTH-TO-DATE
-                            </Text>
-                            {/* 2026-08-20: reset epoch note. Prior record had
-                                misleading flat-110 assumption on side picks. */}
-                            <Text style={{color:THEME.textMuted, fontSize:9, fontStyle:'italic'}}>
-                              Fresh record from Aug 20 — tracking real snapshot odds.
-                            </Text>
-                            <View style={{gap:6}}>
-                              <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                                <Text style={{color:THEME.textDim, fontSize:12}}>Record</Text>
-                                <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
-                                  {r.w}-{r.l}{r.p ? ` (${r.p}P)` : ''}
-                                  {total > 0 && <Text style={{color:THEME.textDim, fontWeight:'500'}}> · {hitPct}%</Text>}
-                                </Text>
+                          <View>
+                            <View style={{flexDirection:'row', alignItems:'baseline', justifyContent:'space-between', marginBottom:10}}>
+                              <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1}}>{monthName.toUpperCase()} · UNIT-WEIGHTED</Text>
+                              <Text style={{color:THEME.textMuted, fontSize:9}}>MTD</Text>
+                            </View>
+                            <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
+                              <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>RECORD</Text>
+                                <Text style={{color:THEME.text, fontSize:20, fontWeight:'800'}}>{r.w}-{r.l}{r.p ? `-${r.p}` : ''}</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{total > 0 ? `${hitPct}%` : '—'}</Text>
                               </View>
-                              <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                                <Text style={{color:THEME.textDim, fontSize:12}}>Units Net</Text>
-                                <Text style={{color:unitsColor, fontWeight:'800', fontSize:15}}>
-                                  {r.unitsNet > 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u
-                                </Text>
+                              <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
+                              <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>UNITS</Text>
+                                <Text style={{color:unitsColor, fontSize:20, fontWeight:'800'}}>{r.unitsNet >= 0 ? '+' : ''}{r.unitsNet.toFixed(2)}</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>net</Text>
                               </View>
-                              <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                                <Text style={{color:THEME.textDim, fontSize:12}}>ROI</Text>
-                                <Text style={{color:unitsColor, fontWeight:'700', fontSize:13}}>
-                                  {total > 0 ? `${((r.unitsNet / total) * 100).toFixed(1)}%` : '—'}
-                                </Text>
+                              <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
+                              <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>ROI</Text>
+                                <Text style={{color:unitsColor, fontSize:20, fontWeight:'800'}}>{roi != null ? `${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%` : '—'}</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>per pick</Text>
                               </View>
                             </View>
-                            {/* Divider */}
-                            <View style={{height:0.5, backgroundColor:THEME.border + '55', marginVertical:4}} />
-                            {/* Previous month recap */}
-                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
-                              <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.5}}>
-                                {prevMonthName.toUpperCase()} · FINAL
-                              </Text>
+                            {/* Prev-month + fresh-epoch footer, single line */}
+                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44'}}>
+                              <Text style={{color:THEME.textMuted, fontSize:9, fontStyle:'italic'}}>Fresh from Aug 20 · real snapshot odds</Text>
                               {totalPrev > 0 ? (
-                                <Text style={{color:THEME.text, fontSize:11}}>
-                                  <Text style={{color:THEME.textDim}}>{r.wPrev}-{r.lPrev}{r.pPrev ? `-${r.pPrev}` : ''} · </Text>
-                                  <Text style={{color:unitsColorPrev, fontWeight:'700'}}>
-                                    {r.unitsNetPrev > 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u
-                                  </Text>
-                                  <Text style={{color:THEME.textDim}}> · {hitPctPrev}%</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10}}>
+                                  {prevMonthName}: {r.wPrev}-{r.lPrev} · <Text style={{color:unitsColorPrev, fontWeight:'700'}}>{r.unitsNetPrev >= 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u</Text>
                                 </Text>
-                              ) : (
-                                <Text style={{color:THEME.textDim, fontSize:11, fontStyle:'italic'}}>no data yet</Text>
-                              )}
+                              ) : null}
                             </View>
                           </View>
                         );
@@ -14868,55 +14897,51 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   <View style={{alignItems:'center',paddingTop:40}}><ActivityIndicator color={HRB_COLOR}/></View>
                 ) : (
                   <View style={{gap:12}}>
-                    {/* 2026-08-18: Ledger record card — MTD + prev-month, parity with The Sharp */}
+                    {/* 2026-08-22: match Sharp/Ladder 3-col glance pattern.
+                        RECORD / UNITS / ROI with prev-month one-line footer. */}
                     <View style={[styles.card, {padding:14}]}>
                       {(() => {
                         const r = ledgerRecord;
                         const total = r.w + r.l;
                         const totalPrev = r.wPrev + r.lPrev;
                         const hitPct = total > 0 ? Math.round(1000 * r.w / total) / 10 : 0;
-                        const hitPctPrev = totalPrev > 0 ? Math.round(1000 * r.wPrev / totalPrev) / 10 : 0;
                         const uColor = r.unitsNet > 0 ? THEME.win : r.unitsNet < 0 ? THEME.loss : THEME.textDim;
                         const uColorPrev = r.unitsNetPrev > 0 ? THEME.win : r.unitsNetPrev < 0 ? THEME.loss : THEME.textDim;
                         const monthName = new Date().toLocaleDateString('en-US', {month: 'long'});
-                        const prevMonthName = new Date(new Date().setMonth(new Date().getMonth()-1)).toLocaleDateString('en-US', {month: 'long'});
+                        const prevMonthName = new Date(new Date().setMonth(new Date().getMonth()-1)).toLocaleDateString('en-US', {month: 'short'});
+                        const roi = total > 0 ? (r.unitsNet / total) * 100 : null;
                         return (
-                          <View style={{gap:10}}>
-                            <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:1}}>
-                              {monthName.toUpperCase()} · 1u PER COMBO · MONTH-TO-DATE
-                            </Text>
-                            <View style={{gap:6}}>
-                              <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                                <Text style={{color:THEME.textDim, fontSize:12}}>Record</Text>
-                                <Text style={{color:THEME.text, fontWeight:'700', fontSize:13}}>
-                                  {r.w}-{r.l}{r.p ? ` (${r.p}P)` : ''}
-                                  {total > 0 && <Text style={{color:THEME.textDim, fontWeight:'500'}}> · {hitPct}%</Text>}
-                                </Text>
+                          <View>
+                            <View style={{flexDirection:'row', alignItems:'baseline', justifyContent:'space-between', marginBottom:10}}>
+                              <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1}}>{monthName.toUpperCase()} · 1u PER COMBO</Text>
+                              <Text style={{color:THEME.textMuted, fontSize:9}}>MTD</Text>
+                            </View>
+                            <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
+                              <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>RECORD</Text>
+                                <Text style={{color:THEME.text, fontSize:20, fontWeight:'800'}}>{r.w}-{r.l}{r.p ? `-${r.p}` : ''}</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{total > 0 ? `${hitPct}%` : '—'}</Text>
                               </View>
-                              <View style={{flexDirection:'row', justifyContent:'space-between'}}>
-                                <Text style={{color:THEME.textDim, fontSize:12}}>Units Net</Text>
-                                <Text style={{color:uColor, fontWeight:'800', fontSize:15}}>
-                                  {r.unitsNet > 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u
-                                </Text>
+                              <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
+                              <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>UNITS</Text>
+                                <Text style={{color:uColor, fontSize:20, fontWeight:'800'}}>{r.unitsNet >= 0 ? '+' : ''}{r.unitsNet.toFixed(2)}</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>net</Text>
+                              </View>
+                              <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
+                              <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>ROI</Text>
+                                <Text style={{color:uColor, fontSize:20, fontWeight:'800'}}>{roi != null ? `${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%` : '—'}</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>per combo</Text>
                               </View>
                             </View>
-                            <View style={{height:0.5, backgroundColor:THEME.border + '55', marginVertical:4}} />
-                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
-                              <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.5}}>
-                                {prevMonthName.toUpperCase()} · FINAL
-                              </Text>
-                              {totalPrev > 0 ? (
-                                <Text style={{color:THEME.text, fontSize:11}}>
-                                  <Text style={{color:THEME.textDim}}>{r.wPrev}-{r.lPrev}{r.pPrev ? `-${r.pPrev}` : ''} · </Text>
-                                  <Text style={{color:uColorPrev, fontWeight:'700'}}>
-                                    {r.unitsNetPrev > 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u
-                                  </Text>
-                                  <Text style={{color:THEME.textDim}}> · {hitPctPrev}%</Text>
+                            {totalPrev > 0 && (
+                              <View style={{flexDirection:'row', justifyContent:'flex-end', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44'}}>
+                                <Text style={{color:THEME.textDim, fontSize:10}}>
+                                  {prevMonthName}: {r.wPrev}-{r.lPrev} · <Text style={{color:uColorPrev, fontWeight:'700'}}>{r.unitsNetPrev >= 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u</Text>
                                 </Text>
-                              ) : (
-                                <Text style={{color:THEME.textDim, fontSize:11, fontStyle:'italic'}}>no data yet</Text>
-                              )}
-                            </View>
+                              </View>
+                            )}
                           </View>
                         );
                       })()}
