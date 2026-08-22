@@ -187,6 +187,81 @@ def _regress_to_mean(stats_dict: dict, shrink: float = 0.4) -> dict:
     return out
 
 
+def get_qb_vs_team_stats(team_abbr: str, opponent_abbr: str) -> dict:
+    """Look up starting QB for `team_abbr` and their career+recent stats vs
+    `opponent_abbr` defense from nfl_qb_vs_team table.
+
+    Strategy: query nfl_qb_vs_team for opponent_team = opp, filter to QBs
+    whose recent games (via nfl_player_stats or last_faced_date) indicate
+    they're the current starter for `team_abbr`. Simplification: pick QB
+    with highest career_starts vs this opp among those recently active
+    (most-recent last_faced_date within 2 seasons).
+
+    Returns dict of qb_vs_team fields (empty if no data).
+
+    2026-08-21: shipped with nfl_qb_vs_team backfill (1425 rows).
+    """
+    if not team_abbr or not opponent_abbr:
+        return {}
+    try:
+        # Query nfl_player_stats for the most-recent QB start for this team
+        # to determine current starting QB
+        r = requests.get(
+            f'{SB}/rest/v1/nfl_player_stats',
+            headers=H_READ,
+            params={
+                'recent_team': f'eq.{team_abbr}',
+                'position': 'eq.QB',
+                'select': 'player_id,player_display_name,season,week,attempts',
+                'order': 'season.desc,week.desc',
+                'limit': '10',
+            }, timeout=10,
+        )
+        recent = r.json() if r.status_code == 200 else []
+        # Filter to actual starts (>= 15 attempts) and get most-recent QB
+        starters = [row for row in recent if isinstance(row, dict)
+                    and (row.get('attempts') or 0) >= 15]
+        if not starters:
+            return {}
+        qb_id = starters[0].get('player_id')
+        qb_name = starters[0].get('player_display_name')
+        if not qb_id:
+            return {}
+
+        # Now fetch this QB's stats vs the specific opponent
+        vs = requests.get(
+            f'{SB}/rest/v1/nfl_qb_vs_team',
+            headers=H_READ,
+            params={
+                'qb_id': f'eq.{qb_id}',
+                'opponent_team': f'eq.{opponent_abbr}',
+                'select': 'career_starts,career_qb_rating,career_yds_per_att,career_cmp_pct,career_td_int_ratio,recent_n_starts,recent_pass_yds_avg,recent_pass_td_avg,recent_int_avg,recent_qb_rating,qb_name',
+            }, timeout=10,
+        )
+        rows = vs.json() if vs.status_code == 200 else []
+        if not rows:
+            # QB has never faced this opponent — return name only
+            return {'qb_id': qb_id, 'qb_name': qb_name}
+        row = rows[0]
+        return {
+            'qb_id': qb_id,
+            'qb_name': qb_name or row.get('qb_name'),
+            'career_starts': row.get('career_starts'),
+            'career_qb_rating': row.get('career_qb_rating'),
+            'career_yds_per_att': row.get('career_yds_per_att'),
+            'career_cmp_pct': row.get('career_cmp_pct'),
+            'career_td_int_ratio': row.get('career_td_int_ratio'),
+            'recent_n_starts': row.get('recent_n_starts'),
+            'recent_pass_yds_avg': row.get('recent_pass_yds_avg'),
+            'recent_pass_td_avg': row.get('recent_pass_td_avg'),
+            'recent_int_avg': row.get('recent_int_avg'),
+            'recent_qb_rating': row.get('recent_qb_rating'),
+        }
+    except Exception as e:
+        print(f'  ⚠ get_qb_vs_team_stats({team_abbr} vs {opponent_abbr}) failed: {e}')
+        return {}
+
+
 def load_team_stats_with_fallback(current_season: int) -> tuple:
     """Return (stats_dict, source_label). Falls back to prior-season
     regressed-to-mean when current-year sample is too thin (Weeks 1-3).
@@ -894,6 +969,41 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     )
     row['signal_confluence_net'] = conf_net
     row['signal_confluence_breakdown'] = breakdown
+
+    # 2026-08-21: Join qb_vs_team stats from nfl_qb_vs_team backfill (1425 rows
+    # 2021-2025 seasons). Powers nfl_qb_owns_defense_career + related signals.
+    # Fields nullable if no career data or migration not yet applied.
+    try:
+        home_qb = get_qb_vs_team_stats(home, away)
+        if home_qb:
+            row['home_qb_id'] = home_qb.get('qb_id')
+            row['home_qb_name'] = home_qb.get('qb_name')
+            row['home_qb_vs_team_career_starts'] = home_qb.get('career_starts')
+            row['home_qb_vs_team_career_qb_rating'] = home_qb.get('career_qb_rating')
+            row['home_qb_vs_team_career_yds_per_att'] = home_qb.get('career_yds_per_att')
+            row['home_qb_vs_team_career_cmp_pct'] = home_qb.get('career_cmp_pct')
+            row['home_qb_vs_team_career_td_int_ratio'] = home_qb.get('career_td_int_ratio')
+            row['home_qb_vs_team_recent_n_starts'] = home_qb.get('recent_n_starts')
+            row['home_qb_vs_team_recent_pass_yds_avg'] = home_qb.get('recent_pass_yds_avg')
+            row['home_qb_vs_team_recent_pass_td_avg'] = home_qb.get('recent_pass_td_avg')
+            row['home_qb_vs_team_recent_int_avg'] = home_qb.get('recent_int_avg')
+            row['home_qb_vs_team_recent_qb_rating'] = home_qb.get('recent_qb_rating')
+        away_qb = get_qb_vs_team_stats(away, home)
+        if away_qb:
+            row['away_qb_id'] = away_qb.get('qb_id')
+            row['away_qb_name'] = away_qb.get('qb_name')
+            row['away_qb_vs_team_career_starts'] = away_qb.get('career_starts')
+            row['away_qb_vs_team_career_qb_rating'] = away_qb.get('career_qb_rating')
+            row['away_qb_vs_team_career_yds_per_att'] = away_qb.get('career_yds_per_att')
+            row['away_qb_vs_team_career_cmp_pct'] = away_qb.get('career_cmp_pct')
+            row['away_qb_vs_team_career_td_int_ratio'] = away_qb.get('career_td_int_ratio')
+            row['away_qb_vs_team_recent_n_starts'] = away_qb.get('recent_n_starts')
+            row['away_qb_vs_team_recent_pass_yds_avg'] = away_qb.get('recent_pass_yds_avg')
+            row['away_qb_vs_team_recent_pass_td_avg'] = away_qb.get('recent_pass_td_avg')
+            row['away_qb_vs_team_recent_int_avg'] = away_qb.get('recent_int_avg')
+            row['away_qb_vs_team_recent_qb_rating'] = away_qb.get('recent_qb_rating')
+    except Exception as e:
+        print(f'  ⚠ QB vs team join failed for {away} @ {home}: {e}')
 
     row['cohort_tags'] = compute_cohort_tags(row)
     row['stats_source'] = stats_source
