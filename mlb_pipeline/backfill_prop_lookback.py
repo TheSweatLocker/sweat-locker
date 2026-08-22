@@ -210,6 +210,59 @@ def fetch_mlb_player_recent(player_name: str, stat_field: str, n: int = 30,
     return vals[:n]
 
 
+def fetch_mlb_player_recent_rows(player_name: str, stat_field: str, n: int = 10,
+                                  season: int = 2026) -> list[dict]:
+    """2026-08-22: NEW — return per-game rows for ESPN-style stat table.
+    Each row: {date, value, opponent, home_away, decision, ip (if pitcher)}.
+    Used by render_prop_template.py to render the "last 10 games" table
+    the user asked for after seeing conflicting prop convictions.
+    """
+    pid = _mlb_player_id(player_name)
+    if not pid: return []
+    api_key = _MLB_API_STAT.get(stat_field)
+    if not api_key: return []
+    group, api_field = api_key
+
+    def _pull(sn):
+        try:
+            r = requests.get(
+                f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',
+                params={'stats': 'gameLog', 'group': group, 'season': sn},
+                timeout=10,
+            )
+            splits = r.json().get('stats', []) if r.status_code == 200 else []
+            games = splits[0].get('splits', []) if splits else []
+        except Exception:
+            games = []
+        games.sort(key=lambda g: g.get('date', ''), reverse=True)
+        rows = []
+        for g in games:
+            stat_obj = g.get('stat', {}) or {}
+            v = stat_obj.get(api_field)
+            if v is None: continue
+            try: val = float(v)
+            except (TypeError, ValueError): continue
+            opp = g.get('opponent', {}) or {}
+            row = {
+                'date': g.get('date', '')[:10],
+                'value': val,
+                'opp': opp.get('abbreviation') or opp.get('name', '')[:3],
+                'home': g.get('isHome', True),
+            }
+            # Pitcher-specific: add IP and decision for context
+            if group == 'pitching':
+                row['ip'] = stat_obj.get('inningsPitched')
+                if stat_obj.get('gamesStarted', 0):
+                    row['gs'] = True
+            rows.append(row)
+        return rows
+
+    rows = _pull(season)
+    if len(rows) < 3 and season >= 2025:
+        rows = rows + _pull(season - 1)
+    return rows[:n]
+
+
 def compute_lookback(recent_values: list[float], prop_line: float, direction: str) -> dict:
     """Given ordered recent-first values + prop line + direction,
     compute L5/L10 hit counts + extreme flags + season pct."""
@@ -247,7 +300,9 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
     now_iso = datetime.now(timezone.utc).isoformat()
     updated = 0
     # Cache player recent-values so we only fetch each player once
+    # 2026-08-22: also cache per-game rows for ESPN-table rendering
     recent_cache: dict[tuple, list[float]] = {}
+    rows_cache: dict[tuple, list[dict]] = {}
     for prop in props:
         pname = prop.get('player_name')
         ptype = prop.get('prop_type')
@@ -263,10 +318,27 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
         cache_key = (pname, stat)
         if cache_key not in recent_cache:
             recent_cache[cache_key] = fetch_mlb_player_recent(pname, stat, n=30)
+            rows_cache[cache_key] = fetch_mlb_player_recent_rows(pname, stat, n=10)
         recent = recent_cache[cache_key]
+        rows_last10 = rows_cache.get(cache_key, [])
 
         lb = compute_lookback(recent, pline, pdir)
         if lb['l10'] is None: continue
+
+        # 2026-08-22: merge raw per-game values into signals dict for
+        # ESPN-table rendering downstream. Underscore-prefix marks it
+        # as internal metadata (not shown as a signal chip). Template
+        # renderer reads this to build the "last 10 starts" table user
+        # asked for. Preserves existing signals — read-modify-write.
+        existing_signals = prop.get('signals') or {}
+        if not isinstance(existing_signals, dict): existing_signals = {}
+        existing_signals['_stat_last10'] = rows_last10
+        existing_signals['_stat_avg_l5'] = round(sum(recent[:5])/len(recent[:5]), 2) if recent[:5] else None
+        existing_signals['_stat_avg_l10'] = round(sum(recent[:10])/len(recent[:10]), 2) if recent[:10] else None
+        existing_signals['_stat_avg_season'] = round(sum(recent)/len(recent), 2) if recent else None
+        existing_signals['_stat_field'] = stat
+        existing_signals['_line'] = pline
+        existing_signals['_direction'] = pdir
 
         patch = {
             'player_l5_hit_count':   lb['l5'],
@@ -275,6 +347,7 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
             'player_l5_extreme_flag':  lb['l5_extreme'],
             'player_l10_extreme_flag': lb['l10_extreme'],
             'player_lookback_updated_at': now_iso,
+            'signals': existing_signals,
         }
         if not dry_run:
             pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',

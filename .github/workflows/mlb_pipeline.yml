@@ -519,7 +519,20 @@ jobs:
           # they render deterministically from tier + conviction + signals dict
           # without Claude tokens. Template renderer will land in follow-up commit
           # to fill deterministic short_read for below-gate props.
-          python generate_prop_jerry_synthesis.py --force --tier-gate PRIME,STRONG || echo "prop jerry synthesis failed (non-fatal)"
+          # 2026-08-22 KILLED LLM PROP JERRY. Per user directive: prop Jerry
+          # was outputting 4 conflicting conviction numbers per prop + prose
+          # that contradicted itself in one paragraph ("BACK. [REVISED from
+          # FADE...] FADE."). Also only surfacing xERA when users don't know
+          # what xERA means. Also 100s from refit saturation (fixed 0a057691).
+          #
+          # New path: --tier-gate NONE forces ALL props through the
+          # deterministic template renderer (render_prop_template.py v2 which
+          # now emits ESPN-style last-10 stat table + categorized signals +
+          # signal gap audit + ONE verdict, ONE score).
+          #
+          # Zero Claude cost on props. Zero contradiction. Zero hallucination.
+          # If someone wants LLM prose back, change gate to PRIME,STRONG.
+          python generate_prop_jerry_synthesis.py --force --tier-gate NONE || echo "prop jerry synthesis failed (non-fatal)"
 
       # Collapse Prop Jerry contradictions (2026-08-01 C). Runs AFTER
       # generate_prop_jerry_synthesis. Kills Skenes-style BACK+BACK /

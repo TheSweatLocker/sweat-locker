@@ -1,227 +1,240 @@
-"""Deterministic prop-synth template renderer (2026-08-22).
+"""Deterministic prop analysis card renderer (2026-08-22 v2).
 
-Companion to `generate_prop_jerry_synthesis.py`. Where the LLM path
-produces rich prose for PRIME/STRONG props (~60 Claude calls/night),
-this template path produces the same output shape for below-gate props
-(LEAN + smaller tiers) using ONLY structured data from the ensemble:
+Renders a COMPLETE analytical card per prop — no LLM, no hallucination,
+every claim provably true from structured data. Same shape output for
+downstream consumers (prop_jerry_reads readers).
 
-    prop.tier, prop.conviction, prop.direction, prop.prop_line
-    prop.signals (dict of signal_key → contribution)
-    prop_playbook_decisions.playbook_sources (list of chip dicts)
+The card follows a universal checklist across prop types:
 
-Zero Claude calls. Zero hallucination risk. Every claim in the prose
-is provably true because it comes from the signals dict itself. Runs
-in milliseconds per prop.
+    1. RECENT FORM (ESPN-style stat table L5-L10)
+    2. PITCHER/BATTER QUALITY (season rates + underlying)
+    3. MATCHUP (opponent context, vs-team history)
+    4. FATIGUE (rest days, workload trend)
+    5. ENVIRONMENT (park, weather, umpire, catcher)
+    6. BETTING CONTEXT (odds, edge, sharp $, line movement)
+    7. MODEL OUTPUT (projection, verdict, one score)
 
-Output shape matches LLM synth so downstream consumers (`prop_jerry_reads`
-readers, `apply_refit_verdict_override`, `apply_fade_type_discipline`,
-grader) don't need branching logic:
+Universal — same code renders MLB pitcher props, MLB batter hits, NBA
+points, NHL SOG, NFL yards, etc. Prop-type-specific rendering pulls
+from _COVERAGE_CHECKLIST per stat family.
 
-    {
-        'short_read': str,   # 40-60 word English narration
-        'verdict':    'BACK' | 'FADE' | 'PASS',
-        'conviction': int (0-100),
-        'source':     'template',  # marker distinguishing from LLM path
-    }
+Sources fed by:
+  - backfill_prop_lookback.py (signals._stat_last10, avg_l5/l10/season)
+  - ensemble scorer (signals dict — situational chips)
+  - prop_playbook_decisions (playbook_sources rich chip data)
+  - game_context (weather, umpire, catcher framing, vs-team)
 
-Usage:
-    from render_prop_template import render_prop_template
-    result = render_prop_template(prop, playbook_decision)
-    # write result to prop_jerry_reads with source='template'
-
-Design intent per user directive 2026-08-22:
-    "Jerry synthesis on games; models/signals as reason for O/U back
-     on props across all sports."
+Design intent: one verdict, one score, comprehensive data surface,
+no LLM prose that contradicts itself.
 """
 from __future__ import annotations
+from typing import Optional
 
-_MARKET_LABEL = {
-    'ks':    'strikeouts',
-    'outs':  'outs recorded',
-    'er':    'earned runs',
-    'ha':    'hits allowed',
-    'bb':    'walks allowed',
-    'hits':  'hits',
-    'tb':    'total bases',
-    'rbi':   'RBIs',
-    'runs':  'runs',
-    'hr':    'home runs',
-    'sb':    'stolen bases',
-    'pts':   'points',
-    'reb':   'rebounds',
-    'ast':   'assists',
-    'threes':'3-pointers',
-    'sog':   'shots on goal',
-    'saves': 'saves',
-    'passing_yds': 'passing yards',
-    'rushing_yds': 'rushing yards',
-    'receiving_yds': 'receiving yards',
-    'rec':   'receptions',
+
+# ─── Stat family metadata ────────────────────────────────────────────
+# Per prop-type family: display label, whether it's a pitcher/batter/skill
+# prop, which context fields are RELEVANT to check for coverage.
+_STAT_META = {
+    # MLB PITCHER
+    'ks':   {'label': 'Strikeouts', 'role': 'pitcher', 'relevant_ctx': ['opp_k_pct', 'opp_k_pct_vs_hand', 'umpire_k', 'catcher_framing', 'weather']},
+    'ha':   {'label': 'Hits Allowed', 'role': 'pitcher', 'relevant_ctx': ['opp_wrc', 'opp_wrc_recent', 'park', 'weather', 'vs_team_history']},
+    'bb':   {'label': 'Walks Allowed', 'role': 'pitcher', 'relevant_ctx': ['opp_bb_pct', 'umpire_k', 'catcher_framing']},
+    'outs': {'label': 'Outs Recorded', 'role': 'pitcher', 'relevant_ctx': ['pitcher_1st_inn_era', 'bullpen_taxed', 'fatigue']},
+    'er':   {'label': 'Earned Runs', 'role': 'pitcher', 'relevant_ctx': ['opp_wrc', 'opp_wrc_recent', 'park', 'weather', 'vs_team_history', 'fatigue']},
+    # MLB BATTER
+    'hits': {'label': 'Hits', 'role': 'batter', 'relevant_ctx': ['opp_starter_xera', 'opp_starter_form', 'park', 'weather', 'lineup_slot', 'platoon', 'bvp']},
+    'tb':   {'label': 'Total Bases', 'role': 'batter', 'relevant_ctx': ['opp_starter_xera', 'park', 'weather', 'platoon', 'barrel_rate']},
+    'hr':   {'label': 'Home Runs', 'role': 'batter', 'relevant_ctx': ['park', 'weather', 'opp_starter_hr_rate', 'barrel_rate']},
+    'rbi':  {'label': 'RBIs', 'role': 'batter', 'relevant_ctx': ['lineup_slot', 'opp_starter_xera', 'team_run_env']},
+    # NBA
+    'points':   {'label': 'Points', 'role': 'skill', 'relevant_ctx': ['opp_def_rating', 'pace', 'minutes_projected', 'b2b', 'usage']},
+    'rebounds': {'label': 'Rebounds', 'role': 'skill', 'relevant_ctx': ['opp_rebound_rate', 'pace', 'minutes_projected']},
+    'assists':  {'label': 'Assists', 'role': 'skill', 'relevant_ctx': ['pace', 'usage', 'teammate_scoring']},
+    'threes':   {'label': '3-Pointers Made', 'role': 'skill', 'relevant_ctx': ['opp_3p_defense', 'pace', 'shot_volume']},
+    # NHL
+    'sog':      {'label': 'Shots on Goal', 'role': 'skill', 'relevant_ctx': ['opp_goalie_sv', 'line_projection', 'toi']},
+    'saves':    {'label': 'Saves', 'role': 'goalie', 'relevant_ctx': ['opp_shots_per60', 'team_defense']},
+    # NFL
+    'passing_yards':    {'label': 'Passing Yards', 'role': 'qb', 'relevant_ctx': ['opp_pass_def', 'pace', 'weather', 'game_script']},
+    'rushing_yards':    {'label': 'Rushing Yards', 'role': 'rb', 'relevant_ctx': ['opp_run_def', 'game_script', 'weather']},
+    'receiving_yards':  {'label': 'Receiving Yards', 'role': 'wr', 'relevant_ctx': ['opp_pass_def', 'target_share', 'game_script']},
+    'receptions':       {'label': 'Receptions', 'role': 'wr', 'relevant_ctx': ['target_share', 'game_script']},
 }
 
 
-def _readable_prop_type(prop_type: str) -> str:
-    """'outs_over' → 'outs recorded'."""
-    if not prop_type:
-        return 'this prop'
-    base = prop_type.rsplit('_', 1)[0] if prop_type.endswith(('_over', '_under')) else prop_type
-    return _MARKET_LABEL.get(base, base.replace('_', ' '))
+def _stat_family(prop_type: str) -> str:
+    """'hits_over' → 'hits'. 'passing_yards_under' → 'passing_yards'."""
+    if not prop_type: return ''
+    for suffix in ('_over', '_under'):
+        if prop_type.endswith(suffix):
+            return prop_type[:-len(suffix)]
+    return prop_type
 
 
-def _verdict_from_tier_conviction(tier: str, conviction: int, side: str = '') -> str:
-    """Map ensemble output to Jerry verdict enum.
+def _implied_prob_pct(odds) -> Optional[int]:
+    try: o = int(odds)
+    except (TypeError, ValueError): return None
+    return round(100 * 100.0 / (o + 100)) if o >= 0 else round(100 * -o / (-o + 100.0))
 
-    Legacy LLM path outputs BACK/FADE/PASS. We mirror it deterministically:
-    - PRIME/STRONG + high conviction → BACK
-    - Explicit fade side from calibration → FADE
-    - LEAN with moderate conviction → BACK (light)
-    - Below LEAN or low conviction → PASS
-    Downstream apply_refit_verdict_override can still flip.
-    """
-    tier = (tier or '').upper()
-    side = (side or '').upper()
+
+def _verdict(tier: str, conviction: int, side: str = '') -> str:
+    tier = (tier or '').upper(); side = (side or '').upper()
     conv = int(conviction or 0)
-
-    if side == 'FADE':
-        return 'FADE'
-    if tier == 'PRIME' and conv >= 70:
-        return 'BACK'
-    if tier == 'STRONG' and conv >= 60:
-        return 'BACK'
-    if tier == 'LEAN' and conv >= 55:
-        return 'BACK'
+    if side == 'FADE': return 'FADE'
+    if tier == 'PRIME' and conv >= 70: return 'BACK'
+    if tier == 'STRONG' and conv >= 60: return 'BACK'
+    if tier == 'LEAN' and conv >= 55: return 'LEAN BACK'
     return 'PASS'
 
 
-def _top_signals(sources: list, side_filter: str | None = None, top_n: int = 3) -> list:
-    """Return top-N sources by |contribution|, optionally filtered by BACK/FADE."""
-    if not sources:
-        return []
-    if side_filter:
-        filtered = [s for s in sources if (s.get('side') or '').upper() == side_filter.upper()]
-    else:
-        filtered = list(sources)
-    return sorted(filtered, key=lambda s: -abs(float(s.get('contribution') or 0)))[:top_n]
+def _format_stat_table(rows: list, line: float, direction: str) -> list[str]:
+    """ESPN-style compact last-10 table. Returns list of lines."""
+    if not rows: return ['  (no recent game log available)']
+    out = ['  Last {} games:'.format(len(rows[:10]))]
+    over = sum(1 for r in rows[:10] if float(r.get('value', 0) or 0) >= line)
+    under = sum(1 for r in rows[:10] if float(r.get('value', 0) or 0) < line)
+    for r in rows[:10]:
+        v = r.get('value')
+        d = r.get('date', '')[-5:] if r.get('date') else '?'
+        opp = r.get('opp', '?')
+        home_marker = 'vs' if r.get('home') else '@'
+        mark = '✓' if (direction == 'over' and float(v or 0) >= line) or (direction == 'under' and float(v or 0) < line) else '✗'
+        ip = f' {r.get("ip")}IP' if r.get('ip') is not None else ''
+        out.append(f'    {d} {home_marker} {opp:3}  {v:>4}{ip}  {mark}')
+    out.append(f'  → {over}/{len(rows[:10])} games OVER {line}   ({under} UNDER)')
+    return out
 
 
-def _signal_prose(source: dict) -> str:
-    """Extract the human-readable chip text from a signal source row.
-
-    Falls back through prose → signal_key humanized if prose missing.
-    """
-    prose = source.get('prose') or source.get('display_prose')
-    if prose:
-        return prose.strip()
-    key = source.get('signal_key') or ''
-    return key.replace('_', ' ')
-
-
-def _implied_prob_pct(odds) -> str:
-    """American odds → implied probability percentage string."""
-    try:
-        o = int(odds)
-    except (TypeError, ValueError):
-        return ''
-    if o >= 0:
-        p = 100.0 / (o + 100)
-    else:
-        p = -o / (-o + 100.0)
-    return f'{round(p * 100)}%'
+def _categorize_signals(sources: list, prop_signals: dict) -> dict:
+    """Group signals into positive (supporting direction) / negative (against).
+    Prefer playbook_sources chip data; fall back to signals dict."""
+    positive, negative = [], []
+    for s in (sources or []):
+        contrib = float(s.get('contribution') or 0)
+        prose = s.get('prose') or s.get('signal_key', '')
+        (positive if contrib >= 0 else negative).append((abs(contrib), prose))
+    # If no playbook sources, extract from signals dict
+    if not sources and prop_signals:
+        for k, v in prop_signals.items():
+            if k.startswith('_'): continue
+            positive.append((0.5, f'{k}: {str(v)[:80]}'))
+    positive.sort(key=lambda x: -x[0])
+    negative.sort(key=lambda x: -x[0])
+    return {'positive': [p for _, p in positive[:5]], 'negative': [p for _, p in negative[:3]]}
 
 
-def render_prop_template(prop: dict, playbook_decision: dict | None = None) -> dict:
-    """Render a deterministic Jerry-shaped synthesis for one prop.
+def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None) -> dict:
+    """Render a full analytical prop card.
 
-    Inputs:
-        prop: row from *_pipeline_props (needs tier, conviction, direction,
-              prop_line, player_name, prop_type, signals, odds cols)
-        playbook_decision: matching prop_playbook_decisions row, or None.
-                          If provided, playbook_sources is the source-of-truth
-                          for signal chips.
-
-    Returns dict shaped exactly like LLM synth output.
+    Returns dict with:
+        short_read: multi-line str (the full card body, plain text)
+        verdict:    'BACK' | 'FADE' | 'LEAN BACK' | 'PASS'
+        conviction: int (0-95)
+        source:     'template'
     """
     player = prop.get('player_name') or 'This player'
     prop_type = prop.get('prop_type') or ''
     direction = (prop.get('direction') or '').lower()
     line = prop.get('prop_line')
+    try: line_f = float(line) if line is not None else 0.0
+    except (TypeError, ValueError): line_f = 0.0
     tier = (prop.get('tier') or 'LEAN').upper()
     conviction = int(float(prop.get('conviction') or 0))
-    readable_prop = _readable_prop_type(prop_type)
+    refit_conv = prop.get('refit_conviction')
 
-    # Prefer playbook_sources when available (richer chip data). Fall back
-    # to signals dict entries reformatted as pseudo-sources.
-    sources = []
-    if playbook_decision and isinstance(playbook_decision.get('playbook_sources'), list):
-        sources = playbook_decision['playbook_sources']
-    else:
-        # Convert signals dict into pseudo-source list where value is contribution
-        raw_sig = prop.get('signals') or {}
-        if isinstance(raw_sig, dict):
-            for k, v in raw_sig.items():
-                if k.startswith('_') or v is None:
-                    continue
-                try:
-                    contrib = float(v)
-                except (TypeError, ValueError):
-                    continue
-                sources.append({
-                    'signal_key': k,
-                    'contribution': contrib,
-                    'side': 'BACK' if contrib >= 0 else 'FADE',
-                    'prose': k.replace('_', ' '),
-                })
+    family = _stat_family(prop_type)
+    meta = _STAT_META.get(family, {'label': family or 'prop', 'role': 'unknown', 'relevant_ctx': []})
+    label = meta['label']
 
-    verdict = _verdict_from_tier_conviction(tier, conviction,
-                                             side=prop.get('side') or (playbook_decision or {}).get('playbook_side', ''))
-
-    # Compute BACK/FADE signal groups
-    back_signals = _top_signals(sources, side_filter='BACK', top_n=3)
-    fade_signals = _top_signals(sources, side_filter='FADE', top_n=2)
-    n_back = len([s for s in sources if (s.get('side') or '').upper() == 'BACK'])
-    n_fade = len([s for s in sources if (s.get('side') or '').upper() == 'FADE'])
-
-    # Odds/implied probability
+    # Odds + implied
     side_odds = prop.get('book_over_odds') if direction == 'over' else prop.get('book_under_odds')
     implied = _implied_prob_pct(side_odds)
 
-    # ─── Compose the short read ─────────────────────────────────────
-    parts = []
-    line_txt = f'{direction.title()} {line}' if line is not None else direction.title()
+    # Verdict + score
+    pb_side = (playbook_decision or {}).get('playbook_side') if playbook_decision else ''
+    verdict = _verdict(tier, conviction, side=pb_side or prop.get('side', ''))
 
-    if verdict == 'BACK' and back_signals:
-        # "3 signals BACK Player Over 5.5 outs: opp K% 28%, L10 hit rate 7/10, low park total."
-        chip_prose = ', '.join(_signal_prose(s) for s in back_signals)
-        lead = f'{n_back} signal{"s" if n_back != 1 else ""} back {player} {line_txt} {readable_prop}: {chip_prose}.'
-        parts.append(lead)
-        if fade_signals:
-            fade_prose = ', '.join(_signal_prose(s) for s in fade_signals)
-            parts.append(f'Counter: {fade_prose}.')
-    elif verdict == 'FADE' and fade_signals:
-        chip_prose = ', '.join(_signal_prose(s) for s in fade_signals)
-        parts.append(f'Fade {player} {line_txt} {readable_prop}: {chip_prose}.')
-        if back_signals:
-            back_prose = _signal_prose(back_signals[0])
-            parts.append(f'Only support: {back_prose}.')
-    elif verdict == 'PASS':
-        if back_signals and fade_signals:
-            parts.append(f'{player} {line_txt} {readable_prop}: {n_back} back / {n_fade} fade — no edge.')
-        elif sources:
-            parts.append(f'{player} {line_txt} {readable_prop}: mixed signals, no clean edge.')
-        else:
-            parts.append(f'{player} {line_txt} {readable_prop}: insufficient signal support.')
-    else:
-        # Verdict has weight but no supporting sources — describe from tier only
-        parts.append(f'{player} {line_txt} {readable_prop}: {tier} tier from ensemble ({conviction} conviction).')
+    # Signal categorization
+    sources = (playbook_decision or {}).get('playbook_sources') if playbook_decision else None
+    if not isinstance(sources, list): sources = []
+    prop_signals = prop.get('signals') if isinstance(prop.get('signals'), dict) else {}
+    cats = _categorize_signals(sources, prop_signals)
 
-    # Tier + conviction footer
-    footer_bits = [f'{tier} tier', f'conviction {conviction}']
-    if implied:
-        footer_bits.append(f'market implies {implied}')
-    parts.append('· '.join(footer_bits) + '.')
+    # Recent form — from signals._stat_last10 (backfill_prop_lookback populates)
+    stat_rows = prop_signals.get('_stat_last10') or []
+    avg_l5 = prop_signals.get('_stat_avg_l5')
+    avg_l10 = prop_signals.get('_stat_avg_l10')
+    avg_season = prop_signals.get('_stat_avg_season')
 
-    short_read = ' '.join(parts).strip()
+    # ─── COMPOSE THE CARD ───────────────────────────────────────────
+    lines = []
+    lines.append(f'{player} · {label} {direction.upper()} {line}  @  {side_odds if side_odds is not None else "—"}')
+    lines.append(f'{"─" * 60}')
+    # Header stats
+    header_bits = []
+    if avg_l5 is not None: header_bits.append(f'L5 avg {avg_l5}')
+    if avg_l10 is not None: header_bits.append(f'L10 avg {avg_l10}')
+    if avg_season is not None: header_bits.append(f'Season avg {avg_season}')
+    if implied is not None: header_bits.append(f'Implied {implied}%')
+    if header_bits:
+        lines.append('  ' + '  ·  '.join(header_bits))
+    lines.append('')
 
+    # Recent-form ESPN table
+    if stat_rows:
+        lines.append('RECENT FORM')
+        lines.extend(_format_stat_table(stat_rows, line_f, direction))
+        lines.append('')
+
+    # Signal breakdown — positive + negative
+    if cats['positive']:
+        lines.append(f'▲ FAVORING {direction.upper()}')
+        for p in cats['positive']:
+            lines.append(f'  · {p[:110]}')
+    if cats['negative']:
+        lines.append(f'')
+        lines.append(f'▼ AGAINST {direction.upper()}')
+        for n in cats['negative']:
+            lines.append(f'  · {n[:110]}')
+    lines.append('')
+
+    # Coverage audit — flag signals we SHOULD have but DON'T
+    missing = []
+    ctx_keys_in_signals = set(k for k in prop_signals.keys() if not k.startswith('_'))
+    relevance_check = {
+        'opp_k_pct':          {'opp_k_rate', 'opp_k_pct', 'opp_hand_k'},
+        'opp_wrc':            {'opp_wrc', 'opp_team_wrc'},
+        'opp_wrc_recent':     {'opp_l14_ops', 'opp_l14_wrc', 'opp_recent'},
+        'opp_starter_xera':   {'opp_starter', 'opp_xera', 'xera'},
+        'opp_starter_form':   {'opp_form'},
+        'park':               {'park', 'park_factor'},
+        'weather':            {'weather', 'temp', 'wind'},
+        'umpire_k':           {'umpire', 'ump'},
+        'catcher_framing':    {'catcher_framing', 'framing'},
+        'lineup_slot':        {'lineup_spot', 'lineup_slot'},
+        'platoon':            {'platoon', 'wrc_hand'},
+        'bvp':                {'bvp_mastery', 'bvp'},
+        'vs_team_history':    {'vs_team', 'pitcher_vs_team'},
+        'fatigue':            {'fatigue', 'days_rest', 'pitch_count_last'},
+        'bullpen_taxed':      {'bullpen_taxed', 'bp_taxed', 'opp_bullpen'},
+    }
+    for req in meta.get('relevant_ctx', []):
+        expected_keys = relevance_check.get(req, {req})
+        if not (expected_keys & ctx_keys_in_signals):
+            missing.append(req)
+    if missing:
+        lines.append(f'⚠ Signal gaps (should be checked but not surfaced): {", ".join(missing)}')
+        lines.append('')
+
+    # Verdict + score footer
+    footer = f'VERDICT: {verdict}   ·   Score: {conviction}'
+    if refit_conv is not None:
+        try: footer += f'   ·   Refit: {int(float(refit_conv))}'
+        except (TypeError, ValueError): pass
+    if tier: footer += f'   ·   Tier: {tier}'
+    lines.append(footer)
+
+    short_read = '\n'.join(lines)
     return {
         'short_read': short_read,
         'verdict': verdict,
@@ -231,25 +244,31 @@ def render_prop_template(prop: dict, playbook_decision: dict | None = None) -> d
 
 
 if __name__ == '__main__':
-    # Quick sanity render
     demo_prop = {
-        'player_name': 'Willi Castro',
-        'prop_type': 'hits_over',
-        'direction': 'over',
-        'prop_line': 0.5,
-        'tier': 'PRIME',
-        'conviction': 84,
-        'book_over_odds': -140,
-        'signals': {'opp_k_low': 0.12, 'l10_hit_rate': 0.7, 'park_factor_low': -0.05},
+        'player_name': 'Logan Henderson',
+        'prop_type': 'ks_under',
+        'direction': 'under',
+        'prop_line': 6.5,
+        'tier': 'LEAN',
+        'conviction': 55,
+        'refit_conviction': 95,
+        'book_under_odds': -120,
+        'signals': {
+            'l3_k': 'l3_k 29.6', 'park': 'park 97', 'xera': 'xera 2.7',
+            'opp_wrc': 'opp_wrc 106', 'opp_k_rate': 'opp_k_rate 24.0',
+            '_stat_last10': [
+                {'date': '2026-08-15', 'value': 7, 'opp': 'ATL', 'home': True, 'ip': '5.0'},
+                {'date': '2026-08-10', 'value': 4, 'opp': 'STL', 'home': False, 'ip': '4.2'},
+                {'date': '2026-08-05', 'value': 7, 'opp': 'PIT', 'home': True, 'ip': '6.0'},
+                {'date': '2026-07-31', 'value': 9, 'opp': 'CHC', 'home': False, 'ip': '6.1'},
+                {'date': '2026-07-26', 'value': 7, 'opp': 'NYM', 'home': True, 'ip': '5.2'},
+                {'date': '2026-07-21', 'value': 8, 'opp': 'CIN', 'home': False, 'ip': '6.0'},
+                {'date': '2026-07-16', 'value': 7, 'opp': 'MIL', 'home': True, 'ip': '5.1'},
+                {'date': '2026-07-10', 'value': 6, 'opp': 'MIN', 'home': False, 'ip': '5.0'},
+                {'date': '2026-07-05', 'value': 4, 'opp': 'STL', 'home': True, 'ip': '4.1'},
+                {'date': '2026-06-29', 'value': 4, 'opp': 'PIT', 'home': False, 'ip': '4.0'},
+            ],
+            '_stat_avg_l5': 6.8, '_stat_avg_l10': 6.3, '_stat_avg_season': 6.4,
+        },
     }
-    demo_pb = {
-        'playbook_sources': [
-            {'signal_key': 'opp_k_low', 'side': 'BACK', 'contribution': 0.85,
-             'prose': 'Opp starter K% 18% (well below 22% avg)'},
-            {'signal_key': 'l10_hit_rate', 'side': 'BACK', 'contribution': 0.72,
-             'prose': '7/10 last 10 games'},
-            {'signal_key': 'park_factor', 'side': 'FADE', 'contribution': -0.18,
-             'prose': 'Coors depressor factor'},
-        ]
-    }
-    print(render_prop_template(demo_prop, demo_pb))
+    print(render_prop_template(demo_prop)['short_read'])
