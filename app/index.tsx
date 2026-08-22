@@ -14513,26 +14513,34 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
             {steamSubTab==='lines' && (
               <>
                 {/* 2026-08-22: Sharp-signal 30d record card by tier so users
-                    see if triple / confirmed / lean actually cash. */}
+                    see if triple / confirmed / lean actually cash. Matches
+                    3-col glance idiom used across Ladder / Sharp / Ledger
+                    (dividers, big number, small label + secondary line). */}
                 {(splitRecord.triple.w + splitRecord.triple.l +
                   splitRecord.confirmed.w + splitRecord.confirmed.l +
                   splitRecord.lean.w + splitRecord.lean.l) > 0 && (
-                  <View style={{backgroundColor:THEME.surface,borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:THEME.border}}>
-                    <Text style={{color:THEME.accent,fontSize:10,fontWeight:'800',letterSpacing:1,marginBottom:8}}>SHARP SIGNAL RECORD · 30d</Text>
-                    <View style={{flexDirection:'row',justifyContent:'space-between',gap:8}}>
-                      {(['triple','confirmed','lean'] as const).map(bkt => {
+                  <View style={[styles.card, {padding:14, marginBottom:14}]}>
+                    <View style={{flexDirection:'row', alignItems:'baseline', justifyContent:'space-between', marginBottom:10}}>
+                      <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1}}>SHARP SIGNAL RECORD</Text>
+                      <Text style={{color:THEME.textMuted, fontSize:9}}>30d</Text>
+                    </View>
+                    <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
+                      {(['triple','confirmed','lean'] as const).map((bkt, idx) => {
                         const r = splitRecord[bkt];
                         const wl = r.w + r.l;
                         const pct = wl ? Math.round(100*r.w/wl) : 0;
                         const label = bkt === 'triple' ? '🔥 TRIPLE' : bkt === 'confirmed' ? 'CONFIRMED' : 'LEAN';
                         const netColor = r.unitsNet > 0 ? THEME.win : r.unitsNet < 0 ? THEME.loss : THEME.textMuted;
                         return (
-                          <View key={bkt} style={{flex:1,alignItems:'center'}}>
-                            <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'800',letterSpacing:0.6,marginBottom:4}}>{label}</Text>
-                            <Text style={{color:THEME.text,fontSize:15,fontWeight:'800'}}>{r.w}-{r.l}</Text>
-                            <Text style={{color:THEME.textDim,fontSize:10,marginTop:2}}>{wl ? `${pct}%` : '—'}</Text>
-                            <Text style={{color:netColor,fontSize:11,fontWeight:'700',marginTop:2}}>{r.unitsNet >= 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u</Text>
-                          </View>
+                          <React.Fragment key={bkt}>
+                            {idx > 0 && <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>}
+                            <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                              <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>{label}</Text>
+                              <Text style={{color:THEME.text, fontSize:20, fontWeight:'800'}}>{r.w}-{r.l}</Text>
+                              <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{wl ? `${pct}%` : '—'}</Text>
+                              <Text style={{color:netColor, fontSize:11, fontWeight:'700', marginTop:2}}>{r.unitsNet >= 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u</Text>
+                            </View>
+                          </React.Fragment>
                         );
                       })}
                     </View>
@@ -14833,32 +14841,47 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                             The ensemble found no edge across MLB, UFC + all sports. Some slates are like that — no bets is a bet.
                           </Text>
                         </View>
-                      ) : sharpPicks.map((p: any, i: number) => {
-                        const tierColor = p.tier === 'PRIME' ? THEME.win : p.tier === 'STRONG' ? THEME.sharp : THEME.textDim;
-                        return (
-                          <View key={i} style={{paddingVertical:10, borderTopWidth: i > 0 ? 0.5 : 0, borderTopColor: THEME.border + '44'}}>
-                            <View style={{flexDirection:'row', alignItems:'center', gap:8, marginBottom:4}}>
-                              <View style={{backgroundColor: tierColor + '22', paddingHorizontal:6, paddingVertical:2, borderRadius:4, borderWidth:0.5, borderColor: tierColor + '55'}}>
-                                <Text style={{color: tierColor, fontSize:9, fontWeight:'800', letterSpacing:0.5}}>{p.tier}</Text>
+                      ) : (
+                        <View style={{gap:8}}>
+                          {sharpPicks.map((p: any, i: number) => {
+                            const tierColor = p.tier === 'PRIME' ? THEME.win : p.tier === 'STRONG' ? THEME.sharp : THEME.textDim;
+                            const tierBg = p.tier === 'PRIME' ? THEME.win + '0D' : p.tier === 'STRONG' ? THEME.sharp + '0D' : THEME.surfaceAlt + '55';
+                            return (
+                              <View key={i} style={{
+                                backgroundColor: tierBg, borderRadius:8,
+                                borderLeftWidth:3, borderLeftColor:tierColor,
+                                paddingVertical:10, paddingHorizontal:12,
+                              }}>
+                                {/* Top row: tier · sport · units */}
+                                <View style={{flexDirection:'row', alignItems:'center', gap:8, marginBottom:6}}>
+                                  <View style={{backgroundColor: tierColor + '22', paddingHorizontal:6, paddingVertical:2, borderRadius:4, borderWidth:0.5, borderColor: tierColor + '55'}}>
+                                    <Text style={{color: tierColor, fontSize:9, fontWeight:'800', letterSpacing:0.5}}>{p.tier}</Text>
+                                  </View>
+                                  <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.5}}>{p.sport}</Text>
+                                  {p.type && p.type !== 'ml' && (
+                                    <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700'}}>{String(p.type).toUpperCase()}</Text>
+                                  )}
+                                  <Text style={{color:p.units >= 2 ? THEME.sharp : THEME.textMuted, fontWeight: p.units >= 2 ? '800' : '600', fontSize:10, marginLeft:'auto'}}>{p.units || 1}u</Text>
+                                </View>
+                                {/* Pick + odds */}
+                                <View style={{flexDirection:'row', alignItems:'baseline', gap:8, flexWrap:'wrap'}}>
+                                  <Text style={{color:THEME.text, fontWeight:'800', fontSize:15, flex:1, minWidth:0}} numberOfLines={1}>{p.pick}</Text>
+                                  {p.odds != null && (
+                                    <Text style={{color: p.odds > 0 ? THEME.win : THEME.sharp, fontWeight:'800', fontSize:14}}>
+                                      {p.odds > 0 ? '+' : ''}{p.odds}
+                                    </Text>
+                                  )}
+                                </View>
+                                {/* Matchup */}
+                                <Text style={{color:THEME.textDim, fontSize:11, marginTop:3}} numberOfLines={1}>{p.matchup}</Text>
+                                {p.reason && (
+                                  <Text style={{color:THEME.textMuted, fontSize:10, marginTop:5, lineHeight:14, fontStyle:'italic'}} numberOfLines={2}>{p.reason}</Text>
+                                )}
                               </View>
-                              <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700'}}>{p.sport}</Text>
-                              <Text style={{color:p.units >= 2 ? THEME.sharp : THEME.textMuted, fontWeight: p.units >= 2 ? '800' : '600', fontSize:10, marginLeft:'auto'}}>{p.units || 1}u</Text>
-                            </View>
-                            <View style={{flexDirection:'row', alignItems:'baseline', gap:8, flexWrap:'wrap'}}>
-                              <Text style={{color:THEME.text, fontWeight:'700', fontSize:14}}>{p.pick}</Text>
-                              {p.odds != null && (
-                                <Text style={{color: p.odds > 0 ? THEME.win : THEME.sharp, fontWeight:'800', fontSize:13}}>
-                                  {p.odds > 0 ? '+' : ''}{p.odds}
-                                </Text>
-                              )}
-                            </View>
-                            <Text style={{color:THEME.textDim, fontSize:11, marginTop:2}} numberOfLines={1}>{p.matchup}</Text>
-                            {p.reason && (
-                              <Text style={{color:THEME.textMuted, fontSize:10, marginTop:4, lineHeight:14}} numberOfLines={2}>{p.reason}</Text>
-                            )}
-                          </View>
-                        );
-                      })}
+                            );
+                          })}
+                        </View>
+                      )}
                     </View>
 
                     {/* Methodology card */}
