@@ -98,15 +98,14 @@ def grade_date(gd: str, dry_run: bool = False) -> tuple[int, int]:
         for row in (pr.json() or []):
             prop_results[row['id']] = row.get('result')
 
-    # 2026-08-21 FALLBACK: for snapshots whose prop_id lookup missed OR
-    # returned null result, try matching by identifying fields. Handles
-    # pruned source rows.
+    # 2026-08-21 FALLBACK 1: for snapshots whose prop_id lookup missed OR
+    # returned null result, try matching by identifying fields against
+    # mlb_pipeline_props. Handles pruned source rows.
     fallback_results = {}
     unresolved = [s for s in snaps
                   if s.get('prop_id') is None
                   or prop_results.get(s.get('prop_id')) not in ('Win', 'Loss', 'Push')]
     if unresolved:
-        # Fetch all graded props for the date (small enough to batch)
         fb = requests.get(
             f'{SB}/rest/v1/mlb_pipeline_props',
             headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-4999'},
@@ -118,12 +117,41 @@ def grade_date(gd: str, dry_run: bool = False) -> tuple[int, int]:
             timeout=30,
         )
         graded_props = fb.json() if fb.status_code in (200, 206) else []
-        # Index by (player, type, line, direction)
         for row in graded_props:
             if not isinstance(row, dict): continue
             key = (row.get('player_name'), row.get('prop_type'),
                    row.get('prop_line'), row.get('direction'))
             fallback_results[key] = row.get('result')
+
+    # 2026-08-21 FALLBACK 2: prop_playbook_decisions (persistent, doesn't
+    # get pruned like mlb_pipeline_props). Uses W/L single-letter format
+    # so we normalize here to Win/Loss for consistency with prior grades.
+    # Covers 405+ snapshots that source table couldn't grade.
+    if unresolved:
+        fb2 = requests.get(
+            f'{SB}/rest/v1/prop_playbook_decisions',
+            headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-4999'},
+            params={
+                'game_date': f'eq.{gd}',
+                'result': 'not.is.null',
+                'select': 'player_name,prop_type,prop_line,direction,result',
+            },
+            timeout=30,
+        )
+        graded_pb = fb2.json() if fb2.status_code in (200, 206) else []
+        for row in graded_pb:
+            if not isinstance(row, dict): continue
+            key = (row.get('player_name'), row.get('prop_type'),
+                   row.get('prop_line'), row.get('direction'))
+            # Only fill if not already found via primary fallback
+            if key in fallback_results and fallback_results[key] in ('Win', 'Loss', 'Push'):
+                continue
+            # Normalize W/L → Win/Loss
+            raw = str(row.get('result', '')).upper()
+            norm = {'W': 'Win', 'L': 'Loss', 'V': 'Push', 'P': 'Push',
+                    'WIN': 'Win', 'LOSS': 'Loss', 'VOID': 'Push', 'PUSH': 'Push'}.get(raw)
+            if norm:
+                fallback_results[key] = norm
 
     graded = skipped = 0
     now_iso = datetime.now(timezone.utc).isoformat()

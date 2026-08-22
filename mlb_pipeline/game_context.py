@@ -3808,6 +3808,35 @@ def run(target_date=None):
             # Reset throws variables to avoid scope issues
             home_throws = None
             away_throws = None
+
+            # 2026-08-21 FIX: pull pitcher handedness INDEPENDENTLY of
+            # lineup_confirmed. Prior version only set home_throws/away_throws
+            # inside the lineup-confirmed block (line ~4045), so pre-lineup
+            # ctx had home_throws=NULL, blocking every batter_platoon signal
+            # from firing. Now the field populates as soon as we have a
+            # pitcher name (via pitcher_stats.get('throws') OR direct MLB API
+            # lookup as fallback).
+            try:
+                if home_pitcher_stats:
+                    _t = home_pitcher_stats.get('throws')
+                    if _t: home_throws = _t
+                if not home_throws and home_pitcher:
+                    try:
+                        from pitcher_stats import get_pitcher_handedness
+                        _h = get_pitcher_handedness(home_pitcher)
+                        if _h: home_throws = _h
+                    except Exception: pass
+                if away_pitcher_stats:
+                    _t = away_pitcher_stats.get('throws')
+                    if _t: away_throws = _t
+                if not away_throws and away_pitcher:
+                    try:
+                        from pitcher_stats import get_pitcher_handedness
+                        _h = get_pitcher_handedness(away_pitcher)
+                        if _h: away_throws = _h
+                    except Exception: pass
+            except Exception as _e:
+                print(f"  [warn] pitcher_throws early-populate failed: {_e}")
             
             # Get team strikeout rates
             home_k_pct = get_team_strikeout_rate(home_team)
