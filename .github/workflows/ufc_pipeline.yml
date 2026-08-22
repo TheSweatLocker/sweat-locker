@@ -66,16 +66,25 @@ jobs:
         if: steps.mode.outputs.mode == 'full'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python ufc_card_scraper_v3.py || echo "card scraper failed (non-fatal)"
+
+      - name: Refit isotonic calibrator from latest graded fights
+        if: steps.mode.outputs.mode == 'full'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ufc_calibration_fit.py --days 365 || echo "calibrator refit failed (score card falls back to raw)"
 
       - name: Score card with 4-model ensemble
         if: steps.mode.outputs.mode == 'full'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python ufc_score_card.py || echo "score card failed"
@@ -84,7 +93,7 @@ jobs:
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only' || steps.mode.outputs.mode == 'card_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -94,7 +103,12 @@ jobs:
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only' || steps.mode.outputs.mode == 'card_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          # 2026-08-21: SHARP-FADE experiment disabled. Real fix (isotonic
+          # calibrator v1) shipped this date + refit before every score run.
+          # See project_ufc_model_broken_817 memo. Leave flag here so it can
+          # be flipped back on quickly if calibrator behaves badly.
+          UFC_SHARP_FADE_MODE: 'false'
         run: |
           cd mlb_pipeline
           python ufc_compute_ev.py || echo "EV compute failed"
@@ -103,7 +117,7 @@ jobs:
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python ufc_weekly_card.py --format markdown || echo "weekly card failed"
@@ -113,7 +127,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python pull_externals_ufc.py || echo "externals pull failed (non-fatal)"
@@ -122,7 +136,7 @@ jobs:
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python ufc_resolve_fights.py || echo "resolver failed"
@@ -137,7 +151,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python ufc_espn_enrich.py --today || echo "UFC ESPN enrich failed (non-fatal — synth falls back to prior stats)"
@@ -153,7 +167,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
@@ -167,7 +181,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python ufc_grader.py --backfill-all || echo "UFC grader failed (non-fatal)"
@@ -181,7 +195,7 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           python grade_ufc_jerry_reads.py --backfill-days 60 || echo "UFC jerry grader failed (non-fatal)"

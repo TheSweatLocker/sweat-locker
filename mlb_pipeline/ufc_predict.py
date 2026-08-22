@@ -138,11 +138,11 @@ def predict_fight(fighter_a_url, fighter_b_url, fight_date, total_rounds_schedul
         bst, meta = m
         # Natural orientation P(A wins)
         x_nat = _feature_vector(feat, meta["feature_names"])
-        p_nat = float(bst.predict(xgb.DMatrix(x_nat))[0])
+        p_nat = float(bst.predict(xgb.DMatrix(x_nat, feature_names=meta["feature_names"]))[0])
         # Swapped orientation — "P(A wins)" is now really P(original B wins)
         sw = _swap_ab_features(feat)
         x_sw = _feature_vector(sw, meta["feature_names"])
-        p_sw_orient = float(bst.predict(xgb.DMatrix(x_sw))[0])
+        p_sw_orient = float(bst.predict(xgb.DMatrix(x_sw, feature_names=meta["feature_names"]))[0])
         # Symmetric average of P(original A wins)
         p = 0.5 * (p_nat + (1.0 - p_sw_orient))
         out["_winner_model_version"] = meta.get('_model_version', 'v1')
@@ -177,7 +177,7 @@ def predict_fight(fighter_a_url, fighter_b_url, fight_date, total_rounds_schedul
     if m:
         bst, meta = m
         x = _feature_vector(feat, meta["feature_names"])
-        probs = bst.predict(xgb.DMatrix(x))[0]
+        probs = bst.predict(xgb.DMatrix(x, feature_names=meta["feature_names"]))[0]
         out["p_method_ko"] = float(probs[0])
         out["p_method_sub"] = float(probs[1])
         out["p_method_dec"] = float(probs[2])
@@ -187,7 +187,7 @@ def predict_fight(fighter_a_url, fighter_b_url, fight_date, total_rounds_schedul
     if m:
         bst, meta = m
         x = _feature_vector(feat, meta["feature_names"])
-        p = float(bst.predict(xgb.DMatrix(x))[0])
+        p = float(bst.predict(xgb.DMatrix(x, feature_names=meta["feature_names"]))[0])
         out["p_distance"] = p
 
     # Round of finish (R1=0..R5=4)
@@ -195,7 +195,7 @@ def predict_fight(fighter_a_url, fighter_b_url, fight_date, total_rounds_schedul
     if m:
         bst, meta = m
         x = _feature_vector(feat, meta["feature_names"])
-        probs = bst.predict(xgb.DMatrix(x))[0]
+        probs = bst.predict(xgb.DMatrix(x, feature_names=meta["feature_names"]))[0]
         for i, p in enumerate(probs):
             out[f"p_round_{i+1}"] = float(p)
 
