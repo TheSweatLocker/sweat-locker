@@ -78,12 +78,26 @@ def _implied_prob_pct(odds) -> Optional[int]:
 
 
 def _verdict(tier: str, conviction: int, side: str = '') -> str:
+    """Return the SINGLE-word stance for this prop.
+
+    2026-08-22: killed the dual-label "LEAN BACK" bug — user was reading
+    the card and seeing both tier=LEAN and verdict='LEAN BACK' which
+    forced them to reconcile two labels for one decision. Now the tier
+    IS the stance:
+        PRIME  → play it (highest conviction bucket)
+        STRONG → play it
+        LEAN   → lean, size down
+        PASS   → skip
+    'FADE' overrides when playbook signals contrarian direction.
+
+    Preserves receipts vocabulary — PRIME/STRONG/LEAN unchanged in DB.
+    """
     tier = (tier or '').upper(); side = (side or '').upper()
     conv = int(conviction or 0)
     if side == 'FADE': return 'FADE'
-    if tier == 'PRIME' and conv >= 70: return 'BACK'
-    if tier == 'STRONG' and conv >= 60: return 'BACK'
-    if tier == 'LEAN' and conv >= 55: return 'LEAN BACK'
+    if tier == 'PRIME' and conv >= 70: return 'PRIME'
+    if tier == 'STRONG' and conv >= 60: return 'STRONG'
+    if tier == 'LEAN' and conv >= 55: return 'LEAN'
     return 'PASS'
 
 
@@ -226,13 +240,15 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None) -
         lines.append(f'⚠ Signal gaps (should be checked but not surfaced): {", ".join(missing)}')
         lines.append('')
 
-    # Verdict + score footer
-    footer = f'VERDICT: {verdict}   ·   Score: {conviction}'
+    # Verdict = tier. Show ONE label + one score (refit if available).
+    # Score priority: refit_conviction (model-of-record) > legacy conviction.
+    # Legacy conviction retired from display 2026-08-22.
+    display_score = None
     if refit_conv is not None:
-        try: footer += f'   ·   Refit: {int(float(refit_conv))}'
-        except (TypeError, ValueError): pass
-    if tier: footer += f'   ·   Tier: {tier}'
-    lines.append(footer)
+        try: display_score = int(float(refit_conv))
+        except (TypeError, ValueError): display_score = conviction
+    if display_score is None: display_score = conviction
+    lines.append(f'{verdict}   ·   Score: {display_score}')
 
     short_read = '\n'.join(lines)
     return {

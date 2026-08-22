@@ -4512,6 +4512,42 @@ def run():
         top = [p for p in top if p.get('game_id') not in live_game_ids]
         print(f"  🔒 Live-game preserve: {len(live_game_ids)} game(s) past first pitch — kept AM props, dropped {before - len(top)} re-scored rows for those games from upsert")
 
+    # 2026-08-22 DEDUP: one card per (player_name, stat_family). Previously
+    # generate_props emitted BOTH over and under variants for the same
+    # pitcher/batter/stat when both scored above the tier threshold. User
+    # correctly flagged: 15 games × 30 pitchers should yield ~30 HA cards,
+    # not 84. The app "matchup edges" counter on index.tsx:13351 was
+    # inflated by both-sides duplicates × multiple book_source rows.
+    #
+    # Dedup rule: for each (player, stat_family), keep the side with the
+    # higher conviction. Tie → prefer the tier ordering PRIME > STRONG > LEAN.
+    # Note: STAT_FAMILY strips _over/_under suffix using the same helper
+    # render_prop_template uses.
+    _TIER_ORD = {'PRIME': 3, 'STRONG': 2, 'LEAN': 1, 'SKIP': 0, 'PASS': 0}
+    def _stat_fam(pt: str) -> str:
+        if not pt: return ''
+        for suf in ('_over', '_under'):
+            if pt.endswith(suf): return pt[:-len(suf)]
+        return pt
+    def _dedup_key(p):
+        return ((p.get('player_name') or '').lower(),
+                _stat_fam(p.get('prop_type') or ''))
+    def _rank(p):
+        # higher tuple wins the (player, stat) matchup
+        return (_TIER_ORD.get((p.get('tier') or '').upper(), 0),
+                float(p.get('conviction') or 0),
+                float(p.get('refit_conviction') or 0))
+    _before_dedup = len(top)
+    _by_matchup = {}
+    for p in top:
+        k = _dedup_key(p)
+        if k not in _by_matchup or _rank(p) > _rank(_by_matchup[k]):
+            _by_matchup[k] = p
+    top = list(_by_matchup.values())
+    if _before_dedup != len(top):
+        print(f"  🎯 Prop dedup: {_before_dedup} → {len(top)} rows "
+              f"(one card per (player, stat) — winning direction kept)")
+
     wipe_todays_props(skip_live_game_ids=live_game_ids or None)
     saved = upsert_props(top)
     print(f"\n✅ Stored {saved} top props (of {len(all_props)} passing threshold)")
