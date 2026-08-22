@@ -156,9 +156,37 @@ Same 10-factor structure as NFL props:
 | 11 | Model consensus (V4 + panel) | ⚠️ NBA V4 model TBD |
 | 12 | External handicapper picks | Existing pattern |
 
-## NBA — Player Props (design pending, Nov 3 launch target)
+## NBA — Player Props Checklist (12 factors)
 
-Similar 10-factor pattern to NFL: L10 extreme, L5 hot/cold, projection edge, season hit%, matchup at position (need `nba_player_vs_team` backfill), back-to-back fatigue, opponent pace impact, minutes projection sanity.
+| # | Factor | Signal example |
+|---|---|---|
+| 1 | L10 hit count extreme | `nba_prop_l10_extreme` |
+| 2 | L5 hot/cold streak | `nba_prop_l5_hot/cold` |
+| 3 | Season hit % consistency | `nba_prop_season_hit_pct_high` |
+| 4 | Projection edge (supports/opposes/strong) | `nba_prop_projection_*` |
+| 5 | Back-to-back fatigue | `nba_prop_b2b_fade` |
+| 6 | Pace mismatch (high → over) | `nba_prop_high/low_pace_over/under` |
+| 7 | Star OUT teammate boost | `nba_prop_star_out_teammate_boost` |
+| 8 | Minutes projection sanity | `nba_prop_minutes_low_fade` |
+| 9 | Player vs team scoring history | ⚠️ needs `nba_player_vs_team` backfill |
+| 10 | Matchup at position | ⚠️ needs positional-def data |
+| 11 | Home/road split | ⚠️ needs season data |
+| 12 | Rest days | ⚠️ needs rest calc |
+
+## NHL — Player Props Checklist (10 factors)
+
+| # | Factor | Signal example |
+|---|---|---|
+| 1 | L10 hit count extreme | `nhl_prop_l10_extreme` |
+| 2 | L5 hot/cold streak | `nhl_prop_l5_hot/cold` |
+| 3 | Season hit % consistency | `nhl_prop_season_hit_pct_high` |
+| 4 | Projection edge (supports/opposes) | `nhl_prop_projection_*` |
+| 5 | Facing elite goalie (SV%>=.920) | `nhl_prop_facing_elite_goalie` |
+| 6 | Facing weak goalie (SV%<=.895) | `nhl_prop_facing_weak_goalie` |
+| 7 | Back-to-back fatigue | `nhl_prop_b2b_fade` |
+| 8 | PP opportunity vs weak PK | `nhl_prop_pp_specialist_hot_pk` |
+| 9 | Home/road split | ⚠️ needs season data |
+| 10 | Player vs opponent scoring history | ⚠️ needs `nhl_player_vs_team` backfill |
 
 ## NHL — Sides / Totals Checklist (12 factors)
 

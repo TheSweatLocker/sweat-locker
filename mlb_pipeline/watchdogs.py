@@ -435,6 +435,102 @@ def check_prop_volume_thin() -> Optional[dict]:
     }
 
 
+def check_coverage_audit() -> Optional[dict]:
+    """Alert when today's PRIME/STRONG picks have <12/25 factor coverage OR
+    a single class dominates >45% of the score. Enforces SIGNAL_FRAMEWORK.md
+    standard shipped 8/21.
+
+    Uses today's prop_playbook_decisions. Threshold: 20% of PRIME/STRONG
+    rows failing coverage = WARNING; 40% = CRITICAL.
+    """
+    today = _et_today()
+    try:
+        r = requests.get(f'{SB}/rest/v1/prop_playbook_decisions',
+                         headers=H_READ,
+                         params={'game_date': f'eq.{today}',
+                                 'playbook_tier': 'in.(PRIME,STRONG)',
+                                 'select': 'player_name,prop_type,playbook_tier,playbook_sources'},
+                         timeout=15)
+        rows = r.json() if r.status_code == 200 else []
+    except Exception:
+        return None
+    if not rows:
+        return None
+
+    # Factor categorization (mirrors coverage_audit.py FACTOR_SLOTS)
+    def factor_of(key: str) -> str:
+        k = key.lower()
+        if 'projection_contradicts' in k: return 'projection_sanity'
+        if 'recent_hot' in k or 'recent_cold' in k or 'l5_confirm' in k: return 'form_recent'
+        if 'xera' in k or 'siera' in k: return 'form_season'
+        if 'home_road_split' in k: return 'home_road_split'
+        if 'first_inning' in k or 'slow_start' in k: return 'first_inning'
+        if 'vs_team_career_baa' in k: return 'vs_team_baa'
+        if 'vs_team_career_er' in k: return 'vs_team_er'
+        if 'vs_team_career_k9' in k: return 'vs_team_k9'
+        if 'vs_team_recent' in k or 'vs_team_dominant' in k or 'vs_team_hit_hard' in k: return 'vs_team_recent'
+        if 'opp_lineup' in k: return 'opp_lineup'
+        if 'opp_ats' in k: return 'opp_ats'
+        if 'babip' in k: return 'opp_babip'
+        if 'barrel' in k: return 'opp_barrel'
+        if 'bullpen' in k: return 'own_bullpen'
+        if 'park' in k: return 'park'
+        if 'wind' in k or 'weather' in k: return 'weather'
+        if 'platoon' in k: return 'platoon'
+        if 'sharp_split' in k or 'oddscrowd' in k or 'sharp_scenario' in k: return 'sharp_split'
+        if 'refit' in k: return 'refit'
+        return 'other'
+
+    from collections import defaultdict
+    flagged = 0
+    for row in rows:
+        sources = row.get('playbook_sources') or []
+        if isinstance(sources, str):
+            try:
+                import json as _j
+                sources = _j.loads(sources)
+            except Exception:
+                sources = []
+        if not isinstance(sources, list):
+            continue
+        factors_touched = set()
+        class_share = defaultdict(float)
+        total = 0.0
+        for c in sources:
+            if not isinstance(c, dict): continue
+            contrib = c.get('contribution', 0) or 0
+            total += contrib
+            factors_touched.add(factor_of(c.get('signal_key', '')))
+            class_share[c.get('class', '?')] += contrib
+        # Coverage check
+        if len(factors_touched) < 12:
+            flagged += 1
+            continue
+        # Class dominance
+        if total > 0:
+            max_share = max((v/total for v in class_share.values()), default=0)
+            if max_share > 0.45:
+                flagged += 1
+    flag_rate = flagged / max(1, len(rows))
+    if flag_rate >= 0.40:
+        return {
+            'check_name': 'coverage_audit',
+            'severity': 'CRITICAL',
+            'message': f'{flagged}/{len(rows)} PRIME/STRONG picks fail framework coverage ({flag_rate:.0%})',
+            'detail': {'flagged': flagged, 'total': len(rows),
+                       'threshold': 'CRITICAL >= 40%'}
+        }
+    if flag_rate >= 0.20:
+        return {
+            'check_name': 'coverage_audit',
+            'severity': 'WARNING',
+            'message': f'{flagged}/{len(rows)} PRIME/STRONG picks fail framework coverage ({flag_rate:.0%})',
+            'detail': {'flagged': flagged, 'total': len(rows),
+                       'threshold': 'WARNING 20-40%'}
+        }
+    return None
+
+
 CHECKS = [
     check_ladder_empty,
     check_ensemble_engine_share,
@@ -446,6 +542,7 @@ CHECKS = [
     check_signal_source_dark,
     check_prime_hit_crash,
     check_prop_volume_thin,
+    check_coverage_audit,
 ]
 
 
