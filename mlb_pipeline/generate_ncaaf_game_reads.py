@@ -81,16 +81,19 @@ def load_templates():
 
 
 def fetch_upcoming_games():
-    """Pull ncaaf_game_context rows for games in next 10 days."""
+    """Pull ncaaf_game_context rows for games in next 10 days.
+
+    2026-08-09 fix: dict-based query string collapsed both game_date filters
+    to only the second (lte.horizon), pulling PAST games too. Build URL by
+    hand so both filters land as separate query params.
+    """
     today = today_et()
     horizon = (datetime.now(timezone.utc) + timedelta(days=10) - timedelta(hours=4)).strftime('%Y-%m-%d')
-    return sb_get('ncaaf_game_context', {
-        'game_date': f'gte.{today}',
-        'game_date': f'lte.{horizon}',   # note: dict overwrites; postgrest also parses both if in URL directly
-        'select': '*',
-        'order': 'sweat_score.desc.nullslast',
-        'limit': '50',
-    })
+    url = (f"{SUPABASE_URL}/rest/v1/ncaaf_game_context"
+           f"?game_date=gte.{today}&game_date=lte.{horizon}"
+           f"&select=*&order=sweat_score.desc.nullslast&limit=50")
+    r = requests.get(url, headers=SB_READ, timeout=20)
+    return r.json() if r.status_code == 200 else []
 
 
 def _build_casual_summary(ctx):
@@ -313,4 +316,9 @@ def main():
 
 
 if __name__ == '__main__':
+    try:
+        from season_gate import season_gate_or_exit
+        season_gate_or_exit('NCAAF')
+    except ImportError:
+        pass
     main()

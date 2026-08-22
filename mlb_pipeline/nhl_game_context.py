@@ -57,6 +57,41 @@ SPORT_KEY = 'icehockey_nhl'
 # During preseason use icehockey_nhl_preseason if it exists.
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Elo model apply (2026-08-17)
+# ═══════════════════════════════════════════════════════════════════════
+
+_NHL_ELO_CACHE = None
+
+
+def _load_nhl_elo():
+    """Train NHL Elo from nhl_game_results (cached per run)."""
+    global _NHL_ELO_CACHE
+    if _NHL_ELO_CACHE is not None: return _NHL_ELO_CACHE
+    try:
+        from nhl_elo import train
+        _NHL_ELO_CACHE = train()
+    except Exception as e:
+        print(f'  ⚠ NHL Elo training failed: {e}')
+        _NHL_ELO_CACHE = {}
+    return _NHL_ELO_CACHE
+
+
+def enrich_nhl_elo(rows: list[dict]) -> None:
+    """Attach projected_home_wp + projected_total from Elo to each ctx row."""
+    ratings = _load_nhl_elo()
+    if not ratings: return
+    from nhl_elo import predict as elo_predict
+    for row in rows:
+        home = row.get('home_team',''); away = row.get('away_team','')
+        pred = elo_predict(home, away, ratings)
+        row['projected_home_wp'] = pred['projected_home_wp']
+        row['projected_total'] = pred['projected_total']
+        row['projected_home_ml'] = pred['projected_home_ml']
+        row['elo_home'] = pred['home_elo']
+        row['elo_away'] = pred['away_elo']
+
+
 def _et_now() -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=4)
 
@@ -328,6 +363,7 @@ def run_for_date(game_date: date, dry_run: bool = False) -> int:
 
     print(f'    fetched {len(games)} games — enriching...')
     enrich_market(games)
+    enrich_nhl_elo(games)  # 2026-08-17: Elo-driven projected_home_wp + total
     enrich_team_stats(games, season)
     enrich_goalies(games, season)
     enrich_rest_and_travel(games)
@@ -355,4 +391,9 @@ def main():
 
 
 if __name__ == '__main__':
+    try:
+        from season_gate import season_gate_or_exit
+        season_gate_or_exit('NHL')
+    except ImportError:
+        pass
     main()

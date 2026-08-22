@@ -531,4 +531,11 @@ def main():
 
 
 if __name__ == '__main__':
+    # 2026-08-22: season gate. NCAAF is Aug-Jan. Off-season top-exit
+    # rather than fetching empty Odds API responses + iterating no games.
+    try:
+        from season_gate import season_gate_or_exit
+        season_gate_or_exit('NCAAF')
+    except ImportError:
+        pass
     main()

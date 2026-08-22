@@ -336,4 +336,9 @@ def main():
 
 
 if __name__ == '__main__':
+    try:
+        from season_gate import season_gate_or_exit
+        season_gate_or_exit('NCAAB')
+    except ImportError:
+        pass
     main()
