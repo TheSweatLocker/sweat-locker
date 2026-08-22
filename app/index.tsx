@@ -15,6 +15,7 @@ import UfcFightDetail from './components/UfcFightDetail';
 import Explainer from './components/Explainer';
 import TierChip from './components/TierChip';
 import LineMovementTab from './components/LineMovementTab';
+import AdminNoticeBanner from './components/AdminNoticeBanner';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Sport } from './lib/sportPeriods';
 
@@ -10950,6 +10951,13 @@ setJerryHistory(prev => {
 
   return(
     <View style={styles.container}>
+      {/* Admin live-note banner. Invisible when no active notices in admin_notice
+          table. Use for outage FYIs / stale-pick warnings / any live message
+          the user wants to push without an app submission cycle. Sport/route
+          scoping intentionally left off — activeTab is section-scoped
+          ('home'/'jerry'/etc.), not sport-scoped. Add per-sport filtering
+          later if we introduce a separate sport-tab state. */}
+      <AdminNoticeBanner supabase={supabase} />
       {!onboardingDone&&(
         // 2026-08-09 expanded to 3 steps for launch: Welcome → How to Read the
         // Card (tier hierarchy visual) → Age Gate. Middle step teaches users
