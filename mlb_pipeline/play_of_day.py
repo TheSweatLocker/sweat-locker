@@ -3449,8 +3449,38 @@ def run():
         )
         return
 
-    # Sort by score
-    candidates.sort(key=lambda c: c['score'], reverse=True)
+    # 2026-08-22 SORT KEY OVERHAUL — rank by primary_play.conviction FIRST,
+    # sweat_score as tiebreaker.
+    #
+    # Prior behavior: sort by sweat_score composite (SIDE + TOTAL + PROP +
+    # NRFI + HR dim). Problem surfaced tonight: Yankees game had a
+    # supplementary NRFI 89 that inflated the game's composite sweat_score
+    # above games with much stronger ENSEMBLE picks (Padres ML PRIME conv
+    # 83, Arizona ML PRIME conv 88 etc.). The composite is dimensionally
+    # correct for "how bettable is this game overall" but WRONG for "which
+    # ensemble pick has the most confident model signal."
+    #
+    # New sort key mirrors the "backside dictates renders" philosophy:
+    # ensemble writes primary_play with tier + conviction — POTD elevates
+    # the best ensemble pick, not the sweatiest composite. sweat_score
+    # remains authoritative for game-card display but no longer drives
+    # POTD ranking.
+    #
+    # Tier ranking (PRIME > STRONG > LEAN > SKIP) with conviction as the
+    # in-tier tiebreaker. Games without primary_play (rare — legacy fallback
+    # abstained) fall back to sweat_score. Supplementary NRFI/YRFI has no
+    # primary_play so falls under the sweat_score path; game-started guards
+    # + bare-NRFI gates from the earlier block already filter those.
+    _TIER_RANK = {'PRIME': 4, 'STRONG': 3, 'LEAN': 2, 'PASS': 1, 'SKIP': 1}
+    def _potd_sort_key(c):
+        pp = c.get('primary_play') if isinstance(c.get('primary_play'), dict) else None
+        if pp:
+            tier_rank = _TIER_RANK.get((pp.get('tier') or '').upper(), 0)
+            conv = float(pp.get('conviction') or 0)
+            return (1, tier_rank, conv, float(c.get('score') or 0))
+        # No primary_play — legacy sweat_score path (behind ensemble picks)
+        return (0, 0, 0.0, float(c.get('score') or 0))
+    candidates.sort(key=_potd_sort_key, reverse=True)
 
     # Weather-risk POTD gate — 2026-07-22.
     # 7/21 postponement wiped POTD Red Sox ML + STRONG YRFI BAL@BOS + SKIP
@@ -3468,8 +3498,8 @@ def run():
             print(f"  ☔ Weather-risk POTD skip: {_c.get('away_team')} @ {_c.get('home_team')}"
                   f" (rain_prob={_pop})")
         candidates = _dry_mlb + [c for c in candidates if c.get('sport') != 'MLB']
-        # Re-sort in case ordering shifted
-        candidates.sort(key=lambda c: c['score'], reverse=True)
+        # Re-sort using conviction-first key (2026-08-22)
+        candidates.sort(key=_potd_sort_key, reverse=True)
 
     # ────────────────────────────────────────────────────────────────
     # 2026-08-22 POTD SAFETY GUARDS (added after Yankees NRFI 89 POTD
