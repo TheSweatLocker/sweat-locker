@@ -340,11 +340,23 @@ function FilterPill({label, active, onPress}: {label: string; active: boolean; o
 // ─── STRONGEST SIGNAL CARD (horizontal strip) ───────────────────────
 function StrongestSignalCard({flags, sample, onTap}: any) {
   const first = flags[0];
-  const matchup = sample[0]?.matchup || '';
-  const [awayTeam, homeTeam] = matchup.includes(' @ ') ? matchup.split(' @ ').map((s: string) => s.trim()) : ['', ''];
   const strongest = flags.find((f: any) => String(f.classification || '').endsWith('_TRIPLE_CONFIRMED'))
                  || flags.find((f: any) => String(f.classification || '').endsWith('_CONFIRMED'))
                  || flags[0];
+  // 2026-08-22 SAME FIX AS LineMovementCard: parse matchup from flag.detail
+  // prefix ("Cubs @ Mariners · total: Sharps on OVER..."). sample[0]?.matchup
+  // silently returned undefined because line_history select didn't include
+  // matchup column. Parsing from detail is deterministic + zero dependencies.
+  const parseMatchupFromDetail = (flag: any): string => {
+    const detail = String(flag?.detail || '');
+    if (detail.includes(' · ')) {
+      const prefix = detail.split(' · ')[0].trim();
+      if (prefix.includes(' @ ')) return prefix;
+    }
+    return '';
+  };
+  const matchup = parseMatchupFromDetail(strongest) || parseMatchupFromDetail(first) || sample[0]?.matchup || '';
+  const [awayTeam, homeTeam] = matchup.includes(' @ ') ? matchup.split(' @ ').map((s: string) => s.trim()) : ['', ''];
   const cls = String(strongest.classification || '');
   const isTriple = cls.endsWith('_TRIPLE_CONFIRMED');
   const family = cls.startsWith('SHARP_MOVE') ? 'sharp'
