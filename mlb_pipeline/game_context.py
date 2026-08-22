@@ -1280,15 +1280,25 @@ def get_pitcher_vs_team(pitcher_id, opponent_team_id):
                 agg["ab"] += int(stat.get("atBats", 0) or 0)
                 agg["hits"] += int(stat.get("hits", 0) or 0)
                 agg["g"] += 1
-        # 15-IP source-side gate: don't persist undersized vs-team data so no
-        # downstream consumer (scorers, Jerry struct, social card) can cite a
-        # noise sample as "mastery." Was 3 IP — too permissive; let rookies
-        # and infrequent matchups through with single-game hot streaks. The
-        # 5/27 Matz incident showed even 9.7 IP across 2 seasons fed a public
-        # mastery claim that whiffed (4.23 career ERA vs BAL, not 0.93). The
-        # 5-season lookback above (2022-2026) helps build sample; this gate
-        # ensures we never serve numbers that should fail the eye test.
-        if agg["ip"] < 15:
+        # 2026-08-21 SOFTENED (per feedback_vs_team_gate_soften): return the
+        # raw numbers regardless of sample size, but include mastery_reliable
+        # flag so downstream label/prose gates can distinguish trustworthy
+        # career signal from small-sample data.
+        #
+        # Prior behavior: hard null gate at ip<15 to prevent Matz-incident-
+        # style mastery hallucination (2026-05-27: 9.7 IP → 0.93 ERA vs BAL
+        # cited as "mastery," career actually 4.23). Effect: Cameron (11 IP,
+        # 12 K vs DET → 9.82 K/9) had his ENTIRE vs-team signal suppressed,
+        # even the K/9 rate stat that stabilizes fast.
+        #
+        # New behavior: surface the numbers. Downstream mastery LABEL gates
+        # already exist (jerry_model.py:115 mastery_ip_gate=15,
+        # cohort_features.py:149 mastery cohort ip>=15) so "mastery" prose
+        # never fires below 15 IP regardless of source. Meanwhile signals
+        # like pitcher_vs_team_ip_below_outs_line — which compute rate stats
+        # and gate themselves on n_starts + sample — get the data they need.
+        # Minimum floor kept at 3 IP to filter out relief-appearance noise.
+        if agg["ip"] < 3:
             return None
         era = round((agg["er"] * 9.0) / agg["ip"], 2)
         avg = round(agg["hits"] / agg["ab"], 3) if agg["ab"] > 0 else 0.0
@@ -1297,6 +1307,8 @@ def get_pitcher_vs_team(pitcher_id, opponent_team_id):
             "avg_vs_team": avg,
             "ip_vs_team": round(agg["ip"], 1),
             "k_vs_team": agg["k"],
+            "n_starts_vs_team": agg["g"],
+            "mastery_reliable": agg["ip"] >= 15,
         }
     except Exception:
         return None
