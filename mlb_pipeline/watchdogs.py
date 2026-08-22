@@ -281,16 +281,23 @@ def check_jerry_diagnostic_leak() -> Optional[dict]:
 
 def check_signal_source_dark() -> Optional[dict]:
     """Alert if any enabled signal_source hasn't been referenced in
-    _ensemble_sources over last 14 days across ANY game. Signal is dead."""
+    _ensemble_sources over last 14 days across ANY game. Signal is dead.
+
+    2026-08-21 revision: only flag signals ENABLED for the full lookback
+    window. Fresh signals created within the last 14 days haven't had
+    time to accumulate fire history — treating them as dark generated
+    40+ false positives on 8/21 (all 40 flagged signals were <14d old,
+    from active signal-expansion work). The real dark check is: signal
+    that's been live >14d and STILL never fired = truly broken.
+    """
     since = _days_ago(14)
-    # Get all enabled MLB signals
+    # Get all enabled MLB signals + creation timestamp
     r = requests.get(f'{SB}/rest/v1/signal_sources',
         params={'sport': 'eq.MLB', 'enabled': 'eq.true',
-                'select': 'signal_key,class'},
+                'select': 'signal_key,class,created_at'},
         headers=H_READ, timeout=10)
     all_sigs = r.json() if r.status_code == 200 else []
     if not isinstance(all_sigs, list): return None
-    all_keys = {s['signal_key'] for s in all_sigs}
     # Pull last 14d of ensemble source lists from primary_play
     r = requests.get(f'{SB}/rest/v1/mlb_game_context',
         params={'game_date': f'gte.{since}', 'select': 'primary_play'},
@@ -315,15 +322,18 @@ def check_signal_source_dark() -> Optional[dict]:
     skip_classes = {'external_pick', 'split', 'scenario',
                     'prop_trend', 'prop_form', 'prop_environment',
                     'prop_matchup', 'prop_model'}
+    # Age filter: only flag signals that predate the lookback window.
+    # Fresh signals in ramp-up phase are 'not yet observed', not 'dark'.
     dark = sorted([s['signal_key'] for s in all_sigs
                    if s.get('class') not in skip_classes
-                   and s['signal_key'] not in fired])
+                   and s['signal_key'] not in fired
+                   and (s.get('created_at') or '') < since])
     if not dark or len(dark) < 5:  # a few is normal; alert only on wave
         return None
     return {
         'check_name': 'signal_source_dark',
         'severity': 'INFO' if len(dark) < 20 else 'WARNING',
-        'message': f'{len(dark)} enabled signals have not fired on ANY game in last 14 days.',
+        'message': f'{len(dark)} enabled signals older than 14d have not fired on ANY game in last 14 days.',
         'detail': {'since': since, 'dark_count': len(dark), 'examples': dark[:10]},
     }
 
