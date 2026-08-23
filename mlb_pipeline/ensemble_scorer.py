@@ -387,6 +387,17 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
 RAMP_UP_PRIOR = 0.50
 RAMP_UP_DAYS = 30
 
+# 2026-08-22 SAMPLE FLOOR — signals with tiny historical samples produce
+# noise, not evidence. Cleveland @ Colorado tonight showcased the bug:
+# `hitters_park_over` (Coors 118) got weight 0.0 because n=12 hr=0.5 fell
+# below -110 breakeven (52.4%), silently zeroing the strongest physical
+# park factor in MLB. Meanwhile `rockies_under_season_form` (n=11 hr=72.7%)
+# got weight 0.54 because a tiny-sample looked like a huge edge.
+# Below this threshold, use RAMP_UP_PRIOR instead of the noisy edge
+# formula — 25 aligns with the ANTI_VALIDATED flip minimum (only signals
+# with real evidence are trusted for flipping).
+SAMPLE_MIN_N = 25
+
 
 def edge_weight(hit_rate: Optional[float], n: int,
                 tier: Optional[str] = None,
@@ -413,6 +424,11 @@ def edge_weight(hit_rate: Optional[float], n: int,
             return RAMP_UP_PRIOR
         # No proven track record — small floor if registry knows about it
         return 0.20 if tier in ('DISCOVERY', 'UNVALIDATED', 'VALIDATED') else 0.15
+    # 2026-08-22: sample floor — n < SAMPLE_MIN_N produces noise, not
+    # evidence. Below the threshold, ignore the edge formula and use
+    # ramp-up prior instead. See constant docstring for CLE @ COL example.
+    if n < SAMPLE_MIN_N:
+        return RAMP_UP_PRIOR
     edge_pp = hit_rate - BREAKEVEN
     if edge_pp <= 0:
         return 0.0
