@@ -109,23 +109,44 @@ def normalize_from_public_splits_archive(sport: str, game_date: str) -> list[dic
     return rows
 
 
+def _game_id_lookup(sport: str, game_date: str) -> dict:
+    """Return {(away_team, home_team): game_id} for a sport's game_context.
+    Used when source-specific tables (fadereport_signals, cleatz_signals)
+    don't populate game_id for non-MLB sports (scraper gap 2026-08-23)."""
+    tbl = SPORT_CTX_TABLE.get(sport.upper())
+    if not tbl: return {}
+    r = requests.get(f"{SB}/rest/v1/{tbl}",
+                     headers=H_READ,
+                     params={"game_date": f"eq.{game_date}",
+                             "select": "game_id,home_team,away_team", "limit": 200},
+                     timeout=15)
+    if r.status_code != 200: return {}
+    return {(row.get("away_team"), row.get("home_team")): row.get("game_id")
+            for row in (r.json() or []) if isinstance(row, dict) and row.get("game_id")}
+
+
 def normalize_from_fadereport_signals(sport: str, game_date: str) -> list[dict]:
-    """Fadereport native table. sharp_side_norm + bets/money splits both sides given."""
+    """Fadereport native table. sharp_side_norm + bets/money splits both sides given.
+    2026-08-23: fallback game_id lookup for non-MLB where scraper leaves gid null."""
     r = requests.get(f"{SB}/rest/v1/fadereport_signals",
                      headers=H_READ,
                      params={"sport": f"eq.{sport}",
                              "snapshot_date": f"eq.{game_date}",
                              "select": "game_id,market,sharp_side_norm,bets_side_pct,"
                                        "money_side_pct,bets_other_pct,money_other_pct,"
-                                       "strength_pts,fetched_at",
+                                       "strength_pts,fetched_at,home_team,away_team",
                              "limit": 2000},
                      timeout=20)
     if r.status_code != 200: return []
+    gid_idx = _game_id_lookup(sport, game_date) if sport != "MLB" else {}
     rows = []
     for row in r.json() or []:
         if not isinstance(row, dict): continue
         gid = row.get("game_id"); mkt = str(row.get("market","")).lower()
         sharp = str(row.get("sharp_side_norm","")).upper()
+        # Fallback: lookup gid via (away, home) team names when scraper left it null
+        if not gid and row.get("home_team") and row.get("away_team"):
+            gid = gid_idx.get((row["away_team"], row["home_team"]))
         if not (gid and mkt and sharp): continue
         ts = row.get("fetched_at")
         # sharp side gets bets_side_pct / money_side_pct
@@ -151,22 +172,26 @@ def normalize_from_fadereport_signals(sport: str, game_date: str) -> list[dict]:
 
 
 def normalize_from_cleatz_signals(sport: str, game_date: str) -> list[dict]:
-    """Cleatz native table. sharp_side_norm + handle/bets splits both sides given."""
+    """Cleatz native table. sharp_side_norm + handle/bets splits both sides given.
+    2026-08-23: fallback game_id lookup for non-MLB where scraper leaves gid null."""
     r = requests.get(f"{SB}/rest/v1/cleatz_signals",
                      headers=H_READ,
                      params={"sport": f"eq.{sport}",
                              "snapshot_date": f"eq.{game_date}",
                              "select": "game_id,market,sharp_side_norm,sharp_bets_pct,"
                                        "sharp_handle_pct,other_bets_pct,other_handle_pct,"
-                                       "divergence,fetched_at",
+                                       "divergence,fetched_at,home_team,away_team",
                              "limit": 2000},
                      timeout=20)
     if r.status_code != 200: return []
+    gid_idx = _game_id_lookup(sport, game_date) if sport != "MLB" else {}
     rows = []
     for row in r.json() or []:
         if not isinstance(row, dict): continue
         gid = row.get("game_id"); mkt = str(row.get("market","")).lower()
         sharp = str(row.get("sharp_side_norm","")).upper()
+        if not gid and row.get("home_team") and row.get("away_team"):
+            gid = gid_idx.get((row["away_team"], row["home_team"]))
         if not (gid and mkt and sharp): continue
         ts = row.get("fetched_at")
         for metric, val in (("bets_pct", row.get("sharp_bets_pct")),
@@ -190,8 +215,18 @@ def normalize_from_cleatz_signals(sport: str, game_date: str) -> list[dict]:
 
 def upsert_v2_rows(rows: list[dict], dry: bool) -> int:
     if not rows: return 0
+    # In-batch dedupe: unique constraint is (game_id, market, side, source,
+    # metric, snapshot_ts). Source tables can produce multiple rows at the
+    # same captured_at (multiple snapshots stamped identically) — keep the
+    # LATEST occurrence per key so the batch itself passes 21000.
+    deduped: dict[tuple, dict] = {}
+    for row in rows:
+        key = (row.get("game_id"), row.get("market"), row.get("side"),
+               row.get("source"), row.get("metric"), row.get("snapshot_ts"))
+        deduped[key] = row
+    rows = list(deduped.values())
     if dry:
-        print(f"    [DRY] would upsert {len(rows)} v2 rows")
+        print(f"    [DRY] would upsert {len(rows)} v2 rows (deduped)")
         return 0
     written = 0
     CHUNK = 500
