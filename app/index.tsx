@@ -1744,6 +1744,7 @@ const [ncaabTeamStatsMap, setNcaabTeamStatsMap] = useState({});   // team(lower)
 const [ncaafTeamStatsMap, setNcaafTeamStatsMap] = useState({});   // team(lower) -> {sp_overall, sp_offense, sp_defense, off_epa_per_play, def_epa_per_play, ...}
 const [nflTeamStatsMap, setNflTeamStatsMap] = useState({});       // team(short) -> {pass_epa, rush_epa, pass_cpoe, def_sacks, def_ints, ...}
 const [nflGameContextMap, setNflGameContextMap] = useState({});   // game_id AND away@home -> {projected_spread, cohort_tags, primary_play, stats_source, ...}
+const [ncaafGameContextMap, setNcaafGameContextMap] = useState({});  // 2026-08-23: NCAAF ctx enrichment (mirrors NFL) — primary_play + splits_summary + SP+ projections
 const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
@@ -4979,7 +4980,7 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     try {
       const nflCtxResult = await supabase
         .from('nfl_game_context')
-        .select('game_id,game_date,home_team,away_team,close_spread,close_total,projected_spread,projected_total,signal_confluence_net,cohort_tags,sweat_score,sweat_tier,primary_play,stats_source,season_type,week')
+        .select('game_id,game_date,home_team,away_team,close_spread,close_total,projected_spread,projected_total,signal_confluence_net,cohort_tags,sweat_score,sweat_tier,primary_play,stats_source,season_type,week,splits_summary')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(nflCtxResult?.data && nflCtxResult.data.length > 0) {
@@ -4992,6 +4993,29 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           }
         });
         setNflGameContextMap(nflCtxMap);
+      }
+    } catch(pe) { /* non-fatal */ }
+    // 2026-08-23: NCAAF game context enrichment — mirrors NFL pattern.
+    // Users saw bare NCAAF cards on the Aug 29 opener preview because the
+    // Odds-API-only Games fetch didn't overlay model + splits data. This
+    // populates ncaafGameContextMap so card renderers can join by game_id
+    // or "away@home" key and surface primary_play, splits_summary,
+    // sweat_score, SP+ projected_spread on preview cards.
+    try {
+      const ncaafCtxResult = await supabase
+        .from('ncaaf_game_context')
+        .select('game_id,game_date,home_team,away_team,close_spread,close_total,projected_spread,projected_total,signal_confluence_net,signal_confluence_breakdown,sweat_score,sweat_tier,primary_play,splits_summary,season,season_type,home_sp_overall,away_sp_overall,sp_gap')
+        .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
+        .limit(500);
+      if(ncaafCtxResult?.data && ncaafCtxResult.data.length > 0) {
+        const ncaafCtxMap = {};
+        ncaafCtxResult.data.forEach(g => {
+          if(g.game_id) ncaafCtxMap[g.game_id] = g;
+          if(g.home_team && g.away_team) {
+            ncaafCtxMap[`${g.away_team}@${g.home_team}`] = g;
+          }
+        });
+        setNcaafGameContextMap(ncaafCtxMap);
       }
     } catch(pe) { /* non-fatal */ }
     // Umpire stats for the MLB Situational tab (audit-anchored cohort flags)
@@ -15586,9 +15610,12 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     ? (mlbGameContext[selectedGame.away_team] ||
                        mlbGameContext[selectedGame.home_team] ||
                        mlbGameContext[selectedGame.id] || null)
-                    : gamesSport === 'NFL' || gamesSport === 'NCAAF'
+                    : gamesSport === 'NFL'
                       ? (nflGameContextMap?.[`${stripMascot(selectedGame.away_team||'')}@${stripMascot(selectedGame.home_team||'')}`] ||
                          nflGameContextMap?.[selectedGame.id] || null)
+                    : gamesSport === 'NCAAF'
+                      ? (ncaafGameContextMap?.[`${stripMascot(selectedGame.away_team||'')}@${stripMascot(selectedGame.home_team||'')}`] ||
+                         ncaafGameContextMap?.[selectedGame.id] || null)
                       : null
                 }
                 gamesSport={gamesSport}
