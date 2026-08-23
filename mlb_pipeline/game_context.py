@@ -3060,132 +3060,15 @@ def upload_game_context(context, commence_time=None):
             context["primary_play"] = compute_primary_play(context)
             context["primary_play"]["_engine"] = "legacy_compute_primary_play" if isinstance(context["primary_play"], dict) else None
 
-        # 2026-08-22 OC-DISSENT AUTO-FLIP (Option B). Empirical from 14d
-        # audit: when ensemble picks ML side X and OC has money% >= 60 on
-        # the OPPOSITE side, our pick loses 81% (7-30 n=37). Flipping to
-        # OC's side would win 30-7 = 81%. Same principle applies to RL
-        # and TOTAL — OC dissent w/ money conviction is a real reversal
-        # signal (memory: feedback_sharp_money_discipline_802 +
-        # project_sharp_money_fade_808). Applied post-ensemble so the
-        # audit trail preserves the ensemble's raw pick alongside the
-        # flipped output.
-        try:
-            pp = context.get("primary_play")
-            oc = context.get("oddscrowd_snapshot")
-            if (pp and isinstance(pp, dict) and isinstance(oc, dict)
-                    and pp.get("_engine") == "ensemble_v2"):
-                mkt = str(pp.get("type", "")).lower()
-                cur_side = str(pp.get("side", "")).upper()
-                seg = oc.get(mkt) if mkt in ("ml", "rl", "total") else None
-                if isinstance(seg, dict) and seg.get("pick") and cur_side:
-                    oc_pick = str(seg.get("pick", "")).upper()
-                    oc_money = float(seg.get("money") or 0)
-                    # For ML/RL sides use HOME/AWAY; for total use OVER/UNDER
-                    if oc_pick and oc_pick != cur_side and oc_money >= 60:
-                        # OC dissents with money conviction — flip.
-                        # Preserve original pick for audit + downgrade tier
-                        # one notch so users know the flip is a defensive
-                        # move (not the ensemble's original conviction).
-                        orig_side = cur_side
-                        orig_label = pp.get("label")
-                        orig_tier = pp.get("tier")
-                        # Flip side + relabel
-                        flip_map = {"HOME": "AWAY", "AWAY": "HOME",
-                                    "OVER": "UNDER", "UNDER": "OVER"}
-                        new_side = flip_map.get(cur_side, cur_side)
-                        # Build a new label matching the flipped side
-                        home = context.get("home_team", "HOME")
-                        away = context.get("away_team", "AWAY")
-                        cs = context.get("close_spread")
-                        ct = context.get("close_total")
-                        if mkt == "ml":
-                            new_label = f"{home} ML" if new_side == "HOME" else f"{away} ML"
-                        elif mkt == "rl":
-                            try:
-                                line = float(cs) if new_side == "HOME" else -float(cs)
-                                new_label = f"{home if new_side=='HOME' else away} {line:+g}"
-                            except (TypeError, ValueError):
-                                new_label = f"{home if new_side=='HOME' else away} RL"
-                        elif mkt == "total":
-                            try:
-                                new_label = f"{'Over' if new_side=='OVER' else 'Under'} {float(ct)}"
-                            except (TypeError, ValueError):
-                                new_label = "Over" if new_side == "OVER" else "Under"
-                        else:
-                            new_label = pp.get("label")
-                        # Downgrade tier one step
-                        tier_step = {"PRIME": "STRONG", "STRONG": "LEAN", "LEAN": "LEAN"}
-                        new_tier = tier_step.get(orig_tier or "LEAN", "LEAN")
-                        pp["side"] = new_side
-                        pp["label"] = new_label
-                        pp["tier"] = new_tier
-                        pp["_oc_flipped"] = {
-                            "orig_side": orig_side, "orig_label": orig_label,
-                            "orig_tier": orig_tier,
-                            "oc_pick": oc_pick, "oc_money_pct": oc_money,
-                            "reason": (f"OC dissent flip: money% {oc_money:.0f} "
-                                       f"on {oc_pick} vs our {orig_side}. "
-                                       f"14d dissent-band record 7-30 (81% fade edge)."),
-                        }
-                        # Also flip the "sub" narrative if present to reflect new pick
-                        pp["sub"] = (f"OC-dissent flip. Ensemble had {orig_label}; "
-                                     f"OC has {oc_money:.0f}% money on the other side.")
-        except Exception as _oc_flip_err:
-            # Never block pipeline on flip logic
-            pass
-
-        # 2026-08-22 MC-DISSENT GATE. Empirical from Padres audit tonight:
-        # ensemble picked SD ML PRIME conv 83, but Monte Carlo sim only had
-        # SD at 44.9% win prob (vs MIN 41.7%) — a 3.2pp edge that maps to
-        # LEAN-band conviction, NOT PRIME. Ensemble was 15-20 conviction
-        # points too hot vs its own simulator. Rule: if primary_play is
-        # PRIME on ML market AND MC has our pick side < 52% win prob,
-        # downgrade one tier. STRONG-on-ML with MC < 50 also demotes to
-        # LEAN. Prevents the ensemble from crowning a PRIME the simulator
-        # calls a coin flip. Same defensive-guard pattern as OC-dissent
-        # flip above — preserves original tier in _mc_dissent audit trail.
-        try:
-            pp = context.get("primary_play")
-            mc = context.get("mc_probabilities") if isinstance(context.get("mc_probabilities"), dict) else None
-            if (pp and isinstance(pp, dict) and mc
-                    and pp.get("_engine") == "ensemble_v2"
-                    and str(pp.get("type", "")).lower() == "ml"
-                    and pp.get("tier") in ("PRIME", "STRONG")):
-                cur_side = str(pp.get("side", "")).upper()
-                pick_prob = None
-                if cur_side == "HOME":
-                    pick_prob = mc.get("mc_p_home_win")
-                elif cur_side == "AWAY":
-                    pick_prob = mc.get("mc_p_away_win")
-                if pick_prob is not None:
-                    try: pick_prob_f = float(pick_prob)
-                    except (TypeError, ValueError): pick_prob_f = None
-                    if pick_prob_f is not None:
-                        # PRIME requires MC >= 0.52 (5pp edge over BREAKEVEN 47.6%).
-                        # STRONG requires MC >= 0.50 (edge over pure toss-up).
-                        # Below thresholds → one-tier downgrade + audit note.
-                        demote = False
-                        reason = None
-                        if pp["tier"] == "PRIME" and pick_prob_f < 0.52:
-                            new_tier = "STRONG"; demote = True
-                            reason = f"MC dissent: sim has our side at {pick_prob_f*100:.1f}% (<52% PRIME threshold)"
-                        elif pp["tier"] == "STRONG" and pick_prob_f < 0.50:
-                            new_tier = "LEAN"; demote = True
-                            reason = f"MC dissent: sim has our side at {pick_prob_f*100:.1f}% (<50% STRONG threshold)"
-                        if demote:
-                            pp["_mc_dissent"] = {
-                                "orig_tier": pp["tier"],
-                                "mc_pick_win_pct": round(pick_prob_f * 100, 1),
-                                "reason": reason,
-                            }
-                            pp["tier"] = new_tier
-                            # Also drop conviction to match tier ceiling so
-                            # display consistency (LEAN 55 max, STRONG 65 max)
-                            tier_cap = {"LEAN": 55, "STRONG": 65}
-                            if isinstance(pp.get("conviction"), (int, float)):
-                                pp["conviction"] = min(int(pp["conviction"]), tier_cap.get(new_tier, 55))
-        except Exception:
-            pass  # never block pipeline
+        # 2026-08-23: OC-flip + MC-dissent extracted to defensive_gates.py so
+        # recompute_primary_play.py can call the identical logic. Previously
+        # both blocks lived inline here (~130 lines total); recompute path
+        # bypassed them, letting Orioles PRIME 86 (MC 40%) + Mariners PRIME 84
+        # (MC 35%) escape demotion. See defensive_gates.py for the full
+        # empirical rationale on each gate. Order: OC flip runs FIRST (may
+        # change pp.side), then MC dissent (which reads pp.side).
+        from defensive_gates import apply_all_defensive_gates
+        apply_all_defensive_gates(context.get("primary_play"), context)
 
         # 2026-08-22 SHARP-FADE SURFACING — DISABLED 2026-08-23.
         # This block auto-populated _losing_market_notes with a Fadereport
