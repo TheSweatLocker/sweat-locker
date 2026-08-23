@@ -478,6 +478,23 @@ jobs:
           cd mlb_pipeline
           python backfill_prop_lookback.py --sport MLB || echo "prop lookback backfill failed (non-fatal)"
 
+      # 2026-08-23 Dedup pass. sweep_prop_coverage.py inserts the
+      # OPPOSITE direction as COVERAGE stub so shadow playbook has
+      # coverage on both sides; apply_refit_verdict_override.py then
+      # auto-demotes COVERAGE → LEAN 55. Net effect users see: every
+      # opinionated pitcher has ha_over LEAN 55 AND ha_under LEAN 55
+      # as separate cards. dedup_prop_dupes.py collapses the pair to
+      # the winning row (fired-signals > stub, higher tier > lower).
+      # Runs BEFORE prop_ensemble_scorer + prop_jerry_synth so those
+      # only see one clean pick per (player, family).
+      - name: Dedup prop dupes
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python dedup_prop_dupes.py || echo "prop dedup failed (non-fatal)"
+
       # Prop ensemble scorer — SHADOW MODE (2026-08-17). Reads
       # signal_sources rows with subject_scope IN ('prop','player_prop')
       # and writes plug-in playbook decisions to prop_playbook_decisions
