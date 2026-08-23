@@ -2411,7 +2411,14 @@ setEvData(evOpps.slice(0,20));
       // 2026-08-13: weekly-scope sports (NFL, NCAAF) widen the day window
       // to 7 days so the "This Week / Next Week" tabs actually show a week
       // of games instead of one calendar day. tab_scope from sport_registry.
-      const isWeekly = meta?.tab_scope === 'weekly';
+      // 2026-08-23: sport-aware fallback. If sportMeta hasn't loaded yet
+      // (transient during PostgREST schema reload after NOTIFY), force NFL/
+      // NCAAF into weekly by sport, not by lookup — otherwise a missed
+      // registry fetch would collapse a week of NCAAF games into today (which
+      // has zero games in preseason) and users see "no games."
+      const _WEEKLY_SPORTS = new Set(['NFL', 'NCAAF']);
+      const isWeekly = meta?.tab_scope === 'weekly'
+                        || (!meta && _WEEKLY_SPORTS.has(gamesSport));
       const weekTodayEnd = new Date(todayStart);
       weekTodayEnd.setDate(weekTodayEnd.getDate() + 7);
       weekTodayEnd.setHours(23,59,59,999);
@@ -12200,7 +12207,20 @@ setJerryHistory(prev => {
                   'event' → This Card/Next Card). Falls back to Today/Tomorrow
                   when the sport's meta hasn't loaded yet. */}
               {(() => {
-                const scope = sportMeta[gamesSport]?.tab_scope || 'daily';
+                // 2026-08-23: sport-aware fallback. Prior default of 'daily'
+                // collapsed football sports to Today/Tomorrow when sportMeta
+                // hadn't loaded (transient — after a PostgREST schema reload
+                // NOTIFY, sport_registry query can return empty briefly). NCAAF
+                // and NFL play once a week — daily tabs are always wrong for
+                // them, so hardcode the smart default that mirrors sport_registry.
+                const SPORT_TAB_DEFAULT: Record<string,string> = {
+                  MLB: 'daily', NBA: 'daily', NHL: 'daily', NCAAB: 'daily',
+                  NFL: 'weekly', NCAAF: 'weekly',
+                  UFC: 'event',
+                };
+                const scope = sportMeta[gamesSport]?.tab_scope
+                              || SPORT_TAB_DEFAULT[gamesSport]
+                              || 'daily';
                 const labels = scope === 'weekly'
                   ? [{id:'today',label:'This Week'},{id:'tomorrow',label:'Next Week'}]
                   : scope === 'event'
