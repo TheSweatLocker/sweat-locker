@@ -999,10 +999,45 @@ def score_pitcher_ha_over(g, side):
         conviction += 5
         signals['l3_hard'] = f'L3 ERA {l3_era:.2f} — hit hard lately'
 
-    if park_run >= 108:
+    # 2026-08-23 GAP CLOSE — park was silently influencing conviction but
+    # never emitted a signal key. Coverage chip showed "park missing" on
+    # Rockies pitchers because signals dict had no park entry despite the
+    # math using park_run_factor. Now emits signal so card + coverage chip
+    # actually reflect what the model is using.
+    if park_run >= 115:
+        conviction += 6
+        signals['park'] = f'Extreme hitter park (run factor {park_run:.0f}) — Coors-class HA boost'
+    elif park_run >= 108:
         conviction += 4
+        signals['park'] = f'Hitter-friendly park ({park_run:.0f}) — HA over lean'
     elif park_run <= 92:
         conviction -= 3
+        signals['park'] = f'Pitcher-friendly park ({park_run:.0f}) — HA over headwind'
+
+    # 2026-08-23 GAP CLOSE — weather signal for HA. Hot temp (ball carries),
+    # cool temp (dead ball). ctx.temperature is present but was never read.
+    _temp = _f(g.get('temperature'))
+    if _temp is not None:
+        if _temp >= 88:
+            conviction += 4
+            signals['weather'] = f'Hot game-time {_temp:.0f}°F — ball carries, more hits'
+        elif _temp <= 55:
+            conviction -= 3
+            signals['weather'] = f'Cold {_temp:.0f}°F — dead ball, hits suppressed'
+
+    # 2026-08-23 GAP CLOSE — opposing bullpen quality. When a pitcher gets
+    # pulled early (see pull_scale above), the OPP BP takes over. Weak
+    # pen extends the hits count. Strong pen limits late damage.
+    _opp_bp = _f(g.get(f'{opp_side}_bullpen_era'))
+    if _opp_bp is not None:
+        # For HA_OVER: we want to KNOW OUR OWN team's bullpen (comes in after
+        # our pitcher), not opp's. But since HA is on OUR pitcher, use our
+        # own team's bullpen (side=side, not opp_side).
+        pass
+    _own_bp = _f(g.get(f'{side}_bullpen_era'))
+    if _own_bp is not None and _own_bp >= 5.0:
+        conviction += 4
+        signals['weak_pen'] = f'Own bullpen ERA {_own_bp:.2f} — late-inning damage adds HA'
 
     # vs-team BAA mastery — added 2026-05-24. When a pitcher has been
     # historically pummeled by this opponent (BAA >= .290), boost HA-over.
@@ -1092,10 +1127,34 @@ def score_pitcher_ha_under(g, side):
         conviction += 5
         signals['l3_locked'] = f'L3 ERA {l3_era:.2f} — locked in'
 
-    if park_run <= 92:
+    # 2026-08-23 GAP CLOSE — same silent-park-influence bug as ha_over,
+    # inverse direction. Emit signal so coverage chip + card show the park
+    # factor the model is using.
+    if park_run <= 88:
+        conviction += 6
+        signals['park'] = f'Extreme pitcher park ({park_run:.0f}) — HA-under boost'
+    elif park_run <= 92:
         conviction += 4
+        signals['park'] = f'Pitcher-friendly park ({park_run:.0f}) — HA-under lean'
     elif park_run >= 108:
         conviction -= 3
+        signals['park'] = f'Hitter-friendly park ({park_run:.0f}) — HA-under headwind'
+
+    # 2026-08-23 GAP CLOSE — weather (inverse of ha_over)
+    _temp = _f(g.get('temperature'))
+    if _temp is not None:
+        if _temp <= 55:
+            conviction += 4
+            signals['weather'] = f'Cold {_temp:.0f}°F — dead ball, hits suppressed'
+        elif _temp >= 88:
+            conviction -= 3
+            signals['weather'] = f'Hot {_temp:.0f}°F — ball carries, HA-under headwind'
+
+    # 2026-08-23 GAP CLOSE — own bullpen elite means late-inning damage minimal
+    _own_bp = _f(g.get(f'{side}_bullpen_era'))
+    if _own_bp is not None and _own_bp <= 3.50:
+        conviction += 4
+        signals['strong_pen'] = f'Own bullpen ERA {_own_bp:.2f} — late innings shut down'
 
     # vs-team BAA mastery — added 2026-05-24 per project_mastery_split_by_prop_type.
     # Previously score_pitcher_ha_under only used vs_team_era which is the

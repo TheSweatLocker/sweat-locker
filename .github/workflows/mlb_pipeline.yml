@@ -495,6 +495,20 @@ jobs:
           cd mlb_pipeline
           python dedup_prop_dupes.py || echo "prop dedup failed (non-fatal)"
 
+      # 2026-08-23 Sport-universal coverage audit. Runs read-only, reports
+      # per-family signal-firing gaps to stdout. Findings map 1:1 to the
+      # coverage chip users see on the card. Surfaces wire-up backlog so
+      # when NFL/NCAAF/NCAAB/NHL/UFC props start flowing, the same audit
+      # tells us which sport-specific scoring functions have gaps.
+      # Non-fatal — pure diagnostic.
+      - name: Prop coverage audit
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python prop_coverage_audit.py --sport MLB || echo "coverage audit failed (non-fatal)"
+
       # Prop ensemble scorer — SHADOW MODE (2026-08-17). Reads
       # signal_sources rows with subject_scope IN ('prop','player_prop')
       # and writes plug-in playbook decisions to prop_playbook_decisions
