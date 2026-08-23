@@ -538,6 +538,20 @@ jobs:
           cd mlb_pipeline
           python signal_contribution_tracker.py --sport MLB --days 30 || echo "signal tracker failed (non-fatal)"
 
+      # 2026-08-23 Auto-calibration bridge: writes empirical signal hit
+      # rates into signal_registry so playbook's edge_weight() picks up
+      # legacy's proven scoring wisdom automatically. Runs AFTER the
+      # contribution tracker (which produces the data). Non-fatal.
+      # User insight: "if legacy is working, inject those processes into
+      # playbook — the math holds." This is the connector.
+      - name: Refresh prop signal calibration
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refresh_prop_signal_calibration.py --sport MLB --days 30 || echo "signal calibration refresh failed (non-fatal)"
+
       # Prop ensemble scorer — SHADOW MODE (2026-08-17). Reads
       # signal_sources rows with subject_scope IN ('prop','player_prop')
       # and writes plug-in playbook decisions to prop_playbook_decisions
