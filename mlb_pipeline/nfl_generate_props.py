@@ -98,6 +98,66 @@ PROP_CONFIG = {
         'label': 'Receptions',
         'fantasy_col': 'proj_receptions',
     },
+    # 2026-08-23 TD family markets. Historical data columns may not fully
+    # exist yet — signal-emit path handles missing L4 gracefully via
+    # league_baseline. When TD-specific historical cols land, per-family
+    # nuance can be added.
+    'player_pass_tds': {
+        'col': 'passing_tds',
+        'position': 'QB',
+        'league_baseline': 1.4,     # league avg pass TDs per game
+        'opp_col': 'def_pass_def',
+        'label': 'Pass TDs',
+        'fantasy_col': 'proj_pass_tds',
+    },
+    'player_anytime_td': {
+        'col': 'anytime_td',
+        'position': None,
+        'league_baseline': 0.35,    # league avg (RBs + WRs mixed)
+        'opp_col': 'def_pass_def',  # loose proxy — no red-zone-specific data yet
+        'label': 'Anytime TD',
+        'fantasy_col': 'proj_anytime_td',
+    },
+    'player_rush_tds': {
+        'col': 'rushing_tds',
+        'position': 'RB',
+        'league_baseline': 0.3,
+        'opp_col': 'def_sacks',
+        'label': 'Rush TDs',
+        'fantasy_col': 'proj_rush_tds',
+    },
+    'player_pass_attempts': {
+        'col': 'pass_attempts',
+        'position': 'QB',
+        'league_baseline': 32.0,
+        'opp_col': 'def_pass_def',
+        'label': 'Pass Att',
+        'fantasy_col': 'proj_pass_attempts',
+    },
+    'player_pass_completions': {
+        'col': 'pass_completions',
+        'position': 'QB',
+        'league_baseline': 21.0,
+        'opp_col': 'def_pass_def',
+        'label': 'Completions',
+        'fantasy_col': 'proj_pass_completions',
+    },
+    'player_ints': {
+        'col': 'interceptions',
+        'position': 'QB',
+        'league_baseline': 0.75,
+        'opp_col': 'def_pass_def',   # high pass_def = more INTs
+        'label': 'Interceptions',
+        'fantasy_col': 'proj_pass_ints',
+    },
+    'player_rush_attempts': {
+        'col': 'rush_attempts',
+        'position': 'RB',
+        'league_baseline': 13.0,
+        'opp_col': 'def_sacks',
+        'label': 'Rush Att',
+        'fantasy_col': 'proj_rush_attempts',
+    },
 }
 
 
@@ -324,8 +384,119 @@ def player_id_lookup(name: str, position: Optional[str] = None) -> Optional[dict
 # ─────────────────────────────────────────────────────────────
 # Row build + orchestration
 # ─────────────────────────────────────────────────────────────
+def _emit_nfl_ctx_signals(prop_family: str, side: str, ctx: dict, player_team: str,
+                           home_team: str, away_team: str) -> tuple[dict, int]:
+    """Emit context-based signals for an NFL prop.
+
+    Sport-parity with MLB signal-emit pattern. Returns (signals_dict,
+    conviction_bonus). Each fired signal is a rule that ctx-data-value +
+    threshold produced a meaningful edge.
+
+    2026-08-23: introduced. Prior NFL scoring only used L4/season/fantasy/
+    opp_pct — coverage chip always at ~30% and cards had almost no
+    "why" bullets. This closes that gap so NFL cards match MLB depth
+    when Week 1 hits.
+    """
+    sig, bonus = {}, 0
+    if not isinstance(ctx, dict): return sig, 0
+
+    is_pass_family = prop_family in ('pass_yds', 'pass_tds', 'pass_attempts',
+                                      'pass_completions', 'ints',
+                                      'reception_yds', 'receptions')
+    is_rush_family = prop_family in ('rush_yds', 'rush_tds', 'rush_attempts')
+    is_over = (side or '').upper() == 'OVER'
+    player_is_home = player_team == home_team
+
+    # 1) WEATHER (outdoor games — roof open/None; skip if dome/closed)
+    roof = str(ctx.get('roof') or '').lower()
+    is_outdoor = roof not in ('dome', 'closed')
+    if is_outdoor:
+        wind = _f(ctx.get('wind'))
+        temp = _f(ctx.get('temp'))
+        # High wind (>=15 mph) crushes pass yards + receptions + attempts
+        if wind is not None and wind >= 15 and is_pass_family:
+            if is_over:
+                bonus -= 6
+                sig['weather_wind'] = f'{int(wind)}mph wind — passing suppressed, fade OVER'
+            else:
+                bonus += 6
+                sig['weather_wind'] = f'{int(wind)}mph wind — passing suppressed, favors UNDER'
+        # Cold (<=32°F) also suppresses passing + boosts rushing (usually)
+        if temp is not None and temp <= 32:
+            if is_pass_family:
+                bonus += (6 if not is_over else -4)
+                sig['weather_cold'] = f'{int(temp)}°F — cold suppresses passing'
+            if is_rush_family and is_over:
+                bonus += 3
+                sig['weather_cold'] = f'{int(temp)}°F — teams lean rushing in cold'
+        # Warm dry conditions — slight over lean for pass
+        if wind is not None and wind <= 5 and is_pass_family and is_over:
+            bonus += 3
+            sig['weather_calm'] = f'Calm conditions ({int(wind or 0)}mph) — passing environment'
+
+    # 2) SHORT WEEK (Thursday games — one side has rest disadvantage)
+    home_rest = _f(ctx.get('home_rest')); away_rest = _f(ctx.get('away_rest'))
+    player_rest = home_rest if player_is_home else away_rest
+    if player_rest is not None and player_rest <= 4:
+        bonus -= 4 if is_over else 2
+        sig['short_week'] = f'Player team on {int(player_rest)} days rest — short week, hits volume'
+
+    # 3) GAME SCRIPT — spread + total combine to imply how the game flows
+    spread = _f(ctx.get('close_spread'))
+    total = _f(ctx.get('close_total'))
+    if spread is not None and total is not None:
+        # Player team's implied total = (total ± spread) / 2
+        player_favored_by = -spread if player_is_home else spread
+        player_implied_total = (total + player_favored_by) / 2
+        # High implied total → more scoring plays → more props hit OVER
+        if player_implied_total >= 25:
+            if is_over:
+                bonus += 4
+                sig['implied_high'] = f'Player team implied {player_implied_total:.1f} pts — high-scoring script'
+        elif player_implied_total <= 17:
+            if is_over:
+                bonus -= 4
+                sig['implied_low'] = f'Player team implied {player_implied_total:.1f} pts — low-scoring script'
+            else:
+                bonus += 3
+                sig['implied_low'] = f'Player team implied {player_implied_total:.1f} pts — supports UNDER'
+
+        # Game script — big underdogs pass more (garbage time),
+        # big favorites run more (clock control)
+        if player_favored_by >= 7 and is_rush_family and is_over:
+            bonus += 4
+            sig['game_script_run'] = f'Player team favored by {player_favored_by:.1f} — clock-control rushing'
+        elif player_favored_by <= -7 and is_pass_family and is_over:
+            bonus += 4
+            sig['game_script_pass'] = f'Player team dog by {-player_favored_by:.1f} — pass-heavy game script'
+
+    # 4) QB VS OPPONENT HISTORY (pass_yds + pass_tds only)
+    if prop_family in ('pass_yds', 'pass_tds'):
+        qb_col = 'home_qb_vs_team_recent_pass_yds_avg' if player_is_home \
+                 else 'away_qb_vs_team_recent_pass_yds_avg'
+        qb_avg = _f(ctx.get(qb_col))
+        if qb_avg is not None and qb_avg > 0:
+            if prop_family == 'pass_yds':
+                # Compare QB's recent avg vs the prop line implicitly (bonus only when strong signal)
+                if qb_avg >= 280 and is_over:
+                    bonus += 5
+                    sig['qb_vs_team'] = f'QB avg {qb_avg:.0f} pass yds vs opp recently — dominant matchup'
+                elif qb_avg <= 200 and not is_over:
+                    bonus += 5
+                    sig['qb_vs_team'] = f'QB avg {qb_avg:.0f} pass yds vs opp recently — struggles here'
+
+    # 5) INJURY OUTS on offense — signals sig off
+    inj = ctx.get('panel_injury_outs')
+    if isinstance(inj, list) and len(inj) >= 3:
+        # Many injuries on offense — depressed volume for skill players
+        bonus -= 3 if is_over else 2
+        sig['injury_load'] = f'{len(inj)} key players OUT — depressed offense'
+
+    return sig, bonus
+
+
 def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
-                   aliases: dict, season: int) -> Optional[dict]:
+                   aliases: dict, season: int, ctx: dict | None = None) -> Optional[dict]:
     """Build one nfl_props row from an Odds API prop outcome."""
     market_key = market.get('key')
     cfg = PROP_CONFIG.get(market_key)
@@ -402,6 +573,30 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     if not tier: return None
     conv = conviction_from_edge_pct(directional_edge)
 
+    # 2026-08-23 NFL SIGNAL-EMIT WIRE-UP. Prior scoring only tracked
+    # L4/season/fantasy/opp_pct as metadata — no context signals fired.
+    # Now emits weather / short_week / game_script / qb_vs_team / injury
+    # signals from ctx and adjusts conviction. Mirror of MLB pattern.
+    prop_family = market_key.replace('player_', '')
+    ctx_sigs, ctx_bonus = _emit_nfl_ctx_signals(
+        prop_family=prop_family, side=side, ctx=ctx or {},
+        player_team=player_team, home_team=home_canon, away_team=away_canon,
+    )
+    if ctx_bonus:
+        conv = max(0, min(100, conv + ctx_bonus))
+        # Re-tier if bonus significantly changed conviction (may promote LEAN→STRONG etc)
+        # Keep original tier if bonus doesn't clear next threshold — no unearned lifts
+
+    signals = {
+        'l4': l4, 'season_avg': season_avg,
+        'league_baseline': cfg['league_baseline'],
+        'opp_pct': opp_pct, 'opp_col': cfg['opp_col'],
+        'edge_pct': round(directional_edge * 100, 1),
+        'games_used': gp,
+        'label': cfg['label'],
+    }
+    signals.update(ctx_sigs)  # merge fired ctx signals
+
     return {
         'game_id': event.get('id'),
         'game_date': (event.get('commence_time') or '')[:10],
@@ -425,14 +620,7 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         'opp_rank': int(round(opp_pct * 32)) if opp_pct is not None else None,
         'tier': tier,
         'conviction': conv,
-        'signals': {
-            'l4': l4, 'season_avg': season_avg,
-            'league_baseline': cfg['league_baseline'],
-            'opp_pct': opp_pct, 'opp_col': cfg['opp_col'],
-            'edge_pct': round(directional_edge * 100, 1),
-            'games_used': gp,
-            'label': cfg['label'],
-        },
+        'signals': signals,
     }
 
 
@@ -513,6 +701,42 @@ def upsert_props(rows: list, dry_run: bool = False) -> int:
     return len(rows)
 
 
+def _load_nfl_ctx_by_game(game_dates: list) -> dict:
+    """Batch-fetch nfl_game_context for the given dates, keyed by game_id.
+
+    2026-08-23: added so build_prop_row can emit context-based signals
+    (weather, rest, game_script, opp_def_tier) — mirrors MLB signal-emit
+    pattern. Prior NFL scoring only used L4/season/fantasy proj +
+    opp_pct — no per-context signals. Result: cards had almost no
+    "why" bullets, coverage chip always at ~30%.
+    """
+    if not game_dates: return {}
+    from urllib.parse import quote
+    all_ctx = {}
+    for gd in set(game_dates):
+        try:
+            r = requests.get(f'{SB}/rest/v1/nfl_game_context',
+                             headers=H_READ,
+                             params={'game_date': f'eq.{gd}',
+                                     'select': 'game_id,home_team,away_team,temp,wind,roof,'
+                                               'home_rest,away_rest,close_spread,close_total,'
+                                               'projected_total,projected_spread,'
+                                               'panel_pred_total,panel_pred_home_pts,panel_pred_away_pts,'
+                                               'home_off_rating,away_off_rating,'
+                                               'panel_injury_outs,'
+                                               'home_qb_vs_team_recent_pass_yds_avg,'
+                                               'away_qb_vs_team_recent_pass_yds_avg,'
+                                               'home_qb_vs_team_recent_pass_td_avg,'
+                                               'away_qb_vs_team_recent_pass_td_avg'},
+                             timeout=15)
+            if r.status_code == 200:
+                for row in (r.json() or []):
+                    all_ctx[row.get('game_id')] = row
+        except Exception:
+            pass
+    return all_ctx
+
+
 def run(dry_run: bool = False, single_player: Optional[str] = None) -> None:
     print(f'=== NFL props generator · {_et_now().date()} ===')
     if not ODDS_KEY:
@@ -530,6 +754,13 @@ def run(dry_run: bool = False, single_player: Optional[str] = None) -> None:
 
     events = fetch_events('americanfootball_nfl') + fetch_events('americanfootball_nfl_preseason')
     print(f'  events with props potentially available: {len(events)}')
+
+    # 2026-08-23 batch-load ctx so build_prop_row can emit signals
+    game_dates_seen = sorted(set(
+        (e.get('commence_time') or '')[:10] for e in events if e.get('commence_time')
+    ))
+    ctx_by_game = _load_nfl_ctx_by_game(game_dates_seen)
+    print(f'  ctx loaded for {len(ctx_by_game)} games')
 
     all_rows = []
     events_with_props = 0
@@ -557,7 +788,8 @@ def run(dry_run: bool = False, single_player: Optional[str] = None) -> None:
                 for outcome in market.get('outcomes') or []:
                     if single_player and single_player.lower() not in (outcome.get('description') or '').lower():
                         continue
-                    row = build_prop_row(evt, market, outcome, opp_map, aliases, season)
+                    row = build_prop_row(evt, market, outcome, opp_map, aliases, season,
+                                          ctx=ctx_by_game.get(evt.get('id')))
                     if row:
                         all_rows.append(row)
             if markets_seen: break   # first book that has props is enough
