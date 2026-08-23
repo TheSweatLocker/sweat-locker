@@ -658,6 +658,22 @@ jobs:
           cd mlb_pipeline
           python apply_refit_verdict_override.py || echo "refit override failed (non-fatal)"
 
+      # 2026-08-23 SECOND DEDUP PASS. Wave 1a follow-up: the first
+      # dedup_prop_dupes (line ~496) runs before apply_refit_verdict_override
+      # + before any downstream writer that could insert dupe rows via
+      # [preserved] book_source pattern from generate_props' live-game
+      # handling. Empirically today's cron had 47 dupes still present
+      # after the first dedup pass because the [preserved] rows landed
+      # after dedup ran. This second pass catches them right before
+      # aggregate_daily_records reads props for the sharp card. Non-fatal.
+      - name: Dedup prop dupes (final pass)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python dedup_prop_dupes.py --sport MLB || echo "final dedup failed (non-fatal)"
+
       # 2026-08-14 · FADE→PASS discipline for bomb-list prop_types.
       # 30d audit showed outs_over / er_under / bb_over / bb_under / ks_under
       # natural FADEs hit <45% (see apply_fade_type_discipline.py docstring).
