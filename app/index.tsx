@@ -7329,10 +7329,19 @@ if(mkt.key === 'pitcher_props') {
                     prop_jerry: jerry,
                     is_skip_back: isSkipBack};   // flag for UI to badge as override
           });
-          // Jerry-aware filter: keep if not SKIP OR Jerry says BACK
-          const filtered = merged.filter((p: any) =>
-            p?.tier !== 'SKIP' || (p.prop_jerry?.call_verdict || '').toUpperCase() === 'BACK'
-          );
+          // Jerry-aware filter: keep if not SKIP OR Jerry says BACK.
+          // 2026-08-23 coverage-stub filter: drop rows marked UNPUBLISHABLE
+          // by apply_refit_verdict_override._demote_coverage_tier. These are
+          // COVERAGE-tier stubs that got auto-demoted to LEAN 55 for
+          // downstream compatibility but the intent per that function's
+          // docstring is "treats them as internal-only, not publishable".
+          // App feed was missing the filter — user saw 100+ tier=LEAN 55
+          // cards with no signal reasoning cluttering the surface.
+          const filtered = merged.filter((p: any) => {
+            const kill = p?.signals?._coverage_kill_gate;
+            if (kill) return false;  // stub — not for user surface
+            return p?.tier !== 'SKIP' || (p.prop_jerry?.call_verdict || '').toUpperCase() === 'BACK';
+          });
           // Re-sort by display_conviction DESC so refit-boosted picks bubble up
           filtered.sort((a: any, b: any) => (b.display_conviction || 0) - (a.display_conviction || 0));
           setPipelineMLBProps(filtered);
