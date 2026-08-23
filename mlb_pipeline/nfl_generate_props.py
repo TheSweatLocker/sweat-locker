@@ -384,6 +384,96 @@ def player_id_lookup(name: str, position: Optional[str] = None) -> Optional[dict
 # ─────────────────────────────────────────────────────────────
 # Row build + orchestration
 # ─────────────────────────────────────────────────────────────
+def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
+                             n: int = 10) -> list[dict]:
+    """Return last-N per-week rows for a player's stat.
+
+    2026-08-23: NFL parallel to MLB fetch_mlb_player_recent_rows. Uses
+    nfl_player_stats (per-week per-player) as source. Rows returned
+    newest-first: {season, week, opponent, value, home_away?}.
+    Falls back to prior season if current has <3 rows (Week 1 case).
+    """
+    if not player_id or not stat_col: return []
+    def _pull(sn):
+        try:
+            r = requests.get(f'{SB}/rest/v1/nfl_player_stats',
+                             headers=H_READ,
+                             params={'player_id': f'eq.{player_id}',
+                                     'season': f'eq.{sn}',
+                                     'season_type': 'eq.REG',
+                                     'select': f'season,week,opponent_team,{stat_col}',
+                                     'order': 'week.desc', 'limit': str(n)},
+                             timeout=10)
+            if r.status_code != 200: return []
+            return r.json() or []
+        except Exception: return []
+    rows = _pull(season)
+    if len(rows) < 3 and season > 2020:
+        rows = rows + _pull(season - 1)
+    # Normalize shape
+    out = []
+    for row in rows[:n]:
+        v = row.get(stat_col)
+        if v is None: continue
+        try: val = float(v)
+        except (TypeError, ValueError): continue
+        out.append({
+            'season': row.get('season'),
+            'week': row.get('week'),
+            'opp': row.get('opponent_team'),
+            'value': val,
+        })
+    return out
+
+
+def compute_nfl_l10_signals(recent_rows: list, line: float, side: str) -> tuple[dict, int]:
+    """Compute L10 hit-rate signals from recent player rows.
+
+    Mirror of MLB `l5_confirm`/`l10_hot` pattern that empirically shows
+    up in signal tracker at ~58-83% hit rate. Track record vs prop line
+    IS a signal in itself.
+    """
+    sig, bonus = {}, 0
+    if not recent_rows: return sig, 0
+    is_over = (side or '').upper() == 'OVER'
+    values = [r['value'] for r in recent_rows]
+    n = len(values)
+
+    # L5 hit count vs line
+    l5 = values[:5]
+    if l5:
+        l5_hits = sum(1 for v in l5 if (v >= line if is_over else v < line))
+        l5_pct = l5_hits / len(l5)
+        if l5_hits >= 4:  # 4-of-5 or 5-of-5
+            bonus += 6
+            avg = round(sum(l5)/len(l5), 1)
+            sig['l5_confirm'] = f'L5 avg {avg} — {l5_hits}-of-{len(l5)} {"OVER" if is_over else "UNDER"} {line}'
+        elif l5_hits <= 1:  # 0-of-5 or 1-of-5 — cold streak on this direction
+            bonus -= 5
+            sig['l5_cold'] = f'L5 only {l5_hits}-of-{len(l5)} on {"OVER" if is_over else "UNDER"} {line} — fade risk'
+
+    # L10 hit count — bigger sample
+    l10 = values[:10]
+    if len(l10) >= 8:
+        l10_hits = sum(1 for v in l10 if (v >= line if is_over else v < line))
+        l10_pct = l10_hits / len(l10)
+        if l10_hits >= 8:  # elite streak
+            bonus += 5
+            avg = round(sum(l10)/len(l10), 1)
+            sig['l10_hot'] = f'L10 {l10_hits}-of-{len(l10)} on {"OVER" if is_over else "UNDER"} {line} — dominant trend'
+        elif l10_hits <= 2:
+            bonus -= 4
+            sig['l10_cold'] = f'L10 only {l10_hits}-of-{len(l10)} on this direction — trend against'
+
+    # Store raw rows for chart rendering (mirror MLB _stat_last10)
+    sig['_stat_last10'] = recent_rows
+    sig['_stat_avg_l5'] = round(sum(l5)/len(l5), 2) if l5 else None
+    sig['_stat_avg_l10'] = round(sum(l10)/len(l10), 2) if l10 else None
+    sig['_line'] = line
+    sig['_direction'] = side.lower() if side else None
+    return sig, bonus
+
+
 def _emit_nfl_ctx_signals(prop_family: str, side: str, ctx: dict, player_team: str,
                            home_team: str, away_team: str) -> tuple[dict, int]:
     """Emit context-based signals for an NFL prop.
@@ -582,8 +672,18 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         prop_family=prop_family, side=side, ctx=ctx or {},
         player_team=player_team, home_team=home_canon, away_team=away_canon,
     )
-    if ctx_bonus:
-        conv = max(0, min(100, conv + ctx_bonus))
+
+    # 2026-08-23 NFL L10 HIT-RATE + CHART DATA. User asked: track record
+    # of hits over the line IS a signal in itself. Mirror MLB _stat_last10
+    # pattern. Fetches player's last 10 weeks in this stat, computes
+    # L5/L10 hit counts vs the prop line, emits l5_confirm/l10_hot/etc
+    # signals + stores raw rows for chart render.
+    recent_rows = fetch_nfl_player_recent(player_id, cfg['col'], season, n=10)
+    l10_sigs, l10_bonus = compute_nfl_l10_signals(recent_rows, line, side)
+
+    total_bonus = ctx_bonus + l10_bonus
+    if total_bonus:
+        conv = max(0, min(100, conv + total_bonus))
         # Re-tier if bonus significantly changed conviction (may promote LEAN→STRONG etc)
         # Keep original tier if bonus doesn't clear next threshold — no unearned lifts
 
@@ -595,7 +695,8 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         'games_used': gp,
         'label': cfg['label'],
     }
-    signals.update(ctx_sigs)  # merge fired ctx signals
+    signals.update(ctx_sigs)   # merge fired ctx signals
+    signals.update(l10_sigs)   # merge L10 hit-rate + chart data
 
     return {
         'game_id': event.get('id'),
