@@ -76,41 +76,118 @@ def load_weights() -> dict:
     return merged
 
 
-# 2026-08-23 REFIT BLACKLIST — prop families with known bad trained
-# weights. Sign-flipped coefficients produce nonsense refit values that
-# undermine trust in the model. Return None → app falls back to legacy
-# conviction until weights are retrained properly.
+# 2026-08-23 REGISTRY-GUARDED REFIT (replaces static blacklist).
+# Prior state: bb_under, ks_under, ha_over were hard-blacklisted because
+# their v1/v2 coefficients had sign flips (bb_under.last7_control=-0.354
+# when empirical says +4.7pp positive; ks_under.book_recalibration=-0.49
+# when empirical says +5.3pp positive). Blacklist meant the entire family
+# fell back to legacy conviction — losing all model input.
 #
-# bb_under/under: BOTH v1 AND v2 weights have sign-flipped coefs.
-#   v1: aggressive_opp=-0.30, clean_start=-0.25, book_recal=-0.13
-#       (all should be POSITIVE — fewer walks vs aggressive opps,
-#       clean prior starts, book giving line above proj all support
-#       UNDER hitting).
-#   v2: last7_control=-0.3538 sign-flipped (elite recent control
-#       should boost UNDER, not crush it). Was supposed to fix v1
-#       but introduced a different sign flip.
-#   Observed: elite BB command pitchers (Martinez 0.9 BB/9 last 7)
-#   land refit=22.4 instead of correctly ~85-95. Legacy conviction
-#   is directionally right (PRIME 97) so users get legacy while
-#   refit retrains.
-REFIT_BLACKLIST = frozenset({
-    ('bb_under', 'under'),
-    # ks_under/under: pos_sum=0.000, all 5 coefs are negative in merged
-    # v1/v2 weights. book_recalibration=-0.49, l3_k=-0.29, etc. NO
-    # signal can produce a positive refit → every fired-signal ks_under
-    # lands crushed to floor. Structurally broken until retrain.
+# New approach: at load time, cross-check every coefficient against the
+# signal_registry rows (populated by refresh_prop_signal_calibration.py).
+# Drop coefficients where the sign disagrees with empirical hit rate at
+# a meaningful edge (|edge_pp| >= 3.0). Recompute score bounds from
+# surviving coefs. If fewer than 2 fired-signal coefs survive for a pick,
+# return None (fall through to legacy). Otherwise proceed with the
+# registry-vetted subset.
+#
+# Rules:
+#   registry hit_rate > 50 + 3pp AND coef < 0 → DROP (sign flip)
+#   registry hit_rate < 50 - 3pp AND coef > 0 → DROP (sign flip)
+#   registry tier == ANTI_VALIDATED → DROP (proven fade)
+#   registry missing / neutral (|edge|<3pp) → KEEP coef as-is
+#
+# Removes the need for the 3-family blacklist — every family gets the
+# same guard treatment, uniformly, without hand-maintained skip lists.
+# Kept for families whose v2 structure is broken even after registry filter.
+# ks_under/ha_over have all-negative-or-zero coefficients — no amount of
+# sign-flip filtering fixes them, they need actual retraining (Wave 2b v3).
+# bb_under was on this list until 2026-08-23 — now handled by the alias +
+# registry filter below.
+REFIT_BLACKLIST: frozenset = frozenset({
     ('ks_under', 'under'),
-    # ha_over/over: pos_sum=0.000, only negative coefs (l3_hard=-0.081,
-    # park=-0.077). Same structural issue as ks_under. Rare prop family
-    # so lower priority but same blacklist treatment.
     ('ha_over', 'over'),
 })
+
+# Coefficient-name → registry signal_name aliases. v2 training script emitted
+# some feature names that differ from the standardized signal_name used in
+# signal_registry. Without this mapping, the registry sign-check misses those
+# coefs entirely (silent bypass). Add pairs here whenever a training script
+# introduces a differently-named feature that measures the same signal.
+_COEF_ALIASES: dict = {
+    'last7_control': 'l7_control',    # bb_under.last7_control sign-flipped -0.354
+    'last7_walks':   'l7_walks',      # bb_over — same rename pattern
+}
+
+_REGISTRY_CACHE: dict | None = None  # {(sport, market_scope, signal_name): row}
+
+
+def _load_signal_registry_index(sport: str = "MLB") -> dict:
+    """Fetch signal_registry rows for sport, index by (market_scope, signal_name).
+    Cached for the process. Silent fail returns empty dict (no guard applied)."""
+    global _REGISTRY_CACHE
+    if _REGISTRY_CACHE is not None:
+        return _REGISTRY_CACHE
+    _REGISTRY_CACHE = {}
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return _REGISTRY_CACHE
+    try:
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/signal_registry",
+                         headers=H_READ,
+                         params={"sport": f"eq.{sport}",
+                                 "select": "market_scope,signal_name,hit_rate,sample_n,tier,edge_pp",
+                                 "limit": 2000},
+                         timeout=10)
+        for row in (r.json() or []):
+            if not isinstance(row, dict): continue
+            ms = row.get("market_scope"); sn = row.get("signal_name")
+            if ms and sn:
+                _REGISTRY_CACHE[(ms, sn)] = row
+    except Exception:
+        pass  # missing registry → no guard, but refit still runs on trained coefs
+    return _REGISTRY_CACHE
+
+
+def _filter_coefs_by_registry(coefs: dict, prop_type: str) -> tuple[dict, list]:
+    """Return (surviving_coefs, dropped_reasons).
+    Drops coefs whose sign disagrees with signal_registry at |edge_pp| >= 3.0
+    OR whose registry tier is ANTI_VALIDATED. Registry hit_rate is a percentage
+    (55.0 not 0.55) — the edge_pp field on the registry row is the delta from
+    50%, so we can use it directly for both magnitude and direction."""
+    registry = _load_signal_registry_index("MLB")
+    if not registry:
+        return coefs, []  # registry unavailable → no guard, use coefs as-is
+    surviving = {}
+    dropped = []
+    for sig_name, coef in coefs.items():
+        # Look up registry using alias if present (last7_control -> l7_control)
+        registry_name = _COEF_ALIASES.get(sig_name, sig_name)
+        row = registry.get((prop_type, registry_name))
+        if not row:
+            surviving[sig_name] = coef  # no registry row → no opinion, trust ML
+            continue
+        tier = row.get("tier") or ""
+        edge_pp = row.get("edge_pp")
+        if tier == "ANTI_VALIDATED":
+            dropped.append((sig_name, coef, "ANTI_VALIDATED", edge_pp))
+            continue
+        try: e = float(edge_pp) if edge_pp is not None else None
+        except (TypeError, ValueError): e = None
+        if e is None or abs(e) < 3.0:
+            surviving[sig_name] = coef  # neutral registry — trust the ML fit
+            continue
+        # e >= +3.0 means empirical positive → coef should be positive
+        # e <= -3.0 means empirical negative → coef should be negative
+        if (e >= 3.0 and coef < 0) or (e <= -3.0 and coef > 0):
+            dropped.append((sig_name, coef, f"sign flip vs registry", e))
+            continue
+        surviving[sig_name] = coef
+    return surviving, dropped
 
 
 def compute_refit(prop_type: str, direction: str, signals: dict,
                   weights: dict) -> tuple[float, str] | None:
     """Returns (refit_conviction 0-100, refit_version) or None if skipped."""
-    # Blacklist check first — skip prop families with known bad weights
     if (prop_type, direction) in REFIT_BLACKLIST:
         return None
     key = f"{prop_type}/{direction}"
@@ -118,7 +195,18 @@ def compute_refit(prop_type: str, direction: str, signals: dict,
     if not pw:
         return None
     coefs = pw["coefficients"]
+    # 2026-08-23 registry sign-check — drop sign-flipped coefs before scoring
+    coefs, dropped = _filter_coefs_by_registry(coefs, prop_type)
+    # Require at least 2 surviving positive-side coefs so refit isn't
+    # dominated by one signal or all-negative structure
+    positive_surviving = [k for k, v in coefs.items() if v > 0]
+    if len(positive_surviving) < 2:
+        return None  # legacy fallback — not enough registry-vetted structure
     score_min = pw["score_min"]; score_max = pw["score_max"]
+    # Recompute score bounds from surviving coefs (drops widen or narrow range)
+    if dropped:
+        score_min = sum(v for v in coefs.values() if v < 0)
+        score_max = sum(v for v in coefs.values() if v > 0)
     # Sum of fired-signal coefficients (positive coefs help, negative hurt)
     fired = [k for k in (signals or {}).keys() if k in coefs]
     # 2026-08-23 FIRED-EMPTY GUARD: when zero signals fire, refit has
