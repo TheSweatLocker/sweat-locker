@@ -3462,6 +3462,42 @@ def upload_game_context(context, commence_time=None):
         print(f"  ⚠️ game_context: stripped {len(stripped_total)} cols across {retry_rounds} retries — schema cache may be stale; run NOTIFY pgrst, 'reload schema' in Supabase")
     if r.status_code not in [200, 201, 204]:
         print(f"Upload failed {r.status_code}: {r.text}")
+
+    # 2026-08-23 Wave 1b: snapshot primary_play on every successful publish.
+    # game_context is the primary write path (recompute already snapshots on
+    # its side under source='recompute'). Together they form the append-only
+    # audit trail. Best-effort — never blocks the publish. See migration
+    # 20260823_primary_play_snapshots_append_mode.sql.
+    if r.status_code in [200, 201, 204]:
+        pp = context.get("primary_play")
+        if isinstance(pp, dict) and context.get("game_id"):
+            snap = {
+                "sport": "MLB",
+                "game_date": context.get("game_date"),
+                "game_id": context.get("game_id"),
+                "snapshot_source": "card_lock",
+                "home_team": context.get("home_team"),
+                "away_team": context.get("away_team"),
+                "primary_play": pp,
+                "pick_type": pp.get("type"),
+                "pick_label": pp.get("label"),
+                "pick_side": pp.get("side"),
+                "pick_line": pp.get("line"),
+                "tier": pp.get("tier"),
+                "conviction": pp.get("conviction"),
+                "score": pp.get("score"),
+            }
+            try:
+                sr = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/primary_play_snapshots",
+                    headers={**headers, "Prefer": "return=minimal"},
+                    json=snap, timeout=8,
+                )
+                if sr.status_code >= 400 and sr.status_code != 404:
+                    print(f"  ⚠ snapshot write {sr.status_code}: {sr.text[:80]}")
+            except Exception:
+                pass  # never block publish on snapshot failure
+
     return r.status_code in [200, 201, 204]
 
 def log_game_result(context):

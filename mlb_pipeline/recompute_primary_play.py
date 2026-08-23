@@ -300,11 +300,13 @@ def run(date_str: str, dry_run: bool = False) -> None:
         else:
             print(f'    ✗ patch failed {r.status_code}: {r.text[:150]}')
 
-        # 2026-08-21: snapshot the NEW primary_play so signal-level audits
-        # have a permanent record. Prior state: primary_play was overwritten
-        # in place on every recompute — only 12 of 30d survived. See migration
-        # 20260821_primary_play_snapshots.sql. Fails soft if table missing.
-        if pp_changed and new_pp:
+        # 2026-08-23: snapshot on EVERY publish (append-mode). Prior version
+        # gated on pp_changed AND upserted (game_id, snapshot_source), which
+        # collapsed to one row per source per game — killing the audit trail
+        # this table exists to build. See migration
+        # 20260823_primary_play_snapshots_append_mode.sql for schema change.
+        # Fails soft if table missing.
+        if new_pp:
             snap = {
                 'sport': 'MLB',
                 'game_date': date_str,
@@ -321,13 +323,13 @@ def run(date_str: str, dry_run: bool = False) -> None:
                 'conviction': new_pp.get('conviction'),
                 'score': new_pp.get('score'),
             }
-            snap_hw = {**HW, 'Prefer': 'resolution=merge-duplicates,return=minimal'}
             try:
                 sr = requests.post(
-                    f'{SB}/rest/v1/primary_play_snapshots?on_conflict=game_id,snapshot_source',
-                    headers=snap_hw, json=snap, timeout=10,
+                    f'{SB}/rest/v1/primary_play_snapshots',
+                    headers={**HW, 'Prefer': 'return=minimal'},
+                    json=snap, timeout=10,
                 )
-                # Silent unless failure (avoids noise); 404 = migration not applied yet
+                # Silent unless failure; 404 = migration not applied yet
                 if sr.status_code >= 400 and sr.status_code != 404:
                     print(f'    ⚠ snapshot write {sr.status_code}: {sr.text[:80]}')
             except Exception:
