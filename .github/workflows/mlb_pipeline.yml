@@ -524,6 +524,20 @@ jobs:
           cd mlb_pipeline
           python prop_pipeline_healthcheck.py --sport MLB --sample 3 || echo "healthcheck failed (non-fatal)"
 
+      # 2026-08-23 Per-signal ROI tracker — empirical validation of each
+      # signal_key's historical hit rate on graded props. Answers "which
+      # signals earn their weight" with real data instead of hand-tuning.
+      # Runs on 30d rolling window. Findings feed into refit v3 retrain
+      # + candidate weight adjustments. Sport-universal, read-only,
+      # non-fatal.
+      - name: Signal contribution tracker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python signal_contribution_tracker.py --sport MLB --days 30 || echo "signal tracker failed (non-fatal)"
+
       # Prop ensemble scorer — SHADOW MODE (2026-08-17). Reads
       # signal_sources rows with subject_scope IN ('prop','player_prop')
       # and writes plug-in playbook decisions to prop_playbook_decisions
