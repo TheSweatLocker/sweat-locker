@@ -1879,7 +1879,7 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [steamFlags, setSteamFlags] = useState<any[]>([]);
   const [steamHistorySample, setSteamHistorySample] = useState<Record<string, any[]>>({});
   const [steamPicksIdx, setSteamPicksIdx] = useState<Record<string, {primary:any, supplementary:any}>>({});
-  const [steamRawSigsIdx, setSteamRawSigsIdx] = useState<Record<string, {cleatz: any[]; fadereport: any[]}>>({});
+  const [steamRawSigsIdx, setSteamRawSigsIdx] = useState<Record<string, {cleatz: any[]; fadereport: any[]; scoresandodds: any[]}>>({});
   // 2026-08-15 Line Movement redesign: external_source_track_record rows
   // per (source, sport, market, window). Rendered inline on each card as
   // the "how do we know this isn't noise" ribbon. Bulk-fetched once with
@@ -8466,27 +8466,76 @@ setJerryHistory(prev => {
       // Prior version only showed aggregated line_movement_flags →
       // stripped per-source strength. User feedback: "we track fadereport,
       // cleatz AND oddscrowd — the tab should show them separately."
+      //
+      // 2026-08-23 Phase 4: ScoresAndOdds ('so') added as 4th source via
+      // public_splits_v2 (source-agnostic long-form table shipped tonight in
+      // Phases 1-3). Client-side pivot converts long-form (game_id, market,
+      // side, source, metric, value) → shape matching cleatz_signals for
+      // uniform SharpMoneyChip rendering. Adding a 5th source (Pinnacle
+      // etc.) becomes another entry in the pivot function, not another
+      // supabase query per source.
       try {
         const gd = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
-        const [{data: cleatz}, {data: fade}] = await Promise.all([
+        const [{data: cleatz}, {data: fade}, {data: v2rows}] = await Promise.all([
           supabase.from('cleatz_signals')
             .select('game_id,market,sharp_side_norm,sharp_bets_pct,sharp_handle_pct,divergence')
             .eq('snapshot_date', gd),
           supabase.from('fadereport_signals')
             .select('game_id,market,sharp_side_norm,strength_tier,strength_pts,bets_side_pct,money_side_pct')
             .eq('snapshot_date', gd),
+          supabase.from('public_splits_v2')
+            .select('game_id,market,side,source,metric,value')
+            .eq('sport', 'MLB')
+            .eq('source', 'so')
+            .gte('snapshot_ts', `${gd}T00:00:00Z`),
         ]);
-        const rawSigsIdx: Record<string, {cleatz: any[]; fadereport: any[]}> = {};
-        (cleatz || []).forEach((c: any) => {
-          const k = c.game_id;
-          if (!rawSigsIdx[k]) rawSigsIdx[k] = {cleatz: [], fadereport: []};
-          rawSigsIdx[k].cleatz.push(c);
+        // Pivot long-form v2 rows for SO into cleatz-compatible shape:
+        //   {game_id, market, sharp_side_norm, sharp_bets_pct, sharp_handle_pct, divergence}
+        // Sharp side = the side with the biggest (money_pct - bets_pct) delta.
+        const soByGameMarket: Record<string, Record<string, any>> = {};
+        (v2rows || []).forEach((r: any) => {
+          const gk = `${r.game_id}::${r.market}::${r.side}`;
+          if (!soByGameMarket[r.game_id]) soByGameMarket[r.game_id] = {};
+          const key = `${r.market}::${r.side}`;
+          if (!soByGameMarket[r.game_id][key]) soByGameMarket[r.game_id][key] = {market: r.market, side: r.side};
+          soByGameMarket[r.game_id][key][r.metric] = r.value;
         });
-        (fade || []).forEach((f: any) => {
-          const k = f.game_id;
-          if (!rawSigsIdx[k]) rawSigsIdx[k] = {cleatz: [], fadereport: []};
-          rawSigsIdx[k].fadereport.push(f);
+        const so: any[] = [];
+        Object.entries(soByGameMarket).forEach(([gid, byKey]) => {
+          const byMarket: Record<string, any[]> = {};
+          Object.values(byKey).forEach((row: any) => {
+            if (!byMarket[row.market]) byMarket[row.market] = [];
+            byMarket[row.market].push(row);
+          });
+          Object.entries(byMarket).forEach(([mkt, sides]) => {
+            // Pick the side with biggest (money_pct - bets_pct) delta as sharp
+            let sharp: any = null;
+            let maxDelta = -1;
+            sides.forEach((s: any) => {
+              const m = Number(s.money_pct ?? 0);
+              const b = Number(s.bets_pct ?? 0);
+              const delta = Math.abs(m - b);
+              if (delta > maxDelta) { maxDelta = delta; sharp = s; }
+            });
+            if (sharp && sharp.money_pct != null && sharp.bets_pct != null) {
+              so.push({
+                game_id: gid, market: mkt,
+                sharp_side_norm: sharp.side,
+                sharp_bets_pct: sharp.bets_pct,
+                sharp_handle_pct: sharp.money_pct,   // 'handle' == money in cleatz convention
+                divergence: Math.round(maxDelta),
+              });
+            }
+          });
         });
+        const rawSigsIdx: Record<string, {cleatz: any[]; fadereport: any[]; scoresandodds: any[]}> = {};
+        const _ensure = (k: string) => {
+          if (!rawSigsIdx[k]) rawSigsIdx[k] = {cleatz: [], fadereport: [], scoresandodds: []};
+          return rawSigsIdx[k];
+        };
+        (cleatz || []).forEach((c: any) => _ensure(c.game_id).cleatz.push(c));
+        (fade || []).forEach((f: any) => _ensure(f.game_id).fadereport.push(f));
+        so.forEach((s: any) => _ensure(s.game_id).scoresandodds.push(s));
         setSteamRawSigsIdx(rawSigsIdx);
       } catch (e) { setSteamRawSigsIdx({}); }
 

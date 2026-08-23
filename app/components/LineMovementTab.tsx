@@ -73,7 +73,8 @@ type Props = {
   historySample: Record<string, any[]>;     // keyed by "gid::market"
   picksIdx: Record<string, {primary: any; supplementary: any}>;
   sourceRecords: SourceRecord[];            // external_source_track_record rows
-  rawSigsIdx?: Record<string, {cleatz: any[]; fadereport: any[]}>;  // 2026-08-18 per-source raw sharp$
+  // 2026-08-18 per-source raw sharp$; 2026-08-23 added scoresandodds (4th source, pivoted from public_splits_v2)
+  rawSigsIdx?: Record<string, {cleatz: any[]; fadereport: any[]; scoresandodds: any[]}>;
   onTapGame: (matchup: string, sport: string, gid: string) => void;
 };
 
@@ -431,12 +432,18 @@ function StrongestSignalCard({flags, sample, picks, onTap}: any) {
 // with N% of the money vs M% of the bets → divergence Xpp. Uses the
 // strongest source per market so users see the peak signal, not the
 // average.
-function SharpMoneyChip({rawSigs, market}: {rawSigs?: {cleatz: any[]; fadereport: any[]}; market: string}) {
+function SharpMoneyChip({rawSigs, market}: {rawSigs?: {cleatz: any[]; fadereport: any[]; scoresandodds: any[]}; market: string}) {
   if (!rawSigs) return null;
   const mkt = market.toLowerCase();
   const cleatzMatch = (rawSigs.cleatz || []).find((c: any) => String(c.market).toLowerCase() === mkt);
   const fadeMatch = (rawSigs.fadereport || []).find((f: any) => String(f.market).toLowerCase() === mkt);
-  // Normalize both into a common shape then pick the one with biggest divergence
+  // 2026-08-23 Phase 4: added ScoresAndOdds as 4th source. Pivoted from
+  // public_splits_v2 in index.tsx to match cleatz shape (sharp_side_norm,
+  // sharp_bets_pct, sharp_handle_pct, divergence). Competes on same "biggest
+  // divergence wins the chip" logic — sharpest signal surfaces regardless
+  // of which source found it.
+  const soMatch = (rawSigs.scoresandodds || []).find((s: any) => String(s.market).toLowerCase() === mkt);
+  // Normalize all three into a common shape then pick the one with biggest divergence
   const c1 = cleatzMatch ? {
     side: cleatzMatch.sharp_side_norm,
     money: cleatzMatch.sharp_handle_pct,
@@ -450,7 +457,13 @@ function SharpMoneyChip({rawSigs, market}: {rawSigs?: {cleatz: any[]; fadereport
     div: (fadeMatch.money_side_pct != null && fadeMatch.bets_side_pct != null)
       ? Math.abs(fadeMatch.money_side_pct - fadeMatch.bets_side_pct) : 0,
   } : null;
-  const best = [c1, c2].filter(Boolean).sort((a: any, b: any) => (b.div || 0) - (a.div || 0))[0] as any;
+  const c3 = soMatch ? {
+    side: soMatch.sharp_side_norm,
+    money: soMatch.sharp_handle_pct,
+    bets: soMatch.sharp_bets_pct,
+    div: soMatch.divergence,
+  } : null;
+  const best = [c1, c2, c3].filter(Boolean).sort((a: any, b: any) => (b.div || 0) - (a.div || 0))[0] as any;
   if (!best || best.money == null || best.bets == null) return null;
   const sideDisp = String(best.side || '').toUpperCase();
   return (
