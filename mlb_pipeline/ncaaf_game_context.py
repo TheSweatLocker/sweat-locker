@@ -232,20 +232,34 @@ def compute_projections(home_stats: dict, away_stats: dict,
         # Adjustment: sp_offense_home - sp_defense_away = expected home points
         # relative to average. Same for away.
         # Note: sp_defense higher = worse defense in CFBD (allows more).
+        # 2026-08-23: FORMULA IS WRONG for CFB. sp_offense from CFBD isn't
+        # "points above league avg" — it's a raw scoring rate (typically
+        # 15-45). Adding to LEAGUE_TEAM_AVG=26 produces 40-70 per team,
+        # total 80-140 → capped to 90.0 on every game. Every NCAAF game
+        # showed 90.0 projected_total which produced bogus "+30-40pt OVER
+        # edge" picks against 47-53 markets.
+        # QUICK FIX: null out when result is clearly bogus (>75). Signals
+        # that depend on projected_total won't fire. Users see spread/ML
+        # picks from SP+ (which works) without garbage OVER picks.
+        # REAL FIX queued: rewrite formula using SP+ overall as "points
+        # better than avg" anchor (baseline 55 + mismatch bonus).
         h_pts_raw = LEAGUE_TEAM_AVG + (h_sp_off + a_sp_def) / 2
         a_pts_raw = LEAGUE_TEAM_AVG + (a_sp_off + h_sp_def) / 2
-        # Dampen extremes by blending toward BASE (80% matchup, 20% anchor)
         h_pts = 0.80 * h_pts_raw + 0.20 * LEAGUE_TEAM_AVG
         a_pts = 0.80 * a_pts_raw + 0.20 * LEAGUE_TEAM_AVG
-        # HFA on home side
         h_pts += HOME_FIELD_PTS * 0.4 if not neutral_site else 0
         a_pts -= HOME_FIELD_PTS * 0.4 if not neutral_site else 0
         total = h_pts + a_pts
-        # Cap absurd projections at reasonable CFB range 30-90
-        total = max(30.0, min(90.0, total))
-        out['projected_total'] = round(total, 2)
-        out['model_pred_home_points'] = round(h_pts, 1)
-        out['model_pred_away_points'] = round(a_pts, 1)
+        if total > 75 or total < 35:
+            # Formula produced obviously bogus value → null out. Real total
+            # model wire-up (real formula, EPA inputs, weather) is queued.
+            out['projected_total'] = None
+            out['model_pred_home_points'] = None
+            out['model_pred_away_points'] = None
+        else:
+            out['projected_total'] = round(total, 2)
+            out['model_pred_home_points'] = round(h_pts, 1)
+            out['model_pred_away_points'] = round(a_pts, 1)
     else:
         # Fallback: static base + split via spread
         total = BASE_TOTAL
