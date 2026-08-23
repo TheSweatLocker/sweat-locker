@@ -247,9 +247,15 @@ def agg_ladder(date: str) -> dict | None:
 
 
 def agg_potd(date: str) -> dict | None:
-    r = requests.get(f'{SB}/rest/v1/play_of_the_day',
+    # 2026-08-23 fix: POTD data lives in daily_best_bet_history, NOT the
+    # long-deprecated play_of_the_day table (404). This agg had been
+    # silently returning None for months — POTD never appeared in
+    # daily_surface_records. Now reads the correct table + immutable
+    # snapshot pattern (has created_at + resolved_at, no updated_at).
+    r = requests.get(f'{SB}/rest/v1/daily_best_bet_history',
         headers=H_READ,
-        params={'game_date': f'eq.{date}', 'select': '*', 'limit': '1'},
+        params={'bet_date': f'eq.{date}', 'select': '*',
+                'order': 'created_at.desc', 'limit': '1'},
         timeout=10)
     if r.status_code != 200: return None
     rows = r.json()
@@ -263,7 +269,7 @@ def agg_potd(date: str) -> dict | None:
     return {'surface':'potd','sport':row.get('sport') or 'MLB','record_date':date,
             'wins':1 if v=='W' else 0,'losses':1 if v=='L' else 0,'pushes':1 if v=='P' else 0,
             'units_bet':stake,'units_won':round(units_won,2),'pick_count':1,
-            'detail':{'pick':row.get('pick_label') or row.get('pick'),'tier':row.get('tier'),'odds':odds}}
+            'detail':{'pick':row.get('lean') or row.get('game'),'tier':row.get('sweat_score'),'odds':odds}}
 
 
 def agg_dawg_of_day(date: str) -> dict | None:
