@@ -257,19 +257,43 @@ def call_claude(prompt: str) -> Optional[str]:
 
 def write_cache(game_id: str, sport: str, narrative: str, struct: dict) -> bool:
     cache_key = f'game_read_{game_id}_{today_et()}'
+    # 2026-08-23: sanitize struct — remove non-JSON types (numpy scalars,
+    # sets, NaN/Inf floats) that make PostgREST reject the write silently.
+    # Also cap narrative at 10k chars to protect payload size.
+    def _sanitize(v):
+        import math
+        if v is None or isinstance(v, (bool, str)): return v
+        if isinstance(v, (int,)): return v
+        if isinstance(v, float):
+            if math.isnan(v) or math.isinf(v): return None
+            return v
+        if isinstance(v, (list, tuple)): return [_sanitize(x) for x in v]
+        if isinstance(v, dict): return {str(k): _sanitize(x) for k, x in v.items()}
+        # numpy / datetime / other → str fallback
+        try: return str(v)
+        except Exception: return None
+    clean_struct = _sanitize(struct) if isinstance(struct, dict) else {}
     payload = {
         'cache_key': cache_key,
         'game_id': game_id,
         'sport': sport,
-        'narrative': narrative or '',
-        'data': struct,
+        'narrative': (narrative or '')[:10000],
+        'data': clean_struct,
         'fetched_at': datetime.now(timezone.utc).isoformat(),
     }
+    # 2026-08-23: jerry_cache has UNIQUE on (game_id, sport), not cache_key.
+    # Prior on_conflict=cache_key caused every re-run to 409 silently after
+    # the first row was written. Every NCAAF cache write since the beginning
+    # was silently failing. Also caps observed on other sports' game_reads.
     r = requests.post(
-        f'{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=cache_key',
+        f'{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport',
         headers=SB_WRITE, json=payload, timeout=15,
     )
-    return r.status_code in (200, 201, 204)
+    if r.status_code not in (200, 201, 204):
+        # Loud error so silent misses stop happening
+        print(f'    ⚠ cache write HTTP {r.status_code}: {r.text[:200]}')
+        return False
+    return True
 
 
 def run(force: bool = False, limit: Optional[int] = None) -> None:

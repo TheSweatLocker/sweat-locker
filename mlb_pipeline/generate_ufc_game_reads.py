@@ -259,7 +259,8 @@ def upsert_read(struct, narrative):
         "created_at": datetime.now(timezone.utc).isoformat(),
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
-    r = requests.post(f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=cache_key", headers=SB_WRITE, json=payload, timeout=15)
+    # 2026-08-23: fixed on_conflict from cache_key to game_id,sport
+    r = requests.post(f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport", headers=SB_WRITE, json=payload, timeout=15)
     if r.status_code not in (200, 201, 204):
         print(f"  ⚠️ upsert failed {r.status_code}: {r.text[:300]}")
         return False, key

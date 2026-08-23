@@ -293,7 +293,8 @@ def write_cache(game_id: str, sport: str, narrative: str, struct: dict) -> bool:
         'fetched_at': datetime.now(timezone.utc).isoformat(),
     }
     r = requests.post(
-        f'{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=cache_key',
+        # 2026-08-23: fixed on_conflict from cache_key to game_id,sport
+        f'{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport',
         headers=SB_WRITE, json=payload, timeout=15,
     )
     return r.status_code in (200, 201, 204)

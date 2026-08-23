@@ -488,7 +488,10 @@ def upsert_read(game, struct, narrative, parsed=None):
         "created_at": datetime.now(timezone.utc).isoformat(),
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
-    r = requests.post(f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=cache_key", headers=SB_WRITE, json=payload, timeout=15)
+    # 2026-08-23: fixed on_conflict from cache_key to game_id,sport (matches
+    # actual UNIQUE constraint on jerry_cache). Every re-run was silently
+    # 409-ing after the first insert per game.
+    r = requests.post(f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport", headers=SB_WRITE, json=payload, timeout=15)
     ok = r.status_code in (200, 201, 204)
     if not ok:
         print(f"  ⚠️ jerry_cache upsert failed {r.status_code}: {r.text[:300]}")
