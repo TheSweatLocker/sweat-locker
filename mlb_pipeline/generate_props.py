@@ -2841,6 +2841,13 @@ def score_batter_hits(g, batter, side, lineup_position=None):
         elif opp_quality >= 4.25:
             conviction += 10
             signals['opp_starter'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — below avg'
+        elif opp_quality >= 3.50:
+            # 2026-08-23 Wave 3a: middle-zone mild boost. Prior code left
+            # 2.75-4.25 silent — batter Over Hits vs mediocre starter got
+            # no pitcher-form signal. Parallel to the fade added on the
+            # UNDER side for the same middle zone (score_batter_hits_under).
+            conviction += 3
+            signals['opp_starter_mid'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — average form, mild lift'
         elif opp_quality <= 2.75:
             conviction -= 12
             signals['opp_starter'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — elite arm'
@@ -3066,6 +3073,17 @@ def score_batter_hits_under(g, batter, side, lineup_position=None):
         signals['opp_starter'] = f'Opp starter {opp_quality:.2f} {opp_quality_label} — quality arm'
     elif opp_quality >= 5.0:
         return None  # bad opposing pitcher = wrong side
+    else:
+        # 2026-08-23 Wave 3a: MIDDLE-ZONE FADE. Prior code left xERA/L3 ERA
+        # 3.50-5.00 as silent — no boost, no fade — so batter Under Hits
+        # picks against mediocre pitchers shipped at the same base conviction
+        # as if the pitcher had no downside. Empirically these are lift
+        # regressions: mediocre opp starter -> batter still makes contact.
+        # Mild fade signal + narrative so downstream (Jerry, refit) sees it.
+        conviction -= 4
+        signals['opp_starter_mediocre'] = (
+            f'Opp starter {opp_quality:.2f} {opp_quality_label} — mediocre form, '
+            f'fade caution')
 
     # K-heavy opp starter — REWEIGHTED 2026-05-30. opp_k_artist (k_pct≥30)
     # audits at 58.1% PRESENT vs 60.6% ABSENT (delta -2.6pt). Not as bad
