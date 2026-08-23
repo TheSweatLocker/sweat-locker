@@ -56,8 +56,11 @@ def _i(v):
     except (TypeError, ValueError): return None
 
 
-def load_upcoming(days_ahead: int = 10) -> list:
-    """Pull upcoming ncaaf_game_results within horizon."""
+def load_upcoming(days_ahead: int = 21) -> list:
+    """Pull upcoming ncaaf_game_results within horizon.
+    2026-08-23: extended 10→21 days so 'Next Week' tab renders. Week 1
+    opener (Aug 30) was inside the 10d horizon but Week 2 (Sep 4-6) fell
+    outside, leaving Next Week tab empty for a week straight."""
     today = _et_now().date().isoformat()
     horizon = (_et_now() + timedelta(days=days_ahead)).date().isoformat()
     r = requests.get(
@@ -417,6 +420,9 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
     # 2026-08-22 (silent-bug audit finding #12): derive combined field so the
     # ncaaf_returning_prod_home / _away signals can read ctx.home_returning_production
     # (previously read from a field that never existed). Blended off+def average.
+    # 2026-08-23: kept the blended writes; upsert() strip-on-400 handles it if
+    # DB migration hasn't landed. Migration 20260823d_ncaaf_ctx_missing_columns
+    # adds the 5 columns permanently.
     def _blend(off, deff):
         vals = [v for v in (off, deff) if v is not None]
         return sum(vals) / len(vals) if vals else None
@@ -507,10 +513,38 @@ def upsert(rows: list, dry_run: bool = False) -> int:
                   f"conf={r.get('signal_confluence_net'):+d}  ss={r['sweat_score']} {r['sweat_tier']}"
                   + (f"  → {pp.get('tier')} {pp.get('label')}" if pp else ''))
         return len(rows)
+    # 2026-08-23: strip-on-400 pattern (mirrors mlb_game_context). Columns
+    # added 8/22 for signal_sources readers (home_sp_plus, away_sp_plus,
+    # sp_plus_matchup_total, home/away_returning_production) never got a
+    # DB migration, so every upsert 400'd blocking ALL games. Loop strip
+    # any column PostgREST rejects until upsert succeeds or 8 rounds cap.
+    _STRIP_CANDIDATES = (
+        'home_sp_plus', 'away_sp_plus', 'sp_plus_matchup_total',
+        'home_returning_production', 'away_returning_production',
+    )
     r = requests.post(
         f'{SB}/rest/v1/ncaaf_game_context?on_conflict=game_id',
         headers=H_WRITE, json=rows, timeout=30,
     )
+    stripped_total = []
+    retry_rounds = 0
+    while r.status_code == 400 and retry_rounds < 8:
+        round_stripped = []
+        for col in _STRIP_CANDIDATES:
+            if col in r.text:
+                for row in rows:
+                    row.pop(col, None)
+                round_stripped.append(col)
+                stripped_total.append(col)
+        if not round_stripped:
+            break
+        r = requests.post(
+            f'{SB}/rest/v1/ncaaf_game_context?on_conflict=game_id',
+            headers=H_WRITE, json=rows, timeout=30,
+        )
+        retry_rounds += 1
+    if stripped_total and r.status_code in (200, 201, 204):
+        print(f'  ⚠ ncaaf ctx stripped {len(stripped_total)} unknown cols: {stripped_total} — run migration 20260823d')
     if r.status_code not in (200, 201, 204):
         print(f'  ⚠ upsert failed {r.status_code}: {r.text[:200]}')
         return 0
