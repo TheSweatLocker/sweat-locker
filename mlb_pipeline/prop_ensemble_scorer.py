@@ -280,12 +280,46 @@ def _evaluate_signal(source_row: dict, ctx: dict, p: dict) -> Optional[PropContr
     w = edge_weight(hr, n, reg_tier)
     if w <= 0: return None
 
-    # Render prose from template
+    # Render prose from template.
+    # 2026-08-23: signal_sources templates like projection_edge_supports use
+    # tokens like `{_edge_at_book}` which live at p["signals"]["_edge_at_book"],
+    # not at the top level of p. Previously .format() KeyError'd and shipped
+    # the raw template to users (visible bug: "{_edge_at_book} edge at book
+    # line" in the app). Flatten p["signals"] into the format namespace so
+    # any signals-JSONB field is a valid template token. Signals fields take
+    # precedence over ctx/p top-level in the rare collision case (signal
+    # authors wrote the template with signals fields in mind).
     prose = source_row.get('display_prose_template') or ''
+    _sig = p.get('signals') if isinstance(p.get('signals'), dict) else {}
+    _fmt = {**ctx, **p, **_sig}
+    # Round any numeric values to 2 decimals so raw floats like 0.3499999
+    # don't leak. Preserves strings + None as-is.
+    for _k, _v in list(_fmt.items()):
+        if isinstance(_v, float):
+            _fmt[_k] = round(_v, 2)
     try:
-        prose = prose.format(**{**ctx, **p})
+        prose = prose.format(**_fmt)
     except (KeyError, IndexError, ValueError):
-        pass  # template used a missing key — ship template as-is
+        pass  # missing key — try per-token substitution below so partial
+              # substitutions still happen instead of shipping raw template
+    # Belt-and-suspenders: any {token} that survived (either because format
+    # raised or because a token had special format chars) gets replaced with
+    # its lookup value or stripped. Prior version shipped raw `{_edge_at_book}`
+    # to users on the app when the format namespace didn't include it.
+    if '{' in prose:
+        import re
+        def _sub(m):
+            key = m.group(1).split(':')[0].split('!')[0]
+            v = _fmt.get(key)
+            if v is None: return ''  # unknown token → drop it
+            return str(v)
+        prose = re.sub(r'\{([^{}]+)\}', _sub, prose)
+        # Clean up double-spaces + dangling em-dashes/hyphens left by drops
+        prose = re.sub(r'\s+', ' ', prose)
+        prose = re.sub(r'\s*[—–-]\s*$', '', prose).strip()
+        # If prose collapsed to just punctuation, fall back to signal_key
+        if not prose or all(c in ' -—–.,;:•' for c in prose):
+            prose = source_row.get('signal_key', '')
 
     return PropContribution(
         signal_key=source_row.get('signal_key', ''),
