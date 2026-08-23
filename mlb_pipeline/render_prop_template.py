@@ -93,7 +93,7 @@ def _verdict(tier: str, conviction: int, side: str = '') -> str:
     return 'PASS'
 
 
-def _clean_prose(s: str) -> str:
+def _clean_prose(s) -> str:
     """Prose scrubber — kill jargon, sentence-case, humanize.
 
     Input signal prose comes from playbook_sources / signal registry and
@@ -105,9 +105,24 @@ def _clean_prose(s: str) -> str:
       - Convert ">= .270" / "<= 3.0" comparison syntax to a stat
       - Capitalize first character
       - No trailing em-dash phrase (redundant with the stat)
+
+    2026-08-23 dict-safe: when a signal's prose is a dict instead of a str
+    (yesterday's hits_over PRIME "Opposing starter is soft" signal source
+    emitted `{'park': 'Park factor 118…', 'l7_hot': '...'}` which stringified
+    as raw Python dict on 3 cards). Now joins dict values with " · " so the
+    downstream card renders "Park factor 118 · Hits in 6 of last 7 (86%)"
+    instead of the literal dict repr.
     """
     import re
-    if not s: return s
+    if not s: return ''
+    # Handle non-str prose defensively (dict, list, tuple)
+    if isinstance(s, dict):
+        # Prefer values (usually the human-readable sentences) over keys
+        parts = [str(v).strip() for v in s.values() if v]
+        s = ' · '.join(p for p in parts if p) or ''
+    elif isinstance(s, (list, tuple)):
+        s = ' · '.join(str(x).strip() for x in s if x)
+    if not s: return ''
     s = str(s).strip()
     # Drop sample-size parentheticals
     s = re.sub(r'\s*\((?:\d+\+?\s*(?:IP|starts|PA|AB|games|min|snaps|shots|K|BB))\)\s*', ' ', s)

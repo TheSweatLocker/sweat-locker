@@ -124,14 +124,16 @@ def run(game_date: str | None = None, dry_run: bool = False) -> None:
         f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
         headers=H_READ,
         params={"game_date": f"eq.{gd}",
-                "select": "id,prop_type,direction,conviction,signals",
+                # 2026-08-23: also fetch `tier` so we can gate PRIME
+                # hits_over promotions on refit disagreement (see below).
+                "select": "id,prop_type,direction,conviction,tier,signals",
                 "limit": 500},
         timeout=30,
     )
     props = r.json() if r.status_code == 200 else []
     print(f"  {len(props)} props to consider")
 
-    updated = skipped = 0
+    updated = skipped = hits_capped = 0
     for p in props:
         result = compute_refit(p["prop_type"], p["direction"],
                                 p.get("signals") or {}, weights)
@@ -139,6 +141,32 @@ def run(game_date: str | None = None, dry_run: bool = False) -> None:
             skipped += 1
             continue
         conv, version = result
+
+        # 2026-08-23 HITS_OVER REFIT-GATE (from 8/22 audit).
+        # All 3 hits_over PRIME cards on 8/22 had legacy conviction 78-84
+        # BUT refit_conviction only 48.5 — refit was telling us these were
+        # coin flips. Result: 1-2 (33%). Meanwhile STRONG hits_over at the
+        # same refit 48.5 went 8-1 by short-line luck. The rule: when the
+        # refit model disagrees strongly with the legacy tier (refit < 60
+        # on a PRIME), cap the tier at STRONG. Same architecture as the
+        # MC-dissent gate for games — treat internal model disagreement as
+        # a hygiene downgrade, not a W/L booster.
+        patch: dict = {"refit_conviction": conv, "refit_version": version[:10]}
+        prop_type = (p.get("prop_type") or "").lower()
+        current_tier = (p.get("tier") or "").upper()
+        if (prop_type == "hits_over"
+                and current_tier == "PRIME"
+                and conv < 60):
+            patch["tier"] = "STRONG"
+            # Also cap conviction at STRONG ceiling so display doesn't show
+            # PRIME-tier conviction number on a STRONG-tier bucket.
+            legacy_conv = p.get("conviction")
+            if isinstance(legacy_conv, (int, float)) and legacy_conv > 65:
+                patch["conviction"] = 65
+            hits_capped += 1
+            print(f"  🔽 hits_over PRIME cap: id={p['id']} "
+                  f"legacy={p.get('conviction')} refit={conv} → tier=STRONG")
+
         if dry_run:
             print(f"  [DRY] id={p['id']} {p['prop_type']}/{p['direction']}: "
                   f"conv={p.get('conviction')} → refit={conv}")
@@ -147,7 +175,7 @@ def run(game_date: str | None = None, dry_run: bool = False) -> None:
         pr = requests.patch(
             f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?id=eq.{p['id']}",
             headers=H_WRITE,
-            json={"refit_conviction": conv, "refit_version": version[:10]},
+            json=patch,
             timeout=10,
         )
         if pr.status_code in (200, 204):
@@ -157,6 +185,8 @@ def run(game_date: str | None = None, dry_run: bool = False) -> None:
 
     print(f"\n  ✅ {updated} refit_conviction rows written")
     print(f"  ⏭  {skipped} skipped (prop type not in refit registry)")
+    if hits_capped:
+        print(f"  🔽 {hits_capped} hits_over PRIME rows capped to STRONG (refit < 60)")
 
 
 if __name__ == "__main__":
