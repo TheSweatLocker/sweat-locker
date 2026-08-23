@@ -509,6 +509,21 @@ jobs:
           cd mlb_pipeline
           python prop_coverage_audit.py --sport MLB || echo "coverage audit failed (non-fatal)"
 
+      # 2026-08-23 End-to-end pipeline healthcheck. Verifies all 8 layers
+      # of the prop flow (ingest → scoring → conviction → refit → playbook
+      # → L10 → render → surface) with sample traces. Read-only. Non-fatal.
+      # Catches drift + regressions that the coverage audit alone misses
+      # (e.g. yesterday's migration column-not-populated bug surfaced
+      # first run). Sport-universal — works for NFL/NCAAF/etc when their
+      # pipelines produce rows.
+      - name: Prop pipeline healthcheck
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python prop_pipeline_healthcheck.py --sport MLB --sample 3 || echo "healthcheck failed (non-fatal)"
+
       # Prop ensemble scorer — SHADOW MODE (2026-08-17). Reads
       # signal_sources rows with subject_scope IN ('prop','player_prop')
       # and writes plug-in playbook decisions to prop_playbook_decisions
