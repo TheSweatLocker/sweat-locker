@@ -76,9 +76,43 @@ def load_weights() -> dict:
     return merged
 
 
+# 2026-08-23 REFIT BLACKLIST — prop families with known bad trained
+# weights. Sign-flipped coefficients produce nonsense refit values that
+# undermine trust in the model. Return None → app falls back to legacy
+# conviction until weights are retrained properly.
+#
+# bb_under/under: BOTH v1 AND v2 weights have sign-flipped coefs.
+#   v1: aggressive_opp=-0.30, clean_start=-0.25, book_recal=-0.13
+#       (all should be POSITIVE — fewer walks vs aggressive opps,
+#       clean prior starts, book giving line above proj all support
+#       UNDER hitting).
+#   v2: last7_control=-0.3538 sign-flipped (elite recent control
+#       should boost UNDER, not crush it). Was supposed to fix v1
+#       but introduced a different sign flip.
+#   Observed: elite BB command pitchers (Martinez 0.9 BB/9 last 7)
+#   land refit=22.4 instead of correctly ~85-95. Legacy conviction
+#   is directionally right (PRIME 97) so users get legacy while
+#   refit retrains.
+REFIT_BLACKLIST = frozenset({
+    ('bb_under', 'under'),
+    # ks_under/under: pos_sum=0.000, all 5 coefs are negative in merged
+    # v1/v2 weights. book_recalibration=-0.49, l3_k=-0.29, etc. NO
+    # signal can produce a positive refit → every fired-signal ks_under
+    # lands crushed to floor. Structurally broken until retrain.
+    ('ks_under', 'under'),
+    # ha_over/over: pos_sum=0.000, only negative coefs (l3_hard=-0.081,
+    # park=-0.077). Same structural issue as ks_under. Rare prop family
+    # so lower priority but same blacklist treatment.
+    ('ha_over', 'over'),
+})
+
+
 def compute_refit(prop_type: str, direction: str, signals: dict,
                   weights: dict) -> tuple[float, str] | None:
     """Returns (refit_conviction 0-100, refit_version) or None if skipped."""
+    # Blacklist check first — skip prop families with known bad weights
+    if (prop_type, direction) in REFIT_BLACKLIST:
+        return None
     key = f"{prop_type}/{direction}"
     pw = (weights.get("prop_types") or {}).get(key)
     if not pw:
