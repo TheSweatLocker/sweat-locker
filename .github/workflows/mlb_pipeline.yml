@@ -1919,6 +1919,35 @@ jobs:
           cd mlb_pipeline
           python cleatz_scraper.py || echo "cleatz scraper failed (non-fatal)"
 
+      # ScoresAndOdds scraper (2026-08-23) — 4th public-splits source.
+      # Writes directly to public_splits_v2 (source-agnostic schema
+      # shipped tonight in Phases 1-3). Prior to this workflow step,
+      # SO only ran when manually invoked → data went stale between
+      # user checks. Now populates every cron cycle alongside FR + CZ.
+      - name: ScoresAndOdds — scrape 4th splits source
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python pull_scoresandodds.py --sport MLB || echo "SO scraper failed (non-fatal)"
+
+      # Splits v2 aggregator (2026-08-23) — normalizes rows from
+      # oddscrowd (public_splits_archive) + fadereport_signals +
+      # cleatz_signals into public_splits_v2 long-form, then computes
+      # game_context.splits_summary JSONB per game. Runs AFTER all
+      # source scrapers so the aggregator sees the newest per-source
+      # values. Silent no-op if no sources landed.
+      - name: Splits v2 aggregator
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python splits_v2_pipeline.py --sport MLB || echo "splits v2 aggregator failed (non-fatal)"
+
       # Archive both public split sources side-by-side per snapshot
       # (2026-08-15). Feeds the living pattern-discovery engine below —
       # nothing is meaningful the day it happens; it's the cumulative
