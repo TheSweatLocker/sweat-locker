@@ -845,17 +845,47 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
         for c in chips:
             class_share[c.signal_class] += c.contribution
         # Class-balance penalty: cap any single class at MAX_CLASS_SHARE of total
-        # 2026-08-21: changed from soft (overflow*0.5) to HARD cap. Soft penalty
-        # let scenario class hit ~70% of Braves 8/20 pick score (0.75/0.98)
-        # despite 40% cap — half the overflow slipped through. Hard cap makes
-        # the class-diversity gate actually enforced.
+        # 2026-08-21: changed from soft (overflow*0.5) to HARD cap.
+        # 2026-08-23: fixed-point cap. Prior version computed
+        #   max_allowed = raw_total * 0.40
+        # and subtracted the overflow. But because the overflow subtraction
+        # ALSO shrinks the total, the capped class ended up ~56% of the new
+        # adjusted_total — the 40% share never actually held.
+        #
+        # Surfaced by user's audit of tonight's PRIME MLs: cohort trio
+        # (confluence_home_lean +0.83, sharp_confluence_alignment +0.59,
+        # confluence_home_lean_as_fav +0.30 = +1.72) was contributing 55-90%
+        # of every home-chalk pick's score despite class='cohort' being
+        # nominally 40%-capped. Marlins/Dodgers/Red Sox PRIMEs were basically
+        # "home team + cohort" without matchup edge.
+        #
+        # True cap: enforce cohort_effective / adjusted_total <= 0.40.
+        # Algebra:
+        #   cohort_effective <= 0.40 * (cohort_effective + others)
+        #   cohort_effective * 0.60 <= 0.40 * others
+        #   cohort_effective <= (0.40 / 0.60) * others = (2/3) * others
+        # So the correct max_allowed_for_a_class is
+        #   share_cap = (MAX_CLASS_SHARE / (1 - MAX_CLASS_SHARE)) * others_sum
+        # For cohort=1.72, others=0.79 the new cap = 0.79 * (2/3) = 0.53,
+        # dropping Marlins ML adjusted score from ~1.79 to ~1.32 — no longer
+        # PRIME on cohort alone. Games with real distributed matchup edge
+        # (Padres: cohort 0.42 + team_form 0.53 + offense 0.15 + model 0.13
+        # = 1.23) barely move because their cohort share was already <40%.
         adjusted_total = raw_total
         if raw_total > 0:
-            max_allowed = raw_total * MAX_CLASS_SHARE
+            cap_ratio = MAX_CLASS_SHARE / (1.0 - MAX_CLASS_SHARE)
             for cls_name, share in class_share.items():
-                if share > max_allowed:
-                    overflow = share - max_allowed
-                    adjusted_total -= overflow  # HARD cap (was overflow*0.5)
+                others_sum = raw_total - share
+                if others_sum <= 0:
+                    # single-class contribution — nothing to balance against;
+                    # let the raw fraction cap fall back to old behavior so
+                    # single-source picks don't get zeroed to nothing.
+                    max_allowed_effective = raw_total * MAX_CLASS_SHARE
+                else:
+                    max_allowed_effective = others_sum * cap_ratio
+                if share > max_allowed_effective:
+                    overflow = share - max_allowed_effective
+                    adjusted_total -= overflow
         classes_fired = len([c for c in class_share.keys() if class_share[c] > 0])
         scored.append((cand, adjusted_total, chips, dict(class_share), classes_fired))
 
