@@ -136,6 +136,16 @@ def check_primary_play_stale() -> Optional[dict]:
             'message': f'ensemble_scorer import failed: {type(e).__name__}: {e}',
             'detail': {'today': today},
         }
+    # 2026-08-23: apply defensive_gates before comparing — the DB persists
+    # POST-gate output (MC-dissent demotes, OC-flip flips), so raw score_game
+    # produces PRE-gate live which will always disagree on games where a gate
+    # fired. Prior version flagged 7/15 stale tonight, all with _mc_dissent
+    # or _oc_flipped flags in DB — false alarms because the gates ran on the
+    # persist side but not the live-score side.
+    try:
+        from defensive_gates import apply_all_defensive_gates
+    except Exception:
+        apply_all_defensive_gates = None
     stale = []
     for g in ctx:
         persisted = g.get('primary_play') or {}
@@ -145,8 +155,20 @@ def check_primary_play_stale() -> Optional[dict]:
             continue
         if live is None: continue
         top = live.top()
+        # Build a pp-shaped dict from `top` matching what game_context writes,
+        # then run it through the same gates that ran on the persist side.
+        live_pp = {
+            '_engine': 'ensemble_v2',
+            'type': top.market,
+            'label': top.display_label,
+            'side': top.side,
+            'tier': top.tier,
+            'conviction': top.conviction,
+        }
+        if apply_all_defensive_gates is not None:
+            apply_all_defensive_gates(live_pp, g)
         per_key = f'{persisted.get("type")}/{persisted.get("label")}/{persisted.get("tier")}'
-        live_key = f'{top.market}/{top.display_label}/{top.tier}'
+        live_key = f'{live_pp.get("type")}/{live_pp.get("label")}/{live_pp.get("tier")}'
         if per_key != live_key:
             stale.append({
                 'matchup': f'{g.get("away_team","?")} @ {g.get("home_team","?")}',
