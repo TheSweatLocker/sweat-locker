@@ -84,25 +84,35 @@ def _grade_side(pp: dict, game: dict) -> str | None:
 
 def agg_sharp_card(date: str) -> dict | None:
     """Sharp Card = PRIME/STRONG primary_play picks + PRIME/STRONG props
-    on that date, using the app's 2u/2u/1u sizing policy."""
-    ctx = requests.get(f'{SB}/rest/v1/mlb_game_context',
-        headers=H_READ,
-        params={'game_date': f'eq.{date}',
-                'select': 'game_id,home_team,away_team,primary_play'},
-        timeout=15).json()
+    on that date, using the app's 2u/2u/1u sizing policy.
+
+    2026-08-23 CRITICAL FIX: read primary_play from mlb_game_results
+    (FROZEN at log_game_result time) instead of mlb_game_context
+    (LIVE, drifts every time recompute_primary_play runs). Yesterday's
+    audit showed 9 of 15 games had drifted primary_play between cron
+    time and next-morning aggregation — 3 phantom losses got attributed
+    to sharp_card that never actually shipped to users. Frozen version:
+    18-10 (64.3%). Live-drifted version: 18-13 (58.1%). Difference is
+    entirely from LEAN picks getting live-promoted to PRIME/STRONG after
+    the fact, then graded (and losing) against actual outcomes.
+
+    mlb_game_results.primary_play is captured by log_game_result at
+    grade time — closest available to what shipped. A true cron-time
+    snapshot table would be better but doesn't exist yet.
+    """
     res = requests.get(f'{SB}/rest/v1/mlb_game_results',
         headers=H_READ,
         params={'game_date': f'eq.{date}',
-                'select': 'game_id,home_score,away_score,home_win,run_line_result,total_result,home_team,away_team'},
+                'select': 'game_id,home_team,away_team,home_score,away_score,'
+                          'home_win,run_line_result,total_result,spread_result,'
+                          'primary_play'},
         timeout=15).json()
-    rmap = {r['game_id']: r for r in res if isinstance(r, dict)}
     w = l = p = 0; units_bet = 0.0; units_won = 0.0; detail = []
-    for g in (ctx if isinstance(ctx, list) else []):
+    for g in (res if isinstance(res, list) else []):
         pp = g.get('primary_play') or {}
         if pp.get('tier') not in ('PRIME','STRONG'): continue
-        game = rmap.get(g.get('game_id'))
-        if not game: continue
-        game = {**game, 'home_team': g.get('home_team'), 'away_team': g.get('away_team')}
+        # `game` for _grade_side is just the current row (has all outcome cols)
+        game = g
         verdict = _grade_side(pp, game)
         if verdict is None: continue
         stake = 2.0
