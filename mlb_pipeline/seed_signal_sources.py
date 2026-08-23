@@ -115,6 +115,24 @@ SIGNALS = [
         'weight_registry_key': 'jerry_pred_total',
         'display_prose_template': 'runs model projects {jerry_pred_total} vs market {close_total}',
     },
+    # 2026-08-22 GAP FILL — projected_total (v3) had NO signal_source
+    # even though it's the ensemble's primary heuristic runs projection
+    # (computed in game_context.py from xERA + wRC + park + weather etc,
+    # calibrated on backtest). Padres @ Twins tonight:
+    #   projected_total 9.6, close_total 8.5 → +1.1 OVER edge, silently
+    #   dropped. Total market ended up picking UNDER despite the model
+    #   projecting OVER by 1.1 runs.
+    # Now fires alongside jerry/v4/panel projections; ensemble's own
+    # runs projection becomes a first-class citizen in the vote pool.
+    {
+        'signal_key': 'projected_total',
+        'class': 'model', 'market_scope': 'total',
+        'condition_expr': 'ctx.projected_total is not None and ctx.close_total is not None and abs(float(ctx.projected_total) - float(ctx.close_total)) >= 0.5',
+        'side_expr': '"OVER" if float(ctx.projected_total) > float(ctx.close_total) else "UNDER"',
+        'strength_expr': 'min(abs(float(ctx.projected_total) - float(ctx.close_total)) / 2.0, 1.0)',
+        'weight_registry_key': 'projected_total',
+        'display_prose_template': 'primary runs projection {projected_total} vs market {close_total}',
+    },
     {
         'signal_key': 'mc_high_confidence',
         'class': 'model', 'market_scope': 'ml',

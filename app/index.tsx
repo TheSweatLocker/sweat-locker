@@ -13431,37 +13431,43 @@ setJerryHistory(prev => {
                     <Text style={{color:tierColor, fontWeight:'700', fontSize:13, marginTop:2}}>{propLabel}</Text>
                     <Text style={{color:THEME.textMuted, fontSize:11, marginTop:2}}>{prop.matchup}</Text>
                   </View>
-                  <View style={{alignItems:'flex-end', minWidth:70}}>
-                    {/* 2026-08-20: replaced the dominating 80x56 tier pill.
-                        Refit conviction is now the big number (differentiates
-                        props LEAN@100 vs LEAN@30 which the old pill flattened),
-                        tier stays as a tiny caption. Tooltip removed entirely
-                        on this surface — the "WHY WE BACK THIS" section below
-                        is the informational content, no need for a squished
-                        260px popover crammed into an 80px column. */}
+                  <View style={{alignItems:'flex-end', minWidth:76}}>
+                    {/* 2026-08-22 v4 hierarchy: TIER is the primary label
+                        (it's the decision — PRIME/STRONG/LEAN maps directly
+                        to play size). Refit score is a SECONDARY confidence
+                        metric. Prior design put refit as the big 24pt number
+                        with tier as a small caption, which made "LEAN · 95"
+                        cards look like big plays despite being LEAN sizing.
+                        User feedback: "still see 95 refit lean on right
+                        side of card. what about prime strong etc" —
+                        confused why big number said 95 but action was LEAN.
+                        Now: tier is the bold pill, refit is a subtle
+                        confidence rail below. Reads correctly at a glance. */}
                     {(() => {
+                      const tierUp = String(prop.tier || '').toUpperCase();
                       const refit = prop.refit_conviction;
                       const conv = prop.conviction;
-                      const primary = refit != null ? refit : conv;
-                      const primaryLabel = refit != null ? 'REFIT' : 'CONV';
-                      if (primary == null) {
-                        return (
-                          <Text style={{color:tierColor, fontSize:11, fontWeight:'800', letterSpacing:0.4}}>
-                            {String(prop.tier || '').toUpperCase()}
-                          </Text>
-                        );
-                      }
+                      const confidence = refit != null ? refit : conv;
+                      // Tier badge — bold, tier-colored, THE decision label
+                      const tierBg = tierColor + '22';
+                      const tierBorder = tierColor + '55';
                       return (
                         <>
-                          <Text style={{color:tierColor, fontSize:24, fontWeight:'800', letterSpacing:-0.3, lineHeight:26}}>
-                            {Math.round(primary)}
-                          </Text>
-                          <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'700', letterSpacing:0.5, marginTop:1}}>
-                            {primaryLabel}
-                          </Text>
-                          <Text style={{color:tierColor, fontSize:10, fontWeight:'700', letterSpacing:0.4, marginTop:2, opacity:0.75}}>
-                            {String(prop.tier || '').toUpperCase()}
-                          </Text>
+                          <View style={{
+                            backgroundColor: tierBg,
+                            borderColor: tierBorder, borderWidth: 1,
+                            paddingHorizontal: 10, paddingVertical: 4,
+                            borderRadius: 6, minWidth: 68, alignItems: 'center',
+                          }}>
+                            <Text style={{color: tierColor, fontSize:13, fontWeight:'900', letterSpacing:0.6}}>
+                              {tierUp || '—'}
+                            </Text>
+                          </View>
+                          {confidence != null && (
+                            <Text style={{color: THEME.textDim, fontSize:10, fontWeight:'700', marginTop:4, letterSpacing:0.3}}>
+                              {refit != null ? 'refit' : 'conv'} {Math.round(confidence)}
+                            </Text>
+                          )}
                         </>
                       );
                     })()}
