@@ -514,6 +514,13 @@ def upsert(rows: list, dry_run: bool = False) -> int:
     if r.status_code not in (200, 201, 204):
         print(f'  ⚠ upsert failed {r.status_code}: {r.text[:200]}')
         return 0
+    # 2026-08-23 Wave 1b multi-sport: snapshot primary_play per publish.
+    try:
+        from snapshot_writer import write_primary_play_snapshot
+        for row in rows:
+            write_primary_play_snapshot(SB, H_WRITE, 'NCAAF', row)
+    except Exception:
+        pass
     return len(rows)
 
 

@@ -539,6 +539,12 @@ def upsert_context(rows):
     if not rows:
         return 0
     n = 0
+    # 2026-08-23 Wave 1b multi-sport: snapshot writer set up once
+    try:
+        from snapshot_writer import write_primary_play_snapshot
+        _snap = write_primary_play_snapshot
+    except Exception:
+        _snap = None
     for row in rows:
         # Strip None values to preserve existing column values on re-runs
         clean = {k: v for k, v in row.items() if v is not None}
@@ -551,6 +557,9 @@ def upsert_context(rows):
         )
         if r.status_code in (200, 201, 204):
             n += 1
+            if _snap:
+                try: _snap(SUPABASE_URL, WRITE_HEADERS, 'NCAAB', row)
+                except Exception: pass
         else:
             print(f"  upsert failed for {row.get('game_id')}: {r.status_code} {r.text[:200]}")
     return n

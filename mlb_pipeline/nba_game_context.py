@@ -270,11 +270,22 @@ def upsert(rows: list[dict], dry_run: bool = False) -> int:
     normalized = [{k: r.get(k) for k in all_keys} for r in rows]
 
     written = 0
+    # 2026-08-23 Wave 1b multi-sport: snapshot writer
+    try:
+        from snapshot_writer import write_primary_play_snapshot
+        _snap = write_primary_play_snapshot
+    except Exception:
+        _snap = None
     for i in range(0, len(normalized), 100):
         chunk = normalized[i:i+100]
         pr = requests.post(f'{SB}/rest/v1/nba_game_context?on_conflict=game_id',
                            headers=H_WRITE, json=chunk, timeout=30)
-        if pr.status_code in (200, 201, 204): written += len(chunk)
+        if pr.status_code in (200, 201, 204):
+            written += len(chunk)
+            if _snap:
+                for row in chunk:
+                    try: _snap(SB, H_WRITE, 'NBA', row)
+                    except Exception: pass
         else: print(f'  ✗ upsert failed: {pr.status_code} {pr.text[:200]}')
     return written
 

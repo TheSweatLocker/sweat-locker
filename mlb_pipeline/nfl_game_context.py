@@ -1091,6 +1091,17 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
     if r.status_code not in (200, 201, 204):
         print(f'  ⚠ upsert failed {r.status_code}: {r.text[:200]}')
         return 0
+    # 2026-08-23 Wave 1b (multi-sport): snapshot primary_play per successful
+    # publish. Prior state: only MLB snapshotted (see mlb_pipeline/snapshot_
+    # writer.py). NFL/NCAAF/NCAAB/NBA silently never populated the append-
+    # only audit trail — as their seasons open, users would get zero snapshot
+    # history for signal-impact audits. Best-effort — never blocks the upsert.
+    try:
+        from snapshot_writer import write_primary_play_snapshot
+        for row in rows:
+            write_primary_play_snapshot(SB, H_WRITE, 'NFL', row)
+    except Exception:
+        pass
     return len(rows)
 
 
