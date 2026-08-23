@@ -3002,8 +3002,14 @@ def upload_game_context(context, commence_time=None):
                         'conviction': top.conviction,
                         'score': round(top.score, 2),
                         'sub': sub,
-                        'audit_note': (f'ensemble_scorer v2 · {len(top.contributions)} sources · '
-                                       f'score={top.score:.2f} margin={top.margin:+.2f}'),
+                        # 2026-08-22 caption honest about the [:8] slice below.
+                        # Padres audit surfaced: caption said "12 sources"
+                        # but _ensemble_sources array only had 8.
+                        'audit_note': (
+                            f'ensemble_scorer v2 · showing top {min(len(top.contributions), 8)}'
+                            f' of {len(top.contributions)} sources · '
+                            f'score={top.score:.2f} margin={top.margin:+.2f}'
+                        ),
                         '_engine': 'ensemble_v2',
                         '_ensemble_sources': [
                             {'signal_key': c.signal_key, 'class': c.signal_class,
@@ -3127,6 +3133,131 @@ def upload_game_context(context, commence_time=None):
         except Exception as _oc_flip_err:
             # Never block pipeline on flip logic
             pass
+
+        # 2026-08-22 MC-DISSENT GATE. Empirical from Padres audit tonight:
+        # ensemble picked SD ML PRIME conv 83, but Monte Carlo sim only had
+        # SD at 44.9% win prob (vs MIN 41.7%) — a 3.2pp edge that maps to
+        # LEAN-band conviction, NOT PRIME. Ensemble was 15-20 conviction
+        # points too hot vs its own simulator. Rule: if primary_play is
+        # PRIME on ML market AND MC has our pick side < 52% win prob,
+        # downgrade one tier. STRONG-on-ML with MC < 50 also demotes to
+        # LEAN. Prevents the ensemble from crowning a PRIME the simulator
+        # calls a coin flip. Same defensive-guard pattern as OC-dissent
+        # flip above — preserves original tier in _mc_dissent audit trail.
+        try:
+            pp = context.get("primary_play")
+            mc = context.get("mc_probabilities") if isinstance(context.get("mc_probabilities"), dict) else None
+            if (pp and isinstance(pp, dict) and mc
+                    and pp.get("_engine") == "ensemble_v2"
+                    and str(pp.get("type", "")).lower() == "ml"
+                    and pp.get("tier") in ("PRIME", "STRONG")):
+                cur_side = str(pp.get("side", "")).upper()
+                pick_prob = None
+                if cur_side == "HOME":
+                    pick_prob = mc.get("mc_p_home_win")
+                elif cur_side == "AWAY":
+                    pick_prob = mc.get("mc_p_away_win")
+                if pick_prob is not None:
+                    try: pick_prob_f = float(pick_prob)
+                    except (TypeError, ValueError): pick_prob_f = None
+                    if pick_prob_f is not None:
+                        # PRIME requires MC >= 0.52 (5pp edge over BREAKEVEN 47.6%).
+                        # STRONG requires MC >= 0.50 (edge over pure toss-up).
+                        # Below thresholds → one-tier downgrade + audit note.
+                        demote = False
+                        reason = None
+                        if pp["tier"] == "PRIME" and pick_prob_f < 0.52:
+                            new_tier = "STRONG"; demote = True
+                            reason = f"MC dissent: sim has our side at {pick_prob_f*100:.1f}% (<52% PRIME threshold)"
+                        elif pp["tier"] == "STRONG" and pick_prob_f < 0.50:
+                            new_tier = "LEAN"; demote = True
+                            reason = f"MC dissent: sim has our side at {pick_prob_f*100:.1f}% (<50% STRONG threshold)"
+                        if demote:
+                            pp["_mc_dissent"] = {
+                                "orig_tier": pp["tier"],
+                                "mc_pick_win_pct": round(pick_prob_f * 100, 1),
+                                "reason": reason,
+                            }
+                            pp["tier"] = new_tier
+                            # Also drop conviction to match tier ceiling so
+                            # display consistency (LEAN 55 max, STRONG 65 max)
+                            tier_cap = {"LEAN": 55, "STRONG": 65}
+                            if isinstance(pp.get("conviction"), (int, float)):
+                                pp["conviction"] = min(int(pp["conviction"]), tier_cap.get(new_tier, 55))
+        except Exception:
+            pass  # never block pipeline
+
+        # 2026-08-22 SHARP-FADE SURFACING. Padres audit finding: Fadereport
+        # flagged Twins as sharp side with strength 33 ("strong"), but
+        # _losing_market_notes was NULL on the primary_play — user saw a
+        # PRIME 83 card with zero counter-argument, never learned the market
+        # was fading it. Now: pull fadereport_signals for this game_date,
+        # cross-check the sharp side vs our pick side per market; when they
+        # disagree AND strength_pts >= 15, append a synthesized "sharp fade"
+        # note to _losing_market_notes so the card can surface it.
+        try:
+            pp = context.get("primary_play")
+            if pp and isinstance(pp, dict) and pp.get("_engine") == "ensemble_v2":
+                fr_rows = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/fadereport_signals",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                    params={
+                        "sport": "eq.MLB",
+                        "snapshot_date": f"eq.{game_date_et}",
+                        "home_team": f"eq.{home_team}",
+                        "away_team": f"eq.{away_team}",
+                        "select": "market,sharp_side_norm,strength_pts,strength_tier,"
+                                  "bets_side_pct,money_side_pct,reasoning",
+                    },
+                    timeout=8,
+                )
+                fr = fr_rows.json() if fr_rows.status_code == 200 else []
+                # Build a picks-by-market map for what our ensemble chose
+                all_mkts = pp.get("_ensemble_all_markets") or {}
+                our_picks = {
+                    "ml":    (all_mkts.get("ml") or {}).get("pick"),
+                    "rl":    (all_mkts.get("rl") or {}).get("pick"),
+                    "total": (all_mkts.get("total") or {}).get("pick"),
+                }
+                # Normalize pick strings — HOME_ML → HOME, AWAY_RL → AWAY, OVER → OVER
+                def _side_of(pick):
+                    if not pick: return None
+                    p = str(pick).upper()
+                    if p.startswith("HOME"): return "HOME"
+                    if p.startswith("AWAY"): return "AWAY"
+                    if p in ("OVER", "UNDER"): return p
+                    return None
+                lmn = pp.get("_losing_market_notes")
+                if not isinstance(lmn, list): lmn = []
+                for row in fr:
+                    mkt = str(row.get("market") or "").lower()
+                    our_side = _side_of(our_picks.get(mkt))
+                    sharp_side = str(row.get("sharp_side_norm") or "").upper()
+                    strength = row.get("strength_pts") or 0
+                    if (our_side and sharp_side and our_side != sharp_side
+                            and float(strength) >= 15):
+                        # Sharp fades our pick with meaningful strength — surface.
+                        # Append as a synthetic entry so app can render alongside
+                        # ensemble runner-up signals.
+                        lmn.append({
+                            "market": mkt,
+                            "losing_side": sharp_side,
+                            "top_signals": [{
+                                "signal_key": "fadereport_sharp_fade",
+                                "class": "sharp",
+                                "side": sharp_side,
+                                "contribution": round(float(strength) / 100.0, 2),
+                                "prose": (
+                                    f"Sharp fade: FR strength {int(float(strength))} on {sharp_side} · "
+                                    f"bets {row.get('bets_side_pct')}% / money {row.get('money_side_pct')}% "
+                                    f"other side. {row.get('reasoning') or ''}"[:180]
+                                ),
+                            }],
+                        })
+                if lmn:
+                    pp["_losing_market_notes"] = lmn
+        except Exception:
+            pass  # never block pipeline on external-signal surfacing
 
         # 2026-08-16 Bundle H: Playbook tier gate. Scan the primary_play's
         # sub/audit_note for any ANTI_VALIDATED signal names from the
