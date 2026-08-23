@@ -317,8 +317,15 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
 
         cache_key = (pname, stat)
         if cache_key not in recent_cache:
-            recent_cache[cache_key] = fetch_mlb_player_recent(pname, stat, n=30)
-            rows_cache[cache_key] = fetch_mlb_player_recent_rows(pname, stat, n=10)
+            # 2026-08-22: wrap fetches too — MLB Stats API also 502/reset
+            # occasionally. Same fail-loud-continue pattern as the patch.
+            try:
+                recent_cache[cache_key] = fetch_mlb_player_recent(pname, stat, n=30)
+                rows_cache[cache_key] = fetch_mlb_player_recent_rows(pname, stat, n=10)
+            except requests.exceptions.RequestException as _e:
+                print(f'    ⚠ fetch failed for {pname}/{stat}: {_e}')
+                recent_cache[cache_key] = []
+                rows_cache[cache_key] = []
         recent = recent_cache[cache_key]
         rows_last10 = rows_cache.get(cache_key, [])
 
@@ -350,8 +357,31 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
             'signals': existing_signals,
         }
         if not dry_run:
-            pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
-                                headers=H_WRITE, json=patch, timeout=10)
+            # 2026-08-22 RETRY on transient ConnectionResetError. Prior
+            # behavior: single failure killed the whole run — one prop's
+            # patch throwing ConnectionError propagated up and stopped
+            # processing all remaining props. Today's slate: crashed at
+            # prop ~58 of 155, leaving 97 props with l10 counts but no
+            # _stat_last10 (so the recent-form table wouldn't render on
+            # those cards). Now: retry up to 3x with backoff, skip the
+            # single prop if all retries fail, keep processing the rest.
+            import time as _time
+            pr = None
+            for attempt in range(3):
+                try:
+                    pr = requests.patch(
+                        f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+                        headers=H_WRITE, json=patch, timeout=15,
+                    )
+                    break  # got a response (any code) — exit retry loop
+                except requests.exceptions.RequestException as _e:
+                    if attempt < 2:
+                        _time.sleep(0.5 * (attempt + 1))
+                        continue
+                    print(f'    ✗ patch {prop["id"]} net error after 3 retries: {_e}')
+                    pr = None
+            if pr is None:
+                continue
             if pr.status_code not in (200, 204):
                 print(f'    ✗ patch {prop["id"]} failed: {pr.status_code}')
                 continue
