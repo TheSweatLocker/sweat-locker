@@ -292,6 +292,28 @@ def _evaluate_signal(source_row: dict, ctx: dict, p: dict) -> Optional[PropContr
     prose = source_row.get('display_prose_template') or ''
     _sig = p.get('signals') if isinstance(p.get('signals'), dict) else {}
     _fmt = {**ctx, **p, **_sig}
+    # 2026-08-23: matched-pitcher helpers. Templates for pitcher_recent_cold,
+    # pitcher_xera_high, pitcher_vs_team_tagged_history previously hardcoded
+    # threshold values (">=5.50", ">=5.0") in prose because the signal fires
+    # on EITHER home or away pitcher and the template can't conditional on
+    # which side. Result: Bryce Miller card showed "Pitcher L3 ERA 5.50+"
+    # (generic threshold) instead of his real 8.04. Fix: inject computed
+    # `pitcher_l3_era` / `pitcher_xera` / `pitcher_vs_team_era` fields based
+    # on which pitcher the prop belongs to, so authors can write
+    # {pitcher_l3_era:.2f} and get the real value.
+    _player = p.get('player_name', '')
+    _home_p = ctx.get('home_pitcher', '')
+    _away_p = ctx.get('away_pitcher', '')
+    if _player and _player == _home_p:
+        _fmt['pitcher_l3_era']       = ctx.get('home_pitcher_last_3_era')
+        _fmt['pitcher_xera']         = ctx.get('home_sp_xera')
+        _fmt['pitcher_vs_team_era']  = ctx.get('home_pitcher_vs_team_era')
+        _fmt['pitcher_first_inn_era'] = ctx.get('home_first_inning_era')
+    elif _player and _player == _away_p:
+        _fmt['pitcher_l3_era']       = ctx.get('away_pitcher_last_3_era')
+        _fmt['pitcher_xera']         = ctx.get('away_sp_xera')
+        _fmt['pitcher_vs_team_era']  = ctx.get('away_pitcher_vs_team_era')
+        _fmt['pitcher_first_inn_era'] = ctx.get('away_first_inning_era')
     # Round any numeric values to 2 decimals so raw floats like 0.3499999
     # don't leak. Preserves strings + None as-is.
     for _k, _v in list(_fmt.items()):

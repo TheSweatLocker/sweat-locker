@@ -398,7 +398,15 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None,
     # flips headers or verdict — it appears (optionally) as a context
     # bullet in the risks section.
     dir_label = direction.upper()
-    why_header, risk_header = f'Why {dir_label}', f'Why {dir_label} risks'
+    # 2026-08-23 rename: this section shows PLAYBOOK's per-signal contribution
+    # view for the pick. App's "WHY WE BACK THIS" already surfaces the raw
+    # generate_props signals. Prior header "Why UNDER" made the two sections
+    # look duplicative even though they're different perspectives. Renaming
+    # to "PLAYBOOK CONFIRMS" so users read them as two views (raw signals +
+    # model-weighted confirmation) rather than one section repeating itself.
+    # Kept `Why UNDER risks` for the risk block (correct label — that IS
+    # what risks the direction).
+    why_header, risk_header = 'PLAYBOOK CONFIRMS', f'Why {dir_label} risks'
     why_list, risk_list = cats['positive'], cats['negative']
     if why_list:
         lines.append(why_header)
