@@ -196,6 +196,51 @@ def run(date_str: str, dry_run: bool = False) -> None:
                 print(f'  ✗ {away} @ {home}: compute_primary_play failed — {e}')
                 continue
 
+        # 2026-08-23 MC-DISSENT GATE — ported from game_context.py:3131.
+        # This gate demotes ensemble PRIME/STRONG ML picks when Monte
+        # Carlo says our pick side wins <52%/<50% respectively. Previously
+        # only ran on the initial game_context path — recompute_primary_play
+        # bypassed it, so recomputed picks (like tonight's Orioles PRIME 86
+        # with MC 40% and Mariners PRIME 84 with MC 35%) escaped demotion.
+        # audit_note field made this visible: "recompute" vs no "recompute"
+        # traced which games hit the gate vs not.
+        try:
+            mc = c.get('mc_probabilities') if isinstance(c.get('mc_probabilities'), dict) else None
+            if (new_pp and isinstance(new_pp, dict) and mc
+                    and new_pp.get('_engine') == 'ensemble_v2'
+                    and str(new_pp.get('type', '')).lower() == 'ml'
+                    and new_pp.get('tier') in ('PRIME', 'STRONG')):
+                cur_side = str(new_pp.get('side', '')).upper()
+                pick_prob = None
+                if cur_side == 'HOME':
+                    pick_prob = mc.get('mc_p_home_win')
+                elif cur_side == 'AWAY':
+                    pick_prob = mc.get('mc_p_away_win')
+                if pick_prob is not None:
+                    try: pick_prob_f = float(pick_prob)
+                    except (TypeError, ValueError): pick_prob_f = None
+                    if pick_prob_f is not None:
+                        demote = False; reason = None; new_tier = None
+                        if new_pp['tier'] == 'PRIME' and pick_prob_f < 0.52:
+                            new_tier = 'STRONG'; demote = True
+                            reason = f'MC dissent: sim has our side at {pick_prob_f*100:.1f}% (<52% PRIME threshold)'
+                        elif new_pp['tier'] == 'STRONG' and pick_prob_f < 0.50:
+                            new_tier = 'LEAN'; demote = True
+                            reason = f'MC dissent: sim has our side at {pick_prob_f*100:.1f}% (<50% STRONG threshold)'
+                        if demote:
+                            new_pp['_mc_dissent'] = {
+                                'orig_tier': new_pp['tier'],
+                                'mc_pick_win_pct': round(pick_prob_f * 100, 1),
+                                'reason': reason,
+                            }
+                            new_pp['tier'] = new_tier
+                            tier_cap = {'LEAN': 55, 'STRONG': 65}
+                            if isinstance(new_pp.get('conviction'), (int, float)):
+                                new_pp['conviction'] = min(int(new_pp['conviction']),
+                                                            tier_cap.get(new_tier, 55))
+        except Exception:
+            pass  # never block recompute on gate errors
+
         new_key = f"{(new_pp or {}).get('tier')}·{(new_pp or {}).get('label')}·{(new_pp or {}).get('type')}"
         pp_changed = old_key != new_key
 
