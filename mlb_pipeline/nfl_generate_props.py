@@ -426,6 +426,77 @@ def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
     return out
 
 
+def fetch_nfl_defense_recent_allowed(opp_team: str, stat_col: str, season: int,
+                                       weeks_back: int = 5) -> float | None:
+    """Aggregate per-week yards/TDs allowed by opp_team over last N weeks.
+
+    2026-08-23: nfl_team_defense_stats only has SEASON averages — can't
+    see recent form. This aggregates from nfl_player_stats by summing
+    the stat across all opposing players who played opp_team in the
+    last N weeks. Returns avg per-game allowed. None if no data.
+    """
+    if not opp_team or not stat_col: return None
+    try:
+        r = requests.get(f'{SB}/rest/v1/nfl_player_stats',
+                         headers=H_READ,
+                         params={'opponent_team': f'eq.{opp_team}',
+                                 'season': f'eq.{season}',
+                                 'season_type': 'eq.REG',
+                                 'select': f'week,{stat_col}',
+                                 'order': 'week.desc', 'limit': '200'},
+                         timeout=15)
+        if r.status_code != 200: return None
+        rows = r.json() or []
+    except Exception:
+        return None
+    # Group by week, sum
+    by_week: dict = {}
+    for row in rows:
+        wk = row.get('week')
+        v = row.get(stat_col)
+        if wk is None or v is None: continue
+        try: by_week[wk] = by_week.get(wk, 0) + float(v)
+        except (TypeError, ValueError): continue
+    if not by_week: return None
+    # Take most-recent weeks_back weeks
+    recent_weeks = sorted(by_week.keys(), reverse=True)[:weeks_back]
+    if not recent_weeks: return None
+    total = sum(by_week[w] for w in recent_weeks)
+    return round(total / len(recent_weeks), 1)
+
+
+def fetch_nfl_player_usage(player_id: int, season: int) -> dict:
+    """L4 target_share + air_yards_share + wopr for a pass-catcher.
+
+    Signals whether a WR/TE/RB is genuinely a focal target or a
+    peripheral option. High target_share (>=22%) is a real edge for
+    receptions + rec_yds props.
+    """
+    if not player_id: return {}
+    try:
+        r = requests.get(f'{SB}/rest/v1/nfl_player_stats',
+                         headers=H_READ,
+                         params={'player_id': f'eq.{player_id}',
+                                 'season': f'eq.{season}',
+                                 'season_type': 'eq.REG',
+                                 'select': 'week,target_share,air_yards_share,wopr,targets',
+                                 'order': 'week.desc', 'limit': '4'},
+                         timeout=10)
+        rows = r.json() if r.status_code == 200 else []
+    except Exception:
+        return {}
+    if not rows: return {}
+    def _avg(field):
+        vals = [float(row[field]) for row in rows if row.get(field) is not None]
+        return round(sum(vals)/len(vals), 3) if vals else None
+    return {
+        'l4_target_share': _avg('target_share'),
+        'l4_air_yards_share': _avg('air_yards_share'),
+        'l4_wopr': _avg('wopr'),
+        'l4_targets': _avg('targets'),
+    }
+
+
 def compute_nfl_l10_signals(recent_rows: list, line: float, side: str) -> tuple[dict, int]:
     """Compute L10 hit-rate signals from recent player rows.
 
@@ -681,7 +752,63 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     recent_rows = fetch_nfl_player_recent(player_id, cfg['col'], season, n=10)
     l10_sigs, l10_bonus = compute_nfl_l10_signals(recent_rows, line, side)
 
-    total_bonus = ctx_bonus + l10_bonus
+    # 2026-08-23 DEFENSE L5 RECENT-FORM SIGNAL. Opp def is currently a
+    # season-average percentile — no recent-form view. This aggregates
+    # opponents' yards allowed to opp_team over last 5 weeks. Emits
+    # def_recent_soft / def_recent_stout signals when yielded avg
+    # sits meaningfully above/below league baseline.
+    def_bonus = 0
+    def_recent_avg = fetch_nfl_defense_recent_allowed(
+        opp_team, cfg['col'], season, weeks_back=5)
+    if def_recent_avg is not None:
+        baseline = cfg['league_baseline']
+        # Loose delta thresholds — "soft" if opp allows 15%+ over baseline
+        # (over-friendly) or "stout" if 15%- under baseline (under-friendly)
+        pct_delta = (def_recent_avg - baseline) / baseline if baseline else 0
+        if pct_delta >= 0.15:
+            if side.upper() == 'OVER':
+                def_bonus += 5
+                l10_sigs['def_recent_soft'] = (
+                    f'Opp {opp_team} allowed {def_recent_avg:.1f} {cfg["label"]}/game L5 '
+                    f'(+{int(pct_delta*100)}% vs baseline) — soft matchup'
+                )
+        elif pct_delta <= -0.15:
+            if side.upper() == 'UNDER':
+                def_bonus += 5
+                l10_sigs['def_recent_stout'] = (
+                    f'Opp {opp_team} allowed {def_recent_avg:.1f} {cfg["label"]}/game L5 '
+                    f'({int(pct_delta*100)}% vs baseline) — stout matchup'
+                )
+
+    # 2026-08-23 TARGET SHARE SIGNAL for pass-catcher props. Available
+    # directly in nfl_player_stats. High target share = genuinely focal
+    # WR/TE — meaningful edge for receptions + rec_yds overs.
+    usage_bonus = 0
+    if prop_family in ('reception_yds', 'receptions', 'anytime_td'):
+        usage = fetch_nfl_player_usage(player_id, season)
+        ts = usage.get('l4_target_share')
+        if ts is not None:
+            if ts >= 0.25 and side.upper() == 'OVER':
+                usage_bonus += 5
+                l10_sigs['target_share_elite'] = (
+                    f'L4 target share {ts:.1%} — elite alpha, high volume'
+                )
+            elif ts >= 0.22 and side.upper() == 'OVER':
+                usage_bonus += 3
+                l10_sigs['target_share_high'] = (
+                    f'L4 target share {ts:.1%} — genuine focal option'
+                )
+            elif ts <= 0.10 and side.upper() == 'OVER':
+                usage_bonus -= 4
+                l10_sigs['target_share_low'] = (
+                    f'L4 target share {ts:.1%} — peripheral, low volume'
+                )
+        # Also store raw usage metrics for downstream display
+        for k, v in usage.items():
+            if v is not None:
+                l10_sigs[f'_{k}'] = v
+
+    total_bonus = ctx_bonus + l10_bonus + def_bonus + usage_bonus
     if total_bonus:
         conv = max(0, min(100, conv + total_bonus))
         # Re-tier if bonus significantly changed conviction (may promote LEAN→STRONG etc)
