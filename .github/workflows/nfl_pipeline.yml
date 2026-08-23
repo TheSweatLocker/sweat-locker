@@ -376,6 +376,22 @@ jobs:
         run: |
           cd mlb_pipeline
           python resolve_nfl_results.py || echo "resolver failed"
+          # 2026-08-23 season-ready: grade NFL props (was game-results-only)
+          python resolve_nfl_props.py || echo "prop resolver failed (non-fatal)"
+
+      # 2026-08-23 season-ready: refresh signal_registry from freshly graded
+      # NFL props. Feeds the sign-constrained refit training (once Weeks 1-3
+      # accumulate enough graded rows for MIN_SAMPLE gates to fire). Silent
+      # no-op until then. Sport-universal script.
+      - name: Refresh NFL signal_registry from graded props
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refresh_prop_signal_calibration.py --sport NFL --days 30 || echo "NFL signal calibration failed (non-fatal)"
 
       - name: Recompute cohort calibration
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'

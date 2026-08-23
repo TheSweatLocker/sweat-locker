@@ -33,6 +33,19 @@ jobs:
           cd mlb_pipeline
           python nba_resolve_results.py || echo "nba resolver failed (non-fatal, likely offseason)"
 
+      # 2026-08-23 season-ready: refresh signal_registry from graded NBA props
+      # once season data lands. Sport-universal script. Silent no-op during
+      # offseason (no graded prop history). Feeds v3-style refit training
+      # once volume hits.
+      - name: Refresh NBA signal_registry from graded props
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refresh_prop_signal_calibration.py --sport NBA --days 30 || echo "NBA signal calibration failed (non-fatal, likely offseason)"
+
       # ─── Today's context (schedule + odds + rest) ──────────────
       - name: Build NBA game context (today + next 3 days)
         continue-on-error: true
