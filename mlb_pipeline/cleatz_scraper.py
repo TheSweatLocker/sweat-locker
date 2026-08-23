@@ -54,15 +54,20 @@ SPORT_URL = {
     'MLB':   'https://cleatz.com/public-betting/mlb/',
     'NFL':   'https://cleatz.com/public-betting/nfl/',
     'NCAAF': 'https://cleatz.com/public-betting/college-football/',  # CFB — Cleatz URL uses full name
-    # 'NBA':   'https://cleatz.com/public-betting/nba/',  # URL exists but no tab in-season (off-season Aug)
-    # 'NHL':   404 (Cleatz doesn't cover)
-    # 'NCAAB': 404 (Cleatz doesn't cover)
+    # 2026-08-23 Phase 3 — NBA + NCAAB re-enabled. Both URLs return HTTP 200
+    # with the page template; game blocks appear only in-season. Running
+    # them off-season is a safe no-op (scraper finds 0 games, writes 0 rows).
+    'NBA':   'https://cleatz.com/public-betting/nba/',
+    'NCAAB': 'https://cleatz.com/public-betting/college-basketball/',
+    # 'NHL':   HTTP 404 (Cleatz doesn't cover hockey as of 2026-08-23)
 }
 
 SPORT_TABLE = {
     'MLB':   'mlb_game_context',
     'NFL':   'nfl_game_context',
     'NCAAF': 'ncaaf_game_context',
+    'NBA':   'nba_game_context',
+    'NCAAB': 'ncaab_game_context',
 }
 
 # Common team-code → full-team-name map for fuzzy join

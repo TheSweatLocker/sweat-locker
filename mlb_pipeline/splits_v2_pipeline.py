@@ -47,12 +47,16 @@ SPORT_CTX_TABLE = {
     "NHL":   "nhl_game_context",
 }
 
-# Which sources currently have per-sport coverage. Extended in Phase 3.
+# 2026-08-23 Phase 3 audit updated the coverage map based on what each
+# source ACTUALLY produces per fadereport_signals / cleatz_signals row
+# counts. Prior state assumed FR was MLB-only per the proposal doc — but
+# FR scraper's SPORT_URL dict already covers all 6 sports and DB has
+# NFL 207 + NCAAF 192 rows for Aug 2026. Same story on CZ.
 SOURCE_COVERAGE = {
     "oc": {"MLB", "NFL", "NCAAF", "NCAAB", "NBA", "NHL"},
-    "fr": {"MLB"},           # Phase 3 target: extend
-    "cz": {"MLB", "NFL"},    # Phase 3 target: verify NBA/NHL/NCAAB
-    "so": set(),             # Phase 2 target: build scraper
+    "fr": {"MLB", "NFL", "NCAAF", "NCAAB", "NBA", "NHL"},   # site covers all; NBA/NHL/NCAAB rows land in-season
+    "cz": {"MLB", "NFL", "NCAAF", "NCAAB", "NBA"},          # site covers 5 sports (no NHL — 404)
+    "so": {"MLB", "NFL", "NCAAF", "NCAAB", "NBA", "NHL"},   # Phase 2 scraper handles all 6 via SPORT_URL dict
 }
 
 
