@@ -13615,33 +13615,74 @@ setJerryHistory(prev => {
                           </View>
                         )}
 
-                        {/* RECENT FORM TABLE */}
-                        {rf && rf.rows && rf.rows.length > 0 && (
-                          <View style={{gap:4}}>
-                            <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:0.5}}>
-                              LAST {rf.rows.length} · {rf.over_count}/{rf.rows.length} OVER {rf.line}
-                            </Text>
-                            <View style={{backgroundColor:THEME.surface2 || THEME.bgAlt || '#0f1720', borderRadius:6, padding:6}}>
-                              {rf.rows.map((r: any, ri: number) => {
-                                const hit = rf.direction === 'over' ? (Number(r.value)||0) >= rf.line : (Number(r.value)||0) < rf.line;
-                                const d = String(r.date || '').slice(-5);
-                                return (
-                                  <View key={ri} style={{flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingVertical:2}}>
-                                    <View style={{flexDirection:'row', gap:4, alignItems:'center', flex:1}}>
-                                      <Text style={{color:THEME.textDim, fontSize:11, fontFamily:'Menlo', width:36}}>{d}</Text>
-                                      <Text style={{color:THEME.textMuted, fontSize:11, fontFamily:'Menlo', width:24}}>{r.home ? 'vs' : '@'}</Text>
-                                      <Text style={{color:THEME.text, fontSize:11, fontFamily:'Menlo', width:34}}>{r.opp}</Text>
+                        {/* RECENT FORM — visual bar chart. 2026-08-22 v2
+                            User feedback: prior monospace table looked
+                            "pasted in and doesn't blend, tough to read."
+                            Redesigned as compact bar chart that reads at a
+                            glance: chronological left→right (oldest to most
+                            recent), bars colored by hit/miss vs the shown
+                            direction, dashed reference line at prop line,
+                            opponent codes under each bar. No monospace font,
+                            no distinct background — inherits card surface so
+                            it visually belongs. */}
+                        {rf && rf.rows && rf.rows.length > 0 && (() => {
+                          // Reverse so chart reads oldest → newest (natural time flow)
+                          const chartRows = [...rf.rows].reverse();
+                          const values = chartRows.map((r: any) => Number(r.value) || 0);
+                          const maxV = Math.max(...values, rf.line * 1.15);
+                          const chartHeight = 62;
+                          const lineY = chartHeight * (1 - rf.line / maxV);
+                          return (
+                            <View style={{gap:6}}>
+                              <View style={{flexDirection:'row', alignItems:'baseline', gap:6, flexWrap:'wrap'}}>
+                                <Text style={{color:THEME.textDim, fontSize:10, fontWeight:'800', letterSpacing:0.5}}>
+                                  RECENT FORM
+                                </Text>
+                                <Text style={{color:THEME.textMuted, fontSize:10}}>
+                                  {rf.over_count}/{rf.rows.length} over {rf.line}
+                                </Text>
+                              </View>
+                              {/* Chart area with prop-line reference */}
+                              <View style={{height: chartHeight, flexDirection:'row', alignItems:'flex-end', gap:3, position:'relative'}}>
+                                {/* Dashed prop-line reference (absolute-positioned across the chart) */}
+                                <View style={{
+                                  position:'absolute', left:0, right:0, top:lineY,
+                                  height:1, borderTopWidth:1, borderTopColor: THEME.textMuted + '55',
+                                  borderStyle:'dashed', zIndex:1,
+                                }}/>
+                                {chartRows.map((r: any, ri: number) => {
+                                  const v = Number(r.value) || 0;
+                                  const hit = rf.direction === 'over' ? v >= rf.line : v < rf.line;
+                                  const barH = Math.max(3, (v / maxV) * chartHeight);
+                                  const color = hit ? THEME.win : THEME.loss;
+                                  return (
+                                    <View key={ri} style={{flex:1, alignItems:'center', justifyContent:'flex-end', height: chartHeight}}>
+                                      <Text style={{color, fontSize:8, fontWeight:'700', marginBottom:1}}>{v}</Text>
+                                      <View style={{
+                                        width:'80%', height: barH,
+                                        backgroundColor: color + 'CC',
+                                        borderTopLeftRadius:2, borderTopRightRadius:2,
+                                      }}/>
                                     </View>
-                                    <Text style={{color:THEME.text, fontSize:11, fontFamily:'Menlo', width:36, textAlign:'right'}}>{r.value}{r.ip ? ` (${r.ip})` : ''}</Text>
-                                    <Text style={{color: hit ? THEME.win : THEME.loss, fontSize:11, fontWeight:'800', width:18, textAlign:'center'}}>
-                                      {hit ? '✓' : '✗'}
+                                  );
+                                })}
+                              </View>
+                              {/* Opponent labels underneath, matching bar spacing */}
+                              <View style={{flexDirection:'row', gap:3}}>
+                                {chartRows.map((r: any, ri: number) => (
+                                  <View key={ri} style={{flex:1, alignItems:'center'}}>
+                                    <Text style={{color:THEME.textMuted, fontSize:8, fontWeight:'700', letterSpacing:0.2}}>
+                                      {r.home ? '' : '@'}{String(r.opp || '').slice(0,3)}
                                     </Text>
                                   </View>
-                                );
-                              })}
+                                ))}
+                              </View>
+                              <Text style={{color:THEME.textMuted + '99', fontSize:9, marginTop:-2}}>
+                                oldest → most recent · dashed line = {rf.line}
+                              </Text>
                             </View>
-                          </View>
-                        )}
+                          );
+                        })()}
 
                         {/* REASONING — WHY */}
                         {rz && rz.why_bullets && rz.why_bullets.length > 0 && (
