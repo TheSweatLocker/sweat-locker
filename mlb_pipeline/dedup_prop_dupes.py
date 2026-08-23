@@ -88,11 +88,28 @@ def _rank(prop: dict) -> tuple:
     return (fired > 0, tier, refit, conv)
 
 
-def run(game_date: str | None = None, dry_run: bool = False) -> int:
-    gd = game_date or _et_today()
-    print(f'=== dedup_prop_dupes · {gd} ===')
+# 2026-08-23 sport-universal registry — same pattern as coverage_audit /
+# healthcheck / signal_tracker. NFL / NCAAF / etc auto-dedup when their
+# prop pipelines produce rows. Add sport to registry to enable.
+SPORT_REG = {
+    'MLB':   ('mlb_pipeline_props',   'MLB'),
+    'NFL':   ('nfl_pipeline_props',   'NFL'),
+    'NCAAF': ('ncaaf_pipeline_props', 'NCAAF'),
+    'NCAAB': ('ncaab_pipeline_props', 'NCAAB'),
+    'NHL':   ('nhl_pipeline_props',   'NHL'),
+    'NBA':   ('nba_pipeline_props',   'NBA'),
+}
 
-    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+
+def run(game_date: str | None = None, dry_run: bool = False, sport: str = 'MLB') -> int:
+    gd = game_date or _et_today()
+    if sport not in SPORT_REG:
+        print(f'  ⚠ unknown sport: {sport}')
+        return 0
+    props_table, sport_str = SPORT_REG[sport]
+    print(f'=== dedup_prop_dupes · {sport} · {gd} ===')
+
+    r = requests.get(f'{SB}/rest/v1/{props_table}',
                      headers=H_READ,
                      params={'game_date': f'eq.{gd}',
                              'select': 'id,player_name,prop_type,direction,'
@@ -144,7 +161,7 @@ def run(game_date: str | None = None, dry_run: bool = False) -> int:
     for i in range(0, len(losers_to_delete), CHUNK):
         chunk = losers_to_delete[i:i+CHUNK]
         id_list = ','.join(str(x) for x in chunk)
-        dr = requests.delete(f'{SB}/rest/v1/mlb_pipeline_props?id=in.({id_list})',
+        dr = requests.delete(f'{SB}/rest/v1/{props_table}?id=in.({id_list})',
                               headers=H_WRITE, timeout=30)
         if dr.status_code in (200, 204):
             deleted += len(chunk)
@@ -158,7 +175,7 @@ def run(game_date: str | None = None, dry_run: bool = False) -> int:
                  if p['id'] not in losers_to_delete}
         jr = requests.get(f'{SB}/rest/v1/prop_jerry_reads',
                           headers=H_READ,
-                          params={'game_date': f'eq.{gd}', 'sport': 'eq.MLB',
+                          params={'game_date': f'eq.{gd}', 'sport': f'eq.{sport_str}',
                                   'select': 'id,player_name,prop_type,direction',
                                   'limit': 1000},
                           timeout=20).json() or []
@@ -179,9 +196,10 @@ def run(game_date: str | None = None, dry_run: bool = False) -> int:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--date')
+    p.add_argument('--sport', default='MLB', choices=list(SPORT_REG.keys()))
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(game_date=args.date, dry_run=args.dry_run)
+    run(game_date=args.date, dry_run=args.dry_run, sport=args.sport)
 
 
 if __name__ == '__main__':
