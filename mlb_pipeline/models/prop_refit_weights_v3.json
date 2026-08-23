@@ -1,0 +1,461 @@
+{
+  "trained_at": "2026-08-23T15:51:58.854816",
+  "training_window": "120d",
+  "n_total_rows": 6330,
+  "method": "sklearn.LogisticRegression(C=0.3, penalty=l1, solver=liblinear, class_weight=None) + corr>0.9 feature drop + signal_registry sign constraints + ANTI_VALIDATED zeroing",
+  "usage": "apply_prop_refit reads this JSON in preference to v2 when present.",
+  "registry_priors_used": 519,
+  "prop_types": {
+    "hits_under/under": {
+      "n_training": 762,
+      "baseline_hit": 0.5774278215223098,
+      "intercept": 0.0,
+      "coefficients": {
+        "opp_starter": 0.08179490055248594,
+        "l7_avg_cold": 0.1555778611181821,
+        "l7_cold": 0.0,
+        "lineup_spot": 0.04334981403920903,
+        "opp_form_hot": 0.0,
+        "opp_k_artist": 0.016823462792124114,
+        "hitless_streak": 0.3326671758745507,
+        "opp_k_heavy": 0.0,
+        "l7_cool": -0.1485494548779495,
+        "team_cold": 0.14684326385668378,
+        "l14_cold": -0.00359004700951352,
+        "park": 0.0,
+        "team_offense": -0.08205087515964411,
+        "prime_gate": 0.0,
+        "opp_vs_team_baa": -0.0911703072213613,
+        "anticorr_team_individual": -0.04291938055972937,
+        "umpire": 0.0,
+        "team_heat": 0.0,
+        "l14_warming": 0.0,
+        "l14_reversing": 0.0,
+        "l14_heat": 0.0
+      },
+      "score_min": -0.13198196669298357,
+      "score_max": 0.7734664312237222,
+      "features_dropped_correlated": [],
+      "features_zeroed_by_registry": []
+    },
+    "ks_over/over": {
+      "n_training": 473,
+      "baseline_hit": 0.572938689217759,
+      "intercept": 0.0,
+      "coefficients": {
+        "xera": 0.0,
+        "k_artist": 0.0,
+        "bucket_k": 0.18587429085146334,
+        "k_gap": 0.0,
+        "bucket_sustain": 0.0,
+        "book_recalibration": -0.5002558128121114,
+        "l5_confirm": 0.0,
+        "opp_k_rate": 0.0,
+        "form_hot": 0.30124778778185346,
+        "framing": 0.1610114438820327,
+        "vs_team_k": 0.12316052812493569,
+        "slow_start": -0.06769843735320186,
+        "l3_k": -0.7256625323013435,
+        "opp_offense": 0.495105138929761,
+        "whiff_elite": 0.0,
+        "umpire": 0.0,
+        "opp_contact_hot": 0.0
+      },
+      "score_min": -0.7256625323013435,
+      "score_max": 0.9822272175630777,
+      "features_dropped_correlated": [
+        "park",
+        "opp_wrc",
+        "projection",
+        "l3_era"
+      ],
+      "features_zeroed_by_registry": [
+        "xera"
+      ]
+    },
+    "hits_over/over": {
+      "n_training": 1759,
+      "baseline_hit": 0.6884593519044911,
+      "intercept": 0.6301172255620661,
+      "coefficients": {
+        "lineup_spot": 0.11458017974376383,
+        "opp_starter": 0.0,
+        "opp_form": 0.026481864095707144,
+        "l7_hot": 0.3004645316020409,
+        "opp_bullpen": 0.0,
+        "team_offense": 0.011822783789431607,
+        "team_heat": 0.04475977413169674,
+        "l7_avg_hot": 0.0,
+        "l14_heat": 0.0,
+        "park": 0.11239691884715275,
+        "l7_warm": 0.0,
+        "wind": 0.4099499372252101,
+        "l14_warming": -0.06743814236075957,
+        "team_cold": 0.0,
+        "l14_reversing": 0.0,
+        "opp_vs_team_baa_anti": -0.33303803443307933,
+        "opp_vs_team_baa": 0.0,
+        "l14_cooling": 0.0,
+        "l14_cold": 0.0,
+        "bvp_mastery": 0.0,
+        "bvp_neutral": 0.020386573543836342,
+        "offense_drift_cold": 0.0
+      },
+      "score_min": -0.276455476511951,
+      "score_max": 0.9756962153033063,
+      "features_dropped_correlated": [],
+      "features_zeroed_by_registry": [
+        "opp_starter",
+        "l7_avg_hot",
+        "l14_cooling"
+      ]
+    },
+    "ks_under/under": {
+      "n_training": 727,
+      "baseline_hit": 0.5515818431911967,
+      "intercept": 0.9022078374537112,
+      "coefficients": {
+        "k_gap_neg": 0.0,
+        "book_recalibration": 0.0,
+        "low_k_pitcher": -0.06455862622458759,
+        "opp_offense": 0.0,
+        "l5_confirm": 0.0,
+        "bucket_k": 0.0,
+        "short_outing": 0.0,
+        "form_struggling": 0.0,
+        "form_cold": 0.005064070324171371,
+        "prime_gate": -0.12184283372342823,
+        "framing": -0.13252754076850323,
+        "vs_team_k_anti": 0.06895697541484032,
+        "vs_team_k": 0.0,
+        "park": 0.0,
+        "opp_contact_hot": 0.07459676244321733
+      },
+      "score_min": -0.31892900071651903,
+      "score_max": 0.07459676244321733,
+      "features_dropped_correlated": [
+        "xera",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ],
+      "features_zeroed_by_registry": [
+        "book_recalibration",
+        "opp_offense",
+        "short_outing",
+        "form_struggling"
+      ]
+    },
+    "er_over/over": {
+      "n_training": 267,
+      "baseline_hit": 0.5355805243445693,
+      "intercept": 0.1711088324666642,
+      "coefficients": {
+        "l3": 0.0,
+        "1st_inn": 0.04863482543372113,
+        "book_recalibration": 0.0,
+        "proj_supports": -0.2674078449964228,
+        "xera_high": 0.0,
+        "l7_er": 0.0,
+        "l5_confirm": 0.0,
+        "xera_avg": 0.0,
+        "park": 0.0,
+        "opp_offense": 0.04326709562179817,
+        "framing_bad": 0.0,
+        "xera": 0.0,
+        "vs_team": 0.2644636821943447,
+        "er_strong_demoted": 0.0
+      },
+      "score_min": -0.2674078449964228,
+      "score_max": 0.356365603249864,
+      "features_dropped_correlated": [
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ],
+      "features_zeroed_by_registry": []
+    },
+    "er_under/under": {
+      "n_training": 158,
+      "baseline_hit": 0.43037974683544306,
+      "intercept": 0.0,
+      "coefficients": {
+        "nrfi_assist": 0.0,
+        "xera": -0.07988543847326639,
+        "park": 0.0,
+        "l3_hot": 0.0,
+        "book_recalibration": 0.0,
+        "l5_confirm": -0.607503590387623,
+        "xera_elite": 0.4214828576185605,
+        "vs_team": -0.20974820016818665,
+        "opp_wrc": 0.0,
+        "opp_weak": 0.24861561678031288,
+        "framing": -0.2735307101767335
+      },
+      "score_min": -1.0907825007325431,
+      "score_max": 0.6700984743988734,
+      "features_dropped_correlated": [
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ],
+      "features_zeroed_by_registry": []
+    },
+    "outs_under/under": {
+      "n_training": 340,
+      "baseline_hit": 0.6676470588235294,
+      "intercept": 0.7405263408540419,
+      "coefficients": {
+        "slow_start": 0.0,
+        "book_recalibration": 0.18142517717269913,
+        "l5_confirm": 0.013057552418936825,
+        "l3_bad": 0.0,
+        "xera_high": 0.0,
+        "short_last": 0.0,
+        "opp_wrc": 0.0,
+        "park": 0.0,
+        "xera": 0.0,
+        "l3_k": 0.0
+      },
+      "score_min": 0.0,
+      "score_max": 0.19448272959163596,
+      "features_dropped_correlated": [
+        "opp_k_rate",
+        "projection",
+        "l3_era"
+      ],
+      "features_zeroed_by_registry": [
+        "l3_bad",
+        "park"
+      ]
+    },
+    "bb_under/under": {
+      "n_training": 443,
+      "baseline_hit": 0.5711060948081265,
+      "intercept": 0.02376380710481294,
+      "coefficients": {
+        "l7_control": 0.0,
+        "bb_rate": 0.15302387833751957,
+        "book_recalibration": 0.0,
+        "aggressive_opp": 0.020063456449800447,
+        "l5_confirm": 0.10118835646216427,
+        "clean_start": 0.10219154041071543,
+        "park": 0.0
+      },
+      "score_min": 0.0,
+      "score_max": 0.37646723166019974,
+      "features_dropped_correlated": [
+        "xera",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ],
+      "features_zeroed_by_registry": []
+    },
+    "ha_under/under": {
+      "n_training": 480,
+      "baseline_hit": 0.5145833333333333,
+      "intercept": 0.0,
+      "coefficients": {
+        "l7_limit": 0.0,
+        "hits_rate": 0.07369816407383793,
+        "book_recalibration": 0.0,
+        "l5_confirm": 0.0,
+        "l3_locked": 0.0,
+        "vs_team_baa": 0.0,
+        "opp_weak": 0.0,
+        "park": -0.17589066646366391,
+        "vs_team_baa_anti": 0.0
+      },
+      "score_min": -0.17589066646366391,
+      "score_max": 0.07369816407383793,
+      "features_dropped_correlated": [
+        "xera",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ],
+      "features_zeroed_by_registry": []
+    },
+    "bb_over/over": {
+      "n_training": 498,
+      "baseline_hit": 0.5441767068273092,
+      "intercept": 0.0,
+      "coefficients": {
+        "l7_walks": 0.6559895137605947,
+        "book_recalibration": -0.7135342657221503,
+        "bb_rate": 0.0,
+        "l5_confirm": 0.31868598033207807,
+        "wild_start": 0.07443925421572126,
+        "rest_rust": 0.0,
+        "park": 0.0,
+        "l3_k": 0.0
+      },
+      "score_min": -0.3948482853900722,
+      "score_max": 1.049114748308394,
+      "features_dropped_correlated": [
+        "xera",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_era"
+      ],
+      "features_zeroed_by_registry": [
+        "bb_rate"
+      ]
+    },
+    "outs_over/over": {
+      "n_training": 194,
+      "baseline_hit": 0.3711340206185567,
+      "intercept": -0.5091281680537236,
+      "coefficients": {
+        "xera": 0.0,
+        "book_recalibration": 0.0,
+        "l5_confirm": -0.22411333587955368,
+        "l3": 0.40597839355995996,
+        "l7_durable": 0.0,
+        "durable": 0.0,
+        "pen_gassed": 0.0,
+        "opp_wrc": 0.0,
+        "park": 0.0,
+        "opp_weak": 0.0
+      },
+      "score_min": -0.22411333587955368,
+      "score_max": 0.40597839355995996,
+      "features_dropped_correlated": [
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ],
+      "features_zeroed_by_registry": [
+        "xera"
+      ]
+    },
+    "ha_over/over": {
+      "n_training": 229,
+      "baseline_hit": 0.4978165938864629,
+      "intercept": 0.0,
+      "coefficients": {
+        "l7_hits": 0.0,
+        "hits_rate": 0.0,
+        "l3_hard": 0.0,
+        "l5_confirm": 0.04281999718247036,
+        "opp_offense": 0.0,
+        "park": 0.0,
+        "vs_team_baa": 0.0,
+        "vs_team_baa_anti": 0.0,
+        "l5_fade": 0.0
+      },
+      "score_min": 0.0,
+      "score_max": 0.04281999718247036,
+      "features_dropped_correlated": [
+        "book_recalibration",
+        "xera",
+        "opp_wrc",
+        "opp_k_rate",
+        "projection",
+        "l3_k",
+        "l3_era"
+      ],
+      "features_zeroed_by_registry": []
+    }
+  },
+  "sign_flip_warnings": [
+    {
+      "prop": "ks_over/over",
+      "signal": "book_recalibration",
+      "coef": -0.5002558128121114,
+      "note": "legacy warning \u2014 registry constraint should have caught this"
+    },
+    {
+      "prop": "outs_over/over",
+      "signal": "l5_confirm",
+      "coef": -0.22411333587955368,
+      "note": "legacy warning \u2014 registry constraint should have caught this"
+    }
+  ],
+  "registry_zeroed": [
+    {
+      "prop": "ks_over/over",
+      "signal": "xera",
+      "orig_coef": 0.359768838934491,
+      "reason": "ANTI_VALIDATED in registry"
+    },
+    {
+      "prop": "hits_over/over",
+      "signal": "opp_starter",
+      "orig_coef": -0.18787911635623,
+      "reason": "sign flip vs registry edge_pp=16.6"
+    },
+    {
+      "prop": "hits_over/over",
+      "signal": "l7_avg_hot",
+      "orig_coef": -0.12018324790561247,
+      "reason": "sign flip vs registry edge_pp=11.5"
+    },
+    {
+      "prop": "hits_over/over",
+      "signal": "l14_cooling",
+      "orig_coef": -0.22722924822933993,
+      "reason": "sign flip vs registry edge_pp=21.5"
+    },
+    {
+      "prop": "ks_under/under",
+      "signal": "book_recalibration",
+      "orig_coef": -0.7405608439888869,
+      "reason": "sign flip vs registry edge_pp=5.3"
+    },
+    {
+      "prop": "ks_under/under",
+      "signal": "opp_offense",
+      "orig_coef": -0.06022182480599804,
+      "reason": "sign flip vs registry edge_pp=7.6"
+    },
+    {
+      "prop": "ks_under/under",
+      "signal": "short_outing",
+      "orig_coef": -0.02684386565876667,
+      "reason": "sign flip vs registry edge_pp=6.3"
+    },
+    {
+      "prop": "ks_under/under",
+      "signal": "form_struggling",
+      "orig_coef": -0.13258736679107816,
+      "reason": "sign flip vs registry edge_pp=6.2"
+    },
+    {
+      "prop": "outs_under/under",
+      "signal": "l3_bad",
+      "orig_coef": -0.32941015326086703,
+      "reason": "sign flip vs registry edge_pp=30.9"
+    },
+    {
+      "prop": "outs_under/under",
+      "signal": "park",
+      "orig_coef": -0.06979564636357934,
+      "reason": "sign flip vs registry edge_pp=16.8"
+    },
+    {
+      "prop": "bb_over/over",
+      "signal": "bb_rate",
+      "orig_coef": -0.11822502611025425,
+      "reason": "sign flip vs registry edge_pp=3.4"
+    },
+    {
+      "prop": "outs_over/over",
+      "signal": "xera",
+      "orig_coef": 0.0,
+      "reason": "ANTI_VALIDATED in registry"
+    }
+  ]
+}

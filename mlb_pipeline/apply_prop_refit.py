@@ -41,6 +41,7 @@ H_WRITE = {**H_READ, "Content-Type": "application/json",
 
 WEIGHTS_V1 = Path(__file__).parent / "models" / "prop_refit_weights_v1.json"
 WEIGHTS_V2 = Path(__file__).parent / "models" / "prop_refit_weights_v2.json"
+WEIGHTS_V3 = Path(__file__).parent / "models" / "prop_refit_weights_v3.json"
 
 
 def today_et() -> str:
@@ -48,28 +49,41 @@ def today_et() -> str:
 
 
 def load_weights() -> dict:
-    """Load v2 as primary + v1 as fallback for prop types v2 didn't cover.
+    """Load merged v1 + v2 + v3 weights. Each version overrides the previous
+    for prop families it covers.
 
-    v2 was retrained 2026-08-01 with fixes for sign-flipped bb_under coefficients:
-      - class_weight=None (was 'balanced' → sign flips at small n)
-      - L1 penalty + tighter regularization (kills correlated features)
-      - Higher min-sample gate (n≥60)
+    2026-08-23 v3 added: signal_registry sign-constrained retrain. When the
+    L1 fit produces a coefficient whose sign disagrees with empirical hit
+    rate at |edge_pp| >= 3.0, training zeros that coefficient at the source
+    (root-cause fix). This eliminates 12 sign flips found across 5 prop
+    families that the runtime registry-guarded filter was catching every
+    request. v3 keeps the same schema as v2 so apply_prop_refit doesn't
+    change behavior — just uses better-fit coefficients.
 
-    Result: v2 covers 4 high-sample types (hits_over/under n=300+, ks_over/under n=80+)
-    with zero sign flips. Low-sample types (bb_*, er_*, ha_*) still use v1 weights;
-    Jerry synth conviction caps prevent overexposure on those uncalibrated flows.
+    Roll back: delete prop_refit_weights_v3.json and refit falls back to v2.
+
+    v2 was retrained 2026-08-01 with fixes for sign-flipped bb_under coefs:
+    class_weight=None, L1 penalty, tighter regularization, min-sample gate 60.
+    Low-sample types (bb_*, er_*, ha_*) still use v1 weights as a further
+    fallback when v3/v2 didn't cover them.
     """
     merged = {}
     if WEIGHTS_V1.exists():
         merged = json.loads(WEIGHTS_V1.read_text())
+    pt_merged = dict(merged.get("prop_types") or {})
     if WEIGHTS_V2.exists():
         v2 = json.loads(WEIGHTS_V2.read_text())
-        # v2 prop_types override v1 for anything v2 retrained
-        pt_merged = dict(merged.get("prop_types") or {})
         pt_merged.update(v2.get("prop_types") or {})
-        merged["prop_types"] = pt_merged
-        merged["version"] = "v2+v1_fallback"
         merged["v2_trained_at"] = v2.get("trained_at")
+    if WEIGHTS_V3.exists():
+        v3 = json.loads(WEIGHTS_V3.read_text())
+        pt_merged.update(v3.get("prop_types") or {})
+        merged["v3_trained_at"] = v3.get("trained_at")
+        merged["v3_registry_zeroed"] = len(v3.get("registry_zeroed") or [])
+        merged["version"] = "v3+v2+v1_fallback"
+    elif WEIGHTS_V2.exists():
+        merged["version"] = "v2+v1_fallback"
+    merged["prop_types"] = pt_merged
     if not merged:
         print(f"  ⚠ no refit weights available")
         return {}
@@ -99,15 +113,13 @@ def load_weights() -> dict:
 #
 # Removes the need for the 3-family blacklist — every family gets the
 # same guard treatment, uniformly, without hand-maintained skip lists.
-# Kept for families whose v2 structure is broken even after registry filter.
-# ks_under/ha_over have all-negative-or-zero coefficients — no amount of
-# sign-flip filtering fixes them, they need actual retraining (Wave 2b v3).
-# bb_under was on this list until 2026-08-23 — now handled by the alias +
-# registry filter below.
-REFIT_BLACKLIST: frozenset = frozenset({
-    ('ks_under', 'under'),
-    ('ha_over', 'over'),
-})
+# 2026-08-23 v3 obsoleted the blacklist. v3 zeroes sign-flipped coefs at
+# TRAINING time (12 flips zeroed across 5 families) plus the runtime
+# registry filter plus the "must have >=2 positive fired coefs" guard in
+# compute_refit gives 3 layers of defense. ks_under + ha_over now have
+# real trained coefficients from v3 and can compute refit safely.
+# Symbol kept for future hard-blocks if we ever need one.
+REFIT_BLACKLIST: frozenset = frozenset()
 
 # Coefficient-name → registry signal_name aliases. v2 training script emitted
 # some feature names that differ from the standardized signal_name used in
