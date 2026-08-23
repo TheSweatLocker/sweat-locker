@@ -2417,7 +2417,7 @@ setEvData(evOpps.slice(0,20));
       // NCAAF into weekly by sport, not by lookup — otherwise a missed
       // registry fetch would collapse a week of NCAAF games into today (which
       // has zero games in preseason) and users see "no games."
-      const _WEEKLY_SPORTS = new Set(['NFL', 'NCAAF']);
+      const _WEEKLY_SPORTS = new Set(['NFL', 'NCAAF', 'UFC']);
       const isWeekly = meta?.tab_scope === 'weekly'
                         || (!meta && _WEEKLY_SPORTS.has(gamesSport));
       const weekTodayEnd = new Date(todayStart);
@@ -12237,10 +12237,11 @@ setJerryHistory(prev => {
                 // NOTIFY, sport_registry query can return empty briefly). NCAAF
                 // and NFL play once a week — daily tabs are always wrong for
                 // them, so hardcode the smart default that mirrors sport_registry.
+                // 2026-08-23 UFC also flipped to weekly (was 'event') — cards
+                // are Saturday nights so weekly window matches user mental model.
                 const SPORT_TAB_DEFAULT: Record<string,string> = {
                   MLB: 'daily', NBA: 'daily', NHL: 'daily', NCAAB: 'daily',
-                  NFL: 'weekly', NCAAF: 'weekly',
-                  UFC: 'event',
+                  NFL: 'weekly', NCAAF: 'weekly', UFC: 'weekly',
                 };
                 const scope = sportMeta[gamesSport]?.tab_scope
                               || SPORT_TAB_DEFAULT[gamesSport]

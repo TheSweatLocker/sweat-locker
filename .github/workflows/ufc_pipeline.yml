@@ -62,8 +62,13 @@ jobs:
             fi
           fi
 
+      # 2026-08-23: card scrape runs on FULL mode (Wed 6pm ET) AND on all
+      # resolver_only runs (Sat/Sun) so next week's card populates 4 days
+      # sooner. Prior 'full' gate meant users saw stale last-week's card
+      # from Sun morning through Wed evening. Non-fatal — if ESPN scoreboard
+      # doesn't yet have next event, silent no-op (writes latest available).
       - name: Scrape upcoming UFC card (ESPN)
-        if: steps.mode.outputs.mode == 'full'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
