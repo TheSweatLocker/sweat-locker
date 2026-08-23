@@ -290,7 +290,17 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
     r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
                      headers=H_READ,
                      params={'game_date': f'eq.{game_date}',
-                             'select': 'id,player_name,prop_type,direction,prop_line',
+                             # 2026-08-23 CRITICAL FIX: `signals` was missing
+                             # from SELECT. Backfill then did
+                             # `existing_signals = prop.get('signals') or {}`
+                             # which always returned {}, and the PATCH wiped
+                             # every fired-signal key written by
+                             # generate_props / juice_trap_gate / prop_refit.
+                             # 100% of 8/22 + 8/23 props had EMPTY signals
+                             # dicts as a result — hollow "Why UNDER/OVER"
+                             # sections + uniform fake refit values per
+                             # family (48.5/37.7/etc). Introduced in c922b2af.
+                             'select': 'id,player_name,prop_type,direction,prop_line,signals',
                              'limit': '500'},
                      timeout=30)
     props = r.json() if r.status_code == 200 else []

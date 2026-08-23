@@ -237,21 +237,50 @@ def apply_flip(read: dict, ctx: dict, rule_id: str, new_side: str,
 
 
 def sync_primary_play(read: dict, ctx: dict, new_side: str, dry_run: bool = False) -> None:
-    """Update mlb_game_context.primary_play IF it was set from Jerry fallback
-    with the OLD side. This keeps the app-side sweat card badge coherent
-    with the flipped Jerry read.
+    """Update mlb_game_context.primary_play when Jerry gets flipped by the
+    sharp-fade / model-consensus discipline, so the app-side sweat card
+    badge stays coherent with the flipped Jerry call.
+
+    2026-08-23 EXPANSION: was gated to only run when primary_play was set
+    by Jerry-fallback ('jerry_read fallback' in audit_note). Now also
+    fires when primary_play._engine=='ensemble_v2' — Rockies @ Guardians
+    tonight showed the mismatch: ensemble picked Over 11 LEAN 66 (Coors
+    park + Griffin first-inn), then Rule B flipped Jerry to UNDER 11
+    based on model consensus (J=9.11, v3=10.5, MC=8.65 all under),
+    leaving TWO opposing labels on the same game card. Now the flip
+    also patches primary_play so the badges agree. Original tier is
+    preserved in _flipped_by audit trail.
     """
     pp = ctx.get('primary_play') or {}
     if not isinstance(pp, dict) or not pp.get('audit_note'): return
-    if 'jerry_read fallback' not in (pp.get('audit_note') or '').lower(): return
+    audit = (pp.get('audit_note') or '').lower()
+    engine = str(pp.get('_engine') or '')
+    # Two acceptable trigger paths:
+    #   legacy jerry-fallback (original behavior)
+    #   ensemble_v2 with matching market — new 2026-08-23 path
+    from_jerry_fallback = 'jerry_read fallback' in audit
+    from_ensemble = engine == 'ensemble_v2' and str(pp.get('type', '')).lower() == 'total'
+    if not (from_jerry_fallback or from_ensemble): return
     line = ctx.get('close_total')
     new_label = f'{new_side.title()} {line}'
     if pp.get('label') == new_label: return
     pp_new = dict(pp)
     pp_new['label'] = new_label
-    pp_new['sub'] = f'{pp_new.get("sub","")} · Jerry flipped by sharp-fade discipline'[:250]
+    pp_new['side'] = new_side.upper()
+    pp_new['sub'] = f'{pp_new.get("sub","")} · Flipped by sharp-fade / model-consensus discipline'[:250]
     pp_new['audit_note'] = (pp_new.get('audit_note','') +
-                            ' · label updated after 2026-08-10 sharp-fade flip')[:250]
+                            f' · side flipped {pp.get("side")}->{new_side.upper()} by collapse_sharp_fade_violations')[:250]
+    # Preserve original ensemble pick for audit trail
+    pp_new['_flipped_by'] = {
+        'orig_side': pp.get('side'),
+        'orig_label': pp.get('label'),
+        'orig_tier': pp.get('tier'),
+        'source': 'collapse_sharp_fade_violations',
+    }
+    # Cap conviction so display doesn't show original PRIME/STRONG number
+    # on a flipped side — mirrors the LEAN cap the Jerry read uses.
+    if isinstance(pp_new.get('conviction'), (int, float)):
+        pp_new['conviction'] = min(int(pp_new['conviction']), 55)
     if dry_run:
         print(f'    [DRY] primary_play label {pp.get("label")} -> {new_label}')
         return

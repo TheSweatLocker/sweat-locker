@@ -87,6 +87,16 @@ def compute_refit(prop_type: str, direction: str, signals: dict,
     score_min = pw["score_min"]; score_max = pw["score_max"]
     # Sum of fired-signal coefficients (positive coefs help, negative hurt)
     fired = [k for k in (signals or {}).keys() if k in coefs]
+    # 2026-08-23 FIRED-EMPTY GUARD: when zero signals fire, refit has
+    # nothing to compute from — return None so downstream sees NULL and
+    # falls back to legacy conviction, rather than shipping the formula's
+    # baseline (which produces uniform fake numbers per family: all
+    # hits_over land 48.5, all ks_over 37.7, all er_over 0.0). Bryce
+    # Miller er_over 2.5 on 8/23 was a canonical case — legacy said LEAN
+    # 68 while refit showed 0.0 because upstream signals wipe (fixed in
+    # backfill_prop_lookback.py this same commit) left fired empty.
+    if not fired:
+        return None
     raw = sum(coefs[k] for k in fired)
     # Rescale to 0-100 using the training-time observed range
     if score_max <= score_min:
