@@ -2168,15 +2168,31 @@ def score_pitcher_outs(g, side):
         conviction += 7
         signals['pen_gassed'] = f'Own pen used {int(own_bp_used)} relievers L3d — manager rides starter'
 
-    # Park — high-run parks force more pitches
-    if park_run >= 110:
+    # 2026-08-23 GAP CLOSE — park was silently influencing conviction on
+    # outs scoring but never emitting a signal (same class of bug as HA
+    # scoring before its fix). Now emits so coverage chip + card reflect
+    # what the model is using.
+    if park_run >= 115:
+        conviction -= 7
+        signals['park'] = f'Extreme hitter park ({park_run:.0f}) — high pitch count risk shortens outing'
+    elif park_run >= 110:
         conviction -= 5
+        signals['park'] = f'Hitter-friendly park ({park_run:.0f}) — more pitches, shorter outing'
+    elif park_run <= 88:
+        conviction += 6
+        signals['park'] = f'Extreme pitcher park ({park_run:.0f}) — efficient innings, deeper outing'
     elif park_run <= 92:
         conviction += 4
+        signals['park'] = f'Pitcher-friendly park ({park_run:.0f}) — efficient innings'
 
-    # Days rest — extra rest helps depth
-    if days_rest is not None and days_rest >= 6:
-        conviction += 3
+    # 2026-08-23 GAP CLOSE — days_rest signal (silent before)
+    if days_rest is not None:
+        if days_rest >= 6:
+            conviction += 3
+            signals['fatigue'] = f'{int(days_rest)} days rest — fresh arm, depth advantage'
+        elif days_rest <= 3:
+            conviction -= 3
+            signals['fatigue'] = f'{int(days_rest)} days rest — short rest, quicker hook likely'
 
     # 1st-inning trouble bleeds into pitch count
     if first_inn_era is not None and first_inn_era >= 5.0:
