@@ -579,6 +579,57 @@ def check_coverage_audit() -> Optional[dict]:
     return None
 
 
+def check_ufc_picks_ungraded() -> Optional[dict]:
+    """Alert if UFC picks exist for events with completed results (winners
+    logged in ufc_fight_results) but pick_result stays NULL on the picks
+    24h+ after the event. Caught tonight (2026-08-23): Aug 22 Fight Night
+    had 9 picks + 13 fight_results but 0 graded ufc_picks — silent grader
+    miss. ufc_grader.py works but was never invoked by the Sat 10am ET
+    cron (workflow issue). This check catches that class of gap
+    proactively so the user doesn't have to notice manually."""
+    # Look for events with graded fight_results but at least one ufc_picks
+    # row for the same event whose pick_result is null AND event is >24h old
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        # UFC event_dates are TEXT strings ("August 22, 2026"), not ISO.
+        # We scan the last 14 event_dates present in ufc_picks + cross-check.
+        r = requests.get(f'{SB}/rest/v1/ufc_picks',
+            params={'select': 'event_name,event_date,pick_result,winner_actual,generated_at',
+                    'order': 'event_date.desc', 'limit': 200},
+            headers=H_READ, timeout=15)
+        picks = r.json() if r.status_code == 200 else []
+        if not isinstance(picks, list): return None
+        # Group by event; count graded (pick_result present) vs total
+        by_event = defaultdict(lambda: {'total': 0, 'graded': 0, 'oldest_gen': None})
+        for p in picks:
+            if not isinstance(p, dict): continue
+            key = p.get('event_name', '?')
+            by_event[key]['total'] += 1
+            if p.get('pick_result') or p.get('winner_actual'):
+                by_event[key]['graded'] += 1
+            gen = p.get('generated_at')
+            if gen and (by_event[key]['oldest_gen'] is None or gen < by_event[key]['oldest_gen']):
+                by_event[key]['oldest_gen'] = gen
+        # Ungraded events where generated_at is >24h old
+        ungraded = []
+        for ev, stats in by_event.items():
+            if stats['graded'] == 0 and stats['total'] > 0 and stats['oldest_gen']:
+                if stats['oldest_gen'] < cutoff:
+                    ungraded.append({'event': ev, 'picks': stats['total'],
+                                     'oldest_gen': stats['oldest_gen']})
+        if not ungraded: return None
+        return {
+            'check_name': 'ufc_picks_ungraded',
+            'severity': 'WARNING',
+            'message': f'{len(ungraded)} UFC event(s) have picks published '
+                       f'but no grading 24h+ after publish. Run ufc_grader.py '
+                       f'--event-date <date>.',
+            'detail': {'ungraded_events': ungraded[:5]},
+        }
+    except Exception as e:
+        return None
+
+
 CHECKS = [
     check_ladder_empty,
     check_ensemble_engine_share,
@@ -591,6 +642,7 @@ CHECKS = [
     check_prime_hit_crash,
     check_prop_volume_thin,
     check_coverage_audit,
+    check_ufc_picks_ungraded,
 ]
 
 

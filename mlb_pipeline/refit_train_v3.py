@@ -26,9 +26,17 @@ Output goes alongside v2 (does not overwrite). apply_prop_refit.py loads
 v3 in preference to v2 when the file exists. Roll back = delete v3.json.
 
 Usage:
-    python refit_train_v3.py                       # train + write v3.json
+    python refit_train_v3.py                       # MLB train + write v3.json
+    python refit_train_v3.py --sport NFL           # NFL prop refit (needs data)
+    python refit_train_v3.py --sport NBA           # NBA prop refit (needs data)
     python refit_train_v3.py --dry-run             # train + print, don't write
     python refit_train_v3.py --compare-v2          # also emit v3-vs-v2 diff
+
+2026-08-23 sport-universal: same training pipeline works for MLB/NFL/NBA.
+Each sport's prop table has the identical schema (prop_type/direction/
+signals/conviction/result). Sport-specific config lives in SPORT_CFG.
+Adding a new sport = one entry in SPORT_CFG + the sport-scoped
+signal_registry rows.
 """
 import argparse, os, json, sys
 from pathlib import Path
@@ -48,6 +56,54 @@ url = os.environ['SUPABASE_URL']; key = os.environ['SUPABASE_KEY']
 h = {'apikey': key, 'Authorization': f'Bearer {key}'}
 
 from sklearn.linear_model import LogisticRegression
+
+# Per-sport config: which table has graded props, which families to train,
+# which output file to write. Sports NOT in SPORT_CFG are unsupported.
+SPORT_CFG = {
+    'MLB': {
+        'props_table': 'mlb_pipeline_props',
+        'gated_families': {
+            'bb_over/over', 'bb_under/under',
+            'ks_over/over', 'ks_under/under',
+            'outs_over/over', 'outs_under/under',
+            'er_over/over', 'er_under/under',
+            'ha_over/over', 'ha_under/under',
+            'hits_over/over', 'hits_under/under',
+        },
+        'output': 'prop_refit_weights_v3.json',
+    },
+    'NFL': {
+        'props_table': 'nfl_pipeline_props',
+        # Families to gate — Week 3+ data required. Under-samples will
+        # silently drop out via n>=60 gate below.
+        'gated_families': {
+            'pass_yds/over', 'pass_yds/under',
+            'pass_tds/over', 'pass_tds/under',
+            'rush_yds/over', 'rush_yds/under',
+            'rush_tds/over', 'rush_tds/under',
+            'receiving_yards/over', 'receiving_yards/under',
+            'receptions/over', 'receptions/under',
+            'anytime_td/over',
+            'pass_attempts/over', 'pass_attempts/under',
+            'pass_completions/over', 'pass_completions/under',
+            'ints/over', 'ints/under',
+            'rush_attempts/over', 'rush_attempts/under',
+        },
+        'output': 'nfl_prop_refit_weights_v3.json',
+    },
+    'NBA': {
+        'props_table': 'nba_pipeline_props',
+        'gated_families': {
+            'points/over', 'points/under',
+            'rebounds/over', 'rebounds/under',
+            'assists/over', 'assists/under',
+            'threes/over', 'threes/under',
+            'pra/over', 'pra/under',
+            'stocks/over', 'stocks/under',
+        },
+        'output': 'nba_prop_refit_weights_v3.json',
+    },
+}
 
 # Same alias table as apply_prop_refit.py — ensures training + inference
 # agree on which signal_name maps to which registry row.
@@ -90,11 +146,13 @@ def drop_correlated_features(X, keys, threshold=0.90):
     return X[:, keep], [keys[i] for i in keep], dropped
 
 
-def load_signal_registry() -> dict:
-    """Return {(market_scope, signal_name): {edge_pp, tier, hit_rate, sample_n}}."""
+def load_signal_registry(sport: str = 'MLB') -> dict:
+    """Return {(market_scope, signal_name): {edge_pp, tier, hit_rate, sample_n}}
+    for a given sport. Empty dict means no calibration data yet (fine — training
+    proceeds without sign constraints, matches v2 behavior)."""
     r = requests.get(f'{url}/rest/v1/signal_registry',
                      headers=h,
-                     params={'sport': 'eq.MLB',
+                     params={'sport': f'eq.{sport}',
                              'select': 'market_scope,signal_name,hit_rate,sample_n,tier,edge_pp',
                              'limit': 2000},
                      timeout=15)
@@ -145,18 +203,28 @@ def apply_sign_constraints(coef_dict: dict, prop_type: str,
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument('--sport', default='MLB', help='MLB, NFL, NBA (per SPORT_CFG)')
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--compare-v2', action='store_true')
     args = p.parse_args()
 
-    print('== refit_train_v3 · signal_registry sign-constrained ==')
-    registry = load_signal_registry()
-    print(f'  signal_registry: {len(registry)} rows loaded')
+    sport = args.sport.upper()
+    cfg = SPORT_CFG.get(sport)
+    if not cfg:
+        print(f'  ✗ unsupported sport: {sport}. Supported: {list(SPORT_CFG.keys())}')
+        return
+    print(f'== refit_train_v3 · {sport} · signal_registry sign-constrained ==')
+    registry = load_signal_registry(sport=sport)
+    print(f'  signal_registry: {len(registry)} rows loaded for {sport}')
+    if len(registry) == 0:
+        print(f'  ⚠ 0 registry rows — refit will run WITHOUT sign constraints. '
+              f'Run refresh_prop_signal_calibration.py --sport {sport} first '
+              f'once graded prop data has accumulated.')
 
     end = datetime.now(); start = end - timedelta(days=120)
     rows = []; offset = 0
     while True:
-        chunk = requests.get(f'{url}/rest/v1/mlb_pipeline_props',
+        chunk = requests.get(f'{url}/rest/v1/{cfg["props_table"]}',
             headers={**h, 'Range': f'{offset}-{offset+999}', 'Range-Unit': 'items'},
             params={
                 'select': 'prop_type,direction,conviction,signals,result',
@@ -168,18 +236,18 @@ def main():
         if len(chunk) < 1000: break
         offset += 1000
         if offset > 30000: break
-    print(f'  {len(rows)} training rows over 120d')
+    print(f'  {len(rows)} training rows over 120d from {cfg["props_table"]}')
+    if len(rows) == 0:
+        print(f'  ⚠ 0 training rows — no graded props for {sport} yet. '
+              f'Retry after Week 3+ once volume accumulates.')
+        return
 
-    GATED = {
-        'bb_over/over', 'bb_under/under',
-        'ks_over/over', 'ks_under/under',
-        'outs_over/over', 'outs_under/under',
-        'er_over/over', 'er_under/under',
-        'ha_over/over', 'ha_under/under',
-        'hits_over/over', 'hits_under/under',
-    }
+    GATED = cfg['gated_families']
     combos = Counter((r['prop_type'], r['direction']) for r in rows)
     targets = [(pt, d) for (pt, d), n in combos.items() if n >= 60 and f'{pt}/{d}' in GATED]
+    if not targets:
+        print(f'  ⚠ no prop family reached n>=60 threshold. Waiting for more graded data.')
+        return
 
     weights = {
         'trained_at': datetime.now().isoformat(),
@@ -263,7 +331,7 @@ def main():
         print('\n  [DRY-RUN] not writing')
         return
 
-    out = Path(__file__).parent / 'models' / 'prop_refit_weights_v3.json'
+    out = Path(__file__).parent / 'models' / cfg['output']
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(weights, indent=2))
     print(f'\n  saved -> {out}')
