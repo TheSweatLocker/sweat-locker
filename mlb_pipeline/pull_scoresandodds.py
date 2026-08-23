@@ -203,14 +203,24 @@ def parse_card(market: str, idx: int, card_html: str, sport: str) -> dict | None
 # extension will need per-sport alias tables (Phase 3).
 
 def _load_game_id_index(sport: str, game_date: str) -> dict:
-    """Return {(away_short, home_short): game_id} for today's games."""
+    """Return {(away_short, home_short): game_id} for games in a horizon
+    starting at game_date. SO shows the upcoming slate (next week), not just
+    today, so we look up a window of ctx games to match against.
+    2026-08-23: extended from single-date to 10-day horizon so preview-mode
+    NCAAF cards (opener Aug 30 shown Aug 23) can correlate."""
     tbl = SPORT_CTX_TABLE.get(sport)
     if not tbl: return {}
+    from datetime import datetime as _dt, timedelta as _td
+    try:
+        start = _dt.strptime(game_date, "%Y-%m-%d").date()
+    except ValueError:
+        start = _dt.now().date()
+    end = (start + _td(days=10)).isoformat()
     r = requests.get(f"{SB}/rest/v1/{tbl}",
                      headers=H_READ,
-                     params={"game_date": f"eq.{game_date}",
+                     params={"and": f"(game_date.gte.{start.isoformat()},game_date.lte.{end})",
                              "select": "game_id,home_team,away_team",
-                             "limit": 100},
+                             "limit": 200},
                      timeout=15)
     if r.status_code != 200: return {}
     idx = {}
@@ -268,8 +278,19 @@ def to_v2_rows(cards: list[dict], gid_idx: dict, sport: str,
 
 def upsert_v2(rows: list[dict], dry: bool) -> int:
     if not rows: return 0
+    # 2026-08-23 batch dedup: SO's DOM repeats each trend-card ~15x (nested
+    # wrappers). Parser produces duplicate rows per (game_id, market, side,
+    # source, metric, snapshot_ts). Prior version 500-ed on the unique
+    # constraint. Same fix as splits_v2_pipeline: keep the last occurrence
+    # per key.
+    deduped: dict[tuple, dict] = {}
+    for row in rows:
+        key = (row.get("game_id"), row.get("market"), row.get("side"),
+               row.get("source"), row.get("metric"), row.get("snapshot_ts"))
+        deduped[key] = row
+    rows = list(deduped.values())
     if dry:
-        print(f"  [DRY] would upsert {len(rows)} v2 rows")
+        print(f"  [DRY] would upsert {len(rows)} v2 rows (deduped)")
         return 0
     written = 0; CHUNK = 500
     for i in range(0, len(rows), CHUNK):

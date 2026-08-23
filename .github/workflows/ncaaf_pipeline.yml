@@ -168,6 +168,33 @@ jobs:
           cd mlb_pipeline
           python enrich_team_form_universal.py --sport NCAAF || echo "team_form_universal non-fatal"
 
+      # 2026-08-23 season-ready: ScoresAndOdds NCAAF splits scraper.
+      # Fadereport + Cleatz already scrape NCAAF via MLB workflow's shared
+      # fadereport_scraper.py / cleatz_scraper.py runs (both scrape all
+      # sports in one invocation). SO needs per-sport invocation.
+      - name: ScoresAndOdds — scrape NCAAF splits
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_scoresandodds.py --sport NCAAF || echo "SO NCAAF failed (non-fatal)"
+
+      # Splits v2 aggregator — normalizes OC/FR/CZ/SO into
+      # public_splits_v2, writes game_context.splits_summary JSONB.
+      # Must run AFTER all source scrapers.
+      - name: Splits v2 aggregator (NCAAF)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python splits_v2_pipeline.py --sport NCAAF || echo "NCAAF splits aggregator failed (non-fatal)"
+
       - name: Generate NCAAF game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:

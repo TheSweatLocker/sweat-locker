@@ -110,14 +110,23 @@ def normalize_from_public_splits_archive(sport: str, game_date: str) -> list[dic
 
 
 def _game_id_lookup(sport: str, game_date: str) -> dict:
-    """Return {(away_team, home_team): game_id} for a sport's game_context.
+    """Return {(away_team, home_team): game_id} for a sport's game_context
+    in a 10-day horizon starting at game_date.
     Used when source-specific tables (fadereport_signals, cleatz_signals)
-    don't populate game_id for non-MLB sports (scraper gap 2026-08-23)."""
+    don't populate game_id for non-MLB sports (scraper gap 2026-08-23).
+    2026-08-23: extended to horizon so preview-mode picks (source scraper
+    runs Aug 23 with snapshot_date=today for games on Aug 29) correlate."""
     tbl = SPORT_CTX_TABLE.get(sport.upper())
     if not tbl: return {}
+    from datetime import datetime as _dt, timedelta as _td
+    try:
+        start = _dt.strptime(game_date, "%Y-%m-%d").date()
+    except ValueError:
+        start = _dt.now().date()
+    end = (start + _td(days=10)).isoformat()
     r = requests.get(f"{SB}/rest/v1/{tbl}",
                      headers=H_READ,
-                     params={"game_date": f"eq.{game_date}",
+                     params={"and": f"(game_date.gte.{start.isoformat()},game_date.lte.{end})",
                              "select": "game_id,home_team,away_team", "limit": 200},
                      timeout=15)
     if r.status_code != 200: return {}
