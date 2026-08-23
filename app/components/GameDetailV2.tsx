@@ -212,12 +212,19 @@ export default function GameDetailV2({
             : gamesSport === 'NCAAF' ? 'ncaaf_game_context'
             : gamesSport === 'NCAAB' ? 'ncaab_game_context' : null;
           if (contextTable) {
+            // 2026-08-23: Odds API returns team names WITH mascots ("TCU Horned
+            // Frogs") while ctx tables store bare names ("TCU"). Exact .eq lookup
+            // never matched for NCAAF/NCAAB/NFL. Use ilike with a "last word"
+            // suffix match — matches "TCU" against "%TCU%" and "TCU Horned Frogs"
+            // against "%Frogs%" if ctx happens to have the full name too.
+            const awayShort = String(away).split(' ').filter(Boolean).slice(-1)[0] || away;
+            const homeShort = String(home).split(' ').filter(Boolean).slice(-1)[0] || home;
             const {data: ctxData} = await client
               .from(contextTable)
               .select('game_id,game_date')
               .eq('game_date', gameDate)
-              .eq('home_team', home)
-              .eq('away_team', away)
+              .ilike('home_team', `%${homeShort}%`)
+              .ilike('away_team', `%${awayShort}%`)
               .limit(1);
             if (ctxData && ctxData.length) {
               gid = ctxData[0].game_id;
