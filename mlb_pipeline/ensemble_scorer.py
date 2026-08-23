@@ -746,7 +746,24 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
         # Guard: only flip when n >= 25 AND hr <= 0.47 — thin-sample fades
         # aren't reliable enough to bet, and marginal negatives (48-52%)
         # aren't clear edges.
-        if tier == 'ANTI_VALIDATED' and hr is not None and n >= 25 and hr <= 0.47:
+        #
+        # 2026-08-23 double-fade guard. Surfaced by user's audit of tonight's
+        # PRIME MLs: h2h_home_dominant_fade__fade was firing HOME_ML +0.14
+        # on Marlins/Dodgers. Chain was:
+        #   1. base h2h_home_dominant (HOME_ML)
+        #   2. manual h2h_home_dominant_fade (AWAY_ML, already the correct
+        #      contrarian bet, registered ANTI_VALIDATED @ 45%)
+        #   3. auto-fade sees (2) is ANTI → creates *_fade__fade (HOME_ML)
+        # Result: the fade of a fade lands back on the ORIGINAL side, silently
+        # propping up chalk conviction. Fix: skip auto-fade for signals whose
+        # key already ends in '_fade' (or '__fade'). The manual fade was
+        # intentional; if it too is ANTI_VALIDATED, edge_weight returns 0
+        # (line 420) and the opinion contributes nothing — which is the right
+        # answer for a signal that has no edge in either direction.
+        _sk = source.get('signal_key', '') or ''
+        if _sk.endswith('_fade') or _sk.endswith('__fade'):
+            pass  # don't auto-fade a fade — falls through to zero-weight emit
+        elif tier == 'ANTI_VALIDATED' and hr is not None and n >= 25 and hr <= 0.47:
             flip_map = {'HOME_ML':'AWAY_ML','AWAY_ML':'HOME_ML',
                         'HOME_RL':'AWAY_RL','AWAY_RL':'HOME_RL',
                         'OVER':'UNDER','UNDER':'OVER'}
