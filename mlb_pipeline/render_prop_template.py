@@ -80,15 +80,18 @@ def _implied_prob_pct(odds) -> Optional[int]:
 def _verdict(tier: str, conviction: int, side: str = '') -> str:
     """Return the SINGLE-word stance for this prop.
 
-    2026-08-22 v2: verdict = tier verbatim. Do NOT re-threshold against
-    conviction — the juice-trap gate already down-scores conv from 55 to
-    52 which used to fall through to PASS while the DB tier stayed LEAN.
-    Result: card showed tier=LEAN AND verdict=PASS AND refit=100 — three
-    contradictory labels. Now: tier is the authority, period. If tier
-    got demoted, DB tier is demoted; verdict follows.
+    2026-08-23 v3: PURE TIER SYSTEM. Verdict = tier verbatim, no
+    exceptions. Playbook is shadow-mode (not proven against legacy yet)
+    so its BACK/FADE opinion should NOT override the user-facing verdict.
+    If playbook disagrees with the shown direction, that appears as a
+    context bullet in the "risks" section — not as the primary label.
+    Fixes the confusion where users saw tier=LEAN pill next to
+    verdict=FADE and had to reconcile two conflicting labels.
+
+    Only PRIME/STRONG/LEAN/PASS. `side` param retained for API compat
+    but not used to override.
     """
-    tier = (tier or '').upper(); side = (side or '').upper()
-    if side == 'FADE': return 'FADE'
+    tier = (tier or '').upper()
     if tier in ('PRIME', 'STRONG', 'LEAN'): return tier
     return 'PASS'
 
@@ -167,33 +170,28 @@ def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str =
                          playbook_side: str = '') -> dict:
     """Group signals into FOR / AGAINST the CARD's shown direction.
 
-    2026-08-22 v2: previously always labeled "FAVORING <prop_direction>"
-    regardless of which side the playbook actually supported. Example:
-    prop=Weathers HA UNDER, playbook_side=OVER (FADE the under), signals
-    with positive contribution supported OVER — but card labeled them
-    "FAVORING UNDER" (wrong).
+    2026-08-23 v3 — PURE TIER SYSTEM. The flip-orientation on playbook
+    FADE was removed. Now: signals with positive contribution ALWAYS
+    support the card's shown direction; negative always against. This
+    keeps semantics consistent regardless of what the shadow-mode
+    playbook thinks. Playbook's disagreement (when it fades) becomes
+    a separate context bullet in the render, not a signal-orientation
+    override.
 
-    Now: contribution sign is relative to playbook_side. Card is oriented
-    to prop_direction (what the user sees the line on). If playbook_side
-    disagrees with prop_direction, we flip the label — positive
-    contribution supporting playbook_side is actually AGAINST the card's
-    shown direction.
+    Rationale: playbook is shadow-mode / not primary. It should not
+    silently reinterpret the model's fired signals from the user's
+    perspective. If playbook disagrees, that's noted as context, but
+    the primary "why UNDER" bullets stay grounded in the direction
+    the CARD is showing.
+
+    prop_direction + playbook_side retained for API compat but not
+    used for flipping.
     """
-    pd = (prop_direction or '').upper()
-    ps = (playbook_side or '').upper()
-    # Flip is on when playbook fades the shown direction. Two encodings:
-    #   ps='FADE' — playbook_decisions convention (most common)
-    #   ps='OVER'/'UNDER' with pd opposite — legacy encoding
-    flip = (ps == 'FADE') or (
-        pd in ('OVER', 'UNDER') and ps in ('OVER', 'UNDER') and pd != ps
-    )
     for_side, against_side = [], []
     for s in (sources or []):
         contrib = float(s.get('contribution') or 0)
         prose = _clean_prose(s.get('prose') or s.get('signal_key', ''))
-        supports_shown = (contrib >= 0) ^ flip  # XOR: flip inverts
-        (for_side if supports_shown else against_side).append((abs(contrib), prose))
-    # Fallback for props without playbook chips
+        (for_side if contrib >= 0 else against_side).append((abs(contrib), prose))
     if not sources and prop_signals:
         for k, v in prop_signals.items():
             if k.startswith('_'): continue
@@ -395,23 +393,13 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None,
         lines.extend(_format_stat_table(stat_rows, line_f, direction))
         lines.append('')
 
-    # Signal breakdown — headers reflect model stance:
-    #   verdict = FADE  → "Why fade the OVER" (opposite of shown)
-    #   verdict = play  → "Why UNDER works" (same as shown)
-    # 'positive' and 'negative' lists are always oriented to the card's
-    # shown direction. When verdict is FADE, the model actually likes the
-    # OPPOSITE side, so what looks "against the UNDER" is really the
-    # model's supporting case — swap the labels.
+    # 2026-08-23 v3 — PURE TIER SYSTEM. Headers always match the shown
+    # direction. Playbook's shadow-mode BACK/FADE opinion no longer
+    # flips headers or verdict — it appears (optionally) as a context
+    # bullet in the risks section.
     dir_label = direction.upper()
-    opp_label = 'OVER' if direction == 'under' else 'UNDER'
-    if verdict == 'FADE':
-        # positive-for-shown-direction becomes "why the FADE risks" and
-        # negative-for-shown-direction becomes "why FADE" (supports opposite)
-        why_header, risk_header = f'Why FADE (take the {opp_label})', f'Why the {dir_label} could still hit'
-        why_list, risk_list = cats['negative'], cats['positive']
-    else:
-        why_header, risk_header = f'Why {dir_label}', f'Why {dir_label} risks'
-        why_list, risk_list = cats['positive'], cats['negative']
+    why_header, risk_header = f'Why {dir_label}', f'Why {dir_label} risks'
+    why_list, risk_list = cats['positive'], cats['negative']
     if why_list:
         lines.append(why_header)
         for p in why_list:
@@ -421,6 +409,13 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None,
         lines.append(risk_header)
         for n in risk_list:
             lines.append(f'  · {n[:110]}')
+    # Shadow-playbook disagreement note (context only, not verdict).
+    # If playbook flags FADE on this direction, surface the fact as a
+    # small caution — users get transparency without playbook overriding
+    # the primary tier verdict.
+    if (pb_side or '').upper() == 'FADE':
+        lines.append('')
+        lines.append(f'⚠ Shadow playbook fades this direction (calibrating vs legacy — not primary signal)')
 
     # No footer duplicating the tier/score — app-side chip + big number
     # already display these. Duplicating them here created 3-way mismatch
@@ -470,7 +465,8 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None,
             'why_bullets': why_list,
             'risk_header': risk_header,
             'risk_bullets': risk_list,
-            'is_fade': verdict == 'FADE',
+            'is_fade': False,  # 2026-08-23 v3: PURE TIER SYSTEM — verdict never FADE
+            'shadow_playbook_fades': (pb_side or '').upper() == 'FADE',  # context flag for app
         },
         'verdict': verdict,
         'conviction_display': int(float(refit_conv)) if refit_conv is not None else conviction,
