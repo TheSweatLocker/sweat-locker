@@ -1634,6 +1634,68 @@ def _compose_ensemble_sub(md) -> str:
     return f'{md.display_label}: ' + ' · '.join(parts)
 
 
+def _prepend_model_coherence_flag(sub: str, ctx, market: str, pick_side: str) -> str:
+    """Prepend a transparency disclosure when the ensemble pick contradicts
+    the underlying projection models by >= 1.0 runs / points.
+
+    2026-08-24 ROOT-CAUSE FIX for TEX/CHW-style directional coherence bugs.
+    The ensemble legitimately outweights model projections with cohort +
+    sharp $ signals (8/23 audit showed cohort-first beat model-first). BUT
+    when we publish UNDER STRONG while both jerry_pred_total and
+    model_pred_total say OVER by 1.5 runs, users see contradiction without
+    context and lose trust. This adds honest disclosure without changing
+    the pick.
+
+    Brand alignment: "More Data, Less Sweat" is a transparency promise.
+    When we override our models, we should say so.
+
+    Applies to totals only (spread/ML coherence handled by other gates).
+    """
+    if market != 'total':
+        return sub
+    if not isinstance(ctx, dict):
+        try: ctx = dict(ctx or {})
+        except (TypeError, ValueError): return sub
+
+    close = ctx.get('close_total')
+    model = ctx.get('model_pred_total') or ctx.get('projected_total')
+    jerry = ctx.get('jerry_pred_total')
+    if close is None or model is None:
+        return sub
+
+    try:
+        close_f = float(close); model_f = float(model)
+    except (TypeError, ValueError):
+        return sub
+
+    model_side = 'OVER' if model_f > close_f else 'UNDER' if model_f < close_f else None
+    gap = abs(model_f - close_f)
+
+    # Only disclose when model materially disagrees (>=1.0 run) with our pick
+    if model_side is None or model_side == pick_side or gap < 1.0:
+        return sub
+
+    # Compose disclosure. Include jerry model if it also disagrees for weight.
+    jerry_agrees = False
+    if jerry is not None:
+        try:
+            jerry_f = float(jerry)
+            jerry_side = 'OVER' if jerry_f > close_f else 'UNDER' if jerry_f < close_f else None
+            if jerry_side and jerry_side != pick_side:
+                jerry_agrees = True  # jerry also disagrees with pick
+        except (TypeError, ValueError):
+            pass
+
+    if jerry_agrees:
+        disclosure = (f'⚠ Model projects {model_side} ({model_f:.1f} vs mkt {close_f:.1f}) '
+                      f'— sharp $ + cohort override.')
+    else:
+        disclosure = (f'⚠ V4 projects {model_side} ({model_f:.1f} vs mkt {close_f:.1f}) '
+                      f'— outweighed by other signals.')
+
+    return f'{disclosure} {sub}'
+
+
 def v4_over_call_rate_14d():
     """Return the fraction of the last 14 days' MLB games where v4 called
     OVER vs the close total. This is the CALL-FREQUENCY bias — separate
@@ -2993,6 +3055,11 @@ def upload_game_context(context, commence_time=None):
                     # Convert MarketDecision -> primary_play dict format
                     # so downstream (app, sweat card, sharp, ladder) is unchanged.
                     sub = _compose_ensemble_sub(top)
+                    # 2026-08-24: coherence disclosure — prepend "⚠ V4 projects
+                    # OVER 9.5 vs mkt 8.0 — outweighed by other signals." when
+                    # a total pick contradicts our own model projections by >=1
+                    # run. Transparency, doesn't change pick.
+                    sub = _prepend_model_coherence_flag(sub, context, top.market, top.pick)
                     ensemble_pp = {
                         'type': top.market,
                         'tier': top.tier,
