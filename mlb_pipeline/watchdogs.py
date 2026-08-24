@@ -630,6 +630,83 @@ def check_ufc_picks_ungraded() -> Optional[dict]:
         return None
 
 
+def check_supabase_capacity() -> Optional[dict]:
+    """Alert as database size approaches Supabase Pro tier ceiling (8GB).
+    Overage bills at $0.021/GB storage; next tier (Team) is $599/mo (24x
+    jump from Pro's $25). Egress + MAU need Management API — this check
+    covers just database size, which is usually the first ceiling hit
+    as backfilled history + snapshot audit trails accumulate.
+
+    Fires WARNING at 70% (5.6GB), CRITICAL at 90% (7.2GB). Also flags
+    any single table > 25% of DB (fatness — usually snapshot bloat)."""
+    try:
+        # RPC call returns db size + top-tables JSONB (see
+        # 20260824a_supabase_capacity_rpc.sql)
+        r = requests.post(f'{SB}/rest/v1/rpc/get_supabase_capacity',
+                          headers={**H_READ, 'Content-Type': 'application/json'},
+                          json={}, timeout=15)
+        if r.status_code != 200: return None
+        cap = r.json()
+        if not isinstance(cap, dict): return None
+
+        pct = float(cap.get('pro_tier_pct_used') or 0)
+        size_gb = float(cap.get('db_size_gb') or 0)
+        db_bytes = int(cap.get('db_size_bytes') or 0)
+        top = cap.get('top_tables') or []
+
+        # Fat-table check — any single table > 25% of total DB
+        fat_tables = []
+        for t in top[:5]:
+            if not isinstance(t, dict): continue
+            tbytes = int(t.get('size_bytes') or 0)
+            if db_bytes > 0 and tbytes / db_bytes > 0.25:
+                fat_tables.append({
+                    'table': t.get('table'),
+                    'size_pretty': t.get('size_pretty'),
+                    'pct_of_db': round(tbytes / db_bytes * 100, 1),
+                })
+
+        # Tier thresholds
+        if pct >= 90:
+            severity = 'CRITICAL'
+            msg = (f'Supabase DB {size_gb}GB is {pct}% of Pro tier 8GB '
+                   f'ceiling. Overage billing imminent OR Team-tier '
+                   f'upgrade ($599/mo, 24x jump from Pro) approaching. '
+                   f'Take action: prune old snapshots / archive '
+                   f'historical rows / trim JSONB blobs.')
+        elif pct >= 70:
+            severity = 'WARNING'
+            msg = (f'Supabase DB {size_gb}GB at {pct}% of Pro tier 8GB. '
+                   f'~60 days from Team-tier cliff at current growth. '
+                   f'Review top 3 tables: '
+                   + ', '.join(f"{t.get('table')}={t.get('size_pretty')}"
+                               for t in top[:3] if isinstance(t, dict)))
+        elif fat_tables:
+            # Below overall threshold but concentration risk
+            severity = 'INFO'
+            msg = (f'Supabase DB healthy ({size_gb}GB / {pct}%) but '
+                   f'{len(fat_tables)} table(s) each > 25% of DB — '
+                   f'concentration risk if user growth accelerates: '
+                   + ', '.join(f"{t['table']} ({t['pct_of_db']}%)"
+                               for t in fat_tables))
+        else:
+            return None
+
+        return {
+            'check_name': 'supabase_capacity',
+            'severity': severity,
+            'message': msg,
+            'detail': {
+                'db_size_gb':      size_gb,
+                'pro_pct_used':    pct,
+                'fat_tables':      fat_tables,
+                'top_5':           top[:5],
+            },
+        }
+    except Exception:
+        return None
+
+
 def check_roster_physicality_stale() -> Optional[dict]:
     """Alert when roster_physicality data is stale during college season.
     NCAAF weekly cron runs Tue 11am ET, NCAAB weekly Mon 11am ET. If
@@ -690,6 +767,7 @@ CHECKS = [
     check_coverage_audit,
     check_ufc_picks_ungraded,
     check_roster_physicality_stale,
+    check_supabase_capacity,
 ]
 
 
