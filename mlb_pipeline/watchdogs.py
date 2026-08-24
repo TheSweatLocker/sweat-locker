@@ -630,6 +630,52 @@ def check_ufc_picks_ungraded() -> Optional[dict]:
         return None
 
 
+def check_roster_physicality_stale() -> Optional[dict]:
+    """Alert when roster_physicality data is stale during college season.
+    NCAAF weekly cron runs Tue 11am ET, NCAAB weekly Mon 11am ET. If
+    updated_at > 9 days ago for any team during their active season, the
+    weekly scrape silently failed (ESPN endpoint change, alias mismatch,
+    workflow disabled). Signals silently degrade — this catches that.
+
+    Active seasons (rough): NCAAF Aug-Jan, NCAAB Nov-Apr. Outside those
+    windows the staleness is expected (returns None)."""
+    try:
+        now = datetime.now(timezone.utc)
+        month = now.month
+        stale_cutoff = (now - timedelta(days=9)).isoformat()
+        # Season gate — return None outside active window so we don't cry
+        # wolf during natural off-season silence
+        sports_active = []
+        if month in (8, 9, 10, 11, 12, 1):  sports_active.append('NCAAF')
+        if month in (11, 12, 1, 2, 3, 4):   sports_active.append('NCAAB')
+        if not sports_active: return None
+
+        stale_by_sport = {}
+        for sport in sports_active:
+            r = requests.get(f'{SB}/rest/v1/roster_physicality',
+                params={'select': 'team,updated_at',
+                        'sport': f'eq.{sport}',
+                        'updated_at': f'lt.{stale_cutoff}',
+                        'limit': 500},
+                headers=H_READ, timeout=15)
+            rows = r.json() if r.status_code == 200 else []
+            if isinstance(rows, list) and rows:
+                stale_by_sport[sport] = len(rows)
+
+        if not stale_by_sport: return None
+        total = sum(stale_by_sport.values())
+        return {
+            'check_name': 'roster_physicality_stale',
+            'severity': 'WARNING',
+            'message': f'{total} team(s) have roster_physicality > 9 days '
+                       f'stale during active season: {stale_by_sport}. '
+                       f'Run pull_college_rosters.py --sport <X> manually.',
+            'detail': stale_by_sport,
+        }
+    except Exception:
+        return None
+
+
 CHECKS = [
     check_ladder_empty,
     check_ensemble_engine_share,
@@ -643,6 +689,7 @@ CHECKS = [
     check_prop_volume_thin,
     check_coverage_audit,
     check_ufc_picks_ungraded,
+    check_roster_physicality_stale,
 ]
 
 
