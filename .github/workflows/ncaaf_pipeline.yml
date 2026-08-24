@@ -75,6 +75,31 @@ jobs:
           SEASON=$(date +%Y)
           python ncaaf_returning_production_pull.py --season $SEASON || echo "returning production pull failed"
 
+      # 2026-08-23: Roster physicality — ESPN scraper for OL/DL weights +
+      # class year. Weekly (Tue) is plenty; rosters don't churn intra-week.
+      # Feeds shadow signals ncaaf_ol_weight_adv_* + experience_edge_early_*.
+      # Ctx enricher runs same step to populate ol_dl_weight_gap_* etc.
+      # Non-fatal — signals just return None for unenriched games.
+      - name: Pull NCAAF roster physicality (Tue only)
+        if: github.event.schedule == '0 15 * * 2' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          SEASON=$(date +%Y)
+          python pull_college_rosters.py --sport NCAAF --season $SEASON || echo "NCAAF roster pull failed (non-fatal)"
+
+      - name: Enrich NCAAF ctx with roster physicality
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_ctx_roster_physicality.py --sport NCAAF --days-ahead 14 || echo "NCAAF physicality enrich failed (non-fatal)"
+
       - name: Refresh CFBD team stats (Tue only)
         if: (steps.mode.outputs.mode == 'full') && github.event.schedule == '0 15 * * 2'
         env:

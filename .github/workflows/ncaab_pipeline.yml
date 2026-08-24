@@ -75,6 +75,22 @@ jobs:
           if [ -n "$KENPOM_KEY" ]; then echo "KENPOM_KEY length: ${#KENPOM_KEY}"; else echo "KENPOM_KEY not set"; fi
           python ncaab_pipeline.py || echo "KenPom pull failed (non-fatal — game context can run on prior snapshot)"
 
+      # 2026-08-23: Roster physicality — ESPN scraper for frontcourt height +
+      # class year. Monday-only (kenpom_only mode) — rosters don't churn
+      # intra-week. Feeds shadow signals ncaab_frontcourt_height_adv_* +
+      # experience_edge_*. Ctx enricher runs daily below (before card build)
+      # so newly scheduled games pick up populated fields.
+      - name: Pull NCAAB roster physicality (Mon only)
+        if: steps.mode.outputs.mode == 'kenpom_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          SEASON=$(date +%Y)
+          python pull_college_rosters.py --sport NCAAB --season $SEASON || echo "NCAAB roster pull failed (non-fatal)"
+
       # ────── MULTI-SOURCE RATING SNAPSHOTS (2026-08-14 Session 1 · Panel foundation)
       # Runs 3 rating scrapers in sequence. Each writes to ncaab_rating_snapshots
       # keyed on (snapshot_date, team, season, rating_system). Panel model
@@ -183,6 +199,20 @@ jobs:
         run: |
           cd mlb_pipeline
           python enrich_team_form_universal.py --sport NCAAB || echo "team_form_universal non-fatal"
+
+      # 2026-08-23: Roster physicality enricher — populates
+      # home/away_frontcourt_avg_ht + class_year_edge_home etc. on
+      # ncaab_game_context so shadow signals can fire. Runs daily after
+      # game_context so new games pick up whatever physicality data
+      # exists (Mon scraper refreshes the source table weekly).
+      - name: Enrich NCAAB ctx with roster physicality
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_ctx_roster_physicality.py --sport NCAAB --days-ahead 7 || echo "NCAAB physicality enrich failed (non-fatal)"
 
       # ────── PANEL MODEL (2026-08-14 Session 3 · lens #2 of 5 - MC is #1) ──────
       # Reads latest ncaab_rating_snapshots (KenPom + Torvik + Haslam) and
