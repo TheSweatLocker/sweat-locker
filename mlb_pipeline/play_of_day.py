@@ -378,20 +378,38 @@ def sweat_tier_for(score, ctx=None):
     qualifying primary_play. Before this gate, games with high confluence +
     big xERA gap but no actionable lean (spread_delta below ML threshold)
     were ranking PRIME on the home-screen sweat card with no specific bet
-    to display — confusing UX. Cap at STRONG when there's no primary_play."""
+    to display — confusing UX. Cap at STRONG when there's no primary_play.
+
+    2026-08-24 COHERENCE GATE: also cap when primary_play.tier is LEAN or
+    lower. E2E audit today found 5 of 10 MLB games with sweat_tier=PRIME
+    while primary_play.tier=LEAN — happened when OC-flip demoted the pick
+    STRONG→LEAN but sweat_score (derived from raw confluence) wasn't
+    recomputed. Users saw "PRIME sweat chip · LEAN pick" — incoherent.
+    Now: sweat_tier cannot exceed primary_play.tier. If pp.tier is LEAN,
+    sweat_tier caps at STRONG; if pp.tier is STRONG, sweat_tier can reach
+    PRIME; if pp.tier is PRIME, PRIME is free.
+    """
     if score is None:
         return None
-    if score >= 80:
-        # PRIME requires an actionable lean — otherwise the card shows a
-        # giant "high data interest" tile with no specific bet.
-        if ctx is not None and not ctx.get('primary_play'):
-            return 'STRONG'
-        return 'PRIME'
-    if score >= 65:
-        return 'STRONG'
-    if score >= 50:
-        return 'LIGHT_LEAN'
-    return 'PASS'
+
+    raw_tier = 'PRIME' if score >= 80 else 'STRONG' if score >= 65 else 'LIGHT_LEAN' if score >= 50 else 'PASS'
+
+    if ctx is not None:
+        pp = ctx.get('primary_play') or {}
+        # No actionable lean at all → cap PRIME to STRONG (2026-05-18 rule)
+        if not pp:
+            return 'STRONG' if raw_tier == 'PRIME' else raw_tier
+        # 2026-08-24 coherence: pp.tier ceiling. LEAN pick → sweat capped at STRONG.
+        pp_tier = (pp.get('tier') or '').upper()
+        if pp_tier in ('LEAN', 'LIGHT_LEAN', 'PASS'):
+            # LEAN pick means engine only has soft directional edge — don't
+            # let a stale/pre-gate confluence score inflate the sweat chip
+            # to PRIME. Cap at STRONG.
+            if raw_tier == 'PRIME':
+                return 'STRONG'
+        # pp.tier is STRONG or PRIME → raw_tier free to reach PRIME
+
+    return raw_tier
 
 
 _TIER_RANK = {'PASS': 0, 'LIGHT_LEAN': 1, 'STRONG': 2, 'PRIME': 3}
