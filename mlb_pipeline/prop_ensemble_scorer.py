@@ -631,12 +631,29 @@ def _compute_edge_and_rec(decision: PropDecision, prop: dict) -> tuple:
     (over/under) — that's what selects which book odds side to use. Prior
     version compared decision.side.lower() to 'over'/'under' which never
     matched → all 30 fresh V2 rows landed with implied=None → all NO_PLAY.
+
+    2026-08-24 SECOND BUG FIX — FADE edge_pp was reading the WRONG side's
+    odds. Original assumption: "prop.direction is what we're betting." That's
+    true for BACK decisions but FALSE for FADE — a FADE reverses direction.
+    Bug caused ALL FADE decisions in prop_playbook_decisions to have wrong
+    market_implied_prob + wrong edge_pp. Empirical proof: 30d grading
+    showed higher FADE edge_pp = WORSE hit rate (36.4% at 30+ edge vs
+    54.8% at 0-10 edge). Not a signal-quality problem — a math artifact
+    from reading opposite-side odds on FADE. See
+    [[project_playbook_fade_broken_824]].
     """
-    # Direction of the prop = which side we're betting = over or under
-    direction = (prop.get('direction') or '').lower()
+    # Which direction are we actually BACKING? BACK = listed direction,
+    # FADE = opposite direction. edge_pp must be computed vs the odds of
+    # the direction we're betting, not the listed one.
+    listed_direction = (prop.get('direction') or '').lower()
+    verdict = (getattr(decision, 'side', 'BACK') or 'BACK').upper()
+    if verdict == 'FADE':
+        backed_direction = 'under' if listed_direction == 'over' else 'over'
+    else:
+        backed_direction = listed_direction
     over_o = prop.get('book_over_odds')
     under_o = prop.get('book_under_odds')
-    odds = over_o if direction == 'over' else under_o if direction == 'under' else None
+    odds = over_o if backed_direction == 'over' else under_o if backed_direction == 'under' else None
     implied = _american_to_implied_prob(odds)
     if implied is None or decision.conviction is None:
         return (None, None, 'NO_PLAY')
