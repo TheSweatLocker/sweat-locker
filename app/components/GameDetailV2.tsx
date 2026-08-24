@@ -339,6 +339,16 @@ export default function GameDetailV2({
 
         <SportSpecificSlot ctx={ctx} gamesSport={gamesSport} game={game} />
 
+        {/* 2026-08-23: Public Splits panel — renders ctx.splits_summary
+            (populated by splits_v2_pipeline aggregator). Shows sources_present
+            + triple_confirmed markets. User feedback: college football game
+            detail was missing splits despite backend data landing. */}
+        {ctx?.splits_summary && (
+          <Expander title="Public Splits" badge={splitsBadge(ctx.splits_summary)}>
+            <SplitsSummaryPanel summary={ctx.splits_summary} />
+          </Expander>
+        )}
+
         <Expander title="Cohort Signals" badge={cohortBadge(ctx)}>
           <CohortsPanel ctx={ctx} />
         </Expander>
@@ -1749,6 +1759,102 @@ function cohortBadge(ctx: any): string {
   const fired = Object.entries(cb).filter(([_, v]) => v === 'home' || v === 'away').length;
   const net = ctx?.signal_confluence_net;
   return `${fired} fired · net ${net != null && net > 0 ? '+' : ''}${net ?? '—'}`;
+}
+
+// 2026-08-23: Public splits panel — reads game_context.splits_summary JSONB
+// populated by splits_v2_pipeline. Shows per-market source badges + triple-
+// confirmed markers. No render if splits_summary absent.
+function splitsBadge(summary: any): string {
+  const srcs = Array.isArray(summary?.sources_present) ? summary.sources_present : [];
+  const triple = Array.isArray(summary?.triple_confirmed) ? summary.triple_confirmed : [];
+  if (srcs.length === 0) return 'no sources';
+  return `${srcs.length} source${srcs.length === 1 ? '' : 's'}${triple.length ? ` · ${triple.length} triple-confirmed` : ''}`;
+}
+
+function SplitsSummaryPanel({summary}: any) {
+  const s = summary || {};
+  const srcs: string[] = Array.isArray(s.sources_present) ? s.sources_present : [];
+  const triple: string[] = Array.isArray(s.triple_confirmed) ? s.triple_confirmed : [];
+  const MARKETS = ['ml', 'rl', 'total'];
+  const marketLabel: Record<string, string> = {ml: 'Moneyline', rl: 'Run/Puck Line', total: 'Total'};
+  const sourceLabel: Record<string, string> = {oc: 'OddsCrowd', fr: 'Fadereport', cz: 'Cleatz', so: 'ScoresAndOdds'};
+  return (
+    <View style={{gap: 10}}>
+      {/* Sources present row */}
+      {srcs.length > 0 && (
+        <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center'}}>
+          <Text style={{color: C.textMuted, fontSize: 10, fontWeight: '700', marginRight: 4}}>
+            SOURCES:
+          </Text>
+          {srcs.map((src, i) => (
+            <View key={i} style={{
+              backgroundColor: C.accent + '18', borderColor: C.accent + '55', borderWidth: 1,
+              borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3,
+            }}>
+              <Text style={{color: C.accent, fontSize: 10, fontWeight: '700'}}>
+                {sourceLabel[src] || String(src).toUpperCase()}
+              </Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Per-market breakdown */}
+      {MARKETS.map(mkt => {
+        const mkt_data = s[mkt];
+        if (!mkt_data || typeof mkt_data !== 'object') return null;
+        const sides = Object.entries(mkt_data);
+        if (sides.length === 0) return null;
+        return (
+          <View key={mkt} style={{gap: 4}}>
+            <Text style={{color: C.text, fontSize: 11, fontWeight: '700'}}>
+              {marketLabel[mkt] || String(mkt).toUpperCase()}
+            </Text>
+            {sides.map(([side, agg]: any, i) => {
+              const money = agg?.money_pct_avg;
+              const bets = agg?.bets_pct_avg;
+              const nSrc = agg?.sources_agree ?? 0;
+              const isTriple = triple.includes(`${mkt}_${side}`);
+              return (
+                <View key={i} style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 8,
+                  paddingHorizontal: 8, paddingVertical: 4,
+                  backgroundColor: isTriple ? (C.sharp + '15') : 'transparent',
+                  borderRadius: 6,
+                }}>
+                  <Text style={{color: C.textDim, fontSize: 11, minWidth: 50, fontWeight: '600'}}>
+                    {String(side).toUpperCase()}
+                  </Text>
+                  {money != null && (
+                    <Text style={{color: C.text, fontSize: 11}}>
+                      Money <Text style={{fontWeight: '700'}}>{money}%</Text>
+                    </Text>
+                  )}
+                  {bets != null && (
+                    <Text style={{color: C.textDim, fontSize: 11}}>
+                      Bets <Text style={{fontWeight: '700'}}>{bets}%</Text>
+                    </Text>
+                  )}
+                  <Text style={{color: C.textMuted, fontSize: 9}}>
+                    {nSrc} src{nSrc === 1 ? '' : 's'}
+                  </Text>
+                  {isTriple && (
+                    <Text style={{color: C.sharp, fontSize: 9, fontWeight: '800'}}>
+                      TRIPLE
+                    </Text>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+        );
+      })}
+
+      {srcs.length === 0 && (
+        <Text style={styles.emptyMuted}>No public splits data for this game yet.</Text>
+      )}
+    </View>
+  );
 }
 
 // ─── STYLES ─────────────────────────────────────────────────────────────
