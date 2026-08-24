@@ -367,7 +367,8 @@ def _cap_hits_over_juice_trap(game_date: str, dry_run: bool = False) -> int:
                              'prop_type': 'eq.hits_over',
                              'tier': 'in.(STRONG,PRIME)',
                              'select': 'id,player_name,prop_type,direction,tier,'
-                                       'conviction,refit_conviction,book_line,signals'},
+                                       'conviction,refit_conviction,book_over_odds,'
+                                       'book_under_odds,signals'},
                      timeout=15)
     if r.status_code != 200: return 0
     capped = 0
@@ -379,7 +380,12 @@ def _cap_hits_over_juice_trap(game_date: str, dry_run: bool = False) -> int:
         if not isinstance(sig, dict): sig = {}
         if sig.get('_hits_over_juice_gate'): continue
 
-        odds = prop.get('book_line')
+        # 2026-08-24 bug fix: previously read book_line (the LINE value like
+        # 0.5) as if it were odds. book_line=0.5 is always > -140 so the gate
+        # never fired. Read direction-appropriate odds column instead.
+        direction = prop.get('direction') or 'over'
+        odds = (prop.get('book_over_odds') if direction == 'over'
+                else prop.get('book_under_odds'))
         if odds is None:
             continue  # can't gate without odds
         try:
@@ -486,7 +492,8 @@ def _cap_under_juice_trap(game_date: str, dry_run: bool = False) -> int:
                              'prop_type': UNDER_TYPES,
                              'tier': 'in.(STRONG,PRIME)',
                              'select': 'id,player_name,prop_type,direction,tier,'
-                                       'conviction,refit_conviction,book_line,signals'},
+                                       'conviction,refit_conviction,book_over_odds,'
+                                       'book_under_odds,signals'},
                      timeout=15)
     if r.status_code != 200: return 0
     capped = 0
@@ -498,7 +505,11 @@ def _cap_under_juice_trap(game_date: str, dry_run: bool = False) -> int:
         if not isinstance(sig, dict): sig = {}
         if sig.get('_under_juice_gate'): continue
 
-        odds = prop.get('book_line')
+        # 2026-08-24 bug fix: was reading book_line (the LINE value, e.g.
+        # 1.5) as if it were odds. book_line=1.5 always > -140 so gate
+        # never fired. Read book_under_odds (direction=under for all these
+        # prop_types) — the actual juice on the pick side.
+        odds = prop.get('book_under_odds')
         if odds is None: continue
         try: odds = int(odds)
         except (TypeError, ValueError): continue
@@ -897,8 +908,9 @@ def run(game_date: str, dry_run: bool = False) -> int:
             # 2026-08-14: also prepend REVISED clause to short_read so user
             # sees new verdict + reason, not the original FADE narrative.
             _orig_sr = r.get('short_read') or ''
-            _override = f'BACK. [REVISED from FADE — flip lean cap (refit boost).] '
-            _new_sr = _orig_sr if _orig_sr.lstrip().startswith('BACK. [REVISED') else (_override + _orig_sr)[:2000]
+            # 2026-08-19: humanized — was 'BACK. [REVISED from FADE — flip lean cap (refit boost).]'
+            _override = 'BACK. Updated take: model recalibration flips this — cluster now backs the pick, sized cautiously (unproven band). '
+            _new_sr = _orig_sr if _orig_sr.lstrip().startswith('BACK. Updated take:') else (_override + _orig_sr)[:2000]
             payload = {'call_verdict': 'BACK', 'conviction': 55,
                        'audit_notes': note[:1500], 'short_read': _new_sr}
             print(f'  {r["player_name"]:22} {r["prop_type"]:12} {r["direction"]:5} '
@@ -970,12 +982,21 @@ def run(game_date: str, dry_run: bool = False) -> int:
         # prepend an override clause to short_read so user-facing narrative
         # starts with the NEW verdict + one-line reason.
         original_short = r.get('short_read') or ''
-        override_prefix = (
-            f'{new_verdict}. [REVISED from {current} — {action.replace("_", " ").lower()}. '
-            f'Original analysis below.] '
-        )
+        # 2026-08-19: humanize the override prefix. Prior version leaked internal
+        # engine tokens (FORCE_BACK_BOOST, FORCE_BACK_FLIP_LEAN_CAP) directly into
+        # user-facing text. User feedback: "if I don't know, users definitely do not."
+        # Now the prefix reads as plain English tied to what actually happened.
+        _REASON_HUMAN = {
+            'FORCE_BACK_BOOST':          'model recalibration lifts this — signal cluster is strong',
+            'FORCE_BACK_REFIT_OVERRIDE': 'model recalibration overrides — signal cluster loads the pick',
+            'FORCE_BACK_FLIP_LEAN_CAP':  'model recalibration flips this — cluster now backs the pick',
+            'FORCE_PASS_REFIT_TRAP_DISABLED': 'model flags this as a trap — no play',
+            'FORCE_PASS_JERRY_HALLUCINATION': 'writeup contradicted the data — no play',
+        }
+        reason = _REASON_HUMAN.get(action, action.replace('_',' ').lower())
+        override_prefix = f'{new_verdict}. Updated take: {reason}. '
         # Don't double-prepend if we've already flipped this prop today
-        if not original_short.lstrip().startswith(f'{new_verdict}. [REVISED'):
+        if not original_short.lstrip().startswith(f'{new_verdict}. Updated take:'):
             new_short = override_prefix + original_short
             new_short = new_short[:2000]  # cap length
         else:
