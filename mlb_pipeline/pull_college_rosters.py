@@ -170,28 +170,38 @@ def normalize_position(pos: str, sport: str) -> Optional[str]:
 
 
 def _build_espn_team_index(sport: str) -> dict:
-    """Fetch ESPN's teams endpoint → {display_name_lower: espn_id}."""
+    """Fetch ESPN's teams endpoint → {display_name_lower: espn_id}.
+
+    ESPN caps each response at 500 teams regardless of limit param.
+    CFB has 700+ teams across all divisions, so we paginate until we
+    get an empty page. Missing this caused 14 FBS teams (Tennessee,
+    TCU, Purdue, SMU, Texas Tech, ...) to silently skip on 8/24 first
+    full scrape — 2026-08-24 fix.
+    """
     cfg = SPORT_CFG[sport]
-    print(f'[fetch] {cfg["teams_url"]}', flush=True)
-    data = _get(cfg['teams_url'])
-    if not data:
-        print(f'[error] ESPN teams endpoint failed for {sport}', flush=True)
-        return {}
     idx = {}
-    # ESPN nests: sports[0].leagues[0].teams[].team
-    try:
-        teams = data['sports'][0]['leagues'][0]['teams']
-    except (KeyError, IndexError, TypeError):
-        print(f'[error] Unexpected ESPN response shape for {sport}', flush=True)
-        return {}
-    for t in teams:
-        team = t.get('team') or {}
-        tid = str(team.get('id') or '')
-        for key in ('displayName', 'name', 'nickname', 'location', 'shortDisplayName'):
-            val = team.get(key)
-            if val and tid:
-                idx[str(val).lower().strip()] = tid
-    print(f'[index] {sport}: {len(idx)} name→id mappings', flush=True)
+    seen_teams = 0
+    for page in range(1, 6):  # hard cap 6 pages / ~3000 teams
+        url = f'{cfg["teams_url"]}&page={page}' if '?' in cfg['teams_url'] else f'{cfg["teams_url"]}?page={page}'
+        print(f'[fetch] page {page}: {url}', flush=True)
+        data = _get(url)
+        if not data: break
+        try:
+            teams = data['sports'][0]['leagues'][0]['teams']
+        except (KeyError, IndexError, TypeError):
+            break
+        if not teams: break
+        for t in teams:
+            team = t.get('team') or {}
+            tid = str(team.get('id') or '')
+            for key in ('displayName', 'name', 'nickname', 'location', 'shortDisplayName'):
+                val = team.get(key)
+                if val and tid:
+                    idx[str(val).lower().strip()] = tid
+        seen_teams += len(teams)
+        if len(teams) < 500:  # last page reached
+            break
+    print(f'[index] {sport}: {len(idx)} name→id mappings from {seen_teams} teams', flush=True)
     return idx
 
 

@@ -151,20 +151,31 @@ def compute_ncaab(home: dict, away: dict) -> dict:
 
 
 def upsert_ctx(sport: str, game_id: str, fields: dict):
+    """UPDATE existing game_context row with roster physicality fields.
+
+    Uses PATCH targeting the specific row rather than POST-upsert. Why:
+    PostgREST's resolution=merge-duplicates requires ALL NOT NULL columns
+    in the payload even for updates — sending just the roster fields
+    triggers a NOT NULL violation on game_date/home_team/away_team via
+    the insert-fallback path. PATCH sidesteps that entirely.
+
+    load_upcoming() already guarantees the game_id exists in ctx, so we
+    never need an insert path here.
+    """
+    import urllib.parse
     tbl = CTX_TABLE[sport]
-    payload = {'game_id': game_id, **fields}
-    body = json.dumps([payload]).encode('utf-8')
-    url = f'{SB}/rest/v1/{tbl}?on_conflict=game_id'
-    hdr = {**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'}
-    req = urllib.request.Request(url, data=body, headers=hdr, method='POST')
+    qgid = urllib.parse.quote(game_id, safe='')
+    url = f'{SB}/rest/v1/{tbl}?game_id=eq.{qgid}'
+    body = json.dumps(fields).encode('utf-8')
+    hdr = {**H_WRITE, 'Prefer': 'return=minimal'}
+    req = urllib.request.Request(url, data=body, headers=hdr, method='PATCH')
     try:
         urllib.request.urlopen(req, timeout=15).read()
         return True
     except Exception as e:
-        # strip-on-400 fallback: column missing → drop it and retry once
         msg = str(e)
         if '400' in msg or 'PGRST204' in msg:
-            print(f'[warn] ctx upsert 400 for {game_id}: {msg[:120]}', flush=True)
+            print(f'[warn] ctx patch 400 for {game_id}: {msg[:120]}', flush=True)
         return False
 
 
