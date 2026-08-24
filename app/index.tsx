@@ -11101,16 +11101,7 @@ setJerryHistory(prev => {
               <Text style={{color:THEME.text,fontWeight:'900',fontSize:34,textAlign:'center',marginBottom:12,letterSpacing:1}}>THE SWEAT LOCKER</Text>
               <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:16,textAlign:'center',marginBottom:20}}>More Data, Less Sweat.</Text>
               <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22,marginBottom:24}}>Daily sports analytics. Every model, every external opinion, every market signal — read by one analyst voice, graded every night.</Text>
-              <TouchableOpacity
-                style={{borderWidth:1,borderColor:THEME.accent,borderRadius:12,paddingHorizontal:20,paddingVertical:12}}
-                onPress={async()=>{
-                  await AsyncStorage.setItem('sweatlocker_onboarded','true');
-                  setOnboardingDone(true);
-                  setTimeout(()=>router.push('/faq'),100);
-                }}
-              >
-                <Text style={{color:THEME.accent,fontWeight:'700',fontSize:14}}>📖 Learn how it works</Text>
-              </TouchableOpacity>
+              <Text style={{color:THEME.textMuted,fontSize:12,textAlign:'center',paddingHorizontal:24,lineHeight:17}}>Quick 60-second tour so you know what's where.</Text>
             </View>
           )}
           {onboardingStep===1&&(
@@ -11139,7 +11130,90 @@ setJerryHistory(prev => {
               </View>
             </ScrollView>
           )}
+          {/* 2026-08-24: onboarding expanded 3 → 7 steps. Adds tours of
+              Sweat Card, Steam Room, Game Detail, and Receipts so new
+              users see the full product surface within ~60s. Previous
+              onboarding taught only tier vocabulary — 90% of the product
+              was undiscovered. See [[feedback_sweat_card_vs_sharp_card]]
+              — Sweat Card (daily dashboard) and Sharp Card (Steam Room
+              disciplined sub-tab) are distinct, framing them separately. */}
           {onboardingStep===2&&(
+            <ScrollView contentContainerStyle={{flexGrow:1,justifyContent:'center'}} showsVerticalScrollIndicator={false}>
+              <View style={{alignItems:'center'}}>
+                <Text style={{fontSize:44,marginBottom:12}}>📋</Text>
+                <Text style={{color:THEME.text,fontWeight:'900',fontSize:26,textAlign:'center',marginBottom:8}}>Your Daily Sweat Card</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:20,paddingHorizontal:10}}>Every night: 8 curated picks led by <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Pick of the Day</Text> and <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Dawg of the Day</Text>, plus the rest of the slate. Sides, totals, and player props — all tiered by conviction.</Text>
+                <View style={{width:'100%',backgroundColor:THEME.surface,borderRadius:10,padding:14,marginBottom:16,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
+                  <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11,letterSpacing:0.5,marginBottom:8}}>PROP JERRY</Text>
+                  <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Player prop analysis with real book prices + projection-based edge. <Text style={{color:THEME.text,fontWeight:'700'}}>PRIME props hit 60%+ lifetime.</Text></Text>
+                </View>
+                <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16,paddingHorizontal:10}}>Tap any card to open full game detail.</Text>
+              </View>
+            </ScrollView>
+          )}
+          {onboardingStep===3&&(
+            <ScrollView contentContainerStyle={{flexGrow:1,justifyContent:'center'}} showsVerticalScrollIndicator={false}>
+              <View style={{alignItems:'center'}}>
+                <Text style={{fontSize:44,marginBottom:12}}>💨</Text>
+                <Text style={{color:THEME.text,fontWeight:'900',fontSize:26,textAlign:'center',marginBottom:8}}>The Steam Room</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:16,paddingHorizontal:10}}>Where the sharps live. Four sub-tabs, each with its own edge.</Text>
+                <View style={{width:'100%',gap:8,marginBottom:12}}>
+                  {[
+                    {ic:'📈', label:'LINE MOVEMENT',  desc:'Reverse-line-move alerts — public on side A, market moves toward B = sharp money'},
+                    {ic:'🎯', label:'SHARP CARD',     desc:'A disciplined sharp-money list. Smaller, higher bar than the daily Sweat Card'},
+                    {ic:'🪜', label:'LADDER',         desc:'1 play per day. Winnings compound. Highest-conviction pick only'},
+                    {ic:'📚', label:'LEDGER',         desc:'Auto-generated parlays and teasers from tonight\'s highest-agreement picks'},
+                  ].map(t=>(
+                    <View key={t.label} style={{flexDirection:'row',alignItems:'flex-start',backgroundColor:THEME.surface,borderRadius:10,padding:10}}>
+                      <Text style={{fontSize:18,marginRight:10}}>{t.ic}</Text>
+                      <View style={{flex:1}}>
+                        <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:10,letterSpacing:0.5,marginBottom:2}}>{t.label}</Text>
+                        <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}}>{t.desc}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+                <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16}}>You see what sharps see.</Text>
+              </View>
+            </ScrollView>
+          )}
+          {onboardingStep===4&&(
+            <ScrollView contentContainerStyle={{flexGrow:1,justifyContent:'center'}} showsVerticalScrollIndicator={false}>
+              <View style={{alignItems:'center'}}>
+                <Text style={{fontSize:44,marginBottom:12}}>🔍</Text>
+                <Text style={{color:THEME.text,fontWeight:'900',fontSize:26,textAlign:'center',marginBottom:8}}>Every Game Has a Story</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:16,paddingHorizontal:10}}>Tap any game to open the full breakdown — every angle in one view.</Text>
+                <View style={{width:'100%',gap:6,marginBottom:12}}>
+                  {[
+                    'Six analytical lenses (MC · HC · Panel · V4 · EPA · Cohorts)',
+                    'Public betting splits from 4 sources with triple-agreement badges',
+                    'External handicapper aggregation (graded record)',
+                    'Cohort signals (which historical bucket this game lives in)',
+                    'Jerry\'s full read — every number traceable to a source',
+                  ].map((line,i)=>(
+                    <View key={i} style={{flexDirection:'row',alignItems:'flex-start'}}>
+                      <Text style={{color:HRB_COLOR,fontSize:12,fontWeight:'900',marginRight:8,lineHeight:18}}>✓</Text>
+                      <Text style={{color:THEME.textDim,fontSize:12,flex:1,lineHeight:18}}>{line}</Text>
+                    </View>
+                  ))}
+                </View>
+                <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16}}>Depth for when you want to know why.</Text>
+              </View>
+            </ScrollView>
+          )}
+          {onboardingStep===5&&(
+            <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
+              <Text style={{fontSize:64,marginBottom:24}}>🧾</Text>
+              <Text style={{color:THEME.text,fontWeight:'900',fontSize:28,textAlign:'center',marginBottom:12}}>Every Pick Is Graded</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22,marginBottom:20,paddingHorizontal:10}}>The <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Receipts</Text> tab tracks every pick's result the moment the game ends. No cherry-picking. Slice by tier, sport, or market.</Text>
+              <View style={{width:'100%',backgroundColor:THEME.surface,borderRadius:10,padding:14,borderLeftWidth:3,borderLeftColor:HRB_COLOR,marginBottom:12}}>
+                <Text style={{color:THEME.textMuted,fontSize:10,letterSpacing:0.5,marginBottom:4}}>WHY IT MATTERS</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,lineHeight:17}}>Any picks app can talk about their wins. Sweat Locker publishes the full ledger — losses included.</Text>
+              </View>
+              <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center'}}>Track record you can verify.</Text>
+            </View>
+          )}
+          {onboardingStep===6&&(
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>⚠️</Text>
               <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Before You Enter</Text>
@@ -11160,18 +11234,18 @@ setJerryHistory(prev => {
               </Text>
             </View>
           )}
-          <View style={{flexDirection:'row',justifyContent:'center',gap:8,marginBottom:28}}>
-            {[0,1,2].map(i=>(
-              <View key={i} style={{width:i===onboardingStep?24:8,height:8,borderRadius:4,backgroundColor:i===onboardingStep?HRB_COLOR:THEME.border}}/>
+          <View style={{flexDirection:'row',justifyContent:'center',gap:6,marginBottom:20}}>
+            {[0,1,2,3,4,5,6].map(i=>(
+              <View key={i} style={{width:i===onboardingStep?20:6,height:6,borderRadius:3,backgroundColor:i===onboardingStep?HRB_COLOR:THEME.border}}/>
             ))}
           </View>
-          <View style={{gap:12}}>
-            {onboardingStep<2?(
+          <View style={{gap:10}}>
+            {onboardingStep<6?(
               <TouchableOpacity
-                style={{backgroundColor:HRB_COLOR,borderRadius:14,padding:18,alignItems:'center'}}
+                style={{backgroundColor:HRB_COLOR,borderRadius:14,padding:16,alignItems:'center'}}
                 onPress={()=>setOnboardingStep(s=>s+1)}
               >
-                <Text style={{color:'#000',fontWeight:'900',fontSize:17}}>{onboardingStep===0?'Show me →':'Continue →'}</Text>
+                <Text style={{color:'#000',fontWeight:'900',fontSize:16}}>{onboardingStep===0?'Show me →':'Continue →'}</Text>
               </TouchableOpacity>
             ):(
               <TouchableOpacity
