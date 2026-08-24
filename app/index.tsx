@@ -11143,7 +11143,21 @@ setJerryHistory(prev => {
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>⚠️</Text>
               <Text style={{color:THEME.text,fontWeight:'900',fontSize:30,textAlign:'center',marginBottom:12}}>Before You Enter</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22}}>The Sweat Locker provides data analysis for entertainment purposes only.{'\n\n'}Past performance is not indicative of future results.{'\n\n'}Must be of legal betting age in your jurisdiction (18-21+ depending on state). Know your local laws and gamble responsibly.{'\n\n'}Need help? 1-800-GAMBLER available 24/7.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22,marginBottom:18}}>The Sweat Locker provides data analysis for entertainment purposes only.{'\n\n'}Past performance is not indicative of future results.{'\n\n'}Must be of legal betting age in your jurisdiction (18-21+ depending on state). Know your local laws and gamble responsibly.{'\n\n'}Need help? 1-800-GAMBLER available 24/7.</Text>
+              {/* 2026-08-24: explicit ToS + Privacy acceptance for App Store review + legal cover.
+                  Traceable consent lives in AsyncStorage 'sweatlocker_consent_v1' (version bump if terms
+                  materially change → forces re-consent on next launch). */}
+              <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16,paddingHorizontal:8}}>
+                By tapping below, you confirm you're of legal age and agree to our{' '}
+                <Text style={{color:THEME.accent,textDecorationLine:'underline'}}
+                      onPress={()=>Linking.openURL('https://sweatlocker.app/terms')}>
+                  Terms of Service
+                </Text>{' '}and{' '}
+                <Text style={{color:THEME.accent,textDecorationLine:'underline'}}
+                      onPress={()=>Linking.openURL('https://sweatlocker.app/privacy')}>
+                  Privacy Policy
+                </Text>.
+              </Text>
             </View>
           )}
           <View style={{flexDirection:'row',justifyContent:'center',gap:8,marginBottom:28}}>
@@ -11163,11 +11177,17 @@ setJerryHistory(prev => {
               <TouchableOpacity
                 style={{backgroundColor:HRB_COLOR,borderRadius:14,padding:18,alignItems:'center'}}
                 onPress={async()=>{
+                  // 2026-08-24: record versioned consent + timestamp so we can
+                  // force re-consent if ToS materially changes (bump v1→v2).
                   await AsyncStorage.setItem('sweatlocker_onboarded','true');
+                  await AsyncStorage.setItem('sweatlocker_consent_v1',
+                    JSON.stringify({accepted_at: new Date().toISOString(),
+                                    terms_url: 'https://sweatlocker.app/terms',
+                                    privacy_url: 'https://sweatlocker.app/privacy'}));
                   setOnboardingDone(true);
                 }}
               >
-                <Text style={{color:'#000',fontWeight:'900',fontSize:17}}>I'm of legal age · Let's Sweat 🔒</Text>
+                <Text style={{color:'#000',fontWeight:'900',fontSize:17}}>I agree · Let's Sweat 🔒</Text>
               </TouchableOpacity>
             )}
             {onboardingStep>0&&(
