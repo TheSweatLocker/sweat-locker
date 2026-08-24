@@ -110,6 +110,37 @@ jobs:
           cd mlb_pipeline
           python prop_ensemble_scorer.py --sport NHL --refresh-existing || echo "NHL prop playbook failed (non-fatal)"
 
+      # 2026-08-23 season-ready: SO scraper + splits_v2 aggregator + signal
+      # calibration. Silent no-op during offseason (NHL 2026-27 season opens
+      # Oct 8). NHL not on Cleatz (Cleatz doesn't cover hockey per Phase 3
+      # audit) but SO + FR + OC do. Once season opens, 3 sources fire.
+      - name: ScoresAndOdds — scrape NHL splits
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_scoresandodds.py --sport NHL || echo "SO NHL failed (non-fatal, likely offseason)"
+
+      - name: Splits v2 aggregator (NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python splits_v2_pipeline.py --sport NHL || echo "NHL splits aggregator failed (non-fatal)"
+
+      - name: Refresh NHL signal_registry from graded games
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refresh_prop_signal_calibration.py --sport NHL --days 30 || echo "NHL signal calibration failed (non-fatal, likely offseason)"
+
       # Note: NHL ensemble scoring happens inside nhl_game_context.py's
       # upsert path via _apply_ensemble (same as MLB pattern). Signals
       # in signal_sources (sport='NHL') fire automatically once tendency

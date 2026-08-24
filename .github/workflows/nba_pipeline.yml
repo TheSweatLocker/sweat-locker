@@ -151,5 +151,34 @@ jobs:
           cd mlb_pipeline
           python prop_ensemble_scorer.py --sport NBA --refresh-existing || echo "NBA prop playbook failed (non-fatal)"
 
+      # 2026-08-23 season-ready: SO scraper + splits_v2 aggregator (mirrors
+      # NCAAF/NCAAB pattern). Silent no-op during offseason.
+      - name: ScoresAndOdds — scrape NBA splits
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_scoresandodds.py --sport NBA || echo "SO NBA failed (non-fatal, likely offseason)"
+
+      - name: Splits v2 aggregator (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python splits_v2_pipeline.py --sport NBA || echo "NBA splits aggregator failed (non-fatal)"
+
+      - name: Refresh NBA signal_registry from graded games
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refresh_prop_signal_calibration.py --sport NBA --days 30 || echo "NBA signal calibration failed (non-fatal, likely offseason)"
+
       # Model / card generation: Elo model runs inside nba_game_context.py
       # (enrich_elo). Card generation deferred until preseason validates.
