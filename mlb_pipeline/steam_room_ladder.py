@@ -363,10 +363,29 @@ def check_prop_qualifier(prop: dict, sport: str = 'MLB') -> Optional[dict]:
     elif pb_conv_i is not None:
         gate_notes.append(f'conv={pb_conv_i}')
 
-    # Gate 5: playbook backing (STRONG playbook independent of legacy)
-    if playbook_tier in ('PRIME','STRONG'):
+    # Gate 5: playbook backing THIS DIRECTION specifically
+    #
+    # 2026-08-24 ROOT-CAUSE FIX for wrong-side ladder qualification:
+    # prop_playbook_decisions carries both `direction` (the listed line
+    # side, e.g. 'under') AND `playbook_side` (BACK / FADE). Previously
+    # this gate incremented on playbook_tier PRIME/STRONG regardless of
+    # side — which meant a row like (direction='under', playbook_side='FADE',
+    # edge_pp=+22 on OVER) would qualify as 'playbook✓' even though the
+    # playbook is actively fading the under. Today's ladder pointed at
+    # "Springs Under 3.5 ER" while the playbook said BACK THE OVER at
+    # +22 edge. Users following the ladder would be on the wrong side.
+    #
+    # Fix: hard-disqualify FADE rows here. If a day has NO qualifiers
+    # left, the RELAXED-scan fallback (line 460+) picks the next-best
+    # candidate. Better to skip a day than ship a wrong-side pick as
+    # THE one-play-per-day compounding ladder.
+    if playbook_tier in ('PRIME', 'STRONG'):
+        ps = (prop.get('playbook_side') or 'BACK').upper()
+        if ps == 'FADE':
+            gate_notes.append(f'playbook FADES this direction — DISQUALIFIED')
+            return None  # hard block — ladder never points at faded side
         gates_passed += 1
-        gate_notes.append('playbook✓')
+        gate_notes.append(f'playbook✓ ({ps})')
 
     if gates_passed < LADDER_MIN_GATES:
         return None
