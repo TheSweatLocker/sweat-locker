@@ -46,23 +46,48 @@ def et_today() -> str:
 
 
 # ─── FIX 1: LADDER RUNG ────────────────────────────────────────
+def _get_with_retries(url, timeout=30, retries=3):
+    """PostgREST is flaky under load. Retry with backoff so a single
+    Cloudflare 522 or slow-scan timeout doesn't kill the whole script."""
+    import time as _t
+    last = None
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=H_READ, timeout=timeout)
+            if r.status_code == 200:
+                return r
+            last = f'status={r.status_code}'
+        except Exception as e:
+            last = f'{type(e).__name__}: {str(e)[:60]}'
+        if attempt < retries - 1:
+            _t.sleep(2 ** attempt)  # 1s, 2s, 4s
+    print(f'  [warn] gave up after {retries} attempts: {last}', flush=True)
+    return None
+
+
 def diagnose_ladder():
     print('\n=== LADDER DIAGNOSIS ===', flush=True)
-    r = requests.get(f'{SB}/rest/v1/ladder_state?select=*&order=updated_at.desc&limit=1',
-                     headers=H_READ, timeout=15)
-    state = r.json()[0] if r.status_code == 200 and r.json() else None
+    # 2026-08-24: use id-based ordering (primary key = always indexed) + narrow
+    # select. Previous version ordered by updated_at (no index → full scan)
+    # and select=* pulled JSONB blobs → 15s timeouts under load.
+    r = _get_with_retries(
+        f'{SB}/rest/v1/ladder_state?select=id,active_rung_id,streak&order=id.desc&limit=1'
+    )
+    state = r.json()[0] if r and r.json() else None
     print(f'  active_rung_id: {state.get("active_rung_id") if state else None}')
     print(f'  streak:         {state.get("streak") if state else None}')
 
-    # Today's rungs
     today = et_today()
-    r2 = requests.get(f'{SB}/rest/v1/ladder_rung?game_date=eq.{today}&select=*',
-                      headers=H_READ, timeout=15)
-    rungs = r2.json() if r2.status_code == 200 else []
+    r2 = _get_with_retries(
+        f'{SB}/rest/v1/ladder_rung?game_date=eq.{today}'
+        f'&select=id,pick_label,tier,playbook_side,result,qualification_notes'
+        f'&order=id.desc'
+    )
+    rungs = r2.json() if r2 else []
     print(f'  rungs for {today}: {len(rungs)}')
     for rg in rungs:
         print(f'    id={rg.get("id")} label={rg.get("pick_label","")[:60]} '
-              f'tier={rg.get("tier")} result={rg.get("result")}')
+              f'tier={rg.get("tier")} side={rg.get("playbook_side")} result={rg.get("result")}')
     return state, rungs
 
 
@@ -115,29 +140,29 @@ def fix_ladder(dry_run=False):
 def diagnose_line_movement():
     print('\n=== LINE MOVEMENT DIAGNOSIS ===', flush=True)
 
-    # Check odds_cache for MLB prefix
-    r = requests.get(f'{SB}/rest/v1/odds_cache',
-                     params={'cache_key': 'like.odds_games_MLB_%',
-                             'select': 'cache_key,fetched_at',
-                             'order': 'fetched_at.desc', 'limit': 5},
-                     headers=H_READ, timeout=15)
-    rows = r.json() if r.status_code == 200 else []
-    print(f'  odds_cache MLB rows: {len(rows)}')
+    # odds_cache — use narrow select, id-order fallback if fetched_at index missing
+    r = _get_with_retries(
+        f'{SB}/rest/v1/odds_cache'
+        f'?cache_key=like.odds_games_MLB_%'
+        f'&select=cache_key,fetched_at&order=id.desc&limit=5'
+    )
+    rows = r.json() if r else []
+    print(f'  odds_cache MLB rows (recent 5): {len(rows)}')
     for row in rows[:3]:
-        print(f'    key={row.get("cache_key")} fetched={row.get("fetched_at","")[:19]}')
+        print(f'    key={row.get("cache_key")} fetched={str(row.get("fetched_at",""))[:19]}')
 
-    # Check line_history last write
-    r2 = requests.get(f'{SB}/rest/v1/line_history',
-                     params={'select': 'captured_at', 'order': 'captured_at.desc', 'limit': 1},
-                     headers=H_READ, timeout=15)
-    lh = r2.json() if r2.status_code == 200 else []
+    # line_history — id.desc + narrow (avoids full-table scan on captured_at)
+    r2 = _get_with_retries(
+        f'{SB}/rest/v1/line_history?select=captured_at&order=id.desc&limit=1'
+    )
+    lh = r2.json() if r2 else []
     print(f'  line_history last write: {lh[0].get("captured_at","")[:19] if lh else "NONE"}')
 
-    # Check mlb_line_history (poller output) — might still be writing
-    r3 = requests.get(f'{SB}/rest/v1/mlb_line_history',
-                     params={'select': 'captured_at', 'order': 'captured_at.desc', 'limit': 1},
-                     headers=H_READ, timeout=15)
-    mlh = r3.json() if r3.status_code == 200 else []
+    # mlb_line_history
+    r3 = _get_with_retries(
+        f'{SB}/rest/v1/mlb_line_history?select=captured_at&order=id.desc&limit=1'
+    )
+    mlh = r3.json() if r3 else []
     print(f'  mlb_line_history last write: {mlh[0].get("captured_at","")[:19] if mlh else "NONE"}')
 
     return rows, lh, mlh
