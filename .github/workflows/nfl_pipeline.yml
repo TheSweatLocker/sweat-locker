@@ -136,6 +136,32 @@ jobs:
           cd mlb_pipeline
           python nfl_game_context.py || echo "game_context failed"
 
+      # 2026-08-24: Madden NFL 27 talent prior seed + enrich.
+      # Seed is idempotent (upsert on team,season,week_snapshot) — safe
+      # to run every cron. Weekly refresh scraper (madden27.wiki) will
+      # replace the seed call once built. Enricher patches nfl_game_context
+      # with madden_ovr_gap_home / madden_off_gap_home / madden_qb_delta_home
+      # so shadow signals ncaaf_madden_* fire on next scoring pass.
+      # See project_madden_top100_nfl_signal_824.
+      - name: Seed / refresh Madden NFL 27 launch snapshot
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          SEASON=$(date +%Y)
+          python seed_nfl_madden_launch.py --season $SEASON || echo "Madden seed failed (non-fatal)"
+
+      - name: Enrich NFL ctx with Madden ratings + Top 100
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_ctx_nfl_madden.py --days-ahead 14 || echo "Madden ctx enrich failed (non-fatal)"
+
       # 2026-08-22: LIVE ORPHAN WIRES — these scripts existed but had no
       # cron caller despite SQL migrations and app code (GameDetailV2.tsx)
       # depending on their output tables. Adding them now so NFL launch
