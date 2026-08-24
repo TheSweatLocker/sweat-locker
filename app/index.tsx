@@ -8658,8 +8658,20 @@ setJerryHistory(prev => {
       // enabled AND playbook tier is PRIME/STRONG, else legacy tier.
       // Never downgrades — playbook can lift a LEAN legacy to STRONG
       // but can't demote a PRIME legacy.
-      const resolveTier = (legacy?: string, playbook?: string): string | undefined => {
+      // 2026-08-24 ROOT-CAUSE FIX: playbook_side must be BACK to lift tier.
+      // 30d grading showed FADE loses at every tier (PRIME 48%, STRONG 47%,
+      // LEAN 45%) and gets WORSE with higher edge_pp (36% at 30+ edge). So
+      // when the playbook says FADE the listed direction, using its tier
+      // as a lift misleads the user — the FADE PRIME on OVER is not
+      // evidence that the UNDER is PRIME. Only accept BACK-side lifts.
+      // Same class of bug as the ladder direction gate fixed today (b09e2e1e).
+      const resolveTier = (legacy?: string, playbook?: string, playbookSide?: string): string | undefined => {
         if (!PROP_PLAYBOOK_ENABLED) return legacy;
+        // FADE means playbook is backing the OPPOSITE direction — don't
+        // let it lift this row's tier. Absence of side defaults to BACK
+        // for backward compat (older rows before playbook_side column).
+        const side = (playbookSide || 'BACK').toUpperCase();
+        if (side === 'FADE') return legacy;
         const rank = (t?: string) => t === 'PRIME' ? 3 : t === 'STRONG' ? 2 : t === 'LEAN' ? 1 : 0;
         return rank(playbook) > rank(legacy) ? playbook : legacy;
       };
@@ -8835,7 +8847,7 @@ setJerryHistory(prev => {
       const mlbPropPicks = (mlbProps || []).map((p: any) => {
         const pbKey = `${p.player_name}|${p.prop_type}|${p.direction}|${p.prop_line}`;
         const pb = playbookByKey[pbKey];
-        const effectiveTier = resolveTier(p.tier, pb?.playbook_tier);
+        const effectiveTier = resolveTier(p.tier, pb?.playbook_tier, pb?.playbook_side);
         const propOdds = p.direction === 'over' ? p.book_over_odds : p.book_under_odds;
         return {
           sport: 'MLB', matchup: p.matchup || '—', tier: effectiveTier,
