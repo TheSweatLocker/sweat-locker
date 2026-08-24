@@ -80,7 +80,7 @@ H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
-ESPN_HEADERS = {'User-Agent': 'Mozilla/5.0 (SweatLocker/1.0)'}
+ESPN_HEADERS = {'User-Agent': 'Mozilla/5.0'}
 
 # ─── sport config ──────────────────────────────────────────────
 SPORT_CFG = {
@@ -196,10 +196,17 @@ def _build_espn_team_index(sport: str) -> dict:
 
 
 def _load_aliases(sport: str) -> list[dict]:
-    """Read canonical_name + full_name + location + nickname + alt_names."""
+    """Read canonical_name + name-variant fields. Schema differs per sport:
+      NCAAF alias table: full_name, location, nickname, alt_names
+      NCAAB alias table: odds_api_name, kenpom_name, bart_name, alt_names, espn_id
+    """
     cfg = SPORT_CFG[sport]
+    if sport == 'NCAAB':
+        select = 'canonical_name,odds_api_name,kenpom_name,bart_name,alt_names,espn_id'
+    else:  # NCAAF
+        select = 'canonical_name,full_name,location,nickname,alt_names'
     r = urllib.request.Request(
-        f'{SB}/rest/v1/{cfg["alias_table"]}?select=canonical_name,full_name,location,nickname,alt_names',
+        f'{SB}/rest/v1/{cfg["alias_table"]}?select={select}',
         headers=H_READ,
     )
     try:
@@ -210,12 +217,18 @@ def _load_aliases(sport: str) -> list[dict]:
 
 
 def match_team_to_espn_id(alias: dict, espn_idx: dict) -> Optional[str]:
-    """Try alias.full_name, then location, then nickname, then alts."""
+    """Fast-path: if alias row already has espn_id (NCAAB), use it.
+    Fallback: try full_name/location/nickname/canonical_name/alt_names
+    against the ESPN name→id index (NCAAF path)."""
+    # Fast path — trust seeded espn_id if present
+    seeded = alias.get('espn_id')
+    if seeded:
+        return str(seeded)
     candidates = []
-    if alias.get('full_name'):     candidates.append(alias['full_name'])
-    if alias.get('location'):      candidates.append(alias['location'])
-    if alias.get('nickname'):      candidates.append(alias['nickname'])
-    if alias.get('canonical_name'):candidates.append(alias['canonical_name'])
+    for key in ('full_name', 'odds_api_name', 'location',
+                'nickname', 'kenpom_name', 'bart_name', 'canonical_name'):
+        v = alias.get(key)
+        if v: candidates.append(v)
     for a in (alias.get('alt_names') or []):
         candidates.append(a)
     for c in candidates:
