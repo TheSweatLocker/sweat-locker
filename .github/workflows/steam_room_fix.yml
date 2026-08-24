@@ -1,0 +1,52 @@
+name: Steam Room Fix (manual)
+
+# One-shot fix for Steam Room bugs surfaced by 8/24 E2E audit:
+#   1. Wrong-side ladder rung (Springs Under 3.5 ER — playbook backs OVER)
+#   2. Line Movement pipeline diagnosis + catchup
+#
+# Manual trigger only — not scheduled. Run from GH Actions UI:
+#   Actions → Steam Room Fix (manual) → Run workflow
+#
+# Pick which fix to run via the dropdown, or 'both' to run all.
+# Use 'diagnose' first to see what's wrong without changing anything,
+# then re-run with 'apply' to make the changes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'diagnose (read-only) or apply (mutate)'
+        required: true
+        default: 'diagnose'
+        type: choice
+        options: [diagnose, apply]
+      target:
+        description: 'Which fix to run'
+        required: true
+        default: 'both'
+        type: choice
+        options: [both, ladder, line_movement]
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install deps
+        run: pip install requests python-dotenv
+
+      - name: Run fix
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          FLAGS=""
+          if [ "${{ github.event.inputs.mode }}" = "diagnose" ]; then FLAGS="--dry-run"; fi
+          if [ "${{ github.event.inputs.target }}" != "both" ]; then
+            FLAGS="$FLAGS --only ${{ github.event.inputs.target }}"
+          fi
+          python fix_steam_room_824.py $FLAGS
