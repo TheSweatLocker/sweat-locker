@@ -166,7 +166,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_form_universal.py --sport NCAAF || echo "team_form_universal non-fatal"
+          python enrich_team_form_universal.py --sport NCAAF --days-ahead 14 || echo "team_form_universal non-fatal"
 
       # 2026-08-23 season-ready: ScoresAndOdds NCAAF splits scraper.
       # Fadereport + Cleatz already scrape NCAAF via MLB workflow's shared

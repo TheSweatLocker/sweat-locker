@@ -271,28 +271,46 @@ def enrich_game(sport: str, game: dict, dry_run: bool = False) -> bool:
     return ok
 
 
-def run(sport: str = None, game_date: str = None, dry_run: bool = False):
+def run(sport: str = None, game_date: str = None, days_ahead: int = 0,
+         dry_run: bool = False):
+    """Enrich today (game_date/today) and optionally the next `days_ahead`
+    days too. 2026-08-23: days_ahead added — NCAAF Aug 30 opener wasn't
+    getting team-form data because ctx had 8/29+ games but enricher only
+    looked at today (8/23). Now workflow can pass --days-ahead 14 to cover
+    the Next Week tab window."""
+    from datetime import date as _date, timedelta as _td
     gd = game_date or _et_today()
     sports = [sport] if sport else list(SPORT_CFG.keys())
-    print(f'=== enrich_team_form_universal · {gd} · {"/".join(sports)}'
+    # Build date window: [gd, gd+1, ..., gd+days_ahead]
+    try:
+        start = _date.fromisoformat(gd)
+    except (TypeError, ValueError):
+        start = _date.today()
+    date_window = [(start + _td(days=i)).isoformat() for i in range(days_ahead + 1)]
+    win_label = date_window[0] if len(date_window) == 1 else f'{date_window[0]}→{date_window[-1]}'
+    print(f'=== enrich_team_form_universal · {win_label} · {"/".join(sports)}'
           f'{" [DRY]" if dry_run else ""} ===')
     for s in sports:
         ctx_t = SPORT_CFG[s][0]
-        r = requests.get(
-            f'{SB}/rest/v1/{ctx_t}',
-            headers=H_READ,
-            params={'game_date': f'eq.{gd}',
-                    'select': 'game_id,game_date,home_team,away_team',
-                    'limit': '200'},
-            timeout=20,
-        )
-        games = r.json() if r.status_code == 200 else []
-        if not games:
-            print(f'  {s}: no games on {gd}'); continue
-        ok = 0
-        for g in games:
-            if enrich_game(s, g, dry_run=dry_run): ok += 1
-        print(f'  {s}: enriched {ok}/{len(games)}')
+        total_ok = total_games = 0
+        for d in date_window:
+            r = requests.get(
+                f'{SB}/rest/v1/{ctx_t}',
+                headers=H_READ,
+                params={'game_date': f'eq.{d}',
+                        'select': 'game_id,game_date,home_team,away_team',
+                        'limit': '200'},
+                timeout=20,
+            )
+            games = r.json() if r.status_code == 200 else []
+            if not games: continue
+            total_games += len(games)
+            for g in games:
+                if enrich_game(s, g, dry_run=dry_run): total_ok += 1
+        if total_games:
+            print(f'  {s}: enriched {total_ok}/{total_games} across {len(date_window)}d window')
+        else:
+            print(f'  {s}: no games in window ({win_label})')
 
 
 def backfill_days(sport: str, days: int, dry_run: bool = False):
@@ -330,6 +348,10 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sport', choices=list(SPORT_CFG.keys()))
     p.add_argument('--date', help='YYYY-MM-DD (default: today ET)')
+    p.add_argument('--days-ahead', type=int, default=0,
+                   help='Also enrich next N days after --date. Default 0 (today only).'
+                        ' Set to 14 for weekly-scoped sports (NFL, NCAAF) so preview'
+                        ' games get team-form data.')
     p.add_argument('--backfill-days', type=int,
                    help='Populate the last N days retroactively (for signal_tiers backfill priming)')
     p.add_argument('--dry-run', action='store_true')
@@ -337,7 +359,8 @@ def main():
     if args.backfill_days:
         backfill_days(sport=args.sport, days=args.backfill_days, dry_run=args.dry_run)
     else:
-        run(sport=args.sport, game_date=args.date, dry_run=args.dry_run)
+        run(sport=args.sport, game_date=args.date, days_ahead=args.days_ahead,
+            dry_run=args.dry_run)
 
 
 if __name__ == '__main__':
