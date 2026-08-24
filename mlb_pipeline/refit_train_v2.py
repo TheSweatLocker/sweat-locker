@@ -28,10 +28,16 @@ from datetime import datetime, timedelta
 import requests
 import numpy as np
 
-for line in Path(r'C:\Users\gomez\SweatShop\mlb_pipeline\.env').read_text().split('\n'):
-    if '=' in line and not line.startswith('#'):
-        k, v = line.split('=', 1)
-        os.environ.setdefault(k.strip(), v.strip())
+# 2026-08-24: relative .env resolution — hardcoded C:\Users\gomez path
+# broke GitHub Actions Linux runner (nightly refit_train_v2 cron failing
+# with FileNotFoundError). Env vars from Actions secrets are already in
+# os.environ, so missing .env is a no-op (setdefault preserves them).
+_env = Path(__file__).parent / '.env'
+if _env.exists():
+    for line in _env.read_text().split('\n'):
+        if '=' in line and not line.startswith('#'):
+            k, v = line.split('=', 1)
+            os.environ.setdefault(k.strip(), v.strip())
 sys.stdout.reconfigure(encoding='utf-8')
 url = os.environ['SUPABASE_URL']; key = os.environ['SUPABASE_KEY']
 h = {'apikey': key, 'Authorization': f'Bearer {key}'}
