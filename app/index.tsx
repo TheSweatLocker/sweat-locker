@@ -11534,7 +11534,28 @@ setJerryHistory(prev => {
             <Text style={{color:THEME.textMuted,fontSize:8,fontWeight:'600',letterSpacing:0.5,marginTop:1}}>/100</Text>
           </View>
         </View>
-        <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{dailyBestBet.narrative?.replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim()}"</Text>
+        {/* 2026-08-24: narrative render with graceful fallback. Previously
+            rendered "{undefined}" as literal empty quotes when narrative
+            was missing (Phillies@Mariners 8/24 shipped with null narrative
+            due to POTD context missing pitcher data → Claude refused →
+            refusal shipped to app). Now: check narrative exists + isn't a
+            Claude refusal before rendering with quotes; otherwise show a
+            clean fallback that reads well. Root cause fix in
+            generate_potd_narrative.py hydration + refusal guard. */}
+        {(() => {
+          const raw = (dailyBestBet.narrative || '').replace(/#{1,6}\s/g, '').replace(/\*\*/g, '').replace(/\*/g, '').trim();
+          const isRefusal = /^(i appreciate|i need to flag|i can't|i cannot|unfortunately|to deliver|i don't have|let me flag)/i.test(raw);
+          if (!raw || isRefusal) {
+            return (
+              <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20}}>
+                Full write-up is loading — open game detail for the complete Jerry read on this pick.
+              </Text>
+            );
+          }
+          return (
+            <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{raw}"</Text>
+          );
+        })()}
       </View>
     ) : null}
   </View>

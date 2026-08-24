@@ -28,6 +28,7 @@ import sys
 import json
 import argparse
 import urllib.request
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -252,10 +253,73 @@ def main():
         print(f"  Real narrative already present ({len(existing_inner)} chars) — skip (use --force to overwrite)")
         return
 
+    # 2026-08-24 SELF-HYDRATION FIX
+    # play_of_day.py wrote a POTD context with all pitcher/venue/xERA fields
+    # null (Phillies@Mariners 8/24 shipped context={"venue": null,
+    # "temperature": null, "conviction": 93, ...}). Prompt fed to Claude had
+    # no numbers → Claude correctly refused with "I need actual pitcher names"
+    # → that refusal shipped to the app as the POTD narrative → home screen
+    # rendered "" (see [[feedback_verify_pitcher_attribution]] +
+    # [[project_jerry_attribution_validator]]).
+    #
+    # Instead of chasing every upstream context-write path, hydrate from
+    # mlb_game_context here as a defensive backfill. That table has
+    # home_pitcher / away_pitcher / home_sp_xera / away_sp_xera / venue /
+    # projected_total / spread_delta populated by nightly cron. If the
+    # incoming context is thin, we top it up. Silent no-op for non-MLB or
+    # when ctx is already rich.
+    if (potd.get("sport") or "MLB").upper() == "MLB":
+        game = potd.get("game") or {}
+        ctx = potd.get("context") or {}
+        thin = not (ctx.get("home_pitcher") and ctx.get("away_pitcher"))
+        if thin and game.get("home_team") and game.get("away_team"):
+            try:
+                qh = urllib.parse.quote(game["home_team"], safe="")
+                qa = urllib.parse.quote(game["away_team"], safe="")
+                mgc_r = urllib.request.Request(
+                    f"{SB}/rest/v1/mlb_game_context"
+                    f"?game_date=eq.{date_str}"
+                    f"&home_team=eq.{qh}&away_team=eq.{qa}"
+                    f"&select=home_pitcher,away_pitcher,home_sp_xera,"
+                    f"away_sp_xera,venue,temperature,projected_total,"
+                    f"spread_delta,close_spread,close_total",
+                    headers=H_READ,
+                )
+                mgc_rows = json.loads(urllib.request.urlopen(mgc_r, timeout=10).read())
+                if mgc_rows:
+                    hydrated = mgc_rows[0]
+                    # Fill only NULL/missing keys — never overwrite
+                    filled = []
+                    for k, v in hydrated.items():
+                        if v is not None and ctx.get(k) is None:
+                            ctx[k] = v
+                            filled.append(k)
+                    if filled:
+                        print(f"  🔧 hydrated context from mlb_game_context: {', '.join(filled)}")
+                        potd["context"] = ctx
+            except Exception as e:
+                print(f"  ⚠️  hydration lookup failed (non-fatal): {e}")
+
     prompt = build_prompt(potd)
     narrative = call_claude(prompt)
     if not narrative:
         print("  No narrative returned")
+        return
+
+    # 2026-08-24 REFUSAL GUARD
+    # If Claude refuses despite our hydration (rare — usually because a stat
+    # is still missing or the model gets stubborn), DON'T ship the refusal
+    # to production. Detect known refusal-prefix patterns and reject.
+    # Leaves the placeholder in place; app renders a graceful fallback
+    # instead of the "I appreciate the detailed setup but..." text.
+    REFUSAL_PREFIXES = [
+        "i appreciate", "i need to flag", "i can't", "i cannot",
+        "unfortunately", "to deliver what", "i don't have", "let me flag",
+    ]
+    n_low = narrative.lower().lstrip()[:40]
+    if any(n_low.startswith(p) for p in REFUSAL_PREFIXES):
+        print(f"  🚫 refusal detected — NOT writing to DB. First 100ch: {narrative[:100]}")
+        print(f"     App fallback will render instead. Fix upstream context data.")
         return
 
     # Write narrative into BOTH the data.narrative JSONB field (app reads from
