@@ -26,6 +26,7 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="track-record" />
+        <Stack.Screen name="faq" />
       </Stack>
 
       {showSplash && (

@@ -20,6 +20,7 @@
  *   PRIME   → GOLD          (top signal, matches wordmark emphasis)
  *   STRONG  → CYAN          (secondary conviction)
  *   LEAN    → GOLD_DEEP     (drops off from PRIME, same family)
+ *   READ    → SLATE_LINE    (analytical take, thin edge — not actionable)
  *   LIGHT   → TEXT_DIM      (muted grey — reads "informational")
  *   PASS    → TEXT_MUTE     (invisible-ish grey)
  *   LOSS    → DANGER
@@ -86,11 +87,17 @@ export const THEME = {
 // ─── Tier → color map (single source; DO NOT redefine elsewhere) ───────
 // Kill every inline `tierColor = ... PRIME ... STRONG ...` ternary and read
 // from here. Audit found 12 inline definitions with 3 different STRONG hues.
-export type Tier = 'PRIME' | 'STRONG' | 'LEAN' | 'LIGHT' | 'PASS';
+// 2026-08-09: READ added as the "analytical take, thin edge" tier.
+// Backend emits it from _jerry_fallback_for_game (conv < 50) and prop
+// validators (post-collapse LEAN cap). Distinct color signals to the
+// user: "we have a directional read here but no strong edge — bet at
+// your own risk." Sits between LEAN and LIGHT visually.
+export type Tier = 'PRIME' | 'STRONG' | 'LEAN' | 'READ' | 'LIGHT' | 'PASS';
 export const TIER_COLOR: Record<Tier, string> = {
   PRIME:  THEME.accent,      // gold — matches wordmark emphasis
   STRONG: THEME.sharp,       // cyan
   LEAN:   THEME.accentDeep,  // deep gold — drops off from PRIME, same family
+  READ:   BRAND.slateLine,   // slate blue-grey — analytical, non-actionable, distinct from STRONG's cyan
   LIGHT:  THEME.textDim,     // muted grey
   PASS:   THEME.textMuted,   // near-invisible grey
 };
