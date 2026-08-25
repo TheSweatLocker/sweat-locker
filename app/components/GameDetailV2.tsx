@@ -28,6 +28,7 @@ import React, {useState, useMemo, useEffect} from 'react';
 import {View, Text, TouchableOpacity, ScrollView, StyleSheet, Platform} from 'react-native';
 import {createClient} from '@supabase/supabase-js';
 import Explainer from './Explainer';
+import { personaFor, scrubSourceNames } from '../lib/sourcePersona';
 
 // Standard sport-league abbreviations — Dodgers → LAD (not DOD)
 const TEAM_ABBREV: Record<string, string> = {
@@ -452,7 +453,7 @@ function VerdictCard({ctx, awayTeam, homeTeam}: any) {
         </View>
       )}
       <Text style={styles.verdictPlay}>{label}</Text>
-      {sub ? <Text style={styles.verdictWhy}>{sub}</Text> : null}
+      {sub ? <Text style={styles.verdictWhy}>{scrubSourceNames(sub)}</Text> : null}
     </View>
   );
 }
@@ -496,7 +497,7 @@ function LosingMarketChips({ctx}: any) {
                   {marketLabel[note.market] || note.market.toUpperCase()}
                 </Text>
                 <Text style={styles.losingChipProse} numberOfLines={2}>
-                  {s.prose}
+                  {scrubSourceNames(s.prose)}
                 </Text>
               </View>
             ))
@@ -1047,7 +1048,7 @@ function HandicappersRow({picks, homeTeam, awayTeam, sport}: any) {
         p.fade_flag === 'boost' && {color: C.accent},
         p.fade_flag === 'fade' && {color: C.fade},
       ]}>
-        {p.source}
+        {personaFor(p.source)}
       </Text>
     </View>
   );
@@ -2709,7 +2710,10 @@ function SplitsSummaryPanel({summary}: any) {
   const triple: string[] = Array.isArray(s.triple_confirmed) ? s.triple_confirmed : [];
   const MARKETS = ['ml', 'rl', 'total'];
   const marketLabel: Record<string, string> = {ml: 'Moneyline', rl: 'Run/Puck Line', total: 'Total'};
-  const sourceLabel: Record<string, string> = {oc: 'OddsCrowd', fr: 'Fadereport', cz: 'Cleatz', so: 'ScoresAndOdds'};
+  // 2026-08-25: anonymized labels — same "Split N" convention as
+  // LineMovementTab / feedback_tos_scrub_source_names. Never leak
+  // vendor names ('OddsCrowd', 'Fadereport', etc) to user copy.
+  const sourceLabel: Record<string, string> = {oc: 'Split 1', fr: 'Split 2', cz: 'Split 3', so: 'Split 4'};
   return (
     <View style={{gap: 10}}>
       {/* Sources present row */}
