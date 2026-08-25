@@ -305,6 +305,30 @@ def _short_team(name):
     return NAME_TO_ABBR.get(name, name)
 
 
+def _build_model_lean(m_total, p_total, struct):
+    """2026-08-25: replaces the prior hardcoded 'no game model active —
+    market-based' string that misled Jerry into writing market-only prose
+    on NFL games where Panel + EPA-matchup models were actually populated.
+    Cites whichever models are present so Jerry can reason across them."""
+    parts = []
+    try:
+        if p_total is not None:
+            parts.append(f'Panel projects {float(p_total):.1f} total')
+    except (TypeError, ValueError):
+        pass
+    try:
+        if m_total is not None:
+            parts.append(f'EPA-matchup {float(m_total):.1f}')
+    except (TypeError, ValueError):
+        pass
+    conf_net = (struct.get('confluence') or {}).get('net')
+    if conf_net is not None:
+        parts.append(f'confluence net {conf_net}')
+    if parts:
+        return ' · '.join(parts)
+    return 'market-based (Panel + EPA models pending for this game)'
+
+
 def render_prompt(templates, struct):
     # 2026-08-09: Phase 2 confidence copy depends on whether per-game models
     # actually populated (models block present with real numbers).
@@ -336,7 +360,7 @@ def render_prompt(templates, struct):
         .replace("{sweat_tier_label}", "")
         .replace("{spread_str}", str(m.get("spread") or "N/A"))
         .replace("{total_str}", str(m.get("total") or "N/A"))
-        .replace("{model_lean}", "no game model active — market-based")
+        .replace("{model_lean}", _build_model_lean(m_total, p_total, struct))
         .replace("{confidence_tier}", confidence_tier)
         .replace("{tournament_floor_note}", "")
         .replace("{full_score_context}", "")
