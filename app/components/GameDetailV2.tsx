@@ -1166,17 +1166,56 @@ function NCAAFSlot({ctx, game}: any) {
 
 // ─── NCAAF TEAM MATCHUP (rich — matches MLB PitcherCard density) ────────
 // Side-by-side team cards with efficiency numbers, advantage highlighting,
-// and a bottom "model read" strip. Renders whatever ctx serves; each row
-// hides if both teams are null.
+// and a bottom "model read" strip. Fetches ncaaf_team_stats directly so
+// SP+ Offense/Defense/traditional stats render even when the ctx row is
+// thin (pre-season / EPA not yet computed). Falls back to prior season
+// stats when current season has no rows yet.
 function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
-  const spH = ctx?.home_sp_overall;
-  const spA = ctx?.away_sp_overall;
-  const offH = ctx?.home_off_epa_pp; const defH = ctx?.home_def_epa_pp;
-  const offA = ctx?.away_off_epa_pp; const defA = ctx?.away_def_epa_pp;
+  const [stats, setStats] = React.useState<{home?: any; away?: any}>({});
+  const [seasonUsed, setSeasonUsed] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    const client = sb();
+    if (!client || !homeTeam || !awayTeam) return;
+    (async () => {
+      const currentSeason = Number(ctx?.season) || new Date().getFullYear();
+      const trySeasons = [currentSeason, currentSeason - 1];
+      for (const s of trySeasons) {
+        const {data} = await client.from('ncaaf_team_stats')
+          .select('*').in('team', [homeTeam, awayTeam]).eq('season', s);
+        if (Array.isArray(data) && data.length > 0) {
+          const map: any = {};
+          for (const r of data) map[r.team] = r;
+          // Only pick if at least one team has meaningful non-null values
+          const anyReal = data.some((r: any) =>
+            r.sp_overall != null || r.off_epa_per_play != null || r.points_per_game != null);
+          if (anyReal) {
+            setStats({home: map[homeTeam], away: map[awayTeam]});
+            setSeasonUsed(s);
+            return;
+          }
+        }
+      }
+    })();
+  }, [homeTeam, awayTeam, ctx?.season]);
+
+  // Prefer live team_stats fetch, fall back to ctx fields.
+  const spH = stats.home?.sp_overall ?? ctx?.home_sp_overall;
+  const spA = stats.away?.sp_overall ?? ctx?.away_sp_overall;
+  const spOffH = stats.home?.sp_offense;
+  const spOffA = stats.away?.sp_offense;
+  const spDefH = stats.home?.sp_defense;
+  const spDefA = stats.away?.sp_defense;
+  const offH = stats.home?.off_epa_per_play ?? ctx?.home_off_epa_pp;
+  const offA = stats.away?.off_epa_per_play ?? ctx?.away_off_epa_pp;
+  const defH = stats.home?.def_epa_per_play ?? ctx?.home_def_epa_pp;
+  const defA = stats.away?.def_epa_per_play ?? ctx?.away_def_epa_pp;
+  const succOffH = stats.home?.off_success_rate; const succOffA = stats.away?.off_success_rate;
+  const explH = stats.home?.off_explosiveness;   const explA = stats.away?.off_explosiveness;
   const spGap = ctx?.sp_gap;
   const projSpread = ctx?.projected_spread;
   const closeSpread = ctx?.close_spread;
-  if (spH == null && spA == null && offH == null && offA == null) return null;
+  if (spH == null && spA == null && spOffH == null && spOffA == null &&
+      offH == null && offA == null) return null;
 
   // Advantage helper — highlights the higher (or lower for def) number.
   const cmp = (a?: number, b?: number, higherIsBetter = true) => {
@@ -1210,7 +1249,7 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
     ? Number(projSpread) - Number(closeSpread) : null;
 
   return (
-    <Section title="Team Matchup" hint="efficiency + EPA · higher = advantage">
+    <Section title="Team Matchup" hint={seasonUsed ? `efficiency + EPA · ${seasonUsed} season · higher = advantage` : 'efficiency + EPA · higher = advantage'}>
       <View style={{backgroundColor: C.surface2, borderRadius: 10, padding: 12}}>
         {/* Team header row */}
         <View style={{flexDirection: 'row', alignItems: 'center', paddingBottom: 8,
@@ -1224,12 +1263,28 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
             <Text style={{color: C.home, fontSize: 13, fontWeight: '800', textAlign: 'right'}} numberOfLines={1}>{homeTeam}</Text>
           </View>
         </View>
-        <StatRow label="EFFICIENCY" a={spA} b={spH} aAdv={spAdv.a} bAdv={spAdv.b}
+        <StatRow label="OVERALL"    a={spA} b={spH} aAdv={spAdv.a} bAdv={spAdv.b}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
+        <StatRow label="OFFENSE"    a={spOffA} b={spOffH}
+                 aAdv={spOffA != null && spOffH != null && spOffA > spOffH}
+                 bAdv={spOffA != null && spOffH != null && spOffH > spOffA}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
+        <StatRow label="DEFENSE"    a={spDefA} b={spDefH}
+                 aAdv={spDefA != null && spDefH != null && spDefA > spDefH}
+                 bAdv={spDefA != null && spDefH != null && spDefH > spDefA}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
         <StatRow label="OFF EPA/PL" a={offA} b={offH} aAdv={offAdv.a} bAdv={offAdv.b}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
         <StatRow label="DEF EPA/PL" a={defA} b={defH} aAdv={defAdv.a} bAdv={defAdv.b}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
+        <StatRow label="SUCCESS %"  a={succOffA} b={succOffH}
+                 aAdv={succOffA != null && succOffH != null && succOffA > succOffH}
+                 bAdv={succOffA != null && succOffH != null && succOffH > succOffA}
+                 fmt={(v: any) => v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`} />
+        <StatRow label="EXPLOSIVE"  a={explA} b={explH}
+                 aAdv={explA != null && explH != null && explA > explH}
+                 bAdv={explA != null && explH != null && explH > explA}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(2)} />
 
         {/* Model read banner — mirrors MLB teamProjBanner */}
         {(gapVal != null && projSpread != null) && (
