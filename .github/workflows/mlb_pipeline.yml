@@ -397,13 +397,13 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
-          DOW=$(date -u +%u)
-          if [ "$DOW" = "7" ]; then
-            cd mlb_pipeline
-            python _fit_prop_refit_weights_v2.py || echo "refit retrain failed (non-fatal)"
-          else
-            echo "not Sunday (DOW=$DOW) — skipping weekly retrain"
-          fi
+          # 2026-08-24: was calling _fit_prop_refit_weights_v2.py which is a
+          # gitignored scratch script (never existed on remote). Real weekly
+          # retrain runs in mlb_refit_weekly.yml via refit_train_v2.py — this
+          # step here is redundant. Kept as a no-op guard rail so removing
+          # the surrounding block doesn't cascade schedule changes; can be
+          # deleted entirely in a follow-up cleanup pass.
+          echo "refit retrain handled by mlb_refit_weekly.yml — no-op here"
 
       # 2026-08-21: Weekly signal_registry refit — computes per-signal
       # hit_rate + tier from last 90d of graded prop_playbook_decisions +
