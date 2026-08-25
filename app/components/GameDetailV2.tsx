@@ -1152,17 +1152,174 @@ function NCAAFSlot({ctx, game}: any) {
 
   return (
     <>
-      {/* 2026-08-25 SENTINEL — remove after verifying redesign is live. */}
-      <View style={{padding: 8, backgroundColor: '#ff6b35', margin: 8, borderRadius: 6}}>
-        <Text style={{color: '#0a0e14', fontWeight: '800', fontSize: 12, letterSpacing: 0.5, textAlign: 'center'}}>
-          🏈 NCAAFSlot v2 · redesign loaded {new Date().toLocaleTimeString()}
-        </Text>
-      </View>
+      <NCAAFTeamMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NCAAFRostersRichCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <SportWeatherCard ctx={ctx} />
-      <NCAAFEfficiencyCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
-      <NCAAFRostersCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <TeamTendenciesCard sport="NCAAF" ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
     </>
+  );
+}
+
+// ─── NCAAF TEAM MATCHUP (rich — matches MLB PitcherCard density) ────────
+// Side-by-side team cards with efficiency numbers, advantage highlighting,
+// and a bottom "model read" strip. Renders whatever ctx serves; each row
+// hides if both teams are null.
+function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
+  const spH = ctx?.home_sp_overall;
+  const spA = ctx?.away_sp_overall;
+  const offH = ctx?.home_off_epa_pp; const defH = ctx?.home_def_epa_pp;
+  const offA = ctx?.away_off_epa_pp; const defA = ctx?.away_def_epa_pp;
+  const spGap = ctx?.sp_gap;
+  const projSpread = ctx?.projected_spread;
+  const closeSpread = ctx?.close_spread;
+  if (spH == null && spA == null && offH == null && offA == null) return null;
+
+  // Advantage helper — highlights the higher (or lower for def) number.
+  const cmp = (a?: number, b?: number, higherIsBetter = true) => {
+    if (a == null || b == null) return {a: false, b: false};
+    if (higherIsBetter) return {a: a > b, b: b > a};
+    return {a: a < b, b: b < a};
+  };
+  const spAdv  = cmp(spA, spH, true);
+  const offAdv = cmp(offA, offH, true);
+  const defAdv = cmp(defA, defH, false);  // lower def EPA = better defense
+
+  const StatRow = ({label, a, b, aAdv, bAdv, fmt}: any) => {
+    if (a == null && b == null) return null;
+    const fA = fmt ? fmt(a) : (a == null ? '—' : Number(a).toFixed(2));
+    const fB = fmt ? fmt(b) : (b == null ? '—' : Number(b).toFixed(2));
+    return (
+      <View style={{flexDirection: 'row', alignItems: 'center', paddingVertical: 4}}>
+        <Text style={{flex: 1, fontSize: 13, fontWeight: aAdv ? '800' : '600',
+                      color: aAdv ? C.away : C.textDim, textAlign: 'left'}}>{fA}</Text>
+        <Text style={{width: 78, fontSize: 10, fontWeight: '800', color: C.textMuted,
+                      textAlign: 'center', letterSpacing: 0.5}}>{label}</Text>
+        <Text style={{flex: 1, fontSize: 13, fontWeight: bAdv ? '800' : '600',
+                      color: bAdv ? C.home : C.textDim, textAlign: 'right'}}>{fB}</Text>
+      </View>
+    );
+  };
+
+  const gapVal = spGap != null ? Number(spGap) : null;
+  const gapFavHome = gapVal != null && gapVal > 0;
+  const projVsMarket = (projSpread != null && closeSpread != null)
+    ? Number(projSpread) - Number(closeSpread) : null;
+
+  return (
+    <Section title="Team Matchup" hint="efficiency + EPA · higher = advantage">
+      <View style={{backgroundColor: C.surface2, borderRadius: 10, padding: 12}}>
+        {/* Team header row */}
+        <View style={{flexDirection: 'row', alignItems: 'center', paddingBottom: 8,
+                      borderBottomWidth: 1, borderBottomColor: C.border + '55'}}>
+          <View style={{flex: 1}}>
+            <Text style={{color: C.away, fontSize: 13, fontWeight: '800'}} numberOfLines={1}>{awayTeam}</Text>
+          </View>
+          <Text style={{width: 78, color: C.textMuted, fontSize: 9, fontWeight: '700',
+                        textAlign: 'center', letterSpacing: 0.5}}>METRIC</Text>
+          <View style={{flex: 1}}>
+            <Text style={{color: C.home, fontSize: 13, fontWeight: '800', textAlign: 'right'}} numberOfLines={1}>{homeTeam}</Text>
+          </View>
+        </View>
+        <StatRow label="EFFICIENCY" a={spA} b={spH} aAdv={spAdv.a} bAdv={spAdv.b}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
+        <StatRow label="OFF EPA/PL" a={offA} b={offH} aAdv={offAdv.a} bAdv={offAdv.b}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
+        <StatRow label="DEF EPA/PL" a={defA} b={defH} aAdv={defAdv.a} bAdv={defAdv.b}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
+
+        {/* Model read banner — mirrors MLB teamProjBanner */}
+        {(gapVal != null && projSpread != null) && (
+          <View style={{marginTop: 10, padding: 10, backgroundColor: C.accent + '14',
+                        borderRadius: 8, borderLeftWidth: 3, borderLeftColor: C.accent}}>
+            <Text style={{color: C.accent, fontSize: 10, fontWeight: '800', letterSpacing: 0.6, marginBottom: 4}}>MODEL READ</Text>
+            <Text style={{color: C.text, fontSize: 12, lineHeight: 17}}>
+              Efficiency gap {Math.abs(gapVal).toFixed(1)} pts favors <Text style={{fontWeight: '800', color: gapFavHome ? C.home : C.away}}>{gapFavHome ? homeTeam : awayTeam}</Text>.
+              {' '}Model projects <Text style={{fontWeight: '800', color: C.text}}>{Math.abs(Number(projSpread)).toFixed(1)}</Text>-pt spread.
+              {projVsMarket != null && closeSpread != null && (
+                <Text> Market at {Number(closeSpread).toFixed(1)} →{' '}
+                  <Text style={{fontWeight: '800', color: Math.abs(projVsMarket) >= 1 ? C.accent : C.textMuted}}>
+                    {projVsMarket >= 0 ? '+' : ''}{projVsMarket.toFixed(1)} pt {Math.abs(projVsMarket) >= 1 ? 'edge' : 'value'}
+                  </Text>
+                </Text>
+              )}
+            </Text>
+          </View>
+        )}
+      </View>
+    </Section>
+  );
+}
+
+// ─── NCAAF ROSTERS (rich card matching Team Matchup density) ────────────
+function NCAAFRostersRichCard({ctx, homeTeam, awayTeam}: any) {
+  const rpH = ctx?.home_returning_production;
+  const rpA = ctx?.away_returning_production;
+  const olH = ctx?.home_ol_avg_wt; const olA = ctx?.away_ol_avg_wt;
+  const clsH = ctx?.home_avg_class_year; const clsA = ctx?.away_avg_class_year;
+  const olGapH = ctx?.ol_dl_weight_gap_home; const olGapA = ctx?.ol_dl_weight_gap_away;
+  const classEdge = ctx?.class_year_edge_home;
+  if (rpH == null && rpA == null && olH == null && clsH == null) return null;
+
+  const cmp = (a?: number, b?: number, higherIsBetter = true) => {
+    if (a == null || b == null) return {a: false, b: false};
+    if (higherIsBetter) return {a: a > b, b: b > a};
+    return {a: a < b, b: b < a};
+  };
+  const rpAdv = cmp(rpA, rpH, true);
+  const olAdv = cmp(olA, olH, true);
+  const clsAdv = cmp(clsA, clsH, true);
+
+  const StatRow = ({label, a, b, aAdv, bAdv, fmt}: any) => {
+    if (a == null && b == null) return null;
+    return (
+      <View style={{flexDirection: 'row', alignItems: 'center', paddingVertical: 4}}>
+        <Text style={{flex: 1, fontSize: 13, fontWeight: aAdv ? '800' : '600',
+                      color: aAdv ? C.away : C.textDim, textAlign: 'left'}}>{fmt(a)}</Text>
+        <Text style={{width: 96, fontSize: 10, fontWeight: '800', color: C.textMuted,
+                      textAlign: 'center', letterSpacing: 0.5}}>{label}</Text>
+        <Text style={{flex: 1, fontSize: 13, fontWeight: bAdv ? '800' : '600',
+                      color: bAdv ? C.home : C.textDim, textAlign: 'right'}}>{fmt(b)}</Text>
+      </View>
+    );
+  };
+
+  const notes: string[] = [];
+  if (olGapH != null && Number(olGapH) >= 15)
+    notes.push(`${(homeTeam || '').split(' ').pop()} OL outweighs opposing DL by ${Math.round(Number(olGapH))} lb — ground-game leverage.`);
+  if (olGapA != null && Number(olGapA) >= 15)
+    notes.push(`${(awayTeam || '').split(' ').pop()} OL outweighs opposing DL by ${Math.round(Number(olGapA))} lb.`);
+  if (classEdge != null && Math.abs(Number(classEdge)) >= 0.3)
+    notes.push(`${Number(classEdge) > 0 ? (homeTeam || '').split(' ').pop() : (awayTeam || '').split(' ').pop()} carries a class-year experience edge (Weeks 1-3 significant).`);
+
+  return (
+    <Section title="Rosters &amp; Continuity" hint="returning production + physicality">
+      <View style={{backgroundColor: C.surface2, borderRadius: 10, padding: 12}}>
+        <View style={{flexDirection: 'row', alignItems: 'center', paddingBottom: 8,
+                      borderBottomWidth: 1, borderBottomColor: C.border + '55'}}>
+          <View style={{flex: 1}}>
+            <Text style={{color: C.away, fontSize: 13, fontWeight: '800'}} numberOfLines={1}>{awayTeam}</Text>
+          </View>
+          <Text style={{width: 96, color: C.textMuted, fontSize: 9, fontWeight: '700',
+                        textAlign: 'center', letterSpacing: 0.5}}>METRIC</Text>
+          <View style={{flex: 1}}>
+            <Text style={{color: C.home, fontSize: 13, fontWeight: '800', textAlign: 'right'}} numberOfLines={1}>{homeTeam}</Text>
+          </View>
+        </View>
+        <StatRow label="RETURN PROD" a={rpA} b={rpH} aAdv={rpAdv.a} bAdv={rpAdv.b}
+                 fmt={(v: any) => v == null ? '—' : `${Math.round(Number(v) * 100)}%`} />
+        <StatRow label="OL AVG WT" a={olA} b={olH} aAdv={olAdv.a} bAdv={olAdv.b}
+                 fmt={(v: any) => v == null ? '—' : `${Math.round(Number(v))} lb`} />
+        <StatRow label="CLASS EXP" a={clsA} b={clsH} aAdv={clsAdv.a} bAdv={clsAdv.b}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
+        {notes.length > 0 && (
+          <View style={{marginTop: 10, gap: 5}}>
+            {notes.map((n, i) => (
+              <Text key={i} style={{color: C.accent, fontSize: 11, lineHeight: 15}}>• {n}</Text>
+            ))}
+          </View>
+        )}
+      </View>
+    </Section>
   );
 }
 
