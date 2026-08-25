@@ -108,18 +108,25 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          # Compute NFL week from date, pull that + next week (bracket lineups changes)
+          # Compute NFL week from date. 2026-08-25: pre-season within 21d
+          # of Week 1 pulls Week 1 anyway — Sleeper publishes Week 1 lines
+          # in mid-August, ESPN closer to first game. Prior "days<0 → skip"
+          # meant nfl_player_projections sat empty for ~3 weeks pre-season.
           SEASON=$(date +%Y)
           WEEK=$(python -c "
           from datetime import date
           d = date.today()
           y = d.year
-          import calendar
           sept1 = date(y,9,1)
           first_thu = (3 - sept1.weekday()) % 7
           wk1_start = date(y, 9, 1 + first_thu)
           days = (d - wk1_start).days
-          print(max(1, min(18, days // 7 + 1)) if days >= 0 else 0)
+          if days >= 0:
+              print(max(1, min(18, days // 7 + 1)))
+          elif days >= -21:
+              print(1)  # pull Week 1 early (pre-season window)
+          else:
+              print(0)
           ")
           if [ "$WEEK" -gt 0 ]; then
             python nfl_sleeper_projections_pull.py --season $SEASON --week $WEEK || echo "sleeper failed"
