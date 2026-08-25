@@ -127,7 +127,19 @@ def apply_oc_flip_gate(pp: dict | None, ctx: dict) -> dict | None:
         except (TypeError, ValueError):
             oc_money = 0.0
 
-        if not oc_pick or oc_pick == cur_side or oc_money < 60:
+        if not oc_pick or oc_pick == cur_side:
+            return pp
+
+        # 2026-08-25 per-market threshold tightening.
+        # 14d audit split by market:
+        #   ML/RL dissent @ money>=60  → 81% fade edge (7-30) ✓ keep
+        #   TOTAL dissent @ money>=60  → 55% fade edge only (12-10) — noise
+        #   TOTAL dissent @ money>=70  → 76% fade edge (3-13) ✓ tighter
+        # Totals get more market money at fair juice, so OC-alone dissent
+        # doesn't clear the noise floor until money% is louder. Require
+        # money>=70 on totals; keep 60 on ML/RL.
+        money_threshold = 70 if mkt == 'total' else 60
+        if oc_money < money_threshold:
             return pp
 
         # OC dissents with money conviction — flip.
