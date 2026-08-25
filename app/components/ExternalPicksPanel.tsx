@@ -55,24 +55,27 @@ type SourceCalibration = {
   losses: number;
 };
 
-// 2026-08-21: names abbreviated per ToS-avoidance policy (mirrors LineMovementTab
-// FR/CZ/OC pattern for split sources). Displaying full brand names in-app risks
-// scraping-ToS violations from source sites. Users see hit rates + codes;
-// key mapping stays internal.
+// 2026-08-24: "The X" personality tags — brand-cohesive naming that extends
+// the app's voice (The Sharp, The Ledger, The Locker) to external attribution.
+// Zero source-name exposure (satisfies ToS-avoidance policy). Users learn
+// "The Fade has been hot" faster than "Source PD has been hot" — builds
+// character + memorability. Style assignments are v1 based on source
+// reputation; will recompute from actual pick-pattern data after 30d of
+// track record accumulates. See project_the_x_naming_convention_824 memory.
 const SOURCE_LABEL: Record<string, string> = {
-  action: 'AN',
-  dimers: 'DM',
-  covers: 'CV',
-  vsin: 'VS',
-  pickswise: 'PW',
-  pickdawgz: 'PD',
-  bettingpros: 'BP',
-  docsports: 'DS',
-  cbs: 'CBS',
-  oddsshark: 'OS',
-  fangraphs: 'FG',
-  ballparkpal: 'BPP',
-  scp: 'SCP',
+  action:      'The Book',       // market-tracker, data-heavy
+  dimers:      'The Grinder',    // algo-driven high-vol
+  covers:      'The Volume',     // big daily output
+  vsin:        'The Pulse',      // sharp-market analysis
+  pickswise:   'The Chalk',      // favorite-heavy
+  pickdawgz:   'The Dog',        // underdog specialist
+  bettingpros: 'The Spread',     // broad coverage aggregator
+  docsports:   'The Lock',       // high-conviction premium
+  cbs:         'The Consensus',  // mainstream editorial
+  oddsshark:   'The Line',       // line-movement-first
+  fangraphs:   'The Nerd',       // sabermetric (playful)
+  ballparkpal: 'The Park',       // park-factor specialist
+  scp:         'The Fade',       // contrarian trap-setter
 };
 
 const flagColor = (flag: string | null): string => {
@@ -281,7 +284,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: BORDER,
   },
-  sourceLabel: { color: TEXT_PRIMARY, fontWeight: '700', fontSize: 13 },
+  // 2026-08-24: labels expanded from 2-3 char codes to "The X" personality tags.
+  // Slight size reduction + italic to fit longer text without wrapping while
+  // keeping the branded voice. minWidth ensures rows align across sources.
+  sourceLabel: { color: TEXT_PRIMARY, fontWeight: '700', fontSize: 12, fontStyle: 'italic', minWidth: 82 },
   flagChip: {
     paddingHorizontal: 6,
     paddingVertical: 2,
