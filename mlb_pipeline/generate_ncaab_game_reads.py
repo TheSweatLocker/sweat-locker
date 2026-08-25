@@ -26,6 +26,8 @@ from typing import Optional
 import requests
 from dotenv import load_dotenv
 
+from jerry_reads_dual_write import parse_synthesis, upsert_jerry_read
+
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
@@ -327,6 +329,15 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
             written += 1
         else:
             skipped += 1
+
+        # 2026-08-25 Phase 2 dual-write. Structured pick to jerry_reads.
+        parsed = parse_synthesis(narrative)
+        if parsed.get('short_read'):
+            upsert_jerry_read(
+                sport='NCAAB', game_id=ctx['game_id'], game_date=today_et(),
+                struct=struct, parsed=parsed, narrative=narrative,
+                prompt_version='ncaab_game_read_v2_2026-08-25',
+            )
 
     print(f'\n✓ wrote {written} · skipped {skipped}')
 

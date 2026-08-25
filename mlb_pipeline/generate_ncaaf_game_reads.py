@@ -24,6 +24,8 @@ from typing import Optional
 import requests
 from dotenv import load_dotenv
 
+from jerry_reads_dual_write import parse_synthesis, upsert_jerry_read
+
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
@@ -331,6 +333,16 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
             print(f'    ✓ wrote cache (narrative {len(narrative)} chars)')
         else:
             print(f'    ⚠ cache write failed')
+
+        # 2026-08-25 Phase 2 dual-write. Structured pick to jerry_reads so
+        # sweat card / fallback resolver can rank NCAAF alongside MLB + NFL.
+        parsed = parse_synthesis(narrative)
+        if parsed.get('short_read'):
+            upsert_jerry_read(
+                sport='NCAAF', game_id=gid, game_date=today_et(),
+                struct=struct, parsed=parsed, narrative=narrative,
+                prompt_version='ncaaf_game_read_v2_2026-08-25',
+            )
 
     print(f'\n✓ {success}/{len(games)} game reads generated')
 
