@@ -1859,7 +1859,7 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   // (populated by steam_room_ladder.py).
   const [steamSubTab, setSteamSubTab] = useState<'lines'|'ladder'|'sharp'|'ledger'>('lines');
   const [sharpPicks, setSharpPicks] = useState<any[]>([]);
-  const [sharpRecord, setSharpRecord] = useState<{w:number,l:number,p:number,unitsNet:number,wPrev:number,lPrev:number,pPrev:number,unitsNetPrev:number}>({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0});
+  const [sharpRecord, setSharpRecord] = useState<{w:number,l:number,p:number,unitsNet:number,wPrev:number,lPrev:number,pPrev:number,unitsNetPrev:number,yW:number,yL:number,yP:number,yUnits:number}>({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0,yW:0,yL:0,yP:0,yUnits:0});
   // 2026-08-22: Split records per tier (triple / confirmed / lean). Reads
   // daily_surface_records rows written by aggregate_daily_records.py::agg_split.
   // User ask: 'every single sub tab in the steam room should have records to
@@ -8925,19 +8925,27 @@ setJerryHistory(prev => {
 
       let w=0, l=0, p=0, unitsNet=0;               // current month
       let wPrev=0, lPrev=0, pPrev=0, unitsNetPrev=0;  // previous month
+      let yW=0, yL=0, yP=0, yUnits=0;               // yesterday only
+      // 2026-08-25: yesterday's game_date in ET (matches the game_date stamps).
+      const yesterdayET = new Date(nowD.getTime() - 24*60*60*1000).toISOString().slice(0,10);
 
-      const bump = (r: any, payout: number, curBucket: boolean) => {
+      const bump = (r: any, payout: number, curBucket: boolean, isYesterday: boolean) => {
         // Skip COVERAGE stubs (conviction=0 = un-scored sweep stub, not a real pick)
         if (r.conviction === 0 || r.tier === 'COVERAGE') return;
         const stake = unitsForTier(r.tier);
         if (r.result === 'Win') {
-          if (curBucket) { w++; unitsNet += payout * stake; }
-          else { wPrev++; unitsNetPrev += payout * stake; }
+          const gain = payout * stake;
+          if (curBucket) { w++; unitsNet += gain; }
+          else { wPrev++; unitsNetPrev += gain; }
+          if (isYesterday) { yW++; yUnits += gain; }
         } else if (r.result === 'Loss') {
-          if (curBucket) { l++; unitsNet -= 1.0 * stake; }
-          else { lPrev++; unitsNetPrev -= 1.0 * stake; }
+          const loss = 1.0 * stake;
+          if (curBucket) { l++; unitsNet -= loss; }
+          else { lPrev++; unitsNetPrev -= loss; }
+          if (isYesterday) { yL++; yUnits -= loss; }
         } else if (r.result === 'Push') {
           if (curBucket) p++; else pPrev++;
+          if (isYesterday) yP++;
         }
       };
 
@@ -8947,19 +8955,22 @@ setJerryHistory(prev => {
       (jerryHist || []).forEach((r: any) => {
         const gd = r.game_date || '';
         if (gd < SHARP_RECORD_EPOCH) return;
-        if (gd >= curMonthStart) bump(r, 0.91, true);
-        else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, 0.91, false);
+        const isY = gd === yesterdayET;
+        if (gd >= curMonthStart) bump(r, 0.91, true, isY);
+        else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, 0.91, false, isY);
       });
       (propsHist || []).forEach((r: any) => {
         const gd = r.game_date || '';
         if (gd < SHARP_RECORD_EPOCH) return;
+        const isY = gd === yesterdayET;
         const payout = winPayoutFromAmerican(r.book_line);
-        if (gd >= curMonthStart) bump(r, payout, true);
-        else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, payout, false);
+        if (gd >= curMonthStart) bump(r, payout, true, isY);
+        else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, payout, false, isY);
       });
       setSharpRecord({w, l, p, unitsNet: Math.round(unitsNet*100)/100,
-                      wPrev, lPrev, pPrev, unitsNetPrev: Math.round(unitsNetPrev*100)/100} as any);
-    } catch (e) { setSharpPicks([]); setSharpRecord({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0}); }
+                      wPrev, lPrev, pPrev, unitsNetPrev: Math.round(unitsNetPrev*100)/100,
+                      yW, yL, yP, yUnits: Math.round(yUnits*100)/100} as any);
+    } catch (e) { setSharpPicks([]); setSharpRecord({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0,yW:0,yL:0,yP:0,yUnits:0}); }
     setSharpTabLoading(false);
   }, []);
 
@@ -15193,9 +15204,27 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
                                 <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>ROI</Text>
                                 <Text style={{color:unitsColor, fontSize:20, fontWeight:'800'}}>{roi != null ? `${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%` : '—'}</Text>
-                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>per pick</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{total > 0 ? `over ${total} picks` : 'over 0 picks'}</Text>
                               </View>
                             </View>
+                            {/* 2026-08-25: Yesterday recap band. Single line right
+                                below the MTD row so users see the most recent
+                                day's result without hunting through history. */}
+                            {(() => {
+                              const yTotal = r.yW + r.yL;
+                              if (yTotal === 0) return null;
+                              const yHit = Math.round(1000 * r.yW / yTotal) / 10;
+                              const yRoi = (r.yUnits / yTotal) * 100;
+                              const yColor = r.yUnits > 0 ? THEME.win : r.yUnits < 0 ? THEME.loss : THEME.textDim;
+                              return (
+                                <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44'}}>
+                                  <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.5}}>YESTERDAY</Text>
+                                  <Text style={{color:THEME.textDim, fontSize:11}}>
+                                    {r.yW}-{r.yL}{r.yP ? `-${r.yP}` : ''} · {yHit}% · <Text style={{color:yColor, fontWeight:'800'}}>{r.yUnits >= 0 ? '+' : ''}{r.yUnits.toFixed(2)}u</Text> · <Text style={{color:yColor, fontWeight:'700'}}>{yRoi >= 0 ? '+' : ''}{yRoi.toFixed(1)}%</Text>
+                                  </Text>
+                                </View>
+                              );
+                            })()}
                             {/* Prev-month + fresh-epoch footer, single line */}
                             <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44'}}>
                               <Text style={{color:THEME.textMuted, fontSize:9, fontStyle:'italic'}}>Fresh from Aug 20 · real snapshot odds</Text>

@@ -705,7 +705,11 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
         }}>
           <Text style={{color: T.hrb, fontSize: 11, marginTop: 1}}>💡</Text>
           <Text style={{color: T.textDim, fontSize: 11, flex: 1, lineHeight: 15}}>
-            <Text style={{color: T.hrb, fontWeight: '800'}}>MINORITY DISSENT: </Text>
+            <Explainer term="MINORITY DISSENT" color={T.hrb} activeColor={T.hrb} helpColor={T.text}
+              helpBg={T.hrb + '18'}
+              textStyle={{color: T.hrb, fontWeight: '800'}}>
+              <Text style={{color: T.hrb, fontWeight: '800'}}>MINORITY DISSENT: </Text>
+            </Explainer>
             2 of 3 sharp sources agree here — 1 disagrees. Worth noting the
             dissenter's side if you're weighing a contrarian angle.
           </Text>
@@ -778,7 +782,13 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
               <View style={{flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1}}>
                 {/* Distinct color dot per Split — visual confirmation stacking */}
                 <View style={{width: 8, height: 8, borderRadius: 4, backgroundColor: row.color}} />
-                <Text style={{color: row.color, fontSize: 11, fontWeight: '800', width: 60}}>{row.label}</Text>
+                {/* 2026-08-25: tap-to-learn on the Split label so casuals know
+                    what an anonymized "Split N" actually is. */}
+                <Explainer term={row.label} color={row.color} activeColor={row.color} helpColor={T.text}
+                  helpBg={row.color + '18'}
+                  textStyle={{color: row.color, fontSize: 11, fontWeight: '800', width: 60}}>
+                  <Text style={{color: row.color, fontSize: 11, fontWeight: '800', width: 60}}>{row.label}</Text>
+                </Explainer>
                 {row.pct > 0 ? (
                   <Text style={{color: T.textDim, fontSize: 11, fontWeight: '700'}}>{row.pct.toFixed(0)}%</Text>
                 ) : (
@@ -799,7 +809,12 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
                 // Aggregate track record IS visible in the header strip at top
                 // of tab (sharp_source_calibration 30d hit rates). Per-market
                 // rate builds up as this source × market accumulates n.
-                <Text style={{color: T.textMuted, fontSize: 9, fontStyle: 'italic'}}>rate building</Text>
+                // 2026-08-25: tap-to-learn what "rate building" means.
+                <Explainer term="rate building" color={T.textMuted} activeColor={T.text} helpColor={T.text}
+                  helpBg={T.surface}
+                  textStyle={{color: T.textMuted, fontSize: 9, fontStyle: 'italic'}}>
+                  <Text style={{color: T.textMuted, fontSize: 9, fontStyle: 'italic'}}>rate building</Text>
+                </Explainer>
               )}
             </View>
           ))}

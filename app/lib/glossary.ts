@@ -130,6 +130,16 @@ export const GLOSSARY: Record<string, {label?: string; help: string}> = {
   'SOURCES_SPLIT': {help: 'The Splits point different ways — one has sharp on home, another on away. Skip unless you have your own read.'},
   'sharp %': {help: '% of the total money (handle) on this side, per book data. Above 65% = notably sharp; above 80% = heavy.'},
   'public %': {help: '% of bets (tickets) on this side — casual money. Divergence from sharp % is what creates the fade opportunity.'},
+  // Line-move pattern types (raw signal shapes from the line poller)
+  'LIMIT RAISED': {help: "The book raised its max-bet acceptance limit on this side. Books widen limits only when they're comfortable with the direction — a classic 'the book trusts this number' sharp signal."},
+  'STEAM MOVE': {help: 'Same side moving simultaneously across many books within minutes. Coordinated sharp money hitting the market — following steam is one of the oldest sharp signals.'},
+  'REVERSE LINE MOVE': {help: 'Public bets are on one side but the line moved the OTHER way. That gap only closes when sharp money outweighs public tickets. Line tells you where the real money is.'},
+  // Anonymized source labels + "rate building" state
+  'Split 1': {help: 'One of three independent public-money data sources we track. Kept unnamed for provider-agreement reasons. Its identity is stable — the same source is always Split 1.'},
+  'Split 2': {help: 'Second independent public-money source, distinct from Split 1. Two Splits agreeing = SHARP CONFIRMED. Three agreeing = SHARP TRIPLE.'},
+  'Split 3': {help: 'Third public-money source. Only surfaces on TRIPLE-tier plays where all three Splits agree — the top confidence bucket.'},
+  'rate building': {help: 'This Split is currently agreeing on this side but we do not have enough graded picks in this specific market yet to display an accurate hit rate. The aggregate hit rate for the source is visible in the tab header.'},
+  'MINORITY DISSENT': {help: 'Two of three Splits agree here, one disagrees. Worth noting the dissenting Split — occasional dissent is normal, repeated dissent from a proven source is signal.'},
 
   // ─── PROP / BET STRUCTURE (universal) ────────────────────────────
   'refit': {help: "Our post-line model's revised probability after accounting for cohort adjustments + weather + late scratches."},
