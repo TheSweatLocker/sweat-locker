@@ -227,7 +227,10 @@ export default function LineMovementTab({
             📊 30-DAY SOURCE TRACK RECORD (MLB)
           </Text>
           <View style={{flexDirection: 'row', gap: 10, flexWrap: 'wrap'}}>
-            {['FR', 'CZ', 'OC'].map(src => {
+            {/* 2026-08-25: SO added as 4th source. Renders only when
+                calibration has enough n (SO starts collecting today so
+                the tile only appears after ~1w of graded picks). */}
+            {['FR', 'CZ', 'OC', 'SO'].map(src => {
               const row = sourceCal.find((r: any) => r.source === src);
               if (!row) return null;
               const hr = row.hit_rate; const n = row.sample_n; const edge = row.edge_pp;
