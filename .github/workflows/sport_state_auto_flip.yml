@@ -1,0 +1,41 @@
+name: Sport State Auto-Flip (daily)
+
+# Reads sport_registry rows + flips `state` based on today vs season_start /
+# season_end. Runs daily at 5am UTC (1am ET) so any date-driven transition
+# is live before the day's first user opens the app.
+#
+# Idempotent — writes only when state actually changes. Silent no-op on
+# days without transitions (>99% of runs).
+
+on:
+  schedule:
+    - cron: '0 5 * * *'   # daily 5am UTC (1am ET)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview transitions without writing'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+jobs:
+  flip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install deps
+        run: pip install requests python-dotenv
+
+      - name: Run auto-flip
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then FLAG="--dry-run"; fi
+          python auto_flip_sport_state.py $FLAG
