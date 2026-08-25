@@ -19,9 +19,10 @@
 -- game_date DESC to keep index small (most queries only look at recent
 -- data anyway).
 
--- ladder_state — updated_at ordering used by app + fix scripts
-CREATE INDEX IF NOT EXISTS idx_ladder_state_updated_at
-  ON public.ladder_state (updated_at DESC);
+-- ladder_state — last_updated_at ordering used by app + fix scripts
+-- (column is `last_updated_at` not `updated_at` — confirmed 8/24)
+CREATE INDEX IF NOT EXISTS idx_ladder_state_last_updated_at
+  ON public.ladder_state (last_updated_at DESC);
 
 -- ladder_rung — game_date filtering (already may exist, using IF NOT EXISTS)
 CREATE INDEX IF NOT EXISTS idx_ladder_rung_game_date
