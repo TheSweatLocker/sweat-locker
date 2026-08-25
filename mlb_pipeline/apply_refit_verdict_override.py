@@ -386,8 +386,30 @@ def _cap_hits_over_juice_trap(game_date: str, dry_run: bool = False) -> int:
         direction = prop.get('direction') or 'over'
         odds = (prop.get('book_over_odds') if direction == 'over'
                 else prop.get('book_under_odds'))
+        # 2026-08-24: 7-day audit showed 42/42 missing prop odds are
+        # hits_over — books offer them at -300 to -400 juice which is
+        # outside our scraper range. Prior behavior kept these at
+        # PRIME/STRONG tier with null odds → user saw PRIME chip they
+        # couldn't act on (app-side unit gate zeroed out sizing). Now:
+        # when hits_over PRIME/STRONG has null odds, cap to LEAN so
+        # internal tier matches user-actionable tier.
         if odds is None:
-            continue  # can't gate without odds
+            old_tier = prop.get('tier')
+            if old_tier in ('PRIME', 'STRONG'):
+                sig['_hits_over_juice_gate'] = 'HITS_OVER_NULL_ODDS_UNACTIONABLE'
+                sig['_refit_override_at'] = _et_today()
+                print(f'  hits_over-null: {prop["player_name"]:22} '
+                      f'{old_tier}/{prop.get("conviction")} @ null -> LEAN/55',
+                      flush=True)
+                if not dry_run:
+                    requests.patch(
+                        f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+                        headers=H_WRITE,
+                        json={'tier': 'LEAN', 'conviction': 55, 'signals': sig},
+                        timeout=10,
+                    )
+                capped += 1
+            continue
         try:
             odds = int(odds)
         except (TypeError, ValueError):
