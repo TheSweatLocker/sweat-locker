@@ -320,7 +320,22 @@ def run(days: int = 60, dry_run: bool = False,
     games = fetch_games_with_results(days, sport=sport)
     print(f'  {len(games)} games with results in window\n')
     if not games:
-        print('  no games — abort')
+        # 2026-08-25: pre-season sports (NFL/NCAAF/NCAAB/NHL/NBA before
+        # Week 1) have no graded games yet. Instead of skipping, seed the
+        # registry with UNVALIDATED rows (weight 0.3) so the ensemble knows
+        # the signals exist. Once games grade, the next backfill will
+        # overwrite with real hit rates + tier upgrades.
+        print('  no games — seeding registry with UNVALIDATED priors (weight 0.3)')
+        empty_stats = {'fires': 0, 'w': 0, 'l': 0, 'p': 0, 'n_dec': 0,
+                       'hit_rate': None, 'edge_pp': None,
+                       'tier': 'UNVALIDATED', 'recommended_weight': 0.3}
+        seeded = 0
+        for source in signals:
+            if source.get('class') == 'external_pick':
+                continue
+            if write_registry(source, empty_stats, dry_run=dry_run):
+                seeded += 1
+        print(f'  {"[DRY] " if dry_run else ""}seeded {seeded} UNVALIDATED rows')
         return
 
     tier_counts = defaultdict(int)
@@ -362,10 +377,10 @@ def main():
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--signal-key', default=None)
     p.add_argument('--sport', default='MLB',
-                   choices=['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC', 'ALL'])
+                   choices=['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NBA', 'NHL', 'UFC', 'ALL'])
     args = p.parse_args()
     if args.sport == 'ALL':
-        for s in ('MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC'):
+        for s in ('MLB', 'NFL', 'NCAAF', 'NCAAB', 'NBA', 'NHL', 'UFC'):
             try:
                 run(days=args.days, dry_run=args.dry_run,
                     signal_key_filter=args.signal_key, sport=s)
