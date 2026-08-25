@@ -1263,15 +1263,15 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
             <Text style={{color: C.home, fontSize: 13, fontWeight: '800', textAlign: 'right'}} numberOfLines={1}>{homeTeam}</Text>
           </View>
         </View>
-        <StatRow label="OVERALL"    a={spA} b={spH} aAdv={spAdv.a} bAdv={spAdv.b}
+        <StatRow label="POWER"      a={spA} b={spH} aAdv={spAdv.a} bAdv={spAdv.b}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
-        <StatRow label="OFFENSE"    a={spOffA} b={spOffH}
+        <StatRow label="PROJ PPG"   a={spOffA} b={spOffH}
                  aAdv={spOffA != null && spOffH != null && spOffA > spOffH}
                  bAdv={spOffA != null && spOffH != null && spOffH > spOffA}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
-        <StatRow label="DEFENSE"    a={spDefA} b={spDefH}
-                 aAdv={spDefA != null && spDefH != null && spDefA > spDefH}
-                 bAdv={spDefA != null && spDefH != null && spDefH > spDefA}
+        <StatRow label="PROJ PA"    a={spDefA} b={spDefH}
+                 aAdv={spDefA != null && spDefH != null && spDefA < spDefH}
+                 bAdv={spDefA != null && spDefH != null && spDefH < spDefA}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
         <StatRow label="OFF EPA/PL" a={offA} b={offH} aAdv={offAdv.a} bAdv={offAdv.b}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
