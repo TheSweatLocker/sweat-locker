@@ -53,8 +53,30 @@ def _map_team(t): return TEAM_MAP.get(t, t)
 
 
 def fetch_injuries(season: int) -> list:
-    """import_injuries takes list of seasons, returns DataFrame."""
-    df = nfl.import_injuries([season])
+    """import_injuries takes list of seasons, returns DataFrame.
+
+    Handles pre-season 404s gracefully: nfl_data_py hits a per-season
+    parquet URL on GitHub that doesn't get published until practice
+    reports begin (Week 1 = first week of Sept). Off-season and August
+    calls will 404 — that's expected, not a failure.
+    """
+    from urllib.error import HTTPError
+    try:
+        df = nfl.import_injuries([season])
+    except HTTPError as e:
+        if e.code == 404:
+            print(f'  ℹ️ season {season} injuries parquet not published yet '
+                  f'(pre-season / Week 1 not started) — 0 rows')
+            return []
+        raise
+    except Exception as e:
+        # Some pandas versions bubble the HTTPError inside a chained wrap
+        msg = str(e)
+        if '404' in msg and 'injuries' in msg.lower():
+            print(f'  ℹ️ season {season} injuries parquet not published yet '
+                  f'(pre-season / Week 1 not started) — 0 rows')
+            return []
+        raise
     if df is None or df.empty:
         return []
     return df.to_dict(orient='records')
