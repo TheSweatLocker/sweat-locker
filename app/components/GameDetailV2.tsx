@@ -1113,12 +1113,11 @@ function SportSpecificSlot({ctx, gamesSport, game}: any) {
     // returning production %, projected spread.
     return <NCAAFSlot ctx={ctx} game={game} />;
   }
-  if (gamesSport === 'NBA' || gamesSport === 'NCAAB') {
-    return (
-      <Section title="Pace + Rating">
-        <Text style={styles.emptyMuted}>Pace / net-rating card + rest days coming next.</Text>
-      </Section>
-    );
+  if (gamesSport === 'NBA') {
+    return <NBASlot ctx={ctx} game={game} />;
+  }
+  if (gamesSport === 'NCAAB') {
+    return <NCAABSlot ctx={ctx} game={game} />;
   }
   if (gamesSport === 'NHL') {
     return (
@@ -1414,19 +1413,94 @@ function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
 // nfl_team_stats. Phase 2 adds QB starter card + injuries + weather when
 // those pipes ship.
 function NFLSlot({ctx, game}: any) {
-  const [teamStats, setTeamStats] = useState<{home?: any; away?: any} | null>(null);
-  const [starters, setStarters] = useState<{home?: any; away?: any} | null>(null);
-  const [injuries, setInjuries] = useState<{home: any[]; away: any[]}>({home: [], away: []});
-
   const homeTeam = ctx?.home_team || game?.home_team;
   const awayTeam = ctx?.away_team || game?.away_team;
+  return (
+    <>
+      <SportWeatherCard ctx={ctx} />
+      <NFLQBMatchupCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NFLTeamMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NFLInjuriesCard   ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <TeamTendenciesCard sport="NFL" ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NFLSituationalCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+    </>
+  );
+}
 
-  useEffect(() => {
+// ─── NFL QB MATCHUP ─────────────────────────────────────────────────────
+// Buffed from the prior "Starting QBs" name-only card. Now joins Sleeper
+// projections (nfl_player_projections, 802 rows live per 2026-08-25) so
+// each starter shows projected fantasy pts + season Y/A when available.
+function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
+  const [starters, setStarters] = useState<{home?: any; away?: any}>({});
+  const [projections, setProjections] = useState<{home?: any; away?: any}>({});
+  React.useEffect(() => {
+    const client = sb();
+    if (!client || !homeTeam || !awayTeam) return;
+    (async () => {
+      const {data: st} = await client.from('nfl_starters')
+        .select('team,position,player_name,is_starter,week')
+        .in('team', [homeTeam, awayTeam])
+        .eq('position', 'QB')
+        .eq('is_starter', true)
+        .order('week', {ascending: false})
+        .limit(2);
+      const smap: any = {};
+      for (const row of (st || [])) if (!smap[row.team]) smap[row.team] = row;
+      setStarters({home: smap[homeTeam], away: smap[awayTeam]});
+      const starterNames = Object.values(smap).map((s: any) => s.player_name).filter(Boolean);
+      if (starterNames.length > 0) {
+        const {data: proj} = await client.from('nfl_player_projections')
+          .select('player_name,team,proj_fantasy_pts,proj_pass_yards,proj_pass_tds')
+          .in('player_name', starterNames)
+          .in('team', [homeTeam, awayTeam])
+          .order('pulled_at', {ascending: false})
+          .limit(4);
+        const pmap: any = {};
+        for (const row of (proj || [])) if (!pmap[row.team]) pmap[row.team] = row;
+        setProjections({home: pmap[homeTeam], away: pmap[awayTeam]});
+      }
+    })();
+  }, [homeTeam, awayTeam]);
+
+  if (!starters.home && !starters.away) return null;
+
+  const renderQB = (side: 'home' | 'away', st: any, proj: any, team: string) => (
+    <View style={[styles.pitcherCard, {borderTopColor: side === 'home' ? C.home : C.away, padding: 12, gap: 4, flex: 1}]}>
+      <Text style={styles.pitcherName}>{st?.player_name || 'TBD'}</Text>
+      <Text style={styles.pitcherStats}>{abbrev3(team)} QB</Text>
+      {proj?.proj_fantasy_pts != null && (
+        <Text style={styles.pitcherStats}>
+          Proj FP: <Text style={styles.pitcherStatBold}>{Number(proj.proj_fantasy_pts).toFixed(1)}</Text>
+        </Text>
+      )}
+      {proj?.proj_pass_yards != null && (
+        <Text style={styles.pitcherStats}>
+          Pass Y: <Text style={styles.pitcherStatBold}>{Math.round(Number(proj.proj_pass_yards))}</Text>
+          {proj?.proj_pass_tds != null && ` · TD ${Number(proj.proj_pass_tds).toFixed(1)}`}
+        </Text>
+      )}
+    </View>
+  );
+
+  return (
+    <Section title="QB Matchup" hint="starters + weekly projections">
+      <View style={{flexDirection: 'row', gap: 8}}>
+        {renderQB('away', starters.away, projections.away, awayTeam)}
+        {renderQB('home', starters.home, projections.home, homeTeam)}
+      </View>
+    </Section>
+  );
+}
+
+// ─── NFL TEAM MATCHUP (existing pass/rush/def, isolated) ────────────────
+function NFLTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
+  const [teamStats, setTeamStats] = useState<{home?: any; away?: any} | null>(null);
+  React.useEffect(() => {
     const client = sb();
     if (!client || !homeTeam || !awayTeam) return;
     (async () => {
       const season = ctx?.season || new Date().getFullYear();
-      // Season team stats — try current season, fall back to prior season
       const {data: ts} = await client
         .from('nfl_team_stats')
         .select('team,pass_epa,rush_epa,pass_yards,rush_yards,pass_attempts,rush_attempts,pass_tds,pass_ints,def_sacks,def_ints,def_pass_def,pass_cpoe,sacks_suffered,games,season')
@@ -1436,27 +1510,30 @@ function NFLSlot({ctx, game}: any) {
         .order('season', {ascending: false})
         .limit(6);
       if (ts) {
-        // Pick most-recent per team
         const map: any = {};
-        for (const row of ts) {
-          if (!map[row.team]) map[row.team] = row;
-        }
+        for (const row of ts) if (!map[row.team]) map[row.team] = row;
         setTeamStats({home: map[homeTeam], away: map[awayTeam]});
       }
-      // Starters (Phase 2 table — nfl_starters, populated by nfl_weekly_starters.py)
-      const {data: st} = await client.from('nfl_starters')
-        .select('team,position,player_name,is_starter')
-        .in('team', [homeTeam, awayTeam])
-        .eq('position', 'QB')
-        .eq('is_starter', true)
-        .order('week', {ascending: false})
-        .limit(2);
-      if (st) {
-        const smap: any = {};
-        for (const row of st) if (!smap[row.team]) smap[row.team] = row;
-        setStarters({home: smap[homeTeam], away: smap[awayTeam]});
-      }
-      // Injuries (Phase 2 table — nfl_injuries)
+    })();
+  }, [homeTeam, awayTeam, ctx?.season]);
+  if (!teamStats || (!teamStats.home && !teamStats.away)) return null;
+  return (
+    <Section title="Team Matchup" hint="season · pass EPA + def">
+      <View style={{gap: 8}}>
+        {teamStats.away && <TeamStatRow team={awayTeam} side="away" stats={teamStats.away} defense={teamStats.home} />}
+        {teamStats.home && <TeamStatRow team={homeTeam} side="home" stats={teamStats.home} defense={teamStats.away} />}
+      </View>
+    </Section>
+  );
+}
+
+// ─── NFL INJURIES (existing, extracted into its own component) ──────────
+function NFLInjuriesCard({ctx, homeTeam, awayTeam}: any) {
+  const [injuries, setInjuries] = useState<{home: any[]; away: any[]}>({home: [], away: []});
+  React.useEffect(() => {
+    const client = sb();
+    if (!client || !homeTeam || !awayTeam) return;
+    (async () => {
       const {data: inj} = await client.from('nfl_injuries')
         .select('team,player_name,position,injury_status,body_part,practice_status')
         .in('team', [homeTeam, awayTeam])
@@ -1470,92 +1547,62 @@ function NFLSlot({ctx, game}: any) {
         });
       }
     })();
-  }, [homeTeam, awayTeam, ctx?.season]);
-
-  const tags = ctx?.cohort_tags || [];
-  const rest = {home: ctx?.home_rest, away: ctx?.away_rest};
-  const wx = {temp: ctx?.temp, wind: ctx?.wind};
-  const roof = ctx?.roof;
-  const div = ctx?.div_game;
-
+  }, [homeTeam, awayTeam]);
+  if (injuries.home.length + injuries.away.length === 0) return null;
   return (
-    <>
-      {/* Starter QBs (if pipe has populated) */}
-      {(starters?.home || starters?.away) && (
-        <Section title="Starting QBs" hint="from nfl_starters">
-          <View style={styles.pitcherMatchup}>
-            <View style={[styles.pitcherCard, {borderTopColor: C.away}]}>
-              <Text style={styles.pitcherName}>{starters?.away?.player_name || 'TBD'}</Text>
-              <Text style={styles.pitcherStats}>{abbrev3(awayTeam)} QB</Text>
-            </View>
-            <View style={[styles.pitcherCard, {borderTopColor: C.home}]}>
-              <Text style={styles.pitcherName}>{starters?.home?.player_name || 'TBD'}</Text>
-              <Text style={styles.pitcherStats}>{abbrev3(homeTeam)} QB</Text>
-            </View>
-          </View>
-        </Section>
-      )}
-
-      {/* Team offense/defense — always try, degrades w/ '—' when missing */}
-      <Section title="Team Matchup" hint="season · pass EPA + def">
-        {teamStats ? (
-          <View style={{gap: 8}}>
-            <TeamStatRow team={awayTeam} side="away" stats={teamStats.away} defense={teamStats.home} />
-            <TeamStatRow team={homeTeam} side="home" stats={teamStats.home} defense={teamStats.away} />
-          </View>
-        ) : (
-          <Text style={styles.emptyMuted}>Loading team stats…</Text>
-        )}
-      </Section>
-
-      {/* Injuries (if populated) */}
-      {(injuries.home.length + injuries.away.length) > 0 && (
-        <Section title="Injuries" hint="Out / Doubtful / Questionable">
-          <View style={{gap: 6}}>
-            {injuries.away.length > 0 && (
-              <View>
-                <Text style={styles.injSideLabel}>{abbrev3(awayTeam)}</Text>
-                {injuries.away.map((r: any, i: number) => (
-                  <Text key={i} style={styles.injRow}>
-                    <Text style={{color: injStatusColor(r.injury_status)}}>[{r.injury_status?.[0]}]</Text>{' '}
-                    {r.player_name} ({r.position}) — {r.body_part || 'undisclosed'}
-                  </Text>
-                ))}
-              </View>
-            )}
-            {injuries.home.length > 0 && (
-              <View>
-                <Text style={styles.injSideLabel}>{abbrev3(homeTeam)}</Text>
-                {injuries.home.map((r: any, i: number) => (
-                  <Text key={i} style={styles.injRow}>
-                    <Text style={{color: injStatusColor(r.injury_status)}}>[{r.injury_status?.[0]}]</Text>{' '}
-                    {r.player_name} ({r.position}) — {r.body_part || 'undisclosed'}
-                  </Text>
-                ))}
-              </View>
-            )}
-          </View>
-        </Section>
-      )}
-
-      {/* Situational chips row — only render if at least one is present */}
-      {(div || roof || wx.temp != null || wx.wind != null || rest.home != null || rest.away != null || (tags && tags.length)) && (
-        <Section title="Situational">
-          <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
-            {div && <SitChip label="Divisional" />}
-            {roof && <SitChip label={`Roof: ${roof}`} />}
-            {wx.temp != null && <SitChip label={`${wx.temp}°F`} kind={wx.temp <= 40 ? 'info' : 'neutral'} />}
-            {wx.wind != null && wx.wind >= 15 && <SitChip label={`Wind ${wx.wind}mph`} kind="warn" />}
-            {rest.home != null && rest.away != null && Math.abs(rest.home - rest.away) >= 3 && (
-              <SitChip label={`Rest gap: ${abbrev3(rest.home > rest.away ? homeTeam : awayTeam)} +${Math.abs(rest.home - rest.away)}d`} kind="info" />
-            )}
-            {Array.isArray(tags) && tags.map((t: string, i: number) => (
-              <SitChip key={i} label={t.replace(/^nfl_/, '').replace(/_/g, ' ')} />
+    <Section title="Injuries" hint="Out / Doubtful / Questionable">
+      <View style={{gap: 6}}>
+        {injuries.away.length > 0 && (
+          <View>
+            <Text style={styles.injSideLabel}>{abbrev3(awayTeam)}</Text>
+            {injuries.away.map((r: any, i: number) => (
+              <Text key={i} style={styles.injRow}>
+                <Text style={{color: injStatusColor(r.injury_status)}}>[{r.injury_status?.[0]}]</Text>{' '}
+                {r.player_name} ({r.position}) — {r.body_part || 'undisclosed'}
+              </Text>
             ))}
           </View>
-        </Section>
-      )}
-    </>
+        )}
+        {injuries.home.length > 0 && (
+          <View>
+            <Text style={styles.injSideLabel}>{abbrev3(homeTeam)}</Text>
+            {injuries.home.map((r: any, i: number) => (
+              <Text key={i} style={styles.injRow}>
+                <Text style={{color: injStatusColor(r.injury_status)}}>[{r.injury_status?.[0]}]</Text>{' '}
+                {r.player_name} ({r.position}) — {r.body_part || 'undisclosed'}
+              </Text>
+            ))}
+          </View>
+        )}
+      </View>
+    </Section>
+  );
+}
+
+// ─── NFL SITUATIONAL (chips row — divisional, rest gap, cohort tags) ────
+// Weather chips REMOVED here; the shared SportWeatherCard renders them
+// as a proper section higher up.
+function NFLSituationalCard({ctx, homeTeam, awayTeam}: any) {
+  const tags = ctx?.cohort_tags || [];
+  const rest = {home: ctx?.home_rest, away: ctx?.away_rest};
+  const roof = ctx?.roof;
+  const div = ctx?.div_game;
+  const restGap = (rest.home != null && rest.away != null && Math.abs(rest.home - rest.away) >= 3);
+  const hasAny = div || roof || restGap || (tags && tags.length);
+  if (!hasAny) return null;
+  return (
+    <Section title="Situational">
+      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
+        {div && <SitChip label="Divisional" />}
+        {roof && <SitChip label={`Roof: ${roof}`} />}
+        {restGap && (
+          <SitChip label={`Rest gap: ${abbrev3(rest.home > rest.away ? homeTeam : awayTeam)} +${Math.abs(rest.home - rest.away)}d`} kind="info" />
+        )}
+        {Array.isArray(tags) && tags.map((t: string, i: number) => (
+          <SitChip key={i} label={t.replace(/^nfl_/, '').replace(/_/g, ' ')} />
+        ))}
+      </View>
+    </Section>
   );
 }
 
@@ -1598,6 +1645,335 @@ function injStatusColor(status: string): string {
   if (status === 'Doubtful') return C.warn;
   if (status === 'Questionable') return C.sharp;
   return C.textMuted;
+}
+
+// ─── NBA SLOT ────────────────────────────────────────────────────────────
+// 2026-08-25 build (see nba_slot_mock artifact). Season starts Oct 22 so
+// most cards render empty until then — each returns null on missing data.
+//
+// Backend controls what shows via ctx fields:
+//   Rest/B2B:     home_rest_days / home_is_b2b / away_rest_days / away_is_b2b
+//   Team snap:    home_off_rating / home_def_rating / home_net_rating / home_pace
+//   Elo:          elo_home / elo_away
+//   Injuries:     home_starters_out TEXT[] + home_injury_impact NUMERIC
+//                 + nba_injuries table for full list
+//   Tendencies:   nba_team_home_road_tendencies materialized view
+function NBASlot({ctx, game}: any) {
+  const homeTeam = ctx?.home_team || game?.home_team;
+  const awayTeam = ctx?.away_team || game?.away_team;
+  return (
+    <>
+      <NBATeamSnapshotCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NBARestB2BCard      ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NBAInjuriesCard     ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NBAFourFactorsCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <TeamTendenciesCard sport="NBA" ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+    </>
+  );
+}
+
+// Team snapshot — net rating + pace + off/def rating side by side.
+function NBATeamSnapshotCard({ctx, homeTeam, awayTeam}: any) {
+  const h = {net: ctx?.home_net_rating, pace: ctx?.home_pace, off: ctx?.home_off_rating, def: ctx?.home_def_rating, elo: ctx?.elo_home};
+  const a = {net: ctx?.away_net_rating, pace: ctx?.away_pace, off: ctx?.away_off_rating, def: ctx?.away_def_rating, elo: ctx?.elo_away};
+  if (h.net == null && a.net == null && h.elo == null && a.elo == null) return null;
+  const fmt = (v: any, digits = 1) => v == null ? '—' : Number(v).toFixed(digits);
+  return (
+    <Section title="Team Snapshot" hint="net rating + pace + Elo">
+      <View style={{flexDirection: 'row', gap: 8}}>
+        <View style={[styles.pitcherCard, {borderTopColor: C.away, padding: 12, gap: 3, flex: 1}]}>
+          <Text style={styles.pitcherName}>{awayTeam}</Text>
+          {a.net != null && <Text style={styles.pitcherStats}>Net: <Text style={styles.pitcherStatBold}>{fmt(a.net)}</Text></Text>}
+          {a.pace != null && <Text style={styles.pitcherStats}>Pace: <Text style={styles.pitcherStatBold}>{fmt(a.pace)}</Text></Text>}
+          {a.off != null && a.def != null && <Text style={styles.pitcherStats}>Off/Def: <Text style={styles.pitcherStatBold}>{fmt(a.off, 0)}/{fmt(a.def, 0)}</Text></Text>}
+          {a.elo != null && <Text style={styles.pitcherStats}>Elo: <Text style={styles.pitcherStatBold}>{fmt(a.elo, 0)}</Text></Text>}
+        </View>
+        <View style={[styles.pitcherCard, {borderTopColor: C.home, padding: 12, gap: 3, flex: 1}]}>
+          <Text style={styles.pitcherName}>{homeTeam}</Text>
+          {h.net != null && <Text style={styles.pitcherStats}>Net: <Text style={styles.pitcherStatBold}>{fmt(h.net)}</Text></Text>}
+          {h.pace != null && <Text style={styles.pitcherStats}>Pace: <Text style={styles.pitcherStatBold}>{fmt(h.pace)}</Text></Text>}
+          {h.off != null && h.def != null && <Text style={styles.pitcherStats}>Off/Def: <Text style={styles.pitcherStatBold}>{fmt(h.off, 0)}/{fmt(h.def, 0)}</Text></Text>}
+          {h.elo != null && <Text style={styles.pitcherStats}>Elo: <Text style={styles.pitcherStatBold}>{fmt(h.elo, 0)}</Text></Text>}
+        </View>
+      </View>
+    </Section>
+  );
+}
+
+// Rest days + back-to-back (huge NBA signal).
+function NBARestB2BCard({ctx, homeTeam, awayTeam}: any) {
+  const hRest = ctx?.home_rest_days;
+  const aRest = ctx?.away_rest_days;
+  const hB2B = ctx?.home_is_b2b;
+  const aB2B = ctx?.away_is_b2b;
+  if (hRest == null && aRest == null && !hB2B && !aB2B) return null;
+  const row = (team: string, rest: any, b2b: boolean, color: string) => (
+    <View style={{flex: 1, backgroundColor: C.border + '22', padding: 10, borderRadius: 8, borderLeftWidth: 3, borderLeftColor: color}}>
+      <Text style={{color: C.textMuted, fontSize: 10, fontWeight: '700', letterSpacing: 0.5}}>{abbrev3(team)}</Text>
+      <View style={{flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4}}>
+        <Text style={{color: C.text, fontSize: 13, fontWeight: '700'}}>
+          {rest != null ? `${rest} day${rest === 1 ? '' : 's'} rest` : '—'}
+        </Text>
+        {b2b && (
+          <View style={{backgroundColor: C.fade + '33', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3}}>
+            <Text style={{color: C.fade, fontSize: 9, fontWeight: '800', letterSpacing: 0.5}}>2ND OF B2B</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+  return (
+    <Section title="Rest &amp; B2B" hint="big NBA signal">
+      <View style={{flexDirection: 'row', gap: 8}}>
+        {row(awayTeam, aRest, !!aB2B, C.away)}
+        {row(homeTeam, hRest, !!hB2B, C.home)}
+      </View>
+    </Section>
+  );
+}
+
+// Injuries + line-move impact when quantified by backend.
+function NBAInjuriesCard({ctx, homeTeam, awayTeam}: any) {
+  const [injuries, setInjuries] = useState<{home: any[]; away: any[]}>({home: [], away: []});
+  React.useEffect(() => {
+    const client = sb();
+    if (!client || !homeTeam || !awayTeam) return;
+    (async () => {
+      // NBA injuries keyed by team_abbrev, not team name
+      const homeAbbr = ctx?.home_abbrev; const awayAbbr = ctx?.away_abbrev;
+      const abbrs = [homeAbbr, awayAbbr].filter(Boolean);
+      if (abbrs.length === 0) return;
+      const {data} = await client.from('nba_injuries')
+        .select('team_abbrev,player_name,status,reason')
+        .in('team_abbrev', abbrs)
+        .in('status', ['OUT', 'DOUBTFUL', 'QUESTIONABLE', 'GTD'])
+        .order('updated_at', {ascending: false})
+        .limit(20);
+      if (data) {
+        setInjuries({
+          home: data.filter((r: any) => r.team_abbrev === homeAbbr).slice(0, 4),
+          away: data.filter((r: any) => r.team_abbrev === awayAbbr).slice(0, 4),
+        });
+      }
+    })();
+  }, [homeTeam, awayTeam, ctx?.home_abbrev, ctx?.away_abbrev]);
+  const impact = ctx?.home_injury_impact;
+  const startersOut = ctx?.home_starters_out;
+  if (injuries.home.length + injuries.away.length === 0 && !impact && !startersOut) return null;
+  const renderSide = (label: string, rows: any[]) => rows.length === 0 ? null : (
+    <View>
+      <Text style={styles.injSideLabel}>{label}</Text>
+      {rows.map((r: any, i: number) => (
+        <Text key={i} style={styles.injRow}>
+          <Text style={{color: injStatusColor(r.status?.charAt(0) + r.status?.slice(1).toLowerCase())}}>[{r.status?.charAt(0)}]</Text>{' '}
+          {r.player_name} — {r.reason || 'undisclosed'}
+        </Text>
+      ))}
+    </View>
+  );
+  return (
+    <Section title="Injuries" hint="OUT / DOUBTFUL / QUESTIONABLE">
+      <View style={{gap: 6}}>
+        {renderSide(abbrev3(awayTeam), injuries.away)}
+        {renderSide(abbrev3(homeTeam), injuries.home)}
+        {impact != null && Math.abs(Number(impact)) >= 0.2 && (
+          <Text style={{color: C.fade, fontSize: 11, fontStyle: 'italic', marginTop: 4}}>
+            Starter-out impact score: {(Number(impact) * 100).toFixed(0)}% of typical starter value — line already reflects.
+          </Text>
+        )}
+      </View>
+    </Section>
+  );
+}
+
+// Four Factors — eFG / TOV / ORB / FT for both teams from nba_team_stats.
+function NBAFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
+  const [stats, setStats] = useState<{home?: any; away?: any}>({});
+  React.useEffect(() => {
+    const client = sb();
+    if (!client) return;
+    const homeAbbr = ctx?.home_abbrev; const awayAbbr = ctx?.away_abbrev;
+    if (!homeAbbr && !awayAbbr) return;
+    (async () => {
+      const {data} = await client.from('nba_team_stats')
+        .select('team_abbrev,season,efg_pct,tov_pct,orb_pct,ft_rate,opp_efg_pct,opp_tov_pct')
+        .in('team_abbrev', [homeAbbr, awayAbbr].filter(Boolean))
+        .order('season', {ascending: false})
+        .limit(6);
+      if (data) {
+        const map: any = {};
+        for (const r of data) if (!map[r.team_abbrev]) map[r.team_abbrev] = r;
+        setStats({home: map[homeAbbr], away: map[awayAbbr]});
+      }
+    })();
+  }, [ctx?.home_abbrev, ctx?.away_abbrev]);
+  if (!stats.home && !stats.away) return null;
+  const pct = (v: any) => v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`;
+  const num = (v: any) => v == null ? '—' : Number(v).toFixed(2);
+  const factors = [
+    {label: 'eFG%',  away: pct(stats.away?.efg_pct),  home: pct(stats.home?.efg_pct)},
+    {label: 'TOV%',  away: pct(stats.away?.tov_pct),  home: pct(stats.home?.tov_pct)},
+    {label: 'ORB%',  away: pct(stats.away?.orb_pct),  home: pct(stats.home?.orb_pct)},
+    {label: 'FT Rate', away: num(stats.away?.ft_rate), home: num(stats.home?.ft_rate)},
+  ];
+  return (
+    <Section title="Four Factors" hint="eFG · TOV · ORB · FT">
+      <View style={{flexDirection: 'row', paddingBottom: 4, borderBottomWidth: 0.5, borderBottomColor: C.border}}>
+        <Text style={{flex: 1.3, color: C.textMuted, fontSize: 9, fontWeight: '800'}}>FACTOR</Text>
+        <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800', textAlign: 'center'}}>{abbrev3(awayTeam)}</Text>
+        <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800', textAlign: 'center'}}>{abbrev3(homeTeam)}</Text>
+      </View>
+      {factors.map((f, i) => (
+        <View key={i} style={{flexDirection: 'row', paddingVertical: 5}}>
+          <Text style={{flex: 1.3, color: C.textDim, fontSize: 12}}>{f.label}</Text>
+          <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{f.away}</Text>
+          <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{f.home}</Text>
+        </View>
+      ))}
+    </Section>
+  );
+}
+
+// ─── NCAAB SLOT ──────────────────────────────────────────────────────────
+// 2026-08-25 build (see ncaab_slot_mock artifact). Season starts Nov 3.
+// Efficiency Panel is the NCAAB differentiator — reads home_adj_em /
+// away_adj_em / adj_em_gap directly (blended panel from KenPom + Torvik
+// + Haslam materialized by ncaab_efficiency_model.py, wired 8/25).
+function NCAABSlot({ctx, game}: any) {
+  const homeTeam = ctx?.home_team || game?.home_team;
+  const awayTeam = ctx?.away_team || game?.away_team;
+  return (
+    <>
+      <NCAABEfficiencyCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NCAABPaceCard       ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NCAABFourFactorsCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NCAABFormRestCard   ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+    </>
+  );
+}
+
+function NCAABEfficiencyCard({ctx, homeTeam, awayTeam}: any) {
+  const h = {em: ctx?.home_adj_em, oe: ctx?.home_adj_oe, de: ctx?.home_adj_de};
+  const a = {em: ctx?.away_adj_em, oe: ctx?.away_adj_oe, de: ctx?.away_adj_de};
+  if (h.em == null && a.em == null) return null;
+  const projSpread = ctx?.projected_spread;
+  const closeSpread = ctx?.close_spread;
+  const fmt = (v: any, d = 1) => v == null ? '—' : Number(v).toFixed(d);
+  return (
+    <Section title="Efficiency Panel" hint="blended rating panel">
+      <View style={{flexDirection: 'row', gap: 8}}>
+        <View style={[styles.pitcherCard, {borderTopColor: C.away, padding: 12, gap: 3, flex: 1}]}>
+          <Text style={styles.pitcherName}>{awayTeam}</Text>
+          {a.em != null && <Text style={styles.pitcherStats}>Adj EM: <Text style={styles.pitcherStatBold}>{fmt(a.em)}</Text></Text>}
+          {a.oe != null && a.de != null && <Text style={styles.pitcherStats}>Off/Def: <Text style={styles.pitcherStatBold}>{fmt(a.oe, 0)}/{fmt(a.de, 0)}</Text></Text>}
+        </View>
+        <View style={[styles.pitcherCard, {borderTopColor: C.home, padding: 12, gap: 3, flex: 1}]}>
+          <Text style={styles.pitcherName}>{homeTeam}</Text>
+          {h.em != null && <Text style={styles.pitcherStats}>Adj EM: <Text style={styles.pitcherStatBold}>{fmt(h.em)}</Text></Text>}
+          {h.oe != null && h.de != null && <Text style={styles.pitcherStats}>Off/Def: <Text style={styles.pitcherStatBold}>{fmt(h.oe, 0)}/{fmt(h.de, 0)}</Text></Text>}
+        </View>
+      </View>
+      {projSpread != null && closeSpread != null && (
+        <View style={{padding: 10, backgroundColor: C.accent + '10', borderRadius: 8, borderWidth: 1, borderColor: C.accent + '40', marginTop: 8}}>
+          <Text style={{color: C.accent, fontWeight: '800', fontSize: 11, letterSpacing: 0.5, marginBottom: 4}}>PANEL READ</Text>
+          <Text style={{color: C.text, fontSize: 12}}>
+            Panel projects spread at {Number(projSpread).toFixed(1)} vs market {Number(closeSpread).toFixed(1)}.
+          </Text>
+        </View>
+      )}
+    </Section>
+  );
+}
+
+function NCAABPaceCard({ctx, homeTeam, awayTeam}: any) {
+  const hTempo = ctx?.home_tempo;
+  const aTempo = ctx?.away_tempo;
+  const paceAvg = ctx?.pace_avg;
+  const closeTotal = ctx?.close_total;
+  const projTotal = ctx?.projected_total;
+  if (hTempo == null && aTempo == null && paceAvg == null) return null;
+  return (
+    <Section title="Pace &amp; Tempo" hint="projected possessions">
+      <View style={{flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 8}}>
+        {aTempo != null && (
+          <View style={{alignItems: 'center'}}>
+            <Text style={{color: C.away, fontSize: 10, fontWeight: '800', letterSpacing: 0.5}}>{abbrev3(awayTeam)}</Text>
+            <Text style={{color: C.text, fontSize: 18, fontWeight: '800'}}>{Number(aTempo).toFixed(1)}</Text>
+            <Text style={{color: C.textMuted, fontSize: 10}}>poss</Text>
+          </View>
+        )}
+        {paceAvg != null && (
+          <View style={{alignItems: 'center'}}>
+            <Text style={{color: C.accent, fontSize: 10, fontWeight: '800', letterSpacing: 0.5}}>PROJ</Text>
+            <Text style={{color: C.accent, fontSize: 18, fontWeight: '800'}}>{Number(paceAvg).toFixed(1)}</Text>
+            <Text style={{color: C.textMuted, fontSize: 10}}>blend</Text>
+          </View>
+        )}
+        {hTempo != null && (
+          <View style={{alignItems: 'center'}}>
+            <Text style={{color: C.home, fontSize: 10, fontWeight: '800', letterSpacing: 0.5}}>{abbrev3(homeTeam)}</Text>
+            <Text style={{color: C.text, fontSize: 18, fontWeight: '800'}}>{Number(hTempo).toFixed(1)}</Text>
+            <Text style={{color: C.textMuted, fontSize: 10}}>poss</Text>
+          </View>
+        )}
+      </View>
+      {projTotal != null && closeTotal != null && (
+        <Text style={{color: C.textDim, fontSize: 11, marginTop: 6, textAlign: 'center'}}>
+          Total projection <Text style={{color: C.text, fontWeight: '700'}}>{Number(projTotal).toFixed(1)}</Text> vs line {Number(closeTotal).toFixed(1)}
+        </Text>
+      )}
+    </Section>
+  );
+}
+
+function NCAABFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
+  const h = {efg: ctx?.home_efg_o, to: ctx?.home_to_o, or: ctx?.home_or_o, ftr: ctx?.home_ftr_o};
+  const a = {efg: ctx?.away_efg_o, to: ctx?.away_to_o, or: ctx?.away_or_o, ftr: ctx?.away_ftr_o};
+  if (h.efg == null && a.efg == null) return null;
+  const pct = (v: any) => v == null ? '—' : `${Number(v).toFixed(1)}%`;
+  const num = (v: any) => v == null ? '—' : Number(v).toFixed(2);
+  const factors = [
+    {label: 'eFG%', away: pct(a.efg), home: pct(h.efg)},
+    {label: 'TO%',  away: pct(a.to),  home: pct(h.to)},
+    {label: 'OR%',  away: pct(a.or),  home: pct(h.or)},
+    {label: 'FTR',  away: num(a.ftr), home: num(h.ftr)},
+  ];
+  return (
+    <Section title="Four Factors" hint="ordered by predictive weight">
+      <View style={{flexDirection: 'row', paddingBottom: 4, borderBottomWidth: 0.5, borderBottomColor: C.border}}>
+        <Text style={{flex: 1.3, color: C.textMuted, fontSize: 9, fontWeight: '800'}}>FACTOR</Text>
+        <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800', textAlign: 'center'}}>{abbrev3(awayTeam)}</Text>
+        <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800', textAlign: 'center'}}>{abbrev3(homeTeam)}</Text>
+      </View>
+      {factors.map((f, i) => (
+        <View key={i} style={{flexDirection: 'row', paddingVertical: 5}}>
+          <Text style={{flex: 1.3, color: C.textDim, fontSize: 12}}>{f.label}</Text>
+          <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{f.away}</Text>
+          <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{f.home}</Text>
+        </View>
+      ))}
+    </Section>
+  );
+}
+
+function NCAABFormRestCard({ctx, homeTeam, awayTeam}: any) {
+  const h = {rec: ctx?.home_record, l10: ctx?.home_l10, rest: ctx?.home_days_rest};
+  const a = {rec: ctx?.away_record, l10: ctx?.away_l10, rest: ctx?.away_days_rest};
+  if (!h.rec && !a.rec && h.rest == null && a.rest == null) return null;
+  const line = (team: string, x: any) => (
+    <View style={{flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4}}>
+      <Text style={{color: C.textDim, fontSize: 12}}>{abbrev3(team)}</Text>
+      <Text style={{color: C.text, fontSize: 12, fontWeight: '700'}}>
+        {x.rec || '—'} · L10 {x.l10 || '—'} · rest {x.rest != null ? `${x.rest}d` : '—'}
+      </Text>
+    </View>
+  );
+  return (
+    <Section title="Form &amp; Rest">
+      {a.rec != null || a.rest != null ? line(awayTeam, a) : null}
+      {h.rec != null || h.rest != null ? line(homeTeam, h) : null}
+    </Section>
+  );
 }
 
 // ─── COHORTS PANEL ──────────────────────────────────────────────────────
