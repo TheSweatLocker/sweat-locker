@@ -168,8 +168,14 @@ def median_across_books(odds_data):
 
 
 def write_line_history(game_id, game_date, odds_snapshot):
-    """Insert a row in mlb_line_history."""
-    if not odds_snapshot: return False
+    """Insert a row in mlb_line_history.
+
+    2026-08-25: added error surfacing. Prior version silently returned
+    False on any error — main loop ignored return value → 7 days of
+    RLS-blocked writes (Aug 17-24) completed 'green' with zero rows
+    landing. Now returns (bool, error_detail) so caller can surface.
+    """
+    if not odds_snapshot: return (False, 'empty_snapshot')
     row = {
         "game_id": game_id,
         "game_date": game_date,
@@ -182,9 +188,11 @@ def write_line_history(game_id, game_date, odds_snapshot):
             json=row,
             timeout=10,
         )
-        return r.status_code in (200, 201, 204)
-    except Exception:
-        return False
+        if r.status_code in (200, 201, 204):
+            return (True, None)
+        return (False, f'HTTP {r.status_code}: {r.text[:120]}')
+    except Exception as e:
+        return (False, f'{type(e).__name__}: {str(e)[:120]}')
 
 
 def update_game_context(game_id, game_date, snapshot, set_close=False):
@@ -309,6 +317,9 @@ def run():
     skipped_inprog = 0
     bl_rows_written = 0
     bl_books_scanned = 0
+    write_ok = 0            # 2026-08-25: count successful history writes
+    write_fail = 0
+    first_write_error = None
     for ev in slate:
         game_id, game_date = map_event_to_game(ev, ctx_rows)
         if not game_id: continue
@@ -318,7 +329,13 @@ def run():
         # ev is already the odds response — no per-event API call needed
         snap = median_across_books(ev)
         if not snap: continue
-        write_line_history(game_id, game_date, snap)
+        ok, err = write_line_history(game_id, game_date, snap)
+        if ok:
+            write_ok += 1
+        else:
+            write_fail += 1
+            if first_write_error is None:
+                first_write_error = err
         set_close = is_game_starting_soon(ev)
         update_game_context(game_id, game_date, snap, set_close=set_close)
         if set_close: closed += 1
@@ -334,8 +351,18 @@ def run():
                 print(f"    ⚠ book_lines writer error on {game_id[:10]}: {e}")
 
     print(f"  ✓ polled {polled} events, locked close_total on {closed}, skipped {skipped_inprog} in-progress")
+    print(f"  📝 history writes: {write_ok} ok, {write_fail} failed")
     if _BL_AVAILABLE:
         print(f"  📚 book_lines: {bl_rows_written} rows written (change-only) across {bl_books_scanned} book-events scanned")
+
+    # 2026-08-25: exit non-zero when EVERY event's write failed — that's
+    # the "silent no-op" pattern that hid Aug 17-24 RLS-blocked writes.
+    # A green cron with 0 successful history writes across 9+ events is
+    # broken. Individual failures OK — full failure is a workflow bug.
+    if polled > 0 and write_ok == 0:
+        print(f"\n🚨 ALL {polled} line_history writes FAILED — first error: {first_write_error}")
+        print("   Fix: check SUPABASE_SERVICE_ROLE_KEY env / RLS policies on mlb_line_history.")
+        sys.exit(2)
 
 
 if __name__ == "__main__":
