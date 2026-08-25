@@ -1314,6 +1314,7 @@ function NCAAFRostersCard({ctx, homeTeam, awayTeam}: any) {
 function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
   const [homeRow, setHomeRow] = React.useState<any>(null);
   const [awayRow, setAwayRow] = React.useState<any>(null);
+  const [seasonUsed, setSeasonUsed] = React.useState<number | null>(null);
   const [loading, setLoading] = React.useState(true);
 
   const season = ctx?.season;
@@ -1326,15 +1327,28 @@ function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
     const client = sb();
     if (!client || !viewName || !homeTeam || !awayTeam) { setLoading(false); return; }
     (async () => {
-      let query: any = client.from(viewName).select('*').in('team', [homeTeam, awayTeam]);
-      if (season) query = query.eq('season', season);
-      const {data} = await query;
-      if (Array.isArray(data)) {
-        const homeR = data.find((r: any) => r.team === homeTeam);
-        const awayR = data.find((r: any) => r.team === awayTeam);
-        setHomeRow(homeR || null);
-        setAwayRow(awayR || null);
+      // Season fallback: current season may have zero graded games (pre-Wk 4
+      // for football, pre-Nov 3 for basketball). If current returns nothing
+      // for either team, fall back to prior season so the card renders last
+      // year's baseline. Mirrors the mock's "2025 season · blends after Wk 4".
+      const currentSeason = Number(season) || new Date().getFullYear();
+      const trySeasons = [currentSeason, currentSeason - 1];
+      let picked: number | null = null;
+      let matched: any[] = [];
+      for (const s of trySeasons) {
+        const {data} = await client.from(viewName).select('*')
+          .in('team', [homeTeam, awayTeam]).eq('season', s);
+        if (Array.isArray(data) && data.length > 0) {
+          matched = data;
+          picked = s;
+          break;
+        }
       }
+      const homeR = matched.find((r: any) => r.team === homeTeam);
+      const awayR = matched.find((r: any) => r.team === awayTeam);
+      setHomeRow(homeR || null);
+      setAwayRow(awayR || null);
+      setSeasonUsed(picked);
       setLoading(false);
     })();
   }, [viewName, homeTeam, awayTeam, season]);
@@ -1380,7 +1394,7 @@ function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
   ];
 
   return (
-    <Section title="Trends &amp; Tendencies" hint="home vs road splits">
+    <Section title="Trends &amp; Tendencies" hint={seasonUsed ? `home vs road splits · ${seasonUsed} season` : 'home vs road splits'}>
       <View>
         {/* Column headers */}
         <View style={{flexDirection: 'row', paddingHorizontal: 4, paddingBottom: 6, borderBottomWidth: 0.5, borderBottomColor: C.border}}>
