@@ -319,7 +319,10 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
         narrative = call_claude(prompt)
         if narrative is None:
             print(f'  ✗ claude failed for {ctx.get("game_id")}'); skipped += 1; continue
-        ok = write_cache(ctx['game_id'], 'ncaab', narrative, struct)
+        # 2026-08-25 case fix: was 'ncaab' (lowercase) — app queries
+        # jerry_cache by sport='NCAAB' (uppercase per sport_registry).
+        # Existing lowercase rows in DB need one-time UPDATE to match.
+        ok = write_cache(ctx['game_id'], 'NCAAB', narrative, struct)
         if ok:
             written += 1
         else:

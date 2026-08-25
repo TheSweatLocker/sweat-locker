@@ -321,7 +321,11 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
         if not narrative:
             print(f'    ⚠ claude returned empty — skipping cache write')
             continue
-        ok = write_cache(gid, 'ncaaf', narrative, struct)
+        # 2026-08-25 case fix: was 'ncaaf' (lowercase) — data audit found
+        # consumers filter jerry_cache by sport='NCAAF' (uppercase per
+        # sport_registry convention) so all writes were invisible. Existing
+        # lowercase rows in DB need one-time UPDATE to match new convention.
+        ok = write_cache(gid, 'NCAAF', narrative, struct)
         if ok:
             success += 1
             print(f'    ✓ wrote cache (narrative {len(narrative)} chars)')
