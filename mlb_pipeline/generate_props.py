@@ -3916,9 +3916,18 @@ def upsert_props(props):
         for k in all_keys:
             if k not in p:
                 p[k] = None
+    # 2026-08-25: cross-run dedup. In-Python dedup above only handles
+    # WITHIN a batch — same pipeline invocation. Cross-invocation
+    # duplicates (16:17 run + 19:32 run + 20:29 run today all inserted
+    # separate rows for Pfaadt bb_under 1.5) require on_conflict on the
+    # POST + a matching UNIQUE index on the DB (see migration
+    # 20260826d_mlb_pipeline_props_dedup.sql). With both in place, PATCH
+    # merges instead of INSERT for existing (game_date, player_name,
+    # prop_type, direction, prop_line) tuples.
+    conflict_cols = 'game_date,player_name,prop_type,direction,prop_line'
     r = requests.post(
-        f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
-        headers=HEADERS,
+        f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?on_conflict={conflict_cols}",
+        headers={**HEADERS, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
         json=props,
         timeout=20
     )
