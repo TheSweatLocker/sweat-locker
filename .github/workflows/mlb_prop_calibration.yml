@@ -49,7 +49,7 @@ jobs:
       - name: Recompute prop edge calibration
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
@@ -83,7 +83,7 @@ jobs:
       - name: Run rolling-window backtest
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         # Only run backtest on Mondays (day_of_week check inside script's own gate would be cleaner,
         # but for now: fire the workflow daily, backtest job only writes on Monday runs).
         run: |
