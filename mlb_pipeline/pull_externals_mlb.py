@@ -134,6 +134,11 @@ SOURCE_REGISTRY = {
         'base_url': 'https://oddscrowd.com/games/upcoming/baseball',
         'label': 'OddsCrowd',
     },
+    'scoresandodds': {
+        'fade_flag': 'trust', 'ttl_hours': 6,       # 2026-08-25 SO scraper
+        'base_url': 'https://www.scoresandodds.com/mlb',
+        'label': 'ScoresAndOdds',
+    },
     'sbr': {
         'fade_flag': 'fade', 'ttl_hours': 6,        # extreme public → fade signal
         'base_url': 'https://www.sportsbookreview.com/betting-odds/mlb-baseball/consensus/',
@@ -1109,6 +1114,29 @@ def fetch_oddscrowd(slate: list, game_date: str) -> tuple[list, int]:
     return picks, status
 
 
+def fetch_scoresandodds(slate: list, game_date: str) -> tuple[list, int]:
+    """2026-08-25 4th public-split source. Complements OC + FR + CZ so we can
+    reach TRIPLE_CONFIRMED more consistently in the sharp signal stack."""
+    from externals_scoresandodds import fetch_scoresandodds_generic
+    picks_dicts, status = fetch_scoresandodds_generic(
+        league_slug='mlb',
+        sport_code='MLB',
+        game_date=game_date,
+        slate=slate,
+        find_game_id_fn=find_game_id,
+    )
+    picks = []
+    for d in picks_dicts:
+        picks.append(ExternalPick(
+            game_id=d['game_id'], sport=d['sport'], game_date=d['game_date'],
+            source=d['source'], surface=d['surface'], pick_side=d['pick_side'],
+            pick_line=d['pick_line'], odds_american=d['odds_american'],
+            confidence=d['confidence'], raw_text=d['raw_text'],
+            source_url=d['source_url'], fade_flag=d['fade_flag'],
+        ))
+    return picks, status
+
+
 def fetch_sbr(slate: list, game_date: str) -> tuple[list, int]:
     """SportsBookReview consensus — thin wrapper around externals_consensus.
     See externals_consensus.py::fetch_sbr for parser + fade-flag policy."""
@@ -1173,6 +1201,7 @@ FETCHERS = {
     'fangraphs': fetch_fangraphs,
     'ballparkpal': fetch_ballparkpal,
     'oddscrowd': fetch_oddscrowd,
+    'scoresandodds': fetch_scoresandodds,
     'sbr': fetch_sbr,
     'betfirm': fetch_betfirm,
     'tonyspicks': fetch_tonyspicks,

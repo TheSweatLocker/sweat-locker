@@ -99,6 +99,11 @@ SOURCE_REGISTRY = {
         'base_url': 'https://oddscrowd.com/games/upcoming/football',
         'label': 'OddsCrowd CFB',
     },
+    'scoresandodds': {
+        'fade_flag': 'trust', 'ttl_hours': 12,   # 2026-08-25 SO scraper
+        'base_url': 'https://www.scoresandodds.com/ncaaf',
+        'label': 'ScoresAndOdds CFB',
+    },
 }
 
 
@@ -523,6 +528,25 @@ def fetch_oddscrowd(slate: list, game_date: str, aliases: dict) -> tuple:
     return picks, status
 
 
+def fetch_scoresandodds(slate: list, game_date: str, aliases: dict) -> tuple:
+    """2026-08-25 SO scraper for NCAAF."""
+    from externals_scoresandodds import fetch_scoresandodds_generic
+    picks_dicts, status = fetch_scoresandodds_generic(
+        league_slug='ncaaf', sport_code='NCAAF', game_date=game_date,
+        slate=slate, find_game_id_fn=find_game_id,
+    )
+    picks = []
+    for d in picks_dicts:
+        picks.append(ExternalPick(
+            game_id=d['game_id'], sport=d['sport'], game_date=d['game_date'],
+            source=d['source'], surface=d['surface'], pick_side=d['pick_side'],
+            pick_line=d['pick_line'], odds_american=d['odds_american'],
+            confidence=d['confidence'], raw_text=d['raw_text'],
+            source_url=d['source_url'], fade_flag=d['fade_flag'],
+        ))
+    return picks, status
+
+
 FETCHERS = {
     'dimers': fetch_dimers,
     'covers': fetch_covers,
@@ -532,6 +556,7 @@ FETCHERS = {
     'pickswise': fetch_pickswise,
     'pickdawgz': fetch_pickdawgz,
     'oddscrowd': fetch_oddscrowd,
+    'scoresandodds': fetch_scoresandodds,
 }
 
 
