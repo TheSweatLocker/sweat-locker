@@ -13135,15 +13135,24 @@ setJerryHistory(prev => {
   // leaking non-PRIME games into the Prime Only view. Strict tier check
   // guarantees only games the pipeline itself scored as PRIME show up.
   if(gamesPrimeOnly || gamesStrongOnly) {
-    // 2026-08-20: switched from sweatScores.tier to primary_play.tier
-    // (the ensemble output, the authoritative pick). sweatScore was
-    // an OLDER metric that didn't align with the ensemble cutover.
-    const ctxAny: any = mlbGameContext[game.id]
-      || Object.values(mlbGameContext).find((c: any) =>
-           c.home_team === game.home_team || c.away_team === game.away_team);
-    const ppTier = ctxAny?.primary_play?.tier;
-    // Fall back to sweatScore tier if no primary_play (non-MLB sports may
-    // not have ensemble output yet).
+    // 2026-08-25 sport-aware ctx lookup. Prior code hardcoded
+    // mlbGameContext, so Prime/Strong+ filters silently missed every
+    // NFL/NCAAF game's tier — they'd never appear in the filtered view
+    // even when the game was PRIME on the ensemble. Now: pick the
+    // sport's own map first, then MLB fallback, then sweatScore.
+    // NBA/NCAAB/NHL context maps not yet wired into the app (pre-season
+    // for those sports); when they land, add them here.
+    const sportMap: any =
+      gamesSport === 'NFL'   ? (nflGameContextMap || {}) :
+      gamesSport === 'NCAAF' ? (ncaafGameContextMap || {}) :
+      mlbGameContext;
+    const ctxAny: any = sportMap[game.id]
+      || Object.values(sportMap).find((c: any) =>
+           c && (c.home_team === game.home_team || c.away_team === game.away_team));
+    // primary_play can arrive as a JSONB string on some tables; parse safely.
+    let pp: any = ctxAny?.primary_play;
+    if (typeof pp === 'string') { try { pp = JSON.parse(pp); } catch { pp = null; } }
+    const ppTier = pp?.tier;
     const effectiveTier = ppTier || sweatScores[game.id]?.tier;
     if (gamesPrimeOnly && effectiveTier !== 'PRIME') return false;
     if (gamesStrongOnly && effectiveTier !== 'PRIME' && effectiveTier !== 'STRONG') return false;
