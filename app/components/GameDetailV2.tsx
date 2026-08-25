@@ -688,11 +688,28 @@ function ScoreRange({ctx, awayTeam, homeTeam}: any) {
     if (!isFinite(t) || !isFinite(m)) return;
     preds.push({name, a: (t - m) / 2, h: (t + m) / 2});
   };
+  const addPredHA = (name: string, homePts: any, awayPts: any) => {
+    // Sports that ship home/away points directly (NCAAF: model_pred_home_points,
+    // sp_plus_pred_home_pts) instead of total+margin. Convert to the same shape.
+    if (homePts == null || awayPts == null) return;
+    const h = parseFloat(homePts); const a = parseFloat(awayPts);
+    if (!isFinite(h) || !isFinite(a)) return;
+    preds.push({name, a, h});
+  };
+  // MLB lens columns
   addPred('Panel', ctx?.panel_implied_total, ctx?.panel_implied_margin);
   addPred('Jerry', ctx?.jerry_pred_total, ctx?.jerry_pred_spread);
-  addPred('v3', ctx?.projected_total, ctx?.projected_spread);
-  addPred('v4', ctx?.model_pred_total, ctx?.model_pred_spread);
-  addPred('MC', mc.mc_expected_total ?? mc.mc_mean_total, mc.mc_expected_margin);
+  addPred('v3',    ctx?.projected_total,   ctx?.projected_spread);
+  addPred('v4',    ctx?.model_pred_total,  ctx?.model_pred_spread);
+  addPred('MC',    mc.mc_expected_total ?? mc.mc_mean_total, mc.mc_expected_margin);
+  // 2026-08-25 — cross-sport predicted-score fields so this component
+  // renders for NCAAF / NFL / NBA / NCAAB, not just MLB. Each sport's
+  // context builder writes its own naming; we probe all of them.
+  addPredHA('Model',    ctx?.model_pred_home_points, ctx?.model_pred_away_points);
+  addPredHA('SP+',      ctx?.sp_plus_pred_home_pts,   ctx?.sp_plus_pred_away_pts);
+  addPredHA('Efficiency', ctx?.eff_pred_home_pts,     ctx?.eff_pred_away_pts);
+  // NBA/NHL Elo — if ctx exposes projected points from elo, use those too.
+  addPredHA('Elo',      ctx?.elo_pred_home_pts,       ctx?.elo_pred_away_pts);
 
   if (preds.length === 0) return <Text style={styles.emptyMuted}>No score projections available.</Text>;
 
@@ -1114,19 +1131,108 @@ function SportSpecificSlot({ctx, gamesSport, game}: any) {
 }
 
 // ─── NCAAF SLOT ──────────────────────────────────────────────────────────
-// 2026-08-24: dedicated NCAAF slot. Surfaces SP+ ratings, roster
-// physicality (from 8/23 shipping), returning production %, projected
-// spread. Never queries nfl_team_stats (which broke NFLSlot for NCAAF).
+// 2026-08-25 redesign (see ncaaf_slot_mock artifact): backend-driven cards
+// that render present-data-only. Parent GameDetailV2 already handles
+// Predicted Score, Money Flow, Line Movement, Model Consensus, External
+// Handicappers as shared shells. This slot adds sport-unique cards.
+//
+// Backend controls what shows via ctx fields:
+//   Weather:            temp / wind / dome / weather_source (via ncaaf_weather_pull.py)
+//   Efficiency:         home_sp_overall / away_sp_overall / sp_gap / projected_spread
+//   Rosters:            home_returning_production / ol_dl_weight_gap_home /
+//                       home_ol_avg_wt / home_avg_class_year / class_year_edge_home
+//   Tendencies:         home/road ATS/SU/OU/as-fav-dog from
+//                       ncaaf_team_home_road_tendencies materialized view
+//
+// Adding a new sport-unique card = one Section entry + component.
+// Adding a new field WITHIN an existing card = zero app change if the
+// data lands in a JSONB blob that render loops over.
 function NCAAFSlot({ctx, game}: any) {
   const homeTeam = ctx?.home_team || game?.home_team;
   const awayTeam = ctx?.away_team || game?.away_team;
 
-  // Read what's actually on the ctx row (populated by ncaaf_game_context.py
-  // + ncaaf_returning_production_pull.py + roster physicality enricher).
+  return (
+    <>
+      <SportWeatherCard ctx={ctx} />
+      <NCAAFEfficiencyCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NCAAFRostersCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <TeamTendenciesCard sport="NCAAF" ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+    </>
+  );
+}
+
+// ─── SPORT WEATHER (shared shell — NCAAF/NFL/etc) ───────────────────────
+// Reads temp/wind/dome from ctx (whichever sport). Hides on domes or
+// when weather columns are still null (pre-pull).
+function SportWeatherCard({ctx}: any) {
+  const temp = ctx?.temp;
+  const wind = ctx?.wind;
+  const dome = ctx?.dome;
+  const src  = ctx?.weather_source;
+  if (dome === true) return null;                // don't waste a card on domes
+  if (temp == null && wind == null) return null; // pre-pull / no coverage
+  return (
+    <Section title="Weather" hint="game-time forecast">
+      <View style={{flexDirection: 'row', gap: 8}}>
+        {temp != null && (
+          <View style={{flex: 1, backgroundColor: C.border + '22', padding: 10, borderRadius: 8, alignItems: 'center'}}>
+            <Text style={{color: C.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 0.5}}>TEMP</Text>
+            <Text style={{color: C.text, fontSize: 15, fontWeight: '800', marginTop: 2}}>{Math.round(Number(temp))}°F</Text>
+          </View>
+        )}
+        {wind != null && (
+          <View style={{flex: 1, backgroundColor: C.border + '22', padding: 10, borderRadius: 8, alignItems: 'center'}}>
+            <Text style={{color: C.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 0.5}}>WIND</Text>
+            <Text style={{color: Number(wind) >= 15 ? C.sharp : C.text, fontSize: 15, fontWeight: '800', marginTop: 2}}>{Math.round(Number(wind))} mph</Text>
+          </View>
+        )}
+      </View>
+      {wind != null && Number(wind) >= 15 && (
+        <Text style={{color: C.textMuted, fontSize: 11, marginTop: 8, fontStyle: 'italic'}}>
+          15+ mph correlates with lower totals historically.
+        </Text>
+      )}
+    </Section>
+  );
+}
+
+// ─── NCAAF EFFICIENCY (renamed from SP+ — no provider name in user copy) ─
+function NCAAFEfficiencyCard({ctx, homeTeam, awayTeam}: any) {
   const spHome = ctx?.home_sp_overall;
   const spAway = ctx?.away_sp_overall;
   const spGap = ctx?.sp_gap;
   const projSpread = ctx?.projected_spread;
+  if (spHome == null || spAway == null) return null;
+  return (
+    <Section title="Efficiency Ratings" hint="season-level power rating">
+      <View style={{gap: 8}}>
+        <View style={[styles.pitcherCard, {borderTopColor: C.away, padding: 12}]}>
+          <Text style={styles.pitcherName}>{awayTeam}</Text>
+          <Text style={styles.pitcherStats}>
+            Overall: <Text style={styles.pitcherStatBold}>{Number(spAway).toFixed(1)}</Text>
+          </Text>
+        </View>
+        <View style={[styles.pitcherCard, {borderTopColor: C.home, padding: 12}]}>
+          <Text style={styles.pitcherName}>{homeTeam}</Text>
+          <Text style={styles.pitcherStats}>
+            Overall: <Text style={styles.pitcherStatBold}>{Number(spHome).toFixed(1)}</Text>
+          </Text>
+        </View>
+        {spGap != null && projSpread != null && (
+          <View style={{padding: 10, backgroundColor: C.accent + '10', borderRadius: 8, borderWidth: 1, borderColor: C.accent + '40'}}>
+            <Text style={{color: C.accent, fontWeight: '800', fontSize: 11, letterSpacing: 0.5, marginBottom: 4}}>MODEL READ</Text>
+            <Text style={{color: C.text, fontSize: 12}}>
+              Rating gap of {Number(spGap).toFixed(1)} points {Number(spGap) > 0 ? `favors ${homeTeam}` : `favors ${awayTeam}`}. Model projects spread at {Number(projSpread).toFixed(1)}.
+            </Text>
+          </View>
+        )}
+      </View>
+    </Section>
+  );
+}
+
+// ─── NCAAF ROSTERS & CONTINUITY (returning + physicality consolidated) ──
+function NCAAFRostersCard({ctx, homeTeam, awayTeam}: any) {
   const rpHome = ctx?.home_returning_production;
   const rpAway = ctx?.away_returning_production;
   const olGapH = ctx?.ol_dl_weight_gap_home;
@@ -1136,100 +1242,169 @@ function NCAAFSlot({ctx, game}: any) {
   const awayClassYr = ctx?.away_avg_class_year;
   const homeOl = ctx?.home_ol_avg_wt;
   const awayOl = ctx?.away_ol_avg_wt;
-
-  const hasSp = spHome != null && spAway != null;
-  const hasPhys = olGapH != null || olGapA != null || classEdge != null;
-  const hasRp = rpHome != null || rpAway != null;
-
-  if (!hasSp && !hasPhys && !hasRp) {
-    return (
-      <Section title="Team Analysis" hint="pre-season · SP+ + physicality">
-        <Text style={styles.emptyMuted}>
-          Pre-season data still loading. Full breakdown lands once teams have game reps.
-        </Text>
-      </Section>
-    );
-  }
-
+  const hasAny = rpHome != null || rpAway != null || olGapH != null || olGapA != null ||
+                 classEdge != null || homeOl != null || awayOl != null;
+  if (!hasAny) return null;
+  const awayShort = (awayTeam || '').split(' ').pop();
+  const homeShort = (homeTeam || '').split(' ').pop();
   return (
-    <>
-      {hasSp && (
-        <Section title="SP+ Efficiency Ratings" hint="preseason season-level power rating">
-          <View style={{gap: 8}}>
-            <View style={[styles.pitcherCard, {borderTopColor: C.away, padding: 12}]}>
-              <Text style={styles.pitcherName}>{awayTeam}</Text>
-              <Text style={styles.pitcherStats}>
-                SP+ overall: <Text style={styles.pitcherStatBold}>{Number(spAway).toFixed(1)}</Text>
-              </Text>
-            </View>
-            <View style={[styles.pitcherCard, {borderTopColor: C.home, padding: 12}]}>
-              <Text style={styles.pitcherName}>{homeTeam}</Text>
-              <Text style={styles.pitcherStats}>
-                SP+ overall: <Text style={styles.pitcherStatBold}>{Number(spHome).toFixed(1)}</Text>
-              </Text>
-            </View>
-            {spGap != null && projSpread != null && (
-              <View style={{padding: 10, backgroundColor: C.accent + '10', borderRadius: 8, borderWidth: 1, borderColor: C.accent + '40'}}>
-                <Text style={{color: C.accent, fontWeight: '800', fontSize: 11, letterSpacing: 0.5, marginBottom: 4}}>MODEL READ</Text>
-                <Text style={{color: C.text, fontSize: 12}}>
-                  SP+ gap of {Number(spGap).toFixed(1)} points {Number(spGap) > 0 ? `favors ${homeTeam}` : `favors ${awayTeam}`}. Model projects spread at {Number(projSpread).toFixed(1)}.
-                </Text>
-              </View>
-            )}
+    <Section title="Rosters & Continuity" hint="returning production + physicality">
+      <View style={{gap: 6}}>
+        {(rpAway != null || rpHome != null) && (
+          <View style={{flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4}}>
+            <Text style={{color: C.textDim, fontSize: 12}}>Returning offense + defense</Text>
+            <Text style={{color: C.text, fontSize: 12, fontWeight: '700'}}>
+              {rpAway != null ? `${awayShort} ${Math.round(Number(rpAway) * 100)}%` : '—'}
+              {' · '}
+              {rpHome != null ? `${homeShort} ${Math.round(Number(rpHome) * 100)}%` : '—'}
+            </Text>
           </View>
-        </Section>
-      )}
-
-      {hasRp && (
-        <Section title="Returning Production" hint="% of last season's offense + defense back">
-          <View style={{gap: 6}}>
-            {rpAway != null && (
-              <Text style={styles.pitcherStats}>
-                {awayTeam}: <Text style={styles.pitcherStatBold}>{Math.round(Number(rpAway) * 100)}%</Text> returning
-              </Text>
-            )}
-            {rpHome != null && (
-              <Text style={styles.pitcherStats}>
-                {homeTeam}: <Text style={styles.pitcherStatBold}>{Math.round(Number(rpHome) * 100)}%</Text> returning
-              </Text>
-            )}
+        )}
+        {homeOl != null && awayOl != null && (
+          <View style={{flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4}}>
+            <Text style={{color: C.textDim, fontSize: 12}}>OL avg weight</Text>
+            <Text style={{color: C.text, fontSize: 12, fontWeight: '700'}}>
+              {awayShort} {Math.round(Number(awayOl))}lb · {homeShort} {Math.round(Number(homeOl))}lb
+            </Text>
           </View>
-        </Section>
-      )}
-
-      {hasPhys && (
-        <Section title="Roster Physicality" hint="OL/DL weight + class-year experience">
-          <View style={{gap: 6}}>
-            {homeOl != null && awayOl != null && (
-              <Text style={styles.pitcherStats}>
-                OL avg weight: <Text style={styles.pitcherStatBold}>{awayTeam.split(' ').pop()} {Math.round(Number(awayOl))}lb</Text> · <Text style={styles.pitcherStatBold}>{homeTeam.split(' ').pop()} {Math.round(Number(homeOl))}lb</Text>
-              </Text>
-            )}
+        )}
+        {homeClassYr != null && awayClassYr != null && (
+          <View style={{flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4}}>
+            <Text style={{color: C.textDim, fontSize: 12}}>Class experience</Text>
+            <Text style={{color: C.text, fontSize: 12, fontWeight: '700'}}>
+              {awayShort} {Number(awayClassYr).toFixed(1)} · {homeShort} {Number(homeClassYr).toFixed(1)}
+              <Text style={{color: C.textMuted, fontSize: 10}}> (1=Fr, 4=Sr)</Text>
+            </Text>
+          </View>
+        )}
+        {((olGapH != null && Number(olGapH) >= 15) ||
+          (olGapA != null && Number(olGapA) >= 15) ||
+          (classEdge != null && Math.abs(Number(classEdge)) >= 0.3)) && (
+          <View style={{marginTop: 4, gap: 4}}>
             {olGapH != null && Number(olGapH) >= 15 && (
               <Text style={[styles.pitcherStats, {color: C.accent}]}>
-                {homeTeam.split(' ').pop()} OL outweighs opposing DL by {Math.round(Number(olGapH))} lb — ground-game leverage
+                {homeShort} OL outweighs opposing DL by {Math.round(Number(olGapH))} lb — ground-game leverage
               </Text>
             )}
             {olGapA != null && Number(olGapA) >= 15 && (
               <Text style={[styles.pitcherStats, {color: C.accent}]}>
-                {awayTeam.split(' ').pop()} OL outweighs opposing DL by {Math.round(Number(olGapA))} lb
-              </Text>
-            )}
-            {homeClassYr != null && awayClassYr != null && (
-              <Text style={styles.pitcherStats}>
-                Class experience: <Text style={styles.pitcherStatBold}>{awayTeam.split(' ').pop()} {Number(awayClassYr).toFixed(1)}</Text> · <Text style={styles.pitcherStatBold}>{homeTeam.split(' ').pop()} {Number(homeClassYr).toFixed(1)}</Text>
-                <Text style={{color: C.textMuted, fontSize: 10}}> (1=Fr, 4=Sr)</Text>
+                {awayShort} OL outweighs opposing DL by {Math.round(Number(olGapA))} lb
               </Text>
             )}
             {classEdge != null && Math.abs(Number(classEdge)) >= 0.3 && (
               <Text style={[styles.pitcherStats, {color: C.accent}]}>
-                {Number(classEdge) > 0 ? homeTeam.split(' ').pop() : awayTeam.split(' ').pop()} carries a class-year experience edge (Weeks 1-3 significant)
+                {Number(classEdge) > 0 ? homeShort : awayShort} carries a class-year experience edge (Weeks 1-3 significant)
               </Text>
             )}
           </View>
-        </Section>
-      )}
-    </>
+        )}
+      </View>
+    </Section>
+  );
+}
+
+// ─── TEAM TENDENCIES (shared — NFL / NCAAF / NBA) ───────────────────────
+// Reads the {sport}_team_home_road_tendencies materialized view built by
+// migration 20260826b. Renders home team's home-splits vs away team's
+// road-splits so a casual can see "how does this team do in this spot."
+//
+// Backend-driven: the METRICS array below is the display manifest. Adding
+// a new column to the view + adding a row here = one narrow app update.
+// The view refresh cadence lives in each sport's pipeline workflow (calls
+// refresh_home_road_tendencies RPC after the resolver).
+function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
+  const [homeRow, setHomeRow] = React.useState<any>(null);
+  const [awayRow, setAwayRow] = React.useState<any>(null);
+  const [loading, setLoading] = React.useState(true);
+
+  const season = ctx?.season;
+  const viewName = sport === 'NFL'   ? 'nfl_team_home_road_tendencies'
+                  : sport === 'NCAAF' ? 'ncaaf_team_home_road_tendencies'
+                  : sport === 'NBA'   ? 'nba_team_home_road_tendencies'
+                  : null;
+
+  React.useEffect(() => {
+    const client = sb();
+    if (!client || !viewName || !homeTeam || !awayTeam) { setLoading(false); return; }
+    (async () => {
+      let query: any = client.from(viewName).select('*').in('team', [homeTeam, awayTeam]);
+      if (season) query = query.eq('season', season);
+      const {data} = await query;
+      if (Array.isArray(data)) {
+        const homeR = data.find((r: any) => r.team === homeTeam);
+        const awayR = data.find((r: any) => r.team === awayTeam);
+        setHomeRow(homeR || null);
+        setAwayRow(awayR || null);
+      }
+      setLoading(false);
+    })();
+  }, [viewName, homeTeam, awayTeam, season]);
+
+  if (!viewName) return null;
+  if (loading) return null;  // silent — no flicker
+  if (!homeRow && !awayRow) return null;  // no data (offseason / backfill pending)
+
+  // Home team's HOME record vs Away team's ROAD record — that's the matchup.
+  const fmt = (w?: number, l?: number, suffix = '') => {
+    if (w == null && l == null) return '—';
+    if ((w ?? 0) + (l ?? 0) === 0) return '—';
+    return `${w ?? 0}-${l ?? 0}${suffix}`;
+  };
+  const fmtOU = (o?: number, u?: number) => {
+    if (o == null && u == null) return '—';
+    const n = (o ?? 0) + (u ?? 0);
+    if (n === 0) return '—';
+    return (o ?? 0) >= (u ?? 0) ? `${o}-${u} O` : `${o}-${u} U`;
+  };
+  const fmtFavDog = (fw?: number, fl?: number, dw?: number, dl?: number, primaryFav = true) => {
+    const favN = (fw ?? 0) + (fl ?? 0);
+    const dogN = (dw ?? 0) + (dl ?? 0);
+    if (primaryFav && favN >= dogN && favN > 0) return `${fw}-${fl} fav`;
+    if (dogN > 0) return `${dw}-${dl} dog`;
+    if (favN > 0) return `${fw}-${fl} fav`;
+    return '—';
+  };
+
+  // Metric display manifest — one row per metric.
+  const metrics = [
+    {label: 'ATS',       away: fmt(awayRow?.road_ats_wins,  awayRow?.road_ats_losses),
+                         home: fmt(homeRow?.home_ats_wins,  homeRow?.home_ats_losses)},
+    {label: 'SU (ML)',   away: fmt(awayRow?.road_su_wins,   awayRow?.road_su_losses),
+                         home: fmt(homeRow?.home_su_wins,   homeRow?.home_su_losses)},
+    {label: 'O/U',       away: fmtOU(awayRow?.road_ou_overs, awayRow?.road_ou_unders),
+                         home: fmtOU(homeRow?.home_ou_overs, homeRow?.home_ou_unders)},
+    {label: 'As fav / dog',
+                         away: fmtFavDog(awayRow?.as_fav_ats_wins, awayRow?.as_fav_ats_losses,
+                                         awayRow?.as_dog_ats_wins, awayRow?.as_dog_ats_losses, false),
+                         home: fmtFavDog(homeRow?.as_fav_ats_wins, homeRow?.as_fav_ats_losses,
+                                         homeRow?.as_dog_ats_wins, homeRow?.as_dog_ats_losses, true)},
+  ];
+
+  return (
+    <Section title="Trends &amp; Tendencies" hint="home vs road splits">
+      <View>
+        {/* Column headers */}
+        <View style={{flexDirection: 'row', paddingHorizontal: 4, paddingBottom: 6, borderBottomWidth: 0.5, borderBottomColor: C.border}}>
+          <Text style={{flex: 1.4, color: C.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 0.5}}>METRIC</Text>
+          <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800', letterSpacing: 0.5, textAlign: 'center'}}>
+            {(awayTeam || '').split(' ').pop()} (road)
+          </Text>
+          <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800', letterSpacing: 0.5, textAlign: 'center'}}>
+            {(homeTeam || '').split(' ').pop()} (home)
+          </Text>
+        </View>
+        {/* Metric rows */}
+        {metrics.map((m, i) => (
+          <View key={i} style={{flexDirection: 'row', paddingVertical: 6, paddingHorizontal: 4,
+                                borderBottomWidth: i < metrics.length - 1 ? 0.5 : 0,
+                                borderBottomColor: C.border + '44'}}>
+            <Text style={{flex: 1.4, color: C.textDim, fontSize: 12}}>{m.label}</Text>
+            <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{m.away}</Text>
+            <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{m.home}</Text>
+          </View>
+        ))}
+      </View>
+    </Section>
   );
 }
 
