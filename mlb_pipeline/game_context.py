@@ -4685,6 +4685,14 @@ def run(target_date=None):
                         'away_team_k_pct': _aofs.get('k_pct'),
                         'home_k_gap': home_k_gap,
                         'away_k_gap': away_k_gap,
+                        # 2026-08-25 walk-draw matchup — direct BB% counter to
+                        # BB unders. Cubs #1 in MLB at 10.8% is exactly the
+                        # spot our k_pct-only proxy misses. Feeds
+                        # score_pitcher_bb_over/under opp_bb_pct branch.
+                        'home_team_bb_pct': _hofs.get('bb_pct'),
+                        'away_team_bb_pct': _aofs.get('bb_pct'),
+                        'home_team_obp':    _hofs.get('obp'),
+                        'away_team_obp':    _aofs.get('obp'),
                         # Defense
                         'home_team_oaa': _hofs.get('oaa'),
                         'away_team_oaa': _aofs.get('oaa'),

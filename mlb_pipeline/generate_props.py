@@ -689,6 +689,9 @@ def score_pitcher_bb_over(g, side):
 
     opp_side = 'away' if side == 'home' else 'home'
     opp_k_pct = _f(g.get(f'{opp_side}_team_k_pct')) or 22  # patient-vs-aggressive proxy (lower K = more contact-y)
+    # 2026-08-25: direct walk-draw signal — symmetric to bb_under. High
+    # opp BB% is a tailwind for BB overs.
+    opp_bb_pct = _f(g.get(f'{opp_side}_team_bb_pct'))
     first_inn_whip = _f(g.get(f'{side}_first_inning_whip'))
     days_rest = _f(g.get(f'{side}_days_rest'))
 
@@ -737,6 +740,19 @@ def score_pitcher_bb_over(g, side):
         signals['patient_opp'] = f'Opp K% {opp_k_pct:.1f}% — works counts'
     elif opp_k_pct >= 27:
         conviction -= 4  # aggressive lineup, fewer walks drawn
+
+    # 2026-08-25: direct opp walk-draw rate (symmetric to bb_under fix).
+    # High BB% lineups are a tailwind for BB overs.
+    if opp_bb_pct is not None:
+        if opp_bb_pct >= 10.0:
+            conviction += 10  # top-5 walk-drawing lineup — strong tailwind
+            signals['walk_prone_opp'] = f'Opp BB% {opp_bb_pct:.1f}% — top walk-drawing lineup, over tailwind'
+        elif opp_bb_pct >= 9.0:
+            conviction += 5
+            signals['walk_lean_opp'] = f'Opp BB% {opp_bb_pct:.1f}% — patient lineup, above avg walks drawn'
+        elif opp_bb_pct <= 7.0:
+            conviction -= 6
+            signals['hacker_opp_fade'] = f'Opp BB% {opp_bb_pct:.1f}% — hacky lineup, unlikely to draw walks'
 
     # Rust — extra rest can mean shakier command first time back
     if days_rest is not None and days_rest >= 7:
@@ -792,6 +808,11 @@ def score_pitcher_bb_under(g, side):
 
     opp_side = 'away' if side == 'home' else 'home'
     opp_k_pct = _f(g.get(f'{opp_side}_team_k_pct')) or 22
+    # 2026-08-25: direct opponent walk-draw rate. User caught this gap
+    # tonight — Cubs are #1 in MLB at 10.8% BB rate, but our K%-only
+    # signal missed it (Cubs K% 21.7% is average, triggers no adjustment).
+    # league_avg ~8.5%, high walk-drawers 9.5%+, elite hackers 7%-.
+    opp_bb_pct = _f(g.get(f'{opp_side}_team_bb_pct'))
     first_inn_whip = _f(g.get(f'{side}_first_inning_whip'))
 
     signals = {}
@@ -840,6 +861,20 @@ def score_pitcher_bb_under(g, side):
         signals['aggressive_opp'] = f'Opp K% {opp_k_pct:.1f}% — aggressive, low walk draw'
     elif opp_k_pct <= 18:
         conviction -= 5  # patient lineup, more walk risk
+
+    # 2026-08-25: opp walk-draw rate — direct BB signal, doesn't rely on
+    # K% as proxy. Cubs 10.8% BB (top of league) missed by K%-only check.
+    # League avg ~8.5%; high-walk lineups >= 9.5%; elite hackers <= 7%.
+    if opp_bb_pct is not None:
+        if opp_bb_pct >= 10.0:
+            conviction -= 12  # top-5 walk-drawers — real headwind for BB under
+            signals['opp_walk_headwind'] = f'Opp BB% {opp_bb_pct:.1f}% — top walk-drawing lineup, real under risk'
+        elif opp_bb_pct >= 9.0:
+            conviction -= 6
+            signals['opp_walk_lean'] = f'Opp BB% {opp_bb_pct:.1f}% — patient lineup, above avg walk draw'
+        elif opp_bb_pct <= 7.0:
+            conviction += 6
+            signals['opp_hacker'] = f'Opp BB% {opp_bb_pct:.1f}% — hacky lineup, unlikely to draw many'
 
     conviction = max(0, min(100, conviction))
     suggested_line = 1.5  # under-1.5 is the standard book line
