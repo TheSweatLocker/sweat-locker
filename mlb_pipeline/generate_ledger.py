@@ -716,13 +716,19 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
         suggestions.append(chalk); register(chalk)
         print(f'  ✓ CHALK TRIO: {chalk["combined_odds"]:+d} · {len(chalk["legs"])} legs')
 
-    # 2. Teased totals combo — pair two PRIME/STRONG totals, each teased
-    # 1.5-2 runs to easier zone. High-EV per user vision: "Red Sox game
-    # teased down to O 6.5 or 5.5 with another total we liked teased."
-    teased_totals = build_teased_totals_combo(picks, exclude_games=used_games)
-    if teased_totals:
-        suggestions.append(teased_totals); register(teased_totals)
-        print(f'  ✓ TEASED TOTALS COMBO: {teased_totals["combined_odds"]:+d}')
+    # 2. Teased totals combo — PAUSED 2026-08-25.
+    # 7d P/L bleeding -3u/day; 1-of-2 leg-hit three consecutive days. Teasing
+    # totals 1.5-2 runs into "safer" zones hasn't cleared the -110/-120 combined
+    # juice on this slate profile. Re-enable after backtest reweight or when
+    # per-source tracker shows totals cohort recovering.
+    teased_totals_paused = True
+    if not teased_totals_paused:
+        teased_totals = build_teased_totals_combo(picks, exclude_games=used_games)
+        if teased_totals:
+            suggestions.append(teased_totals); register(teased_totals)
+            print(f'  ✓ TEASED TOTALS COMBO: {teased_totals["combined_odds"]:+d}')
+    else:
+        print('  ⏸ TEASED TOTALS COMBO paused (7d bleeding -3u/day, 1/2 leg-hit trap)')
 
     # 3. Teased spreads combo — 2026-08-18 per user: "Could also tease
     # spreads across sports like Reds +2.5." Mirror of totals combo for
