@@ -64,8 +64,18 @@ from ensemble_scorer import MAX_CLASS_SHARE, edge_weight
 # to 0.18 (still req 2 classes + 0.10 margin) captures the miss cluster
 # without opening the gate wide. Kept LEAN + PRIME bars unchanged; PRIME
 # threshold gets its own audit once we have 30d of playbook data.
+# 2026-08-24: PRIME threshold raised from 0.40 → 0.60 based on 30d
+# BACK PRIME backtest showing non-monotonic hit rate:
+#   score 0.40-0.50: 54.5% (n=22, +0.92u)
+#   score 0.50-0.60: 62.5% (n=16, +3.10u)
+#   score 0.60-0.70: 50.0% (n=20, -0.90u)  ← DEAD ZONE
+#   score 0.70+:     70.0% (n=10, +3.37u)
+# Raising min_score to 0.60 kills the below-0.60 rollercoaster while
+# keeping the strong 0.70+ zone tiering as PRIME. Below-0.60 winners
+# fall to STRONG (still actionable) — user still gets exposure but at
+# lower unit size. Reweight after 30d of the tightened cohort.
 PROP_TIER_THRESHOLDS = {
-    'PRIME':  {'min_score': 0.40, 'min_classes': 3, 'min_margin': 0.20},
+    'PRIME':  {'min_score': 0.60, 'min_classes': 3, 'min_margin': 0.20},
     'STRONG': {'min_score': 0.18, 'min_classes': 2, 'min_margin': 0.10},
     'LEAN':   {'min_score': 0.05, 'min_classes': 1, 'min_margin': 0.03},
 }
