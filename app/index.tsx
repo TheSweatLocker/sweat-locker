@@ -11100,7 +11100,15 @@ setJerryHistory(prev => {
           scoping intentionally left off — activeTab is section-scoped
           ('home'/'jerry'/etc.), not sport-scoped. Add per-sport filtering
           later if we introduce a separate sport-tab state. */}
-      <AdminNoticeBanner supabase={supabase} />
+      {/* 2026-08-24: pass currentSport so per-sport notices only show on
+          the relevant tab. Banner is invisible when no notice matches.
+          App-wide notices (sport=null in DB) still show on every tab.
+          Add per-sport notice via SQL:
+            INSERT INTO admin_notice (message, severity, sport, expires_at)
+            VALUES ('NCAAB rating snapshot delayed — refreshing at 3am ET',
+                    'info', 'NCAAB', NOW() + INTERVAL '4 hours');
+      */}
+      <AdminNoticeBanner supabase={supabase} currentSport={gamesSport} />
       {!onboardingDone&&(
         // 2026-08-09 expanded to 3 steps for launch: Welcome → How to Read the
         // Card (tier hierarchy visual) → Age Gate. Middle step teaches users
