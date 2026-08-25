@@ -1375,28 +1375,28 @@ function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
     if (n === 0) return '—';
     return (o ?? 0) >= (u ?? 0) ? `${o}-${u} O` : `${o}-${u} U`;
   };
+  // Brand casing: "Fav" + "Dawg" (matches "Dawg of the Day" product name).
   const fmtFavDog = (fw?: number, fl?: number, dw?: number, dl?: number, primaryFav = true) => {
     const favN = (fw ?? 0) + (fl ?? 0);
     const dogN = (dw ?? 0) + (dl ?? 0);
-    if (primaryFav && favN >= dogN && favN > 0) return `${fw}-${fl} fav`;
-    if (dogN > 0) return `${dw}-${dl} dog`;
-    if (favN > 0) return `${fw}-${fl} fav`;
+    if (primaryFav && favN >= dogN && favN > 0) return `${fw}-${fl} Fav`;
+    if (dogN > 0) return `${dw}-${dl} Dawg`;
+    if (favN > 0) return `${fw}-${fl} Fav`;
     return '—';
   };
 
   // Metric display manifest — one row per metric.
   const metrics = [
-    {label: 'ATS',       away: fmt(awayRow?.road_ats_wins,  awayRow?.road_ats_losses),
-                         home: fmt(homeRow?.home_ats_wins,  homeRow?.home_ats_losses)},
-    {label: 'SU (ML)',   away: fmt(awayRow?.road_su_wins,   awayRow?.road_su_losses),
-                         home: fmt(homeRow?.home_su_wins,   homeRow?.home_su_losses)},
-    {label: 'O/U',       away: fmtOU(awayRow?.road_ou_overs, awayRow?.road_ou_unders),
-                         home: fmtOU(homeRow?.home_ou_overs, homeRow?.home_ou_unders)},
-    {label: 'As fav / dog',
-                         away: fmtFavDog(awayRow?.as_fav_ats_wins, awayRow?.as_fav_ats_losses,
-                                         awayRow?.as_dog_ats_wins, awayRow?.as_dog_ats_losses, false),
-                         home: fmtFavDog(homeRow?.as_fav_ats_wins, homeRow?.as_fav_ats_losses,
-                                         homeRow?.as_dog_ats_wins, homeRow?.as_dog_ats_losses, true)},
+    {label: 'ATS',        away: fmt(awayRow?.road_ats_wins,  awayRow?.road_ats_losses),
+                          home: fmt(homeRow?.home_ats_wins,  homeRow?.home_ats_losses)},
+    {label: 'ML',         away: fmt(awayRow?.road_su_wins,   awayRow?.road_su_losses),
+                          home: fmt(homeRow?.home_su_wins,   homeRow?.home_su_losses)},
+    {label: 'O/U',        away: fmtOU(awayRow?.road_ou_overs, awayRow?.road_ou_unders),
+                          home: fmtOU(homeRow?.home_ou_overs, homeRow?.home_ou_unders)},
+    {label: 'Fav / Dawg', away: fmtFavDog(awayRow?.as_fav_ats_wins, awayRow?.as_fav_ats_losses,
+                                          awayRow?.as_dog_ats_wins, awayRow?.as_dog_ats_losses, false),
+                          home: fmtFavDog(homeRow?.as_fav_ats_wins, homeRow?.as_fav_ats_losses,
+                                          homeRow?.as_dog_ats_wins, homeRow?.as_dog_ats_losses, true)},
   ];
 
   return (
