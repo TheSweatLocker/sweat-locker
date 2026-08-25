@@ -5019,8 +5019,10 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         // 2026-08-25: expanded SELECT so NCAAFSlot renders Team Matchup
         // (EPA), Rosters (returning + physicality), Weather cards. Prior
         // SELECT only pulled 15 fields → those cards silently returned null.
+        // NOTE: ncaaf_game_context uses `close_home_ml`/`close_away_ml`
+        // (not `home_ml_close` like MLB) — inconsistent naming across sports.
         .select('game_id,game_date,home_team,away_team,close_spread,close_total,'
-          + 'home_ml_close,away_ml_close,open_spread,open_total,'
+          + 'close_home_ml,close_away_ml,open_spread,open_total,'
           + 'projected_spread,projected_total,model_pred_home_points,model_pred_away_points,'
           + 'sp_plus_pred_home_pts,sp_plus_pred_away_pts,'
           + 'signal_confluence_net,signal_confluence_breakdown,'
@@ -5031,7 +5033,7 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           + 'home_ol_avg_wt,away_ol_avg_wt,ol_dl_weight_gap_home,ol_dl_weight_gap_away,'
           + 'home_avg_class_year,away_avg_class_year,class_year_edge_home,'
           + 'temp,wind,dome,weather_source,neutral_site,conference_game,kickoff_utc,'
-          + 'oddscrowd_snapshot,align_status')
+          + 'oddscrowd_snapshot,align_status,cohort_tags')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(ncaafCtxResult?.data && ncaafCtxResult.data.length > 0) {

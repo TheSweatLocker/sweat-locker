@@ -284,8 +284,12 @@ export default function GameDetailV2({
   const homeTeam = game.home_team || ctx?.home_team || 'Home';
   const closeSpread = ctx?.close_spread ?? game.close_spread;
   const closeTotal = ctx?.close_total ?? game.close_total;
-  const homeML = ctx?.home_ml_close ?? game.home_ml;
-  const awayML = ctx?.away_ml_close ?? game.away_ml;
+  // 2026-08-25: sports name ML columns differently on their context tables.
+  //   MLB / NFL / NBA:  home_ml_close / away_ml_close
+  //   NCAAF / NCAAB:    close_home_ml / close_away_ml
+  // Read both so the Market card + LineMovement work everywhere.
+  const homeML = ctx?.home_ml_close ?? ctx?.close_home_ml ?? game.home_ml;
+  const awayML = ctx?.away_ml_close ?? ctx?.close_away_ml ?? game.away_ml;
 
   return (
     <View style={styles.root}>
@@ -895,7 +899,7 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
   const openHomeML = historicalOdds?.opening_ml_home;
   const closeSp = ctx?.close_spread;
   const closeTot = ctx?.close_total;
-  const closeHomeML = ctx?.home_ml_close;
+  const closeHomeML = ctx?.home_ml_close ?? ctx?.close_home_ml;
 
   const items = [
     {label: 'Spread', open: openSp, current: closeSp, fmt: (v: any) => f(v, 1)},
