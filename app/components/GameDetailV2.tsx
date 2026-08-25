@@ -1084,8 +1084,17 @@ function SportSpecificSlot({ctx, gamesSport, game}: any) {
       </Section>
     );
   }
-  if (gamesSport === 'NFL' || gamesSport === 'NCAAF') {
+  if (gamesSport === 'NFL') {
     return <NFLSlot ctx={ctx} game={game} />;
+  }
+  if (gamesSport === 'NCAAF') {
+    // 2026-08-24: NCAAF got its own slot. Previously reused NFLSlot which
+    // queries nfl_team_stats + nfl_starters — those tables have no NCAAF
+    // data, so every NCAAF card showed "team: season stats unavailable"
+    // (the bare feeling on TCU@UNC card). NCAAFSlot surfaces what's actually
+    // populated: SP+ ratings, roster physicality (OL/DL weight, class year),
+    // returning production %, projected spread.
+    return <NCAAFSlot ctx={ctx} game={game} />;
   }
   if (gamesSport === 'NBA' || gamesSport === 'NCAAB') {
     return (
@@ -1103,6 +1112,127 @@ function SportSpecificSlot({ctx, gamesSport, game}: any) {
   }
   return null;
 }
+
+// ─── NCAAF SLOT ──────────────────────────────────────────────────────────
+// 2026-08-24: dedicated NCAAF slot. Surfaces SP+ ratings, roster
+// physicality (from 8/23 shipping), returning production %, projected
+// spread. Never queries nfl_team_stats (which broke NFLSlot for NCAAF).
+function NCAAFSlot({ctx, game}: any) {
+  const homeTeam = ctx?.home_team || game?.home_team;
+  const awayTeam = ctx?.away_team || game?.away_team;
+
+  // Read what's actually on the ctx row (populated by ncaaf_game_context.py
+  // + ncaaf_returning_production_pull.py + roster physicality enricher).
+  const spHome = ctx?.home_sp_overall;
+  const spAway = ctx?.away_sp_overall;
+  const spGap = ctx?.sp_gap;
+  const projSpread = ctx?.projected_spread;
+  const rpHome = ctx?.home_returning_production;
+  const rpAway = ctx?.away_returning_production;
+  const olGapH = ctx?.ol_dl_weight_gap_home;
+  const olGapA = ctx?.ol_dl_weight_gap_away;
+  const classEdge = ctx?.class_year_edge_home;
+  const homeClassYr = ctx?.home_avg_class_year;
+  const awayClassYr = ctx?.away_avg_class_year;
+  const homeOl = ctx?.home_ol_avg_wt;
+  const awayOl = ctx?.away_ol_avg_wt;
+
+  const hasSp = spHome != null && spAway != null;
+  const hasPhys = olGapH != null || olGapA != null || classEdge != null;
+  const hasRp = rpHome != null || rpAway != null;
+
+  if (!hasSp && !hasPhys && !hasRp) {
+    return (
+      <Section title="Team Analysis" hint="pre-season · SP+ + physicality">
+        <Text style={styles.emptyMuted}>
+          Pre-season data still loading. Full breakdown lands once teams have game reps.
+        </Text>
+      </Section>
+    );
+  }
+
+  return (
+    <>
+      {hasSp && (
+        <Section title="SP+ Efficiency Ratings" hint="preseason season-level power rating">
+          <View style={{gap: 8}}>
+            <View style={[styles.pitcherCard, {borderTopColor: C.away, padding: 12}]}>
+              <Text style={styles.pitcherName}>{awayTeam}</Text>
+              <Text style={styles.pitcherStats}>
+                SP+ overall: <Text style={styles.pitcherStatBold}>{Number(spAway).toFixed(1)}</Text>
+              </Text>
+            </View>
+            <View style={[styles.pitcherCard, {borderTopColor: C.home, padding: 12}]}>
+              <Text style={styles.pitcherName}>{homeTeam}</Text>
+              <Text style={styles.pitcherStats}>
+                SP+ overall: <Text style={styles.pitcherStatBold}>{Number(spHome).toFixed(1)}</Text>
+              </Text>
+            </View>
+            {spGap != null && projSpread != null && (
+              <View style={{padding: 10, backgroundColor: C.accent + '10', borderRadius: 8, borderWidth: 1, borderColor: C.accent + '40'}}>
+                <Text style={{color: C.accent, fontWeight: '800', fontSize: 11, letterSpacing: 0.5, marginBottom: 4}}>MODEL READ</Text>
+                <Text style={{color: C.text, fontSize: 12}}>
+                  SP+ gap of {Number(spGap).toFixed(1)} points {Number(spGap) > 0 ? `favors ${homeTeam}` : `favors ${awayTeam}`}. Model projects spread at {Number(projSpread).toFixed(1)}.
+                </Text>
+              </View>
+            )}
+          </View>
+        </Section>
+      )}
+
+      {hasRp && (
+        <Section title="Returning Production" hint="% of last season's offense + defense back">
+          <View style={{gap: 6}}>
+            {rpAway != null && (
+              <Text style={styles.pitcherStats}>
+                {awayTeam}: <Text style={styles.pitcherStatBold}>{Math.round(Number(rpAway) * 100)}%</Text> returning
+              </Text>
+            )}
+            {rpHome != null && (
+              <Text style={styles.pitcherStats}>
+                {homeTeam}: <Text style={styles.pitcherStatBold}>{Math.round(Number(rpHome) * 100)}%</Text> returning
+              </Text>
+            )}
+          </View>
+        </Section>
+      )}
+
+      {hasPhys && (
+        <Section title="Roster Physicality" hint="OL/DL weight + class-year experience">
+          <View style={{gap: 6}}>
+            {homeOl != null && awayOl != null && (
+              <Text style={styles.pitcherStats}>
+                OL avg weight: <Text style={styles.pitcherStatBold}>{awayTeam.split(' ').pop()} {Math.round(Number(awayOl))}lb</Text> · <Text style={styles.pitcherStatBold}>{homeTeam.split(' ').pop()} {Math.round(Number(homeOl))}lb</Text>
+              </Text>
+            )}
+            {olGapH != null && Number(olGapH) >= 15 && (
+              <Text style={[styles.pitcherStats, {color: C.accent}]}>
+                {homeTeam.split(' ').pop()} OL outweighs opposing DL by {Math.round(Number(olGapH))} lb — ground-game leverage
+              </Text>
+            )}
+            {olGapA != null && Number(olGapA) >= 15 && (
+              <Text style={[styles.pitcherStats, {color: C.accent}]}>
+                {awayTeam.split(' ').pop()} OL outweighs opposing DL by {Math.round(Number(olGapA))} lb
+              </Text>
+            )}
+            {homeClassYr != null && awayClassYr != null && (
+              <Text style={styles.pitcherStats}>
+                Class experience: <Text style={styles.pitcherStatBold}>{awayTeam.split(' ').pop()} {Number(awayClassYr).toFixed(1)}</Text> · <Text style={styles.pitcherStatBold}>{homeTeam.split(' ').pop()} {Number(homeClassYr).toFixed(1)}</Text>
+                <Text style={{color: C.textMuted, fontSize: 10}}> (1=Fr, 4=Sr)</Text>
+              </Text>
+            )}
+            {classEdge != null && Math.abs(Number(classEdge)) >= 0.3 && (
+              <Text style={[styles.pitcherStats, {color: C.accent}]}>
+                {Number(classEdge) > 0 ? homeTeam.split(' ').pop() : awayTeam.split(' ').pop()} carries a class-year experience edge (Weeks 1-3 significant)
+              </Text>
+            )}
+          </View>
+        </Section>
+      )}
+    </>
+  );
+}
+
 
 // ─── NFL SLOT ────────────────────────────────────────────────────────────
 // Phase 1 (2026-07-30) — renders what's available from nfl_game_context +
