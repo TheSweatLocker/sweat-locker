@@ -267,6 +267,21 @@ jobs:
           cd mlb_pipeline
           python ncaab_panel_predictor.py || echo "ncaab_panel_predictor failed (non-fatal)"
 
+      # 2026-08-25: materialize the panel into ncaab_team_efficiency so
+      # downstream consumers (lens framework, PPP/tempo comparisons) can
+      # read a stable team-level table instead of re-deriving from every
+      # snapshot. Offseason no-op — 0 games / 0 snapshots yields 0 rows.
+      - name: NCAAB — Materialize panel to ncaab_team_efficiency
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          SEASON=$(date +%Y)
+          python ncaab_efficiency_model.py --season $SEASON || echo "ncaab_efficiency_model failed (non-fatal)"
+
       # ────── MC SIMULATOR (2026-08-14 Session 2 · lens #1 of 5) ──────
       # Reads latest KenPom snapshot from ncaab_team_stats + today's games,
       # runs 10k possession-based sims per game, writes mc_probabilities
