@@ -33,6 +33,21 @@ jobs:
           cd mlb_pipeline
           python nba_resolve_results.py || echo "nba resolver failed (non-fatal, likely offseason)"
 
+      # 2026-08-25: refresh home/road tendencies materialized view after
+      # results resolver. Powers the Trends & Tendencies card in the NBA
+      # slot redesign. Uses refresh_home_road_tendencies(sport) RPC from
+      # 20260826b migration. Offseason no-op (0 games → 0 rows).
+      - name: Refresh NBA home/road tendencies view
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_home_road_tendencies" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"p_sport": "NBA"}' || echo "tendencies refresh failed"
+
       # 2026-08-23 season-ready: refresh signal_registry from graded NBA props
       # once season data lands. Sport-universal script. Silent no-op during
       # offseason (no graded prop history). Feeds v3-style refit training

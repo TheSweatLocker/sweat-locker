@@ -33,24 +33,24 @@ VALUES
   -- ─────────────────────────────────────────────────────────────
 
   -- Home team meaningfully better roster (OVR gap 6+)
-  ('nfl_madden_ovr_edge_home', 'NFL', 'madden_talent', 'ml', 'game',
+  ('nfl_madden_ovr_edge_home', 'NFL', 'roster_talent', 'ml', 'game',
    'ctx.madden_ovr_gap_home is not None and float(ctx.madden_ovr_gap_home) >= 6',
    '"HOME_ML"',
    'min((float(ctx.madden_ovr_gap_home) - 4) / 12.0, 0.40)',
-   '{home_team} Madden OVR {home_madden_ovr} vs {away_team} {away_madden_ovr} — talent edge +{madden_ovr_gap_home}',
-   'NFL: home team meaningfully better Madden roster (OVR gap 6+)',
+   '{home_team} roster OVR {home_madden_ovr} vs {away_team} {away_madden_ovr} — talent edge +{madden_ovr_gap_home}',
+   'NFL: home team meaningfully better roster-talent (OVR gap 6+)',
    true, 'SEEDED_MADDEN_TALENT_824'),
 
-  ('nfl_madden_ovr_edge_away', 'NFL', 'madden_talent', 'ml', 'game',
+  ('nfl_madden_ovr_edge_away', 'NFL', 'roster_talent', 'ml', 'game',
    'ctx.madden_ovr_gap_home is not None and float(ctx.madden_ovr_gap_home) <= -6',
    '"AWAY_ML"',
    'min((abs(float(ctx.madden_ovr_gap_home)) - 4) / 12.0, 0.40)',
-   '{away_team} Madden OVR {away_madden_ovr} vs {home_team} {home_madden_ovr} — talent edge on road',
-   'NFL: road team meaningfully better Madden roster',
+   '{away_team} roster OVR {away_madden_ovr} vs {home_team} {home_madden_ovr} — talent edge on road',
+   'NFL: road team meaningfully better roster-talent',
    true, 'SEEDED_MADDEN_TALENT_824'),
 
   -- Home offense strong AGAINST away defense (OFF gap 8+)
-  ('nfl_madden_off_leverage_home', 'NFL', 'madden_talent', 'rl', 'game',
+  ('nfl_madden_off_leverage_home', 'NFL', 'roster_talent', 'rl', 'game',
    'ctx.madden_off_gap_home is not None and float(ctx.madden_off_gap_home) >= 8',
    '"HOME_RL"',
    'min((float(ctx.madden_off_gap_home) - 6) / 15.0, 0.45)',
@@ -58,7 +58,7 @@ VALUES
    'NFL: home offense meaningfully outrates away defense',
    true, 'SEEDED_MADDEN_TALENT_824'),
 
-  ('nfl_madden_off_leverage_away', 'NFL', 'madden_talent', 'rl', 'game',
+  ('nfl_madden_off_leverage_away', 'NFL', 'roster_talent', 'rl', 'game',
    'ctx.madden_off_gap_away is not None and float(ctx.madden_off_gap_away) >= 8',
    '"AWAY_RL"',
    'min((float(ctx.madden_off_gap_away) - 6) / 15.0, 0.45)',
@@ -67,7 +67,7 @@ VALUES
    true, 'SEEDED_MADDEN_TALENT_824'),
 
   -- Dual top defenses → UNDER (both defenses 85+)
-  ('nfl_madden_dual_top_defense_under', 'NFL', 'madden_talent', 'total', 'game',
+  ('nfl_madden_dual_top_defense_under', 'NFL', 'roster_talent', 'total', 'game',
    'ctx.home_madden_def is not None and ctx.away_madden_def is not None and float(ctx.home_madden_def) >= 85 and float(ctx.away_madden_def) >= 85',
    '"UNDER"',
    '0.40',
@@ -80,19 +80,19 @@ VALUES
   -- ─────────────────────────────────────────────────────────────
 
   -- Home QB meaningfully better (delta 8+)
-  ('nfl_madden_qb_advantage_home', 'NFL', 'madden_talent', 'ml', 'game',
+  ('nfl_madden_qb_advantage_home', 'NFL', 'roster_talent', 'ml', 'game',
    'ctx.madden_qb_delta_home is not None and float(ctx.madden_qb_delta_home) >= 8',
    '"HOME_ML"',
    'min((float(ctx.madden_qb_delta_home) - 6) / 14.0, 0.40)',
-   '{home_team} QB Madden {home_qb_madden_ovr} vs {away_team} QB {away_qb_madden_ovr} — QB edge +{madden_qb_delta_home}',
+   '{home_team} QB roster OVR {home_qb_madden_ovr} vs {away_team} QB {away_qb_madden_ovr} — QB edge +{madden_qb_delta_home}',
    'NFL: home QB significantly better rated than opponent',
    true, 'SEEDED_MADDEN_TALENT_824'),
 
-  ('nfl_madden_qb_advantage_away', 'NFL', 'madden_talent', 'ml', 'game',
+  ('nfl_madden_qb_advantage_away', 'NFL', 'roster_talent', 'ml', 'game',
    'ctx.madden_qb_delta_home is not None and float(ctx.madden_qb_delta_home) <= -8',
    '"AWAY_ML"',
    'min((abs(float(ctx.madden_qb_delta_home)) - 6) / 14.0, 0.40)',
-   '{away_team} QB Madden {away_qb_madden_ovr} vs {home_team} QB {home_qb_madden_ovr} — QB edge on road',
+   '{away_team} QB roster OVR {away_qb_madden_ovr} vs {home_team} QB {home_qb_madden_ovr} — QB edge on road',
    'NFL: road QB significantly better rated than home',
    true, 'SEEDED_MADDEN_TALENT_824'),
 
@@ -102,20 +102,20 @@ VALUES
   -- Big OVR gap in early season = talent prior overweight vs EPA sample.
   -- Higher weight cap because EPA hasn't stabilized yet.
 
-  ('nfl_madden_talent_gap_early_home', 'NFL', 'madden_talent', 'ml', 'game',
+  ('nfl_madden_talent_gap_early_home', 'NFL', 'roster_talent', 'ml', 'game',
    'ctx.madden_ovr_gap_home is not None and float(ctx.madden_ovr_gap_home) >= 10 and ctx.week is not None and int(ctx.week) <= 3',
    '"HOME_ML"',
    '0.45',
-   '{home_team} big talent edge (Madden +{madden_ovr_gap_home}) in Week {week} — market underweights talent early',
-   'NFL Weeks 1-3: home has large Madden OVR gap (10+) — talent prior overweights the market',
+   '{home_team} big talent edge (roster OVR +{madden_ovr_gap_home}) in Week {week} — market underweights talent early',
+   'NFL Weeks 1-3: home has large roster OVR gap (10+) — talent prior overweights the market',
    true, 'SEEDED_MADDEN_TALENT_824'),
 
-  ('nfl_madden_talent_gap_early_away', 'NFL', 'madden_talent', 'ml', 'game',
+  ('nfl_madden_talent_gap_early_away', 'NFL', 'roster_talent', 'ml', 'game',
    'ctx.madden_ovr_gap_home is not None and float(ctx.madden_ovr_gap_home) <= -10 and ctx.week is not None and int(ctx.week) <= 3',
    '"AWAY_ML"',
    '0.45',
-   '{away_team} big talent edge (Madden +{madden_ovr_gap_home}) in Week {week} — road talent overweight',
-   'NFL Weeks 1-3: away has large Madden OVR gap (10+)',
+   '{away_team} big talent edge (roster OVR +{madden_ovr_gap_home}) in Week {week} — road talent overweight',
+   'NFL Weeks 1-3: away has large roster OVR gap (10+)',
    true, 'SEEDED_MADDEN_TALENT_824');
 
 NOTIFY pgrst, 'reload schema';
