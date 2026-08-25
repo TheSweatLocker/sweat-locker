@@ -8765,7 +8765,13 @@ setJerryHistory(prev => {
         // legacy picks to STRONG when playbook validates them. Filter
         // downstream via resolveTier() → isPS() below.
         supabase.from('mlb_pipeline_props')
-          .select('player_name,matchup,prop_type,prop_line,direction,tier,conviction,refit_conviction,book_line,game_id')
+          // 2026-08-25 BUG FIX: added book_over_odds + book_under_odds to
+          // SELECT. Prior SELECT only pulled book_line (which is the LINE
+          // value like 1.5, not odds) — propOdds was always undefined →
+          // unitsForPick returned 0 → EVERY prop got filtered out of the
+          // Sharp Card. User reported "not seeing props on Sharp sub tab."
+          // Same class as yesterday's server-side juice-gate bug.
+          .select('player_name,matchup,prop_type,prop_line,direction,tier,conviction,refit_conviction,book_line,book_over_odds,book_under_odds,game_id')
           .eq('game_date', today).in('tier', ['PRIME','STRONG','LEAN']),
         supabase.from('nfl_game_context')
           .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
