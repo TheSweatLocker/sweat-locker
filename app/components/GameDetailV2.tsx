@@ -1152,6 +1152,12 @@ function NCAAFSlot({ctx, game}: any) {
 
   return (
     <>
+      {/* 2026-08-25 SENTINEL — remove after verifying redesign is live. */}
+      <View style={{padding: 8, backgroundColor: '#ff6b35', margin: 8, borderRadius: 6}}>
+        <Text style={{color: '#0a0e14', fontWeight: '800', fontSize: 12, letterSpacing: 0.5, textAlign: 'center'}}>
+          🏈 NCAAFSlot v2 · redesign loaded {new Date().toLocaleTimeString()}
+        </Text>
+      </View>
       <SportWeatherCard ctx={ctx} />
       <NCAAFEfficiencyCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NCAAFRostersCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
