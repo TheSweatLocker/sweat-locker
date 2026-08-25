@@ -61,6 +61,20 @@ jobs:
           cd mlb_pipeline
           python refresh_prop_signal_calibration.py --sport NBA --days 30 || echo "NBA signal calibration failed (non-fatal, likely offseason)"
 
+      # 2026-08-25: NBA injury scrape (ESPN /nba/injuries). Populates
+      # nba_injuries so the NBAInjuriesCard in GameDetailV2 has data to
+      # render. Works year-round (ESPN keeps the page live in offseason
+      # with rehab / surgery-recovery entries). Non-fatal — if ESPN
+      # markup shifts, we get 0 rows and the card renders empty.
+      - name: Pull NBA injuries (ESPN)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_injuries_pull.py || echo "NBA injuries pull failed (non-fatal)"
+
       # ─── Today's context (schedule + odds + rest) ──────────────
       - name: Build NBA game context (today + next 3 days)
         continue-on-error: true
