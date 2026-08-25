@@ -1195,7 +1195,7 @@ def upsert_read(g, narrative, struct):
     payload = {
         "game_id": key,
         "cache_key": key,
-        "sport": "mlb",
+        "sport": "MLB",  # 2026-08-25 case fix — see NCAAF commit 1a71199e
         "narrative": narrative,
         "data": json.dumps(struct, default=str),
         "created_at": datetime.now(timezone.utc).isoformat(),

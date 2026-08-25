@@ -253,7 +253,7 @@ def upsert_read(struct, narrative):
     payload = {
         "game_id": key,
         "cache_key": key,
-        "sport": "ufc",
+        "sport": "UFC",  # 2026-08-25 case fix — matches sport_registry convention
         "narrative": narrative,
         "data": json.dumps(struct, default=str),
         "created_at": datetime.now(timezone.utc).isoformat(),
