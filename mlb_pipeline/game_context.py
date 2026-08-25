@@ -2955,12 +2955,37 @@ def compute_primary_play(ctx):
             if not juice_skip and agree_count >= 5:
                 # STRONG at 6/6, LEAN at 5/6
                 tier = 'STRONG' if agree_count >= 6 else 'LEAN'
+                # 2026-08-25 modest-fav demote (8/24 audit finding).
+                # STRONG-tier ML on modest favs bled 1/5 last week. When the
+                # spread is a pick'em/near-pick (|close_spread| <= 1.0) OR the
+                # ML price is thin (>-115), 6/6 lens agreement is directional
+                # only — no meaningful market conviction. Demote to LEAN so
+                # ladder + POTD stop treating these as headline plays.
+                demote_reason = None
+                if tier == 'STRONG':
+                    try:
+                        cs_abs = abs(float(close_spread)) if close_spread is not None else None
+                    except (TypeError, ValueError):
+                        cs_abs = None
+                    try:
+                        wml_f = float(winning_ml) if winning_ml is not None else None
+                    except (TypeError, ValueError):
+                        wml_f = None
+                    if cs_abs is not None and cs_abs <= 1.0:
+                        tier = 'LEAN'
+                        demote_reason = f'modest-fav demote (spread {cs_abs:.1f} ≤ 1.0)'
+                    elif wml_f is not None and wml_f > -115:
+                        tier = 'LEAN'
+                        demote_reason = f'thin-juice demote (ML {int(wml_f):+d} > -115)'
                 floor = 72 if tier == 'STRONG' else 62
+                sub = f'ML consensus fallback — {agree_count}/6 lens agree on {winning_team} (small spread deltas but strong direction)'
+                if demote_reason:
+                    sub += f' · {demote_reason}'
                 return {
                     'type': 'ml',
                     'tier': tier,
                     'label': f'{winning_team} ML',
-                    'sub': f'ML consensus fallback — {agree_count}/6 lens agree on {winning_team} (small spread deltas but strong direction)',
+                    'sub': sub,
                     'signal_floor': floor,
                     'audit_note': 'ML consensus tier · Jerry+MC-agree cohort 68% 30d (n=34) as baseline',
                 }
