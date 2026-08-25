@@ -1245,8 +1245,21 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
 
   const gapVal = spGap != null ? Number(spGap) : null;
   const gapFavHome = gapVal != null && gapVal > 0;
+  // 2026-08-25 sign-convention fix. Prior math was
+  //     projSpread - closeSpread
+  // which produced garbage +15.3pt edges on the TCU-UNC card because
+  // projected_spread uses "positive = home wins" but close_spread uses
+  // the market convention "negative = home favored." Adding them
+  // (equivalent to projSpread - (-closeSpread)) normalizes to the
+  // same signed margin and yields the true home-cover edge.
+  //   edge_for_home > 0 → BACK home (model gives home more than market)
+  //   edge_for_home < 0 → BACK away (model gives away more than market)
   const projVsMarket = (projSpread != null && closeSpread != null)
-    ? Number(projSpread) - Number(closeSpread) : null;
+    ? Number(projSpread) + Number(closeSpread) : null;
+  const edgeSide = projVsMarket == null ? null
+    : projVsMarket > 0 ? 'home'
+    : projVsMarket < 0 ? 'away' : null;
+  const edgeMag = projVsMarket == null ? null : Math.abs(projVsMarket);
 
   return (
     <Section title="Team Matchup" hint={seasonUsed ? `efficiency + EPA · ${seasonUsed} season · higher = advantage` : 'efficiency + EPA · higher = advantage'}>
@@ -1286,19 +1299,21 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
                  bAdv={explA != null && explH != null && explH > explA}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(2)} />
 
-        {/* Model read banner — mirrors MLB teamProjBanner */}
-        {(gapVal != null && projSpread != null) && (
+        {/* Model read banner — mirrors MLB teamProjBanner. Speaks
+            projected margin + market comparison in the same signed
+            frame so nothing double-counts across sign conventions. */}
+        {(projSpread != null) && (
           <View style={{marginTop: 10, padding: 10, backgroundColor: C.accent + '14',
                         borderRadius: 8, borderLeftWidth: 3, borderLeftColor: C.accent}}>
             <Text style={{color: C.accent, fontSize: 10, fontWeight: '800', letterSpacing: 0.6, marginBottom: 4}}>MODEL READ</Text>
             <Text style={{color: C.text, fontSize: 12, lineHeight: 17}}>
-              Efficiency gap {Math.abs(gapVal).toFixed(1)} pts favors <Text style={{fontWeight: '800', color: gapFavHome ? C.home : C.away}}>{gapFavHome ? homeTeam : awayTeam}</Text>.
-              {' '}Model projects <Text style={{fontWeight: '800', color: C.text}}>{Math.abs(Number(projSpread)).toFixed(1)}</Text>-pt spread.
-              {projVsMarket != null && closeSpread != null && (
-                <Text> Market at {Number(closeSpread).toFixed(1)} →{' '}
-                  <Text style={{fontWeight: '800', color: Math.abs(projVsMarket) >= 1 ? C.accent : C.textMuted}}>
-                    {projVsMarket >= 0 ? '+' : ''}{projVsMarket.toFixed(1)} pt {Math.abs(projVsMarket) >= 1 ? 'edge' : 'value'}
-                  </Text>
+              Model projects <Text style={{fontWeight: '800', color: Number(projSpread) > 0 ? C.home : C.away}}>{Number(projSpread) > 0 ? homeTeam : awayTeam}</Text> by <Text style={{fontWeight: '800', color: C.text}}>{Math.abs(Number(projSpread)).toFixed(1)}</Text>.
+              {closeSpread != null && (
+                <Text> Market has {Number(closeSpread) < 0 ? homeTeam : awayTeam} laying <Text style={{fontWeight: '800', color: C.text}}>{Math.abs(Number(closeSpread)).toFixed(1)}</Text>.</Text>
+              )}
+              {edgeMag != null && edgeSide && (
+                <Text>{'\n'}Edge: <Text style={{fontWeight: '800', color: edgeMag >= 1 ? C.accent : C.textMuted}}>{edgeMag.toFixed(1)} pts on {edgeSide === 'home' ? homeTeam : awayTeam}</Text>
+                  {edgeMag >= 2 ? ' — real value.' : edgeMag >= 1 ? ' — slight lean.' : ' — market is right in line.'}
                 </Text>
               )}
             </Text>

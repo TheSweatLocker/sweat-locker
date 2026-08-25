@@ -18,6 +18,7 @@ import LineMovementTab from './components/LineMovementTab';
 import AdminNoticeBanner from './components/AdminNoticeBanner';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Sport } from './lib/sportPeriods';
+import { abbrev as teamAbbrev } from './lib/teamAbbrev';
 
 import { THEME, TIER_COLOR, OUTCOME_COLOR } from './theme';
 import StatusChip from './components/StatusChip';
@@ -13939,24 +13940,38 @@ setJerryHistory(prev => {
                                   const hit = rf.direction === 'over' ? v >= rf.line : v < rf.line;
                                   const barH = Math.max(3, (v / maxV) * chartHeight);
                                   const color = hit ? THEME.win : THEME.loss;
+                                  // 2026-08-25 label-collision fix: on tall bars the
+                                  // value label above the bar was crashing into the
+                                  // "RECENT FORM" header. Put the label INSIDE the
+                                  // top of the bar (white text) when there's <14px
+                                  // of headroom; otherwise keep it above (original).
+                                  const insideBar = (chartHeight - barH) < 14;
                                   return (
                                     <View key={ri} style={{flex:1, alignItems:'center', justifyContent:'flex-end', height: chartHeight}}>
-                                      <Text style={{color, fontSize:8, fontWeight:'700', marginBottom:1}}>{v}</Text>
+                                      {!insideBar && (
+                                        <Text style={{color, fontSize:8, fontWeight:'700', marginBottom:1}}>{v}</Text>
+                                      )}
                                       <View style={{
                                         width:'80%', height: barH,
                                         backgroundColor: color + 'CC',
                                         borderTopLeftRadius:2, borderTopRightRadius:2,
-                                      }}/>
+                                        alignItems:'center', justifyContent:'flex-start', paddingTop:1,
+                                      }}>
+                                        {insideBar && (
+                                          <Text style={{color:'#0a0e14', fontSize:8, fontWeight:'800'}}>{v}</Text>
+                                        )}
+                                      </View>
                                     </View>
                                   );
                                 })}
                               </View>
-                              {/* Opponent labels underneath, matching bar spacing */}
+                              {/* Opponent labels underneath, using shared team-abbrev helper
+                                  so 'San Diego Padres' renders as 'SD' not 'San'. */}
                               <View style={{flexDirection:'row', gap:3}}>
                                 {chartRows.map((r: any, ri: number) => (
                                   <View key={ri} style={{flex:1, alignItems:'center'}}>
                                     <Text style={{color:THEME.textMuted, fontSize:8, fontWeight:'700', letterSpacing:0.2}}>
-                                      {r.home ? '' : '@'}{String(r.opp || '').slice(0,3)}
+                                      {r.home ? '' : '@'}{teamAbbrev(r.opp) || String(r.opp || '').slice(0,3).toUpperCase()}
                                     </Text>
                                   </View>
                                 ))}
