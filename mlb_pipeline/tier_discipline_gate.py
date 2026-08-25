@@ -281,6 +281,102 @@ def weighted_composite_spread(v3_spread, v4_spread, jerry_spread, panel_margin=N
     return sum(wi * float(x) for wi, x in used) / norm
 
 
+# 2026-08-08 Phase 2A: sharp fade flag (bucket-based cap).
+# 2026-08-09 Phase 2B: sharp fade RULES (pattern-based cap).
+try:
+    from sharp_fade_flag import compute_sharp_fade_flag as _sharp_fade_flag
+except Exception:
+    _sharp_fade_flag = None
+try:
+    from sharp_fade_rules import compute_fade_context as _sharp_fade_context
+except Exception:
+    _sharp_fade_context = None
+
+
+def _log_sharp_fade(ctx: Optional[dict], market: str, side: Optional[str],
+                     tier: str, source: str) -> Optional[dict]:
+    """Combined Phase 2A (bucket cap) + Phase 2B (rule cap) sharp fade guard.
+
+    Returns the *strongest* cap directive when multiple guards fire:
+      2 rules ACTIVE  → CAP_TO_READ_49
+      1 rule ACTIVE OR bucket cap → CAP_TO_LEAN_55
+
+    Returns None or a flag dict for the tier-gate wrapper to apply.
+    """
+    if not ctx or not side or tier == 'SKIP': return None
+    combined_flag = None
+    max_severity = 0   # 0=none, 1=LEAN, 2=READ
+
+    # ---- Phase 2A: bucket flag ----
+    if _sharp_fade_flag:
+        oc = ctx.get('oddscrowd_snapshot')
+        try:
+            bflag = _sharp_fade_flag(oc, market, side)
+        except Exception:
+            bflag = None
+        if bflag and bflag.get('flag') in ('ALIGNS_WITH_FADE_SIDE', 'OPPOSES_FADE_SIDE'):
+            cap = bflag.get('cap_directive')
+            tag = '  🚨 CAP-TO-LEAN' if cap else ''
+            print(f'  📊 [{source}] sharp-fade {bflag["flag"]}: {bflag["reason"]}{tag}')
+            if cap:
+                combined_flag = bflag
+                max_severity = 1  # bucket cap → LEAN
+
+    # ---- Phase 2B: pattern rules ----
+    if _sharp_fade_context:
+        try:
+            fctx = _sharp_fade_context(ctx, market, side)
+        except Exception:
+            fctx = None
+        if fctx and fctx.get('triggers'):
+            for t in fctx['triggers']:
+                mode = t.get('mode', 'LOG')
+                mark = '🚨' if mode == 'ACTIVE' else ('📌' if mode == 'LOG' else '💤')
+                print(f'  {mark} [{source}] rule {t["rule"]}({mode}): {t["reason"]}')
+            cap = fctx.get('cap_directive')
+            if cap == 'CAP_TO_READ_49':
+                combined_flag = {'cap_directive': cap, 'reason':
+                    f'2+ ACTIVE rules fired: {[t["rule"] for t in fctx["triggers"] if t.get("mode")=="ACTIVE"]}',
+                    'triggers': fctx['triggers']}
+                max_severity = 2  # rule stack → READ
+            elif cap == 'CAP_TO_LEAN_55' and max_severity < 1:
+                combined_flag = {'cap_directive': cap, 'reason':
+                    f'1 ACTIVE rule fired: {next(t["rule"] for t in fctx["triggers"] if t.get("mode")=="ACTIVE")}',
+                    'triggers': fctx['triggers']}
+                max_severity = 1
+
+    return combined_flag
+
+
+def _apply_sharp_fade_cap(verdict: 'TierVerdict', flag: dict) -> 'TierVerdict':
+    """Downgrade verdict tier based on cap_directive:
+      CAP_TO_LEAN_55 → cap to LEAN
+      CAP_TO_READ_49 → cap to LEAN (we treat as same until READ is a real tier)
+    Preserves direction. Idempotent for already-low tiers.
+    """
+    if not flag or not flag.get('cap_directive'): return verdict
+    directive = flag['cap_directive']
+    # Determine target tier
+    if directive == 'CAP_TO_READ_49':
+        # 2+ ACTIVE rules — most aggressive. LEAN today (READ tier not
+        # yet a first-class TierVerdict value in this module); downstream
+        # sweat_card treats LEAN as the floor for publishing anyway.
+        target = 'LEAN'
+        prefix = 'Sharp Phase 2B (2+ rules)'
+    else:
+        target = 'LEAN'
+        prefix = 'Sharp Phase 2A/2B (1 rule/bucket)'
+    if verdict.tier in (None, 'SKIP', 'LEAN'): return verdict
+    reason_suffix = f' [{prefix} cap: {flag.get("reason", "")[:140]}]'
+    return TierVerdict(
+        tier=target, direction=verdict.direction,
+        reason=(verdict.reason or '') + reason_suffix,
+        composite_gap=verdict.composite_gap,
+        models_agree=verdict.models_agree,
+        historical_hit_rate=verdict.historical_hit_rate,
+    )
+
+
 def evaluate_total(
     *,
     line: float,
@@ -358,6 +454,17 @@ def evaluate_total(
         composite_avg = sum(composite_inputs) / max(1, len(composite_inputs))
     gap = composite_avg - line
 
+    # 2026-08-08 Phase 2A: log sharp-fade flag alignment. When Phase 2A cap
+    # conditions met (see sharp_divergence_tracker), capture the flag and
+    # apply cap-to-LEAN at final verdict below.
+    provisional_dir = 'OVER' if gap > 0 else ('UNDER' if gap < 0 else None)
+    _sharp_cap_flag = None
+    if provisional_dir:
+        _sharp_cap_flag = _log_sharp_fade(ctx, 'total', provisional_dir, 'PROVISIONAL', 'evaluate_total')
+
+    def _cap(v):
+        return _apply_sharp_fade_cap(v, _sharp_cap_flag)
+
     # Hard SKIPs first
     if abs(gap) < 0.5:
         return TierVerdict('SKIP', None, f'composite gap |{gap:+.2f}| < 0.5 — no signal', gap, max(overs, unders), None)
@@ -373,15 +480,15 @@ def evaluate_total(
 
         # ELITE UNDER: any setup with proj-vs-line gap <= -3.0
         if proj_total - line <= -3.0:
-            return TierVerdict('ELITE', 'UNDER',
+            return _cap(TierVerdict('ELITE', 'UNDER',
                 f'proj_total - line = {proj_total - line:.2f} (elite under signal)',
-                gap, unders, 0.64)
+                gap, unders, 0.64))
 
         # STRONG UNDER: needs all-3 + gap <= -1.5 (small sample but consistent)
         if unders >= 3 and gap <= -1.5:
-            return TierVerdict('STRONG', 'UNDER',
+            return _cap(TierVerdict('STRONG', 'UNDER',
                 f'all-3 UNDER + composite gap {gap:.2f}',
-                gap, unders, 0.60)
+                gap, unders, 0.60))
 
         # KILL zone: gap -1.5 to -3.0 historically LOSES (44%, 42%). Skip.
         if -3.0 < gap < -1.5:
@@ -391,9 +498,9 @@ def evaluate_total(
 
         # LEAN UNDER: all-3 + lighter gap
         if unders >= 3 and gap >= -1.5:
-            return TierVerdict('LEAN', 'UNDER',
+            return _cap(TierVerdict('LEAN', 'UNDER',
                 f'all-3 UNDER + light gap {gap:.2f}',
-                gap, unders, 0.57)
+                gap, unders, 0.57))
 
         return TierVerdict('SKIP', None,
             f'UNDER lean but no all-3 unity (only {unders}/3 agree)',
@@ -406,27 +513,27 @@ def evaluate_total(
 
         # PRIME OVER: gap 2.0-3.0 + all-3 (71% hist)
         if 2.0 <= gap < 3.0 and overs >= 3:
-            return TierVerdict('PRIME', 'OVER',
+            return _cap(TierVerdict('PRIME', 'OVER',
                 f'all-3 OVER + composite gap {gap:.2f} (prime band 71% hist)',
-                gap, overs, 0.71)
+                gap, overs, 0.71))
 
         # ELITE OVER: very loud + all-3 (only sample-thin band)
         if gap >= 3.0 and overs >= 3:
-            return TierVerdict('ELITE', 'OVER',
+            return _cap(TierVerdict('ELITE', 'OVER',
                 f'all-3 OVER + elite gap {gap:.2f}',
-                gap, overs, 0.62)
+                gap, overs, 0.62))
 
         # STRONG OVER: all-3 + gap 1.2-2.0 (57% hist - marginal)
         if 1.2 <= gap < 2.0 and overs >= 3:
-            return TierVerdict('STRONG', 'OVER',
+            return _cap(TierVerdict('STRONG', 'OVER',
                 f'all-3 OVER + composite gap {gap:.2f}',
-                gap, overs, 0.57)
+                gap, overs, 0.57))
 
         # LEAN OVER: all-3 + gap 0.7-1.2 (56% hist)
         if 0.7 <= gap < 1.2 and overs >= 3:
-            return TierVerdict('LEAN', 'OVER',
+            return _cap(TierVerdict('LEAN', 'OVER',
                 f'all-3 OVER + light gap {gap:.2f}',
-                gap, overs, 0.56)
+                gap, overs, 0.56))
 
         # mild magnitude (< 0.7) historically loses (48%) — skip
         if gap < 0.7:
@@ -471,6 +578,7 @@ def evaluate_ml(
     resolver_direction: Optional[str],    # 'HOME' | 'AWAY'
     composite_spread: Optional[float],    # avg of v3+v4+jerry spreads (+ = home wins)
     panel_implied_margin: Optional[float] = None,  # +home runs - away runs (Panel)
+    ctx: Optional[dict] = None,            # 2026-08-08: pass ctx for sharp-fade log
 ) -> TierVerdict:
     """Apply tier-discipline rules to decide whether an ML/RL pick publishes.
 
@@ -484,6 +592,12 @@ def evaluate_ml(
     if resolver_direction not in ('HOME', 'AWAY'):
         return TierVerdict('SKIP', None, 'resolver has no clean direction',
             None, 0, None)
+
+    # 2026-08-08 Phase 2A sharp-fade log + capture cap flag for final wrap
+    _sharp_cap_flag = _log_sharp_fade(ctx, 'ml', resolver_direction, resolver_tier, 'evaluate_ml')
+
+    def _cap(v):
+        return _apply_sharp_fade_cap(v, _sharp_cap_flag)
 
     # Composite spread agreement — 2026-07-12: first check. When v3+v4+jerry
     # loudly agree AWAY from resolver by >= 1.0 runs, that's a real model-
@@ -502,9 +616,9 @@ def evaluate_ml(
     if composite_winner and composite_winner != resolver_direction:
         cs_abs = abs(float(composite_spread))
         if cs_abs >= 1.0:
-            return TierVerdict('LEAN', composite_winner,
+            return _cap(TierVerdict('LEAN', composite_winner,
                 f'resolver {resolver_direction} but composite spread {composite_spread:+.2f} loud {composite_winner} — publish composite',
-                None, 0, 0.55)
+                None, 0, 0.55))
         return TierVerdict('SKIP', None,
             f'resolver {resolver_direction} but composite spread {composite_spread:+.2f} → {composite_winner} (thin flip)',
             None, 0, None)
@@ -518,9 +632,9 @@ def evaluate_ml(
         panel_winner = 'HOME' if panel_implied_margin > 0 else 'AWAY'
         if panel_winner != resolver_direction:
             if abs_margin >= 1.0:
-                return TierVerdict('LEAN', panel_winner,
+                return _cap(TierVerdict('LEAN', panel_winner,
                     f'resolver {resolver_direction} but Panel margin {panel_implied_margin:+.1f} loud {panel_winner} — publish Panel (57% edge)',
-                    None, 0, 0.57)
+                    None, 0, 0.57))
             return TierVerdict('SKIP', None,
                 f'resolver {resolver_direction} but Panel margin {panel_implied_margin:+.1f} says {panel_winner} — thin flip',
                 None, 0, None)
@@ -533,29 +647,29 @@ def evaluate_ml(
     # ELITE: resolver ELITE + Panel margin >= 2 (when Panel available)
     if resolver_tier == 'ELITE':
         if panel_implied_margin is None or abs(panel_implied_margin) >= 2.0:
-            return TierVerdict('ELITE', resolver_direction,
+            return _cap(TierVerdict('ELITE', resolver_direction,
                 f'resolver ELITE + Panel margin {panel_implied_margin or "n/a"}',
-                None, 0, 0.75)
-        return TierVerdict('STRONG', resolver_direction,
+                None, 0, 0.75))
+        return _cap(TierVerdict('STRONG', resolver_direction,
             f'resolver ELITE but Panel margin {panel_implied_margin:+.1f} only mild — downgrade to STRONG',
-            None, 0, 0.62)
+            None, 0, 0.62))
 
     # STRONG: resolver STRONG + Panel margin >= 1.0
     if resolver_tier == 'STRONG':
         if panel_implied_margin is None or abs(panel_implied_margin) >= 1.0:
-            return TierVerdict('STRONG', resolver_direction,
+            return _cap(TierVerdict('STRONG', resolver_direction,
                 f'resolver STRONG + Panel margin {panel_implied_margin or "n/a"}',
-                None, 0, 0.62)
+                None, 0, 0.62))
         # Panel margin tight (0.5-1.0) — downgrade to LEAN
-        return TierVerdict('LEAN', resolver_direction,
+        return _cap(TierVerdict('LEAN', resolver_direction,
             f'resolver STRONG but Panel margin {panel_implied_margin:+.1f} mild — downgrade to LEAN',
-            None, 0, 0.57)
+            None, 0, 0.57))
 
     # LEAN: resolver LEAN passes through if Panel agrees in direction
     if resolver_tier == 'LEAN':
-        return TierVerdict('LEAN', resolver_direction,
+        return _cap(TierVerdict('LEAN', resolver_direction,
             f'resolver LEAN + Panel direction match',
-            None, 0, 0.55)
+            None, 0, 0.55))
 
     return TierVerdict('SKIP', None,
         f'unhandled resolver tier {resolver_tier}', None, 0, None)

@@ -113,12 +113,17 @@ def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
         'kickoff_utc': commence,
     }
 
-    # Spreads — FLIP sign to nflverse convention (positive = home fav)
+    # Spreads — keep CFBD convention (positive = home dog / home is underdog).
+    # 2026-08-09 fix: previous code flipped to nflverse convention (positive =
+    # home fav) but resolve_ncaaf_results.py + ncaaf_cohort_backfill.py both
+    # assume CFBD convention. Historical `cfbd_*` rows use CFBD too. Flipping
+    # here meant 2026 season results would grade INVERTED and cohorts would
+    # mis-tag heavy dogs as favorites. Removing the flip aligns all systems.
     sp = _pick_book(event, 'spreads')
     for o in sp.get('outcomes') or []:
         if o['name'] == home_raw:
             pt = _f(o.get('point'))
-            row['close_spread'] = -pt if pt is not None else None
+            row['close_spread'] = pt if pt is not None else None
         elif o['name'] == away_raw:
             pass  # away spread implied
 

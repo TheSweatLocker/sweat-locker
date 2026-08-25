@@ -191,15 +191,45 @@ def run(season: Optional[int] = None, dry_run: bool = False,
     if not cfbd_games:
         return
 
-    game_id_map = {f'cfbd_{g.get("id")}': g for g in cfbd_games if g.get('id')}
-    existing = fetch_existing(list(game_id_map.keys()))
-    print(f'  matched existing rows: {len(existing)}/{len(game_id_map)}')
+    # 2026-08-09 fix: 2026 odds-pull rows use game_id format
+    # `ncaaf_YYYYMMDD_<away>_<home>` (per ncaaf_odds_pull.py); historical rows
+    # use `cfbd_{id}`. Resolver must look up BOTH keys so it grades ALL
+    # game_id_map keys. If only cfbd_{id} was tried, resolver silently
+    # updates zero games for 2026 season.
+    def _slugify(name):
+        import re as _re
+        return _re.sub(r'[^a-z0-9]', '', (name or '').lower())
+
+    # Build candidate keys per CFBD game
+    key_variants = {}  # composite_variant_list → cfbd_g
+    for g in cfbd_games:
+        if not g.get('id'): continue
+        keys = [f'cfbd_{g["id"]}']
+        # Also derive ncaaf_YYYYMMDD_away_home from CFBD kickoff + teams
+        kickoff = g.get('start_date') or g.get('kickoff_utc') or ''
+        try:
+            ymd = kickoff[:10].replace('-','')
+            away_slug = _slugify(g.get('away_team'))
+            home_slug = _slugify(g.get('home_team'))
+            if ymd and away_slug and home_slug:
+                keys.append(f'ncaaf_{ymd}_{away_slug}_{home_slug}')
+        except Exception: pass
+        for k in keys:
+            key_variants[k] = g
+    all_keys = list(key_variants.keys())
+    existing = fetch_existing(all_keys)
+    print(f'  matched existing rows: {len(existing)}/{len(cfbd_games)} '
+          f'(tried {len(all_keys)} key variants)')
 
     patches = []
-    for gid, cfbd_g in game_id_map.items():
+    seen_ids = set()
+    for gid, cfbd_g in key_variants.items():
         ex = existing.get(gid)
-        if not ex:
-            continue  # skip games not in our DB (haven't seen via odds pull)
+        if not ex: continue
+        # Avoid double-patching same CFBD game via both key variants
+        cid = cfbd_g.get('id')
+        if cid in seen_ids: continue
+        seen_ids.add(cid)
         payload = compute_outcome_patch(cfbd_g, ex)
         if payload:
             patches.append((gid, payload))

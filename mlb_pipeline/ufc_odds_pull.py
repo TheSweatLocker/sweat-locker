@@ -279,6 +279,11 @@ def run(event_date: str | None = None, dry_run: bool = False):
             refresh_for_event(event_date)
         except Exception as e:
             print(f'  ⚠ display_labels refresh failed (non-fatal): {e}')
+        try:
+            from ufc_detail_view import refresh_for_event as refresh_detail
+            refresh_detail(event_date)
+        except Exception as e:
+            print(f'  ⚠ detail_view refresh failed (non-fatal): {e}')
 
 
 if __name__ == '__main__':

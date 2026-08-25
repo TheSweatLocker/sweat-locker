@@ -107,13 +107,20 @@ def fetch_games(season_filter: Optional[int] = None) -> list:
 
 
 def _kickoff_day_hour_et(kickoff_utc: str) -> tuple:
-    """Return (weekday_int, hour_int_et) or (None, None)."""
+    """Return (weekday_int, hour_int_et) or (None, None).
+    2026-08-09 fix: use ZoneInfo('America/New_York') for DST-correct ET.
+    Previous fixed EST -5 mis-classified late-Sat primetime games during
+    EDT (Aug-Nov = all NCAAF season)."""
     if not kickoff_utc: return None, None
     try:
         dt = datetime.fromisoformat(kickoff_utc.replace('Z', '+00:00'))
-        # Convert UTC → ET (approximate — no DST awareness, close enough for cohort)
-        from datetime import timedelta, timezone
-        dt_et = dt.astimezone(timezone(timedelta(hours=-5)))  # EST base
+        try:
+            from zoneinfo import ZoneInfo
+            dt_et = dt.astimezone(ZoneInfo('America/New_York'))
+        except ImportError:
+            # Py<3.9 fallback — approximate
+            from datetime import timedelta, timezone as _tz
+            dt_et = dt.astimezone(_tz(timedelta(hours=-4)))  # EDT default
         return dt_et.weekday(), dt_et.hour
     except Exception:
         return None, None

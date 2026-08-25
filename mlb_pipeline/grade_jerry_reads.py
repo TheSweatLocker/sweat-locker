@@ -68,17 +68,50 @@ def grade_rl(side: str, line, hs: int, as_: int, run_line_result: str | None) ->
     return 'Win' if margin_picked > abs(line) else 'Loss'
 
 
-def grade_one(read: dict, results_by_gid: dict) -> str | None:
-    """Return 'Win' | 'Loss' | 'Push' | 'Void' | None (pending)."""
+def _normalize_market(raw: str) -> str:
+    """Strip LLM markdown junk from call_market before matching.
+
+    2026-08-09 audit found rows like:
+      call_market = '** ml  \\n**side:** home  \\n**line:** null  ...'
+    Jerry occasionally wrote raw markdown into the enum column. Take the
+    first alphabetic token, lowercase. Empty → ''.
+    """
+    if not raw:
+        return ''
+    s = str(raw).strip()
+    # Strip leading markdown markers, colons, asterisks
+    s = s.lstrip('*').lstrip(':').strip()
+    # Take first whitespace-delimited token
+    tok = s.split()[0] if s.split() else ''
+    tok = tok.lower().strip('*:,.\n\r\t')
+    return tok
+
+
+def _normalize_side(raw) -> str:
+    """Same defensive strip for call_side (HOME/AWAY/OVER/UNDER)."""
+    if raw is None: return ''
+    s = str(raw).strip().lstrip('*').lstrip(':').strip()
+    tok = s.split()[0] if s.split() else ''
+    return tok.upper().strip('*:,.\n\r\t')
+
+
+def grade_one(read: dict, results_by_gid: dict, prop_lookup: dict | None = None,
+              postponed_gids: set | None = None) -> str | None:
+    """Return 'Win' | 'Loss' | 'Push' | 'Void' | 'NO_ACTION' | 'TRACKED_ELSEWHERE' | None (pending)."""
     gid = read.get('game_id')
-    market = (read.get('call_market') or '').lower()
+    market = _normalize_market(read.get('call_market'))
     if market == 'pass':
         return 'NO_ACTION'
+    # Postponement → mark Void so it stops counting as ungraded
+    if postponed_gids and gid in postponed_gids:
+        return 'Void'
     res = results_by_gid.get(gid)
     if not res or res.get('home_score') is None:
+        # No result row → check postponement inference: game_date >4 days
+        # old with no result = postponed/cancelled. Void it.
         return None
     hs, as_ = int(res['home_score']), int(res['away_score'])
-    side = (read.get('call_side') or '').upper()
+    side = _normalize_side(read.get('call_side'))
     line = read.get('call_line')
     if market == 'ml':
         return grade_ml(side, hs, as_)
@@ -86,6 +119,15 @@ def grade_one(read: dict, results_by_gid: dict) -> str | None:
         return grade_total(side, line, hs, as_)
     if market == 'rl':
         return grade_rl(side, line, hs, as_, res.get('run_line_result'))
+    if market == 'prop':
+        # Jerry occasionally calls a prop inside a game read (rare).
+        # If prop_lookup matches the same game_id, inherit its result.
+        # Otherwise mark TRACKED_ELSEWHERE so it exits the ungraded queue.
+        if prop_lookup:
+            match = prop_lookup.get(gid)
+            if match and match.get('result'):
+                return match['result']
+        return 'TRACKED_ELSEWHERE'
     return None
 
 
@@ -117,9 +159,45 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
                       timeout=15)
     results_by_gid = {row['game_id']: row for row in (rr.json() if rr.status_code == 200 else [])}
 
+    # Postponement inference: game_date more than 4 days old + no result row
+    # or result row with null scores = postponed/cancelled. Void them so they
+    # exit the ungraded queue. Prevents the 8/1 LAA @ MIL rain-out pattern
+    # (still surfaced as ungraded 8 days later).
+    postponed_gids = set()
+    try:
+        from datetime import date, timedelta
+        d0 = date.fromisoformat(game_date)
+        if (date.today() - d0).days > 4:
+            for gid in gid_list:
+                res = results_by_gid.get(gid)
+                if not res or res.get('home_score') is None:
+                    postponed_gids.add(gid)
+            if postponed_gids:
+                print(f'  [{sport}] {len(postponed_gids)} postponed/void (>4d old, no result)')
+    except Exception:
+        pass
+
+    # Prop-in-game-read lookup: for market='prop' calls, look up the same
+    # game in mlb_pipeline_props to inherit its resolved result. Only MLB
+    # has pipeline_props today.
+    prop_lookup = {}
+    if sport == 'MLB':
+        pr = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                          headers=H_READ,
+                          params={'game_date': f'eq.{game_date}',
+                                  'game_id': f'in.({gid_in})',
+                                  'select': 'game_id,result'},
+                          timeout=15)
+        for row in (pr.json() if pr.status_code == 200 else []):
+            if row.get('game_id') and row.get('result'):
+                # Keep first non-null per game_id
+                prop_lookup.setdefault(row['game_id'], row)
+
     graded = 0
     for read in reads:
-        result = grade_one(read, results_by_gid)
+        result = grade_one(read, results_by_gid,
+                           prop_lookup=prop_lookup,
+                           postponed_gids=postponed_gids)
         if not result: continue
         actual = {'home_score': results_by_gid.get(read['game_id'], {}).get('home_score'),
                   'away_score': results_by_gid.get(read['game_id'], {}).get('away_score')}

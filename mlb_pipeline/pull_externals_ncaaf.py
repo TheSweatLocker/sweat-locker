@@ -256,18 +256,34 @@ def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:
 
 
 def load_ncaaf_alias_map() -> dict:
-    """Map full team name → canonical abbrev via ncaaf_team_aliases."""
+    """Map full team name → canonical abbrev via ncaaf_team_aliases.
+
+    2026-08-09 fix: previous select requested `odds_api_name` which
+    doesn't exist in the schema. Actual columns per audit:
+    canonical_name, full_name, location, nickname, alt_names.
+    Use alt_names (JSONB/text) for aliases beyond full_name.
+    """
     r = requests.get(
-        f'{SB}/rest/v1/ncaaf_team_aliases?select=canonical_name,full_name,odds_api_name',
+        f'{SB}/rest/v1/ncaaf_team_aliases?select=canonical_name,full_name,location,nickname,alt_names',
         headers=H_READ, timeout=15,
     )
     if r.status_code != 200: return {}
     aliases = {}
     for row in r.json():
         canon = row.get('canonical_name')
-        for field in ('full_name', 'odds_api_name'):
+        if not canon: continue
+        for field in ('full_name', 'location', 'nickname'):
             n = row.get(field)
-            if n and canon: aliases[n] = canon
+            if n: aliases[n] = canon
+        # alt_names may be an array or comma-separated string
+        alts = row.get('alt_names')
+        if isinstance(alts, list):
+            for n in alts:
+                if n: aliases[n] = canon
+        elif isinstance(alts, str):
+            for n in alts.split(','):
+                n = n.strip()
+                if n: aliases[n] = canon
     return aliases
 
 
