@@ -101,7 +101,7 @@ jobs:
           python enrich_ctx_roster_physicality.py --sport NCAAF --days-ahead 14 || echo "NCAAF physicality enrich failed (non-fatal)"
 
       - name: Refresh CFBD team stats (Tue only)
-        if: (steps.mode.outputs.mode == 'full') && github.event.schedule == '0 15 * * 2'
+        if: (steps.mode.outputs.mode == 'full') && (github.event.schedule == '0 15 * * 2' || github.event_name == 'workflow_dispatch')
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
