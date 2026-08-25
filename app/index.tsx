@@ -4980,7 +4980,19 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     try {
       const nflCtxResult = await supabase
         .from('nfl_game_context')
-        .select('game_id,game_date,home_team,away_team,close_spread,close_total,projected_spread,projected_total,signal_confluence_net,cohort_tags,sweat_score,sweat_tier,primary_play,stats_source,season_type,week,splits_summary')
+        // 2026-08-25: expanded SELECT so NFLSlot's rich cards can render.
+        // Extras: weather/rest/roof for SportWeatherCard + Situational card,
+        // model_pred_* fields for cross-sport ScoreRange, oddscrowd_snapshot
+        // + align_status for parent MoneyFlow section.
+        .select('game_id,game_date,home_team,away_team,close_spread,close_total,'
+          + 'home_ml_close,away_ml_close,open_spread,open_total,'
+          + 'projected_spread,projected_total,model_pred_spread,model_pred_total,'
+          + 'panel_implied_margin,panel_implied_total,jerry_pred_spread,jerry_pred_total,'
+          + 'signal_confluence_net,cohort_tags,sweat_score,sweat_tier,primary_play,'
+          + 'stats_source,season,season_type,week,splits_summary,'
+          + 'temp,wind,dome,weather_source,roof,'
+          + 'home_rest,away_rest,div_game,'
+          + 'oddscrowd_snapshot,align_status,commence_time')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(nflCtxResult?.data && nflCtxResult.data.length > 0) {
@@ -5004,7 +5016,22 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     try {
       const ncaafCtxResult = await supabase
         .from('ncaaf_game_context')
-        .select('game_id,game_date,home_team,away_team,close_spread,close_total,projected_spread,projected_total,signal_confluence_net,signal_confluence_breakdown,sweat_score,sweat_tier,primary_play,splits_summary,season,season_type,home_sp_overall,away_sp_overall,sp_gap')
+        // 2026-08-25: expanded SELECT so NCAAFSlot renders Team Matchup
+        // (EPA), Rosters (returning + physicality), Weather cards. Prior
+        // SELECT only pulled 15 fields → those cards silently returned null.
+        .select('game_id,game_date,home_team,away_team,close_spread,close_total,'
+          + 'home_ml_close,away_ml_close,open_spread,open_total,'
+          + 'projected_spread,projected_total,model_pred_home_points,model_pred_away_points,'
+          + 'sp_plus_pred_home_pts,sp_plus_pred_away_pts,'
+          + 'signal_confluence_net,signal_confluence_breakdown,'
+          + 'sweat_score,sweat_tier,primary_play,splits_summary,season,season_type,'
+          + 'home_sp_overall,away_sp_overall,sp_gap,'
+          + 'home_off_epa_pp,away_off_epa_pp,home_def_epa_pp,away_def_epa_pp,'
+          + 'home_returning_production,away_returning_production,'
+          + 'home_ol_avg_wt,away_ol_avg_wt,ol_dl_weight_gap_home,ol_dl_weight_gap_away,'
+          + 'home_avg_class_year,away_avg_class_year,class_year_edge_home,'
+          + 'temp,wind,dome,weather_source,neutral_site,conference_game,kickoff_utc,'
+          + 'oddscrowd_snapshot,align_status')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(ncaafCtxResult?.data && ncaafCtxResult.data.length > 0) {
