@@ -17,7 +17,7 @@ CLI:
   python audit_sharp_source_calibration.py --dry-run
 """
 from __future__ import annotations
-import argparse, os, sys, json
+import argparse, os, re, sys, json
 from collections import defaultdict, Counter
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
@@ -91,14 +91,21 @@ def _fetch_source_snaps(gids: list[str], table: str, source_filter: str | None =
         if source_filter:
             url += f'&source=eq.{source_filter}'
         # Sort key varies by table
-        sort_col = 'snapshot_ts' if table == 'line_snapshot' else 'fetched_at'
+        if table == 'line_snapshot':
+            sort_col = 'snapshot_ts'
+        elif table == 'external_picks':
+            sort_col = 'pulled_at'
+        else:
+            sort_col = 'fetched_at'
         url += f'&order={sort_col}.desc'
         r = requests.get(url, headers=H_READ, timeout=25)
         rows = r.json() if r.status_code == 200 else []
         if not isinstance(rows, list):
             continue
         for row in rows:
-            k = (row.get('game_id'), row.get('market'))
+            # external_picks uses 'surface' rather than 'market' — normalize.
+            market_key = row.get('market') or row.get('surface')
+            k = (row.get('game_id'), market_key)
             if k not in out:
                 out[k] = row
     return out
@@ -122,6 +129,29 @@ def _fr_sharp_side(row: dict | None) -> Optional[str]:
 
 def _cz_sharp_side(row: dict | None) -> Optional[str]:
     return (row.get('sharp_side_norm') or '').lower() if row else None
+
+
+def _so_sharp_side(row: dict | None) -> Optional[str]:
+    """SO sharp side — external_picks stores money/bets pcts inside the
+    confidence string ('money 89% / bets 87% (div +2pp)'). Parse them
+    back out and apply the same money>bets-else-inverse rule as OC.
+    Also normalizes surface → market so keys match the calibrator's
+    per-source dict shape.
+    """
+    if not row: return None
+    pick = (row.get('pick_side') or '').lower()
+    conf = row.get('confidence') or ''
+    m_ = re.search(r'money\s*(\d+)%\s*/\s*bets\s*(\d+)%', conf, re.IGNORECASE)
+    if not m_ or not pick:
+        return None
+    money_pct = int(m_.group(1))
+    bets_pct = int(m_.group(2))
+    surface = (row.get('surface') or row.get('market') or '').lower()
+    if money_pct > bets_pct:
+        return pick
+    if surface in ('total', 'totals'):
+        return 'under' if pick == 'over' else 'over'
+    return 'away' if pick == 'home' else 'home'
 
 
 def _grade(market: str, side: Optional[str], r_: dict) -> Optional[str]:
@@ -184,7 +214,24 @@ def run_sport(sport: str, dry_run: bool = False) -> None:
     oc = _fetch_source_snaps(gids, 'line_snapshot', source_filter='oddscrowd')
     fr = _fetch_source_snaps(gids, 'fadereport_signals')
     cz = _fetch_source_snaps(gids, 'cleatz_signals')
-    print(f'  OC snaps: {len(oc)} · FR snaps: {len(fr)} · CZ snaps: {len(cz)}')
+    # 2026-08-25: SO lives in external_picks (surface col, not market).
+    # Normalize the key shape to (game_id, market) so it slots into the
+    # same per-source dict pattern as OC/FR/CZ.
+    so_raw = _fetch_source_snaps(gids, 'external_picks', source_filter='scoresandodds')
+    so = {}
+    for (gid, surface), row in so_raw.items():
+        # external_picks uses 'surface' — some rows may map through as market=None.
+        market = (row.get('market') or row.get('surface') or surface or '').lower()
+        if market in ('rl', 'spread'):
+            market = 'rl'
+        elif market in ('total', 'totals'):
+            market = 'total'
+        elif market in ('ml', 'h2h', 'moneyline'):
+            market = 'ml'
+        else:
+            continue
+        so[(gid, market)] = {**row, 'market': market}
+    print(f'  OC snaps: {len(oc)} · FR snaps: {len(fr)} · CZ snaps: {len(cz)} · SO snaps: {len(so)}')
 
     # Build a per-(game, market, source) sharp-side call
     sport_lower = sport.lower()
@@ -227,12 +274,14 @@ def run_sport(sport: str, dry_run: bool = False) -> None:
             oc_row = oc.get((gid, market))
             fr_row = fr.get((gid, market))
             cz_row = cz.get((gid, market))
+            so_row = so.get((gid, market))
             oc_side = _oc_sharp_side(oc_row)
             fr_side = _fr_sharp_side(fr_row)
             cz_side = _cz_sharp_side(cz_row)
+            so_side = _so_sharp_side(so_row)
 
             # Per-source grade
-            for src, side in (('FR', fr_side), ('CZ', cz_side), ('OC', oc_side)):
+            for src, side in (('FR', fr_side), ('CZ', cz_side), ('OC', oc_side), ('SO', so_side)):
                 if not side: continue
                 out = _grade(market, side, r_)
                 if not out: continue
@@ -241,29 +290,41 @@ def run_sport(sport: str, dry_run: bool = False) -> None:
                         per_source[(src, market, wlabel)][out] += 1
                         per_source[(src, 'ALL', wlabel)][out] += 1
 
-            # Agreement bucket grade
-            sides = [s for s in (fr_side, cz_side, oc_side) if s]
+            # Agreement bucket grade — 4 sources now (was 3). Buckets:
+            #   4_of_4_AGREE / 3_of_4_AGREE / 2_of_4_AGREE (split rooms)
+            #   DISSENT_<source> when exactly 1 source out of 4 dissents from
+            #                    the other 3 (still directional signal).
+            sides = [s for s in (fr_side, cz_side, oc_side, so_side) if s]
             if len(sides) < 2: continue
             unique = set(sides)
             bucket = None; grade_target = None
             if len(unique) == 1:
-                bucket = '3_of_3_AGREE' if len(sides) == 3 else '2_of_2_AGREE'
+                # All agreeing sources unanimous — bucket name reflects the count.
+                bucket = {2: '2_of_2_AGREE', 3: '3_of_3_AGREE', 4: '4_of_4_AGREE'}.get(len(sides))
                 grade_target = sides[0]
-            elif len(sides) == 3 and len(unique) == 2:
+            elif len(sides) >= 3 and len(unique) == 2:
                 c = Counter(sides)
-                majority = [s for s, n in c.items() if n == 2][0]
-                minority = [s for s, n in c.items() if n == 1][0]
-                odd_src = 'FR' if fr_side == minority else 'CZ' if cz_side == minority else 'OC'
-                # Two picks to grade: majority (fade dissent) + dissent
-                for b_name, side_used in ((f'MAJ_when_{odd_src}_dissents', majority),
-                                          (f'DISSENT_{odd_src}', minority)):
-                    out = _grade(market, side_used, r_)
-                    if not out: continue
-                    for wlabel, wdays in WINDOWS:
-                        if _in_window(gd_str, wdays):
-                            per_agreement[(b_name, market, wlabel)][out] += 1
-                            per_agreement[(b_name, 'ALL', wlabel)][out] += 1
-                continue  # skip the single-bucket grade below
+                # Look for a clean N-1 majority (e.g. 3 of 4 agree, 1 dissents).
+                counts = sorted(c.values(), reverse=True)
+                if counts[0] == len(sides) - 1:
+                    majority = [s for s, n in c.items() if n == counts[0]][0]
+                    minority = [s for s, n in c.items() if n == 1][0]
+                    # Identify which source is the dissenter.
+                    odd_src = None
+                    for src, side in (('FR', fr_side), ('CZ', cz_side),
+                                      ('OC', oc_side), ('SO', so_side)):
+                        if side == minority:
+                            odd_src = src; break
+                    if odd_src:
+                        for b_name, side_used in ((f'MAJ_when_{odd_src}_dissents', majority),
+                                                  (f'DISSENT_{odd_src}', minority)):
+                            out = _grade(market, side_used, r_)
+                            if not out: continue
+                            for wlabel, wdays in WINDOWS:
+                                if _in_window(gd_str, wdays):
+                                    per_agreement[(b_name, market, wlabel)][out] += 1
+                                    per_agreement[(b_name, 'ALL', wlabel)][out] += 1
+                        continue  # skip the single-bucket grade below
             if bucket and grade_target:
                 out = _grade(market, grade_target, r_)
                 if not out: continue
