@@ -649,6 +649,18 @@ def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
         market = surface if surface in ('ml', 'rl', 'total') else None
         if market is None: continue
 
+        # 2026-08-26 data-quality guard. External sources like SBR store
+        # market money% splits ("over 65% / under 35%") as "picks" without
+        # a pick_line — the ingest treats the majority side as their pick.
+        # These aren't actual handicapper picks: (1) they're bookmaker
+        # aggregate data, not opinions; (2) the resolver marks them all
+        # as Loss because it can't compare actual to a null line, which
+        # then flows into the fade-flip below and drives OPPOSITE-side
+        # picks off bad data. Skip totals/RL picks with no pick_line —
+        # ML markets don't need a line, so ML passes through.
+        if market in ('total', 'rl') and p.get('pick_line') is None:
+            continue
+
         # Fade flag on the source means we invert
         invert = bool(p.get('fade_flag'))
         cand = _flag_to_candidate(market, pick_side, invert)

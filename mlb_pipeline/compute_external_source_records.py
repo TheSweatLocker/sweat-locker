@@ -149,6 +149,42 @@ def run(sport_filter: str | None = None) -> None:
             print(f'  ✗ chunk {i}: {pr.status_code} {pr.text[:150]}')
     print(f'  ✓ wrote {written} rollup rows')
 
+    # 2026-08-26 stale-key sweep. Upsert doesn't delete keys that no
+    # longer have any graded picks. Triggered by SBR MLB total 0-85:
+    # after we nulled 85 bad rows in external_picks (SBR "totals" were
+    # market %% not real picks), the aggregator wrote no new payload
+    # for that (source, sport, surface, window) key, so the stale 0-85
+    # persisted in track_record and drove ensemble fade-flips off phantom
+    # losing records. Delete rows in track_record whose composite key
+    # doesn't appear in the current payload set.
+    if not sport_filter:  # only sweep on full runs
+        try:
+            fresh_keys = {(p['source'], p['sport'], p['surface'], p['window_days'])
+                          for p in payloads}
+            r = requests.get(f'{SB}/rest/v1/external_source_track_record'
+                             '?select=id,source,sport,surface,window_days',
+                             headers=H_READ, timeout=30)
+            existing = r.json() if r.status_code == 200 else []
+            stale = [row['id'] for row in existing
+                     if (row['source'], row['sport'], row['surface'],
+                         row['window_days']) not in fresh_keys]
+            if stale:
+                # delete in batches of 200
+                deleted = 0
+                for i in range(0, len(stale), 200):
+                    batch = stale[i:i+200]
+                    ids_csv = ','.join(str(x) for x in batch)
+                    dr = requests.delete(
+                        f'{SB}/rest/v1/external_source_track_record'
+                        f'?id=in.({ids_csv})',
+                        headers=H_WRITE, timeout=30)
+                    if dr.status_code in (200, 204):
+                        deleted += len(batch)
+                print(f'  🧹 swept {deleted} stale track-record keys '
+                      f'(source/surface combos with no current graded picks)')
+        except Exception as e:
+            print(f'  ⚠ stale-key sweep failed: {type(e).__name__}: {e}')
+
 
 def main():
     p = argparse.ArgumentParser()
