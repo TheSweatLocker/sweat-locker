@@ -268,6 +268,59 @@ SIGNALS = [
         'display_prose_template': 'jerry + projected both project home by 0.5+ — historically road covers 66%',
         'description': 'Jerry+Proj HOME spread consensus. Historical 34.3% cover → 65.7% fade, n=35 60d MLB. side=AWAY_RL contrarian.',
     },
+
+    # ── TEAM-FORM + PUBLIC-DIVERGENCE PATTERNS (2026-08-26 v3 mining) ──
+    # These aren't model-vs-model combos — they're TREND-vs-model, TREND-vs-
+    # TREND, or MODEL-vs-PUBLIC patterns that show real edge in 60d data.
+    {
+        'signal_key': 'home_under_trend_at_home_solo',
+        'class': 'team_form', 'market_scope': 'total',
+        'condition_expr': ('ctx.home_ou_l10_at_home_unders is not None and '
+                           'ctx.home_ou_l10_at_home_overs is not None and '
+                           '(int(ctx.home_ou_l10_at_home_unders) + int(ctx.home_ou_l10_at_home_overs)) >= 5 and '
+                           'int(ctx.home_ou_l10_at_home_unders) / '
+                           '(int(ctx.home_ou_l10_at_home_unders) + int(ctx.home_ou_l10_at_home_overs)) >= 0.7'),
+        'side_expr': '"UNDER"',
+        'strength_expr': '0.5',
+        'hit_rate_pct': 65.7, 'sample_n': 35,
+        'display_prose_template': 'home team gone UNDER 70%+ in last 10 at home — historically 66%',
+        'description': 'Naked home UNDER trend at home. 23-12 (65.7%) 60d MLB.',
+    },
+    {
+        'signal_key': 'both_teams_under_trend_split',
+        'class': 'team_form', 'market_scope': 'total',
+        'condition_expr': ('ctx.home_ou_l10_at_home_unders is not None and '
+                           'ctx.home_ou_l10_at_home_overs is not None and '
+                           'ctx.away_ou_l10_on_road_unders is not None and '
+                           'ctx.away_ou_l10_on_road_overs is not None and '
+                           '(int(ctx.home_ou_l10_at_home_unders) + int(ctx.home_ou_l10_at_home_overs)) >= 5 and '
+                           '(int(ctx.away_ou_l10_on_road_unders) + int(ctx.away_ou_l10_on_road_overs)) >= 5 and '
+                           'int(ctx.home_ou_l10_at_home_unders) / '
+                           '(int(ctx.home_ou_l10_at_home_unders) + int(ctx.home_ou_l10_at_home_overs)) >= 0.6 and '
+                           'int(ctx.away_ou_l10_on_road_unders) / '
+                           '(int(ctx.away_ou_l10_on_road_unders) + int(ctx.away_ou_l10_on_road_overs)) >= 0.6'),
+        'side_expr': '"UNDER"',
+        'strength_expr': '0.6',
+        'hit_rate_pct': 69.7, 'sample_n': 33,
+        'display_prose_template': 'both teams L10 UNDER 60%+ in their split contexts — historically 70%',
+        'description': 'Both-teams UNDER trend confluence (split-adjusted). 23-10 (69.7%) 60d MLB.',
+    },
+    {
+        'signal_key': 'away_rl_home_cover_trap',
+        'class': 'team_form', 'market_scope': 'rl',
+        'condition_expr': ('ctx.jerry_pred_spread is not None and ctx.close_spread is not None and '
+                           '(float(ctx.jerry_pred_spread) + float(ctx.close_spread)) < -0.5 and '
+                           'ctx.home_ats_l10_at_home is not None and '
+                           'ctx.home_ats_l10_at_home_losses is not None and '
+                           '(int(ctx.home_ats_l10_at_home) + int(ctx.home_ats_l10_at_home_losses)) >= 5 and '
+                           'int(ctx.home_ats_l10_at_home) / '
+                           '(int(ctx.home_ats_l10_at_home) + int(ctx.home_ats_l10_at_home_losses)) <= 0.3'),
+        'side_expr': '"AWAY_RL"',
+        'strength_expr': '0.7',
+        'hit_rate_pct': 73.3, 'sample_n': 15,
+        'display_prose_template': 'jerry likes road RL and home team cover rate at home ≤30% — 73%',
+        'description': 'Jerry AWAY_RL + home fails to cover at home. 11-4 (73.3%) 60d MLB — small sample, DISCOVERY tier.',
+    },
     {
         'signal_key': 'mc_high_confidence',
         'class': 'model', 'market_scope': 'ml',
