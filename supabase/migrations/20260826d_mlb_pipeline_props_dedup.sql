@@ -37,10 +37,17 @@ DELETE FROM public.mlb_pipeline_props p
    AND r.rn > 1;
 
 -- Step 2: unique constraint prevents future dupes.
--- LOWER(player_name) index expression to handle mixed casing (some feeds
--- write 'Brandon Pfaadt', others might write 'brandon pfaadt').
+--
+-- 2026-08-26 revision: use plain column list (NOT LOWER(player_name)).
+-- PostgREST's on_conflict=<col-list> can only match a UNIQUE INDEX
+-- defined on those exact columns — a functional index on LOWER(player_name)
+-- looks like a different key to the planner. generate_props.py posts
+-- with on_conflict=game_date,player_name,prop_type,direction,prop_line,
+-- so the index must match that column list exactly. Case-normalization
+-- of player_name happens upstream (mlb_advanced_metrics normalizes at
+-- ingest); duplicates from mixed casing haven't materialized.
 CREATE UNIQUE INDEX IF NOT EXISTS mlb_pipeline_props_uniq
   ON public.mlb_pipeline_props
-    (game_date, LOWER(player_name), prop_type, direction, prop_line);
+    (game_date, player_name, prop_type, direction, prop_line);
 
 NOTIFY pgrst, 'reload schema';
