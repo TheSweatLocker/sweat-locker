@@ -597,6 +597,8 @@ _SOURCE_PERSONA = {
     'cleatz':     'CZ',
     'scoresandodds':'SO',
     'so':         'SO',
+    'pickdawgz':  'PDZ',
+    'bfo':        'BFO',
 }
 
 
