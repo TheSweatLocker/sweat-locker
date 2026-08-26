@@ -580,9 +580,48 @@ def _handler_scenario(source_row: dict, ctx: dict) -> list[Opinion]:
     return out
 
 
+_SOURCE_PERSONA = {
+    'sbr':        'SBR',
+    'tonyspicks': 'TON',
+    'pickswise':  'PWS',
+    'betfirm':    'BFM',
+    'oddscrowd':  'OC',
+    'covers':     'COV',
+    'action':     'ACT',
+    'vsin':       'VSN',
+    'dimers':     'DIM',
+    'bettingpros':'BTP',
+    'docsports':  'DOC',
+    'peterson':   'PET',
+    'fadereport': 'FR',
+    'cleatz':     'CZ',
+    'scoresandodds':'SO',
+    'so':         'SO',
+}
+
+
+def _persona(src: str) -> str:
+    """Map raw handicapper source names to abbrev codes (ToS-scrub
+    feedback 8/21). Never surface raw provider names in user prose."""
+    return _SOURCE_PERSONA.get((src or '').lower(), (src or '').upper()[:4])
+
+
 def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
     """External handicapper picks for this game, each weighted by that
-    handicapper's own track record (external_source_track_record)."""
+    handicapper's own track record (external_source_track_record).
+
+    2026-08-26 fade-flip: a source with a demonstrated LOSING record on
+    this surface is a contrarian signal, not agreement. When
+    hit_rate ≤ 0.35 with n ≥ 10, flip the candidate to the OPPOSITE
+    side and weight against fade_hr = 1 − hr. Prevents 0-for-14
+    handicappers from propping up our losing side with RAMP_UP_PRIOR
+    (0.50) weight when n < SAMPLE_MIN_N (25).
+
+    Triggered by Rockies UNDER PRIME 97 (2026-08-26): sbr 0-22 total
+    + tonyspicks 0-14 total both landed on UNDER contributing 0.25 each,
+    while MC projected 65% OVER and jerry_pred_total was 12.08 vs
+    line 9.0.
+    """
     gid = ctx.get('game_id')
     game_date = ctx.get('game_date')
     if not gid or not _SB: return []
@@ -615,22 +654,48 @@ def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
         cand = _flag_to_candidate(market, pick_side, invert)
         if not cand: continue
 
-        # Look up source track record
+        # Look up source track record — prefer surface-specific over ALL
         rec = tracks.get((src, sport, surface)) or tracks.get((src, sport, 'ALL'))
         hr = rec.get('hit_rate') if rec else None
         if hr is not None:
             try: hr = float(hr) / 100.0
             except (TypeError, ValueError): hr = None
         n = int(rec.get('n_graded', 0)) if rec else 0
+        persona = _persona(src)
+
+        # Fade-flip: known cold source's pick is a contrarian signal
+        if hr is not None and hr <= 0.35 and n >= 10:
+            flip = {'HOME_ML':'AWAY_ML','AWAY_ML':'HOME_ML',
+                    'HOME_RL':'AWAY_RL','AWAY_RL':'HOME_RL',
+                    'OVER':'UNDER','UNDER':'OVER'}
+            flipped = flip.get(cand)
+            if flipped:
+                fade_hr = 1.0 - hr
+                fade_tier = ('VALIDATED' if fade_hr >= 0.65 and n >= 20
+                             else 'DISCOVERY' if fade_hr >= 0.60 and n >= 10
+                             else 'UNVALIDATED')
+                wins = int(rec.get('n_wins') or 0) if rec else 0
+                losses = int(rec.get('n_losses') or 0) if rec else 0
+                out.append(Opinion(
+                    signal_key=f'external:{src}__fade',
+                    signal_class='external_pick', side=flipped, strength=0.5,
+                    hit_rate=fade_hr, sample_n=n, tier=fade_tier,
+                    display_prose=f'Fade {persona}: {wins}-{losses} on {market.upper()} picks',
+                ))
+                continue  # emit fade only, skip the losing-side opinion
+
         tier = 'VALIDATED' if (hr and hr >= 0.57 and n >= 50) \
                else 'DISCOVERY' if (hr and hr >= 0.55 and n >= 20) \
                else 'UNVALIDATED'
 
+        wins = int(rec.get('n_wins') or 0) if rec else 0
+        losses = int(rec.get('n_losses') or 0) if rec else 0
+        rec_str = f'{wins}-{losses}' if (wins or losses) else f'{n} picks'
         out.append(Opinion(
             signal_key=f'external:{src}',
             signal_class='external_pick', side=cand, strength=0.5,
             hit_rate=hr, sample_n=n, tier=tier,
-            display_prose=f'{src} is on this side ({int((hr or 0)*100)}% {n}-pick track)',
+            display_prose=f'{persona} is on this side ({rec_str} on {market.upper()})',
         ))
     return out
 
