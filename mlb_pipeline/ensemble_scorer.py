@@ -143,6 +143,13 @@ def _current_health_state(sport: str) -> dict:
 # picks from earning tier without diverse evidence.
 MAX_CLASS_SHARE = 0.40
 
+# 2026-08-26 aggregate fade cap. Per-class cap alone doesn't restrain
+# auto-fade stacks that split across pitcher/weather/offense classes —
+# Rockies UNDER 9.0 PRIME 97 had 4 fades collectively at ~62% share,
+# each below their own class 40% budget. Cap total fade contribution at
+# FADE_MAX_SHARE of adjusted_total per side. See _score_market.
+FADE_MAX_SHARE = 0.35
+
 # Handler class markers
 HANDLER_CLASSES = {'split', 'scenario', 'external_pick'}
 
@@ -416,7 +423,13 @@ def edge_weight(hit_rate: Optional[float], n: int,
     (or lack of earned) rate takes over — a fresh signal that fires
     strongly early and turns out bad drops to 0 once registry data
     catches up.
+
+    2026-08-26: use ENSEMBLE_WEIGHT_VERSION=v2 to route to the Bayesian
+    posterior implementation (edge_weight_v2) instead. v1 remains the
+    default until A/B backtest promotes v2.
     """
+    if os.environ.get('ENSEMBLE_WEIGHT_VERSION', 'v1') == 'v2':
+        return edge_weight_v2(hit_rate, n, tier, is_recent)
     if tier == 'ANTI_VALIDATED':
         return 0.0
     if hit_rate is None or n <= 0:
@@ -434,6 +447,73 @@ def edge_weight(hit_rate: Optional[float], n: int,
         return 0.0
     edge_component = min(edge_pp / 0.12, 1.0)
     n_component = min(math.log1p(n) / math.log(101), 1.0)
+    return round(edge_component * n_component, 4)
+
+
+# 2026-08-26 Bayesian posterior weight — replaces the hand-tuned
+# RAMP_UP_PRIOR = 0.50 fallback path that dominated ~73% of signals
+# (all UNVALIDATED tier). Under v1, an UNVALIDATED signal with hr=0.35
+# n=8 got the same 0.50 weight as a signal with hr=0.65 n=8 — the
+# empirical evidence was ignored in favor of a constant.
+#
+# v2 uses a Beta(alpha_0, beta_0) prior centered on the -110 breakeven
+# rate (0.524), updated by observed wins/losses to a posterior mean that
+# shrinks toward breakeven as n shrinks and toward the observed rate as
+# n grows. Small-sample "lucky" signals get lower weight than they did
+# under v1; small-sample "unlucky" signals get demoted to 0 (which was
+# the correct answer under v1 too but got masked by the RAMP_UP_PRIOR
+# override).
+#
+# Prior strength = 20 pseudo-samples. Chosen so that a signal with
+# n=8 observed still leans heavily on the prior (posterior weight
+# fraction is 20/28 = 71% prior); by n=100 the prior weight drops to
+# 20/120 = 17%. This matches typical MLB signal maturation curves.
+BAYES_PRIOR_STRENGTH = 20
+BAYES_PRIOR_MEAN = BREAKEVEN  # 0.524
+
+
+def edge_weight_v2(hit_rate: Optional[float], n: int,
+                   tier: Optional[str] = None,
+                   is_recent: bool = False) -> float:
+    """Bayesian posterior version of edge_weight.
+
+    Same interface + same ANTI_VALIDATED gate. Different math for the
+    (hit_rate is not None) case: posterior mean via Beta prior instead
+    of the SAMPLE_MIN_N=25 hard cutoff to RAMP_UP_PRIOR.
+
+    Weight formula:
+      posterior_mean = (alpha_0 + wins) / (alpha_0 + beta_0 + n)
+        where wins = hit_rate * n; alpha_0 = 0.524 * prior_strength;
+        beta_0 = 0.476 * prior_strength.
+      edge_pp = posterior_mean - BREAKEVEN
+      if edge_pp <= 0: 0
+      else: min(edge_pp / 0.12, 1.0) * n_component
+        where n_component uses (n + prior_strength) so signals with
+        combined evidence >= 100 saturate.
+    """
+    if tier == 'ANTI_VALIDATED':
+        return 0.0
+    if hit_rate is None or n <= 0:
+        # Same cold-start behavior as v1 — no observations, no update.
+        if is_recent:
+            return RAMP_UP_PRIOR
+        return 0.20 if tier in ('DISCOVERY', 'UNVALIDATED', 'VALIDATED') else 0.15
+
+    # Bayesian posterior mean
+    wins = hit_rate * n
+    alpha_0 = BAYES_PRIOR_MEAN * BAYES_PRIOR_STRENGTH
+    beta_0 = (1 - BAYES_PRIOR_MEAN) * BAYES_PRIOR_STRENGTH
+    posterior_mean = (alpha_0 + wins) / (alpha_0 + beta_0 + n)
+
+    edge_pp = posterior_mean - BREAKEVEN
+    if edge_pp <= 0:
+        return 0.0
+    edge_component = min(edge_pp / 0.12, 1.0)
+    # n_component uses effective sample = n + prior_strength so the
+    # curve is smooth (no discontinuity at SAMPLE_MIN_N). Signals with
+    # 100+ effective sample saturate.
+    n_eff = n + BAYES_PRIOR_STRENGTH
+    n_component = min(math.log1p(n_eff) / math.log(101 + BAYES_PRIOR_STRENGTH), 1.0)
     return round(edge_component * n_component, 4)
 
 
@@ -776,6 +856,100 @@ def _enrich_ctx_for_sport(sport: str, ctx: dict) -> dict:
     return enriched
 
 
+def _fade_consensus_ok(ctx: dict, source: dict, orig_side: str,
+                        flipped_side: str, cls: str) -> bool:
+    """Consensus check before emitting an auto-fade opinion.
+
+    The auto-fade mechanism flips an ANTI_VALIDATED signal from `orig_side`
+    to `flipped_side` on the theory that a historically losing signal is
+    actually a contrarian signal. But if Monte Carlo + market money + our
+    own runs projection all AGREE with `orig_side` by a meaningful margin,
+    the auto-fade is fighting live model consensus. Suppress the flip in
+    those cases — the audit called this out as the mechanism that produced
+    Rockies UNDER PRIME 97 while jerry_pred=12.15 and MC 70% OVER.
+
+    Returns True if the fade is allowed to emit; False to suppress.
+
+    Rule: block the flip if ≥2 of {MC, OC money%, jerry_pred vs line}
+    agree with orig_side by ≥15pp / 1.5 units. If ctx signals are missing
+    we allow the flip (backward compatibility for sports where these
+    fields aren't populated).
+    """
+    market = None
+    if orig_side in ('OVER', 'UNDER'): market = 'total'
+    elif orig_side in ('HOME_ML', 'AWAY_ML'): market = 'ml'
+    elif orig_side in ('HOME_RL', 'AWAY_RL'): market = 'rl'
+    if not market:
+        return True  # unknown market, allow
+
+    votes_for_orig = 0
+    votes_checked = 0
+
+    # 1) Monte Carlo agreement with orig_side
+    mc = ctx.get('mc_probabilities') if isinstance(ctx.get('mc_probabilities'), dict) else None
+    if mc:
+        try:
+            if market == 'total':
+                p = mc.get('mc_p_over') if orig_side == 'OVER' else mc.get('mc_p_under')
+                if p is not None:
+                    votes_checked += 1
+                    if float(p) >= 0.575:  # +15pp over 42.5% breakeven for MC probability
+                        votes_for_orig += 1
+            elif market == 'ml':
+                p = mc.get('mc_p_home_win') if orig_side == 'HOME_ML' else mc.get('mc_p_away_win')
+                if p is not None:
+                    votes_checked += 1
+                    if float(p) >= 0.575:
+                        votes_for_orig += 1
+        except (TypeError, ValueError):
+            pass
+
+    # 2) OddsCrowd money% agreement with orig_side
+    oc = ctx.get('oddscrowd_snapshot') if isinstance(ctx.get('oddscrowd_snapshot'), dict) else None
+    if oc:
+        seg = oc.get(market) if isinstance(oc.get(market), dict) else None
+        if seg and seg.get('pick'):
+            try:
+                oc_side_raw = str(seg.get('pick', '')).upper()
+                oc_money = float(seg.get('money') or 0)
+                oc_matches_orig = (
+                    (market == 'total' and oc_side_raw == orig_side) or
+                    (market in ('ml', 'rl') and (
+                        (oc_side_raw == 'HOME' and orig_side.startswith('HOME')) or
+                        (oc_side_raw == 'AWAY' and orig_side.startswith('AWAY'))
+                    ))
+                )
+                if oc_matches_orig:
+                    votes_checked += 1
+                    if oc_money >= 65:  # sharp/public 65%+ on orig side
+                        votes_for_orig += 1
+                else:
+                    votes_checked += 1  # OC votes for flipped, count against
+            except (TypeError, ValueError):
+                pass
+
+    # 3) Jerry projected total vs close_total (for total market only)
+    if market == 'total':
+        try:
+            jpred = ctx.get('jerry_pred_total')
+            cline = ctx.get('close_total')
+            if jpred is not None and cline is not None:
+                diff = float(jpred) - float(cline)
+                votes_checked += 1
+                if orig_side == 'OVER' and diff >= 1.5:
+                    votes_for_orig += 1
+                elif orig_side == 'UNDER' and diff <= -1.5:
+                    votes_for_orig += 1
+        except (TypeError, ValueError):
+            pass
+
+    # Block the flip when ≥2 signals side with orig_side. Requires at
+    # least 2 votes checked so single-signal cases don't false-positive.
+    if votes_checked >= 2 and votes_for_orig >= 2:
+        return False
+    return True
+
+
 def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
     """Iterate all enabled signal_sources for the sport, evaluate each
     against ctx (or dispatch to handler), return every Opinion emitted."""
@@ -843,25 +1017,25 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
         if _sk.endswith('_fade') or _sk.endswith('__fade'):
             pass  # don't auto-fade a fade — falls through to zero-weight emit
         elif tier == 'ANTI_VALIDATED' and hr is not None and n >= 25 and hr <= 0.47:
+            # 2026-08-26 UFC gap fix: fight market was missing from flip_map,
+            # so every ANTI signal on a UFC card silently emitted zero-weight
+            # instead of flipping to the other fighter.
             flip_map = {'HOME_ML':'AWAY_ML','AWAY_ML':'HOME_ML',
                         'HOME_RL':'AWAY_RL','AWAY_RL':'HOME_RL',
-                        'OVER':'UNDER','UNDER':'OVER'}
+                        'OVER':'UNDER','UNDER':'OVER',
+                        'FIGHTER_A_ML':'FIGHTER_B_ML','FIGHTER_B_ML':'FIGHTER_A_ML'}
             flipped_side = flip_map.get(side)
-            if flipped_side:
+            if flipped_side is None:
+                # New market label added to CANDIDATES_BY_MARKET without
+                # updating flip_map. Log so this can't recur silently.
+                print(f'⚠ auto-fade: unrecognized side {side!r} for signal '
+                      f'{source.get("signal_key")} — flip_map needs updating')
+            if flipped_side and _fade_consensus_ok(ctx, source, side, flipped_side, cls):
                 fade_hr = 1.0 - hr
                 # Promote to VALIDATED if fade edge is meaningful (>= 55%)
                 # AND sample is decent, else DISCOVERY.
                 fade_tier = 'VALIDATED' if (fade_hr >= 0.55 and n >= 50) else 'DISCOVERY'
-                # 2026-08-22 user feedback on Detroit @ KC primary_play:
-                # "[fade] home covering at home (L10 at-home ATS)" reads
-                # like debug output. Bracketed [fade] is model jargon
-                # leaking to users. Replaced with "Fade:" prefix (English
-                # verb form). Downstream _compose_ensemble_sub joins the
-                # prose with ' · ' so multiple fade signals still read
-                # cleanly: "Fade: X · Fade: Y".
                 raw = prose or source["signal_key"]
-                # Sentence-case the raw prose so bulleted lists look
-                # consistent (was: "home covering at home"; now: "Home ...")
                 if raw and raw[0].isalpha() and raw[0].islower():
                     raw = raw[0].upper() + raw[1:]
                 fade_prose = f'Fade: {raw}'
@@ -965,6 +1139,25 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
                 if share > max_allowed_effective:
                     overflow = share - max_allowed_effective
                     adjusted_total -= overflow
+
+        # 2026-08-26 aggregate FADE cap. Per-class cap doesn't restrain
+        # a stack of auto-fades that split across classes (Rockies UNDER
+        # PRIME 97 had 4 fades across pitcher/weather/offense — each got
+        # its own 40% budget, collectively they dominated). Enforce that
+        # the sum of __fade contributions across all classes stays under
+        # FADE_MAX_SHARE of adjusted_total. Same algebra as per-class:
+        #   fade_effective <= FMS * (fade_effective + others)
+        #   fade_effective <= (FMS / (1-FMS)) * others_sum
+        fade_share = sum(c.contribution for c in chips
+                         if c.signal_key.endswith('__fade') or c.signal_key.endswith('_fade'))
+        if fade_share > 0 and adjusted_total > 0:
+            fade_cap_ratio = FADE_MAX_SHARE / (1.0 - FADE_MAX_SHARE)
+            others_sum = adjusted_total - fade_share
+            if others_sum > 0:
+                max_fade_effective = others_sum * fade_cap_ratio
+                if fade_share > max_fade_effective:
+                    adjusted_total -= (fade_share - max_fade_effective)
+
         classes_fired = len([c for c in class_share.keys() if class_share[c] > 0])
         scored.append((cand, adjusted_total, chips, dict(class_share), classes_fired))
 
