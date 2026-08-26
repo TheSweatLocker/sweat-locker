@@ -133,6 +133,141 @@ SIGNALS = [
         'weight_registry_key': 'projected_total',
         'display_prose_template': 'primary runs projection {projected_total} vs market {close_total}',
     },
+
+    # ── MODEL-COMBO CLASS (2026-08-26) ───────────────────────────────
+    # Individual model signals hit ~50% (MLB dead-ball 2026 — books price
+    # them in). Empirical mining shows AGREEMENT PATTERNS have real edge:
+    #   UNDER-consensus and AWAY-consensus BACK
+    #   OVER-consensus and HOME-consensus FADE
+    # This is systemic — every model was trained on richer scoring / more
+    # HFA years than 2026 actually is. Books capture the OVER/HOME thesis;
+    # the UNDER/AWAY thesis is what beats the closing line.
+    #
+    # 60-day empirical rates baked into hit_rate_pct/sample_n so these
+    # earn weight from day 1. refit_signal_registry updates over time.
+    # All rows are class='model' so class-balance cap keeps them from
+    # dominating any single side.
+
+    # -- TOTAL: back consensus UNDERs --
+    {
+        'signal_key': 'mc_panel_agree_under',
+        'class': 'model', 'market_scope': 'total',
+        'condition_expr': ('ctx.close_total is not None and '
+                           'ctx.panel_implied_total is not None and '
+                           'ctx.mc_probabilities is not None and '
+                           '(ctx.mc_probabilities or {}).get("mc_mean_total") is not None and '
+                           'float(ctx.panel_implied_total) < float(ctx.close_total) - 0.5 and '
+                           'float((ctx.mc_probabilities or {}).get("mc_mean_total")) < float(ctx.close_total) - 0.5'),
+        'side_expr': '"UNDER"',
+        'strength_expr': '0.6',
+        'hit_rate_pct': 65.1, 'sample_n': 43,
+        'display_prose_template': 'MC ({mc_probabilities.mc_mean_total}) and panel ({panel_implied_total}) both under line {close_total} — historically 65% under',
+        'description': 'MC+Panel joint UNDER lean. 65.1% n=43 60d MLB.',
+    },
+    {
+        'signal_key': 'jerry_panel_agree_under',
+        'class': 'model', 'market_scope': 'total',
+        'condition_expr': ('ctx.close_total is not None and '
+                           'ctx.jerry_pred_total is not None and '
+                           'ctx.panel_implied_total is not None and '
+                           'float(ctx.jerry_pred_total) < float(ctx.close_total) - 0.5 and '
+                           'float(ctx.panel_implied_total) < float(ctx.close_total) - 0.5'),
+        'side_expr': '"UNDER"',
+        'strength_expr': '0.7',
+        'hit_rate_pct': 77.8, 'sample_n': 9,
+        'display_prose_template': 'Jerry ({jerry_pred_total}) and panel ({panel_implied_total}) both under line {close_total} — historically 78% under',
+        'description': 'Jerry+Panel joint UNDER lean. 77.8% n=9 60d MLB — small sample, DISCOVERY tier.',
+    },
+
+    # -- TOTAL: FADE consensus OVERs (contrarian side=UNDER) --
+    {
+        'signal_key': 'jerry_panel_mc_agree_over_fade',
+        'class': 'model', 'market_scope': 'total',
+        'condition_expr': ('ctx.close_total is not None and '
+                           'ctx.jerry_pred_total is not None and '
+                           'ctx.panel_implied_total is not None and '
+                           'ctx.mc_probabilities is not None and '
+                           '(ctx.mc_probabilities or {}).get("mc_mean_total") is not None and '
+                           'float(ctx.jerry_pred_total) > float(ctx.close_total) + 0.5 and '
+                           'float(ctx.panel_implied_total) > float(ctx.close_total) + 0.5 and '
+                           'float((ctx.mc_probabilities or {}).get("mc_mean_total")) > float(ctx.close_total) + 0.5'),
+        'side_expr': '"UNDER"',   # CONTRARIAN — all 3 model OVER historically loses 70% of time
+        'strength_expr': '0.8',
+        'hit_rate_pct': 70.0, 'sample_n': 10,
+        'display_prose_template': 'triple-model overs (Jerry {jerry_pred_total}, panel {panel_implied_total}, MC {mc_probabilities.mc_mean_total}) get faded 70% — books price this in',
+        'description': 'All-3 model OVER consensus. Historical 30% hit → 70% fade edge, n=10 60d MLB. side=UNDER contrarian.',
+    },
+    {
+        'signal_key': 'jerry_panel_agree_over_fade',
+        'class': 'model', 'market_scope': 'total',
+        'condition_expr': ('ctx.close_total is not None and '
+                           'ctx.jerry_pred_total is not None and '
+                           'ctx.panel_implied_total is not None and '
+                           'float(ctx.jerry_pred_total) > float(ctx.close_total) + 0.5 and '
+                           'float(ctx.panel_implied_total) > float(ctx.close_total) + 0.5'),
+        'side_expr': '"UNDER"',   # CONTRARIAN
+        'strength_expr': '0.6',
+        'hit_rate_pct': 61.9, 'sample_n': 21,
+        'display_prose_template': 'both projection models over line ({jerry_pred_total} / {panel_implied_total} vs {close_total}) — historically fades 62%',
+        'description': 'Jerry+Panel OVER consensus. Historical 38.1% hit → 61.9% fade edge, n=21 60d MLB. side=UNDER.',
+    },
+
+    # -- ML: back MC+model consensus on AWAY, fade jerry+proj on HOME --
+    {
+        'signal_key': 'mc_model_agree_away_ml',
+        'class': 'model', 'market_scope': 'ml',
+        'condition_expr': ('ctx.mc_probabilities is not None and '
+                           '(ctx.mc_probabilities or {}).get("mc_p_away_win") is not None and '
+                           'ctx.model_pred_spread is not None and ctx.close_spread is not None and '
+                           'float((ctx.mc_probabilities or {}).get("mc_p_away_win")) >= 0.55 and '
+                           '(float(ctx.model_pred_spread) + float(ctx.close_spread)) < -0.5'),
+        'side_expr': '"AWAY_ML"',
+        'strength_expr': '0.6',
+        'hit_rate_pct': 63.2, 'sample_n': 19,
+        'display_prose_template': 'MC ({mc_probabilities.mc_p_away_win} away win) and spread model both like the road team',
+        'description': 'MC+model spread joint AWAY lean. 63.2% n=19 60d MLB.',
+    },
+    {
+        'signal_key': 'jerry_proj_agree_home_ml_fade',
+        'class': 'model', 'market_scope': 'ml',
+        'condition_expr': ('ctx.jerry_pred_spread is not None and ctx.projected_spread is not None and '
+                           'ctx.close_spread is not None and '
+                           '(float(ctx.jerry_pred_spread) + float(ctx.close_spread)) > 0.5 and '
+                           '(float(ctx.projected_spread) + float(ctx.close_spread)) > 0.5'),
+        'side_expr': '"AWAY_ML"',   # CONTRARIAN — jerry+proj HOME historically loses 71.4%
+        'strength_expr': '0.6',
+        'hit_rate_pct': 71.4, 'sample_n': 35,
+        'display_prose_template': 'jerry + projected models both favor home team — historically fades 71%, take road ML',
+        'description': 'Jerry+Proj HOME consensus. Historical 28.6% hit → 71.4% fade, n=35 60d MLB. side=AWAY_ML contrarian.',
+    },
+
+    # -- RL cover: back jerry+proj AWAY, fade jerry+proj HOME --
+    {
+        'signal_key': 'jerry_proj_agree_away_rl',
+        'class': 'model', 'market_scope': 'rl',
+        'condition_expr': ('ctx.jerry_pred_spread is not None and ctx.projected_spread is not None and '
+                           'ctx.close_spread is not None and '
+                           '(float(ctx.jerry_pred_spread) + float(ctx.close_spread)) < -0.5 and '
+                           '(float(ctx.projected_spread) + float(ctx.close_spread)) < -0.5'),
+        'side_expr': '"AWAY_RL"',
+        'strength_expr': '0.7',
+        'hit_rate_pct': 68.8, 'sample_n': 48,
+        'display_prose_template': 'jerry + projected models both like road team by 0.5+ runs — RL cover 69%',
+        'description': 'Jerry+Proj AWAY spread consensus. 68.8% n=48 60d MLB — biggest sample compound signal.',
+    },
+    {
+        'signal_key': 'jerry_proj_agree_home_rl_fade',
+        'class': 'model', 'market_scope': 'rl',
+        'condition_expr': ('ctx.jerry_pred_spread is not None and ctx.projected_spread is not None and '
+                           'ctx.close_spread is not None and '
+                           '(float(ctx.jerry_pred_spread) + float(ctx.close_spread)) > 0.5 and '
+                           '(float(ctx.projected_spread) + float(ctx.close_spread)) > 0.5'),
+        'side_expr': '"AWAY_RL"',   # CONTRARIAN — home spread consensus historically covers 34%
+        'strength_expr': '0.6',
+        'hit_rate_pct': 65.7, 'sample_n': 35,
+        'display_prose_template': 'jerry + projected both project home by 0.5+ — historically road covers 66%',
+        'description': 'Jerry+Proj HOME spread consensus. Historical 34.3% cover → 65.7% fade, n=35 60d MLB. side=AWAY_RL contrarian.',
+    },
     {
         'signal_key': 'mc_high_confidence',
         'class': 'model', 'market_scope': 'ml',
