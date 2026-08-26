@@ -297,12 +297,32 @@ def build_chalk_parlay(picks: list[dict], target_odds_range: tuple = (-180, 175)
         if gid: seen_games.add(gid)
         dedup_candidates.append(c)
     candidates = dedup_candidates
-    # Try 3-leg first (bigger chalk stack), then 2-leg
+    # 2026-08-26: combinatorial search across top candidates. Prior code
+    # only tried candidates[:n_legs] (best-by-tier), which failed when the
+    # top-2 combined odds were outside the target range even though other
+    # 2-leg combos fit. Real example: 8/26 top-2 (SD -128 + CLE -145) =
+    # +201 (out), but CLE + MIL = +170 (in range, both STRONG). Now: try
+    # all C(k, n) combinations from the top ~6 candidates, prefer the
+    # combination with the tightest odds toward +100 among those in range.
+    from itertools import combinations
+    POOL = candidates[:6]  # cap pool at 6 → max C(6,3)=20 combos, fast
     for n_legs in (3, 2):
-        if len(candidates) < n_legs: continue
-        legs = candidates[:n_legs]
-        combined = combined_american_odds([p['original_odds'] for p in legs])
-        if target_odds_range[0] <= combined <= target_odds_range[1]:
+        if len(POOL) < n_legs: continue
+        valid = []
+        for combo in combinations(POOL, n_legs):
+            odds_list = [p['original_odds'] for p in combo]
+            combined = combined_american_odds(odds_list)
+            if target_odds_range[0] <= combined <= target_odds_range[1]:
+                # Score: how tight to +100 (even money target)
+                distance = abs(combined - 100)
+                # Bonus for higher-tier legs (STRONG > LEAN > CHALK_ONLY)
+                tier_score = sum({'PRIME': 3, 'STRONG': 2, 'LEAN': 1,
+                                  'CHALK_ONLY': 0}.get(p['tier'], 0) for p in combo)
+                valid.append((distance - tier_score * 5, combo, combined))
+        if valid:
+            valid.sort(key=lambda x: x[0])
+            _, best_combo, combined = valid[0]
+            legs = list(best_combo)
             return {
                 'kind': 'chalk_parlay',
                 'sport_scope': 'MLB' if all(l['sport']=='MLB' for l in legs) else 'MULTI',

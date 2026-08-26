@@ -142,6 +142,53 @@ def apply_oc_flip_gate(pp: dict | None, ctx: dict) -> dict | None:
         if oc_money < money_threshold:
             return pp
 
+        # 2026-08-26 MC-DISSENT BLOCK. 8/25 audit finding: OC-flip fell
+        # 1-5 that night (running 9-7 vs the 8-2 head start). The one
+        # obvious loss was Over 8.5 COL/WSH — OC 90% money OVER triggered
+        # a flip, but MC sim projected 6.31 total (81% UNDER probability).
+        # MC was right (actual 4). Rule: if MC has HIGH probability for the
+        # side we're about to flip AWAY from, respect the sim and skip the
+        # flip. Thresholds set conservatively so this only blocks the
+        # loudest MC dissents.
+        mc = ctx.get('mc_probabilities')
+        if isinstance(mc, dict):
+            mc_block = False
+            if mkt == 'total':
+                # Flipping AWAY from cur_side (Under) → Over means MC's
+                # mc_p_under is the "prob the original side wins."
+                # Block if MC has >=70% conviction on the original side.
+                mc_prob_orig = None
+                if cur_side == 'UNDER':
+                    mc_prob_orig = mc.get('mc_p_under')
+                elif cur_side == 'OVER':
+                    mc_prob_orig = mc.get('mc_p_over')
+                try:
+                    if mc_prob_orig is not None and float(mc_prob_orig) >= 0.70:
+                        mc_block = True
+                except (TypeError, ValueError):
+                    pass
+            elif mkt == 'ml':
+                mc_prob_orig = None
+                if cur_side == 'HOME':
+                    mc_prob_orig = mc.get('mc_p_home_win') or mc.get('mc_home_win_prob')
+                elif cur_side == 'AWAY':
+                    mc_prob_orig = mc.get('mc_p_away_win') or mc.get('mc_away_win_prob')
+                try:
+                    if mc_prob_orig is not None and float(mc_prob_orig) >= 0.65:
+                        mc_block = True
+                except (TypeError, ValueError):
+                    pass
+            if mc_block:
+                # Attach an audit note so we can see WHY flip was skipped.
+                pp['_oc_flip_blocked'] = {
+                    'reason': f'MC dissent block: MC has {float(mc_prob_orig)*100:.0f}% '
+                              f'conviction on {cur_side} — skipping OC-flip to {oc_pick}.',
+                    'oc_money_pct': oc_money,
+                    'oc_pick': oc_pick,
+                    'mc_prob_orig_side': float(mc_prob_orig),
+                }
+                return pp
+
         # OC dissents with money conviction — flip.
         orig_side = cur_side
         orig_label = pp.get('label')
