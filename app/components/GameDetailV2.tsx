@@ -184,6 +184,7 @@ export default function GameDetailV2({
 }: Props) {
   const [fetchedExternals, setFetchedExternals] = useState<any[]>([]);
   const [fetchedProps, setFetchedProps] = useState<any[]>([]);
+  const [sourceRecords, setSourceRecords] = useState<Record<string, any>>({});
 
   // Auto-fetch externals + props per-game when parent doesn't supply.
   useEffect(() => {
@@ -253,6 +254,23 @@ export default function GameDetailV2({
           console.log(`[GameDetailV2] fetched ${extData.length} external_picks for gid=${gid}`);
           setFetchedExternals(extData);
         }
+        // 2026-08-26: also fetch 30d W-L record per source×surface so chips
+        // can show "The Chalk 24-13" instead of just "The Chalk".
+        const sources = Array.from(new Set((extData || []).map(e => e.source).filter(Boolean)));
+        if (sources.length > 0) {
+          const {data: trackData, error: trackErr} = await client
+            .from('external_source_track_record')
+            .select('source,surface,n_wins,n_losses,hit_rate')
+            .eq('sport', gamesSport)
+            .eq('window_days', 30)
+            .in('source', sources);
+          if (trackErr) console.warn('[GameDetailV2] track_record fetch error:', trackErr.message);
+          if (!cancelled && trackData) {
+            const map: Record<string, any> = {};
+            for (const r of trackData) map[`${r.source}|${r.surface}`] = r;
+            setSourceRecords(map);
+          }
+        }
       }
 
       // Fetch props (MLB only for now)
@@ -281,8 +299,13 @@ export default function GameDetailV2({
 
   if (!game) return null;
 
-  const awayTeam = game.away_team || ctx?.away_team || 'Away';
-  const homeTeam = game.home_team || ctx?.home_team || 'Home';
+  // 2026-08-26: prefer ctx team name (our DB canonical) over game (Odds API).
+  // Odds API includes mascot ('North Carolina Tar Heels', 'Texas Christian
+  // Horned Frogs') which abbrev3's last-word fallback maps to 'HEE'/'FRO'
+  // for NCAAF teams not in TEAM_ABBREV. Our ctx stores 'North Carolina' +
+  // 'TCU' which map to 'NC'/'TCU' cleanly.
+  const awayTeam = ctx?.away_team || game.away_team || 'Away';
+  const homeTeam = ctx?.home_team || game.home_team || 'Home';
   const closeSpread = ctx?.close_spread ?? game.close_spread;
   const closeTotal = ctx?.close_total ?? game.close_total;
   // 2026-08-25: sports name ML columns differently on their context tables.
@@ -339,7 +362,7 @@ export default function GameDetailV2({
         </Section>
 
         <Section title="External Handicappers">
-          <HandicappersRow picks={externalPicks} homeTeam={homeTeam} awayTeam={awayTeam} sport={gamesSport} />
+          <HandicappersRow picks={externalPicks} homeTeam={homeTeam} awayTeam={awayTeam} sport={gamesSport} records={sourceRecords} />
         </Section>
 
         <SportSpecificSlot ctx={ctx} gamesSport={gamesSport} game={game} />
@@ -1022,7 +1045,7 @@ function LensGrid({ctx, gamesSport}: any) {
 }
 
 // ─── HANDICAPPERS ROW ───────────────────────────────────────────────────
-function HandicappersRow({picks, homeTeam, awayTeam, sport}: any) {
+function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) {
   const nonOC = (picks || []).filter((p: any) => p.source !== 'oddscrowd');
   const ml = nonOC.filter((p: any) => p.surface === 'ml');
   const rl = nonOC.filter((p: any) => p.surface === 'rl');
@@ -1035,23 +1058,45 @@ function HandicappersRow({picks, homeTeam, awayTeam, sport}: any) {
   const totOver = totals.filter((p: any) => p.pick_side === 'OVER');
   const totUnder = totals.filter((p: any) => p.pick_side === 'UNDER');
 
-  const chip = (p: any, i: number) => (
-    <View
-      key={`${p.source}-${i}`}
-      style={[
-        styles.handiChip,
-        p.fade_flag === 'boost' && {backgroundColor: C.accentDim, borderColor: C.accent},
-        p.fade_flag === 'fade' && {backgroundColor: C.fadeDim, borderColor: C.fade},
-      ]}>
-      <Text style={[
-        styles.handiChipText,
-        p.fade_flag === 'boost' && {color: C.accent},
-        p.fade_flag === 'fade' && {color: C.fade},
-      ]}>
-        {personaFor(p.source)}
-      </Text>
-    </View>
-  );
+  const chip = (p: any, i: number) => {
+    // Look up this source's 30d record on this surface
+    const rec = records[`${p.source}|${p.surface}`] || records[`${p.source}|ALL`];
+    const w = rec?.n_wins ?? 0;
+    const l = rec?.n_losses ?? 0;
+    const hasRec = (w + l) >= 5;
+    const isHot = hasRec && rec?.hit_rate != null && Number(rec.hit_rate) >= 58;
+    const isCold = hasRec && rec?.hit_rate != null && Number(rec.hit_rate) <= 42;
+    // Boost/fade flag OR hot/cold record can color the chip. Record-based
+    // coloring wins if it disagrees (real perf > ingest heuristic).
+    const showBoost = isHot || (!hasRec && p.fade_flag === 'boost');
+    const showFade  = isCold || (!hasRec && p.fade_flag === 'fade');
+    return (
+      <View
+        key={`${p.source}-${i}`}
+        style={[
+          styles.handiChip,
+          showBoost && {backgroundColor: C.accentDim, borderColor: C.accent},
+          showFade && {backgroundColor: C.fadeDim, borderColor: C.fade},
+        ]}>
+        <Text style={[
+          styles.handiChipText,
+          showBoost && {color: C.accent},
+          showFade && {color: C.fade},
+        ]}>
+          {personaFor(p.source)}
+        </Text>
+        {hasRec && (
+          <Text style={[
+            styles.handiChipRecord,
+            showBoost && {color: C.accent},
+            showFade && {color: C.fade},
+          ]}>
+            {w}-{l}
+          </Text>
+        )}
+      </View>
+    );
+  };
 
   const bucketRow = (label: string, items: any[]) => (
     <View style={styles.handiRow}>
@@ -3015,8 +3060,10 @@ const styles = StyleSheet.create({
   handiChip: {
     paddingHorizontal: 7, paddingVertical: 2, backgroundColor: C.surface2,
     borderWidth: 1, borderColor: C.border, borderRadius: 4,
+    flexDirection: 'row', alignItems: 'baseline',
   },
   handiChipText: {fontSize: 10, color: C.text},
+  handiChipRecord: {fontSize: 9, color: C.textMuted, marginLeft: 3, fontVariant: ['tabular-nums']},
   handiCount: {marginLeft: 'auto', fontSize: 11, color: C.textMuted, fontWeight: '600', fontVariant: ['tabular-nums']},
   handiEmpty: {fontSize: 10, color: C.textDim, fontStyle: 'italic'},
 

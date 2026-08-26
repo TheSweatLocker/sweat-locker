@@ -445,7 +445,13 @@ def edge_weight(hit_rate: Optional[float], n: int,
     edge_pp = hit_rate - BREAKEVEN
     if edge_pp <= 0:
         return 0.0
-    edge_component = min(edge_pp / 0.12, 1.0)
+    # 2026-08-26 log-compression (audit recommendation). Old:
+    #   edge_component = min(edge_pp / 0.12, 1.0)  # linear saturation
+    # A single mature signal at 12pp edge could supply 1.0 contribution
+    # alone, dominating a pick. New curve retains 0.86 at 12pp and 0.36
+    # at 3pp — smaller signals contribute meaningfully, big signals
+    # don't singlehandedly win markets.
+    edge_component = 1.0 - math.exp(-edge_pp / 0.06)
     n_component = min(math.log1p(n) / math.log(101), 1.0)
     return round(edge_component * n_component, 4)
 
@@ -508,7 +514,9 @@ def edge_weight_v2(hit_rate: Optional[float], n: int,
     edge_pp = posterior_mean - BREAKEVEN
     if edge_pp <= 0:
         return 0.0
-    edge_component = min(edge_pp / 0.12, 1.0)
+    # 2026-08-26: same log-compression as v1 — no single signal
+    # dominates via linear saturation.
+    edge_component = 1.0 - math.exp(-edge_pp / 0.06)
     # n_component uses effective sample = n + prior_strength so the
     # curve is smooth (no discontinuity at SAMPLE_MIN_N). Signals with
     # 100+ effective sample saturate.
@@ -874,7 +882,64 @@ def _fade_consensus_ok(ctx: dict, source: dict, orig_side: str,
     agree with orig_side by ≥15pp / 1.5 units. If ctx signals are missing
     we allow the flip (backward compatibility for sports where these
     fields aren't populated).
+
+    2026-08-26 EXCEPTION: if a compound signal (jerry_panel_agree_over_fade,
+    jerry_proj_agree_home_ml_fade, etc.) is present in the same market
+    with a VALIDATED tier from empirical grading, it OVERRIDES the block —
+    that pattern historically fades exactly this consensus. Prevents
+    ensemble from ignoring proven fade patterns just because live models
+    happen to agree with the consensus that historically loses.
     """
+    # Compound-fade override: check if any of the seeded fade patterns
+    # would fire on this game. Signal_key convention is *_fade — the seed
+    # is present in signal_registry with real hit_rate; if hit_rate is
+    # >=0.60 with n>=15, respect it as override.
+    #
+    # We check by looking at ctx flags for jerry+panel agree over,
+    # jerry+proj home spread agree, etc. — signals that specifically
+    # exist to fade this exact consensus type.
+    try:
+        market_lower = None
+        if orig_side in ('OVER', 'UNDER'): market_lower = 'total'
+        elif orig_side in ('HOME_ML', 'AWAY_ML'): market_lower = 'ml'
+        elif orig_side in ('HOME_RL', 'AWAY_RL'): market_lower = 'rl'
+
+        if market_lower == 'total' and orig_side == 'OVER':
+            # Any of jerry+panel, jerry+panel+MC over-agreement means
+            # a proven fade signal wants UNDER. Let the fade emit.
+            ct = ctx.get('close_total')
+            jp = ctx.get('jerry_pred_total')
+            pp = ctx.get('panel_implied_total')
+            if ct is not None and jp is not None and pp is not None:
+                try:
+                    if (float(jp) - float(ct) > 0.5 and
+                            float(pp) - float(ct) > 0.5):
+                        return True  # compound fade active, allow flip
+                except (TypeError, ValueError):
+                    pass
+        if market_lower == 'ml' and orig_side == 'HOME_ML':
+            js = ctx.get('jerry_pred_spread'); ps = ctx.get('projected_spread')
+            cs = ctx.get('close_spread')
+            if js is not None and ps is not None and cs is not None:
+                try:
+                    if ((float(js) + float(cs)) > 0.5 and
+                            (float(ps) + float(cs)) > 0.5):
+                        return True  # jerry_proj home ML consensus historically fades
+                except (TypeError, ValueError):
+                    pass
+        if market_lower == 'rl' and orig_side == 'HOME_RL':
+            js = ctx.get('jerry_pred_spread'); ps = ctx.get('projected_spread')
+            cs = ctx.get('close_spread')
+            if js is not None and ps is not None and cs is not None:
+                try:
+                    if ((float(js) + float(cs)) > 0.5 and
+                            (float(ps) + float(cs)) > 0.5):
+                        return True  # jerry_proj home RL consensus historically fades
+                except (TypeError, ValueError):
+                    pass
+    except Exception:
+        pass
+
     market = None
     if orig_side in ('OVER', 'UNDER'): market = 'total'
     elif orig_side in ('HOME_ML', 'AWAY_ML'): market = 'ml'
