@@ -564,8 +564,15 @@ def _demote_coverage_tier(game_date: str, dry_run: bool = False) -> int:
 
     COVERAGE tier is a -11% ROI drag over 216 stakes (8/16 audit). These
     are fallback fills that got promoted for card coverage without real
-    conviction. Cap all COVERAGE props at LEAN so downstream (sweat card,
-    the sharp, etc.) treats them as internal-only, not publishable.
+    conviction. Move them to SKIP so every UI surface (sharp card, sweat
+    card, prop card) hides them; SKIP rows stay in DB for backtest audit.
+
+    2026-08-26 fix: previously wrote LEAN/55 with a hidden
+    _coverage_kill_gate note, but every downstream filter uses
+    `tier IN (PRIME, STRONG, LEAN)` — LEAN IS publishable. Coverage stubs
+    were leaking through as 124 identical-signal LEAN 55 props today. SKIP
+    matches how recalibrate + scratch invalidation already handle
+    unpublishable rows (generate_props.py:4475, 4570, 4586).
 
     Idempotent via _coverage_kill_gate tag.
     """
@@ -588,9 +595,9 @@ def _demote_coverage_tier(game_date: str, dry_run: bool = False) -> int:
         sig['_coverage_kill_gate'] = 'COVERAGE_TIER_UNPUBLISHABLE'
         sig['_refit_override_at'] = _et_today()
         print(f'  coverage-kill: {prop["player_name"]:22} {prop["prop_type"]:12} '
-              f'COVERAGE/{prop.get("conviction")} -> LEAN/55')
+              f'COVERAGE/{prop.get("conviction")} -> SKIP')
         if dry_run: demoted += 1; continue
-        patch = {'tier': 'LEAN', 'conviction': 55, 'signals': sig}
+        patch = {'tier': 'SKIP', 'conviction': 0, 'signals': sig}
         pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
                             headers=H_WRITE, json=patch, timeout=10)
         if pr.status_code in (200, 204): demoted += 1
