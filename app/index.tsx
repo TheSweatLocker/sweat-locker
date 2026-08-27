@@ -1789,6 +1789,9 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [jerryRecord, setJerryRecord] = useState(null);
   const [jerryRecordLoading, setJerryRecordLoading] = useState(false);
   const [recordWindow, setRecordWindow] = useState('lifetime');   // 'lifetime' | '30d' | '7d'
+  const [receiptsSport, setReceiptsSport] = useState('ALL');
+  const [potdHistory, setPotdHistory] = useState<any[]>([]);
+  const [potdHistoryLoading, setPotdHistoryLoading] = useState(false);
   const [dawgData, setDawgData] = useState<any>(null);
   const [dawgLoading, setDawgLoading] = useState(false);
   const [propJerryData, setPropJerryData] = useState([]);
@@ -5149,6 +5152,26 @@ const fetchDawgOfDay = async () => {
     setDawgData({ noPick: true });
   }
   setDawgLoading(false);
+};
+
+const fetchPotdHistory = async () => {
+  setPotdHistoryLoading(true);
+  try {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 14);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    const {data, error} = await supabase
+      .from('daily_best_bet_history')
+      .select('bet_date,sport,game,lean,result,sweat_score')
+      .gte('bet_date', cutoffStr)
+      .order('bet_date', {ascending: true});
+    if (error) console.warn('[Receipts] potd history fetch error:', error.message);
+    if (data) setPotdHistory(data);
+  } catch (e) {
+    console.warn('[Receipts] potd history unexpected error:', e);
+  } finally {
+    setPotdHistoryLoading(false);
+  }
 };
 
 const fetchJerryRecord = async () => {
@@ -14178,10 +14201,13 @@ setJerryHistory(prev => {
             })()}
 
             {trendsTab==='mytrends'&&(()=>{
-              // Refetch if no data OR data is stale (>6hr old) to catch overnight resolver runs
+              /* Receipts redesign v3 (2026-08-27) — sport filter chips scope
+                 everything below. POTD strip replaces last-5-losses. CLV
+                 honest teaser. Cut college props (no market). */
               const STALE_MS = 6 * 60 * 60 * 1000;
               const isStale = jerryRecord && jerryRecord.fetched_at && (Date.now() - jerryRecord.fetched_at > STALE_MS);
               if(!jerryRecordLoading && (!jerryRecord || isStale)) fetchJerryRecord();
+              if(!potdHistoryLoading && potdHistory.length === 0) fetchPotdHistory();
               if(jerryRecordLoading) return(
                 <View style={{alignItems:'center',paddingTop:60}}>
                   <ActivityIndicator size="large" color={HRB_COLOR}/>
@@ -14194,554 +14220,187 @@ setJerryHistory(prev => {
                   <Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center'}}>No record data yet.{'\n'}Jerry's picks will be tracked automatically.</Text>
                 </View>
               );
-              const p = jerryRecord.props;
-              const propTotal = p.wins + p.losses;
-              const propWinRate = propTotal > 0 ? ((p.wins/propTotal)*100).toFixed(0) : '—';
-              // Window-selector state (lifetime / 30d / 7d) applies to DOD +
-              // Pipeline Props cards below. NRFI + Best Bet History stay lifetime
-              // (different data models). See fetchJerryRecord for the underlying
-              // rolling counters (dawg.total/last30/last7, pipelineProps.total/last30/last7).
-              const winLabel = recordWindow === '7d' ? 'LAST 7D' : recordWindow === '30d' ? 'LAST 30D' : 'LIFETIME';
-              const pickWindow = (obj: any, fallback: any) => {
-                if (!obj) return fallback;
-                if (recordWindow === '7d')  return obj.last7  || fallback;
-                if (recordWindow === '30d') return obj.last30 || fallback;
-                return obj.total || obj;   // lifetime = total (or the flat obj for backward-compat)
+
+              const js: any = (jerryRecord as any).jerrySynthesis || {bySport: {}, total: {wins:0,losses:0}};
+              const pp: any = (jerryRecord as any).pipelineProps || {total: {wins:0,losses:0}, byTier: {}};
+
+              const filterSport = receiptsSport;
+              const activeSports = [
+                {id: 'MLB',   icon: '⚾', label: 'MLB',   status: 'live',      kickoff: null},
+                {id: 'UFC',   icon: '🥊', label: 'UFC',   status: 'live',      kickoff: null},
+                {id: 'NFL',   icon: '🏈', label: 'NFL',   status: 'preseason', kickoff: 'Sept 5'},
+                {id: 'NCAAF', icon: '🏈', label: 'NCAAF', status: 'preseason', kickoff: 'Aug 30'},
+                {id: 'NBA',   icon: '🏀', label: 'NBA',   status: 'offseason', kickoff: 'Oct'},
+                {id: 'NHL',   icon: '🏒', label: 'NHL',   status: 'offseason', kickoff: 'Oct'},
+              ];
+
+              const surfaceData = (key: string, sport: string) => {
+                if (key === 'sharp') {
+                  const src = sport === 'ALL' ? js.total : (js.bySport?.[sport] || {wins:0,losses:0});
+                  const w = src.wins||0, l = src.losses||0;
+                  return {units: (w*0.91) - l, wins: w, losses: l, hitPct: w+l > 0 ? (w/(w+l))*100 : 0, hasData: (w+l) > 0};
+                }
+                if (key === 'prop') {
+                  if (sport === 'ALL' || sport === 'MLB') {
+                    const src = recordWindow === '7d' ? pp.last7 : recordWindow === '30d' ? pp.last30 : pp.total;
+                    const w = src?.wins||0, l = src?.losses||0;
+                    return {units: (w*0.91) - l, wins: w, losses: l, hitPct: w+l > 0 ? (w/(w+l))*100 : 0, hasData: (w+l) > 0};
+                  }
+                  return {units: 0, wins: 0, losses: 0, hitPct: 0, hasData: false};
+                }
+                return {units: 0, wins: 0, losses: 0, hitPct: 0, hasData: false};
               };
+
+              const s = surfaceData('sharp', filterSport);
+              const pd = surfaceData('prop', filterSport);
+              const heroU = s.units + pd.units;
+              const heroN = s.wins + s.losses + pd.wins + pd.losses;
+              const heroScope = filterSport === 'ALL' ? 'All Sports' : filterSport;
+
+              const potdRows = filterSport === 'ALL' ? potdHistory : potdHistory.filter((r:any) => r.sport === filterSport);
+              const potdW = potdRows.filter((r:any) => r.result === 'Win').length;
+              const potdL = potdRows.filter((r:any) => r.result === 'Loss').length;
+              const potdP = potdRows.filter((r:any) => r.result === 'Push').length;
+              const potdPct = potdW+potdL > 0 ? ((potdW/(potdW+potdL))*100).toFixed(1) : '—';
+
+              const tiers = ['PRIME','STRONG','LEAN'] as const;
+              const tierColor: any = {PRIME: THEME.accent, STRONG: THEME.sharp || THEME.accent, LEAN: THEME.textMuted};
+
               return(
                 <View>
-                  {/* Header */}
-                  <View style={{backgroundColor:THEME.hrb + '12',borderRadius:14,padding:14,marginBottom:16,borderWidth:1,borderColor:THEME.hrb + '40'}}>
-                    <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🎤 JERRY'S TRACK RECORD</Text>
-                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Model performance — updated daily · {winLabel}</Text>
+                  <View style={{backgroundColor:THEME.hrb + '12',borderRadius:14,padding:14,marginBottom:14,borderWidth:1,borderColor:THEME.hrb + '40'}}>
+                    <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:14,marginBottom:4}}>🎤 JERRY'S RECEIPTS</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Every pick tracked · sport-filterable · results auto-resolve daily</Text>
                   </View>
 
-                  {/* Window drill-down chips (2026-07-26) */}
-                  <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
-                    {[
-                      {id:'lifetime', label:'Lifetime'},
-                      {id:'30d', label:'Last 30D'},
-                      {id:'7d', label:'Last 7D'},
-                    ].map(w => (
-                      <TouchableOpacity
-                        key={w.id}
-                        onPress={() => setRecordWindow(w.id)}
-                        style={{
-                          flex:1, paddingVertical:8, borderRadius:8, alignItems:'center',
-                          backgroundColor: recordWindow===w.id ? THEME.hrb + '26' : THEME.surface,
-                          borderWidth:1,
-                          borderColor: recordWindow===w.id ? HRB_COLOR : THEME.border,
-                        }}
-                      >
-                        <Text style={{
-                          color: recordWindow===w.id ? HRB_COLOR : THEME.textDim,
-                          fontSize:11, fontWeight:'700', letterSpacing:0.3,
-                        }}>{w.label}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  {/* ─── BY SPORT SUMMARY (2026-08-09 · multi-sport receipts) ──
-                      Combines game-read Jerry (jerrySynthesis.bySport) + prop
-                      Jerry (propJerry.bySport) + pipeline props (props.bySport)
-                      into one headline row per sport. This is the "which sports
-                      is the product actually working in" surface.
-
-                      DATA: 100% backend — all W/L numbers come from live queries
-                      on jerry_reads, prop_jerry_reads, mlb_pipeline_props tables.
-                      Every cron run refreshes.
-
-                      SPORT LIST: reads top-level SPORTS array (line 58) filtered
-                      by the `receipts_tab` feature flag from `feature_flags` table.
-                      Add a sport row to feature_flags with feature='receipts_tab',
-                      enabled=true to surface it here — no app rebuild required.
-                      Fail-open: if flag not present, sport shows if it has data. */}
-                  {(() => {
-                    const js = (jerryRecord as any).jerrySynthesis || {bySport: {}};
-                    const pj = (jerryRecord as any).propJerry || {bySport: {}};
-                    const pipeBySport = (jerryRecord as any).props?.bySport || {};
-                    // Sport universe = top-level SPORTS array (backend-controlled
-                    // via feature_flags for game_tab). Order preserves the SPORTS
-                    // array order (which is also backend-editable — reorder there).
-                    const sports = SPORTS.filter(s => {
-                      const hasData = (js.bySport?.[s]) || (pj.bySport?.[s]) || (pipeBySport?.[s]);
-                      const flagOn = isFeatureOn(s, 'receipts_tab');
-                      // Show if either: feature flag ON, or actual data exists.
-                      return hasData || flagOn;
-                    });
-                    // 2026-08-20: pre-compute totals so we can show an ALL
-                    // SPORTS aggregate row on top of the per-sport breakdown.
-                    let totalW = 0, totalL = 0;
-                    sports.forEach(sp => {
-                      const _gs = js.bySport?.[sp] || {wins:0,losses:0};
-                      const _pj = pj.bySport?.[sp] || {wins:0,losses:0};
-                      const _ppRaw = pipeBySport?.[sp];
-                      const _pp = _ppRaw ? {wins: _ppRaw.w ?? _ppRaw.wins ?? 0, losses: _ppRaw.l ?? _ppRaw.losses ?? 0} : {wins:0,losses:0};
-                      totalW += (_gs.wins||0) + (_pj.wins||0) + (_pp.wins||0);
-                      totalL += (_gs.losses||0) + (_pj.losses||0) + (_pp.losses||0);
-                    });
-                    const totalN = totalW + totalL;
-                    const totalPct = totalN > 0 ? Math.round((totalW/totalN)*100) : 0;
-                    const totalColor = totalPct>=55 ? THEME.accent : totalPct>=50 ? HRB_COLOR : totalPct>=45 ? THEME.textDim : THEME.loss;
-                    return (
-                      <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:THEME.accent,fontWeight:'800',fontSize:12,marginBottom:10,letterSpacing:0.5}}>🏆 BY SPORT — LIFETIME  ·  ALL JERRY CALLS</Text>
-                        {/* 2026-08-20: ALL SPORTS aggregate row — user asked how
-                            we surface total across everything. Above per-sport
-                            breakdown, one row summing all calls. */}
-                        {totalN > 0 && (
-                          <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:10,marginBottom:4,borderBottomWidth:2,borderBottomColor:THEME.border,backgroundColor:THEME.hrb + '0A',borderRadius:8,paddingHorizontal:10}}>
-                            <View style={{flexDirection:'row',alignItems:'center',flex:1}}>
-                              <Text style={{fontSize:16,marginRight:8}}>🌐</Text>
-                              <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:13,letterSpacing:0.3}}>ALL SPORTS</Text>
-                            </View>
-                            <View style={{flexDirection:'row',alignItems:'center',gap:12}}>
-                              <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>{totalW}-{totalL}</Text>
-                              <View style={{width:48,height:48,borderRadius:24,borderWidth:2,borderColor:totalColor,alignItems:'center',justifyContent:'center',backgroundColor:totalColor+'11'}}>
-                                <Text style={{color:totalColor,fontWeight:'900',fontSize:13}}>{totalPct}%</Text>
-                              </View>
-                            </View>
-                          </View>
-                        )}
-                        {sports.map(sp => {
-                          const gs = js.bySport?.[sp] || {wins:0,losses:0};
-                          const pjS = pj.bySport?.[sp] || {wins:0,losses:0};
-                          // pipeline props already store bySport as {w,l} not {wins,losses}
-                          const ppSraw = pipeBySport?.[sp];
-                          const ppS = ppSraw ? {wins: ppSraw.w ?? ppSraw.wins ?? 0, losses: ppSraw.l ?? ppSraw.losses ?? 0} : {wins:0, losses:0};
-                          const w = (gs.wins||0) + (pjS.wins||0) + (ppS.wins||0);
-                          const l = (gs.losses||0) + (pjS.losses||0) + (ppS.losses||0);
-                          const n = w + l;
-                          const pct = n > 0 ? Math.round((w/n)*100) : 0;
-                          const color = pct>=55 ? THEME.accent : pct>=50 ? HRB_COLOR : pct>=45 ? THEME.textDim : THEME.loss;
-                          const emoji = SPORT_EMOJI[sp] || '•';
-                          return (
-                            <View key={sp} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8,borderBottomWidth:1,borderBottomColor:THEME.border}}>
-                              <View style={{flexDirection:'row',alignItems:'center',flex:1}}>
-                                <Text style={{fontSize:15,marginRight:8}}>{emoji}</Text>
-                                <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>{sp}</Text>
-                              </View>
-                              {n === 0 ? (
-                                <View style={{backgroundColor:THEME.surfaceAlt,paddingHorizontal:8,paddingVertical:3,borderRadius:8}}>
-                                  <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700',letterSpacing:0.4}}>NO DATA YET</Text>
-                                </View>
-                              ) : (
-                                <View style={{flexDirection:'row',alignItems:'center',gap:12}}>
-                                  <Text style={{color:THEME.textDim,fontSize:12}}>{w}-{l}</Text>
-                                  <View style={{width:44,height:44,borderRadius:22,borderWidth:2,borderColor:color,alignItems:'center',justifyContent:'center'}}>
-                                    <Text style={{color:color,fontWeight:'800',fontSize:12}}>{pct}%</Text>
-                                  </View>
-                                </View>
-                              )}
-                            </View>
-                          );
-                        })}
-                        <Text style={{color:THEME.textMuted,fontSize:10,marginTop:10,lineHeight:14}}>Includes game reads + prop reads + pipeline picks. "No data yet" = sport not in season or not yet launched.</Text>
-                      </View>
-                    );
-                  })()}
-
-                  {/* NRFI Model Record — split by tier (PRIME 90-94 vs Mild 70-79) */}
-                  {(()=>{
-                    const prime = jerryRecord.nrfi.prime || {wins:0, losses:0};
-                    const mild = jerryRecord.nrfi.mild || {wins:0, losses:0};
-                    const primeTotal = prime.wins + prime.losses;
-                    const mildTotal = mild.wins + mild.losses;
-                    const primePct = primeTotal > 0 ? Math.round((prime.wins/primeTotal)*100) : 0;
-                    const mildPct = mildTotal > 0 ? Math.round((mild.wins/mildTotal)*100) : 0;
-                    if(primeTotal === 0 && mildTotal === 0) return(
-                      <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:THEME.accent,fontWeight:'800',fontSize:12}}>⚾ NRFI MODEL — LEAN TIERS</Text>
-                        <Text style={{color:THEME.textDim,fontSize:13,marginTop:8}}>NRFI results loading...</Text>
-                      </View>
-                    );
-                    return(
-                      <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:THEME.accent,fontWeight:'800',fontSize:12,marginBottom:12}}>⚾ NRFI MODEL — LEAN TIERS  ·  MLB</Text>
-                        {/* PRIME tier — gold standard */}
-                        <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8,borderBottomWidth:1,borderBottomColor:THEME.border}}>
-                          <View style={{flex:1}}>
-                            <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>🟢 PRIME (90-94)</Text>
-                            <Text style={{color:THEME.textDim,fontSize:10,marginTop:2}}>Sweet spot tier</Text>
-                          </View>
-                          <Text style={{color:THEME.text,fontWeight:'900',fontSize:18,marginRight:14}}>{prime.wins}-{prime.losses}</Text>
-                          <View style={{width:48,height:48,borderRadius:24,borderWidth:2,borderColor:primePct>=55?THEME.accent:THEME.loss,alignItems:'center',justifyContent:'center'}}>
-                            <Text style={{color:primePct>=55?THEME.accent:THEME.loss,fontWeight:'800',fontSize:13}}>{primeTotal>0?`${primePct}%`:'—'}</Text>
-                          </View>
-                        </View>
-                        {/* Mild Lean tier — volume */}
-                        <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:8}}>
-                          <View style={{flex:1}}>
-                            <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>🔵 Mild Lean (70-79)</Text>
-                            <Text style={{color:THEME.textDim,fontSize:10,marginTop:2}}>Volume tier — edge but not lock</Text>
-                          </View>
-                          <Text style={{color:THEME.text,fontWeight:'900',fontSize:18,marginRight:14}}>{mild.wins}-{mild.losses}</Text>
-                          <View style={{width:48,height:48,borderRadius:24,borderWidth:2,borderColor:mildPct>=55?THEME.accent:mildPct>=50?HRB_COLOR:THEME.loss,alignItems:'center',justifyContent:'center'}}>
-                            <Text style={{color:mildPct>=55?THEME.accent:mildPct>=50?HRB_COLOR:THEME.loss,fontWeight:'800',fontSize:13}}>{mildTotal>0?`${mildPct}%`:'—'}</Text>
-                          </View>
-                        </View>
-                      </View>
-                    );
-                  })()}
-
-                  {/* Dawg of the Day Record */}
-                  {(() => {
-                    const dRoot = jerryRecord.dawg || {};
-                    const d = pickWindow(dRoot, {wins:0,losses:0,pending:0});
-                    const pending = dRoot.total?.pending ?? dRoot.pending ?? 0;
-                    const total = (d.wins||0) + (d.losses||0);
-                    const pct = total > 0 ? Math.round((d.wins / total) * 100) : 0;
-                    return (
-                      <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🐕 DAWG OF THE DAY  ·  MLB  ·  {winLabel}</Text>
-                        {total === 0 ? (
-                          <Text style={{color:THEME.textDim,fontSize:13,lineHeight:18}}>{recordWindow === 'lifetime' ? 'Tracking begins once picks resolve.' : `No resolved dawgs in the ${recordWindow} window yet.`}{'\n'}{pending > 0 && recordWindow === 'lifetime' ? `${pending} pending result${pending === 1 ? '' : 's'}.` : ''}</Text>
-                        ) : (
-                          <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center'}}>
-                            <View style={{alignItems:'center'}}>
-                              <Text style={{color:THEME.text,fontWeight:'900',fontSize:32}}>{d.wins}-{d.losses}</Text>
-                              <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>RECORD</Text>
-                            </View>
-                            <View style={{alignItems:'center'}}>
-                              <Text style={{color:pct>=55?THEME.accent:pct>=45?HRB_COLOR:THEME.loss,fontWeight:'800',fontSize:24}}>{pct}%</Text>
-                              <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
-                            </View>
-                            {pending > 0 && recordWindow === 'lifetime' && (
-                              <View style={{alignItems:'center'}}>
-                                <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:22}}>{pending}</Text>
-                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>PENDING</Text>
-                              </View>
-                            )}
-                          </View>
-                        )}
-                        {/* Per-tier breakdown surfaces only when lifetime — 30d/7d
-                            per-tier splits get too thin to be meaningful (n<10 per
-                            tier is noise). Users get tier context via the primary
-                            lifetime view, then focus on rolling for recency. */}
-                        {recordWindow === 'lifetime' && dRoot.byTier && (
-                          <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10,marginTop:12}}>
-                            <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY TIER (LIFETIME)</Text>
-                            {['PRIME','STRONG','LEAN'].map(t => {
-                              const tr = dRoot.byTier[t] || {wins:0,losses:0};
-                              const tn = tr.wins + tr.losses;
-                              const tp = tn > 0 ? Math.round((tr.wins/tn)*100) : 0;
-                              const color = t === 'PRIME' ? THEME.accent : t === 'STRONG' ? THEME.sharp : THEME.textDim;
-                              return (
-                                <View key={t} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
-                                  <Text style={{color:color,fontWeight:'700',fontSize:12}}>{t}</Text>
-                                  <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                                    <Text style={{color:THEME.textDim,fontSize:12}}>{tr.wins}-{tr.losses}</Text>
-                                    {tn > 0 && <Text style={{color:tp>=55?THEME.accent:tp>=45?HRB_COLOR:THEME.loss,fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{tp}%</Text>}
-                                  </View>
-                                </View>
-                              );
-                            })}
-                          </View>
-                        )}
-                      </View>
-                    );
-                  })()}
-
-                  {/* Pipeline Props — conviction-tiered record.
-                      Now shows BOTH lifetime and rolling 30D (added 2026-05-20
-                      after user spotted record dropping 305→285 day-over-day
-                      due to old 500-row rolling window. Lifetime = true model
-                      track record; 30D = recent form indicator). */}
-                  {(() => {
-                    const pp = jerryRecord.pipelineProps || {total: {wins:0, losses:0, pending:0}, last30: {wins:0, losses:0}, last7: {wins:0, losses:0}, byTier: {}, byType: {}};
-                    // Selected-window headline. Lifetime kept as reference for "vs" comparison.
-                    const t = pickWindow(pp, {wins:0,losses:0,pending:0});
-                    const tLifetime = pp.total;
-                    const resolved = (t.wins||0) + (t.losses||0);
-                    const pct = resolved > 0 ? Math.round((t.wins / resolved) * 100) : 0;
-                    const resolvedLifetime = tLifetime.wins + tLifetime.losses;
-                    const pctLifetime = resolvedLifetime > 0 ? Math.round((tLifetime.wins / resolvedLifetime) * 100) : 0;
-                    const tierRow = (label: string, tier: {wins:number, losses:number}, color: string) => {
-                      const tTotal = tier.wins + tier.losses;
-                      const tPct = tTotal > 0 ? Math.round((tier.wins / tTotal) * 100) : 0;
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}} contentContainerStyle={{gap:6,paddingRight:14}}>
+                    {[{id:'ALL', icon:'🌐', label:'All', status:'live', kickoff:null}, ...activeSports].map((sp:any) => {
+                      const isDisabled = sp.status === 'offseason' || sp.status === 'preseason';
+                      const isActive = receiptsSport === sp.id;
                       return (
-                        <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:6}}>
-                          <Text style={{color:color,fontWeight:'700',fontSize:12}}>{label}</Text>
-                          <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                            <Text style={{color:THEME.textDim,fontSize:12}}>{tier.wins}-{tier.losses}</Text>
-                            {tTotal > 0 && (
-                              <Text style={{color:tPct>=55?THEME.accent:tPct>=45?HRB_COLOR:THEME.loss,fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{tPct}%</Text>
+                        <TouchableOpacity
+                          key={sp.id}
+                          onPress={() => setReceiptsSport(sp.id)}
+                          disabled={isDisabled && sp.id !== 'ALL'}
+                          style={{flexDirection:'row',alignItems:'center',gap:5,paddingVertical:7,paddingHorizontal:12,borderRadius:999,backgroundColor: isActive ? THEME.hrb + '26' : THEME.surface,borderWidth:1,borderColor: isActive ? HRB_COLOR : THEME.border,opacity: (isDisabled && sp.id !== 'ALL') ? 0.4 : 1}}>
+                          <Text style={{fontSize:13,lineHeight:14}}>{sp.icon}</Text>
+                          <Text style={{color: isActive ? HRB_COLOR : THEME.textMuted, fontSize:12, fontWeight:'600'}}>{sp.label}</Text>
+                          {sp.kickoff && (
+                            <Text style={{color:THEME.textDim, fontSize:9, fontWeight:'500', marginLeft:2}}>{sp.kickoff}</Text>
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+
+                  <View style={{backgroundColor:THEME.surface,borderRadius:12,padding:14,marginBottom:14,borderWidth:1,borderColor:THEME.border,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
+                    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
+                      <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',letterSpacing:1.4}}>{heroScope.toUpperCase()} · TOTAL P/L</Text>
+                      <View style={{flexDirection:'row',gap:4}}>
+                        {[{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'lifetime',label:'ALL'}].map(w=>(
+                          <TouchableOpacity key={w.id} onPress={()=>setRecordWindow(w.id)} style={{paddingVertical:3,paddingHorizontal:8,borderRadius:5,backgroundColor:recordWindow===w.id?THEME.hrb+'26':THEME.surfaceAlt,borderWidth:1,borderColor:recordWindow===w.id?HRB_COLOR:THEME.border}}>
+                            <Text style={{color:recordWindow===w.id?HRB_COLOR:THEME.textDim,fontSize:10,fontWeight:'700'}}>{w.label}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+                    <Text style={{color:heroU>=0?THEME.win:THEME.loss,fontSize:38,fontWeight:'800',letterSpacing:-0.6,fontVariant:['tabular-nums'],lineHeight:44}}>
+                      {heroU>=0?'+':''}{heroU.toFixed(1)}u
+                    </Text>
+                    <View style={{flexDirection:'row',gap:12,alignItems:'center',marginTop:4}}>
+                      <Text style={{color:THEME.textMuted,fontSize:12}}>on {heroN} graded picks</Text>
+                      {heroN>0 && (
+                        <View style={{backgroundColor:heroU>=0?THEME.win+'26':THEME.loss+'26',borderRadius:4,paddingHorizontal:6,paddingVertical:2}}>
+                          <Text style={{color:heroU>=0?THEME.win:THEME.loss,fontSize:11,fontWeight:'700'}}>{((heroU/heroN)*100).toFixed(1)}% ROI</Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+
+                  <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'800',letterSpacing:1.2,marginBottom:8,marginLeft:2}}>BY SURFACE</Text>
+                  <View style={{flexDirection:'row',flexWrap:'wrap',gap:8,marginBottom:14}}>
+                    {[
+                      {key:'sharp',  label:'The Sharp',  badge:'SC'},
+                      {key:'prop',   label:'Prop Card',  badge:'PC'},
+                      {key:'ladder', label:'Ladder',     badge:'LD'},
+                      {key:'ledger', label:'Ledger',     badge:'LG'},
+                    ].map((sfc:any) => {
+                      const d = surfaceData(sfc.key, filterSport);
+                      const isCollegeProps = sfc.key === 'prop' && (filterSport === 'NCAAF' || filterSport === 'NCAAB');
+                      if (isCollegeProps) {
+                        return (
+                          <View key={sfc.key} style={{flex:1,minWidth:'46%',backgroundColor:THEME.surface,borderRadius:10,padding:12,borderWidth:1,borderColor:THEME.border,opacity:0.5}}>
+                            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                              <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'700',letterSpacing:0.5}}>{sfc.label.toUpperCase()}</Text>
+                              <Text style={{color:THEME.textDim,fontSize:9,backgroundColor:THEME.surfaceAlt,paddingHorizontal:5,paddingVertical:1,borderRadius:4}}>{sfc.badge}</Text>
+                            </View>
+                            <Text style={{color:THEME.textDim,fontSize:11,fontStyle:'italic'}}>Books don't carry college props</Text>
+                          </View>
+                        );
+                      }
+                      return (
+                        <View key={sfc.key} style={{flex:1,minWidth:'46%',backgroundColor:THEME.surface,borderRadius:10,padding:12,borderWidth:1,borderColor:THEME.border}}>
+                          <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                            <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'700',letterSpacing:0.5}}>{sfc.label.toUpperCase()}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:9,backgroundColor:THEME.surfaceAlt,paddingHorizontal:5,paddingVertical:1,borderRadius:4}}>{sfc.badge}</Text>
+                          </View>
+                          <Text style={{color: !d.hasData ? THEME.textDim : d.units>=0 ? THEME.win : THEME.loss, fontSize:22, fontWeight:'800', letterSpacing:-0.4, fontVariant:['tabular-nums'], lineHeight:26}}>
+                            {!d.hasData ? '—' : (d.units>=0?'+':'') + d.units.toFixed(1) + 'u'}
+                          </Text>
+                          <View style={{flexDirection:'row',justifyContent:'space-between',marginTop:4}}>
+                            <Text style={{color:THEME.textMuted,fontSize:11,fontVariant:['tabular-nums']}}>
+                              {d.hasData ? `${d.wins}-${d.losses}` : (sfc.key === 'ladder' || sfc.key === 'ledger' ? 'v1.1' : 'no data')}
+                            </Text>
+                            {d.hasData && (
+                              <Text style={{color:THEME.textMuted,fontSize:11,fontVariant:['tabular-nums']}}>{d.hitPct.toFixed(0)}%</Text>
                             )}
                           </View>
+                          {filterSport === 'ALL' && (sfc.key === 'sharp' || sfc.key === 'prop') && (
+                            <View style={{marginTop:8,paddingTop:8,borderTopWidth:1,borderTopColor:THEME.border,borderStyle:'dashed'}}>
+                              {activeSports.filter((sp:any) => sp.status !== 'offseason').map((sp:any) => {
+                                if (sfc.key === 'prop' && (sp.id === 'NCAAF' || sp.id === 'NCAAB')) return null;
+                                const spD = surfaceData(sfc.key, sp.id);
+                                return (
+                                  <View key={sp.id} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:2}}>
+                                    <Text style={{color:THEME.textMuted,fontSize:11}}>{sp.icon} {sp.label}</Text>
+                                    <Text style={{color: !spD.hasData ? THEME.textDim : spD.units>=0 ? THEME.win : THEME.loss, fontSize:11, fontWeight:'700', fontVariant:['tabular-nums']}}>
+                                      {!spD.hasData ? '—' : (spD.units>=0?'+':'') + spD.units.toFixed(1) + 'u'}
+                                    </Text>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          )}
                         </View>
                       );
-                    };
-                    return (
-                      <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:THEME.textDim,fontSize:11,fontWeight:'700',marginBottom:10,letterSpacing:0.5}}>🧠 PIPELINE PROPS — CONVICTION TIERS  ·  MLB  ·  {winLabel}</Text>
-                        {resolved === 0 ? (
-                          <Text style={{color:THEME.textDim,fontSize:13,lineHeight:18}}>{recordWindow === 'lifetime' ? 'Tracking begins once picks resolve.' : `No resolved props in the ${recordWindow} window yet.`}{'\n'}{tLifetime.pending > 0 && recordWindow === 'lifetime' ? `${tLifetime.pending} pending result${tLifetime.pending === 1 ? '' : 's'}.` : ''}</Text>
-                        ) : (
-                          <>
-                            {/* Headline row — reflects selected window */}
-                            <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:12,paddingBottom:12,borderBottomWidth:1,borderBottomColor:THEME.border}}>
-                              <View style={{alignItems:'center'}}>
-                                <Text style={{color:THEME.text,fontWeight:'900',fontSize:28}}>{t.wins}-{t.losses}</Text>
-                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>{winLabel}</Text>
-                              </View>
-                              <View style={{alignItems:'center'}}>
-                                <Text style={{color:pct>=55?THEME.accent:pct>=45?HRB_COLOR:THEME.loss,fontWeight:'800',fontSize:22}}>{pct}%</Text>
-                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
-                              </View>
-                              {tLifetime.pending > 0 && recordWindow === 'lifetime' && (
-                                <View style={{alignItems:'center'}}>
-                                  <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:20}}>{tLifetime.pending}</Text>
-                                  <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>PENDING</Text>
-                                </View>
-                              )}
-                            </View>
-                            {/* When drilled-down, show delta vs lifetime as trend indicator */}
-                            {recordWindow !== 'lifetime' && resolvedLifetime > 0 && (
-                              <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:10}}>
-                                <View style={{alignItems:'center'}}>
-                                  <Text style={{color:THEME.textDim,fontWeight:'800',fontSize:16}}>{tLifetime.wins}-{tLifetime.losses}</Text>
-                                  <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>LIFETIME</Text>
-                                </View>
-                                <View style={{alignItems:'center'}}>
-                                  <Text style={{color:pctLifetime>=55?THEME.accent:pctLifetime>=45?HRB_COLOR:THEME.loss,fontWeight:'700',fontSize:14}}>{pctLifetime}%</Text>
-                                  <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>BASELINE</Text>
-                                </View>
-                                <View style={{alignItems:'center'}}>
-                                  <Text style={{color:pct>pctLifetime?THEME.accent:pct<pctLifetime?THEME.accent:THEME.textDim,fontWeight:'700',fontSize:16}}>{pct>pctLifetime?'↑':pct<pctLifetime?'↓':'→'}{Math.abs(pct-pctLifetime)}pt</Text>
-                                  <Text style={{color:THEME.textMuted,fontSize:9,marginTop:2,letterSpacing:0.5}}>VS LIFETIME</Text>
-                                </View>
-                              </View>
-                            )}
-                            {/* Per-tier breakdown stays lifetime — 30d/7d per-tier splits get too thin */}
-                            <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10,marginTop:4}}>
-                              <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:4,letterSpacing:0.5}}>BY TIER (LIFETIME)</Text>
-                              {tierRow('🔒 PRIME (80+)', pp.byTier.PRIME || {wins:0,losses:0}, THEME.accent)}
-                              {tierRow('⚡ STRONG (65-79)', pp.byTier.STRONG || {wins:0,losses:0}, HRB_COLOR)}
-                              {tierRow('📊 LEAN (50-64)', pp.byTier.LEAN || {wins:0,losses:0}, THEME.textDim)}
-                            </View>
-                          </>
-                        )}
-                      </View>
-                    );
-                  })()}
+                    })}
+                  </View>
 
-                  {/* ─── Jerry Synthesis Record (2026-07-31 · Tier 3) ─────
-                      Live scoreboard for the game-level Jerry take. Populated
-                      by grade_jerry_reads.py nightly. Sport-universal — rolls
-                      up MLB + NBA + NFL + NCAAF + NCAAB as those sports ship. */}
-                  {(() => {
-                    const js = (jerryRecord as any).jerrySynthesis || {total: {wins:0,losses:0,push:0,no_action:0}, last30: {wins:0,losses:0}, byMarket: {}, bySport: {}};
-                    const t = pickWindow(js, {wins:0,losses:0});
-                    const graded = (t.wins||0) + (t.losses||0);
-                    const pct = graded > 0 ? Math.round((t.wins/graded)*100) : 0;
-                    const noAction = js.total?.no_action ?? 0;
-                    return (
-                      <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:THEME.accent,fontWeight:'800',fontSize:12,marginBottom:10,letterSpacing:0.5}}>🧠 JERRY GAME SYNTHESIS  ·  {winLabel}</Text>
-                        {graded === 0 ? (
-                          <Text style={{color:THEME.textDim,fontSize:13,lineHeight:18}}>Jerry synthesis grading begins as games resolve. Live from 2026-07-31.{noAction > 0 ? `\n${noAction} PASS calls (Jerry stayed out).` : ''}</Text>
-                        ) : (
-                          <>
-                            <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:12,paddingBottom:12,borderBottomWidth:1,borderBottomColor:THEME.border}}>
-                              <View style={{alignItems:'center'}}>
-                                <Text style={{color:THEME.text,fontWeight:'900',fontSize:32}}>{t.wins}-{t.losses}</Text>
-                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>RECORD</Text>
-                              </View>
-                              <View style={{alignItems:'center'}}>
-                                <Text style={{color:pct>=55?THEME.accent:pct>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:24}}>{pct}%</Text>
-                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
-                              </View>
-                              {noAction > 0 && (
-                                <View style={{alignItems:'center'}}>
-                                  <Text style={{color:THEME.textDim,fontWeight:'700',fontSize:22}}>{noAction}</Text>
-                                  <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>PASSES</Text>
-                                </View>
-                              )}
-                            </View>
-                            {/* By market breakdown (ML / RL / Total / Fight).
-                                2026-08-09: Label the RL row "Run Line / Spread" so the
-                                sport-agnostic view reads correctly (MLB users see run
-                                line, NFL/NBA/NCAAF users see spread — same market). */}
-                            <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10}}>
-                              <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY MARKET (LIFETIME)</Text>
-                              {([['ml','ML'],['rl','Run Line / Spread'],['total','Total'],['fight','Fight ML']] as [string,string][]).map(([k,label]) => {
-                                const m = (js.byMarket as any)?.[k] || {wins:0,losses:0};
-                                const mt = m.wins + m.losses;
-                                const mp = mt > 0 ? Math.round((m.wins/mt)*100) : 0;
-                                if (mt === 0 && k === 'fight') return null; // hide fight row until UFC data lands
-                                return (
-                                  <View key={k} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
-                                    <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600'}}>{label}</Text>
-                                    <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                                      <Text style={{color:THEME.textDim,fontSize:12}}>{m.wins}-{m.losses}</Text>
-                                      {mt > 0 && <Text style={{color:mp>=55?THEME.accent:mp>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{mp}%</Text>}
-                                    </View>
-                                  </View>
-                                );
-                              })}
-                            </View>
-                            {/* 2026-08-09: per-sport breakdown for Jerry game synthesis.
-                                Shows sports with at least 1 graded read. Cleanly
-                                reveals sport parity — when NFL/NCAAF/NBA/NHL start
-                                shipping graded reads, they appear automatically. */}
-                            {js.bySport && Object.keys(js.bySport).length > 0 && (
-                              <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10,marginTop:8}}>
-                                <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY SPORT (LIFETIME)</Text>
-                                {Object.entries(js.bySport as Record<string,{wins:number,losses:number}>)
-                                  .sort((a,b) => (b[1].wins + b[1].losses) - (a[1].wins + a[1].losses))
-                                  .map(([sp,rec]) => {
-                                    const mt = (rec.wins||0) + (rec.losses||0);
-                                    const mp = mt > 0 ? Math.round((rec.wins/mt)*100) : 0;
-                                    if (mt === 0) return null;
-                                    return (
-                                      <View key={sp} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
-                                        <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600'}}>{SPORT_EMOJI[sp]||''} {sp}</Text>
-                                        <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                                          <Text style={{color:THEME.textDim,fontSize:12}}>{rec.wins}-{rec.losses}</Text>
-                                          <Text style={{color:mp>=55?THEME.accent:mp>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{mp}%</Text>
-                                        </View>
-                                      </View>
-                                    );
-                                  })}
-                              </View>
-                            )}
-                          </>
-                        )}
-                      </View>
-                    );
-                  })()}
-
-                  {/* ─── Prop Jerry BACK/FADE Record ───────────────────── */}
-                  {(() => {
-                    const pj = (jerryRecord as any).propJerry || {total: {wins:0,losses:0,push:0,no_action:0}, last30: {wins:0,losses:0}, byVerdict: {}};
-                    const t = pickWindow(pj, {wins:0,losses:0});
-                    const graded = (t.wins||0) + (t.losses||0);
-                    const pct = graded > 0 ? Math.round((t.wins/graded)*100) : 0;
-                    const passes = pj.total?.no_action ?? 0;
-                    return (
-                      <View style={[styles.card,{marginBottom:16}]}>
-                        <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:12,marginBottom:10,letterSpacing:0.5}}>🎯 PROP JERRY  ·  BACK / FADE  ·  {winLabel}</Text>
-                        {graded === 0 ? (
-                          <Text style={{color:THEME.textDim,fontSize:13,lineHeight:18}}>Prop Jerry grading begins as props resolve. Live from 2026-07-31.{passes > 0 ? `\n${passes} PASS calls (Jerry stayed out — most props don't clear the threshold).` : ''}</Text>
-                        ) : (
-                          <>
-                            <View style={{flexDirection:'row',justifyContent:'space-around',alignItems:'center',marginBottom:12,paddingBottom:12,borderBottomWidth:1,borderBottomColor:THEME.border}}>
-                              <View style={{alignItems:'center'}}>
-                                <Text style={{color:THEME.text,fontWeight:'900',fontSize:32}}>{t.wins}-{t.losses}</Text>
-                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>RECORD</Text>
-                              </View>
-                              <View style={{alignItems:'center'}}>
-                                <Text style={{color:pct>=55?THEME.accent:pct>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:24}}>{pct}%</Text>
-                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>HIT RATE</Text>
-                              </View>
-                              {passes > 0 && (
-                                <View style={{alignItems:'center'}}>
-                                  <Text style={{color:THEME.textDim,fontWeight:'700',fontSize:22}}>{passes}</Text>
-                                  <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2,letterSpacing:0.5}}>PASSES</Text>
-                                </View>
-                              )}
-                            </View>
-                            {/* BACK vs FADE breakdown */}
-                            <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10}}>
-                              <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY VERDICT (LIFETIME)</Text>
-                              {([['BACK','🎯 BACK'],['FADE','⛔ FADE']] as [string,string][]).map(([k,label]) => {
-                                const m = (pj.byVerdict as any)?.[k] || {wins:0,losses:0};
-                                const mt = m.wins + m.losses;
-                                const mp = mt > 0 ? Math.round((m.wins/mt)*100) : 0;
-                                return (
-                                  <View key={k} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
-                                    <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600'}}>{label}</Text>
-                                    <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                                      <Text style={{color:THEME.textDim,fontSize:12}}>{m.wins}-{m.losses}</Text>
-                                      {mt > 0 && <Text style={{color:mp>=55?THEME.accent:mp>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{mp}%</Text>}
-                                    </View>
-                                  </View>
-                                );
-                              })}
-                            </View>
-                            {/* 2026-08-09: sport breakdown for Prop Jerry too. */}
-                            {pj.bySport && Object.keys(pj.bySport).length > 0 && (
-                              <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:10,marginTop:8}}>
-                                <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700',marginBottom:6,letterSpacing:0.5}}>BY SPORT (LIFETIME)</Text>
-                                {Object.entries(pj.bySport as Record<string,{wins:number,losses:number}>)
-                                  .sort((a,b) => (b[1].wins + b[1].losses) - (a[1].wins + a[1].losses))
-                                  .map(([sp,rec]) => {
-                                    const mt = (rec.wins||0) + (rec.losses||0);
-                                    const mp = mt > 0 ? Math.round((rec.wins/mt)*100) : 0;
-                                    if (mt === 0) return null;
-                                    return (
-                                      <View key={sp} style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:4}}>
-                                        <Text style={{color:THEME.textDim,fontSize:12,fontWeight:'600'}}>{SPORT_EMOJI[sp]||''} {sp}</Text>
-                                        <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
-                                          <Text style={{color:THEME.textDim,fontSize:12}}>{rec.wins}-{rec.losses}</Text>
-                                          <Text style={{color:mp>=55?THEME.accent:mp>=45?THEME.sharp:THEME.loss,fontWeight:'800',fontSize:13,width:36,textAlign:'right'}}>{mp}%</Text>
-                                        </View>
-                                      </View>
-                                    );
-                                  })}
-                              </View>
-                            )}
-                          </>
-                        )}
-                      </View>
-                    );
-                  })()}
-
-                  {/* TIER INTEGRITY BADGE — reads nightly findings from
-                      audit_tier_integrity.py (tier_integrity_findings table).
-                      When a lower-tier cohort outperforms a higher one,
-                      surfaces the warning here. Clean state = "✅ check
-                      passed" reassurance line. Transparency moat: own the
-                      disclosure rather than hide internal pipeline state. */}
-                  <TierIntegrityBadge />
-
-                  {/* 🧠 COHORT AUDIT DASHBOARD — multi-sport audit table.
-                      Defaults to MLB (only sport with data right now). Has
-                      its own internal sport-selector chips so users can
-                      switch to NBA/NCAAB/NFL when those sports have data
-                      — NOT tied to gamesSport (that's the games-tab
-                      selection, irrelevant to the receipts surface and
-                      previously caused "How We Pick — NBA" to render when
-                      user was looking at NBA games tab earlier).  */}
-                  <CohortDashboard />
-
-                  {/* Legacy "Prop Jerry — Tracked Picks" + "Recent Prop Picks"
-                      sections removed 2026-05-08. Both pulled from the
-                      pre-pivot EV scanner / A-grade data store. The
-                      pipelineProps card above (jerryRecord.pipelineProps)
-                      now carries Track Record duty using PRIME/STRONG/LEAN
-                      conviction tiers from the post-pivot architecture.
-                      jerryRecord.props field still populates via legacy
-                      DB writes but isn't surfaced in the UI anymore. */}
-
-                  {/* Best Bet History */}
-                  {jerryRecord.bestBets.length > 0 && (
+                  {(filterSport === 'ALL' || filterSport === 'MLB') && (
                     <>
-                      <Text style={styles.sectionLabel}>🔒 DAILY PLAY OF THE DAY HISTORY</Text>
-                      {jerryRecord.bestBets.slice(0,14).map((bet, i) => {
-                        const isPending = bet.result === 'Pending';
-                        const isWin = bet.result === 'Win';
-                        const resultColor = isPending ? THEME.textMuted : isWin ? THEME.win : THEME.loss;
-                        return(
-                          <View key={i} style={[styles.betCard,{borderLeftColor:resultColor,marginBottom:8}]}>
-                            <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
-                              <View style={{flex:1}}>
-                                <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>{bet.game}</Text>
-                                <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,marginTop:2}}>{bet.lean || 'Model Edge'}</Text>
-                                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:2}}>{SPORT_EMOJI[bet.sport]||''} {bet.sport} • {new Date(bet.bet_date + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</Text>
+                      <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8,marginHorizontal:2}}>
+                        <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'800',letterSpacing:1.2}}>BY TIER · MLB PROPS</Text>
+                        <Text style={{color:THEME.textDim,fontSize:10}}>Lifetime</Text>
+                      </View>
+                      {tiers.map((t:any) => {
+                        const tData = (pp.byTier || {})[t] || {wins:0, losses:0};
+                        const total = tData.wins + tData.losses;
+                        const hitPct = total > 0 ? (tData.wins/total)*100 : 0;
+                        const units = (tData.wins * 0.91) - tData.losses;
+                        const barColor = hitPct >= 55 ? THEME.win : hitPct >= 50 ? THEME.accent : THEME.loss;
+                        return (
+                          <View key={t} style={{flexDirection:'row',alignItems:'center',gap:10,padding:9,backgroundColor:THEME.surface,borderRadius:8,marginBottom:6,borderWidth:1,borderColor:THEME.border}}>
+                            <View style={{width:60,backgroundColor:tierColor[t]+'22',paddingVertical:4,borderRadius:4}}>
+                              <Text style={{color:tierColor[t],fontSize:10,fontWeight:'800',letterSpacing:0.6,textAlign:'center'}}>{t}</Text>
+                            </View>
+                            <View style={{flex:1}}>
+                              <View style={{height:6,backgroundColor:THEME.surfaceAlt,borderRadius:3,overflow:'hidden'}}>
+                                <View style={{height:'100%',width:`${Math.min(hitPct,100)}%`,backgroundColor:barColor}}/>
                               </View>
-                              <View style={{alignItems:'center',gap:4}}>
-                                {/* Circle now shows Jerry conviction (POTD anchored to Jerry
-                                    2026-07-31 · daily_best_bet_history.sweat_score column
-                                    stores conv value now). Label reflects new anchor. */}
-                                <View style={{width:52,height:52,borderRadius:26,borderWidth:2,borderColor:THEME.accent,alignItems:'center',justifyContent:'center',backgroundColor:THEME.accent + '1A'}}>
-                                  <Text style={{color:THEME.accent,fontWeight:'800',fontSize:14}}>{bet.sweat_score||'—'}</Text>
-                                  <Text style={{color:THEME.accent,fontSize:7,fontWeight:'800',letterSpacing:0.4,marginTop:1}}>JERRY</Text>
-                                </View>
-                                <View style={{backgroundColor:resultColor+'22',borderRadius:6,paddingHorizontal:6,paddingVertical:2,borderWidth:1,borderColor:resultColor}}>
-                                  <Text style={{color:resultColor,fontWeight:'800',fontSize:9}}>{isPending?'PENDING':isWin?'WIN':'LOSS'}</Text>
-                                </View>
-                              </View>
+                            </View>
+                            <View style={{alignItems:'flex-end',minWidth:78}}>
+                              <Text style={{color:THEME.text,fontWeight:'700',fontSize:12,fontVariant:['tabular-nums']}}>{hitPct.toFixed(1)}%</Text>
+                              <Text style={{color:THEME.textMuted,fontSize:10,fontVariant:['tabular-nums']}}>{tData.wins}-{tData.losses}{total>0 ? `  ${units>=0?'+':''}${units.toFixed(1)}u` : ''}</Text>
                             </View>
                           </View>
                         );
@@ -14749,9 +14408,52 @@ setJerryHistory(prev => {
                     </>
                   )}
 
-                  {/* Footer note */}
-                  <Text style={{color:THEME.textMuted,fontSize:10,textAlign:'center',marginTop:12,lineHeight:14}}>Every Jerry read graded post-game · results auto-resolve daily via sport-specific APIs</Text>
+                  <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8,marginTop:18,marginHorizontal:2}}>
+                    <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'800',letterSpacing:1.2}}>PLAY OF THE DAY</Text>
+                    <Text style={{color:THEME.textDim,fontSize:10}}>Last 14 days</Text>
+                  </View>
+                  <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:12,borderWidth:1,borderColor:THEME.border,marginBottom:14}}>
+                    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:10}}>
+                      <Text style={{color:THEME.text,fontWeight:'800',fontSize:18,fontVariant:['tabular-nums'],letterSpacing:-0.4}}>{potdW}-{potdL}{potdP > 0 ? `-${potdP}` : ''}</Text>
+                      <Text style={{color:potdW>potdL?THEME.win:THEME.loss,fontSize:13,fontWeight:'700',fontVariant:['tabular-nums']}}>{potdPct}%</Text>
+                    </View>
+                    {potdRows.length === 0 ? (
+                      <Text style={{color:THEME.textDim,fontSize:11,fontStyle:'italic',textAlign:'center',paddingVertical:8}}>No POTDs graded yet for this sport in the last 14 days.</Text>
+                    ) : (
+                      <>
+                        <View style={{flexDirection:'row',gap:3,flexWrap:'wrap'}}>
+                          {potdRows.map((row:any, idx:number) => {
+                            const bg = row.result === 'Win' ? THEME.win + '33' : row.result === 'Loss' ? THEME.loss + '33' : row.result === 'Push' ? THEME.textMuted + '33' : THEME.surfaceAlt;
+                            const fg = row.result === 'Win' ? THEME.win : row.result === 'Loss' ? THEME.loss : row.result === 'Push' ? THEME.textMuted : THEME.textDim;
+                            const glyph = row.result === 'Win' ? 'W' : row.result === 'Loss' ? 'L' : row.result === 'Push' ? 'P' : '·';
+                            return (
+                              <View key={idx} style={{flex:1,minWidth:22,maxWidth:34,paddingVertical:4,borderRadius:4,backgroundColor:bg,alignItems:'center'}}>
+                                <Text style={{color:fg,fontSize:10,fontWeight:'800',letterSpacing:0.4}}>{glyph}</Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                        <Text style={{color:THEME.textDim,fontSize:10,textAlign:'center',marginTop:6}}>
+                          {potdRows[0]?.bet_date && new Date(potdRows[0].bet_date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})} → today
+                        </Text>
+                      </>
+                    )}
+                  </View>
 
+                  <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8,marginHorizontal:2}}>
+                    <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'800',letterSpacing:1.2}}>BEAT-THE-MARKET</Text>
+                    <Text style={{color:THEME.textDim,fontSize:10}}>Coming v1.1</Text>
+                  </View>
+                  <View style={{backgroundColor:THEME.surface,borderWidth:1,borderStyle:'dashed',borderColor:THEME.border,borderRadius:10,padding:14,marginBottom:14}}>
+                    <Text style={{color:THEME.accent,fontWeight:'800',fontSize:12,marginBottom:6}}>CLV tracking ships next update</Text>
+                    <Text style={{color:THEME.textMuted,fontSize:11,lineHeight:17}}>
+                      Once every pick captures its <Text style={{color:THEME.text,fontWeight:'700'}}>closing line snapshot</Text>, this card will show closing-line beat rate + average CLV — the single strongest indicator that our edge is real, not variance.
+                    </Text>
+                  </View>
+
+                  <Text style={{color:THEME.textMuted,fontSize:10,textAlign:'center',marginTop:6,lineHeight:14,paddingHorizontal:10}}>
+                    Every pick graded server-side when the game ends · results auto-resolve daily · records include pushes as breakeven (0u)
+                  </Text>
                   <View style={{height:20}}/>
                 </View>
               );
