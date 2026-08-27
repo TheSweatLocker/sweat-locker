@@ -305,31 +305,49 @@ def apply_publish_gate(pp: dict | None, ctx: dict) -> dict | None:
         if thin_share > 0.40:
             reasons.append(f'thin_share={thin_share:.2f}>0.40 (pick riding tiny-sample signals)')
 
-        # Rule 3: TOTAL model concurrence check
+        # Rule 3: TOTAL model concurrence check.
+        # 2026-08-27 magnitude weighting. Prior version counted binary
+        # agreements: "agrees within 1.0 unit" = +1, else 0. This let picks
+        # pass when 2/3 models mildly agreed but 1 model VIOLENTLY dissented.
+        # LAD/ATL 8/26: Jerry projected 10.84 vs line 8.5 (+2.34 OVER on an
+        # UNDER pick). Panel 7.77 UNDER, MC 7.54 UNDER — 2/3 agree, but
+        # Jerry's +2.34 dissent was a screaming red flag the gate ignored.
+        # Actual: 11 runs. UNDER lost.
+        # New: any single model dissenting by >=2.0 units against the pick
+        # triggers demotion, even when other models agree. Also keep the
+        # 2/3 vote floor as backup.
+        SEVERE_DISSENT_UNITS = 2.0
         if mkt == 'total':
             line = ctx.get('close_total')
             model_agreements = 0
             model_checked = 0
-            for key in ('jerry_pred_total', 'projected_total'):
-                v = ctx.get(key)
-                if v is not None and line is not None:
-                    try:
-                        diff = float(v) - float(line)
-                        model_checked += 1
-                        if side == 'OVER' and diff > -1.0:
-                            model_agreements += 1
-                        elif side == 'UNDER' and diff < 1.0:
-                            model_agreements += 1
-                    except (TypeError, ValueError):
-                        pass
-            if mc and mc.get('mc_mean_total') is not None and line is not None:
+            severe_dissenters = []
+            def _check_model(name, val, line_v, pick_side):
+                nonlocal model_agreements, model_checked
+                if val is None or line_v is None: return
                 try:
-                    diff = float(mc['mc_mean_total']) - float(line)
-                    model_checked += 1
-                    if side == 'OVER' and diff > -1.0: model_agreements += 1
-                    elif side == 'UNDER' and diff < 1.0: model_agreements += 1
-                except (TypeError, ValueError): pass
-            if model_checked >= 2 and model_agreements < 2:
+                    diff = float(val) - float(line_v)
+                except (TypeError, ValueError):
+                    return
+                model_checked += 1
+                if pick_side == 'OVER':
+                    if diff > -1.0: model_agreements += 1
+                    if diff <= -SEVERE_DISSENT_UNITS:
+                        severe_dissenters.append(f'{name} projects {val} vs line {line_v} '
+                                                 f'({diff:+.2f} units UNDER of an OVER pick)')
+                elif pick_side == 'UNDER':
+                    if diff < 1.0: model_agreements += 1
+                    if diff >= SEVERE_DISSENT_UNITS:
+                        severe_dissenters.append(f'{name} projects {val} vs line {line_v} '
+                                                 f'({diff:+.2f} units OVER of an UNDER pick)')
+            _check_model('jerry_pred_total', ctx.get('jerry_pred_total'), line, side)
+            _check_model('projected_total', ctx.get('projected_total'), line, side)
+            if mc:
+                _check_model('mc_mean_total', mc.get('mc_mean_total'), line, side)
+            if severe_dissenters:
+                reasons.append(f'TOTAL PRIME with severe model dissent: '
+                              + '; '.join(severe_dissenters))
+            elif model_checked >= 2 and model_agreements < 2:
                 reasons.append(f'TOTAL PRIME with only {model_agreements}/{model_checked} '
                               f'model projections agreeing within 1.0 unit')
 
