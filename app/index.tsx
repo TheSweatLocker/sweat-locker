@@ -9047,10 +9047,13 @@ setJerryHistory(prev => {
         if (gd >= curMonthStart) bump(r, payout, true, isY);
         else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, payout, false, isY);
       });
-      // 2026-08-27: Prefer aggregator (surface_records) as single source of
-      // truth for MLB sharp MTD. Falls back to the inline bump-loop tally
-      // computed above when the table is empty (fresh install / migration
-      // not yet applied). Guarantees Sharp Card + Receipts agree.
+      // 2026-08-27: Sharp Card record = SIDES ONLY (jerry_reads, conv>=60).
+      // Cleaner semantics per user memory feedback_sweat_card_vs_sharp_card:
+      // Sharp Card is the disciplined sides tab; props have their own
+      // Prop Card tab with its own record. Previously the app mixed them
+      // and juice-trap prop drag pulled Sharp Card negative even when
+      // sides were legitimately +.  Yesterday's yW/yL/yP still includes
+      // props — that stays as a daily snapshot separate from MTD record.
       try {
         const {data: srRows} = await supabase.from('surface_records')
           .select('*').eq('surface','sharp').eq('sport','MLB').eq('window_key','mtd').limit(1);

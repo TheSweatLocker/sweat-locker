@@ -113,13 +113,13 @@ def _paged(url: str, chunk: int = 1000):
 def pick_sharp() -> list[dict]:
     """jerry_reads — sides picks, cross-sport.
 
-    jerry_reads doesn't store `tier` or a real book snapshot, so the Sharp
-    Card falls back to flat 1u @ -110. We match that here — otherwise the
-    numbers diverge again.
+    Matches the Sharp Card app-side query exactly: conviction>=60 (below
+    that is un-shipped lean territory). jerry_reads doesn't store `tier`
+    or a real book snapshot, so we use flat 1u @ -110 like the app does.
     """
     url = (f'{SB}/rest/v1/jerry_reads'
            f'?select=sport,game_date,result,conviction,call_odds_est'
-           f'&result=not.is.null&order=game_date.desc')
+           f'&result=not.is.null&conviction=gte.60&order=game_date.desc')
     out = []
     for r in _paged(url):
         cls = _classify(r.get('result'))
