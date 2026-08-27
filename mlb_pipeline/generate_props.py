@@ -3465,6 +3465,12 @@ PROP_MARKET_MAP = {
     'ha_over': 'pitcher_hits_allowed',   'ha_under': 'pitcher_hits_allowed',
     'outs_over': 'pitcher_outs',         'outs_under': 'pitcher_outs',
     'er_over': 'pitcher_earned_runs',    'er_under': 'pitcher_earned_runs',
+    # 2026-08-27: added batter_hits. Prior version omitted these, so
+    # every batter hits_over/hits_under prop had book_over_odds = NULL,
+    # which made unitsForPick return 0, which made the Sharp Card render
+    # empty. 90% of daily PRIME/STRONG props are hits_over 0.5 — this
+    # was silently killing every prop card until fixed.
+    'hits_over': 'batter_hits',          'hits_under': 'batter_hits',
 }
 PROP_PROJ_KEY = {
     'ks_over': '_projected_ks',     'ks_under': '_projected_ks',
