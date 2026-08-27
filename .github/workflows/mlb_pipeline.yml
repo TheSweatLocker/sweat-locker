@@ -8,6 +8,16 @@ on:
     # min late and occasionally 2-3 hrs late. Earlier trigger = larger
     # buffer to hit the in-app ready-by promise.
     - cron: '0 10 * * *'  # 6:00am EDT (10:00 UTC) — was 8:00am
+    # 2026-08-27 BACKUP TRIGGER. GitHub Actions schedule triggers
+    # SILENTLY SKIP when the platform is under load. Happened twice this
+    # week (8/26 + 8/27 — no props / no MC / no ladder / no ledger for
+    # tonight's slate). Our rescue step catches per-STEP failures inside
+    # a running workflow, but if the workflow itself never triggers,
+    # rescue doesn't help either. This 3rd cron runs at 8:30am EDT to
+    # catch cases where 6am dropped. If the 6am DID succeed, the rescue
+    # step's threshold checks (MC>=3, props>=20, etc.) short-circuit
+    # every rescue block, making the run cheap (~5 min).
+    - cron: '30 12 * * *'  # 8:30am EDT (12:30 UTC) BACKUP
     - cron: '0 18 * * *'  # 2:00pm EDT (18:00 UTC)
     # Post-2pm late-announce coverage: queued for a lightweight standalone
     # workflow (retry_starters.yml) that runs 5pm ET + fires only the
@@ -29,6 +39,33 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      # 2026-08-27 heartbeat START. Detects "workflow triggered but died
+      # early" vs "workflow never triggered at all" (the 8/26 + 8/27 case).
+      # Fires within 30s of workflow start, before any real work — so
+      # if this row lands but end doesn't, we know it started + died.
+      # If no start row for today, GitHub Actions dropped the cron.
+      # Table: workflow_heartbeat (see migration 20260827_workflow_heartbeat.sql).
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          CRON_SLOT="${{ github.event.schedule }}"
+          case "$CRON_SLOT" in
+            '0 10 * * *')   SLOT='10' ;;
+            '30 12 * * *')  SLOT='1230' ;;
+            '0 18 * * *')   SLOT='18' ;;
+            *)              SLOT='manual' ;;
+          esac
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"mlb_pipeline\",\"event\":\"start\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}" \
+               || echo "heartbeat start write failed (non-fatal — likely migration not applied yet)"
 
       - name: Install dependencies
         run: |
@@ -2343,6 +2380,30 @@ jobs:
       # Rebase's ours/theirs are inverted from merge's: in `git pull
       # --rebase`, "theirs" means our local commits being replayed —
       # which is what we want to keep.
+      # 2026-08-27 heartbeat END. If this row is missing but "start" exists,
+      # the workflow died mid-run. If start also missing, the cron dropped
+      # entirely (GH Actions silently skipped — bigger issue).
+      - name: Heartbeat — end
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          CRON_SLOT="${{ github.event.schedule }}"
+          case "$CRON_SLOT" in
+            '0 10 * * *')   SLOT='10' ;;
+            '30 12 * * *')  SLOT='1230' ;;
+            '0 18 * * *')   SLOT='18' ;;
+            *)              SLOT='manual' ;;
+          esac
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"mlb_pipeline\",\"event\":\"end\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}" \
+               || echo "heartbeat end write failed (non-fatal)"
+
       - name: Commit content card
         if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'
         run: |
