@@ -9053,8 +9053,11 @@ setJerryHistory(prev => {
       // the UI can show "97-62 · sides 31-19 · props 66-43" — same total
       // number people saw before, more transparency underneath.
       try {
+        // window_key='epoch' = both surfaces since SHARP_RECORD_EPOCH (2026-08-20),
+        // so sides + props are summed on the same time floor (mtd would mix
+        // 8-day sides with 27-day props and inflate the combined tally).
         const {data: srRows} = await supabase.from('surface_records')
-          .select('*').eq('sport','MLB').in('surface',['sharp','prop']).eq('window_key','mtd');
+          .select('*').eq('sport','MLB').in('surface',['sharp','prop']).eq('window_key','epoch');
         if (srRows && srRows.length) {
           const sharpRow = srRows.find((r: any) => r.surface === 'sharp') || {wins:0,losses:0,pushes:0,units_net:0};
           const propRow  = srRows.find((r: any) => r.surface === 'prop')  || {wins:0,losses:0,pushes:0,units_net:0};

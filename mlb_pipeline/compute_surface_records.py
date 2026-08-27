@@ -77,16 +77,22 @@ def _iso(d: dt.date) -> str:
 
 
 def _windows_today(today: dt.date) -> dict[str, tuple[dt.date, dt.date]]:
-    """Absolute date ranges for each window ending today (inclusive)."""
+    """Absolute date ranges for each window ending today (inclusive).
+
+    `epoch` window starts at SHARP_RECORD_EPOCH so the Sharp Card can sum
+    sides + props on the same time floor. Prevents the 8/1-mtd-props +
+    8/20-mtd-sides drift that produced misleading combined tallies.
+    """
     mtd_start = today.replace(day=1)
     d7_start  = today - dt.timedelta(days=6)
     d30_start = today - dt.timedelta(days=29)
-    epoch     = dt.date(2020, 1, 1)  # lifetime floor for non-sharp surfaces
+    lifetime_floor = dt.date(2020, 1, 1)
     return {
-        'mtd':      (mtd_start, today),
-        'd7':       (d7_start,  today),
-        'd30':      (d30_start, today),
-        'lifetime': (epoch,     today),
+        'mtd':      (mtd_start,          today),
+        'd7':       (d7_start,           today),
+        'd30':      (d30_start,          today),
+        'epoch':    (SHARP_RECORD_EPOCH, today),
+        'lifetime': (lifetime_floor,     today),
     }
 
 
