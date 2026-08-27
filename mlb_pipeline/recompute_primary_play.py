@@ -44,7 +44,7 @@ def _today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
 
-def run(date_str: str, dry_run: bool = False) -> None:
+def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
     print(f'=== recompute_primary_play · {date_str} ===')
     ctxs = requests.get(
         f'{SB}/rest/v1/mlb_game_context?game_date=eq.{date_str}&select=*',
@@ -217,6 +217,8 @@ def run(date_str: str, dry_run: bool = False) -> None:
         engine_changed = old_engine != new_engine and new_pp is not None
         if engine_changed and not pp_changed:
             pp_changed = True  # trigger patch below to stamp the fresh engine
+        if force and new_pp is not None:
+            pp_changed = True  # user asked to force-write even if unchanged
 
         # NRFI ensemble uses mc_p_nrfi + sklearn nrfi_score
         mc = c.get('mc_probabilities') or {}
@@ -323,8 +325,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--date', default=None, help='YYYY-MM-DD (default: today ET)')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--force', action='store_true',
+                    help='force re-write even when tier/label/type unchanged '
+                         '(needed after ensemble internals changed and only '
+                         'ensemble_sources chip contributions shift)')
     args = ap.parse_args()
-    run(args.date or _today_et(), dry_run=args.dry_run)
+    run(args.date or _today_et(), dry_run=args.dry_run, force=args.force)
 
 
 if __name__ == '__main__':
