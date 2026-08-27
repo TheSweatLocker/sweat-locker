@@ -1865,7 +1865,7 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   // (populated by steam_room_ladder.py).
   const [steamSubTab, setSteamSubTab] = useState<'lines'|'ladder'|'sharp'|'ledger'>('lines');
   const [sharpPicks, setSharpPicks] = useState<any[]>([]);
-  const [sharpRecord, setSharpRecord] = useState<{w:number,l:number,p:number,unitsNet:number,wPrev:number,lPrev:number,pPrev:number,unitsNetPrev:number,yW:number,yL:number,yP:number,yUnits:number}>({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0,yW:0,yL:0,yP:0,yUnits:0});
+  const [sharpRecord, setSharpRecord] = useState<{w:number,l:number,p:number,unitsNet:number,wPrev:number,lPrev:number,pPrev:number,unitsNetPrev:number,yW:number,yL:number,yP:number,yUnits:number,sidesW?:number,sidesL?:number,propsW?:number,propsL?:number}>({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0,yW:0,yL:0,yP:0,yUnits:0});
   // 2026-08-22: Split records per tier (triple / confirmed / lean). Reads
   // daily_surface_records rows written by aggregate_daily_records.py::agg_split.
   // User ask: 'every single sub tab in the steam room should have records to
@@ -9047,21 +9047,26 @@ setJerryHistory(prev => {
         if (gd >= curMonthStart) bump(r, payout, true, isY);
         else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, payout, false, isY);
       });
-      // 2026-08-27: Sharp Card record = SIDES ONLY (jerry_reads, conv>=60).
-      // Cleaner semantics per user memory feedback_sweat_card_vs_sharp_card:
-      // Sharp Card is the disciplined sides tab; props have their own
-      // Prop Card tab with its own record. Previously the app mixed them
-      // and juice-trap prop drag pulled Sharp Card negative even when
-      // sides were legitimately +.  Yesterday's yW/yL/yP still includes
-      // props — that stays as a daily snapshot separate from MTD record.
+      // 2026-08-27: Sharp Card record = SIDES + PROPS combined (matches
+      // historical fetchSharp behavior + what has been publicly posted).
+      // Split is exposed as sidesW/sidesL and propsW/propsL sub-fields so
+      // the UI can show "97-62 · sides 31-19 · props 66-43" — same total
+      // number people saw before, more transparency underneath.
       try {
         const {data: srRows} = await supabase.from('surface_records')
-          .select('*').eq('surface','sharp').eq('sport','MLB').eq('window_key','mtd').limit(1);
-        const sr = srRows && srRows[0];
-        if (sr && (sr.wins + sr.losses + sr.pushes) > 0) {
+          .select('*').eq('sport','MLB').in('surface',['sharp','prop']).eq('window_key','mtd');
+        if (srRows && srRows.length) {
+          const sharpRow = srRows.find((r: any) => r.surface === 'sharp') || {wins:0,losses:0,pushes:0,units_net:0};
+          const propRow  = srRows.find((r: any) => r.surface === 'prop')  || {wins:0,losses:0,pushes:0,units_net:0};
+          const totW = (sharpRow.wins || 0) + (propRow.wins || 0);
+          const totL = (sharpRow.losses || 0) + (propRow.losses || 0);
+          const totP = (sharpRow.pushes || 0) + (propRow.pushes || 0);
+          const totU = Number(sharpRow.units_net || 0) + Number(propRow.units_net || 0);
           setSharpRecord({
-            w: sr.wins, l: sr.losses, p: sr.pushes,
-            unitsNet: Math.round(Number(sr.units_net)*100)/100,
+            w: totW, l: totL, p: totP,
+            unitsNet: Math.round(totU * 100) / 100,
+            sidesW: sharpRow.wins || 0, sidesL: sharpRow.losses || 0,
+            propsW: propRow.wins || 0,  propsL: propRow.losses || 0,
             wPrev, lPrev, pPrev,
             unitsNetPrev: Math.round(unitsNetPrev*100)/100,
             yW, yL, yP, yUnits: Math.round(yUnits*100)/100,
@@ -14326,13 +14331,15 @@ setJerryHistory(prev => {
 
               const s = surfaceData('sharp', filterSport);
               const pd = surfaceData('prop', filterSport);
-              // 2026-08-27: Hero leads with Sharp Card (flagship track record).
-              // Prior version summed sharp+prop as "TOTAL P/L" — juice-heavy
-              // prop drag was pulling display negative even when Jerry's
-              // sides were +12u. Prop still tracked below in the surface grid.
-              const heroU = s.units;
-              const heroN = s.wins + s.losses;
+              // 2026-08-27: Hero = sides + props combined (matches historical
+              // Sharp Card headline and what's been publicly posted).
+              // heroSidesLabel / heroPropsLabel expose the split as a
+              // sub-line so viewers see the breakdown, not just the total.
+              const heroU = s.units + pd.units;
+              const heroN = s.wins + s.losses + pd.wins + pd.losses;
               const heroScope = filterSport === 'ALL' ? 'All Sports' : filterSport;
+              const heroSidesLabel = s.hasData ? `${s.wins}-${s.losses} sides` : '';
+              const heroPropsLabel = pd.hasData ? `${pd.wins}-${pd.losses} props` : '';
 
               const potdRows = filterSport === 'ALL' ? potdHistory : potdHistory.filter((r:any) => r.sport === filterSport);
               const potdW = potdRows.filter((r:any) => r.result === 'Win').length;
@@ -14372,7 +14379,7 @@ setJerryHistory(prev => {
 
                   <View style={{backgroundColor:THEME.surface,borderRadius:12,padding:14,marginBottom:14,borderWidth:1,borderColor:THEME.border,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
                     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
-                      <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',letterSpacing:1.4}}>{heroScope.toUpperCase()} · THE SHARP</Text>
+                      <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',letterSpacing:1.4}}>{heroScope.toUpperCase()} · TOTAL P/L</Text>
                       <View style={{flexDirection:'row',gap:4}}>
                         {[{id:'mtd',label:'MTD'},{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'lifetime',label:'ALL'}].map(w=>(
                           <TouchableOpacity key={w.id} onPress={()=>setRecordWindow(w.id)} style={{paddingVertical:3,paddingHorizontal:8,borderRadius:5,backgroundColor:recordWindow===w.id?THEME.hrb+'26':THEME.surfaceAlt,borderWidth:1,borderColor:recordWindow===w.id?HRB_COLOR:THEME.border}}>
@@ -14392,6 +14399,11 @@ setJerryHistory(prev => {
                         </View>
                       )}
                     </View>
+                    {(heroSidesLabel || heroPropsLabel) && (
+                      <Text style={{color:THEME.textDim,fontSize:11,marginTop:6,fontVariant:['tabular-nums']}}>
+                        {[heroSidesLabel, heroPropsLabel].filter(Boolean).join('  ·  ')}
+                      </Text>
+                    )}
                   </View>
 
                   <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'800',letterSpacing:1.2,marginBottom:8,marginLeft:2}}>BY SURFACE</Text>
@@ -15025,6 +15037,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>RECORD</Text>
                                 <Text style={{color:THEME.text, fontSize:20, fontWeight:'800'}}>{r.w}-{r.l}{r.p ? `-${r.p}` : ''}</Text>
                                 <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{total > 0 ? `${hitPct}%` : '—'}</Text>
+                                {(r.sidesW !== undefined || r.propsW !== undefined) && (
+                                  <Text style={{color:THEME.textDim, fontSize:9, marginTop:3, fontVariant:['tabular-nums'], textAlign:'center'}}>
+                                    {(r.sidesW||0)}-{(r.sidesL||0)} sides · {(r.propsW||0)}-{(r.propsL||0)} props
+                                  </Text>
+                                )}
                               </View>
                               <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
                               <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
