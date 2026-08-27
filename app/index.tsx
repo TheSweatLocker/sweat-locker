@@ -14282,6 +14282,7 @@ setJerryHistory(prev => {
                 {id: 'NFL',   icon: '🏈', label: 'NFL',   status: 'preseason', kickoff: 'Sept 5'},
                 {id: 'NCAAF', icon: '🏈', label: 'NCAAF', status: 'preseason', kickoff: 'Aug 30'},
                 {id: 'NBA',   icon: '🏀', label: 'NBA',   status: 'offseason', kickoff: 'Oct'},
+                {id: 'NCAAB', icon: '🏀', label: 'NCAAB', status: 'offseason', kickoff: 'Nov 3'},
                 {id: 'NHL',   icon: '🏒', label: 'NHL',   status: 'offseason', kickoff: 'Oct'},
               ];
 
@@ -14322,8 +14323,12 @@ setJerryHistory(prev => {
 
               const s = surfaceData('sharp', filterSport);
               const pd = surfaceData('prop', filterSport);
-              const heroU = s.units + pd.units;
-              const heroN = s.wins + s.losses + pd.wins + pd.losses;
+              // 2026-08-27: Hero leads with Sharp Card (flagship track record).
+              // Prior version summed sharp+prop as "TOTAL P/L" — juice-heavy
+              // prop drag was pulling display negative even when Jerry's
+              // sides were +12u. Prop still tracked below in the surface grid.
+              const heroU = s.units;
+              const heroN = s.wins + s.losses;
               const heroScope = filterSport === 'ALL' ? 'All Sports' : filterSport;
 
               const potdRows = filterSport === 'ALL' ? potdHistory : potdHistory.filter((r:any) => r.sport === filterSport);
@@ -14364,7 +14369,7 @@ setJerryHistory(prev => {
 
                   <View style={{backgroundColor:THEME.surface,borderRadius:12,padding:14,marginBottom:14,borderWidth:1,borderColor:THEME.border,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
                     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
-                      <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',letterSpacing:1.4}}>{heroScope.toUpperCase()} · TOTAL P/L</Text>
+                      <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',letterSpacing:1.4}}>{heroScope.toUpperCase()} · THE SHARP</Text>
                       <View style={{flexDirection:'row',gap:4}}>
                         {[{id:'mtd',label:'MTD'},{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'lifetime',label:'ALL'}].map(w=>(
                           <TouchableOpacity key={w.id} onPress={()=>setRecordWindow(w.id)} style={{paddingVertical:3,paddingHorizontal:8,borderRadius:5,backgroundColor:recordWindow===w.id?THEME.hrb+'26':THEME.surfaceAlt,borderWidth:1,borderColor:recordWindow===w.id?HRB_COLOR:THEME.border}}>
