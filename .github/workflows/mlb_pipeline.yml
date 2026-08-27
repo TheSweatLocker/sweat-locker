@@ -38,39 +38,53 @@ jobs:
           # (Dimers/Action/BettingPros). Adds ~200MB but only runs on external pull step.
           python -m playwright install --with-deps chromium || echo "chromium install failed (non-fatal — Playwright scrapers will skip)"
 
+      # 2026-08-27: EVERY step in this workflow now uses continue-on-error.
+      # Prior policy — mandatory steps died on any error and killed everything
+      # downstream — caused 2 consecutive days of 0 props + 0 MC + 0 ladder
+      # + 0 ledger when a single upstream step failed (root cause unknown but
+      # cascade was total). New policy: individual step failure logs + continues;
+      # downstream steps decide for themselves whether they have enough data
+      # to succeed. Result: a bad pitcher_stats.py refresh no longer prevents
+      # tonight's props from generating. See "Rescue" step near the end that
+      # forces MC + props to run even if the main sequence had partial failures.
       - name: Run pitcher stats update
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pitcher_stats.py
+          python pitcher_stats.py || echo "pitcher_stats failed (non-fatal 8/27)"
 
       - name: Run bullpen stats update
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python bullpen_stats.py
+          python bullpen_stats.py || echo "bullpen_stats failed (non-fatal 8/27)"
 
       - name: Run team offense stats
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python team_stats.py
+          python team_stats.py || echo "team_stats failed (non-fatal 8/27)"
 
       - name: Run Savant enrichment (OAA, xwOBA, barrel%, catcher framing)
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python savant_enrichment.py
+          python savant_enrichment.py || echo "savant enrichment failed (non-fatal 8/27)"
 
       - name: Run game context pipeline
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
@@ -79,7 +93,7 @@ jobs:
           BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
         run: |
           cd mlb_pipeline
-          python game_context.py
+          python game_context.py || echo "game_context failed (non-fatal 8/27 — rescue step will retry MC + props)"
 
       # Backfill L10 team ATS / O/U / ML tendencies onto today's rows
       # (2026-08-17). Populates home/away_ats_last10, ou_last10_overs/unders,
@@ -176,12 +190,13 @@ jobs:
       # Runs RIGHT AFTER game_context.py so corrections land before props /
       # sweat card / Jerry reads pull pitcher-dependent data.
       - name: Verify starting pitchers vs MLB API
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python verify_starters.py
+          python verify_starters.py || echo "verify_starters failed (non-fatal 8/27 — props may use stale probable pitcher)"
 
       # 2026-08-22: PARALLEL warmup of inning bucket splits for tonight's
       # starters. Before this step, game_context.py would discover late-
@@ -220,20 +235,22 @@ jobs:
           python _data_quality_audit.py
 
       - name: Update team HR threats
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python team_hr_threats.py
+          python team_hr_threats.py || echo "team_hr_threats failed (non-fatal 8/27)"
 
       - name: Compute pitcher offense-class projections (before props — props read this)
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_pitcher_class_projections.py
+          python compute_pitcher_class_projections.py || echo "pitcher_class_projections failed (non-fatal 8/27 — props will fall back to game_context values)"
 
       # Patch projected_ks columns on today's mlb_game_context rows from the
       # JSON cache that compute_pitcher_class_projections.py just wrote. This
@@ -243,12 +260,13 @@ jobs:
       # without a number was unauditable because every surface rebuilt its
       # own ad-hoc estimate.)
       - name: Patch projected_ks onto mlb_game_context
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python patch_projected_ks.py
+          python patch_projected_ks.py || echo "patch_projected_ks failed (non-fatal 8/27)"
 
       # Monte Carlo simulation — writes mc_probabilities + mc_high_conf_flag
       # + NRFI ensemble back to mlb_game_context. Must run BEFORE Jerry reads
@@ -258,12 +276,13 @@ jobs:
       # meant compute_primary_play never saw mc_high_conf_flag at build time
       # → MC-HIGH-CONF headline block never fired from the primary path.
       - name: Enrich Monte Carlo (mc_probabilities + high_conf + NRFI ensemble)
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_monte_carlo.py
+          python enrich_monte_carlo.py || echo "enrich_monte_carlo failed (non-fatal 8/27 — rescue step will retry)"
 
       # Sequencing-bug companion (same pattern as 7/25 panel fix):
       # game_context.py builds primary_play BEFORE enrich_monte_carlo writes
@@ -2109,6 +2128,85 @@ jobs:
       # in the 7d/30d/90d rolling windows. continue-on-error: monitoring
       # failure never blocks the main pipeline (dashboard staleness would
       # itself trigger the stale_snapshot alert on the next successful run).
+      # ═══════════════════════════════════════════════════════════════════
+      # 2026-08-27 RESCUE STEP — the "we WILL publish something tonight" gate.
+      # ═══════════════════════════════════════════════════════════════════
+      # Root cause of 8/26 + 8/27 zero-props days: a mandatory step upstream
+      # (game_context / verify_starters / patch_projected_ks / MC / etc.)
+      # threw an error that killed the whole workflow before downstream
+      # essentials (MC, props, ladder, ledger) ran. All those steps are now
+      # `continue-on-error: true` so any single failure logs and moves on.
+      #
+      # This rescue step runs AFTER everything else, checks which essentials
+      # are missing for today, and RE-RUNS them directly. This is the last
+      # line of defense — even if 20 upstream steps all fail, tonight's
+      # slate still gets MC + props + ladder + ledger.
+      #
+      # Sequence order (mirrors main pipeline dependencies):
+      #   1. MC (mc_probabilities on ctx)
+      #   2. recompute_primary_play (needs MC on ctx to gate correctly)
+      #   3. generate_props (needs primary_play tier for filtering)
+      #   4. sweep_prop_coverage (fills gaps)
+      #   5. steam_room_ladder (needs props)
+      #   6. generate_ledger (needs primary_play + props)
+      #
+      # Each rescue block runs ONLY if the essential row is missing —
+      # keeps this cheap when the main pipeline succeeded.
+      - name: Rescue — force MC + props + ladder + ledger if missing
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          set +e
+          TODAY=$(date -u -d '4 hours ago' +%Y-%m-%d)  # ET rollover
+          echo "=== RESCUE STEP === checking essentials for $TODAY"
+
+          check_url() {
+            curl -s -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+                 -H "Prefer: count=exact" \
+                 -I "$SUPABASE_URL/rest/v1/$1" 2>/dev/null | \
+                 grep -i content-range | awk -F/ '{print $2}' | tr -d '\r'
+          }
+
+          MC_COUNT=$(check_url "mlb_game_context?game_date=eq.$TODAY&mc_probabilities=not.is.null&select=game_id")
+          MC_COUNT=${MC_COUNT:-0}
+          echo "MC coverage: $MC_COUNT games"
+          if [ "$MC_COUNT" -lt 3 ]; then
+            echo "🚨 RESCUE: re-running enrich_monte_carlo.py"
+            python enrich_monte_carlo.py || echo "MC rescue failed"
+            python recompute_primary_play.py --date $TODAY || echo "recompute rescue failed"
+          fi
+
+          PROPS_COUNT=$(check_url "mlb_pipeline_props?game_date=eq.$TODAY&select=id")
+          PROPS_COUNT=${PROPS_COUNT:-0}
+          echo "Props coverage: $PROPS_COUNT rows"
+          if [ "$PROPS_COUNT" -lt 20 ]; then
+            echo "🚨 RESCUE: re-running generate_props.py"
+            python generate_props.py || echo "props rescue failed"
+            python sweep_prop_coverage.py || echo "coverage sweep rescue failed"
+          fi
+
+          LADDER_COUNT=$(check_url "ladder_rung?game_date=eq.$TODAY&select=id")
+          LADDER_COUNT=${LADDER_COUNT:-0}
+          echo "Ladder coverage: $LADDER_COUNT rungs"
+          if [ "$LADDER_COUNT" -lt 1 ]; then
+            echo "🚨 RESCUE: re-running steam_room_ladder.py"
+            python steam_room_ladder.py || echo "ladder rescue failed"
+          fi
+
+          LEDGER_COUNT=$(check_url "ledger_suggestions?game_date=eq.$TODAY&select=id")
+          LEDGER_COUNT=${LEDGER_COUNT:-0}
+          echo "Ledger coverage: $LEDGER_COUNT suggestions"
+          if [ "$LEDGER_COUNT" -lt 1 ]; then
+            echo "🚨 RESCUE: re-running generate_ledger.py"
+            python generate_ledger.py || echo "ledger rescue failed"
+          fi
+
+          echo "=== RESCUE DONE ==="
+
       - name: Monitoring — hit-rate snapshots
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
