@@ -1792,6 +1792,8 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [receiptsSport, setReceiptsSport] = useState('ALL');
   const [potdHistory, setPotdHistory] = useState<any[]>([]);
   const [potdHistoryLoading, setPotdHistoryLoading] = useState(false);
+  const [surfaceRecords, setSurfaceRecords] = useState<Record<string, any>>({});
+  const [surfaceRecordsLoading, setSurfaceRecordsLoading] = useState(false);
   const [dawgData, setDawgData] = useState<any>(null);
   const [dawgLoading, setDawgLoading] = useState(false);
   const [propJerryData, setPropJerryData] = useState([]);
@@ -5172,6 +5174,31 @@ const fetchPotdHistory = async () => {
   } finally {
     setPotdHistoryLoading(false);
   }
+};
+
+// 2026-08-27: Single source of truth for surface records.
+// compute_surface_records.py aggregator writes this table daily; both the
+// Receipts tab and the Sharp Card read from it so the numbers never diverge.
+// See supabase/migrations/20260827b_surface_records.sql.
+const fetchSurfaceRecords = async () => {
+  setSurfaceRecordsLoading(true);
+  try {
+    const {data, error} = await supabase.from('surface_records').select('*');
+    if (error) {
+      console.warn('[surface_records] fetch failed', error.message);
+      setSurfaceRecords({});
+    } else {
+      const map: Record<string, any> = {};
+      (data || []).forEach((r: any) => {
+        map[`${r.sport}|${r.surface}|${r.window}`] = r;
+      });
+      setSurfaceRecords(map);
+    }
+  } catch (e) {
+    console.warn('[surface_records] fetch threw', e);
+    setSurfaceRecords({});
+  }
+  setSurfaceRecordsLoading(false);
 };
 
 const fetchJerryRecord = async () => {
@@ -9020,9 +9047,32 @@ setJerryHistory(prev => {
         if (gd >= curMonthStart) bump(r, payout, true, isY);
         else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, payout, false, isY);
       });
-      setSharpRecord({w, l, p, unitsNet: Math.round(unitsNet*100)/100,
-                      wPrev, lPrev, pPrev, unitsNetPrev: Math.round(unitsNetPrev*100)/100,
-                      yW, yL, yP, yUnits: Math.round(yUnits*100)/100} as any);
+      // 2026-08-27: Prefer aggregator (surface_records) as single source of
+      // truth for MLB sharp MTD. Falls back to the inline bump-loop tally
+      // computed above when the table is empty (fresh install / migration
+      // not yet applied). Guarantees Sharp Card + Receipts agree.
+      try {
+        const {data: srRows} = await supabase.from('surface_records')
+          .select('*').eq('surface','sharp').eq('sport','MLB').eq('window','mtd').limit(1);
+        const sr = srRows && srRows[0];
+        if (sr && (sr.wins + sr.losses + sr.pushes) > 0) {
+          setSharpRecord({
+            w: sr.wins, l: sr.losses, p: sr.pushes,
+            unitsNet: Math.round(Number(sr.units_net)*100)/100,
+            wPrev, lPrev, pPrev,
+            unitsNetPrev: Math.round(unitsNetPrev*100)/100,
+            yW, yL, yP, yUnits: Math.round(yUnits*100)/100,
+          } as any);
+        } else {
+          setSharpRecord({w, l, p, unitsNet: Math.round(unitsNet*100)/100,
+                          wPrev, lPrev, pPrev, unitsNetPrev: Math.round(unitsNetPrev*100)/100,
+                          yW, yL, yP, yUnits: Math.round(yUnits*100)/100} as any);
+        }
+      } catch {
+        setSharpRecord({w, l, p, unitsNet: Math.round(unitsNet*100)/100,
+                        wPrev, lPrev, pPrev, unitsNetPrev: Math.round(unitsNetPrev*100)/100,
+                        yW, yL, yP, yUnits: Math.round(yUnits*100)/100} as any);
+      }
     } catch (e) { setSharpPicks([]); setSharpRecord({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0,yW:0,yL:0,yP:0,yUnits:0}); }
     setSharpTabLoading(false);
   }, []);
@@ -14208,6 +14258,7 @@ setJerryHistory(prev => {
               const isStale = jerryRecord && jerryRecord.fetched_at && (Date.now() - jerryRecord.fetched_at > STALE_MS);
               if(!jerryRecordLoading && (!jerryRecord || isStale)) fetchJerryRecord();
               if(!potdHistoryLoading && potdHistory.length === 0) fetchPotdHistory();
+              if(!surfaceRecordsLoading && Object.keys(surfaceRecords).length === 0) fetchSurfaceRecords();
               if(jerryRecordLoading) return(
                 <View style={{alignItems:'center',paddingTop:60}}>
                   <ActivityIndicator size="large" color={HRB_COLOR}/>
@@ -14234,7 +14285,25 @@ setJerryHistory(prev => {
                 {id: 'NHL',   icon: '🏒', label: 'NHL',   status: 'offseason', kickoff: 'Oct'},
               ];
 
+              // 2026-08-27: primary path — surface_records table (server-computed,
+              // aligns Sharp Card + Receipts). Legacy jerrySynthesis + pipelineProps
+              // path is the fallback while surface_records is being backfilled.
+              const winKey =
+                recordWindow === '7d' ? 'd7' :
+                recordWindow === '30d' ? 'd30' :
+                recordWindow === 'mtd' ? 'mtd' : 'lifetime';
               const surfaceData = (key: string, sport: string) => {
+                const rec = surfaceRecords[`${sport}|${key}|${winKey}`];
+                if (rec) {
+                  const w = rec.wins||0, l = rec.losses||0;
+                  return {
+                    units: Number(rec.units_net) || 0,
+                    wins: w, losses: l,
+                    hitPct: w+l > 0 ? (w/(w+l))*100 : 0,
+                    hasData: (w+l) > 0,
+                  };
+                }
+                // Legacy fallback (jerrySynthesis / pipelineProps)
                 if (key === 'sharp') {
                   const src = sport === 'ALL' ? js.total : (js.bySport?.[sport] || {wins:0,losses:0});
                   const w = src.wins||0, l = src.losses||0;
@@ -14297,7 +14366,7 @@ setJerryHistory(prev => {
                     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
                       <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',letterSpacing:1.4}}>{heroScope.toUpperCase()} · TOTAL P/L</Text>
                       <View style={{flexDirection:'row',gap:4}}>
-                        {[{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'lifetime',label:'ALL'}].map(w=>(
+                        {[{id:'mtd',label:'MTD'},{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'lifetime',label:'ALL'}].map(w=>(
                           <TouchableOpacity key={w.id} onPress={()=>setRecordWindow(w.id)} style={{paddingVertical:3,paddingHorizontal:8,borderRadius:5,backgroundColor:recordWindow===w.id?THEME.hrb+'26':THEME.surfaceAlt,borderWidth:1,borderColor:recordWindow===w.id?HRB_COLOR:THEME.border}}>
                             <Text style={{color:recordWindow===w.id?HRB_COLOR:THEME.textDim,fontSize:10,fontWeight:'700'}}>{w.label}</Text>
                           </TouchableOpacity>

@@ -1240,6 +1240,20 @@ jobs:
           cd mlb_pipeline
           python resolve_potd.py
 
+      # 2026-08-27: Single source of truth for per-surface, per-sport,
+      # per-window W/L/P + units_net. Both the Receipts tab and the Sharp
+      # Card read from surface_records so their numbers never diverge.
+      # Runs AFTER resolve_potd + resolve_externals so newly-graded results
+      # are included in the same run.
+      - name: Compute surface records
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_surface_records.py || echo "surface_records failed (non-fatal — app falls back to legacy calc)"
+
       # Grade external picks now that game_results is filled — enables
       # per-source calibration + consensus-fade detector (transparency
       # differentiator, 2026-07-22). continue-on-error so a bad
@@ -2276,6 +2290,12 @@ jobs:
           # Cheap when everything is already resolved.
           echo "🔄 RESCUE: running resolve_potd.py (backfills any missing results)"
           python resolve_potd.py || echo "POTD resolver rescue failed"
+
+          # 2026-08-27: surface_records aggregator — single source of truth
+          # for Sharp Card + Receipts. Runs unconditionally at rescue-time
+          # (cheap: reads-only + one upsert of <200 rows).
+          echo "🔄 RESCUE: refreshing surface_records"
+          python compute_surface_records.py || echo "surface_records rescue failed"
 
           echo "=== RESCUE DONE ==="
 
