@@ -423,9 +423,33 @@ jobs:
           if [ "$DOW" = "7" ]; then
             cd mlb_pipeline
             python refit_signal_registry.py --days 90 --min-n 10 || echo "signal registry refit failed (non-fatal)"
+            # 2026-08-26: weekly auto-mining across all sports.
+            # discover_patterns.py walks each sport's ctx+results, enumerates
+            # 2-way and 3-way combos of model/split/form features, and
+            # auto-seeds any that beat n>=15 AND |edge|>=10pp. Seeded with
+            # disabled=True so user reviews + enables. Non-fatal — mining
+            # errors on one sport don't stop the others.
+            python discover_patterns.py --all --days 90 || echo "discover_patterns failed (non-fatal)"
+            # 2026-08-26: rebuild external handicapper track records nightly
+            # (was manual — a 10-day stale ghost was root cause of Rockies
+            # UNDER 9.0 PRIME 97 fade-flip drift on 8/26).
+            python compute_external_source_records.py || echo "external records aggregator failed (non-fatal)"
           else
-            echo "not Sunday (DOW=$DOW) — skipping signal registry refit"
+            echo "not Sunday (DOW=$DOW) — skipping weekly signal refit + pattern discovery"
           fi
+
+      # 2026-08-26: nightly external-source aggregator (runs EVERY day, not
+      # just Sunday). Was manual until 8/26 — 10-day stale rows were driving
+      # ensemble fade-flips off phantom records. Cheap read+upsert, safe to
+      # rerun.
+      - name: Refresh external handicapper records
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_external_source_records.py || echo "external records failed (non-fatal)"
 
       # 2026-08-10: Nightly scenario audit recompute. Reads all past
       # game_context+results, projects into ~30 canonical MLB scenarios

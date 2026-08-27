@@ -153,6 +153,169 @@ def _mlb_grade(res: dict, ct, cs) -> dict:
     return grades
 
 
+def _football_extractors(g: dict) -> dict:
+    """Shared extractor for NFL + NCAAF (both have same column shape).
+    Total-direction from projected/panel/sp_plus/model + ml direction from
+    spread models. OU / ATS split-adj tendencies.
+    """
+    out = {}
+    ct = _f(g.get('close_total'))
+    cs = _f(g.get('close_spread'))
+    mc = g.get('mc_probabilities') or {}
+    if not isinstance(mc, dict): mc = {}
+    oc = g.get('oddscrowd_snapshot') or {}
+    if not isinstance(oc, dict): oc = {}
+
+    if ct is not None:
+        for name, key in (('proj_total', 'projected_total'),
+                          ('panel_total', 'panel_pred_total'),   # NFL only, absent NCAAF
+                          ('sp_plus_total', 'sp_plus_pred_total')):  # NCAAF only
+            v = _f(g.get(key))
+            if v is not None and abs(v - ct) >= 0.5:
+                out[name] = 'over' if v > ct else 'under'
+        # Model_pred_home + away can be summed for a total projection
+        mph = _f(g.get('model_pred_home_points'))
+        mpa = _f(g.get('model_pred_away_points'))
+        if mph is not None and mpa is not None:
+            mt = mph + mpa
+            if abs(mt - ct) >= 0.5:
+                out['model_total'] = 'over' if mt > ct else 'under'
+        if mc.get('mc_mean_total') is not None:
+            mt2 = _f(mc['mc_mean_total'])
+            if mt2 is not None and abs(mt2 - ct) >= 0.5:
+                out['mc_total'] = 'over' if mt2 > ct else 'under'
+        oc_t = oc.get('total') or {}
+        if oc_t.get('pick'):
+            oc_m = _f(oc_t.get('money')) or 0
+            if oc_m >= 65:
+                out['oc_total_heavy'] = str(oc_t.get('pick', '')).lower()
+
+    if cs is not None:
+        for name, key in (('proj_ml', 'projected_spread'),
+                          ('sp_plus_ml', 'sp_plus_pred_spread')):
+            v = _f(g.get(key))
+            if v is not None:
+                delta = v + cs
+                if abs(delta) >= 0.5:
+                    out[name] = 'HOME' if delta > 0 else 'AWAY'
+        # From model pred points
+        mph = _f(g.get('model_pred_home_points'))
+        mpa = _f(g.get('model_pred_away_points'))
+        if mph is not None and mpa is not None:
+            model_margin = mph - mpa   # positive = home wins by that much
+            delta = model_margin + cs   # close_spread is home spread (negative = home fav)
+            if abs(delta) >= 0.5:
+                out['model_ml'] = 'HOME' if delta > 0 else 'AWAY'
+        if mc.get('mc_p_home_win') is not None:
+            p = _f(mc['mc_p_home_win']) or 0
+            if p >= 0.55: out['mc_ml'] = 'HOME'
+            elif p <= 0.45: out['mc_ml'] = 'AWAY'
+    oc_ml = oc.get('ml') or {}
+    if oc_ml.get('pick'):
+        m = _f(oc_ml.get('money')) or 0
+        if m >= 65:
+            out['oc_ml_heavy'] = str(oc_ml.get('pick', '')).upper()
+
+    # Team form (split-adjusted OU + ATS)
+    try:
+        h_o = _f(g.get('home_ou_l10_at_home_overs')) or 0
+        h_u = _f(g.get('home_ou_l10_at_home_unders')) or 0
+        if h_o + h_u >= 4:
+            h_u_pct = h_u / (h_o + h_u)
+            if h_u_pct >= 0.6: out['home_form_total'] = 'under'
+            elif h_u_pct <= 0.4: out['home_form_total'] = 'over'
+        a_o = _f(g.get('away_ou_l10_on_road_overs')) or 0
+        a_u = _f(g.get('away_ou_l10_on_road_unders')) or 0
+        if a_o + a_u >= 4:
+            a_u_pct = a_u / (a_o + a_u)
+            if a_u_pct >= 0.6: out['away_form_total'] = 'under'
+            elif a_u_pct <= 0.4: out['away_form_total'] = 'over'
+    except (TypeError, ZeroDivisionError):
+        pass
+    return out
+
+
+def _football_grade(res, ct, cs):
+    return _mlb_grade(res, ct, cs)   # same math (home_score + away_score)
+
+
+def _basketball_extractors(g: dict) -> dict:
+    """NBA / NCAAB — same shape as football but without panel/sp+, keeps
+    projected_total/projected_spread + model_pred_*_points + mc + oc.
+    """
+    out = {}
+    ct = _f(g.get('close_total'))
+    cs = _f(g.get('close_spread'))
+    mc = g.get('mc_probabilities') or {}
+    if not isinstance(mc, dict): mc = {}
+    oc = g.get('oddscrowd_snapshot') or {}
+    if not isinstance(oc, dict): oc = {}
+
+    if ct is not None:
+        v = _f(g.get('projected_total'))
+        if v is not None and abs(v - ct) >= 0.5:
+            out['proj_total'] = 'over' if v > ct else 'under'
+        mph = _f(g.get('model_pred_home_points'))
+        mpa = _f(g.get('model_pred_away_points'))
+        if mph is not None and mpa is not None:
+            mt = mph + mpa
+            if abs(mt - ct) >= 0.5:
+                out['model_total'] = 'over' if mt > ct else 'under'
+        if mc.get('mc_mean_total') is not None:
+            m2 = _f(mc['mc_mean_total'])
+            if m2 is not None and abs(m2 - ct) >= 0.5:
+                out['mc_total'] = 'over' if m2 > ct else 'under'
+        oc_t = oc.get('total') or {}
+        if oc_t.get('pick'):
+            m = _f(oc_t.get('money')) or 0
+            if m >= 65:
+                out['oc_total_heavy'] = str(oc_t.get('pick', '')).lower()
+
+    if cs is not None:
+        v = _f(g.get('projected_spread'))
+        if v is not None:
+            delta = v + cs
+            if abs(delta) >= 0.5:
+                out['proj_ml'] = 'HOME' if delta > 0 else 'AWAY'
+        mph = _f(g.get('model_pred_home_points'))
+        mpa = _f(g.get('model_pred_away_points'))
+        if mph is not None and mpa is not None:
+            model_margin = mph - mpa
+            delta = model_margin + cs
+            if abs(delta) >= 0.5:
+                out['model_ml'] = 'HOME' if delta > 0 else 'AWAY'
+        if mc.get('mc_p_home_win') is not None:
+            p = _f(mc['mc_p_home_win']) or 0
+            if p >= 0.55: out['mc_ml'] = 'HOME'
+            elif p <= 0.45: out['mc_ml'] = 'AWAY'
+    oc_ml = oc.get('ml') or {}
+    if oc_ml.get('pick'):
+        m = _f(oc_ml.get('money')) or 0
+        if m >= 65:
+            out['oc_ml_heavy'] = str(oc_ml.get('pick', '')).upper()
+    return out
+
+
+def _hockey_extractors(g: dict) -> dict:
+    """NHL — no total_points field on results, so total market omitted for grading.
+    ML + puck line (RL equivalent) supported."""
+    out = {}
+    cs = _f(g.get('close_spread'))
+    mc = g.get('mc_probabilities') or {}
+    if not isinstance(mc, dict): mc = {}
+    if cs is not None:
+        v = _f(g.get('projected_spread'))
+        if v is not None:
+            delta = v + cs
+            if abs(delta) >= 0.5:
+                out['proj_ml'] = 'HOME' if delta > 0 else 'AWAY'
+        if mc.get('mc_p_home_win') is not None:
+            p = _f(mc['mc_p_home_win']) or 0
+            if p >= 0.55: out['mc_ml'] = 'HOME'
+            elif p <= 0.45: out['mc_ml'] = 'AWAY'
+    return out
+
+
 SPORT_PLUGINS = {
     'MLB': {
         'ctx_table': 'mlb_game_context',
@@ -166,7 +329,6 @@ SPORT_PLUGINS = {
         'extractors': _mlb_extractors,
         'grade': _mlb_grade,
         'markets': ['total', 'ml', 'rl'],
-        # Which feature names contribute to which market
         'market_features': {
             'total': ['jerry_total', 'panel_total', 'proj_total', 'model_total',
                       'mc_total', 'oc_total_heavy', 'home_form_total', 'away_form_total'],
@@ -174,8 +336,93 @@ SPORT_PLUGINS = {
             'rl': ['jerry_ml', 'proj_ml', 'model_ml', 'mc_ml', 'oc_ml_heavy'],
         },
     },
-    # NFL/NCAAF/NBA/NHL/UFC/NCAAB plugins can be added here — same shape,
-    # different columns.
+    'NFL': {
+        'ctx_table': 'nfl_game_context',
+        'results_table': 'nfl_game_results',
+        'ctx_select': ('game_id,close_total,close_spread,'
+                       'projected_total,panel_pred_total,'
+                       'projected_spread,'
+                       'model_pred_home_points,model_pred_away_points,'
+                       'mc_probabilities,oddscrowd_snapshot,'
+                       'home_ou_l10_at_home_overs,home_ou_l10_at_home_unders,'
+                       'away_ou_l10_on_road_overs,away_ou_l10_on_road_unders'),
+        'extractors': _football_extractors,
+        'grade': _football_grade,
+        'markets': ['total', 'ml', 'rl'],
+        'market_features': {
+            'total': ['proj_total', 'panel_total', 'model_total', 'mc_total',
+                      'oc_total_heavy', 'home_form_total', 'away_form_total'],
+            'ml': ['proj_ml', 'model_ml', 'mc_ml', 'oc_ml_heavy'],
+            'rl': ['proj_ml', 'model_ml', 'mc_ml', 'oc_ml_heavy'],
+        },
+    },
+    'NCAAF': {
+        'ctx_table': 'ncaaf_game_context',
+        'results_table': 'ncaaf_game_results',
+        'ctx_select': ('game_id,close_total,close_spread,'
+                       'projected_total,sp_plus_pred_total,'
+                       'projected_spread,sp_plus_pred_spread,'
+                       'model_pred_home_points,model_pred_away_points,'
+                       'mc_probabilities,oddscrowd_snapshot,'
+                       'home_ou_l10_at_home_overs,home_ou_l10_at_home_unders,'
+                       'away_ou_l10_on_road_overs,away_ou_l10_on_road_unders'),
+        'extractors': _football_extractors,
+        'grade': _football_grade,
+        'markets': ['total', 'ml', 'rl'],
+        'market_features': {
+            'total': ['proj_total', 'sp_plus_total', 'model_total', 'mc_total',
+                      'oc_total_heavy', 'home_form_total', 'away_form_total'],
+            'ml': ['proj_ml', 'sp_plus_ml', 'model_ml', 'mc_ml', 'oc_ml_heavy'],
+            'rl': ['proj_ml', 'sp_plus_ml', 'model_ml', 'mc_ml', 'oc_ml_heavy'],
+        },
+    },
+    'NBA': {
+        'ctx_table': 'nba_game_context',
+        'results_table': 'nba_game_results',
+        'ctx_select': ('game_id,close_total,close_spread,'
+                       'projected_total,projected_spread,'
+                       'model_pred_home_points,model_pred_away_points,'
+                       'mc_probabilities,oddscrowd_snapshot'),
+        'extractors': _basketball_extractors,
+        'grade': _football_grade,   # same math
+        'markets': ['total', 'ml', 'rl'],
+        'market_features': {
+            'total': ['proj_total', 'model_total', 'mc_total', 'oc_total_heavy'],
+            'ml': ['proj_ml', 'model_ml', 'mc_ml', 'oc_ml_heavy'],
+            'rl': ['proj_ml', 'model_ml', 'mc_ml', 'oc_ml_heavy'],
+        },
+    },
+    'NCAAB': {
+        'ctx_table': 'ncaab_game_context',
+        'results_table': 'ncaab_game_results',
+        'ctx_select': ('game_id,close_total,close_spread,'
+                       'projected_total,projected_spread,'
+                       'model_pred_home_points,model_pred_away_points,'
+                       'mc_probabilities,oddscrowd_snapshot'),
+        'extractors': _basketball_extractors,
+        'grade': _football_grade,
+        'markets': ['total', 'ml', 'rl'],
+        'market_features': {
+            'total': ['proj_total', 'model_total', 'mc_total', 'oc_total_heavy'],
+            'ml': ['proj_ml', 'model_ml', 'mc_ml', 'oc_ml_heavy'],
+            'rl': ['proj_ml', 'model_ml', 'mc_ml', 'oc_ml_heavy'],
+        },
+    },
+    'NHL': {
+        'ctx_table': 'nhl_game_context',
+        'results_table': 'nhl_game_results',
+        'ctx_select': ('game_id,close_spread,'
+                       'projected_spread,'
+                       'mc_probabilities'),
+        'extractors': _hockey_extractors,
+        'grade': _football_grade,   # ML + RL only
+        'markets': ['ml', 'rl'],
+        'market_features': {
+            'ml': ['proj_ml', 'mc_ml'],
+            'rl': ['proj_ml', 'mc_ml'],
+        },
+    },
+    # UFC deferred — different market structure (fight/method/round).
 }
 
 
