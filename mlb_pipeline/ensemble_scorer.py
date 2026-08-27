@@ -265,31 +265,59 @@ def _load_sources(sport: str) -> list[dict]:
     return [s for s in _SOURCES_CACHE if s.get('sport') in (sport, '*')]
 
 
+# 2026-08-26: max age for a signal_registry row to be considered valid.
+# Prevents stale ANTI_VALIDATED verdicts from continuing to auto-fade
+# signals long after the graded pattern shifted. Audit finding: weekly-only
+# refit + `|| echo non-fatal` on nightly rescore meant tiers could be up to
+# 7 days stale. Registry rows older than this cutoff are IGNORED — signal
+# falls back to inline hit_rate_pct or the no-registry default.
+MAX_REGISTRY_AGE_DAYS = 14
+
+
 def _load_registry() -> dict:
     """Load signal_registry keyed by (signal_name, sport) tuple.
 
     2026-08-21 CROSS-SPORT CONTAMINATION FIX: prior version keyed by
     signal_name alone. Many signals exist for multiple sports (e.g.
     away_ats_cold_on_road for MLB AND NHL). Last-loaded wins meant
-    MLB scorer often got NHL weights. Example caught: away_ats_cold_on_road
-    MLB=56.1% n=41 vs NHL=36.9% n=575 → scorer used NHL number → signal
-    was silently treated as anti-signal on MLB games for weeks.
+    MLB scorer often got NHL weights.
+
+    2026-08-26 STALENESS FILTER: drop rows whose last_computed_at is
+    older than MAX_REGISTRY_AGE_DAYS. Stale rows produce stale weights.
     """
     global _REGISTRY_CACHE
     if _REGISTRY_CACHE is not None:
         return _REGISTRY_CACHE
+    from datetime import datetime, timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_REGISTRY_AGE_DAYS)
+    dropped_stale = 0
     out: dict = {}
     if _SB:
         try:
             r = requests.get(f'{_SB}/rest/v1/signal_registry',
                              headers=_H_READ,
-                             params={'select': 'signal_name,sport,tier,recommended_weight,hit_rate,sample_n'},
+                             params={'select': 'signal_name,sport,tier,recommended_weight,'
+                                               'hit_rate,sample_n,last_computed_at,updated_at'},
                              timeout=10)
             for row in (r.json() if r.status_code == 200 else []):
+                # Staleness filter
+                ts_str = row.get('last_computed_at') or row.get('updated_at')
+                if ts_str:
+                    try:
+                        s = str(ts_str).replace('Z', '+00:00')
+                        ts = datetime.fromisoformat(s)
+                        if ts.tzinfo is None: ts = ts.replace(tzinfo=timezone.utc)
+                        if ts < cutoff:
+                            dropped_stale += 1
+                            continue
+                    except (ValueError, TypeError):
+                        pass
                 key = (row['signal_name'], row.get('sport') or '*')
                 out[key] = row
         except Exception:
             pass
+    if dropped_stale > 0:
+        print(f'  [ensemble] dropped {dropped_stale} stale registry rows (>{MAX_REGISTRY_AGE_DAYS}d)')
     _REGISTRY_CACHE = out
     return out
 
@@ -371,8 +399,13 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
     sport = source_row.get('sport') or '*'
     for lookup_key in (source_row.get('weight_registry_key'), source_row.get('signal_key')):
         if not lookup_key: continue
-        # Try sport-specific first, then wildcard
-        reg = registry.get((lookup_key, sport)) or registry.get((lookup_key, '*'))
+        # 2026-08-26: sport-specific ONLY. The `sport='*'` fallback silently
+        # borrowed a different sport's weights when the sport-specific row
+        # was missing (audit finding — same class of bug as the 8/21 cross-
+        # sport contamination fix but on the fallback path). A missing
+        # sport-specific row should mean "no registry data yet," not "use
+        # some other sport's numbers."
+        reg = registry.get((lookup_key, sport))
         if reg:
             hr = reg.get('hit_rate')
             if hr is not None:
@@ -1189,21 +1222,34 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
         # PRIME on cohort alone. Games with real distributed matchup edge
         # (Padres: cohort 0.42 + team_form 0.53 + offense 0.15 + model 0.13
         # = 1.23) barely move because their cohort share was already <40%.
+        # 2026-08-26 multi-class cap math fix (audit finding).
+        # Prior bug: iterated all classes computing `others_sum = raw_total
+        # - share`, then subtracted overflow. If two classes each exceeded
+        # the cap, they both used the ORIGINAL raw_total to compute
+        # `others_sum`, so both settled at ~44% instead of the intended 40%.
+        #
+        # Fix: sort classes DESCENDING by share, iterate with a running
+        # `working_total` and `working_class_share` that decreases as we cap
+        # each over-cap class. Each class's `others_sum` reflects the
+        # post-caps state.
         adjusted_total = raw_total
         if raw_total > 0:
             cap_ratio = MAX_CLASS_SHARE / (1.0 - MAX_CLASS_SHARE)
-            for cls_name, share in class_share.items():
-                others_sum = raw_total - share
+            working_class_share = dict(class_share)
+            working_total = raw_total
+            for cls_name in sorted(working_class_share.keys(),
+                                   key=lambda k: -working_class_share[k]):
+                share = working_class_share[cls_name]
+                others_sum = working_total - share
                 if others_sum <= 0:
-                    # single-class contribution — nothing to balance against;
-                    # let the raw fraction cap fall back to old behavior so
-                    # single-source picks don't get zeroed to nothing.
-                    max_allowed_effective = raw_total * MAX_CLASS_SHARE
+                    max_allowed_effective = working_total * MAX_CLASS_SHARE
                 else:
                     max_allowed_effective = others_sum * cap_ratio
                 if share > max_allowed_effective:
                     overflow = share - max_allowed_effective
                     adjusted_total -= overflow
+                    working_total -= overflow
+                    working_class_share[cls_name] = max_allowed_effective
 
         # 2026-08-26 aggregate FADE cap. Per-class cap doesn't restrain
         # a stack of auto-fades that split across classes (Rockies UNDER

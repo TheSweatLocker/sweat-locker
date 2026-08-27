@@ -153,17 +153,22 @@ def apply_oc_flip_gate(pp: dict | None, ctx: dict) -> dict | None:
         mc = ctx.get('mc_probabilities')
         if isinstance(mc, dict):
             mc_block = False
+            # 2026-08-26 threshold tightening (audit rec). Rockies UNDER
+            # PRIME 97 had MC 70.3% OVER — right at the old threshold, passed
+            # by rounding, flip proceeded. Lower to 60% for totals, 58% for
+            # ML so meaningful MC dissent blocks the flip. Track _oc_flip_
+            # blocked outcomes for 30d and revisit if fade edge holds.
             if mkt == 'total':
                 # Flipping AWAY from cur_side (Under) → Over means MC's
                 # mc_p_under is the "prob the original side wins."
-                # Block if MC has >=70% conviction on the original side.
+                # Block if MC has >=60% conviction on the original side.
                 mc_prob_orig = None
                 if cur_side == 'UNDER':
                     mc_prob_orig = mc.get('mc_p_under')
                 elif cur_side == 'OVER':
                     mc_prob_orig = mc.get('mc_p_over')
                 try:
-                    if mc_prob_orig is not None and float(mc_prob_orig) >= 0.70:
+                    if mc_prob_orig is not None and float(mc_prob_orig) >= 0.60:
                         mc_block = True
                 except (TypeError, ValueError):
                     pass
@@ -174,7 +179,7 @@ def apply_oc_flip_gate(pp: dict | None, ctx: dict) -> dict | None:
                 elif cur_side == 'AWAY':
                     mc_prob_orig = mc.get('mc_p_away_win') or mc.get('mc_away_win_prob')
                 try:
-                    if mc_prob_orig is not None and float(mc_prob_orig) >= 0.65:
+                    if mc_prob_orig is not None and float(mc_prob_orig) >= 0.58:
                         mc_block = True
                 except (TypeError, ValueError):
                     pass

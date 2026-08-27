@@ -545,9 +545,12 @@ SIGNALS = [
 
     # ── WEATHER CLASS ────────────────────────────────────────────────
     {
+        # 2026-08-26: temp clamp 20-115F. Anything outside is data corruption.
         'signal_key': 'cold_game_under',
         'class': 'weather', 'market_scope': 'total',
-        'condition_expr': 'ctx.temperature is not None and int(ctx.temperature) <= 55 and (ctx.is_dome is None or ctx.is_dome == False)',
+        'condition_expr': ('ctx.temperature is not None and int(ctx.temperature) <= 55 and '
+                           'int(ctx.temperature) >= 20 and '
+                           '(ctx.is_dome is None or ctx.is_dome == False)'),
         'side_expr': '"UNDER"',
         'strength_expr': '0.4',
         'display_prose_template': 'game-time temp {temperature}F suppresses offense',
@@ -555,7 +558,9 @@ SIGNALS = [
     {
         'signal_key': 'hot_game_over',
         'class': 'weather', 'market_scope': 'total',
-        'condition_expr': 'ctx.temperature is not None and int(ctx.temperature) >= 88 and (ctx.is_dome is None or ctx.is_dome == False)',
+        'condition_expr': ('ctx.temperature is not None and int(ctx.temperature) >= 88 and '
+                           'int(ctx.temperature) <= 115 and '
+                           '(ctx.is_dome is None or ctx.is_dome == False)'),
         'side_expr': '"OVER"',
         'strength_expr': '0.3',
         'display_prose_template': 'game-time temp {temperature}F helps the ball carry',
@@ -563,7 +568,13 @@ SIGNALS = [
     {
         'signal_key': 'wind_blowing_out',
         'class': 'weather', 'market_scope': 'total',
-        'condition_expr': 'ctx.wind_blowing_in is not None and ctx.wind_blowing_in == False and ctx.wind_speed is not None and int(ctx.wind_speed) >= 10',
+        # 2026-08-26: added wind_speed <= 40 plausibility clamp. Milwaukee/Mets
+        # 8/26 game showed "wind 75 mph blowing in" — data feed corruption.
+        # 40 mph is the practical MLB ceiling for a game that wouldn't be
+        # cancelled (sustained winds above 30 typically halt play).
+        'condition_expr': ('ctx.wind_blowing_in is not None and ctx.wind_blowing_in == False and '
+                           'ctx.wind_speed is not None and int(ctx.wind_speed) >= 10 and '
+                           'int(ctx.wind_speed) <= 40'),
         'side_expr': '"OVER"',
         'strength_expr': '0.35',
         'display_prose_template': 'wind {wind_speed} mph blowing out',
@@ -571,7 +582,9 @@ SIGNALS = [
     {
         'signal_key': 'wind_blowing_in',
         'class': 'weather', 'market_scope': 'total',
-        'condition_expr': 'ctx.wind_blowing_in is not None and ctx.wind_blowing_in == True and ctx.wind_speed is not None and int(ctx.wind_speed) >= 10',
+        'condition_expr': ('ctx.wind_blowing_in is not None and ctx.wind_blowing_in == True and '
+                           'ctx.wind_speed is not None and int(ctx.wind_speed) >= 10 and '
+                           'int(ctx.wind_speed) <= 40'),
         'side_expr': '"UNDER"',
         'strength_expr': '0.35',
         'display_prose_template': 'wind {wind_speed} mph blowing in — knocks HRs down',
