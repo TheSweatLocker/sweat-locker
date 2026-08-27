@@ -2171,6 +2171,24 @@ jobs:
                  grep -i content-range | awk -F/ '{print $2}' | tr -d '\r'
           }
 
+          # 2026-08-27 audit found daily NULLS in bullpen effective ERA + team
+          # tendencies + refit_conviction. Adding those to the rescue too.
+          BULLPEN_MISSING=$(check_url "mlb_game_context?game_date=eq.$TODAY&home_bullpen_effective_era=is.null&select=game_id")
+          BULLPEN_MISSING=${BULLPEN_MISSING:-0}
+          echo "Bullpen effective ERA missing on: $BULLPEN_MISSING games"
+          if [ "$BULLPEN_MISSING" -gt 0 ]; then
+            echo "🚨 RESCUE: re-running mlb_advanced_metrics.py"
+            python mlb_advanced_metrics.py || echo "advanced_metrics rescue failed"
+          fi
+
+          TENDENCIES_MISSING=$(check_url "mlb_game_context?game_date=eq.$TODAY&home_ou_l10_at_home_overs=is.null&select=game_id")
+          TENDENCIES_MISSING=${TENDENCIES_MISSING:-0}
+          echo "Team tendencies missing on: $TENDENCIES_MISSING games"
+          if [ "$TENDENCIES_MISSING" -gt 0 ]; then
+            echo "🚨 RESCUE: re-running backfill_team_tendencies.py"
+            python backfill_team_tendencies.py || echo "tendencies rescue failed"
+          fi
+
           MC_COUNT=$(check_url "mlb_game_context?game_date=eq.$TODAY&mc_probabilities=not.is.null&select=game_id")
           MC_COUNT=${MC_COUNT:-0}
           echo "MC coverage: $MC_COUNT games"
@@ -2187,6 +2205,17 @@ jobs:
             echo "🚨 RESCUE: re-running generate_props.py"
             python generate_props.py || echo "props rescue failed"
             python sweep_prop_coverage.py || echo "coverage sweep rescue failed"
+          fi
+
+          # Refit conviction — this is what promotes/demotes props based on
+          # the day's calibration. Was NULL on every prop in 8/27 audit
+          # because apply_refit_verdict_override.py silently didn't run.
+          REFIT_NULL=$(check_url "mlb_pipeline_props?game_date=eq.$TODAY&refit_conviction=is.null&tier=in.(PRIME,STRONG,LEAN)&select=id")
+          REFIT_NULL=${REFIT_NULL:-0}
+          echo "Props with NULL refit_conviction: $REFIT_NULL"
+          if [ "$REFIT_NULL" -gt 5 ]; then
+            echo "🚨 RESCUE: re-running apply_refit_verdict_override.py"
+            python apply_refit_verdict_override.py || echo "refit override rescue failed"
           fi
 
           LADDER_COUNT=$(check_url "ladder_rung?game_date=eq.$TODAY&select=id")

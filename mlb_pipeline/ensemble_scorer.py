@@ -1233,6 +1233,18 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
         # each over-cap class. Each class's `others_sum` reflects the
         # post-caps state.
         adjusted_total = raw_total
+        # 2026-08-27 SCALE INDIVIDUAL CHIPS. Prior version only reduced
+        # `adjusted_total` (a scalar) but left `chips[i].contribution`
+        # untouched. So conviction/tier was correctly capped, but the
+        # user-visible `_ensemble_sources` breakdown still showed the raw
+        # (over-cap) contribution values. Signal audits then reported
+        # "cohort 87.7% share" on a game that was already capped down —
+        # confusing at best, and it left the SIDE-vote arithmetic in
+        # per-candidate scoring using raw values too.
+        # New: when a class is capped, scale each chip in that class by
+        # (max_allowed / original_class_share) so downstream side-votes
+        # AND audit displays both reflect effective contribution.
+        chip_scale_factors: dict[str, float] = {}  # class_name -> scale
         if raw_total > 0:
             cap_ratio = MAX_CLASS_SHARE / (1.0 - MAX_CLASS_SHARE)
             working_class_share = dict(class_share)
@@ -1250,6 +1262,15 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
                     adjusted_total -= overflow
                     working_total -= overflow
                     working_class_share[cls_name] = max_allowed_effective
+                    if share > 0:
+                        chip_scale_factors[cls_name] = max_allowed_effective / share
+
+        if chip_scale_factors:
+            for c in chips:
+                factor = chip_scale_factors.get(c.signal_class)
+                if factor is not None:
+                    c.contribution = round(c.contribution * factor, 4)
+                    c.weight = round(c.weight * factor, 4)
 
         # 2026-08-26 aggregate FADE cap. Per-class cap doesn't restrain
         # a stack of auto-fades that split across classes (Rockies UNDER
@@ -1398,6 +1419,23 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
     'hard_suppress' (rolling ROI has been negative 10+ days), returns
     None to trigger the legacy fallback in the game_context caller.
     If 'soft_tighten', passes a raised LEAN threshold to _score_market."""
+    # 2026-08-27 CTX NORMALIZATION. When close_total / close_spread are
+    # NULL (line hasn't closed yet or Odds API returned partial data —
+    # MIL/NYM 8/27 had current_total=7.0 but close_total=NULL for the
+    # whole slate), fall back to current_total / current_spread so
+    # ensemble scoring still works. Otherwise every model signal that
+    # depends on close_total returns 0 because the condition_expr
+    # can't evaluate. Doesn't mutate ctx globally — we make a shallow
+    # copy so the caller's dict stays as-is.
+    _ctx_needs_copy = True
+    if ctx.get('close_total') is None and ctx.get('current_total') is not None:
+        ctx = dict(ctx); _ctx_needs_copy = False
+        ctx['close_total'] = ctx['current_total']
+    if ctx.get('close_spread') is None and ctx.get('current_spread') is not None:
+        if _ctx_needs_copy:
+            ctx = dict(ctx); _ctx_needs_copy = False
+        ctx['close_spread'] = ctx['current_spread']
+
     health = _current_health_state(sport)
     if health.get('suppressed'):
         return None  # caller falls back to legacy compute_primary_play
