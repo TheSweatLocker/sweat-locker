@@ -4794,6 +4794,26 @@ def run():
     # this in cron logs next time.
     expected_game = f"{pick['away_team']} @ {pick['home_team']}"
     expected_lean = pick.get('lean_display')
+    # 2026-08-27: snapshot the real American odds for the POTD side. Enables
+    # honest ROI in surface_records (was flat -110 assumption). ML picks pull
+    # from close_ml columns; totals/spreads stay at -110 until per-side
+    # closing lines are captured (v1.3 target).
+    def _potd_odds_american(pk):
+        try:
+            ctx = pk.get('_ctx') or {}
+            pp  = ctx.get('primary_play') or {}
+            side  = (pp.get('side') or '').upper()
+            ptype = (pp.get('type') or '').lower()
+            lean  = (pk.get('lean_bet') or '').lower()
+            if ptype == 'ml' or lean == 'ml':
+                if side == 'HOME':
+                    return int(ctx.get('home_ml_close') or ctx.get('home_ml_odds') or -110)
+                if side == 'AWAY':
+                    return int(ctx.get('away_ml_close') or ctx.get('away_ml_odds') or -110)
+        except Exception:
+            pass
+        return -110
+    potd_odds = _potd_odds_american(pick)
     try:
         hr = requests.post(
             f"{SUPABASE_URL}/rest/v1/daily_best_bet_history?on_conflict=bet_date",
@@ -4805,6 +4825,7 @@ def run():
                 "lean": expected_lean,
                 "sweat_score": pick['score'],
                 "result": "Pending",
+                "odds_american": potd_odds,
             },
             timeout=15,
         )

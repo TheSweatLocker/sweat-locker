@@ -9,7 +9,7 @@
 CREATE TABLE IF NOT EXISTS surface_records (
   sport            TEXT        NOT NULL,   -- MLB / NFL / NCAAF / UFC / NBA / NHL / NCAAB / ALL
   surface          TEXT        NOT NULL,   -- sharp / prop / ladder / ledger / potd
-  window           TEXT        NOT NULL,   -- mtd / d7 / d30 / lifetime
+  window_key       TEXT        NOT NULL,   -- mtd / d7 / d30 / lifetime  (`window` is a Postgres reserved word)
   wins             INT         NOT NULL DEFAULT 0,
   losses           INT         NOT NULL DEFAULT 0,
   pushes           INT         NOT NULL DEFAULT 0,
@@ -20,11 +20,11 @@ CREATE TABLE IF NOT EXISTS surface_records (
   epoch_start      DATE,                    -- earliest date included
   last_pick_date   DATE,                    -- most recent graded pick
   last_computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (sport, surface, window)
+  PRIMARY KEY (sport, surface, window_key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_surface_records_lookup
-  ON surface_records (surface, sport, window);
+  ON surface_records (surface, sport, window_key);
 
 ALTER TABLE surface_records ENABLE ROW LEVEL SECURITY;
 

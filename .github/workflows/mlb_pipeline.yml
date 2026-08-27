@@ -2085,6 +2085,20 @@ jobs:
           cd mlb_pipeline
           python freeze_closing_lines.py --sport ALL || echo "close freezer failed"
 
+      # 2026-08-27: prop closing-line freeze — snapshots close_over_odds /
+      # close_under_odds / close_prop_line on PRIME/STRONG props at T-5min.
+      # Unlocks prop CLV in compute_clv.py once ~5 days of frozen data
+      # accumulates. Idempotent (skips rows where close_locked_at is set).
+      - name: Line movement — freeze prop closing lines
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python freeze_prop_closing_lines.py --sport ALL || echo "prop close freezer failed"
+
       - name: Steam Room — ladder qualifier check
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

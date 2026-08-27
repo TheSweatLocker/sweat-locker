@@ -5190,7 +5190,7 @@ const fetchSurfaceRecords = async () => {
     } else {
       const map: Record<string, any> = {};
       (data || []).forEach((r: any) => {
-        map[`${r.sport}|${r.surface}|${r.window}`] = r;
+        map[`${r.sport}|${r.surface}|${r.window_key}`] = r;
       });
       setSurfaceRecords(map);
     }
@@ -9053,7 +9053,7 @@ setJerryHistory(prev => {
       // not yet applied). Guarantees Sharp Card + Receipts agree.
       try {
         const {data: srRows} = await supabase.from('surface_records')
-          .select('*').eq('surface','sharp').eq('sport','MLB').eq('window','mtd').limit(1);
+          .select('*').eq('surface','sharp').eq('sport','MLB').eq('window_key','mtd').limit(1);
         const sr = srRows && srRows[0];
         if (sr && (sr.wins + sr.losses + sr.pushes) > 0) {
           setSharpRecord({

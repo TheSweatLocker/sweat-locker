@@ -214,12 +214,13 @@ def pick_ledger() -> list[dict]:
 def pick_potd() -> list[dict]:
     """daily_best_bet_history — Play of the Day, cross-sport.
 
-    No per-pick odds captured historically, so flat 1u @ -110 for now.
-    v1.2 target: snapshot odds_american when POTD is written so ROI is
-    real, not assumed.
+    2026-08-27: now uses real odds_american snapshotted at write time (see
+    play_of_day.py POTD writer). Rows predating that (migration
+    20260827c_potd_odds_capture.sql backfills MLB ML picks; totals/spreads
+    stay NULL) fall back to -110.
     """
     url = (f'{SB}/rest/v1/daily_best_bet_history'
-           f'?select=bet_date,result,sport'
+           f'?select=bet_date,result,sport,odds_american'
            f'&result=not.is.null&order=bet_date.desc')
     out = []
     for r in _paged(url):
@@ -230,8 +231,9 @@ def pick_potd() -> list[dict]:
         except Exception:
             continue
         sp = (r.get('sport') or '').upper() or 'MLB'
+        payout = _american_win_payout(r.get('odds_american'))
         out.append({'sport': sp, 'date': d, 'result': cls,
-                    'stake': 1.0, 'payout': 0.909})
+                    'stake': 1.0, 'payout': payout})
     return out
 
 
@@ -301,7 +303,7 @@ def build_rows():
                 agg = _aggregate(rows, sport, wrange)
                 if agg is None: continue
                 out_rows.append({
-                    'sport': sport, 'surface': surface_name, 'window': wname,
+                    'sport': sport, 'surface': surface_name, 'window_key': wname,
                     **agg,
                     'last_computed_at': dt.datetime.now(dt.timezone.utc).isoformat(),
                 })
@@ -313,7 +315,7 @@ def upsert(rows: list[dict]):
     if not rows: return
     # PostgREST resolves ON CONFLICT via the composite PK when we set the header
     r = requests.post(
-        f'{SB}/rest/v1/surface_records?on_conflict=sport,surface,window',
+        f'{SB}/rest/v1/surface_records?on_conflict=sport,surface,window_key',
         headers={**H, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
         json=rows, timeout=90,
     )
@@ -339,7 +341,7 @@ def main():
     if args.dry_run:
         # Preview a few for sanity
         for r in rows[:8]:
-            print(f'  {r["sport"]:6s} {r["surface"]:6s} {r["window"]:8s}  '
+            print(f'  {r["sport"]:6s} {r["surface"]:6s} {r["window_key"]:8s}  '
                   f'{r["wins"]}-{r["losses"]}-{r["pushes"]}  '
                   f'{r["units_net"]:+.2f}u  hit={r["hit_rate"]}', file=sys.stderr)
         return
