@@ -15337,7 +15337,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 {/* Matchup */}
                                 <Text style={{color:THEME.textDim, fontSize:11, marginTop:3}} numberOfLines={1}>{p.matchup}</Text>
                                 {p.reason && (
-                                  <Text style={{color:THEME.textMuted, fontSize:10, marginTop:5, lineHeight:14, fontStyle:'italic'}} numberOfLines={2}>{p.reason}</Text>
+                                  <ExpandableReason reason={p.reason} />
                                 )}
                               </View>
                             );
@@ -17200,6 +17200,33 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
         </View>
       </Modal>
     </View>
+  );
+}
+
+// 2026-08-26: Sharp Card writeup expander. Was capped at 2 lines with
+// ellipsis and no way to see the rest — user flagged this as trust-
+// killer. Now: 2-line preview by default, tap to expand → full text +
+// "Show less". Uses a small hooked component so each pick tracks its
+// own state.
+function ExpandableReason({reason}: {reason: string}) {
+  const [expanded, setExpanded] = useState(false);
+  // Only render toggle if the text is long enough to actually truncate
+  const shouldTruncate = reason.length > 90;
+  return (
+    <TouchableOpacity
+      onPress={() => shouldTruncate && setExpanded(!expanded)}
+      activeOpacity={shouldTruncate ? 0.7 : 1}>
+      <Text
+        style={{color:THEME.textMuted, fontSize:10, marginTop:5, lineHeight:14, fontStyle:'italic'}}
+        numberOfLines={expanded ? undefined : 2}>
+        {reason}
+      </Text>
+      {shouldTruncate && (
+        <Text style={{color:THEME.accent, fontSize:9, fontWeight:'700', marginTop:2, letterSpacing:0.5}}>
+          {expanded ? 'SHOW LESS' : 'READ MORE'}
+        </Text>
+      )}
+    </TouchableOpacity>
   );
 }
 

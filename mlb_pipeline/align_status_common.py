@@ -70,16 +70,36 @@ def load_contexts(sb_url: str, sb_key: str, context_table: str,
     # 2026-08-06: added open_total/current_total/home_ml_open/close for RLM
     # detector in market_status (_compute_rlm needs these to detect reverse
     # line movement — line moved opposite to public money).
-    sel = ('game_id,away_team,home_team,close_total,close_spread,'
-           'open_total,current_total,home_ml_open,home_ml_close,home_ml_odds'
-           + (',' + extra_select if extra_select else ''))
+    # 2026-08-26: some sports don't have all RLM columns (NCAAF missing
+    # current_total + home_ml_* fields). Try the full SELECT first, then
+    # progressively drop optional columns on 42703.
+    core_sel = 'game_id,away_team,home_team,close_total,close_spread'
+    rlm_sel  = 'open_total,current_total,home_ml_open,home_ml_close,home_ml_odds'
+    optional_cols = ['current_total', 'home_ml_open', 'home_ml_close', 'home_ml_odds', 'open_total']
+    sel = (core_sel + ',' + rlm_sel + (',' + extra_select if extra_select else ''))
     h = {'apikey': sb_key, 'Authorization': f'Bearer {sb_key}'}
-    r = requests.get(
-        f'{sb_url}/rest/v1/{context_table}',
-        params={'game_date': f'eq.{game_date}', 'select': sel},
-        headers=h, timeout=30,
-    )
-    return r.json() if r.status_code == 200 else []
+
+    for attempt in range(len(optional_cols) + 1):
+        r = requests.get(
+            f'{sb_url}/rest/v1/{context_table}',
+            params={'game_date': f'eq.{game_date}', 'select': sel},
+            headers=h, timeout=30,
+        )
+        if r.status_code == 200:
+            return r.json()
+        # 42703 = column does not exist — drop it and retry
+        if r.status_code == 400 and 'does not exist' in (r.text or ''):
+            dropped = None
+            for col in optional_cols:
+                if col in sel and col in (r.text or ''):
+                    dropped = col
+                    break
+            if not dropped: break
+            # rebuild sel without that column
+            sel = ','.join(x for x in sel.split(',') if x.strip() != dropped)
+            continue
+        break
+    return []
 
 
 def load_externals(sb_url: str, sb_key: str, sport_code: str, game_date: str) -> dict:
@@ -95,6 +115,90 @@ def load_externals(sb_url: str, sb_key: str, sport_code: str, game_date: str) ->
     for e in j if isinstance(j, list) else []:
         if isinstance(e, dict):
             out[e.get('game_id')].append(e)
+    return out
+
+
+def load_public_splits_snapshot(sb_url: str, sb_key: str, sport_code: str,
+                                 game_date: str) -> dict:
+    """Load ScoresAndOdds public splits and transform into the same
+    {ml/rl/total: {pick, money, bets, fade}} snapshot format that
+    OddsCrowd uses. Used as an OC fallback for sports OC doesn't cover
+    (NCAAF — user flagged 8/26).
+
+    public_splits_v2 rows are long-form: one per (game, market, side,
+    metric). Aggregate into per-game per-market {pick: majority-money side,
+    money: majority-money %, bets: majority-money %}.
+    Returns dict game_id → {ml, rl, total} snapshot.
+    """
+    h = {'apikey': sb_key, 'Authorization': f'Bearer {sb_key}'}
+    # public_splits_v2 has no game_date column — pulls are stamped with
+    # snapshot_ts (when we scraped). Get the last N days of snapshots and
+    # filter by game_id downstream. Cast wide net so we catch a snapshot
+    # pulled several days before the game.
+    from datetime import datetime, timedelta, timezone
+    ts_cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    r = requests.get(
+        f'{sb_url}/rest/v1/public_splits_v2',
+        params={'sport': f'eq.{sport_code}', 'source': 'eq.so',
+                'snapshot_ts': f'gte.{ts_cutoff}',
+                'select': 'game_id,market,side,metric,value,snapshot_ts',
+                'limit': '10000'},
+        headers=h, timeout=30,
+    )
+    rows = r.json() if r.status_code == 200 else []
+    if not isinstance(rows, list): return {}
+
+    # game_id → market → side → {bets_pct, money_pct}
+    per_game = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+    latest_ts = defaultdict(str)
+    for row in rows:
+        gid = row.get('game_id')
+        mkt = str(row.get('market') or '').lower()
+        side = str(row.get('side') or '').upper()
+        metric = row.get('metric')
+        val = row.get('value')
+        ts = row.get('snapshot_ts') or ''
+        if not (gid and mkt and side and metric and val is not None): continue
+        per_game[gid][mkt][side][metric] = float(val)
+        if ts > latest_ts[gid]: latest_ts[gid] = ts
+
+    out = {}
+    for gid, markets in per_game.items():
+        snapshot = {}
+        for mkt, sides in markets.items():
+            if mkt not in ('ml', 'rl', 'total'): continue
+            # Two sides per market. Pick = side with more money_pct.
+            picks = []
+            for side, metrics in sides.items():
+                money = metrics.get('money_pct')
+                bets = metrics.get('bets_pct')
+                if money is not None:
+                    picks.append((side, money, bets))
+            if not picks: continue
+            picks.sort(key=lambda x: -x[1])
+            top_side, top_money, top_bets = picks[0]
+            # Fade classification: if bets% > money% by 10+, public loves it
+            # but money isn't following → fade the public → boost sharp side.
+            fade_note = 'neutral'
+            if top_bets is not None and top_money is not None:
+                if top_bets - top_money >= 10:
+                    fade_note = 'fade'  # public heavy but money quiet
+                elif top_money - top_bets >= 10:
+                    fade_note = 'boost'  # money heavier than bets = sharp
+            div_val = None
+            if top_bets is not None:
+                div_val = int(round(top_money - top_bets))
+            snapshot[mkt] = {
+                'pick': top_side,
+                'money': int(round(top_money)),
+                'bets': int(round(top_bets or 0)),
+                'div': div_val if div_val is not None else 0,
+                'fade': fade_note,
+                'source': 'so',
+            }
+        if snapshot:
+            snapshot['pulled_at'] = latest_ts.get(gid)
+            out[gid] = snapshot
     return out
 
 
@@ -166,7 +270,8 @@ def compute_lens_total_from_context(c: dict, lens_fields: dict) -> tuple:
     return lead, n, len(dirs)
 
 
-def build_alignment(c: dict, ext_rows: list, lens_fields: dict) -> tuple[dict, dict]:
+def build_alignment(c: dict, ext_rows: list, lens_fields: dict,
+                     so_snapshot: dict | None = None) -> tuple[dict, dict]:
     oc_by_surface = {}
     ext_by_surface = defaultdict(list)
     latest_oc_pulled = None
@@ -181,6 +286,18 @@ def build_alignment(c: dict, ext_rows: list, lens_fields: dict) -> tuple[dict, d
         else:
             if surf in ('ml', 'rl', 'total'):
                 ext_by_surface[surf].append(e)
+
+    # 2026-08-26: fall back to ScoresAndOdds public splits for sports
+    # OddsCrowd doesn't cover (NCAAF). Preserves same snapshot shape so
+    # every downstream consumer (ensemble OC-flip gate, GameDetailV2
+    # money-flow bars, etc.) sees the same data structure.
+    if so_snapshot:
+        for surf, snap in so_snapshot.items():
+            if surf in ('ml', 'rl', 'total') and surf not in oc_by_surface:
+                oc_by_surface[surf] = snap
+                pulled = so_snapshot.get('pulled_at')
+                if pulled and (not latest_oc_pulled or pulled > latest_oc_pulled):
+                    latest_oc_pulled = pulled
 
     def _compute_rlm(surface: str, oc_side: str | None) -> dict:
         """Reverse line movement detector (2026-08-06).
@@ -335,12 +452,19 @@ def compute_and_write(sb_url: str, sb_key: str, sport_code: str,
     """One-shot entry point. Returns count updated."""
     ctxs = load_contexts(sb_url, sb_key, context_table, game_date, extra_select=extra_select)
     exts = load_externals(sb_url, sb_key, sport_code, game_date)
-    print(f'  {len(ctxs)} games · {sum(len(v) for v in exts.values())} external rows')
+    # 2026-08-26: also try ScoresAndOdds public splits (fallback for
+    # sports OC doesn't cover — NCAAF). No-op for sports where S&O has
+    # no rows.
+    so_snaps = load_public_splits_snapshot(sb_url, sb_key, sport_code, game_date)
+    ext_total = sum(len(v) for v in exts.values())
+    print(f'  {len(ctxs)} games · {ext_total} external rows · '
+          f'{len(so_snaps)} games with S&O snapshots')
     updated = 0
     for c in ctxs:
         gid = c['game_id']
         ext_rows = exts.get(gid, [])
-        align, oc_snap = build_alignment(c, ext_rows, lens_fields)
+        align, oc_snap = build_alignment(c, ext_rows, lens_fields,
+                                          so_snapshot=so_snaps.get(gid))
         ov = align['overall']
         print(f"  {c['away_team'][:14]:14s} @ {c['home_team'][:14]:14s}  "
               f"overall={ov['verdict']:16s} markets={ov['aligned_markets']}  "

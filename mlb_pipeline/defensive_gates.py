@@ -244,15 +244,128 @@ def apply_oc_flip_gate(pp: dict | None, ctx: dict) -> dict | None:
     return pp
 
 
-def apply_all_defensive_gates(pp: dict | None, ctx: dict) -> dict | None:
-    """Apply all defensive gates in the canonical order (OC flip first,
-    then MC dissent). Callers that want everything can use this instead
-    of chaining apply_*_gate calls.
+def apply_publish_gate(pp: dict | None, ctx: dict) -> dict | None:
+    """Hard-block PRIME publishes that violate any of the audit's
+    publish-gate rules. Demotes to STRONG (never all the way to LEAN —
+    the ensemble scored it high for a reason, we're just reducing user-
+    facing conviction). Attaches `_publish_gate_reason` for audit.
 
-    Order matters: OC-flip runs FIRST because it may change pp.side, and
-    MC-dissent reads pp.side. Reversing the order would let MC gate the
-    original pick when OC is about to flip it anyway.
+    Rules (any one triggers demote):
+      1. fade_share > 0.30 AND MC doesn't concur with pick by >=52%
+         (fade stack driving pick without live model confirmation)
+      2. sum(contribs where signal_n < 25) / adjusted_total > 0.40
+         (pick is >40% ramp-up-prior — no proven evidence)
+      3. TOTAL pick where 3 of {jerry_pred_total, projected_total,
+         mc_mean_total} exist but fewer than 2 agree with pick within
+         1.0 unit
+      4. ML pick where MC pick-side prob < 0.50 (already handled by
+         apply_mc_dissent_gate but include as safety)
+
+    Only fires on PRIME tier — STRONG/LEAN pass through untouched.
+    """
+    try:
+        if not (pp and isinstance(pp, dict)): return pp
+        if pp.get('tier') != 'PRIME': return pp
+        if pp.get('_engine') != 'ensemble_v2': return pp
+
+        reasons = []
+        sources = pp.get('_ensemble_sources') or []
+        if not sources:
+            return pp
+
+        # Compute shares
+        total_contrib = sum((s.get('contribution') or 0) for s in sources)
+        if total_contrib <= 0: return pp
+        fade_contrib = sum((s.get('contribution') or 0) for s in sources
+                           if (s.get('signal_key') or '').endswith('_fade'))
+        thin_contrib = sum((s.get('contribution') or 0) for s in sources
+                           if (s.get('n') or 0) < 25)
+        fade_share = fade_contrib / total_contrib
+        thin_share = thin_contrib / total_contrib
+
+        # Rule 1: fade-heavy without MC concurrence
+        mkt = str(pp.get('type', '')).lower()
+        side = str(pp.get('side', '')).upper()
+        mc = ctx.get('mc_probabilities') if isinstance(ctx.get('mc_probabilities'), dict) else None
+        mc_our = None
+        if mc and mkt == 'total':
+            mc_our = mc.get('mc_p_over') if side == 'OVER' else mc.get('mc_p_under')
+        elif mc and mkt == 'ml':
+            mc_our = mc.get('mc_p_home_win') if side == 'HOME' else mc.get('mc_p_away_win')
+        try:
+            mc_our_f = float(mc_our) if mc_our is not None else None
+        except (TypeError, ValueError):
+            mc_our_f = None
+
+        if fade_share > 0.30 and (mc_our_f is None or mc_our_f < 0.52):
+            reasons.append(f'fade_share={fade_share:.2f}>0.30 without MC concurrence '
+                          f'(mc_our={mc_our_f})')
+
+        # Rule 2: >40% ramp-up-prior chip contribution
+        if thin_share > 0.40:
+            reasons.append(f'thin_share={thin_share:.2f}>0.40 (pick riding tiny-sample signals)')
+
+        # Rule 3: TOTAL model concurrence check
+        if mkt == 'total':
+            line = ctx.get('close_total')
+            model_agreements = 0
+            model_checked = 0
+            for key in ('jerry_pred_total', 'projected_total'):
+                v = ctx.get(key)
+                if v is not None and line is not None:
+                    try:
+                        diff = float(v) - float(line)
+                        model_checked += 1
+                        if side == 'OVER' and diff > -1.0:
+                            model_agreements += 1
+                        elif side == 'UNDER' and diff < 1.0:
+                            model_agreements += 1
+                    except (TypeError, ValueError):
+                        pass
+            if mc and mc.get('mc_mean_total') is not None and line is not None:
+                try:
+                    diff = float(mc['mc_mean_total']) - float(line)
+                    model_checked += 1
+                    if side == 'OVER' and diff > -1.0: model_agreements += 1
+                    elif side == 'UNDER' and diff < 1.0: model_agreements += 1
+                except (TypeError, ValueError): pass
+            if model_checked >= 2 and model_agreements < 2:
+                reasons.append(f'TOTAL PRIME with only {model_agreements}/{model_checked} '
+                              f'model projections agreeing within 1.0 unit')
+
+        # Rule 4: ML MC dissent below 50% (belt-and-suspenders)
+        if mkt == 'ml' and mc_our_f is not None and mc_our_f < 0.50:
+            reasons.append(f'ML PRIME with MC {mc_our_f:.2%} on pick side (<50%)')
+
+        if reasons:
+            pp['_publish_gate_demoted'] = {
+                'orig_tier': pp['tier'],
+                'orig_conviction': pp.get('conviction'),
+                'reasons': reasons,
+                'fade_share': round(fade_share, 3),
+                'thin_share': round(thin_share, 3),
+            }
+            pp['tier'] = 'STRONG'
+            if isinstance(pp.get('conviction'), (int, float)):
+                # STRONG conviction cap = 84 (PRIME floor is 85)
+                pp['conviction'] = min(int(pp['conviction']), 84)
+    except Exception:
+        pass  # gate errors must never block publish
+    return pp
+
+
+def apply_all_defensive_gates(pp: dict | None, ctx: dict) -> dict | None:
+    """Apply all defensive gates in the canonical order:
+    OC flip → MC dissent → publish gate. Callers that want everything
+    can use this instead of chaining apply_*_gate calls.
+
+    Order matters:
+      - OC-flip FIRST because it may change pp.side (MC-dissent reads pp.side)
+      - MC-dissent SECOND to demote pick tier when MC disagrees
+      - Publish gate LAST — reads the final pp state after both flip + MC
+        dissent and hard-caps PRIMEs that don't earn PRIME rigor
     """
     pp = apply_oc_flip_gate(pp, ctx)
     pp = apply_mc_dissent_gate(pp, ctx)
+    pp = apply_publish_gate(pp, ctx)
     return pp
