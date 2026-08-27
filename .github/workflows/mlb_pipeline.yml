@@ -2271,6 +2271,12 @@ jobs:
             python generate_ledger.py || echo "ledger rescue failed"
           fi
 
+          # 2026-08-27: POTD resolver was never in any cron — daily_best_bet_history
+          # rows were staying Pending until manual runs. Backfills up to 30d.
+          # Cheap when everything is already resolved.
+          echo "🔄 RESCUE: running resolve_potd.py (backfills any missing results)"
+          python resolve_potd.py || echo "POTD resolver rescue failed"
+
           echo "=== RESCUE DONE ==="
 
       - name: Monitoring — hit-rate snapshots
