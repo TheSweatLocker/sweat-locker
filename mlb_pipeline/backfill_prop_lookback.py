@@ -366,21 +366,22 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
             'player_lookback_updated_at': now_iso,
             'signals': existing_signals,
         }
-        # 2026-08-27 batter_hits L10 gate: per user directive, hits_over 0.5
-        # only publishes when the player is 10/10 in L10. Any hits_over row
-        # with L10 < 10 gets tier=COVERAGE + conviction=0 so the Sharp Card
-        # filter (tier in PRIME/STRONG) drops it. Grading still runs since
-        # the row stays in the table — we just never show it or count it.
-        # Root cause: batter_hits O 0.5 at -200+ juice hits ~61% but needs
-        # 66%+ to break even. L10=10 filter targets the true-lock subset.
+        # 2026-08-28: hits_over 0.5 → Sharp Card exclusion (upgraded from
+        # L10=10 gate). Per user directive after 8/28 audit: batter_hits O 0.5
+        # is Ledger material (parlay legs), NOT a Sharp Card standalone play.
+        # These props hit ~60-70% at real juice (-180 to -280) which is
+        # break-even at BEST as standalone, but great as combined parlay legs
+        # where correlated hits multiply. Always demote to COVERAGE regardless
+        # of L10 count — the Ledger generator picks them up as parlay candidates.
+        # Row stays in DB (graded, tracked); just never shows on Sharp Card
+        # (which filters tier in PRIME/STRONG).
         prop_type = prop.get('prop_type', '')
         direction = prop.get('direction', '')
         if prop_type == 'hits_over' and direction == 'over':
-            if lb['l10'] is None or int(lb['l10']) < 10:
-                cur_tier = (prop.get('tier') or '').upper()
-                if cur_tier in ('PRIME', 'STRONG', 'LEAN'):
-                    patch['tier'] = 'COVERAGE'
-                    patch['conviction'] = 0
+            cur_tier = (prop.get('tier') or '').upper()
+            if cur_tier in ('PRIME', 'STRONG', 'LEAN'):
+                patch['tier'] = 'COVERAGE'
+                patch['conviction'] = 0
         if not dry_run:
             # 2026-08-22 RETRY on transient ConnectionResetError. Prior
             # behavior: single failure killed the whole run — one prop's
