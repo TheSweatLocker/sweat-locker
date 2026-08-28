@@ -438,6 +438,68 @@ def check_F18_result_schema():
              '  '.join(f'{t}={vals}' for t,vals in schemas.items()))
 
 
+# ═══ G. JERRY <> ENSEMBLE ENFORCEMENT (Phase 3, docs/JERRY_UNIFICATION) ═══
+
+def check_G19_jerry_pp_drift():
+    """Per docs/JERRY_UNIFICATION.md: for every game today with a
+    primary_play, the jerry_reads row must exist AND its call_market /
+    call_side / call_line must match primary_play. jerry_pick_scrub +
+    sync_jerry_reads_from_ctx are supposed to guarantee this.
+    """
+    today = dt.date.today().isoformat()
+    total_checked = 0
+    drift_rows = []
+    ctx_tables = {
+        'MLB':   'mlb_game_context',
+        'NCAAF': 'ncaaf_game_context',
+        'NFL':   'nfl_game_context',
+        'NCAAB': 'ncaab_game_context',
+    }
+    for sport, tbl in ctx_tables.items():
+        try:
+            ctx_rows = get(f'{tbl}?game_date=eq.{today}&primary_play=not.is.null'
+                           f'&select=game_id,primary_play&limit=200')
+        except Exception:
+            continue
+        if not ctx_rows:
+            continue
+        gids = [c['game_id'] for c in ctx_rows]
+        if not gids:
+            continue
+        ids = ','.join(f'"{g}"' for g in gids)
+        try:
+            jr_rows = get(f'jerry_reads?sport=eq.{sport}&game_date=eq.{today}'
+                          f'&game_id=in.({ids})'
+                          f'&select=game_id,call_market,call_side,call_line')
+        except Exception:
+            jr_rows = []
+        jr_map = {j['game_id']: j for j in jr_rows}
+        for c in ctx_rows:
+            pp = c.get('primary_play') or {}
+            pp_type = (pp.get('type') or '').lower()
+            pp_side = (pp.get('side') or '').upper()
+            # Skip non-standard markets (nrfi/yrfi/fight)
+            if pp_type not in ('ml', 'rl', 'total'): continue
+            total_checked += 1
+            j = jr_map.get(c['game_id'])
+            if not j:
+                drift_rows.append((sport, c['game_id'], 'NO_JERRY_ROW', pp_type, pp_side))
+                continue
+            j_market = (j.get('call_market') or '').lower()
+            j_side = (j.get('call_side') or '').upper()
+            if j_market != pp_type or j_side != pp_side:
+                drift_rows.append((sport, c['game_id'],
+                                   f'{j_market}/{j_side}',
+                                   pp_type, pp_side))
+    if drift_rows:
+        emit('G19', 'JERRY_PP', 'HIGH', 'FAIL',
+             f'{len(drift_rows)}/{total_checked} games with jerry_reads ≠ primary_play; '
+             f'first: {drift_rows[0]}')
+    else:
+        emit('G19', 'JERRY_PP', 'OK', 'OK',
+             f'{total_checked} games today: jerry_reads matches primary_play')
+
+
 # ═══ RUN ════════════════════════════════════════════════════════════════════
 
 CHECKS = [
@@ -447,6 +509,7 @@ CHECKS = [
     check_D13_yesterday_sharp, check_D14_yesterday_potd,
     check_E15_potd_leandisplay_drift, check_E16_potd_odds_drift, check_E17_props_l10_gate,
     check_F18_result_schema,
+    check_G19_jerry_pp_drift,
 ]
 
 def main():

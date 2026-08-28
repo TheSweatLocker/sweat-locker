@@ -310,6 +310,18 @@ jobs:
           cd mlb_pipeline
           python generate_ncaab_game_reads.py || echo "game reads failed (non-fatal)"
 
+      # 2026-08-28 Phase 3: sync jerry_reads from primary_play + narrative.
+      # NCAAB prompt is prose-only. See docs/JERRY_UNIFICATION.md.
+      - name: Sync NCAAB jerry_reads from ctx
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sync_jerry_reads_from_ctx.py --sport NCAAB --window 5 || echo "NCAAB jerry_reads sync failed"
+
       # ────── 4-LENS RESOLVER (2026-08-14 Session 4) ──────
       # Runs LAST in card-build sequence (after MC + Panel + Jerry).
       # Reads all 4 lens signals, recomputes sweat_score/tier/primary_play

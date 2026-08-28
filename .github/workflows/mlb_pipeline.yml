@@ -1551,6 +1551,12 @@ jobs:
           # synced with primary_play flips post-recompute.
           python generate_jerry_synthesis.py || echo "jerry synthesis failed (non-fatal)"
 
+          # 2026-08-28 Phase 3: defense-in-depth — sync jerry_reads from ctx
+          # even after parse_synthesis. If parse fails silently (has happened
+          # twice this month), sync catches. If parse worked, sync no-ops
+          # with matching values. See docs/JERRY_UNIFICATION.md.
+          python sync_jerry_reads_from_ctx.py --sport MLB || echo "MLB jerry_reads sync failed"
+
       # 2026-08-10: Sharp-fade discipline enforcement. Runs AFTER Jerry synth.
       # Wires the documented sharp-fade + model-consensus rules into the
       # pipeline (previously the rules lived in memory docs but Jerry synth

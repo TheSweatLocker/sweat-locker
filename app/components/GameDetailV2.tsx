@@ -595,7 +595,7 @@ function JerryReadSection({narrative, loading, synthesis}: {
           ML twice on this screen"). Kept only the AM-read timestamp hint. */}
       {isAmRead && (
         <Text style={{color:C.textMuted,fontSize:10,fontStyle:'italic',marginBottom:8}}>
-          AM read · refreshes 2pm ET
+          AM read · badge shows latest ensemble pick after any recompute
         </Text>
       )}
       <Text style={styles.jerryBody}>{shown}</Text>

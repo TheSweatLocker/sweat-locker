@@ -45,6 +45,7 @@ HW  = {**H, 'Content-Type': 'application/json',
        'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 SPORT_CONFIG = {
+    'MLB':   {'ctx': 'mlb_game_context'},
     'NCAAF': {'ctx': 'ncaaf_game_context'},
     'NFL':   {'ctx': 'nfl_game_context'},
     'NCAAB': {'ctx': 'ncaab_game_context'},
