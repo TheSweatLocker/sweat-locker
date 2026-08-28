@@ -329,6 +329,18 @@ jobs:
       # Verified 2026-07-26 on 15-game slate: 8/15 primary_plays flipped,
       # 2 new PRIME ML picks landed (COL@MIL + CLE@TB) that MC-HC had been
       # showing but scorer wasn't converting.
+      # 2026-08-28: promote open→close for games where close_* stayed
+      # NULL (game_context is_open_run gate can leave rows stuck). Must
+      # run BEFORE recompute_primary_play so ensemble sees real close_*.
+      - name: Promote open→close market fields
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python promote_open_to_close.py --sport MLB || echo "promote failed (non-fatal)"
+
       - name: Recompute primary_play + NRFI ensemble post-MC
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

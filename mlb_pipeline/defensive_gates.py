@@ -33,10 +33,13 @@ from __future__ import annotations
 def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
     """Demote ML PRIME/STRONG picks when Monte Carlo disagrees.
 
-    Rule (empirical from Padres 8/22 audit — ensemble PRIME 83 SD ML while
-    MC had SD at 44.9% win prob):
-        PRIME on ML market + MC pick_side_prob < 0.52 -> STRONG (conv cap 65)
-        STRONG on ML market + MC pick_side_prob < 0.50 -> LEAN (conv cap 55)
+    2026-08-28 tightened: 8/28 lotto audit found 11 of 13 games with the
+    ensemble publishing picks that MC disagreed with by 15-30pp. Old
+    thresholds (52% for PRIME, 50% for STRONG) were too soft — CHC ML at
+    -199 was shipping as STRONG 65 with MC only at 51.9%. Now:
+        PRIME  requires MC >= 0.55  else -> LEAN  (was STRONG @ 0.52)
+        STRONG requires MC >= 0.48  else -> LEAN  (was LEAN @ 0.50)
+        Any tier with MC < 0.40 -> COVERAGE (blocks publish entirely)
 
     Preserves original tier + MC pct in pp['_mc_dissent'] audit field so
     downstream (Sharp Card, Jerry reads) can surface the demote reason.
@@ -46,35 +49,41 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
     try:
         if not (pp and isinstance(pp, dict)): return pp
         if pp.get('_engine') != 'ensemble_v2': return pp
-        if str(pp.get('type', '')).lower() != 'ml': return pp
-        if pp.get('tier') not in ('PRIME', 'STRONG'): return pp
+        ptype = str(pp.get('type', '')).lower()
+        if ptype not in ('ml', 'total'): return pp
+        if pp.get('tier') not in ('PRIME', 'STRONG', 'LEAN'): return pp
 
         mc = ctx.get('mc_probabilities') if isinstance(ctx.get('mc_probabilities'), dict) else None
         if not mc: return pp
 
         cur_side = str(pp.get('side', '')).upper()
-        if cur_side == 'HOME':
-            pick_prob = mc.get('mc_p_home_win')
-        elif cur_side == 'AWAY':
-            pick_prob = mc.get('mc_p_away_win')
-        else:
-            return pp
+        pick_prob = None
+        if ptype == 'ml':
+            if cur_side == 'HOME':   pick_prob = mc.get('mc_p_home_win')
+            elif cur_side == 'AWAY': pick_prob = mc.get('mc_p_away_win')
+        elif ptype == 'total':
+            # 2026-08-28 extended: totals were bypassing MC gate. PHI Under 8.0
+            # shipped as STRONG 84 with -15pp MC edge because gate skipped.
+            if cur_side == 'OVER':    pick_prob = mc.get('mc_p_over')
+            elif cur_side == 'UNDER': pick_prob = mc.get('mc_p_under')
         if pick_prob is None: return pp
         try:
             pick_prob_f = float(pick_prob)
         except (TypeError, ValueError):
             return pp
 
-        # PRIME requires MC >= 0.52 (5pp edge over MLB breakeven 47.6%).
-        # STRONG requires MC >= 0.50 (edge over pure toss-up).
         new_tier = None
         reason = None
-        if pp['tier'] == 'PRIME' and pick_prob_f < 0.52:
-            new_tier = 'STRONG'
-            reason = f'MC dissent: sim has our side at {pick_prob_f*100:.1f}% (<52% PRIME threshold)'
-        elif pp['tier'] == 'STRONG' and pick_prob_f < 0.50:
+        # Hard block: MC has our side losing by 10pp+ implied → don't ship
+        if pick_prob_f < 0.40:
+            new_tier = 'COVERAGE'
+            reason = f'MC hard dissent: sim has our side at {pick_prob_f*100:.1f}% (<40% blocks publish)'
+        elif pp['tier'] == 'PRIME' and pick_prob_f < 0.55:
             new_tier = 'LEAN'
-            reason = f'MC dissent: sim has our side at {pick_prob_f*100:.1f}% (<50% STRONG threshold)'
+            reason = f'MC dissent: sim has our side at {pick_prob_f*100:.1f}% (<55% PRIME threshold)'
+        elif pp['tier'] == 'STRONG' and pick_prob_f < 0.48:
+            new_tier = 'LEAN'
+            reason = f'MC dissent: sim has our side at {pick_prob_f*100:.1f}% (<48% STRONG threshold)'
 
         if new_tier:
             pp['_mc_dissent'] = {
@@ -83,11 +92,59 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
                 'reason': reason,
             }
             pp['tier'] = new_tier
-            tier_cap = {'LEAN': 55, 'STRONG': 65}
+            tier_cap = {'COVERAGE': 0, 'LEAN': 55, 'STRONG': 65}
             if isinstance(pp.get('conviction'), (int, float)):
                 pp['conviction'] = min(int(pp['conviction']), tier_cap.get(new_tier, 55))
     except Exception:
         pass  # gate errors must never block the publish
+    return pp
+
+
+def apply_juice_trap_gate(pp: dict | None, ctx: dict) -> dict | None:
+    """Demote ML PRIME/STRONG picks with heavy-fav or long-dog trap prices.
+
+    Per user memory feedback_heavy_fav_ml_trap_803 + prop juice-trap
+    discipline: heavy-fav ML at -200+ is a documented trap; long-dog ML
+    at +250+ is the mirror trap. 8/28 slate had NYY -173 (PRIME 92),
+    ATL -229 (STRONG 79), CHC -199 (STRONG 78) all shipping through
+    juice-trap prices with no gate.
+
+    Rule:
+        odds <= -200  → demote one tier (PRIME→STRONG, STRONG→LEAN)
+        odds >= +250  → demote one tier
+
+    When combined with MC-dissent (already demoted for MC), stack demote.
+    """
+    try:
+        if not (pp and isinstance(pp, dict)): return pp
+        if str(pp.get('type', '')).lower() != 'ml': return pp
+        if pp.get('tier') not in ('PRIME', 'STRONG'): return pp
+
+        cur_side = str(pp.get('side', '')).upper()
+        if cur_side == 'HOME':
+            price = ctx.get('home_ml_close') or ctx.get('home_ml_odds') or ctx.get('home_ml_open')
+        elif cur_side == 'AWAY':
+            price = ctx.get('away_ml_close') or ctx.get('away_ml_odds') or ctx.get('away_ml_open')
+        else:
+            return pp
+        if price is None: return pp
+        try: o = int(price)
+        except (TypeError, ValueError): return pp
+
+        # Juice-trap band
+        if o > -200 and o < 250: return pp  # fair price, no demote
+
+        old = pp['tier']
+        new_tier = 'STRONG' if old == 'PRIME' else 'LEAN'
+        reason = (f'juice-trap demote: side price {o} '
+                  f'({"heavy-fav trap <=-200" if o <= -200 else "long-dog trap >=+250"})')
+        pp['_juice_trap'] = {'orig_tier': old, 'side_price': o, 'reason': reason}
+        pp['tier'] = new_tier
+        tier_cap = {'LEAN': 55, 'STRONG': 65}
+        if isinstance(pp.get('conviction'), (int, float)):
+            pp['conviction'] = min(int(pp['conviction']), tier_cap.get(new_tier, 55))
+    except Exception:
+        pass
     return pp
 
 
@@ -374,16 +431,17 @@ def apply_publish_gate(pp: dict | None, ctx: dict) -> dict | None:
 
 def apply_all_defensive_gates(pp: dict | None, ctx: dict) -> dict | None:
     """Apply all defensive gates in the canonical order:
-    OC flip → MC dissent → publish gate. Callers that want everything
-    can use this instead of chaining apply_*_gate calls.
+    OC flip → MC dissent → juice-trap → publish gate.
 
     Order matters:
-      - OC-flip FIRST because it may change pp.side (MC-dissent reads pp.side)
-      - MC-dissent SECOND to demote pick tier when MC disagrees
-      - Publish gate LAST — reads the final pp state after both flip + MC
-        dissent and hard-caps PRIMEs that don't earn PRIME rigor
+      - OC-flip FIRST because it may change pp.side (downstream gates read pp.side)
+      - MC-dissent SECOND to demote/block when MC disagrees
+      - Juice-trap THIRD to demote on -200+ or +250+ side prices (2026-08-28)
+      - Publish gate LAST — reads final pp state after all demotes and
+        hard-caps PRIMEs that don't earn PRIME rigor
     """
     pp = apply_oc_flip_gate(pp, ctx)
     pp = apply_mc_dissent_gate(pp, ctx)
+    pp = apply_juice_trap_gate(pp, ctx)
     pp = apply_publish_gate(pp, ctx)
     return pp
