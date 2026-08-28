@@ -2,10 +2,10 @@ name: NBA Pipeline Daily
 
 on:
   schedule:
-    # 2026-08-17 rebuild: NBA v1.0 scaffolding. Season opener Oct 22.
-    # Preseason ~early Oct. Daily cron so preseason data flows in.
-    - cron: '0 12 * * *'   # 8:00am EDT — before tip
-    - cron: '0 22 * * *'   # 6:00pm EDT — post-market refresh
+    # 2026-08-28 Phase 4 kill #9: dropped from 2x/day to 1x/day pre-season.
+    # All steps are silent no-ops until Oct 22 season opener. Restore
+    # 22 UTC (post-market) cron once preseason starts ~early Oct.
+    - cron: '0 12 * * *'   # 8:00am EDT — daily preseason placeholder
   workflow_dispatch:
     inputs:
       date:

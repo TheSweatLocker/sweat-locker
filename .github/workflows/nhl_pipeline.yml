@@ -2,11 +2,10 @@ name: NHL Pipeline Daily
 
 on:
   schedule:
-    # 2026-08-17: NHL v1.0 scaffolding. Preseason typically late Sept,
-    # regular season starts Oct 7. Daily cron so preseason data flows
-    # in automatically once games post.
-    - cron: '0 12 * * *'  # 8:00am EDT (12:00 UTC) — before puck drop
-    - cron: '0 20 * * *'  # 4:00pm EDT (20:00 UTC) — post-market refresh
+    # 2026-08-28 Phase 4 kill #9: dropped from 2x/day to 1x/day pre-season.
+    # All steps are silent no-ops until Oct 7 season opener. Restore
+    # 20 UTC (post-market) cron once preseason starts ~late Sept.
+    - cron: '0 12 * * *'  # 8:00am EDT (12:00 UTC) — daily preseason placeholder
   workflow_dispatch:
     inputs:
       date:

@@ -465,20 +465,8 @@ jobs:
       # non-fatal — apply_prop_refit falls back to prior weights file.
       # Cadence per project_refit_v2_expansion_810: weekly is right
       # tradeoff between freshness and sample-size stability.
-      - name: Retrain prop refit v2 weights (Sundays only)
-        if: github.event.schedule == '0 10 * * *' && github.event_name == 'schedule'
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          # 2026-08-24: was calling _fit_prop_refit_weights_v2.py which is a
-          # gitignored scratch script (never existed on remote). Real weekly
-          # retrain runs in mlb_refit_weekly.yml via refit_train_v2.py — this
-          # step here is redundant. Kept as a no-op guard rail so removing
-          # the surrounding block doesn't cascade schedule changes; can be
-          # deleted entirely in a follow-up cleanup pass.
-          echo "refit retrain handled by mlb_refit_weekly.yml — no-op here"
+      # 2026-08-28 Phase 4: no-op stub deleted (was echo-only). Real weekly
+      # retrain lives in mlb_refit_weekly.yml. See docs/PIPELINE_MAP.md kill #2.
 
       # 2026-08-21: Weekly signal_registry refit — computes per-signal
       # hit_rate + tier from last 90d of graded prop_playbook_decisions +
@@ -545,10 +533,17 @@ jobs:
           python compute_scenario_audit.py --sport MLB --window 30d || echo "scenario audit MLB 30d failed"
           # 2026-08-11: NCAAF results-primary path (15k+ games via CFBD).
           # NCAAF ctx is thin — builder pulls scenarios directly from results.
-          # Also touches NHL/NCAAB (no-op until their results tables ship).
           python compute_scenario_audit.py --sport NCAAF --window lifetime || echo "scenario audit NCAAF lifetime failed"
-          python compute_scenario_audit.py --sport NHL --window lifetime || echo "scenario audit NHL lifetime failed"
-          python compute_scenario_audit.py --sport NCAAB --window lifetime || echo "scenario audit NCAAB lifetime failed"
+          # 2026-08-28 Phase 4 kill #8: NHL + NCAAB scenario audits gated
+          # to their in-season months. Silent no-ops off-season were
+          # firing 3x/day for nothing. Re-runs Nov 3 (NCAAB) / Oct 7 (NHL).
+          MONTH=$(date -u -d '-4 hours' +%m)
+          if [ "$MONTH" -ge 10 ] || [ "$MONTH" -le 04 ]; then
+            python compute_scenario_audit.py --sport NHL --window lifetime || echo "scenario audit NHL lifetime failed"
+          fi
+          if [ "$MONTH" -ge 11 ] || [ "$MONTH" -le 04 ]; then
+            python compute_scenario_audit.py --sport NCAAB --window lifetime || echo "scenario audit NCAAB lifetime failed"
+          fi
           # 2026-08-12: sharp scenario matrix — 30+ patterns per sport
           # tracked with per-game match cache. Sport-universal, MLB first.
           python compute_sharp_scenario_matrix.py --sport MLB --window 90 || echo "sharp matrix MLB failed"
@@ -878,29 +873,8 @@ jobs:
             echo "Not Tuesday or out of NFL season (day=$DAY month=$MONTH) — skipping"
           fi
 
-      # NCAAB Phase 1 prep — server-side KenPom puller (Mondays only).
-      # Once season starts (Nov 2026), bump cadence to daily by removing
-      # the day gate. Until then KenPom is mostly static offseason and
-      # weekly is plenty.
-      - name: Pull NCAAB KenPom snapshot (Mondays only)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-          KENPOM_KEY: ${{ secrets.KENPOM_KEY }}
-        run: |
-          DAY=$(date -u -d '-4 hours' +%u)
-          # 2026-07-22 debug: KENPOM_KEY was reporting "missing" per 6/1
-          # audit despite secret set. Print length only (never the value)
-          # so we can tell empty-string vs actually-populated at a glance.
-          # Remove this echo once the KenPom pull is confirmed working.
-          echo "KENPOM_KEY length: ${#KENPOM_KEY}"
-          # 2026-08-22: KenPom Monday pull REMOVED from MLB cron. This was
-          # duplicating the identical paid-API call already running in
-          # ncaab_pipeline.yml Monday cron (which writes to ncaab_team_stats
-          # AND ncaab_rating_snapshots). Paying twice for the same snapshot.
-          # If ncaab_pipeline.yml is down, trigger it manually via
-          # workflow_dispatch rather than reintroducing this duplicate.
-          echo "KenPom pull is owned by ncaab_pipeline.yml — not re-running here"
+      # 2026-08-28 Phase 4: KenPom Monday stub deleted (was echo-only).
+      # KenPom pull owned by ncaab_pipeline.yml. See docs/PIPELINE_MAP.md kill #2.
 
       # HR Watch audit (2026-06-01) — resolves prior days' predictions
       # against MLB Stats API gameLog, computes hit rate by score band,
@@ -994,46 +968,12 @@ jobs:
             echo "Not Monday (day=$DAY) — skipping umpire update"
           fi
 
-      - name: Run UFC card scraper (Thursdays only)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          DAY=$(date -u -d '-4 hours' +%u)
-          if [ "$DAY" = "4" ]; then
-            echo "Thursday — running UFC card scraper (v3 ESPN-backed)"
-            cd mlb_pipeline
-            # v3 replaces v1 (UFCStats.com added JS bot-check May 2026).
-            # ESPN scoreboard API is the reliable source. Kept v1 script
-            # in repo for reference until fighter-DB gap is closed.
-            python ufc_card_scraper_v3.py
-          else
-            echo "Not Thursday (day=$DAY) — skipping UFC scraper"
-          fi
-
-      - name: Score UFC card (Thursdays only, post-scraper)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          DAY=$(date -u -d '-4 hours' +%u)
-          if [ "$DAY" = "4" ]; then
-            echo "Thursday — scoring UFC card via v1 model"
-            cd mlb_pipeline
-            python ufc_score_card.py
-          fi
-
-      - name: Resolve UFC fights (Sundays/Mondays after weekend cards)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          DAY=$(date -u -d '-4 hours' +%u)
-          if [ "$DAY" = "7" ] || [ "$DAY" = "1" ]; then
-            echo "Sun/Mon — resolving completed UFC fights"
-            cd mlb_pipeline
-            python ufc_resolve_fights.py
-          fi
+      # 2026-08-28 Phase 4 kill #1: UFC scraper/score/resolve steps deleted
+      # from MLB cron. These 3 scripts were duplicating identical work already
+      # running in ufc_pipeline.yml (Wed/Fri/Sat/Sun crons with proper mode
+      # gating). Duplicate ESPN scoreboard API hits + source of divergence.
+      # If ufc_pipeline is down, trigger it via workflow_dispatch — do NOT
+      # reintroduce these here. See docs/PIPELINE_MAP.md kill #1.
 
       # Server-side Jerry UFC fight reads — runs every cron, self-no-ops when
       # 2026-08-22: UFC + NFL game-reads MOVED OUT of MLB cron.
@@ -1431,30 +1371,11 @@ jobs:
           cd mlb_pipeline
           python play_of_day.py
 
-      # v7 total model SHADOW predictions. Logs per-game OVER/UNDER probability
-      # from the retrained GradientBoost model (trained 2026-06-23, 59% holdout,
-      # 64% conf-UNDER) into jerry_cache key v7_total_shadow_<date>. NOT user-
-      # facing. Run audit_v7_shadow.py to compare v7 vs composite over 14d.
-      # Promote to production once v7 sustainably beats composite.
-      - name: v7 total shadow inference
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python shadow_total_inference.py || echo "shadow inference failed, continuing"
-
-      # v1 ML model SHADOW predictions. Logs per-game HOME/AWAY win probability
-      # from XGBoost trained 2026-06-23 (53% holdout, 64% conf-HOME on n=42).
-      # Writes to jerry_cache key ml_v1_shadow_<date>. NOT user-facing.
-      # Same 14d promotion gate via audit_ml_v1_shadow.py.
-      - name: v1 ML shadow inference
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python shadow_ml_inference.py || echo "ML shadow inference failed, continuing"
+      # 2026-08-28 Phase 4 kill #3: v7/v1_ml shadow inference deleted.
+      # Auditors (audit_v7_shadow.py, audit_ml_v1_shadow.py) went dead
+      # 2026-06-23 without cutover. Writers were dumping 15+ rows/day into
+      # jerry_cache that no code read. Scripts moved to mlb_pipeline/_legacy/.
+      # If we ever want a fresh shadow model, start over cleanly.
 
       # Server-side POTD narrative — replaces the client-side Claude call
       # that used to run on first POTD load. Single source of truth: the
