@@ -103,13 +103,22 @@ def fetch_ungraded_picks(sport: str, days: Optional[int], force_regrade: bool) -
         filt += f'&game_date=gte.{cutoff}'
     filt += f'&sport=eq.{sport}'
 
-    r = requests.get(
-        f'{SB}/rest/v1/external_picks?'
-        f'select=id,game_id,sport,game_date,source,surface,pick_side,pick_line'
-        f'{filt}',
-        headers=H_READ, timeout=30,
-    )
-    return r.json() if r.status_code == 200 else []
+    # Paginate — PostgREST caps at 1000/req. 2026-08-28: --force-regrade
+    # over 30d was silently truncating a 4k-row universe to the first 1000,
+    # leaving ~3k SBR total rows stuck at their stale 8/27 grades.
+    out = []
+    for off in range(0, 50000, 1000):
+        r = requests.get(
+            f'{SB}/rest/v1/external_picks?'
+            f'select=id,game_id,sport,game_date,source,surface,pick_side,pick_line'
+            f'{filt}&limit=1000&offset={off}',
+            headers=H_READ, timeout=30,
+        )
+        chunk = r.json() if r.status_code == 200 else []
+        if not isinstance(chunk, list): break
+        out.extend(chunk)
+        if len(chunk) < 1000: break
+    return out
 
 
 def fetch_result_map(sport: str, game_ids: list) -> dict:
