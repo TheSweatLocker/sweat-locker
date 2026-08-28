@@ -67,6 +67,26 @@ const ALIASES: Record<string, string> = {
   // Common alt spellings
   'ATH': 'ATH', 'A\'s': 'ATH', 'Athletics': 'ATH',
   'SFG': 'SF', 'SDP': 'SD', 'KCR': 'KC', 'CHW': 'CWS',
+  // 2026-08-28: NCAAF Top 25 + tomorrow's Week 0 slate. Without these
+  // the tendencies card was showing 'Carolina' for UNC via split-and-pop
+  // fallback. Expand as we add sports/weeks. When key isn't found, abbrev()
+  // falls back to first-3-chars uppercase — still ugly for CFB teams.
+  'North Carolina': 'UNC', 'NC State': 'NCST', 'TCU': 'TCU',
+  'Alabama': 'BAMA', 'Georgia': 'UGA', 'Texas': 'TEX', 'Ohio State': 'OSU',
+  'Michigan': 'MICH', 'Notre Dame': 'ND', 'Penn State': 'PSU',
+  'Oklahoma': 'OU', 'LSU': 'LSU', 'Tennessee': 'TENN', 'Auburn': 'AUB',
+  'Florida': 'FLA', 'Florida State': 'FSU', 'Miami': 'MIA', 'Clemson': 'CLEM',
+  'Oregon': 'ORE', 'Washington': 'WASH', 'USC': 'USC', 'UCLA': 'UCLA',
+  'Utah': 'UTAH', 'Wisconsin': 'WIS', 'Iowa': 'IOWA', 'Nebraska': 'NEB',
+  'Missouri': 'MIZZ', 'Arkansas': 'ARK', 'Kentucky': 'UK', 'Ole Miss': 'MISS',
+  'Mississippi State': 'MSST', 'Vanderbilt': 'VAN', 'Kansas State': 'KSU',
+  'Iowa State': 'ISU', 'Baylor': 'BAY', 'Texas Tech': 'TTU', 'Oklahoma State': 'OKST',
+  'BYU': 'BYU', 'Cincinnati': 'CIN', 'Houston': 'HOU', 'UCF': 'UCF',
+  'Virginia': 'UVA', 'Wake Forest': 'WAKE', 'Duke': 'DUKE', 'Georgia Tech': 'GT',
+  'Louisville': 'LOU', 'Pittsburgh': 'PITT', 'Syracuse': 'SYR', 'Boston College': 'BC',
+  'Virginia Tech': 'VT', 'North Carolina State': 'NCST',
+  'Stanford': 'STAN', 'Hawaii': 'HAW', 'San Jose State': 'SJSU',
+  'New Mexico State': 'NMSU', 'Memphis': 'MEM', 'UNLV': 'UNLV',
 };
 
 /**

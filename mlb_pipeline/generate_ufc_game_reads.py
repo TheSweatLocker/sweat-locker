@@ -228,6 +228,12 @@ def render_prompt(templates, struct):
 
 
 def call_claude(prompt):
+    # 2026-08-28: LLM disabled per docs/LLM_AUDIT.md kill #3.
+    # Duplicate of generate_ufc_fight_synthesis.py which is now the sole
+    # source of UFC jerry_reads. Legacy jerry_cache narrative derives from
+    # fight_synthesis's short_read via app-side join.
+    if os.environ.get('DISABLE_LEGACY_GAME_READS_LLM', '1') == '1':
+        return None
     if not ANTHROPIC_API_KEY:
         return None
     try:

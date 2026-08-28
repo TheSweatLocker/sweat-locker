@@ -1162,6 +1162,15 @@ def render_prompt(templates, g, struct):
 
 
 def call_claude(prompt):
+    # 2026-08-28: LLM call disabled per docs/LLM_AUDIT.md kill #1.
+    # This script's Jerry narrative was a DUPLICATE of generate_jerry_synthesis.py
+    # which is now the sole source of jerry_reads.short_read/long_read.
+    # jerry_cache.narrative here is legacy — Numbers Panel now reads from
+    # jerry_reads via game_id join instead of the game_read_* cache key.
+    # Set env DISABLE_LEGACY_GAME_READS_LLM=0 to temporarily re-enable
+    # (e.g. if a display regression appears).
+    if os.environ.get('DISABLE_LEGACY_GAME_READS_LLM', '1') == '1':
+        return None
     if not ANTHROPIC_API_KEY:
         return None
     try:

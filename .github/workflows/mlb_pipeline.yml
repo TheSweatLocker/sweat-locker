@@ -1544,7 +1544,12 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
-          python generate_jerry_synthesis.py --force || echo "jerry synthesis failed (non-fatal)"
+          # 2026-08-28: removed --force per docs/LLM_AUDIT.md cut #2 (freshness gate).
+          # Script skips games with an existing jerry_reads row for today.
+          # Result: LLM runs once per day (first successful cron), backup + afternoon
+          # crons no-op if morning succeeded. jerry_pick_scrub keeps CALL fields
+          # synced with primary_play flips post-recompute.
+          python generate_jerry_synthesis.py || echo "jerry synthesis failed (non-fatal)"
 
       # 2026-08-10: Sharp-fade discipline enforcement. Runs AFTER Jerry synth.
       # Wires the documented sharp-fade + model-consensus rules into the

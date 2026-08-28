@@ -230,6 +230,20 @@ jobs:
           cd mlb_pipeline
           python generate_ncaaf_game_reads.py || echo "game reads failed (non-fatal)"
 
+      # 2026-08-28: NCAAF prompt template writes prose only (no structured
+      # CALL block) so parse_synthesis returns empty and dual-write to
+      # jerry_reads never fires. This bridge script derives jerry_reads.call_*
+      # from ctx.primary_play (mechanical truth) + narrative from jerry_cache.
+      # Deterministic — no LLM call. Runs today + next 7 days.
+      - name: Sync NCAAF jerry_reads from ctx
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sync_jerry_reads_from_ctx.py --sport NCAAF --window 7 || echo "ncaaf jerry_reads sync failed (non-fatal)"
+
       - name: External source aggregation pull
         if: steps.mode.outputs.mode == 'full'
         continue-on-error: true

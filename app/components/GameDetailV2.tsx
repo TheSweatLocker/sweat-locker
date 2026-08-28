@@ -29,6 +29,7 @@ import {View, Text, TouchableOpacity, ScrollView, StyleSheet, Platform} from 're
 import {createClient} from '@supabase/supabase-js';
 import Explainer from './Explainer';
 import { personaFor, scrubSourceNames } from '../lib/sourcePersona';
+import { abbrev as teamAbbrev } from '../lib/teamAbbrev';
 
 // Standard sport-league abbreviations — Dodgers → LAD (not DOD)
 const TEAM_ABBREV: Record<string, string> = {
@@ -1683,10 +1684,10 @@ function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
         <View style={{flexDirection: 'row', paddingHorizontal: 4, paddingBottom: 6, borderBottomWidth: 0.5, borderBottomColor: C.border}}>
           <Text style={{flex: 1.4, color: C.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 0.5}}>METRIC</Text>
           <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800', letterSpacing: 0.5, textAlign: 'center'}}>
-            {(awayTeam || '').split(' ').pop()} (road)
+            {teamAbbrev(awayTeam)} · AWAY
           </Text>
           <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800', letterSpacing: 0.5, textAlign: 'center'}}>
-            {(homeTeam || '').split(' ').pop()} (home)
+            {teamAbbrev(homeTeam)} · HOME
           </Text>
         </View>
         {/* Metric rows */}
