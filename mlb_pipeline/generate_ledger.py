@@ -197,6 +197,97 @@ def fetch_chalk_candidates(game_date: str, sports: list[str]) -> list[dict]:
     return out
 
 
+def fetch_hits_over_legs(game_date: str) -> list[dict]:
+    """Pull hits_over 0.5 candidates for Ledger parlay legs (MLB only, 2026-08-28).
+
+    hits_over 0.5 was moved off Sharp Card (see backfill_prop_lookback.py)
+    because at real juice -180 to -280 it hits ~60-70% as a standalone
+    which is break-even at best. Ideal as parlay legs though — correlated
+    same-team hits multiply into positive-EV chalk.
+
+    Selection: L10 >= 8 (loose — need 3-4 candidates to build parlay);
+    book_over_odds populated (no null-juice); odds tighter than -300
+    (per user's feedback_prop_jerry_odds range).
+    """
+    try:
+        r = requests.get(
+            f'{SB}/rest/v1/mlb_pipeline_props',
+            headers=H_READ,
+            params={
+                'game_date': f'eq.{game_date}',
+                'prop_type': 'eq.hits_over',
+                'direction': 'eq.over',
+                'player_l10_hit_count': 'gte.8',
+                'book_over_odds': 'gte.-300',
+                'select': 'game_id,matchup,player_name,player_team,prop_line,'
+                          'book_over_odds,player_l10_hit_count,player_l5_hit_count,conviction',
+                'order': 'player_l10_hit_count.desc,book_over_odds.desc',
+                'limit': '30',
+            },
+            timeout=15,
+        )
+        rows = r.json() if r.status_code == 200 else []
+    except Exception as e:
+        print(f'  hits_over fetch failed: {e}')
+        return []
+    legs = []
+    for row in rows:
+        odds = row.get('book_over_odds')
+        if odds is None: continue
+        legs.append({
+            'sport': 'MLB',
+            'game_id': row.get('game_id'),
+            'matchup': row.get('matchup'),
+            'market': 'prop_hits_over',
+            'pick': f"{row.get('player_name')} Over 0.5 Hits",
+            'side': 'OVER',
+            'original_line': row.get('prop_line'),
+            'original_odds': int(odds),
+            'tier': 'PROP',
+            'conviction': row.get('conviction') or 0,
+            'player_l10': row.get('player_l10_hit_count'),
+            'player_l5': row.get('player_l5_hit_count'),
+            'player_team': row.get('player_team'),
+        })
+    return legs
+
+
+def build_hits_parlay(hit_legs: list[dict],
+                      target_odds_range: tuple = (100, 400)) -> Optional[dict]:
+    """Combine 2-3 highest-L10 hits_over 0.5 legs into a parlay in the
+    target odds range. Prefers multi-team legs (avoid single-game
+    correlation smoothing profit) unless slate forces single-team.
+    """
+    if len(hit_legs) < 2: return None
+    # Try 3-leg first, fall back to 2-leg
+    for n in (3, 2):
+        # Take top L10 legs, prefer multi-team
+        seen_teams = set()
+        pick_slots = []
+        for leg in hit_legs:
+            team = (leg.get('player_team') or '').lower()
+            if team in seen_teams and len(pick_slots) >= n - 1:
+                continue
+            pick_slots.append(leg)
+            seen_teams.add(team)
+            if len(pick_slots) == n: break
+        if len(pick_slots) < n: continue
+        combined = combined_american_odds([l['original_odds'] for l in pick_slots])
+        if not (target_odds_range[0] <= combined <= target_odds_range[1]):
+            continue
+        return {
+            'kind': 'hits_parlay',
+            'sport_scope': 'MLB',
+            'legs': pick_slots,
+            'combined_odds': combined,
+            'combined_prob': None,
+            'reasoning': (f'{n}-leg hits O 0.5 parlay from L10-locked bats '
+                          f'(L10 >= 8). Correlated-hits math turns juice into value.'),
+            'auto_generated': True,
+        }
+    return None
+
+
 def fetch_picks(game_date: str, sports: list[str]) -> list[dict]:
     """Pull all PRIME/STRONG picks with a real primary_play across sports.
     Returns list of leg-shaped dicts."""
@@ -780,6 +871,18 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
     if ncaab_teaser and all(l.get('game_id') not in used_games for l in ncaab_teaser['legs']):
         suggestions.append(ncaab_teaser); register(ncaab_teaser)
         print(f'  ✓ NCAAB TEASER: {ncaab_teaser["combined_odds"]:+d}')
+
+    # 5. Hits parlay (MLB) — 2026-08-28 addition. hits_over 0.5 moved off
+    # Sharp Card because standalone juice math is break-even. Correlated
+    # multi-leg parlay turns it positive when all bats hit. L10>=8 filter.
+    if 'MLB' in sports:
+        hit_legs = fetch_hits_over_legs(gd)
+        if hit_legs:
+            hits_parlay = build_hits_parlay(hit_legs)
+            if hits_parlay:
+                suggestions.append(hits_parlay)
+                print(f'  ✓ HITS PARLAY: {hits_parlay["combined_odds"]:+d} · '
+                      f'{len(hits_parlay["legs"])} legs')
 
     written = 0
     for i, sugg in enumerate(suggestions, 1):
