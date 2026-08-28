@@ -1788,7 +1788,11 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
    const [jerryHistory, setJerryHistory] = useState([]);
   const [jerryRecord, setJerryRecord] = useState(null);
   const [jerryRecordLoading, setJerryRecordLoading] = useState(false);
-  const [recordWindow, setRecordWindow] = useState('lifetime');   // 'lifetime' | '30d' | '7d'
+  // 2026-08-28: default = 'epoch' (since Aug 20 fresh-start).
+  // Lifetime window includes ~1800 pre-calibration juice-trap prop picks
+  // that dragged public display to -700u. Epoch shows the honest
+  // post-recalibration record. Users can toggle to lifetime.
+  const [recordWindow, setRecordWindow] = useState('epoch');   // 'epoch' | 'mtd' | '30d' | '7d' | 'lifetime'
   const [receiptsSport, setReceiptsSport] = useState('ALL');
   const [potdHistory, setPotdHistory] = useState<any[]>([]);
   const [potdHistoryLoading, setPotdHistoryLoading] = useState(false);
@@ -14303,7 +14307,8 @@ setJerryHistory(prev => {
               const winKey =
                 recordWindow === '7d' ? 'd7' :
                 recordWindow === '30d' ? 'd30' :
-                recordWindow === 'mtd' ? 'mtd' : 'lifetime';
+                recordWindow === 'mtd' ? 'mtd' :
+                recordWindow === 'epoch' ? 'epoch' : 'lifetime';
               const surfaceData = (key: string, sport: string) => {
                 const rec = surfaceRecords[`${sport}|${key}|${winKey}`];
                 if (rec) {
@@ -14384,7 +14389,7 @@ setJerryHistory(prev => {
                     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
                       <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',letterSpacing:1.4}}>{heroScope.toUpperCase()} · TOTAL P/L</Text>
                       <View style={{flexDirection:'row',gap:4}}>
-                        {[{id:'mtd',label:'MTD'},{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'lifetime',label:'ALL'}].map(w=>(
+                        {[{id:'epoch',label:'FRESH'},{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'mtd',label:'MTD'},{id:'lifetime',label:'ALL'}].map(w=>(
                           <TouchableOpacity key={w.id} onPress={()=>setRecordWindow(w.id)} style={{paddingVertical:3,paddingHorizontal:8,borderRadius:5,backgroundColor:recordWindow===w.id?THEME.hrb+'26':THEME.surfaceAlt,borderWidth:1,borderColor:recordWindow===w.id?HRB_COLOR:THEME.border}}>
                             <Text style={{color:recordWindow===w.id?HRB_COLOR:THEME.textDim,fontSize:10,fontWeight:'700'}}>{w.label}</Text>
                           </TouchableOpacity>
@@ -14402,6 +14407,16 @@ setJerryHistory(prev => {
                         </View>
                       )}
                     </View>
+                    {winKey === 'epoch' && (
+                      <Text style={{color:THEME.textDim,fontSize:10,marginTop:6,fontStyle:'italic'}}>
+                        Since Aug 20 · post-recalibration fresh start
+                      </Text>
+                    )}
+                    {winKey === 'lifetime' && (
+                      <Text style={{color:THEME.textDim,fontSize:10,marginTop:6,fontStyle:'italic'}}>
+                        Lifetime · includes pre-calibration prop shipping
+                      </Text>
+                    )}
                     {(heroSidesLabel || heroPropsLabel) && (
                       <Text style={{color:THEME.textDim,fontSize:11,marginTop:6,fontVariant:['tabular-nums']}}>
                         {[heroSidesLabel, heroPropsLabel].filter(Boolean).join('  ·  ')}
