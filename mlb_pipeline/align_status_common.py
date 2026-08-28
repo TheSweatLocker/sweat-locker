@@ -142,6 +142,7 @@ def load_public_splits_snapshot(sb_url: str, sb_key: str, sport_code: str,
         params={'sport': f'eq.{sport_code}', 'source': 'eq.so',
                 'snapshot_ts': f'gte.{ts_cutoff}',
                 'select': 'game_id,market,side,metric,value,snapshot_ts',
+                'order': 'snapshot_ts.asc',
                 'limit': '10000'},
         headers=h, timeout=30,
     )

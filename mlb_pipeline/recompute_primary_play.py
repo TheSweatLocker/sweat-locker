@@ -248,19 +248,13 @@ def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
 
         patch = {}
         if pp_changed:
-            # 2026-08-28: if the side flipped (e.g. HOME ML → AWAY ML, or
-            # OVER → UNDER), blank primary_play.sub. The `sub` field is the
-            # LLM/ensemble-generated rationale text; when the pick flips
-            # mid-recompute it can carry over the OLD side's rationale,
-            # producing label='Over 8.5' with sub='Under 8.5: ...' (8/28 MIA/WSH).
-            # Blanking is safer than stale — app shows label only until next
-            # regeneration rebuilds sub with the correct rationale.
-            if new_pp:
-                old_side = str(old_pp.get('side', '')).upper()
-                new_side = str((new_pp or {}).get('side', '')).upper()
-                if old_side and new_side and old_side != new_side:
-                    if new_pp.get('sub'):
-                        new_pp['sub'] = None  # let downstream regenerate
+            # 2026-08-28: REVERTED sub-blank logic. Ensemble regenerates
+            # `sub` on every score_game() call to match the current pick
+            # (verified 8/28 — ATL sub matches ATL label post-flip). My
+            # previous fix was solving a race that doesn't exist for
+            # ensemble-generated sub. Instead it caused every flipped
+            # game to show "Analysis pending" on the app because I
+            # blanked the fresh sub instead of the stale one.
             patch['primary_play'] = new_pp   # None is valid — clears stale play
             patch['primary_play_computed_at'] = datetime.now(timezone.utc).isoformat()
         if ens_changed and new_ens:
