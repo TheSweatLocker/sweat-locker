@@ -48,51 +48,35 @@ def _et_today() -> str:
 
 
 def fetch_history(days: int = 90) -> list[dict]:
-    """Pull all resolved games from the last N days joined with context.
-    Returns list of dicts with game_date, home_team, away_team, home_score,
-    away_score, close_spread, close_total, home_ml_close, away_ml_close."""
+    """Pull all resolved games from the last N days.
+
+    2026-08-28 bug fix: previously joined mlb_game_results → mlb_game_context
+    for close_spread/close_total. Ctx rows for games >30 days old often
+    get pruned or never existed, so `if not ctx: continue` silently dropped
+    ~85% of the games (172 kept vs 1200 real). Result: dog cover% and
+    every other tendency was computed on a truncated dataset that skewed
+    heavily toward recent games with ctx.
+
+    Fix: pull spread/total/ML directly from mlb_game_results (those
+    columns ARE on results — verified 8/28). Ctx no longer needed for
+    the tendency compute.
+    """
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     yesterday = (date.today() - timedelta(days=1)).isoformat()
 
-    # Fetch results
     results = []
     for off in range(0, 20000, 1000):
         r = requests.get(
             f'{SB}/rest/v1/mlb_game_results'
             f'?game_date=gte.{cutoff}&game_date=lte.{yesterday}'
-            f'&select=game_id,game_date,home_team,away_team,home_score,away_score&limit=1000&offset={off}',
+            f'&select=game_id,game_date,home_team,away_team,home_score,away_score,'
+            f'close_spread,close_total,home_ml_close,away_ml_close'
+            f'&limit=1000&offset={off}',
             headers=H_READ, timeout=30)
         chunk = r.json() if r.status_code == 200 else []
         results += chunk
         if len(chunk) < 1000: break
-
-    if not results: return []
-
-    # Fetch matching context rows in bulk (game_ids)
-    ctx_by_gid: dict = {}
-    all_gids = [r['game_id'] for r in results]
-    # Batch in 200s to avoid URL length issues
-    for i in range(0, len(all_gids), 200):
-        batch = all_gids[i:i+200]
-        gid_list = ','.join(f'"{g}"' for g in batch)
-        try:
-            r = requests.get(
-                f'{SB}/rest/v1/mlb_game_context'
-                f'?game_id=in.({gid_list})'
-                '&select=game_id,close_spread,close_total,home_ml_close,away_ml_close',
-                headers=H_READ, timeout=30)
-            for row in (r.json() if r.status_code == 200 else []):
-                ctx_by_gid[row['game_id']] = row
-        except Exception:
-            pass
-
-    # Join
-    joined = []
-    for res in results:
-        ctx = ctx_by_gid.get(res['game_id'])
-        if not ctx: continue
-        joined.append({**res, **ctx})
-    return joined
+    return results
 
 
 def compute_team_tendencies(games: list[dict]) -> dict:
@@ -101,7 +85,12 @@ def compute_team_tendencies(games: list[dict]) -> dict:
     # Group games by team (either home or away)
     per_team: dict = defaultdict(list)
     for g in games:
-        if not g.get('home_score') or not g.get('away_score'): continue
+        # 2026-08-28 bug fix: `not g.get('home_score')` treated 0 (a valid
+        # shutout score) as falsy → any 0-run game was silently dropped.
+        # For dogs, most non-cover losses include 0-run outings, so filtering
+        # them inflated `covers_as_dog_pct` (e.g. SEA showed 75% actual 50%).
+        # Explicit None check now includes real 0-scores.
+        if g.get('home_score') is None or g.get('away_score') is None: continue
         # Order both sides consistently — sorted by date
         entry = {
             'game_date': g['game_date'],
