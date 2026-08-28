@@ -337,6 +337,25 @@ jobs:
           cd mlb_pipeline
           python recompute_primary_play.py
 
+      # 2026-08-27: cascade primary_play changes to jerry_reads.
+      # Jerry's LLM runs early morning and stamps call_side/call_market/call_text
+      # from THEN-current primary_play. When recompute above flips a pick
+      # (MC refresh, close-line update, defensive gate demotion), Jerry's
+      # stored fields stay stale — badge shows the new ensemble pick, prose
+      # analysis shows the old one. Scrub sweeps all today's jerry_reads
+      # and overwrites CALL fields to match current primary_play so the
+      # badge + Sharp Card grading + Receipts all agree.
+      # Prose (short_read/long_read) left as-is; may occasionally reference
+      # a stale market, but badge/grade fields are authoritative.
+      - name: Jerry pick scrub (sync CALL fields to primary_play)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python jerry_pick_scrub.py --sport MLB || echo "jerry pick scrub failed (non-fatal)"
+
       # L5 pitcher actuals (2026-06-07). Hits MLB Stats API per starter on
       # today's slate, pulls last-5 starts (outs/Ks/BB/hits/ER), writes to
       # jerry_cache rows keyed pitcher_l5_{date}_{game_id}. Consumed by
@@ -2264,6 +2283,8 @@ jobs:
             echo "🚨 RESCUE: re-running enrich_monte_carlo.py"
             python enrich_monte_carlo.py || echo "MC rescue failed"
             python recompute_primary_play.py --date $TODAY || echo "recompute rescue failed"
+            # 2026-08-27: cascade to jerry_reads so badge + prose don't drift
+            python jerry_pick_scrub.py --sport MLB --date $TODAY || echo "jerry scrub rescue failed"
           fi
 
           PROPS_COUNT=$(check_url "mlb_pipeline_props?game_date=eq.$TODAY&select=id")
