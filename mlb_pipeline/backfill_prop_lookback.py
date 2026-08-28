@@ -417,22 +417,41 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
     return updated
 
 
-def run(game_date: str | None = None, sport: str | None = None, dry_run: bool = False):
-    gd = game_date or _et_today()
+def run(game_date: str | None = None, sport: str | None = None, dry_run: bool = False,
+        days: int = 0):
+    """Backfill lookback for a single date, OR the last N days.
+
+    2026-08-27: added `days` param. Backfill previously ran only for today,
+    so any row generated after the daily cron finished (e.g. late odds
+    sweep) stayed with L10=null forever. The prop L10 gate needs L10
+    populated to fire, so historical gaps meant hits_over juice traps
+    kept shipping. When days > 0, iterates game_date=today,today-1,...,
+    today-days+1 and backfills each.
+    """
     sports = [sport] if sport else list(PROPS_TABLE.keys())
-    print(f'=== backfill prop lookback · {gd} · {"/".join(sports)}{" [DRY]" if dry_run else ""} ===')
-    for s in sports:
-        if s == 'MLB':
-            n = backfill_mlb(gd, dry_run=dry_run)
-            print(f'  MLB: updated {n} props with lookback\n')
-        elif s == 'NFL':
-            print(f'  NFL: skipped — nfl_player_game_logs backfill not yet built\n')
-        elif s == 'NHL':
-            n = backfill_nba_nhl(gd, sport='NHL', dry_run=dry_run)
-            print(f'  NHL: updated {n} props with lookback\n')
-        elif s == 'NBA':
-            n = backfill_nba_nhl(gd, sport='NBA', dry_run=dry_run)
-            print(f'  NBA: updated {n} props with lookback\n')
+    if days > 0 and game_date is None:
+        # Multi-day mode: today back N days
+        today = _et_today()
+        y, m, d = (int(x) for x in today.split('-'))
+        base = date(y, m, d)
+        dates = [(base - timedelta(days=i)).isoformat() for i in range(days)]
+    else:
+        dates = [game_date or _et_today()]
+    print(f'=== backfill prop lookback · {"/".join(dates[:3])}{" +more" if len(dates)>3 else ""} · '
+          f'{"/".join(sports)}{" [DRY]" if dry_run else ""} ===')
+    for gd in dates:
+        for s in sports:
+            if s == 'MLB':
+                n = backfill_mlb(gd, dry_run=dry_run)
+                print(f'  MLB {gd}: updated {n} props with lookback')
+            elif s == 'NFL':
+                pass  # NFL backfill not built yet
+            elif s == 'NHL':
+                n = backfill_nba_nhl(gd, sport='NHL', dry_run=dry_run)
+                print(f'  NHL {gd}: updated {n} props with lookback')
+            elif s == 'NBA':
+                n = backfill_nba_nhl(gd, sport='NBA', dry_run=dry_run)
+                print(f'  NBA {gd}: updated {n} props with lookback')
 
 
 # ─── NBA / NHL backfill via ESPN game-log endpoints ────────────────────
@@ -627,9 +646,11 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sport', choices=list(PROPS_TABLE.keys()))
     p.add_argument('--date', help='YYYY-MM-DD (default: today ET)')
+    p.add_argument('--days', type=int, default=0,
+                   help='Backfill last N days (today + prior N-1). Overrides --date if set.')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(game_date=args.date, sport=args.sport, dry_run=args.dry_run)
+    run(game_date=args.date, sport=args.sport, dry_run=args.dry_run, days=args.days)
 
 
 if __name__ == '__main__':

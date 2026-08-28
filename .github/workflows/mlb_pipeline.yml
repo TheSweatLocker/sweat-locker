@@ -556,7 +556,10 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_prop_lookback.py --sport MLB || echo "prop lookback backfill failed (non-fatal)"
+          # 2026-08-27: --days 3 catches late-generated props that missed today's
+          # first backfill run (yesterday showed 17/17 L10=null which broke the
+          # hits_over L10 gate). Cheap because most rows are already backfilled.
+          python backfill_prop_lookback.py --sport MLB --days 3 || echo "prop lookback backfill failed (non-fatal)"
 
       # 2026-08-23 Dedup pass. sweep_prop_coverage.py inserts the
       # OPPOSITE direction as COVERAGE stub so shadow playbook has
