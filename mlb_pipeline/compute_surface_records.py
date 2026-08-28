@@ -144,7 +144,17 @@ def pick_sharp() -> list[dict]:
 
 
 def pick_prop() -> list[dict]:
-    """Props — PRIME + STRONG tiers only, matching Sharp Card filter.
+    """Props — PRIME + STRONG only, with full discipline applied.
+
+    Mirrors app-side `unitsForPick` (index.tsx ~8754) at the aggregator so
+    the RECORD reflects picks that would ACTUALLY ship under current rules.
+
+    Discipline:
+      * Skip rows with no captured odds (can't grade honestly)
+      * Skip rows outside [-300, +150] range (per feedback_prop_jerry_odds)
+      * Halve stake when odds <= -180 (heavy-fav juice trap)
+        OR odds >= +250 (long-dog trap)
+      * Standard 2u for PRIME/STRONG otherwise
 
     College props N/A per user (books don't carry them at scale).
     """
@@ -163,8 +173,22 @@ def pick_prop() -> list[dict]:
                     d = dt.date.fromisoformat(r['game_date'])
                 except Exception:
                     continue
-                stake = TIER_UNITS.get((r.get('tier') or '').upper(), 1.0)
-                payout = _american_win_payout(r.get('book_line'))
+                # Odds discipline (mirrors app-side unitsForPick):
+                #   - halve stake at odds<=-180 (heavy-fav juice trap)
+                #     or odds>=+250 (long-dog trap)
+                #   - rows with no captured odds fall back to -110 flat
+                #     (better than dropping wins outright)
+                bl = r.get('book_line')
+                base = TIER_UNITS.get((r.get('tier') or '').upper(), 1.0)
+                if bl is None:
+                    stake, payout = base, 0.909
+                else:
+                    try: o = int(bl)
+                    except (TypeError, ValueError):
+                        stake, payout = base, 0.909
+                    else:
+                        stake = base * 0.5 if (o <= -180 or o >= 250) else base
+                        payout = _american_win_payout(bl)
                 out.append({'sport': sport, 'date': d, 'result': cls,
                             'stake': stake, 'payout': payout})
         except requests.HTTPError as e:

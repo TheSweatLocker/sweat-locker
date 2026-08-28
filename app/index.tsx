@@ -14445,21 +14445,29 @@ setJerryHistory(prev => {
                           </View>
                         );
                       }
+                      // 2026-08-28: lead with HIT RATE (big) — the bragging
+                      // number. Units become secondary. Prop juice math is
+                      // brutal but the hit rate tells the real skill story.
+                      const hitColor = !d.hasData ? THEME.textDim :
+                        d.hitPct >= 55 ? THEME.win :
+                        d.hitPct >= 50 ? THEME.accent : THEME.loss;
                       return (
                         <View key={sfc.key} style={{flex:1,minWidth:'46%',backgroundColor:THEME.surface,borderRadius:10,padding:12,borderWidth:1,borderColor:THEME.border}}>
                           <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                             <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'700',letterSpacing:0.5}}>{sfc.label.toUpperCase()}</Text>
                             <Text style={{color:THEME.textDim,fontSize:9,backgroundColor:THEME.surfaceAlt,paddingHorizontal:5,paddingVertical:1,borderRadius:4}}>{sfc.badge}</Text>
                           </View>
-                          <Text style={{color: !d.hasData ? THEME.textDim : d.units>=0 ? THEME.win : THEME.loss, fontSize:22, fontWeight:'800', letterSpacing:-0.4, fontVariant:['tabular-nums'], lineHeight:26}}>
-                            {!d.hasData ? '—' : (d.units>=0?'+':'') + d.units.toFixed(1) + 'u'}
+                          <Text style={{color: hitColor, fontSize:24, fontWeight:'800', letterSpacing:-0.4, fontVariant:['tabular-nums'], lineHeight:28}}>
+                            {!d.hasData ? '—' : `${d.hitPct.toFixed(0)}%`}
                           </Text>
-                          <View style={{flexDirection:'row',justifyContent:'space-between',marginTop:4}}>
+                          <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginTop:4}}>
                             <Text style={{color:THEME.textMuted,fontSize:11,fontVariant:['tabular-nums']}}>
                               {d.hasData ? `${d.wins}-${d.losses}` : (sfc.key === 'ladder' || sfc.key === 'ledger' ? 'v1.1' : 'no data')}
                             </Text>
                             {d.hasData && (
-                              <Text style={{color:THEME.textMuted,fontSize:11,fontVariant:['tabular-nums']}}>{d.hitPct.toFixed(0)}%</Text>
+                              <Text style={{color:d.units>=0?THEME.win:THEME.loss,fontSize:11,fontWeight:'600',fontVariant:['tabular-nums']}}>
+                                {d.units>=0?'+':''}{d.units.toFixed(1)}u
+                              </Text>
                             )}
                           </View>
                           {filterSport === 'ALL' && (sfc.key === 'sharp' || sfc.key === 'prop') && (
@@ -14467,11 +14475,14 @@ setJerryHistory(prev => {
                               {activeSports.filter((sp:any) => sp.status !== 'offseason').map((sp:any) => {
                                 if (sfc.key === 'prop' && (sp.id === 'NCAAF' || sp.id === 'NCAAB')) return null;
                                 const spD = surfaceData(sfc.key, sp.id);
+                                const spHitColor = !spD.hasData ? THEME.textDim :
+                                  spD.hitPct >= 55 ? THEME.win :
+                                  spD.hitPct >= 50 ? THEME.accent : THEME.loss;
                                 return (
                                   <View key={sp.id} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:2}}>
                                     <Text style={{color:THEME.textMuted,fontSize:11}}>{sp.icon} {sp.label}</Text>
-                                    <Text style={{color: !spD.hasData ? THEME.textDim : spD.units>=0 ? THEME.win : THEME.loss, fontSize:11, fontWeight:'700', fontVariant:['tabular-nums']}}>
-                                      {!spD.hasData ? '—' : (spD.units>=0?'+':'') + spD.units.toFixed(1) + 'u'}
+                                    <Text style={{color: spHitColor, fontSize:11, fontWeight:'700', fontVariant:['tabular-nums']}}>
+                                      {!spD.hasData ? '—' : `${spD.hitPct.toFixed(0)}%`}
                                     </Text>
                                   </View>
                                 );
