@@ -4768,36 +4768,13 @@ def run():
         },
     }
 
-    # Store in jerry_cache
-    r = requests.post(
-        f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport",
-        headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
-        json={
-            "cache_key": f"best_bet_{today}",
-            "game_id": f"best_bet_{today}",
-            "sport": pick['sport'],
-            "narrative": f"Play of the Day: {pick['away_team']} @ {pick['home_team']} | {pick.get('lean_display', '')}",
-            "data": result,
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-    if r.status_code in [200, 201, 204]:
-        print(f"✅ Play of the Day stored: {pick['sport']} {pick['away_team']} @ {pick['home_team']} | Lean: {pick.get('lean_display')}")
-    else:
-        print(f"❌ Cache store failed: {r.status_code} {r.text[:200]}")
-
-    # Also log to history — was silently swallowed pre 2026-05-25; turned
-    # loud after 5/25 incident (home tab showed NRFI, receipts showed v2 OVER
-    # — both writes timestamped within 250ms of each other in same run yet
-    # ended up with different picks). Most likely cause: two concurrent
-    # play_of_day invocations racing on the two upserts. Loud failure surfaces
-    # this in cron logs next time.
+    # 2026-08-28: Atomic write via write_potd_atomic RPC (single transaction
+    # for cache + history). Prevents divergence documented on 8/22 where
+    # concurrent play_of_day invocations left jerry_cache saying NRFI and
+    # daily_best_bet_history saying SDP ML. Migration 20260828_potd_atomic_write.
     expected_game = f"{pick['away_team']} @ {pick['home_team']}"
     expected_lean = pick.get('lean_display')
-    # 2026-08-27: snapshot the real American odds for the POTD side. Enables
-    # honest ROI in surface_records (was flat -110 assumption). ML picks pull
-    # from close_ml columns; totals/spreads stay at -110 until per-side
-    # closing lines are captured (v1.3 target).
+
     def _potd_odds_american(pk):
         try:
             ctx = pk.get('_ctx') or {}
@@ -4814,25 +4791,47 @@ def run():
             pass
         return -110
     potd_odds = _potd_odds_american(pick)
+
+    narrative = f"Play of the Day: {pick['away_team']} @ {pick['home_team']} | {pick.get('lean_display', '')}"
     try:
-        hr = requests.post(
-            f"{SUPABASE_URL}/rest/v1/daily_best_bet_history?on_conflict=bet_date",
-            headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
+        r = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/write_potd_atomic",
+            headers={**HEADERS, "Content-Type": "application/json"},
             json={
-                "bet_date": today,
-                "sport": pick['sport'],
-                "game": expected_game,
-                "lean": expected_lean,
-                "sweat_score": pick['score'],
-                "result": "Pending",
-                "odds_american": potd_odds,
+                "p_today": today,
+                "p_sport": pick['sport'],
+                "p_narrative": narrative,
+                "p_data": result,
+                "p_game": expected_game,
+                "p_lean": expected_lean,
+                "p_sweat_score": pick['score'],
+                "p_odds_american": potd_odds,
             },
             timeout=15,
         )
-        if hr.status_code not in (200, 201, 204):
-            print(f"  ⚠️ history write returned {hr.status_code}: {hr.text[:200]}")
+        if r.status_code in (200, 201, 204):
+            print(f"✅ POTD stored atomically: {pick['sport']} {expected_game} | {expected_lean}")
+        else:
+            print(f"❌ atomic POTD write failed: {r.status_code} {r.text[:250]}")
+            # Fallback: individual writes if RPC missing (migration not applied)
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=game_id,sport",
+                headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={"cache_key": f"best_bet_{today}", "game_id": f"best_bet_{today}",
+                      "sport": pick['sport'], "narrative": narrative, "data": result,
+                      "fetched_at": datetime.now(timezone.utc).isoformat()},
+                timeout=15,
+            )
+            requests.post(
+                f"{SUPABASE_URL}/rest/v1/daily_best_bet_history?on_conflict=bet_date",
+                headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={"bet_date": today, "sport": pick['sport'], "game": expected_game,
+                      "lean": expected_lean, "sweat_score": pick['score'],
+                      "result": "Pending", "odds_american": potd_odds},
+                timeout=15,
+            )
     except Exception as e:
-        print(f"  ⚠️ history write FAILED: {e}")
+        print(f"❌ POTD atomic RPC threw: {e}")
 
     # Consistency check: read back both surfaces and warn if they diverge.
     # When this fires, the next POTD render to users will show mismatched

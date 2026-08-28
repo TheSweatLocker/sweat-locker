@@ -146,22 +146,16 @@ def pick_sharp() -> list[dict]:
 def pick_prop() -> list[dict]:
     """Props — PRIME + STRONG only, with full discipline applied.
 
-    Mirrors app-side `unitsForPick` (index.tsx ~8754) at the aggregator so
-    the RECORD reflects picks that would ACTUALLY ship under current rules.
-
-    Discipline:
-      * Skip rows with no captured odds (can't grade honestly)
-      * Skip rows outside [-300, +150] range (per feedback_prop_jerry_odds)
-      * Halve stake when odds <= -180 (heavy-fav juice trap)
-        OR odds >= +250 (long-dog trap)
-      * Standard 2u for PRIME/STRONG otherwise
-
-    College props N/A per user (books don't carry them at scale).
+    CRITICAL 2026-08-28 FIX: was reading `book_line` (the OVER/UNDER prop
+    line, e.g. 0.5) as American odds. Because int(0.5)==0, every prop win
+    got flat -110 payout instead of the real juiced odds. Fixed to read
+    book_over_odds / book_under_odds based on direction — which is where
+    the actual American odds live in mlb_pipeline_props.
     """
     out = []
     for tbl, sport in [('mlb_pipeline_props', 'MLB'), ('nfl_pipeline_props', 'NFL')]:
         url = (f'{SB}/rest/v1/{tbl}'
-               f'?select=game_date,result,tier,conviction,book_line'
+               f'?select=game_date,result,tier,conviction,direction,book_over_odds,book_under_odds'
                f'&result=not.is.null&tier=in.(PRIME,STRONG)'
                f'&order=game_date.desc')
         try:
@@ -173,22 +167,25 @@ def pick_prop() -> list[dict]:
                     d = dt.date.fromisoformat(r['game_date'])
                 except Exception:
                     continue
-                # Odds discipline (mirrors app-side unitsForPick):
-                #   - halve stake at odds<=-180 (heavy-fav juice trap)
-                #     or odds>=+250 (long-dog trap)
-                #   - rows with no captured odds fall back to -110 flat
-                #     (better than dropping wins outright)
-                bl = r.get('book_line')
-                base = TIER_UNITS.get((r.get('tier') or '').upper(), 1.0)
-                if bl is None:
-                    stake, payout = base, 0.909
+                direction = (r.get('direction') or '').lower()
+                # Pick the American odds for the side we backed
+                if direction == 'over':
+                    odds_val = r.get('book_over_odds')
+                elif direction == 'under':
+                    odds_val = r.get('book_under_odds')
                 else:
-                    try: o = int(bl)
+                    odds_val = None
+                base = TIER_UNITS.get((r.get('tier') or '').upper(), 1.0)
+                if odds_val is None:
+                    stake, payout = base, 0.909   # fallback -110
+                else:
+                    try: o = int(odds_val)
                     except (TypeError, ValueError):
                         stake, payout = base, 0.909
                     else:
+                        # Halve on juice trap (<=-180) or long-dog (>=+250)
                         stake = base * 0.5 if (o <= -180 or o >= 250) else base
-                        payout = _american_win_payout(bl)
+                        payout = _american_win_payout(o)
                 out.append({'sport': sport, 'date': d, 'result': cls,
                             'stake': stake, 'payout': payout})
         except requests.HTTPError as e:
