@@ -224,6 +224,11 @@ def grade_pick(pick: dict, result: dict, cfg: dict) -> tuple:
             elif total_pts < pline: tr = 'under'
             else:                   tr = 'push'
 
+        # 2026-08-27 case-normalize: game_results.total_result is stored as
+        # 'Over'/'Under'/'Push' (title case) but the SPORT_CONFIG buckets are
+        # lowercase. Silent bug — every OVER/UNDER pick was marked L because
+        # 'Under' not in ('under',). Normalize before the containment check.
+        if isinstance(tr, str): tr = tr.lower()
         if tr in cfg['push_vals']:
             return 'P', float(total_pts), None
         if side == 'OVER':
