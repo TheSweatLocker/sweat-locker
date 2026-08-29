@@ -15067,7 +15067,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 <Text style={{color:THEME.text, fontSize:20, fontWeight:'800'}}>{r.w}-{r.l}{r.p ? `-${r.p}` : ''}</Text>
                                 <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{total > 0 ? `${hitPct}%` : '—'}</Text>
                                 {(r.sidesW !== undefined || r.propsW !== undefined) && (
-                                  <Text style={{color:THEME.textDim, fontSize:9, marginTop:3, fontVariant:['tabular-nums'], textAlign:'center'}}>
+                                  <Text
+                                    numberOfLines={1}
+                                    adjustsFontSizeToFit
+                                    minimumFontScale={0.7}
+                                    style={{color:THEME.textDim, fontSize:9, marginTop:3, fontVariant:['tabular-nums'], textAlign:'center', flexShrink:1, width:'100%'}}>
                                     {(r.sidesW||0)}-{(r.sidesL||0)} sides · {(r.propsW||0)}-{(r.propsL||0)} props
                                   </Text>
                                 )}
@@ -15095,19 +15099,27 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               const yRoi = (r.yUnits / yTotal) * 100;
                               const yColor = r.yUnits > 0 ? THEME.win : r.yUnits < 0 ? THEME.loss : THEME.textDim;
                               return (
-                                <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44'}}>
+                                <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44', gap:8}}>
                                   <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.5}}>YESTERDAY</Text>
-                                  <Text style={{color:THEME.textDim, fontSize:11}}>
+                                  <Text
+                                    numberOfLines={1}
+                                    adjustsFontSizeToFit
+                                    minimumFontScale={0.75}
+                                    style={{color:THEME.textDim, fontSize:11, flexShrink:1, textAlign:'right'}}>
                                     {r.yW}-{r.yL}{r.yP ? `-${r.yP}` : ''} · {yHit}% · <Text style={{color:yColor, fontWeight:'800'}}>{r.yUnits >= 0 ? '+' : ''}{r.yUnits.toFixed(2)}u</Text> · <Text style={{color:yColor, fontWeight:'700'}}>{yRoi >= 0 ? '+' : ''}{yRoi.toFixed(1)}%</Text>
                                   </Text>
                                 </View>
                               );
                             })()}
                             {/* Prev-month + fresh-epoch footer, single line */}
-                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44'}}>
-                              <Text style={{color:THEME.textMuted, fontSize:9, fontStyle:'italic'}}>Fresh from Aug 20 · real snapshot odds</Text>
+                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44', gap:8}}>
+                              <Text style={{color:THEME.textMuted, fontSize:9, fontStyle:'italic', flexShrink:1}} numberOfLines={1}>Fresh from Aug 20 · real snapshot odds</Text>
                               {totalPrev > 0 ? (
-                                <Text style={{color:THEME.textDim, fontSize:10}}>
+                                <Text
+                                  numberOfLines={1}
+                                  adjustsFontSizeToFit
+                                  minimumFontScale={0.75}
+                                  style={{color:THEME.textDim, fontSize:10, flexShrink:1, textAlign:'right'}}>
                                   {prevMonthName}: {r.wPrev}-{r.lPrev} · <Text style={{color:unitsColorPrev, fontWeight:'700'}}>{r.unitsNetPrev >= 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u</Text>
                                 </Text>
                               ) : null}
