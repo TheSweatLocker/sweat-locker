@@ -325,6 +325,17 @@ def run():
                                     'total_result': total_result,
                                     'run_line_result': run_line,
                                     'spread_result': spread_result,
+                                    # 2026-08-29: previously only game_context.py::log_game_result
+                                    # wrote home_spread_covered, but that path doesn't
+                                    # run in production — 1815 graded rows had
+                                    # spread_result populated but home_spread_covered
+                                    # NULL. Downstream cohort/audit code reads the
+                                    # boolean form. Derive it from spread_result:
+                                    #   'home_covered' → True
+                                    #   'away_covered' → False
+                                    #   'push' or None → leave None (unset)
+                                    **(({'home_spread_covered': spread_result == 'home_covered'}
+                                        if spread_result in ('home_covered', 'away_covered') else {})),
                                     **(({'f5_total_result': f5_result} if f5_result else {})),
                                     **(({'umpire': umpire} if umpire else {})),
                                     'result_logged_at': datetime.utcnow().isoformat()
