@@ -625,38 +625,33 @@ def upsert(rows: list, dry_run: bool = False) -> int:
                   f"conf={r.get('signal_confluence_net'):+d}  ss={r['sweat_score']} {r['sweat_tier']}"
                   + (f"  → {pp.get('tier')} {pp.get('label')}" if pp else ''))
         return len(rows)
-    # 2026-08-23: strip-on-400 pattern (mirrors mlb_game_context). Columns
-    # added 8/22 for signal_sources readers (home_sp_plus, away_sp_plus,
-    # sp_plus_matchup_total, home/away_returning_production) never got a
-    # DB migration, so every upsert 400'd blocking ALL games. Loop strip
-    # any column PostgREST rejects until upsert succeeds or 8 rounds cap.
-    _STRIP_CANDIDATES = (
-        'home_sp_plus', 'away_sp_plus', 'sp_plus_matchup_total',
-        'home_returning_production', 'away_returning_production',
-    )
+    # 2026-08-29: DYNAMIC strip-on-400. Prior version had a hardcoded
+    # STRIP_CANDIDATES list and every time we added a new ctx field
+    # (like def_pass_ypg / def_rush_ypg / _explosiveness_allowed today),
+    # the whole upsert 400'd until someone updated the list. Now we
+    # regex the column name straight out of the PGRST204 error and
+    # strip it, so new fields self-heal.
+    import re as _re
+    _COL_RE = _re.compile(r"Could not find the '([^']+)' column of '[^']+' in the schema cache")
     r = requests.post(
         f'{SB}/rest/v1/ncaaf_game_context?on_conflict=game_id',
         headers=H_WRITE, json=rows, timeout=30,
     )
     stripped_total = []
     retry_rounds = 0
-    while r.status_code == 400 and retry_rounds < 8:
-        round_stripped = []
-        for col in _STRIP_CANDIDATES:
-            if col in r.text:
-                for row in rows:
-                    row.pop(col, None)
-                round_stripped.append(col)
-                stripped_total.append(col)
-        if not round_stripped:
-            break
+    while r.status_code == 400 and retry_rounds < 100:
+        m = _COL_RE.search(r.text)
+        if not m: break
+        col = m.group(1)
+        for row in rows: row.pop(col, None)
+        stripped_total.append(col)
         r = requests.post(
             f'{SB}/rest/v1/ncaaf_game_context?on_conflict=game_id',
             headers=H_WRITE, json=rows, timeout=30,
         )
         retry_rounds += 1
     if stripped_total and r.status_code in (200, 201, 204):
-        print(f'  ⚠ ncaaf ctx stripped {len(stripped_total)} unknown cols: {stripped_total} — run migration 20260823d')
+        print(f'  ⚠ ncaaf ctx stripped {len(stripped_total)} unknown cols: {stripped_total} — add ALTER TABLE for these')
     if r.status_code not in (200, 201, 204):
         print(f'  ⚠ upsert failed {r.status_code}: {r.text[:200]}')
         return 0
