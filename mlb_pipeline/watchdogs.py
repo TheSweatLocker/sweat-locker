@@ -157,6 +157,11 @@ def check_primary_play_stale() -> Optional[dict]:
         top = live.top()
         # Build a pp-shaped dict from `top` matching what game_context writes,
         # then run it through the same gates that ran on the persist side.
+        # 2026-08-28: MUST include _ensemble_sources — apply_publish_gate
+        # early-returns when sources is empty, so previously the live pp
+        # skipped publish_gate demotion and any DB row demoted from
+        # PRIME→STRONG via publish_gate (SEA/TOR total dissent tonight)
+        # falsely tripped as stale.
         live_pp = {
             '_engine': 'ensemble_v2',
             'type': top.market,
@@ -164,6 +169,12 @@ def check_primary_play_stale() -> Optional[dict]:
             'side': top.side,
             'tier': top.tier,
             'conviction': top.conviction,
+            '_ensemble_sources': [
+                {'signal_key': c.signal_key, 'class': c.signal_class,
+                 'side': c.side, 'weight': round(c.weight, 2),
+                 'n': c.n, 'contribution': round(c.contribution, 2)}
+                for c in top.contributions[:8]
+            ],
         }
         if apply_all_defensive_gates is not None:
             apply_all_defensive_gates(live_pp, g)
