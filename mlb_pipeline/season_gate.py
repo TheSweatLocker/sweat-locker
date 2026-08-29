@@ -30,7 +30,7 @@ def _today_et():
 # regular-season + playoffs + a small buffer.
 SEASON_WINDOWS = {
     'MLB':   (3, 11),    # Mar spring training - Oct/early-Nov World Series
-    'NFL':   (9, 2),     # Sep regular - early Feb Super Bowl. Preseason (Aug) handled by opt-in only.
+    'NFL':   (8, 2),     # Late-Aug lead-up to Wk1 through early-Feb Super Bowl. 2026-08-28: was (9,2), pulled forward to Aug so Wk1 slate loads before kickoff.
     'NCAAF': (8, 1),     # Late Aug Week 0 - early Jan CFP title
     'NBA':   (10, 6),    # Oct preseason - mid-June Finals
     'NHL':   (10, 6),    # Oct preseason - mid-June Cup
