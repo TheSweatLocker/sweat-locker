@@ -218,9 +218,19 @@ def pick_ladder() -> list[dict]:
 
 
 def pick_ledger() -> list[dict]:
-    """ledger_suggestions — teasers/parlays, cross-sport."""
-    url = (f'{SB}/rest/v1/ledger_suggestions'
-           f'?select=sport_scope,game_date,result,combined_odds,rank'
+    """ledger_snapshots — FROZEN teasers/parlays at generation time.
+
+    2026-08-29: switched from ledger_suggestions to ledger_snapshots.
+    grade_ledger_snapshots.py writes results ONLY to ledger_snapshots
+    (the immutable frozen-at-generation-time table), never to
+    ledger_suggestions (the live-editable pick queue). Previous version
+    read from ledger_suggestions.result and only found 6 graded picks
+    since 8/20 — the grader had been writing results downstream to the
+    wrong-for-this-purpose sibling table for 9 days. Fix: read the
+    graded table directly.
+    """
+    url = (f'{SB}/rest/v1/ledger_snapshots'
+           f'?select=sport_scope,game_date,result,combined_odds,unit_pnl'
            f'&result=not.is.null&order=game_date.desc')
     out = []
     for r in _paged(url):
@@ -231,8 +241,22 @@ def pick_ledger() -> list[dict]:
         except Exception:
             continue
         sp = (r.get('sport_scope') or '').upper() or 'MLB'
-        stake = 1.0   # ledger stakes vary; using unit for now
-        payout = _american_win_payout(r.get('combined_odds'))
+        stake = 1.0
+        # Prefer grader's unit_pnl (accounts for pushed legs); fall back
+        # to combined_odds win math for older rows.
+        pnl = r.get('unit_pnl')
+        if pnl is not None:
+            try:
+                pnl = float(pnl)
+                # Convert to (win_payout, was_win) shape expected downstream.
+                if cls == 'W':
+                    payout = pnl   # unit_pnl is profit per 1u stake on wins
+                else:
+                    payout = _american_win_payout(r.get('combined_odds'))
+            except (TypeError, ValueError):
+                payout = _american_win_payout(r.get('combined_odds'))
+        else:
+            payout = _american_win_payout(r.get('combined_odds'))
         out.append({'sport': sp, 'date': d, 'result': cls,
                     'stake': stake, 'payout': payout})
     return out
