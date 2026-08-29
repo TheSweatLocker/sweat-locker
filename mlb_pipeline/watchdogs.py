@@ -603,33 +603,32 @@ def check_ufc_picks_ungraded() -> Optional[dict]:
     # Look for events with graded fight_results but at least one ufc_picks
     # row for the same event whose pick_result is null AND event is >24h old
     try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-        # UFC event_dates are TEXT strings ("August 22, 2026"), not ISO.
-        # We scan the last 14 event_dates present in ufc_picks + cross-check.
+        # 2026-08-28 fix: was gating on generated_at (pick creation time),
+        # which tripped for tomorrow's event with picks generated 2 days
+        # ago. Now gates on event_date so future events don't false-alert.
+        yesterday = (datetime.now(timezone.utc) - timedelta(hours=24)).date().isoformat()
         r = requests.get(f'{SB}/rest/v1/ufc_picks',
-            params={'select': 'event_name,event_date,pick_result,winner_actual,generated_at',
+            params={'select': 'event_name,event_date,pick_result,winner_actual',
                     'order': 'event_date.desc', 'limit': 200},
             headers=H_READ, timeout=15)
         picks = r.json() if r.status_code == 200 else []
         if not isinstance(picks, list): return None
         # Group by event; count graded (pick_result present) vs total
-        by_event = defaultdict(lambda: {'total': 0, 'graded': 0, 'oldest_gen': None})
+        by_event = defaultdict(lambda: {'total': 0, 'graded': 0, 'event_date': None})
         for p in picks:
             if not isinstance(p, dict): continue
             key = p.get('event_name', '?')
             by_event[key]['total'] += 1
             if p.get('pick_result') or p.get('winner_actual'):
                 by_event[key]['graded'] += 1
-            gen = p.get('generated_at')
-            if gen and (by_event[key]['oldest_gen'] is None or gen < by_event[key]['oldest_gen']):
-                by_event[key]['oldest_gen'] = gen
-        # Ungraded events where generated_at is >24h old
+            by_event[key]['event_date'] = p.get('event_date')
+        # Ungraded events where EVENT_DATE is >24h in the past
         ungraded = []
         for ev, stats in by_event.items():
-            if stats['graded'] == 0 and stats['total'] > 0 and stats['oldest_gen']:
-                if stats['oldest_gen'] < cutoff:
+            if stats['graded'] == 0 and stats['total'] > 0 and stats['event_date']:
+                if stats['event_date'] < yesterday:
                     ungraded.append({'event': ev, 'picks': stats['total'],
-                                     'oldest_gen': stats['oldest_gen']})
+                                     'event_date': stats['event_date']})
         if not ungraded: return None
         return {
             'check_name': 'ufc_picks_ungraded',

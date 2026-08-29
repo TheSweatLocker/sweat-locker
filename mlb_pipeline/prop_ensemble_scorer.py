@@ -75,10 +75,16 @@ from ensemble_scorer import MAX_CLASS_SHARE, edge_weight
 # fall to STRONG (still actionable) — user still gets exposure but at
 # lower unit size. Reweight after 30d of the tightened cohort.
 PROP_TIER_THRESHOLDS = {
-    'PRIME':  {'min_score': 0.60, 'min_classes': 3, 'min_margin': 0.20},
-    'STRONG': {'min_score': 0.18, 'min_classes': 2, 'min_margin': 0.10},
-    'LEAN':   {'min_score': 0.05, 'min_classes': 1, 'min_margin': 0.03},
+    'PRIME':  {'min_score': 0.60, 'min_classes': 3, 'min_margin': 0.20, 'min_signals': 4},
+    'STRONG': {'min_score': 0.18, 'min_classes': 2, 'min_margin': 0.10, 'min_signals': 3},
+    'LEAN':   {'min_score': 0.05, 'min_classes': 1, 'min_margin': 0.03, 'min_signals': 1},
 }
+# 2026-08-28: `min_signals` gate added alongside `min_classes`. The old
+# breadth-only check let a STRONG through with just 2 signals if they
+# happened to span 2 classes — coverage_audit watchdog flagged 5 such
+# picks tonight (Emerson Hancock ks_under, Jared Jones er_under, etc.)
+# as thin. Depth gate now enforces the SIGNAL_FRAMEWORK "3+ signals for
+# STRONG" reality-floor.
 
 # Sport → prop table + game context table
 PROPS_TABLE = {
@@ -425,12 +431,14 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
     margin = win_score - runner_score
 
     tier = 'PASS'
+    win_unique_signals = len({c.signal_key for c in win_chips if c.signal_key})
     if win_score >= PROP_TIER_THRESHOLDS['LEAN']['min_score']:
         tier = 'LEAN'
         for candidate_tier in ('PRIME', 'STRONG'):
             th = PROP_TIER_THRESHOLDS[candidate_tier]
             if (win_score >= th['min_score']
                     and win_classes >= th['min_classes']
+                    and win_unique_signals >= th.get('min_signals', 1)
                     and margin >= th['min_margin']):
                 tier = candidate_tier
                 break
