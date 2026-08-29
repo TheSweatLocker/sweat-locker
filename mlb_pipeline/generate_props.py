@@ -346,7 +346,18 @@ def _tier_for_raw(conviction, prop_type=None):
         if conviction >= 70: return 'PRIME'
         if conviction >= 55: return 'STRONG'
         return 'SKIP'
-    # Default / hits_over
+    # 2026-08-29 HITS_OVER 0.5 SHARP EXCLUSION: batter hits O 0.5 at
+    # real juice (-180 to -280) hits ~60-70% = break-even at best as
+    # standalone Sharp plays. Positive-EV only as correlated parlay
+    # legs, which the Ledger picks up separately. Route to SKIP (SKIP
+    # keeps DB tracking + hit-rate calibration while filtering off the
+    # Sharp Card, which selects tier IN ('PRIME','STRONG','LEAN')).
+    # NOTE: prop_line filter is handled by the caller since _tier_for_raw
+    # only sees conviction + prop_type — production scorers only emit
+    # hits_over on the standard 0.5 line, so a blanket rule is safe here.
+    if prop_type == 'hits_over':
+        return 'SKIP'
+    # Default
     if conviction >= 82: return 'PRIME'
     if conviction >= 72: return 'STRONG'
     if conviction >= 55: return 'LEAN'
