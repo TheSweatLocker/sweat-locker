@@ -1863,6 +1863,25 @@ jobs:
           cd mlb_pipeline
           python enrich_team_vs_opp.py
 
+      # 2026-08-29: final --force recompute barrier. Everything above
+      # this point can mutate ensemble state (signal_registry refit,
+      # prop calibration, prop refit override, FADE→PASS discipline,
+      # v4 total override, tier calibration). Without a post-mutation
+      # recompute, watchdog primary_play_stale fires 8-12/17 games
+      # every cron because DB has EARLY-recompute values while live
+      # re-score reflects LATE-mutation state. Recompute here settles
+      # primary_play into the final state before Sweat Card + all
+      # downstream readers (Ledger, snapshots, Aggregator) see it.
+      - name: FINAL recompute primary_play (post-all-mutations barrier)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python recompute_primary_play.py --force || echo "final recompute non-fatal"
+          python jerry_pick_scrub.py --sport MLB || echo "jerry scrub non-fatal"
+
       # Build Tonight's Sweat Card — server-generated structured card for
       # the app's MLB tab. Reads everything upstream wrote (POTD, Dawg,
       # props, NRFI, tier rates) and emits one JSON row the app reads via
@@ -2391,6 +2410,21 @@ jobs:
         run: |
           cd mlb_pipeline
           python verify_signal_wiring.py || echo "verify_signal_wiring reported issues (non-fatal, see log)"
+
+      # 2026-08-29: full watchdog pass at the very end so CRITICAL/WARNING
+      # health issues (primary_play_stale, grader_coverage, sharp_source_
+      # dropped, coverage_audit, prime_hit_crash, jerry_diagnostic_leak,
+      # etc.) surface in workflow logs immediately instead of only
+      # firing when someone runs it manually. Continue-on-error so the
+      # workflow status stays green; the log output is authoritative.
+      - name: Watchdog health checks (14 categories)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python watchdogs.py || echo "watchdog reported alerts (non-fatal, see log)"
 
       # Commit the generated content card so Andy can pull it locally.
       # 5/29 incident: two parallel runs both generated the same dated
