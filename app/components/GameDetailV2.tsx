@@ -1271,6 +1271,18 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
   const defA = stats.away?.def_epa_per_play ?? ctx?.away_def_epa_pp;
   const succOffH = stats.home?.off_success_rate; const succOffA = stats.away?.off_success_rate;
   const explH = stats.home?.off_explosiveness;   const explA = stats.away?.off_explosiveness;
+  // 2026-08-29: raw volumetric — per-game averages computed from
+  // ncaaf_team_stats totals ÷ games. Ctx exposes _pg fields when
+  // games count is populated; falls back to team_stats-fetched
+  // totals if ctx path is thin. Yards allowed comes from
+  // ncaaf_team_defense_stats (opponent-attribution avg).
+  const _pg = (val: any, g: any) => (val == null || !g) ? null : Number(val) / Number(g);
+  const passOffH = ctx?.home_pass_yds_pg ?? _pg(stats.home?.pass_yards, stats.home?.games);
+  const passOffA = ctx?.away_pass_yds_pg ?? _pg(stats.away?.pass_yards, stats.away?.games);
+  const rushOffH = ctx?.home_rush_yds_pg ?? _pg(stats.home?.rush_yards, stats.home?.games);
+  const rushOffA = ctx?.away_rush_yds_pg ?? _pg(stats.away?.rush_yards, stats.away?.games);
+  const passAllH = ctx?.home_def_pass_ypg; const passAllA = ctx?.away_def_pass_ypg;
+  const rushAllH = ctx?.home_def_rush_ypg; const rushAllA = ctx?.away_def_rush_ypg;
   const spGap = ctx?.sp_gap;
   const projSpread = ctx?.projected_spread;
   const closeSpread = ctx?.close_spread;
@@ -1358,6 +1370,26 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
                  aAdv={explA != null && explH != null && explA > explH}
                  bAdv={explA != null && explH != null && explH > explA}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(2)} />
+        {/* 2026-08-29: raw volumetric rows the user asked for — bettor-
+            friendly numbers ("Alabama gives up 178 rush ypg") on top of
+            the efficiency stack above. Higher-is-better for own offense,
+            lower-is-better for defense. */}
+        <StatRow label="PASS YPG"   a={passOffA} b={passOffH}
+                 aAdv={passOffA != null && passOffH != null && passOffA > passOffH}
+                 bAdv={passOffA != null && passOffH != null && passOffH > passOffA}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
+        <StatRow label="RUSH YPG"   a={rushOffA} b={rushOffH}
+                 aAdv={rushOffA != null && rushOffH != null && rushOffA > rushOffH}
+                 bAdv={rushOffA != null && rushOffH != null && rushOffH > rushOffA}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
+        <StatRow label="PASS YPG A" a={passAllA} b={passAllH}
+                 aAdv={passAllA != null && passAllH != null && passAllA < passAllH}
+                 bAdv={passAllA != null && passAllH != null && passAllH < passAllA}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
+        <StatRow label="RUSH YPG A" a={rushAllA} b={rushAllH}
+                 aAdv={rushAllA != null && rushAllH != null && rushAllA < rushAllH}
+                 bAdv={rushAllA != null && rushAllH != null && rushAllH < rushAllA}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
 
         {/* Model read banner — mirrors MLB teamProjBanner. Speaks
             projected margin + market comparison in the same signed

@@ -83,6 +83,7 @@ def backfill(season: int, dry_run: bool = False) -> int:
 
     def_agg = defaultdict(lambda: {
         'games': 0, 'pts_allowed': 0,
+        'pass_yds_allowed': 0.0, 'rush_yds_allowed': 0.0,
         'pass_epa_allowed': 0.0, 'rush_epa_allowed': 0.0,
         'success_rate_allowed': 0.0, 'explosiveness_allowed': 0.0,
         'stat_matches': 0,   # count games where we had opponent stats
@@ -93,6 +94,14 @@ def backfill(season: int, dry_run: bool = False) -> int:
         def_agg[defender]['pts_allowed'] += pts_scored
         if not offender_stats: return
         def_agg[defender]['stat_matches'] += 1
+        # 2026-08-29: derive per-game raw yards from opponent season totals ÷ games.
+        # Requires games count populated (backfilled to 12 in migration
+        # 20260829_ncaaf_defense_raw_ypg for pre-2026 seasons).
+        opp_games = float(offender_stats.get('games') or 0) or 1
+        opp_pass = float(offender_stats.get('pass_yards') or 0) / opp_games
+        opp_rush = float(offender_stats.get('rush_yards') or 0) / opp_games
+        def_agg[defender]['pass_yds_allowed'] += opp_pass
+        def_agg[defender]['rush_yds_allowed'] += opp_rush
         def_agg[defender]['pass_epa_allowed']    += float(offender_stats.get('off_pass_epa') or 0)
         def_agg[defender]['rush_epa_allowed']    += float(offender_stats.get('off_rush_epa') or 0)
         def_agg[defender]['success_rate_allowed'] += float(offender_stats.get('off_success_rate') or 0)
@@ -130,6 +139,8 @@ def backfill(season: int, dry_run: bool = False) -> int:
             'team': team, 'season': season, 'season_type': 'regular',
             'games': n,
             'def_ppg': round(d['pts_allowed'] / n, 2),
+            'def_pass_ypg':            round(d['pass_yds_allowed'] / sn, 2),
+            'def_rush_ypg':            round(d['rush_yds_allowed'] / sn, 2),
             'def_pass_epa_allowed':    round(d['pass_epa_allowed'] / sn, 4),
             'def_rush_epa_allowed':    round(d['rush_epa_allowed'] / sn, 4),
             'def_success_rate_allowed': round(d['success_rate_allowed'] / sn, 4),
