@@ -398,6 +398,24 @@ jobs:
           cd mlb_pipeline
           python write_line_snapshot.py --sport NFL || echo "write_line_snapshot NFL failed (non-fatal)"
 
+      # 2026-08-28: recompute primary_play AFTER all enrichment (defense
+      # backfill, team_form, MC sim, V3/V4 model outputs, align_status,
+      # line_snapshot) lands. Initial score in nfl_game_context runs on
+      # a fresh row that reflects only ctx-build-time state; downstream
+      # PATCHes add fields (mc_probabilities, v3/v4 preds, align_status,
+      # team_form venue-splits) that signals need to fire. Recompute
+      # re-runs score_game against the enriched row. Mirrors MLB's
+      # recompute_primary_play.py + NCAAF's recompute_ncaaf_primary_play.py.
+      - name: Recompute NFL primary_play with enriched signals
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python recompute_nfl_primary_play.py --days 14 || echo "nfl recompute non-fatal"
+
       - name: Generate NFL game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:
