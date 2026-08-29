@@ -349,14 +349,13 @@ def _tier_for_raw(conviction, prop_type=None):
     # 2026-08-29 HITS_OVER 0.5 SHARP EXCLUSION: batter hits O 0.5 at
     # real juice (-180 to -280) hits ~60-70% = break-even at best as
     # standalone Sharp plays. Positive-EV only as correlated parlay
-    # legs, which the Ledger picks up separately. Route to SKIP (SKIP
-    # keeps DB tracking + hit-rate calibration while filtering off the
-    # Sharp Card, which selects tier IN ('PRIME','STRONG','LEAN')).
-    # NOTE: prop_line filter is handled by the caller since _tier_for_raw
-    # only sees conviction + prop_type — production scorers only emit
-    # hits_over on the standard 0.5 line, so a blanket rule is safe here.
+    # legs. Route to COVERAGE (not SKIP) so the row PERSISTS in
+    # mlb_pipeline_props for the Ledger generator to pull as parlay
+    # candidates. Sharp Card / Sweat Card filter tier IN PRIME/STRONG/LEAN,
+    # so COVERAGE stays silent on those surfaces. _keep() must include
+    # COVERAGE so the row survives the pre-write filter.
     if prop_type == 'hits_over':
-        return 'SKIP'
+        return 'COVERAGE'
     # Default
     if conviction >= 82: return 'PRIME'
     if conviction >= 72: return 'STRONG'
@@ -4613,7 +4612,11 @@ def run():
     # The _pre_recal_tier and _pre_attach_tier trace fields make them
     # auditable.
     def _keep(p):
-        if p.get('tier') in ('PRIME', 'STRONG', 'LEAN'):
+        if p.get('tier') in ('PRIME', 'STRONG', 'LEAN', 'COVERAGE'):
+            # 2026-08-29: COVERAGE added so Ledger-only props (hits_over
+            # 0.5 juice traps) persist in DB for the Ledger generator.
+            # Sharp/Sweat cards filter tier IN PRIME/STRONG/LEAN so
+            # COVERAGE stays hidden on those surfaces.
             return True
         # Any recalibrated pitcher prop with trace — keep for backtest
         sigs = p.get('signals') or {}
