@@ -734,15 +734,25 @@ def run(force: bool = False, game_date: str | None = None,
         home, away = g.get("home_team"), g.get("away_team")
         gid = g.get("game_id")
         if not force:
+            # 2026-08-29: only skip when a REAL synthesis row exists
+            # (prompt_version = synthesis_v1). Previously any row blocked
+            # regen — but sync_jerry_reads_from_ctx.py writes placeholder
+            # bridge_v1 rows with "Analysis pending" short_read as a
+            # fallback. Those placeholders were sticking permanently:
+            # sync ran first, wrote placeholder, this gate then skipped
+            # synthesis, so real LLM output never landed. All 17 MLB
+            # games showed "Analysis pending" today.
             r = requests.get(
                 f"{SUPABASE_URL}/rest/v1/jerry_reads",
                 headers=SB_READ,
                 params={"sport": "eq.MLB", "game_id": f"eq.{gid}",
-                        "game_date": f"eq.{gd}", "select": "game_id"},
+                        "game_date": f"eq.{gd}",
+                        "prompt_version": f"eq.{PROMPT_VERSION}",
+                        "select": "game_id"},
                 timeout=10,
             )
             if r.status_code == 200 and r.json():
-                print(f"  • {away} @ {home}: exists, skip (--force to regen)")
+                print(f"  • {away} @ {home}: real synthesis exists, skip (--force to regen)")
                 continue
 
         props = next((v for k, v in props_by_game.items() if _matches(k, home, away)), [])
