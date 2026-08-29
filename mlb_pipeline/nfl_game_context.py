@@ -1084,6 +1084,17 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
                   f"conf={r.get('signal_confluence_net'):+d}  ss={r['sweat_score']} {r['sweat_tier']}"
                   + (f"  → {pp.get('tier')} {pp.get('label')}" if pp else ''))
         return len(rows)
+    # 2026-08-28: normalize batch keys — PostgREST returns
+    # PGRST102 "All object keys must match" when different rows in
+    # the same batch have different key sets. This happens naturally
+    # here: preseason rows have some enrichment fields regular-season
+    # rows don't (or vice versa depending on ESPN/pull availability).
+    # Union keys, fill missing with None.
+    all_keys = set()
+    for row in rows: all_keys.update(row.keys())
+    for row in rows:
+        for k in all_keys:
+            if k not in row: row[k] = None
     r = requests.post(
         f'{SB}/rest/v1/nfl_game_context?on_conflict=game_id',
         headers=H_WRITE, json=rows, timeout=30,
