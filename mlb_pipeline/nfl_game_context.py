@@ -970,6 +970,23 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     row['signal_confluence_net'] = conf_net
     row['signal_confluence_breakdown'] = breakdown
 
+    # 2026-08-28: expose per-team defense stats on the row so downstream
+    # signals (nfl_def_matchup_pass_top, _bottom, _rush_top, _ppg_extreme_low)
+    # can read ctx.home_def_pass_ypg / ctx.away_def_rush_ypg / etc.
+    # home_def / away_def already loaded above for compute_projections.
+    row['home_def_ppg']              = home_def.get('def_ppg')
+    row['home_def_ypg']              = home_def.get('def_ypg')
+    row['home_def_pass_ypg']         = home_def.get('def_pass_ypg')
+    row['home_def_rush_ypg']         = home_def.get('def_rush_ypg')
+    row['home_def_pass_epa_allowed'] = home_def.get('def_pass_epa_allowed')
+    row['home_def_rush_epa_allowed'] = home_def.get('def_rush_epa_allowed')
+    row['away_def_ppg']              = away_def.get('def_ppg')
+    row['away_def_ypg']              = away_def.get('def_ypg')
+    row['away_def_pass_ypg']         = away_def.get('def_pass_ypg')
+    row['away_def_rush_ypg']         = away_def.get('def_rush_ypg')
+    row['away_def_pass_epa_allowed'] = away_def.get('def_pass_epa_allowed')
+    row['away_def_rush_epa_allowed'] = away_def.get('def_rush_epa_allowed')
+
     # 2026-08-21: Join qb_vs_team stats from nfl_qb_vs_team backfill (1425 rows
     # 2021-2025 seasons). Powers nfl_qb_owns_defense_career + related signals.
     # Fields nullable if no career data or migration not yet applied.

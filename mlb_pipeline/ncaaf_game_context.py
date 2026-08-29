@@ -95,12 +95,38 @@ def load_returning_production(season: int) -> dict:
 
 
 def load_team_stats(season: int) -> dict:
-    """Return {team: stats_row} for the season."""
+    """Return {team: stats_row} for the season, merged with defense stats.
+
+    2026-08-28: also loads ncaaf_team_defense_stats and merges the
+    def_ppg / def_pass_epa_allowed / def_rush_epa_allowed /
+    def_success_rate_allowed / def_explosiveness_allowed fields onto
+    the same per-team dict so build_context_row can flow them into
+    ctx without a signature change.
+    """
     r = requests.get(
         f'{SB}/rest/v1/ncaaf_team_stats?season=eq.{season}&season_type=eq.regular&select=*',
         headers=H_READ, timeout=15,
     )
-    return {row['team']: row for row in r.json()} if r.status_code == 200 else {}
+    stats = {row['team']: row for row in r.json()} if r.status_code == 200 else {}
+    # Merge defense stats (table may not exist yet in fresh envs — 404 → skip)
+    try:
+        d = requests.get(
+            f'{SB}/rest/v1/ncaaf_team_defense_stats?season=eq.{season}&season_type=eq.regular&select=*',
+            headers=H_READ, timeout=15)
+        if d.status_code == 200:
+            for row in (d.json() or []):
+                team = row.get('team')
+                if not team: continue
+                stats.setdefault(team, {}).update({
+                    'def_ppg':                  row.get('def_ppg'),
+                    'def_pass_epa_allowed':     row.get('def_pass_epa_allowed'),
+                    'def_rush_epa_allowed':     row.get('def_rush_epa_allowed'),
+                    'def_success_rate_allowed': row.get('def_success_rate_allowed'),
+                    'def_explosiveness_allowed': row.get('def_explosiveness_allowed'),
+                })
+    except Exception:
+        pass
+    return stats
 
 
 # Weeks 1-3 discipline (mirrors NFL Sept-4 fallback).
@@ -458,6 +484,21 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
             arp.get('returning_offense_pct'), arp.get('returning_defense_pct')),
     }
 
+    # 2026-08-28: pull defense stats attached to team_stats dict (see
+    # load_team_stats merge). Fuels ncaaf_def_* matchup signals.
+    def_fields = {
+        'home_def_ppg':                  home_stats.get('def_ppg'),
+        'home_def_pass_epa_allowed':     home_stats.get('def_pass_epa_allowed'),
+        'home_def_rush_epa_allowed':     home_stats.get('def_rush_epa_allowed'),
+        'home_def_success_rate_allowed': home_stats.get('def_success_rate_allowed'),
+        'home_def_explosiveness_allowed': home_stats.get('def_explosiveness_allowed'),
+        'away_def_ppg':                  away_stats.get('def_ppg'),
+        'away_def_pass_epa_allowed':     away_stats.get('def_pass_epa_allowed'),
+        'away_def_rush_epa_allowed':     away_stats.get('def_rush_epa_allowed'),
+        'away_def_success_rate_allowed': away_stats.get('def_success_rate_allowed'),
+        'away_def_explosiveness_allowed': away_stats.get('def_explosiveness_allowed'),
+    }
+
     row = {
         'game_id': g['game_id'],
         'game_date': g['game_date'],
@@ -478,6 +519,7 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
         'stats_source': stats_source,
         **proj,
         **ret_fields,
+        **def_fields,
         'signal_confluence_net': conf_net,
         'signal_confluence_breakdown': breakdown,
     }

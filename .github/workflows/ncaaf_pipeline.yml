@@ -197,6 +197,21 @@ jobs:
           cd mlb_pipeline
           python enrich_team_form_universal.py --sport NCAAF --days-ahead 14 || echo "team_form_universal non-fatal"
 
+      # 2026-08-28: derive per-team defense stats (PPG, pass_epa_allowed,
+      # rush_epa_allowed, success_rate_allowed, explosiveness_allowed)
+      # from opponent offense EPA. Fills the gap where ncaaf_team_stats
+      # only tracks offense-side EPA. Fuels the 4 ncaaf_def_* signals
+      # and the team-defense section of the game detail card.
+      - name: NCAAF team defense stats backfill
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_team_defense_backfill.py || echo "NCAAF defense backfill non-fatal"
+
       # 2026-08-23 season-ready: ScoresAndOdds NCAAF splits scraper.
       # Fadereport + Cleatz already scrape NCAAF via MLB workflow's shared
       # fadereport_scraper.py / cleatz_scraper.py runs (both scrape all
