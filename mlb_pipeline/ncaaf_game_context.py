@@ -97,36 +97,63 @@ def load_returning_production(season: int) -> dict:
 def load_team_stats(season: int) -> dict:
     """Return {team: stats_row} for the season, merged with defense stats.
 
-    2026-08-28: also loads ncaaf_team_defense_stats and merges the
-    def_ppg / def_pass_epa_allowed / def_rush_epa_allowed /
-    def_success_rate_allowed / def_explosiveness_allowed fields onto
-    the same per-team dict so build_context_row can flow them into
-    ctx without a signature change.
+    2026-08-29: PRIOR-SEASON FALLBACK for volumetric fields. Current
+    season (e.g. 2026) has sp_overall populated (preseason SP+) but
+    pass_yards/penalties/def_ppg/etc are all NULL until games are
+    played. Previously the "current has sp_overall → use current"
+    logic wiped every volumetric field. Now we merge: fetch BOTH
+    current and prior season stats, then for each team fill any
+    NULL current field from prior. This means Alabama's 2025 defense
+    numbers (242 pass_ypg allowed) render on their 2026 preview cards
+    until enough 2026 data accumulates.
     """
-    r = requests.get(
-        f'{SB}/rest/v1/ncaaf_team_stats?season=eq.{season}&season_type=eq.regular&select=*',
-        headers=H_READ, timeout=15,
-    )
-    stats = {row['team']: row for row in r.json()} if r.status_code == 200 else {}
-    # Merge defense stats (table may not exist yet in fresh envs — 404 → skip)
-    try:
-        d = requests.get(
-            f'{SB}/rest/v1/ncaaf_team_defense_stats?season=eq.{season}&season_type=eq.regular&select=*',
-            headers=H_READ, timeout=15)
-        if d.status_code == 200:
-            for row in (d.json() or []):
-                team = row.get('team')
-                if not team: continue
-                stats.setdefault(team, {}).update({
-                    'def_ppg':                  row.get('def_ppg'),
-                    'def_pass_epa_allowed':     row.get('def_pass_epa_allowed'),
-                    'def_rush_epa_allowed':     row.get('def_rush_epa_allowed'),
-                    'def_success_rate_allowed': row.get('def_success_rate_allowed'),
-                    'def_explosiveness_allowed': row.get('def_explosiveness_allowed'),
-                })
-    except Exception:
-        pass
-    return stats
+    def _fetch(s: int) -> dict:
+        r = requests.get(
+            f'{SB}/rest/v1/ncaaf_team_stats?season=eq.{s}&season_type=eq.regular&select=*',
+            headers=H_READ, timeout=15,
+        )
+        out = {row['team']: row for row in r.json()} if r.status_code == 200 else {}
+        # 2026-08-29: ONLY enrich existing D1 teams with defense fields.
+        # ncaaf_team_defense_stats may include D2/D3 rows w/ 0.0000 EPA
+        # (they play FBS teams occasionally). setdefault previously added
+        # them as new team entries — inflated dict to ~700 teams, drove
+        # `_populated_pct` below 60%, triggered "source=none" fallback.
+        try:
+            d = requests.get(
+                f'{SB}/rest/v1/ncaaf_team_defense_stats?season=eq.{s}&season_type=eq.regular&select=*',
+                headers=H_READ, timeout=15)
+            if d.status_code == 200:
+                for row in (d.json() or []):
+                    team = row.get('team')
+                    if not team or team not in out: continue
+                    out[team].update({
+                        'def_ppg':                  row.get('def_ppg'),
+                        'def_pass_ypg':             row.get('def_pass_ypg'),
+                        'def_rush_ypg':             row.get('def_rush_ypg'),
+                        'def_pass_epa_allowed':     row.get('def_pass_epa_allowed'),
+                        'def_rush_epa_allowed':     row.get('def_rush_epa_allowed'),
+                        'def_success_rate_allowed': row.get('def_success_rate_allowed'),
+                        'def_explosiveness_allowed': row.get('def_explosiveness_allowed'),
+                    })
+        except Exception:
+            pass
+        return out
+
+    current = _fetch(season)
+    prior = _fetch(season - 1)
+
+    # Merge: for each team seen in either, fill NULL current fields from prior.
+    merged = {}
+    all_teams = set(current.keys()) | set(prior.keys())
+    for team in all_teams:
+        cur_row = current.get(team) or {}
+        pri_row = prior.get(team) or {}
+        merged_row = dict(cur_row)
+        for k, v in pri_row.items():
+            if merged_row.get(k) is None:
+                merged_row[k] = v
+        merged[team] = merged_row
+    return merged
 
 
 # Weeks 1-3 discipline (mirrors NFL Sept-4 fallback).
@@ -633,6 +660,16 @@ def upsert(rows: list, dry_run: bool = False) -> int:
     # strip it, so new fields self-heal.
     import re as _re
     _COL_RE = _re.compile(r"Could not find the '([^']+)' column of '[^']+' in the schema cache")
+    # 2026-08-29: normalize batch keys BEFORE first attempt. Per-team
+    # merge fallback produces variable key sets across rows, and
+    # PostgREST throws PGRST102 "All object keys must match" on
+    # heterogeneous batches. Union keys, fill missing with None so
+    # every row has the same shape.
+    _all_keys = set()
+    for _row in rows: _all_keys.update(_row.keys())
+    for _row in rows:
+        for _k in _all_keys:
+            if _k not in _row: _row[_k] = None
     r = requests.post(
         f'{SB}/rest/v1/ncaaf_game_context?on_conflict=game_id',
         headers=H_WRITE, json=rows, timeout=30,
