@@ -8873,10 +8873,17 @@ setJerryHistory(prev => {
         supabase.from('jerry_reads')
           .select('result,conviction,call_market,call_side,sport,game_id,game_date')
           .gte('game_date', thirty).gte('conviction', 60).not('result','is',null),
-        // Real odds now come with props via book_line. Include game_date
-        // for monthly bucketing + conviction so we can filter COVERAGE stubs.
+        // 2026-08-29 BUG FIX (mirrors compute_surface_records.py fix):
+        // book_line is the PROP LINE (0.5 for hits, 4.5 for Ks), NOT
+        // American odds. Previously piped book_line into
+        // winPayoutFromAmerican() which fell back to 0.91 (flat -110)
+        // for every prop win — inflating unit totals vs true juiced
+        // payouts (e.g. hits O 0.5 at -280 pays 0.36u, not 0.91u).
+        // Yesterday: real +1.59u vs app-inflated +7.56u = 4.8x drift.
+        // Fix: SELECT book_over_odds/book_under_odds + direction, pick
+        // the right column at compute time.
         supabase.from('mlb_pipeline_props')
-          .select('result,tier,conviction,prop_type,book_line,game_date')
+          .select('result,tier,conviction,prop_type,direction,book_over_odds,book_under_odds,game_date')
           .gte('game_date', thirty).in('tier', ['PRIME','STRONG']).not('result','is',null),
       ]);
 
@@ -9047,7 +9054,12 @@ setJerryHistory(prev => {
         const gd = r.game_date || '';
         if (gd < SHARP_RECORD_EPOCH) return;
         const isY = gd === yesterdayET;
-        const payout = winPayoutFromAmerican(r.book_line);
+        // 2026-08-29: pick real American odds for the direction the
+        // prop was on (over or under). book_line is the point line,
+        // not odds — using it here previously inflated all prop-win
+        // payouts to 0.91 (fake -110 fallback).
+        const odds = r.direction === 'over' ? r.book_over_odds : r.book_under_odds;
+        const payout = winPayoutFromAmerican(odds);
         if (gd >= curMonthStart) bump(r, payout, true, isY);
         else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, payout, false, isY);
       });
