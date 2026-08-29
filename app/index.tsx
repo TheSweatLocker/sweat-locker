@@ -15685,10 +15685,37 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                        mlbGameContext[selectedGame.id] || null)
                     : gamesSport === 'NFL'
                       ? (nflGameContextMap?.[`${stripMascot(selectedGame.away_team||'')}@${stripMascot(selectedGame.home_team||'')}`] ||
-                         nflGameContextMap?.[selectedGame.id] || null)
+                         nflGameContextMap?.[selectedGame.id] ||
+                         // 2026-08-29: fallback substring match same as NCAAF
+                         (() => {
+                           const aRaw = String(selectedGame.away_team||'').toLowerCase();
+                           const hRaw = String(selectedGame.home_team||'').toLowerCase();
+                           for (const [k, v] of Object.entries(nflGameContextMap || {})) {
+                             if (!k.includes('@')) continue;
+                             const [ctxAway, ctxHome] = k.split('@');
+                             if (aRaw.includes(ctxAway.toLowerCase()) && hRaw.includes(ctxHome.toLowerCase())) return v;
+                           }
+                           return null;
+                         })())
                     : gamesSport === 'NCAAF'
                       ? (ncaafGameContextMap?.[`${stripMascot(selectedGame.away_team||'')}@${stripMascot(selectedGame.home_team||'')}`] ||
-                         ncaafGameContextMap?.[selectedGame.id] || null)
+                         ncaafGameContextMap?.[selectedGame.id] ||
+                         // 2026-08-29: fallback for teams whose mascot isn't in
+                         // stripMascot's nickname list (Wolfpack, Buffaloes,
+                         // Pirates, Crimson Tide, Green Wave, etc.). Ctx keys
+                         // are `away@home` w/ short team names; check if either
+                         // Odds-API name CONTAINS the short name. Fixes blank
+                         // Virginia / NC State / Colorado / Ole Miss cards.
+                         (() => {
+                           const aRaw = String(selectedGame.away_team||'').toLowerCase();
+                           const hRaw = String(selectedGame.home_team||'').toLowerCase();
+                           for (const [k, v] of Object.entries(ncaafGameContextMap || {})) {
+                             if (!k.includes('@')) continue;
+                             const [ctxAway, ctxHome] = k.split('@');
+                             if (aRaw.includes(ctxAway.toLowerCase()) && hRaw.includes(ctxHome.toLowerCase())) return v;
+                           }
+                           return null;
+                         })())
                       : null
                 }
                 gamesSport={gamesSport}

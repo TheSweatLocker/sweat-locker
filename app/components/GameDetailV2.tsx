@@ -1226,17 +1226,30 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
     (async () => {
       const currentSeason = Number(ctx?.season) || new Date().getFullYear();
       const trySeasons = [currentSeason, currentSeason - 1];
+      // 2026-08-29: when props' homeTeam/awayTeam are Odds-API mascot
+      // names ("Virginia Cavaliers") that don't match CFBD short names
+      // ("Virginia"), the exact `.in('team', [...])` misses. Do a
+      // per-season pull of ALL teams and fuzzy-match by substring so
+      // we always resolve a row when the data exists.
       for (const s of trySeasons) {
         const {data} = await client.from('ncaaf_team_stats')
-          .select('*').in('team', [homeTeam, awayTeam]).eq('season', s);
+          .select('*').eq('season', s);
         if (Array.isArray(data) && data.length > 0) {
-          const map: any = {};
-          for (const r of data) map[r.team] = r;
-          // Only pick if at least one team has meaningful non-null values
-          const anyReal = data.some((r: any) =>
-            r.sp_overall != null || r.off_epa_per_play != null || r.points_per_game != null);
+          const _norm = (n: string) => (n || '').toLowerCase().replace(/\s+/g, ' ').trim();
+          const hNorm = _norm(homeTeam);
+          const aNorm = _norm(awayTeam);
+          const homeRow = data.find((r: any) => {
+            const t = _norm(r.team);
+            return t === hNorm || hNorm.includes(t) || t.includes(hNorm);
+          });
+          const awayRow = data.find((r: any) => {
+            const t = _norm(r.team);
+            return t === aNorm || aNorm.includes(t) || t.includes(aNorm);
+          });
+          const anyReal = [homeRow, awayRow].some((r: any) => r &&
+            (r.sp_overall != null || r.off_epa_per_play != null || r.points_per_game != null));
           if (anyReal) {
-            setStats({home: map[homeTeam], away: map[awayTeam]});
+            setStats({home: homeRow, away: awayRow});
             setSeasonUsed(s);
             return;
           }
