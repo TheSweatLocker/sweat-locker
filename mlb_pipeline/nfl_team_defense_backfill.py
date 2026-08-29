@@ -64,7 +64,7 @@ def load_results(season: int) -> list:
 
 def load_team_stats(season: int) -> dict:
     r = requests.get(f'{SB}/rest/v1/nfl_team_stats', headers=H,
-        params={'season': f'eq.{season}', 'season_type': 'eq.reg',
+        params={'season': f'eq.{season}', 'season_type': 'eq.REG',
                 'select': '*'}, timeout=30)
     return {row['team']: row for row in (r.json() if isinstance(r.json(), list) else [])}
 
@@ -114,7 +114,7 @@ def backfill(season: int, dry_run: bool = False) -> int:
         n = d['games']
         if n < 1: continue
         rows.append({
-            'team': team, 'season': season, 'season_type': 'reg',
+            'team': team, 'season': season, 'season_type': 'REG',
             'games': n,
             'def_ppg': round(d['pts_allowed'] / n, 2),
             'def_pass_ypg': round(d['pass_yds_allowed'] / n, 2),

@@ -86,6 +86,51 @@ def fetch_advanced_stats(season: int) -> dict:
     return out
 
 
+def fetch_season_stats(season: int) -> dict:
+    """CFBD /stats/season (non-advanced) — raw volumetric stats.
+
+    Returns {team: {pass_yards, rush_yards, penalties, penalty_yards,
+    first_downs, third_down_conv, third_downs, fourth_down_conv,
+    fourth_downs, turnovers, fumbles_lost, possession_time_sec,
+    def_sacks, def_ints, def_fumbles_rec, ...}}.
+
+    CFBD returns list of {team, statName, statValue} — pivoting here.
+    """
+    rows = cfbd_get('/stats/season', {'year': season})
+    # CFBD stat name → our column name
+    stat_map = {
+        'netPassingYards':          'pass_yards',
+        'passingTDs':               'pass_tds',
+        'passCompletions':          'pass_completions',
+        'passAttempts':             'pass_attempts',
+        'passesIntercepted':        'pass_ints',
+        'rushingYards':             'rush_yards',
+        'rushingTDs':               'rush_tds',
+        'rushingAttempts':          'rush_attempts',
+        'firstDowns':               'first_downs',
+        'thirdDownConversions':     'third_down_conv',
+        'thirdDowns':               'third_downs',
+        'fourthDownConversions':    'fourth_down_conv',
+        'fourthDowns':              'fourth_downs',
+        'penalties':                'penalties',
+        'penaltyYards':             'penalty_yards',
+        'turnovers':                'turnovers',
+        'fumblesLost':              'fumbles_lost',
+        'possessionTime':           'possession_time_sec',
+        'sacks':                    'def_sacks',
+        'interceptions':            'def_ints',
+        'fumblesRecovered':         'def_fumbles_rec',
+    }
+    out: dict = {}
+    for row in rows:
+        team = row.get('team')
+        stat_name = row.get('statName')
+        stat_val = row.get('statValue')
+        if not team or stat_name not in stat_map: continue
+        out.setdefault(team, {})[stat_map[stat_name]] = _i(stat_val)
+    return out
+
+
 def fetch_sp_ratings(season: int) -> dict:
     """Return {team: {sp_overall, sp_offense, sp_defense}}."""
     rows = cfbd_get('/ratings/sp', {'year': season})
@@ -136,8 +181,12 @@ def run(seasons: list) -> None:
         print(f'\n--- Season {season} ---')
         adv = fetch_advanced_stats(season)
         sp = fetch_sp_ratings(season)
-        print(f'  advanced stats: {len(adv)} teams · SP+ ratings: {len(sp)} teams')
-        team_set = set(adv.keys()) | set(sp.keys())
+        # 2026-08-28: also pull raw volumetric stats (yards, penalties,
+        # downs, TOP, turnovers) that the /stats/season/advanced endpoint
+        # doesn't return. Feeds the game-detail team-stats section.
+        vol = fetch_season_stats(season)
+        print(f'  advanced: {len(adv)} · SP+: {len(sp)} · vol: {len(vol)} teams')
+        team_set = set(adv.keys()) | set(sp.keys()) | set(vol.keys())
         rows = []
         for team in sorted(team_set):
             row = {
@@ -148,6 +197,7 @@ def run(seasons: list) -> None:
             }
             row.update(adv.get(team, {}))
             row.update(sp.get(team, {}))
+            row.update(vol.get(team, {}))
             rows.append(row)
         n = upsert(rows)
         print(f'  ✓ upserted {n} team-season rows')

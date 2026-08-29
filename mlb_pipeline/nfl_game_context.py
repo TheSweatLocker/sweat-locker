@@ -112,7 +112,7 @@ def load_team_def_stats(season: int) -> dict:
     Falls back to prior season if current is empty (preseason case)."""
     for candidate in (season, season - 1):
         r = requests.get(
-            f'{SB}/rest/v1/nfl_team_defense_stats?season=eq.{candidate}&season_type=eq.reg&select=*',
+            f'{SB}/rest/v1/nfl_team_defense_stats?season=eq.{candidate}&season_type=eq.REG&select=*',
             headers=H_READ, timeout=15,
         )
         if r.status_code == 200:
@@ -986,6 +986,53 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     row['away_def_rush_ypg']         = away_def.get('def_rush_ypg')
     row['away_def_pass_epa_allowed'] = away_def.get('def_pass_epa_allowed')
     row['away_def_rush_epa_allowed'] = away_def.get('def_rush_epa_allowed')
+
+    # 2026-08-28: expose full offense + defense + discipline stats on
+    # the row for the game-detail team-stats section. All derived from
+    # already-populated nfl_team_stats (nflverse pull). Per-game math.
+    def _per_game(stats: dict, field: str):
+        n = stats.get('games') or 0
+        v = stats.get(field)
+        if v is None or not n: return None
+        try: return round(float(v) / float(n), 2)
+        except (TypeError, ValueError): return None
+    # Penalty tendencies
+    row['home_penalties_pg']       = _per_game(home_stats, 'penalties')
+    row['home_penalty_yds_pg']     = _per_game(home_stats, 'penalty_yards')
+    row['away_penalties_pg']       = _per_game(away_stats, 'penalties')
+    row['away_penalty_yds_pg']     = _per_game(away_stats, 'penalty_yards')
+    # Offense passing volume + efficiency
+    row['home_pass_yds_pg']        = _per_game(home_stats, 'pass_yards')
+    row['home_pass_tds_pg']        = _per_game(home_stats, 'pass_tds')
+    row['home_pass_ints_pg']       = _per_game(home_stats, 'pass_ints')
+    row['home_pass_cpoe']          = home_stats.get('pass_cpoe')
+    row['home_pass_epa_pg']        = _per_game(home_stats, 'pass_epa')
+    row['away_pass_yds_pg']        = _per_game(away_stats, 'pass_yards')
+    row['away_pass_tds_pg']        = _per_game(away_stats, 'pass_tds')
+    row['away_pass_ints_pg']       = _per_game(away_stats, 'pass_ints')
+    row['away_pass_cpoe']          = away_stats.get('pass_cpoe')
+    row['away_pass_epa_pg']        = _per_game(away_stats, 'pass_epa')
+    # Offense rushing volume + efficiency
+    row['home_rush_yds_pg']        = _per_game(home_stats, 'rush_yards')
+    row['home_rush_tds_pg']        = _per_game(home_stats, 'rush_tds')
+    row['home_rush_epa_pg']        = _per_game(home_stats, 'rush_epa')
+    row['home_rush_first_downs_pg'] = _per_game(home_stats, 'rush_first_downs')
+    row['away_rush_yds_pg']        = _per_game(away_stats, 'rush_yards')
+    row['away_rush_tds_pg']        = _per_game(away_stats, 'rush_tds')
+    row['away_rush_epa_pg']        = _per_game(away_stats, 'rush_epa')
+    row['away_rush_first_downs_pg'] = _per_game(away_stats, 'rush_first_downs')
+    # Defense event counts per game (from own-team nfl_team_stats def_* fields)
+    row['home_def_sacks_pg']       = _per_game(home_stats, 'def_sacks')
+    row['home_def_ints_pg']        = _per_game(home_stats, 'def_ints')
+    row['home_def_fumbles_pg']     = _per_game(home_stats, 'def_fumbles_forced')
+    row['home_def_tds_pg']         = _per_game(home_stats, 'def_tds')
+    row['away_def_sacks_pg']       = _per_game(away_stats, 'def_sacks')
+    row['away_def_ints_pg']        = _per_game(away_stats, 'def_ints')
+    row['away_def_fumbles_pg']     = _per_game(away_stats, 'def_fumbles_forced')
+    row['away_def_tds_pg']         = _per_game(away_stats, 'def_tds')
+    # QB pressure allowed (own O-line)
+    row['home_sacks_suffered_pg']  = _per_game(home_stats, 'sacks_suffered')
+    row['away_sacks_suffered_pg']  = _per_game(away_stats, 'sacks_suffered')
 
     # 2026-08-21: Join qb_vs_team stats from nfl_qb_vs_team backfill (1425 rows
     # 2021-2025 seasons). Powers nfl_qb_owns_defense_career + related signals.

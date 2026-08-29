@@ -98,12 +98,27 @@ def backfill(season: int, dry_run: bool = False) -> int:
         def_agg[defender]['success_rate_allowed'] += float(offender_stats.get('off_success_rate') or 0)
         def_agg[defender]['explosiveness_allowed'] += float(offender_stats.get('off_explosiveness') or 0)
 
+    # 2026-08-28: filter to D1 only — a team qualifies as "D1" if it
+    # has a row in ncaaf_team_stats (CFBD advanced-stats coverage).
+    # Previous unfiltered version wrote 699 rows including hundreds of
+    # D2/D3 teams (Nichols College, Bethel MN, Wartburg, etc.) whose
+    # EPA fields came back 0.0000 because no opponent stats existed.
+    d1_teams = set(stats_map.keys())
+    skipped_non_d1 = 0
     for g in results:
         home, away = g.get('home_team'), g.get('away_team')
         hs, as_ = g.get('home_score'), g.get('away_score')
         if not home or not away or hs is None or as_ is None: continue
-        _attribute(home, stats_map.get(away, {}), as_)
-        _attribute(away, stats_map.get(home, {}), hs)
+        if home in d1_teams:
+            _attribute(home, stats_map.get(away, {}), as_)
+        else:
+            skipped_non_d1 += 1
+        if away in d1_teams:
+            _attribute(away, stats_map.get(home, {}), hs)
+        else:
+            skipped_non_d1 += 1
+    if skipped_non_d1:
+        print(f'  skipped {skipped_non_d1} non-D1 team-game attributions')
 
     rows = []
     now = datetime.now(timezone.utc).isoformat()

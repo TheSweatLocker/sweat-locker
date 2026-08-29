@@ -499,6 +499,50 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
         'away_def_explosiveness_allowed': away_stats.get('def_explosiveness_allowed'),
     }
 
+    # 2026-08-28: volumetric + discipline stats from ncaaf_team_stats
+    # (populated by CFBD /stats/season pull). Per-game averages using
+    # games count on the stat row.
+    def _pg(stats: dict, field: str):
+        n = stats.get('games') or 0
+        v = stats.get(field)
+        if v is None or not n: return None
+        try: return round(float(v) / float(n), 2)
+        except (TypeError, ValueError): return None
+    vol_fields = {
+        # Penalty tendencies
+        'home_penalties_pg':     _pg(home_stats, 'penalties'),
+        'home_penalty_yds_pg':   _pg(home_stats, 'penalty_yards'),
+        'away_penalties_pg':     _pg(away_stats, 'penalties'),
+        'away_penalty_yds_pg':   _pg(away_stats, 'penalty_yards'),
+        # Offense volume
+        'home_pass_yds_pg':      _pg(home_stats, 'pass_yards'),
+        'home_rush_yds_pg':      _pg(home_stats, 'rush_yards'),
+        'home_pass_tds_pg':      _pg(home_stats, 'pass_tds'),
+        'home_rush_tds_pg':      _pg(home_stats, 'rush_tds'),
+        'away_pass_yds_pg':      _pg(away_stats, 'pass_yards'),
+        'away_rush_yds_pg':      _pg(away_stats, 'rush_yards'),
+        'away_pass_tds_pg':      _pg(away_stats, 'pass_tds'),
+        'away_rush_tds_pg':      _pg(away_stats, 'rush_tds'),
+        # Situational efficiency
+        'home_third_down_pct':   (round(100 * (home_stats.get('third_down_conv') or 0) / home_stats['third_downs'], 1)
+                                   if home_stats.get('third_downs') else None),
+        'away_third_down_pct':   (round(100 * (away_stats.get('third_down_conv') or 0) / away_stats['third_downs'], 1)
+                                   if away_stats.get('third_downs') else None),
+        # Ball security
+        'home_turnovers_pg':     _pg(home_stats, 'turnovers'),
+        'away_turnovers_pg':     _pg(away_stats, 'turnovers'),
+        # Time of possession (minutes/game)
+        'home_top_min':          (round((home_stats.get('possession_time_sec') or 0) / (home_stats.get('games') or 1) / 60, 1)
+                                   if home_stats.get('possession_time_sec') else None),
+        'away_top_min':          (round((away_stats.get('possession_time_sec') or 0) / (away_stats.get('games') or 1) / 60, 1)
+                                   if away_stats.get('possession_time_sec') else None),
+        # Defensive events (own team's D)
+        'home_def_sacks_pg':     _pg(home_stats, 'def_sacks'),
+        'home_def_ints_pg':      _pg(home_stats, 'def_ints'),
+        'away_def_sacks_pg':     _pg(away_stats, 'def_sacks'),
+        'away_def_ints_pg':      _pg(away_stats, 'def_ints'),
+    }
+
     row = {
         'game_id': g['game_id'],
         'game_date': g['game_date'],
@@ -520,6 +564,7 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
         **proj,
         **ret_fields,
         **def_fields,
+        **vol_fields,
         'signal_confluence_net': conf_net,
         'signal_confluence_breakdown': breakdown,
     }
