@@ -109,6 +109,28 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             skipped += 1
             continue
 
+        # 2026-08-29 CRITICAL FIX: skip if a REAL synthesis row already
+        # exists for this (sport, game_id, game_date). Sync bridge was
+        # UPSERTING with `Prefer: resolution=merge-duplicates` and
+        # OVERWRITING real Jerry synth output ('synthesis_v1' prompt)
+        # with placeholder bridge output ('mlb_ctx_bridge_v1' + 'Analysis
+        # pending' short_read). Every workflow cycle: synth wrote reads,
+        # then sync bridge ran downstream and wiped them. All 17 MLB
+        # games showed "Analysis pending" all day 8/29 as a result.
+        existing = requests.get(
+            f'{SB}/rest/v1/jerry_reads',
+            params={'sport': f'eq.{sport}', 'game_id': f'eq.{gid}',
+                    'game_date': f'eq.{gd}',
+                    'select': 'prompt_version'},
+            headers=H, timeout=10,
+        )
+        if existing.status_code == 200:
+            rows = existing.json()
+            if rows and rows[0].get('prompt_version') and \
+               not str(rows[0].get('prompt_version')).endswith('_ctx_bridge_v1'):
+                skipped += 1
+                continue
+
         # Try to find narrative from jerry_cache. cache_key format is
         # game_read_{game_id}_{generation_date} — generation_date != game_date
         # (LLM often runs day-of-writing not game-day). Match by prefix and
