@@ -543,6 +543,25 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
     except Exception:
         pass
 
+    # 2026-08-29 HITS_OVER 0.5 SHARP EXCLUSION: batter hits O 0.5 is
+    # Ledger material only (parlay legs), never a Sharp Card standalone.
+    # These props hit ~60-70% at real juice (-180 to -280) = break-even
+    # at BEST; only positive-EV as combined parlay legs where correlated
+    # hits multiply. Force COVERAGE regardless of scorer output — the
+    # Ledger generator picks them up separately as parlay candidates.
+    # Prior enforcement lived in backfill_prop_lookback.py but that runs
+    # AFTER the scorer, so scorer output kept overwriting the demotion.
+    # Row still lands in DB (graded, tracked); just filtered off Sharp
+    # Card (which selects tier IN ('PRIME','STRONG')).
+    if prop.get('prop_type') == 'hits_over' and (prop.get('direction') or '').lower() == 'over':
+        try:
+            if float(prop.get('prop_line') or 99) <= 0.5:
+                tier = 'COVERAGE'
+                conviction = 0
+                winner_side = 'PASS'
+        except (TypeError, ValueError):
+            pass
+
     return PropDecision(
         sport=sport, game_date=prop.get('game_date',''),
         game_id=prop.get('game_id'), player_name=prop.get('player_name',''),
