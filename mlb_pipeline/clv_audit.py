@@ -169,15 +169,25 @@ def pull_window(days=60):
     backstop a historical audit)."""
     today = date.today()
     since = (today - timedelta(days=days)).isoformat()
-    qs = urlencode({
-        'game_date': f'gte.{since}',
-        'select': ('game_id,game_date,home_score,away_score,'
-                   'open_total,close_total,open_spread,close_spread,'
-                   'away_ml_open,away_ml_close,home_ml_open,home_ml_close,'
-                   'over_lean,spread_lean,sweat_dimensions,sweat_score,primary_play'),
-        'order': 'game_date.asc',
-    })
-    rows = _get(f'{SU}/rest/v1/mlb_game_results?{qs}')
+    # 2026-08-28: paginate — 60d × ~15 games = ~900, sitting on the 1k
+    # PostgREST cap. Any bump via --days or a DH-heavy stretch silently
+    # dropped the tail from the CLV audit.
+    rows = []
+    for off in range(0, 20000, 1000):
+        qs = urlencode({
+            'game_date': f'gte.{since}',
+            'select': ('game_id,game_date,home_score,away_score,'
+                       'open_total,close_total,open_spread,close_spread,'
+                       'away_ml_open,away_ml_close,home_ml_open,home_ml_close,'
+                       'over_lean,spread_lean,sweat_dimensions,sweat_score,primary_play'),
+            'order': 'game_date.asc',
+            'limit': 1000,
+            'offset': off,
+        })
+        chunk = _get(f'{SU}/rest/v1/mlb_game_results?{qs}')
+        if not isinstance(chunk, list): break
+        rows.extend(chunk)
+        if len(chunk) < 1000: break
     out = []
     for r in rows:
         if r.get('home_score') is None:

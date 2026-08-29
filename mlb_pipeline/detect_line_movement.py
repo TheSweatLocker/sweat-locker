@@ -66,16 +66,25 @@ def detect_steam(sport: str, lookback_hours: int, now_iso: str,
     """Compare each (game, market, book, side)'s two most-recent snapshots.
     When 2+ books shifted the same direction within STEAM_WINDOW_MIN, emit."""
     since = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
-    r = requests.get(f'{SB}/rest/v1/line_history', headers=H_READ,
-        params={'sport': f'eq.{sport}',
-                'captured_at': f'gte.{since}',
-                'select': 'game_id,matchup,market,book,side,line,price,captured_at',
-                'order': 'captured_at.asc', 'limit': 5000},
-        timeout=30)
-    if r.status_code != 200:
-        print(f'  line_history read failed: {r.status_code}'); return []
-    rows = r.json()
-    if not isinstance(rows, list) or not rows:
+    # 2026-08-28: paginate — PostgREST caps at 1000/req. Prior client
+    # `limit=5000` was truncated by the server; a full slate × 5 books ×
+    # 3 markets × 2 sides × multi-snapshot easily blew past 1000, so
+    # STEAM missed later-snapshot moves. Loop offset-based in 1k chunks.
+    rows = []
+    for off in range(0, 20000, 1000):
+        r = requests.get(f'{SB}/rest/v1/line_history', headers=H_READ,
+            params={'sport': f'eq.{sport}',
+                    'captured_at': f'gte.{since}',
+                    'select': 'game_id,matchup,market,book,side,line,price,captured_at',
+                    'order': 'captured_at.asc', 'limit': 1000, 'offset': off},
+            timeout=30)
+        if r.status_code != 200:
+            print(f'  line_history read failed: {r.status_code}'); return []
+        chunk = r.json()
+        if not isinstance(chunk, list): return []
+        rows.extend(chunk)
+        if len(chunk) < 1000: break
+    if not rows:
         return []
 
     # Group snapshots per (game, market, book, side) → time-ordered list
@@ -166,16 +175,21 @@ def detect_rlm_and_limit(sport: str, lookback_hours: int, now_iso: str,
         if key not in latest_by_gm:
             latest_by_gm[key] = r
 
-    # Also pull latest line_history to compare movement direction
-    lh = requests.get(f'{SB}/rest/v1/line_history', headers=H_READ,
-        params={'sport': f'eq.{sport}',
-                'captured_at': f'gte.{since}',
-                'select': 'game_id,matchup,market,side,line,price,captured_at',
-                'order': 'captured_at.asc', 'limit': 5000},
-        timeout=30)
-    if lh.status_code != 200: return []
-    lh_rows = lh.json()
-    if not isinstance(lh_rows, list): return []
+    # Also pull latest line_history to compare movement direction —
+    # paginate for the same reason as detect_steam (server-side 1k cap).
+    lh_rows = []
+    for off in range(0, 20000, 1000):
+        lh = requests.get(f'{SB}/rest/v1/line_history', headers=H_READ,
+            params={'sport': f'eq.{sport}',
+                    'captured_at': f'gte.{since}',
+                    'select': 'game_id,matchup,market,side,line,price,captured_at',
+                    'order': 'captured_at.asc', 'limit': 1000, 'offset': off},
+            timeout=30)
+        if lh.status_code != 200: return []
+        chunk = lh.json()
+        if not isinstance(chunk, list): return []
+        lh_rows.extend(chunk)
+        if len(chunk) < 1000: break
 
     # Per (game, market, side) compute first→last delta
     grouped: dict = defaultdict(list)

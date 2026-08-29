@@ -157,17 +157,24 @@ def run(sport: str = 'MLB', game_date: str | None = None,
     gd = game_date or _et_today()
     print(f'=== detect_reverse_line_move · {sport} · {gd} ===')
 
-    # Pull all snapshots for this sport + date
-    r = requests.get(f'{SB}/rest/v1/line_snapshot', headers=H_READ,
-        params={'sport': f'eq.{sport}',
-                'snapshot_ts': f'gte.{gd}T00:00:00',
-                'select': 'game_id,market,snapshot_ts,pick_side,money_pct,'
-                          'bets_pct,line,odds_pick',
-                'order': 'snapshot_ts.asc'},
-        timeout=15)
-    snaps = r.json() if r.status_code == 200 else []
-    if not isinstance(snaps, list):
-        print(f'  fetch failed: {snaps}'); return 0
+    # Pull all snapshots for this sport + date — paginate (PostgREST 1k
+    # cap). Prior version silently dropped later timestamps once a full
+    # slate × hourly OC snapshots × sides exceeded 1000 rows, missing
+    # the very RLM candidates the detector exists to catch.
+    snaps = []
+    for off in range(0, 20000, 1000):
+        r = requests.get(f'{SB}/rest/v1/line_snapshot', headers=H_READ,
+            params={'sport': f'eq.{sport}',
+                    'snapshot_ts': f'gte.{gd}T00:00:00',
+                    'select': 'game_id,market,snapshot_ts,pick_side,money_pct,'
+                              'bets_pct,line,odds_pick',
+                    'order': 'snapshot_ts.asc', 'limit': 1000, 'offset': off},
+            timeout=15)
+        chunk = r.json() if r.status_code == 200 else []
+        if not isinstance(chunk, list):
+            print(f'  fetch failed: {chunk}'); return 0
+        snaps.extend(chunk)
+        if len(chunk) < 1000: break
     print(f'  {len(snaps)} snapshots pulled')
 
     # Group by (game_id, market)

@@ -212,15 +212,28 @@ def check_sharp_source_dropped() -> Optional[dict]:
     """Alert if any sharp source (CZ/FR/OC) row count drops >50% today vs
     trailing 7d average. Silent scraper death."""
     today = _et_today()
-    r = requests.get(f'{SB}/rest/v1/external_picks',
-        params={'date': f'gte.{_days_ago(8)}', 'select': 'source,date'},
-        headers=H_READ, timeout=15)
-    if r.status_code != 200:
-        return None
-    picks = r.json() if isinstance(r.json(), list) else []
+    # 2026-08-28 bug fixes:
+    #   1. `date` column doesn't exist on external_picks — the real
+    #      column is `game_date`. Prior query matched everything (or
+    #      nothing on strict Postgres) so the drop-detection baseline
+    #      was silently garbage.
+    #   2. No pagination + no limit → PostgREST 1k cap silently
+    #      truncated an ~3600-row 8d slate, understating the baseline
+    #      and firing false `sharp_source_dropped` alerts.
+    picks = []
+    for off in range(0, 20000, 1000):
+        r = requests.get(f'{SB}/rest/v1/external_picks',
+            params={'game_date': f'gte.{_days_ago(8)}',
+                    'select': 'source,game_date',
+                    'limit': 1000, 'offset': off},
+            headers=H_READ, timeout=15)
+        if r.status_code != 200: return None
+        chunk = r.json() if isinstance(r.json(), list) else []
+        picks.extend(chunk)
+        if len(chunk) < 1000: break
     by_date_source: dict = defaultdict(lambda: defaultdict(int))
     for p in picks:
-        by_date_source[p.get('date')][p.get('source')] += 1
+        by_date_source[p.get('game_date')][p.get('source')] += 1
     today_counts = by_date_source.get(today, {})
     # Baseline: avg count per source over last 7 days (excluding today)
     baseline = defaultdict(list)

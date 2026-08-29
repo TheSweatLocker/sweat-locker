@@ -63,13 +63,22 @@ def load_upcoming(days_ahead: int = 21) -> list:
     outside, leaving Next Week tab empty for a week straight."""
     today = _et_now().date().isoformat()
     horizon = (_et_now() + timedelta(days=days_ahead)).date().isoformat()
-    r = requests.get(
-        f'{SB}/rest/v1/ncaaf_game_results?'
-        f'game_date=gte.{today}&game_date=lte.{horizon}'
-        f'&select=*&order=game_date.asc&limit=200',
-        headers=H_READ, timeout=15,
-    )
-    return r.json() if r.status_code == 200 else []
+    # 2026-08-28: paginate — 21d × ~60 CFB games/wk (busy Sat) can
+    # exceed 200; prior fixed limit silently dropped later games from
+    # "Next Week" tab in-season. Chunk in 1000s.
+    out = []
+    for off in range(0, 5000, 1000):
+        r = requests.get(
+            f'{SB}/rest/v1/ncaaf_game_results?'
+            f'game_date=gte.{today}&game_date=lte.{horizon}'
+            f'&select=*&order=game_date.asc&limit=1000&offset={off}',
+            headers=H_READ, timeout=15,
+        )
+        chunk = r.json() if r.status_code == 200 else []
+        if not isinstance(chunk, list): break
+        out.extend(chunk)
+        if len(chunk) < 1000: break
+    return out
 
 
 def load_returning_production(season: int) -> dict:

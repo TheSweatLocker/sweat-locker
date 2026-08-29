@@ -73,14 +73,20 @@ WEST_COAST_TEAMS = {'LA', 'LAC', 'SF', 'SEA'}
 
 
 def fetch_games(season_filter: Optional[int] = None) -> list:
-    """Pull all graded NFL games."""
+    """Pull all graded NFL games — paginate in 1k chunks (PostgREST cap)."""
     filters = ['home_score=not.is.null']
     if season_filter:
         filters.append(f'season=eq.{season_filter}')
-    url = (f'{SB}/rest/v1/nfl_game_results?'
-           f'{"&".join(filters)}&select=*&limit=5000')
-    r = requests.get(url, headers=H_READ, timeout=30)
-    return r.json() if r.status_code == 200 else []
+    out = []
+    for off in range(0, 20000, 1000):
+        url = (f'{SB}/rest/v1/nfl_game_results?'
+               f'{"&".join(filters)}&select=*&limit=1000&offset={off}')
+        r = requests.get(url, headers=H_READ, timeout=30)
+        chunk = r.json() if r.status_code == 200 else []
+        if not isinstance(chunk, list): break
+        out.extend(chunk)
+        if len(chunk) < 1000: break
+    return out
 
 
 def compute_cohorts_for_game(g: dict) -> list[str]:

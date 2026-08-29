@@ -137,17 +137,25 @@ def load_public_splits_snapshot(sb_url: str, sb_key: str, sport_code: str,
     # pulled several days before the game.
     from datetime import datetime, timedelta, timezone
     ts_cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
-    r = requests.get(
-        f'{sb_url}/rest/v1/public_splits_v2',
-        params={'sport': f'eq.{sport_code}', 'source': 'eq.so',
-                'snapshot_ts': f'gte.{ts_cutoff}',
-                'select': 'game_id,market,side,metric,value,snapshot_ts',
-                'order': 'snapshot_ts.asc',
-                'limit': '10000'},
-        headers=h, timeout=30,
-    )
-    rows = r.json() if r.status_code == 200 else []
-    if not isinstance(rows, list): return {}
+    # 2026-08-28: paginate — client `limit=10000` is capped server-side
+    # at 1000. Prior version silently dropped later snapshots for late-
+    # slate games, then combined with unsorted iteration (also fixed)
+    # to serve stale morning splits downstream.
+    rows = []
+    for off in range(0, 50000, 1000):
+        r = requests.get(
+            f'{sb_url}/rest/v1/public_splits_v2',
+            params={'sport': f'eq.{sport_code}', 'source': 'eq.so',
+                    'snapshot_ts': f'gte.{ts_cutoff}',
+                    'select': 'game_id,market,side,metric,value,snapshot_ts',
+                    'order': 'snapshot_ts.asc',
+                    'limit': 1000, 'offset': off},
+            headers=h, timeout=30,
+        )
+        chunk = r.json() if r.status_code == 200 else []
+        if not isinstance(chunk, list): return {}
+        rows.extend(chunk)
+        if len(chunk) < 1000: break
 
     # game_id → market → side → {bets_pct, money_pct}
     per_game = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))

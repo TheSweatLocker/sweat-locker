@@ -49,9 +49,16 @@ def snapshot(target_date: str | None = None) -> None:
     snap_date = target_date or today
     print(f'=== snapshot_mlb_game_context · snapshot_date={snap_date} ===')
 
+    # 2026-08-28 bug fix: was pulling first 500 rows across ALL dates
+    # in mlb_game_context (no `game_date` filter), silently truncating
+    # to whatever PostgREST returned first — corrupting the historical
+    # training set. Snapshotter is nightly for a SINGLE date; scope
+    # the query to that date and cap generously.
     r = requests.get(f'{SB}/rest/v1/mlb_game_context',
                      headers=H_READ,
-                     params={'select': ','.join(FIELDS), 'limit': '500'}, timeout=30).json()
+                     params={'game_date': f'eq.{snap_date}',
+                             'select': ','.join(FIELDS),
+                             'limit': '500'}, timeout=30).json()
     if not isinstance(r, list):
         print(f'  ⚠ fetch failed: {r}'); return
     print(f'  {len(r)} game context rows to snapshot')

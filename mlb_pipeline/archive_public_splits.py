@@ -41,18 +41,27 @@ SUPPORTED_SPORTS = ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC']
 def latest_oc(sport: str, since_hrs: int = 6) -> dict:
     """Return {(game_id, market, side): row} latest OC snapshot per key."""
     since = (datetime.now(timezone.utc) - timedelta(hours=since_hrs)).isoformat().replace('+', '%2B')
-    r = requests.get(
-        f'{SB}/rest/v1/line_snapshot'
-        f'?sport=eq.{sport}&source=eq.oddscrowd&snapshot_ts=gte.{since}'
-        f'&select=game_id,market,pick_side,money_pct,bets_pct,divergence,line,snapshot_ts'
-        f'&order=snapshot_ts.desc&limit=3000',
-        headers=H_READ, timeout=30)
-    if r.status_code != 200: return {}
+    # 2026-08-28: paginate — server caps 3000 client hint at 1000. With
+    # order=snapshot_ts.desc + first-seen-wins the LATEST rows are the
+    # ones we want, but truncation at 1000 means unique-key coverage
+    # falls off for late-in-slate games we haven't seen a snapshot for
+    # in the truncated head. Loop until short chunk.
     idx = {}
-    for row in (r.json() or []):
-        key = (row.get('game_id'), (row.get('market') or '').lower(),
-               (row.get('pick_side') or '').upper())
-        if key not in idx: idx[key] = row
+    for off in range(0, 20000, 1000):
+        r = requests.get(
+            f'{SB}/rest/v1/line_snapshot'
+            f'?sport=eq.{sport}&source=eq.oddscrowd&snapshot_ts=gte.{since}'
+            f'&select=game_id,market,pick_side,money_pct,bets_pct,divergence,line,snapshot_ts'
+            f'&order=snapshot_ts.desc&limit=1000&offset={off}',
+            headers=H_READ, timeout=30)
+        if r.status_code != 200: break
+        chunk = r.json() or []
+        if not isinstance(chunk, list): break
+        for row in chunk:
+            key = (row.get('game_id'), (row.get('market') or '').lower(),
+                   (row.get('pick_side') or '').upper())
+            if key not in idx: idx[key] = row
+        if len(chunk) < 1000: break
     return idx
 
 
@@ -69,24 +78,30 @@ def latest_fr(sport: str, since_hrs: int = 6) -> dict:
     stays consistent. Market 'spread' aliased to 'rl' for join.
     """
     since_date = (datetime.now(timezone.utc) - timedelta(hours=since_hrs)).date().isoformat()
-    r = requests.get(
-        f'{SB}/rest/v1/fadereport_signals'
-        f'?sport=eq.{sport}&snapshot_date=gte.{since_date}'
-        f'&select=game_id,market,sharp_side_norm,money_side_pct,bets_side_pct,fetched_at'
-        f'&order=fetched_at.desc&limit=3000',
-        headers=H_READ, timeout=15)
-    if r.status_code != 200: return {}
+    # 2026-08-28: paginate — server caps 3000 client hint at 1000, same
+    # bug as latest_oc above.
     idx = {}
-    for row in (r.json() or []):
-        mkt = (row.get('market') or '').lower()
-        if mkt == 'spread': mkt = 'rl'
-        side = (row.get('sharp_side_norm') or '').upper()
-        key = (row.get('game_id'), mkt, side)
-        if key not in idx:
-            idx[key] = {
-                'handle_pct':  row.get('money_side_pct'),  # money on sharp side
-                'bettors_pct': row.get('bets_side_pct'),   # tickets on sharp side
-            }
+    for off in range(0, 20000, 1000):
+        r = requests.get(
+            f'{SB}/rest/v1/fadereport_signals'
+            f'?sport=eq.{sport}&snapshot_date=gte.{since_date}'
+            f'&select=game_id,market,sharp_side_norm,money_side_pct,bets_side_pct,fetched_at'
+            f'&order=fetched_at.desc&limit=1000&offset={off}',
+            headers=H_READ, timeout=15)
+        if r.status_code != 200: break
+        chunk = r.json() or []
+        if not isinstance(chunk, list): break
+        for row in chunk:
+            mkt = (row.get('market') or '').lower()
+            if mkt == 'spread': mkt = 'rl'
+            side = (row.get('sharp_side_norm') or '').upper()
+            key = (row.get('game_id'), mkt, side)
+            if key not in idx:
+                idx[key] = {
+                    'handle_pct':  row.get('money_side_pct'),
+                    'bettors_pct': row.get('bets_side_pct'),
+                }
+        if len(chunk) < 1000: break
     return idx
 
 

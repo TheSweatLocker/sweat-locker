@@ -29,6 +29,7 @@ USAGE:
 import argparse
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import requests
@@ -263,11 +264,23 @@ def patch_result(pick_id: str, grade: str, actual: Optional[float],
         payload['actual_value'] = actual
     if note:
         payload['resolver_note'] = note
-    r = requests.patch(
-        f'{SB}/rest/v1/external_picks?id=eq.{pick_id}',
-        headers=H_WRITE, json=payload, timeout=15,
-    )
-    return r.status_code in (200, 201, 204)
+    # 2026-08-28: 3-retry with backoff. Previously a single Supabase read
+    # timeout mid-regrade would raise and kill the whole 4k-row job,
+    # leaving thousands of stale rows untouched. Now one blip logs +
+    # skips the row; the job keeps going.
+    for attempt in range(3):
+        try:
+            r = requests.patch(
+                f'{SB}/rest/v1/external_picks?id=eq.{pick_id}',
+                headers=H_WRITE, json=payload, timeout=30,
+            )
+            if r.status_code in (200, 201, 204):
+                return True
+        except requests.exceptions.RequestException:
+            if attempt == 2:
+                return False
+            time.sleep(2 ** attempt)
+    return False
 
 
 def run(sport: str = 'MLB', days: Optional[int] = None,
