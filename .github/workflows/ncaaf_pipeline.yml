@@ -157,7 +157,11 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_ncaaf_team_tendencies.py || echo "ncaaf tendencies backfill failed (non-fatal)"
+          # 2026-08-28: --days 10 covers today + upcoming weekend slate.
+          # Prior single-day default meant Wed/Thu cron runs found "no
+          # games" for the Sat slate and never wrote tendencies, so
+          # Sat's picks scored without team_form data.
+          python backfill_ncaaf_team_tendencies.py --days 10 || echo "ncaaf tendencies backfill failed (non-fatal)"
 
       # 2026-08-17: pull season aggregates from teamrankings then enrich
       # today's ctx rows with home/away season cover_pct + over_pct.
@@ -219,6 +223,23 @@ jobs:
         run: |
           cd mlb_pipeline
           python splits_v2_pipeline.py --sport NCAAF || echo "NCAAF splits aggregator failed (non-fatal)"
+
+      # 2026-08-28: recompute primary_play AFTER tendencies + team_form
+      # + season trends + splits land. Initial score in ncaaf_game_context
+      # runs on a fresh row without team_form fields (they're PATCHed in
+      # by later steps), so ML-only picks dominate and 30-point favorites
+      # never get spread picks. Recompute re-scores against the enriched
+      # ctx rows and patches primary_play in place. Mirrors MLB's
+      # recompute_primary_play.py pattern.
+      - name: Recompute NCAAF primary_play with enriched signals
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python recompute_ncaaf_primary_play.py --days 10 || echo "ncaaf recompute non-fatal"
 
       - name: Generate NCAAF game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'

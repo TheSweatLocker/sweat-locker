@@ -202,9 +202,13 @@ def write_to_today(tendencies: dict, game_date: str, dry_run: bool = False) -> i
     return written
 
 
-def run(game_date: str | None = None, dry_run: bool = False):
+def run(game_date: str | None = None, days: int = 1, dry_run: bool = False):
+    # 2026-08-28: added `days` window so the workflow can pre-seed a full
+    # weekend's slate in one call (Fri+Sat+Sun games). Prior single-date
+    # default meant off-day cron runs found "no games" and never wrote,
+    # leaving pre-week card generation with empty tendency fields.
     gd = game_date or _et_today()
-    print(f'=== backfill NCAAF team tendencies · {gd} ===')
+    print(f'=== backfill NCAAF team tendencies · {gd} +{days-1}d ===')
 
     history = fetch_history(days_lookback=400)
     print(f'  fetched {len(history)} resolved NCAAF games (last 400d)')
@@ -212,16 +216,23 @@ def run(game_date: str | None = None, dry_run: bool = False):
     tendencies = compute_team_tendencies(history)
     print(f'  computed tendencies for {len(tendencies)} teams')
 
-    written = write_to_today(tendencies, gd, dry_run=dry_run)
-    print(f'\n  {"[DRY] " if dry_run else ""}wrote tendencies for {written} games on {gd}')
+    from datetime import date as _date, timedelta as _td
+    start = _date.fromisoformat(gd)
+    total_written = 0
+    for i in range(days):
+        d = (start + _td(days=i)).isoformat()
+        w = write_to_today(tendencies, d, dry_run=dry_run)
+        total_written += w
+    print(f'\n  {"[DRY] " if dry_run else ""}wrote tendencies for {total_written} games across {days} day(s) starting {gd}')
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--date', help='YYYY-MM-DD (default: today ET)')
+    p.add_argument('--days', type=int, default=1, help='Days from --date to cover (default: 1)')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(game_date=args.date, dry_run=args.dry_run)
+    run(game_date=args.date, days=args.days, dry_run=args.dry_run)
 
 
 if __name__ == '__main__':
