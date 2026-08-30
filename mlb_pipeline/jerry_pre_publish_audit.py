@@ -244,7 +244,15 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
                 'select': 'id,player_name,prop_type,prop_line,direction,call_verdict,conviction'},
         timeout=15).json()
     if isinstance(reads, list):
-        directional = [r for r in reads if (r.get('call_verdict') or '').upper() in ('BACK', 'FADE')]
+        # 2026-08-30 taxonomy port: prop_jerry_reads.call_verdict now stores
+        # PRIME/STRONG/LEAN/PASS/SKIP (unified tier) instead of legacy
+        # BACK/FADE. Treat every tiered pick (not PASS/SKIP/None) as
+        # directional so refit-trap gates below fire again. Direction is
+        # carried by r['direction'] (over/under), which is what the
+        # gates actually branch on.
+        _pub = {'PRIME','STRONG','LEAN','BACK','FADE'}
+        directional = [r for r in reads
+                       if (r.get('call_verdict') or '').upper() in _pub]
         # Refit_conviction lives on the source prop row, not jerry row — cross-join
         props = requests.get(f'{SB}/rest/v1/mlb_pipeline_props', headers=H_READ,
             params={'game_date': f'eq.{game_date}',
@@ -268,18 +276,21 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
             if refit is not None:
                 with_refit += 1
                 verdict = r['call_verdict'].upper()
-                # Gate 8: BACK on refit trap.
+                # 2026-08-30: "backing the pick" now = any publishable tier.
+                # Legacy BACK preserved so replays on old rows still gate.
+                backing = verdict in ('PRIME', 'STRONG', 'LEAN', 'BACK')
+                # Gate 8: publishable pick on refit trap.
                 # 2026-08-11 (v2): sync with tightened REFIT_TRAP=30 in
                 # apply_refit_verdict_override. Critical only when refit
                 # is truly hammered (<=30). 30-40 band is warning territory
                 # since override no longer force-flips there.
-                if verdict == 'BACK' and refit <= 30:
+                if backing and refit <= 30:
                     critical.append(f'prop_jerry id={r["id"]} {r["player_name"]} {r["prop_type"]} '
-                                    f'{r["direction"]}: BACK on refit={refit} (trap zone, expected FADE '
-                                    f'via override — did apply_refit_verdict_override run?)')
-                elif verdict == 'BACK' and refit <= 40:
+                                    f'{r["direction"]}: {verdict} on refit={refit} (trap zone — '
+                                    f'apply_refit_verdict_override should have downgraded)')
+                elif backing and refit <= 40:
                     warnings.append(f'prop_jerry id={r["id"]} {r["player_name"]} {r["prop_type"]} '
-                                    f'{r["direction"]}: BACK with refit={refit} (mild trap zone, '
+                                    f'{r["direction"]}: {verdict} with refit={refit} (mild trap zone, '
                                     f'gray-zone — Jerry may have counter-signal)')
                 # Gate 9: FADE on strong refit.
                 # 2026-08-11: split into two tiers.

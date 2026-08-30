@@ -95,6 +95,22 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
             tier_cap = {'COVERAGE': 0, 'LEAN': 55, 'STRONG': 65}
             if isinstance(pp.get('conviction'), (int, float)):
                 pp['conviction'] = min(int(pp['conviction']), tier_cap.get(new_tier, 55))
+            # 2026-08-30: rewrite sub so user sees WHY engine passed, not
+            # stale rationale. Prior version left pp['sub'] intact — a
+            # PRIME "sharp money is here · H2H dominant" narrative on a
+            # COVERAGE/conv=0 pick reads as a lie (Rays 8/30 canonical).
+            top_signals = []
+            for src in (pp.get('_ensemble_sources') or [])[:2]:
+                p = src.get('prose')
+                if p: top_signals.append(p)
+            if new_tier == 'COVERAGE':
+                header = f'⚠ Engine passed: MC sim has our side at {pick_prob_f*100:.0f}% win prob'
+            else:
+                header = f'⚠ Downgraded to {new_tier}: MC sim at {pick_prob_f*100:.0f}%'
+            if top_signals:
+                pp['sub'] = f'{header} — outweighs {" · ".join(top_signals)}'
+            else:
+                pp['sub'] = header
     except Exception:
         pass  # gate errors must never block the publish
     return pp

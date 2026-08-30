@@ -596,7 +596,14 @@ def _extract_primary_play(struct: dict) -> dict | None:
 
 
 def defer_call_to_ensemble(parsed: dict, struct: dict) -> dict:
-    """Overwrite parsed call_* with ensemble primary_play values. Idempotent."""
+    """Overwrite parsed call_* with ensemble primary_play values. Idempotent.
+
+    2026-08-30: Jerry-as-narrator gate. When ensemble tier is COVERAGE
+    (MC dissent blocked publish) OR PASS/SKIP (no edge), overwrite the
+    LLM's short_read with a passed-by-engine narrative so we never ship
+    a BACK story on a dead pick. Rays 8/30 canonical: engine PRIME →
+    MC 30.9% dissent → COVERAGE, but Jerry was narrating sharp-money BACK.
+    """
     pp = _extract_primary_play(struct)
     if pp is None or pp.get('_engine') != 'ensemble_v2':
         return parsed  # no ensemble to defer to — keep LLM output
@@ -605,8 +612,28 @@ def defer_call_to_ensemble(parsed: dict, struct: dict) -> dict:
     label = pp.get('label')
     conviction = pp.get('conviction')
     line = pp.get('line')
-    if market not in _VALID_MARKETS or not side or not label:
-        return parsed  # ensemble PASS / malformed — keep LLM output
+    tier = str(pp.get('tier') or '').upper()
+
+    # Engine passed — Jerry becomes the "why we passed" narrator.
+    if tier in ('COVERAGE', 'PASS', 'SKIP') or (market not in _VALID_MARKETS or not side or not label):
+        dissent = pp.get('_mc_dissent') or {}
+        pct = dissent.get('mc_pick_win_pct')
+        orig = dissent.get('orig_tier')
+        if pct is not None and orig:
+            new_short = (f'Engine passed — the {orig} setup collapses under MC sim '
+                         f'({pct}% win prob for our side). No play.')
+        else:
+            engine_sub = str(pp.get('sub') or '').strip()
+            new_short = (f'Engine passed — no publishable edge on this game. '
+                         f'{engine_sub}' if engine_sub else 'Engine passed — no publishable edge on this game.')
+        parsed['call_market'] = 'pass'
+        parsed['call_side'] = None
+        parsed['call_line'] = None
+        parsed['call_text'] = 'Pass'
+        parsed['conviction'] = 0
+        parsed['short_read'] = new_short[:2000]
+        return parsed
+
     parsed['call_market'] = market
     parsed['call_side'] = str(side).upper()
     parsed['call_line'] = line
