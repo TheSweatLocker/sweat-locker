@@ -4473,9 +4473,17 @@ def run():
     # recalibrated-to-SKIP rows). App filters tier IN (PRIME, STRONG, LEAN)
     # so these stay silent in UI. Hitter props (hits_over/under) at line
     # 0.5 are line-agnostic and don't need book attach, so they're exempt.
+    # 2026-08-30: hits_over/hits_under are line-agnostic at 0.5. Adding
+    # them to PROP_MARKET_MAP on 8/27 (for odds-attach) inadvertently
+    # pulled them into this book-line-required gate, SKIPping every
+    # batter hits prop when the book didn't list an explicit 0.5 line.
+    # Result: zero batter props in DB 8/28+8/30 → Ledger couldn't build
+    # hits_parlays from live data. Exempt them here (matches the comment
+    # already in this block that said they "don't need book attach").
+    _BOOK_REQUIRED = {k for k in PROP_MARKET_MAP if k not in ('hits_over', 'hits_under')}
     for p in top:
-        if p.get('prop_type') not in PROP_MARKET_MAP:
-            continue  # not a pitcher prop, no book line needed
+        if p.get('prop_type') not in _BOOK_REQUIRED:
+            continue  # not a pitcher prop needing book verification
         if p.get('book_line') is not None:
             continue  # attach worked, all good
         # Pitcher prop with no book line — suppress
