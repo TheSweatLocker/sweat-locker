@@ -119,6 +119,41 @@ def compute_outcome_patch(cfbd_game: dict, existing: dict) -> Optional[dict]:
     return payload
 
 
+def _fold_name(name: str) -> str:
+    """Normalize team name for cross-source matching.
+
+    - Lowercase
+    - Strip common mascot suffixes (Hornets, Bison, Rams, Wildcats, ...)
+      that leak into game_ids from earlier ncaaf_odds_pull runs before
+      the alias sync was seeded.
+    - Accent-fold (Hawai'i → Hawaii, San José State → San Jose State)
+    - Drop non-alphanumeric so 'St.' vs 'State' etc collapse.
+    """
+    if not name: return ''
+    import unicodedata as _u
+    n = _u.normalize('NFKD', name)
+    n = ''.join(c for c in n if not _u.combining(c))
+    n = n.lower().replace("'", '').replace('-', ' ')
+    # Strip mascot suffix words — order matters (multi-word first).
+    _MASCOTS = ['delta devils', 'red raiders', 'red wolves', 'blue devils',
+                'golden bears', 'crimson tide', 'green wave', 'yellow jackets',
+                'mountaineers', 'commodores', 'volunteers', 'razorbacks',
+                'gamecocks', 'longhorns', 'bulldogs', 'wildcats', 'cardinals',
+                'panthers', 'tigers', 'bearcats', 'buckeyes', 'wolverines',
+                'nittany lions', 'fighting irish', 'hokies', 'demon deacons',
+                'sun devils', 'utes', 'ducks', 'beavers', 'huskies', 'cougars',
+                'trojans', 'bruins', 'aztecs', 'rebels', 'runnin rebels',
+                'lobos', 'aggies', 'mustangs', 'horned frogs', 'red hawks',
+                'chippewas', 'eagles', 'hornets', 'bison', 'rams', 'lions',
+                'seahawks', 'hurricanes', 'gators', 'seminoles', 'canes']
+    for suf in _MASCOTS:
+        if n.endswith(' ' + suf):
+            n = n[:-(len(suf)+1)].strip()
+            break
+    import re as _re
+    return _re.sub(r'[^a-z0-9]', '', n)
+
+
 def fetch_existing(game_ids: list) -> dict:
     """Batch fetch existing rows by game_id. Returns {game_id: row}.
 
@@ -130,6 +165,12 @@ def fetch_existing(game_ids: list) -> dict:
     0 rows silently — no NCAAF scores ever wrote back after the odds
     pull started using canonical team names. Fetch-by-date is boring
     but bulletproof.
+
+    2026-08-30 (part 2): also emits a fuzzy index keyed by
+    (date, _fold_name(away), _fold_name(home)) so mascot-suffixed rows
+    from earlier ncaaf_odds_pull runs still match CFBD's canonical
+    team names (Sacramento State Hornets → sacramentostate). Stored
+    under the fuzzy key + the raw game_id key so the caller sees both.
     """
     if not game_ids: return {}
     # Extract unique YYYY-MM-DD dates from game_ids of the form
@@ -150,14 +191,20 @@ def fetch_existing(game_ids: list) -> dict:
             f'{SB}/rest/v1/ncaaf_game_results',
             headers=H_READ,
             params={'game_date': f'eq.{d}',
-                    'select': 'game_id,home_score,away_score,close_spread,close_total',
+                    'select': 'game_id,home_team,away_team,home_score,'
+                              'away_score,close_spread,close_total',
                     'limit': 1000},
             timeout=30,
         )
         if r.status_code == 200:
             for row in r.json() or []:
-                if row.get('game_id') in wanted:
-                    out[row['game_id']] = row
+                gid = row.get('game_id')
+                if gid in wanted:
+                    out[gid] = row
+                # Fuzzy key so mascot-suffixed rows also route through
+                fuzzy_key = (d, _fold_name(row.get('away_team') or ''),
+                             _fold_name(row.get('home_team') or ''))
+                out[fuzzy_key] = row
     # Handle any cfbd_{id} keys (legacy rows) via a separate small query
     if has_cfbd:
         cfbd_ids = [g for g in game_ids if g.startswith('cfbd_')]
@@ -288,7 +335,10 @@ def run(season: Optional[int] = None, dry_run: bool = False,
             if k: key_variants[k] = g
     all_keys = list(key_variants.keys())
     existing = fetch_existing(all_keys)
-    print(f'  matched existing rows: {len(existing)}/{len(cfbd_games)} '
+    # existing now includes both exact string keys AND fuzzy tuple keys
+    # (date, fold(away), fold(home)) so mascot-suffixed rows still match.
+    string_hits = sum(1 for k in existing if isinstance(k, str))
+    print(f'  matched existing rows (exact): {string_hits}/{len(cfbd_games)} '
           f'(tried {len(all_keys)} key variants)')
 
     patches = []
@@ -296,13 +346,34 @@ def run(season: Optional[int] = None, dry_run: bool = False,
     for gid, cfbd_g in key_variants.items():
         ex = existing.get(gid)
         if not ex: continue
-        # Avoid double-patching same CFBD game via both key variants
         cid = cfbd_g.get('id')
         if cid in seen_ids: continue
         seen_ids.add(cid)
         payload = compute_outcome_patch(cfbd_g, ex)
         if payload:
-            patches.append((gid, payload))
+            patches.append((ex['game_id'], payload))
+
+    # Fuzzy pass for any CFBD games not yet matched
+    fuzzy_hits = 0
+    for g in cfbd_games:
+        cid = g.get('id')
+        if cid in seen_ids: continue
+        kickoff = (g.get('start_date') or g.get('startDate')
+                   or g.get('kickoff_utc') or '')
+        d = kickoff[:10] if kickoff else ''
+        if not d: continue
+        away_raw = (g.get('away_team') or g.get('awayTeam') or '')
+        home_raw = (g.get('home_team') or g.get('homeTeam') or '')
+        fuzzy_key = (d, _fold_name(away_raw), _fold_name(home_raw))
+        ex = existing.get(fuzzy_key)
+        if not ex: continue
+        seen_ids.add(cid)
+        fuzzy_hits += 1
+        payload = compute_outcome_patch(g, ex)
+        if payload:
+            patches.append((ex['game_id'], payload))
+    if fuzzy_hits:
+        print(f'  fuzzy-matched {fuzzy_hits} additional games via mascot-fold')
 
     updated = apply_patches(patches, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
