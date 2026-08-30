@@ -9018,7 +9018,20 @@ setJerryHistory(prev => {
       let wPrev=0, lPrev=0, pPrev=0, unitsNetPrev=0;  // previous month
       let yW=0, yL=0, yP=0, yUnits=0;               // yesterday only
       // 2026-08-25: yesterday's game_date in ET (matches the game_date stamps).
-      const yesterdayET = new Date(nowD.getTime() - 24*60*60*1000).toISOString().slice(0,10);
+      // 2026-08-30 FIX: prior form used `.toISOString()` which forces UTC.
+      // After 8pm ET the device is already in the next UTC day, so
+      // yesterdayET-24h returned TODAY's date and the "YESTERDAY" band
+      // silently showed today's incomplete numbers. Compute explicitly
+      // in America/New_York so the label matches the game_date stamps.
+      const _etYMD = (d: Date) => {
+        const p: Record<string,string> = {};
+        new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/New_York',
+          year: 'numeric', month: '2-digit', day: '2-digit',
+        }).formatToParts(d).forEach(x => { p[x.type] = x.value; });
+        return `${p.year}-${p.month}-${p.day}`;
+      };
+      const yesterdayET = _etYMD(new Date(nowD.getTime() - 24*60*60*1000));
 
       const bump = (r: any, payout: number, curBucket: boolean, isYesterday: boolean) => {
         // Skip COVERAGE stubs (conviction=0 = un-scored sweep stub, not a real pick)
