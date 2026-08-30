@@ -67,14 +67,40 @@ def run(game_date: str = None, dry_run: bool = False):
         'reasoning': s.get('reasoning'),
     } for s in suggs]
 
+    # 2026-08-30: pre-check existing snapshots for THIS (date, kind, sport,
+    # sorted-picks-tuple). Prior DB-level on_conflict was keyed on
+    # combined_odds which DRIFTS across cron runs — same Braves+Cubs
+    # chalk_parlay snapshotted 3× on 8/29 at odds 116/117/124 because
+    # a leg's book odds moved slightly between runs. Ledger record then
+    # over-counted the same play. Correct identity is the sorted pick set.
+    def _legs_key(legs: list) -> tuple:
+        return tuple(sorted((str(l.get('pick') or '') for l in (legs or []))))
+
+    existing = requests.get(
+        f'{SB}/rest/v1/ledger_snapshots',
+        headers=H_READ,
+        params={'game_date': f'eq.{gd}',
+                'select': 'kind,sport_scope,legs'},
+        timeout=15,
+    ).json() if not dry_run else []
+    seen = set()
+    if isinstance(existing, list):
+        for e in existing:
+            seen.add((e.get('kind'), e.get('sport_scope'), _legs_key(e.get('legs') or [])))
+
     if dry_run:
         for p in payloads:
             print(f"  [DRY] {p['kind']:<24} {p['sport_scope']:<6} "
                   f"combined={p['combined_odds']:+d} legs={len(p['legs'])}")
         return
 
-    written = 0
+    written = skipped_dupe = 0
     for p in payloads:
+        pick_key = (p['kind'], p['sport_scope'], _legs_key(p['legs']))
+        if pick_key in seen:
+            skipped_dupe += 1
+            continue
+        seen.add(pick_key)
         pr = requests.post(
             f'{SB}/rest/v1/ledger_snapshots'
             f'?on_conflict=game_date,kind,sport_scope,combined_odds',
@@ -84,6 +110,8 @@ def run(game_date: str = None, dry_run: bool = False):
             written += 1
         else:
             print(f'  x snapshot failed: {pr.status_code} {pr.text[:150]}')
+    if skipped_dupe:
+        print(f'  ⏭  skipped {skipped_dupe} duplicate combos (same picks, odds drift)')
     print(f'  ✓ upserted {written} ledger snapshots')
 
 
