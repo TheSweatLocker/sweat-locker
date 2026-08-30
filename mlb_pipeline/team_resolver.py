@@ -51,13 +51,22 @@ _NCAAF_CACHE: dict | None = None  # {'by_key': {norm_str: canonical}, 'canonical
 
 
 def _norm(s: str) -> str:
-    """Lowercase + strip + collapse whitespace + drop trailing period."""
+    """Lowercase + strip + collapse whitespace + normalize hyphens/periods.
+
+    2026-08-29: hyphens → space so 'Bethune-Cookman' matches
+    'Bethune Cookman'. Trailing period dropped ('Florida St.').
+    """
     if not s: return ''
     n = str(s).lower().strip()
+    # Hyphens → space so hyphenated + space-separated names collide
+    n = n.replace('-', ' ')
     # Collapse whitespace
     n = ' '.join(n.split())
-    # Drop trailing period on abbreviations ("Florida St." → "florida st")
+    # Drop trailing period on abbreviations
     if n.endswith('.'): n = n[:-1]
+    # Also drop internal periods ('St.', 'A&M.') — normalized to 'st' 'a&m'
+    n = n.replace('.', '')
+    n = ' '.join(n.split())   # collapse again in case periods left doubles
     return n
 
 
@@ -135,20 +144,32 @@ def resolve_ncaaf_team(raw_name: str) -> Optional[str]:
 
     # Substring: raw includes location OR location includes raw.
     # Handles "florida state seminoles" (raw) vs "florida state" (location).
+    # 2026-08-29: tightened guards. Prior version matched "north" (5 char
+    # single-token substring in some D3 school) against "north carolina
+    # state" — wrong team. Now require:
+    #   - Shorter side ≥8 chars OR contains a space (multi-word). Blocks
+    #     short single-token accidents.
+    #   - Prefer the LONGEST loc_n match (more specific team wins).
     by_loc = cache['by_location']
+    best_canon = None
+    best_len = 0
     for loc_n, canon in by_loc.items():
-        if loc_n and (loc_n in n or n in loc_n):
-            # Guard against 2-char accidents ("fl" in "florida" but "fl"
-            # isn't a team — require at least 4 chars on the shorter side).
-            shorter = min(len(loc_n), len(n))
-            if shorter >= 4:
-                return canon
+        if not loc_n: continue
+        if loc_n not in n and n not in loc_n: continue
+        shorter = min(loc_n, n, key=len)
+        # Reject accidents: shorter must be substantial (multi-word or ≥8 chars)
+        if len(shorter) < 8 and ' ' not in shorter:
+            continue
+        if len(loc_n) > best_len:
+            best_canon = canon
+            best_len = len(loc_n)
+    if best_canon:
+        return best_canon
 
     # Last-word == nickname (e.g. raw "Seminoles" alone).
     by_nick = cache['by_nickname']
     tokens = n.split()
     if tokens:
-        last = tokens[-1]
         # 2- or 3-word mascots (e.g. "Blue Devils", "Fighting Irish")
         for tail_len in (3, 2, 1):
             if len(tokens) >= tail_len:

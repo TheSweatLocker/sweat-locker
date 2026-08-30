@@ -254,6 +254,7 @@ def load_slate(week_start: str) -> list:
 
 
 def _team_matches(name: str, target: str) -> bool:
+    """Legacy fallback matcher. Prefer resolve_ncaaf_team + canonical compare."""
     name = (name or '').lower().strip()
     target = (target or '').lower().strip()
     if not name or not target: return False
@@ -262,6 +263,21 @@ def _team_matches(name: str, target: str) -> bool:
 
 
 def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:
+    # 2026-08-29: resolve both hints to canonical via shared team_resolver,
+    # then exact-match against slate's canonical team names. Also logs
+    # gaps to team_alias_gaps for later triage. Falls back to legacy
+    # _team_matches loop if resolver misses either hint.
+    try:
+        from team_resolver import resolve_or_log
+        canon_home = resolve_or_log(home_hint, source='external_scrape')
+        canon_away = resolve_or_log(away_hint, source='external_scrape')
+        if canon_home and canon_away:
+            for g in slate:
+                if g.get('home_team') == canon_home and g.get('away_team') == canon_away:
+                    return g['game_id']
+    except Exception:
+        pass
+    # Legacy fallback for edge cases the resolver missed
     for g in slate:
         if _team_matches(g['home_team'], home_hint) and \
            _team_matches(g['away_team'], away_hint):

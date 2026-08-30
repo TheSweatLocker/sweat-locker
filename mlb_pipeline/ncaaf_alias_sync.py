@@ -104,7 +104,14 @@ def sync(dry_run: bool = False, fbs_only: bool = False) -> None:
     teams = fetch_cfbd_teams()
     print(f'  CFBD returned {len(teams)} teams')
 
-    rows = []
+    # Dedupe by canonical_name — CFBD returns same school name at
+    # different classification levels (e.g. "Miami" as FBS Hurricanes +
+    # FBS Miami (OH) + possibly D3). on_conflict PK is canonical_name so
+    # duplicates within one batch → 500. Keep the highest-tier version
+    # (FBS > FCS > II > III > UNKNOWN) so search always resolves to the
+    # more prominent program.
+    _TIER = {'FBS': 5, 'FCS': 4, 'II': 3, 'III': 2, 'UNKNOWN': 1, None: 0}
+    picked: dict[str, dict] = {}
     by_class = {}
     for t in teams:
         r = _to_row(t)
@@ -112,10 +119,14 @@ def sync(dry_run: bool = False, fbs_only: bool = False) -> None:
         cls = r.get('classification') or 'UNKNOWN'
         by_class[cls] = by_class.get(cls, 0) + 1
         if fbs_only and cls != 'FBS': continue
-        rows.append(r)
+        canon = r['canonical_name']
+        existing = picked.get(canon)
+        if existing is None or _TIER.get(cls, 0) > _TIER.get(existing.get('classification'), 0):
+            picked[canon] = r
+    rows = list(picked.values())
 
     print(f'  breakdown: {by_class}')
-    print(f'  candidates to upsert: {len(rows)}')
+    print(f'  deduped candidates: {len(rows)}')
 
     if dry_run:
         print(f'\n  [DRY] sample first 3 rows:')

@@ -90,23 +90,22 @@ def _pick_book(event: dict, market_key: str) -> dict:
 def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
     home_raw = event.get('home_team')
     away_raw = event.get('away_team')
-    home = aliases.get(home_raw)
-    away = aliases.get(away_raw)
-    # 2026-08-29 fix: don't drop the whole game when one team's alias
-    # is missing (common on FBS-vs-FCS Week 1 games like Bethune-Cookman
-    # @ UCF or Grambling @ LSU). Prior behavior: game got filtered
-    # entirely → app renders with raw Odds API data → mangled labels +
-    # "market-based analysis" fallback. Fix: fall back to a normalized
-    # raw name so the ctx row lands and the app has SOMETHING to render.
-    # Downstream signals that need alias-matched stats will still be
-    # null for the FCS side (they don't have CFBD stats anyway) — but
-    # the FBS side gets its full ctx.
     if not (home_raw and away_raw):
         return None
-    if not home:
-        home = (home_raw or '').strip()
-    if not away:
-        away = (away_raw or '').strip()
+    # 2026-08-29: switched to shared resolver (mlb_pipeline/team_resolver.py).
+    # Ladder: exact canonical/abbrev/location/nickname/full_name/alt →
+    # substring guarded → last-word nickname. If unresolved, logs to
+    # team_alias_gaps + falls back to raw name so the game still lands.
+    try:
+        from team_resolver import resolve_or_log
+        home = resolve_or_log(home_raw, source='odds_api')
+        away = resolve_or_log(away_raw, source='odds_api')
+    except Exception:
+        # Legacy fallback if resolver import fails
+        home = aliases.get(home_raw)
+        away = aliases.get(away_raw)
+    if not home: home = (home_raw or '').strip()
+    if not away: away = (away_raw or '').strip()
 
     commence = event.get('commence_time', '')
     try:
