@@ -195,6 +195,15 @@ def write_picks(picks: list, pull_id: Optional[str]) -> int:
     payload = []
     for p in picks:
         d = asdict(p); d['pull_id'] = pull_id
+        # 2026-08-29: overwrite game_date from slate cache when we
+        # resolved a game_id. Fixes future-week picks (Sat 9/5) being
+        # stamped with today's date (8/29) → wrong bucketing +
+        # unique-key conflicts on re-runs.
+        gid = d.get('game_id')
+        if gid:
+            resolved_date = game_date_for(gid, d.get('game_date') or '')
+            if resolved_date:
+                d['game_date'] = resolved_date
         payload.append(d)
     try:
         r = requests.post(
@@ -258,6 +267,21 @@ def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:
            _team_matches(g['away_team'], away_hint):
             return g['game_id']
     return None
+
+
+# 2026-08-29: cache slate for game_date lookup by game_id. Prior version
+# wrote every external_pick with game_date = today (scrape day), which
+# was wrong for future-week games — a pick for a Sat 9/5 game got
+# stamped 8/29. Cache lets scrapers resolve the REAL game_date when
+# they resolve game_id via find_game_id.
+_SLATE_GID_TO_DATE = {}
+def _refresh_slate_cache(slate: list) -> None:
+    _SLATE_GID_TO_DATE.clear()
+    for g in slate:
+        gid = g.get('game_id'); gd = g.get('game_date')
+        if gid and gd: _SLATE_GID_TO_DATE[gid] = gd
+def game_date_for(game_id: str, fallback: str) -> str:
+    return _SLATE_GID_TO_DATE.get(game_id, fallback)
 
 
 def load_ncaaf_alias_map() -> dict:
@@ -567,6 +591,7 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
              dry_run: bool = False) -> dict:
     print(f'\n=== NCAAF external pull · {game_date} · {triggered_by} ===')
     slate = load_slate(game_date)
+    _refresh_slate_cache(slate)   # 2026-08-29: enable game_date_for(gid) lookups
     print(f'  slate: {len(slate)} games in ±7d window')
     if not slate:
         print('  ⚠ no NCAAF games in window — abort')
