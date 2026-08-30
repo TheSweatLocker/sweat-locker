@@ -288,12 +288,75 @@ def pick_potd() -> list[dict]:
     return out
 
 
+def pick_ncaaf_sides() -> list[dict]:
+    """ncaaf_game_context.primary_play graded against ncaaf_game_results
+    outcomes (2026-08-30). No persistence — grades inline at aggregation
+    time. Only PRIME/STRONG/LEAN counted; COVERAGE/PASS/SKIP filtered.
+    Pushed spreads/totals grade as P.
+
+    Grades:
+      type='ml':    pick side wins iff home_win == (side=='HOME')
+      type='rl':    home_covers → HOME wins RL; away_covers → AWAY wins;
+                    push → P
+      type='total': OVER wins iff total_result=='Over' (case-insensitive
+                    match); UNDER inversely; Push → P
+    """
+    # Pull ctx + results in bulk (both tables are small, <2000 rows/season)
+    ctx_url = (f'{SB}/rest/v1/ncaaf_game_context'
+               f'?select=game_id,game_date,primary_play&primary_play=not.is.null')
+    res_url = (f'{SB}/rest/v1/ncaaf_game_results'
+               f'?select=game_id,home_win,spread_result,total_result')
+
+    ctx_rows = list(_paged(ctx_url))
+    res_map = {r['game_id']: r for r in _paged(res_url) if r.get('game_id')}
+
+    out = []
+    for c in ctx_rows:
+        pp = c.get('primary_play') or {}
+        tier = (pp.get('tier') or '').upper()
+        if tier not in ('PRIME', 'STRONG', 'LEAN'):
+            continue
+        gid = c.get('game_id')
+        res = res_map.get(gid)
+        if not res:
+            continue   # game hasn't been graded yet
+        ptype = (pp.get('type') or '').lower()
+        side  = (pp.get('side') or '').upper()
+        cls = None
+        if ptype == 'ml':
+            hw = res.get('home_win')
+            if hw is None: continue
+            cls = 'win' if ((side == 'HOME' and hw) or (side == 'AWAY' and not hw)) else 'loss'
+        elif ptype in ('rl', 'spread'):
+            sr = (res.get('spread_result') or '').lower()
+            if sr == 'push': cls = 'push'
+            elif sr == 'home_covered': cls = 'win' if side == 'HOME' else 'loss'
+            elif sr == 'away_covered': cls = 'win' if side == 'AWAY' else 'loss'
+            else: continue
+        elif ptype == 'total':
+            tr = (res.get('total_result') or '').lower()
+            if tr == 'push': cls = 'push'
+            elif tr == 'over':  cls = 'win' if side == 'OVER' else 'loss'
+            elif tr == 'under': cls = 'win' if side == 'UNDER' else 'loss'
+            else: continue
+        else:
+            continue
+        try: d = dt.date.fromisoformat(c['game_date'])
+        except Exception: continue
+        # Use flat -110 payout — NCAAF spread/total juice is uniform; ML
+        # varies but ctx doesn't store the close ML for the pick side yet.
+        out.append({'sport': 'NCAAF', 'date': d, 'result': cls,
+                    'stake': 1.0, 'payout': 0.909})
+    return out
+
+
 SURFACES = {
     'sharp':  pick_sharp,
     'prop':   pick_prop,
     'ladder': pick_ladder,
     'ledger': pick_ledger,
     'potd':   pick_potd,
+    'ncaaf_sides': pick_ncaaf_sides,
 }
 
 

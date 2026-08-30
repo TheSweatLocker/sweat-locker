@@ -416,6 +416,66 @@ def agg_split(date: str) -> list[dict]:
     return out
 
 
+def agg_ncaaf_card(date: str) -> dict | None:
+    """NCAAF picks graded (2026-08-30). Reads ncaaf_game_context.primary_play
+    + ncaaf_game_results outcomes. Only PRIME/STRONG/LEAN counted.
+    Flat -110 payout since NCAAF ctx doesn't store per-side ML close yet.
+    """
+    ctx = requests.get(f'{SB}/rest/v1/ncaaf_game_context',
+        headers=H_READ,
+        params={'game_date': f'eq.{date}', 'primary_play': 'not.is.null',
+                'select': 'game_id,primary_play'}, timeout=15).json()
+    if not (isinstance(ctx, list) and ctx): return None
+    gids = ",".join(g['game_id'] for g in ctx if g.get('game_id'))
+    if not gids: return None
+    res = requests.get(f'{SB}/rest/v1/ncaaf_game_results',
+        headers=H_READ,
+        params={'game_id': f'in.({gids})',
+                'select': 'game_id,home_win,spread_result,total_result'}, timeout=15).json()
+    res_map = {r['game_id']: r for r in (res if isinstance(res, list) else []) if r.get('game_id')}
+
+    w = l = p = 0; units_bet = 0.0; units_won = 0.0; detail = []
+    for c in ctx:
+        pp = c.get('primary_play') or {}
+        tier = (pp.get('tier') or '').upper()
+        if tier not in ('PRIME', 'STRONG', 'LEAN'): continue
+        r = res_map.get(c['game_id'])
+        if not r: continue
+        ptype = (pp.get('type') or '').lower()
+        side  = (pp.get('side') or '').upper()
+        v = None
+        if ptype == 'ml':
+            hw = r.get('home_win')
+            if hw is None: continue
+            v = 'W' if ((side == 'HOME' and hw) or (side == 'AWAY' and not hw)) else 'L'
+        elif ptype in ('rl', 'spread'):
+            sr = (r.get('spread_result') or '').lower()
+            if sr == 'push': v = 'P'
+            elif sr == 'home_covered': v = 'W' if side == 'HOME' else 'L'
+            elif sr == 'away_covered': v = 'W' if side == 'AWAY' else 'L'
+            else: continue
+        elif ptype == 'total':
+            tr = (r.get('total_result') or '').lower()
+            if tr == 'push': v = 'P'
+            elif tr == 'over':  v = 'W' if side == 'OVER' else 'L'
+            elif tr == 'under': v = 'W' if side == 'UNDER' else 'L'
+            else: continue
+        else: continue
+        stake = 2.0 if tier in ('PRIME', 'STRONG') else 1.0
+        units_bet += stake
+        if v == 'W': w += 1; units_won += stake * _american_payout(-110)
+        elif v == 'L': l += 1; units_won -= stake
+        elif v == 'P': p += 1
+        detail.append({'pick': pp.get('label'), 'tier': tier, 'verdict': v, 'stake': stake})
+
+    if not detail: return None
+    return {'surface': 'ncaaf_card', 'sport': 'NCAAF', 'record_date': date,
+            'wins': w, 'losses': l, 'pushes': p,
+            'units_bet': round(units_bet, 2), 'units_won': round(units_won, 2),
+            'pick_count': w + l + p,
+            'detail': {'legs': detail[:50]}}
+
+
 AGGREGATORS = [
     ('sharp_card', agg_sharp_card),
     ('ledger', agg_ledger),        # returns LIST
@@ -424,6 +484,7 @@ AGGREGATORS = [
     ('dawg_of_day', agg_dawg_of_day),
     ('daily_degen', agg_daily_degen),
     ('split', agg_split),          # returns LIST — 2026-08-22
+    ('ncaaf_card', agg_ncaaf_card), # 2026-08-30 — NCAAF picks graded
 ]
 
 

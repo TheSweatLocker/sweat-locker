@@ -120,20 +120,60 @@ def compute_outcome_patch(cfbd_game: dict, existing: dict) -> Optional[dict]:
 
 
 def fetch_existing(game_ids: list) -> dict:
-    """Batch fetch existing rows by game_id. Returns {game_id: row}."""
+    """Batch fetch existing rows by game_id. Returns {game_id: row}.
+
+    2026-08-30: switched from `game_id=in.(...)` URL-embedded filter to a
+    broad date-range pull + client-side filter. NCAAF game_ids from
+    ncaaf_odds_pull embed team names with SPACES ('ncaaf_20260829_
+    New Mexico State_Florida State'). Spaces don't URL-encode when
+    embedded literally in the request URL string, so PostgREST returned
+    0 rows silently — no NCAAF scores ever wrote back after the odds
+    pull started using canonical team names. Fetch-by-date is boring
+    but bulletproof.
+    """
     if not game_ids: return {}
+    # Extract unique YYYY-MM-DD dates from game_ids of the form
+    # 'ncaaf_YYYYMMDD_...' + a cfbd_{id} bucket (dateless).
+    dates = set()
+    has_cfbd = False
+    for gid in game_ids:
+        if gid.startswith('cfbd_'):
+            has_cfbd = True; continue
+        if gid.startswith('ncaaf_') and len(gid) >= 14:
+            ymd = gid[6:14]
+            if ymd.isdigit():
+                dates.add(f'{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}')
+    wanted = set(game_ids)
     out = {}
-    for i in range(0, len(game_ids), 100):
-        chunk = game_ids[i:i+100]
-        ids = ','.join(f'"{gid}"' for gid in chunk)
+    for d in dates:
         r = requests.get(
-            f'{SB}/rest/v1/ncaaf_game_results?game_id=in.({ids})'
-            f'&select=game_id,home_score,away_score,close_spread,close_total',
-            headers=H_READ, timeout=30,
+            f'{SB}/rest/v1/ncaaf_game_results',
+            headers=H_READ,
+            params={'game_date': f'eq.{d}',
+                    'select': 'game_id,home_score,away_score,close_spread,close_total',
+                    'limit': 1000},
+            timeout=30,
         )
-        if r.status_code != 200: continue
-        for row in r.json():
-            out[row['game_id']] = row
+        if r.status_code == 200:
+            for row in r.json() or []:
+                if row.get('game_id') in wanted:
+                    out[row['game_id']] = row
+    # Handle any cfbd_{id} keys (legacy rows) via a separate small query
+    if has_cfbd:
+        cfbd_ids = [g for g in game_ids if g.startswith('cfbd_')]
+        for i in range(0, len(cfbd_ids), 100):
+            chunk = cfbd_ids[i:i+100]
+            r = requests.get(
+                f'{SB}/rest/v1/ncaaf_game_results',
+                headers=H_READ,
+                params={'game_id': f'in.({",".join(chunk)})',
+                        'select': 'game_id,home_score,away_score,close_spread,close_total',
+                        'limit': 1000},
+                timeout=30,
+            )
+            if r.status_code == 200:
+                for row in r.json() or []:
+                    out[row['game_id']] = row
     return out
 
 
@@ -200,22 +240,52 @@ def run(season: Optional[int] = None, dry_run: bool = False,
         import re as _re
         return _re.sub(r'[^a-z0-9]', '', (name or '').lower())
 
-    # Build candidate keys per CFBD game
-    key_variants = {}  # composite_variant_list → cfbd_g
+    # 2026-08-30 fix: ncaaf_odds_pull writes game_id as
+    # 'ncaaf_YYYYMMDD_{away}_{home}' with team names AS-IS (spaces
+    # preserved) via team_resolver canonical names. Prior resolver
+    # only tried the slugified variant → 0 matches, no scores written,
+    # NCAAF surface_records permanently blank. Try both variants +
+    # also resolve CFBD's raw team names through our resolver to hit
+    # the canonical name our odds pull actually stored.
+    try:
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).parent))
+        from team_resolver import resolve_ncaaf_team
+    except Exception:
+        resolve_ncaaf_team = None
+
+    def _key_variants_for(g):
+        keys = []
+        if g.get('id'):
+            keys.append(f'cfbd_{g["id"]}')
+        # CFBD returns camelCase (startDate, homeTeam) AND some fields
+        # in snake_case depending on endpoint version. Try both.
+        kickoff = (g.get('start_date') or g.get('startDate')
+                   or g.get('kickoff_utc') or '')
+        ymd = kickoff[:10].replace('-','') if kickoff else ''
+        if not ymd: return keys
+        away_raw = (g.get('away_team') or g.get('awayTeam') or '')
+        home_raw = (g.get('home_team') or g.get('homeTeam') or '')
+        # Variant A: slugified (legacy)
+        keys.append(f'ncaaf_{ymd}_{_slugify(away_raw)}_{_slugify(home_raw)}')
+        # Variant B: raw team names (matches ncaaf_odds_pull today —
+        # canonical names from team_resolver preserve spaces)
+        if away_raw and home_raw:
+            keys.append(f'ncaaf_{ymd}_{away_raw}_{home_raw}')
+        # Variant C: RESOLVER-CANONICAL names (covers cases where CFBD's
+        # school field differs from our canonical, e.g. "Miami" vs "Miami (FL)")
+        if resolve_ncaaf_team:
+            can_a = resolve_ncaaf_team(away_raw) or away_raw
+            can_h = resolve_ncaaf_team(home_raw) or home_raw
+            if (can_a != away_raw) or (can_h != home_raw):
+                keys.append(f'ncaaf_{ymd}_{can_a}_{can_h}')
+        return keys
+
+    key_variants = {}
     for g in cfbd_games:
-        if not g.get('id'): continue
-        keys = [f'cfbd_{g["id"]}']
-        # Also derive ncaaf_YYYYMMDD_away_home from CFBD kickoff + teams
-        kickoff = g.get('start_date') or g.get('kickoff_utc') or ''
-        try:
-            ymd = kickoff[:10].replace('-','')
-            away_slug = _slugify(g.get('away_team'))
-            home_slug = _slugify(g.get('home_team'))
-            if ymd and away_slug and home_slug:
-                keys.append(f'ncaaf_{ymd}_{away_slug}_{home_slug}')
-        except Exception: pass
-        for k in keys:
-            key_variants[k] = g
+        for k in _key_variants_for(g):
+            if k: key_variants[k] = g
     all_keys = list(key_variants.keys())
     existing = fetch_existing(all_keys)
     print(f'  matched existing rows: {len(existing)}/{len(cfbd_games)} '
