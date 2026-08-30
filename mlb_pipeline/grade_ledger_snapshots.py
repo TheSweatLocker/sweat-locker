@@ -98,9 +98,69 @@ def _resolve_pick_side(leg: dict, result: dict) -> str | None:
     return None
 
 
-def _grade_leg(leg: dict, result: dict) -> str:
+# Prop market → stat key (MLB Stats API). Mirrors grade_props.STAT_MAP_MLB.
+_PROP_MARKET_STAT = {
+    'prop_hits_over': 'h_bat', 'prop_hits_under': 'h_bat',
+    'prop_ks_over':   'ks',    'prop_ks_under':   'ks',
+    'prop_bb_over':   'bb',    'prop_bb_under':   'bb',
+    'prop_er_over':   'er',    'prop_er_under':   'er',
+    'prop_ha_over':   'h_pit', 'prop_ha_under':   'h_pit',
+    'prop_outs_over': 'outs',  'prop_outs_under': 'outs',
+}
+
+
+def _grade_prop_leg(leg: dict, player_stats: dict | None) -> str:
+    """Grade a prop leg using MLB Stats API player stats.
+
+    player_stats: {player_name_lower: {ks, bb, er, h_pit, outs, h_bat}}
+    Returns 'W', 'L', 'P', or 'NR'.
+    """
+    if not player_stats: return 'NR'
+    market = str(leg.get('market') or '').lower()
+    stat_key = _PROP_MARKET_STAT.get(market)
+    if not stat_key: return 'NR'
+    # Prefer explicit player_name; fall back to parsing 'pick' string
+    # ("Miguel Vargas Over 0.5 Hits" → "Miguel Vargas")
+    player_name = (leg.get('player_name') or '').strip()
+    if not player_name:
+        pick = str(leg.get('pick') or '')
+        for kw in (' Over ', ' Under '):
+            if kw in pick:
+                player_name = pick.split(kw, 1)[0].strip()
+                break
+    if not player_name: return 'NR'
+    stats = player_stats.get(player_name.lower())
+    if not stats: return 'NR'
+    actual = stats.get(stat_key)
+    if actual is None: return 'NR'
+    line = leg.get('teased_line') if leg.get('teased_line') is not None else leg.get('original_line')
+    if line is None: return 'NR'
+    line = float(line)
+    # Direction: side field wins, else parse from pick, else from market suffix
+    side = (leg.get('side') or '').upper()
+    if side not in ('OVER', 'UNDER'):
+        pick_up = str(leg.get('pick') or '').upper()
+        if 'OVER' in pick_up: side = 'OVER'
+        elif 'UNDER' in pick_up: side = 'UNDER'
+        elif market.endswith('_over'):  side = 'OVER'
+        elif market.endswith('_under'): side = 'UNDER'
+        else: return 'NR'
+    if side == 'OVER':
+        if actual > line: return 'W'
+        if actual < line: return 'L'
+        return 'P'
+    if actual < line: return 'W'
+    if actual > line: return 'L'
+    return 'P'
+
+
+def _grade_leg(leg: dict, result: dict, player_stats: dict | None = None) -> str:
     """Return 'W', 'L', 'P', or 'NR' (not resolved)."""
-    hs = result.get('home_score'); as_ = result.get('away_score')
+    market = str(leg.get('market') or '').lower()
+    if market.startswith('prop_'):
+        return _grade_prop_leg(leg, player_stats)
+    hs = result.get('home_score') if result else None
+    as_ = result.get('away_score') if result else None
     if hs is None or as_ is None: return 'NR'
     market = str(leg.get('market') or '').lower()
     # Use teased line if present, else original_line
@@ -149,6 +209,21 @@ def grade_date(gd: str, dry_run: bool = False) -> tuple[int, int]:
     snaps = r.json() if r.status_code == 200 else []
     if not snaps: return 0, 0
 
+    # 2026-08-30: lazy-load MLB batter/pitcher stats once per date if any
+    # snapshot has a prop_* leg. Feeds _grade_prop_leg for hits_parlay etc.
+    player_stats = None
+    needs_props = any(
+        str(l.get('market') or '').lower().startswith('prop_')
+        for s in snaps for l in (s.get('legs') or [])
+    )
+    if needs_props:
+        try:
+            from grade_props import fetch_player_stats_for_date
+            player_stats, _n_games = fetch_player_stats_for_date(gd)
+            print(f'  loaded MLB player stats: {len(player_stats)} players from {_n_games} games')
+        except Exception as e:
+            print(f'  ⚠ player stats fetch failed: {e}')
+
     graded = skipped = 0
     now_iso = datetime.now(timezone.utc).isoformat()
     for snap in snaps:
@@ -162,10 +237,15 @@ def grade_date(gd: str, dry_run: bool = False) -> tuple[int, int]:
             gid = leg.get('game_id')
             if not sport or not gid:
                 combo_status = 'NR'; break
-            res = _fetch_result(sport, gid)
-            if not res:
-                combo_status = 'NR'; break
-            outcome = _grade_leg(leg, res)
+            market = str(leg.get('market') or '').lower()
+            # Prop legs bypass sport-results fetch — graded via player stats
+            if market.startswith('prop_'):
+                outcome = _grade_leg(leg, {}, player_stats=player_stats)
+            else:
+                res = _fetch_result(sport, gid)
+                if not res:
+                    combo_status = 'NR'; break
+                outcome = _grade_leg(leg, res, player_stats=player_stats)
             results_per_leg.append(outcome)
             if outcome == 'W':
                 legs_hit += 1
