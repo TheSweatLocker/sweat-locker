@@ -589,10 +589,17 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
         cls = str(flag.get('classification') or '')
         if not cls or cls in ('PATTERN_ONLY', 'NEUTRAL', 'SOURCES_SPLIT'):
             continue
+        # 2026-08-31: QUARANTINE — 30d audit showed SHARP_MOVE_CONFIRMED
+        # (2-source) losing 42% (14-19) and fade-side winning 57.6%.
+        # SHARP_MOVE_LEAN (1-source) losing 34% and fade winning 65.6%.
+        # TRIPLE_CONFIRMED still correctly aligned (60% wins). Root cause
+        # is one of the split sources having money%/bets% inverted; while
+        # investigation is open, drop 2-source and 1-source confidence
+        # to 0 so ensemble no longer pushes picks toward the losing side.
+        if signal_key == 'sharp_split_confirmed' and '_TRIPLE_CONFIRMED' not in cls:
+            continue  # QUARANTINE 2-source SHARP_MOVE_CONFIRMED
         # Match source_row to classification tier
         if signal_key == 'sharp_split_triple_confirmed' and '_TRIPLE_CONFIRMED' not in cls:
-            continue
-        if signal_key == 'sharp_split_confirmed' and ('_TRIPLE_CONFIRMED' in cls or '_CONFIRMED' not in cls):
             continue
 
         market = str(flag.get('market') or '').lower()
