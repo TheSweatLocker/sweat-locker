@@ -142,7 +142,7 @@ PROP_CONFIG = {
         'label': 'Completions',
         'fantasy_col': 'proj_pass_completions',
     },
-    'player_ints': {
+    'player_pass_interceptions': {
         'col': 'interceptions',
         'position': 'QB',
         'league_baseline': 0.75,
@@ -353,6 +353,8 @@ def fetch_events(sport_key: str = 'americanfootball_nfl') -> list:
     return r.json()
 
 
+_PROP_FETCH_ERRS: dict = {}
+
 def fetch_event_props(event_id: str, sport_key: str) -> dict:
     """Player-prop markets require the per-event endpoint (Odds API v4).
     Uses paid quota — 1 call per event × per market batch."""
@@ -363,6 +365,11 @@ def fetch_event_props(event_id: str, sport_key: str) -> dict:
         timeout=15,
     )
     if r.status_code != 200:
+        # 2026-08-31: log distinct error bodies. Silent {} return let
+        # player_ints (invalid market key) 422 the whole request without
+        # surfacing — nfl_props stayed empty for weeks before diagnosed.
+        key = (r.status_code, r.text[:80])
+        _PROP_FETCH_ERRS[key] = _PROP_FETCH_ERRS.get(key, 0) + 1
         return {}
     return r.json()
 
@@ -996,12 +1003,15 @@ def run(dry_run: bool = False, single_player: Optional[str] = None) -> None:
         eid = evt.get('id')
         if not eid: continue
         # NOTE: fetch_event_props hits paid Odds API quota. Cap at reasonable
-        # per-run — in production we'd only pull events kicking off in next 24h.
+        # per-run — in production we'd only pull events kicking off in next 14 days.
+        # 2026-08-31: bumped 168h → 336h. Prior 7-day window silently skipped
+        # every Week 1 game (Aug 31 → Sept 10 = 240h out) so nfl_props stayed
+        # empty. 14-day window covers Week 1 + Week 2 Thu without exploding quota.
         commence = evt.get('commence_time', '')
         try:
             dt = datetime.fromisoformat(commence.replace('Z', '+00:00'))
             hrs_out = (dt - datetime.now(timezone.utc)).total_seconds() / 3600
-            if hrs_out > 168 or hrs_out < -1:  # only next 7 days
+            if hrs_out > 336 or hrs_out < -1:  # only next 14 days
                 continue
         except Exception:
             continue
@@ -1026,6 +1036,10 @@ def run(dry_run: bool = False, single_player: Optional[str] = None) -> None:
 
     print(f'  events with props pulled: {events_with_props}')
     print(f'  prop picks generated: {len(all_rows)}')
+    if _PROP_FETCH_ERRS:
+        print(f'  ⚠ Odds API prop fetch errors ({sum(_PROP_FETCH_ERRS.values())} total):')
+        for (code, body), n in sorted(_PROP_FETCH_ERRS.items(), key=lambda x: -x[1]):
+            print(f'      · {code} × {n}: {body}')
 
     # Dedup on (game_id, player_name, prop_type, pick_side) — keep highest conv
     dedup: dict = {}
