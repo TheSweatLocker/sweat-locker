@@ -14973,34 +14973,60 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     <View style={[styles.card, {padding:14}]}>
                       <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>STEP RECORD</Text>
                       {(() => {
+                        // 2026-08-31: reframed for the streak-compounding product
+                        // this actually is. Prior version put lifetime W-L visually
+                        // equal to current/best streak — but Ladder's currency is
+                        // "how many rungs before reset", not raw hit-rate.
+                        // Big numbers: current streak + best. Lifetime W-L moved
+                        // to a lighter sub-line (still transparent, not featured).
+                        // Added L10 as the recency signal — 4-8 lifetime is dragged
+                        // by early misses; L10 shows if the current phase is on the mend.
                         const resolved = ladderRungs.filter(r => r.result);
                         const wins = resolved.filter(r => r.result === 'Win').length;
                         const losses = resolved.filter(r => r.result === 'Loss').length;
                         const pushes = resolved.filter(r => r.result === 'Push').length;
                         const wl = wins + losses;
                         const hitPct = wl > 0 ? Math.round(1000 * wins / wl) / 10 : 0;
+                        // L10 window — most recent 10 resolved rungs
+                        const recent10 = resolved.slice(0, 10);
+                        const rW = recent10.filter(r => r.result === 'Win').length;
+                        const rL = recent10.filter(r => r.result === 'Loss').length;
+                        const rPct = (rW + rL) > 0 ? Math.round(1000 * rW / (rW + rL)) / 10 : 0;
                         const cur = ladderState?.current_streak ?? 0;
                         const best = ladderState?.longest_streak ?? 0;
                         const curColor = cur > 0 ? THEME.win : cur < 0 ? THEME.loss : THEME.textMuted;
                         return (
-                          <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
-                            <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
-                              <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>CURRENT</Text>
-                              <Text style={{color:curColor, fontSize:20, fontWeight:'800'}}>{cur}</Text>
-                              <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>step{Math.abs(cur) === 1 ? '' : 's'}</Text>
+                          <View>
+                            <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
+                              <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>CURRENT</Text>
+                                <Text style={{color:curColor, fontSize:28, fontWeight:'800'}}>{cur}</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>step{Math.abs(cur) === 1 ? '' : 's'}</Text>
+                              </View>
+                              <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
+                              <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>BEST</Text>
+                                <Text style={{color:THEME.accent, fontSize:28, fontWeight:'800'}}>{best}</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>step{best === 1 ? '' : 's'}</Text>
+                              </View>
+                              <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
+                              <View style={{flex:1.2, alignItems:'center', paddingVertical:4}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>L10</Text>
+                                <Text style={{color:(rW + rL) > 0 ? (rPct >= 50 ? THEME.win : rPct >= 40 ? THEME.text : THEME.loss) : THEME.textDim,
+                                              fontSize:22, fontWeight:'800'}}>{rW}-{rL}</Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{(rW + rL) > 0 ? `${rPct.toFixed(0)}%` : '—'}</Text>
+                              </View>
                             </View>
-                            <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
-                            <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
-                              <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>BEST</Text>
-                              <Text style={{color:THEME.accent, fontSize:20, fontWeight:'800'}}>{best}</Text>
-                              <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>step{best === 1 ? '' : 's'}</Text>
-                            </View>
-                            <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
-                            <View style={{flex:1.2, alignItems:'center', paddingVertical:4}}>
-                              <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>RECORD</Text>
-                              <Text style={{color:THEME.text, fontSize:20, fontWeight:'800'}}>{wins}-{losses}{pushes ? `-${pushes}` : ''}</Text>
-                              <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{wl > 0 ? `${hitPct}%` : '—'}</Text>
-                            </View>
+                            {/* Lifetime record moved to muted sub-line — honest but de-featured */}
+                            {wl > 0 && (
+                              <View style={{marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44',
+                                            flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
+                                <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'600', letterSpacing:0.4}}>LIFETIME</Text>
+                                <Text style={{color:THEME.textDim, fontSize:11, fontVariant:['tabular-nums']}}>
+                                  {wins}-{losses}{pushes ? `-${pushes}` : ''} · {hitPct.toFixed(1)}%
+                                </Text>
+                              </View>
+                            )}
                           </View>
                         );
                       })()}
