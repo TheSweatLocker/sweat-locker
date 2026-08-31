@@ -358,6 +358,24 @@ jobs:
           cd mlb_pipeline
           python recompute_primary_play.py
 
+      # 2026-08-31: MC-dissent gate SAFETY NET. If recompute above drops
+      # silently (cron pressure, timeout, transient fail) primary_play
+      # stays at whatever game_context.py wrote BEFORE MC was populated,
+      # and the MC-dissent gate never fires. Symptom: Braves 8/31 shipped
+      # PRIME 94 to the app when MC said 37% home win — Jerry knew, app
+      # didn't. apply_mc_gate_only.py is FAST (no ensemble rebuild) so
+      # even if it runs 3× per cron cycle the cost is trivial. If recompute
+      # succeeded, this is a no-op (gates already applied); if it failed,
+      # this catches the dissent.
+      - name: Safety-net MC dissent gate pass
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python apply_mc_gate_only.py --sport MLB || echo "MC gate safety net non-fatal"
+
       # 2026-08-27: cascade primary_play changes to jerry_reads.
       # Jerry's LLM runs early morning and stamps call_side/call_market/call_text
       # from THEN-current primary_play. When recompute above flips a pick
