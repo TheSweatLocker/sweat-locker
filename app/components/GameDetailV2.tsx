@@ -1348,48 +1348,63 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
             <Text style={{color: C.home, fontSize: 13, fontWeight: '800', textAlign: 'right'}} numberOfLines={1}>{homeTeam}</Text>
           </View>
         </View>
-        <StatRow label="POWER"      a={spA} b={spH} aAdv={spAdv.a} bAdv={spAdv.b}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
-        <StatRow label="PROJ PPG"   a={spOffA} b={spOffH}
-                 aAdv={spOffA != null && spOffH != null && spOffA > spOffH}
-                 bAdv={spOffA != null && spOffH != null && spOffH > spOffA}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
-        <StatRow label="PROJ PA"    a={spDefA} b={spDefH}
-                 aAdv={spDefA != null && spDefH != null && spDefA < spDefH}
-                 bAdv={spDefA != null && spDefH != null && spDefH < spDefA}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
-        <StatRow label="OFF EPA/PL" a={offA} b={offH} aAdv={offAdv.a} bAdv={offAdv.b}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
-        <StatRow label="DEF EPA/PL" a={defA} b={defH} aAdv={defAdv.a} bAdv={defAdv.b}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
-        <StatRow label="SUCCESS %"  a={succOffA} b={succOffH}
-                 aAdv={succOffA != null && succOffH != null && succOffA > succOffH}
-                 bAdv={succOffA != null && succOffH != null && succOffH > succOffA}
-                 fmt={(v: any) => v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`} />
-        <StatRow label="EXPLOSIVE"  a={explA} b={explH}
-                 aAdv={explA != null && explH != null && explA > explH}
-                 bAdv={explA != null && explH != null && explH > explA}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(2)} />
-        {/* 2026-08-29: raw volumetric rows the user asked for — bettor-
-            friendly numbers ("Alabama gives up 178 rush ypg") on top of
-            the efficiency stack above. Higher-is-better for own offense,
-            lower-is-better for defense. */}
+        {/* 2026-08-31 reorder: volumetric (casual-friendly) rows FIRST.
+            Prior order buried "PASS YPG / RUSH YPG" under 7 jargon rows
+            (POWER / EPA / SUCCESS % / EXPLOSIVE) that casual users don't
+            recognize. Casual bettors read the top-of-card first, so
+            surface "gives up 189 rush ypg" before "off_epa_per_play 0.15". */}
+        {/* Team profile — points + volume */}
+        {spOffH != null || spOffA != null ? (
+          <StatRow label="PROJ PPG"   a={spOffA} b={spOffH}
+                   aAdv={spOffA != null && spOffH != null && spOffA > spOffH}
+                   bAdv={spOffA != null && spOffH != null && spOffH > spOffA}
+                   fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
+        ) : null}
+        {spDefH != null || spDefA != null ? (
+          <StatRow label="PROJ PA"    a={spDefA} b={spDefH}
+                   aAdv={spDefA != null && spDefH != null && spDefA < spDefH}
+                   bAdv={spDefA != null && spDefH != null && spDefH < spDefA}
+                   fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
+        ) : null}
         <StatRow label="PASS YPG"   a={passOffA} b={passOffH}
                  aAdv={passOffA != null && passOffH != null && passOffA > passOffH}
                  bAdv={passOffA != null && passOffH != null && passOffH > passOffA}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
-        <StatRow label="RUSH YPG"   a={rushOffA} b={rushOffH}
-                 aAdv={rushOffA != null && rushOffH != null && rushOffA > rushOffH}
-                 bAdv={rushOffA != null && rushOffH != null && rushOffH > rushOffA}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
         <StatRow label="PASS YPG A" a={passAllA} b={passAllH}
                  aAdv={passAllA != null && passAllH != null && passAllA < passAllH}
                  bAdv={passAllA != null && passAllH != null && passAllH < passAllA}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
+        <StatRow label="RUSH YPG"   a={rushOffA} b={rushOffH}
+                 aAdv={rushOffA != null && rushOffH != null && rushOffA > rushOffH}
+                 bAdv={rushOffA != null && rushOffH != null && rushOffH > rushOffA}
+                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
         <StatRow label="RUSH YPG A" a={rushAllA} b={rushAllH}
                  aAdv={rushAllA != null && rushAllH != null && rushAllA < rushAllH}
                  bAdv={rushAllA != null && rushAllH != null && rushAllH < rushAllA}
                  fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
+
+        {/* Advanced metrics — separator + subhead to signal "this is
+            handicapper-grade stuff, casual bettors can skip." */}
+        {(spH != null || spA != null || offH != null || offA != null) && (
+          <View style={{marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.border + '55'}}>
+            <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '800',
+                          letterSpacing: 0.6, marginBottom: 4, textAlign: 'center'}}>ADVANCED METRICS</Text>
+            <StatRow label="POWER"      a={spA} b={spH} aAdv={spAdv.a} bAdv={spAdv.b}
+                     fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
+            <StatRow label="OFF EPA/PL" a={offA} b={offH} aAdv={offAdv.a} bAdv={offAdv.b}
+                     fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
+            <StatRow label="DEF EPA/PL" a={defA} b={defH} aAdv={defAdv.a} bAdv={defAdv.b}
+                     fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
+            <StatRow label="SUCCESS %"  a={succOffA} b={succOffH}
+                     aAdv={succOffA != null && succOffH != null && succOffA > succOffH}
+                     bAdv={succOffA != null && succOffH != null && succOffH > succOffA}
+                     fmt={(v: any) => v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`} />
+            <StatRow label="EXPLOSIVE"  a={explA} b={explH}
+                     aAdv={explA != null && explH != null && explA > explH}
+                     bAdv={explA != null && explH != null && explH > explA}
+                     fmt={(v: any) => v == null ? '—' : Number(v).toFixed(2)} />
+          </View>
+        )}
 
         {/* Model read banner — mirrors MLB teamProjBanner. Speaks
             projected margin + market comparison in the same signed
@@ -1836,17 +1851,25 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
   );
 }
 
-// ─── NFL TEAM MATCHUP (existing pass/rush/def, isolated) ────────────────
+// ─── NFL TEAM MATCHUP ────────────────────────────────────────────────────
+// 2026-08-31 rewrite: casual-first layout matching NCAAFTeamMatchupCard.
+// Reads server-computed summary JSONB (ctx.home_team_stats_summary +
+// away_team_stats_summary) populated by nfl_game_context._build_team_summary.
+// Falls back to raw nfl_team_stats fetch when summary blob is null (e.g.
+// row hasn't been rebuilt post-migration yet). Ranks (1-based, lower =
+// better) render as small gray chips next to each number.
 function NFLTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
-  const [teamStats, setTeamStats] = useState<{home?: any; away?: any} | null>(null);
+  const [fallback, setFallback] = useState<{home?: any; away?: any} | null>(null);
+  const hasSummary = ctx?.home_team_stats_summary || ctx?.away_team_stats_summary;
   React.useEffect(() => {
+    if (hasSummary) return;
     const client = sb();
     if (!client || !homeTeam || !awayTeam) return;
     (async () => {
       const season = ctx?.season || new Date().getFullYear();
       const {data: ts} = await client
         .from('nfl_team_stats')
-        .select('team,pass_epa,rush_epa,pass_yards,rush_yards,pass_attempts,rush_attempts,pass_tds,pass_ints,def_sacks,def_ints,def_pass_def,pass_cpoe,sacks_suffered,games,season')
+        .select('team,pass_yards,rush_yards,def_sacks,def_ints,def_fumbles_forced,pass_tds,rush_tds,fg_made,sacks_suffered,games,season')
         .in('team', [homeTeam, awayTeam])
         .lte('season', season)
         .eq('season_type', 'REG')
@@ -1855,18 +1878,107 @@ function NFLTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
       if (ts) {
         const map: any = {};
         for (const row of ts) if (!map[row.team]) map[row.team] = row;
-        setTeamStats({home: map[homeTeam], away: map[awayTeam]});
+        setFallback({home: map[homeTeam], away: map[awayTeam]});
       }
     })();
-  }, [homeTeam, awayTeam, ctx?.season]);
-  if (!teamStats || (!teamStats.home && !teamStats.away)) return null;
+  }, [homeTeam, awayTeam, ctx?.season, hasSummary]);
+
+  // Compose a normalized {home, away} summary — from server blob first, else fallback fetch.
+  const home = ctx?.home_team_stats_summary || (fallback?.home ? _deriveNflSummary(fallback.home, ctx) : null);
+  const away = ctx?.away_team_stats_summary || (fallback?.away ? _deriveNflSummary(fallback.away, ctx) : null);
+  if (!home && !away) return null;
+
+  // Fallback rows lack ctx defense fields → grab from ctx directly for the
+  // "yds allowed" rows so the render matches server-blob path.
+  const passAllH = home?.pass_yds_allowed_pg ?? ctx?.home_def_pass_ypg;
+  const passAllA = away?.pass_yds_allowed_pg ?? ctx?.away_def_pass_ypg;
+  const rushAllH = home?.rush_yds_allowed_pg ?? ctx?.home_def_rush_ypg;
+  const rushAllA = away?.rush_yds_allowed_pg ?? ctx?.away_def_rush_ypg;
+  const ptsAllH  = home?.pts_allowed_pg      ?? ctx?.home_def_ppg;
+  const ptsAllA  = away?.pts_allowed_pg      ?? ctx?.away_def_ppg;
+
+  const seasonUsed = home?.season_source ?? away?.season_source ?? ctx?.season;
+
   return (
-    <Section title="Team Matchup" hint="season · pass EPA + def">
-      <View style={{gap: 8}}>
-        {teamStats.away && <TeamStatRow team={awayTeam} side="away" stats={teamStats.away} defense={teamStats.home} />}
-        {teamStats.home && <TeamStatRow team={homeTeam} side="home" stats={teamStats.home} defense={teamStats.away} />}
+    <Section title="Team Matchup" hint={seasonUsed ? `${seasonUsed} season · lower rank = better` : 'season stats · lower rank = better'}>
+      <View style={{backgroundColor: C.surface2, borderRadius: 10, padding: 12}}>
+        <View style={{flexDirection: 'row', alignItems: 'center', paddingBottom: 8,
+                      borderBottomWidth: 1, borderBottomColor: C.border + '55'}}>
+          <View style={{flex: 1}}>
+            <Text style={{color: C.away, fontSize: 13, fontWeight: '800'}} numberOfLines={1}>{awayTeam}</Text>
+          </View>
+          <Text style={{width: 96, color: C.textMuted, fontSize: 9, fontWeight: '700',
+                        textAlign: 'center', letterSpacing: 0.5}}>METRIC</Text>
+          <View style={{flex: 1}}>
+            <Text style={{color: C.home, fontSize: 13, fontWeight: '800', textAlign: 'right'}} numberOfLines={1}>{homeTeam}</Text>
+          </View>
+        </View>
+
+        <RankedStatRow label="POINTS/G"     a={away?.pts_pg}      b={home?.pts_pg}
+                       aRank={away?.rank_scoring_off} bRank={home?.rank_scoring_off} higherIsBetter />
+        <RankedStatRow label="PTS ALLOW"    a={ptsAllA}           b={ptsAllH}
+                       aRank={away?.rank_scoring_def} bRank={home?.rank_scoring_def} />
+        <RankedStatRow label="PASS YDS/G"   a={away?.pass_yds_pg} b={home?.pass_yds_pg}
+                       aRank={away?.rank_pass_off}    bRank={home?.rank_pass_off}    higherIsBetter />
+        <RankedStatRow label="PASS ALLOW"   a={passAllA}          b={passAllH}
+                       aRank={away?.rank_pass_def}    bRank={home?.rank_pass_def} />
+        <RankedStatRow label="RUSH YDS/G"   a={away?.rush_yds_pg} b={home?.rush_yds_pg}
+                       aRank={away?.rank_rush_off}    bRank={home?.rank_rush_off}    higherIsBetter />
+        <RankedStatRow label="RUSH ALLOW"   a={rushAllA}          b={rushAllH}
+                       aRank={away?.rank_rush_def}    bRank={home?.rank_rush_def} />
+        <RankedStatRow label="SACKS/G"      a={away?.sacks_pg}    b={home?.sacks_pg} higherIsBetter />
+        <RankedStatRow label="TAKEAWAYS/G"  a={away?.turnovers_forced_pg} b={home?.turnovers_forced_pg} higherIsBetter />
       </View>
     </Section>
+  );
+}
+
+// Derive summary shape from raw nfl_team_stats row when server blob missing.
+// Mirrors _build_team_summary in nfl_game_context.py but without ranks.
+function _deriveNflSummary(s: any, ctx: any) {
+  if (!s) return null;
+  const g = Number(s.games) || 0;
+  const pg = (f: string) => (s[f] == null || !g) ? null : Math.round((Number(s[f]) / g) * 10) / 10;
+  const totalTds = (Number(s.pass_tds) || 0) + (Number(s.rush_tds) || 0);
+  const fgMade = Number(s.fg_made) || 0;
+  return {
+    pts_pg: g && (totalTds || fgMade) ? Math.round((totalTds * 6.9 + fgMade * 3) / g * 10) / 10 : null,
+    pts_allowed_pg: null,   // caller fills from ctx
+    pass_yds_pg: pg('pass_yards'),
+    pass_yds_allowed_pg: null,
+    rush_yds_pg: pg('rush_yards'),
+    rush_yds_allowed_pg: null,
+    sacks_pg: pg('def_sacks'),
+    turnovers_forced_pg: Math.round(((pg('def_ints') || 0) + (pg('def_fumbles_forced') || 0)) * 10) / 10,
+    season_source: s.season,
+    games_sample: g,
+  };
+}
+
+// Shared paired-stat row with optional rank chip (used by NFL + NCAAF matchup cards).
+function RankedStatRow({label, a, b, aRank, bRank, higherIsBetter = false, fmt}: any) {
+  if (a == null && b == null) return null;
+  const fA = fmt ? fmt(a) : (a == null ? '—' : Number(a).toFixed(a >= 100 ? 0 : 1));
+  const fB = fmt ? fmt(b) : (b == null ? '—' : Number(b).toFixed(b >= 100 ? 0 : 1));
+  const aAdv = (a != null && b != null) && (higherIsBetter ? a > b : a < b);
+  const bAdv = (a != null && b != null) && (higherIsBetter ? b > a : b < a);
+  const rankChip = (r: any) => (r == null ? null :
+    <Text style={{color: C.textMuted, fontSize: 10, fontWeight: '600'}}> #{r}</Text>);
+  return (
+    <View style={{flexDirection: 'row', alignItems: 'center', paddingVertical: 4}}>
+      <View style={{flex: 1, flexDirection: 'row', alignItems: 'baseline'}}>
+        <Text style={{fontSize: 13, fontWeight: aAdv ? '800' : '600',
+                      color: aAdv ? C.away : C.textDim}}>{fA}</Text>
+        {rankChip(aRank)}
+      </View>
+      <Text style={{width: 96, fontSize: 10, fontWeight: '800', color: C.textMuted,
+                    textAlign: 'center', letterSpacing: 0.5}}>{label}</Text>
+      <View style={{flex: 1, flexDirection: 'row', alignItems: 'baseline', justifyContent: 'flex-end'}}>
+        {rankChip(bRank)}
+        <Text style={{fontSize: 13, fontWeight: bAdv ? '800' : '600',
+                      color: bAdv ? C.home : C.textDim, textAlign: 'right', marginLeft: 2}}>{fB}</Text>
+      </View>
+    </View>
   );
 }
 

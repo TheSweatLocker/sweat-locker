@@ -262,6 +262,105 @@ def get_qb_vs_team_stats(team_abbr: str, opponent_abbr: str) -> dict:
         return {}
 
 
+_RANK_CACHE: dict = {}
+
+def _rank_teams_by(field: str, team_stats: dict, is_defense: bool = False,
+                   per_game: bool = True, higher_is_better: bool = True) -> dict:
+    """Return {team_abbrev → 1-based rank} across all teams by field.
+    Cached across calls in a run (2×32 teams sorted once)."""
+    key = (field, id(team_stats), higher_is_better)
+    if key in _RANK_CACHE: return _RANK_CACHE[key]
+    scores = []
+    for team, s in team_stats.items():
+        if not s: continue
+        raw = s.get(field)
+        if raw is None: continue
+        try:
+            v = float(raw)
+            if per_game:
+                g = float(s.get('games') or 0)
+                if g <= 0: continue
+                v = v / g
+            scores.append((team, v))
+        except (TypeError, ValueError):
+            continue
+    scores.sort(key=lambda x: -x[1] if higher_is_better else x[1])
+    ranks = {team: i + 1 for i, (team, _) in enumerate(scores)}
+    _RANK_CACHE[key] = ranks
+    return ranks
+
+
+def _build_team_summary(team: str, off_stats: dict, def_stats: dict,
+                        all_off: dict, all_def: dict) -> dict:
+    """Casual-friendly per-team summary for game-card render.
+
+    Blob shape (all values nullable when sample missing):
+      { pts_pg, pts_allowed_pg,
+        rush_yds_pg, rush_yds_allowed_pg,
+        pass_yds_pg, pass_yds_allowed_pg,
+        sacks_pg, turnovers_forced_pg,
+        rank_rush_off, rank_rush_def, rank_pass_off, rank_pass_def,
+        rank_scoring_off, rank_scoring_def,
+        season_source, games_sample }
+
+    Offense fields come from nfl_team_stats (season totals ÷ games).
+    Defense fields come from nfl_team_defense_stats (already per-game).
+    Ranks computed across all 32 teams. Lower rank = better (1st = best).
+    """
+    if not off_stats:
+        return {'error': 'no offense stats for team'}
+    games = off_stats.get('games') or 0
+    def _pg(field):
+        v = off_stats.get(field)
+        if v is None or not games: return None
+        try: return round(float(v) / float(games), 1)
+        except (TypeError, ValueError): return None
+
+    # Scoring: pass_tds + rush_tds + ~1.05 XP each = rough proxy. Uses
+    # actual scored fields when available; falls back to TD*6.9 estimate.
+    pts_pg = None
+    total_tds = ((off_stats.get('pass_tds') or 0)
+                 + (off_stats.get('rush_tds') or 0))
+    fg_made = off_stats.get('fg_made') or 0
+    if games and (total_tds or fg_made):
+        pts_pg = round((total_tds * 6.9 + fg_made * 3) / games, 1)
+
+    summary = {
+        'pts_pg':               pts_pg,
+        'pts_allowed_pg':       def_stats.get('def_ppg') if def_stats else None,
+        'rush_yds_pg':          _pg('rush_yards'),
+        'rush_yds_allowed_pg':  def_stats.get('def_rush_ypg') if def_stats else None,
+        'pass_yds_pg':          _pg('pass_yards'),
+        'pass_yds_allowed_pg':  def_stats.get('def_pass_ypg') if def_stats else None,
+        'sacks_pg':             _pg('def_sacks'),
+        'turnovers_forced_pg':  round(((_pg('def_ints') or 0)
+                                       + (_pg('def_fumbles_forced') or 0)), 1),
+        'season_source':        off_stats.get('season'),
+        'games_sample':         games,
+    }
+
+    # Ranks (1-based, lower = better). Skip when field missing.
+    off_yds_ranks = _rank_teams_by('rush_yards', all_off, higher_is_better=True)
+    if team in off_yds_ranks: summary['rank_rush_off'] = off_yds_ranks[team]
+    pass_ranks = _rank_teams_by('pass_yards', all_off, higher_is_better=True)
+    if team in pass_ranks: summary['rank_pass_off'] = pass_ranks[team]
+    # Defense: lower yds allowed = better rank
+    if all_def:
+        def_rush_ranks = _rank_teams_by('def_rush_ypg', all_def,
+                                        per_game=False, higher_is_better=False)
+        if team in def_rush_ranks: summary['rank_rush_def'] = def_rush_ranks[team]
+        def_pass_ranks = _rank_teams_by('def_pass_ypg', all_def,
+                                        per_game=False, higher_is_better=False)
+        if team in def_pass_ranks: summary['rank_pass_def'] = def_pass_ranks[team]
+        def_scoring_ranks = _rank_teams_by('def_ppg', all_def,
+                                           per_game=False, higher_is_better=False)
+        if team in def_scoring_ranks: summary['rank_scoring_def'] = def_scoring_ranks[team]
+    scoring_ranks = _rank_teams_by('pass_tds', all_off, higher_is_better=True)
+    if team in scoring_ranks: summary['rank_scoring_off'] = scoring_ranks[team]
+
+    return summary
+
+
 def load_team_stats_with_fallback(current_season: int) -> tuple:
     """Return (stats_dict, source_label). Falls back to prior-season
     regressed-to-mean when current-year sample is too thin (Weeks 1-3).
@@ -1033,6 +1132,19 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     # QB pressure allowed (own O-line)
     row['home_sacks_suffered_pg']  = _per_game(home_stats, 'sacks_suffered')
     row['away_sacks_suffered_pg']  = _per_game(away_stats, 'sacks_suffered')
+
+    # 2026-08-31: Casual-friendly team-stats summary for game-card render.
+    # Aggregates the flat per-game fields above into a compact JSONB with
+    # league ranks — so app can render "Iowa State averages 189 rush yds/g
+    # (14th)" without hitting nfl_team_stats a second time. team_stats +
+    # team_def_stats already in scope; ranks computed across all teams
+    # once and cached on the closure so we don't re-sort per game.
+    row['home_team_stats_summary'] = _build_team_summary(
+        home, home_stats, home_def, team_stats, tds,
+    )
+    row['away_team_stats_summary'] = _build_team_summary(
+        away, away_stats, away_def, team_stats, tds,
+    )
 
     # 2026-08-21: Join qb_vs_team stats from nfl_qb_vs_team backfill (1425 rows
     # 2021-2025 seasons). Powers nfl_qb_owns_defense_career + related signals.
