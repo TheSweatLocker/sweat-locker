@@ -257,12 +257,18 @@ def write_picks(picks: list, pull_id: Optional[str]) -> int:
 
     2026-07-27 fix: previously plain INSERT — each cron pull created
     a new row for same (source, game_id, surface, pick_side) combo,
-    inflating consensus counts 2-3x (source posts pick at noon → row 1,
-    5pm cron pulls same pick → row 2, etc). Fade detector triggered off
-    inflated counts. Now uses on_conflict=merge-duplicates against the
-    unique index shipped in 20260727_external_picks_dedup.sql:
-      (source, game_id, surface, pick_side, game_date).
-    pull_id + pulled_at refresh on each merge to reflect latest pull.
+    inflating consensus counts 2-3x.
+
+    2026-08-31 fix v2: previous dedup key INCLUDED pick_side, so when
+    a source's OWN direction flipped between morning and afternoon
+    pulls (e.g. OddsCrowd said HOME sharp at 6am with money 54%/bets 44%,
+    then said AWAY sharp at 5pm with money 56%/bets 53% because line
+    moved), BOTH rows persisted → app rendered same source on BOTH
+    sides of a market. Surfaced on 8/31 Astros game (Ext panel showed
+    Pickswise mistakenly + OC on both sides). Now dedup by
+    (source, game_id, surface, game_date) so the LATEST pull overwrites
+    regardless of direction change. Pre-write scrub deletes any older
+    same-source-same-market rows to catch legacy dupes.
     """
     if not picks:
         return 0
@@ -271,15 +277,40 @@ def write_picks(picks: list, pull_id: Optional[str]) -> int:
         d = asdict(p)
         d['pull_id'] = pull_id
         payload.append(d)
+    # Pre-write scrub: delete existing same-source-same-market rows from today
+    # (belt-and-suspenders in case migration for the tightened index hasn't
+    # landed yet). Safe because we're about to insert the fresh row.
+    scrub_seen = set()
+    for p in payload:
+        key = (p.get('source'), p.get('game_id'), p.get('surface'), p.get('game_date'))
+        if None in key or key in scrub_seen: continue
+        scrub_seen.add(key)
+        try:
+            requests.delete(
+                f'{SB}/rest/v1/external_picks'
+                f'?source=eq.{key[0]}&game_id=eq.{key[1]}'
+                f'&surface=eq.{key[2]}&game_date=eq.{key[3]}',
+                headers=H_WRITE, timeout=10,
+            )
+        except Exception:
+            pass  # non-fatal — upsert will handle merge
     try:
         r = requests.post(
-            f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,pick_side,game_date',
+            f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,game_date',
             headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
             json=payload, timeout=20,
         )
         if r.status_code not in (200, 201, 204):
-            print(f'  ⚠ picks upsert failed {r.status_code}: {r.text[:120]}')
-            return 0
+            # Fallback: if on_conflict target doesn't exist (index not yet
+            # tightened), fall back to old key so we don't lose writes.
+            r = requests.post(
+                f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,pick_side,game_date',
+                headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+                json=payload, timeout=20,
+            )
+            if r.status_code not in (200, 201, 204):
+                print(f'  ⚠ picks upsert failed {r.status_code}: {r.text[:120]}')
+                return 0
         return len(payload)
     except Exception as e:
         print(f'  ⚠ picks upsert exception: {e}')
