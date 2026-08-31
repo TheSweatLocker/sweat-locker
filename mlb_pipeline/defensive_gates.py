@@ -95,6 +95,11 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
             tier_cap = {'COVERAGE': 0, 'LEAN': 55, 'STRONG': 65}
             if isinstance(pp.get('conviction'), (int, float)):
                 pp['conviction'] = min(int(pp['conviction']), tier_cap.get(new_tier, 55))
+            # 2026-08-31: reset recommended_stake to 1.0 on dissent —
+            # MC blocking the pick invalidates the "high-confidence bucket"
+            # premise the 2u LOCK relied on.
+            if pp.get('recommended_stake') and float(pp['recommended_stake']) > 1.0:
+                pp['recommended_stake'] = 1.0
             # 2026-08-30: rewrite sub so user sees WHY engine passed, not
             # stale rationale. Prior version left pp['sub'] intact — a
             # PRIME "sharp money is here · H2H dominant" narrative on a

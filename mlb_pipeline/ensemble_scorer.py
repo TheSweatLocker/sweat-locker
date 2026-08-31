@@ -187,6 +187,10 @@ class Contribution:
     n: int
     contribution: float
     display_prose: str
+    # 2026-08-31: passthrough of source hit_rate so downstream stake-sizing
+    # logic (compute_recommended_stake in game_context.py) can gate 2u LOCK
+    # promotion on "signal has ≥75% historical bucket on n≥30".
+    hit_rate: Optional[float] = None
 
 
 @dataclass
@@ -1188,6 +1192,7 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
             side=op.side, weight=w, strength=op.strength, n=op.sample_n,
             contribution=round(w * op.strength, 4),
             display_prose=op.display_prose,
+            hit_rate=op.hit_rate,  # 2026-08-31: for 2u LOCK stake gate
         )
         per_side[op.side].append(c)
 

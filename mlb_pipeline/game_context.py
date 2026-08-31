@@ -1634,6 +1634,52 @@ def _compose_ensemble_sub(md) -> str:
     return f'{md.display_label}: ' + ' · '.join(parts)
 
 
+# 2026-08-31: Recommended stake sizing.
+# User spec: "flat 1 unit default, 2u for PRIME picks where a pattern
+# places the play in a bucket of over 75% hit rate."
+#
+# Rules (all must hold for 2u LOCK):
+#   1. tier == 'PRIME'
+#   2. No _mc_dissent (MC sim didn't downgrade)
+#   3. At least ONE top-3 contribution has hit_rate ≥ 0.75 and n ≥ 30
+#      (that's the "pattern in a >75% bucket" the user described)
+#
+# Historical rows (pre-2026-08-31) are NOT recomputed — the stake field
+# stays absent so aggregators fall back to their old tier→stake map,
+# which locks the historical record at what was originally sized.
+STAKE_LOCK_HIT_RATE = 0.75
+STAKE_LOCK_MIN_N = 30
+
+def compute_recommended_stake(md, mc_dissented: bool = False) -> float:
+    """Return the recommended stake (1.0 or 2.0) for a MarketDecision.
+    md may be a MarketDecision object or a dict (primary_play shape).
+    Called at score time by the game_context builders; result written
+    to primary_play['recommended_stake'] for downstream consumers."""
+    if md is None:
+        return 1.0
+    tier = getattr(md, 'tier', None) or (md.get('tier') if isinstance(md, dict) else None)
+    if str(tier or '').upper() != 'PRIME':
+        return 1.0
+    if mc_dissented:
+        return 1.0
+    contribs = (getattr(md, 'contributions', None)
+                or (md.get('_ensemble_sources') if isinstance(md, dict) else None)
+                or [])
+    for src in list(contribs)[:3]:
+        hr = getattr(src, 'hit_rate', None) if not isinstance(src, dict) else src.get('hit_rate')
+        n = getattr(src, 'n', None) if not isinstance(src, dict) else src.get('n')
+        if hr is None or n is None: continue
+        try:
+            hr_f = float(hr)
+            # hit_rate may be stored as fraction (0.75) or percent (75.0)
+            if hr_f > 1.0: hr_f = hr_f / 100.0
+            if hr_f >= STAKE_LOCK_HIT_RATE and int(n) >= STAKE_LOCK_MIN_N:
+                return 2.0
+        except (TypeError, ValueError):
+            continue
+    return 1.0
+
+
 def _prepend_model_coherence_flag(sub: str, ctx, market: str, pick_side: str) -> str:
     """Prepend a transparency disclosure when the ensemble pick contradicts
     the underlying projection models by >= 1.0 runs / points.
@@ -3085,6 +3131,11 @@ def upload_game_context(context, commence_time=None):
                     # a total pick contradicts our own model projections by >=1
                     # run. Transparency, doesn't change pick.
                     sub = _prepend_model_coherence_flag(sub, context, top.market, top.pick)
+                    # 2026-08-31: recommended_stake — 1u default, 2u only
+                    # when a top-3 signal has ≥75% hit_rate on n≥30.
+                    # Downstream Sharp Card aggregator + app read this to
+                    # size the play. mc_dissented computed AFTER gate below.
+                    _rec_stake = compute_recommended_stake(top, mc_dissented=False)
                     ensemble_pp = {
                         'type': top.market,
                         'tier': top.tier,
@@ -3094,6 +3145,7 @@ def upload_game_context(context, commence_time=None):
                         'conviction': top.conviction,
                         'score': round(top.score, 2),
                         'sub': sub,
+                        'recommended_stake': _rec_stake,
                         # 2026-08-22 caption honest about the [:8] slice below.
                         # Padres audit surfaced: caption said "12 sources"
                         # but _ensemble_sources array only had 8.
@@ -3107,6 +3159,7 @@ def upload_game_context(context, commence_time=None):
                             {'signal_key': c.signal_key, 'class': c.signal_class,
                              'side': c.side, 'weight': round(c.weight, 2),
                              'n': c.n, 'contribution': round(c.contribution, 2),
+                             'hit_rate': (round(c.hit_rate, 3) if c.hit_rate is not None else None),
                              'prose': c.display_prose}
                             for c in top.contributions[:8]
                         ],

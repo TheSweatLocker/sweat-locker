@@ -1209,6 +1209,10 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
         if decision is not None:
             top = decision.top()
             if top.pick is not None:
+                # 2026-08-31: recommended_stake for unified sizing across sports.
+                # See game_context.compute_recommended_stake for rule.
+                from game_context import compute_recommended_stake as _rs
+                _rec_stake = _rs(top, mc_dissented=False)
                 ensemble_pp = {
                     'type': top.market,
                     'tier': top.tier,
@@ -1218,6 +1222,7 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
                     'conviction': top.conviction,
                     'score': round(top.score, 2),
                     'sub': _compose_ensemble_sub(top),
+                    'recommended_stake': _rec_stake,
                     'audit_note': (f'ensemble_scorer v2 · NFL · {len(top.contributions)} sources · '
                                    f'score={top.score:.2f} margin={top.margin:+.2f}'),
                     '_engine': 'ensemble_v2',
@@ -1225,6 +1230,7 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
                         {'signal_key': c.signal_key, 'class': c.signal_class,
                          'side': c.side, 'weight': round(c.weight, 2),
                          'n': c.n, 'contribution': round(c.contribution, 2),
+                         'hit_rate': (round(c.hit_rate, 3) if c.hit_rate is not None else None),
                          'prose': c.display_prose}
                         for c in top.contributions[:8]
                     ],

@@ -14441,7 +14441,19 @@ setJerryHistory(prev => {
                     <Text style={{color:heroU>=0?THEME.win:THEME.loss,fontSize:38,fontWeight:'800',letterSpacing:-0.6,fontVariant:['tabular-nums'],lineHeight:44}}>
                       {heroU>=0?'+':''}{heroU.toFixed(1)}u
                     </Text>
-                    <View style={{flexDirection:'row',gap:12,alignItems:'center',marginTop:4}}>
+                    {/* 2026-08-31: show BOTH unit count and stake-adjusted
+                        units per user spec. Prior version showed only "on
+                        N picks" — didn't display W-L split above the units.
+                        Now: units + W-L badge on same line so users see both
+                        the raw pick count AND the stake-adjusted result. */}
+                    <View style={{flexDirection:'row',gap:8,alignItems:'center',marginTop:4,flexWrap:'wrap'}}>
+                      {heroN > 0 && (
+                        <View style={{backgroundColor:THEME.surface,borderRadius:4,paddingHorizontal:8,paddingVertical:3,borderWidth:1,borderColor:THEME.border}}>
+                          <Text style={{color:THEME.text,fontSize:12,fontWeight:'700',fontVariant:['tabular-nums']}}>
+                            {(s.wins||0)+(pd.wins||0)}-{(s.losses||0)+(pd.losses||0)}
+                          </Text>
+                        </View>
+                      )}
                       <Text style={{color:THEME.textMuted,fontSize:12}}>on {heroN} graded picks</Text>
                       {heroN>0 && (
                         <View style={{backgroundColor:heroU>=0?THEME.win+'26':THEME.loss+'26',borderRadius:4,paddingHorizontal:6,paddingVertical:2}}>

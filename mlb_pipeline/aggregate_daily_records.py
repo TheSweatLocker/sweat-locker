@@ -82,9 +82,22 @@ def _grade_side(pp: dict, game: dict) -> str | None:
 # SURFACE AGGREGATORS
 # ─────────────────────────────────────────────────────────────
 
+# 2026-08-31: Sharp Card sizing cutover date.
+# BEFORE this date: use the legacy hardcoded 2u/PRIME + 2u/STRONG map
+#   so historical records match what was actually recommended (per user:
+#   "historical should stay where it is").
+# ON/AFTER this date: use primary_play.recommended_stake (1u default,
+#   2u LOCK gate — see game_context.compute_recommended_stake). Uniform
+#   sizing that reflects the true published play.
+SHARP_STAKE_CUTOVER = '2026-08-31'
+
+
 def agg_sharp_card(date: str) -> dict | None:
     """Sharp Card = PRIME/STRONG primary_play picks + PRIME/STRONG props
-    on that date, using the app's 2u/2u/1u sizing policy.
+    on that date. Stake sizing switched 2026-08-31 to the ensemble's
+    recommended_stake field (1u default, 2u LOCK on ≥75% hit-rate
+    signal buckets). Historical dates keep the legacy 2u policy so
+    stored records don't rewrite.
 
     2026-08-23 CRITICAL FIX: read primary_play from mlb_game_results
     (FROZEN at log_game_result time) instead of mlb_game_context
@@ -100,6 +113,7 @@ def agg_sharp_card(date: str) -> dict | None:
     grade time — closest available to what shipped. A true cron-time
     snapshot table would be better but doesn't exist yet.
     """
+    _use_new_stakes = date >= SHARP_STAKE_CUTOVER
     res = requests.get(f'{SB}/rest/v1/mlb_game_results',
         headers=H_READ,
         params={'game_date': f'eq.{date}',
@@ -115,7 +129,14 @@ def agg_sharp_card(date: str) -> dict | None:
         game = g
         verdict = _grade_side(pp, game)
         if verdict is None: continue
-        stake = 2.0
+        # 2026-08-31 stake sizing:
+        # NEW path — read recommended_stake from primary_play (1.0 or 2.0).
+        # LEGACY path — 2.0 flat for PRIME/STRONG (matches historical writes).
+        if _use_new_stakes:
+            try: stake = float(pp.get('recommended_stake') or 1.0)
+            except (TypeError, ValueError): stake = 1.0
+        else:
+            stake = 2.0
         units_bet += stake
         # Approximate payout — MLB games use -110 for spread/total, ML uses close odds
         odds = -110
@@ -145,7 +166,10 @@ def agg_sharp_card(date: str) -> dict | None:
                 if oi < -300 or oi > 150: continue
             except (TypeError, ValueError):
                 pass
-        stake = 2.0  # PRIME/STRONG props
+        # 2026-08-31: same cutover — props go 1u default, no 2u LOCK yet
+        # (props don't have a recommended_stake field; leaving flat 1u on
+        # or after the cutover so we don't over-attribute wins/losses).
+        stake = 1.0 if _use_new_stakes else 2.0
         units_bet += stake
         v = res_c[:1]  # W / L / P
         if v == 'W': w += 1; units_won += stake * _american_payout(odds)
