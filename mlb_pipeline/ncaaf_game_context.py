@@ -473,6 +473,108 @@ def compute_primary_play(ctx):
     return None
 
 
+_NCAAF_RANK_CACHE: dict = {}
+
+def _ncaaf_rank_by(field: str, team_stats: dict, per_game: bool = True,
+                   higher_is_better: bool = True) -> dict:
+    """Return {team → 1-based rank} across all FBS teams for the field.
+    Cached in-process per (field, higher_is_better) so we sort 130 teams
+    once per run, not per game."""
+    key = (field, higher_is_better)
+    if key in _NCAAF_RANK_CACHE: return _NCAAF_RANK_CACHE[key]
+    scored = []
+    for team, s in team_stats.items():
+        if not s: continue
+        raw = s.get(field)
+        if raw is None: continue
+        try:
+            v = float(raw)
+            if per_game:
+                g = float(s.get('games') or 0)
+                if g <= 0: continue
+                v = v / g
+            scored.append((team, v))
+        except (TypeError, ValueError): continue
+    scored.sort(key=lambda x: -x[1] if higher_is_better else x[1])
+    ranks = {team: i + 1 for i, (team, _) in enumerate(scored)}
+    _NCAAF_RANK_CACHE[key] = ranks
+    return ranks
+
+
+def _build_ncaaf_team_summary(team: str, stats: dict, all_stats: dict) -> Optional[dict]:
+    """Casual-friendly NCAAF summary blob for game-card render.
+
+    Uses ncaaf_team_stats (offense fields) + attached def_ppg/def_*_ypg
+    from ncaaf_team_defense_stats (merged into stats dict via
+    load_team_stats). Ranks are FBS-wide (~130 teams). Lower rank = better.
+
+    Blob:
+      { pts_pg, pts_allowed_pg,
+        pass_yds_pg, pass_yds_allowed_pg,
+        rush_yds_pg, rush_yds_allowed_pg,
+        sacks_pg, turnovers_forced_pg, turnover_diff_pg,
+        rank_scoring_off, rank_scoring_def,
+        rank_pass_off, rank_pass_def,
+        rank_rush_off, rank_rush_def,
+        rank_sp_overall, rank_sp_off, rank_sp_def,
+        season_source, games_sample }
+    """
+    if not stats or not stats.get('games'):
+        return None
+    games = stats.get('games') or 0
+    def _pg(field):
+        v = stats.get(field)
+        if v is None or not games: return None
+        try: return round(float(v) / float(games), 1)
+        except (TypeError, ValueError): return None
+
+    total_tds = ((stats.get('pass_tds') or 0) + (stats.get('rush_tds') or 0))
+    # CFBD ncaaf_team_stats doesn't publish season fg_made — approximate
+    # scoring at 6.9 pts/TD (touchdown + XP assumed made) + a fixed FG
+    # rate contribution (~1.5 fg × 3 = 4.5 pts/game). Reasonable proxy.
+    pts_pg = round((total_tds * 6.9) / games + 4.5, 1) if games and total_tds else None
+
+    turnovers_forced = ((_pg('def_ints') or 0) + (_pg('def_fumbles_rec') or 0))
+    turnovers = _pg('turnovers') or 0
+
+    summary = {
+        'pts_pg':              pts_pg,
+        'pts_allowed_pg':      stats.get('def_ppg'),
+        'pass_yds_pg':         _pg('pass_yards'),
+        'pass_yds_allowed_pg': stats.get('def_pass_ypg'),
+        'rush_yds_pg':         _pg('rush_yards'),
+        'rush_yds_allowed_pg': stats.get('def_rush_ypg'),
+        'sacks_pg':            _pg('def_sacks'),
+        'turnovers_forced_pg': round(turnovers_forced, 1),
+        'turnover_diff_pg':    round(turnovers_forced - turnovers, 1),
+        'season_source':       stats.get('season'),
+        'games_sample':        games,
+    }
+
+    def _rank(field, per_game=True, higher_is_better=True):
+        ranks = _ncaaf_rank_by(field, all_stats,
+                               per_game=per_game, higher_is_better=higher_is_better)
+        return ranks.get(team)
+
+    r = _rank('pass_yards');       summary['rank_pass_off']    = r
+    r = _rank('rush_yards');       summary['rank_rush_off']    = r
+    r = _rank('pass_tds');         summary['rank_scoring_off'] = r
+    r = _rank('def_pass_ypg', per_game=False, higher_is_better=False)
+    if r: summary['rank_pass_def'] = r
+    r = _rank('def_rush_ypg', per_game=False, higher_is_better=False)
+    if r: summary['rank_rush_def'] = r
+    r = _rank('def_ppg', per_game=False, higher_is_better=False)
+    if r: summary['rank_scoring_def'] = r
+    # SP+ ranks (efficiency composite) — advanced-metric context
+    r = _rank('sp_overall', per_game=False, higher_is_better=True)
+    if r: summary['rank_sp_overall'] = r
+    r = _rank('sp_offense', per_game=False, higher_is_better=True)
+    if r: summary['rank_sp_off'] = r
+    r = _rank('sp_defense', per_game=False, higher_is_better=False)  # lower SP+ def = better
+    if r: summary['rank_sp_def'] = r
+    return summary
+
+
 def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
                        returning_prod: Optional[dict] = None) -> Optional[dict]:
     home = g.get('home_team'); away = g.get('away_team')
@@ -574,6 +676,14 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
         'away_def_ints_pg':      _pg(away_stats, 'def_ints'),
     }
 
+    # 2026-08-31: Casual-friendly team-stats summary blob for game-card
+    # render. Mirrors NFL pattern (nfl_game_context._build_team_summary)
+    # but ranks over ALL FBS teams (~130) instead of NFL's 32. Emits pts,
+    # yds/g both directions, sacks, turnovers forced, SP+ overall/off/def
+    # ranks. App renders "Iowa State averages 189 rush yds/g (#14)" style.
+    home_summary = _build_ncaaf_team_summary(home, home_stats, team_stats)
+    away_summary = _build_ncaaf_team_summary(away, away_stats, team_stats)
+
     row = {
         'game_id': g['game_id'],
         'game_date': g['game_date'],
@@ -592,6 +702,8 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
         'neutral_site': g.get('neutral_site'),
         'conference_game': g.get('conference_game'),
         'stats_source': stats_source,
+        'home_team_stats_summary': home_summary,
+        'away_team_stats_summary': away_summary,
         **proj,
         **ret_fields,
         **def_fields,

@@ -194,6 +194,22 @@ jobs:
           cd mlb_pipeline
           python nfl_injuries_pull.py || echo "NFL injuries pull failed (non-fatal)"
 
+      # 2026-08-31: ESPN injury scraper as preseason / Week 1 fallback.
+      # nflverse parquet isn't published until games start (Week 1+) so
+      # the primary puller above returns 0 rows in August. ESPN's live
+      # /injuries endpoint fills the gap — same UNIQUE key so a later
+      # nflverse row for the same (season, week, team, player) merges
+      # cleanly instead of duplicating. Runs on every cadence.
+      - name: Pull NFL injuries (ESPN live)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_injuries_espn_pull.py || echo "ESPN injuries pull failed (non-fatal)"
+
       - name: Pull NFL starters (ESPN scoreboard)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true

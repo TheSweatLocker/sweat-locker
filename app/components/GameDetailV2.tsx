@@ -1277,17 +1277,30 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
   // totals if ctx path is thin. Yards allowed comes from
   // ncaaf_team_defense_stats (opponent-attribution avg).
   const _pg = (val: any, g: any) => (val == null || !g) ? null : Number(val) / Number(g);
-  const passOffH = ctx?.home_pass_yds_pg ?? _pg(stats.home?.pass_yards, stats.home?.games);
-  const passOffA = ctx?.away_pass_yds_pg ?? _pg(stats.away?.pass_yards, stats.away?.games);
-  const rushOffH = ctx?.home_rush_yds_pg ?? _pg(stats.home?.rush_yards, stats.home?.games);
-  const rushOffA = ctx?.away_rush_yds_pg ?? _pg(stats.away?.rush_yards, stats.away?.games);
-  const passAllH = ctx?.home_def_pass_ypg; const passAllA = ctx?.away_def_pass_ypg;
-  const rushAllH = ctx?.home_def_rush_ypg; const rushAllA = ctx?.away_def_rush_ypg;
+  // 2026-08-31: prefer server-computed summary blob (adds FBS-wide
+  // ranks). Falls back to ctx flat fields → live-fetched raw stats.
+  const homeSum = ctx?.home_team_stats_summary || null;
+  const awaySum = ctx?.away_team_stats_summary || null;
+  const passOffH = homeSum?.pass_yds_pg ?? ctx?.home_pass_yds_pg ?? _pg(stats.home?.pass_yards, stats.home?.games);
+  const passOffA = awaySum?.pass_yds_pg ?? ctx?.away_pass_yds_pg ?? _pg(stats.away?.pass_yards, stats.away?.games);
+  const rushOffH = homeSum?.rush_yds_pg ?? ctx?.home_rush_yds_pg ?? _pg(stats.home?.rush_yards, stats.home?.games);
+  const rushOffA = awaySum?.rush_yds_pg ?? ctx?.away_rush_yds_pg ?? _pg(stats.away?.rush_yards, stats.away?.games);
+  const passAllH = homeSum?.pass_yds_allowed_pg ?? ctx?.home_def_pass_ypg;
+  const passAllA = awaySum?.pass_yds_allowed_pg ?? ctx?.away_def_pass_ypg;
+  const rushAllH = homeSum?.rush_yds_allowed_pg ?? ctx?.home_def_rush_ypg;
+  const rushAllA = awaySum?.rush_yds_allowed_pg ?? ctx?.away_def_rush_ypg;
+  const ptsOffH  = homeSum?.pts_pg;
+  const ptsOffA  = awaySum?.pts_pg;
+  const ptsAllH  = homeSum?.pts_allowed_pg ?? ctx?.home_def_ppg;
+  const ptsAllA  = awaySum?.pts_allowed_pg ?? ctx?.away_def_ppg;
   const spGap = ctx?.sp_gap;
   const projSpread = ctx?.projected_spread;
   const closeSpread = ctx?.close_spread;
+  // Render if we have ANY stats to show — volumetric (from summary blob
+  // or raw ctx), spread-projection ppg, or SP+ efficiency.
   if (spH == null && spA == null && spOffH == null && spOffA == null &&
-      offH == null && offA == null) return null;
+      offH == null && offA == null &&
+      passOffH == null && passOffA == null && rushOffH == null && rushOffA == null) return null;
 
   // Advantage helper — highlights the higher (or lower for def) number.
   const cmp = (a?: number, b?: number, higherIsBetter = true) => {
@@ -1352,36 +1365,36 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
             Prior order buried "PASS YPG / RUSH YPG" under 7 jargon rows
             (POWER / EPA / SUCCESS % / EXPLOSIVE) that casual users don't
             recognize. Casual bettors read the top-of-card first, so
-            surface "gives up 189 rush ypg" before "off_epa_per_play 0.15". */}
-        {/* Team profile — points + volume */}
-        {spOffH != null || spOffA != null ? (
+            surface "gives up 189 rush ypg" before "off_epa_per_play 0.15".
+            Now with FBS-wide rank chips from server summary blob. */}
+        {(ptsOffH != null || ptsOffA != null) && (
+          <RankedStatRow label="POINTS/G" a={ptsOffA} b={ptsOffH}
+                         aRank={awaySum?.rank_scoring_off} bRank={homeSum?.rank_scoring_off} higherIsBetter />
+        )}
+        {(ptsAllH != null || ptsAllA != null) && (
+          <RankedStatRow label="PTS ALLOW" a={ptsAllA} b={ptsAllH}
+                         aRank={awaySum?.rank_scoring_def} bRank={homeSum?.rank_scoring_def} />
+        )}
+        <RankedStatRow label="PASS YDS/G" a={passOffA} b={passOffH}
+                       aRank={awaySum?.rank_pass_off} bRank={homeSum?.rank_pass_off} higherIsBetter />
+        <RankedStatRow label="PASS ALLOW" a={passAllA} b={passAllH}
+                       aRank={awaySum?.rank_pass_def} bRank={homeSum?.rank_pass_def} />
+        <RankedStatRow label="RUSH YDS/G" a={rushOffA} b={rushOffH}
+                       aRank={awaySum?.rank_rush_off} bRank={homeSum?.rank_rush_off} higherIsBetter />
+        <RankedStatRow label="RUSH ALLOW" a={rushAllA} b={rushAllH}
+                       aRank={awaySum?.rank_rush_def} bRank={homeSum?.rank_rush_def} />
+        {(spOffH != null || spOffA != null) && (
           <StatRow label="PROJ PPG"   a={spOffA} b={spOffH}
                    aAdv={spOffA != null && spOffH != null && spOffA > spOffH}
                    bAdv={spOffA != null && spOffH != null && spOffH > spOffA}
                    fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
-        ) : null}
-        {spDefH != null || spDefA != null ? (
+        )}
+        {(spDefH != null || spDefA != null) && (
           <StatRow label="PROJ PA"    a={spDefA} b={spDefH}
                    aAdv={spDefA != null && spDefH != null && spDefA < spDefH}
                    bAdv={spDefA != null && spDefH != null && spDefH < spDefA}
                    fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
-        ) : null}
-        <StatRow label="PASS YPG"   a={passOffA} b={passOffH}
-                 aAdv={passOffA != null && passOffH != null && passOffA > passOffH}
-                 bAdv={passOffA != null && passOffH != null && passOffH > passOffA}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
-        <StatRow label="PASS YPG A" a={passAllA} b={passAllH}
-                 aAdv={passAllA != null && passAllH != null && passAllA < passAllH}
-                 bAdv={passAllA != null && passAllH != null && passAllH < passAllA}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
-        <StatRow label="RUSH YPG"   a={rushOffA} b={rushOffH}
-                 aAdv={rushOffA != null && rushOffH != null && rushOffA > rushOffH}
-                 bAdv={rushOffA != null && rushOffH != null && rushOffH > rushOffA}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
-        <StatRow label="RUSH YPG A" a={rushAllA} b={rushAllH}
-                 aAdv={rushAllA != null && rushAllH != null && rushAllA < rushAllH}
-                 bAdv={rushAllA != null && rushAllH != null && rushAllH < rushAllA}
-                 fmt={(v: any) => v == null ? '—' : Number(v).toFixed(0)} />
+        )}
 
         {/* Advanced metrics — separator + subhead to signal "this is
             handicapper-grade stuff, casual bettors can skip." */}
