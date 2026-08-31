@@ -49,6 +49,27 @@ jobs:
         with:
           python-version: '3.11'
 
+      # 2026-08-31: External cron monitor ping (healthchecks.io).
+      # Second-layer defense against GH Actions cron silently skipping.
+      # SETUP:
+      #   1. Sign up at healthchecks.io (free tier fine)
+      #   2. Create a check with expected schedule "0 10 * * *" (6am ET)
+      #      + grace period 90 min (covers all 3 morning triggers)
+      #   3. Configure notifications (email/SMS/Slack/PagerDuty)
+      #   4. Copy the check's PING URL
+      #   5. GitHub repo Settings → Secrets → Actions → add HC_MLB_MORNING_URL
+      #      with the full URL (https://hc-ping.com/<uuid>)
+      # If secret absent, ping steps no-op. Once configured, missed runs
+      # alert within minutes instead of hours of manual detection.
+      - name: External monitor — ping start
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_MLB_MORNING_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "${HC_URL}/start" || true
+          fi
+
       # 2026-08-27 heartbeat START. Detects "workflow triggered but died
       # early" vs "workflow never triggered at all" (the 8/26 + 8/27 case).
       # Fires within 30s of workflow start, before any real work — so
@@ -2484,6 +2505,19 @@ jobs:
                -H "Prefer: return=minimal" \
                -d "{\"workflow\":\"mlb_pipeline\",\"event\":\"end\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}" \
                || echo "heartbeat end write failed (non-fatal)"
+
+      # 2026-08-31: external monitor success ping. See start-ping step
+      # for setup instructions. Fires ONLY on successful completion so
+      # a partial failure (any step non-fatal) still gets the alert.
+      - name: External monitor — ping success
+        if: success()
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_MLB_MORNING_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "${HC_URL}" || true
+          fi
 
       - name: Commit content card
         if: github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch'
