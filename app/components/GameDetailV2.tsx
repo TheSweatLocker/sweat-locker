@@ -1714,65 +1714,130 @@ function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
   if (loading) return null;  // silent — no flicker
   if (!homeRow && !awayRow) return null;  // no data (offseason / backfill pending)
 
-  // Home team's HOME record vs Away team's ROAD record — that's the matchup.
-  const fmt = (w?: number, l?: number, suffix = '') => {
-    if (w == null && l == null) return '—';
-    if ((w ?? 0) + (l ?? 0) === 0) return '—';
-    return `${w ?? 0}-${l ?? 0}${suffix}`;
-  };
-  const fmtOU = (o?: number, u?: number) => {
-    if (o == null && u == null) return '—';
-    const n = (o ?? 0) + (u ?? 0);
-    if (n === 0) return '—';
-    return (o ?? 0) >= (u ?? 0) ? `${o}-${u} O` : `${o}-${u} U`;
-  };
-  // Brand casing: "Fav" + "Dawg" (matches "Dawg of the Day" product name).
-  const fmtFavDog = (fw?: number, fl?: number, dw?: number, dl?: number, primaryFav = true) => {
-    const favN = (fw ?? 0) + (fl ?? 0);
-    const dogN = (dw ?? 0) + (dl ?? 0);
-    if (primaryFav && favN >= dogN && favN > 0) return `${fw}-${fl} Fav`;
-    if (dogN > 0) return `${dw}-${dl} Dawg`;
-    if (favN > 0) return `${fw}-${fl} Fav`;
-    return '—';
-  };
+  // 2026-08-31 UI cleanup: hit% + color coding + advantage highlight.
+  // Prior version was 4 rows of raw W-L numbers — scan-hostile. Now each
+  // cell shows W-L plus % chip with green/red tint at extremes, and the
+  // stronger side gets the accent so users see who wins the matchup
+  // dimension at a glance.
+  const HOT_PCT = 58;   // above → green tint
+  const COLD_PCT = 42;  // below → red tint
 
-  // Metric display manifest — one row per metric.
-  const metrics = [
-    {label: 'ATS',        away: fmt(awayRow?.road_ats_wins,  awayRow?.road_ats_losses),
-                          home: fmt(homeRow?.home_ats_wins,  homeRow?.home_ats_losses)},
-    {label: 'ML',         away: fmt(awayRow?.road_su_wins,   awayRow?.road_su_losses),
-                          home: fmt(homeRow?.home_su_wins,   homeRow?.home_su_losses)},
-    {label: 'O/U',        away: fmtOU(awayRow?.road_ou_overs, awayRow?.road_ou_unders),
-                          home: fmtOU(homeRow?.home_ou_overs, homeRow?.home_ou_unders)},
-    {label: 'Fav / Dawg', away: fmtFavDog(awayRow?.as_fav_ats_wins, awayRow?.as_fav_ats_losses,
-                                          awayRow?.as_dog_ats_wins, awayRow?.as_dog_ats_losses, false),
-                          home: fmtFavDog(homeRow?.as_fav_ats_wins, homeRow?.as_fav_ats_losses,
-                                          homeRow?.as_dog_ats_wins, homeRow?.as_dog_ats_losses, true)},
+  const pctOf = (w?: number, l?: number) => {
+    const wn = w ?? 0; const ln = l ?? 0;
+    if (wn + ln === 0) return null;
+    return Math.round(1000 * wn / (wn + ln)) / 10;
+  };
+  const ouPct = (o?: number, u?: number) => {
+    // For O/U, "hit" is whichever direction dominates — return the % of majority
+    const on = o ?? 0; const un = u ?? 0;
+    if (on + un === 0) return null;
+    return Math.round(1000 * Math.max(on, un) / (on + un)) / 10;
+  };
+  const pctColor = (p?: number | null) => {
+    if (p == null) return C.textDim;
+    if (p >= HOT_PCT) return C.win;
+    if (p <= COLD_PCT) return C.loss;
+    return C.text;
+  };
+  const metricRows = [
+    {label: 'ATS',
+     aW: awayRow?.road_ats_wins, aL: awayRow?.road_ats_losses,
+     hW: homeRow?.home_ats_wins, hL: homeRow?.home_ats_losses,
+     type: 'wl' as const,
+     hint: `${teamAbbrev(awayTeam)} away · ${teamAbbrev(homeTeam)} home`},
+    {label: 'ML (SU)',
+     aW: awayRow?.road_su_wins, aL: awayRow?.road_su_losses,
+     hW: homeRow?.home_su_wins, hL: homeRow?.home_su_losses,
+     type: 'wl' as const,
+     hint: 'straight-up win rate'},
+    {label: 'Total',
+     aO: awayRow?.road_ou_overs, aU: awayRow?.road_ou_unders,
+     hO: homeRow?.home_ou_overs, hU: homeRow?.home_ou_unders,
+     type: 'ou' as const,
+     hint: 'over/under trend'},
+    {label: 'as Fav/Dawg',
+     aFW: awayRow?.as_fav_ats_wins, aFL: awayRow?.as_fav_ats_losses,
+     aDW: awayRow?.as_dog_ats_wins, aDL: awayRow?.as_dog_ats_losses,
+     hFW: homeRow?.as_fav_ats_wins, hFL: homeRow?.as_fav_ats_losses,
+     hDW: homeRow?.as_dog_ats_wins, hDL: homeRow?.as_dog_ats_losses,
+     type: 'favdog' as const,
+     hint: 'ATS record in role'},
   ];
 
+  const StatCell = ({wl, pct, sub, teamColor}: any) => (
+    <View style={{flex: 1, alignItems: 'center'}}>
+      <Text style={{color: pctColor(pct), fontSize: 14, fontWeight: '800',
+                    letterSpacing: -0.2, fontVariant: ['tabular-nums']}}>{wl}</Text>
+      {pct != null && (
+        <Text style={{color: pctColor(pct), fontSize: 10, fontWeight: '700', marginTop: 1,
+                      fontVariant: ['tabular-nums']}}>{pct.toFixed(0)}%</Text>
+      )}
+      {sub && (
+        <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '600',
+                      letterSpacing: 0.4, marginTop: 1}}>{sub}</Text>
+      )}
+    </View>
+  );
+
   return (
-    <Section title="Trends &amp; Tendencies" hint={seasonUsed ? `home vs road splits · ${seasonUsed} season` : 'home vs road splits'}>
+    <Section title="Trends &amp; Tendencies"
+             hint={seasonUsed ? `situational splits · ${seasonUsed} season` : 'situational splits'}>
       <View>
-        {/* Column headers */}
-        <View style={{flexDirection: 'row', paddingHorizontal: 4, paddingBottom: 6, borderBottomWidth: 0.5, borderBottomColor: C.border}}>
+        <View style={{flexDirection: 'row', paddingHorizontal: 4, paddingBottom: 8,
+                      borderBottomWidth: 0.5, borderBottomColor: C.border}}>
           <Text style={{flex: 1.4, color: C.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 0.5}}>METRIC</Text>
           <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800', letterSpacing: 0.5, textAlign: 'center'}}>
-            {teamAbbrev(awayTeam)} · AWAY
+            {teamAbbrev(awayTeam)}
           </Text>
           <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800', letterSpacing: 0.5, textAlign: 'center'}}>
-            {teamAbbrev(homeTeam)} · HOME
+            {teamAbbrev(homeTeam)}
           </Text>
         </View>
-        {/* Metric rows */}
-        {metrics.map((m, i) => (
-          <View key={i} style={{flexDirection: 'row', paddingVertical: 6, paddingHorizontal: 4,
-                                borderBottomWidth: i < metrics.length - 1 ? 0.5 : 0,
-                                borderBottomColor: C.border + '44'}}>
-            <Text style={{flex: 1.4, color: C.textDim, fontSize: 12}}>{m.label}</Text>
-            <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{m.away}</Text>
-            <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{m.home}</Text>
-          </View>
-        ))}
+        {metricRows.map((m, i) => {
+          let aCell, hCell;
+          if (m.type === 'wl') {
+            const aN = (m.aW ?? 0) + (m.aL ?? 0);
+            const hN = (m.hW ?? 0) + (m.hL ?? 0);
+            aCell = <StatCell wl={aN ? `${m.aW ?? 0}-${m.aL ?? 0}` : '—'} pct={pctOf(m.aW, m.aL)} />;
+            hCell = <StatCell wl={hN ? `${m.hW ?? 0}-${m.hL ?? 0}` : '—'} pct={pctOf(m.hW, m.hL)} />;
+          } else if (m.type === 'ou') {
+            const aN = (m.aO ?? 0) + (m.aU ?? 0);
+            const hN = (m.hO ?? 0) + (m.hU ?? 0);
+            const aWL = aN ? `${m.aO ?? 0}-${m.aU ?? 0}` : '—';
+            const hWL = hN ? `${m.hO ?? 0}-${m.hU ?? 0}` : '—';
+            const aSub = aN ? ((m.aO ?? 0) >= (m.aU ?? 0) ? 'OVER lean' : 'UNDER lean') : '';
+            const hSub = hN ? ((m.hO ?? 0) >= (m.hU ?? 0) ? 'OVER lean' : 'UNDER lean') : '';
+            aCell = <StatCell wl={aWL} pct={ouPct(m.aO, m.aU)} sub={aSub} />;
+            hCell = <StatCell wl={hWL} pct={ouPct(m.hO, m.hU)} sub={hSub} />;
+          } else { // favdog
+            const aFN = (m.aFW ?? 0) + (m.aFL ?? 0);
+            const aDN = (m.aDW ?? 0) + (m.aDL ?? 0);
+            const hFN = (m.hFW ?? 0) + (m.hFL ?? 0);
+            const hDN = (m.hDW ?? 0) + (m.hDL ?? 0);
+            const aRole = aFN >= aDN ? 'fav' : 'dawg';
+            const hRole = hFN >= hDN ? 'fav' : 'dawg';
+            const aW = aRole === 'fav' ? m.aFW : m.aDW;
+            const aL = aRole === 'fav' ? m.aFL : m.aDL;
+            const hW = hRole === 'fav' ? m.hFW : m.hDW;
+            const hL = hRole === 'fav' ? m.hFL : m.hDL;
+            const aN2 = (aW ?? 0) + (aL ?? 0);
+            const hN2 = (hW ?? 0) + (hL ?? 0);
+            aCell = <StatCell wl={aN2 ? `${aW ?? 0}-${aL ?? 0}` : '—'} pct={pctOf(aW, aL)} sub={aN2 ? aRole.toUpperCase() : ''} />;
+            hCell = <StatCell wl={hN2 ? `${hW ?? 0}-${hL ?? 0}` : '—'} pct={pctOf(hW, hL)} sub={hN2 ? hRole.toUpperCase() : ''} />;
+          }
+          return (
+            <View key={i} style={{flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 4,
+                                  borderBottomWidth: i < metricRows.length - 1 ? 0.5 : 0,
+                                  borderBottomColor: C.border + '44'}}>
+              <View style={{flex: 1.4}}>
+                <Text style={{color: C.text, fontSize: 12, fontWeight: '700'}}>{m.label}</Text>
+                {m.hint && <Text style={{color: C.textMuted, fontSize: 9, marginTop: 1}}>{m.hint}</Text>}
+              </View>
+              {aCell}
+              {hCell}
+            </View>
+          );
+        })}
       </View>
     </Section>
   );
