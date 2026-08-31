@@ -13453,11 +13453,24 @@ setJerryHistory(prev => {
          Jerry take below. Fixes the "no primary play at top but Jerry
          says TB Rays ML" disconnect. */}
 {(()=>{
-  const ctxAny: any = gamesSport === 'MLB'
-    ? (mlbGameContext[game.home_team] || mlbGameContext[game.away_team] ||
-       Object.values(mlbGameContext).find((c: any) => c.home_team === game.home_team || c.away_team === game.away_team))
-    : null;
-  const pp = ctxAny?.primary_play;
+  // 2026-08-31: cross-sport pre-game badge parity. Prior version only
+  // read mlbGameContext, so NFL/NCAAF game cards had NO tier chip
+  // before click — bare "Chiefs @ Chargers · 4:25pm ET" with no signal.
+  // Now looks up the sport's own context map so users see PRIME/STRONG/
+  // LEAN + pick label before opening the detail modal.
+  const sportMap: any =
+    gamesSport === 'NFL'   ? (nflGameContextMap || {}) :
+    gamesSport === 'NCAAF' ? (ncaafGameContextMap || {}) :
+    gamesSport === 'MLB'   ? (mlbGameContext || {}) :
+    {};
+  // Lookup order: game_id, home_team key, away_team key, then value scan
+  let ctxAny: any = sportMap[game.id] || sportMap[game.home_team] || sportMap[game.away_team];
+  if (!ctxAny) {
+    ctxAny = Object.values(sportMap).find((c: any) =>
+      c && (c.home_team === game.home_team || c.away_team === game.away_team));
+  }
+  let pp = ctxAny?.primary_play;
+  if (typeof pp === 'string') { try { pp = JSON.parse(pp); } catch { pp = null; } }
   const al = ctxAny?.align_status;
   const alML: any = al?.ml;
   const jr = game.id ? jerryReads[game.id] : null;
@@ -13469,7 +13482,11 @@ setJerryHistory(prev => {
   // The chip still keeps its color-coded tier styling (green PRIME, etc.)
   // so users can differentiate visually without reading a label they
   // said felt cheap when everything reads LEAN.
-  if (pp?.tier && pp?.label) {
+  // 2026-08-31: gate chip to publishable tiers. Prior version rendered
+  // COVERAGE / PASS / SKIP tier chips too, which surfaced "picks" the
+  // engine explicitly killed (Rays MC-dissent case, etc).
+  const _PUBLISHABLE = new Set(['PRIME','STRONG','LEAN']);
+  if (pp?.tier && pp?.label && _PUBLISHABLE.has(String(pp.tier).toUpperCase())) {
     chips.push(<StatusChip key="pp" variant="tier" tier={pp.tier} label={pp.label} />);
   } else if (jr?.call_text && jr?.conviction != null &&
              String(jr.call_market || '').toLowerCase() !== 'pass') {
