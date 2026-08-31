@@ -63,6 +63,18 @@ def parse_synthesis(raw: str) -> dict:
     long_ = _section('LONG') or ''
     call_block = _section('CALL') or ''
 
+    # 2026-08-31: fallback when the LLM returned free-form prose (no
+    # ---SHORT--- markers). NCAAF + NFL prompt templates don't enforce
+    # the section format so their LLM narratives were dropping to
+    # short_read=None → upsert_jerry_read never fired → jerry_reads
+    # stayed on bridge output only. Treat unmarked responses as a
+    # single short_read (first 480 chars) so downstream still persists.
+    if not short and not long_ and not call_block:
+        _raw = (raw or '').strip()
+        if _raw:
+            short = _raw[:480]
+            long_ = _raw
+
     call_block = re.sub(r'\*+', '', call_block)
     call_block = re.sub(r'_+', '', call_block)
 
