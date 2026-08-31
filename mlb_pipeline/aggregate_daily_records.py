@@ -423,8 +423,17 @@ def agg_split(date: str) -> list[dict]:
         else: continue
         tier_agg[bucket][result.lower()] += 1
 
+    # 2026-08-31: quarantine LEAN + CONFIRMED tier buckets. 30d audit
+    # showed both hit below breakeven (LEAN 34%, CONFIRMED 42%) and the
+    # ensemble + app already stopped surfacing them. Aggregator was
+    # still writing daily rows though — keeps polluting the records
+    # ledger with signals users no longer see. Only TRIPLE aggregates.
+    _PUBLISHED_BUCKETS = {'triple'}
+
     out = []
     for bucket, agg in tier_agg.items():
+        if bucket not in _PUBLISHED_BUCKETS:
+            continue
         w, l = agg['w'], agg['l']
         stake = 1.0
         # -110 standard vig (Split signals are always +/-110 range for
