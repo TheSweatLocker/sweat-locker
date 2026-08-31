@@ -14805,34 +14805,41 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     see if triple / confirmed / lean actually cash. Matches
                     3-col glance idiom used across Ladder / Sharp / Ledger
                     (dividers, big number, small label + secondary line). */}
-                {(splitRecord.triple.w + splitRecord.triple.l +
-                  splitRecord.confirmed.w + splitRecord.confirmed.l +
-                  splitRecord.lean.w + splitRecord.lean.l) > 0 && (
+                {/* 2026-08-31: SIGNAL-TIER GATE. LEAN (34%) + CONFIRMED
+                    (42%) tiers running below breakeven for 30+ days —
+                    only TRIPLE (all-3-source agreement) shows real
+                    edge (60% on n=5, still small but directionally
+                    positive). Rather than hide the record entirely
+                    (users lose track of what's working), we surface
+                    only TRIPLE as a "kept-honest" record and note the
+                    others were pruned. Investigation queued for
+                    whether LEAN 34% is a signal-inversion bug — if
+                    so, INVERTING would give a printing signal at 65%. */}
+                {splitRecord.triple.w + splitRecord.triple.l > 0 && (
                   <View style={[styles.card, {padding:14, marginBottom:14}]}>
                     <View style={{flexDirection:'row', alignItems:'baseline', justifyContent:'space-between', marginBottom:10}}>
                       <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1}}>SHARP SIGNAL RECORD</Text>
-                      <Text style={{color:THEME.textMuted, fontSize:9}}>30d</Text>
+                      <Text style={{color:THEME.textMuted, fontSize:9}}>30d · triple-source only</Text>
                     </View>
-                    <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
-                      {(['triple','confirmed','lean'] as const).map((bkt, idx) => {
-                        const r = splitRecord[bkt];
+                    <View style={{flexDirection:'row', justifyContent:'center', paddingVertical:4}}>
+                      {(() => {
+                        const r = splitRecord.triple;
                         const wl = r.w + r.l;
                         const pct = wl ? Math.round(100*r.w/wl) : 0;
-                        const label = bkt === 'triple' ? '🔥 TRIPLE' : bkt === 'confirmed' ? 'CONFIRMED' : 'LEAN';
                         const netColor = r.unitsNet > 0 ? THEME.win : r.unitsNet < 0 ? THEME.loss : THEME.textMuted;
                         return (
-                          <React.Fragment key={bkt}>
-                            {idx > 0 && <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>}
-                            <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
-                              <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>{label}</Text>
-                              <Text style={{color:THEME.text, fontSize:20, fontWeight:'800'}}>{r.w}-{r.l}</Text>
-                              <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{wl ? `${pct}%` : '—'}</Text>
-                              <Text style={{color:netColor, fontSize:11, fontWeight:'700', marginTop:2}}>{r.unitsNet >= 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u</Text>
-                            </View>
-                          </React.Fragment>
+                          <View style={{alignItems:'center'}}>
+                            <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:6}}>🔥 TRIPLE-CONFIRMED</Text>
+                            <Text style={{color:THEME.text, fontSize:28, fontWeight:'800'}}>{r.w}-{r.l}</Text>
+                            <Text style={{color:THEME.textDim, fontSize:11, marginTop:2}}>{wl ? `${pct}% hit` : '—'}</Text>
+                            <Text style={{color:netColor, fontSize:13, fontWeight:'700', marginTop:2}}>{r.unitsNet >= 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u</Text>
+                          </View>
                         );
-                      })}
+                      })()}
                     </View>
+                    <Text style={{color:THEME.textMuted, fontSize:9, textAlign:'center', marginTop:8, fontStyle:'italic'}}>
+                      Single-source and 2-source tiers pruned pending calibration audit — they were running below breakeven.
+                    </Text>
                   </View>
                 )}
               <LineMovementTab
