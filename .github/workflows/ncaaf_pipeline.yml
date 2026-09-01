@@ -100,8 +100,15 @@ jobs:
           cd mlb_pipeline
           python enrich_ctx_roster_physicality.py --sport NCAAF --days-ahead 14 || echo "NCAAF physicality enrich failed (non-fatal)"
 
-      - name: Refresh CFBD team stats (Tue only)
-        if: (steps.mode.outputs.mode == 'full') && (github.event.schedule == '0 15 * * 2' || github.event_name == 'workflow_dispatch')
+      # 2026-09-01 FRESHNESS FIX: was Tue-only which meant Sat game stats
+      # didn't hit team_stats_rolling until Tue morning (3-day stale ranks
+      # after weekend games). Now runs on full (Tue/Wed) AND resolver_only
+      # (Sun 9am ET after Sat games grade) so ranks refresh right after
+      # weekend results land. CFBD publishes daily during season so daily
+      # pulls are safe. Skips silently on Sat/Fri card_only crons (no new
+      # games graded yet).
+      - name: Refresh CFBD team stats
+        if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only' || github.event_name == 'workflow_dispatch')
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}

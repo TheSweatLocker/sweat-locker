@@ -271,8 +271,12 @@ jobs:
       # downstream consumers (lens framework, PPP/tempo comparisons) can
       # read a stable team-level table instead of re-deriving from every
       # snapshot. Offseason no-op — 0 games / 0 snapshots yields 0 rows.
+      # 2026-09-01 FRESHNESS FIX: also gated on resolver_only so 7am ET
+      # cron (after overnight games grade) refreshes efficiency panel +
+      # team_stats_rolling ranks same-morning. Was full||card_only which
+      # meant efficiency refresh missed the post-grading window.
       - name: NCAAB — Materialize panel to ncaab_team_efficiency
-        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only' || steps.mode.outputs.mode == 'resolver_only'
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -300,6 +304,44 @@ jobs:
           PRIOR_SEASON="${PRIOR_START}-${PRIOR_END}"
           python ncaab_efficiency_model.py --season "$SEASON"       || echo "ncaab_efficiency_model current failed (non-fatal)"
           python ncaab_efficiency_model.py --season "$PRIOR_SEASON" || echo "ncaab_efficiency_model prior failed (non-fatal)"
+
+      # 2026-09-01: refresh cross-sport rollup matviews after NCAAB
+      # resolver/efficiency updates land. Universal matviews — each call
+      # refreshes NCAAB rows within them alongside all other sports.
+      # See project_rolling_rollup_architecture_901 + migrations 20260901d/e/f.
+      - name: Refresh team_recent_games matview
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_recent_games refresh failed"
+      - name: Refresh team_situational_records matview
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_situational_records refresh failed"
+      - name: Refresh team_stats_rolling matview
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_stats_rolling refresh failed"
 
       # ────── MC SIMULATOR (2026-08-14 Session 2 · lens #1 of 5) ──────
       # Reads latest KenPom snapshot from ncaab_team_stats + today's games,

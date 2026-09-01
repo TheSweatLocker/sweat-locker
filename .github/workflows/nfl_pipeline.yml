@@ -87,8 +87,13 @@ jobs:
             echo "skipping preseason pull (month=$MONTH)"
           fi
 
+      # 2026-09-01 FRESHNESS FIX: was `full` only which meant Sun/Mon game
+      # results didn't hit nfl_team_stats until next Wed (3-4 day stale
+      # ranks). Now runs on `full` AND `resolver_only` so Mon 10am ET
+      # cron (after Sun games) and Tue 11am ET (after MNF) both refresh
+      # team stats. nflverse publishes daily during season.
       - name: Refresh team + player stats (nflverse)
-        if: steps.mode.outputs.mode == 'full'
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
@@ -276,8 +281,11 @@ jobs:
       # + defensive-event counts (sacks, INTs) but no yards allowed.
       # Fuels the 4 nfl_def_matchup_* signals and the team-defense
       # section of the game detail card.
+      # 2026-09-01 FRESHNESS FIX: also run on resolver_only so post-Sun
+      # and post-MNF stat refreshes flow into team_stats_rolling ranks
+      # same-day, not Tue+.
       - name: NFL team defense stats backfill
-        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only' || steps.mode.outputs.mode == 'resolver_only'
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

@@ -222,6 +222,116 @@ def check_pitcher_projections_missing(since_date: str) -> list[dict]:
     return findings
 
 
+def check_source_stats_staleness(since_date: str) -> list[dict]:
+    """Flag source stat tables where the newest `updated_at` (or `refreshed_at`
+    on matviews) is older than the sport's expected max staleness window.
+
+    Motivated by 2026-09-01 finding: ncaab_team_efficiency was 0 rows for
+    weeks because the workflow passed SEASON in wrong format — no error
+    surfaced, downstream team_stats_rolling silently dropped NCAAB. This
+    check catches that class of failure: source stats not updating on
+    expected cadence → data quality degrades silently.
+
+    Per-sport max staleness (days):
+        MLB, NBA, NHL          : 2  (nightly updates expected)
+        NCAAF, NFL             : 4  (weekly-ish source cadence during season)
+        NCAAB                  : 3  (efficiency panel refreshed most days)
+
+    Also checks the rollup matviews themselves — refreshed_at should be
+    recent (<24h) or the refresh cron missed a run.
+    """
+    findings = []
+    sport_source_maps = [
+        # (sport, source_table, max_staleness_days, timestamp_col)
+        ('NCAAF', 'ncaaf_team_stats',          4, 'updated_at'),
+        ('NCAAF', 'ncaaf_team_defense_stats',  4, 'updated_at'),
+        ('NFL',   'nfl_team_stats',            4, None),  # no updated_at col
+        ('NFL',   'nfl_team_defense_stats',    4, None),
+        ('NCAAB', 'ncaab_team_efficiency',     3, 'computed_at'),
+    ]
+    for sport, tbl, max_days, ts_col in sport_source_maps:
+        if not ts_col:
+            # Can't measure staleness without a timestamp col — just check row count
+            r = requests.get(f'{SB}/rest/v1/{tbl}?select=*',
+                             headers={**H, 'Prefer': 'count=exact', 'Range': '0-0'},
+                             timeout=15)
+            n = 0
+            try:
+                cr = r.headers.get('content-range','')
+                if '/' in cr: n = int(cr.split('/')[-1])
+            except Exception: pass
+            if n == 0:
+                findings.append({
+                    'kind': 'source_stats_empty',
+                    'severity': 'HIGH',
+                    'sport': sport,
+                    'table': tbl,
+                    'note': f'{tbl} has 0 rows — downstream team_stats_rolling can\'t rank',
+                })
+            continue
+        # Get the most recent timestamp
+        r = requests.get(f'{SB}/rest/v1/{tbl}?select={ts_col}&order={ts_col}.desc&limit=1',
+                         headers=H, timeout=15)
+        if r.status_code != 200: continue
+        rows = r.json() if isinstance(r.json(), list) else []
+        if not rows:
+            findings.append({
+                'kind': 'source_stats_empty',
+                'severity': 'HIGH',
+                'sport': sport,
+                'table': tbl,
+                'note': f'{tbl} has 0 rows',
+            })
+            continue
+        try:
+            ts_str = rows[0].get(ts_col)
+            if not ts_str: continue
+            # Parse ISO — supabase returns w/ 'T' + timezone
+            newest = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+            if newest.tzinfo is None:
+                newest = newest.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - newest).total_seconds() / 86400.0
+        except Exception:
+            continue
+        if age_days > max_days:
+            findings.append({
+                'kind': 'source_stats_stale',
+                'severity': 'HIGH' if age_days > max_days * 2 else 'MEDIUM',
+                'sport': sport,
+                'table': tbl,
+                'age_days': round(age_days, 1),
+                'max_days': max_days,
+                'newest_ts': ts_str,
+                'note': f'{tbl} newest row is {round(age_days, 1)}d old (max expected {max_days}d)',
+            })
+
+    # Also check the three rollup matviews themselves
+    for mv in ('team_recent_games', 'team_situational_records', 'team_stats_rolling'):
+        r = requests.get(f'{SB}/rest/v1/{mv}?select=refreshed_at&order=refreshed_at.desc&limit=1',
+                         headers=H, timeout=15)
+        if r.status_code != 200: continue
+        rows = r.json() if isinstance(r.json(), list) else []
+        if not rows or not rows[0].get('refreshed_at'): continue
+        try:
+            ts_str = rows[0]['refreshed_at']
+            newest = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+            if newest.tzinfo is None:
+                newest = newest.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - newest).total_seconds() / 3600.0
+        except Exception:
+            continue
+        if age_hours > 30:
+            findings.append({
+                'kind': 'matview_stale',
+                'severity': 'HIGH' if age_hours > 48 else 'MEDIUM',
+                'matview': mv,
+                'age_hours': round(age_hours, 1),
+                'newest_ts': ts_str,
+                'note': f'{mv} last refreshed {round(age_hours, 1)}h ago (>30h means the cron missed)',
+            })
+    return findings
+
+
 def run(days: int) -> None:
     since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
     print(f'=== Data Quality Audit · since {since} ({days}d window) ===\n')
@@ -230,6 +340,7 @@ def run(days: int) -> None:
         ('EXTERNALS CROSS-ATTRIBUTION', check_externals_crossattr),
         ('MC DISSENT STALE',            check_mc_dissent_stale),
         ('PITCHER PROJECTIONS MISSING', check_pitcher_projections_missing),
+        ('SOURCE STATS STALENESS',      check_source_stats_staleness),
     ]
     all_findings = []
     for name, fn in checks:
@@ -259,6 +370,9 @@ def run(days: int) -> None:
         elif name == 'PITCHER PROJECTIONS MISSING':
             by_prop = Counter(f['prop'] for f in findings)
             print(f'     by prop_type: {dict(by_prop)}')
+        elif name == 'SOURCE STATS STALENESS':
+            for f in findings:
+                print(f'     [{f.get("severity","?"):6}] {f.get("note","")}')
         print()
         all_findings.extend(findings)
 
