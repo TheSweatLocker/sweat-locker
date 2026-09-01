@@ -1346,7 +1346,12 @@ function RecentGameRow({row}: any) {
         <Text style={{color: C.text, fontWeight: '700'}}>{abbrev3(opp)}</Text>
         {isNeutral ? <Text style={{color: C.textMuted, fontSize: 9}}>  N</Text> : null}
       </Text>
-      {/* Score chip w/ W/L color */}
+      {/* Score chip w/ W/L color. 2026-09-01: flattened nested Text —
+          prior nested <Text style={{fontWeight:'700'}}> had no explicit
+          color, and RN's inheritance through conditional-falsy style
+          arrays isn't reliable → score rendered black on dark background
+          for games w/ null won. Combining into one Text ensures the
+          semantic color (win/loss/muted) applies to the whole string. */}
       <View style={{flex: 1.4, alignItems: 'center'}}>
         <View style={[
           rsStyles.chip,
@@ -1357,9 +1362,9 @@ function RecentGameRow({row}: any) {
             rsStyles.chipText,
             wonSU === true  && {color: C.win},
             wonSU === false && {color: C.loss},
+            (wonSU !== true && wonSU !== false) && {color: C.text},  // unresolved games use cream (readable)
           ]}>
-            {wonSU === true ? 'W ' : wonSU === false ? 'L ' : ''}
-            <Text style={{fontWeight: '700'}}>{scoreText}</Text>
+            {(wonSU === true ? 'W ' : wonSU === false ? 'L ' : '') + scoreText}
           </Text>
         </View>
       </View>
@@ -1727,8 +1732,12 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
     return () => { cancelled = true; };
   }, [sport, homeTeam, awayTeam, seasonForQuery]);
 
-  if (!loading && awayStats.length === 0 && homeStats.length === 0) return null;
-
+  // 2026-09-01: HOOK ORDER FIX — useMemo hooks MUST run every render.
+  // Prior version had `if (empty) return null` BEFORE these useMemos,
+  // which crashed with "Rendered fewer hooks than expected" whenever a
+  // sport has no stats data (empty → skip useMemos → next render calls
+  // useMemos → hook count mismatches). Early return now lives AFTER
+  // every hook.
   const awayByKey = React.useMemo(() => {
     const m: Record<string, any> = {};
     awayStats.forEach((r: any) => { m[r.stat_key] = r; });
@@ -1739,6 +1748,8 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
     homeStats.forEach((r: any) => { m[r.stat_key] = r; });
     return m;
   }, [homeStats]);
+
+  if (!loading && awayStats.length === 0 && homeStats.length === 0) return null;
 
   // Stat groups per sport. All keys resolve to rows in team_stats_rolling
   // (populated by 20260901c + 20260901f migrations). Order matters — rendered
