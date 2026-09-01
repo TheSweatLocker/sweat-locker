@@ -1,0 +1,112 @@
+name: MLB Grade Overnight
+
+# Dedicated grader that runs late night after all MLB games finish.
+# Separate from the main mlb_pipeline.yml because grading takes 2-3
+# minutes and blocking the 45-min pipeline behind it delays morning
+# picks. Runs stand-alone so even if the morning pipeline is delayed
+# by GH Actions load, users logging in still see prior-day results.
+#
+# Also: with the main pipeline hitting 4-7hr cron delays lately,
+# splitting grading out means the DAILY RECORDS surface ALWAYS lands
+# by 5am ET regardless of morning pipeline state.
+
+on:
+  schedule:
+    # Try three times to catch grading windows and beat cron delays.
+    # 2:30am ET = 6:30 UTC — catches West Coast late games
+    - cron: '30 6 * * *'
+    # 4:30am ET = 8:30 UTC — grader safety net
+    - cron: '30 8 * * *'
+    # 5:30am ET = 9:30 UTC — final safety net right before morning pipeline
+    - cron: '30 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv beautifulsoup4
+
+      # 1. Grade yesterday's MLB games (mlb_game_results scores +
+      #    outcomes → jerry_reads.result + prop.result + ledger_snapshots)
+      - name: Resolve MLB game results
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python resolve_game_results.py || echo "resolver had non-fatal errors"
+
+      # 2. Grade ledger snapshots (chalk_parlays, teasers, hits_parlays)
+      - name: Grade ledger snapshots
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python grade_ledger_snapshots.py || echo "ledger grader failed non-fatal"
+
+      # 3. Aggregate daily records — writes sharp_card / ladder / ledger /
+      #    potd / prop_card daily rows so the app hero shows yesterday's
+      #    result immediately when user opens in the morning.
+      - name: Aggregate daily records
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python aggregate_daily_records.py || echo "aggregator failed non-fatal"
+
+      # 4. Recompute surface_records (mtd / d7 / d30 / epoch / lifetime rollups)
+      #    so the record chips + hero P/L update overnight.
+      - name: Compute surface records
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python compute_surface_records.py || echo "surface records non-fatal"
+
+      # 5. NCAAF grader (during football season) — same overnight window
+      - name: Resolve NCAAF game results
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python resolve_ncaaf_results.py --skip-external || echo "NCAAF resolver non-fatal (offseason ok)"
+
+      # 6. External monitor ping (healthchecks.io) — separate check from
+      #    the main pipeline. Once user configures HC_GRADE_OVERNIGHT_URL
+      #    secret, missed nightly grades alert immediately.
+      - name: External monitor — grader ping
+        if: success()
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_GRADE_OVERNIGHT_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "${HC_URL}" || true
+          fi

@@ -32,6 +32,21 @@ on:
     # workflow (retry_starters.yml) that runs 5pm ET + fires only the
     # retry_missing_starters + patch_projected_ks steps. Not adding here
     # to avoid re-running the full 60-step pipeline for 2 API calls.
+  # 2026-09-01: PUSH TRIGGER. GH Actions cron is running 4-7 HOURS LATE
+  # for this repo (verified via workflow_heartbeat log). Users log in
+  # at 9am ET expecting picks; scheduled 6am run doesn't fire until
+  # 1pm ET most days now. Push-to-main also fires the pipeline so any
+  # commit refreshes the slate immediately. Paired with the nightly
+  # mlb_grade_overnight.yml so morning records are ALWAYS current
+  # even when the main pipeline is late.
+  #
+  # Path filter: only files that actually affect pick generation trigger
+  # the workflow (avoid rebuilding on doc/app/spec commits).
+  push:
+    branches: [main]
+    paths:
+      - 'mlb_pipeline/**'
+      - '.github/workflows/mlb_pipeline.yml'
   workflow_dispatch:
 
 jobs:
