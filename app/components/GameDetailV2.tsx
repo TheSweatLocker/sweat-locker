@@ -379,6 +379,14 @@ export default function GameDetailV2({
           <RecentScheduleCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} />
         </Section>
 
+        {/* 2026-09-01: Situational Records — reads team_situational_records
+            matview. Sub-tabs Spread/Total/ML × 4 filter rows (Overall,
+            L10, Home/Away, Fav/Dog). Hit-% color coding (>=58 green,
+            <=42 red). See project_rolling_rollup_architecture_901. */}
+        <Section title="Situational Records" hint="records × market · hit-% color">
+          <SituationalCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
+        </Section>
+
         {/* 2026-08-23: Public Splits panel — renders ctx.splits_summary
             (populated by splits_v2_pipeline aggregator). Shows sources_present
             + triple_confirmed markets. User feedback: college football game
@@ -1442,6 +1450,210 @@ const rsStyles = StyleSheet.create({
   empty: {
     color: C.textMuted, fontSize: 12, fontStyle: 'italic',
     textAlign: 'center', paddingVertical: 10,
+  },
+});
+
+
+// ─── SITUATIONAL RECORDS ────────────────────────────────────────────────
+// 2026-09-01: Second surface of the rolling-rollup architecture. Reads
+// from team_situational_records (long-format matview populated by
+// refresh_team_situational_records — see 20260901b migration).
+//
+// Sub-tabs per user directive: switch between Spread / Total / Moneyline
+// while showing the same 4 record filters (Overall, L10, Home/Away,
+// Fav/Dog) for both teams side-by-side. Wins/losses semantics per
+// market:
+//   spread: wins = team covered
+//   total:  wins = game went OVER (from team's games)
+//   ml:     wins = SU wins
+//
+// Uses the matview's `filter` dimension without any per-sport branches.
+// When a filter has 0 games for a team (e.g. NCAAF team never played as
+// underdog), renders "—" gracefully.
+function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
+  const [awayRecs, setAwayRecs] = React.useState<any[]>([]);
+  const [homeRecs, setHomeRecs] = React.useState<any[]>([]);
+  const [market, setMarket] = React.useState<'spread'|'total'|'ml'>('spread');
+  const [loading, setLoading] = React.useState(true);
+  const seasonForQuery = Number(season) || new Date().getFullYear();
+
+  React.useEffect(() => {
+    const client = sb();
+    if (!client || !sport || !homeTeam || !awayTeam) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const [awayR, homeR] = await Promise.all([
+        client.from('team_situational_records')
+          .select('*').eq('sport', sport).eq('team', awayTeam).eq('season', seasonForQuery),
+        client.from('team_situational_records')
+          .select('*').eq('sport', sport).eq('team', homeTeam).eq('season', seasonForQuery),
+      ]);
+      if (cancelled) return;
+      // Fallback to prior season if current-season is empty (Week 1
+      // scenario for football; matches project_ncaaf_ready_809 pattern).
+      let ar = Array.isArray(awayR?.data) ? awayR.data : [];
+      let hr = Array.isArray(homeR?.data) ? homeR.data : [];
+      if (ar.length === 0 && hr.length === 0 && seasonForQuery > 2020) {
+        const prev = seasonForQuery - 1;
+        const [aP, hP] = await Promise.all([
+          client.from('team_situational_records')
+            .select('*').eq('sport', sport).eq('team', awayTeam).eq('season', prev),
+          client.from('team_situational_records')
+            .select('*').eq('sport', sport).eq('team', homeTeam).eq('season', prev),
+        ]);
+        if (cancelled) return;
+        ar = Array.isArray(aP?.data) ? aP.data : [];
+        hr = Array.isArray(hP?.data) ? hP.data : [];
+      }
+      setAwayRecs(ar); setHomeRecs(hr);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [sport, homeTeam, awayTeam, seasonForQuery]);
+
+  // Filter both team record arrays for the active market
+  const awayByFilter = React.useMemo(() => {
+    const m: Record<string, any> = {};
+    awayRecs.filter((r: any) => r.market === market).forEach((r: any) => { m[r.filter] = r; });
+    return m;
+  }, [awayRecs, market]);
+  const homeByFilter = React.useMemo(() => {
+    const m: Record<string, any> = {};
+    homeRecs.filter((r: any) => r.market === market).forEach((r: any) => { m[r.filter] = r; });
+    return m;
+  }, [homeRecs, market]);
+
+  // Silent hide when both teams have zero records
+  if (!loading && awayRecs.length === 0 && homeRecs.length === 0) {
+    return null;
+  }
+
+  // Row spec: [rowLabel_left, filter_for_away, rowLabel_right, filter_for_home]
+  const rows: [string, string, string, string][] = [
+    ['Overall',   'overall', 'Overall',   'overall'],
+    ['Last 10',   'l10',     'Last 10',   'l10'],
+    ['Away',      'road',    'Home',      'home'],
+    ['As Dog',    'as_dog',  'As Fav',    'as_fav'],
+  ];
+
+  return (
+    <View style={{gap: 10}}>
+      {/* Market segmented control */}
+      <View style={rsStyles.tabBar}>
+        <TabPill label={sport === 'MLB' ? 'Run Line' : 'Spread'} active={market==='spread'} onPress={() => setMarket('spread')} />
+        <TabPill label="Total"     active={market==='total'}  onPress={() => setMarket('total')} />
+        <TabPill label="Moneyline" active={market==='ml'}     onPress={() => setMarket('ml')} />
+      </View>
+
+      {/* Team header */}
+      <View style={sitStyles.teamHead}>
+        <Text style={sitStyles.teamHeadName}>{abbrev3(awayTeam)}</Text>
+        <Text style={sitStyles.teamHeadName}>{abbrev3(homeTeam)}</Text>
+      </View>
+
+      {/* Filter rows */}
+      {rows.map(([labelL, filterA, labelR, filterH], i) => (
+        <SitRow
+          key={i}
+          leftLabel={labelL}  leftRec={awayByFilter[filterA]}
+          rightLabel={labelR} rightRec={homeByFilter[filterH]}
+          market={market}
+        />
+      ))}
+
+      {loading && <Text style={rsStyles.empty}>Loading…</Text>}
+    </View>
+  );
+}
+
+function SitRow({leftLabel, leftRec, rightLabel, rightRec, market}: any) {
+  return (
+    <View style={sitStyles.row}>
+      <View style={sitStyles.side}>
+        <Text style={sitStyles.rowLabel}>{leftLabel}</Text>
+        <RecordPill rec={leftRec} market={market} />
+      </View>
+      <View style={sitStyles.side}>
+        <Text style={[sitStyles.rowLabel, {textAlign: 'right'}]}>{rightLabel}</Text>
+        <RecordPill rec={rightRec} market={market} />
+      </View>
+    </View>
+  );
+}
+
+function RecordPill({rec, market}: any) {
+  if (!rec || rec.games === 0 || rec.games == null) {
+    return <View style={sitStyles.pillEmpty}><Text style={sitStyles.pillEmptyText}>—</Text></View>;
+  }
+  const w = Number(rec.wins) || 0;
+  const l = Number(rec.losses) || 0;
+  const p = Number(rec.pushes) || 0;
+  const total = w + l;  // pushes excluded from hit%
+  const hitPct = total > 0 ? Math.round((w / total) * 100) : 0;
+  // Color the pill by hit%: >=58 green (hot), <=42 red (cold), else neutral
+  const tint = total >= 5 ? (
+    hitPct >= 58 ? 'win' : hitPct <= 42 ? 'loss' : 'neutral'
+  ) : 'neutral';
+  const label = market === 'total'
+    ? `${w}-${l}${p ? `-${p}` : ''}`      // O-U-P
+    : `${w}-${l}${p ? `-${p}` : ''}`;      // W-L-P
+  return (
+    <View style={[
+      sitStyles.pill,
+      tint === 'win'  && sitStyles.pillWin,
+      tint === 'loss' && sitStyles.pillLoss,
+    ]}>
+      <Text style={[
+        sitStyles.pillText,
+        tint === 'win'  && {color: C.win},
+        tint === 'loss' && {color: C.loss},
+      ]}>{label}</Text>
+    </View>
+  );
+}
+
+const sitStyles = StyleSheet.create({
+  teamHead: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    paddingHorizontal: 4, paddingBottom: 4,
+    borderBottomWidth: 1, borderBottomColor: C.borderSoft,
+  },
+  teamHeadName: {
+    color: C.text, fontSize: 13, fontWeight: '800', letterSpacing: 0.06,
+  },
+  row: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    paddingVertical: 8, paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.borderSoft,
+  },
+  side: {
+    flex: 1, gap: 4,
+  },
+  rowLabel: {
+    color: C.textMuted, fontSize: 10, fontWeight: '700',
+    letterSpacing: 0.05, textTransform: 'uppercase',
+  },
+  pill: {
+    paddingVertical: 8, paddingHorizontal: 12,
+    borderRadius: 8, backgroundColor: C.surfaceAlt,
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  pillWin:  {backgroundColor: C.win  + '22'},
+  pillLoss: {backgroundColor: C.loss + '22'},
+  pillText: {
+    color: C.text, fontSize: 15, fontWeight: '800',
+    letterSpacing: 0.02,
+  },
+  pillEmpty: {
+    paddingVertical: 8, paddingHorizontal: 12,
+    borderRadius: 8, backgroundColor: 'transparent',
+    borderWidth: 1, borderColor: C.borderSoft, borderStyle: 'dashed',
+    alignItems: 'center', marginRight: 8,
+  },
+  pillEmptyText: {
+    color: C.textMuted, fontSize: 13, fontWeight: '600',
   },
 });
 
