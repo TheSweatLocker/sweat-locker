@@ -413,6 +413,23 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{}' || echo "team_situational_records refresh failed"
 
+      # 2026-09-01: refresh team_stats_rolling matview. Universal
+      # long-format per-team stat with raw value + league rank. Kills
+      # the NCAAFTeamMatchupCard client-side compute + fuzzy team-match
+      # anti-patterns identified in the 9/1 architecture audit.
+      # Migration: supabase/migrations/20260901c_team_stats_rolling_matview.sql
+      - name: Refresh team_stats_rolling matview
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_stats_rolling refresh failed"
+
       # 2026-08-09: NCAAF sharp-money audit trail. Same infra as MLB/NFL.
       # Rules start in LOG mode until n≥12 accumulates per rule.
       - name: NCAAF — write today's sharp-fade audit rows

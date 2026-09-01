@@ -131,6 +131,20 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{}' || echo "team_situational_records refresh failed"
 
+      # 5d. Refresh team_stats_rolling matview — universal per-team stat
+      #     + rank rollup. NCAAF-only content today; other sports queued.
+      #     Migration: supabase/migrations/20260901c_team_stats_rolling_matview.sql
+      - name: Refresh team_stats_rolling matview
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_stats_rolling refresh failed"
+
       # 6. Data quality checker — surfaces cross-attribution + MC-stale
       #    anomalies before users see them. Non-fatal in cron (findings
       #    logged, not blocked) but exits non-zero when findings exist
