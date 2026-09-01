@@ -98,7 +98,22 @@ jobs:
           cd mlb_pipeline
           python resolve_ncaaf_results.py --skip-external || echo "NCAAF resolver non-fatal (offseason ok)"
 
-      # 6. External monitor ping (healthchecks.io) — separate check from
+      # 6. Data quality checker — surfaces cross-attribution + MC-stale
+      #    anomalies before users see them. Non-fatal in cron (findings
+      #    logged, not blocked) but exits non-zero when findings exist
+      #    so external monitor can alert. Motivated by 2026-09-01 finding:
+      #    73 tainted external picks accumulated over 30 days silently.
+      - name: Data quality audit
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python audit_data_quality.py --days 2 || echo "data quality flagged issues — see log above"
+
+      # 7. External monitor ping (healthchecks.io) — separate check from
       #    the main pipeline. Once user configures HC_GRADE_OVERNIGHT_URL
       #    secret, missed nightly grades alert immediately.
       - name: External monitor — grader ping

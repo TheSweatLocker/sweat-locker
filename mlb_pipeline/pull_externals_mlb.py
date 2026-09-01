@@ -252,6 +252,81 @@ def complete_pull_log(pull_id: Optional[str], status: str,
         print(f'  ⚠ pull_log complete exception: {e}')
 
 
+# 2026-09-01: RAW-TEXT SANITY VALIDATOR. After the puller resolves a
+# game_id from source-provided team names, we scan the raw_text one
+# more time for team keywords and refuse the write if neither the
+# resolved home nor away team is mentioned. Catches the Red Sox↔White
+# Sox failure mode + any future team-alias regression.
+_TEAM_TOKENS = {
+    'Arizona Diamondbacks': ['arizona','diamondbacks','d-backs','dbacks'],
+    'Atlanta Braves':       ['atlanta','braves'],
+    'Baltimore Orioles':    ['baltimore','orioles'],
+    'Boston Red Sox':       ['boston','red sox','redsox','bosox'],
+    'Chicago Cubs':         ['chicago cubs','cubs'],
+    'Chicago White Sox':    ['white sox','whitesox','chi sox'],
+    'Cincinnati Reds':      ['cincinnati','reds'],
+    'Cleveland Guardians':  ['cleveland','guardians'],
+    'Colorado Rockies':     ['colorado','rockies'],
+    'Detroit Tigers':       ['detroit','tigers'],
+    'Houston Astros':       ['houston','astros'],
+    'Kansas City Royals':   ['kansas city','royals'],
+    'Los Angeles Angels':   ['angels','laa','anaheim'],
+    'Los Angeles Dodgers':  ['dodgers','lad'],
+    'Miami Marlins':        ['miami','marlins'],
+    'Milwaukee Brewers':    ['milwaukee','brewers'],
+    'Minnesota Twins':      ['minnesota','twins'],
+    'New York Mets':        ['ny mets','nym','new york mets'],
+    'New York Yankees':     ['ny yankees','nyy','yankees'],
+    'Philadelphia Phillies':['philadelphia','phillies','phils'],
+    'Pittsburgh Pirates':   ['pittsburgh','pirates','bucs'],
+    'San Diego Padres':     ['san diego','padres'],
+    'San Francisco Giants': ['san francisco','giants','sf giants'],
+    'Seattle Mariners':     ['seattle','mariners'],
+    'St. Louis Cardinals':  ['st. louis','st louis','cardinals'],
+    'Tampa Bay Rays':       ['tampa','rays'],
+    'Texas Rangers':        ['texas','rangers'],
+    'Toronto Blue Jays':    ['toronto','blue jays','jays'],
+    'Washington Nationals': ['washington','nationals','nats'],
+    'Athletics':            ['athletics','oakland','oak'],
+}
+
+
+def _team_in_text(text: str, team_full_name: str) -> bool:
+    """Case-insensitive whole-token match. Boston Red Sox in
+    'Pickswise: Boston Red Sox ML -156' → True."""
+    if not text or not team_full_name: return False
+    tl = ' ' + text.lower() + ' '
+    for tok in _TEAM_TOKENS.get(team_full_name, [team_full_name.lower()]):
+        if ' ' + tok + ' ' in tl or tl.startswith(' '+tok) or tl.endswith(tok+' '):
+            return True
+    return False
+
+
+def _validate_pick_attribution(pick, slate: list) -> bool:
+    """Return True if this pick's raw_text mentions the resolved game's
+    home or away team (or if pick surface is 'prop' or 'raw_text' is
+    empty — no validation possible)."""
+    surface = getattr(pick, 'surface', None)
+    if surface == 'prop':  # props reference players not teams
+        return True
+    raw_text = getattr(pick, 'raw_text', None)
+    if not raw_text:
+        return True  # nothing to validate against
+    game_id = getattr(pick, 'game_id', None)
+    if not game_id:
+        return True
+    game = next((g for g in slate if g.get('game_id') == game_id), None)
+    if not game:
+        return True
+    home = game.get('home_team'); away = game.get('away_team')
+    if _team_in_text(raw_text, home) or _team_in_text(raw_text, away):
+        return True
+    # raw_text mentions NEITHER team — that's the cross-attribution smell
+    print(f'  🚨 CROSS-ATTRIBUTION BLOCKED: {getattr(pick,"source","?")} raw="{raw_text[:70]}" '
+          f'resolved to {away}@{home} but neither team appears in text')
+    return False
+
+
 def write_picks(picks: list, pull_id: Optional[str]) -> int:
     """Batch UPSERT picks with pull_id FK. Returns count written.
 
@@ -330,22 +405,70 @@ def load_slate(game_date: str) -> list:
     return r.json() if r.status_code == 200 else []
 
 
+# 2026-09-01 CROSS-ATTRIBUTION FIX
+# Nicknames that appear as the last word of MULTIPLE MLB team names.
+# Matching on just this last word (prior fuzzy logic) was collapsing
+# "Chicago White Sox" and "Boston Red Sox" as the same team, silently
+# routing Pickswise + VSiN picks to the wrong game_id. Ambiguous
+# last-words never win a match alone — must match on ≥2 tokens.
+_AMBIGUOUS_LAST_WORDS = {'sox'}  # add more if audit surfaces them
+
+
 def _team_matches(name: str, target: str) -> bool:
-    """Fuzzy team-name match (Dodgers vs Los Angeles Dodgers)."""
-    name = (name or '').lower().strip()
-    target = (target or '').lower().strip()
-    if not name or not target:
+    """Precise team-name match. Fixes the "Sox → Sox" collision that
+    was routing Chicago White Sox picks to Boston Red Sox games (or vice
+    versa). Rules, tried in order:
+      1. Exact match (case-insensitive)
+      2. Token-boundary substring — one name's tokens are a subset of the
+         other's, AND ≥2 tokens overlap when both are multi-word
+      3. Last-word match ONLY when that last word is not in the ambiguous
+         set (e.g., "Rays" OK, "Sox" not OK)
+    """
+    n = (name or '').lower().strip()
+    t = (target or '').lower().strip()
+    if not n or not t:
         return False
-    return name in target or target in name or \
-           name.split()[-1] == target.split()[-1]
+    if n == t:
+        return True
+    n_toks = n.split(); t_toks = t.split()
+    n_set = set(n_toks); t_set = set(t_toks)
+    # If one is a single token, require that token to be UNAMBIGUOUS as
+    # a distinguishing name (rules out "sox").
+    if len(n_toks) == 1 or len(t_toks) == 1:
+        single = n_toks[0] if len(n_toks) == 1 else t_toks[0]
+        if single in _AMBIGUOUS_LAST_WORDS:
+            return False
+        # Single token must appear as a whole token in the other name
+        return single in (n_set | t_set) and (n_set & t_set)
+    # Both multi-word: require ≥2 shared tokens (kills "Sox" == "Sox")
+    shared = n_set & t_set
+    if len(shared) >= 2:
+        return True
+    # Fallback: last-word match, but ONLY if the last word is unambiguous
+    last_n, last_t = n_toks[-1], t_toks[-1]
+    if last_n == last_t and last_n not in _AMBIGUOUS_LAST_WORDS:
+        return True
+    return False
 
 
 def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:
-    """Match a scraped matchup back to our game_id."""
+    """Match a scraped matchup back to our game_id.
+
+    2026-09-01: added AMBIGUITY GUARD. If ≥2 games in the slate match
+    the hint pair, refuse to resolve (return None) rather than picking
+    one arbitrarily — that was the exact failure mode for Red Sox /
+    White Sox on shared game dates. Loud None > silent wrong game.
+    """
+    matches = []
     for g in slate:
         if _team_matches(g['home_team'], home_hint) and \
            _team_matches(g['away_team'], away_hint):
-            return g['game_id']
+            matches.append(g['game_id'])
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        # Log the ambiguity so audits can catch it
+        print(f'  ⚠ ambiguous game match for {away_hint}@{home_hint}: {len(matches)} candidates — refusing to attribute')
     return None
 
 
@@ -1296,14 +1419,23 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
                 for p in picks[:3]:
                     print(f'      {p.game_id[:12]}... {p.surface}:{p.pick_side} {p.confidence or ""}')
             else:
-                count = write_picks(picks, pull_id)
+                # 2026-09-01: cross-attribution guard. Filter picks whose
+                # raw_text doesn't mention EITHER resolved team.
+                validated = [p for p in picks if _validate_pick_attribution(p, slate)]
+                blocked = len(picks) - len(validated)
+                if blocked:
+                    print(f'  ⚠ blocked {blocked}/{len(picks)} picks from {cfg["label"]} for cross-attribution')
+                count = write_picks(validated, pull_id)
                 complete_pull_log(
                     pull_id, status='success',
                     picks_pulled=count, games_covered=games_covered,
                     http_status=http_status, duration_ms=duration_ms,
                 )
-                print(f'  ✓ {cfg["label"]}: {count} picks / {games_covered} games / {duration_ms}ms')
+                print(f'  ✓ {cfg["label"]}: {count} picks / {games_covered} games / {duration_ms}ms'
+                      + (f' (blocked {blocked})' if blocked else ''))
                 summary['picks_written'] += count
+                summary.setdefault('picks_blocked_crossattr', 0)
+                summary['picks_blocked_crossattr'] += blocked
 
             summary['sources_pulled'] += 1
             summary['source_records'].append({
