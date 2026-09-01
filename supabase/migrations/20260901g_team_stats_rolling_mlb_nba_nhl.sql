@@ -363,14 +363,16 @@ base_stats AS (
   SELECT 'MLB', team, season, 'team_hr_pg',
     ROUND(hr_per_game::NUMERIC, 2), 'higher', 'HR/G', ''
   FROM public.mlb_team_offense WHERE hr_per_game IS NOT NULL
+  -- mlb_bullpen_stats.season is TEXT ('2026') while mlb_team_offense.season
+  -- is INT — cast to INT for UNION compatibility.
   UNION ALL
-  SELECT 'MLB', team, season, 'bullpen_era',
+  SELECT 'MLB', team, NULLIF(season, '')::INT, 'bullpen_era',
     ROUND(bullpen_era::NUMERIC, 2), 'lower', 'Bullpen ERA', ''
-  FROM public.mlb_bullpen_stats WHERE bullpen_era IS NOT NULL
+  FROM public.mlb_bullpen_stats WHERE bullpen_era IS NOT NULL AND season ~ '^[0-9]+$'
   UNION ALL
-  SELECT 'MLB', team, season, 'bullpen_save_pct',
+  SELECT 'MLB', team, NULLIF(season, '')::INT, 'bullpen_save_pct',
     ROUND((save_pct * 100)::NUMERIC, 1), 'higher', 'Bullpen Save %', '%'
-  FROM public.mlb_bullpen_stats WHERE save_pct IS NOT NULL
+  FROM public.mlb_bullpen_stats WHERE save_pct IS NOT NULL AND season ~ '^[0-9]+$'
 
   -- ═════════════════════════════════════════════════════════════════
   -- NBA — bridge team_abbrev to full team name via nba_abbrev_map CTE.
