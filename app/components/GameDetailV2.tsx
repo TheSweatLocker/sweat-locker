@@ -387,6 +387,15 @@ export default function GameDetailV2({
           <SituationalCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
         </Section>
 
+        {/* 2026-09-01: Team Stats — reads team_stats_rolling matview.
+            Offense/Defense sub-tabs, each stat row shows raw value +
+            rank chip (quintile-colored). NCAAF-only content today; MLB/
+            NFL/NBA/NCAAB/NHL follow-up ships. See
+            project_rolling_rollup_architecture_901. */}
+        <Section title="Team Stats" hint="raw value + rank · ranks are FBS-only">
+          <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
+        </Section>
+
         {/* 2026-08-23: Public Splits panel — renders ctx.splits_summary
             (populated by splits_v2_pipeline aggregator). Shows sources_present
             + triple_confirmed markets. User feedback: college football game
@@ -1655,6 +1664,251 @@ const sitStyles = StyleSheet.create({
   pillEmptyText: {
     color: C.textMuted, fontSize: 13, fontWeight: '600',
   },
+});
+
+
+// ─── TEAM STATS ─────────────────────────────────────────────────────────
+// 2026-09-01: Third surface of the rolling-rollup architecture. Reads
+// from team_stats_rolling matview (populated by refresh_team_stats_rolling
+// — see 20260901c migration). Kills the NCAAFTeamMatchupCard client-side
+// compute + fuzzy substring matching anti-patterns identified in the
+// 9/1 audit.
+//
+// Design (matches user's Action Network reference + directive to show
+// RAW stats + rank together, e.g. "258 yd · 12th"):
+//   - Sub-tab: Offense / Defense
+//   - Sport-agnostic — same component for NCAAF, MLB (when populated),
+//     NFL (when populated). Coverage today: NCAAF only.
+//   - Each row: stat display_label, away team raw+rank cell, home team
+//     raw+rank cell
+//   - Rank chip color-coded by quintile (top 20% = elite green, next
+//     20% good-cyan, mid = neutral, next 20% pale-red, bottom 20% = red)
+//   - SP+ overall shown as a header banner above the sub-tabs (composite
+//     rating that spans offense + defense)
+//   - Silent hide when team_stats_rolling returns 0 for both teams
+function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
+  const [awayStats, setAwayStats] = React.useState<any[]>([]);
+  const [homeStats, setHomeStats] = React.useState<any[]>([]);
+  const [side, setSide] = React.useState<'off'|'def'>('off');
+  const [loading, setLoading] = React.useState(true);
+  const seasonForQuery = Number(season) || new Date().getFullYear();
+
+  React.useEffect(() => {
+    const client = sb();
+    if (!client || !sport || !homeTeam || !awayTeam) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const [awayR, homeR] = await Promise.all([
+        client.from('team_stats_rolling')
+          .select('*').eq('sport', sport).eq('team', awayTeam).eq('season', seasonForQuery),
+        client.from('team_stats_rolling')
+          .select('*').eq('sport', sport).eq('team', homeTeam).eq('season', seasonForQuery),
+      ]);
+      if (cancelled) return;
+      let ar = Array.isArray(awayR?.data) ? awayR.data : [];
+      let hr = Array.isArray(homeR?.data) ? homeR.data : [];
+      // Fallback prior season for pre-season (Week 1 NCAAF pattern)
+      if (ar.length === 0 && hr.length === 0 && seasonForQuery > 2020) {
+        const prev = seasonForQuery - 1;
+        const [aP, hP] = await Promise.all([
+          client.from('team_stats_rolling')
+            .select('*').eq('sport', sport).eq('team', awayTeam).eq('season', prev),
+          client.from('team_stats_rolling')
+            .select('*').eq('sport', sport).eq('team', homeTeam).eq('season', prev),
+        ]);
+        if (cancelled) return;
+        ar = Array.isArray(aP?.data) ? aP.data : [];
+        hr = Array.isArray(hP?.data) ? hP.data : [];
+      }
+      setAwayStats(ar); setHomeStats(hr);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [sport, homeTeam, awayTeam, seasonForQuery]);
+
+  if (!loading && awayStats.length === 0 && homeStats.length === 0) return null;
+
+  const awayByKey = React.useMemo(() => {
+    const m: Record<string, any> = {};
+    awayStats.forEach((r: any) => { m[r.stat_key] = r; });
+    return m;
+  }, [awayStats]);
+  const homeByKey = React.useMemo(() => {
+    const m: Record<string, any> = {};
+    homeStats.forEach((r: any) => { m[r.stat_key] = r; });
+    return m;
+  }, [homeStats]);
+
+  // Stat groups per sport. Extend as team_stats_rolling gains other sports.
+  const NCAAF_OFFENSE = [
+    'pass_yds_pg', 'rush_yds_pg', 'total_yds_pg',
+    'third_down_pct', 'off_epa_per_play', 'off_success_rate',
+    'off_explosiveness', 'sp_offense',
+    'turnovers_pg', 'penalty_yds_pg',
+  ];
+  const NCAAF_DEFENSE = [
+    'points_allowed_pg', 'sp_defense',
+    'def_epa_per_play', 'def_rush_epa_allowed', 'def_success_rate_allowed',
+  ];
+  const OFFENSE_BY_SPORT: Record<string, string[]> = {NCAAF: NCAAF_OFFENSE};
+  const DEFENSE_BY_SPORT: Record<string, string[]> = {NCAAF: NCAAF_DEFENSE};
+
+  const statKeys = side === 'off'
+    ? (OFFENSE_BY_SPORT[sport] || [])
+    : (DEFENSE_BY_SPORT[sport] || []);
+
+  // Header SP+ overall banner (composite rating)
+  const spOvrH = homeByKey['sp_overall'];
+  const spOvrA = awayByKey['sp_overall'];
+
+  return (
+    <View style={{gap: 10}}>
+      {/* SP+ overall banner */}
+      {(spOvrH || spOvrA) && (
+        <View style={tsStyles.spBanner}>
+          <View style={tsStyles.spSide}>
+            <Text style={tsStyles.spLabel}>{abbrev3(awayTeam)} SP+</Text>
+            {spOvrA ? (
+              <View style={tsStyles.spRow}>
+                <Text style={tsStyles.spValue}>{spOvrA.raw_value > 0 ? '+' : ''}{spOvrA.raw_value}</Text>
+                <RankChip rank={spOvrA.rank} leagueSize={spOvrA.league_size} />
+              </View>
+            ) : <Text style={tsStyles.dash}>—</Text>}
+          </View>
+          <View style={tsStyles.spDivider} />
+          <View style={tsStyles.spSide}>
+            <Text style={tsStyles.spLabel}>{abbrev3(homeTeam)} SP+</Text>
+            {spOvrH ? (
+              <View style={tsStyles.spRow}>
+                <Text style={tsStyles.spValue}>{spOvrH.raw_value > 0 ? '+' : ''}{spOvrH.raw_value}</Text>
+                <RankChip rank={spOvrH.rank} leagueSize={spOvrH.league_size} />
+              </View>
+            ) : <Text style={tsStyles.dash}>—</Text>}
+          </View>
+        </View>
+      )}
+
+      {/* Offense / Defense toggle */}
+      <View style={rsStyles.tabBar}>
+        <TabPill label="Offense" active={side==='off'} onPress={() => setSide('off')} />
+        <TabPill label="Defense" active={side==='def'} onPress={() => setSide('def')} />
+      </View>
+
+      {/* Team header */}
+      <View style={sitStyles.teamHead}>
+        <Text style={sitStyles.teamHeadName}>{abbrev3(awayTeam)}</Text>
+        <Text style={[sitStyles.teamHeadName, {textAlign: 'right'}]}>{abbrev3(homeTeam)}</Text>
+      </View>
+
+      {/* Stat rows */}
+      {statKeys.map(k => (
+        <StatRow key={k} statKey={k} awayRow={awayByKey[k]} homeRow={homeByKey[k]} />
+      ))}
+
+      {loading && <Text style={rsStyles.empty}>Loading…</Text>}
+    </View>
+  );
+}
+
+function StatRow({statKey, awayRow, homeRow}: any) {
+  // Prefer whichever has display_label present (both should have same);
+  // fall back to prettified stat_key.
+  const label = awayRow?.display_label || homeRow?.display_label
+             || statKey.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+  const unit = awayRow?.unit || homeRow?.unit || '';
+  return (
+    <View style={tsStyles.statRow}>
+      <StatCell row={awayRow} unit={unit} align="right" />
+      <Text style={tsStyles.statLabel}>{label}</Text>
+      <StatCell row={homeRow} unit={unit} align="left" />
+    </View>
+  );
+}
+
+function StatCell({row, unit, align}: any) {
+  if (!row || row.raw_value == null) {
+    return (
+      <View style={[tsStyles.statCell, align==='left' ? {alignItems: 'flex-start'} : {alignItems: 'flex-end'}]}>
+        <Text style={tsStyles.dash}>—</Text>
+      </View>
+    );
+  }
+  const isRightAlign = align !== 'left';
+  return (
+    <View style={[
+      tsStyles.statCell,
+      isRightAlign ? {alignItems: 'flex-end'} : {alignItems: 'flex-start'},
+    ]}>
+      <View style={{
+        flexDirection: isRightAlign ? 'row' : 'row-reverse',
+        alignItems: 'center', gap: 6,
+      }}>
+        <Text style={tsStyles.statValue}>
+          {row.raw_value}{unit ? <Text style={tsStyles.statUnit}> {unit}</Text> : null}
+        </Text>
+        <RankChip rank={row.rank} leagueSize={row.league_size} />
+      </View>
+    </View>
+  );
+}
+
+function RankChip({rank, leagueSize}: any) {
+  if (rank == null || leagueSize == null || leagueSize === 0) return null;
+  // Quintile color: top 20% = elite, next 20% = good, mid = neutral, next 20% = poor, bottom = bad
+  const pct = rank / leagueSize;
+  let bg = C.surfaceAlt, fg = C.textDim;
+  if (pct <= 0.20)      { bg = C.win  + '26'; fg = C.win; }
+  else if (pct <= 0.40) { bg = C.sharp + '20'; fg = C.sharp; }
+  else if (pct <= 0.60) { bg = C.surfaceAlt; fg = C.textDim; }
+  else if (pct <= 0.80) { bg = C.warn + '22'; fg = C.warn; }
+  else                  { bg = C.loss + '22'; fg = C.loss; }
+  // Ordinal suffix
+  const s = String(rank);
+  const last = rank % 100;
+  const suffix = (last >= 11 && last <= 13) ? 'th'
+               : (rank % 10 === 1) ? 'st'
+               : (rank % 10 === 2) ? 'nd'
+               : (rank % 10 === 3) ? 'rd' : 'th';
+  return (
+    <View style={[tsStyles.rankChip, {backgroundColor: bg}]}>
+      <Text style={[tsStyles.rankText, {color: fg}]}>{s}{suffix}</Text>
+    </View>
+  );
+}
+
+const tsStyles = StyleSheet.create({
+  spBanner: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: C.surfaceAlt,
+    borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12,
+    borderWidth: 1, borderColor: C.borderSoft,
+  },
+  spSide: {flex: 1, gap: 4, alignItems: 'center'},
+  spDivider: {width: 1, alignSelf: 'stretch', backgroundColor: C.borderSoft, marginHorizontal: 12},
+  spLabel: {color: C.textMuted, fontSize: 10, letterSpacing: 0.06, fontWeight: '700'},
+  spRow: {flexDirection: 'row', alignItems: 'center', gap: 8},
+  spValue: {color: C.text, fontSize: 20, fontWeight: '900', letterSpacing: -0.02},
+  statRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 8, paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.borderSoft,
+  },
+  statLabel: {
+    flex: 1.4, textAlign: 'center',
+    color: C.textMuted, fontSize: 10, fontWeight: '700',
+    letterSpacing: 0.04, textTransform: 'uppercase',
+    paddingHorizontal: 6,
+  },
+  statCell: {flex: 1.3, justifyContent: 'center'},
+  statValue: {color: C.text, fontSize: 15, fontWeight: '800', letterSpacing: -0.01},
+  statUnit: {color: C.textMuted, fontSize: 10, fontWeight: '600'},
+  rankChip: {
+    minWidth: 38, paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 999, alignItems: 'center',
+  },
+  rankText: {fontSize: 11, fontWeight: '800', letterSpacing: 0.02},
+  dash: {color: C.textMuted, fontSize: 13, fontWeight: '600'},
 });
 
 
