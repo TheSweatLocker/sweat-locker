@@ -124,33 +124,48 @@ WITH base_stats AS (
   UNION ALL
   -- ═══════════════════════════════════════════════════════════════════
   -- NCAAF · defense per-game (opponent-attribution) from ncaaf_team_defense_stats
+  --
+  -- 🎯 FBS-ONLY FILTER (2026-09-01 v2): ncaaf_team_defense_stats holds
+  -- ~700 rows per season including FCS/D2/JUCO opponents that showed up
+  -- on FBS schedules. Ranking Alabama "615/699" mixed in those non-FBS
+  -- teams and made the rank useless. Filter via EXISTS on ncaaf_team_stats
+  -- (which is FBS-only from CFBD's /stats/season/advanced endpoint) so
+  -- the league_size stays consistent (~136) with the offense side.
   -- ═══════════════════════════════════════════════════════════════════
-  SELECT 'NCAAF', team, season, 'points_allowed_pg',
-    ROUND(def_ppg::NUMERIC, 1),
+  SELECT 'NCAAF', d.team, d.season, 'points_allowed_pg',
+    ROUND(d.def_ppg::NUMERIC, 1),
     'lower', 'Points Allowed/G', ''
-  FROM public.ncaaf_team_defense_stats
-  WHERE def_ppg IS NOT NULL
+  FROM public.ncaaf_team_defense_stats d
+  WHERE d.def_ppg IS NOT NULL
+    AND EXISTS (SELECT 1 FROM public.ncaaf_team_stats o
+                WHERE o.team = d.team AND o.season = d.season)
 
   UNION ALL
-  SELECT 'NCAAF', team, season, 'def_epa_per_play',
-    ROUND(def_pass_epa_allowed::NUMERIC, 3),  -- use pass EPA allowed as proxy for now
+  SELECT 'NCAAF', d.team, d.season, 'def_epa_per_play',
+    ROUND(d.def_pass_epa_allowed::NUMERIC, 3),
     'lower', 'Def Pass EPA', ''
-  FROM public.ncaaf_team_defense_stats
-  WHERE def_pass_epa_allowed IS NOT NULL
+  FROM public.ncaaf_team_defense_stats d
+  WHERE d.def_pass_epa_allowed IS NOT NULL
+    AND EXISTS (SELECT 1 FROM public.ncaaf_team_stats o
+                WHERE o.team = d.team AND o.season = d.season)
 
   UNION ALL
-  SELECT 'NCAAF', team, season, 'def_rush_epa_allowed',
-    ROUND(def_rush_epa_allowed::NUMERIC, 3),
+  SELECT 'NCAAF', d.team, d.season, 'def_rush_epa_allowed',
+    ROUND(d.def_rush_epa_allowed::NUMERIC, 3),
     'lower', 'Def Rush EPA', ''
-  FROM public.ncaaf_team_defense_stats
-  WHERE def_rush_epa_allowed IS NOT NULL
+  FROM public.ncaaf_team_defense_stats d
+  WHERE d.def_rush_epa_allowed IS NOT NULL
+    AND EXISTS (SELECT 1 FROM public.ncaaf_team_stats o
+                WHERE o.team = d.team AND o.season = d.season)
 
   UNION ALL
-  SELECT 'NCAAF', team, season, 'def_success_rate_allowed',
-    ROUND((def_success_rate_allowed * 100)::NUMERIC, 1),
+  SELECT 'NCAAF', d.team, d.season, 'def_success_rate_allowed',
+    ROUND((d.def_success_rate_allowed * 100)::NUMERIC, 1),
     'lower', 'Def Success % Allowed', '%'
-  FROM public.ncaaf_team_defense_stats
-  WHERE def_success_rate_allowed IS NOT NULL
+  FROM public.ncaaf_team_defense_stats d
+  WHERE d.def_success_rate_allowed IS NOT NULL
+    AND EXISTS (SELECT 1 FROM public.ncaaf_team_stats o
+                WHERE o.team = d.team AND o.season = d.season)
 
   -- FUTURE: MLB / NFL / NBA / NCAAB / NHL blocks land here as each sport's
   -- team-stats sources are audited and per-game averages computable.
