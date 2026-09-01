@@ -1773,15 +1773,48 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
   const NCAAB_DEFENSE = [
     'ppg_against', 'def_rating',
   ];
+  // MLB — batting stats + bullpen. Pitching stats (ERA/WHIP/K per 9)
+  // still gapped pending persistent puller (currently pulled live per-cron).
+  const MLB_OFFENSE = [
+    'team_avg', 'team_obp', 'team_slg', 'team_ops',
+    'team_woba', 'team_wrc_plus', 'team_iso',
+    'team_bb_pct', 'team_k_pct',
+    'team_runs_pg', 'team_hr_pg',
+  ];
+  const MLB_DEFENSE = [
+    'bullpen_era', 'bullpen_save_pct',
+  ];
+  // NBA — four factors + ratings
+  const NBA_OFFENSE = [
+    'off_rating', 'net_rating', 'pace',
+    'efg_pct', 'tov_pct', 'orb_pct', 'ft_rate',
+  ];
+  const NBA_DEFENSE = [
+    'def_rating', 'opp_efg_pct', 'opp_tov_pct',
+  ];
+  // NHL — expected-goal + special teams + possession
+  const NHL_OFFENSE = [
+    'xgf_per60', 'high_danger_for',
+    'pp_pct', 'corsi_5v5',
+  ];
+  const NHL_DEFENSE = [
+    'xga_per60', 'high_danger_against', 'pk_pct',
+  ];
   const OFFENSE_BY_SPORT: Record<string, string[]> = {
     NCAAF: NCAAF_OFFENSE,
     NFL:   NFL_OFFENSE,
     NCAAB: NCAAB_OFFENSE,
+    MLB:   MLB_OFFENSE,
+    NBA:   NBA_OFFENSE,
+    NHL:   NHL_OFFENSE,
   };
   const DEFENSE_BY_SPORT: Record<string, string[]> = {
     NCAAF: NCAAF_DEFENSE,
     NFL:   NFL_DEFENSE,
     NCAAB: NCAAB_DEFENSE,
+    MLB:   MLB_DEFENSE,
+    NBA:   NBA_DEFENSE,
+    NHL:   NHL_DEFENSE,
   };
 
   const statKeys = side === 'off'
