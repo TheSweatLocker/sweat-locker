@@ -848,18 +848,64 @@ const RL_LABEL_BY_SPORT: Record<string,string> = {
 };
 const rlLabel = (sport?: string) => RL_LABEL_BY_SPORT[sport || ''] || 'Spread';
 
+// 2026-09-01: Adapter that projects splits_summary → the shape MoneyMarket
+// expects ({pick, money, bets, div, agree}). Motivation: the old code read
+// oddscrowd_snapshot which is fed by align_status_common with a `source=eq.so`
+// filter, so Cleatz (CZ) and Fadereport (FR) data landed in Supabase but
+// never reached this card. Reading splits_summary directly gets all sources
+// that splits_v2_pipeline aggregates (OC + FR + CZ + SO where present).
+// Falls back to oddscrowd_snapshot if splits_summary absent (backwards compat
+// during rollout; can deprecate once every ctx has splits_summary populated).
+function _sideFromAgg(agg: any): {money: number; bets: number; div: number} | null {
+  if (!agg || typeof agg !== 'object') return null;
+  const money = typeof agg.money_pct_avg === 'number' ? agg.money_pct_avg : null;
+  const bets  = typeof agg.bets_pct_avg  === 'number' ? agg.bets_pct_avg  : null;
+  if (money == null && bets == null) return null;
+  let div = typeof agg.divergence_avg === 'number' ? agg.divergence_avg : null;
+  if (div == null && money != null && bets != null) div = Math.round(money - bets);
+  return {money: money ?? 0, bets: bets ?? 0, div: div ?? 0};
+}
+function _marketFromSummary(mktObj: any): any | null {
+  if (!mktObj || typeof mktObj !== 'object') return null;
+  const sides = ['HOME', 'AWAY', 'OVER', 'UNDER'];
+  let best: {side: string; money: number; bets: number; div: number; agree: number} | null = null;
+  for (const s of sides) {
+    if (!(s in mktObj)) continue;
+    const agg = _sideFromAgg(mktObj[s]);
+    if (!agg) continue;
+    const agree = typeof mktObj[s]?.sources_agree === 'number' ? mktObj[s].sources_agree : 0;
+    if (!best || agg.money > best.money) {
+      best = {side: s, ...agg, agree};
+    }
+  }
+  if (!best) return null;
+  return {pick: best.side, money: best.money, bets: best.bets, div: best.div, agree: best.agree};
+}
+function oddsFromSummary(summary: any): {ml: any; rl: any; total: any} | null {
+  if (!summary || typeof summary !== 'object') return null;
+  // splits_summary uses 'ml'/'rl'/'total' + also 'spread'/'moneyline' variants
+  const ml    = _marketFromSummary(summary.ml)   || _marketFromSummary(summary.moneyline);
+  const rl    = _marketFromSummary(summary.rl)   || _marketFromSummary(summary.spread);
+  const total = _marketFromSummary(summary.total);
+  if (!ml && !rl && !total) return null;
+  return {ml, rl, total};
+}
+
 function MoneyFlow({ctx, sport}: any) {
-  const oc = ctx?.oddscrowd_snapshot;
-  if (!oc || typeof oc !== 'object') {
+  // Prefer splits_summary (multi-source aggregate). Fallback to
+  // oddscrowd_snapshot for ctxs that haven't been re-aggregated yet.
+  const fromSummary = oddsFromSummary(ctx?.splits_summary);
+  const src = fromSummary || (ctx?.oddscrowd_snapshot as any);
+  if (!src || typeof src !== 'object') {
     // No source attribution. When money data is missing, we say nothing about
     // provenance (competitive moat — see feedback re: Action Network model).
     // Hidden rather than "no data" copy since presence is itself a signal.
     return null;
   }
   const markets: {key: 'ml'|'rl'|'total'; label: string; data: any}[] = [
-    {key: 'ml', label: 'Moneyline', data: oc.ml},
-    {key: 'rl', label: rlLabel(sport), data: oc.rl},
-    {key: 'total', label: 'Total', data: oc.total},
+    {key: 'ml', label: 'Moneyline', data: src.ml},
+    {key: 'rl', label: rlLabel(sport), data: src.rl},
+    {key: 'total', label: 'Total', data: src.total},
   ].filter(x => x.data);
   return (
     <View style={{gap: 8}}>
@@ -2976,13 +3022,41 @@ function cohortBadge(ctx: any): string {
 }
 
 // 2026-08-23: Public splits panel — reads game_context.splits_summary JSONB
-// populated by splits_v2_pipeline. Shows per-market source badges + triple-
-// confirmed markers. No render if splits_summary absent.
+// populated by splits_v2_pipeline. Shows per-market source badges + confirmed
+// markers. Gating (2026-09-01 per user directive): sports where only 1 or
+// 2 external money-flow sources exist (NCAAF has CZ+SO, NHL has SO only)
+// should NOT be advertised as "triple confirmed" — that's a lie. Badge and
+// per-side chip adapt to the actual sources_present count.
+//   0 sources → don't render (gated upstream at ctx.splits_summary presence)
+//   1 source  → "1 source · unconfirmed"        · no side chip
+//   2 sources → "2 sources · confirmed"         · DOUBLE chip when 2 agree
+//   3+ srcs   → "3 sources · triple-confirmed"  · TRIPLE chip when 3+ agree
 function splitsBadge(summary: any): string {
   const srcs = Array.isArray(summary?.sources_present) ? summary.sources_present : [];
   const triple = Array.isArray(summary?.triple_confirmed) ? summary.triple_confirmed : [];
   if (srcs.length === 0) return 'no sources';
-  return `${srcs.length} source${srcs.length === 1 ? '' : 's'}${triple.length ? ` · ${triple.length} triple-confirmed` : ''}`;
+  if (srcs.length === 1) return '1 source · unconfirmed';
+  if (srcs.length === 2) {
+    // With 2 sources max, "triple_confirmed" can't fire per the aggregator's
+    // ≥3 rule. But some sides may have both sources agreeing → "confirmed".
+    const doubles = _doubleConfirmedFromSummary(summary);
+    return doubles.length
+      ? `2 sources · ${doubles.length} confirmed`
+      : '2 sources · dissenting';
+  }
+  return `${srcs.length} sources${triple.length ? ` · ${triple.length} triple-confirmed` : ''}`;
+}
+function _doubleConfirmedFromSummary(summary: any): string[] {
+  const doubles: string[] = [];
+  const MARKETS = ['ml', 'rl', 'spread', 'total', 'moneyline'];
+  for (const mkt of MARKETS) {
+    const mData = summary?.[mkt];
+    if (!mData || typeof mData !== 'object') continue;
+    for (const [side, agg] of Object.entries<any>(mData)) {
+      if (agg?.sources_agree >= 2) doubles.push(`${mkt}_${side}`);
+    }
+  }
+  return doubles;
 }
 
 function SplitsSummaryPanel({summary}: any) {
@@ -3031,12 +3105,19 @@ function SplitsSummaryPanel({summary}: any) {
               const money = agg?.money_pct_avg;
               const bets = agg?.bets_pct_avg;
               const nSrc = agg?.sources_agree ?? 0;
-              const isTriple = triple.includes(`${mkt}_${side}`);
+              // 2026-09-01: adaptive confirmation chip. Was TRIPLE-only which
+              // lied for NCAAF/NCAAB/NHL where max sources ≤ 2. Now:
+              //   nSrc >= 3 → TRIPLE (cyan/sharp)
+              //   nSrc == 2 → DOUBLE (cyan-dim)
+              //   nSrc == 1 → nothing (unconfirmed, single-source)
+              const isTriple = nSrc >= 3;
+              const isDouble = nSrc === 2;
+              const confirmed = isTriple || isDouble;
               return (
                 <View key={i} style={{
                   flexDirection: 'row', alignItems: 'center', gap: 8,
                   paddingHorizontal: 8, paddingVertical: 4,
-                  backgroundColor: isTriple ? (C.sharp + '15') : 'transparent',
+                  backgroundColor: confirmed ? (C.sharp + '15') : 'transparent',
                   borderRadius: 6,
                 }}>
                   <Text style={{color: C.textDim, fontSize: 11, minWidth: 50, fontWeight: '600'}}>
@@ -3058,6 +3139,11 @@ function SplitsSummaryPanel({summary}: any) {
                   {isTriple && (
                     <Text style={{color: C.sharp, fontSize: 9, fontWeight: '800'}}>
                       TRIPLE
+                    </Text>
+                  )}
+                  {isDouble && (
+                    <Text style={{color: C.sharp, fontSize: 9, fontWeight: '700', opacity: 0.75}}>
+                      DOUBLE
                     </Text>
                   )}
                 </View>
