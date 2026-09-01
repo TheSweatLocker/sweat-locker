@@ -61,6 +61,24 @@ HITS_CUTOFF = 55    # Hits Over — floor still profitable
 K_UNDER_CUTOFF = 65       # Ks Under — fading aspirational K lines
 HITS_UNDER_CUTOFF = 70    # Hits Under (0-fer) — needs strong evidence
 
+# ═══════════════════════════════════════════════════════════════════════
+# 2026-08-31 PROJECTION BIAS CORRECTIONS — audit-driven
+# ═══════════════════════════════════════════════════════════════════════
+# audit_projection_accuracy.py on 1000 graded props (30d window) found:
+#   - _projected_ks   averages 1.68 BELOW actual final_value  (n=15+ LEAN)
+#   - _projected_outs averages 0.76 BELOW actual final_value  (n=13+ LEAN)
+#
+# Root cause: raw L7/season-blended projections under-project modern
+# pitcher K totals + outs. Under-projecting pushes our scorer toward
+# UNDER picks that lose because pitchers actually go OVER.
+#
+# Fix: additive bias correction applied AFTER framing_bonus (so we
+# don't double-correct). Constants tuned to the observed mean bias.
+# Re-audit weekly via audit_projection_accuracy.py; tune down toward 0
+# as scorer improves. Set to 0 to disable.
+K_PROJECTION_BIAS_CORRECTION = 1.68
+OUTS_PROJECTION_BIAS_CORRECTION = 0.76
+
 # 2026-06-21 RECAL — fresh 90d audit (n=48 graded outs_under, n=43 graded
 # outs_over) found the threshold structure backwards from where the edge
 # actually lives:
@@ -1854,6 +1872,12 @@ def score_pitcher_ks(g, side):
         signals['_projected_ks'] = round(signals['_projected_ks'] + framing_bonus, 1)
         signals['_framing_k_bonus'] = round(framing_bonus, 2)
 
+    # 2026-08-31 BIAS CORRECTION — see K_PROJECTION_BIAS_CORRECTION at top
+    if K_PROJECTION_BIAS_CORRECTION and signals.get('_projected_ks') is not None:
+        signals['_projected_ks_pre_bias_fix'] = signals['_projected_ks']
+        signals['_projected_ks'] = round(signals['_projected_ks'] + K_PROJECTION_BIAS_CORRECTION, 1)
+        signals['_k_bias_correction'] = K_PROJECTION_BIAS_CORRECTION
+
     # Suggested line — aim for ~1.5 K cushion below projection so the line
     # we surface is a CLEAR Over edge (not 0.5-juiced). Snap to X.5 because
     # books only post X.5 K lines. Bounds 3.5-7.5 match book distribution.
@@ -2102,6 +2126,12 @@ def score_pitcher_ks_under(g, side):
         signals['_projected_ks'] = round(signals['_projected_ks'] + framing_bonus, 1)
         signals['_framing_k_bonus'] = round(framing_bonus, 2)
 
+    # 2026-08-31 BIAS CORRECTION — see K_PROJECTION_BIAS_CORRECTION at top
+    if K_PROJECTION_BIAS_CORRECTION and signals.get('_projected_ks') is not None:
+        signals['_projected_ks_pre_bias_fix'] = signals['_projected_ks']
+        signals['_projected_ks'] = round(signals['_projected_ks'] + K_PROJECTION_BIAS_CORRECTION, 1)
+        signals['_k_bias_correction'] = K_PROJECTION_BIAS_CORRECTION
+
     # Suggested Under line — aim for ~1.5 K cushion ABOVE projection so the
     # line we surface is a CLEAR Under edge (book line above projection by
     # enough that fade has real value). Snap to X.5. Bounds 3.5-7.5.
@@ -2260,6 +2290,12 @@ def score_pitcher_outs(g, side):
     # xERA-tier formula. Falls back to old tier formula when projection missing.
     projected_outs = _f(g.get(f'{side}_pitcher_projected_outs'))
     if projected_outs is not None:
+        # 2026-08-31 BIAS CORRECTION — audit found _projected_outs runs 0.76
+        # below actual final outs. Store both pre/post so audit can track.
+        signals['_projected_outs_pre_bias_fix'] = round(projected_outs, 1)
+        if OUTS_PROJECTION_BIAS_CORRECTION:
+            projected_outs = projected_outs + OUTS_PROJECTION_BIAS_CORRECTION
+            signals['_outs_bias_correction'] = OUTS_PROJECTION_BIAS_CORRECTION
         signals['_projected_outs'] = round(projected_outs, 1)
         # Over scorer: target line ~2 outs BELOW projection for a clear Over edge.
         # Snap to standard book grid (books post 14.5 / 15.5 / 16.5 / 17.5).
@@ -2377,6 +2413,11 @@ def score_pitcher_outs_under(g, side):
     # 4-out cushion target so the suggested line tracks reality.
     projected_outs = _f(g.get(f'{side}_pitcher_projected_outs'))
     if projected_outs is not None:
+        # 2026-08-31 BIAS CORRECTION — mirror of Over-scorer path
+        signals['_projected_outs_pre_bias_fix'] = round(projected_outs, 1)
+        if OUTS_PROJECTION_BIAS_CORRECTION:
+            projected_outs = projected_outs + OUTS_PROJECTION_BIAS_CORRECTION
+            signals['_outs_bias_correction'] = OUTS_PROJECTION_BIAS_CORRECTION
         signals['_projected_outs'] = round(projected_outs, 1)
     if last_ip is not None and last_ip <= 2.0:
         # Opener case — books rarely post outs lines for openers but when
