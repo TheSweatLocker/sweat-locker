@@ -98,6 +98,23 @@ jobs:
           cd mlb_pipeline
           python resolve_ncaaf_results.py --skip-external || echo "NCAAF resolver non-fatal (offseason ok)"
 
+      # 5b. Refresh team_recent_games matview — universal cross-sport
+      #     rollup feeding the Recent Schedule card. Runs AFTER both MLB +
+      #     NCAAF resolvers so newly graded games appear in the card by
+      #     morning. Refresh is cross-sport in one shot (union of all
+      #     sport game_results), so calling once here is enough. Migration:
+      #     supabase/migrations/20260901_team_recent_games_matview.sql
+      - name: Refresh team_recent_games matview
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_recent_games refresh failed"
+
       # 6. Data quality checker — surfaces cross-attribution + MC-stale
       #    anomalies before users see them. Non-fatal in cron (findings
       #    logged, not blocked) but exits non-zero when findings exist

@@ -378,6 +378,25 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"p_sport": "NCAAF"}' || echo "tendencies refresh failed"
 
+      # 2026-09-01: refresh team_recent_games matview (universal, cross-sport).
+      # Feeds the Recent Schedule card on game detail. Uses the
+      # refresh_team_recent_games() RPC from 20260901_team_recent_games_matview.
+      # Refresh is cross-sport (whole view refreshes in one shot), so this
+      # is idempotent regardless of which sport pipeline calls it — but we
+      # trigger from each pipeline's resolver so records lag <30 min behind
+      # the last game finish.
+      - name: Refresh team_recent_games matview
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_recent_games refresh failed"
+
       # 2026-08-09: NCAAF sharp-money audit trail. Same infra as MLB/NFL.
       # Rules start in LOG mode until n≥12 accumulates per rule.
       - name: NCAAF — write today's sharp-fade audit rows
