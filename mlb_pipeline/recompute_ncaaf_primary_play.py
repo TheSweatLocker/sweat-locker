@@ -82,13 +82,14 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
     try:
         from ensemble_scorer import score_game
         from game_context import _compose_ensemble_sub
+        from defensive_gates import apply_all_defensive_gates, reroute_ml_if_trapped
     except ImportError as e:
         print(f'  FAIL importing scorer: {e}'); return
 
     rows = fetch_ctx_window(start_date, days)
     print(f'  ctx rows in window: {len(rows)}')
 
-    changed = 0; patched = 0
+    changed = 0; patched = 0; rerouted = 0
     for g in rows:
         old_pp = g.get('primary_play') or {}
         old_key = f"{old_pp.get('type')}/{old_pp.get('label')}/{old_pp.get('tier')}"
@@ -97,15 +98,22 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
         except Exception as e:
             print(f'  score failed {g.get("away_team")}@{g.get("home_team")}: {e}'); continue
         if decision is None: continue
+        # 2026-09-01: heavy-fav ML reroute (see ncaaf_game_context.py note)
+        decision = reroute_ml_if_trapped(decision, g, sport='NCAAF')
         top = decision.top()
         if top.pick is None: continue
+        _reroute = getattr(top, '_ml_reroute', None)
+        _audit = (f'ensemble_scorer v2 · NCAAF · recompute · {len(top.contributions)} sources · '
+                  f'score={top.score:.2f} margin={top.margin:+.2f}')
+        if _reroute:
+            _audit += f' · ML-reroute({_reroute["orig_market"]}→{top.market} @ {_reroute["orig_ml_price"]})'
+            rerouted += 1
 
         new_pp = {
             'type': top.market, 'tier': top.tier, 'label': top.display_label,
             'side': top.side, 'line': top.line, 'conviction': top.conviction,
             'score': round(top.score, 2), 'sub': _compose_ensemble_sub(top),
-            'audit_note': (f'ensemble_scorer v2 · NCAAF · recompute · {len(top.contributions)} sources · '
-                           f'score={top.score:.2f} margin={top.margin:+.2f}'),
+            'audit_note': _audit,
             '_engine': 'ensemble_v2',
             '_ensemble_sources': [
                 {'signal_key': c.signal_key, 'class': c.signal_class,
@@ -115,6 +123,11 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
                 for c in top.contributions[:8]
             ],
         }
+        if _reroute:
+            new_pp['_ml_reroute'] = _reroute
+        # 2026-09-01: defensive gates (juice-trap floor -300 for NCAAF)
+        new_pp = apply_all_defensive_gates(new_pp, g, sport='NCAAF')
+        if new_pp is None: continue
         new_key = f"{new_pp['type']}/{new_pp['label']}/{new_pp['tier']}"
         if new_key == old_key: continue
         changed += 1
@@ -125,7 +138,7 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
         if patch_pp(g['game_id'], new_pp): patched += 1
 
     prefix = '[DRY] ' if dry_run else ''
-    print(f'\n{prefix}changed={changed}  patched={patched}')
+    print(f'\n{prefix}changed={changed}  patched={patched}  rerouted={rerouted}')
 
 
 def main():

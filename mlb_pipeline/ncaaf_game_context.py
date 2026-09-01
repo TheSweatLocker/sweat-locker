@@ -723,20 +723,31 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
     try:
         from ensemble_scorer import score_game as _ensemble_score
         from game_context import _compose_ensemble_sub
+        from defensive_gates import apply_all_defensive_gates, reroute_ml_if_trapped
         decision = _ensemble_score('NCAAF', row)
         if decision is not None:
+            # 2026-09-01: juice-trap ML reroute BEFORE picking top. When
+            # ML side is priced at -300+ (heavy fav) or +400+ (long dog),
+            # swap top_market to spread or total if either has a real
+            # score. Motivation: NCAAF Week 1 Missouri-tier games price
+            # ML at -3000 — surfacing that as a "take" is nonsense.
+            decision = reroute_ml_if_trapped(decision, row, sport='NCAAF')
             top = decision.top()
             if top.pick is not None:
                 # 2026-08-31: recommended_stake for unified sizing across sports.
                 from game_context import compute_recommended_stake as _rs
                 _rec_stake = _rs(top, mc_dissented=False)
+                _reroute = getattr(top, '_ml_reroute', None)
+                _audit = (f'ensemble_scorer v2 · NCAAF · {len(top.contributions)} sources · '
+                          f'score={top.score:.2f} margin={top.margin:+.2f}')
+                if _reroute:
+                    _audit += f' · ML-reroute({_reroute["orig_market"]}→{top.market} @ {_reroute["orig_ml_price"]})'
                 ensemble_pp = {
                     'type': top.market, 'tier': top.tier, 'label': top.display_label,
                     'side': top.side, 'line': top.line, 'conviction': top.conviction,
                     'score': round(top.score, 2), 'sub': _compose_ensemble_sub(top),
                     'recommended_stake': _rec_stake,
-                    'audit_note': (f'ensemble_scorer v2 · NCAAF · {len(top.contributions)} sources · '
-                                   f'score={top.score:.2f} margin={top.margin:+.2f}'),
+                    'audit_note': _audit,
                     '_engine': 'ensemble_v2',
                     '_ensemble_sources': [
                         {'signal_key': c.signal_key, 'class': c.signal_class,
@@ -747,6 +758,14 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
                         for c in top.contributions[:8]
                     ],
                 }
+                if _reroute:
+                    ensemble_pp['_ml_reroute'] = _reroute
+                # 2026-09-01: apply defensive gates (OC flip → MC dissent
+                # → juice-trap demote → publish gate). Juice-trap floor
+                # is -300 for NCAAF. Reroute already handled the ML→spread
+                # swap; the gate here catches leftover cases where reroute
+                # couldn't find a clearing alt and ML still shipped.
+                ensemble_pp = apply_all_defensive_gates(ensemble_pp, row, sport='NCAAF')
     except Exception:
         pass
 

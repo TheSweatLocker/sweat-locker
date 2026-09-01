@@ -121,7 +121,55 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
     return pp
 
 
-def apply_juice_trap_gate(pp: dict | None, ctx: dict) -> dict | None:
+# 2026-09-01: sport-specific juice thresholds. NCAAF has wider chalk
+# than MLB (50-point favorites price ML at -3000+), so the trap floor
+# is looser. Per user directive: unless ML is looser than -300 for
+# football, the "take" should be spread or total. MLB stays at -200
+# (matches shipped feedback_heavy_fav_ml_trap_803 discipline).
+_JUICE_TRAP_HEAVY_FAV_BY_SPORT = {
+    'MLB':   -200,
+    'NCAAF': -300,
+    'NFL':   -300,
+    'NCAAB': -400,   # basketball tolerates deeper chalk before rerouting
+    'NBA':   -400,
+}
+_JUICE_TRAP_LONG_DOG_BY_SPORT = {
+    'MLB':   +250,
+    'NCAAF': +400,   # football underdogs regularly +400+ in mismatches
+    'NFL':   +400,
+    'NCAAB': +450,
+    'NBA':   +450,
+}
+
+
+def _read_ml_price(pp: dict, ctx: dict) -> int | None:
+    """Read the ML price for pp.side from ctx across sport-specific key aliases.
+
+    MLB ctx uses `home_ml_close`; NCAAF ctx uses `close_home_ml`. This
+    normalizes across both without forcing a schema change. Returns None
+    when no key resolves or the value doesn't parse to int.
+    """
+    cur_side = str(pp.get('side', '')).upper()
+    if cur_side == 'HOME':
+        candidates = [
+            ctx.get('home_ml_close'), ctx.get('home_ml_odds'), ctx.get('home_ml_open'),
+            ctx.get('close_home_ml'), ctx.get('open_home_ml'),
+        ]
+    elif cur_side == 'AWAY':
+        candidates = [
+            ctx.get('away_ml_close'), ctx.get('away_ml_odds'), ctx.get('away_ml_open'),
+            ctx.get('close_away_ml'), ctx.get('open_away_ml'),
+        ]
+    else:
+        return None
+    for p in candidates:
+        if p is None: continue
+        try: return int(p)
+        except (TypeError, ValueError): continue
+    return None
+
+
+def apply_juice_trap_gate(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Demote ML PRIME/STRONG picks with heavy-fav or long-dog trap prices.
 
     Per user memory feedback_heavy_fav_ml_trap_803 + prop juice-trap
@@ -130,36 +178,35 @@ def apply_juice_trap_gate(pp: dict | None, ctx: dict) -> dict | None:
     ATL -229 (STRONG 79), CHC -199 (STRONG 78) all shipping through
     juice-trap prices with no gate.
 
-    Rule:
-        odds <= -200  → demote one tier (PRIME→STRONG, STRONG→LEAN)
-        odds >= +250  → demote one tier
+    Rule (thresholds per-sport):
+        odds <= heavy_fav_floor  → demote one tier (PRIME→STRONG, STRONG→LEAN)
+        odds >= long_dog_ceiling → demote one tier
 
-    When combined with MC-dissent (already demoted for MC), stack demote.
+    NCAAF/NFL floor is -300 (user directive 2026-09-01) because football
+    prices heavy favs into the -1000+ range that MLB never sees. NOTE:
+    for full-market REROUTE (swap ML → spread/total when trapped), use
+    `reroute_ml_if_trapped()` in tandem — this function only demotes.
     """
     try:
         if not (pp and isinstance(pp, dict)): return pp
         if str(pp.get('type', '')).lower() != 'ml': return pp
         if pp.get('tier') not in ('PRIME', 'STRONG'): return pp
 
-        cur_side = str(pp.get('side', '')).upper()
-        if cur_side == 'HOME':
-            price = ctx.get('home_ml_close') or ctx.get('home_ml_odds') or ctx.get('home_ml_open')
-        elif cur_side == 'AWAY':
-            price = ctx.get('away_ml_close') or ctx.get('away_ml_odds') or ctx.get('away_ml_open')
-        else:
-            return pp
-        if price is None: return pp
-        try: o = int(price)
-        except (TypeError, ValueError): return pp
+        o = _read_ml_price(pp, ctx)
+        if o is None: return pp
+
+        heavy_fav_floor  = _JUICE_TRAP_HEAVY_FAV_BY_SPORT.get(sport, -200)
+        long_dog_ceiling = _JUICE_TRAP_LONG_DOG_BY_SPORT.get(sport, +250)
 
         # Juice-trap band
-        if o > -200 and o < 250: return pp  # fair price, no demote
+        if o > heavy_fav_floor and o < long_dog_ceiling: return pp  # fair price
 
         old = pp['tier']
         new_tier = 'STRONG' if old == 'PRIME' else 'LEAN'
-        reason = (f'juice-trap demote: side price {o} '
-                  f'({"heavy-fav trap <=-200" if o <= -200 else "long-dog trap >=+250"})')
-        pp['_juice_trap'] = {'orig_tier': old, 'side_price': o, 'reason': reason}
+        trap_kind = f'heavy-fav trap <={heavy_fav_floor}' if o <= heavy_fav_floor \
+                    else f'long-dog trap >=+{long_dog_ceiling}'
+        reason = f'juice-trap demote ({sport}): side price {o} ({trap_kind})'
+        pp['_juice_trap'] = {'orig_tier': old, 'side_price': o, 'reason': reason, 'sport': sport}
         pp['tier'] = new_tier
         tier_cap = {'LEAN': 55, 'STRONG': 65}
         if isinstance(pp.get('conviction'), (int, float)):
@@ -167,6 +214,77 @@ def apply_juice_trap_gate(pp: dict | None, ctx: dict) -> dict | None:
     except Exception:
         pass
     return pp
+
+
+def reroute_ml_if_trapped(decision, ctx: dict, sport: str = 'NCAAF'):
+    """When ensemble's top pick is ML at trap-priced odds, reroute the
+    `top_market` to spread or total using the ensemble's own scores.
+
+    Motivation (2026-09-01): NCAAF Week 1 has 50-point favorites priced
+    at -3000+ ML. Even when ensemble correctly scores Missouri as the
+    winner, surfacing "Missouri ML -3000" is a garbage recommendation
+    because no one lays that price. The correlated spread or total
+    almost always carries the real edge.
+
+    Rule:
+      - If top_market == 'ml' AND ML price for pp.side violates the
+        juice-trap band for this sport → find the next-best MarketDecision
+        (rl or total) whose score >= LEAN floor and swap top_market to it.
+      - If neither alt clears LEAN floor → leave decision.top_market
+        untouched (a downstream tier demote will still catch it).
+
+    Returns decision (mutated in place). No-op if decision is None or
+    top_market isn't ML.
+    """
+    try:
+        if decision is None: return decision
+        if getattr(decision, 'top_market', None) != 'ml': return decision
+
+        top = decision.top()
+        if not top or not top.pick: return decision
+
+        # Build a fake pp for _read_ml_price
+        fake_pp = {'side': top.side, 'type': 'ml'}
+        o = _read_ml_price(fake_pp, ctx)
+        if o is None: return decision
+
+        heavy_fav_floor  = _JUICE_TRAP_HEAVY_FAV_BY_SPORT.get(sport, -200)
+        long_dog_ceiling = _JUICE_TRAP_LONG_DOG_BY_SPORT.get(sport, +250)
+        if o > heavy_fav_floor and o < long_dog_ceiling: return decision
+
+        # ML is trap-priced. Find the best non-ML alternative.
+        LEAN_FLOOR = 0.3  # matches ensemble_scorer TIER_MIN_SCORE['LEAN']
+        candidates = []
+        for alt_market in ('total', 'rl'):
+            alt = getattr(decision, alt_market, None)
+            if alt is None or not alt.pick: continue
+            if float(alt.score) < LEAN_FLOOR: continue
+            candidates.append((alt_market, alt))
+        if not candidates:
+            # No alternative worth surfacing — leave as ML, downstream
+            # juice-trap demote will drop tier. User will see LEAN ML
+            # with the audit note explaining the juice.
+            return decision
+        # Pick the highest-scoring alternative
+        candidates.sort(key=lambda x: -float(x[1].score))
+        new_market, new_top = candidates[0]
+
+        orig_market = decision.top_market
+        orig_label = top.display_label
+        decision.top_market = new_market
+        # Attach an audit trail on the new top so the write path can
+        # stamp it into primary_play for observability.
+        setattr(new_top, '_ml_reroute', {
+            'orig_market': orig_market,
+            'orig_label': orig_label,
+            'orig_ml_price': o,
+            'reason': f'ML price {o} in juice-trap band ({sport}: '
+                      f'<={heavy_fav_floor} or >=+{long_dog_ceiling}); '
+                      f'rerouted to {new_market} (score {new_top.score:.2f})',
+        })
+    except Exception:
+        pass
+    return decision
 
 
 def apply_oc_flip_gate(pp: dict | None, ctx: dict) -> dict | None:
@@ -450,19 +568,20 @@ def apply_publish_gate(pp: dict | None, ctx: dict) -> dict | None:
     return pp
 
 
-def apply_all_defensive_gates(pp: dict | None, ctx: dict) -> dict | None:
+def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → publish gate.
 
     Order matters:
       - OC-flip FIRST because it may change pp.side (downstream gates read pp.side)
       - MC-dissent SECOND to demote/block when MC disagrees
-      - Juice-trap THIRD to demote on -200+ or +250+ side prices (2026-08-28)
+      - Juice-trap THIRD to demote on side-price traps (sport-specific
+        thresholds — MLB -200, NCAAF/NFL -300, NCAAB/NBA -400)
       - Publish gate LAST — reads final pp state after all demotes and
         hard-caps PRIMEs that don't earn PRIME rigor
     """
     pp = apply_oc_flip_gate(pp, ctx)
     pp = apply_mc_dissent_gate(pp, ctx)
-    pp = apply_juice_trap_gate(pp, ctx)
+    pp = apply_juice_trap_gate(pp, ctx, sport=sport)
     pp = apply_publish_gate(pp, ctx)
     return pp
