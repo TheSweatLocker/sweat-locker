@@ -279,8 +279,27 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          SEASON=$(date +%Y)
-          python ncaab_efficiency_model.py --season $SEASON || echo "ncaab_efficiency_model failed (non-fatal)"
+          # 2026-09-01 FIX: NCAAB season is 'YYYY-YY' format (e.g. '2024-25')
+          # not just year. Prior `SEASON=$(date +%Y)` passed '2026' which
+          # never matched ncaab_rating_snapshots.season → 0 rows written to
+          # ncaab_team_efficiency for entire offseason. Compute proper format:
+          # Jul-Dec = upcoming season (YYYY-{YY+1}); Jan-Jun = current (YYYY-{YY+1})
+          MONTH=$(date +%m)
+          YEAR=$(date +%Y)
+          if [ "$MONTH" -ge 7 ]; then
+            START=$YEAR
+          else
+            START=$((YEAR - 1))
+          fi
+          END=$(printf '%02d' $(( (START + 1) % 100 )))
+          SEASON="${START}-${END}"
+          echo "NCAAB season → $SEASON"
+          # Also backfill prior season for historical rankings + rollup coverage
+          PRIOR_START=$((START - 1))
+          PRIOR_END=$(printf '%02d' $(( (PRIOR_START + 1) % 100 )))
+          PRIOR_SEASON="${PRIOR_START}-${PRIOR_END}"
+          python ncaab_efficiency_model.py --season "$SEASON"       || echo "ncaab_efficiency_model current failed (non-fatal)"
+          python ncaab_efficiency_model.py --season "$PRIOR_SEASON" || echo "ncaab_efficiency_model prior failed (non-fatal)"
 
       # ────── MC SIMULATOR (2026-08-14 Session 2 · lens #1 of 5) ──────
       # Reads latest KenPom snapshot from ncaab_team_stats + today's games,

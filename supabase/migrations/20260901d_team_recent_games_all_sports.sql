@@ -49,7 +49,8 @@ WITH all_games AS (
     close_total AS total_line,
     LOWER(total_result) AS total_result,
     total_runs AS total_score
-  FROM public.mlb_game_results WHERE home_score IS NOT NULL
+  FROM public.mlb_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
   UNION ALL
   SELECT
     'MLB'::TEXT, game_id, season, game_date,
@@ -61,7 +62,8 @@ WITH all_games AS (
       WHEN 'push' THEN 'push' ELSE NULL
     END,
     close_total, LOWER(total_result), total_runs
-  FROM public.mlb_game_results WHERE home_score IS NOT NULL
+  FROM public.mlb_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
 
   -- ═══════════════════════════════════════════════════════════════════
   -- NCAAF (unchanged from 20260901)
@@ -78,7 +80,8 @@ WITH all_games AS (
       WHEN 'push' THEN 'push' ELSE NULL
     END,
     close_total, LOWER(total_result), total_points
-  FROM public.ncaaf_game_results WHERE home_score IS NOT NULL
+  FROM public.ncaaf_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
   UNION ALL
   SELECT
     'NCAAF'::TEXT, game_id, season, game_date,
@@ -91,7 +94,8 @@ WITH all_games AS (
       WHEN 'push' THEN 'push' ELSE NULL
     END,
     close_total, LOWER(total_result), total_points
-  FROM public.ncaaf_game_results WHERE home_score IS NOT NULL
+  FROM public.ncaaf_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
 
   -- ═══════════════════════════════════════════════════════════════════
   -- NFL — season INT, no neutral_site
@@ -107,7 +111,8 @@ WITH all_games AS (
       WHEN 'push' THEN 'push' ELSE NULL
     END,
     close_total, LOWER(total_result), total_points
-  FROM public.nfl_game_results WHERE home_score IS NOT NULL
+  FROM public.nfl_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
   UNION ALL
   SELECT
     'NFL'::TEXT, game_id, season, game_date,
@@ -119,7 +124,8 @@ WITH all_games AS (
       WHEN 'push' THEN 'push' ELSE NULL
     END,
     close_total, LOWER(total_result), total_points
-  FROM public.nfl_game_results WHERE home_score IS NOT NULL
+  FROM public.nfl_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
 
   -- ═══════════════════════════════════════════════════════════════════
   -- NBA — season TEXT '2025-26' → cast to leading-year INT
@@ -136,7 +142,8 @@ WITH all_games AS (
       WHEN 'push' THEN 'push' ELSE NULL
     END,
     close_total, LOWER(total_result), total_points
-  FROM public.nba_game_results WHERE home_score IS NOT NULL
+  FROM public.nba_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
   UNION ALL
   SELECT
     'NBA'::TEXT, game_id,
@@ -149,7 +156,8 @@ WITH all_games AS (
       WHEN 'push' THEN 'push' ELSE NULL
     END,
     close_total, LOWER(total_result), total_points
-  FROM public.nba_game_results WHERE home_score IS NOT NULL
+  FROM public.nba_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
 
   -- ═══════════════════════════════════════════════════════════════════
   -- NCAAB — season TEXT '2025-26' → cast; no neutral_site flag
@@ -166,7 +174,8 @@ WITH all_games AS (
       WHEN 'push' THEN 'push' ELSE NULL
     END,
     close_total, LOWER(total_result), total_points
-  FROM public.ncaab_game_results WHERE home_score IS NOT NULL
+  FROM public.ncaab_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
   UNION ALL
   SELECT
     'NCAAB'::TEXT, game_id,
@@ -179,7 +188,8 @@ WITH all_games AS (
       WHEN 'push' THEN 'push' ELSE NULL
     END,
     close_total, LOWER(total_result), total_points
-  FROM public.ncaab_game_results WHERE home_score IS NOT NULL
+  FROM public.ncaab_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
 
   -- ═══════════════════════════════════════════════════════════════════
   -- NHL — NO season column (derive from game_date); close_puckline (not
@@ -201,7 +211,8 @@ WITH all_games AS (
     END,
     close_total, LOWER(total_result),
     total_goals AS total_score
-  FROM public.nhl_game_results WHERE home_score IS NOT NULL
+  FROM public.nhl_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
   UNION ALL
   SELECT
     'NHL'::TEXT, game_id,
@@ -216,7 +227,8 @@ WITH all_games AS (
       WHEN 'push' THEN 'push' ELSE NULL
     END,
     close_total, LOWER(total_result), total_goals
-  FROM public.nhl_game_results WHERE home_score IS NOT NULL
+  FROM public.nhl_game_results
+  WHERE home_score IS NOT NULL AND home_team IS DISTINCT FROM away_team
 )
 SELECT
   sport, team, game_id, season, game_date, opp,
@@ -227,8 +239,14 @@ SELECT
   ROW_NUMBER() OVER (PARTITION BY sport, team ORDER BY game_date DESC, game_id) AS seq
 FROM all_games;
 
+-- 2026-09-01: unique key includes is_home. Was (sport, team, game_id) but
+-- NHL source has bad rows where both home_team and away_team are stored
+-- as just "New York" (Rangers vs Islanders abbreviated ambiguously). The
+-- WHERE home_team IS DISTINCT FROM away_team filter above skips those,
+-- but keeping is_home in the key is defensive against any future dupe
+-- surfacing from source-data quirks.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_team_recent_games_uq
-  ON public.team_recent_games (sport, team, game_id);
+  ON public.team_recent_games (sport, team, game_id, is_home);
 CREATE INDEX IF NOT EXISTS idx_team_recent_games_seq
   ON public.team_recent_games (sport, team, seq);
 CREATE INDEX IF NOT EXISTS idx_team_recent_games_h2h
