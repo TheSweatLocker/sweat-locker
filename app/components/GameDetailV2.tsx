@@ -368,6 +368,17 @@ export default function GameDetailV2({
 
         <SportSpecificSlot ctx={ctx} gamesSport={gamesSport} game={game} />
 
+        {/* 2026-09-01: Recent Schedule card — cross-sport, reads
+            team_recent_games matview (populated by refresh_team_recent_games
+            RPC called from each pipeline's resolver step). Three tabs:
+            away / H2H / home. Silent hide when both teams have zero rows
+            + no H2H (pre-season / matview not refreshed). See
+            project_rolling_rollup_architecture_901 for the wider
+            rollup-tables architecture. */}
+        <Section title="Recent Schedule" hint="last 5 · ATS · O/U">
+          <RecentScheduleCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} />
+        </Section>
+
         {/* 2026-08-23: Public Splits panel — renders ctx.splits_summary
             (populated by splits_v2_pipeline aggregator). Shows sources_present
             + triple_confirmed markets. User feedback: college football game
@@ -1184,6 +1195,256 @@ function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) 
     </View>
   );
 }
+
+// ─── RECENT SCHEDULE ────────────────────────────────────────────────────
+// 2026-09-01: First surface of the rolling-rollup architecture
+// (project_rolling_rollup_architecture_901). Reads from the universal
+// `team_recent_games` matview (supabase/migrations/20260901_team_recent_games_matview.sql)
+// which unions {sport}_game_results into a team-perspective per-game row.
+//
+// Three sub-tabs: away / H2H / home. Cross-sport by design — same
+// component renders MLB, NCAAF, and (future) NFL/NBA/NCAAB/NHL by
+// filtering on sport. No client-side computation of records; matview
+// is the single source of truth.
+//
+// Renders nothing when either team has zero rows (pre-season or matview
+// not yet refreshed). Silent empty state — better than a placeholder.
+function RecentScheduleCard({sport, homeTeam, awayTeam}: any) {
+  const [awayRows, setAwayRows] = React.useState<any[]>([]);
+  const [homeRows, setHomeRows] = React.useState<any[]>([]);
+  const [h2hRows,  setH2hRows]  = React.useState<any[]>([]);
+  const [tab, setTab] = React.useState<'away'|'h2h'|'home'>('away');
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    const client = sb();
+    if (!client || !sport || !homeTeam || !awayTeam) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const [awayR, homeR, h2hR] = await Promise.all([
+        client.from('team_recent_games')
+          .select('*').eq('sport', sport).eq('team', awayTeam)
+          .order('seq', {ascending: true}).limit(5),
+        client.from('team_recent_games')
+          .select('*').eq('sport', sport).eq('team', homeTeam)
+          .order('seq', {ascending: true}).limit(5),
+        client.from('team_recent_games')
+          .select('*').eq('sport', sport).eq('team', homeTeam).eq('opp', awayTeam)
+          .order('game_date', {ascending: false}).limit(5),
+      ]);
+      if (cancelled) return;
+      setAwayRows(Array.isArray(awayR?.data) ? awayR.data : []);
+      setHomeRows(Array.isArray(homeR?.data) ? homeR.data : []);
+      setH2hRows(Array.isArray(h2hR?.data) ? h2hR.data : []);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [sport, homeTeam, awayTeam]);
+
+  // Silent hide when we have nothing to show for either team AND no H2H
+  if (!loading && awayRows.length === 0 && homeRows.length === 0 && h2hRows.length === 0) {
+    return null;
+  }
+
+  const rows = tab === 'away' ? awayRows : tab === 'home' ? homeRows : h2hRows;
+  const rowsSorted = tab === 'h2h' ? rows : rows;  // already ordered by matview seq
+
+  return (
+    <View style={{gap: 10}}>
+      {/* Sub-tabs */}
+      <View style={rsStyles.tabBar}>
+        <TabPill label={abbrev3(awayTeam)} active={tab==='away'} onPress={() => setTab('away')} />
+        <TabPill label="H2H"               active={tab==='h2h'}  onPress={() => setTab('h2h')} />
+        <TabPill label={abbrev3(homeTeam)} active={tab==='home'} onPress={() => setTab('home')} />
+      </View>
+
+      {/* Column header */}
+      <View style={rsStyles.headRow}>
+        <Text style={[rsStyles.hCol, {flex: 0.9}]}>DATE</Text>
+        <Text style={[rsStyles.hCol, {flex: 1.6, textAlign: 'left'}]}>OPP</Text>
+        <Text style={[rsStyles.hCol, {flex: 1.4}]}>SCORE</Text>
+        <Text style={[rsStyles.hCol, {flex: 1.0}]}>ATS</Text>
+        <Text style={[rsStyles.hCol, {flex: 1.0}]}>O/U</Text>
+      </View>
+
+      {/* Rows */}
+      {rowsSorted.length === 0 ? (
+        <Text style={rsStyles.empty}>
+          {tab === 'h2h' ? 'No prior head-to-head' : 'No games logged yet this season'}
+        </Text>
+      ) : (
+        rowsSorted.map((r, i) => <RecentGameRow key={r.game_id || i} row={r} />)
+      )}
+
+      {loading && <Text style={rsStyles.empty}>Loading…</Text>}
+    </View>
+  );
+}
+
+function TabPill({label, active, onPress}: any) {
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.7} style={[
+      rsStyles.tabPill,
+      active && rsStyles.tabPillActive,
+    ]}>
+      <Text style={[rsStyles.tabPillText, active && rsStyles.tabPillTextActive]}>
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+function RecentGameRow({row}: any) {
+  const isHome = !!row.is_home;
+  const isNeutral = !!row.is_neutral;
+  const opp = row.opp || '—';
+  const scoreUs = row.score_us;
+  const scoreThem = row.score_them;
+  // total_score can be null on older MLB rows — fall back to sum
+  const totalScore = row.total_score != null ? row.total_score
+                   : (scoreUs != null && scoreThem != null) ? (Number(scoreUs) + Number(scoreThem))
+                   : null;
+  const wonSU = row.won;
+  const spreadRes = row.spread_result;   // 'won' | 'lost' | 'push' | null
+  const totalRes  = row.total_result;    // 'over' | 'under' | 'push' | null
+  const spreadLine = row.spread_line;
+  const totalLine = row.total_line;
+
+  // Compact date "MM/DD"
+  let dateShort = '';
+  try {
+    const d = new Date(row.game_date);
+    if (!isNaN(d.getTime())) dateShort = `${d.getMonth()+1}/${d.getDate()}`;
+  } catch {}
+
+  const venuePrefix = isNeutral ? 'vs' : isHome ? 'vs' : '@';
+  const scoreText = (scoreUs != null && scoreThem != null) ? `${scoreUs}-${scoreThem}` : '—';
+
+  return (
+    <View style={rsStyles.dataRow}>
+      <Text style={[rsStyles.cell, {flex: 0.9, color: C.textMuted}]}>{dateShort}</Text>
+      <Text style={[rsStyles.cell, {flex: 1.6, textAlign: 'left'}]} numberOfLines={1}>
+        <Text style={{color: C.textMuted}}>{venuePrefix} </Text>
+        <Text style={{color: C.text, fontWeight: '700'}}>{abbrev3(opp)}</Text>
+        {isNeutral ? <Text style={{color: C.textMuted, fontSize: 9}}>  N</Text> : null}
+      </Text>
+      {/* Score chip w/ W/L color */}
+      <View style={{flex: 1.4, alignItems: 'center'}}>
+        <View style={[
+          rsStyles.chip,
+          wonSU === true  && rsStyles.chipWin,
+          wonSU === false && rsStyles.chipLoss,
+        ]}>
+          <Text style={[
+            rsStyles.chipText,
+            wonSU === true  && {color: C.win},
+            wonSU === false && {color: C.loss},
+          ]}>
+            {wonSU === true ? 'W ' : wonSU === false ? 'L ' : ''}
+            <Text style={{fontWeight: '700'}}>{scoreText}</Text>
+          </Text>
+        </View>
+      </View>
+      {/* ATS chip */}
+      <View style={{flex: 1.0, alignItems: 'center'}}>
+        {spreadRes ? (
+          <View style={[
+            rsStyles.chip,
+            spreadRes === 'won'  && rsStyles.chipWin,
+            spreadRes === 'lost' && rsStyles.chipLoss,
+            spreadRes === 'push' && rsStyles.chipPush,
+          ]}>
+            <Text style={[
+              rsStyles.chipText,
+              spreadRes === 'won'  && {color: C.win},
+              spreadRes === 'lost' && {color: C.loss},
+              spreadRes === 'push' && {color: C.textDim},
+            ]}>
+              {spreadLine != null ? (Number(spreadLine) > 0 ? '+' : '') + spreadLine : '—'}
+            </Text>
+          </View>
+        ) : <Text style={rsStyles.dashCell}>—</Text>}
+      </View>
+      {/* O/U chip */}
+      <View style={{flex: 1.0, alignItems: 'center'}}>
+        {totalRes ? (
+          <View style={[
+            rsStyles.chip,
+            (totalRes === 'over' || totalRes === 'under') && rsStyles.chipPush,
+          ]}>
+            <Text style={[rsStyles.chipText, {color: C.textDim}]}>
+              {totalRes === 'over' ? 'O ' : totalRes === 'under' ? 'U ' : ''}
+              {totalLine != null ? totalLine : '—'}
+            </Text>
+          </View>
+        ) : <Text style={rsStyles.dashCell}>—</Text>}
+      </View>
+    </View>
+  );
+}
+
+const rsStyles = StyleSheet.create({
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: C.surfaceAlt,
+    borderRadius: 999,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: C.borderSoft,
+  },
+  tabPill: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 999,
+    alignItems: 'center',
+  },
+  tabPillActive: {
+    backgroundColor: C.surface,
+    shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 2, shadowOffset: {width: 0, height: 1},
+  },
+  tabPillText: {
+    color: C.textMuted, fontSize: 12, fontWeight: '700', letterSpacing: 0.02,
+  },
+  tabPillTextActive: {
+    color: C.text,
+  },
+  headRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 6, paddingHorizontal: 4,
+    borderBottomWidth: 1, borderBottomColor: C.borderSoft,
+  },
+  hCol: {
+    color: C.textMuted, fontSize: 10, fontWeight: '700',
+    letterSpacing: 0.06, textAlign: 'center',
+  },
+  dataRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 7, paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.borderSoft,
+  },
+  cell: {
+    fontSize: 12, color: C.text, textAlign: 'center',
+  },
+  chip: {
+    paddingHorizontal: 6, paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: C.surfaceAlt,
+    minWidth: 38, alignItems: 'center',
+  },
+  chipText: {
+    fontSize: 11, fontWeight: '700', color: C.textDim, letterSpacing: 0.02,
+  },
+  chipWin:  {backgroundColor: C.win  + '22'},
+  chipLoss: {backgroundColor: C.loss + '22'},
+  chipPush: {backgroundColor: C.surfaceAlt},
+  dashCell: {color: C.textMuted, fontSize: 12},
+  empty: {
+    color: C.textMuted, fontSize: 12, fontStyle: 'italic',
+    textAlign: 'center', paddingVertical: 10,
+  },
+});
+
 
 // ─── SPORT-SPECIFIC SLOT ─────────────────────────────────────────────────
 function SportSpecificSlot({ctx, gamesSport, game}: any) {
