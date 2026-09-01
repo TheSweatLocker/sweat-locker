@@ -30,19 +30,51 @@ CREATE MATERIALIZED VIEW public.team_stats_rolling AS
 WITH
 
 -- ═════════════════════════════════════════════════════════════════════
--- NBA abbrev bridge — pair team_abbrev with full team_name via
--- distinct pairs on nba_game_results. Season stays TEXT here for the
--- JOIN to nba_team_stats (which also stores TEXT); the cast to INT
--- happens on write into the final SELECT.
+-- NBA abbrev bridge — HARDCODED 30-team mapping.
+--
+-- The DYNAMIC bridge attempted first (SELECT DISTINCT home_team,
+-- home_abbrev FROM nba_game_results) failed post-migration spot-check:
+--   1. nba_game_results.home_abbrev + away_abbrev are NULL on all 1,324
+--      rows (schema exists, population never happened)
+--   2. nba_team_stats.team_abbrev is TRUNCATED to 8 chars ('Boston C',
+--      'Los Ange') — not real abbreviations. But CONFIRMED distinct
+--      across all 30 teams so hardcoded mapping is safe.
+--
+-- Excludes 'Team Can/Chu/Ken/Sha' rows (2025 All-Star game format teams).
 -- ═════════════════════════════════════════════════════════════════════
 nba_abbrev_map AS (
-  SELECT DISTINCT home_team AS team, home_abbrev AS abbrev, season
-    FROM public.nba_game_results
-   WHERE home_abbrev IS NOT NULL AND home_team IS NOT NULL
-  UNION
-  SELECT DISTINCT away_team AS team, away_abbrev AS abbrev, season
-    FROM public.nba_game_results
-   WHERE away_abbrev IS NOT NULL AND away_team IS NOT NULL
+  SELECT * FROM (VALUES
+    ('Atlanta ',  'Atlanta Hawks'),
+    ('Boston C',  'Boston Celtics'),
+    ('Brooklyn',  'Brooklyn Nets'),
+    ('Charlott',  'Charlotte Hornets'),
+    ('Chicago ',  'Chicago Bulls'),
+    ('Clevelan',  'Cleveland Cavaliers'),
+    ('Dallas M',  'Dallas Mavericks'),
+    ('Denver N',  'Denver Nuggets'),
+    ('Detroit ',  'Detroit Pistons'),
+    ('Golden S',  'Golden State Warriors'),
+    ('Houston ',  'Houston Rockets'),
+    ('Indiana ',  'Indiana Pacers'),
+    ('LA Clipp',  'LA Clippers'),
+    ('Los Ange',  'Los Angeles Lakers'),
+    ('Memphis ',  'Memphis Grizzlies'),
+    ('Miami He',  'Miami Heat'),
+    ('Milwauke',  'Milwaukee Bucks'),
+    ('Minnesot',  'Minnesota Timberwolves'),
+    ('New Orle',  'New Orleans Pelicans'),
+    ('New York',  'New York Knicks'),
+    ('Oklahoma',  'Oklahoma City Thunder'),
+    ('Orlando ',  'Orlando Magic'),
+    ('Philadel',  'Philadelphia 76ers'),
+    ('Phoenix ',  'Phoenix Suns'),
+    ('Portland',  'Portland Trail Blazers'),
+    ('Sacramen',  'Sacramento Kings'),
+    ('San Anto',  'San Antonio Spurs'),
+    ('Toronto ',  'Toronto Raptors'),
+    ('Utah Jaz',  'Utah Jazz'),
+    ('Washingt',  'Washington Wizards')
+  ) AS t(abbrev, team)
 ),
 
 -- ═════════════════════════════════════════════════════════════════════
@@ -348,12 +380,14 @@ base_stats AS (
     ROUND(iso::NUMERIC, 3), 'higher', 'ISO', ''
   FROM public.mlb_team_offense WHERE iso IS NOT NULL
   UNION ALL
+  -- bb_pct + k_pct stored in percent form (e.g. 9.1 = 9.1%, not 0.091).
+  -- Don't multiply — write raw.
   SELECT 'MLB', team, season, 'team_bb_pct',
-    ROUND((bb_pct * 100)::NUMERIC, 1), 'higher', 'BB%', '%'
+    ROUND(bb_pct::NUMERIC, 1), 'higher', 'BB%', '%'
   FROM public.mlb_team_offense WHERE bb_pct IS NOT NULL
   UNION ALL
   SELECT 'MLB', team, season, 'team_k_pct',
-    ROUND((k_pct * 100)::NUMERIC, 1), 'lower', 'K%', '%'
+    ROUND(k_pct::NUMERIC, 1), 'lower', 'K%', '%'
   FROM public.mlb_team_offense WHERE k_pct IS NOT NULL
   UNION ALL
   SELECT 'MLB', team, season, 'team_runs_pg',
@@ -370,8 +404,9 @@ base_stats AS (
     ROUND(bullpen_era::NUMERIC, 2), 'lower', 'Bullpen ERA', ''
   FROM public.mlb_bullpen_stats WHERE bullpen_era IS NOT NULL AND season ~ '^[0-9]+$'
   UNION ALL
+  -- save_pct stored in percent form (e.g. 67.2 = 67.2%). Write raw.
   SELECT 'MLB', team, NULLIF(season, '')::INT, 'bullpen_save_pct',
-    ROUND((save_pct * 100)::NUMERIC, 1), 'higher', 'Bullpen Save %', '%'
+    ROUND(save_pct::NUMERIC, 1), 'higher', 'Bullpen Save %', '%'
   FROM public.mlb_bullpen_stats WHERE save_pct IS NOT NULL AND season ~ '^[0-9]+$'
 
   -- ═════════════════════════════════════════════════════════════════
@@ -383,70 +418,70 @@ base_stats AS (
     NULLIF(SPLIT_PART(s.season, '-', 1), '')::INT, 'off_rating',
     ROUND(s.off_rating::NUMERIC, 2), 'higher', 'Off Rating', ''
   FROM public.nba_team_stats s
-  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev AND m.season = s.season
+  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev
   WHERE s.off_rating IS NOT NULL
   UNION ALL
   SELECT 'NBA', m.team,
     NULLIF(SPLIT_PART(s.season, '-', 1), '')::INT, 'def_rating',
     ROUND(s.def_rating::NUMERIC, 2), 'lower', 'Def Rating', ''
   FROM public.nba_team_stats s
-  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev AND m.season = s.season
+  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev
   WHERE s.def_rating IS NOT NULL
   UNION ALL
   SELECT 'NBA', m.team,
     NULLIF(SPLIT_PART(s.season, '-', 1), '')::INT, 'net_rating',
     ROUND(s.net_rating::NUMERIC, 2), 'higher', 'Net Rating', ''
   FROM public.nba_team_stats s
-  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev AND m.season = s.season
+  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev
   WHERE s.net_rating IS NOT NULL
   UNION ALL
   SELECT 'NBA', m.team,
     NULLIF(SPLIT_PART(s.season, '-', 1), '')::INT, 'pace',
     ROUND(s.pace::NUMERIC, 1), 'higher', 'Pace', ''
   FROM public.nba_team_stats s
-  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev AND m.season = s.season
+  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev
   WHERE s.pace IS NOT NULL
   UNION ALL
   SELECT 'NBA', m.team,
     NULLIF(SPLIT_PART(s.season, '-', 1), '')::INT, 'efg_pct',
     ROUND((s.efg_pct * 100)::NUMERIC, 1), 'higher', 'eFG %', '%'
   FROM public.nba_team_stats s
-  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev AND m.season = s.season
+  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev
   WHERE s.efg_pct IS NOT NULL
   UNION ALL
   SELECT 'NBA', m.team,
     NULLIF(SPLIT_PART(s.season, '-', 1), '')::INT, 'tov_pct',
     ROUND((s.tov_pct * 100)::NUMERIC, 1), 'lower', 'TOV %', '%'
   FROM public.nba_team_stats s
-  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev AND m.season = s.season
+  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev
   WHERE s.tov_pct IS NOT NULL
   UNION ALL
   SELECT 'NBA', m.team,
     NULLIF(SPLIT_PART(s.season, '-', 1), '')::INT, 'orb_pct',
     ROUND((s.orb_pct * 100)::NUMERIC, 1), 'higher', 'ORB %', '%'
   FROM public.nba_team_stats s
-  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev AND m.season = s.season
+  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev
   WHERE s.orb_pct IS NOT NULL
   UNION ALL
   SELECT 'NBA', m.team,
     NULLIF(SPLIT_PART(s.season, '-', 1), '')::INT, 'ft_rate',
     ROUND(s.ft_rate::NUMERIC, 3), 'higher', 'FT Rate', ''
   FROM public.nba_team_stats s
-  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev AND m.season = s.season
+  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev
   WHERE s.ft_rate IS NOT NULL
   UNION ALL
   SELECT 'NBA', m.team,
     NULLIF(SPLIT_PART(s.season, '-', 1), '')::INT, 'opp_efg_pct',
     ROUND((s.opp_efg_pct * 100)::NUMERIC, 1), 'lower', 'Opp eFG %', '%'
   FROM public.nba_team_stats s
-  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev AND m.season = s.season
+  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev
   WHERE s.opp_efg_pct IS NOT NULL
   UNION ALL
   SELECT 'NBA', m.team,
     NULLIF(SPLIT_PART(s.season, '-', 1), '')::INT, 'opp_tov_pct',
     ROUND((s.opp_tov_pct * 100)::NUMERIC, 1), 'higher', 'Opp TOV %', '%'
   FROM public.nba_team_stats s
-  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev AND m.season = s.season
+  JOIN nba_abbrev_map m ON m.abbrev = s.team_abbrev
   WHERE s.opp_tov_pct IS NOT NULL
 
   -- ═════════════════════════════════════════════════════════════════
