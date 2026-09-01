@@ -115,6 +115,22 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{}' || echo "team_recent_games refresh failed"
 
+      # 5c. Refresh team_situational_records matview — long-format W-L-P
+      #     per (team × market × filter) feeding the Situational Results
+      #     card. Same cross-sport refresh pattern as recent_games; one
+      #     shot covers all wired sports.
+      #     Migration: supabase/migrations/20260901b_team_situational_records_matview.sql
+      - name: Refresh team_situational_records matview
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_situational_records refresh failed"
+
       # 6. Data quality checker — surfaces cross-attribution + MC-stale
       #    anomalies before users see them. Non-fatal in cron (findings
       #    logged, not blocked) but exits non-zero when findings exist
