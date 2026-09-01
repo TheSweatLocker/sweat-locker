@@ -1740,7 +1740,9 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
     return m;
   }, [homeStats]);
 
-  // Stat groups per sport. Extend as team_stats_rolling gains other sports.
+  // Stat groups per sport. All keys resolve to rows in team_stats_rolling
+  // (populated by 20260901c + 20260901f migrations). Order matters — rendered
+  // top-to-bottom in the card.
   const NCAAF_OFFENSE = [
     'pass_yds_pg', 'rush_yds_pg', 'total_yds_pg',
     'third_down_pct', 'off_epa_per_play', 'off_success_rate',
@@ -1751,8 +1753,36 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
     'points_allowed_pg', 'sp_defense',
     'def_epa_per_play', 'def_rush_epa_allowed', 'def_success_rate_allowed',
   ];
-  const OFFENSE_BY_SPORT: Record<string, string[]> = {NCAAF: NCAAF_OFFENSE};
-  const DEFENSE_BY_SPORT: Record<string, string[]> = {NCAAF: NCAAF_DEFENSE};
+  const NFL_OFFENSE = [
+    'pass_yds_pg', 'rush_yds_pg', 'total_yds_pg',
+    'pass_tds_pg', 'rush_tds_pg',
+    'off_pass_epa', 'off_rush_epa',
+    'ints_pg', 'sacks_suffered_pg', 'penalty_yds_pg',
+  ];
+  const NFL_DEFENSE = [
+    'points_allowed_pg', 'yds_allowed_pg',
+    'pass_yds_allowed_pg', 'rush_yds_allowed_pg',
+    'def_pass_epa', 'def_rush_epa',
+  ];
+  // NCAAB is efficiency-driven (not per-game volumes like football); split
+  // isn't offense-vs-defense in the same way. "Offense" tab shows scoring/
+  // pace; "Defense" tab shows opponent-scoring/defensive rating.
+  const NCAAB_OFFENSE = [
+    'ppg_for', 'off_rating', 'net_rating', 'avg_margin', 'tempo',
+  ];
+  const NCAAB_DEFENSE = [
+    'ppg_against', 'def_rating',
+  ];
+  const OFFENSE_BY_SPORT: Record<string, string[]> = {
+    NCAAF: NCAAF_OFFENSE,
+    NFL:   NFL_OFFENSE,
+    NCAAB: NCAAB_OFFENSE,
+  };
+  const DEFENSE_BY_SPORT: Record<string, string[]> = {
+    NCAAF: NCAAF_DEFENSE,
+    NFL:   NFL_DEFENSE,
+    NCAAB: NCAAB_DEFENSE,
+  };
 
   const statKeys = side === 'off'
     ? (OFFENSE_BY_SPORT[sport] || [])

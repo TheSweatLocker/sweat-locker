@@ -491,6 +491,44 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"p_sport": "NFL"}' || echo "tendencies refresh failed"
 
+      # 2026-09-01: refresh cross-sport rollup matviews after NFL resolver
+      # updates nfl_game_results. All three matviews are universal (union
+      # across all sports) so a single call refreshes NFL rows within them.
+      # See project_rolling_rollup_architecture_901 + migrations 20260901d/e/f.
+      - name: Refresh team_recent_games matview
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_recent_games refresh failed"
+      - name: Refresh team_situational_records matview
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_situational_records refresh failed"
+      - name: Refresh team_stats_rolling matview
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_stats_rolling refresh failed"
+
       # 2026-08-23 season-ready: refresh signal_registry from freshly graded
       # NFL props. Feeds the sign-constrained refit training (once Weeks 1-3
       # accumulate enough graded rows for MIN_SAMPLE gates to fire). Silent

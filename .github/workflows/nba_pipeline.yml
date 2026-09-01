@@ -48,6 +48,33 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"p_sport": "NBA"}' || echo "tendencies refresh failed"
 
+      # 2026-09-01: refresh cross-sport rollup matviews (team_recent_games,
+      # team_situational_records, team_stats_rolling). Universal matviews —
+      # this call refreshes NBA rows within them alongside all other sports.
+      # See project_rolling_rollup_architecture_901 + migrations 20260901d/e.
+      # NBA team_stats_rolling coverage deferred (nba_team_stats keys on
+      # team_abbrev vs game_results' full team names — needs name-mapping).
+      - name: Refresh team_recent_games matview
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_recent_games refresh failed"
+      - name: Refresh team_situational_records matview
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_situational_records refresh failed"
+
       # 2026-08-23 season-ready: refresh signal_registry from graded NBA props
       # once season data lands. Sport-universal script. Silent no-op during
       # offseason (no graded prop history). Feeds v3-style refit training
