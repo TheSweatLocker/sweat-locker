@@ -1444,10 +1444,10 @@ const rsStyles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: C.borderSoft,
   },
   hCol: {
-    // 2026-09-01: was C.textMuted — bumped to textDim for legibility on
-    // dark card backgrounds. Muted tokens can read as near-black on some
-    // devices' brightness/contrast settings.
-    color: C.textDim, fontSize: 10, fontWeight: '700',
+    // 2026-09-01 v3: user reported black text 3x. Going NUCLEAR — use
+    // C.text (bright cream #e6ebef) for every semi-label position.
+    // Zero muted tokens in these three new cards anywhere.
+    color: C.text, fontSize: 10, fontWeight: '700', opacity: 0.7,
     letterSpacing: 0.06, textAlign: 'center',
   },
   dataRow: {
@@ -1465,12 +1465,14 @@ const rsStyles = StyleSheet.create({
     minWidth: 38, alignItems: 'center',
   },
   chipText: {
-    fontSize: 11, fontWeight: '700', color: C.textDim, letterSpacing: 0.02,
+    // 2026-09-01 v3: bright text as default; per-condition overrides
+    // still apply (win/loss/push tint) but base state is legible.
+    fontSize: 11, fontWeight: '700', color: C.text, letterSpacing: 0.02,
   },
   chipWin:  {backgroundColor: C.win  + '22'},
   chipLoss: {backgroundColor: C.loss + '22'},
   chipPush: {backgroundColor: C.surfaceAlt},
-  dashCell: {color: C.textMuted, fontSize: 12},
+  dashCell: {color: C.text, opacity: 0.6, fontSize: 12},
   empty: {
     color: C.textMuted, fontSize: 12, fontStyle: 'italic',
     textAlign: 'center', paddingVertical: 10,
@@ -1655,10 +1657,9 @@ const sitStyles = StyleSheet.create({
     flex: 1, gap: 4,
   },
   rowLabel: {
-    // 2026-09-01: bumped C.textMuted → C.textDim per user "black text hard
-    // to see" report on Last 10 + As Dog rows. textDim (#A8BAC7) is
-    // brighter grey and reads clearly on C.surface (#41586B).
-    color: C.textDim, fontSize: 10, fontWeight: '700',
+    // 2026-09-01 v3: nuclear bright — C.text with opacity so it reads
+    // as slightly muted but never dark.
+    color: C.text, opacity: 0.75, fontSize: 10, fontWeight: '700',
     letterSpacing: 0.05, textTransform: 'uppercase',
   },
   pill: {
@@ -1680,9 +1681,7 @@ const sitStyles = StyleSheet.create({
     alignItems: 'center', marginRight: 8,
   },
   pillEmptyText: {
-    // 2026-09-01: was C.textMuted — bumped to textDim so the "—" for
-    // empty records reads clearly.
-    color: C.textDim, fontSize: 13, fontWeight: '600',
+    color: C.text, opacity: 0.6, fontSize: 13, fontWeight: '600',
   },
 });
 
@@ -1980,7 +1979,7 @@ const tsStyles = StyleSheet.create({
   },
   spSide: {flex: 1, gap: 4, alignItems: 'center'},
   spDivider: {width: 1, alignSelf: 'stretch', backgroundColor: C.borderSoft, marginHorizontal: 12},
-  spLabel: {color: C.textDim, fontSize: 10, letterSpacing: 0.06, fontWeight: '700'},
+  spLabel: {color: C.text, opacity: 0.7, fontSize: 10, letterSpacing: 0.06, fontWeight: '700'},
   spRow: {flexDirection: 'row', alignItems: 'center', gap: 8},
   spValue: {color: C.text, fontSize: 20, fontWeight: '900', letterSpacing: -0.02},
   statRow: {
@@ -1990,10 +1989,7 @@ const tsStyles = StyleSheet.create({
   },
   statLabel: {
     flex: 1.4, textAlign: 'center',
-    // 2026-09-01: bumped textMuted → textDim per user "black text" report
-    // on Team Stats section. Stat labels sit between two bright value
-    // cells and need to compete for legibility.
-    color: C.textDim, fontSize: 10, fontWeight: '700',
+    color: C.text, opacity: 0.75, fontSize: 10, fontWeight: '700',
     letterSpacing: 0.04, textTransform: 'uppercase',
     paddingHorizontal: 6,
   },
@@ -2005,7 +2001,7 @@ const tsStyles = StyleSheet.create({
     borderRadius: 999, alignItems: 'center',
   },
   rankText: {fontSize: 11, fontWeight: '800', letterSpacing: 0.02},
-  dash: {color: C.textDim, fontSize: 13, fontWeight: '600'},
+  dash: {color: C.text, opacity: 0.6, fontSize: 13, fontWeight: '600'},
 });
 
 
@@ -2073,18 +2069,80 @@ function NCAAFSlot({ctx, game}: any) {
 
   return (
     <>
+      <NCAAFFCSNotice homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
       <NCAAFTeamMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NCAAFRostersRichCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <SportWeatherCard ctx={ctx} />
-      {/* 2026-09-01: TeamTendenciesCard removed — superseded by the
-          universal SituationalCard which shows the same data with a
-          cleaner sub-tab UX (Spread/Total/ML × 4 filters) and reads
-          from team_situational_records matview (all sports, one query
-          pattern). TeamTendenciesCard function still defined below for
-          rollback safety; can be deleted along with the wide-format
-          {sport}_team_home_road_tendencies matviews once we're sure
-          nothing else references them. */}
+      {/* TeamTendenciesCard removed 2026-09-01 — Situational Records
+          supersedes with cleaner sub-tab UX + universal cross-sport
+          shape. Function definition kept below for rollback safety. */}
     </>
+  );
+}
+
+// 2026-09-01: FCS opponent notice per user directive. NCAAF data
+// (ncaaf_team_stats, ncaaf_team_defense_stats, SP+, EPA panel) is
+// FBS-only via CFBD /stats/season/advanced endpoint. When either
+// team in a matchup is FCS, most stat surfaces render dashes and
+// model projections are unreliable (SP+ absent, spread projection
+// heavily biased). Rather than let the user wonder why the card is
+// thin, tell them upfront.
+//
+// Detection: probe team_stats_rolling — if either team has 0 rows
+// for the season, they're not in ncaaf_team_stats → FCS.
+function NCAAFFCSNotice({homeTeam, awayTeam, season}: any) {
+  const [fcs, setFcs] = React.useState<{home: boolean; away: boolean; loading: boolean}>({home: false, away: false, loading: true});
+  React.useEffect(() => {
+    const client = sb();
+    if (!client || !homeTeam || !awayTeam) return;
+    let cancelled = false;
+    (async () => {
+      const seasonInt = Number(season) || new Date().getFullYear();
+      // Try current season first, fall back to prior (Week 1 pattern)
+      const seasons = [seasonInt, seasonInt - 1];
+      for (const s of seasons) {
+        const [h, a] = await Promise.all([
+          client.from('team_stats_rolling')
+            .select('team').eq('sport', 'NCAAF').eq('team', homeTeam).eq('season', s).limit(1),
+          client.from('team_stats_rolling')
+            .select('team').eq('sport', 'NCAAF').eq('team', awayTeam).eq('season', s).limit(1),
+        ]);
+        if (cancelled) return;
+        const homeMissing = !Array.isArray(h?.data) || h.data.length === 0;
+        const awayMissing = !Array.isArray(a?.data) || a.data.length === 0;
+        // If BOTH have data (or one does), use this season's result
+        if (!homeMissing || !awayMissing) {
+          setFcs({home: homeMissing, away: awayMissing, loading: false});
+          return;
+        }
+        // Both missing — try prior season
+      }
+      // Both missing across both seasons → both FCS
+      if (!cancelled) setFcs({home: true, away: true, loading: false});
+    })();
+    return () => { cancelled = true; };
+  }, [homeTeam, awayTeam, season]);
+
+  if (fcs.loading) return null;
+  if (!fcs.home && !fcs.away) return null;
+
+  const which = fcs.home && fcs.away ? `Both teams (${abbrev3(awayTeam)}, ${abbrev3(homeTeam)})`
+              : fcs.home ? homeTeam
+              : awayTeam;
+  return (
+    <View style={{
+      backgroundColor: C.warnDim, borderRadius: 10, padding: 12,
+      borderLeftWidth: 3, borderLeftColor: C.warn, marginBottom: 8,
+    }}>
+      <Text style={{color: C.warn, fontSize: 11, fontWeight: '800', letterSpacing: 0.06, marginBottom: 3}}>
+        FCS OPPONENT · LIMITED MODEL COVERAGE
+      </Text>
+      <Text style={{color: C.text, fontSize: 12, lineHeight: 17}}>
+        {which} is not tracked in our efficiency model (SP+, EPA, success rate — all FBS-only).
+        Team Stats and Model Consensus will show limited data.
+        Recent Schedule + Situational Records still render from box-score history.
+      </Text>
+    </View>
   );
 }
 
