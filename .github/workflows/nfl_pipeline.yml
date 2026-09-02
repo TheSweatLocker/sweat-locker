@@ -9,7 +9,9 @@ on:
     - cron: '0 22 * * 3'   # Wed 6pm ET   — externals pull + props v1 (Phase 2)
     - cron: '0 12 * * 3'   # Wed 8am ET   — 2026-09-02 Week 1 opener support: Jerry reads for Wed-night season opener (Chiefs/Eagles kickoff etc). nfl_week_start_thu() rolls Wed forward so the key aligns with upcoming Thursday's lock.
     - cron: '0 12 * * 4'   # Thu 8am ET   — 2026-09-02 Thu-lock: Jerry reads generate + lock for the week (idempotent if Wed run already fired)
-    - cron: '0 */6 * * 4-0' # every 6h Thu-Sun — 2026-09-02 injury regen check (fires nfl_injury_regen_check.py; targeted regen if QB1 out post-lock)
+    # 2026-09-02: injury regen check every 6h Thu-Sun. GHA cron doesn't
+    # accept range 4-0 (wraps week boundary). Use explicit day list.
+    - cron: '0 */6 * * 4,5,6,0'
     - cron: '0 18 * * 4'   # Thu 2pm ET   — TNF finalize (weekly card LOCK)
     - cron: '0 14 * * 6'   # Sat 10am ET  — Sunday early-slate lock
     - cron: '0 12 * * 0'   # Sun 8am ET   — final Sunday card
