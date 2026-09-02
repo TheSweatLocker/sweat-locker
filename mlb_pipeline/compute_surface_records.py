@@ -288,6 +288,34 @@ def pick_potd() -> list[dict]:
     return out
 
 
+def pick_dawg() -> list[dict]:
+    """daily_dawg — Dawg of the Day (MLB-only currently).
+
+    2026-09-02: added per audit follow-up. DoD was missing from
+    surface_records aggregation — Receipts total under-counted by
+    excluding Dawg P/L.
+
+    Schema note: daily_dawg has no `sport` or `odds_american` columns
+    (unlike daily_best_bet_history). Defaults: sport='MLB', payout=-110
+    (0.909). If DoD ever extends cross-sport OR captures odds, update
+    both this function and the daily_dawg schema/writer together.
+    """
+    url = (f'{SB}/rest/v1/daily_dawg'
+           f'?select=game_date,result'
+           f'&result=not.is.null&order=game_date.desc')
+    out = []
+    for r in _paged(url):
+        cls = _classify(r.get('result'))
+        if cls is None: continue
+        try:
+            d = dt.date.fromisoformat(r['game_date'])
+        except Exception:
+            continue
+        out.append({'sport': 'MLB', 'date': d, 'result': cls,
+                    'stake': 1.0, 'payout': 0.909})
+    return out
+
+
 def pick_ncaaf_sides() -> list[dict]:
     """ncaaf_game_context.primary_play graded against ncaaf_game_results
     outcomes (2026-08-30). No persistence — grades inline at aggregation
@@ -356,6 +384,7 @@ SURFACES = {
     'ladder': pick_ladder,
     'ledger': pick_ledger,
     'potd':   pick_potd,
+    'dawg':   pick_dawg,   # 2026-09-02: added per audit finding
     'ncaaf_sides': pick_ncaaf_sides,
 }
 
