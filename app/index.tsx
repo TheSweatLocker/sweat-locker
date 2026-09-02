@@ -2033,7 +2033,9 @@ useEffect(() => {
     fetchDailyBestBet();
     fetchDawgOfDay();
     fetchMLBGameContext();  // ← sweat scores per game
-    if (propJerrySport === 'MLB') fetchPipelineProps('MLB');
+    // 2026-09-02: fetch pipeline props for any sport in PROP_SPORT_REGISTRY
+    // (MLB + NFL as of today). Was MLB-only.
+    if (['MLB', 'NFL'].includes(propJerrySport)) fetchPipelineProps(propJerrySport);
     // 2026-08-02 fix: also fire auto-resolver on foreground so bets grade
     // as soon as user returns to app (user placed Rangers ML 8/1, game
     // ended, app never re-fired resolver until this).
@@ -9349,8 +9351,9 @@ setJerryHistory(prev => {
   // the tab in pre-fetch state until a manual refresh. Idempotent — the
   // effect-above-this still fires on subsequent tab transitions.
   useEffect(()=>{
-    if(propJerrySport === 'MLB' && !pipelineMLBFetched) {
-      fetchPipelineProps('MLB');
+    // 2026-09-02: initial fetch on any wired sport (MLB + NFL).
+    if(['MLB', 'NFL'].includes(propJerrySport) && !pipelineMLBFetched) {
+      fetchPipelineProps(propJerrySport);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
@@ -14078,8 +14081,11 @@ setJerryHistory(prev => {
       </View>
     )}
 
-    {/* MLB: pipeline-driven props */}
-    {propJerrySport === 'MLB' ? (
+    {/* 2026-09-02: pipeline-driven props for any wired sport (MLB + NFL).
+        NFL nfl_pipeline_props mirrors mlb_pipeline_props schema so the
+        same render loop works. Labels map at PROP_TYPE_LABELS extended
+        to cover NFL prop types (pass_yds/rush_yds/receptions/etc). */}
+    {['MLB', 'NFL'].includes(propJerrySport) ? (
       (pipelineMLBLoading || !pipelineMLBFetched) ? (
         <View style={{alignItems:'center',paddingTop:40}}>
           <ActivityIndicator size="large" color={HRB_COLOR}/>
@@ -14113,12 +14119,25 @@ setJerryHistory(prev => {
         // of the same market together (HITS = hits_over + hits_under). Sport-
         // universal — builds category set from the actual fetched props.
         const PROP_TYPE_LABELS: Record<string, {label: string; emoji: string}> = {
+          // MLB
           hits:  {label: 'HITS',  emoji: '⚾'},
           ks:    {label: 'K',     emoji: '⚡'},
           bb:    {label: 'BB',    emoji: '🎯'},
           ha:    {label: 'HITS ALLOWED', emoji: '🥎'},
           outs:  {label: 'OUTS',  emoji: '⏱'},
           er:    {label: 'ER',    emoji: '🔥'},
+          // 2026-09-02: NFL prop type labels
+          pass_yds:      {label: 'PASS YDS',  emoji: '🎯'},
+          rush_yds:      {label: 'RUSH YDS',  emoji: '🏃'},
+          reception_yds: {label: 'REC YDS',   emoji: '🙌'},
+          receptions:    {label: 'RECEPTIONS',emoji: '🙌'},
+          pass_tds:      {label: 'PASS TDs',  emoji: '⚡'},
+          rush_tds:      {label: 'RUSH TDs',  emoji: '💨'},
+          anytime_td:    {label: 'ANYTIME TD', emoji: '🏈'},
+          pass_attempts: {label: 'PASS ATT',  emoji: '📈'},
+          pass_completions: {label: 'PASS CMP', emoji: '📊'},
+          pass_interceptions: {label: 'INTs', emoji: '🎯'},
+          rush_attempts: {label: 'RUSH ATT',  emoji: '💪'},
         };
         const catFor = (pt: string): string => (pt || '').split('_')[0];
         const catCounts: Record<string, number> = {};
