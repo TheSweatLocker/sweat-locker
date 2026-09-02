@@ -473,3 +473,26 @@ jobs:
         run: |
           cd mlb_pipeline
           python sharp_fade_audit.py --backfill-results || echo "NCAAF audit backfill failed"
+
+      # 2026-09-02: Split — per-source calibration for NCAAF. Cross-sport
+      # parity with MLB (was MLB-only until 9/2). Powers The Split's
+      # per-source hit% + fade/trust tag on external picks.
+      - name: Refresh external source calibration (NCAAF)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_external_source_calibration.py --sport NCAAF || echo "NCAAF external calibration failed"
+
+      - name: Refresh sharp-source calibration (NCAAF)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_sharp_source_calibration.py --sport NCAAF || echo "NCAAF sharp source calibration failed"

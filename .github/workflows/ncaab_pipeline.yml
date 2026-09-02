@@ -257,6 +257,28 @@ jobs:
           cd mlb_pipeline
           python refresh_prop_signal_calibration.py --sport NCAAB --days 30 || echo "NCAAB signal calibration failed (non-fatal, likely offseason)"
 
+      # 2026-09-02: Split — per-source calibration for NCAAB. Silent
+      # no-op until Nov 3 season start.
+      - name: Refresh external source calibration (NCAAB)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_external_source_calibration.py --sport NCAAB || echo "NCAAB external calibration failed (non-fatal)"
+
+      - name: Refresh sharp-source calibration (NCAAB)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_sharp_source_calibration.py --sport NCAAB || echo "NCAAB sharp source calibration failed (non-fatal)"
+
       - name: NCAAB — Panel model (KenPom + Torvik + Haslam average)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true

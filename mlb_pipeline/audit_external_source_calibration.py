@@ -167,8 +167,11 @@ def run(sport: Optional[str] = None, dry_run: bool = False) -> None:
 
 def main():
     ap = argparse.ArgumentParser()
+    # 2026-09-02: expanded choices for cross-sport Split calibration.
+    # Sport is passed through to fetch_graded as `sport=eq.{sport}` filter
+    # on external_picks — any sport that has externals graded populates.
     ap.add_argument('--sport', default=None,
-                    choices=[None, 'MLB', 'NFL', 'NCAAB'],
+                    choices=[None, 'MLB', 'NFL', 'NCAAF', 'NBA', 'NCAAB', 'NHL', 'UFC'],
                     help='Restrict to a single sport (default: all)')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()

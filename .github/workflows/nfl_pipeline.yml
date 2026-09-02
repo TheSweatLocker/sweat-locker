@@ -551,6 +551,29 @@ jobs:
           cd mlb_pipeline
           python refresh_prop_signal_calibration.py --sport NFL --days 30 || echo "NFL signal calibration failed (non-fatal)"
 
+      # 2026-09-02: Split — per-source calibration for NFL. Powers The
+      # Split's per-source W-L record card + fade/trust tag on external
+      # picks. Cross-sport parity with MLB — was MLB-only until 9/2.
+      - name: Refresh external source calibration (NFL)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_external_source_calibration.py --sport NFL || echo "NFL external calibration failed"
+
+      - name: Refresh sharp-source calibration (NFL)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_sharp_source_calibration.py --sport NFL || echo "NFL sharp source calibration failed"
+
       # 2026-09-01: Vault Match pattern recompute (NFL). Fires whichever
       # patterns land in PATTERN_CATALOG for sport='NFL'. See
       # project_vault_match_901. Non-fatal.

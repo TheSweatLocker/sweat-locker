@@ -263,5 +263,25 @@ jobs:
           cd mlb_pipeline
           python refresh_prop_signal_calibration.py --sport NBA --days 30 || echo "NBA signal calibration failed (non-fatal, likely offseason)"
 
+      # 2026-09-02: Split — per-source calibration for NBA. Silent no-op
+      # until season starts (Oct). Wire pre-season so day-1 records populate.
+      - name: Refresh external source calibration (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_external_source_calibration.py --sport NBA || echo "NBA external calibration failed (non-fatal, likely offseason)"
+
+      - name: Refresh sharp-source calibration (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_sharp_source_calibration.py --sport NBA || echo "NBA sharp source calibration failed (non-fatal, likely offseason)"
+
       # Model / card generation: Elo model runs inside nba_game_context.py
       # (enrich_elo). Card generation deferred until preseason validates.

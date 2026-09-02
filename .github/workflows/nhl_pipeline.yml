@@ -140,6 +140,28 @@ jobs:
           cd mlb_pipeline
           python refresh_prop_signal_calibration.py --sport NHL --days 30 || echo "NHL signal calibration failed (non-fatal, likely offseason)"
 
+      # 2026-09-02: Split — per-source calibration for NHL. Silent no-op
+      # until Oct 8 season start. NHL only has SO source in splits stack
+      # today (see project_scoresandodds_sprint_824) so per-source
+      # calibration will be sparse but wire pre-season for day-1 data.
+      - name: Refresh external source calibration (NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_external_source_calibration.py --sport NHL || echo "NHL external calibration failed (non-fatal)"
+
+      - name: Refresh sharp-source calibration (NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_sharp_source_calibration.py --sport NHL || echo "NHL sharp source calibration failed (non-fatal)"
+
       # Note: NHL ensemble scoring happens inside nhl_game_context.py's
       # upsert path via _apply_ensemble (same as MLB pattern). Signals
       # in signal_sources (sport='NHL') fire automatically once tendency
