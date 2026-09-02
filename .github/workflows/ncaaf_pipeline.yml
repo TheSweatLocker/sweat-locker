@@ -497,6 +497,20 @@ jobs:
           cd mlb_pipeline
           python audit_sharp_source_calibration.py --sport NCAAF || echo "NCAAF sharp source calibration failed"
 
+      # 2026-09-02: NCAAF Strength of Record pull from CFBD. Populates
+      # home_sor + away_sor on ncaaf_game_context. Powers post-launch
+      # SoR-based signals (SoR gap > market spread → back SoR-favored side).
+      - name: Pull NCAAF Strength of Record (CFBD)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_sor_pull.py || echo "NCAAF SoR pull failed (non-fatal — may be too early in season)"
+
       # 2026-09-02: AP top-25 rankings pull. Populates home_ap_rank +
       # away_ap_rank on ncaaf_game_context. Powers ⭐ Ranked matchup badge.
       - name: Pull NCAAF AP rankings (CFBD)
