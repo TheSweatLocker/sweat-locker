@@ -6727,6 +6727,70 @@ LEAD SIGNALS:
 - Line movement ≥2pts = flag.
 
 LENGTH: 2-3 sentences. Hard cap.`,
+
+    // 2026-09-01 · ROOT CAUSE FIX for user report: "why is Jerry still
+    // saying market analysis for NFL." Prior code had no NFL / NCAAF
+    // entries in sportRules → line 6776 fell through to `sportRules.NHL`
+    // which literally instructs Claude "Open with 'Market-based analysis —
+    // no NHL model active yet.'" NFL/NCAAF Jerry has been shipping that
+    // NHL fallback template for months.
+    //
+    // Rules below mirror the server-side prompt_templates migrations
+    // 20260725_nfl_jerry_rules.sql (line-for-line) and
+    // 20260725c_ncaaf_jerry_rules.sql. When the server cache is fresh,
+    // Jerry reads use the SQL rules. When the client falls back for a
+    // cache miss, it now uses the same rules — no more "market analysis"
+    // copy for NFL or NCAAF games.
+    NFL: `
+LEAD SIGNAL HIERARCHY:
+1. EPA/play differential — pass_epa + rush_epa per game is the primary offensive-strength signal from the Sweat Locker efficiency model. Cite the actual numbers (e.g. "KC 0.28 EPA/play vs LAC 0.02").
+2. CPOE (completion % over expected) — quarterback-quality signal that survives roster noise. Gap ≥5pt = flag.
+3. Situational cohorts — heavy_home_dog (+7 or more) historically covers 65% (n=81) since 2022. Use as PRIME anchor when it fires.
+4. Weather — outdoor + wind ≥15mph or temp ≤32°F = UNDER lean.
+5. Rest advantage — bye week / Thu-to-Sun swing when material.
+
+EARLY-SEASON DISCIPLINE (Weeks 1-3):
+- If the model shows "prior-season regressed" or games_played < 4, cap conviction at LEAN. Say plainly that we're leaning on last year's numbers and market cohort baselines, not current-year form.
+- Do NOT project player performance in Week 1 — no live sample.
+
+STRUCTURE (3 sentences — hard cap):
+- Sentence 1: What the MODEL says — cite specific EPA/CPOE numbers from NFL GAME CONTEXT. Reference actual values, not generic descriptions.
+- Sentence 2: Cohort or market signal — name the cohort that fires (heavy_home_dog, outdoor_under, etc.) with its historical hit rate + sample.
+- Sentence 3: Where model and market agree or disagree, or a specific edge / trap flag. If preseason, note starters likely play limited series and skip conviction.
+
+RULES:
+- Never claim to have searched external analyst sites — Jerry has no web search.
+- Never fabricate injury updates. If a starter is questionable, say the model's assumption + note we don't have live injury feeds.
+- Never invent player-level stats not in the context payload.
+- Preseason games: schedule + market only, no POTD conviction.
+
+LENGTH: 3 sentences. Hard cap.`,
+
+    NCAAF: `
+LEAD SIGNAL HIERARCHY:
+1. SP+ overall — Sweat Locker efficiency composite. 5-point gap = decisive; 10+ = mismatch. Cite the actual numbers ("Georgia SP+ 28.4 vs Vandy 4.1").
+2. Off/Def EPA per play — success-rate ± explosiveness confluence. Look for the direction all three agree.
+3. Situational cohorts — heavy_home_dog_14+ / heavy_home_dog_7_13 (audit hit rates in NCAAF cohort table), neutral_site games (no HFA), primetime + Thursday/Friday spots.
+4. Weather — dome_over vs cold/wind on outdoor games.
+
+EARLY-SEASON DISCIPLINE (Weeks 1-3):
+- Non-P4 opponents in Week 1 games (SEC vs FCS, etc.) are usually noise — even a huge SP+ gap doesn't reliably beat the market spread. Say plainly if you're skeptical.
+- Coach/coordinator changes and portal turnover mean prior-year SP+ carries forward with real error bars. When surfacing, note it's prior-season data.
+- Do NOT project individual player performance in early weeks — no live sample.
+
+STRUCTURE (3 sentences — hard cap):
+- Sentence 1: What the MODEL says — cite SP+ numbers + one EPA/success signal from NCAAF GAME CONTEXT. Reference actual values.
+- Sentence 2: Cohort or situational signal — name the cohort that fires (heavy_home_dog_14+, neutral_site, primetime, bowl_game) with its historical hit rate + sample.
+- Sentence 3: Where model and market agree or disagree, or a specific trap flag (SEC-vs-Sun-Belt Week 1, ranked chalk vs +21 dog trap, coaching-change caveat).
+
+RULES:
+- Never claim to have searched external analyst sites — Jerry has no web search.
+- Never fabricate injury / suspension updates. If a QB is questionable, say the model's assumption + note we don't have live injury feeds.
+- Never invent player-level stats not in the context payload.
+- Never name the underlying provider — always "Sweat Locker efficiency model".
+- Neutral-site games (bowl, kickoff classic, conf champ): do NOT reference home-court advantage.
+
+LENGTH: 3 sentences. Hard cap.`,
   };
 
   const universalRules = `
@@ -6761,6 +6825,11 @@ CONFIDENCE TIER: ${
   sport === 'NCAAB' ? 'MODERATE — efficiency model only, no game prediction' :
   sport === 'NBA' ? 'HIGH — NBA model active (net rating, DefRtg, opp eFG%, home/away records, injuries, pace)' :
   sport === 'MLB' ? 'HIGH — MLB model active (pitcher xERA, wOBA, K rate gap, platoon, bullpen, park, weather, umpire)' :
+  // 2026-09-01: NFL + NCAAF added — same coverage matrix as MLB/NBA. Prior
+  // fallback claimed "MODERATE — limited model coverage" while the actual
+  // engines (EPA/CPOE for NFL, SP+/EPA for NCAAF) are live and cited.
+  sport === 'NFL' ? 'HIGH — NFL model active (pass_epa + rush_epa/play, CPOE, situational cohorts, weather, rest)' :
+  sport === 'NCAAF' ? 'HIGH — NCAAF model active (SP+ overall, off/def EPA/play, success rate, explosiveness, cohorts)' :
   sport === 'UFC' ? 'MODERATE — fighter stats + public analyst consensus' :
   sport === 'NHL' ? 'MARKET — no NHL model, pure market analysis' :
   'MODERATE — limited model coverage'

@@ -84,6 +84,22 @@ SPORT_CONFIG = {
         'total_under_ok': ('under',),
         'push_vals':      ('push',),
     },
+    # 2026-09-01: NCAAF added per 9/1 audit finding — resolve_externals
+    # was called from ncaaf_pipeline.yml but SPORT_CONFIG had no NCAAF
+    # entry → guard at line 288 returned immediately → all NCAAF external
+    # picks stayed result=NULL → compute_external_source_records skipped
+    # them → app showed empty W-L chips. Root cause fixed at the config
+    # level (not per-call band-aid).
+    'NCAAF': {
+        'results_table': 'ncaaf_game_results',
+        'select_cols': ('game_id,home_score,away_score,total_points,home_win,'
+                        'spread_result,total_result,close_spread,close_total'),
+        'spread_home_ok': ('home_covered',),
+        'spread_away_ok': ('away_covered',),
+        'total_over_ok':  ('over',),
+        'total_under_ok': ('under',),
+        'push_vals':      ('push',),
+    },
 }
 
 
