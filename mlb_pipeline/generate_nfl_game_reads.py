@@ -52,6 +52,25 @@ def today_et():
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
 
 
+def nfl_week_start_thu():
+    """Return the Thursday of the current NFL week as YYYY-MM-DD.
+
+    NFL Week 1 Thursday 2026 = 2026-09-04. NFL week runs Thu -> Wed for
+    Jerry-lock purposes (Thu-lock keeps reads stable across the entire
+    weekly slate incl. TNF, SNF, MNF, TNF-next-week).
+
+    2026-09-02: introduced with Thu-lock. Cache keys switch from
+    per-day to per-week so subsequent-day cron runs no-op (skip via
+    existing "if cache_key exists, skip" gate).
+    """
+    now_et = datetime.now(timezone.utc) - timedelta(hours=4)
+    # Python weekday(): Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
+    # Roll back to the most recent Thursday (same day if today IS Thursday)
+    days_since_thu = (now_et.weekday() - 3) % 7
+    thu = now_et - timedelta(days=days_since_thu)
+    return thu.strftime("%Y-%m-%d")
+
+
 def now_et_human():
     d = datetime.now(timezone.utc) - timedelta(hours=4)
     return f"{d.strftime('%A, %B')} {d.day}, {d.year}"
@@ -502,13 +521,21 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
 
 
 def upsert_read(game, struct, narrative, parsed=None):
-    key = f"game_read_{game.get('id')}_{today_et()}"
+    # 2026-09-02: Thu-lock cache key. Was per-day (game_read_<id>_<YYYY-MM-DD>)
+    # which regenerated Jerry reads daily even on stable NFL slates. Now
+    # per-week — key ties to the Thursday start of the NFL week. Subsequent
+    # daily cron runs check the same key + skip. Fresh Thursday morning
+    # generates the whole week; injury-triggered regen uses --force to
+    # bust the specific game's cache.
+    week_key = nfl_week_start_thu()
+    key = f"game_read_{game.get('id')}_nfl_week_{week_key}"
+    lock_iso = datetime.now(timezone.utc).isoformat()
     payload = {
         "game_id": key,
         "cache_key": key,
         "sport": "NFL",  # 2026-08-25 case fix — matches sport_registry convention
         "narrative": narrative,
-        "data": json.dumps(struct, default=str),
+        "data": json.dumps({**struct, "_locked_at": lock_iso, "_lock_week_thu": week_key}, default=str),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -562,14 +589,20 @@ def run():
     contexts = fetch_nfl_contexts()
     print(f"  Phase 2 contexts loaded: {len(contexts)}")
 
+    # 2026-09-02: Thu-lock — cache key ties to NFL week's Thursday start.
+    # Subsequent-day runs check same key, find it, skip. Only Thursday
+    # morning cron generates fresh (or manual --force for injury regen).
+    week_key = nfl_week_start_thu()
+    print(f"  Thu-lock week: {week_key}")
+
     done = 0
     for g in games:
         struct = build_struct(g, stats, contexts=contexts)
         away, home = struct["matchup"].split(" @ ")
-        key = f"game_read_{g.get('id')}_{today_et()}"
+        key = f"game_read_{g.get('id')}_nfl_week_{week_key}"
         if not force:
             if sb_get("jerry_cache", {"cache_key": f"eq.{key}", "select": "cache_key"}):
-                print(f"  • {away} @ {home}: exists, skip")
+                print(f"  • {away} @ {home}: locked (Thu {week_key}), skip")
                 continue
         prompt = render_prompt(templates, struct)
         narrative = call_claude(prompt)
