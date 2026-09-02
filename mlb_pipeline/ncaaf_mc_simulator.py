@@ -180,6 +180,63 @@ def _apply_signal_adjustments(base_home_exp: float, base_away_exp: float,
         away_exp += 1.0
         notes.append(f'away extra rest ({away_rest}d) → +1.0 pts')
 
+    # ── D. COHORT TILT (2026-09-01 · MC improvements Tier D) ──
+    # signal_confluence_net is the SIGNED count of cohorts firing on
+    # each side (positive = home advantage, negative = away). When it's
+    # strongly confluent (|net| >= 3), shift expected margin toward the
+    # majority side by ~1.5 pts — this bakes cohort agreement into the
+    # sim's central tendency rather than treating each cohort as pure
+    # noise sitting outside the projection. Data source: ctx.signal_
+    # confluence_net (already populated by ncaaf_game_context.py).
+    conf_net = ctx.get('signal_confluence_net')
+    try:
+        conf_int = int(conf_net) if conf_net is not None else 0
+    except (TypeError, ValueError):
+        conf_int = 0
+    if conf_int >= 3:
+        # Home has strong signal confluence; shift margin toward home
+        # by 0.5 pts per net-signal above 2, capped at +2.5
+        tilt = min((conf_int - 2) * 0.5, 2.5)
+        home_exp += tilt / 2.0
+        away_exp -= tilt / 2.0
+        notes.append(f'cohort tilt home (net +{conf_int}) → +{tilt:.1f} pts margin')
+    elif conf_int <= -3:
+        tilt = min((abs(conf_int) - 2) * 0.5, 2.5)
+        away_exp += tilt / 2.0
+        home_exp -= tilt / 2.0
+        notes.append(f'cohort tilt away (net {conf_int}) → -{tilt:.1f} pts margin')
+
+    # ── E. SHARP MONEY NUDGE (2026-09-01 · MC improvements Tier E) ──
+    # splits_summary aggregates cross-source money% + bets% per (market,
+    # side). When money-pct on one side significantly exceeds bets-pct
+    # (divergence >= 15), that's sharp money on the money side while
+    # public tickets sit on the other. Nudge expected margin ~1.5 pts
+    # toward the sharp side. Uses ML market by default since ML sharp
+    # signal is cleanest; falls back to spread if ML absent.
+    ss = ctx.get('splits_summary')
+    if isinstance(ss, dict):
+        # Try ML first, then spread/rl
+        for mkt_key in ('ml', 'moneyline', 'spread', 'rl'):
+            mkt = ss.get(mkt_key)
+            if not isinstance(mkt, dict): continue
+            home_side = mkt.get('HOME') if isinstance(mkt.get('HOME'), dict) else {}
+            away_side = mkt.get('AWAY') if isinstance(mkt.get('AWAY'), dict) else {}
+            h_money = home_side.get('money_pct_avg')
+            h_bets  = home_side.get('bets_pct_avg')
+            a_money = away_side.get('money_pct_avg')
+            a_bets  = away_side.get('bets_pct_avg')
+            # HOME sharp: money on home >> bets on home (public elsewhere)
+            if (h_money is not None and h_bets is not None
+                and h_money >= 65 and (h_money - h_bets) >= 15):
+                home_exp += 0.75; away_exp -= 0.75
+                notes.append(f'sharp $ home ({mkt_key}: {h_money:.0f}% money vs {h_bets:.0f}% bets)')
+                break
+            if (a_money is not None and a_bets is not None
+                and a_money >= 65 and (a_money - a_bets) >= 15):
+                away_exp += 0.75; home_exp -= 0.75
+                notes.append(f'sharp $ away ({mkt_key}: {a_money:.0f}% money vs {a_bets:.0f}% bets)')
+                break
+
     return home_exp, away_exp, home_std, away_std, notes
 
 
@@ -259,7 +316,10 @@ def run(game_date: str, dry_run: bool = False) -> int:
                           'projected_spread,projected_total,neutral_site,'
                           # Signal fields for A+B+C adjustments:
                           'temp,wind,dome,'
-                          'home_returning_production,away_returning_production'},
+                          'home_returning_production,away_returning_production,'
+                          # Signal fields for D+E adjustments (Tier D=cohort,
+                          # Tier E=sharp money):
+                          'signal_confluence_net,splits_summary'},
         timeout=15)
     if r.status_code != 200:
         print(f'  fetch failed: {r.status_code}'); return 0
