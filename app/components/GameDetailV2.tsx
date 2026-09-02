@@ -1437,7 +1437,10 @@ const rsStyles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: C.borderSoft,
   },
   hCol: {
-    color: C.textMuted, fontSize: 10, fontWeight: '700',
+    // 2026-09-01: was C.textMuted — bumped to textDim for legibility on
+    // dark card backgrounds. Muted tokens can read as near-black on some
+    // devices' brightness/contrast settings.
+    color: C.textDim, fontSize: 10, fontWeight: '700',
     letterSpacing: 0.06, textAlign: 'center',
   },
   dataRow: {
@@ -1645,7 +1648,10 @@ const sitStyles = StyleSheet.create({
     flex: 1, gap: 4,
   },
   rowLabel: {
-    color: C.textMuted, fontSize: 10, fontWeight: '700',
+    // 2026-09-01: bumped C.textMuted → C.textDim per user "black text hard
+    // to see" report on Last 10 + As Dog rows. textDim (#A8BAC7) is
+    // brighter grey and reads clearly on C.surface (#41586B).
+    color: C.textDim, fontSize: 10, fontWeight: '700',
     letterSpacing: 0.05, textTransform: 'uppercase',
   },
   pill: {
@@ -1667,7 +1673,9 @@ const sitStyles = StyleSheet.create({
     alignItems: 'center', marginRight: 8,
   },
   pillEmptyText: {
-    color: C.textMuted, fontSize: 13, fontWeight: '600',
+    // 2026-09-01: was C.textMuted — bumped to textDim so the "—" for
+    // empty records reads clearly.
+    color: C.textDim, fontSize: 13, fontWeight: '600',
   },
 });
 
@@ -1916,11 +1924,16 @@ function StatCell({row, unit, align}: any) {
     ]}>
       <View style={{
         flexDirection: isRightAlign ? 'row' : 'row-reverse',
-        alignItems: 'center', gap: 6,
+        alignItems: 'baseline', gap: 6,
       }}>
-        <Text style={tsStyles.statValue}>
-          {row.raw_value}{unit ? <Text style={tsStyles.statUnit}> {unit}</Text> : null}
-        </Text>
+        {/* 2026-09-01: split value + unit into sibling Text components
+            instead of nesting. Nested Text inside a parent Text can lose
+            explicit color inheritance in RN under certain style-array
+            combinations, resulting in default-black text. Siblings each
+            hold their own StyleSheet reference so color is always
+            explicit. */}
+        <Text style={tsStyles.statValue}>{row.raw_value}</Text>
+        {unit ? <Text style={tsStyles.statUnit}> {unit}</Text> : null}
         <RankChip rank={row.rank} leagueSize={row.league_size} />
       </View>
     </View>
@@ -1960,7 +1973,7 @@ const tsStyles = StyleSheet.create({
   },
   spSide: {flex: 1, gap: 4, alignItems: 'center'},
   spDivider: {width: 1, alignSelf: 'stretch', backgroundColor: C.borderSoft, marginHorizontal: 12},
-  spLabel: {color: C.textMuted, fontSize: 10, letterSpacing: 0.06, fontWeight: '700'},
+  spLabel: {color: C.textDim, fontSize: 10, letterSpacing: 0.06, fontWeight: '700'},
   spRow: {flexDirection: 'row', alignItems: 'center', gap: 8},
   spValue: {color: C.text, fontSize: 20, fontWeight: '900', letterSpacing: -0.02},
   statRow: {
@@ -1970,7 +1983,10 @@ const tsStyles = StyleSheet.create({
   },
   statLabel: {
     flex: 1.4, textAlign: 'center',
-    color: C.textMuted, fontSize: 10, fontWeight: '700',
+    // 2026-09-01: bumped textMuted → textDim per user "black text" report
+    // on Team Stats section. Stat labels sit between two bright value
+    // cells and need to compete for legibility.
+    color: C.textDim, fontSize: 10, fontWeight: '700',
     letterSpacing: 0.04, textTransform: 'uppercase',
     paddingHorizontal: 6,
   },
@@ -1982,7 +1998,7 @@ const tsStyles = StyleSheet.create({
     borderRadius: 999, alignItems: 'center',
   },
   rankText: {fontSize: 11, fontWeight: '800', letterSpacing: 0.02},
-  dash: {color: C.textMuted, fontSize: 13, fontWeight: '600'},
+  dash: {color: C.textDim, fontSize: 13, fontWeight: '600'},
 });
 
 
