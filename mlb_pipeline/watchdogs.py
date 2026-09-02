@@ -733,16 +733,20 @@ def check_supabase_capacity() -> Optional[dict]:
 def check_roster_physicality_stale() -> Optional[dict]:
     """Alert when roster_physicality data is stale during college season.
     NCAAF weekly cron runs Tue 11am ET, NCAAB weekly Mon 11am ET. If
-    updated_at > 9 days ago for any team during their active season, the
+    updated_at > 14 days ago for any team during their active season, the
     weekly scrape silently failed (ESPN endpoint change, alias mismatch,
     workflow disabled). Signals silently degrade — this catches that.
+
+    2026-09-02: threshold raised 9d -> 14d. 9d was too tight — weekly
+    cron w/ retry drift means routine misses look like alerts. 14d
+    catches real breakage without daily false positives.
 
     Active seasons (rough): NCAAF Aug-Jan, NCAAB Nov-Apr. Outside those
     windows the staleness is expected (returns None)."""
     try:
         now = datetime.now(timezone.utc)
         month = now.month
-        stale_cutoff = (now - timedelta(days=9)).isoformat()
+        stale_cutoff = (now - timedelta(days=14)).isoformat()
         # Season gate — return None outside active window so we don't cry
         # wolf during natural off-season silence
         sports_active = []
@@ -767,7 +771,7 @@ def check_roster_physicality_stale() -> Optional[dict]:
         return {
             'check_name': 'roster_physicality_stale',
             'severity': 'WARNING',
-            'message': f'{total} team(s) have roster_physicality > 9 days '
+            'message': f'{total} team(s) have roster_physicality > 14 days '
                        f'stale during active season: {stale_by_sport}. '
                        f'Run pull_college_rosters.py --sport <X> manually.',
             'detail': stale_by_sport,
