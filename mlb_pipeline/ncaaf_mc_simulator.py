@@ -76,27 +76,137 @@ def _f(v) -> Optional[float]:
         return None
 
 
+def _compute_rest_map(game_date: str, ctx_teams: set) -> dict:
+    """Return {team: rest_days} for teams playing on `game_date`.
+
+    Rest = days since last graded game in ncaaf_game_results. Fetches a
+    30-day-prior window in one bulk request. Teams with no prior game
+    in the window (Week 1, byes) get None.
+
+    2026-09-01 (Tier C of MC improvements per user directive).
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    try:
+        target = _dt.fromisoformat(game_date).date()
+    except Exception:
+        return {}
+    since = (target - _td(days=30)).isoformat()
+    r = requests.get(
+        f'{SB}/rest/v1/ncaaf_game_results?'
+        f'game_date=gte.{since}&game_date=lt.{game_date}'
+        f'&home_score=not.is.null'
+        f'&select=home_team,away_team,game_date&order=game_date.desc&limit=2000',
+        headers=H_READ, timeout=20)
+    if r.status_code != 200: return {}
+    rows = r.json() if isinstance(r.json(), list) else []
+    # Latest game per team
+    latest: dict = {}
+    for row in rows:
+        d = row.get('game_date')
+        for tk in ('home_team', 'away_team'):
+            t = row.get(tk)
+            if t and t in ctx_teams and t not in latest:
+                latest[t] = d
+    out = {}
+    for t, d in latest.items():
+        try:
+            gd = _dt.fromisoformat(d).date()
+            out[t] = (target - gd).days
+        except Exception:
+            continue
+    return out
+
+
+def _apply_signal_adjustments(base_home_exp: float, base_away_exp: float,
+                              ctx: dict, home_rest: Optional[int],
+                              away_rest: Optional[int]) -> tuple:
+    """Apply A+B+C signal adjustments to expected scores + stddev.
+
+    Returns (home_expected, away_expected, home_stddev, away_stddev, notes).
+
+    A. WEATHER (outdoor games only):
+       wind >= 15 mph → -2.5 pts both sides + 15% wider stddev each
+       temp <= 32°F  → -1.5 pts both sides + 10% wider stddev each
+
+    B. RETURNING PRODUCTION:
+       team's returning < 55% → 20% wider stddev for that team
+       (high roster churn = more Week 1-4 uncertainty)
+
+    C. REST DAYS:
+       team on short week (<=4 days) → -1.5 pts + 8% wider stddev
+       team with extra rest (>=10 days) → +1.0 pts (byes, coming off bye)
+    """
+    home_exp = base_home_exp
+    away_exp = base_away_exp
+    home_std = GAME_STDDEV
+    away_std = GAME_STDDEV
+    notes = []
+
+    # ── A. WEATHER ──
+    is_dome = bool(ctx.get('dome'))
+    if not is_dome:
+        wind = _f(ctx.get('wind'))
+        temp = _f(ctx.get('temp'))
+        if wind is not None and wind >= 15:
+            home_exp -= 2.5; away_exp -= 2.5
+            home_std *= 1.15; away_std *= 1.15
+            notes.append(f'wind {wind:.0f}mph → -2.5 each, wider var')
+        if temp is not None and temp <= 32:
+            home_exp -= 1.5; away_exp -= 1.5
+            home_std *= 1.10; away_std *= 1.10
+            notes.append(f'temp {temp:.0f}°F → -1.5 each')
+
+    # ── B. RETURNING PRODUCTION ──
+    home_rp = _f(ctx.get('home_returning_production'))
+    away_rp = _f(ctx.get('away_returning_production'))
+    if home_rp is not None and home_rp < 0.55:
+        home_std *= 1.20
+        notes.append(f'home ret prod {home_rp*100:.0f}% → wider home var')
+    if away_rp is not None and away_rp < 0.55:
+        away_std *= 1.20
+        notes.append(f'away ret prod {away_rp*100:.0f}% → wider away var')
+
+    # ── C. REST DAYS ──
+    if home_rest is not None and home_rest <= 4:
+        home_exp -= 1.5; home_std *= 1.08
+        notes.append(f'home short week ({home_rest}d) → -1.5 pts')
+    elif home_rest is not None and home_rest >= 10:
+        home_exp += 1.0
+        notes.append(f'home extra rest ({home_rest}d) → +1.0 pts')
+    if away_rest is not None and away_rest <= 4:
+        away_exp -= 1.5; away_std *= 1.08
+        notes.append(f'away short week ({away_rest}d) → -1.5 pts')
+    elif away_rest is not None and away_rest >= 10:
+        away_exp += 1.0
+        notes.append(f'away extra rest ({away_rest}d) → +1.0 pts')
+
+    return home_exp, away_exp, home_std, away_std, notes
+
+
 def simulate_game(projected_spread: float, projected_total: float,
                   n_sims: int = N_SIMS,
-                  posted_total: Optional[float] = None) -> dict:
-    """Run n_sims of the game.
+                  posted_total: Optional[float] = None,
+                  ctx: Optional[dict] = None,
+                  home_rest: Optional[int] = None,
+                  away_rest: Optional[int] = None) -> dict:
+    """Run n_sims of the game with A+B+C signal adjustments applied.
 
-    projected_spread is home-perspective margin (positive = home wins by X).
-    projected_total is game total. Both from ncaaf_game_context — already
-    incorporate SP+, EPA, HFA, returning production, neutral-site.
+    Base expected scores from ctx projections (SP+/EPA/HFA/returning):
+        home = (projected_total + projected_spread) / 2
+        away = (projected_total - projected_spread) / 2
 
-    Expected scores derived from the projection split:
-        home = (total + margin) / 2
-        away = (total - margin) / 2
-    Then sample around each with GAME_STDDEV, floor at 0.
+    Adjustments applied per _apply_signal_adjustments — weather, returning
+    production variance, rest days. Each side gets its own stddev so
+    high-churn team has wider dispersion than stable opponent.
     """
-    home_expected = (projected_total + projected_spread) / 2.0
-    away_expected = (projected_total - projected_spread) / 2.0
+    base_home = max((projected_total + projected_spread) / 2.0, 3.0)
+    base_away = max((projected_total - projected_spread) / 2.0, 3.0)
 
-    # CFB scores rarely below 3 (safety) but can happen; floor at 3 to
-    # avoid negative samples from wide gauss tails dominating the mean.
-    home_expected = max(home_expected, 3.0)
-    away_expected = max(away_expected, 3.0)
+    home_exp, away_exp, home_std, away_std, notes = _apply_signal_adjustments(
+        base_home, base_away, ctx or {}, home_rest, away_rest)
+    # Enforce floor after adjustments
+    home_exp = max(home_exp, 3.0)
+    away_exp = max(away_exp, 3.0)
 
     home_wins = 0
     over_hits = 0
@@ -105,8 +215,8 @@ def simulate_game(projected_spread: float, projected_total: float,
     margin_sq_sum = 0.0
 
     for _ in range(n_sims):
-        home_score = max(random.gauss(home_expected, GAME_STDDEV), 0)
-        away_score = max(random.gauss(away_expected, GAME_STDDEV), 0)
+        home_score = max(random.gauss(home_exp, home_std), 0)
+        away_score = max(random.gauss(away_exp, away_std), 0)
         margin = home_score - away_score
         total = home_score + away_score
         total_margins += margin
@@ -127,27 +237,29 @@ def simulate_game(projected_spread: float, projected_total: float,
         'mc_expected_margin': round(mean_margin, 2),
         'mc_expected_total': round(mean_total, 2),
         'mc_stddev_margin': round(std_margin, 2),
-        # HIGH-CONF: > 7-pt expected margin AND stddev under ~19 (two
-        # NCAAF score dists with GAME_STDDEV=13.5 each produce margin
-        # stddev ≈ 19.1). Slightly wider than NFL threshold because
-        # CFB variance is genuinely higher — HIGH-CONF should fire on
-        # lopsided sims (elite vs middling), not just close-to-line.
         'mc_confidence_high': (abs(mean_margin) > 7.0 and std_margin < 19.5),
         'generated_at': datetime.now(timezone.utc).isoformat(),
     }
     if posted_total is not None:
         result['mc_p_over_line'] = round(over_hits / n_sims, 3)
+    if notes:
+        # Attach adjustments for audit visibility. Truncate to keep JSONB small.
+        result['mc_adjustments'] = notes[:6]
     return result
 
 
 def run(game_date: str, dry_run: bool = False) -> int:
-    """Load NCAAF ctx rows for the date; simulate each with projections."""
+    """Load NCAAF ctx rows for the date; simulate each with projections
+    + A+B+C signal adjustments (weather / returning production / rest)."""
     print(f'=== NCAAF MC simulator · {game_date} ===')
 
     r = requests.get(f'{SB}/rest/v1/ncaaf_game_context', headers=H_READ,
         params={'game_date': f'eq.{game_date}',
                 'select': 'game_id,home_team,away_team,close_total,'
-                          'projected_spread,projected_total,neutral_site'},
+                          'projected_spread,projected_total,neutral_site,'
+                          # Signal fields for A+B+C adjustments:
+                          'temp,wind,dome,'
+                          'home_returning_production,away_returning_production'},
         timeout=15)
     if r.status_code != 200:
         print(f'  fetch failed: {r.status_code}'); return 0
@@ -155,6 +267,15 @@ def run(game_date: str, dry_run: bool = False) -> int:
     if not games:
         print(f'  no NCAAF games for {game_date}'); return 0
     print(f'  {len(games)} NCAAF games in context')
+
+    # 2026-09-01 (Tier C): bulk-fetch rest days for all teams playing today
+    ctx_teams = set()
+    for g in games:
+        if g.get('home_team'): ctx_teams.add(g['home_team'])
+        if g.get('away_team'): ctx_teams.add(g['away_team'])
+    rest_map = _compute_rest_map(game_date, ctx_teams)
+    if rest_map:
+        print(f'  computed rest days for {len(rest_map)} teams')
 
     written = 0
     skipped_no_projections = 0
@@ -172,14 +293,18 @@ def run(game_date: str, dry_run: bool = False) -> int:
             projected_spread=proj_spread,
             projected_total=proj_total,
             posted_total=_f(g.get('close_total')),
+            ctx=g,
+            home_rest=rest_map.get(home),
+            away_rest=rest_map.get(away),
         )
 
         matchup = f'{away} @ {home}'
         neutral_marker = ' (N)' if g.get('neutral_site') else ''
+        adj_marker = f'  adj={len(result.get("mc_adjustments") or [])}' if result.get('mc_adjustments') else ''
         print(f'  {matchup:36}{neutral_marker}  home {result["mc_p_home"]*100:5.1f}%  '
               f'margin {result["mc_expected_margin"]:+5.1f}  '
               f'tot {result["mc_expected_total"]:5.1f}  '
-              f'{"HIGH-CONF" if result["mc_confidence_high"] else ""}')
+              f'{"HIGH-CONF" if result["mc_confidence_high"] else ""}{adj_marker}')
 
         if dry_run: continue
 
