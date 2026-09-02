@@ -11440,7 +11440,8 @@ setJerryHistory(prev => {
               <View style={{alignItems:'center'}}>
                 <Text style={{fontSize:44,marginBottom:12}}>📋</Text>
                 <Text style={{color:THEME.text,fontWeight:'900',fontSize:26,textAlign:'center',marginBottom:8}}>Your Daily Sweat Card</Text>
-                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:20,paddingHorizontal:10}}>Every night: up to 4 curated picks led by <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Pick of the Day</Text> and <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Dawg of the Day</Text>, plus supporting reads on the rest of the slate. Sides, totals, and player props — all tiered by conviction.</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:12,paddingHorizontal:10}}>Every night: up to 4 curated picks led by <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Pick of the Day</Text> and <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Dawg of the Day</Text>, plus supporting reads on the rest of the slate. Sides, totals, and player props — all tiered by conviction.</Text>
+                <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:15,marginBottom:14,paddingHorizontal:14,fontStyle:'italic'}}>Coverage: MLB now · NFL + NCAAF weekly · NBA + NCAAB + NHL from October · UFC every card.</Text>
                 <View style={{width:'100%',backgroundColor:THEME.surface,borderRadius:10,padding:14,marginBottom:16,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
                   <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11,letterSpacing:0.5,marginBottom:8}}>PROP JERRY</Text>
                   <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Player prop analysis with real book prices + projection-based edge. <Text style={{color:THEME.text,fontWeight:'700'}}>PRIME tier represents our highest-conviction props, backed by aligned model + market signals.</Text></Text>
@@ -11458,7 +11459,7 @@ setJerryHistory(prev => {
                 <View style={{width:'100%',gap:8,marginBottom:12}}>
                   {[
                     {ic:'📊', label:'THE SPLIT',      desc:'Public splits + sharp signals across sources — reverse-line-move alerts + triple-source agreement badges'},
-                    {ic:'🎯', label:'SHARP CARD',     desc:'A disciplined sharp-money list. Smaller, higher bar than the daily Sweat Card'},
+                    {ic:'🎯', label:'THE SHARP',      desc:'A disciplined sharp-money list. Smaller, higher bar than the daily Sweat Card'},
                     {ic:'🪜', label:'LADDER',         desc:'1 play per day. Winnings compound. Highest-conviction pick only'},
                     {ic:'📚', label:'LEDGER',         desc:'Auto-generated parlays and teasers from tonight\'s highest-agreement picks'},
                   ].map(t=>(
@@ -11471,7 +11472,7 @@ setJerryHistory(prev => {
                     </View>
                   ))}
                 </View>
-                <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16}}>You see what sharps see.</Text>
+                <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16}}>Read the market like the pros do.</Text>
               </View>
             </ScrollView>
           )}
@@ -11485,7 +11486,8 @@ setJerryHistory(prev => {
                   {[
                     'Six analytical lenses (Panel · Jerry · V3 · V4 · MC · Confluence)',
                     'Public betting splits from 4 sources with triple-agreement badges',
-                    'External handicapper aggregation (graded record)',
+                    'External handicapper picks WITH their graded record (not just cherry-picked winners)',
+                    'Team-level rollups: recent form, situational records, per-stat ranks — cross-sport',
                     'Cohort signals (which historical bucket this game lives in)',
                     'Jerry\'s full read — every number traceable to a source',
                   ].map((line,i)=>(
@@ -11503,7 +11505,7 @@ setJerryHistory(prev => {
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🧾</Text>
               <Text style={{color:THEME.text,fontWeight:'900',fontSize:28,textAlign:'center',marginBottom:12}}>Every Pick Is Graded</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22,marginBottom:20,paddingHorizontal:10}}>The <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Receipts</Text> tab tracks every pick's result the moment the game ends. No cherry-picking. Slice by tier, sport, or market.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22,marginBottom:20,paddingHorizontal:10}}>Under the <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Receipts</Text> sub-tab (inside Trends), every pick's result is tracked the moment the game ends. No cherry-picking. Slice by tier, sport, or market.</Text>
               <View style={{width:'100%',backgroundColor:THEME.surface,borderRadius:10,padding:14,borderLeftWidth:3,borderLeftColor:HRB_COLOR,marginBottom:12}}>
                 <Text style={{color:THEME.textMuted,fontSize:10,letterSpacing:0.5,marginBottom:4}}>WHY IT MATTERS</Text>
                 <Text style={{color:THEME.textDim,fontSize:12,lineHeight:17}}>Any picks app can talk about their wins. Sweat Locker publishes the full ledger — losses included.</Text>
