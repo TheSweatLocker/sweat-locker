@@ -423,7 +423,7 @@ export default function GameDetailV2({
             detail was missing splits despite backend data landing. */}
         {ctx?.splits_summary && (
           <Expander title="Public Splits" badge={splitsBadge(ctx.splits_summary)}>
-            <SplitsSummaryPanel summary={ctx.splits_summary} />
+            <SplitsSummaryPanel summary={ctx.splits_summary} sport={gamesSport} />
           </Expander>
         )}
 
@@ -1784,9 +1784,15 @@ function RecordPill({rec, market}: any) {
   const tint = total >= 5 ? (
     hitPct >= 58 ? 'win' : hitPct <= 42 ? 'loss' : 'neutral'
   ) : 'neutral';
+  // 2026-09-02: label the display so users know what W-L means per market.
+  //   total: "O 6 · U 4" (over/under, prevents "6-4" ambiguity from user report)
+  //   spread: "6-4 ATS" (against the spread)
+  //   ml: "6-4" (win/loss — self-evident)
   const label = market === 'total'
-    ? `${w}-${l}${p ? `-${p}` : ''}`      // O-U-P
-    : `${w}-${l}${p ? `-${p}` : ''}`;      // W-L-P
+    ? `O ${w} · U ${l}${p ? ` · P ${p}` : ''}`
+    : market === 'spread'
+    ? `${w}-${l}${p ? `-${p}` : ''} ATS`
+    : `${w}-${l}${p ? `-${p}` : ''}`;
   // 2026-09-01 v4: text stays bright cream ALWAYS. Prior version set
   // text color to C.loss (red) on C.loss+22 background (light red) —
   // contrast between red-on-red rendered as muddy/dark (user reported
@@ -2125,13 +2131,19 @@ function StatCell({row, unit, align}: any) {
 function RankChip({rank, leagueSize}: any) {
   if (rank == null || leagueSize == null || leagueSize === 0) return null;
   // Quintile color: top 20% = elite, next 20% = good, mid = neutral, next 20% = poor, bottom = bad
+  // 2026-09-02: text stays bright cream ALWAYS. Prior version colored the
+  // text by tier (win/sharp/textDim/warn/loss) — the textDim + loss options
+  // rendered dark on tinted bg, matched user's "118th in dark lettering"
+  // report. Now: only BG tints, text stays high-contrast. Same pattern
+  // as RecordPill fix (2026-09-01).
   const pct = rank / leagueSize;
-  let bg = C.surfaceAlt, fg = C.textDim;
-  if (pct <= 0.20)      { bg = C.win  + '26'; fg = C.win; }
-  else if (pct <= 0.40) { bg = C.sharp + '20'; fg = C.sharp; }
-  else if (pct <= 0.60) { bg = C.surfaceAlt; fg = C.textDim; }
-  else if (pct <= 0.80) { bg = C.warn + '22'; fg = C.warn; }
-  else                  { bg = C.loss + '22'; fg = C.loss; }
+  let bg = C.surfaceAlt;
+  if (pct <= 0.20)      bg = C.win  + '30';
+  else if (pct <= 0.40) bg = C.sharp + '25';
+  else if (pct <= 0.60) bg = C.surfaceAlt;
+  else if (pct <= 0.80) bg = C.warn + '28';
+  else                  bg = C.loss + '30';
+  const fg = C.text;
   // Ordinal suffix
   const s = String(rank);
   const last = rank % 100;
@@ -4129,12 +4141,20 @@ function _doubleConfirmedFromSummary(summary: any): string[] {
   return doubles;
 }
 
-function SplitsSummaryPanel({summary}: any) {
+function SplitsSummaryPanel({summary, sport}: any) {
   const s = summary || {};
   const srcs: string[] = Array.isArray(s.sources_present) ? s.sources_present : [];
   const triple: string[] = Array.isArray(s.triple_confirmed) ? s.triple_confirmed : [];
   const MARKETS = ['ml', 'rl', 'total'];
-  const marketLabel: Record<string, string> = {ml: 'Moneyline', rl: 'Run/Puck Line', total: 'Total'};
+  // 2026-09-02: rl label was hardcoded "Run/Puck Line" — showed on NCAAF /
+  // NFL / NBA / NCAAB where it should say "Spread". Uses shared rlLabel()
+  // helper (line 940) with sport-aware map (MLB → Run Line, NHL → Puck
+  // Line, else → Spread).
+  const marketLabel: Record<string, string> = {
+    ml: 'Moneyline',
+    rl: rlLabel(sport),
+    total: 'Total',
+  };
   // 2026-08-25: anonymized labels — same "Split N" convention as
   // LineMovementTab / feedback_tos_scrub_source_names. Never leak
   // vendor names ('OddsCrowd', 'Fadereport', etc) to user copy.
@@ -4177,11 +4197,16 @@ function SplitsSummaryPanel({summary}: any) {
               const nSrc = agg?.sources_agree ?? 0;
               // 2026-09-01: adaptive confirmation chip. Was TRIPLE-only which
               // lied for NCAAF/NCAAB/NHL where max sources ≤ 2. Now:
-              //   nSrc >= 3 → TRIPLE (cyan/sharp)
-              //   nSrc == 2 → DOUBLE (cyan-dim)
-              //   nSrc == 1 → nothing (unconfirmed, single-source)
+              //   nSrc >= 3 → TRIPLE (cyan/sharp) — real moat signal
+              //   nSrc == 2 → DOUBLE (cyan-dim) — decent signal
+              //   nSrc == 1 → UNCONFIRMED chip (grey) — one source only, not
+              //               a real agreement signal (2026-09-02 fix: prior
+              //               version rendered these rows identically to
+              //               multi-source rows and reads as "signal" when
+              //               it's really just one book's read).
               const isTriple = nSrc >= 3;
               const isDouble = nSrc === 2;
+              const isSingle = nSrc === 1;
               const confirmed = isTriple || isDouble;
               return (
                 <View key={i} style={{
@@ -4214,6 +4239,11 @@ function SplitsSummaryPanel({summary}: any) {
                   {isDouble && (
                     <Text style={{color: C.sharp, fontSize: 9, fontWeight: '700', opacity: 0.75}}>
                       DOUBLE
+                    </Text>
+                  )}
+                  {isSingle && (
+                    <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '700', fontStyle: 'italic'}}>
+                      1 SRC
                     </Text>
                   )}
                 </View>
