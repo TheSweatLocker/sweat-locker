@@ -1507,11 +1507,37 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
   // 2026-09-01: prior-season blend flag. When current season has < 5
   // games in the overall spread filter for either team, we fall back
   // to prior season data + display a badge so users know it's not
-  // this-season sample. Per user directive: Colorado 5-7 (2025) should
-  // stay visible after Week 1 win, not collapse to 1-0 (statistically
-  // meaningless). Threshold N=5 mirrors the rank-chip sample floor.
+  // this-season sample. Threshold N=5 mirrors the rank-chip sample floor.
+  //
+  // Badge is REMOTELY killable via feature_flags (no app update needed).
+  // To disable for a sport: INSERT INTO feature_flags (sport, feature,
+  // enabled) VALUES ('NCAAF', 'situational_prior_season_badge', false).
+  // Default = enabled. Table already loaded by app on startup; we do a
+  // one-row fetch here so the component stays self-contained rather
+  // than prop-drilling the featureFlags map through GameDetailV2.
   const [usingPriorSeason, setUsingPriorSeason] = React.useState<number | null>(null);
+  const [badgeEnabled, setBadgeEnabled] = React.useState<boolean>(true);
   const seasonForQuery = Number(season) || new Date().getFullYear();
+
+  // Feature-flag check for the prior-season badge (one-time on mount)
+  React.useEffect(() => {
+    const client = sb();
+    if (!client || !sport) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const {data} = await client.from('feature_flags')
+          .select('enabled')
+          .eq('sport', sport)
+          .eq('feature', 'situational_prior_season_badge')
+          .maybeSingle();
+        if (cancelled) return;
+        // Default enabled unless explicit false in DB
+        if (data && (data as any).enabled === false) setBadgeEnabled(false);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [sport]);
 
   React.useEffect(() => {
     const client = sb();
@@ -1592,8 +1618,11 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
     <View style={{gap: 10}}>
       {/* 2026-09-01: prior-season badge when sample too thin for
           current season (<5 games). Prevents "1-0" early-season noise
-          from displacing prior season's real signal (5-7 etc). */}
-      {usingPriorSeason && (
+          from displacing prior season's real signal (5-7 etc).
+          Remotely killable via feature_flags — set enabled=false to
+          hide without app update. Auto-expires ~Week 5-6 of season
+          when N crosses threshold naturally. */}
+      {usingPriorSeason && badgeEnabled && (
         <View style={{
           backgroundColor: C.warnDim, borderRadius: 8,
           paddingVertical: 6, paddingHorizontal: 10,
