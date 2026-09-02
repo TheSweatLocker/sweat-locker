@@ -419,6 +419,61 @@ def fetch_game_context():
     return sb_get("mlb_game_context", {"game_date": f"eq.{today}", "select": "*"})
 
 
+def fetch_football_picks(today: str) -> list:
+    """Fetch NFL + NCAAF PRIME/STRONG primary_plays for today (2026-09-02).
+
+    Blends football picks into the Sweat Card without a full multi-sport
+    refactor. Sport-in-season priority (football Sept-Jan) means these
+    should surface prominently on Sat/Sun during football season.
+
+    Early-season tier discipline: NFL/NCAAF PRIMEs are capped at STRONG
+    on Sweat Card through Sept 22 (mirrors nfl_prop_week1_ready_902
+    discipline for props — no calibration yet, don't overpromise).
+
+    Returns list of dicts with same shape as MLB sweat_card picks:
+      {game, sport, tier, label, side, conviction, matchup}
+    Empty list on off-days / offseason / no PRIMEs.
+    """
+    picks = []
+    EARLY_SEASON_TIER_CAP_UNTIL = '2026-09-22'  # NFL Week 3 end
+
+    for sport, tbl in [('NFL', 'nfl_game_context'), ('NCAAF', 'ncaaf_game_context')]:
+        try:
+            rows = sb_get(tbl, {
+                'game_date': f'eq.{today}',
+                'primary_play': 'not.is.null',
+                'select': 'game_id,home_team,away_team,primary_play',
+            })
+        except Exception as e:
+            print(f'  {sport} fetch failed: {e}')
+            continue
+        for row in rows or []:
+            pp = row.get('primary_play') or {}
+            if isinstance(pp, str):
+                try: pp = json.loads(pp)
+                except Exception: pp = {}
+            if not isinstance(pp, dict): continue
+            tier = str(pp.get('tier') or '').upper()
+            if tier not in ('PRIME', 'STRONG'): continue
+            # Early-season tier cap
+            if today < EARLY_SEASON_TIER_CAP_UNTIL and tier == 'PRIME':
+                tier = 'STRONG'
+            picks.append({
+                'sport': sport,
+                'game_id': row.get('game_id'),
+                'game': f"{row.get('away_team')} @ {row.get('home_team')}",
+                'tier': tier,
+                'label': pp.get('label') or '',
+                'side': pp.get('side'),
+                'type': pp.get('type'),
+                'conviction': pp.get('conviction') or 0,
+                'sub': pp.get('sub'),
+            })
+    # Rank by conviction DESC — cap-at-5 applied at composition step
+    picks.sort(key=lambda p: -p.get('conviction', 0))
+    return picks
+
+
 def find_bucket_angle(games):
     """Identify the strongest bucket-bet angle across the slate.
     Looks for: starter with very bad innings 4-6 ERA + offense with strong
@@ -1977,6 +2032,22 @@ def build_card():
     except Exception as e:
         print(f'  ⚠ correlation_check skipped: {e}')
 
+    # 2026-09-02: multi-sport blend MVP — appendix section with NFL +
+    # NCAAF PRIME/STRONG picks alongside MLB. Sport-in-season priority
+    # (football priority Sept-Jan) means these should surface prominently
+    # on Sat CFB / Sun NFL days. Full unified ranking is post-launch
+    # refactor (see project_sweat_card_multi_sport_902 spec). This MVP
+    # attaches football picks as a separate list the app renders as an
+    # additional card group when non-empty. Auto-hide on off-days.
+    football_picks = fetch_football_picks(today)
+    # Cap at 5 (multi-sport peak day maximum). Rank by conviction already
+    # applied in fetch_football_picks.
+    football_picks = football_picks[:5]
+    if football_picks:
+        print(f'  🏈 football picks appended: {len(football_picks)} '
+              f'({sum(1 for p in football_picks if p["sport"]=="NFL")} NFL + '
+              f'{sum(1 for p in football_picks if p["sport"]=="NCAAF")} NCAAF)')
+
     card = {
         "slate_date": today,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1989,6 +2060,10 @@ def build_card():
         "secondary_lock": yrfi_lock,          # 🔒 second-tier audited play
         "potd": potd.get("data") if potd else None,
         "potd_narrative": (potd or {}).get("narrative"),
+        # 2026-09-02: football blend appendix — NFL/NCAAF PRIME+STRONG
+        # picks alongside MLB. Empty on off-days. Early-season tier cap
+        # applied through 2026-09-22 (Week 3 end).
+        "football_picks": football_picks,
         "dawg": (
             {
                 "team": dawg.get("team"),

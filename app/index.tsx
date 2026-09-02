@@ -12079,6 +12079,42 @@ setJerryHistory(prev => {
       </View>
     )}
 
+    {/* 🏈 FOOTBALL BLEND (2026-09-02) — NFL + NCAAF PRIME/STRONG picks
+        alongside MLB on Sweat Card. Empty on off-days (server returns
+        empty array in football_picks). Early-season tier cap through
+        Sept 22 (server-side, no client logic). Sport-in-season priority
+        means these should be prominent Sat/Sun during football season. */}
+    {Array.isArray(sweatCard.football_picks) && sweatCard.football_picks.length > 0 && (
+      <View style={{marginBottom:14}}>
+        <View style={{flexDirection:'row',alignItems:'baseline',gap:6,marginBottom:6}}>
+          <Text style={{color:THEME.hrb,fontWeight:'800',fontSize:11,letterSpacing:0.8}}>🏈 FOOTBALL</Text>
+          <Text style={{color:THEME.textMuted,fontSize:10}}>{sweatCard.football_picks.length} pick{sweatCard.football_picks.length===1?'':'s'} · tier-capped Week 1-3</Text>
+        </View>
+        {sweatCard.football_picks.map((pick: any, i: number) => {
+          const tierColor = pick.tier === 'PRIME' ? THEME.accent
+                          : pick.tier === 'STRONG' ? THEME.sharp : THEME.textDim;
+          const sportIcon = pick.sport === 'NFL' ? '🏈' : pick.sport === 'NCAAF' ? '🎓' : '🏈';
+          return (
+            <View key={i} style={{
+              flexDirection:'row',alignItems:'center',gap:8,
+              paddingVertical:8,paddingHorizontal:10,marginBottom:4,
+              backgroundColor:THEME.surface,borderRadius:8,
+              borderLeftWidth:3,borderLeftColor:tierColor,
+            }}>
+              <Text style={{fontSize:16}}>{sportIcon}</Text>
+              <View style={{flex:1}}>
+                <Text style={{color:THEME.text,fontSize:13,fontWeight:'700'}} numberOfLines={1}>{pick.label || `${pick.side} ${pick.type?.toUpperCase()}`}</Text>
+                <Text style={{color:THEME.textDim,fontSize:11,marginTop:1}} numberOfLines={1}>{pick.game}</Text>
+              </View>
+              <View style={{backgroundColor:tierColor+'22',paddingHorizontal:8,paddingVertical:3,borderRadius:4}}>
+                <Text style={{color:tierColor,fontSize:10,fontWeight:'800'}}>{pick.tier}</Text>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    )}
+
     {/* ⚡ TOP PROPS — unified surface from sweat_card.top_props (server-driven,
         any PRIME/STRONG prop type, ranked by conviction). No client-side
         filtering or grading — backend is canonical. Falls back to legacy
