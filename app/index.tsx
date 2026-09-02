@@ -2401,6 +2401,16 @@ setEvData(evOpps.slice(0,20));
         extraSportKeys.push('americanfootball_nfl_preseason');
       }
       const allSportKeys = [primarySportKey, ...extraSportKeys];
+      // 2026-09-01: dropped `bookmakers=` allowlist filter. Prior 8-book
+      // filter (HRB/DK/FD/ESPN/MGM/Caesars/WHUS/bet365) meant NCAAF early-
+      // season games where those 8 hadn't posted yet returned 0 books →
+      // "All Book Lines" section showed empty despite other US books
+      // having lines up. Odds API without allowlist returns every book
+      // that has the game in the specified regions. `us,us2` regions
+      // gives all major US books. Result: All Book Lines populates for
+      // more games (esp. early-season NCAAF), users see full market
+      // width. HRB is still the "primary" book for the tile grid because
+      // it's contractual, but the panel now shows everyone.
       const oddsResults = await Promise.all(allSportKeys.map(sk =>
         axios.get('https://api.the-odds-api.com/v4/sports/' + sk + '/odds', {
           params: {
@@ -2408,7 +2418,6 @@ setEvData(evOpps.slice(0,20));
             regions: 'us,us2',
             markets: 'spreads,totals,h2h',
             oddsFormat: 'american',
-            bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,williamhill_us,bet365'
           }
         }).catch(() => ({data: []}))
       ));

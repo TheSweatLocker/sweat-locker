@@ -1494,6 +1494,13 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
   const [homeRecs, setHomeRecs] = React.useState<any[]>([]);
   const [market, setMarket] = React.useState<'spread'|'total'|'ml'>('spread');
   const [loading, setLoading] = React.useState(true);
+  // 2026-09-01: prior-season blend flag. When current season has < 5
+  // games in the overall spread filter for either team, we fall back
+  // to prior season data + display a badge so users know it's not
+  // this-season sample. Per user directive: Colorado 5-7 (2025) should
+  // stay visible after Week 1 win, not collapse to 1-0 (statistically
+  // meaningless). Threshold N=5 mirrors the rank-chip sample floor.
+  const [usingPriorSeason, setUsingPriorSeason] = React.useState<number | null>(null);
   const seasonForQuery = Number(season) || new Date().getFullYear();
 
   React.useEffect(() => {
@@ -1509,11 +1516,17 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
           .select('*').eq('sport', sport).eq('team', homeTeam).eq('season', seasonForQuery),
       ]);
       if (cancelled) return;
-      // Fallback to prior season if current-season is empty (Week 1
-      // scenario for football; matches project_ncaaf_ready_809 pattern).
       let ar = Array.isArray(awayR?.data) ? awayR.data : [];
       let hr = Array.isArray(homeR?.data) ? homeR.data : [];
-      if (ar.length === 0 && hr.length === 0 && seasonForQuery > 2020) {
+      // Sample-size gauge: overall spread record (proxy for total game count)
+      const _gamesFor = (rows: any[]) => {
+        const overall = rows.find(r => r.market === 'spread' && r.filter === 'overall');
+        return overall ? (Number(overall.games) || 0) : 0;
+      };
+      const awayGames = _gamesFor(ar);
+      const homeGames = _gamesFor(hr);
+      const priorNeeded = (awayGames < 5 || homeGames < 5) && seasonForQuery > 2020;
+      if (priorNeeded) {
         const prev = seasonForQuery - 1;
         const [aP, hP] = await Promise.all([
           client.from('team_situational_records')
@@ -1522,8 +1535,17 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
             .select('*').eq('sport', sport).eq('team', homeTeam).eq('season', prev),
         ]);
         if (cancelled) return;
-        ar = Array.isArray(aP?.data) ? aP.data : [];
-        hr = Array.isArray(hP?.data) ? hP.data : [];
+        const arP = Array.isArray(aP?.data) ? aP.data : [];
+        const hrP = Array.isArray(hP?.data) ? hP.data : [];
+        // Use prior only if it actually has data (avoid showing empty)
+        if (arP.length > 0 || hrP.length > 0) {
+          ar = arP; hr = hrP;
+          setUsingPriorSeason(prev);
+        } else {
+          setUsingPriorSeason(null);
+        }
+      } else {
+        setUsingPriorSeason(null);
       }
       setAwayRecs(ar); setHomeRecs(hr);
       setLoading(false);
@@ -1558,6 +1580,24 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
 
   return (
     <View style={{gap: 10}}>
+      {/* 2026-09-01: prior-season badge when sample too thin for
+          current season (<5 games). Prevents "1-0" early-season noise
+          from displacing prior season's real signal (5-7 etc). */}
+      {usingPriorSeason && (
+        <View style={{
+          backgroundColor: C.warnDim, borderRadius: 8,
+          paddingVertical: 6, paddingHorizontal: 10,
+          borderLeftWidth: 3, borderLeftColor: C.warn,
+        }}>
+          <Text style={{color: C.warn, fontSize: 10, fontWeight: '800', letterSpacing: 0.06}}>
+            EARLY {seasonForQuery} SEASON · SHOWING {usingPriorSeason} RECORDS
+          </Text>
+          <Text style={{color: C.text, fontSize: 11, marginTop: 2, opacity: 0.85}}>
+            Current-season sample too thin (&lt;5 games). Prior season shown until enough games log.
+          </Text>
+        </View>
+      )}
+
       {/* Market segmented control */}
       <View style={rsStyles.tabBar}>
         <TabPill label={sport === 'MLB' ? 'Run Line' : 'Spread'} active={market==='spread'} onPress={() => setMarket('spread')} />
