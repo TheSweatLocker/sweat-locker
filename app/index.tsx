@@ -13783,7 +13783,14 @@ setJerryHistory(prev => {
         <Text style={{color:THEME.textDim,fontSize:11,flex:1,lineHeight:16}}>
           {propJerrySport === 'NFL' ? (
             <>
-              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NFL props — full playbook active.</Text> Same quant treatment as MLB — L4-L6 player form, defensive matchup, model projection edges. Live for regular season.
+              {/* 2026-09-01: banner rewritten pre-App-Store-submit. Prior copy
+                  said "full playbook active. Live for regular season" while
+                  the body of this same screen renders "🚧 Playbook still
+                  building for NFL" (index.tsx:14344) — App Reviewers flag
+                  that kind of contradictory copy as "looks unfinished." NFL
+                  props require an RPC + registry wire (deferred post-launch);
+                  banner now matches the actual state. */}
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NFL props — coming this season.</Text> Full playbook (player L4-L6 form, defensive matchup, model projection edges) rolls out during regular season as Week 1-3 sample accumulates.
             </>
           ) : propJerrySport === 'NHL' ? (
             <>

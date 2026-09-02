@@ -417,9 +417,16 @@ export default function GameDetailV2({
           <CohortsPanel ctx={ctx} />
         </Expander>
 
-        <Expander title="Game Props" badge={`${gameProps.length} signal${gameProps.length === 1 ? '' : 's'}`}>
-          <GamePropsPanel props={gameProps} />
-        </Expander>
+        {/* 2026-09-01: gate Game Props expander to sports with actual
+            prop data. Prior version rendered "Game Props · 0 signals"
+            expander header on every NFL/NCAAF/etc. game (fetch is
+            MLB-only at GameDetailV2.tsx:284-295), making cards look
+            unfinished. Show only when we actually have props. */}
+        {gameProps.length > 0 && (
+          <Expander title="Game Props" badge={`${gameProps.length} signal${gameProps.length === 1 ? '' : 's'}`}>
+            <GamePropsPanel props={gameProps} />
+          </Expander>
+        )}
 
         <Section title="Your Book · Hard Rock Bet" hint="tap to add parlay or log pick">
           <YourBookTiles
