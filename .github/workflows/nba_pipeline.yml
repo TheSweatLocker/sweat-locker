@@ -283,5 +283,15 @@ jobs:
           cd mlb_pipeline
           python audit_sharp_source_calibration.py --sport NBA || echo "NBA sharp source calibration failed (non-fatal, likely offseason)"
 
+      # 2026-09-02: Split — signal-pattern rolling hit rates (NBA).
+      - name: Refresh signal pattern registry (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_signal_patterns.py --sport NBA || echo "NBA signal patterns failed (non-fatal)"
+
       # Model / card generation: Elo model runs inside nba_game_context.py
       # (enrich_elo). Card generation deferred until preseason validates.

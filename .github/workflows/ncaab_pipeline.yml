@@ -279,6 +279,17 @@ jobs:
           cd mlb_pipeline
           python audit_sharp_source_calibration.py --sport NCAAB || echo "NCAAB sharp source calibration failed (non-fatal)"
 
+      # 2026-09-02: Split — signal-pattern rolling hit rates (NCAAB).
+      - name: Refresh signal pattern registry (NCAAB)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_signal_patterns.py --sport NCAAB || echo "NCAAB signal patterns failed (non-fatal)"
+
       - name: NCAAB — Panel model (KenPom + Torvik + Haslam average)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true

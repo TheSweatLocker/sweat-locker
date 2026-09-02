@@ -496,3 +496,14 @@ jobs:
         run: |
           cd mlb_pipeline
           python audit_sharp_source_calibration.py --sport NCAAF || echo "NCAAF sharp source calibration failed"
+
+      # 2026-09-02: Split — signal-pattern rolling hit rates (NCAAF).
+      - name: Refresh signal pattern registry (NCAAF)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_signal_patterns.py --sport NCAAF || echo "NCAAF signal patterns failed"

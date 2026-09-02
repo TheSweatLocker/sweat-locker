@@ -162,6 +162,16 @@ jobs:
           cd mlb_pipeline
           python audit_sharp_source_calibration.py --sport NHL || echo "NHL sharp source calibration failed (non-fatal)"
 
+      # 2026-09-02: Split — signal-pattern rolling hit rates (NHL).
+      - name: Refresh signal pattern registry (NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_signal_patterns.py --sport NHL || echo "NHL signal patterns failed (non-fatal)"
+
       # Note: NHL ensemble scoring happens inside nhl_game_context.py's
       # upsert path via _apply_ensemble (same as MLB pattern). Signals
       # in signal_sources (sport='NHL') fire automatically once tendency

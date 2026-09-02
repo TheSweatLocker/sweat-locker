@@ -1330,6 +1330,17 @@ jobs:
           cd mlb_pipeline
           python audit_external_source_calibration.py --sport MLB || echo "external calibration audit failed (non-fatal)"
 
+      # 2026-09-02: Split — signal-pattern rolling hit rates (MLB). Powers
+      # the "does this pattern hit?" inline chip context on Split cards.
+      - name: Refresh signal pattern registry (MLB)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_signal_patterns.py --sport MLB || echo "MLB signal patterns failed"
+
       # 2026-09-01: Vault Match pattern recompute — proprietary
       # system-detected patterns (see project_vault_match_901). Runs
       # after external calibration since some patterns depend on
