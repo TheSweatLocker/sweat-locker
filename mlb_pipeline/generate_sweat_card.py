@@ -2048,6 +2048,49 @@ def build_card():
               f'({sum(1 for p in football_picks if p["sport"]=="NFL")} NFL + '
               f'{sum(1 for p in football_picks if p["sport"]=="NCAAF")} NCAAF)')
 
+    # 2026-09-02 UNIFIED TOP_PICKS (methodical refactor per user directive).
+    # Merges MLB top_8 + football_picks into ONE ranked list. App can
+    # render either the legacy top_8+football sections OR this unified
+    # list (backwards compatible during rollout). Ranking rules:
+    #   1. Conviction DESC (highest first)
+    #   2. Sport-in-season priority tiebreak (football Sept-Jan, MLB Apr-Sep)
+    #   3. Cap: 5 on multi-sport peak days (Sat/Sun), else 4
+    # Sport tag on each pick lets app render sport emoji + drive tap-to-detail.
+    _weekday = datetime.now(timezone.utc).weekday()  # Mon=0..Sun=6
+    _multi_sport_peak = _weekday in (5, 6) and bool(football_picks)  # Sat/Sun w/ football
+    _unified_cap = 5 if _multi_sport_peak else 4
+    _now_month = datetime.now(timezone.utc).month
+    _football_priority = _now_month in (9, 10, 11, 12, 1)  # Sept-Jan = football priority
+
+    def _priority_weight(sport: str) -> int:
+        # Higher = ranks first on ties
+        if _football_priority and sport in ('NFL', 'NCAAF'): return 10
+        if sport == 'MLB': return 5 if _football_priority else 10
+        return 1
+
+    _unified_candidates = []
+    # MLB from top_8_curated
+    for p in (top_8_curated or []):
+        _unified_candidates.append({
+            **p,
+            'sport': p.get('sport', 'MLB'),
+            '_conviction': p.get('conviction') or p.get('sweat_score') or 0,
+        })
+    # Football
+    for p in football_picks:
+        _unified_candidates.append({
+            **p,
+            '_conviction': p.get('conviction') or 0,
+        })
+    # Sort by (priority_weight DESC, conviction DESC)
+    _unified_candidates.sort(
+        key=lambda p: (-_priority_weight(p.get('sport') or 'MLB'), -p.get('_conviction', 0))
+    )
+    unified_top_picks = _unified_candidates[:_unified_cap]
+    if unified_top_picks:
+        print(f'  🎯 unified top_picks: {len(unified_top_picks)} '
+              f'(cap={_unified_cap} · football_priority={_football_priority})')
+
     card = {
         "slate_date": today,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -2064,6 +2107,13 @@ def build_card():
         # picks alongside MLB. Empty on off-days. Early-season tier cap
         # applied through 2026-09-22 (Week 3 end).
         "football_picks": football_picks,
+        # 2026-09-02 unified cross-sport ranked top picks (methodical
+        # refactor). App may render this instead of top_8+football_picks
+        # for a single-scroll experience. Backwards compat: legacy fields
+        # remain populated so app can defer render swap.
+        "unified_top_picks": unified_top_picks,
+        "unified_top_picks_cap": _unified_cap,
+        "unified_football_priority": _football_priority,
         "dawg": (
             {
                 "team": dawg.get("team"),
