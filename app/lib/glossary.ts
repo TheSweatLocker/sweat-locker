@@ -33,6 +33,8 @@ export const GLOSSARY: Record<string, {label?: string; help: string}> = {
   'V4': {help: 'V4 XGBoost — our machine-learning runs model trained on ~5 seasons of MLB games. Best for direction, weaker for exact totals.'},
   'PANEL': {help: 'Panel projection — averages 4 external projection sources into a stable "market consensus" baseline for totals.'},
   'JERRY': {help: 'LLM synthesis narrator — reads all model + cohort + splits data and writes the plain-english call. Not a model itself, just the translator.'},
+  'CONF': {help: 'Signal Confluence — a net count of how many of our 40+ situational rules (cohorts, tendencies, sharp-money patterns, cohort splits) fire on each side. Positive number = home advantage; negative = away. Different from V3/V4/MC which project a spread or total — CONF is a "how many of our rules agree" meter. Bigger absolute value = broader agreement.'},
+  'V3': {help: 'V3 legacy projection — earlier formula-based model for spread/total. Kept for cross-check against V4 (ML model). Divergence between V3 and V4 flags noisy games.'},
   'lens_consensus': {help: '5-of-6 model lenses agreeing on a side. Highest-hitting configuration we track.'},
 
   // ─── MLB PITCHING ─────────────────────────────────────────────────
