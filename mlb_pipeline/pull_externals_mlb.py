@@ -305,10 +305,24 @@ def _team_in_text(text: str, team_full_name: str) -> bool:
 def _validate_pick_attribution(pick, slate: list) -> bool:
     """Return True if this pick's raw_text mentions the resolved game's
     home or away team (or if pick surface is 'prop' or 'raw_text' is
-    empty — no validation possible)."""
+    empty — no validation possible).
+
+    2026-09-02 fix: sources whose raw_text is source-metadata (e.g.
+    OddsCrowd "OddsCrowd Moneyline: AWAY money 65%/bets 35%") don't
+    embed team names at all. Blocking those was a false positive —
+    the ORIGINAL bug was pick-text-based sources (pickswise, dimers,
+    action) where raw_text literally names a team. Validation is now
+    OPT-IN via _VALIDATE_ATTRIBUTION_SOURCES allowlist. Sources on
+    the allowlist get validated; others pass through.
+    """
     surface = getattr(pick, 'surface', None)
     if surface == 'prop':  # props reference players not teams
         return True
+    if surface == 'total':  # totals are OVER/UNDER — no team attribution anyway
+        return True
+    source = getattr(pick, 'source', None)
+    if source not in _VALIDATE_ATTRIBUTION_SOURCES:
+        return True  # source's raw_text doesn't embed team names → don't block
     raw_text = getattr(pick, 'raw_text', None)
     if not raw_text:
         return True  # nothing to validate against
@@ -325,6 +339,20 @@ def _validate_pick_attribution(pick, slate: list) -> bool:
     print(f'  🚨 CROSS-ATTRIBUTION BLOCKED: {getattr(pick,"source","?")} raw="{raw_text[:70]}" '
           f'resolved to {away}@{home} but neither team appears in text')
     return False
+
+
+# 2026-09-02: sources whose raw_text embeds team names (validation eligible).
+# Sources NOT in this set have raw_text that's source-metadata (like OddsCrowd's
+# "OddsCrowd Moneyline: AWAY money 65%") and can't be validated against team
+# tokens — validating them = 100% false positives, breaking the pipeline.
+# Excluded intentionally: oddscrowd (source metadata), sbr (JSON summary),
+# covers (uses "away/home" labels not team names), scoresandodds (raw JSON).
+_VALIDATE_ATTRIBUTION_SOURCES = {
+    'pickswise', 'action', 'dimers', 'pickdawgz', 'vsin',
+    'cbs', 'docsports', 'bettingpros',
+    # betfirm has capper-name prefixes but usually mentions team → validate
+    'betfirm',
+}
 
 
 def write_picks(picks: list, pull_id: Optional[str]) -> int:
