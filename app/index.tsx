@@ -13485,10 +13485,40 @@ setJerryHistory(prev => {
   const isAmRead = gen ? (gen.getUTCHours() < 17) : false;
   const conv = jr.conviction || 0;
   const isPass = String(jr.call_market || '').toLowerCase() === 'pass';
+  // 2026-09-01 ROOT-CAUSE FIX (Padres/Reds "Okay + Play" badge conflict):
+  // Jerry chip color used to derive from jr.conviction thresholds
+  // INDEPENDENT of the strip's tier chip (which uses TIER_COLOR[pp.tier]).
+  // For games where resolver stamped LEAN but Jerry synthesized conv>=75,
+  // Jerry chip rendered bright accent gold ("Play") while strip's tier
+  // chip rendered muted accent_deep ("Okay") — same pick, two colors,
+  // two visual "confidence signals." Universal bug across every sport
+  // that renders both chips.
+  //
+  // Fix: single source of truth. When resolver stamped a tier for this
+  // game, Jerry chip inherits that tier's color (via TIER_COLOR from
+  // theme). Both chips now render identical colors, always. Fallback to
+  // conviction-based only when no resolver tier exists (jr-only case,
+  // e.g. engine passed but Jerry has a directional read).
+  const _sportMap: any =
+    gamesSport === 'NFL'   ? (nflGameContextMap || {}) :
+    gamesSport === 'NCAAF' ? (ncaafGameContextMap || {}) :
+    gamesSport === 'MLB'   ? (mlbGameContext || {}) :
+    {};
+  let _ctx: any = _sportMap[game.id] || _sportMap[game.home_team] || _sportMap[game.away_team];
+  if (!_ctx) {
+    _ctx = Object.values(_sportMap).find((c: any) =>
+      c && (c.home_team === game.home_team || c.away_team === game.away_team));
+  }
+  let _pp = _ctx?.primary_play;
+  if (typeof _pp === 'string') { try { _pp = JSON.parse(_pp); } catch { _pp = null; } }
+  const _resolverTierColor = _pp?.tier && TIER_COLOR[(_pp.tier as any) as 'PRIME'|'STRONG'|'LEAN'|'READ'|'LIGHT'|'PASS']
+                             ? TIER_COLOR[(_pp.tier as any) as 'PRIME'|'STRONG'|'LEAN'|'READ'|'LIGHT'|'PASS'] : null;
   const chipColor = isPass ? THEME.textDim
-                  : conv >= 75 ? THEME.accent
-                  : conv >= 60 ? THEME.sharp
-                  : THEME.warn;
+                  : _resolverTierColor
+                    ? _resolverTierColor
+                    : conv >= 75 ? THEME.accent
+                    : conv >= 60 ? THEME.sharp
+                    : THEME.warn;
   // 2026-08-09 fix: reconstruct badge text from market/side/line when the
   // LLM omitted call_text. Previously fell back to the literal string
   // 'Pass' which misled users into thinking the pick was a PASS when the
