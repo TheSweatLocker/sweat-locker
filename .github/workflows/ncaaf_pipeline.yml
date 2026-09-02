@@ -497,6 +497,19 @@ jobs:
           cd mlb_pipeline
           python audit_sharp_source_calibration.py --sport NCAAF || echo "NCAAF sharp source calibration failed"
 
+      # 2026-09-02: AP top-25 rankings pull. Populates home_ap_rank +
+      # away_ap_rank on ncaaf_game_context. Powers ⭐ Ranked matchup badge.
+      - name: Pull NCAAF AP rankings (CFBD)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_rankings_pull.py || echo "NCAAF rankings pull failed (non-fatal)"
+
       # 2026-09-02: NCAAF injuries pull from ESPN. Foundation for
       # ncaaf_mc_simulator Tier F QB-out penalty (post-launch consumer).
       # Bulk endpoint tried first; per-team fallback if bulk empty.

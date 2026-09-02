@@ -13749,6 +13749,18 @@ setJerryHistory(prev => {
     } catch { /* silent hide on parse error */ }
   }
 
+  // ⭐ Ranked matchup (NCAAF) — both teams in AP top-25. Reads
+  // home_ap_rank + away_ap_rank populated by ncaaf_rankings_pull.
+  // Silent-hide if either team unranked.
+  if (gamesSport === 'NCAAF') {
+    const _hr = Number(ctxAny?.home_ap_rank);
+    const _ar = Number(ctxAny?.away_ap_rank);
+    if (isFinite(_hr) && _hr >= 1 && _hr <= 25 && isFinite(_ar) && _ar >= 1 && _ar <= 25) {
+      _sweatBadges.push(<StatusChip key="rk" variant="custom" color={THEME.accent}
+                                     icon="⭐" label={`#${_ar} vs #${_hr}`} />);
+    }
+  }
+
   // ⚾ Ace on Mound (MLB) — starter with xERA ≤ 3.00. Elite pitcher
   // signal — usually means low totals, K prop upside, and defensive
   // strength for that side. Reads home_sp_xera / away_sp_xera from
