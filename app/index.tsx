@@ -13730,6 +13730,48 @@ setJerryHistory(prev => {
     }
   }
 
+  // 🌃 Prime-Time (NFL) — Thursday/Sunday/Monday Night Football games.
+  // Detects kickoff after 8pm ET. Uses nfl_game_context.kickoff_utc
+  // (populated by nfl_odds_pull.py). Silent-hide if field missing.
+  if (gamesSport === 'NFL' && ctxAny?.kickoff_utc) {
+    try {
+      const _k = new Date(ctxAny.kickoff_utc);
+      if (!isNaN(_k.getTime())) {
+        // Convert to ET (UTC-4 during DST, UTC-5 otherwise; use -4 as
+        // approximation — NFL season is DST for Sept-early-Nov which is
+        // most of the calendar). Prime-time = kickoff hour >= 20 (8pm ET).
+        const _etHour = (_k.getUTCHours() - 4 + 24) % 24;
+        if (_etHour >= 20) {
+          _sweatBadges.push(<StatusChip key="pt" variant="custom" color={THEME.hrb}
+                                         icon="🌃" label="PRIME-TIME" />);
+        }
+      }
+    } catch { /* silent hide on parse error */ }
+  }
+
+  // ⚾ Ace on Mound (MLB) — starter with xERA ≤ 3.00. Elite pitcher
+  // signal — usually means low totals, K prop upside, and defensive
+  // strength for that side. Reads home_sp_xera / away_sp_xera from
+  // mlb_game_context (populated by game_context.py starter fetch).
+  // Silent-hide when both starters have xERA null or > 3.00.
+  if (gamesSport === 'MLB') {
+    const _hxe = Number(ctxAny?.home_sp_xera);
+    const _axe = Number(ctxAny?.away_sp_xera);
+    const _homeAce = isFinite(_hxe) && _hxe > 0 && _hxe <= 3.00;
+    const _awayAce = isFinite(_axe) && _axe > 0 && _axe <= 3.00;
+    if (_homeAce && _awayAce) {
+      // Ace duel — both starters elite
+      _sweatBadges.push(<StatusChip key="ac" variant="custom" color={THEME.accent}
+                                     icon="⚾" label="ACE DUEL" />);
+    } else if (_homeAce) {
+      _sweatBadges.push(<StatusChip key="ac" variant="custom" color={THEME.accent}
+                                     icon="⚾" label="ACE H" />);
+    } else if (_awayAce) {
+      _sweatBadges.push(<StatusChip key="ac" variant="custom" color={THEME.accent}
+                                     icon="⚾" label="ACE A" />);
+    }
+  }
+
   // 🎯 Vault Match — MOAT PLAY. Proprietary system-detected patterns
   // (see project_vault_match_901). Server writes ctx.matched_patterns
   // as [{key,label,hit_pct,n,description,wilson_low,wilson_high,...}]
