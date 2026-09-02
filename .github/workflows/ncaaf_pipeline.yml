@@ -523,6 +523,18 @@ jobs:
           cd mlb_pipeline
           python ncaaf_injuries_espn_pull.py || echo "NCAAF injuries pull failed (non-fatal — table + puller ship as scaffold)"
 
+      # 2026-09-02: split dissent rollup — powers Vault Match dissent
+      # patterns for NCAAF once catalog extended.
+      - name: Refresh split_dissent_snapshots (NCAAF)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_split_dissent_rollup.py --sport NCAAF || echo "NCAAF split dissent rollup failed"
+
       # 2026-09-02: Split — signal-pattern rolling hit rates (NCAAF).
       - name: Refresh signal pattern registry (NCAAF)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'

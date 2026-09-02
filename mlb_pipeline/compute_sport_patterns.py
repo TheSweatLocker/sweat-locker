@@ -452,6 +452,71 @@ PATTERN_CATALOG = [
         'outcome': _rest_edge_underdog_outcome,
     },
 
+    # ─── External-source dissent (2026-09-02) ────────────────────────
+    # From project_dissent_audit_822: MAJ_when_CZ_dissents +16pp winner,
+    # 3_of_3_AGREE -11pp fade. Data source: split_dissent_snapshots
+    # populated nightly by compute_split_dissent_rollup.py. Guardrails
+    # (n>=15, hit>=65%, Wilson) still apply — patterns only render
+    # when they clear the threshold based on live-graded outcomes.
+    {
+        'sport': 'MLB',
+        'key': 'mlb_maj_when_cz_dissents_ml',
+        'label': 'MAJ · CZ Dissents',
+        'direction': 'BACK',
+        'description': 'MLB ML: 2 sources agree on sharp side, CZ (Split 2) dissents. Per dissent audit — the majority sharp side hits +16pp above baseline.',
+        'lookback_days': 90,
+        'matches': lambda g: (
+            (g.get('_dissent') or {}).get('ml', {}).get('agreement') == 'MAJ_2/3'
+            and (g.get('_dissent') or {}).get('ml', {}).get('dissenter') == 'cz'
+        ),
+        # Outcome: did the majority sharp side win?
+        'outcome': lambda g: _spread_outcome_home_covered(g) if (g.get('_dissent') or {}).get('ml', {}).get('majority_side') == 'HOME'
+                             else _spread_outcome_away_covered(g) if (g.get('_dissent') or {}).get('ml', {}).get('majority_side') == 'AWAY'
+                             else 'P',
+    },
+    {
+        'sport': 'MLB',
+        'key': 'mlb_maj_when_oc_dissents_ml',
+        'label': 'MAJ · OC Dissents',
+        'direction': 'BACK',
+        'description': 'MLB ML: 2 sources agree on sharp side, OC (Split 3) dissents. Per per_source_tracker_moat_818 — 77% hit rate.',
+        'lookback_days': 90,
+        'matches': lambda g: (
+            (g.get('_dissent') or {}).get('ml', {}).get('agreement') == 'MAJ_2/3'
+            and (g.get('_dissent') or {}).get('ml', {}).get('dissenter') == 'oc'
+        ),
+        'outcome': lambda g: _spread_outcome_home_covered(g) if (g.get('_dissent') or {}).get('ml', {}).get('majority_side') == 'HOME'
+                             else _spread_outcome_away_covered(g) if (g.get('_dissent') or {}).get('ml', {}).get('majority_side') == 'AWAY'
+                             else 'P',
+    },
+    {
+        'sport': 'MLB',
+        'key': 'mlb_all_3_agree_fade_ml',
+        'label': 'All-3 Agree FADE',
+        'direction': 'FADE',
+        'description': 'MLB ML: all 3+ external sources agree on sharp side. Per dissent audit — counter-intuitively, when everyone agrees they LOSE at -11pp (fade signal).',
+        'lookback_days': 90,
+        'matches': lambda g: (
+            (g.get('_dissent') or {}).get('ml', {}).get('agreement') == 'TRIPLE'
+        ),
+        # FADE: outcome = W when the majority (consensus) side LOST
+        'outcome': lambda g: (
+            'W' if (
+                ((g.get('_dissent') or {}).get('ml', {}).get('majority_side') == 'HOME'
+                 and _spread_outcome_home_covered(g) == 'L')
+                or
+                ((g.get('_dissent') or {}).get('ml', {}).get('majority_side') == 'AWAY'
+                 and _spread_outcome_away_covered(g) == 'L')
+            ) else 'L' if (
+                ((g.get('_dissent') or {}).get('ml', {}).get('majority_side') == 'HOME'
+                 and _spread_outcome_home_covered(g) == 'W')
+                or
+                ((g.get('_dissent') or {}).get('ml', {}).get('majority_side') == 'AWAY'
+                 and _spread_outcome_away_covered(g) == 'W')
+            ) else 'P'
+        ),
+    },
+
     # ─── NCAAF ───────────────────────────────────────────────────────
     {
         'sport': 'NCAAF',
@@ -482,9 +547,33 @@ PATTERN_CATALOG = [
 
 # ─── Data fetch ──────────────────────────────────────────────────────
 
+def _fetch_dissent_snapshots(sport: str, game_ids: list) -> dict:
+    """Return {game_id: {market: {agreement, dissenter, majority_side, n_sources}}}.
+    2026-09-02: powers dissent-based Vault Match patterns."""
+    if not game_ids: return {}
+    out = {}
+    for i in range(0, len(game_ids), 200):
+        batch = game_ids[i:i+200]
+        r = requests.get(
+            f'{SB}/rest/v1/split_dissent_snapshots?'
+            f'select=game_id,market,agreement,dissenter,majority_side,n_sources'
+            f'&sport=eq.{sport}'
+            f'&game_id=in.({",".join(str(g) for g in batch)})',
+            headers=H_READ, timeout=30,
+        )
+        if r.status_code == 200:
+            for row in r.json():
+                gid = str(row.get('game_id'))
+                mkt = row.get('market')
+                if gid and mkt:
+                    out.setdefault(gid, {})[mkt] = row
+    return out
+
+
 def fetch_games(sport: str, lookback_days: int) -> list:
     """Fetch graded game_context rows joined with results for a sport.
-    Returns merged dicts with pre-game ctx + post-game result fields."""
+    Returns merged dicts with pre-game ctx + post-game result fields.
+    2026-09-02: also merges split_dissent_snapshots per game/market."""
     cutoff = (_et_now().date() - timedelta(days=lookback_days)).isoformat()
     ctx_table = f'{sport.lower()}_game_context'
     res_table = f'{sport.lower()}_game_results'
@@ -527,14 +616,19 @@ def fetch_games(sport: str, lookback_days: int) -> list:
             for row in r.json():
                 res_by_gid[str(row.get('game_id'))] = row
 
-    # Merge: ctx + result. Only keep games with a result (graded).
+    # 2026-09-02: also fetch dissent snapshots for these games
+    dissent_by_gid = _fetch_dissent_snapshots(sport, game_ids)
+
+    # Merge: ctx + result + dissent snapshot. Only keep games with a result.
     merged = []
     for g in ctx_rows:
         gid = str(g.get('game_id'))
         res = res_by_gid.get(gid)
         if not res:
             continue
-        merged.append({**g, **res})
+        # Attach dissent snapshot dict keyed by market
+        # (e.g. game['_dissent']['ml'] = {'agreement':'MAJ_2/3', 'dissenter':'cz', ...})
+        merged.append({**g, **res, '_dissent': dissent_by_gid.get(gid, {})})
 
     return merged
 

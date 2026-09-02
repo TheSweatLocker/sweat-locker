@@ -1330,6 +1330,18 @@ jobs:
           cd mlb_pipeline
           python audit_external_source_calibration.py --sport MLB || echo "external calibration audit failed (non-fatal)"
 
+      # 2026-09-02: split dissent rollup — powers Vault Match
+      # dissent patterns (MAJ_when_CZ_dissents, 3_of_3_agree fade).
+      # Reads public_splits_v2, writes split_dissent_snapshots.
+      - name: Refresh split_dissent_snapshots (MLB)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_split_dissent_rollup.py --sport MLB || echo "MLB split dissent rollup failed"
+
       # 2026-09-02: Split — signal-pattern rolling hit rates (MLB). Powers
       # the "does this pattern hit?" inline chip context on Split cards.
       - name: Refresh signal pattern registry (MLB)
