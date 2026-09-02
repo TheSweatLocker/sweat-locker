@@ -520,6 +520,25 @@ PATTERN_CATALOG = [
     # ─── NCAAF ───────────────────────────────────────────────────────
     {
         'sport': 'NCAAF',
+        'key': 'ncaaf_to_lucky_fade',
+        'label': 'TO Luck FADE',
+        'direction': 'FADE',
+        'description': 'NCAAF team with TO margin >= +8 for the season. Turnover luck regresses toward mean — fade the hot-margin team, back the opponent.',
+        'lookback_days': 730,
+        'matches': lambda g: (
+            (_f_safe(g.get('home_to_margin')) is not None and _f_safe(g.get('home_to_margin')) >= 8)
+            or
+            (_f_safe(g.get('away_to_margin')) is not None and _f_safe(g.get('away_to_margin')) >= 8)
+        ),
+        # Fade the TO-lucky team = back the OTHER team
+        'outcome': lambda g: (
+            _spread_outcome_away_covered(g) if (_f_safe(g.get('home_to_margin')) or 0) >= 8
+            else _spread_outcome_home_covered(g) if (_f_safe(g.get('away_to_margin')) or 0) >= 8
+            else 'P'
+        ),
+    },
+    {
+        'sport': 'NCAAF',
         'key': 'ncaaf_top10_trap_fade',
         'label': 'Top-10 Trap',
         'direction': 'FADE',

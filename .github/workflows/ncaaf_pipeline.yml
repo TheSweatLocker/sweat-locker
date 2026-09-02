@@ -497,6 +497,20 @@ jobs:
           cd mlb_pipeline
           python audit_sharp_source_calibration.py --sport NCAAF || echo "NCAAF sharp source calibration failed"
 
+      # 2026-09-02: NCAAF turnover margin computation. Rolls up
+      # season TO margin per team from ncaaf_team_stats, patches
+      # home_to_margin + away_to_margin on ncaaf_game_context.
+      # Powers TO Luck FADE Vault Match pattern.
+      - name: Compute NCAAF turnover margin
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_to_margin_pull.py || echo "NCAAF TO margin failed (non-fatal)"
+
       # 2026-09-02: NCAAF FCS chalk scorer. Fills projected_spread on
       # FBS-vs-FCS games where the FCS side has no SP+ data. Cheap
       # rule-based model (FBS_SP - FCS_default_-28 + HFA). Runs AFTER
