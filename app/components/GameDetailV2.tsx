@@ -104,7 +104,14 @@ const C = {
   borderStrong: '#3b4656',
   text: '#e6ebef',
   textMuted: '#7a8894',
-  textDim: '#556270',
+  // 2026-09-01: bumped textDim from '#556270' (contrast 3.3:1 on
+  // C.bg — borderline unreadable, user reported as "black text" in
+  // Team Tendencies + Recent Schedule + Team Stats cards) to '#8898a5'
+  // (contrast 7.5:1, WCAG AAA). Every card that uses textDim for
+  // "non-advantaged team stat" or muted labels benefits — TeamTendencies,
+  // NCAAFTeamMatchup, NBAFourFactors, NCAABEfficiency, LensGrid, all
+  // three new Tier 1 cards (Recent Schedule, Situational, Team Stats).
+  textDim: '#8898a5',
   accent: '#00c785',
   accentDim: 'rgba(0,199,133,0.14)',
   accentBg: 'rgba(0,199,133,0.10)',
@@ -2069,7 +2076,14 @@ function NCAAFSlot({ctx, game}: any) {
       <NCAAFTeamMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NCAAFRostersRichCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <SportWeatherCard ctx={ctx} />
-      <TeamTendenciesCard sport="NCAAF" ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      {/* 2026-09-01: TeamTendenciesCard removed — superseded by the
+          universal SituationalCard which shows the same data with a
+          cleaner sub-tab UX (Spread/Total/ML × 4 filters) and reads
+          from team_situational_records matview (all sports, one query
+          pattern). TeamTendenciesCard function still defined below for
+          rollback safety; can be deleted along with the wide-format
+          {sport}_team_home_road_tendencies matviews once we're sure
+          nothing else references them. */}
     </>
   );
 }
@@ -2720,7 +2734,7 @@ function NFLSlot({ctx, game}: any) {
       <NFLQBMatchupCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NFLTeamMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NFLInjuriesCard   ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
-      <TeamTendenciesCard sport="NFL" ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      {/* TeamTendenciesCard removed 2026-09-01 — see NCAAF slot note. */}
       <NFLSituationalCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
     </>
   );
@@ -3063,7 +3077,7 @@ function NBASlot({ctx, game}: any) {
       <NBARestB2BCard      ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NBAInjuriesCard     ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NBAFourFactorsCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
-      <TeamTendenciesCard sport="NBA" ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      {/* TeamTendenciesCard removed 2026-09-01 — see NCAAF slot note. */}
     </>
   );
 }
