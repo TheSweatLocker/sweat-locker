@@ -58,17 +58,39 @@ BREAKEVEN = 0.524      # -110 breakeven
 
 
 def _tier_for(hit_rate: float, n: int) -> str | None:
+    # 2026-09-02 CALIBRATION TIGHTENED. Prior thresholds treated
+    # anything hit_rate >= 0.50 as neutral UNVALIDATED. But -110 juice
+    # break-even is 52.4% — signals hitting 47.1-52.3% are LOSING money
+    # yet were labeled "neutral evidence" and left in the stack. Playbook
+    # gate's ANTI_VALIDATED filter therefore never triggered on the biggest
+    # class of drag signals (prop:l5_confirm at 52.3% n=2406 was UNVALIDATED
+    # despite consistently losing money at every published price).
+    #
+    # New bands (matched to -110 juice math + sample-size confidence):
+    #   VALIDATED       hit_rate >= 0.55 AND n >= 50   ← real edge
+    #   DISCOVERY       hit_rate >= 0.55 AND n <  50   ← promising, thin
+    #   UNVALIDATED     hit_rate >= 0.53 AND n >= 50   ← above juice, no clear edge
+    #   ANTI_VALIDATED  hit_rate <= 0.52 AND n >= 100  ← proven money loser
+    #     * bumped n threshold from 50 -> 100 for anti tier (higher
+    #       confidence needed before flagging fade)
+    #     * ceiling raised 0.47 -> 0.52 (juice-break-even boundary)
+    # See prop_prime_gate_902 + FULL_AUDIT_902.md for context.
     """Classify signal into registry tier by empirical evidence."""
     if hit_rate is None or n < MIN_SAMPLE:
         return None
-    if hit_rate <= 0.47 and n >= 50:
+    # 2026-09-02 tightened bands per docstring above.
+    # ANTI splits by severity — extreme fades need less sample:
+    #   hit_rate <= 0.48 AND n >= 50   → ANTI (>=4pp below juice-BE)
+    #   hit_rate <= 0.52 AND n >= 100  → ANTI (marginal drag, higher n)
+    if (hit_rate <= 0.48 and n >= 50) or (hit_rate <= 0.52 and n >= 100):
         return 'ANTI_VALIDATED'
     if hit_rate >= 0.55 and n >= 50:
         return 'VALIDATED'
     if hit_rate >= 0.55 and n >= MIN_SAMPLE:
         return 'DISCOVERY'
-    if hit_rate >= 0.50 and n >= 50:
+    if hit_rate >= 0.53 and n >= 50:
         return 'UNVALIDATED'
+    # Fallthrough — 0.52-0.53 or small-sample zones stay UNVALIDATED
     return 'UNVALIDATED'
 
 
