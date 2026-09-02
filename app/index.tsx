@@ -13690,9 +13690,17 @@ setJerryHistory(prev => {
     const _best = _vm[0]; // pre-sorted server-side by hit_pct DESC
     if (_best?.label && _best?.hit_pct != null) {
       const _hp = Math.round(Number(_best.hit_pct));
+      // Two badge types per direction (2026-09-01):
+      //   BACK  → 🎯 Vault Match  (accent color, back-the-side)
+      //   FADE  → ⚠️ Vault Fade   (warn color, fade-the-side)
+      // Icon + color differentiate at a glance; label carries the
+      // pattern name; value shows hit% + sample size.
+      const _isFade = String(_best.direction || 'BACK').toUpperCase() === 'FADE';
+      const _icon = _isFade ? '⚠️' : '🎯';
+      const _color = _isFade ? THEME.warn : THEME.accent;
       // Prepend to top of badge stack so Vault Match wins cap-slice tie-break
       _sweatBadges.unshift(
-        <StatusChip key="vm" variant="custom" color={THEME.accent} icon="🎯"
+        <StatusChip key="vm" variant="custom" color={_color} icon={_icon}
                     label={String(_best.label).toUpperCase()}
                     value={`${_hp}% · n${_best.n}`} />
       );

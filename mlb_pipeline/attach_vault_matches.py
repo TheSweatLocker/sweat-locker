@@ -205,6 +205,7 @@ def run(sport_filter: Optional[str] = None, dry_run: bool = False) -> None:
                 matched.append({
                     'key': pattern['key'],
                     'label': pattern['label'],
+                    'direction': pattern.get('direction') or metric.get('direction') or 'BACK',
                     'description': pattern.get('description') or metric.get('pattern_description') or '',
                     'hit_pct': hit_pct,
                     'n': n_total,

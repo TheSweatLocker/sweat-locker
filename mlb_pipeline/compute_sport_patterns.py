@@ -123,6 +123,158 @@ def _spread_outcome_away_covered(game: dict) -> str:
     return 'P'
 
 
+def _pp_result_outcome_faded(game: dict) -> str:
+    """FADE variant of _pp_result_outcome — returns W when the primary_play
+    side LOST (i.e., the fade won). For FADE patterns whose implied bet
+    is the opposite of pp.side. Push stays push."""
+    oc = _pp_result_outcome(game)
+    if oc == 'W': return 'L'
+    if oc == 'L': return 'W'
+    return oc  # P stays P
+
+
+def _road_favorite_spread_fn(threshold: float):
+    """Factory: matches_fn that fires when road team is favored by
+    `threshold` or more. NFL/NCAAF convention: close_spread > 0 = home
+    favored, so road fav = close_spread < -threshold."""
+    def _fn(g: dict) -> bool:
+        cs = g.get('close_spread')
+        if cs is None: return False
+        try:
+            return float(cs) <= -threshold
+        except (ValueError, TypeError):
+            return False
+    return _fn
+
+
+def _rest_edge_underdog_fn(threshold_days: int):
+    """Factory: matches_fn that fires when the underdog has at least
+    `threshold_days` more rest than the favorite. NFL convention:
+    days_rest_home / days_rest_away in ctx; close_spread > 0 = home fav."""
+    def _fn(g: dict) -> bool:
+        cs = g.get('close_spread')
+        rh = g.get('days_rest_home')
+        ra = g.get('days_rest_away')
+        if cs is None or rh is None or ra is None:
+            return False
+        try:
+            cs = float(cs); rh = int(rh); ra = int(ra)
+        except (ValueError, TypeError):
+            return False
+        # Home favored (cs > 0) → dog is away → back away if ra - rh >= threshold
+        if cs > 0 and (ra - rh) >= threshold_days:
+            return True
+        # Away favored (cs < 0) → dog is home → back home if rh - ra >= threshold
+        if cs < 0 and (rh - ra) >= threshold_days:
+            return True
+        return False
+    return _fn
+
+
+def _rest_edge_underdog_outcome(g: dict) -> str:
+    """W when the underdog with rest edge covered. Determines which side
+    from close_spread sign, then reads spread_result."""
+    cs = g.get('close_spread')
+    if cs is None: return 'P'
+    try:
+        cs = float(cs)
+    except (ValueError, TypeError):
+        return 'P'
+    if cs > 0:  # dog is away
+        return _spread_outcome_away_covered(g)
+    if cs < 0:  # dog is home
+        return _spread_outcome_home_covered(g)
+    return 'P'
+
+
+def _public_overload_pp_fn(threshold_pct: float):
+    """Factory: matches_fn — public betting >= threshold on primary_play
+    side. Reads splits_summary.per_market for the pp market/side, checks
+    public bet% or money%. If splits_summary shape doesn't expose this,
+    returns False (silent skip)."""
+    def _fn(g: dict) -> bool:
+        pp = _primary_play(g)
+        pp_side = str(pp.get('side') or '').upper()
+        pp_type = str(pp.get('type') or '').lower()
+        if not pp_side or not pp_type:
+            return False
+        ss = g.get('splits_summary') or {}
+        if not isinstance(ss, dict): return False
+        pm = ss.get('per_market') or {}
+        # Map pp.type to splits key
+        market_key = {'ml': 'ml', 'rl': 'rl', 'spread': 'rl', 'total': 'total'}.get(pp_type)
+        if not market_key: return False
+        market = pm.get(market_key) or {}
+        # For side-based markets (ml/rl), splits store per-side pct
+        side_key = pp_side.lower()  # 'home'/'away'/'over'/'under'
+        side_data = market.get(side_key) or {}
+        # Try common field names — bet_pct, public_pct, tickets_pct
+        for k in ('public_pct', 'bet_pct', 'tickets_pct', 'public_bets_pct'):
+            v = side_data.get(k)
+            if v is not None:
+                try:
+                    return float(v) >= threshold_pct
+                except (ValueError, TypeError):
+                    pass
+        return False
+    return _fn
+
+
+def _confluence_backs_pp_fn(min_abs_net: int):
+    """Factory: matches_fn — signal_confluence_net has absolute value
+    >= min_abs_net AND agrees direction with primary_play side."""
+    def _fn(g: dict) -> bool:
+        net = g.get('signal_confluence_net')
+        if net is None: return False
+        try:
+            net = int(net)
+        except (ValueError, TypeError):
+            return False
+        if abs(net) < min_abs_net: return False
+        pp = _primary_play(g)
+        pp_side = str(pp.get('side') or '').upper()
+        # net > 0 = home, net < 0 = away
+        if net > 0 and pp_side == 'HOME': return True
+        if net < 0 and pp_side == 'AWAY': return True
+        return False
+    return _fn
+
+
+def _sp_plus_underdog_fn(g: dict) -> bool:
+    """NCAAF: SP+ predicts the market underdog. Fires when the sign of
+    SP+ implied margin disagrees with the sign of close_spread."""
+    sp_h = g.get('sp_plus_pred_home_pts')
+    sp_a = g.get('sp_plus_pred_away_pts')
+    cs = g.get('close_spread')
+    if sp_h is None or sp_a is None or cs is None: return False
+    try:
+        sp_margin = float(sp_h) - float(sp_a)  # positive = home favored
+        cs = float(cs)  # positive = home favored (nflverse convention)
+    except (ValueError, TypeError):
+        return False
+    # SP+ favors home (sp_margin > 0) but market favors away (cs < 0) → back home dog
+    if sp_margin > 3.0 and cs < -3.0: return True
+    # SP+ favors away (sp_margin < 0) but market favors home (cs > 0) → back away dog
+    if sp_margin < -3.0 and cs > 3.0: return True
+    return False
+
+
+def _sp_plus_underdog_outcome(g: dict) -> str:
+    """Grade: did the SP+-favored (market underdog) side cover?"""
+    sp_h = g.get('sp_plus_pred_home_pts')
+    sp_a = g.get('sp_plus_pred_away_pts')
+    if sp_h is None or sp_a is None: return 'P'
+    try:
+        sp_margin = float(sp_h) - float(sp_a)
+    except (ValueError, TypeError):
+        return 'P'
+    if sp_margin > 0:  # SP+ favors home
+        return _spread_outcome_home_covered(g)
+    if sp_margin < 0:  # SP+ favors away
+        return _spread_outcome_away_covered(g)
+    return 'P'
+
+
 # ─── PATTERN CATALOG ─────────────────────────────────────────────────
 # Add new patterns here. Each is (sport, key, label, description,
 # lookback_days, matches_fn, outcome_fn).
@@ -133,6 +285,7 @@ PATTERN_CATALOG = [
         'sport': 'MLB',
         'key': 'mlb_sharp_confirmed_prime',
         'label': 'Sharp $ + PRIME',
+        'direction': 'BACK',
         'description': 'MLB PRIMEs with 2+ sources confirming the sharp side. Backs the model when the market agrees.',
         'lookback_days': 30,
         'matches': lambda g: (
@@ -145,6 +298,7 @@ PATTERN_CATALOG = [
         'sport': 'MLB',
         'key': 'mlb_sharp_confirmed_strong',
         'label': 'Sharp $ + STRONG',
+        'direction': 'BACK',
         'description': 'MLB STRONGs with 2+ sources confirming the sharp side.',
         'lookback_days': 30,
         'matches': lambda g: (
@@ -153,28 +307,92 @@ PATTERN_CATALOG = [
         ),
         'outcome': _pp_result_outcome,
     },
+    {
+        'sport': 'MLB',
+        'key': 'mlb_confluence_backs_prime',
+        'label': 'Confluence + PRIME',
+        'direction': 'BACK',
+        'description': 'MLB PRIMEs where signal_confluence_net has |value| ≥ 3 and agrees direction with our pick. Deep multi-signal agreement.',
+        'lookback_days': 60,
+        'matches': lambda g: (
+            str(_primary_play(g).get('tier') or '').upper() == 'PRIME'
+            and _confluence_backs_pp_fn(3)(g)
+        ),
+        'outcome': _pp_result_outcome,
+    },
+    {
+        'sport': 'MLB',
+        'key': 'mlb_public_overload_fade',
+        'label': 'Public Trap',
+        'direction': 'FADE',
+        'description': 'MLB pick that Vegas public has piled 70%+ onto. Historically the public-heavy side underperforms — fade the pick.',
+        'lookback_days': 90,
+        'matches': _public_overload_pp_fn(70.0),
+        'outcome': _pp_result_outcome_faded,  # W when pp side LOSES
+    },
 
     # ─── NFL ─────────────────────────────────────────────────────────
     {
         'sport': 'NFL',
         'key': 'nfl_home_div_dog',
         'label': 'Home Div Dog',
+        'direction': 'BACK',
         'description': 'NFL home team is a divisional underdog. Historically hits the spread at an above-market rate.',
-        'lookback_days': 365,  # NFL games sparse — need wider window
+        'lookback_days': 365,
         'matches': lambda g: (
             g.get('div_game') is True
             and g.get('close_spread') is not None
             and float(g.get('close_spread', 0)) < 0
         ),
-        # Pattern implies backing HOME cover — grade via spread_result
         'outcome': _spread_outcome_home_covered,
     },
+    {
+        'sport': 'NFL',
+        'key': 'nfl_road_fav_7plus_fade',
+        'label': 'Road Fav 7+',
+        'direction': 'FADE',
+        'description': 'NFL road favorites of 7+ points. Classic angle — travel + inflated public perception. Fade the road favorite.',
+        'lookback_days': 730,
+        'matches': _road_favorite_spread_fn(7.0),
+        # FADE the road fav means backing the home dog to cover
+        'outcome': _spread_outcome_home_covered,
+    },
+    {
+        'sport': 'NFL',
+        'key': 'nfl_rest_edge_dog_back',
+        'label': 'Rest Edge Dog',
+        'direction': 'BACK',
+        'description': 'NFL underdog with a 3+ day rest advantage (short-week fav vs bye-week dog, TNF fav vs SNF dog, etc). Back the rested dog.',
+        'lookback_days': 730,
+        'matches': _rest_edge_underdog_fn(3),
+        'outcome': _rest_edge_underdog_outcome,
+    },
 
-    # ─── NCAAF / NBA / NCAAB / NHL — add as data thickens ──────────
-    # (starter set kept intentionally small — extend in follow-up
-    # batches once we validate these compute correctly + hit rates
-    # are meaningful. Silent-hide badge means no user impact if a
-    # pattern is missing.)
+    # ─── NCAAF ───────────────────────────────────────────────────────
+    {
+        'sport': 'NCAAF',
+        'key': 'ncaaf_road_fav_10plus_fade',
+        'label': 'CFB Road Fav 10+',
+        'direction': 'FADE',
+        'description': 'NCAAF road favorites of 10+ points. Road environments are punishing (crowd, travel, altitude). Fade the road favorite.',
+        'lookback_days': 730,
+        'matches': _road_favorite_spread_fn(10.0),
+        'outcome': _spread_outcome_home_covered,
+    },
+    {
+        'sport': 'NCAAF',
+        'key': 'ncaaf_sp_underdog_edge',
+        'label': 'SP+ Dog Edge',
+        'direction': 'BACK',
+        'description': 'NCAAF game where SP+ efficiency rating favors the market underdog by 3+ points. Model disagrees with market — back the SP+ pick.',
+        'lookback_days': 730,
+        'matches': _sp_plus_underdog_fn,
+        'outcome': _sp_plus_underdog_outcome,
+    },
+
+    # ─── NBA / NCAAB / NHL — extend once season data thickens ──────
+    # NBA opens 10/22; NCAAB 11/3; NHL 10/7. Add patterns once we have
+    # enough graded games (30+) to compute meaningful hit rates.
 ]
 
 
@@ -264,6 +482,7 @@ def compute_pattern(games: list, pattern: dict) -> Optional[dict]:
         'pattern_key': pattern['key'],
         'pattern_label': pattern['label'],
         'pattern_description': pattern.get('description') or '',
+        'direction': pattern.get('direction', 'BACK'),
         'lookback_days': pattern.get('lookback_days', 30),
         'n_wins': w,
         'n_losses': l,
