@@ -14643,16 +14643,20 @@ setJerryHistory(prev => {
                   </ScrollView>
 
                   <View style={{backgroundColor:THEME.surface,borderRadius:12,padding:14,marginBottom:14,borderWidth:1,borderColor:THEME.border,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
-                    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
-                      <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',letterSpacing:1.4}}>{heroScope.toUpperCase()} · TOTAL P/L</Text>
-                      <View style={{flexDirection:'row',gap:4}}>
-                        {[{id:'epoch',label:'FRESH'},{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'mtd',label:'MTD'},{id:'lifetime',label:'ALL'}].map(w=>(
-                          <TouchableOpacity key={w.id} onPress={()=>setRecordWindow(w.id)} style={{paddingVertical:3,paddingHorizontal:8,borderRadius:5,backgroundColor:recordWindow===w.id?THEME.hrb+'26':THEME.surfaceAlt,borderWidth:1,borderColor:recordWindow===w.id?HRB_COLOR:THEME.border}}>
-                            <Text style={{color:recordWindow===w.id?HRB_COLOR:THEME.textDim,fontSize:10,fontWeight:'700'}}>{w.label}</Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </View>
+                    {/* 2026-09-01: Window pills moved to their own row.
+                        Prior version was flex-row w/ space-between next to
+                        the long "<SPORT> · TOTAL P/L" label — on narrow
+                        screens the 5 pills ran off the right edge and
+                        were unreadable. Now: label on its own line, pills
+                        wrap horizontally in ScrollView, always visible. */}
+                    <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',letterSpacing:1.4,marginBottom:8}}>{heroScope.toUpperCase()} · TOTAL P/L</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:10}} contentContainerStyle={{gap:5}}>
+                      {[{id:'epoch',label:'FRESH'},{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'mtd',label:'MTD'},{id:'lifetime',label:'ALL'}].map(w=>(
+                        <TouchableOpacity key={w.id} onPress={()=>setRecordWindow(w.id)} style={{paddingVertical:4,paddingHorizontal:10,borderRadius:5,backgroundColor:recordWindow===w.id?THEME.hrb+'26':THEME.surfaceAlt,borderWidth:1,borderColor:recordWindow===w.id?HRB_COLOR:THEME.border}}>
+                          <Text style={{color:recordWindow===w.id?HRB_COLOR:THEME.textDim,fontSize:10,fontWeight:'700'}}>{w.label}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
                     <Text style={{color:heroU>=0?THEME.win:THEME.loss,fontSize:38,fontWeight:'800',letterSpacing:-0.6,fontVariant:['tabular-nums'],lineHeight:44}}>
                       {heroU>=0?'+':''}{heroU.toFixed(1)}u
                     </Text>
