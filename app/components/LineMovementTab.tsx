@@ -92,24 +92,46 @@ export default function LineMovementTab({
   // See project_per_source_tracker_moat_818 — this surfaces the moat.
   const [sourceCal, setSourceCal] = React.useState<any[]>([]);
   const [agreementCal, setAgreementCal] = React.useState<any[]>([]);
+  // 2026-09-02: signal_pattern_registry fetch — powers inline "X% n=Y"
+  // context chip on each Strongest Signals card ("SHARP TRIPLE · ML:
+  // 63% n=30"). Cross-sport, all patterns; app filters at render time.
+  const [signalPatterns, setSignalPatterns] = React.useState<any[]>([]);
+  // 2026-09-02: sport-adaptive calibration. Was hardcoded to MLB —
+  // now refetches on sportFilter change so per-source records match the
+  // sport user is looking at. 'ALL' defaults to MLB (most sample).
   React.useEffect(() => {
-    // Fetch 30d MLB calibration (window covers the effective moat sample)
+    const sportForCal = sportFilter === 'ALL' ? 'MLB' : sportFilter;
     (async () => {
       try {
         const {supabase} = require('../lib/supabase');
-        const [{data: src}, {data: agr}] = await Promise.all([
+        const [{data: src}, {data: agr}, {data: pat}] = await Promise.all([
           supabase.from('sharp_source_calibration')
             .select('source,market,hit_rate,sample_n,edge_pp,window_label')
-            .eq('sport', 'MLB').eq('window_label', '30d').eq('market', 'ALL'),
+            .eq('sport', sportForCal).eq('window_label', '30d').eq('market', 'ALL'),
           supabase.from('sharp_agreement_calibration')
             .select('bucket,market,hit_rate,sample_n,edge_pp,window_label')
-            .eq('sport', 'MLB').eq('window_label', '30d').eq('market', 'ALL'),
+            .eq('sport', sportForCal).eq('window_label', '30d').eq('market', 'ALL'),
+          supabase.from('signal_pattern_registry')
+            .select('sport,pattern_key,market,pattern_label,description,n_wins,n_losses,n_total,hit_pct'),
         ]);
         if (Array.isArray(src)) setSourceCal(src);
         if (Array.isArray(agr)) setAgreementCal(agr);
-      } catch { /* table not yet migrated — silent fail, header just hides */ }
+        if (Array.isArray(pat)) setSignalPatterns(pat);
+      } catch { /* tables not yet migrated — silent fail, features just hide */ }
     })();
-  }, []);
+  }, [sportFilter]);
+
+  // 2026-09-02: pattern hit-rate index for O(1) lookup at render time.
+  // Key: `{sport}::{classification}::{market}`. If lookup misses, chip
+  // just hides — never renders a fake number.
+  const patternIdx = React.useMemo(() => {
+    const m: Record<string, {hit_pct: number|null, n: number}> = {};
+    for (const p of signalPatterns) {
+      const k = `${p.sport}::${p.pattern_key}::${p.market}`;
+      m[k] = {hit_pct: p.hit_pct, n: p.n_total};
+    }
+    return m;
+  }, [signalPatterns]);
   const bestDissentBucket = React.useMemo(() => {
     // Find the highest-edge DISSENT_ bucket with real n; used for the
     // header rec ("Following OC dissent wins 77% n=22 last 30d").
@@ -230,20 +252,25 @@ export default function LineMovementTab({
       {sourceCal.length > 0 && (
         <View style={{marginBottom: 14, backgroundColor: T.surface, borderRadius: 10, padding: 10, borderWidth: 1, borderColor: T.border}}>
           <Text style={{color: T.textDim, fontSize: 10, fontWeight: '800', letterSpacing: 0.6, marginBottom: 6}}>
-            📊 30-DAY SOURCE TRACK RECORD (MLB)
+            📊 30-DAY SOURCE TRACK RECORD ({sportFilter === 'ALL' ? 'MLB' : sportFilter})
           </Text>
+          {/* 2026-09-02: source names anonymized (FR/CZ/OC/SO → Split 1-4)
+              per feedback_tos_scrub_source_names. Same anonymization
+              already applied in SplitsSummaryPanel on the game detail. */}
           <View style={{flexDirection: 'row', gap: 10, flexWrap: 'wrap'}}>
-            {/* 2026-08-25: SO added as 4th source. Renders only when
-                calibration has enough n (SO starts collecting today so
-                the tile only appears after ~1w of graded picks). */}
-            {['FR', 'CZ', 'OC', 'SO'].map(src => {
+            {[
+              {src: 'FR', label: 'Split 1'},
+              {src: 'CZ', label: 'Split 2'},
+              {src: 'OC', label: 'Split 3'},
+              {src: 'SO', label: 'Split 4'},
+            ].map(({src, label}) => {
               const row = sourceCal.find((r: any) => r.source === src);
               if (!row) return null;
               const hr = row.hit_rate; const n = row.sample_n; const edge = row.edge_pp;
               const color = hr >= 55 ? T.sharp : hr >= 50 ? T.hrb : T.loss;
               return (
                 <View key={src} style={{flex: 1, minWidth: 90, backgroundColor: T.surfaceAlt, borderRadius: 8, padding: 8, borderLeftWidth: 2, borderLeftColor: color}}>
-                  <Text style={{color: T.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 0.5}}>{src}</Text>
+                  <Text style={{color: T.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 0.5}}>{label}</Text>
                   <Text style={{color: color, fontSize: 16, fontWeight: '900', marginTop: 2}}>{hr != null ? hr.toFixed(1) + '%' : '—'}</Text>
                   <Text style={{color: T.textDim, fontSize: 10, marginTop: 1}}>n={n}  {edge != null ? (edge >= 0 ? '+' : '') + edge.toFixed(1) + 'pp' : ''}</Text>
                 </View>
@@ -255,7 +282,15 @@ export default function LineMovementTab({
               <Text style={{color: T.hrb, fontSize: 12, marginTop: 1}}>💡</Text>
               <Text style={{color: T.textDim, fontSize: 11, flex: 1, lineHeight: 15}}>
                 <Text style={{color: T.sharp, fontWeight: '800'}}>Moat insight: </Text>
-                When only {bestDissentBucket.bucket.replace('DISSENT_', '')} dissents from the other two, following {bestDissentBucket.bucket.replace('DISSENT_', '')} wins <Text style={{color: T.sharp, fontWeight: '700'}}>{bestDissentBucket.hit_rate.toFixed(1)}%</Text> (n={bestDissentBucket.sample_n}, {(bestDissentBucket.edge_pp >= 0 ? '+' : '')}{bestDissentBucket.edge_pp.toFixed(1)}pp edge)
+                {/* Source labels also anonymized in the insight copy (Split 3 = OC in the codebase) */}
+                {(() => {
+                  const raw = bestDissentBucket.bucket.replace('DISSENT_', '');
+                  const anon: Record<string,string> = {FR:'Split 1', CZ:'Split 2', OC:'Split 3', SO:'Split 4'};
+                  const anonLabel = anon[raw] || raw;
+                  return (
+                    <>When only {anonLabel} dissents from the other sources, following {anonLabel} wins <Text style={{color: T.sharp, fontWeight: '700'}}>{bestDissentBucket.hit_rate.toFixed(1)}%</Text> (n={bestDissentBucket.sample_n}, {(bestDissentBucket.edge_pp >= 0 ? '+' : '')}{bestDissentBucket.edge_pp.toFixed(1)}pp edge)</>
+                  );
+                })()}
               </Text>
             </View>
           )}
@@ -276,6 +311,7 @@ export default function LineMovementTab({
               <StrongestSignalCard key={key} groupKey={key} flags={gs}
                 sample={historySample[key] || []}
                 picks={picksIdx[gs[0].game_id]}
+                patternIdx={patternIdx}
                 onTap={(matchup: string, sport: string, gid: string) => onTapGame(matchup, sport, gid)} />
             ))}
           </ScrollView>
@@ -322,6 +358,7 @@ export default function LineMovementTab({
                 picks={picksIdx[gs[0].game_id]}
                 rawSigs={rawSigsIdx?.[gs[0].game_id]}
                 sourceRecordIdx={sourceRecordIdx}
+                patternIdx={patternIdx}
                 onTap={onTapGame} />
             );
           })}
@@ -348,7 +385,7 @@ function FilterPill({label, active, onPress}: {label: string; active: boolean; o
 }
 
 // ─── STRONGEST SIGNAL CARD (horizontal strip) ───────────────────────
-function StrongestSignalCard({flags, sample, picks, onTap}: any) {
+function StrongestSignalCard({flags, sample, picks, patternIdx, onTap}: any) {
   // 2026-08-22 BUG FIX (5th user report on missing matchup):
   // Function signature was ignoring the `picks` prop that the caller
   // passes at line ~268 (`picks={picksIdx[gs[0].game_id]}`). When ALL
@@ -430,6 +467,32 @@ function StrongestSignalCard({flags, sample, picks, onTap}: any) {
         <Text style={{color: T.textMuted, fontSize: 10, marginTop: 2, fontWeight: '600'}} numberOfLines={1}>{matchup}</Text>
       ) : null}
       <Text style={{color: T.textDim, fontSize: 10, marginTop: 3}} numberOfLines={2}>{first.detail}</Text>
+      {/* 2026-09-02: inline hit% context from signal_pattern_registry.
+          Data-backed answer to "does this pattern hit?" — user asked for
+          this specifically. Guardrails: only render when n >= 15 (real
+          sample) AND hit_pct is a number. Silent hide otherwise.
+          Lookup key mirrors compute_signal_patterns.py output shape. */}
+      {(() => {
+        if (!patternIdx) return null;
+        const cls = String(strongest.classification || '');
+        const mkt = String(strongest.market || '').toLowerCase();
+        const key = `${first.sport}::${cls}::${mkt}`;
+        const ctx = patternIdx[key];
+        if (!ctx || ctx.hit_pct == null || (ctx.n || 0) < 15) return null;
+        const hit = Math.round(Number(ctx.hit_pct));
+        // Green if >= 58%, red if <= 42%, neutral otherwise
+        const contextColor = hit >= 58 ? T.win : hit <= 42 ? T.loss : T.textDim;
+        return (
+          <View style={{marginTop: 6, paddingTop: 5, borderTopWidth: 1, borderTopColor: T.border,
+                        flexDirection: 'row', alignItems: 'center', gap: 4}}>
+            <Text style={{color: T.textMuted, fontSize: 9, fontWeight: '600'}}>L30D:</Text>
+            <Text style={{color: contextColor, fontSize: 10, fontWeight: '800', fontVariant: ['tabular-nums']}}>
+              {hit}%
+            </Text>
+            <Text style={{color: T.textMuted, fontSize: 9}}>n={ctx.n}</Text>
+          </View>
+        );
+      })()}
     </TouchableOpacity>
   );
 }
@@ -492,7 +555,7 @@ function SharpMoneyChip({rawSigs, market}: {rawSigs?: {cleatz: any[]; fadereport
 // 2026-08-18: groupKey is now `game_id` (was `game_id::market`).
 // `flags` contains ALL market flags for this game — we feature the
 // strongest as the lead + chip the others below.
-function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawSigs, onTap}: any) {
+function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawSigs, patternIdx, onTap}: any) {
   const first = flags[0];
   const gid = groupKey;  // key is now just game_id
   // `market` for the LEAD signal (extracted after strongest is picked below)
@@ -775,7 +838,7 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
         <View style={{
           backgroundColor: T.surfaceAlt, borderRadius: 8, padding: 10, marginBottom: 10,
         }}>
-          <View style={{flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6}}>
+          <View style={{flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6, flexWrap: 'wrap'}}>
             <Text style={{color: T.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 0.5}}>
               THE SPLIT
             </Text>
@@ -785,6 +848,28 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
             {!isTriple && isConfirmed && (
               <Text style={{color: T.accent, fontSize: 9, fontWeight: '800'}}>· 2 of 3 confirm</Text>
             )}
+            {/* 2026-09-02: inline "does this pattern hit?" context —
+                reads signal_pattern_registry for classification × market.
+                Silent-hide when n<15 (below sample floor). */}
+            {(() => {
+              if (!patternIdx) return null;
+              const cls = String(strongest.classification || '');
+              const mkt = String(strongest.market || '').toLowerCase();
+              const ctx = patternIdx[`${first.sport}::${cls}::${mkt}`];
+              if (!ctx || ctx.hit_pct == null || (ctx.n || 0) < 15) return null;
+              const hit = Math.round(Number(ctx.hit_pct));
+              const contextColor = hit >= 58 ? T.win : hit <= 42 ? T.loss : T.textDim;
+              return (
+                <>
+                  <Text style={{color: T.textMuted, fontSize: 9}}>·</Text>
+                  <Text style={{color: T.textMuted, fontSize: 9, fontWeight: '600'}}>L30D:</Text>
+                  <Text style={{color: contextColor, fontSize: 10, fontWeight: '800', fontVariant: ['tabular-nums']}}>
+                    {hit}%
+                  </Text>
+                  <Text style={{color: T.textMuted, fontSize: 9}}>n={ctx.n}</Text>
+                </>
+              );
+            })()}
           </View>
           {perSourceRows.map((row, i) => (
             <View key={i} style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 3}}>
