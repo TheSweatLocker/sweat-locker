@@ -1751,6 +1751,10 @@ const [ncaafGameContextMap, setNcaafGameContextMap] = useState({});  // 2026-08-
 const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
+  // 2026-09-01: Vault Match drawer state. Set by tapping the 🎯/⚠️
+  // Vault chip on any game card. Renders a Modal with Wilson CI +
+  // lookback + freshness + description. Null when closed.
+  const [vaultDrawer, setVaultDrawer] = useState<any>(null);
   const [pickRecap, setPickRecap] = useState('');
   const [pickRecapVisible, setPickRecapVisible] = useState(false);
   const [parlayAnalysis, setParlayAnalysis] = useState('');
@@ -13709,6 +13713,23 @@ setJerryHistory(prev => {
     }
   }
 
+  // 😴 Rest Edge (NFL) — one team has ≥4 more days rest than the other.
+  // Uses nfl_game_context.home_rest / away_rest (days). Silent-hide if
+  // either field is null (pre-week 2 games have no prior game to compute
+  // rest from). Labels the side WITH the edge: "REST EDGE · <team>".
+  if (gamesSport === 'NFL') {
+    const _hr = Number(ctxAny?.home_rest);
+    const _ar = Number(ctxAny?.away_rest);
+    if (isFinite(_hr) && isFinite(_ar) && (_hr > 0 && _ar > 0)) {
+      const _diff = _hr - _ar;
+      if (Math.abs(_diff) >= 4) {
+        const _restLabel = _diff > 0 ? 'REST EDGE H' : 'REST EDGE A';
+        _sweatBadges.push(<StatusChip key="re" variant="custom" color={THEME.sharp}
+                                       icon="😴" label={_restLabel} />);
+      }
+    }
+  }
+
   // 🎯 Vault Match — MOAT PLAY. Proprietary system-detected patterns
   // (see project_vault_match_901). Server writes ctx.matched_patterns
   // as [{key,label,hit_pct,n,description,wilson_low,wilson_high,...}]
@@ -13735,11 +13756,20 @@ setJerryHistory(prev => {
       const _isFade = String(_best.direction || 'BACK').toUpperCase() === 'FADE';
       const _icon = _isFade ? '⚠️' : '🎯';
       const _color = _isFade ? THEME.warn : THEME.accent;
-      // Prepend to top of badge stack so Vault Match wins cap-slice tie-break
+      // Prepend to top of badge stack so Vault Match wins cap-slice tie-break.
+      // 2026-09-01: wrap in TouchableOpacity so tap opens the drawer with
+      // Wilson CI + lookback + description. stopPropagation via preventing
+      // touch bubbling: setting event.stopPropagation and using onPressIn
+      // instead of onPress to intercept before parent card touch.
       _sweatBadges.unshift(
-        <StatusChip key="vm" variant="custom" color={_color} icon={_icon}
-                    label={String(_best.label).toUpperCase()}
-                    value={`${_hp}% · n${_best.n}`} />
+        <TouchableOpacity key="vm" onPress={(e: any) => {
+          if (e?.stopPropagation) e.stopPropagation();
+          setVaultDrawer(_best);
+        }} activeOpacity={0.7}>
+          <StatusChip variant="custom" color={_color} icon={_icon}
+                      label={String(_best.label).toUpperCase()}
+                      value={`${_hp}% · n${_best.n}`} />
+        </TouchableOpacity>
       );
     }
   }
@@ -16021,6 +16051,80 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           ))}
         </View>
       </View>
+
+      {/* 2026-09-01: Vault Match drawer — opens when user taps a 🎯/⚠️
+          Vault chip on any game card. Shows Wilson CI + lookback +
+          computed_ago + description so users see the uncertainty
+          behind the point estimate (per no-misinformation guardrails). */}
+      {vaultDrawer && (
+        <Modal visible={!!vaultDrawer} transparent animationType="fade"
+               onRequestClose={()=>setVaultDrawer(null)}>
+          <TouchableOpacity activeOpacity={1} onPress={()=>setVaultDrawer(null)}
+                            style={{flex:1, backgroundColor:'#000C', justifyContent:'center', padding:20}}>
+            <TouchableOpacity activeOpacity={1} onPress={()=>{}}
+                              style={{backgroundColor:THEME.surface, borderRadius:14, padding:20, borderWidth:1, borderColor:THEME.border, borderLeftWidth:4, borderLeftColor:String(vaultDrawer.direction||'BACK').toUpperCase()==='FADE' ? THEME.warn : THEME.accent}}>
+              {/* Header: icon + label + direction */}
+              <View style={{flexDirection:'row', alignItems:'center', gap:8, marginBottom:12}}>
+                <Text style={{fontSize:22}}>{String(vaultDrawer.direction||'BACK').toUpperCase()==='FADE' ? '⚠️' : '🎯'}</Text>
+                <View style={{flex:1}}>
+                  <Text style={{color:THEME.text, fontSize:16, fontWeight:'800', letterSpacing:0.2}}>{String(vaultDrawer.label||'').toUpperCase()}</Text>
+                  <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:1.2, marginTop:2}}>VAULT {String(vaultDrawer.direction||'BACK').toUpperCase()} · SYSTEM-DETECTED PATTERN</Text>
+                </View>
+                <TouchableOpacity onPress={()=>setVaultDrawer(null)} hitSlop={{top:10,bottom:10,left:10,right:10}}>
+                  <Text style={{color:THEME.textMuted, fontSize:22, fontWeight:'800'}}>×</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Hit rate + n */}
+              <View style={{flexDirection:'row', gap:12, marginBottom:14}}>
+                <View style={{flex:1, backgroundColor:THEME.surfaceAlt, borderRadius:8, padding:10}}>
+                  <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.8}}>HIT RATE</Text>
+                  <Text style={{color:THEME.text, fontSize:22, fontWeight:'800', marginTop:2, fontVariant:['tabular-nums']}}>{Math.round(Number(vaultDrawer.hit_pct||0))}%</Text>
+                </View>
+                <View style={{flex:1, backgroundColor:THEME.surfaceAlt, borderRadius:8, padding:10}}>
+                  <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.8}}>SAMPLE</Text>
+                  <Text style={{color:THEME.text, fontSize:22, fontWeight:'800', marginTop:2, fontVariant:['tabular-nums']}}>n={vaultDrawer.n}</Text>
+                </View>
+              </View>
+
+              {/* Wilson CI */}
+              {vaultDrawer.wilson_low != null && vaultDrawer.wilson_high != null && (
+                <View style={{backgroundColor:THEME.sharp+'12', borderRadius:8, padding:10, marginBottom:14, borderLeftWidth:2, borderLeftColor:THEME.sharp}}>
+                  <Text style={{color:THEME.sharp, fontSize:9, fontWeight:'800', letterSpacing:0.8, marginBottom:4}}>95% CONFIDENCE INTERVAL</Text>
+                  <Text style={{color:THEME.text, fontSize:14, fontWeight:'700', fontVariant:['tabular-nums']}}>
+                    [{Number(vaultDrawer.wilson_low).toFixed(1)}% – {Number(vaultDrawer.wilson_high).toFixed(1)}%]
+                  </Text>
+                  <Text style={{color:THEME.textMuted, fontSize:10, marginTop:4, fontStyle:'italic', lineHeight:14}}>
+                    True hit rate falls in this range 95% of the time. Wider = less certainty.
+                  </Text>
+                </View>
+              )}
+
+              {/* Description */}
+              {vaultDrawer.description && (
+                <View style={{marginBottom:12}}>
+                  <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.8, marginBottom:6}}>WHAT THIS PATTERN MEANS</Text>
+                  <Text style={{color:THEME.text, fontSize:13, lineHeight:19}}>{vaultDrawer.description}</Text>
+                </View>
+              )}
+
+              {/* Meta */}
+              <View style={{flexDirection:'row', gap:8, flexWrap:'wrap', marginTop:6}}>
+                {vaultDrawer.lookback_days != null && (
+                  <View style={{backgroundColor:THEME.surfaceAlt, borderRadius:4, paddingHorizontal:8, paddingVertical:4}}>
+                    <Text style={{color:THEME.textMuted, fontSize:10}}>Last {vaultDrawer.lookback_days}d</Text>
+                  </View>
+                )}
+                {vaultDrawer.computed_hours_ago != null && (
+                  <View style={{backgroundColor:THEME.surfaceAlt, borderRadius:4, paddingHorizontal:8, paddingVertical:4}}>
+                    <Text style={{color:THEME.textMuted, fontSize:10}}>Computed {Number(vaultDrawer.computed_hours_ago) < 1 ? '<1h' : `${Math.round(Number(vaultDrawer.computed_hours_ago))}h`} ago</Text>
+                  </View>
+                )}
+              </View>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </Modal>
+      )}
 
       {/* Game detail modal — redesigned v2 (project_game_detail_redesign_729).
           Replaces the ~650-line inline block that used to live here.
