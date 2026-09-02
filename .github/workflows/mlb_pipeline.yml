@@ -1330,6 +1330,31 @@ jobs:
           cd mlb_pipeline
           python audit_external_source_calibration.py --sport MLB || echo "external calibration audit failed (non-fatal)"
 
+      # 2026-09-01: Vault Match pattern recompute — proprietary
+      # system-detected patterns (see project_vault_match_901). Runs
+      # after external calibration since some patterns depend on
+      # graded external picks. Non-fatal.
+      - name: Recompute Vault Match patterns (MLB)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_sport_patterns.py --sport MLB || echo "MLB vault patterns failed (non-fatal)"
+
+      # 2026-09-01: attach matched Vault patterns to today's ctx rows.
+      # Must run AFTER compute_sport_patterns (needs current hit_pct in
+      # registry) and AFTER game_context (needs today's rows). Non-fatal.
+      - name: Attach Vault Matches to today's games (MLB)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python attach_vault_matches.py --sport MLB || echo "MLB vault attach failed (non-fatal)"
+
       # 2026-08-20: Sharp-source rolling calibration (FR / CZ / OC hit rates +
       # 3/3-agree vs dissent buckets). The moat table pair per
       # project_per_source_tracker_moat_818. Runs after finals grade so

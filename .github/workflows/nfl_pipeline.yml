@@ -551,6 +551,32 @@ jobs:
           cd mlb_pipeline
           python refresh_prop_signal_calibration.py --sport NFL --days 30 || echo "NFL signal calibration failed (non-fatal)"
 
+      # 2026-09-01: Vault Match pattern recompute (NFL). Fires whichever
+      # patterns land in PATTERN_CATALOG for sport='NFL'. See
+      # project_vault_match_901. Non-fatal.
+      - name: Recompute Vault Match patterns (NFL)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_sport_patterns.py --sport NFL || echo "NFL vault patterns failed (non-fatal)"
+
+      # 2026-09-01: attach matched Vault patterns to today's/upcoming
+      # ctx rows. Runs on full + context_only modes (needs upcoming
+      # games to exist). Non-fatal.
+      - name: Attach Vault Matches to upcoming games (NFL)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'context_only' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python attach_vault_matches.py --sport NFL || echo "NFL vault attach failed (non-fatal)"
+
       - name: Recompute cohort calibration
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'
         env:

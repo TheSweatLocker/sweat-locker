@@ -13672,7 +13672,28 @@ setJerryHistory(prev => {
     }
   }
 
-  // Cap: max 2 sweat badges per card. Order = priority (weather > sharp > sport-unique).
+  // 🎯 Vault Match — MOAT PLAY. Proprietary system-detected patterns
+  // (see project_vault_match_901). Server writes ctx.matched_patterns
+  // as [{key, label, hit_pct, n, description}...] pre-filtered to
+  // patterns clearing MIN_N + MIN_HIT_PCT thresholds. We render the
+  // best-hit-rate pattern as a chip: "🎯 <label> · <hit>% · n<n>".
+  // Silent hide when empty. Highest visual priority so we push it
+  // FIRST (before the .slice cap) — Vault Match is the differentiator.
+  const _vm = Array.isArray(ctxAny?.matched_patterns) ? ctxAny.matched_patterns : [];
+  if (_vm.length > 0) {
+    const _best = _vm[0]; // pre-sorted server-side by hit_pct DESC
+    if (_best?.label && _best?.hit_pct != null) {
+      const _hp = Math.round(Number(_best.hit_pct));
+      // Prepend to top of badge stack so Vault Match wins cap-slice tie-break
+      _sweatBadges.unshift(
+        <StatusChip key="vm" variant="custom" color={THEME.accent} icon="🎯"
+                    label={String(_best.label).toUpperCase()}
+                    value={`${_hp}% · n${_best.n}`} />
+      );
+    }
+  }
+
+  // Cap: max 2 sweat badges per card. Priority order (Vault > weather > sharp > sport-unique).
   chips.push(..._sweatBadges.slice(0, 2));
 
   if (!chips.length) return null;
