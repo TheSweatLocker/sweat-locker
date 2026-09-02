@@ -117,6 +117,50 @@ def _compute_rest_map(game_date: str, ctx_teams: set) -> dict:
     return out
 
 
+def _fetch_qb_injury_map(game_date: str, ctx_teams: set) -> dict:
+    """Return {team: 'out'|'doubtful'} for teams w/ QB1 injury this week.
+
+    2026-09-02: Tier F data feeder. Assumption: one QB with Out/Doubtful
+    status per team = that team's starting QB. If multiple, prefer Out
+    over Doubtful. Refinement candidate later — ncaaf_starters would
+    give proper QB1 lookup but doesn't exist yet.
+    """
+    if not ctx_teams: return {}
+    # NCAAF week derivation matches ncaaf_injuries_espn_pull.py
+    try:
+        from datetime import datetime as _dt, date as _date
+        _today = _dt.strptime(game_date, '%Y-%m-%d').date()
+    except Exception:
+        return {}
+    year = _today.year if _today.month >= 6 else _today.year - 1
+    from datetime import date as _d
+    wk1_start = _d(year, 8, 25)
+    week = max(1, min(16, (_today - wk1_start).days // 7 + 1)) if _today >= wk1_start else 1
+
+    r = requests.get(
+        f'{SB}/rest/v1/ncaaf_injuries',
+        headers=H_READ,
+        params={
+            'season': f'eq.{year}', 'week': f'eq.{week}',
+            'position': 'eq.QB',
+            'injury_status': 'in.(Out,Doubtful)',
+            'select': 'team,injury_status',
+        },
+        timeout=15,
+    )
+    if r.status_code != 200: return {}
+    out = {}
+    for row in r.json():
+        team = row.get('team')
+        status = str(row.get('injury_status') or '').lower()
+        if not team or status not in ('out', 'doubtful'): continue
+        if team not in ctx_teams: continue
+        # Prefer 'out' over 'doubtful' if multiple QB rows per team
+        if team in out and out[team] == 'out': continue
+        out[team] = status
+    return out
+
+
 def _apply_signal_adjustments(base_home_exp: float, base_away_exp: float,
                               ctx: dict, home_rest: Optional[int],
                               away_rest: Optional[int]) -> tuple:
@@ -237,6 +281,33 @@ def _apply_signal_adjustments(base_home_exp: float, base_away_exp: float,
                 notes.append(f'sharp $ away ({mkt_key}: {a_money:.0f}% money vs {a_bets:.0f}% bets)')
                 break
 
+    # ── F. QB INJURY PENALTY (2026-09-02 · MC improvements Tier F) ──
+    # ncaaf_injuries table populated by ncaaf_injuries_espn_pull.py.
+    # If either team's QB1 (position='QB', is_starter status via team_qb1
+    # matching) has status Out/Doubtful, penalize that team's expected
+    # score. Conservative values — CFB QB drop-off ranges from 3-14 pts
+    # depending on QB quality; without rating data, use safe midpoint.
+    #
+    #   QB1 Out       → -6 pts to that team's expected score
+    #   QB1 Doubtful  → -3 pts (uncertainty premium, may play limited)
+    #
+    # Data source: ctx['home_qb_injury_status'] / ctx['away_qb_injury_status']
+    # populated at scorer-call-time from ncaaf_injuries lookup.
+    _hqb = str(ctx.get('home_qb_injury_status') or '').lower()
+    _aqb = str(ctx.get('away_qb_injury_status') or '').lower()
+    if _hqb == 'out':
+        home_exp -= 6.0
+        notes.append(f'home QB1 OUT (-6 pts)')
+    elif _hqb == 'doubtful':
+        home_exp -= 3.0
+        notes.append(f'home QB1 doubtful (-3 pts)')
+    if _aqb == 'out':
+        away_exp -= 6.0
+        notes.append(f'away QB1 OUT (-6 pts)')
+    elif _aqb == 'doubtful':
+        away_exp -= 3.0
+        notes.append(f'away QB1 doubtful (-3 pts)')
+
     return home_exp, away_exp, home_std, away_std, notes
 
 
@@ -337,6 +408,14 @@ def run(game_date: str, dry_run: bool = False) -> int:
     if rest_map:
         print(f'  computed rest days for {len(rest_map)} teams')
 
+    # 2026-09-02 (Tier F): bulk-fetch QB injury status for playing teams.
+    # Reads ncaaf_injuries populated by ncaaf_injuries_espn_pull.py.
+    # Assumption: one QB Out/Doubtful per team = that team's QB1
+    # (refinement needed later w/ ncaaf_starters if we ever build that).
+    qb_injury_map = _fetch_qb_injury_map(game_date, ctx_teams)
+    if qb_injury_map:
+        print(f'  QB injuries: {len(qb_injury_map)} teams w/ QB1 out/doubtful')
+
     written = 0
     skipped_no_projections = 0
 
@@ -348,6 +427,10 @@ def run(game_date: str, dry_run: bool = False) -> int:
         if proj_spread is None or proj_total is None:
             skipped_no_projections += 1
             continue
+
+        # Inject QB injury status onto ctx dict for Tier F pickup in scorer
+        g['home_qb_injury_status'] = qb_injury_map.get(home)
+        g['away_qb_injury_status'] = qb_injury_map.get(away)
 
         result = simulate_game(
             projected_spread=proj_spread,
