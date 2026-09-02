@@ -1365,12 +1365,10 @@ function RecentGameRow({row}: any) {
           wonSU === true  && rsStyles.chipWin,
           wonSU === false && rsStyles.chipLoss,
         ]}>
-          <Text style={[
-            rsStyles.chipText,
-            wonSU === true  && {color: C.win},
-            wonSU === false && {color: C.loss},
-            (wonSU !== true && wonSU !== false) && {color: C.text},  // unresolved games use cream (readable)
-          ]}>
+          {/* 2026-09-01 v4: text stays bright cream ALWAYS. See RecordPill
+              rationale — colored text on tinted bg = muddy contrast that
+              reads as "black text." Background alone signals win/loss. */}
+          <Text style={rsStyles.chipText}>
             {(wonSU === true ? 'W ' : wonSU === false ? 'L ' : '') + scoreText}
           </Text>
         </View>
@@ -1384,12 +1382,7 @@ function RecentGameRow({row}: any) {
             spreadRes === 'lost' && rsStyles.chipLoss,
             spreadRes === 'push' && rsStyles.chipPush,
           ]}>
-            <Text style={[
-              rsStyles.chipText,
-              spreadRes === 'won'  && {color: C.win},
-              spreadRes === 'lost' && {color: C.loss},
-              spreadRes === 'push' && {color: C.textDim},
-            ]}>
+            <Text style={rsStyles.chipText}>
               {spreadLine != null ? (Number(spreadLine) > 0 ? '+' : '') + spreadLine : '—'}
             </Text>
           </View>
@@ -1624,17 +1617,19 @@ function RecordPill({rec, market}: any) {
   const label = market === 'total'
     ? `${w}-${l}${p ? `-${p}` : ''}`      // O-U-P
     : `${w}-${l}${p ? `-${p}` : ''}`;      // W-L-P
+  // 2026-09-01 v4: text stays bright cream ALWAYS. Prior version set
+  // text color to C.loss (red) on C.loss+22 background (light red) —
+  // contrast between red-on-red rendered as muddy/dark (user reported
+  // 3x as "black text hard to see" on 5-7, 4-6, 0-5 loss records).
+  // Same issue for win (green-on-green). Fix: only the BACKGROUND
+  // conveys win/loss. Text = bright cream on tinted bg = high contrast.
   return (
     <View style={[
       sitStyles.pill,
       tint === 'win'  && sitStyles.pillWin,
       tint === 'loss' && sitStyles.pillLoss,
     ]}>
-      <Text style={[
-        sitStyles.pillText,
-        tint === 'win'  && {color: C.win},
-        tint === 'loss' && {color: C.loss},
-      ]}>{label}</Text>
+      <Text style={sitStyles.pillText}>{label}</Text>
     </View>
   );
 }
