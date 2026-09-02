@@ -122,6 +122,13 @@ def run(target_week: Optional[int] = None, dry_run: bool = False) -> None:
           f'{" [DRY]" if dry_run else ""} ==')
 
     ranks = fetch_ap_rankings(season, week)
+    # 2026-09-02: CFBD publishes each week's ranking AFTER games play.
+    # If current week is empty (e.g., Wed after Week N ended but before
+    # Week N+1 posts), fall back to previous week. Also handles the
+    # season-opener case where Week 1 rankings live under wk 1.
+    if not ranks and week > 1:
+        print(f'  → falling back to week {week - 1}')
+        ranks = fetch_ap_rankings(season, week - 1)
     if not ranks:
         print('  no rankings, aborting')
         return
