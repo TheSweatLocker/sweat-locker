@@ -2021,27 +2021,34 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
 
   return (
     <View style={{gap: 10}}>
-      {/* SP+ overall banner */}
+      {/* SP+ overall banner. 2026-09-01: SP+ label wrapped in Explainer
+          — casual users don't know what SP+ means. Tap on either side's
+          label opens the glossary help inline. */}
       {(spOvrH || spOvrA) && (
-        <View style={tsStyles.spBanner}>
-          <View style={tsStyles.spSide}>
-            <Text style={tsStyles.spLabel}>{abbrev3(awayTeam)} SP+</Text>
-            {spOvrA ? (
-              <View style={tsStyles.spRow}>
-                <Text style={tsStyles.spValue}>{spOvrA.raw_value > 0 ? '+' : ''}{spOvrA.raw_value}</Text>
-                <RankChip rank={spOvrA.rank} leagueSize={spOvrA.league_size} />
-              </View>
-            ) : <Text style={tsStyles.dash}>—</Text>}
-          </View>
-          <View style={tsStyles.spDivider} />
-          <View style={tsStyles.spSide}>
-            <Text style={tsStyles.spLabel}>{abbrev3(homeTeam)} SP+</Text>
-            {spOvrH ? (
-              <View style={tsStyles.spRow}>
-                <Text style={tsStyles.spValue}>{spOvrH.raw_value > 0 ? '+' : ''}{spOvrH.raw_value}</Text>
-                <RankChip rank={spOvrH.rank} leagueSize={spOvrH.league_size} />
-              </View>
-            ) : <Text style={tsStyles.dash}>—</Text>}
+        <View>
+          <View style={tsStyles.spBanner}>
+            <View style={tsStyles.spSide}>
+              <Explainer term="SP+" color={C.textMuted} activeColor={C.accent}
+                         helpColor={C.text} helpBg={C.accent + '18'}>
+                <Text style={tsStyles.spLabel}>{abbrev3(awayTeam)} SP+ ⓘ</Text>
+              </Explainer>
+              {spOvrA ? (
+                <View style={tsStyles.spRow}>
+                  <Text style={tsStyles.spValue}>{spOvrA.raw_value > 0 ? '+' : ''}{spOvrA.raw_value}</Text>
+                  <RankChip rank={spOvrA.rank} leagueSize={spOvrA.league_size} />
+                </View>
+              ) : <Text style={tsStyles.dash}>—</Text>}
+            </View>
+            <View style={tsStyles.spDivider} />
+            <View style={tsStyles.spSide}>
+              <Text style={tsStyles.spLabel}>{abbrev3(homeTeam)} SP+</Text>
+              {spOvrH ? (
+                <View style={tsStyles.spRow}>
+                  <Text style={tsStyles.spValue}>{spOvrH.raw_value > 0 ? '+' : ''}{spOvrH.raw_value}</Text>
+                  <RankChip rank={spOvrH.rank} leagueSize={spOvrH.league_size} />
+                </View>
+              ) : <Text style={tsStyles.dash}>—</Text>}
+            </View>
           </View>
         </View>
       )}

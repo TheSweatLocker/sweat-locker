@@ -13627,6 +13627,54 @@ setJerryHistory(prev => {
   if (alML?.verdict && alML.verdict !== 'no_data') {
     chips.push(<StatusChip key="al" variant="alignment" alignment={alML.verdict} />);
   }
+
+  // 2026-09-01: Sweat Badges — cross-sport signal chips that add
+  // visible depth to game cards. Silent hide when data missing.
+  // Cap at 2 sport chips per card so tier + alignment + sport chips
+  // stay under 4 total (mobile row wrap safety).
+  const _sweatBadges: React.ReactNode[] = [];
+
+  // 🌧️ Weather (outdoor sports only, suppress dome/closed roof)
+  const _wxDome = !!ctxAny?.dome || ctxAny?.roof === 'dome' || ctxAny?.roof === 'closed';
+  const _wxTemp = Number(ctxAny?.temp);
+  const _wxWind = Number(ctxAny?.wind);
+  const _wxPrecip = Number(ctxAny?.precip_pct ?? ctxAny?.precip ?? 0);
+  const _wxOutdoor = (gamesSport === 'NFL' || gamesSport === 'NCAAF' || gamesSport === 'MLB');
+  if (_wxOutdoor && !_wxDome) {
+    const _wxSevere = (isFinite(_wxTemp) && _wxTemp <= 32)
+                   || (isFinite(_wxWind) && _wxWind >= 15)
+                   || (isFinite(_wxPrecip) && _wxPrecip >= 40);
+    if (_wxSevere) {
+      const _wxLabel = isFinite(_wxWind) && _wxWind >= 15 ? `WIND ${Math.round(_wxWind)}mph`
+                     : isFinite(_wxTemp) && _wxTemp <= 32 ? `COLD ${Math.round(_wxTemp)}°`
+                     : `RAIN ${Math.round(_wxPrecip)}%`;
+      _sweatBadges.push(<StatusChip key="wx" variant="custom" color={THEME.sharp}
+                                     icon="🌧️" label={_wxLabel} />);
+    }
+  }
+
+  // 💰 Sharp $ — fires when splits_summary shows 2+ sources confirmed
+  // on any surface. Universal signal, no sport gate.
+  const _ss: any = ctxAny?.splits_summary;
+  const _tc = Array.isArray(_ss?.triple_confirmed) ? _ss.triple_confirmed : [];
+  if (_tc.length > 0) {
+    _sweatBadges.push(<StatusChip key="sh" variant="custom" color={THEME.hrb}
+                                   icon="💰" label="SHARP $" />);
+  }
+
+  // 🐕 Home Div Dawg (NFL) — home team is a divisional underdog.
+  // NFL convention: close_spread > 0 = home favored → home dog when < 0.
+  if (gamesSport === 'NFL' && ctxAny?.div_game === true) {
+    const _cs = Number(ctxAny?.close_spread);
+    if (isFinite(_cs) && _cs < 0) {
+      _sweatBadges.push(<StatusChip key="dd" variant="custom" color={THEME.warn}
+                                     icon="🐕" label="HOME DIV DOG" />);
+    }
+  }
+
+  // Cap: max 2 sweat badges per card. Order = priority (weather > sharp > sport-unique).
+  chips.push(..._sweatBadges.slice(0, 2));
+
   if (!chips.length) return null;
   return <View style={{flexDirection:'row',flexWrap:'wrap',gap:6,marginBottom:8}}>{chips}</View>;
 })()}
