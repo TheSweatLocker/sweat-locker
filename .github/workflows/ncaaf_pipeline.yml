@@ -497,6 +497,20 @@ jobs:
           cd mlb_pipeline
           python audit_sharp_source_calibration.py --sport NCAAF || echo "NCAAF sharp source calibration failed"
 
+      # 2026-09-02: NCAAF FCS chalk scorer. Fills projected_spread on
+      # FBS-vs-FCS games where the FCS side has no SP+ data. Cheap
+      # rule-based model (FBS_SP - FCS_default_-28 + HFA). Runs AFTER
+      # v3/v4 scorers so only fills gaps they left null.
+      - name: NCAAF FCS chalk scorer
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_fcs_chalk_scorer.py || echo "NCAAF FCS chalk scorer failed (non-fatal)"
+
       # 2026-09-02: NCAAF Strength of Record pull from CFBD. Populates
       # home_sor + away_sor on ncaaf_game_context. Powers post-launch
       # SoR-based signals (SoR gap > market spread → back SoR-favored side).
