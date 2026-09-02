@@ -56,14 +56,21 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 # Qualifier gates — see project_steam_room_ladder for tuning history.
-LADDER_TIER_MIN         = {'PRIME', 'STRONG', 'LEAN'}  # 2026-08-18: LEAN eligible if all other gates pass
-LADDER_WIN_PROB_MIN     = 58.0     # 2026-08-18 loosened from 60 → 58 (still +EV, unfroze ladder)
-LADDER_COHORT_HIT_MIN   = 55.0     # 2026-08-18 loosened from 60 → 55 (near BE, all other gates carry weight)
-LADDER_COHORT_N_MIN     = 25       # 2026-08-18 loosened from 30 → 25 (2wk MLB sample)
-LADDER_CONSENSUS_MIN    = 3        # 2026-08-18 loosened from 4 → 3 (3-of-5 lens, was too strict)
-LADDER_EDGE_MIN_PP      = 6.0      # 2026-08-18 loosened from 10 → 6 (still meaningful edge)
+# 2026-09-02 REVERT: rolled back 8/18 loosening. Post-loosening the ladder
+# ran 5-9 (35.7%, -5.74u) — the "2 rungs/week min" target was auto-
+# loosening gates and picking marginal plays that lost more than they
+# won. Reverting to pre-8/18 stricter thresholds. Accept fewer rungs
+# (0/week possible) — no bet is a bet. Auto-loosener self-tune below
+# is also disabled to prevent drift back into loosened state.
+LADDER_TIER_MIN         = {'PRIME', 'STRONG'}  # LEAN removed — no ladder authority
+LADDER_WIN_PROB_MIN     = 60.0     # pre-loosen baseline
+LADDER_COHORT_HIT_MIN   = 60.0     # pre-loosen baseline
+LADDER_COHORT_N_MIN     = 30       # pre-loosen baseline
+LADDER_CONSENSUS_MIN    = 4        # pre-loosen baseline (4-of-5 lens)
+LADDER_EDGE_MIN_PP      = 10.0     # pre-loosen baseline (real edge only)
 LADDER_ABS_JUICE_CAP    = -250     # unchanged — compounding math destroys past -250
-LADDER_MIN_GATES        = 3        # 3-of-5 required; relaxed_scan drops this to 2
+LADDER_MIN_GATES        = 4        # 4-of-5 required (was 3); tighter with reverted thresholds
+LADDER_AUTO_LOOSEN_DISABLED = True  # 2026-09-02: prevent drift back to bleeding gates
 
 # 2026-08-20: cross-sport edge normalization. Different sports have different
 # base-rate variance in edge_pp — a +7pp MLB edge is NOT the same as a +7pp
