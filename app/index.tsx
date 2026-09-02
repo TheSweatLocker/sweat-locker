@@ -13674,13 +13674,19 @@ setJerryHistory(prev => {
 
   // 🎯 Vault Match — MOAT PLAY. Proprietary system-detected patterns
   // (see project_vault_match_901). Server writes ctx.matched_patterns
-  // as [{key, label, hit_pct, n, description}...] pre-filtered to
-  // patterns clearing MIN_N + MIN_HIT_PCT thresholds. We render the
-  // best-hit-rate pattern as a chip: "🎯 <label> · <hit>% · n<n>".
-  // Silent hide when empty. Highest visual priority so we push it
-  // FIRST (before the .slice cap) — Vault Match is the differentiator.
+  // as [{key,label,hit_pct,n,description,wilson_low,wilson_high,...}]
+  // pre-filtered by attach_vault_matches.py to patterns clearing:
+  //   n_total >= 15, hit_pct >= 65%, hit_pct >= 52.4% (over -110 juice),
+  //   Wilson lower bound >= 55%, computed within 36h.
+  //
+  // SHADOW MODE (2026-09-01): render is gated on feature_flags
+  //   ALL:vault_render (universal) OR <SPORT>:vault_render (per-sport)
+  // Ships false in shadow so attach populates matched_patterns for
+  // audit without showing users. Flip via SQL when validated.
+  const _vaultAllowed = featureFlags['ALL:vault_render'] === true
+                     || featureFlags[`${gamesSport}:vault_render`] === true;
   const _vm = Array.isArray(ctxAny?.matched_patterns) ? ctxAny.matched_patterns : [];
-  if (_vm.length > 0) {
+  if (_vaultAllowed && _vm.length > 0) {
     const _best = _vm[0]; // pre-sorted server-side by hit_pct DESC
     if (_best?.label && _best?.hit_pct != null) {
       const _hp = Math.round(Number(_best.hit_pct));

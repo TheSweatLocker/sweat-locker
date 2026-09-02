@@ -69,32 +69,57 @@ def _primary_play(game: dict) -> dict:
 
 
 def _pp_result_outcome(game: dict) -> str:
-    """Grade the primary_play against game result. Returns 'W'/'L'/'P'.
-    Assumes game_result row is merged into game dict."""
+    """Grade the primary_play against game result. Returns 'W'/'L'/'P'/None-safe.
+
+    CORRECTED 2026-09-01 (guardrail pass): field names match the actual
+    canonical grader in aggregate_daily_records.py (line 460+):
+      pp.type   'ml' | 'rl' | 'spread' | 'total'  (NOT 'market')
+      pp.side   'HOME' | 'AWAY' | 'OVER' | 'UNDER'
+      home_win  bool
+      spread_result  'home_covered' | 'away_covered' | 'push' (lowercase)
+      total_result   'over' | 'under' | 'push'  (case-normalized via .lower())
+    """
     pp = _primary_play(game)
-    market = str(pp.get('market') or '').lower()
-    side = str(pp.get('side') or '').upper()
-    if not market or not side:
+    ptype = str(pp.get('type') or '').lower()
+    side  = str(pp.get('side') or '').upper()
+    if not ptype or not side:
         return 'P'
-    # ML
-    if market == 'ml':
-        winner = str(game.get('winner') or '').upper()
-        if not winner: return 'P'
-        return 'W' if winner == side else 'L'
-    # Spread — check ats_winner if present
-    if market in ('spread', 'runline', 'puckline'):
-        ats = str(game.get('ats_winner') or '').upper()
-        if ats == 'PUSH': return 'P'
-        if not ats: return 'P'
-        return 'W' if ats == side else 'L'
-    # Total
-    if market == 'total':
-        total_hit = str(game.get('total_result') or '').upper()
-        if total_hit == 'PUSH': return 'P'
-        pp_side = side if side in ('OVER','UNDER') else str(pp.get('label') or '').upper()
-        if 'OVER' in pp_side and total_hit == 'OVER': return 'W'
-        if 'UNDER' in pp_side and total_hit == 'UNDER': return 'W'
-        return 'L'
+    if ptype == 'ml':
+        hw = game.get('home_win')
+        if hw is None: return 'P'
+        if side == 'HOME': return 'W' if hw else 'L'
+        if side == 'AWAY': return 'L' if hw else 'W'
+        return 'P'
+    if ptype in ('rl', 'spread', 'puckline', 'runline'):
+        sr = str(game.get('spread_result') or '').lower()
+        if sr == 'push': return 'P'
+        if sr == 'home_covered': return 'W' if side == 'HOME' else 'L'
+        if sr == 'away_covered': return 'W' if side == 'AWAY' else 'L'
+        return 'P'
+    if ptype == 'total':
+        tr = str(game.get('total_result') or '').lower()
+        if tr == 'push': return 'P'
+        if tr == 'over':  return 'W' if side == 'OVER' else 'L'
+        if tr == 'under': return 'W' if side == 'UNDER' else 'L'
+        return 'P'
+    return 'P'
+
+
+def _spread_outcome_home_covered(game: dict) -> str:
+    """Standalone spread outcome for patterns that back HOME regardless
+    of primary_play. Used by e.g. nfl_home_div_dog. Reads spread_result."""
+    sr = str(game.get('spread_result') or '').lower()
+    if sr == 'push': return 'P'
+    if sr == 'home_covered': return 'W'
+    if sr == 'away_covered': return 'L'
+    return 'P'
+
+
+def _spread_outcome_away_covered(game: dict) -> str:
+    sr = str(game.get('spread_result') or '').lower()
+    if sr == 'push': return 'P'
+    if sr == 'away_covered': return 'W'
+    if sr == 'home_covered': return 'L'
     return 'P'
 
 
@@ -141,12 +166,8 @@ PATTERN_CATALOG = [
             and g.get('close_spread') is not None
             and float(g.get('close_spread', 0)) < 0
         ),
-        # Custom outcome: home team covered the spread?
-        'outcome': lambda g: (
-            'P' if g.get('ats_winner') in (None, '', 'PUSH')
-            else 'W' if str(g.get('ats_winner') or '').upper() in ('HOME', str(g.get('home_team') or '').upper())
-            else 'L'
-        ),
+        # Pattern implies backing HOME cover — grade via spread_result
+        'outcome': _spread_outcome_home_covered,
     },
 
     # ─── NCAAF / NBA / NCAAB / NHL — add as data thickens ──────────

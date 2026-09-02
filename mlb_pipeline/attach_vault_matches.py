@@ -23,6 +23,7 @@ USAGE:
     python attach_vault_matches.py --dry-run
 """
 import argparse
+import math
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -50,9 +51,49 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 MIN_N = 15
 MIN_HIT_PCT = 65.0
 
+# 2026-09-01 GUARDRAILS:
+# - Skip a pattern if its stats are older than this — prevents rendering
+#   stale hit rates if recompute step failed.
+STALE_HOURS = 36
+# - Wilson lower-bound floor. A pattern's TRUE hit rate could be as low
+#   as this given sample noise. Below 55% (still positive edge over 50%)
+#   we don't render the chip even if point estimate >= 65%.
+MIN_WILSON_LOWER = 0.55
+# - Reject if EV is < break-even at -110 juice. Prevents shipping edges
+#   that look positive but don't cover book vig. -110 = 52.38% break-even.
+MIN_HIT_PCT_ABOVE_JUICE = 52.4
+
 
 def _et_now():
     return datetime.now(timezone.utc) - timedelta(hours=4)
+
+
+def _wilson_ci(wins: int, n: int, z: float = 1.96) -> tuple:
+    """Wilson score confidence interval for a binomial proportion.
+    Returns (lower, upper) bounds in [0, 1]. Uses z=1.96 for 95% CI.
+    Handles edge cases (n=0) safely."""
+    if n <= 0:
+        return (0.0, 0.0)
+    p = wins / n
+    denom = 1 + z*z/n
+    center = (p + z*z/(2*n)) / denom
+    margin = z * math.sqrt(p*(1-p)/n + z*z/(4*n*n)) / denom
+    return (max(0.0, center - margin), min(1.0, center + margin))
+
+
+def _hours_since(iso_ts: Optional[str]) -> Optional[float]:
+    if not iso_ts:
+        return None
+    try:
+        # Registry writes iso8601 without tz; treat as ET (matches _et_now)
+        ts = datetime.fromisoformat(str(iso_ts).replace('Z', '+00:00'))
+        if ts.tzinfo is None:
+            # ET-naive → localize
+            ts = ts.replace(tzinfo=timezone.utc) - timedelta(hours=4)
+        delta = _et_now() - ts.replace(tzinfo=None)
+        return delta.total_seconds() / 3600.0
+    except Exception:
+        return None
 
 
 def _fetch_pattern_metrics(sport: str) -> dict:
@@ -132,16 +173,49 @@ def run(sport_filter: Optional[str] = None, dry_run: bool = False) -> None:
                 metric = metrics.get(pattern['key'])
                 if not metric:
                     continue
-                n_total = int(metric.get('n_total') or 0)
-                hit_pct = float(metric.get('hit_pct') or 0)
-                if n_total < MIN_N or hit_pct < MIN_HIT_PCT:
+
+                # ── Guardrail: freshness ──────────────────────────────
+                age_hrs = _hours_since(metric.get('last_computed_at'))
+                if age_hrs is not None and age_hrs > STALE_HOURS:
                     continue
+
+                n_total = int(metric.get('n_total') or 0)
+                n_wins = int(metric.get('n_wins') or 0)
+                hit_pct = float(metric.get('hit_pct') or 0)
+
+                # ── Guardrail: sample floor ───────────────────────────
+                if n_total < MIN_N:
+                    continue
+
+                # ── Guardrail: point estimate threshold ───────────────
+                if hit_pct < MIN_HIT_PCT:
+                    continue
+
+                # ── Guardrail: EV over vig ────────────────────────────
+                if hit_pct < MIN_HIT_PCT_ABOVE_JUICE:
+                    continue
+
+                # ── Guardrail: Wilson lower bound ─────────────────────
+                # Even if point estimate is 72%, if the lower CI bound is
+                # 48% we're not confident enough to render a "moat" chip.
+                wilson_lo, wilson_hi = _wilson_ci(n_wins, n_wins + int(metric.get('n_losses') or 0))
+                if wilson_lo < MIN_WILSON_LOWER:
+                    continue
+
                 matched.append({
                     'key': pattern['key'],
                     'label': pattern['label'],
                     'description': pattern.get('description') or metric.get('pattern_description') or '',
                     'hit_pct': hit_pct,
                     'n': n_total,
+                    # 2026-09-01 guardrail payload — app drawer surfaces
+                    # so users see the uncertainty, not just the point
+                    # estimate. wilson bounds are 0-1 (multiply by 100
+                    # for display).
+                    'wilson_low':  round(wilson_lo * 100, 1),
+                    'wilson_high': round(wilson_hi * 100, 1),
+                    'lookback_days': int(metric.get('lookback_days') or 30),
+                    'computed_hours_ago': round(age_hrs, 1) if age_hrs is not None else None,
                 })
             # Sort matched by strength (hit_pct DESC) so app can render best first
             matched.sort(key=lambda m: (-m['hit_pct'], -m['n']))
