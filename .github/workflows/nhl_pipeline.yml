@@ -144,3 +144,40 @@ jobs:
       # upsert path via _apply_ensemble (same as MLB pattern). Signals
       # in signal_sources (sport='NHL') fire automatically once tendency
       # backfill lands + ensemble_scorer runs.
+
+      # 2026-09-01: Tier 1 rollup refresh calls (mirrors NCAAF/NFL/NBA).
+      # Cross-sport matviews auto-include NHL rows once nhl_game_results
+      # + nhl_game_context populate (Oct season start). Refreshes are
+      # cross-sport in one shot so calling from here keeps NHL rollups
+      # fresh without depending on MLB grader cron. Offseason: refreshes
+      # are no-ops (NHL union blocks return 0 rows).
+      - name: Refresh team_recent_games matview
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_recent_games refresh failed"
+      - name: Refresh team_situational_records matview
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_situational_records refresh failed"
+      - name: Refresh team_stats_rolling matview
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_stats_rolling refresh failed"

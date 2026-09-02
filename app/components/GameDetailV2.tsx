@@ -347,9 +347,14 @@ export default function GameDetailV2({
           />
         </Section>
 
-        <Section title="Predicted Score" hint="range across models">
-          <ScoreRange ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
-        </Section>
+        {/* 2026-09-01: gate on any predicted-score field. Was rendering
+            empty "No score projections available" under the Section title
+            on FCS games + sparse UFC / NHL cards. */}
+        {hasAnyPredictedScore(ctx) && (
+          <Section title="Predicted Score" hint="range across models">
+            <ScoreRange ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
+          </Section>
+        )}
 
         {gamesSport === 'MLB' && (
           <Section title="Stat Projections" hint="model-implied · check against your prop lines">
@@ -365,13 +370,22 @@ export default function GameDetailV2({
           <LineMovementStrip ctx={ctx} historicalOdds={historicalOdds} />
         </Section>
 
-        <Section title="Model Consensus" hint="margin (H+ / A−)">
-          <LensGrid ctx={ctx} gamesSport={gamesSport} />
-        </Section>
+        {/* 2026-09-01: gate on any lens producing a value. Was showing
+            empty "Model Consensus" header on thin UFC/NHL/FCS cards. */}
+        {hasAnyLensValue(ctx, gamesSport) && (
+          <Section title="Model Consensus" hint="margin (H+ / A−)">
+            <LensGrid ctx={ctx} gamesSport={gamesSport} />
+          </Section>
+        )}
 
-        <Section title="External Handicappers">
-          <HandicappersRow picks={externalPicks} homeTeam={homeTeam} awayTeam={awayTeam} sport={gamesSport} records={sourceRecords} />
-        </Section>
+        {/* 2026-09-01: gate on non-OC pick presence. Was rendering
+            empty "No handicapper picks pulled yet" on most NHL/UFC/
+            some NCAAF cards. */}
+        {(externalPicks || []).some((p: any) => p.source !== 'oddscrowd') && (
+          <Section title="External Handicappers">
+            <HandicappersRow picks={externalPicks} homeTeam={homeTeam} awayTeam={awayTeam} sport={gamesSport} records={sourceRecords} />
+          </Section>
+        )}
 
         <SportSpecificSlot ctx={ctx} gamesSport={gamesSport} game={game} />
 
@@ -413,9 +427,13 @@ export default function GameDetailV2({
           </Expander>
         )}
 
-        <Expander title="Cohort Signals" badge={cohortBadge(ctx)}>
-          <CohortsPanel ctx={ctx} />
-        </Expander>
+        {/* 2026-09-01: gate on breakdown presence — was rendering
+            "COHORT SIGNALS · no data" on NHL/UFC/thin NCAAB cards. */}
+        {safeJSON(ctx?.signal_confluence_breakdown) && (
+          <Expander title="Cohort Signals" badge={cohortBadge(ctx)}>
+            <CohortsPanel ctx={ctx} />
+          </Expander>
+        )}
 
         {/* 2026-09-01: gate Game Props expander to sports with actual
             prop data. Prior version rendered "Game Props · 0 signals"
@@ -443,14 +461,18 @@ export default function GameDetailV2({
           />
         </Section>
 
-        <Expander title="All Book Lines" badge={`${(game.bookmakers || []).length} books`}>
-          <AllBookLinesPanel
-            bookmakers={game.bookmakers || []}
-            homeTeam={homeTeam}
-            awayTeam={awayTeam}
-            onAddParlayLeg={onAddParlayLeg}
-          />
-        </Expander>
+        {/* 2026-09-01: gate expander — was rendering "0 books" header
+            on late-add NCAAF games where odds fetch missed. */}
+        {(game.bookmakers || []).length > 0 && (
+          <Expander title="All Book Lines" badge={`${(game.bookmakers || []).length} books`}>
+            <AllBookLinesPanel
+              bookmakers={game.bookmakers || []}
+              homeTeam={homeTeam}
+              awayTeam={awayTeam}
+              onAddParlayLeg={onAddParlayLeg}
+            />
+          </Expander>
+        )}
 
         <Expander title="📐 Numbers" badge="full model dump">
           <NumbersPanel ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} />
@@ -750,6 +772,30 @@ function MarketRow({closeSpread, closeTotal, homeML, awayML}: any) {
 }
 
 // ─── SCORE RANGE (per user "no blind average") ───────────────────────────
+// 2026-09-01: reviewer-safety probe. Mirrors ScoreRange field probes
+// (kept in sync with addPred / addPredHA below). Returns true if at
+// least one model can build a home+away pair, false otherwise.
+function hasAnyPredictedScore(ctx: any): boolean {
+  const mc = safeJSON(ctx?.mc_probabilities) || {};
+  // total+margin form (both required to derive H/A points)
+  const totalMarginPairs = [
+    [ctx?.panel_implied_total, ctx?.panel_implied_margin],
+    [ctx?.jerry_pred_total,    ctx?.jerry_pred_spread],
+    [ctx?.projected_total,     ctx?.projected_spread],
+    [ctx?.model_pred_total,    ctx?.model_pred_spread],
+    [mc.mc_expected_total ?? mc.mc_mean_total, mc.mc_expected_margin],
+  ];
+  if (totalMarginPairs.some(([t, m]: any) => t != null && m != null)) return true;
+  // home/away points form (both required)
+  const hoAwayPairs = [
+    [ctx?.model_pred_home_points, ctx?.model_pred_away_points],
+    [ctx?.sp_plus_pred_home_pts,  ctx?.sp_plus_pred_away_pts],
+    [ctx?.eff_pred_home_pts,      ctx?.eff_pred_away_pts],
+    [ctx?.elo_pred_home_pts,      ctx?.elo_pred_away_pts],
+  ];
+  return hoAwayPairs.some(([h, a]: any) => h != null && a != null);
+}
+
 function ScoreRange({ctx, awayTeam, homeTeam}: any) {
   const mc = safeJSON(ctx?.mc_probabilities) || {};
   const preds: {name: string; a: number; h: number}[] = [];
@@ -782,7 +828,10 @@ function ScoreRange({ctx, awayTeam, homeTeam}: any) {
   // NBA/NHL Elo — if ctx exposes projected points from elo, use those too.
   addPredHA('Elo',      ctx?.elo_pred_home_pts,       ctx?.elo_pred_away_pts);
 
-  if (preds.length === 0) return <Text style={styles.emptyMuted}>No score projections available.</Text>;
+  // 2026-09-01: reviewer safety — was rendering "No score projections
+  // available" text inside the Predicted Score Section. Parent now
+  // gates via hasAnyPredictedScore(). This is defense-in-depth.
+  if (preds.length === 0) return null;
 
   const aMin = Math.min(...preds.map(p => p.a)); const aMax = Math.max(...preds.map(p => p.a));
   const hMin = Math.min(...preds.map(p => p.h)); const hMax = Math.max(...preds.map(p => p.h));
@@ -1056,6 +1105,29 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
 // to switch). Same UX as before, actually readable.
 import {explain as _explainGlossary} from '../lib/glossary';
 
+// 2026-09-01: reviewer-safety probe. Mirrors LensGrid row-building
+// (kept in sync with the same field list). Returns true if at least
+// one lens has margin or total; false when the grid would render
+// entirely dashes.
+function hasAnyLensValue(ctx: any, gamesSport: string): boolean {
+  const mc = safeJSON(ctx?.mc_probabilities) || {};
+  const candidates = gamesSport === 'MLB'
+    ? [ctx?.panel_implied_margin, ctx?.panel_implied_total,
+       ctx?.jerry_pred_spread, ctx?.jerry_pred_total,
+       ctx?.projected_spread, ctx?.projected_total,
+       ctx?.model_pred_spread, ctx?.model_pred_total,
+       mc.mc_expected_margin, mc.mc_expected_total, mc.mc_mean_total]
+    : gamesSport === 'NCAAF'
+    ? [ctx?.projected_spread, ctx?.projected_total,
+       ctx?.model_pred_spread, ctx?.model_pred_total,
+       mc.mc_expected_margin, mc.mc_expected_total, mc.mc_mean_total,
+       ctx?.signal_confluence_net]
+    : [ctx?.projected_spread, ctx?.projected_total,
+       ctx?.model_pred_spread, ctx?.model_pred_total,
+       ctx?.signal_confluence_net];
+  return candidates.some(v => v != null);
+}
+
 function LensGrid({ctx, gamesSport}: any) {
   const mc = safeJSON(ctx?.mc_probabilities) || {};
   // 2026-09-01: NCAAF gets MC lens too — mirrors NFL/MLB. Simulator
@@ -1084,6 +1156,12 @@ function LensGrid({ctx, gamesSport}: any) {
   const closeTot = ctx?.close_total;
   const [openLens, setOpenLens] = useState<string | null>(null);
   const openHelp = openLens ? _explainGlossary(openLens.toUpperCase()) : null;
+
+  // 2026-09-01: reviewer safety — if every lens is null on both
+  // margin AND total (thin ctx: UFC / sparse NHL / NCAAF FCS), the
+  // grid rendered as a row of "—" tiles which reads as broken. Bail.
+  const hasAnyValue = rows.some((r: any) => r.m != null || r.t != null);
+  if (!hasAnyValue) return null;
 
   return (
     <View>
@@ -1146,6 +1224,10 @@ function LensGrid({ctx, gamesSport}: any) {
 // ─── HANDICAPPERS ROW ───────────────────────────────────────────────────
 function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) {
   const nonOC = (picks || []).filter((p: any) => p.source !== 'oddscrowd');
+  // 2026-09-01: hard defense — parent Section is gated but if HandicappersRow
+  // is ever mounted with no non-OC picks, render nothing rather than the
+  // empty-state text that read as "we forgot to build this."
+  if (nonOC.length === 0) return null;
   const ml = nonOC.filter((p: any) => p.surface === 'ml');
   const rl = nonOC.filter((p: any) => p.surface === 'rl');
   const totals = nonOC.filter((p: any) => p.surface === 'total');
@@ -1230,9 +1312,11 @@ function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) 
           {bucketRow('UNDER', totUnder)}
         </>
       )}
-      {nonOC.length === 0 && (
-        <Text style={styles.handiEmpty}>No handicapper picks pulled yet.</Text>
-      )}
+      {/* 2026-09-01: parent Section is now gated on nonOC>0 upstream,
+          so this branch shouldn't fire in prod. Kept as defense in
+          depth — if HandicappersRow is ever mounted with no non-OC
+          picks (edge case, standalone testing), return null instead
+          of the confusing "not pulled yet" copy. */}
     </View>
   );
 }
@@ -2097,11 +2181,9 @@ function SportSpecificSlot({ctx, gamesSport, game}: any) {
     return null;
   }
   if (gamesSport === 'UFC') {
-    return (
-      <Section title="Fighter Reads">
-        <Text style={styles.emptyMuted}>Fighter breakdown card coming next (reach/reads + method/round breakdown).</Text>
-      </Section>
-    );
+    // 2026-09-01: killed "coming next" placeholder. Section shipping
+    // when reach/reads + method/round breakdown lands. Reviewer safety.
+    return null;
   }
   if (gamesSport === 'NFL') {
     return <NFLSlot ctx={ctx} game={game} />;
@@ -2122,11 +2204,9 @@ function SportSpecificSlot({ctx, gamesSport, game}: any) {
     return <NCAABSlot ctx={ctx} game={game} />;
   }
   if (gamesSport === 'NHL') {
-    return (
-      <Section title="Goalie + Rest">
-        <Text style={styles.emptyMuted}>Goalie matchup + B2B chip coming next.</Text>
-      </Section>
-    );
+    // 2026-09-01: killed "coming next" placeholder. Goalie matchup
+    // + B2B chip ships once nhl_starters / nhl_goalies land. Reviewer safety.
+    return null;
   }
   return null;
 }
