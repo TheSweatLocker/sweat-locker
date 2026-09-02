@@ -11437,10 +11437,10 @@ setJerryHistory(prev => {
               <View style={{alignItems:'center'}}>
                 <Text style={{fontSize:44,marginBottom:12}}>📋</Text>
                 <Text style={{color:THEME.text,fontWeight:'900',fontSize:26,textAlign:'center',marginBottom:8}}>Your Daily Sweat Card</Text>
-                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:20,paddingHorizontal:10}}>Every night: 8 curated picks led by <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Pick of the Day</Text> and <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Dawg of the Day</Text>, plus the rest of the slate. Sides, totals, and player props — all tiered by conviction.</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:20,paddingHorizontal:10}}>Every night: up to 4 curated picks led by <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Pick of the Day</Text> and <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Dawg of the Day</Text>, plus supporting reads on the rest of the slate. Sides, totals, and player props — all tiered by conviction.</Text>
                 <View style={{width:'100%',backgroundColor:THEME.surface,borderRadius:10,padding:14,marginBottom:16,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
                   <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11,letterSpacing:0.5,marginBottom:8}}>PROP JERRY</Text>
-                  <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Player prop analysis with real book prices + projection-based edge. <Text style={{color:THEME.text,fontWeight:'700'}}>PRIME props hit 60%+ lifetime.</Text></Text>
+                  <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Player prop analysis with real book prices + projection-based edge. <Text style={{color:THEME.text,fontWeight:'700'}}>PRIME tier represents our highest-conviction props, backed by aligned model + market signals.</Text></Text>
                 </View>
                 <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16,paddingHorizontal:10}}>Tap any card to open full game detail.</Text>
               </View>
@@ -11454,7 +11454,7 @@ setJerryHistory(prev => {
                 <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:16,paddingHorizontal:10}}>Where the sharps live. Four sub-tabs, each with its own edge.</Text>
                 <View style={{width:'100%',gap:8,marginBottom:12}}>
                   {[
-                    {ic:'📈', label:'LINE MOVEMENT',  desc:'Reverse-line-move alerts — public on side A, market moves toward B = sharp money'},
+                    {ic:'📊', label:'THE SPLIT',      desc:'Public splits + sharp signals across sources — reverse-line-move alerts + triple-source agreement badges'},
                     {ic:'🎯', label:'SHARP CARD',     desc:'A disciplined sharp-money list. Smaller, higher bar than the daily Sweat Card'},
                     {ic:'🪜', label:'LADDER',         desc:'1 play per day. Winnings compound. Highest-conviction pick only'},
                     {ic:'📚', label:'LEDGER',         desc:'Auto-generated parlays and teasers from tonight\'s highest-agreement picks'},
@@ -11480,7 +11480,7 @@ setJerryHistory(prev => {
                 <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:16,paddingHorizontal:10}}>Tap any game to open the full breakdown — every angle in one view.</Text>
                 <View style={{width:'100%',gap:6,marginBottom:12}}>
                   {[
-                    'Six analytical lenses (MC · HC · Panel · V4 · EPA · Cohorts)',
+                    'Six analytical lenses (Panel · Jerry · V3 · V4 · MC · Confluence)',
                     'Public betting splits from 4 sources with triple-agreement badges',
                     'External handicapper aggregation (graded record)',
                     'Cohort signals (which historical bucket this game lives in)',
