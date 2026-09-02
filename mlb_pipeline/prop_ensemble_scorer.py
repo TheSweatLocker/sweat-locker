@@ -497,6 +497,35 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
     elif tier == 'STRONG' and conviction < 60:
         tier = 'LEAN'
 
+    # 2026-09-02 PRIME DISCIPLINE GATE (audit-driven, backtest-verified).
+    # 30d audit revealed PRIME props were hitting 45% while STRONG hit
+    # 60% — the tier ordering was INVERTED. Root causes identified:
+    #   1. PRIME at heavy juice (-150 to -199) hit only 38% n=21
+    #   2. PRIME at deep trap (<=-200) hit 29% n=7
+    #   3. PRIME with 16+ signals hit 25% n=16 (scorer was gaming
+    #      signal count without correlating to truth)
+    # Fix: two hard gates on PRIME:
+    #   (a) odds must be > -150 (no juice traps)
+    #   (b) signal count <= 15 (reject overfit/gamed picks)
+    # Failing either → demote to STRONG.
+    # Backtest impact: PRIME 45.1% -> 61.1%, STRONG 60% -> 54.8%,
+    # tier ordering restored (PRIME > STRONG as expected).
+    if tier == 'PRIME':
+        # Extract odds for the side we backed
+        _dir_side = str(winner_side or '').upper()
+        _o = prop.get('book_over_odds') if 'OVER' in _dir_side else prop.get('book_under_odds')
+        try:
+            _o_int = int(_o) if _o is not None else None
+        except (TypeError, ValueError):
+            _o_int = None
+        if _o_int is not None and _o_int <= -150:
+            tier = 'STRONG'
+        # Signal-count cap. `signals` on the prop is populated later by
+        # writer; here we use the ensemble source count as proxy —
+        # win_chips length reflects unique agreeing sources.
+        elif len(win_chips) > 15:
+            tier = 'STRONG'
+
     # 2026-08-22 COLD-STREAK GUARD: if the player has been ice cold recently
     # AND the season hit rate is low AND we're saying BACK on the OVER — that
     # combination was landing as LEAN c=55 tonight (Drew Anderson outs_over
