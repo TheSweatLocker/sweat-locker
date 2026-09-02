@@ -13797,6 +13797,27 @@ setJerryHistory(prev => {
     }
   }
 
+  // ⚠️ Trap Game (NCAAF) — top-10 team laying 17+ vs unranked opponent.
+  // Classic look-ahead spot; historically favorite fails to cover.
+  // Reads home_ap_rank/away_ap_rank + close_spread. Silent-hide when
+  // criteria not met. (Vault Match pattern computes rolling hit% for
+  // this same signal in shadow mode.)
+  if (gamesSport === 'NCAAF') {
+    const _hr = Number(ctxAny?.home_ap_rank);
+    const _ar = Number(ctxAny?.away_ap_rank);
+    const _cs = Number(ctxAny?.close_spread);
+    const _homeTop10Fav = isFinite(_hr) && _hr >= 1 && _hr <= 10
+                       && (!isFinite(_ar) || _ar > 25)
+                       && isFinite(_cs) && _cs >= 17;
+    const _awayTop10Fav = isFinite(_ar) && _ar >= 1 && _ar <= 10
+                       && (!isFinite(_hr) || _hr > 25)
+                       && isFinite(_cs) && _cs <= -17;
+    if (_homeTop10Fav || _awayTop10Fav) {
+      _sweatBadges.push(<StatusChip key="tp" variant="custom" color={THEME.warn}
+                                     icon="⚠️" label="TRAP GAME" />);
+    }
+  }
+
   // ⚾ Ace on Mound (MLB) — starter with xERA ≤ 3.00. Elite pitcher
   // signal — usually means low totals, K prop upside, and defensive
   // strength for that side. Reads home_sp_xera / away_sp_xera from

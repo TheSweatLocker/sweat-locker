@@ -520,6 +520,38 @@ PATTERN_CATALOG = [
     # ─── NCAAF ───────────────────────────────────────────────────────
     {
         'sport': 'NCAAF',
+        'key': 'ncaaf_top10_trap_fade',
+        'label': 'Top-10 Trap',
+        'direction': 'FADE',
+        'description': 'NCAAF top-10 team laying 17+ points vs unranked opponent. Classic look-ahead / lookaround trap — historically fade the favorite (they fail to cover).',
+        'lookback_days': 730,
+        'matches': lambda g: (
+            # One team ranked top-10, other unranked (or >25)
+            (
+                (_f_safe(g.get('home_ap_rank')) is not None
+                 and _f_safe(g.get('home_ap_rank')) <= 10
+                 and (_f_safe(g.get('away_ap_rank')) is None or _f_safe(g.get('away_ap_rank')) > 25)
+                 and _f_safe(g.get('close_spread')) is not None
+                 and _f_safe(g.get('close_spread')) >= 17)
+                or
+                (_f_safe(g.get('away_ap_rank')) is not None
+                 and _f_safe(g.get('away_ap_rank')) <= 10
+                 and (_f_safe(g.get('home_ap_rank')) is None or _f_safe(g.get('home_ap_rank')) > 25)
+                 and _f_safe(g.get('close_spread')) is not None
+                 and _f_safe(g.get('close_spread')) <= -17)
+            )
+        ),
+        # FADE the favorite = back the underdog covering
+        'outcome': lambda g: (
+            # Favorite is home (close_spread >= 17 means home fav) → back away
+            _spread_outcome_away_covered(g) if (_f_safe(g.get('close_spread')) or 0) >= 17
+            # Favorite is away (close_spread <= -17 means away fav) → back home
+            else _spread_outcome_home_covered(g) if (_f_safe(g.get('close_spread')) or 0) <= -17
+            else 'P'
+        ),
+    },
+    {
+        'sport': 'NCAAF',
         'key': 'ncaaf_road_fav_10plus_fade',
         'label': 'CFB Road Fav 10+',
         'direction': 'FADE',
