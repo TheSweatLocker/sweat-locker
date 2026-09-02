@@ -497,6 +497,19 @@ jobs:
           cd mlb_pipeline
           python audit_sharp_source_calibration.py --sport NCAAF || echo "NCAAF sharp source calibration failed"
 
+      # 2026-09-02: NCAAF RZ + kicking efficiency pull. Populates
+      # rz_td_rate + opp_rz_td_rate columns for Vault Match RZ signals.
+      - name: Pull NCAAF RZ/kicking (CFBD advanced)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_rz_kicking_pull.py || echo "NCAAF RZ pull failed (non-fatal)"
+
       # 2026-09-02: NCAAF turnover margin computation. Rolls up
       # season TO margin per team from ncaaf_team_stats, patches
       # home_to_margin + away_to_margin on ncaaf_game_context.

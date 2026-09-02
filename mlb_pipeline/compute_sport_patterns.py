@@ -520,6 +520,31 @@ PATTERN_CATALOG = [
     # ─── NCAAF ───────────────────────────────────────────────────────
     {
         'sport': 'NCAAF',
+        'key': 'ncaaf_rz_finisher_back',
+        'label': 'RZ Finisher',
+        'direction': 'BACK',
+        'description': 'NCAAF team with elite red-zone TD rate (>=70%) as favorite. Finishers cover more consistently — market often undervalues drive-completion.',
+        'lookback_days': 730,
+        'matches': lambda g: (
+            (_f_safe(g.get('home_rz_td_rate')) is not None
+             and _f_safe(g.get('home_rz_td_rate')) >= 0.70
+             and _f_safe(g.get('close_spread')) is not None
+             and _f_safe(g.get('close_spread')) > 0)
+            or
+            (_f_safe(g.get('away_rz_td_rate')) is not None
+             and _f_safe(g.get('away_rz_td_rate')) >= 0.70
+             and _f_safe(g.get('close_spread')) is not None
+             and _f_safe(g.get('close_spread')) < 0)
+        ),
+        # BACK the RZ-elite favorite (home if home fav w/ RZ, away if away fav w/ RZ)
+        'outcome': lambda g: (
+            _spread_outcome_home_covered(g) if (_f_safe(g.get('home_rz_td_rate')) or 0) >= 0.70 and (_f_safe(g.get('close_spread')) or 0) > 0
+            else _spread_outcome_away_covered(g) if (_f_safe(g.get('away_rz_td_rate')) or 0) >= 0.70 and (_f_safe(g.get('close_spread')) or 0) < 0
+            else 'P'
+        ),
+    },
+    {
+        'sport': 'NCAAF',
         'key': 'ncaaf_to_lucky_fade',
         'label': 'TO Luck FADE',
         'direction': 'FADE',
