@@ -130,6 +130,21 @@ jobs:
           cd mlb_pipeline
           python ncaaf_game_context.py || echo "game_context failed"
 
+      # 2026-09-01: NCAAF MC simulator (5th lens). Runs after game_context
+      # since it reads projected_spread + projected_total off the ctx row.
+      # Simulates 10k games per matchup with GAME_STDDEV=13.5 (CFB variance),
+      # writes mc_probabilities blob. Mirrors nfl_mc_simulator.py pattern.
+      # Days-forward = 8 so weekend games get MC prepped by Tue/Wed cron.
+      - name: NCAAF MC simulator
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_mc_simulator.py --days 8 || echo "NCAAF MC failed (non-fatal)"
+
       # 2026-08-22 (silent-bug audit finding #14): NCAAF weather pull.
       # Populates temp / wind / wind_speed / dome / weather_source columns
       # so ncaaf_extreme_wind_under, ncaaf_high_wind_under,

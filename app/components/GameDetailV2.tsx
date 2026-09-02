@@ -1051,14 +1051,24 @@ import {explain as _explainGlossary} from '../lib/glossary';
 
 function LensGrid({ctx, gamesSport}: any) {
   const mc = safeJSON(ctx?.mc_probabilities) || {};
+  // 2026-09-01: NCAAF gets MC lens too — mirrors NFL/MLB. Simulator
+  // populates mc_probabilities via mlb_pipeline/ncaaf_mc_simulator.py
+  // (schema in 20260901h_ncaaf_mc_column.sql, workflow step in
+  // .github/workflows/ncaaf_pipeline.yml after game_context build).
+  // Same lens chip shape so cross-sport rendering stays uniform.
   const rows = gamesSport === 'MLB' ? [
     {name: 'Panel', m: ctx?.panel_implied_margin, t: ctx?.panel_implied_total},
     {name: 'Jerry', m: ctx?.jerry_pred_spread, t: ctx?.jerry_pred_total},
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
     {name: 'v4', m: ctx?.model_pred_spread, t: ctx?.model_pred_total},
     {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
+  ] : gamesSport === 'NCAAF' ? [
+    {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+    {name: 'v4', m: ctx?.model_pred_spread, t: ctx?.model_pred_total},
+    {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
+    {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
   ] : [
-    // Non-MLB sports have fewer lens fields
+    // Other non-MLB sports have fewer lens fields
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
     {name: 'v4', m: ctx?.model_pred_spread, t: ctx?.model_pred_total},
     {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
