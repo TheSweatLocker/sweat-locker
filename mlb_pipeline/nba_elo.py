@@ -131,21 +131,103 @@ def train(season: str | None = None, reset_all: bool = True) -> dict:
     return out
 
 
+def _load_espn_team_lookup() -> dict:
+    """Fetch all 30 NBA teams from ESPN → {full_name: abbrev} map.
+
+    2026-09-01: root-cause fix for the truncated team_abbrev bug. Prior
+    code wrote team[:8] as abbrev ("Boston Celtics" → "Boston C") which
+    broke every downstream JOIN. ESPN returns real 3-letter abbrevs
+    (BOS, LAL, LAC) + full displayName. Map lookup once per elo run.
+    Falls back to a hardcoded 30-team map if ESPN blip.
+    """
+    try:
+        from nba_data_client import get_teams
+        teams = get_teams()
+        if teams:
+            return {t['name']: t['abbrev'] for t in teams if t.get('name') and t.get('abbrev')}
+    except Exception as e:
+        print(f'  ESPN team lookup failed ({e}), using hardcoded fallback')
+    # Hardcoded 30-team fallback (matches ESPN abbreviations)
+    return {
+        'Atlanta Hawks': 'ATL', 'Boston Celtics': 'BOS', 'Brooklyn Nets': 'BKN',
+        'Charlotte Hornets': 'CHA', 'Chicago Bulls': 'CHI', 'Cleveland Cavaliers': 'CLE',
+        'Dallas Mavericks': 'DAL', 'Denver Nuggets': 'DEN', 'Detroit Pistons': 'DET',
+        'Golden State Warriors': 'GSW', 'Houston Rockets': 'HOU', 'Indiana Pacers': 'IND',
+        'LA Clippers': 'LAC', 'Los Angeles Lakers': 'LAL', 'Memphis Grizzlies': 'MEM',
+        'Miami Heat': 'MIA', 'Milwaukee Bucks': 'MIL', 'Minnesota Timberwolves': 'MIN',
+        'New Orleans Pelicans': 'NOP', 'New York Knicks': 'NYK', 'Oklahoma City Thunder': 'OKC',
+        'Orlando Magic': 'ORL', 'Philadelphia 76ers': 'PHI', 'Phoenix Suns': 'PHX',
+        'Portland Trail Blazers': 'POR', 'Sacramento Kings': 'SAC', 'San Antonio Spurs': 'SAS',
+        'Toronto Raptors': 'TOR', 'Utah Jazz': 'UTA', 'Washington Wizards': 'WAS',
+    }
+
+
+def _compute_records(season: str | None) -> dict:
+    """Compute real W-L per team from nba_game_results (2026-09-01 fix).
+
+    Prior code wrote wins=games_played, losses=0 — placeholder that made
+    the wins/losses columns useless. This computes actual W-L from the
+    home_win field in the finalized results table.
+    """
+    params = 'game_date=not.is.null&home_score=not.is.null'
+    if season: params += f'&season=eq.{season}'
+    records = defaultdict(lambda: {'w': 0, 'l': 0})
+    for off in range(0, 20000, 1000):
+        r = requests.get(f'{SB}/rest/v1/nba_game_results?{params}'
+                         f'&select=home_team,away_team,home_win&limit=1000&offset={off}',
+                         headers=H_READ, timeout=30)
+        chunk = r.json() if r.status_code == 200 else []
+        for row in chunk:
+            if row.get('home_win') is True:
+                records[row['home_team']]['w'] += 1
+                records[row['away_team']]['l'] += 1
+            elif row.get('home_win') is False:
+                records[row['home_team']]['l'] += 1
+                records[row['away_team']]['w'] += 1
+        if len(chunk) < 1000: break
+    return dict(records)
+
+
 def save_ratings(ratings: dict, season: str) -> int:
-    """Upsert per-team Elo into nba_team_stats (season-scoped)."""
+    """Upsert per-team ratings into nba_team_stats (season-scoped).
+
+    2026-09-01 rewrite (root-cause fix):
+      - team_abbrev = real 3-letter ESPN abbrev (BOS not "Boston C")
+      - team_name = full ESPN displayName ("Boston Celtics")
+      - wins / losses = real counts from nba_game_results.home_win
+      - off_rating / def_rating / net_rating = PPG-based (points-per-game
+        without pace adjustment — labeled accurately as Points/G in the
+        team_stats_rolling matview since we don't have pace data yet;
+        column names retained for schema stability, future four-factors
+        puller will overwrite with true per-100-possession values)
+    """
     now_iso = datetime.now(timezone.utc).isoformat()
+    team_map = _load_espn_team_lookup()
+    records = _compute_records(season)
+    print(f'  loaded {len(team_map)} ESPN team abbrevs, W-L for {len(records)} teams')
+
     payloads = []
+    skipped_unknown = 0
     for team, d in ratings.items():
+        abbrev = team_map.get(team)
+        if not abbrev:
+            skipped_unknown += 1
+            continue
+        rec = records.get(team, {'w': 0, 'l': 0})
         payloads.append({
-            'team_abbrev': team[:8],  # some ESPN full names > 8 chars but this is scope-note
+            'team_abbrev': abbrev,
+            'team_name':   team,
             'season':      season,
             'off_rating':  d.get('avg_pts_for'),
             'def_rating':  d.get('avg_pts_against'),
             'net_rating':  round(d.get('avg_pts_for', 0) - d.get('avg_pts_against', 0), 1),
-            'wins':        d.get('games_played', 0),  # placeholder
-            'losses':      0,
+            'wins':        rec['w'],
+            'losses':      rec['l'],
             'updated_at':  now_iso,
         })
+    if skipped_unknown:
+        print(f'  ⚠ {skipped_unknown} teams not in ESPN map (likely All-Star placeholders) — skipped')
+
     written = 0
     for i in range(0, len(payloads), 50):
         chunk = payloads[i:i+50]

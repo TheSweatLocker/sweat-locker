@@ -1883,13 +1883,15 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
   const MLB_DEFENSE = [
     'bullpen_era', 'bullpen_save_pct',
   ];
-  // NBA — four factors + ratings
+  // NBA — 2026-09-01 rewrite: honest labels for PPG-based stats
+  // (nba_elo writes PPG, not per-100-poss). Four-factors (efg/tov/orb/
+  // ftr + opp) rows appear only once a puller populates them.
   const NBA_OFFENSE = [
-    'off_rating', 'net_rating', 'pace',
+    'points_pg', 'net_pts_pg', 'pace',
     'efg_pct', 'tov_pct', 'orb_pct', 'ft_rate',
   ];
   const NBA_DEFENSE = [
-    'def_rating', 'opp_efg_pct', 'opp_tov_pct',
+    'points_allowed_pg', 'opp_efg_pct', 'opp_tov_pct', 'opp_orb_pct',
   ];
   // NHL — expected-goal + special teams + possession
   const NHL_OFFENSE = [
