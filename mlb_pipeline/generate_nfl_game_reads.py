@@ -57,17 +57,28 @@ def nfl_week_start_thu():
 
     NFL Week 1 Thursday 2026 = 2026-09-04. NFL week runs Thu -> Wed for
     Jerry-lock purposes (Thu-lock keeps reads stable across the entire
-    weekly slate incl. TNF, SNF, MNF, TNF-next-week).
+    weekly slate incl. TNF, SNF, MNF, and the Wed-night SEASON OPENER
+    which anchors to that same week).
+
+    Day-of-week handling:
+      Wed: roll FORWARD to tomorrow (Thu). Wed-night opener belongs
+           to the upcoming Thursday's week, not last week's. This
+           makes the Wed 8am ET cron generate reads that Thu-lock
+           preserves for the rest of the week.
+      Thu: today (same-day generation baseline).
+      Fri-Tue: roll BACK to the most recent Thursday.
 
     2026-09-02: introduced with Thu-lock. Cache keys switch from
-    per-day to per-week so subsequent-day cron runs no-op (skip via
-    existing "if cache_key exists, skip" gate).
+    per-day to per-week so subsequent-day cron runs no-op.
+    2026-09-02 v2: Wed rolls forward per NFL Week 1 opener (Wed 9/3).
     """
     now_et = datetime.now(timezone.utc) - timedelta(hours=4)
-    # Python weekday(): Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
-    # Roll back to the most recent Thursday (same day if today IS Thursday)
-    days_since_thu = (now_et.weekday() - 3) % 7
-    thu = now_et - timedelta(days=days_since_thu)
+    dow = now_et.weekday()  # Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
+    if dow == 2:  # Wednesday — roll forward to tomorrow (Thursday)
+        thu = now_et + timedelta(days=1)
+    else:
+        days_since_thu = (dow - 3) % 7
+        thu = now_et - timedelta(days=days_since_thu)
     return thu.strftime("%Y-%m-%d")
 
 
