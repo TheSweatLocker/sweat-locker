@@ -142,6 +142,83 @@ STADIUMS: dict[str, dict] = {
     'San Diego State':{'lat': 32.7830, 'lng': -117.1204, 'dome': False},
     'Toledo':         {'lat': 41.6634, 'lng': -83.6134, 'dome': False},
     'Northern Illinois': {'lat': 41.9330, 'lng': -88.7734, 'dome': False},
+    # ─── 2026-09-01: full FBS backfill (user report: "Akron 0°F,
+    # all games do") — Akron + ~40 other FBS programs were missing
+    # from STADIUMS, so weather_pull skipped them silently. Adding
+    # every remaining FBS home stadium so no game slips through.
+    # ─── MAC (rest) ───────────────────────────────────────────────
+    'Akron':           {'lat': 41.0778, 'lng': -81.5083, 'dome': False},
+    'Ball State':      {'lat': 40.2000, 'lng': -85.4109, 'dome': False},
+    'Bowling Green':   {'lat': 41.3757, 'lng': -83.6337, 'dome': False},
+    'Buffalo':         {'lat': 43.0011, 'lng': -78.7864, 'dome': False},
+    'Central Michigan':{'lat': 43.5919, 'lng': -84.7857, 'dome': False},
+    'Eastern Michigan':{'lat': 42.2508, 'lng': -83.6206, 'dome': False},
+    'Kent State':      {'lat': 41.1560, 'lng': -81.3450, 'dome': False},
+    'Miami (OH)':      {'lat': 39.5065, 'lng': -84.7300, 'dome': False},
+    'Ohio':            {'lat': 39.3225, 'lng': -82.1075, 'dome': False},
+    'Western Michigan':{'lat': 42.2839, 'lng': -85.6106, 'dome': False},
+    # ─── AAC (rest — Army already in Independents above) ─────────
+    'Charlotte':       {'lat': 35.3084, 'lng': -80.7346, 'dome': False},
+    'East Carolina':   {'lat': 35.5990, 'lng': -77.3654, 'dome': False},
+    'Florida Atlantic':{'lat': 26.3763, 'lng': -80.1027, 'dome': False},
+    'North Texas':     {'lat': 33.2098, 'lng': -97.1552, 'dome': False},
+    'Rice':            {'lat': 29.7168, 'lng': -95.4090, 'dome': False},
+    'South Florida':   {'lat': 27.9793, 'lng': -82.5040, 'dome': False},
+    'Temple':          {'lat': 39.9008, 'lng': -75.1671, 'dome': False},
+    'Tulsa':           {'lat': 36.1523, 'lng': -95.9448, 'dome': False},
+    'UAB':             {'lat': 33.5100, 'lng': -86.8080, 'dome': False},
+    'UTSA':            {'lat': 29.4241, 'lng': -98.4936, 'dome': True},  # Alamodome
+    # ─── C-USA ────────────────────────────────────────────────────
+    'FIU':             {'lat': 25.7581, 'lng': -80.3728, 'dome': False},
+    'Jacksonville State':{'lat': 33.8226, 'lng': -85.7686, 'dome': False},
+    'Kennesaw State':  {'lat': 34.0432, 'lng': -84.5738, 'dome': False},
+    'Louisiana Tech':  {'lat': 32.5303, 'lng': -92.6532, 'dome': False},
+    'Middle Tennessee':{'lat': 35.8461, 'lng': -86.3743, 'dome': False},
+    'New Mexico State':{'lat': 32.2812, 'lng': -106.7527, 'dome': False},
+    'Sam Houston':     {'lat': 30.7139, 'lng': -95.5450, 'dome': False},
+    'UTEP':            {'lat': 31.7714, 'lng': -106.5064, 'dome': False},
+    'Western Kentucky':{'lat': 36.9843, 'lng': -86.4665, 'dome': False},
+    'Delaware':        {'lat': 39.6795, 'lng': -75.7526, 'dome': False},
+    'Missouri State':  {'lat': 37.1978, 'lng': -93.2792, 'dome': False},
+    # ─── Sun Belt ─────────────────────────────────────────────────
+    'Arkansas State':  {'lat': 35.8477, 'lng': -90.6798, 'dome': False},
+    'Georgia Southern':{'lat': 32.4194, 'lng': -81.7818, 'dome': False},
+    'Georgia State':   {'lat': 33.7325, 'lng': -84.3903, 'dome': False},  # Center Parc Stadium
+    'Louisiana':       {'lat': 30.2141, 'lng': -92.0269, 'dome': False},
+    'UL Monroe':       {'lat': 32.5327, 'lng': -92.0776, 'dome': False},
+    'Marshall':        {'lat': 38.4193, 'lng': -82.4275, 'dome': False},
+    'Old Dominion':    {'lat': 36.8869, 'lng': -76.3061, 'dome': False},
+    'South Alabama':   {'lat': 30.6944, 'lng': -88.1806, 'dome': False},
+    'Southern Miss':   {'lat': 31.3260, 'lng': -89.3306, 'dome': False},
+    'Texas State':     {'lat': 29.8842, 'lng': -97.9291, 'dome': False},
+    'Troy':            {'lat': 31.7962, 'lng': -85.9528, 'dome': False},
+    # ─── Mountain West ────────────────────────────────────────────
+    'Colorado State':  {'lat': 40.5722, 'lng': -105.0844, 'dome': False},
+    'Hawaii':          {'lat': 21.4406, 'lng': -157.8004, 'dome': False},
+    'Nevada':          {'lat': 39.5455, 'lng': -119.8171, 'dome': False},
+    'New Mexico':      {'lat': 35.0672, 'lng': -106.6229, 'dome': False},
+    'San Jose State':  {'lat': 37.3512, 'lng': -121.9236, 'dome': False},
+    'UNLV':            {'lat': 36.0908, 'lng': -115.1836, 'dome': True},   # Allegiant Stadium
+    'Utah State':      {'lat': 41.7519, 'lng': -111.8117, 'dome': False},
+    'Wyoming':         {'lat': 41.3117, 'lng': -105.5697, 'dome': False},
+    # ─── Independents ─────────────────────────────────────────────
+    'UMass':           {'lat': 42.3900, 'lng': -72.5341, 'dome': False},
+    # ─── Big Ten (missing) ────────────────────────────────────────
+    'Illinois':        {'lat': 40.0994, 'lng': -88.2361, 'dome': False},
+    'Indiana':         {'lat': 39.1808, 'lng': -86.5259, 'dome': False},
+    'Maryland':        {'lat': 38.9908, 'lng': -76.9469, 'dome': False},
+    'Minnesota':       {'lat': 44.9760, 'lng': -93.2244, 'dome': False},
+    'Nebraska':        {'lat': 40.8206, 'lng': -96.7057, 'dome': False},
+    'Northwestern':    {'lat': 42.0655, 'lng': -87.6931, 'dome': False},
+    'Purdue':          {'lat': 40.4341, 'lng': -86.9188, 'dome': False},
+    'Rutgers':         {'lat': 40.5133, 'lng': -74.4652, 'dome': False},
+    'UCLA':            {'lat': 34.1614, 'lng': -118.1678, 'dome': False},
+    'USC':             {'lat': 34.0143, 'lng': -118.2879, 'dome': False},
+    'Oregon':          {'lat': 44.0583, 'lng': -123.0682, 'dome': False},
+    'Oregon State':    {'lat': 44.5591, 'lng': -123.2809, 'dome': False},
+    'Washington':      {'lat': 47.6503, 'lng': -122.3016, 'dome': False},
+    'Washington State':{'lat': 46.7315, 'lng': -117.1553, 'dome': False},
+    # (Stanford already listed in ACC block above.)
 }
 
 

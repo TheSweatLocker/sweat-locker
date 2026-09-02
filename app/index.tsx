@@ -1703,6 +1703,8 @@ const [sweatCardLoading, setSweatCardLoading] = useState(false);
   // Fail-safe default: missing flag = disabled (launch flow must explicitly
   // enable each sport/feature).
   const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({});
+  // 2026-09-01: DB-pullable copy strings — see fetchUiNotes()
+  const [uiNotes, setUiNotes] = useState<Record<string, string>>({});
   // 2026-08-09: sport registry rev-counter. fetchSportRegistry mutates the
   // module-level SPORTS + SPORT_EMOJI (module-level so any component reading
   // them sees the update); this counter is only to trigger a re-render on
@@ -2003,6 +2005,10 @@ useEffect(() => {
   setBestBetFetched(true);
   fetchDailyBestBet();
   fetchSweatCard();
+  // 2026-09-01: also fetch UI notes on initial mount so DB-pullable
+  // copy (still-building banners etc) lands before first render of
+  // sport-specific tabs. Foreground listener re-fetches on tab-back.
+  fetchUiNotes();
 }, []);
 // Refetch MLB tab data when app foregrounds — pipeline watchdog updates DB
 // every 30 min as lineups confirm + umpires land. Throttled to 5 min so a
@@ -2018,6 +2024,7 @@ useEffect(() => {
     lastMLBRefreshAt.current = Date.now();
     fetchSweatCard();
     fetchFeatureFlags();
+    fetchUiNotes();
     fetchSportRegistry();
     fetchDailyBestBet();
     fetchDawgOfDay();
@@ -5522,6 +5529,24 @@ const fetchFeatureFlags = async () => {
       setFeatureFlags(m);
     }
   } catch (e) { console.warn('[feature_flags]', (e as any)?.message); }
+};
+
+// 2026-09-01: UI notes loader — DB-pullable copy strings so we can edit
+// "still building" banners + status messages WITHOUT an App Store re-review.
+// See supabase/migrations/20260901t_ui_notes.sql. Non-blocking + fail-safe:
+// if fetch fails, uiNotes stays empty and every call site falls back to its
+// hardcoded default (never breaks the app, never blocks render).
+const fetchUiNotes = async () => {
+  try {
+    const {data} = await supabase.from('ui_notes').select('note_key,note_text,enabled');
+    if (data) {
+      const m: Record<string, string> = {};
+      for (const r of data as any[]) {
+        if (r?.enabled && r?.note_key && r?.note_text) m[r.note_key] = r.note_text;
+      }
+      setUiNotes(m);
+    }
+  } catch (e) { console.warn('[ui_notes]', (e as any)?.message); }
 };
 
 // Sport registry loader (2026-08-09). Fetches the canonical sport catalog
@@ -13886,22 +13911,18 @@ setJerryHistory(prev => {
         <Text style={{color:THEME.textDim,fontSize:11,flex:1,lineHeight:16}}>
           {propJerrySport === 'NFL' ? (
             <>
-              {/* 2026-09-01: banner rewritten pre-App-Store-submit. Prior copy
-                  said "full playbook active. Live for regular season" while
-                  the body of this same screen renders "🚧 Playbook still
-                  building for NFL" (index.tsx:14344) — App Reviewers flag
-                  that kind of contradictory copy as "looks unfinished." NFL
-                  props require an RPC + registry wire (deferred post-launch);
-                  banner now matches the actual state. */}
-              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NFL props — coming this season.</Text> Full playbook (player L4-L6 form, defensive matchup, model projection edges) rolls out during regular season as Week 1-3 sample accumulates.
+              {/* 2026-09-01: banner copy pulled from ui_notes.nfl_prop_banner
+                  (DB-editable without app update). Falls back to hardcoded
+                  string if DB row missing/disabled/fetch failed. */}
+              {uiNotes['nfl_prop_banner'] || 'NFL props — coming this season. Full playbook (player L4-L6 form, defensive matchup, model projection edges) rolls out during regular season as Week 1-3 sample accumulates.'}
             </>
           ) : propJerrySport === 'NHL' ? (
             <>
-              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NHL props — coming this season.</Text> Full playbook (player L10 form, opp goalie save%, line role, PP time) rolls out ahead of October puck drop.
+              {uiNotes['nhl_prop_banner'] || 'NHL props — coming this season. Full playbook (player L10 form, opp goalie save%, line role, PP time) rolls out ahead of October puck drop.'}
             </>
           ) : propJerrySport === 'NBA' ? (
             <>
-              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>NBA props — coming this season.</Text> Full playbook (player L10-L15 form, opp DefRtg by category, pace, matchup) rolls out ahead of tip-off week.
+              {uiNotes['nba_prop_banner'] || 'NBA props — coming this season. Full playbook (player L10-L15 form, opp DefRtg by category, pace, matchup) rolls out ahead of tip-off week.'}
             </>
           ) : propJerrySport === 'UFC' ? (
             <>
@@ -14452,8 +14473,10 @@ setJerryHistory(prev => {
          pipeline-driven card path (same as MLB) — not the A/B/C system. */
       <View style={{alignItems:'center',paddingTop:40}}>
         <Text style={{fontSize:32}}>🚧</Text>
+        {/* 2026-09-01: playbook body copy pulled from ui_notes.<sport>_playbook_body.
+            Falls back to hardcoded default per sport. */}
         <Text style={{color:THEME.textDim,marginTop:12,fontSize:14,textAlign:'center',lineHeight:20}}>
-          Playbook still building for {propJerrySport}.{'\n'}Check the note above for the timeline.
+          {uiNotes[`${propJerrySport.toLowerCase()}_playbook_body`] || `Playbook still building for ${propJerrySport}.\nCheck the note above for the timeline.`}
         </Text>
       </View>
     )}
@@ -15121,27 +15144,62 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   setActiveTab('games');
                   const normalize = (s: string) => (s || '').toLowerCase()
                     .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+                  // 2026-09-01: also strip common team-name qualifier prefixes
+                  // that vary between Split (uses short name from flag detail)
+                  // and games list (uses full display name). e.g. "Diamondbacks"
+                  // vs "Arizona Diamondbacks", "STL" vs "St. Louis Cardinals".
+                  // Match on the LAST word of each team name — always the city
+                  // or nickname, guaranteed to match if same team.
+                  const lastWord = (s: string) => {
+                    const n = normalize(s);
+                    const parts = n.split(' ').filter(Boolean);
+                    return parts[parts.length - 1] || '';
+                  };
                   const [awayTeam, homeTeam] = matchup.includes(' @ ')
                     ? matchup.split(' @ ').map((s: string) => s.trim())
                     : ['', ''];
                   const awayN = normalize(awayTeam);
                   const homeN = normalize(homeTeam);
+                  const awayLW = lastWord(awayTeam);
+                  const homeLW = lastWord(homeTeam);
                   let opened = false;
                   const tryOpen = () => {
-                    if (opened) return;
+                    if (opened) return true;
                     const list = (gamesData || []);
                     // Match by game_id first (most reliable)
                     let target = gid ? list.find((g: any) => g.id === gid || g.game_id === gid) : null;
-                    // Fall back to normalized team-name match
+                    // Full-name normalized match
                     if (!target && awayN && homeN) {
                       target = list.find((g: any) =>
                         normalize(g.away_team) === awayN && normalize(g.home_team) === homeN);
                     }
-                    if (target) { openGameDetail(target); opened = true; }
+                    // Last-word match — handles "Diamondbacks" vs "Arizona Diamondbacks"
+                    if (!target && awayLW && homeLW) {
+                      target = list.find((g: any) =>
+                        lastWord(g.away_team) === awayLW && lastWord(g.home_team) === homeLW);
+                    }
+                    if (target) { openGameDetail(target); opened = true; return true; }
+                    return false;
                   };
-                  setTimeout(tryOpen, 250);
-                  setTimeout(tryOpen, 800);
-                  setTimeout(tryOpen, 2000);
+                  // 2026-09-01 fix: persistent-retry pattern replaces the
+                  // 3-shot timing lottery. User report: "clicking on game
+                  // just goes to games tab, not specific game." On cold
+                  // starts gamesData took >2s to load and all 3 tries missed.
+                  // Now: poll every 300ms up to 8s, exit as soon as opened
+                  // OR max attempts hit.
+                  let attempts = 0;
+                  const MAX_ATTEMPTS = 27; // ~8s at 300ms
+                  const poll = setInterval(() => {
+                    attempts += 1;
+                    if (tryOpen() || attempts >= MAX_ATTEMPTS) {
+                      clearInterval(poll);
+                      if (!opened) {
+                        console.warn('[Split deep-link] game not found after 8s', {gid, matchup, sport, gamesDataLen: (gamesData||[]).length});
+                      }
+                    }
+                  }, 300);
+                  // Also try immediately (fast case: gamesData already loaded)
+                  tryOpen();
                 }}
               />
               </>

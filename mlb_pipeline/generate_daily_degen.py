@@ -564,10 +564,19 @@ def extract_leg_candidates(games, props):
     # excluding it from Daily Degen left the model's actual best output
     # invisible. v3 over_lean is gate-only (xERA gap rule) — too narrow to
     # rely on as the sole total-leg source.
+    #
+    # 2026-09-01 (user-reported divergence): DD used to ship OVER on games
+    # where Jerry / ensemble read UNDER (v4 disagrees with the fuller stack).
+    # Users saw "DD: Over 8.5 · Jerry: lean under" on the same game and
+    # (rightly) called it a transparency bug. Fix: cross-check jerry_pred_total.
+    # If v4 says over AND jerry says under (or vice-versa) by ≥0.5 runs,
+    # SKIP the DD leg — the narrative disagreement is loud enough that
+    # publishing the v4 lean alone reads as contradiction.
     for g in games:
         v4t = _f(g.get('model_pred_total'))
         v3t = _f(g.get('projected_total'))
         ct = _f(g.get('close_total'))
+        jt = _f(g.get('jerry_pred_total'))
         if ct is None:
             continue
         # Prefer v4 when available; v3 fallback when v4 was suppressed (e.g.
@@ -579,6 +588,14 @@ def extract_leg_candidates(games, props):
         if abs(delta) < 1.5:
             continue
         direction = 'over' if delta > 0 else 'under'
+        # Jerry cross-check: if Jerry's projected total is on the OPPOSITE
+        # side of the close by ≥ 0.5 runs, model + narrator disagree — skip.
+        if jt is not None:
+            jerry_dir = 'over' if (jt - ct) > 0.5 else 'under' if (jt - ct) < -0.5 else None
+            if jerry_dir and jerry_dir != direction:
+                print(f"  ⚠️ Dropping TOTAL {direction} for {g.get('away_team')} @ {g.get('home_team')}: "
+                      f"v4/v3={pt:.1f} says {direction} but jerry={jt:.1f} says {jerry_dir} (vs close {ct:.1f})")
+                continue
         model_label = 'v4' if v4t is not None else 'v3'
         # Tier scales with magnitude. Conviction caps at 80; v4 has 62.4%
         # backtest direction but no live audit yet, so don't push higher.
