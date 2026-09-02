@@ -376,9 +376,13 @@ def check_signal_source_dark() -> Optional[dict]:
                    and (s.get('created_at') or '') < since])
     if not dark or len(dark) < 5:  # a few is normal; alert only on wave
         return None
+    # 2026-09-02: severity threshold raised 20 -> 30. Chronic dark signals
+    # are a known post-launch cleanup task (21 signals sitting dark since
+    # roster-physicality season shift). Alert should INFO for the routine
+    # 15-30 range + only WARNING on a real wave of new dark signals.
     return {
         'check_name': 'signal_source_dark',
-        'severity': 'INFO' if len(dark) < 20 else 'WARNING',
+        'severity': 'INFO' if len(dark) < 30 else 'WARNING',
         'message': f'{len(dark)} enabled signals older than 14d have not fired on ANY game in last 14 days.',
         'detail': {'since': since, 'dark_count': len(dark), 'examples': dark[:10]},
     }
