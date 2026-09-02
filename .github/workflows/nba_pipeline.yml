@@ -48,6 +48,33 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"p_sport": "NBA"}' || echo "tendencies refresh failed"
 
+      # 2026-09-01: NBA four-factors + pace puller (basketball-reference).
+      # Populates efg_pct / tov_pct / orb_pct / ft_rate + opp variants +
+      # pace on nba_team_stats — fills the visible NBA Team Stats card
+      # block that was blank pre-9/1. Runs daily so 2025-26 season data
+      # updates as bref publishes. In offseason: returns prior season
+      # (dev-configurable via --season arg; default computes current).
+      - name: NBA four-factors pull (basketball-reference)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_four_factors_pull.py || echo "nba_four_factors_pull failed (non-fatal)"
+
+      # 2026-09-01: refresh team_stats_rolling after four-factors write
+      - name: Refresh team_stats_rolling (NBA follow-up)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "team_stats_rolling refresh failed"
+
       # 2026-09-01: refresh cross-sport rollup matviews (team_recent_games,
       # team_situational_records, team_stats_rolling). Universal matviews —
       # this call refreshes NBA rows within them alongside all other sports.
