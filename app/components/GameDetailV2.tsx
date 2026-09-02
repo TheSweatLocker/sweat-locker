@@ -2633,7 +2633,16 @@ function SportWeatherCard({ctx}: any) {
   const dome = ctx?.dome;
   const src  = ctx?.weather_source;
   if (dome === true) return null;                // don't waste a card on domes
+  // 2026-09-01: gate on weather_source not null (only set when a real
+  // pull succeeded). Prior version rendered "0°F" on games where the
+  // weather column had a stale/default 0 (user report: "Akron 0°F,
+  // impossible"). No weather_source = data was never actually pulled
+  // for this venue → hide the card entirely.
+  if (!src) return null;
   if (temp == null && wind == null) return null; // pre-pull / no coverage
+  // Also hide if temp is exactly 0 and wind is 0 — that's the classic
+  // "field defaulted to 0" fingerprint, not real weather.
+  if ((temp === 0 || temp == null) && (wind === 0 || wind == null)) return null;
   return (
     <Section title="Weather" hint="game-time forecast">
       <View style={{flexDirection: 'row', gap: 8}}>

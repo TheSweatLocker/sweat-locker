@@ -13635,19 +13635,31 @@ setJerryHistory(prev => {
   const _sweatBadges: React.ReactNode[] = [];
 
   // 🌧️ Weather (outdoor sports only, suppress dome/closed roof)
+  // 2026-09-01 hardening: gate on weather_source presence AND require
+  // finite non-null values on the fields we check. Prior version fired
+  // "COLD 0°" on every NCAAF game where weather hadn't been pulled
+  // (temp field defaulted to 0, Number(null) = 0, 0 <= 32 = true — fire).
+  // Now: no weather_source → skip entirely. Real pulls always set
+  // weather_source (openweather_* or dome_default).
   const _wxDome = !!ctxAny?.dome || ctxAny?.roof === 'dome' || ctxAny?.roof === 'closed';
-  const _wxTemp = Number(ctxAny?.temp);
-  const _wxWind = Number(ctxAny?.wind);
-  const _wxPrecip = Number(ctxAny?.precip_pct ?? ctxAny?.precip ?? 0);
+  const _wxSrc = ctxAny?.weather_source;
+  const _wxTempRaw = ctxAny?.temp;
+  const _wxWindRaw = ctxAny?.wind;
+  const _wxPrecipRaw = ctxAny?.precip_pct ?? ctxAny?.precip;
   const _wxOutdoor = (gamesSport === 'NFL' || gamesSport === 'NCAAF' || gamesSport === 'MLB');
-  if (_wxOutdoor && !_wxDome) {
-    const _wxSevere = (isFinite(_wxTemp) && _wxTemp <= 32)
-                   || (isFinite(_wxWind) && _wxWind >= 15)
-                   || (isFinite(_wxPrecip) && _wxPrecip >= 40);
-    if (_wxSevere) {
-      const _wxLabel = isFinite(_wxWind) && _wxWind >= 15 ? `WIND ${Math.round(_wxWind)}mph`
-                     : isFinite(_wxTemp) && _wxTemp <= 32 ? `COLD ${Math.round(_wxTemp)}°`
-                     : `RAIN ${Math.round(_wxPrecip)}%`;
+  if (_wxOutdoor && !_wxDome && _wxSrc) {
+    // Only evaluate a dimension if the raw value is non-null AND non-zero
+    // (0 is the "not-populated" sentinel — real weather uses actual numbers).
+    const _wxTemp = _wxTempRaw != null && _wxTempRaw !== 0 ? Number(_wxTempRaw) : null;
+    const _wxWind = _wxWindRaw != null ? Number(_wxWindRaw) : null;
+    const _wxPrecip = _wxPrecipRaw != null ? Number(_wxPrecipRaw) : null;
+    const _tempSevere = _wxTemp != null && isFinite(_wxTemp) && _wxTemp <= 32;
+    const _windSevere = _wxWind != null && isFinite(_wxWind) && _wxWind >= 15;
+    const _precipSevere = _wxPrecip != null && isFinite(_wxPrecip) && _wxPrecip >= 40;
+    if (_tempSevere || _windSevere || _precipSevere) {
+      const _wxLabel = _windSevere ? `WIND ${Math.round(_wxWind!)}mph`
+                     : _tempSevere ? `COLD ${Math.round(_wxTemp!)}°`
+                     : `RAIN ${Math.round(_wxPrecip!)}%`;
       _sweatBadges.push(<StatusChip key="wx" variant="custom" color={THEME.sharp}
                                      icon="🌧️" label={_wxLabel} />);
     }
