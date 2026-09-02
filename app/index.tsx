@@ -7462,6 +7462,14 @@ if(mkt.key === 'pitcher_props') {
   // their prop pipelines produce rows into a *_pipeline_props table.
   const PROP_SPORT_REGISTRY: Record<string, {rpc: string; table: string; propJerryFilter: string}> = {
     MLB: {rpc: 'get_todays_pipeline_props', table: 'mlb_pipeline_props', propJerryFilter: 'MLB'},
+    // 2026-09-01: NFL wired via get_upcoming_nfl_pipeline_props RPC
+    // (week-scoped since NFL is weekly not nightly). RPC returns rows
+    // for today-1d → today+8d ordered by conviction DESC. UI still
+    // shows "coming soon" banner until nfl_pipeline_props has enough
+    // publishable rows (threshold checked in propJerrySport === 'NFL'
+    // branch below) — avoids rendering an anemic 4-prop screen early
+    // Week 1 before nfl_generate_props cron has thickened data.
+    NFL: {rpc: 'get_upcoming_nfl_pipeline_props', table: 'nfl_pipeline_props', propJerryFilter: 'NFL'},
     // NBA: {rpc: 'get_todays_pipeline_props_nba', table: 'nba_pipeline_props', propJerryFilter: 'NBA'},
   };
   const fetchPipelineProps = async (sport: string = 'MLB') => {
