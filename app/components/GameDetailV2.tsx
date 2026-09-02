@@ -2981,6 +2981,7 @@ function NFLSlot({ctx, game}: any) {
   const awayTeam = ctx?.away_team || game?.away_team;
   return (
     <>
+      <NFLJerryLockNote />
       <SportWeatherCard ctx={ctx} />
       <NFLQBMatchupCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NFLTeamMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
@@ -2988,6 +2989,33 @@ function NFLSlot({ctx, game}: any) {
       {/* TeamTendenciesCard removed 2026-09-01 — see NCAAF slot note. */}
       <NFLSituationalCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
     </>
+  );
+}
+
+// 2026-09-02: Thu-lock explanation banner. Reads ui_notes for
+// 'nfl_jerry_lock_note' — backend-editable copy per
+// project_backend_notes_901. Silent-hide if fetch fails / note missing.
+function NFLJerryLockNote() {
+  const [note, setNote] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const client = sb();
+        if (!client) return;
+        const {data} = await client.from('ui_notes')
+          .select('note_text').eq('note_key', 'nfl_jerry_lock_note').eq('enabled', true).limit(1);
+        if (Array.isArray(data) && data[0]?.note_text) setNote(data[0].note_text);
+      } catch { /* silent hide if table missing or fetch fails */ }
+    })();
+  }, []);
+  if (!note) return null;
+  return (
+    <View style={{
+      backgroundColor: C.accent + '12', borderRadius: 8, padding: 10, marginBottom: 12,
+      borderLeftWidth: 3, borderLeftColor: C.accent,
+    }}>
+      <Text style={{color: C.text, fontSize: 12, lineHeight: 17}}>{note}</Text>
+    </View>
   );
 }
 
