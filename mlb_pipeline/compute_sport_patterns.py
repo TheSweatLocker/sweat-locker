@@ -259,6 +259,14 @@ def _sp_plus_underdog_fn(g: dict) -> bool:
     return False
 
 
+def _f_safe(v):
+    """Safe float coerce — returns None on any failure."""
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _sp_plus_underdog_outcome(g: dict) -> str:
     """Grade: did the SP+-favored (market underdog) side cover?"""
     sp_h = g.get('sp_plus_pred_home_pts')
@@ -329,6 +337,82 @@ PATTERN_CATALOG = [
         'lookback_days': 90,
         'matches': _public_overload_pp_fn(70.0),
         'outcome': _pp_result_outcome_faded,  # W when pp side LOSES
+    },
+
+    # 2026-09-02: INVERSE VARIANTS — starter "sharp confirmed = win" thesis
+    # audits at 48-51% (below coin flip). Testing whether the INVERSE holds
+    # (i.e., sharp confirmation is a fade signal, not a back signal). If
+    # these validate at 65%+, we've found the real edge — was inverted
+    # from day one. Shadow mode protects users while we test.
+    {
+        'sport': 'MLB',
+        'key': 'mlb_sharp_confirmed_prime_fade',
+        'label': 'Fade Sharp+PRIME',
+        'direction': 'FADE',
+        'description': 'MLB PRIMEs with 2+ sources confirming sharp side — but empirically these lose. Fade the pick.',
+        'lookback_days': 30,
+        'matches': lambda g: (
+            len(_splits_triple_confirmed(g)) > 0
+            and str(_primary_play(g).get('tier') or '').upper() == 'PRIME'
+        ),
+        'outcome': _pp_result_outcome_faded,
+    },
+    {
+        'sport': 'MLB',
+        'key': 'mlb_sharp_confirmed_strong_fade',
+        'label': 'Fade Sharp+STRONG',
+        'direction': 'FADE',
+        'description': 'MLB STRONGs with 2+ sources confirming sharp side — but empirically these lose. Fade the pick.',
+        'lookback_days': 30,
+        'matches': lambda g: (
+            len(_splits_triple_confirmed(g)) > 0
+            and str(_primary_play(g).get('tier') or '').upper() == 'STRONG'
+        ),
+        'outcome': _pp_result_outcome_faded,
+    },
+
+    # ─── Memory-based patterns (from tracked findings) ─────────────
+    # 2026-09-02: patterns derived from documented user memories.
+    # If any validate at 65%+, they graduate from memory → live badge.
+    {
+        'sport': 'MLB',
+        'key': 'mlb_heavy_fav_ml_trap',
+        'label': 'Heavy Fav Trap',
+        'direction': 'FADE',
+        'description': 'MLB ML pick on team priced at -200 or heavier juice. Per feedback_heavy_fav_ml_trap_803 — heavy ML favorites underperform their implied win rate; fade the ML.',
+        'lookback_days': 90,
+        'matches': lambda g: (
+            str(_primary_play(g).get('type') or '').lower() == 'ml'
+            and _primary_play(g).get('conviction') is not None
+            and (
+                # Home fav @ -200+ juice
+                (str(_primary_play(g).get('side') or '').upper() == 'HOME'
+                 and g.get('home_ml') is not None
+                 and _f_safe(g.get('home_ml')) is not None
+                 and _f_safe(g.get('home_ml')) <= -200)
+                or
+                # Away fav @ -200+ juice
+                (str(_primary_play(g).get('side') or '').upper() == 'AWAY'
+                 and g.get('away_ml') is not None
+                 and _f_safe(g.get('away_ml')) is not None
+                 and _f_safe(g.get('away_ml')) <= -200)
+            )
+        ),
+        'outcome': _pp_result_outcome_faded,
+    },
+    {
+        'sport': 'MLB',
+        'key': 'mlb_mc_hard_dissent_fade',
+        'label': 'MC Hard Dissent',
+        'direction': 'FADE',
+        'description': 'MLB pick where MC simulation gives our side <40% win probability. Per defensive_gates — MC hard dissent flags catastrophic model divergence; fade the pick.',
+        'lookback_days': 60,
+        'matches': lambda g: (
+            _primary_play(g).get('_mc_dissent') is not None
+            and _primary_play(g).get('_mc_dissent', {}).get('mc_pick_win_pct') is not None
+            and float(_primary_play(g).get('_mc_dissent', {}).get('mc_pick_win_pct') or 100) < 40
+        ),
+        'outcome': _pp_result_outcome_faded,
     },
 
     # ─── NFL ─────────────────────────────────────────────────────────
