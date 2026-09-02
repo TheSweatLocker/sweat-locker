@@ -576,8 +576,20 @@ def run():
             limit = int(sys.argv[sys.argv.index("--limit") + 1])
         except Exception:
             limit = None
+    # 2026-09-02: --game-id filter for injury-triggered targeted regen.
+    # nfl_injury_regen_check.py calls this with a specific game_id when
+    # QB1 status changes post-Thu-lock. --force required alongside to
+    # bust the existing week-lock for THAT game only.
+    game_id_filter = None
+    if "--game-id" in sys.argv:
+        try:
+            game_id_filter = sys.argv[sys.argv.index("--game-id") + 1]
+        except Exception:
+            game_id_filter = None
 
     print(f"=== NFL game reads {today_et()} ===")
+    if game_id_filter:
+        print(f"  --game-id filter: {game_id_filter} (targeted regen mode)")
     templates = load_templates()
     if not templates:
         sys.exit(1)
@@ -589,6 +601,12 @@ def run():
     # Filter to next 8 days only (regular season scope)
     cutoff = datetime.now(timezone.utc) + timedelta(days=8)
     games = [g for g in games if g.get("commence_time") and g["commence_time"] <= cutoff.isoformat()]
+    # Apply game_id filter for targeted regen
+    if game_id_filter:
+        games = [g for g in games if g.get("id") == game_id_filter]
+        if not games:
+            print(f"  ⚠ game_id {game_id_filter} not in fetched odds list")
+            return
     if not games:
         print("  No NFL games in the next 8 days.")
         return

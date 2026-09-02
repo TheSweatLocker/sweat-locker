@@ -9,6 +9,7 @@ on:
     - cron: '0 22 * * 3'   # Wed 6pm ET   — externals pull + props v1 (Phase 2)
     - cron: '0 12 * * 3'   # Wed 8am ET   — 2026-09-02 Week 1 opener support: Jerry reads for Wed-night season opener (Chiefs/Eagles kickoff etc). nfl_week_start_thu() rolls Wed forward so the key aligns with upcoming Thursday's lock.
     - cron: '0 12 * * 4'   # Thu 8am ET   — 2026-09-02 Thu-lock: Jerry reads generate + lock for the week (idempotent if Wed run already fired)
+    - cron: '0 */6 * * 4-0' # every 6h Thu-Sun — 2026-09-02 injury regen check (fires nfl_injury_regen_check.py; targeted regen if QB1 out post-lock)
     - cron: '0 18 * * 4'   # Thu 2pm ET   — TNF finalize (weekly card LOCK)
     - cron: '0 14 * * 6'   # Sat 10am ET  — Sunday early-slate lock
     - cron: '0 12 * * 0'   # Sun 8am ET   — final Sunday card
@@ -451,6 +452,21 @@ jobs:
         run: |
           cd mlb_pipeline
           python generate_nfl_game_reads.py || echo "game reads failed (non-fatal)"
+
+      # 2026-09-02: Thu-lock injury regen check. Runs on every cron
+      # (cheap query — silent no-op unless a QB1 has status change
+      # since last lock). Fires generate_nfl_game_reads.py --force
+      # --game-id X on affected games. Idempotent.
+      - name: Injury-triggered regen check (NFL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_injury_regen_check.py || echo "injury regen check failed (non-fatal)"
 
       # 2026-08-28 Phase 3: sync jerry_reads from primary_play + narrative.
       # NFL prompt writes prose only; without sync, jerry_reads never fills.
