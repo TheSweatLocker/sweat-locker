@@ -113,6 +113,14 @@ def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
         game_date = dt.date().isoformat()
     except Exception:
         dt = _et_now(); game_date = dt.date().isoformat()
+    # 2026-09-02 guard: skip if team_resolver collapsed both sides to the
+    # same canonical name (e.g., "Washington Huskies" + "Washington State"
+    # both aliased to "Washington"). This produced 2 corrupted rows in
+    # NCAAF context that snuck into card-render (#17 Washington @ #17
+    # Washington). Return None → caller drops the event.
+    if home == away:
+        print(f'  ⚠ skipping self-vs-self after alias resolve: {home_raw!r} + {away_raw!r} both → {home!r}')
+        return None
     game_id = f'ncaaf_{dt.strftime("%Y%m%d")}_{away}_{home}'
 
     row = {
