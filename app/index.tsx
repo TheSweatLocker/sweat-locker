@@ -13476,7 +13476,16 @@ setJerryHistory(prev => {
     sees the tier/alignment chips below as the fallback signal).
     Label "AM · updates 2pm ET" appears on morning-only generations
     so users know it'll refresh with confirmed lineups. */}
-{gamesSport === 'MLB' && game.id && jerryReads[game.id] && (()=>{
+{/* 2026-09-01: dropped `gamesSport === 'MLB'` gate. Jerry reads are
+    generated for MLB / NFL / NCAAF / (etc.) via their respective
+    generate_*_game_reads.py scripts, all writing to the same
+    `jerry_reads` table. App-side jerryReads state is fetched sport-
+    agnostic (index.tsx:4892-4906 SELECT has no sport filter). Only
+    thing keeping non-MLB cards from rendering Jerry was this literal
+    'MLB' string check — a leftover from when only MLB had reads.
+    Now every sport with a jerry_reads row for the game gets the
+    narrative + call chip on its game list card. */}
+{game.id && jerryReads[game.id] && (()=>{
   const jr = jerryReads[game.id];
   const cleanShort = scrubJerryText(jr.short_read);
   if (!cleanShort) return null;

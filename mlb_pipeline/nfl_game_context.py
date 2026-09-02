@@ -1205,14 +1205,27 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     try:
         from ensemble_scorer import score_game as _ensemble_score
         from game_context import _compose_ensemble_sub
+        from defensive_gates import apply_all_defensive_gates, reroute_ml_if_trapped
         decision = _ensemble_score('NFL', row)
         if decision is not None:
+            # 2026-09-01: juice-trap ML reroute BEFORE picking top. Same
+            # pattern as NCAAF (ncaaf_game_context.py). NFL Week 1 has
+            # heavy chalk games (BAL -14 → ML -700+) that never should
+            # ship as ML picks — swap to spread/total when either has a
+            # real score. Threshold: -300 heavy_fav, +400 long_dog per
+            # _JUICE_TRAP_*_BY_SPORT['NFL'].
+            decision = reroute_ml_if_trapped(decision, row, sport='NFL')
             top = decision.top()
             if top.pick is not None:
                 # 2026-08-31: recommended_stake for unified sizing across sports.
                 # See game_context.compute_recommended_stake for rule.
                 from game_context import compute_recommended_stake as _rs
                 _rec_stake = _rs(top, mc_dissented=False)
+                _reroute = getattr(top, '_ml_reroute', None)
+                _audit = (f'ensemble_scorer v2 · NFL · {len(top.contributions)} sources · '
+                          f'score={top.score:.2f} margin={top.margin:+.2f}')
+                if _reroute:
+                    _audit += f' · ML-reroute({_reroute["orig_market"]}→{top.market} @ {_reroute["orig_ml_price"]})'
                 ensemble_pp = {
                     'type': top.market,
                     'tier': top.tier,
@@ -1223,8 +1236,7 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
                     'score': round(top.score, 2),
                     'sub': _compose_ensemble_sub(top),
                     'recommended_stake': _rec_stake,
-                    'audit_note': (f'ensemble_scorer v2 · NFL · {len(top.contributions)} sources · '
-                                   f'score={top.score:.2f} margin={top.margin:+.2f}'),
+                    'audit_note': _audit,
                     '_engine': 'ensemble_v2',
                     '_ensemble_sources': [
                         {'signal_key': c.signal_key, 'class': c.signal_class,
@@ -1243,6 +1255,14 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
                                   'tier': decision.total.tier, 'conviction': decision.total.conviction},
                     },
                 }
+                if _reroute:
+                    ensemble_pp['_ml_reroute'] = _reroute
+                # 2026-09-01: apply defensive gates (OC flip → MC dissent →
+                # juice-trap demote → publish gate). Juice-trap floor is
+                # -300 for NFL. Reroute already handled ML→spread swap;
+                # gate catches leftover cases where reroute couldn't find
+                # a clearing alt and ML still shipped.
+                ensemble_pp = apply_all_defensive_gates(ensemble_pp, row, sport='NFL')
     except Exception:
         pass
 

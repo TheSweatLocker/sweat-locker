@@ -136,8 +136,14 @@ export default function LineMovementTab({
   // only MLB on days when other sports have no flagged games). Use a
   // fixed list of live sports; filter still applies to whatever flags
   // are in-window, so an empty NFL filter shows the "no matches" state.
+  //
+  // 2026-09-01: dropped NHL from the sport filter. NHL currently has
+  // ONE money-flow source (SO) so The Split can never triple-confirm
+  // OR double-confirm — the tab renders empty state 100% of the time
+  // for NHL. Not-yet-listed sports (UFC) also excluded — no split data.
+  // Re-add NHL when 2+ money-flow sources are wired.
   const availableSports = React.useMemo(() => {
-    return ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NBA', 'NHL'];
+    return ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NBA'];
   }, []);
 
   // 2026-08-18: consolidate — group by GAME (was game::market). Prior
