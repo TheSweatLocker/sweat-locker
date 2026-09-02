@@ -741,6 +741,17 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     if not tier: return None
     conv = conviction_from_edge_pct(directional_edge)
 
+    # 2026-09-02 EARLY-SEASON TIER CAP (Q2 discussion decision).
+    # NFL Weeks 1-3 have no live calibration data — playbook can't
+    # meaningfully differentiate PRIME from STRONG. Cap PRIME → STRONG
+    # during Weeks 1-3 until sample accumulates. Auto-expires Week 3-4.
+    # Same discipline for NCAAF (see project_nfl_ncaaf_week1_readiness_820).
+    _gd = (event.get('commence_time') or '')[:10]
+    if _gd and _gd < '2026-09-22':  # 2026 NFL Week 3 ends Sept 22
+        if tier == 'PRIME':
+            tier = 'STRONG'
+            conv = min(conv, 72)  # cap conviction at STRONG floor
+
     # 2026-08-23 NFL SIGNAL-EMIT WIRE-UP. Prior scoring only tracked
     # L4/season/fantasy/opp_pct as metadata — no context signals fired.
     # Now emits weather / short_week / game_script / qb_vs_team / injury
