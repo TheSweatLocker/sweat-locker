@@ -497,6 +497,19 @@ jobs:
           cd mlb_pipeline
           python audit_sharp_source_calibration.py --sport NCAAF || echo "NCAAF sharp source calibration failed"
 
+      # 2026-09-02: NCAAF recruiting composite pull. CFBD /talent.
+      # Rolling 4-year composite; used for "recruiting mismatch" signals.
+      - name: Pull NCAAF recruiting composite (CFBD)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_recruiting_pull.py || echo "NCAAF recruiting pull failed (non-fatal)"
+
       # 2026-09-02: NCAAF RZ + kicking efficiency pull. Populates
       # rz_td_rate + opp_rz_td_rate columns for Vault Match RZ signals.
       - name: Pull NCAAF RZ/kicking (CFBD advanced)
