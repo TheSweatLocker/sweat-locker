@@ -337,6 +337,15 @@ def check_signal_source_dark() -> Optional[dict]:
     that's been live >14d and STILL never fired = truly broken.
     """
     since = _days_ago(14)
+    # 2026-09-02: extend lookback to 30d for known rare-conditional
+    # signal classes. weather/umpire/h2h/team_form_season fire only
+    # when specific game conditions align (specific ump assignment,
+    # extreme temp, season-long trend break, etc.). 14d is too narrow
+    # for these — legit signals show as dark when they're simply
+    # dormant-not-broken. Post-launch cleanup handled here so watchdogs
+    # stop crying wolf on rare-conditional dormancy.
+    since_rare = _days_ago(30)
+    RARE_CONDITIONAL = {'weather', 'umpire', 'h2h', 'team_form_season'}
     # Get all enabled MLB signals + creation timestamp
     r = requests.get(f'{SB}/rest/v1/signal_sources',
         params={'sport': 'eq.MLB', 'enabled': 'eq.true',
@@ -344,19 +353,25 @@ def check_signal_source_dark() -> Optional[dict]:
         headers=H_READ, timeout=10)
     all_sigs = r.json() if r.status_code == 200 else []
     if not isinstance(all_sigs, list): return None
-    # Pull last 14d of ensemble source lists from primary_play
+    # Pull last 30d of ensemble source lists from primary_play (widest
+    # window; per-signal cutoff applied below based on class).
     r = requests.get(f'{SB}/rest/v1/mlb_game_context',
-        params={'game_date': f'gte.{since}', 'select': 'primary_play'},
+        params={'game_date': f'gte.{since_rare}', 'select': 'primary_play,game_date'},
         headers=H_READ, timeout=20)
     ctx = r.json() if r.status_code == 200 else []
-    fired = set()
+    fired_14 = set()
+    fired_30 = set()
     for g in (ctx if isinstance(ctx, list) else []):
         pp = g.get('primary_play') or {}
+        gd = g.get('game_date') or ''
         for src in (pp.get('_ensemble_sources') or []):
             sk = src.get('signal_key')
             if sk:
                 # Strip __fade suffix so a fade-flipped signal counts
-                fired.add(sk.replace('__fade', ''))
+                sk_clean = sk.replace('__fade', '')
+                fired_30.add(sk_clean)
+                if gd >= since:
+                    fired_14.add(sk_clean)
     # 2026-08-20: exclusions expanded after first live run flagged 89
     # "dark" signals with 25+ false positives.
     #   - external_pick / split / scenario are HANDLER classes — contribute
@@ -370,10 +385,16 @@ def check_signal_source_dark() -> Optional[dict]:
                     'prop_matchup', 'prop_model'}
     # Age filter: only flag signals that predate the lookback window.
     # Fresh signals in ramp-up phase are 'not yet observed', not 'dark'.
-    dark = sorted([s['signal_key'] for s in all_sigs
-                   if s.get('class') not in skip_classes
-                   and s['signal_key'] not in fired
-                   and (s.get('created_at') or '') < since])
+    # Rare-conditional classes use 30d window + 30d creation cutoff.
+    def _is_dark(s):
+        cls = s.get('class')
+        if cls in skip_classes: return False
+        key = s['signal_key']
+        ca = s.get('created_at') or ''
+        if cls in RARE_CONDITIONAL:
+            return key not in fired_30 and ca < since_rare
+        return key not in fired_14 and ca < since
+    dark = sorted([s['signal_key'] for s in all_sigs if _is_dark(s)])
     if not dark or len(dark) < 5:  # a few is normal; alert only on wave
         return None
     # 2026-09-02: severity threshold raised 20 -> 30. Chronic dark signals
