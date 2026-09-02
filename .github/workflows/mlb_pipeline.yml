@@ -156,6 +156,20 @@ jobs:
           cd mlb_pipeline
           python team_stats.py || echo "team_stats failed (non-fatal 8/27)"
 
+      # 2026-09-01: MLB team-wide pitching pull. Persists team ERA/WHIP/
+      # K per 9 / BB per 9 / HR per 9 to mlb_team_pitching (was live-
+      # only in generate_mlb_game_reads before). Fills the last MLB
+      # gap in team_stats_rolling matview. 30 MLB StatsAPI calls, ~5s.
+      # Runs same schedule as team_stats (nightly build).
+      - name: Run team pitching stats pull
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python mlb_team_pitching_pull.py || echo "mlb_team_pitching_pull failed (non-fatal)"
+
       - name: Run Savant enrichment (OAA, xwOBA, barrel%, catcher framing)
         continue-on-error: true
         env:

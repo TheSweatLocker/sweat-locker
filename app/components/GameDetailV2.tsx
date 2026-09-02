@@ -1872,8 +1872,8 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
   const NCAAB_DEFENSE = [
     'ppg_against', 'def_rating',
   ];
-  // MLB — batting stats + bullpen. Pitching stats (ERA/WHIP/K per 9)
-  // still gapped pending persistent puller (currently pulled live per-cron).
+  // MLB — batting from mlb_team_offense; pitching from mlb_team_pitching
+  // (persisted 2026-09-01, populated by mlb_team_pitching_pull.py) + bullpen.
   const MLB_OFFENSE = [
     'team_avg', 'team_obp', 'team_slg', 'team_ops',
     'team_woba', 'team_wrc_plus', 'team_iso',
@@ -1881,6 +1881,8 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
     'team_runs_pg', 'team_hr_pg',
   ];
   const MLB_DEFENSE = [
+    'team_era', 'team_whip', 'team_k_per_9', 'team_bb_per_9',
+    'team_hr_per_9', 'team_baa',
     'bullpen_era', 'bullpen_save_pct',
   ];
   // NBA — 2026-09-01 rewrite: honest labels for PPG-based stats
