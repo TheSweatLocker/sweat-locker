@@ -155,42 +155,81 @@ def _f_or_none(v):
 
 
 def fetch_team_pitching_snapshots():
-    """Pull season pitching stats for all 30 teams from MLB Stats API,
-    compute league ranks, return {team_name: {era, whip, k_bb, baa, fip_proxy, ranks}}.
-    Cached per-process. Added 2026-06-05 Phase B.
+    """Pull season pitching stats for all 30 teams. Cached per-process.
 
-    Why MLB Stats API instead of a Supabase table: full-staff pitching wasn't
-    being stored anywhere (mlb_bullpen_stats covers relievers only). Rather
-    than add a migration + nightly fetcher, we pull live at read-generation
-    time. 30 API calls take ~3s and only run once per cron tick."""
+    2026-09-01 REWRITE — cutover from live MLB StatsAPI to persisted
+    mlb_team_pitching table (populated nightly by mlb_team_pitching_pull.py).
+    Kills 30 API calls per cron tick + eliminates the "MLB StatsAPI is
+    slow/down" failure surface. Falls back to live-fetch when Supabase
+    returns nothing (fresh-install / migration-not-yet-applied case).
+
+    Return shape unchanged so downstream callers work as-is:
+      {team_name: {team_era, team_whip, team_baa, team_k, team_bb,
+                   team_k_bb, team_hr_allowed, team_ip,
+                   rank_team_era, rank_team_whip, rank_team_baa,
+                   rank_team_k_bb}}
+    """
     if _TEAM_PITCHING_CACHE:
         return _TEAM_PITCHING_CACHE
-    import urllib.request
+
+    # ── PRIMARY PATH: read from persisted mlb_team_pitching ──
     by_team = {}
-    for team_name, team_id in _MLB_TEAM_IDS.items():
-        try:
-            url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=season&group=pitching&season=2026"
-            with urllib.request.urlopen(url, timeout=10) as r:
-                data = json.loads(r.read())
-            for split in data.get("stats", []):
-                for sp in split.get("splits", []):
-                    st = sp.get("stat", {})
-                    so = _f_or_none(st.get("strikeOuts"))
-                    bb = _f_or_none(st.get("baseOnBalls"))
-                    k_bb = round(so / bb, 2) if (so and bb and bb > 0) else None
-                    by_team[team_name] = {
-                        "team_era": _f_or_none(st.get("era")),
-                        "team_whip": _f_or_none(st.get("whip")),
-                        "team_baa": _f_or_none(st.get("avg")),
-                        "team_k": int(so) if so else None,
-                        "team_bb": int(bb) if bb else None,
-                        "team_k_bb": k_bb,
-                        "team_hr_allowed": int(_f_or_none(st.get("homeRuns")) or 0) or None,
-                        "team_ip": _f_or_none(st.get("inningsPitched")),
+    try:
+        import os, requests as _rq
+        sb = os.environ.get("SUPABASE_URL"); k = os.environ.get("SUPABASE_KEY")
+        if sb and k:
+            season = datetime.now().year
+            r = _rq.get(
+                f"{sb}/rest/v1/mlb_team_pitching"
+                f"?season=eq.{season}&select=*",
+                headers={"apikey": k, "Authorization": f"Bearer {k}"},
+                timeout=10,
+            )
+            if r.status_code == 200 and r.json():
+                for row in r.json():
+                    tname = row.get("team")
+                    if not tname: continue
+                    by_team[tname] = {
+                        "team_era":         _f_or_none(row.get("era")),
+                        "team_whip":        _f_or_none(row.get("whip")),
+                        "team_baa":         _f_or_none(row.get("baa")),
+                        "team_k":           int(row.get("k") or 0) or None,
+                        "team_bb":          int(row.get("bb") or 0) or None,
+                        "team_k_bb":        _f_or_none(row.get("k_bb_ratio")),
+                        "team_hr_allowed":  int(row.get("hr_allowed") or 0) or None,
+                        "team_ip":          _f_or_none(row.get("ip")),
                     }
-        except Exception as e:
-            print(f"  ⚠️ team pitching fetch failed for {team_name}: {e}")
-    # Compute league ranks (lower = better for ERA/WHIP/BAA; higher = better for K/BB ratio)
+    except Exception as e:
+        print(f"  ⚠️ mlb_team_pitching read failed ({e}), falling back to live API")
+
+    # ── FALLBACK: live MLB StatsAPI (original path) ──
+    if not by_team:
+        import urllib.request
+        for team_name, team_id in _MLB_TEAM_IDS.items():
+            try:
+                url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=season&group=pitching&season={datetime.now().year}"
+                with urllib.request.urlopen(url, timeout=10) as r:
+                    data = json.loads(r.read())
+                for split in data.get("stats", []):
+                    for sp in split.get("splits", []):
+                        st = sp.get("stat", {})
+                        so = _f_or_none(st.get("strikeOuts"))
+                        bb = _f_or_none(st.get("baseOnBalls"))
+                        k_bb = round(so / bb, 2) if (so and bb and bb > 0) else None
+                        by_team[team_name] = {
+                            "team_era": _f_or_none(st.get("era")),
+                            "team_whip": _f_or_none(st.get("whip")),
+                            "team_baa": _f_or_none(st.get("avg")),
+                            "team_k": int(so) if so else None,
+                            "team_bb": int(bb) if bb else None,
+                            "team_k_bb": k_bb,
+                            "team_hr_allowed": int(_f_or_none(st.get("homeRuns")) or 0) or None,
+                            "team_ip": _f_or_none(st.get("inningsPitched")),
+                        }
+            except Exception as e:
+                print(f"  ⚠️ team pitching fetch failed for {team_name}: {e}")
+
+    # Compute league ranks (lower = better for ERA/WHIP/BAA; higher for K/BB ratio)
     if by_team:
         ranks_era = _rank_dict({t: r.get("team_era") for t, r in by_team.items()}, ascending=True)
         ranks_whip = _rank_dict({t: r.get("team_whip") for t, r in by_team.items()}, ascending=True)
