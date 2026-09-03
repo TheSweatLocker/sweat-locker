@@ -1008,9 +1008,14 @@ function MoneyFlow({ctx, sport}: any) {
 function MoneyMarket({label, data}: any) {
   if (!data) return null;
   const div = data.div ?? 0;
-  const sharp = div >= 10;
   const money = Math.max(0, Math.min(100, data.money ?? 0));
   const bets = Math.max(0, Math.min(100, data.bets ?? 0));
+  // 2026-09-02: sharp threshold aligned with pipeline
+  // (line_movement_config.py: divergence_threshold=20 OR money>=60).
+  // Prior `div >= 10` labeled 10pp gaps as SHARP — user spotted this
+  // on Royals RL where SO shows home 56% money vs 50% bets (6pp) and
+  // the app called it "home sharp". Now requires real signal.
+  const sharp = Math.abs(div) >= 20 || money >= 60;
   return (
     <View style={[
       styles.moneyMarket,
