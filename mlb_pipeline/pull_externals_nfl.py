@@ -242,11 +242,22 @@ def load_slate(week_start: str) -> list:
 
 
 def _team_matches(name: str, target: str) -> bool:
+    """2026-09-03 BUGFIX: prior last-word fallback was safer in NFL than
+    NCAA (32 teams, mostly unique mascots) but still had collision risk
+    ("Jets" NYJ vs Winnipeg Jets in Sunday NHL, "Giants" NYG vs SF Giants).
+    Mirroring the NCAAF fix — block last-word match on generic suffixes,
+    substring/exact still primary. Same class as ncaaf/ncaab _team_matches."""
     name = (name or '').lower().strip()
     target = (target or '').lower().strip()
     if not name or not target: return False
-    return name in target or target in name or \
-           name.split()[-1] == target.split()[-1]
+    if name in target or target in name:
+        return True
+    GENERIC_SUFFIX = {'the','of','and','&'}
+    n_last = name.split()[-1]
+    t_last = target.split()[-1]
+    if n_last == t_last and n_last not in GENERIC_SUFFIX:
+        return True
+    return False
 
 
 def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:

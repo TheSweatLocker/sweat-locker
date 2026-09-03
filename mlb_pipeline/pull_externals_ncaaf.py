@@ -254,12 +254,33 @@ def load_slate(week_start: str) -> list:
 
 
 def _team_matches(name: str, target: str) -> bool:
-    """Legacy fallback matcher. Prefer resolve_ncaaf_team + canonical compare."""
+    """Legacy fallback matcher. Prefer resolve_ncaaf_team + canonical compare.
+
+    2026-09-03 BUGFIX: prior last-word fallback matched any two teams
+    sharing a generic suffix ("State", "University", "College", "Tech").
+    Dimers scraper attached "New Mexico State @ Florida State" wp data
+    to the "Ball State @ Ohio State" game because BOTH away teams end
+    in "State" and BOTH home teams end in "State" — the last-word
+    match fires trivially. Wrong game got the pick.
+
+    Fix: block the last-word match when the shared suffix is generic
+    (a filler word that dozens of CFB programs share). Only trust
+    last-word match on distinctive mascots/proper nouns.
+    """
     name = (name or '').lower().strip()
     target = (target or '').lower().strip()
     if not name or not target: return False
-    return name in target or target in name or \
-           name.split()[-1] == target.split()[-1]
+    # Substring match still fine — "Ohio" in "Ohio State" is a real signal
+    if name in target or target in name:
+        return True
+    # Last-word match ONLY when suffix isn't a generic CFB filler word
+    GENERIC_SUFFIX = {'state','university','college','tech','a&m','a&t',
+                      'the','of','and','&','institute'}
+    n_last = name.split()[-1]
+    t_last = target.split()[-1]
+    if n_last == t_last and n_last not in GENERIC_SUFFIX:
+        return True
+    return False
 
 
 def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:
