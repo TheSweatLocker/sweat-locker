@@ -15443,6 +15443,20 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       target = list.find((g: any) =>
                         lastWord(g.away_team) === awayLW && lastWord(g.home_team) === homeLW);
                     }
+                    // 2026-09-03: startsWith / includes fallback — catches cases
+                    // where one side has a modified prefix (e.g. Athletics moved
+                    // to Sacramento but Split flag still uses just "Athletics",
+                    // gamesData now has "Sacramento Athletics"). Team names are
+                    // rarely fully substring of another team so false-match risk is
+                    // low; last resort before poll times out.
+                    if (!target && awayN && homeN) {
+                      target = list.find((g: any) => {
+                        const ga = normalize(g.away_team);
+                        const gh = normalize(g.home_team);
+                        return (ga.includes(awayN) || awayN.includes(ga)) &&
+                               (gh.includes(homeN) || homeN.includes(gh));
+                      });
+                    }
                     if (target) { openGameDetail(target); opened = true; return true; }
                     return false;
                   };
@@ -15698,9 +15712,14 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         const roi = total > 0 ? (r.unitsNet / total) * 100 : null;
                         return (
                           <View>
+                            {/* 2026-09-03: label clarity — user reported seeing 3 different Sharp
+                                numbers (receipts 56-40 +10.9u, sharp tab 150-82-4 +58u). All are TRUE
+                                but measure different scopes: 56-40 is SIDES-ONLY, 150-82-4 is
+                                SIDES+PROPS combined. Explicit label eliminates the "which one is
+                                right" confusion. */}
                             <View style={{flexDirection:'row', alignItems:'baseline', justifyContent:'space-between', marginBottom:10}}>
-                              <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1}}>{monthName.toUpperCase()} · UNIT-WEIGHTED</Text>
-                              <Text style={{color:THEME.textMuted, fontSize:9}}>MTD</Text>
+                              <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1}}>SIDES + PROPS · ALL-TIME</Text>
+                              <Text style={{color:THEME.textMuted, fontSize:9}}>UNIT-WEIGHTED</Text>
                             </View>
                             <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
                               <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
@@ -15713,7 +15732,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                     adjustsFontSizeToFit
                                     minimumFontScale={0.7}
                                     style={{color:THEME.textDim, fontSize:9, marginTop:3, fontVariant:['tabular-nums'], textAlign:'center', flexShrink:1, width:'100%'}}>
-                                    {(r.sidesW||0)}-{(r.sidesL||0)} sides · {(r.propsW||0)}-{(r.propsL||0)} props
+                                    sides {(r.sidesW||0)}-{(r.sidesL||0)} · props {(r.propsW||0)}-{(r.propsL||0)}
                                   </Text>
                                 )}
                               </View>
