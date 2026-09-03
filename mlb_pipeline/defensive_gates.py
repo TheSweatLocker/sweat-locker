@@ -568,20 +568,134 @@ def apply_publish_gate(pp: dict | None, ctx: dict) -> dict | None:
     return pp
 
 
+def apply_ncaaf_large_spread_gate(pp: dict | None, ctx: dict) -> dict | None:
+    """2026-09-02 NCAAF-specific gate: dogs on large spreads (>=20pt)
+    get demoted when multiple context signals fade the dog.
+
+    Discovered on Stanford +24.5 vs Miami where scorer produced STRONG
+    with 6 weak signals, ignoring:
+      - MC: mc_p_home = 21.5% (Stanford wins ~1-in-5)
+      - AP rank: Miami #7 vs Stanford unranked
+      - Talent: Stanford 705 vs Miami 886 (+180 gap)
+      - SP+ gap: -24.3 (matches market spread — no line value)
+
+    Rule: if backing a DOG on a spread with |spread| >= 20 AND >=2
+    of the following context anti-signals fire → demote one tier:
+      (a) mc_p_dog_side < 0.30
+      (b) fav ap_rank <= 15 AND dog ap_rank is null (unranked)
+      (c) talent_gap_against_dog >= 150 points
+      (d) sp_gap AGAINST dog >= 20 (line is FAIR, not exploitable)
+
+    Preserves audit trail in pp['_ncaaf_large_spread_gate'].
+    Sport-scoped — only touches NCAAF picks.
+    """
+    try:
+        if not (pp and isinstance(pp, dict)): return pp
+        if pp.get('_engine') != 'ensemble_v2': return pp
+        ptype = str(pp.get('type', '')).lower()
+        if ptype != 'rl': return pp  # only spread picks
+        tier = pp.get('tier')
+        if tier not in ('PRIME', 'STRONG'): return pp
+
+        # Must be an NCAAF context — presence of home_sp_plus is a good tell
+        if ctx.get('home_sp_plus') is None and ctx.get('away_sp_plus') is None:
+            return pp
+
+        close_spread = ctx.get('close_spread')
+        if close_spread is None: return pp
+        try: spread_abs = abs(float(close_spread))
+        except (TypeError, ValueError): return pp
+        if spread_abs < 20: return pp  # only large-spread games
+
+        # Determine which side is the DOG. In our convention close_spread
+        # is home-relative (positive = home is dog per CFBD convention).
+        cur_side = str(pp.get('side', '')).upper()
+        pick_is_home = 'HOME' in cur_side
+        dog_side = 'HOME' if float(close_spread) > 0 else 'AWAY'
+        if pick_is_home and dog_side != 'HOME': return pp
+        if not pick_is_home and dog_side != 'AWAY': return pp
+        # We're backing the DOG on a >=20pt spread — apply anti-signal count
+
+        anti = []
+
+        # (a) MC dog probability < 0.30
+        mc = ctx.get('mc_probabilities') if isinstance(ctx.get('mc_probabilities'), dict) else {}
+        mc_dog_p = mc.get('mc_p_home') if dog_side == 'HOME' else mc.get('mc_p_away')
+        try:
+            if mc_dog_p is not None and float(mc_dog_p) < 0.30:
+                anti.append(f'MC_dog_pct={float(mc_dog_p)*100:.0f}%')
+        except (TypeError, ValueError): pass
+
+        # (b) AP rank differential — dog unranked, fav top-15
+        dog_ap = ctx.get('home_ap_rank') if dog_side == 'HOME' else ctx.get('away_ap_rank')
+        fav_ap = ctx.get('away_ap_rank') if dog_side == 'HOME' else ctx.get('home_ap_rank')
+        try:
+            if dog_ap is None and fav_ap is not None and int(fav_ap) <= 15:
+                anti.append(f'AP_gap_fav_#{int(fav_ap)}_dog_unranked')
+        except (TypeError, ValueError): pass
+
+        # (c) Talent composite gap
+        dog_talent = ctx.get('home_talent') if dog_side == 'HOME' else ctx.get('away_talent')
+        fav_talent = ctx.get('away_talent') if dog_side == 'HOME' else ctx.get('home_talent')
+        try:
+            if dog_talent is not None and fav_talent is not None:
+                gap = float(fav_talent) - float(dog_talent)
+                if gap >= 150:
+                    anti.append(f'talent_gap_{gap:.0f}pts_against')
+        except (TypeError, ValueError): pass
+
+        # (d) SP+ gap matches market — line is FAIR, no value
+        sp_gap = ctx.get('sp_gap')
+        try:
+            if sp_gap is not None:
+                # SP+ home-relative; if we're backing home_dog and sp_gap is very
+                # negative (say -20+), SP+ says line is fair; likewise for away.
+                sp_gap_val = float(sp_gap)
+                if (dog_side == 'HOME' and sp_gap_val <= -20) or \
+                   (dog_side == 'AWAY' and sp_gap_val >= 20):
+                    anti.append(f'SP+_gap_matches_line_{sp_gap_val:+.1f}')
+        except (TypeError, ValueError): pass
+
+        if len(anti) < 2: return pp  # need 2+ anti-signals to trigger
+
+        # Demote: PRIME -> LEAN, STRONG -> LEAN. Two-tier drop from PRIME
+        # because these picks are structurally weak.
+        new_tier = 'LEAN'
+        pp['_ncaaf_large_spread_gate'] = {
+            'original_tier': tier,
+            'demoted_to': new_tier,
+            'reason': 'backing_large_spread_dog',
+            'anti_signals': anti,
+            'spread': close_spread,
+            'dog_side': dog_side,
+        }
+        pp['tier'] = new_tier
+        # Update audit note visible in downstream reads
+        prev_note = pp.get('audit_note') or ''
+        pp['audit_note'] = f'{prev_note} · ncaaf_large_spread_dog_gate: {tier}->{new_tier} ({len(anti)} anti-signals)'.strip(' ·')
+    except Exception:
+        pass  # never block the pipeline on gate error
+    return pp
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
-    OC flip → MC dissent → juice-trap → publish gate.
+    OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
 
     Order matters:
       - OC-flip FIRST because it may change pp.side (downstream gates read pp.side)
       - MC-dissent SECOND to demote/block when MC disagrees
       - Juice-trap THIRD to demote on side-price traps (sport-specific
         thresholds — MLB -200, NCAAF/NFL -300, NCAAB/NBA -400)
+      - NCAAF large-spread FOURTH — sport-scoped, catches "Stanford +24.5"
+        pattern where scorer stacked weak signals on a fadeable dog
       - Publish gate LAST — reads final pp state after all demotes and
         hard-caps PRIMEs that don't earn PRIME rigor
     """
     pp = apply_oc_flip_gate(pp, ctx)
     pp = apply_mc_dissent_gate(pp, ctx)
     pp = apply_juice_trap_gate(pp, ctx, sport=sport)
+    if sport == 'NCAAF':
+        pp = apply_ncaaf_large_spread_gate(pp, ctx)
     pp = apply_publish_gate(pp, ctx)
     return pp
