@@ -933,15 +933,33 @@ def upsert_props(rows: list, dry_run: bool = False) -> int:
     if not bridge_rows:
         print('  ⚠ no rows to write (all failed shape mapping)')
         return 0
-    r = requests.post(
-        f'{SB}/rest/v1/nfl_pipeline_props?on_conflict=game_date,game_id,player_name,prop_type,direction,prop_line',
-        headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
-        json=bridge_rows, timeout=30,
-    )
-    if r.status_code not in (200, 201, 204):
+    # Try known unique-key candidates in order of specificity. Real
+    # constraint may be shorter than what nfl_generate_props previously
+    # assumed. 2026-09-03 fix chain: primary target was dead `nfl_props`
+    # table (fixed); bridge on_conflict now needs matching constraint.
+    _CONFLICT_CANDIDATES = [
+        'game_id,player_name,prop_type,direction',
+        'game_id,player_name,prop_type',
+        'game_date,game_id,player_name,prop_type,direction',
+    ]
+    r = None
+    for conflict in _CONFLICT_CANDIDATES:
+        r = requests.post(
+            f'{SB}/rest/v1/nfl_pipeline_props?on_conflict={conflict}',
+            headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+            json=bridge_rows, timeout=30,
+        )
+        if r.status_code in (200, 201, 204):
+            print(f"  ✓ upsert used on_conflict='{conflict}'")
+            return len(bridge_rows)
+        # 42P10 = constraint mismatch; try next candidate
+        if r.status_code == 400 and '42P10' in (r.text or ''):
+            continue
+        # other errors — stop trying
+        break
+    if r is not None and r.status_code not in (200, 201, 204):
         print(f'  ⚠ upsert failed {r.status_code}: {r.text[:200]}')
-        return 0
-    return len(bridge_rows)
+    return 0
 
 
 def _load_nfl_ctx_by_game(game_dates: list) -> dict:
