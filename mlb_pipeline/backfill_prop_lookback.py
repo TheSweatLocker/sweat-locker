@@ -36,6 +36,68 @@ if _env.exists():
         if '=' in line and not line.startswith('#'):
             k, v = line.split('=', 1); os.environ.setdefault(k.strip(), v.strip())
 
+# 2026-09-03 LR CUTOVER: load supervised-learning prop model at import
+# time so we can override tier assignment for MLB props. Model was trained
+# on 6733 resolved props (90d), test acc 57.4% vs baseline 53.2%, PRIME
+# tier hits 85.6% n=104 on holdout vs current PRIME 52.1% n=68 on same
+# window. See mlb_prop_logreg_train.py for training details. Silent-hide
+# if model file missing (falls back to legacy scorer).
+_LR_MODEL_MLB_PROP = None
+try:
+    import json as _json
+    _lr_path = Path(__file__).parent / 'models' / 'mlb_prop_logreg.json'
+    if _lr_path.exists():
+        _LR_MODEL_MLB_PROP = _json.loads(_lr_path.read_text())
+        print(f'  ✓ Loaded MLB prop LR model v{(_LR_MODEL_MLB_PROP.get("version") or "?")[:16]} '
+              f'({len(_LR_MODEL_MLB_PROP.get("features", []))} features, '
+              f'test_acc {_LR_MODEL_MLB_PROP.get("meta", {}).get("test_accuracy", 0)*100:.1f}%)')
+except Exception as _e:
+    print(f'  ⚠ MLB prop LR model load failed (falling back to legacy): {_e}')
+
+
+def _lr_predict_prop(prop_row: dict) -> dict | None:
+    """Apply MLB prop LR model. Returns {p_hit, tier} or None if disabled."""
+    if _LR_MODEL_MLB_PROP is None: return None
+    import math as _math
+    m = _LR_MODEL_MLB_PROP
+    features = m['features']; coefs = m['coefficients']
+    intercept = m['intercept']; medians = m['imputer_medians']
+    means = m['scaler_mean']; scales = m['scaler_scale']
+    NUMERIC = [
+        'book_over_odds', 'book_under_odds', 'book_line', 'prop_line',
+        'conviction', 'refit_conviction',
+        'player_l5_hit_count', 'player_l10_hit_count', 'player_season_hit_pct',
+    ]
+    row = []
+    for f in NUMERIC:
+        if f not in features: continue
+        v = prop_row.get(f)
+        try: row.append(float(v) if v is not None else None)
+        except (TypeError, ValueError): row.append(None)
+    if 'direction_over' in features:
+        row.append(1.0 if (prop_row.get('direction') or '').lower() == 'over' else 0.0)
+    if 'stack_alert_bool' in features:
+        row.append(1.0 if prop_row.get('stack_alert') else 0.0)
+    prop_types_onehot = m.get('prop_types_onehot', [])
+    for pt in prop_types_onehot:
+        if f'ptype_{pt}' in features:
+            row.append(1.0 if prop_row.get('prop_type') == pt else 0.0)
+    z = intercept
+    for i, val in enumerate(row):
+        if val is None: val = medians[i]
+        scaled = (val - means[i]) / scales[i] if scales[i] != 0 else 0
+        z += coefs[i] * scaled
+    if z >= 0: p = 1.0 / (1.0 + _math.exp(-z))
+    else:      ez = _math.exp(z); p = ez / (1.0 + ez)
+    # Tier bins match training-time bins in mlb_prop_logreg_train.py
+    if p >= 0.70:   tier = 'PRIME'
+    elif p >= 0.60: tier = 'STRONG'
+    elif p >= 0.50: tier = 'LEAN'
+    elif p >= 0.40: tier = 'COIN'  # -> mapped to SKIP on write (no play)
+    else:           tier = 'FADE'  # -> mapped to SKIP (or flip direction)
+    return {'p_hit': round(p, 4), 'tier': tier}
+
+
 SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
 H_READ  = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
@@ -469,6 +531,45 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
                 elif cur_tier == 'LEAN':
                     patch['tier'] = 'STRONG'
                     patch['_r3_stack_promote'] = True
+
+        # 2026-09-03 LR CUTOVER — supervised model REPLACES legacy tier for
+        # all MLB props with the L5/L10 features populated. 90d audit
+        # showed current 'conviction' field is a NEGATIVE predictor of
+        # prop hits (coef -0.036); LR trained on real outcomes hits PRIME
+        # at 85.6% vs current 52.1%. Fold in enriched fields (l5/l10/season)
+        # + odds + prop_type onehot for the model input. Original scorer's
+        # tier/conviction preserved in signals for audit.
+        if _LR_MODEL_MLB_PROP is not None:
+            # Merge lookback vals into prop dict so LR sees fresh L5/L10
+            _prop_for_lr = dict(prop)
+            _prop_for_lr['player_l5_hit_count']  = lb.get('l5')
+            _prop_for_lr['player_l10_hit_count'] = lb.get('l10')
+            _prop_for_lr['player_season_hit_pct'] = lb.get('season_pct')
+            lr_pred = _lr_predict_prop(_prop_for_lr)
+            if lr_pred:
+                # Preserve legacy scorer output in signals for audit
+                orig_tier = patch.get('tier') or (prop.get('tier') or '').upper()
+                existing_signals['_pre_lr_tier'] = orig_tier
+                existing_signals['_pre_lr_conviction'] = prop.get('conviction')
+                existing_signals['_lr_p_hit'] = lr_pred['p_hit']
+                existing_signals['_lr_tier_raw'] = lr_pred['tier']
+                # Map LR tier → user-facing tier. COIN/FADE both become SKIP
+                # (COIN = no edge, FADE = model says opposite side wins).
+                _lr_to_user = {
+                    'PRIME':  'PRIME',
+                    'STRONG': 'STRONG',
+                    'LEAN':   'LEAN',
+                    'COIN':   'SKIP',
+                    'FADE':   'SKIP',
+                }
+                final_tier = _lr_to_user.get(lr_pred['tier'], 'SKIP')
+                patch['tier'] = final_tier
+                # Rewrite conviction to LR probability × 100 so downstream
+                # sorting/ranking uses LR's confidence not the anti-predictive
+                # legacy conviction. Round to int.
+                patch['conviction'] = int(round(lr_pred['p_hit'] * 100))
+                patch['signals'] = existing_signals
+
         if not dry_run:
             # 2026-08-22 RETRY on transient ConnectionResetError. Prior
             # behavior: single failure killed the whole run — one prop's
