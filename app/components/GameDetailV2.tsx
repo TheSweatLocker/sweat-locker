@@ -521,21 +521,18 @@ function VerdictCard({ctx, awayTeam, homeTeam}: any) {
       </View>
     );
   }
-  // 2026-09-03 TIER GATE. Prior behavior rendered ANY primary_play including
-  // tier=COVERAGE — that's the tier defensive_gates writes when it kills a
-  // pick (juice trap, LR coin flip, MC dissent, etc). Users saw picks like
-  // "Rutgers ML" at -9000 because the label field wasn't rewritten on demote
-  // and no UI gate hid COVERAGE picks. Pipeline now rewrites label too, but
-  // this gate is belt+suspenders: any tier below LEAN → show "no play" msg
-  // instead of surfacing the pick as if it were actionable.
+  // 2026-09-03 TIER GATE. COVERAGE / PASS / SKIP tiers = the pipeline
+  // examined this game and DIDN'T find an actionable edge (juice trap,
+  // LR coin flip, thin-data signal, etc). Prior UX: showed "NO PLAY —
+  // pipeline killed pick" text card on every such game. User feedback
+  // 9/3: chalk-heavy Wk1 slate has ~10 of these, verdict card everywhere
+  // reads as "app is broken" instead of "no edge here". Better: return
+  // null so no verdict card renders at all — the stats + tabs below
+  // still surface (splits, cohorts, model lens, etc), which is what
+  // a curious user wants when there's no primary pick anyway.
   const tier = String(play.tier || '').toUpperCase();
   if (tier === 'COVERAGE' || tier === 'PASS' || tier === 'SKIP') {
-    return (
-      <View style={styles.verdict}>
-        <Text style={styles.verdictNoPlay}>No play surfaced — pipeline killed pick ({tier.toLowerCase()}).</Text>
-        {play.sub ? <Text style={[styles.verdictWhy, {marginTop:6}]}>{scrubSourceNames(play.sub)}</Text> : null}
-      </View>
-    );
+    return null;
   }
   const label = play.label || '';
   const sub = play.sub || '';

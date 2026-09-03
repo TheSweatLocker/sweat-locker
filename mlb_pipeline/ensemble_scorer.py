@@ -191,6 +191,10 @@ class Contribution:
     # logic (compute_recommended_stake in game_context.py) can gate 2u LOCK
     # promotion on "signal has ≥75% historical bucket on n≥30".
     hit_rate: Optional[float] = None
+    # 2026-09-03: passthrough of registry tier for signal-quality gate
+    # (West Georgia +24.5 was a LEAN pick supported only by a rule with
+    # tier=UNVALIDATED, sample_n=1 — that's noise, not signal).
+    tier: Optional[str] = None
 
 
 @dataclass
@@ -1193,6 +1197,7 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
             contribution=round(w * op.strength, 4),
             display_prose=op.display_prose,
             hit_rate=op.hit_rate,  # 2026-08-31: for 2u LOCK stake gate
+            tier=op.tier,          # 2026-09-03: for signal-quality gate
         )
         per_side[op.side].append(c)
 
@@ -1374,6 +1379,31 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
                 and margin >= th['min_margin']):
             tier = candidate_tier
             break
+
+    # 2026-09-03 SIGNAL-QUALITY GATE. Root cause of West Georgia +24.5
+    # being surfaced as a LEAN pick on a 1-signal ensemble score of 0.20:
+    # the sole supporting signal was `ncaaf_penalty_home_undisciplined`
+    # with tier=UNVALIDATED, sample_n=1, hit_rate=100% (that 1 historical
+    # game happened to win — statistical noise, not evidence).
+    #
+    # Gate: LEAN picks must have AT LEAST ONE supporting chip that is
+    # either (a) VALIDATED / DISCOVERY tier OR (b) sample_n >= 15.
+    # Everything else (all UNVALIDATED with tiny samples) → COVERAGE
+    # (visible in game detail for audit, not a card-eligible pick).
+    #
+    # PRIME/STRONG already have multi-signal / high-score thresholds
+    # that make single-noise-signal survival impossible; gate only
+    # bites at the LEAN floor where thin data leaked through.
+    if tier == 'LEAN':
+        credible = False
+        for chip in win_chips:
+            t = (chip.tier or '').upper()
+            if t in ('VALIDATED', 'DISCOVERY'):
+                credible = True; break
+            if (chip.n or 0) >= 15:
+                credible = True; break
+        if not credible:
+            tier = 'COVERAGE'
 
     # 2026-08-19: PRIME breadth lane. Traditional PRIME requires score≥1.5
     # (rare — today's Toronto pick at 1.39/1.04/9-sources is just shy).
