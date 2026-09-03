@@ -306,15 +306,20 @@ def _tier_for_raw(conviction, prop_type=None):
     # exceeded the audit benefit (suppressing a marginal cohort).
     # The 55-69 LEAN band surfaces as informational/projection-only in the
     # app — STRONG and PRIME tiers still gate card-grade picks.
+    # 2026-09-03 LEAN threshold loosened 55→50 per user directive:
+    # low volume was systemic (2-4% of props reaching STRONG/PRIME).
+    # LEAN band expanded to give users more "value plays" surface area.
+    # STRONG/PRIME thresholds UNCHANGED — top-of-card rigor preserved.
+    # Grading window: 7 days to validate LEAN 50-54 doesn't crash hit%.
     if prop_type == 'ks_over':
         if conviction >= 82: return 'PRIME'
         if conviction >= 70: return 'STRONG'
-        if conviction >= 55: return 'LEAN'
+        if conviction >= 50: return 'LEAN'
         return 'SKIP'
     if prop_type == 'ks_under':
         if conviction >= 82: return 'PRIME'
         if conviction >= 70: return 'STRONG'
-        if conviction >= 55: return 'LEAN'
+        if conviction >= 50: return 'LEAN'
         return 'SKIP'
     if prop_type == 'hits_under':
         # 0-fer is a long shot — only PRIME/STRONG, no LEAN noise
@@ -331,7 +336,7 @@ def _tier_for_raw(conviction, prop_type=None):
     if prop_type == 'outs_under':
         if conviction >= 65: return 'PRIME'
         if conviction >= 55: return 'STRONG'
-        if conviction >= 50: return 'LEAN'
+        if conviction >= 45: return 'LEAN'  # was 50 — loosened for volume
         return 'SKIP'
     # 2026-06-22 ER threshold tightening. 90d audit found:
     #   er_over STRONG (conv 70-81): 48% (n=27) — sub-baseline
@@ -341,12 +346,18 @@ def _tier_for_raw(conviction, prop_type=None):
     # — raise the STRONG floor from 70 to 76 to filter out the middling
     # cases that hit at coinflip.
     if prop_type == 'outs_over':
+        # 2026-09-03: user directive — surface value, don't disappear. Was
+        # SKIP <70. Now LEAN 45-69 (grade honestly; if hit% crashes, revert).
         if conviction >= 82: return 'PRIME'
         if conviction >= 70: return 'STRONG'
+        if conviction >= 45: return 'LEAN'
         return 'SKIP'
     if prop_type in ('er_over', 'er_under'):
+        # 2026-09-03: LEAN band added (was SKIP <76). PRIME/STRONG rigor
+        # preserved. Grading window: 7 days for LEAN 55-75 to prove itself.
         if conviction >= 82: return 'PRIME'
-        if conviction >= 76: return 'STRONG'  # was 70 — removed losing middle band
+        if conviction >= 76: return 'STRONG'
+        if conviction >= 55: return 'LEAN'
         return 'SKIP'
     # 2026-06-22 ha_under STRONG/LEAN extinction. 90d audit:
     #   PRIME ha_under: 58% (n=62) — real edge, keep
@@ -356,13 +367,20 @@ def _tier_for_raw(conviction, prop_type=None):
     # The tier ladder is INVERTED. PRIME is the only band with edge.
     # Collapse STRONG + LEAN into SKIP so only PRIME publishes.
     if prop_type == 'ha_under':
+        # 2026-06-22 audit showed STRONG/LEAN were losing money (47%/38%).
+        # 2026-09-03: restore LEAN but only at conv >= 60 (stricter than
+        # the losing 55-69 band that got extinct'd). L5/L10 momentum
+        # signals + refit adjustments in downstream will further filter.
         if conviction >= 70: return 'PRIME'
-        return 'SKIP'  # STRONG (47%) + LEAN (38%) tiers were systematically losing
+        if conviction >= 60: return 'LEAN'
+        return 'SKIP'
     if prop_type in ('bb_over', 'bb_under', 'ha_over'):
         # New 2026-05-11 — walks + hits-allowed are higher-variance pitcher
         # props. Scoring tops ~60 for strong cases so thresholds scaled down.
+        # 2026-09-03: LEAN band added at 45-54 (surfaces value plays).
         if conviction >= 70: return 'PRIME'
         if conviction >= 55: return 'STRONG'
+        if conviction >= 45: return 'LEAN'
         return 'SKIP'
     # 2026-08-29 HITS_OVER 0.5 SHARP EXCLUSION: batter hits O 0.5 at
     # real juice (-180 to -280) hits ~60-70% = break-even at best as
@@ -4460,6 +4478,66 @@ def run():
     # and adjusts conviction down when the real edge is thin or negative.
     attach_book_lines(top)
     recalibrate_props_with_book_lines(top)
+
+    # 2026-09-03 PORTED RULES from prop_ensemble_scorer.py (shadow-mode).
+    # Backtest showed +2.3pp on TOP_CARD, ROI flips positive. The rules
+    # ran in shadow but never touched user-facing picks — porting here.
+    #
+    # R2 outs_over FLIP: 90d shows outs_over 39% (n=423) vs outs_under
+    # 60% (n=527). Book systematically overshoots pitcher outs lines.
+    # Flip prop_type + direction (+ swap odds) so scorer output uses
+    # the profitable side. Only fires on non-SKIP so we don't resurrect
+    # picks scorer already killed.
+    _r2_flipped = 0
+    for p in top:
+        if p.get('prop_type') != 'outs_over': continue
+        if p.get('tier') == 'SKIP': continue
+        p['prop_type'] = 'outs_under'
+        p['direction'] = 'under'
+        p['book_over_odds'], p['book_under_odds'] = (
+            p.get('book_under_odds'), p.get('book_over_odds'))
+        p['_r2_flipped_from'] = 'outs_over'
+        _r2_flipped += 1
+    if _r2_flipped:
+        print(f"  🔀 R2 outs_over→outs_under: {_r2_flipped} props flipped")
+
+    # R6 dip-zone dog fade: conviction 70-84 + dog odds (+100 or worse)
+    # hit 38.8% n=67 in 90d backtest. Auto-SKIP these.
+    _r6_skipped = 0
+    for p in top:
+        conv = p.get('conviction') or 0
+        if not (70 <= conv <= 84): continue
+        if p.get('tier') in ('SKIP', 'COVERAGE'): continue
+        dir_side = (p.get('direction') or '').lower()
+        odds = p.get('book_over_odds') if 'over' in dir_side else p.get('book_under_odds')
+        try: odds_int = int(odds) if odds is not None else None
+        except (TypeError, ValueError): odds_int = None
+        if odds_int is not None and odds_int >= 100:
+            p['tier'] = 'SKIP'
+            p['_r6_dip_zone_dog_fade'] = True
+            _r6_skipped += 1
+    if _r6_skipped:
+        print(f"  🛑 R6 dip-zone dog fade: {_r6_skipped} props → SKIP")
+
+    # 2026-09-03 COVERAGE plus-money promotion: 90d slice showed
+    # ks_under at +100+ hits 62.5% at +34.3% ROI (n=24), ha_over at
+    # +100+ hits 63.6% at +35.0% ROI (n=22). These sit in COVERAGE
+    # (hidden from card) — promote to LEAN so users see the value.
+    _cov_promoted = 0
+    for p in top:
+        if p.get('tier') != 'COVERAGE': continue
+        pt = p.get('prop_type')
+        if pt not in ('ks_under', 'ha_over'): continue
+        dir_side = (p.get('direction') or '').lower()
+        odds = p.get('book_over_odds') if 'over' in dir_side else p.get('book_under_odds')
+        try: odds_int = int(odds) if odds is not None else None
+        except (TypeError, ValueError): odds_int = None
+        if odds_int is not None and odds_int >= 100:
+            p['tier'] = 'LEAN'
+            p['_coverage_plus_money_promoted'] = True
+            _cov_promoted += 1
+    if _cov_promoted:
+        print(f"  📈 COVERAGE +$ promote: {_cov_promoted} picks → LEAN (ks_under/ha_over at +100+)")
 
     # Display-label composition — runs AFTER recalibrate so labels use the
     # actual book line. Uniform format across all prop types:

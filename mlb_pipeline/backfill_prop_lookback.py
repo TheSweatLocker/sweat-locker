@@ -420,6 +420,55 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
             if cur_tier in ('PRIME', 'STRONG', 'LEAN'):
                 patch['tier'] = 'COVERAGE'
                 patch['conviction'] = 0
+
+        # 2026-09-03 PORTED RULES from prop_ensemble_scorer.py (shadow-mode).
+        # Backtest showed +2.3pp on TOP_CARD, +3.1pp on PRIME. Now applied
+        # to production props once L5/L10 is populated (this backfill's job).
+        # Order: R4 convergence (may promote) → R1 momentum (may promote/cap)
+        # → R3 stack_alert (final trump). All guarded on cur_tier != SKIP.
+        cur_tier = patch.get('tier') or (prop.get('tier') or '').upper()
+        cur_conv = prop.get('conviction') or 0
+
+        if cur_tier not in ('SKIP', 'PASS', 'COVERAGE'):
+            _promote = {'COVERAGE': 'LEAN', 'LEAN': 'STRONG', 'STRONG': 'PRIME'}
+
+            # R4 convergence: L5 hot + L10 hot in current direction → promote
+            # L5+L10 both hot (>= 4 out of 5, >= 8 out of 10) → PRIME (if conv>=60) or STRONG
+            if lb['l5'] is not None and lb['l10'] is not None:
+                if lb['l5'] >= 4 and lb['l10'] >= 8:
+                    new_t = 'PRIME' if cur_conv >= 60 else 'STRONG'
+                    # Only apply if it's a promotion, not a demotion
+                    _tier_ord = {'COVERAGE':0,'LEAN':1,'STRONG':2,'PRIME':3}
+                    if _tier_ord.get(new_t, 0) > _tier_ord.get(cur_tier, 0):
+                        patch['tier'] = new_t
+                        patch['_r4_convergence_hot'] = True
+                        cur_tier = new_t
+
+            # R1 momentum: L10 in current direction >= 8 → bump one tier
+            # (may re-fire after R4 for another bump — capped by promotion map)
+            if lb['l10'] is not None and lb['l10'] >= 8:
+                new_t = _promote.get(cur_tier)
+                if new_t:
+                    patch['tier'] = new_t
+                    patch['_r1_l10_momentum'] = True
+                    cur_tier = new_t
+            # L10 cold (<= 3) with tier PRIME/STRONG — cap at LEAN
+            elif lb['l10'] is not None and lb['l10'] <= 3:
+                if cur_tier in ('PRIME', 'STRONG'):
+                    patch['tier'] = 'LEAN'
+                    patch['conviction'] = min(cur_conv, 60)
+                    patch['_r1_l10_cold_cap'] = True
+                    cur_tier = 'LEAN'
+
+            # R3 stack_alert: stack_alert=True hit 68.5% n=343 in backtest.
+            # Any surviving pick with stack_alert → +1 tier; conv>=60 → PRIME.
+            if prop.get('stack_alert'):
+                if cur_conv >= 60 and cur_tier in ('COVERAGE', 'LEAN', 'STRONG'):
+                    patch['tier'] = 'PRIME'
+                    patch['_r3_stack_prime'] = True
+                elif cur_tier == 'LEAN':
+                    patch['tier'] = 'STRONG'
+                    patch['_r3_stack_promote'] = True
         if not dry_run:
             # 2026-08-22 RETRY on transient ConnectionResetError. Prior
             # behavior: single failure killed the whole run — one prop's
