@@ -19,6 +19,23 @@ HEADERS = {
     'Content-Type': 'application/json',
 }
 
+
+# 2026-09-03 TIMEOUT + RETRY WRAPPER. Prior 10s timeout hit ReadTimeout in
+# GHA cron when Supabase lagged during Sweat Card resolver's per-pick fan-out
+# — one flaky request nuked the whole `python resolve_game_results.py` step.
+# Wrapper: 30s timeout, 1 retry on ReadTimeout/ConnectionError, silent
+# fall-through on final failure so a bad row doesn't kill the whole run.
+def _get(url: str, params: dict = None, timeout: int = 30) -> requests.Response | None:
+    for attempt in range(2):
+        try:
+            return requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+        except (requests.Timeout, requests.ConnectionError) as e:
+            if attempt == 1:
+                print(f'  ⚠ _get failed after retry: {str(e)[:100]}')
+                return None
+            continue
+    return None
+
 _NAME_SUFFIXES = {'jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv'}
 
 # Postponement detection: how stale a missing-score row can sit before
@@ -52,7 +69,7 @@ def _fetch_mlb_game_state(home_team, away_team, game_date_str):
     try:
         r = requests.get(
             f'https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}',
-            timeout=10,
+            timeout=30,
         )
         if r.status_code != 200:
             _MLB_STATE_CACHE[key] = ('pending', None)
@@ -127,7 +144,7 @@ def _backfill_score_to_results(game_id, home_team, away_team, game_date_str, sco
         r = requests.post(
             f'{SUPABASE_URL}/rest/v1/mlb_game_results?on_conflict=game_id',
             headers={**HEADERS, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
-            json=payload, timeout=10,
+            json=payload, timeout=30,
         )
         return r.status_code in (200, 201, 204)
     except Exception:
@@ -988,7 +1005,7 @@ def _resolve_single_pick(pick, slate_date):
         r = requests.get(
             f'{SUPABASE_URL}/rest/v1/daily_best_bet_history',
             params={'bet_date': f'eq.{slate_date}', 'sport': 'eq.MLB', 'select': 'result'},
-            headers=HEADERS, timeout=10,
+            headers=HEADERS, timeout=30,
         ).json()
         if r and r[0].get('result') in ('Win', 'Loss', 'Push'):
             return r[0]['result']
@@ -998,7 +1015,7 @@ def _resolve_single_pick(pick, slate_date):
         r = requests.get(
             f'{SUPABASE_URL}/rest/v1/daily_dawg',
             params={'game_date': f'eq.{slate_date}', 'select': 'result'},
-            headers=HEADERS, timeout=10,
+            headers=HEADERS, timeout=30,
         ).json()
         if r and r[0].get('result') in ('Win', 'Loss', 'Push'):
             return r[0]['result']
@@ -1010,7 +1027,9 @@ def _resolve_single_pick(pick, slate_date):
             player, ptype, pline = (key or '').split('|', 2)
         except ValueError:
             return 'Pending'
-        r = requests.get(
+        # 2026-09-03: use retry wrapper — this was the exact call that
+        # hit ReadTimeout in GHA cron on 9/3 during Sweat Card resolver.
+        resp = _get(
             f'{SUPABASE_URL}/rest/v1/mlb_pipeline_props',
             params={
                 'game_date': f'eq.{slate_date}',
@@ -1019,8 +1038,12 @@ def _resolve_single_pick(pick, slate_date):
                 'prop_line': f'eq.{pline}',
                 'select': 'result',
             },
-            headers=HEADERS, timeout=10,
-        ).json()
+        )
+        if resp is None: return 'Pending'
+        try:
+            r = resp.json()
+        except (ValueError, AttributeError):
+            return 'Pending'
         if r and r[0].get('result') in ('Win', 'Loss', 'Push'):
             return r[0]['result']
         return 'Pending'
@@ -1032,7 +1055,7 @@ def _resolve_single_pick(pick, slate_date):
         r = requests.get(
             f'{SUPABASE_URL}/rest/v1/mlb_game_results',
             params={'game_id': f'eq.{key}', 'select': 'home_team,away_team,home_score,away_score,home_win'},
-            headers=HEADERS, timeout=10,
+            headers=HEADERS, timeout=30,
         ).json()
         if not r or r[0].get('home_score') is None:
             # Look up team names from mlb_game_context (the row may exist
@@ -1046,7 +1069,7 @@ def _resolve_single_pick(pick, slate_date):
                 ctx_r = requests.get(
                     f'{SUPABASE_URL}/rest/v1/mlb_game_context',
                     params={'game_id': f'eq.{key}', 'select': 'home_team,away_team'},
-                    headers=HEADERS, timeout=10,
+                    headers=HEADERS, timeout=30,
                 ).json()
                 if ctx_r:
                     sg_home = ctx_r[0].get('home_team')
@@ -1105,7 +1128,7 @@ def _resolve_single_pick(pick, slate_date):
                 rg = requests.get(
                     f'{SUPABASE_URL}/rest/v1/mlb_game_results',
                     params={'game_id': f'eq.{key}', 'select': 'nrfi_result'},
-                    headers=HEADERS, timeout=10,
+                    headers=HEADERS, timeout=30,
                 ).json()
                 if not rg or not rg[0].get('nrfi_result'):
                     # Same team-lookup pattern as the game_results branch above
@@ -1118,7 +1141,7 @@ def _resolve_single_pick(pick, slate_date):
                         ctx_r = requests.get(
                             f'{SUPABASE_URL}/rest/v1/mlb_game_context',
                             params={'game_id': f'eq.{key}', 'select': 'home_team,away_team'},
-                            headers=HEADERS, timeout=10,
+                            headers=HEADERS, timeout=30,
                         ).json()
                         if ctx_r:
                             nrfi_home = ctx_r[0].get('home_team')
@@ -1131,7 +1154,7 @@ def _resolve_single_pick(pick, slate_date):
                 rg = requests.get(
                     f'{SUPABASE_URL}/rest/v1/mlb_game_results',
                     params={'game_id': f'eq.{key}', 'select': 'nrfi_result'},
-                    headers=HEADERS, timeout=10,
+                    headers=HEADERS, timeout=30,
                 ).json()
                 if not rg or not rg[0].get('nrfi_result'):
                     # Same team-lookup pattern as the game_results branch above
@@ -1144,7 +1167,7 @@ def _resolve_single_pick(pick, slate_date):
                         ctx_r = requests.get(
                             f'{SUPABASE_URL}/rest/v1/mlb_game_context',
                             params={'game_id': f'eq.{key}', 'select': 'home_team,away_team'},
-                            headers=HEADERS, timeout=10,
+                            headers=HEADERS, timeout=30,
                         ).json()
                         if ctx_r:
                             nrfi_home = ctx_r[0].get('home_team')
