@@ -1199,6 +1199,47 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     if not per_side:
         return _no_pick(market, ctx)
 
+    # 2026-09-03 INTRA-CLASS FAMILY DEDUP — signals measuring the SAME
+    # underlying info shouldn't be counted as independent votes. Root
+    # cause of NCAAF 93% dog bias: SP+/model-based spread signals
+    # (ncaaf_projected_spread_rl, ncaaf_home_spread_edge,
+    #  ncaaf_sp_plus_edge_home/away_rl) all fire together on the same
+    # side (SP+ projects tighter spreads → dog wins all 3). Counted as
+    # 0.55+ contribution when really it's ~0.20 of unique info.
+    #
+    # Dedup: within each side, group by family (heuristic pattern-match
+    # on signal_key), keep only the highest-contribution chip per family.
+    # Other families still contribute independently.
+    _FAMILY_PATTERNS = [
+        # NCAAF SP+/projected-spread family — same underlying info
+        ('sp_edge',      lambda k: 'spread_edge' in k or 'sp_plus_edge' in k or 'projected_spread' in k),
+        # H2H family — head-to-head trends often correlate across metrics
+        ('h2h',          lambda k: k.startswith('h2h_')),
+        # Team-form-season (season-long ATS/OU trends)
+        ('team_season',  lambda k: 'season' in k and ('ats' in k or 'over_trend' in k or 'under_trend' in k)),
+        # Team-form recent (L10 ATS/OU)
+        ('team_recent',  lambda k: any(t in k for t in ['ats_hot','ats_cold','over_trend','under_trend','ml_hot','ml_cold']) and 'season' not in k),
+    ]
+    def _fam(sig_key: str) -> str:
+        k = (sig_key or '').lower()
+        for name, matcher in _FAMILY_PATTERNS:
+            if matcher(k): return name
+        return 'unique_' + k  # unique family per non-matched signal
+
+    for cand, chips in list(per_side.items()):
+        by_fam: dict[str, list[Contribution]] = defaultdict(list)
+        for c in chips:
+            by_fam[_fam(c.signal_key)].append(c)
+        # Keep only the highest-contribution chip per family; discard the rest
+        deduped: list[Contribution] = []
+        for fam_name, fam_chips in by_fam.items():
+            if len(fam_chips) == 1:
+                deduped.extend(fam_chips); continue
+            # Multiple chips in the same family — keep top-contribution one
+            top = max(fam_chips, key=lambda x: x.contribution)
+            deduped.append(top)
+        per_side[cand] = deduped
+
     # Sum per candidate + apply class-balance
     scored: list[tuple[str, float, list[Contribution], dict, int]] = []
     for cand in candidates:
