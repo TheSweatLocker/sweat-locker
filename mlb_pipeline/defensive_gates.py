@@ -690,9 +690,10 @@ def _load_lr_model(filename: str):
         return _json.loads(p.read_text()) if p.exists() else None
     except Exception: return None
 
-_LR_MODEL_MLB_ML   = _load_lr_model('mlb_ml_logreg.json')
-_LR_MODEL_NFL_ML   = _load_lr_model('nfl_ml_logreg.json')
-_LR_MODEL_NCAAF_ML = _load_lr_model('ncaaf_ml_logreg.json')
+_LR_MODEL_MLB_ML    = _load_lr_model('mlb_ml_logreg.json')
+_LR_MODEL_NFL_ML    = _load_lr_model('nfl_ml_logreg.json')
+_LR_MODEL_NCAAF_ML  = _load_lr_model('ncaaf_ml_logreg.json')
+_LR_MODEL_MLB_TOTAL = _load_lr_model('mlb_total_logreg.json')
 
 
 def _lr_predict_ml(ctx: dict, model=None) -> dict | None:
@@ -896,8 +897,89 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # output still gets a chance; LR fires as a final override for ML.
     if sport in ('MLB', 'NFL', 'NCAAF'):
         pp = apply_ml_lr_override(pp, ctx, sport=sport)
+    # 2026-09-03 MLB TOTAL LR OVERRIDE — supervised total model.
+    # Test acc 59.8%, PRIME_OVER 69% n=71, PRIME_UNDER 62% n=111.
+    if sport == 'MLB':
+        pp = apply_mlb_total_lr_override(pp, ctx)
     pp = apply_publish_gate(pp, ctx)
     return pp
+
+
+def _lr_predict_total(ctx: dict) -> dict | None:
+    """Returns {p_over, suggested_side, suggested_tier} for MLB total."""
+    if _LR_MODEL_MLB_TOTAL is None: return None
+    try:
+        m = _LR_MODEL_MLB_TOTAL
+        z = m['intercept']
+        for i, f in enumerate(m['features']):
+            v = ctx.get(f)
+            try: v = float(v) if v is not None else None
+            except (TypeError, ValueError): v = None
+            if v is None: v = m['imputer_medians'][i]
+            scale = m['scaler_scale'][i]
+            scaled = (v - m['scaler_mean'][i]) / scale if scale != 0 else 0
+            z += m['coefficients'][i] * scaled
+        if z >= 0: p = 1.0 / (1.0 + _math.exp(-z))
+        else: ez = _math.exp(z); p = ez / (1.0 + ez)
+        if p >= 0.65:   tier, side = 'PRIME',  'OVER'
+        elif p >= 0.55: tier, side = 'STRONG', 'OVER'
+        elif p >= 0.45: tier, side = None,     'NONE'
+        elif p >= 0.35: tier, side = 'STRONG', 'UNDER'
+        else:           tier, side = 'PRIME',  'UNDER'
+        return {'p_over': round(p, 4), 'suggested_side': side, 'suggested_tier': tier}
+    except Exception:
+        return None
+
+
+def apply_mlb_total_lr_override(pp, ctx):
+    """MLB total LR override. Same pattern as ML: if LR confident,
+    replace with LR tier/side. If LR coin flip, demote legacy total to
+    COVERAGE. If legacy is ML/RL not total, only override if LR is PRIME."""
+    if _LR_MODEL_MLB_TOTAL is None: return pp
+    try:
+        pred = _lr_predict_total(ctx)
+        if pred is None: return pp
+        old_pp = pp if isinstance(pp, dict) else {}
+        was_total = str(old_pp.get('type','')).lower() == 'total'
+        if pred['suggested_side'] == 'NONE':
+            if was_total:
+                old_pp['_lr_total_shadow'] = pred
+                old_pp['_pre_lr_tier'] = old_pp.get('tier')
+                old_pp['tier'] = 'COVERAGE'
+                old_pp['audit_note'] = f'MLB total LR sees coin flip (p_over={pred["p_over"]:.2f}) — legacy demoted'
+                return old_pp
+            return pp
+        if not was_total and old_pp:
+            # Existing pp is ML/RL — only override if LR total is PRIME
+            if pred['suggested_tier'] != 'PRIME':
+                old_pp['_lr_total_shadow'] = pred
+                return old_pp
+        # Build new pp
+        close_total = ctx.get('close_total')
+        label = f'{pred["suggested_side"].title()} {close_total}' if close_total else pred['suggested_side'].title()
+        p = pred['p_over']
+        conviction = int(round((p if pred['suggested_side'] == 'OVER' else (1 - p)) * 100))
+        new_pp = {
+            'type': 'total',
+            'tier': pred['suggested_tier'],
+            'side': pred['suggested_side'],
+            'label': label,
+            'sub': f'LR total predictor: p_over={p:.2f} · {conviction}% confidence',
+            'conviction': conviction,
+            'line': close_total,
+            '_engine': 'lr_v1',
+            '_lr_p_over': p,
+            '_lr_model_version': _LR_MODEL_MLB_TOTAL.get('version', ''),
+            '_pre_lr': {
+                'tier': old_pp.get('tier'), 'side': old_pp.get('side'),
+                'type': old_pp.get('type'), 'engine': old_pp.get('_engine'),
+                'conviction': old_pp.get('conviction'),
+            } if old_pp else None,
+            'audit_note': f'LR TOTAL override · p_over={p:.2f} · was {(old_pp.get("tier") or "none")}/{(old_pp.get("type") or "none")}',
+        }
+        return new_pp
+    except Exception:
+        return pp
 
 
 # Backwards-compat alias — existing MLB callers still work

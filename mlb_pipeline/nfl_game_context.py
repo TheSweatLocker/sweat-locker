@@ -1311,7 +1311,11 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
     if r.status_code == 400:
         import re as _re
         stripped = []
-        for _attempt in range(8):
+        # 2026-09-03 raised from 8 → 60. Initial 8 was mirrored from
+        # game_context.py MLB pattern but NFL has 44 missing columns
+        # (schema catchup migration 20260903a pending user apply). 8
+        # iterations left 36 columns still blocking. 60 gives headroom.
+        for _attempt in range(60):
             try:
                 err = r.json(); msg = err.get('message', '') if isinstance(err, dict) else ''
             except (ValueError, AttributeError):
