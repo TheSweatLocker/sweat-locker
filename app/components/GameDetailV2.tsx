@@ -521,40 +521,45 @@ function VerdictCard({ctx, awayTeam, homeTeam}: any) {
       </View>
     );
   }
-  // 2026-09-03 TIER GATE. COVERAGE / PASS / SKIP tiers = the pipeline
-  // examined this game and DIDN'T find an actionable edge (juice trap,
-  // LR coin flip, thin-data signal, etc). Prior UX: showed "NO PLAY —
-  // pipeline killed pick" text card on every such game. User feedback
-  // 9/3: chalk-heavy Wk1 slate has ~10 of these, verdict card everywhere
-  // reads as "app is broken" instead of "no edge here". Better: return
-  // null so no verdict card renders at all — the stats + tabs below
-  // still surface (splits, cohorts, model lens, etc), which is what
-  // a curious user wants when there's no primary pick anyway.
+  // 2026-09-03 REVISED PER USER: every game gets a take shown in game
+  // detail — "not picking is wild, feels like there should be something
+  // for every game". Sharp Card / Sweat Card stay filtered (PRIME/STRONG
+  // only). Game detail = every game, even low-conviction ones.
+  //
+  // For COVERAGE / PASS / SKIP tiers: render the pick label as usual
+  // BUT add a subtle "LOW CONVICTION" chip so users know this isn't
+  // card-eligible — it's a "here's our best guess if you're curious"
+  // read, not a play we're recommending.
+  //
+  // Prior TIER=COVERAGE gate REMOVED — was returning null which felt
+  // broken to users clicking into a game expecting to see the pipeline's
+  // opinion. Better: show + label the confidence honestly.
   const tier = String(play.tier || '').toUpperCase();
-  if (tier === 'COVERAGE' || tier === 'PASS' || tier === 'SKIP') {
-    return null;
-  }
+  const isLowConviction = tier === 'COVERAGE' || tier === 'PASS' || tier === 'SKIP';
   const label = play.label || '';
   const sub = play.sub || '';
-  // 2026-08-20: tier badge REMOVED from game analysis surface per user
-  // feedback. Tier chips (LEAN/STRONG/PRIME) only appear on curated pick
-  // surfaces (Sharp Card, Sweat Card, Ladder, POTD, Dawg of Day, Daily
-  // Degen). The game analysis card keeps the pick label + market type
-  // + reasoning, but drops the confidence chip because forcing every
-  // game into a tier label was making 90% of games render as "LEAN"
-  // (honest data reality — most games don't have a strong edge) which
-  // read as "our take is weak" instead of "here's the data, decide
-  // yourself." Reasoning is the confidence signal now.
   const marketLabel = String(play.type || '').toUpperCase();
   return (
     <View style={styles.verdict}>
-      {marketLabel && (
-        <View style={[styles.verdictTierPill, {backgroundColor: C.border + '22', flexDirection:'row', alignItems:'center'}]}>
-          <Text style={[styles.verdictTierText, {color: C.textMuted}]}>{marketLabel}</Text>
-        </View>
-      )}
+      <View style={{flexDirection:'row', alignItems:'center', gap:6, flexWrap:'wrap'}}>
+        {marketLabel && (
+          <View style={[styles.verdictTierPill, {backgroundColor: C.border + '22', flexDirection:'row', alignItems:'center'}]}>
+            <Text style={[styles.verdictTierText, {color: C.textMuted}]}>{marketLabel}</Text>
+          </View>
+        )}
+        {isLowConviction && (
+          <View style={[styles.verdictTierPill, {backgroundColor: C.textMuted + '18', borderWidth:1, borderColor: C.textMuted + '55'}]}>
+            <Text style={[styles.verdictTierText, {color: C.textMuted}]}>LOW CONVICTION</Text>
+          </View>
+        )}
+      </View>
       <Text style={styles.verdictPlay}>{label}</Text>
       {sub ? <Text style={styles.verdictWhy}>{scrubSourceNames(sub)}</Text> : null}
+      {isLowConviction && (
+        <Text style={[styles.verdictWhy, {color: C.textMuted, marginTop:6, fontSize:11, fontStyle:'italic'}]}>
+          Not a recommended play — thin signal support or unplayable price. Shown here for context; Sharp Card + Sweat Card only surface actionable picks.
+        </Text>
+      )}
     </View>
   );
 }

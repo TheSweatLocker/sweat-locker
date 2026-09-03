@@ -782,13 +782,12 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         # Existing total/rl picks left alone — LR-COIN only kills ML.
         if pred['suggested_side'] == 'NONE':
             if was_ml:
-                # 2026-09-03: rewrite label so app can't render stale pick text
+                # 2026-09-03 REVISED: keep original label + demote tier
+                # to COVERAGE. UI LOW-CONVICTION chip communicates the
+                # coin-flip verdict without erasing the ensemble's take.
                 old_pp['_lr_ml_shadow'] = pred
                 old_pp['_pre_lr_tier'] = old_pp.get('tier')
-                old_pp['_pre_lr_label'] = old_pp.get('label')
                 old_pp['tier'] = 'COVERAGE'
-                old_pp['label'] = 'NO PLAY · coin flip'
-                old_pp['sub']   = f'LR sees {pred["p_home_win"]:.0%} home — no edge either side'
                 old_pp['audit_note'] = f'{sport} LR sees coin flip (p={pred["p_home_win"]:.2f}) — legacy demoted'
                 return old_pp
             return pp
@@ -798,20 +797,17 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         # (if there was one) or downgrade to COVERAGE (if legacy was ML).
         if _ml_odds_too_juiced(ctx, pred['suggested_side']):
             if was_ml:
-                # Legacy was also ML — demote to COVERAGE (no play, too juicy).
-                # 2026-09-03 LABEL REWRITE: prior behavior mutated tier only;
-                # label kept the pre-demote text (e.g. "Rutgers ML" at -9000)
-                # which the app renders unconditionally (GameDetailV2 has no
-                # tier gate). User saw "Rutgers ML" as a pick despite backend
-                # correctly killing it. Rewrite label + sub so even if the UI
-                # ignores tier, the text reads NO PLAY.
+                # 2026-09-03 REVISED: keep the pick label intact + demote
+                # tier to COVERAGE. UI now shows "LOW CONVICTION" chip on
+                # COVERAGE picks (see GameDetailV2 VerdictCard) so users
+                # see the pipeline's take + a clear "not recommended"
+                # signal, rather than "NO PLAY" text. Sharp/Sweat cards
+                # still filter COVERAGE out — this rewrite is game-detail
+                # only. Prior label overwrite made game detail feel empty.
                 old_pp['_lr_ml_shadow'] = pred
                 old_pp['_pre_lr_tier'] = old_pp.get('tier')
-                old_pp['_pre_lr_label'] = old_pp.get('label')
                 old_pp['tier'] = 'COVERAGE'
-                old_pp['label'] = 'NO PLAY · juice too high'
-                old_pp['sub']   = f'ML too juicy for edge (>{-300}); no side eligible'
-                old_pp['audit_note'] = f'{sport} LR ML too juicy (>-300) — hidden'
+                old_pp['audit_note'] = f'{sport} LR ML too juicy (>-300) — coverage'
                 return old_pp
             # Legacy was total/rl — leave it (better market at high juice)
             old_pp['_lr_ml_shadow'] = pred
@@ -938,12 +934,10 @@ def apply_ncaaf_total_lr_override(pp, ctx):
         was_total = str(old_pp.get('type','')).lower() == 'total'
         if pred['suggested_side'] == 'NONE':
             if was_total:
+                # 2026-09-03 REVISED: keep label, demote tier only.
                 old_pp['_lr_total_shadow'] = pred
                 old_pp['_pre_lr_tier']  = old_pp.get('tier')
-                old_pp['_pre_lr_label'] = old_pp.get('label')
                 old_pp['tier']  = 'COVERAGE'
-                old_pp['label'] = 'NO PLAY · total coin flip'
-                old_pp['sub']   = f'NCAAF LR total sees {pred["p_over"]:.0%} over — no edge'
                 old_pp['audit_note'] = f'NCAAF total LR coin flip (p_over={pred["p_over"]:.2f}) — legacy demoted'
                 return old_pp
             # Not a total pick — just shadow the LR verdict
