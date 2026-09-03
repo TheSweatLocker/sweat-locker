@@ -36,7 +36,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests python-dotenv numpy scikit-learn
 
-      - name: Refit training run
+      - name: Refit training run (prop weights)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
@@ -44,15 +44,37 @@ jobs:
           cd mlb_pipeline
           python refit_train_v2.py
 
+      # 2026-09-03: LR predictors are trained from resolved outcomes and
+      # drift as data grows. Weekly retrain keeps coefficients calibrated.
+      # Non-fatal per model — one failure doesn't kill the others.
+      - name: LR predictor retrain (MLB + NFL + NCAAF)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python mlb_ml_logreg_train.py    || echo "mlb_ml_logreg non-fatal"
+          python mlb_prop_logreg_train.py  || echo "mlb_prop_logreg non-fatal"
+          python mlb_total_logreg_train.py || echo "mlb_total_logreg non-fatal"
+          python nfl_ml_logreg_train.py    || echo "nfl_ml_logreg non-fatal"
+          python ncaaf_ml_logreg_train.py  || echo "ncaaf_ml_logreg non-fatal"
+          python ncaaf_total_logreg_train.py || echo "ncaaf_total_logreg non-fatal"
+          # NBA/NHL/NCAAB scaffolds exit cleanly on missing features until backfill.
+          python nba_ml_logreg_train.py    || echo "nba_ml_logreg data-blocked (expected)"
+          python nhl_ml_logreg_train.py    || echo "nhl_ml_logreg data-blocked (expected)"
+          python ncaab_ml_logreg_train.py  || echo "ncaab_ml_logreg data-blocked (expected)"
+
       - name: Commit fresh weights if changed
         run: |
           cd mlb_pipeline
-          if git diff --quiet models/prop_refit_weights_v2.json; then
-            echo "No weights change this week"
+          # Compose glob of everything the retrain could produce
+          CHANGED_FILES="models/prop_refit_weights_v2.json models/mlb_ml_logreg.json models/mlb_prop_logreg.json models/mlb_total_logreg.json models/nfl_ml_logreg.json models/ncaaf_ml_logreg.json models/ncaaf_total_logreg.json"
+          if git diff --quiet $CHANGED_FILES; then
+            echo "No model change this week"
           else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add models/prop_refit_weights_v2.json
-            git commit -m "Weekly refit weights $(date +%Y-%m-%d)"
+            git add $CHANGED_FILES
+            git commit -m "Weekly refit + LR retrain $(date +%Y-%m-%d)"
             git push
           fi

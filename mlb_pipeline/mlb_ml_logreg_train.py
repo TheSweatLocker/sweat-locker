@@ -89,6 +89,66 @@ def _probe_valid_cols() -> set:
     return set(r.json()[0].keys())
 
 
+MONEY_FLOW_FEATURES = [
+    'sharp_ml_money',     # oddscrowd_snapshot.ml.money — % of $ on picked side
+    'sharp_ml_bets',      # oddscrowd_snapshot.ml.bets  — % of tickets on picked side
+    'sharp_ml_div',       # money - bets  (positive = sharp $ on this side)
+    'sharp_ml_pick_home', # 1 if picked side == HOME else 0 (encodes direction)
+    'sharp_total_money',
+    'sharp_total_bets',
+    'sharp_total_div',
+    'sharp_total_pick_over',
+]
+
+
+def _extract_money_flow(snap: dict) -> dict:
+    """Flatten oddscrowd_snapshot JSONB into scalar features so LR can weight them.
+    Missing keys -> None (imputer fills at train time)."""
+    out = {k: None for k in MONEY_FLOW_FEATURES}
+    if not isinstance(snap, dict): return out
+    ml = snap.get('ml') or {}
+    if isinstance(ml, dict):
+        m = ml.get('money'); b = ml.get('bets')
+        out['sharp_ml_money'] = m
+        out['sharp_ml_bets']  = b
+        if isinstance(m, (int, float)) and isinstance(b, (int, float)):
+            out['sharp_ml_div'] = m - b
+        pick = str(ml.get('pick') or '').upper()
+        if pick in ('HOME', 'AWAY'):
+            out['sharp_ml_pick_home'] = 1 if pick == 'HOME' else 0
+    tot = snap.get('total') or {}
+    if isinstance(tot, dict):
+        m = tot.get('money'); b = tot.get('bets')
+        out['sharp_total_money'] = m
+        out['sharp_total_bets']  = b
+        if isinstance(m, (int, float)) and isinstance(b, (int, float)):
+            out['sharp_total_div'] = m - b
+        pick = str(tot.get('pick') or '').upper()
+        if pick in ('OVER', 'UNDER'):
+            out['sharp_total_pick_over'] = 1 if pick == 'OVER' else 0
+    return out
+
+
+def _pull_money_flow_by_game(d_start: str, d_end: str) -> dict:
+    """Fetch oddscrowd_snapshot JSONB from mlb_game_context, keyed by game_id.
+    Returns empty dict if history is thin — imputer will fill NaNs downstream."""
+    out = {}
+    for off in range(0, 5000, 500):
+        r = requests.get(f'{SB}/rest/v1/mlb_game_context',
+            params={'select': 'game_id,oddscrowd_snapshot',
+                    'and': f'(game_date.gte.{d_start},game_date.lte.{d_end})',
+                    'oddscrowd_snapshot': 'not.is.null',
+                    'limit': 500, 'offset': off, 'order': 'game_date.asc'},
+            headers=H, timeout=30)
+        chunk = r.json() if isinstance(r.json(), list) else []
+        if not chunk: break
+        for row in chunk:
+            gid = row.get('game_id')
+            if gid: out[gid] = row.get('oddscrowd_snapshot')
+        if len(chunk) < 500: break
+    return out
+
+
 def _pull_training_data(days: int) -> list:
     d_start = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
     d_end   = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
@@ -108,6 +168,24 @@ def _pull_training_data(days: int) -> list:
         if not chunk: break
         rows.extend(chunk)
         if len(chunk) < 500: break
+
+    # 2026-09-03 MONEY-FLOW JOIN. mlb_game_results doesn't persist the
+    # oddscrowd snapshot — the JSONB blob lives on mlb_game_context and
+    # captures sharp $ / bets % / picked side at ingest time. Join it in
+    # so LR can weight sharp-money signals. Coverage starts 8/21 (thin
+    # history — coefficients start noisy, strengthen w/ weekly refit).
+    money_by_gid = _pull_money_flow_by_game(d_start, d_end)
+    money_hits = 0
+    for r in rows:
+        gid = r.get('game_id')
+        snap = money_by_gid.get(gid)
+        flat = _extract_money_flow(snap or {})
+        for k, v in flat.items():
+            r[k] = v
+        if snap is not None:
+            money_hits += 1
+    features = features + MONEY_FLOW_FEATURES
+    print(f'  money-flow join: {money_hits}/{len(rows)} games matched oddscrowd_snapshot')
     return rows, features
 
 
