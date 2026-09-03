@@ -71,13 +71,29 @@ def _norm(s: str) -> str:
 
 
 def _build_ncaaf_cache() -> dict:
-    """Fetch ncaaf_team_aliases and build reverse-lookup dict."""
-    r = requests.get(
-        f'{SB}/rest/v1/ncaaf_team_aliases'
-        f'?select=canonical_name,full_name,location,nickname,abbrev,alt_names&limit=5000',
-        headers=_H, timeout=15,
-    )
-    rows = r.json() if r.status_code == 200 else []
+    """Fetch ncaaf_team_aliases and build reverse-lookup dict.
+
+    2026-09-03 PAGE THROUGH: Supabase HARD-CAPS at 1000 rows per request
+    regardless of ?limit=. Prior code sent `limit=5000` and silently got
+    only 1000 rows, missing ~872 aliases (Utah Tech, Virginia Tech,
+    hundreds of FCS + D-II teams). Discovered when seed script correctly
+    inserted Virginia Tech but resolver still returned None — cache built
+    from a truncated slice never saw the row.
+    """
+    rows = []
+    for offset in range(0, 20000, 1000):
+        r = requests.get(
+            f'{SB}/rest/v1/ncaaf_team_aliases',
+            params={
+                'select': 'canonical_name,full_name,location,nickname,abbrev,alt_names',
+                'limit': 1000, 'offset': offset,
+            },
+            headers=_H, timeout=15,
+        )
+        chunk = r.json() if r.status_code == 200 else []
+        if not chunk: break
+        rows.extend(chunk)
+        if len(chunk) < 1000: break
     by_key: dict[str, str] = {}
     by_nickname: dict[str, str] = {}
     by_location: dict[str, str] = {}
@@ -232,13 +248,23 @@ _NCAAB_CACHE: dict | None = None
 def _build_ncaab_cache() -> dict:
     """Fetch ncaab_team_aliases and build reverse-lookup dict.
     Schema: canonical_name, kenpom_name, odds_api_name, bart_name,
-            alt_names, conference, espn_id."""
-    r = requests.get(
-        f'{SB}/rest/v1/ncaab_team_aliases'
-        f'?select=canonical_name,kenpom_name,odds_api_name,bart_name,alt_names&limit=5000',
-        headers=_H, timeout=15,
-    )
-    rows = r.json() if r.status_code == 200 else []
+            alt_names, conference, espn_id.
+
+    2026-09-03: paginate (Supabase 1000-row cap, same fix as NCAAF)."""
+    rows = []
+    for offset in range(0, 20000, 1000):
+        r = requests.get(
+            f'{SB}/rest/v1/ncaab_team_aliases',
+            params={
+                'select': 'canonical_name,kenpom_name,odds_api_name,bart_name,alt_names',
+                'limit': 1000, 'offset': offset,
+            },
+            headers=_H, timeout=15,
+        )
+        chunk = r.json() if r.status_code == 200 else []
+        if not chunk: break
+        rows.extend(chunk)
+        if len(chunk) < 1000: break
     by_key: dict[str, str] = {}
     canonicals: set[str] = set()
 
