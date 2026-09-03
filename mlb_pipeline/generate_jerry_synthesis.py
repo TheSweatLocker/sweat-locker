@@ -526,6 +526,17 @@ def parse_synthesis(raw: str) -> dict:
     if side not in _VALID_SIDES:
         print(f"  ⚠ parser produced invalid call_side {side!r} — nulling")
         side = None
+    # 2026-09-03 CROSS-MARKET VALIDATION: 8 mislabeled MLB jerry_reads
+    # rows discovered in yesterday's audit — call_market='ml' with
+    # call_side='OVER'/'UNDER' (nonsensical). Root cause was parser
+    # picking side from totals-related prose while market was ml.
+    # Guard here: sides must MATCH their market — coerce or null.
+    if market in ('ml', 'rl') and side in ('OVER', 'UNDER'):
+        print(f"  ⚠ CROSS-MARKET PARSE ERROR: market={market} + side={side} — nulling both")
+        market = None; side = None
+    elif market == 'total' and side in ('HOME', 'AWAY'):
+        print(f"  ⚠ CROSS-MARKET PARSE ERROR: market=total + side={side} — nulling both")
+        market = None; side = None
 
     # Persona-shift enforcement (2026-08-06): the new prompt commands PASS
     # only for structurally broken data. If Jerry emits PASS with a
@@ -640,6 +651,30 @@ def defer_call_to_ensemble(parsed: dict, struct: dict) -> dict:
     parsed['call_text'] = label  # human-readable e.g. "Brewers ML"
     if isinstance(conviction, (int, float)):
         parsed['conviction'] = max(0, min(100, int(conviction)))
+
+    # 2026-09-03 MLB ML CONVICTION GATE: 30d audit shows Jerry MLB ML
+    # picks hit only 48.9% (n=174). Break-even at -110 is 52.4%. The
+    # HI-conviction band (>=70) hits 56.5% — the only sustainable
+    # slice. Force MID/LO ML picks to PASS so we don't surface losing
+    # picks. Prose stays (users see the read) but pick badge = no play.
+    # Sport-scoped to MLB — NFL/NCAAF ML rate not yet audited.
+    sport = str(struct.get('sport') or '').upper()
+    if sport == 'MLB' and market == 'ml':
+        try:
+            conv_val = int(parsed.get('conviction') or 0)
+            if conv_val < 70:
+                print(f"  ⚠ MLB ML conv={conv_val} < 70 (30d hit% only 48.9% below HI band) — downgrade to PASS")
+                parsed['_mlb_ml_hi_gate'] = {
+                    'orig_market': market, 'orig_side': str(side).upper(),
+                    'orig_conviction': conv_val, 'orig_label': label,
+                }
+                parsed['call_market'] = 'pass'
+                parsed['call_side'] = None
+                parsed['call_line'] = None
+                parsed['call_text'] = 'Pass'
+                parsed['conviction'] = 0
+        except (TypeError, ValueError):
+            pass
     return parsed
 
 

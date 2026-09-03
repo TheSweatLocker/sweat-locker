@@ -919,32 +919,29 @@ def upsert_props(rows: list, dry_run: bool = False) -> int:
                   f"proj={r['projected']:>5.1f} edge={r['edge']:+.1f}  "
                   f"tier={r['tier']:<6} conv={r['conviction']}")
         return len(rows)
-    # Bridge (2026-08-22): dual-write to nfl_pipeline_props so cross-sport
-    # tooling (ensemble_scorer, backfill_prop_lookback, etc.) can see NFL
-    # props. Fire-and-log — nfl_props write is authoritative.
+    # 2026-09-03 FIX: prior code wrote to `nfl_props` table which does
+    # not exist (dead legacy target — returns 400). Bridge to
+    # `nfl_pipeline_props` was secondary. Promoting bridge to primary +
+    # removing dead write. Result: NFL props actually reach the DB and
+    # render on Week 1 card. Diagnosed via NFL Wk1 showing 0 props all
+    # week despite scorer producing 172 STRONG / 22 LIGHT in dry-run.
     try:
         bridge_rows = [b for b in (_to_pipeline_props_shape(r) for r in rows) if b]
-        if bridge_rows:
-            br = requests.post(
-                f'{SB}/rest/v1/nfl_pipeline_props?on_conflict=game_date,game_id,player_name,prop_type,direction,prop_line',
-                headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
-                json=bridge_rows, timeout=30,
-            )
-            if br.status_code in (200, 201, 204):
-                print(f'  ↔ bridge: {len(bridge_rows)} rows mirrored to nfl_pipeline_props')
-            else:
-                print(f'  ⚠ bridge failed (non-fatal): {br.status_code} {br.text[:150]}')
     except Exception as _e:
-        print(f'  ⚠ bridge write raised (non-fatal): {_e}')
-
+        print(f'  ⚠ shape-mapper raised: {_e}')
+        return 0
+    if not bridge_rows:
+        print('  ⚠ no rows to write (all failed shape mapping)')
+        return 0
     r = requests.post(
-        f'{SB}/rest/v1/nfl_props?on_conflict=game_id,player_name,prop_type,pick_side',
-        headers=H_WRITE, json=rows, timeout=30,
+        f'{SB}/rest/v1/nfl_pipeline_props?on_conflict=game_date,game_id,player_name,prop_type,direction,prop_line',
+        headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+        json=bridge_rows, timeout=30,
     )
     if r.status_code not in (200, 201, 204):
         print(f'  ⚠ upsert failed {r.status_code}: {r.text[:200]}')
         return 0
-    return len(rows)
+    return len(bridge_rows)
 
 
 def _load_nfl_ctx_by_game(game_dates: list) -> dict:

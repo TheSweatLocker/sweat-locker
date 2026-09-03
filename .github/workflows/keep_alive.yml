@@ -1,0 +1,29 @@
+name: Keep Alive (prevent GH scheduled-workflow skip)
+
+# 2026-09-03: GitHub Actions silently skips scheduled workflows on
+# repos with low commit activity or during GH platform slowdowns.
+# Symptom: our morning MLB/NFL/NCAAF pipeline crons (6/7:15/8:30 EDT)
+# were not firing reliably, forcing manual runs from user.
+#
+# Fix: this workflow runs every 30 min via cron, does effectively
+# nothing (just a shell echo), but the schedule "touch" is enough
+# to keep the repo's scheduled-workflow queue active. GH removes
+# repos from the schedule queue if there's no scheduled workflow
+# activity — this heartbeat guarantees activity.
+#
+# Cost: ~0.5s/run × 48 runs/day = 24s/day of Actions minutes. Trivial.
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Heartbeat
+        run: |
+          echo "keep-alive ping — $(date -u +%FT%TZ)"
+          echo "GitHub Actions scheduled-workflow queue kept warm."
