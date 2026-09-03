@@ -252,20 +252,24 @@ def reroute_ml_if_trapped(decision, ctx: dict, sport: str = 'NCAAF'):
         long_dog_ceiling = _JUICE_TRAP_LONG_DOG_BY_SPORT.get(sport, +250)
         if o > heavy_fav_floor and o < long_dog_ceiling: return decision
 
-        # ML is trap-priced. Find the best non-ML alternative.
-        LEAN_FLOOR = 0.3  # matches ensemble_scorer TIER_MIN_SCORE['LEAN']
+        # 2026-09-03 USER DIRECTIVE ("don't show -3000 ML as a take,
+        # pick spread or total when juicier than -300"):
+        # ALWAYS reroute juiced ML to the best-scoring alt market
+        # regardless of alt's absolute score. Prior LEAN_FLOOR=0.3 guard
+        # left "Rutgers ML" (at -9000) intact because both spread and
+        # total scored below 0.3 on Rutgers @ UMass. User doesn't want
+        # a juiced ML to survive as the take; a low-signal spread with
+        # a LOW CONVICTION chip is a better UX than a garbage ML price.
         candidates = []
         for alt_market in ('total', 'rl'):
             alt = getattr(decision, alt_market, None)
             if alt is None or not alt.pick: continue
-            if float(alt.score) < LEAN_FLOOR: continue
             candidates.append((alt_market, alt))
         if not candidates:
-            # No alternative worth surfacing — leave as ML, downstream
-            # juice-trap demote will drop tier. User will see LEAN ML
-            # with the audit note explaining the juice.
+            # Truly no non-ML alternative — leave as ML for downstream
+            # juice-trap demote (COVERAGE + LOW CONVICTION chip in UI).
             return decision
-        # Pick the highest-scoring alternative
+        # Pick the highest-scoring alternative (any score)
         candidates.sort(key=lambda x: -float(x[1].score))
         new_market, new_top = candidates[0]
 

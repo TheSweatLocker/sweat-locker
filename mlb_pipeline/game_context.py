@@ -3119,8 +3119,16 @@ def upload_game_context(context, commence_time=None):
         ensemble_pp = None
         try:
             from ensemble_scorer import score_game as _ensemble_score
+            from defensive_gates import reroute_ml_if_trapped as _reroute
             decision = _ensemble_score('MLB', context)
+            # 2026-09-03: MLB ML reroute per user directive. Heavy-fav MLB
+            # ML at -200+ (documented trap per feedback_heavy_fav_ml_trap_803)
+            # gets rerouted to run line or total if either is scorable —
+            # avoids surfacing e.g. Astros -240 as "the pick" when the RL
+            # or total carries the real edge. NCAAF+NFL already call this;
+            # MLB was missing.
             if decision is not None:
+                decision = _reroute(decision, context, sport='MLB')
                 top = decision.top()
                 if top.pick is not None:
                     # Convert MarketDecision -> primary_play dict format
