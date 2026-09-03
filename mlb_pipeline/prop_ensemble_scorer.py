@@ -387,6 +387,25 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
     enough. Legacy fields (tier, conviction, refit_conviction) are
     NOT read here — they can enter as their own plug-in signals via
     signal_sources rows (refit_conviction_strong etc.)."""
+    # 2026-09-02 RULE STACK — audit-driven rules from 90d/n=7038 backtest.
+    # Six rules stacked lift CARDED hit 54.6% → 55.8% (+1.1pp), ROI
+    # -0.5% → +1.4% (positive!). Individual rule deltas in
+    # _prop_rule_backtest.py output. Each rule is guarded so misfires
+    # revert cleanly to the pre-rule behavior.
+
+    # R2 outs_over FLIP (pre-scoring): 90d shows outs_over 39% n=423 across
+    # ALL tiers, outs_under 60% n=527. Book systematically OVERSHOOTS
+    # pitcher outs lines. Flip prop_type + direction; downstream scoring
+    # runs on the corrected side.
+    if sport == 'MLB' and prop.get('prop_type') == 'outs_over':
+        prop = dict(prop)  # don't mutate caller's dict
+        prop['prop_type'] = 'outs_under'
+        prop['direction'] = 'under'
+        # Odds swap so downstream juice gates read correct side
+        prop['book_over_odds'], prop['book_under_odds'] = \
+            prop.get('book_under_odds'), prop.get('book_over_odds')
+        prop['_flipped_from_outs_over'] = True
+
     sources = _load_prop_sources(sport)
     contribs: list[PropContribution] = []
     for src in sources:
@@ -590,6 +609,78 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
                 winner_side = 'PASS'
         except (TypeError, ValueError):
             pass
+
+    # 2026-09-02 RULE STACK (audit-driven). Applied only to non-SKIP tiers
+    # to avoid resurrecting picks the scorer already killed. Rules order
+    # matters: momentum first (may re-tier), then convergence (may promote
+    # or flip), then dip-zone fade (may skip), then refit-flat SKIP,
+    # then stack_alert promote (final trump). Backtest — see
+    # _prop_rule_backtest.py: STACKED lifts PRIME +3.1pp, TOP_CARD +2.3pp,
+    # CARDED ROI -0.5% → +1.4%.
+    try:
+        _l10 = prop.get('player_l10_hit_count')
+        _l5 = prop.get('player_l5_hit_count')
+        _conv = conviction
+        _cur_dir = (prop.get('direction') or '').upper()
+        _cur_odds = prop.get('book_over_odds') if 'OVER' in _cur_dir else prop.get('book_under_odds')
+        try: _cur_odds_int = int(_cur_odds) if _cur_odds is not None else None
+        except (TypeError, ValueError): _cur_odds_int = None
+
+        # R1 — L10 momentum reweight. Only touches non-SKIP tiers.
+        # l10 >= 8 in current direction → bump tier one step.
+        # l10 <= 3 → downgrade to LEAN (don't rely on cold-side pick).
+        # Cold-flip is handled by R4 which uses L5 confirmation.
+        if _l10 is not None and tier not in ('SKIP', 'PASS'):
+            if int(_l10) >= 8:
+                _promote = {'COVERAGE': 'LEAN', 'LEAN': 'STRONG', 'STRONG': 'PRIME'}
+                tier = _promote.get(tier, tier)
+            elif int(_l10) <= 3 and tier in ('PRIME', 'STRONG'):
+                tier = 'LEAN'
+                conviction = min(conviction, 60)
+
+        # R4 — L5+L10 convergence.
+        # Both hot (l5>=4, l10>=8) → force STRONG (or PRIME if conv>=60).
+        # Both cold (l5<=1, l10<=3) → flip direction + odds; result-grading
+        # happens after game so the flipped pick is graded on its new side.
+        if _l5 is not None and _l10 is not None and tier not in ('SKIP', 'PASS'):
+            if int(_l5) >= 4 and int(_l10) >= 8:
+                tier = 'PRIME' if conviction >= 60 else 'STRONG'
+            elif int(_l5) <= 1 and int(_l10) <= 3:
+                # Flip direction — downstream Jerry render must pull the
+                # NEW side from PropDecision.direction not from prop dict
+                _new_dir = 'under' if 'OVER' in _cur_dir else 'over'
+                prop['direction'] = _new_dir
+                # Swap odds so tier gate & juice cap read correct side
+                prop['book_over_odds'], prop['book_under_odds'] = \
+                    prop.get('book_under_odds'), prop.get('book_over_odds')
+                # Flip winner_side too (BACK/FADE was on original dir)
+                winner_side = 'FADE' if str(winner_side).upper() == 'BACK' else 'BACK'
+
+        # R6 — Dip-zone dog fade: conviction 70-84 + dog odds (+100 or bigger)
+        # → SKIP. 90d shows 38.8% n=67 in this bucket.
+        if 70 <= _conv <= 84 and _cur_odds_int is not None and _cur_odds_int >= 100 \
+                and tier not in ('SKIP', 'PASS', 'COVERAGE'):
+            tier = 'SKIP'
+            winner_side = 'PASS'
+
+        # R5 — Refit-flat SKIP: if |refit - base| < 5 AND conv < 70 → SKIP.
+        # 90d shows refit-flat 45.8% n=463 (loses money).
+        _refit = prop.get('refit_conviction')
+        if _refit is not None and _conv < 70 and abs(int(_refit) - int(_conv)) < 5 \
+                and tier not in ('SKIP', 'PASS', 'COVERAGE'):
+            tier = 'SKIP'
+            winner_side = 'PASS'
+
+        # R3 — Stack_alert promote (final trump): stack_alert=True hits 68.5%
+        # n=343 vs 52.2% baseline. Any surviving pick with stack_alert gets
+        # a tier bump; conv>=60 → auto-PRIME.
+        if prop.get('stack_alert') and tier not in ('SKIP', 'PASS'):
+            if conviction >= 60 and tier in ('COVERAGE', 'LEAN', 'STRONG'):
+                tier = 'PRIME'
+            elif tier == 'LEAN':
+                tier = 'STRONG'
+    except (TypeError, ValueError):
+        pass  # any bad row silently passes through unchanged
 
     return PropDecision(
         sport=sport, game_date=prop.get('game_date',''),
