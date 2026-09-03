@@ -739,13 +739,28 @@ def apply_ml_lr_override(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict
 def _ml_odds_too_juiced(ctx: dict, side: str, max_juice: int = -300) -> bool:
     """Return True if ML odds on the picked side are worse than max_juice.
     Default -300: anything at -301 or juicier (e.g., -500, -1000) fails.
-    Per user directive 2026-09-03: at heavy juice ML has marginal EV,
-    switch to spread/total instead of shipping the chalk."""
+
+    Also blocks when odds are UNKNOWN for large-spread favorite chalks —
+    FCS-vs-FBS blowouts (spread magnitude > 20) typically don't have
+    published moneylines because the juice would be -1000 to -100000+
+    (no book wants to write it). Rather than publish a PRIME on unknown
+    juice, treat as too-juiced and let the spread/total win the market.
+    """
     try:
         home_ml = ctx.get('close_home_ml') or ctx.get('home_ml_odds') or ctx.get('home_ml_close')
         away_ml = ctx.get('close_away_ml') or ctx.get('away_ml_odds') or ctx.get('away_ml_close')
         odds = home_ml if side == 'HOME' else away_ml
-        if odds is None: return False  # unknown juice, don't block
+        if odds is None:
+            # Unknown juice — check spread. If picking the FAVORITE on a
+            # >20pt spread, it's almost certainly deep chalk (>-1000).
+            try:
+                spr = float(ctx.get('close_spread') or 0)
+                home_is_fav = spr < 0
+                picking_fav = (side == 'HOME' and home_is_fav) or (side == 'AWAY' and not home_is_fav)
+                if picking_fav and abs(spr) > 20:
+                    return True  # treat unknown-odds heavy chalk as too juiced
+            except (TypeError, ValueError): pass
+            return False  # unknown odds on close game — don't block
         o = int(odds)
         # More-negative = juicier. -400 < -300 as ints means the odds are worse.
         return o < max_juice

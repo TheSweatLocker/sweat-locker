@@ -1301,6 +1301,35 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
         f'{SB}/rest/v1/nfl_game_context?on_conflict=game_id',
         headers=H_WRITE, json=rows, timeout=30,
     )
+    # 2026-09-03 PGRST204 STRIP-RETRY: mirrors game_context.py MLB
+    # pattern. If DB schema is missing a column we're writing (e.g.
+    # away_def_fumbles_pg discovered 9/3 blocking ALL NFL writes),
+    # parse the error, strip the column, retry. Loop up to 8x so a
+    # migration lag doesn't kill the whole pipeline. Prior behavior:
+    # single missing column silently zeroed the entire NFL context
+    # slate, LR override never fired, users saw stale Week 1 picks.
+    if r.status_code == 400:
+        import re as _re
+        stripped = []
+        for _attempt in range(8):
+            try:
+                err = r.json(); msg = err.get('message', '') if isinstance(err, dict) else ''
+            except (ValueError, AttributeError):
+                msg = r.text
+            m = _re.search(r"'([a-z_0-9]+)'", msg)
+            if not m or r.status_code != 400: break
+            col = m.group(1)
+            if not any(col in row for row in rows): break
+            for row in rows:
+                row.pop(col, None)
+            stripped.append(col)
+            r = requests.post(
+                f'{SB}/rest/v1/nfl_game_context?on_conflict=game_id',
+                headers=H_WRITE, json=rows, timeout=30,
+            )
+            if r.status_code in (200, 201, 204): break
+        if stripped and r.status_code in (200, 201, 204):
+            print(f"  ⚠ nfl_game_context: stripped missing cols ({', '.join(stripped[:5])}) — schema lag, apply pending migrations")
     if r.status_code not in (200, 201, 204):
         print(f'  ⚠ upsert failed {r.status_code}: {r.text[:200]}')
         return 0
