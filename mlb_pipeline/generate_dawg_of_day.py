@@ -737,6 +737,54 @@ def score_dawg(g, diag=None, ml_map=None):
     except Exception:
         pass
 
+    # 2026-09-03 LR PREDICTOR FOLD (user-requested option B). Legacy scoring
+    # is hand-tuned additive bumps (base 40 + jerry + edge + wRC+ + xERA +
+    # bullpen + confluence + sharp $ + refit). The LR predictor is
+    # supervised-learned from ~3000 resolved MLB games — MLB PRIME hit
+    # 69.6% n=112 vs legacy PRIME 12.5% n=16. Prior surfaces (ledger,
+    # POTD, jerry synthesis, ladder) inherit LR via primary_play.tier;
+    # Dawg has its OWN scoring so LR opinion never entered — user
+    # flagged this. Fold p_dawg_wins directly into conviction so a
+    # legacy-strong dog the LR sees as dead can't ship, and a legacy-
+    # borderline dog the LR loves gets the tier bump.
+    p_dawg_lr = None
+    try:
+        from defensive_gates import _lr_predict_ml, _LR_MODEL_MLB_ML
+        if _LR_MODEL_MLB_ML is not None:
+            _lr = _lr_predict_ml(g, model=_LR_MODEL_MLB_ML)
+            if _lr:
+                _p_home = _lr['p_home_win']
+                p_dawg_lr = _p_home if is_home_dawg else (1 - _p_home)
+                if p_dawg_lr >= 0.55:
+                    conviction += 18
+                    signals['lr_predictor'] = (
+                        f'LR predictor backs {team_label}: p_win={p_dawg_lr:.2f} — '
+                        f'model sees this dog as fair-or-better'
+                    )
+                elif p_dawg_lr >= 0.45:
+                    conviction += 6
+                    signals['lr_predictor'] = (
+                        f'LR predictor: {team_label} p_win={p_dawg_lr:.2f} — mild lean, '
+                        f'live but not loud'
+                    )
+                elif p_dawg_lr <= 0.30:
+                    conviction -= 25
+                    signals['lr_predictor'] = (
+                        f'LR predictor fades {team_label}: p_win={p_dawg_lr:.2f} — '
+                        f'model sees dead dog, tier suppressed'
+                    )
+                elif p_dawg_lr <= 0.40:
+                    conviction -= 10
+                    signals['lr_predictor'] = (
+                        f'LR predictor: {team_label} p_win={p_dawg_lr:.2f} — soft fade'
+                    )
+                else:
+                    signals['lr_predictor'] = (
+                        f'LR predictor: {team_label} p_win={p_dawg_lr:.2f} — coin flip, no adj'
+                    )
+    except Exception:
+        pass
+
     conviction = max(0, min(100, conviction))
     tier = 'PRIME' if conviction >= 80 else 'STRONG' if conviction >= 65 else 'LEAN'
 
@@ -754,6 +802,7 @@ def score_dawg(g, diag=None, ml_map=None):
         'opp_team': opp_team,
         'starter': starter,
         'opp_starter': opp_starter,
+        '_lr_p_dawg_wins': p_dawg_lr,
     }
 
 
