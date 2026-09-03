@@ -142,6 +142,23 @@ def _mlb_player_id(player_name: str) -> Optional[int]:
         normalized = _norm_name(player_name)
         if normalized and normalized != player_name:
             people = _search(normalized)
+    # 2026-09-02 FALLBACK: some sportsbook feeds use "Suarez, E" or "E Suarez"
+    # for players with common last names. If exact + normalized both fail,
+    # try a lastname-only pass and pick the first match. Only fires when
+    # nothing else matched to avoid false positives.
+    if not people and player_name and ' ' in player_name:
+        # Try last token as surname (e.g. "Fernando Tatis Jr." → "Tatis Jr.")
+        tokens = _norm_name(player_name).replace('.', '').split()
+        # Skip common suffixes to find the surname
+        SUFFIXES = {'jr', 'sr', 'ii', 'iii', 'iv'}
+        core = [t for t in tokens if t.lower() not in SUFFIXES]
+        if len(core) >= 2:
+            surname = core[-1]
+            initial = core[0][:1]
+            candidates = _search(surname)
+            # If multiple, pick one whose first name starts with the same initial
+            match = [p for p in candidates if (p.get('firstName') or '')[:1].lower() == initial.lower()]
+            people = match or (candidates[:1] if len(candidates) == 1 else [])
     pid = people[0]['id'] if people else None
     _PLAYER_ID_CACHE[player_name] = pid
     return pid
@@ -287,7 +304,12 @@ def compute_lookback(recent_values: list[float], prop_line: float, direction: st
 
 
 def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
-    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+    # 2026-09-02 PAGINATION FIX: was hardcoded limit=500. On big slates
+    # (>500 props/day) tail rows never got L5/L10 backfilled → 30% coverage
+    # gap. Now paginate through all rows.
+    props = []
+    for off in range(0, 5000, 500):
+        r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
                      headers=H_READ,
                      params={'game_date': f'eq.{game_date}',
                              # 2026-08-23 CRITICAL FIX: `signals` was missing
@@ -301,11 +323,21 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
                              # sections + uniform fake refit values per
                              # family (48.5/37.7/etc). Introduced in c922b2af.
                              'select': 'id,player_name,prop_type,direction,prop_line,signals',
-                             'limit': '500'},
+                             'limit': '500', 'offset': off},
                      timeout=30)
-    props = r.json() if r.status_code == 200 else []
+        chunk = r.json() if r.status_code == 200 else []
+        props.extend(chunk)
+        if len(chunk) < 500: break
     if not props:
         print(f'  MLB: no props on {game_date}'); return 0
+    print(f'  MLB: {len(props)} props to backfill')
+
+    # 2026-09-02 COVERAGE COUNTERS: track why props get skipped so we can
+    # measure name-match failures + backfill health.
+    skip_missing_fields = 0
+    skip_no_stat = 0
+    skip_player_id_null = 0
+    skip_no_recent = 0
 
     now_iso = datetime.now(timezone.utc).isoformat()
     updated = 0
@@ -319,11 +351,11 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
         pdir  = prop.get('direction')
         pline = prop.get('prop_line')
         if not (pname and ptype and pdir is not None and pline is not None):
-            continue
+            skip_missing_fields += 1; continue
         stat = _mlb_stat_key(ptype)
-        if not stat: continue
+        if not stat: skip_no_stat += 1; continue
         try: pline = float(pline)
-        except (TypeError, ValueError): continue
+        except (TypeError, ValueError): skip_missing_fields += 1; continue
 
         cache_key = (pname, stat)
         if cache_key not in recent_cache:
@@ -340,7 +372,13 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
         rows_last10 = rows_cache.get(cache_key, [])
 
         lb = compute_lookback(recent, pline, pdir)
-        if lb['l10'] is None: continue
+        if lb['l10'] is None:
+            # Distinguish player-id lookup failure vs no-recent-games
+            if not recent and _mlb_player_id(pname) is None:
+                skip_player_id_null += 1
+            else:
+                skip_no_recent += 1
+            continue
 
         # 2026-08-22: merge raw per-game values into signals dict for
         # ESPN-table rendering downstream. Underscore-prefix marks it
@@ -415,6 +453,14 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
         if lb['l10_extreme']:
             marker = '🔥' if lb['l10'] >= 8 else '🧊'
             print(f'  {marker} {pname:<22} {ptype:<10} {pdir:<5} line={pline}  L10={lb["l10"]}/10  L5={lb["l5"]}/5')
+    # 2026-09-02 COVERAGE SUMMARY: exposes where coverage leaks so we can
+    # attack the biggest leaks. Player-id-null = name-match failure between
+    # sportsbook feed and MLB Stats API (candidate for expanded alias table).
+    total = len(props)
+    coverage_pct = 100.0 * updated / total if total else 0
+    print(f'  MLB backfill: {updated}/{total} props ({coverage_pct:.1f}%) — '
+          f'skips: missing_fields={skip_missing_fields}, no_stat_map={skip_no_stat}, '
+          f'player_id_null={skip_player_id_null}, no_recent_games={skip_no_recent}')
     return updated
 
 
