@@ -86,6 +86,21 @@ jobs:
           cd mlb_pipeline
           python compute_surface_records.py || echo "surface records non-fatal"
 
+      # 4b. Team-alias gap audit (2026-09-03). Surfaces unresolved raw
+      # names logged by team_resolver so we can add missing aliases before
+      # they cause silent zero-external coverage. Only surfaces gaps with
+      # ≥2 hits (single-hit noise from cross-sport misroutes is filtered
+      # by the --min-hits guard).
+      - name: Team-alias gap audit
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python audit_team_alias_gaps.py --min-hits 2 || echo "gap audit non-fatal"
+
       # 5. NCAAF grader (during football season) — same overnight window
       - name: Resolve NCAAF game results
         continue-on-error: true
