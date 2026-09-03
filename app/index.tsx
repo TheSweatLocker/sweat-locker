@@ -14900,31 +14900,14 @@ setJerryHistory(prev => {
                 recordWindow === 'mtd' ? 'mtd' :
                 recordWindow === 'epoch' ? 'epoch' : 'lifetime';
               const surfaceData = (key: string, sport: string) => {
-                // 2026-09-03 CROSS-SPORT AGGREGATION: when user picks "All"
-                // toggle, sum every sport's surface_records row instead of
-                // falling through to raw jerry_reads counts (different math,
-                // different scope — that's why receipts + Sharp tab showed
-                // divergent numbers under "All"). Both surfaces now read
-                // the SAME server-computed table.
-                if (sport === 'ALL') {
-                  let w = 0, l = 0, u = 0, hasAny = false;
-                  Object.entries(surfaceRecords).forEach(([mk, rec]: [string, any]) => {
-                    const [rSport, rKey, rWin] = mk.split('|');
-                    if (rKey !== key || rWin !== winKey) return;
-                    w += rec.wins || 0;
-                    l += rec.losses || 0;
-                    u += Number(rec.units_net) || 0;
-                    if ((rec.wins || 0) + (rec.losses || 0) > 0) hasAny = true;
-                  });
-                  if (hasAny) {
-                    return {
-                      units: u, wins: w, losses: l,
-                      hitPct: w+l > 0 ? (w/(w+l))*100 : 0,
-                      hasData: (w+l) > 0,
-                    };
-                  }
-                  // No surface_records data yet → fall through to legacy
-                }
+                // 2026-09-03: compute_surface_records writes a sport='ALL'
+                // row per window that already sums every sport (see
+                // compute_surface_records.py:401 — when sport='ALL' the
+                // aggregator drops the per-sport filter). Direct read of
+                // that row = correct cross-sport total. Prior receipts
+                // path missed this and fell through to legacy jerry_reads
+                // counts → showed different numbers than the Sharp tab.
+                // Now both surfaces read the same server row.
                 const rec = surfaceRecords[`${sport}|${key}|${winKey}`];
                 if (rec) {
                   const w = rec.wins||0, l = rec.losses||0;
