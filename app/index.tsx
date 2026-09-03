@@ -8638,11 +8638,25 @@ setJerryHistory(prev => {
   const fetchSteamFlags = React.useCallback(async () => {
     setSteamLoading(true);
     try {
+      // 2026-09-03 STALE-FLAG FIX: user reported seeing a phantom
+      // "Athletics @ Texas Rangers" TRIPLE_CONFIRMED signal in the
+      // Split's Strongest Signals section on 9/3. Root cause: that WAS
+      // a real Athletics @ Rangers game on 9/2 (yesterday). The flag's
+      // last_seen_at was 8:30pm ET yesterday — inside the prior 24h
+      // window — so it kept surfacing as if the game were still live.
+      // Real bug: signals for FINISHED games leak into today's slate.
+      // Fix: 12h window (was 24h) so signals age out by the time the
+      // next day's slate is being surfaced, AND filter to game_id whose
+      // ctx game_date is today (fetched below via steamPicksIdx join
+      // then applied when composing UI). 12h alone catches morning
+      // triggers on today's games; ctx-date filter kills all cross-day
+      // leaks even if source keeps re-flagging.
+      const twelveHrsAgo = new Date(Date.now() - 12*60*60*1000).toISOString();
       const { data } = await supabase
         .from('line_movement_flags')
         .select('sport,game_id,market,side,pattern,detail,first_seen_at,last_seen_at,' +
                 'classification,money_pct,bets_pct,handle_pct,bettors_pct,classified_at')
-        .gte('last_seen_at', new Date(Date.now() - 24*60*60*1000).toISOString())
+        .gte('last_seen_at', twelveHrsAgo)
         .order('last_seen_at', {ascending: false})
         .limit(120);
       const flags = data || [];
@@ -8680,7 +8694,7 @@ setJerryHistory(prev => {
           // Also pull commence_time for the time-badge fallback.
           const {data: ourPicks} = await supabase
             .from('mlb_game_context')
-            .select('game_id,away_team,home_team,commence_time,primary_play,supplementary_play')
+            .select('game_id,game_date,away_team,home_team,commence_time,primary_play,supplementary_play')
             .in('game_id', uniqueGids);
           const picksIdx: Record<string, any> = {};
           (ourPicks || []).forEach((row: any) => {
@@ -8688,9 +8702,28 @@ setJerryHistory(prev => {
               primary: row.primary_play, supplementary: row.supplementary_play,
               away_team: row.away_team, home_team: row.home_team,
               commence_time: row.commence_time,
+              game_date: row.game_date,
             };
           });
           setSteamPicksIdx(picksIdx);
+          // 2026-09-03 STALE-FLAG FILTER: drop any flag whose game_id
+          // resolves to a game_date < today ET. Prior 24h window let
+          // yesterday's completed games leak into today's Strongest Signals
+          // (user saw phantom "Athletics @ Rangers TRIPLE_CONFIRMED" on
+          // 9/3 — that game was 9/2, already finished). game_date compare
+          // is authoritative regardless of last_seen_at drift.
+          const todayET = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+          const freshFlags = flags.filter((f: any) => {
+            const ctx = picksIdx[f.game_id];
+            // Keep flag if we don't have ctx (non-MLB sports fetched by
+            // other cron scripts — better to show than silently drop).
+            // Kill only when we DO know the game_date and it's stale.
+            if (!ctx || !ctx.game_date) return true;
+            return ctx.game_date >= todayET;
+          });
+          if (freshFlags.length !== flags.length) {
+            setSteamFlags(freshFlags);
+          }
         }
       } catch (e) { setSteamPicksIdx({}); }
       // 2026-08-18: pull raw per-source sharp$ data so cards can show
@@ -14867,6 +14900,31 @@ setJerryHistory(prev => {
                 recordWindow === 'mtd' ? 'mtd' :
                 recordWindow === 'epoch' ? 'epoch' : 'lifetime';
               const surfaceData = (key: string, sport: string) => {
+                // 2026-09-03 CROSS-SPORT AGGREGATION: when user picks "All"
+                // toggle, sum every sport's surface_records row instead of
+                // falling through to raw jerry_reads counts (different math,
+                // different scope — that's why receipts + Sharp tab showed
+                // divergent numbers under "All"). Both surfaces now read
+                // the SAME server-computed table.
+                if (sport === 'ALL') {
+                  let w = 0, l = 0, u = 0, hasAny = false;
+                  Object.entries(surfaceRecords).forEach(([mk, rec]: [string, any]) => {
+                    const [rSport, rKey, rWin] = mk.split('|');
+                    if (rKey !== key || rWin !== winKey) return;
+                    w += rec.wins || 0;
+                    l += rec.losses || 0;
+                    u += Number(rec.units_net) || 0;
+                    if ((rec.wins || 0) + (rec.losses || 0) > 0) hasAny = true;
+                  });
+                  if (hasAny) {
+                    return {
+                      units: u, wins: w, losses: l,
+                      hitPct: w+l > 0 ? (w/(w+l))*100 : 0,
+                      hasData: (w+l) > 0,
+                    };
+                  }
+                  // No surface_records data yet → fall through to legacy
+                }
                 const rec = surfaceRecords[`${sport}|${key}|${winKey}`];
                 if (rec) {
                   const w = rec.wins||0, l = rec.losses||0;
