@@ -678,6 +678,120 @@ def apply_ncaaf_large_spread_gate(pp: dict | None, ctx: dict) -> dict | None:
     return pp
 
 
+import json as _json
+import math as _math
+from pathlib import Path as _Path
+
+# 2026-09-03 MLB ML LR CUTOVER — load supervised model at import time.
+# 90d audit showed current ML ensemble PRIME at 12.5% n=16 (catastrophic).
+# LR predictor tests at 63.1% holdout accuracy, 69.6% PRIME n=112.
+# Falls back silently to legacy scorer if model file missing.
+_LR_MODEL_MLB_ML = None
+try:
+    _lr_path = _Path(__file__).parent / 'models' / 'mlb_ml_logreg.json'
+    if _lr_path.exists():
+        _LR_MODEL_MLB_ML = _json.loads(_lr_path.read_text())
+except Exception:
+    _LR_MODEL_MLB_ML = None
+
+
+def _lr_predict_ml(ctx: dict) -> dict | None:
+    """Returns {p_home_win, suggested_side, suggested_tier} or None."""
+    if _LR_MODEL_MLB_ML is None: return None
+    try:
+        m = _LR_MODEL_MLB_ML
+        features = m['features']
+        z = m['intercept']
+        for i, f in enumerate(features):
+            v = ctx.get(f)
+            try: v = float(v) if v is not None else None
+            except (TypeError, ValueError): v = None
+            if v is None: v = m['imputer_medians'][i]
+            scale = m['scaler_scale'][i]
+            scaled = (v - m['scaler_mean'][i]) / scale if scale != 0 else 0
+            z += m['coefficients'][i] * scaled
+        if z >= 0: p = 1.0 / (1.0 + _math.exp(-z))
+        else: ez = _math.exp(z); p = ez / (1.0 + ez)
+        if p >= 0.65:   tier, side = 'PRIME',  'HOME'
+        elif p >= 0.55: tier, side = 'STRONG', 'HOME'
+        elif p >= 0.45: tier, side = None,     'NONE'   # COIN → no play
+        elif p >= 0.35: tier, side = 'STRONG', 'AWAY'
+        else:           tier, side = 'PRIME',  'AWAY'
+        return {'p_home_win': round(p, 4), 'suggested_side': side, 'suggested_tier': tier}
+    except Exception:
+        return None
+
+
+def apply_mlb_ml_lr_override(pp: dict | None, ctx: dict) -> dict | None:
+    """OVERRIDE the ML primary_play using LR prediction when model loaded.
+
+    Rationale (from 90d audit): current ML ensemble PRIME hits 12.5%,
+    LR PRIME hits 69.6%. Replacing tier + side is a strict improvement.
+    Legacy pp preserved in pp._pre_lr for audit.
+
+    Applied when:
+      - Model loaded successfully
+      - Current pp is an ML pick (type='ml') OR pp is None/non-ML but LR
+        finds a HIGH-confidence ML edge on this game (opportunistic add).
+
+    Sport-scoped: only MLB. Games without enough features fall through.
+    """
+    if _LR_MODEL_MLB_ML is None: return pp
+    try:
+        pred = _lr_predict_ml(ctx)
+        if pred is None: return pp
+        old_pp = pp if isinstance(pp, dict) else {}
+        was_ml = str(old_pp.get('type', '')).lower() == 'ml'
+        # LR sees COIN (p in [0.45, 0.55]) — no edge either side.
+        # Current ML PRIME hits 12.5% on 90d, so keeping the legacy
+        # confident-but-wrong pick is worse than surfacing no ML pick.
+        # Demote to COVERAGE (still in DB for grading, hidden from card).
+        # If existing pp is total/rl, leave it — LR-COIN only kills ML.
+        if pred['suggested_side'] == 'NONE':
+            if was_ml:
+                old_pp['_lr_ml_shadow'] = pred
+                old_pp['_pre_lr_tier'] = old_pp.get('tier')
+                old_pp['tier'] = 'COVERAGE'
+                old_pp['audit_note'] = f'LR sees coin flip (p={pred["p_home_win"]:.2f}) — legacy PRIME/STRONG demoted'
+                return old_pp
+            return pp
+        # LR has confident pick. Build the new pp — preserve legacy for audit.
+        if not was_ml and old_pp:
+            # Existing pp is TOTAL/RL — don't overwrite with LR ML (leave
+            # existing market intact; LR would be for a different market).
+            # But annotate ctx audit trail.
+            old_pp['_lr_ml_shadow'] = pred
+            return old_pp
+        home_team = ctx.get('home_team') or 'Home'
+        away_team = ctx.get('away_team') or 'Away'
+        team = home_team if pred['suggested_side'] == 'HOME' else away_team
+        # Convert probability to conviction 0-100 scale
+        p = pred['p_home_win']
+        conviction = int(round((p if pred['suggested_side'] == 'HOME' else (1 - p)) * 100))
+        new_pp = {
+            'type': 'ml',
+            'tier': pred['suggested_tier'],
+            'side': pred['suggested_side'],
+            'label': f'{team} ML',
+            'sub': f'LR predictor: p_home_win={p:.2f} · {conviction}% confidence',
+            'conviction': conviction,
+            '_engine': 'lr_v1',
+            '_lr_p_home_win': p,
+            '_lr_model_version': _LR_MODEL_MLB_ML.get('version', ''),
+            '_pre_lr': {
+                'tier': old_pp.get('tier'),
+                'side': old_pp.get('side'),
+                'type': old_pp.get('type'),
+                'engine': old_pp.get('_engine'),
+                'conviction': old_pp.get('conviction'),
+            } if old_pp else None,
+            'audit_note': f'LR override · p={p:.2f} · was {(old_pp.get("tier") or "none")}/{(old_pp.get("type") or "none")}',
+        }
+        return new_pp
+    except Exception:
+        return pp  # never break the pipeline
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -697,5 +811,11 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     pp = apply_juice_trap_gate(pp, ctx, sport=sport)
     if sport == 'NCAAF':
         pp = apply_ncaaf_large_spread_gate(pp, ctx)
+    # 2026-09-03 MLB ML LR OVERRIDE — supervised model replaces legacy
+    # ML pick when confident. Runs AFTER other gates so juice-trap/MC-
+    # dissent output still gets a chance; LR only fires as a final
+    # override for ML market. Sport-scoped to MLB.
+    if sport == 'MLB':
+        pp = apply_mlb_ml_lr_override(pp, ctx)
     pp = apply_publish_gate(pp, ctx)
     return pp
