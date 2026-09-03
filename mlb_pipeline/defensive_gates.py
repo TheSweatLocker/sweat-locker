@@ -736,6 +736,23 @@ def apply_ml_lr_override(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict
     return _apply_ml_lr_override_impl(pp, ctx, model, sport)
 
 
+def _ml_odds_too_juiced(ctx: dict, side: str, max_juice: int = -300) -> bool:
+    """Return True if ML odds on the picked side are worse than max_juice.
+    Default -300: anything at -301 or juicier (e.g., -500, -1000) fails.
+    Per user directive 2026-09-03: at heavy juice ML has marginal EV,
+    switch to spread/total instead of shipping the chalk."""
+    try:
+        home_ml = ctx.get('close_home_ml') or ctx.get('home_ml_odds') or ctx.get('home_ml_close')
+        away_ml = ctx.get('close_away_ml') or ctx.get('away_ml_odds') or ctx.get('away_ml_close')
+        odds = home_ml if side == 'HOME' else away_ml
+        if odds is None: return False  # unknown juice, don't block
+        o = int(odds)
+        # More-negative = juicier. -400 < -300 as ints means the odds are worse.
+        return o < max_juice
+    except (TypeError, ValueError):
+        return False
+
+
 def _apply_ml_lr_override_impl(pp, ctx, model, sport):
     if model is None: return pp
     try:
@@ -754,18 +771,60 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
                 old_pp['audit_note'] = f'{sport} LR sees coin flip (p={pred["p_home_win"]:.2f}) — legacy demoted'
                 return old_pp
             return pp
+        # 2026-09-03 JUICE CAP (user directive): if LR wants ML but the
+        # side's odds are worse than -300, skip the ML override —
+        # heavy chalks have marginal EV, keep the total/spread pick
+        # (if there was one) or downgrade to COVERAGE (if legacy was ML).
+        if _ml_odds_too_juiced(ctx, pred['suggested_side']):
+            if was_ml:
+                # Legacy was also ML — demote to COVERAGE (no play, too juicy)
+                old_pp['_lr_ml_shadow'] = pred
+                old_pp['_pre_lr_tier'] = old_pp.get('tier')
+                old_pp['tier'] = 'COVERAGE'
+                old_pp['audit_note'] = f'{sport} LR ML too juicy (>-300) — hidden'
+                return old_pp
+            # Legacy was total/rl — leave it (better market at high juice)
+            old_pp['_lr_ml_shadow'] = pred
+            old_pp['_lr_juice_cap_reason'] = f'{sport}_ml_odds_worse_than_-300'
+            return old_pp
+
         # LR has confident pick. Build the new pp — preserve legacy for audit.
         if not was_ml and old_pp:
-            # Existing pp is TOTAL/RL. Two paths:
-            # (a) LR is only STRONG-confidence — don't overwrite total/rl (those
-            #     markets have their own edges). Just annotate shadow.
-            # (b) LR is PRIME-confidence (p>=0.65 HOME or p<0.35 AWAY) — override.
-            #     Especially valuable for NCAAF where our RL scorer picks dog
-            #     spreads (Stanford +24.5 style) that LR would fade in favor
-            #     of the ML chalk that hits 91.4% at PRIME_HOME confidence.
+            # Existing pp is TOTAL/RL. Sport-aware override policy:
+            # (a) LR STRONG-only → don't overwrite total/rl markets
+            # (b) LR PRIME → override, WITH EXCEPTIONS below
+            #
+            # 2026-09-03 NCAAF Week 1-2 dog-spread PROTECTION (data-driven):
+            # Historical audit of 6026 NCAAF games shows Week 1 dogs +0 to
+            # +28pt cover at 56-59% (real edge). Only huge dogs +28pt+
+            # lose (45-48%). Blanket LR override would kill LEGIT
+            # small/moderate Week 1 dog picks along with the bad ones.
+            # Preserve dog spread pick in the profitable band; let LR
+            # override only in the losing +28pt+ band.
             if pred['suggested_tier'] != 'PRIME':
                 old_pp['_lr_ml_shadow'] = pred
                 return old_pp
+            if sport == 'NCAAF' and str(old_pp.get('type','')).lower() == 'rl':
+                close_spr = ctx.get('close_spread')
+                cur_side = str(old_pp.get('side','')).upper()
+                # Determine if legacy pick backs the dog and its spread magnitude
+                try:
+                    spr_val = float(close_spr) if close_spr is not None else None
+                    home_is_dog = spr_val > 0 if spr_val is not None else None
+                    backing_dog = None
+                    if home_is_dog is not None:
+                        backing_dog = (('HOME' in cur_side) == home_is_dog)
+                    spr_abs = abs(spr_val) if spr_val is not None else None
+                    # Early-season detection: game_date in first 2 weeks of Sept
+                    gd = str(ctx.get('game_date') or '')
+                    is_early = (gd[:7] in ('2026-08', '2026-09') and gd[8:10] <= '14') if len(gd)>=10 else False
+                    # PROTECTIVE case: Week 1-2 + backing dog + spread in edge band
+                    if backing_dog and is_early and spr_abs is not None and spr_abs < 28:
+                        old_pp['_lr_ml_shadow'] = pred
+                        old_pp['_lr_protection_reason'] = f'wk1-2_dog_+{spr_abs:.1f}_covers_56pct_hist'
+                        return old_pp
+                except (TypeError, ValueError):
+                    pass
             # PRIME LR override — replaces RL/total pick with the ML edge
         home_team = ctx.get('home_team') or 'Home'
         away_team = ctx.get('away_team') or 'Away'
