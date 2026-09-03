@@ -9193,6 +9193,47 @@ setJerryHistory(prev => {
         if (gd >= curMonthStart) bump(r, payout, true, isY);
         else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, payout, false, isY);
       });
+      // 2026-09-03 SINGLE-SOURCE-OF-TRUTH REFACTOR. Prior behavior:
+      // client-side re-derived yW/yL/yUnits from raw jerry_reads + props
+      // with DIFFERENT stake sizing (2u tier flat) than the aggregator
+      // (post-8/31 cutover uses 1u), no sport filter (jerry_reads pulled
+      // cross-sport), no odds gate, and flat 0.91 payout on sides. Users
+      // saw "+18u yesterday" phantom vs -0.41u DB truth on 9/2.
+      //
+      // Fix: read directly from `daily_surface_records` (written by
+      // aggregate_daily_records.agg_sharp_card — the SAME logic that
+      // grades every pick through juice cap, sport filter, and cutover-
+      // aware stake sizing). Client re-derive is kept as a fallback
+      // when the row is missing (e.g. before grader runs).
+      try {
+        // Get yesterday's row from the authoritative daily aggregator
+        const {data: yRows} = await supabase.from('daily_surface_records')
+          .select('wins,losses,pushes,units_won,units_bet')
+          .eq('surface','sharp_card').eq('sport','MLB').eq('record_date', yesterdayET);
+        if (yRows && yRows.length) {
+          yW      = yRows[0].wins   || 0;
+          yL      = yRows[0].losses || 0;
+          yP      = yRows[0].pushes || 0;
+          yUnits  = Number(yRows[0].units_won || 0);
+        }
+        // Also read MTD from daily_surface_records so the MTD counter
+        // matches yesterday's truth (was reading from surface_records
+        // which uses a DIFFERENT tier-stake table — divergent totals).
+        const {data: mRows} = await supabase.from('daily_surface_records')
+          .select('wins,losses,pushes,units_won,record_date')
+          .eq('surface','sharp_card').eq('sport','MLB')
+          .gte('record_date', curMonthStart);
+        if (mRows && mRows.length) {
+          w = 0; l = 0; p = 0; unitsNet = 0;
+          for (const r of mRows) {
+            w        += r.wins   || 0;
+            l        += r.losses || 0;
+            p        += r.pushes || 0;
+            unitsNet += Number(r.units_won || 0);
+          }
+        }
+      } catch {}
+
       // 2026-08-27: Sharp Card record = SIDES + PROPS combined (matches
       // historical fetchSharp behavior + what has been publicly posted).
       // Split is exposed as sidesW/sidesL and propsW/propsL sub-fields so

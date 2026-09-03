@@ -690,10 +690,11 @@ def _load_lr_model(filename: str):
         return _json.loads(p.read_text()) if p.exists() else None
     except Exception: return None
 
-_LR_MODEL_MLB_ML    = _load_lr_model('mlb_ml_logreg.json')
-_LR_MODEL_NFL_ML    = _load_lr_model('nfl_ml_logreg.json')
-_LR_MODEL_NCAAF_ML  = _load_lr_model('ncaaf_ml_logreg.json')
-_LR_MODEL_MLB_TOTAL = _load_lr_model('mlb_total_logreg.json')
+_LR_MODEL_MLB_ML      = _load_lr_model('mlb_ml_logreg.json')
+_LR_MODEL_NFL_ML      = _load_lr_model('nfl_ml_logreg.json')
+_LR_MODEL_NCAAF_ML    = _load_lr_model('ncaaf_ml_logreg.json')
+_LR_MODEL_MLB_TOTAL   = _load_lr_model('mlb_total_logreg.json')
+_LR_MODEL_NCAAF_TOTAL = _load_lr_model('ncaaf_total_logreg.json')
 
 
 def _lr_predict_ml(ctx: dict, model=None) -> dict | None:
@@ -781,9 +782,13 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         # Existing total/rl picks left alone — LR-COIN only kills ML.
         if pred['suggested_side'] == 'NONE':
             if was_ml:
+                # 2026-09-03: rewrite label so app can't render stale pick text
                 old_pp['_lr_ml_shadow'] = pred
                 old_pp['_pre_lr_tier'] = old_pp.get('tier')
+                old_pp['_pre_lr_label'] = old_pp.get('label')
                 old_pp['tier'] = 'COVERAGE'
+                old_pp['label'] = 'NO PLAY · coin flip'
+                old_pp['sub']   = f'LR sees {pred["p_home_win"]:.0%} home — no edge either side'
                 old_pp['audit_note'] = f'{sport} LR sees coin flip (p={pred["p_home_win"]:.2f}) — legacy demoted'
                 return old_pp
             return pp
@@ -793,10 +798,19 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         # (if there was one) or downgrade to COVERAGE (if legacy was ML).
         if _ml_odds_too_juiced(ctx, pred['suggested_side']):
             if was_ml:
-                # Legacy was also ML — demote to COVERAGE (no play, too juicy)
+                # Legacy was also ML — demote to COVERAGE (no play, too juicy).
+                # 2026-09-03 LABEL REWRITE: prior behavior mutated tier only;
+                # label kept the pre-demote text (e.g. "Rutgers ML" at -9000)
+                # which the app renders unconditionally (GameDetailV2 has no
+                # tier gate). User saw "Rutgers ML" as a pick despite backend
+                # correctly killing it. Rewrite label + sub so even if the UI
+                # ignores tier, the text reads NO PLAY.
                 old_pp['_lr_ml_shadow'] = pred
                 old_pp['_pre_lr_tier'] = old_pp.get('tier')
+                old_pp['_pre_lr_label'] = old_pp.get('label')
                 old_pp['tier'] = 'COVERAGE'
+                old_pp['label'] = 'NO PLAY · juice too high'
+                old_pp['sub']   = f'ML too juicy for edge (>{-300}); no side eligible'
                 old_pp['audit_note'] = f'{sport} LR ML too juicy (>-300) — hidden'
                 return old_pp
             # Legacy was total/rl — leave it (better market at high juice)
@@ -901,15 +915,53 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # Test acc 59.8%, PRIME_OVER 69% n=71, PRIME_UNDER 62% n=111.
     if sport == 'MLB':
         pp = apply_mlb_total_lr_override(pp, ctx)
+    # 2026-09-03 NCAAF TOTAL LR OVERRIDE — weak +3.5pp lift baseline
+    # model. Runs in demote-only mode (STRONG cap) so it can't manufacture
+    # a PRIME from a weak signal, but CAN kill obviously-wrong legacy
+    # totals via the coin-flip path.
+    if sport == 'NCAAF':
+        pp = apply_ncaaf_total_lr_override(pp, ctx)
     pp = apply_publish_gate(pp, ctx)
     return pp
 
 
-def _lr_predict_total(ctx: dict) -> dict | None:
-    """Returns {p_over, suggested_side, suggested_tier} for MLB total."""
-    if _LR_MODEL_MLB_TOTAL is None: return None
+def apply_ncaaf_total_lr_override(pp, ctx):
+    """NCAAF total LR override — DEMOTE-ONLY mode.
+    Test acc 52.4% (+3.5pp lift) — model too weak to promote picks, but
+    the coin-flip signal is legitimate for killing high-conviction legacy
+    totals the LR flags as toss-ups. STRONG cap applied on any lift."""
+    if _LR_MODEL_NCAAF_TOTAL is None: return pp
     try:
-        m = _LR_MODEL_MLB_TOTAL
+        pred = _lr_predict_total(ctx, model=_LR_MODEL_NCAAF_TOTAL)
+        if pred is None: return pp
+        old_pp = pp if isinstance(pp, dict) else {}
+        was_total = str(old_pp.get('type','')).lower() == 'total'
+        if pred['suggested_side'] == 'NONE':
+            if was_total:
+                old_pp['_lr_total_shadow'] = pred
+                old_pp['_pre_lr_tier']  = old_pp.get('tier')
+                old_pp['_pre_lr_label'] = old_pp.get('label')
+                old_pp['tier']  = 'COVERAGE'
+                old_pp['label'] = 'NO PLAY · total coin flip'
+                old_pp['sub']   = f'NCAAF LR total sees {pred["p_over"]:.0%} over — no edge'
+                old_pp['audit_note'] = f'NCAAF total LR coin flip (p_over={pred["p_over"]:.2f}) — legacy demoted'
+                return old_pp
+            # Not a total pick — just shadow the LR verdict
+            old_pp['_lr_total_shadow'] = pred
+            return old_pp
+        # LR has a lean — but NCAAF total model too weak to promote; shadow only
+        old_pp['_lr_total_shadow'] = pred
+        return old_pp
+    except Exception:
+        return pp
+
+
+def _lr_predict_total(ctx: dict, model=None) -> dict | None:
+    """Returns {p_over, suggested_side, suggested_tier}. Defaults to MLB model —
+    pass model=<sport-specific> for others (e.g. _LR_MODEL_NCAAF_TOTAL)."""
+    m = model if model is not None else _LR_MODEL_MLB_TOTAL
+    if m is None: return None
+    try:
         z = m['intercept']
         for i, f in enumerate(m['features']):
             v = ctx.get(f)

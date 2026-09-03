@@ -3213,7 +3213,16 @@ def upload_game_context(context, commence_time=None):
         # empirical rationale on each gate. Order: OC flip runs FIRST (may
         # change pp.side), then MC dissent (which reads pp.side).
         from defensive_gates import apply_all_defensive_gates
-        apply_all_defensive_gates(context.get("primary_play"), context)
+        # 2026-09-03 CAPTURE RETURN VALUE. In-place mutations (juice-trap
+        # tier demote, OC-flip, MC-dissent) always took effect via mutation.
+        # But the LR PRIME-override path (defensive_gates.py:844-871) BUILDS
+        # a fresh new_pp dict and RETURNS it — that return was being
+        # discarded, so MLB never got the "LR replaces the pick entirely
+        # when it disagrees" behavior. Same fix applied in
+        # recompute_primary_play.py:207.
+        _new_pp = apply_all_defensive_gates(context.get("primary_play"), context)
+        if _new_pp is not None:
+            context["primary_play"] = _new_pp
 
         # 2026-08-22 SHARP-FADE SURFACING — DISABLED 2026-08-23.
         # This block auto-populated _losing_market_notes with a Fadereport

@@ -204,7 +204,13 @@ def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
         # through recompute and escaped demotion. Now a gate can never again
         # be on one path but not the other.
         from defensive_gates import apply_all_defensive_gates
-        apply_all_defensive_gates(new_pp, c)
+        # 2026-09-03 CAPTURE RETURN VALUE. In-place mutations always
+        # took effect but LR's PRIME-override path returns a fresh
+        # new_pp dict — discarding the return dropped LR's "replace
+        # the pick entirely" behavior. Same fix in game_context.py:3216.
+        _rebuilt = apply_all_defensive_gates(new_pp, c)
+        if _rebuilt is not None:
+            new_pp = _rebuilt
 
         new_key = f"{(new_pp or {}).get('tier')}·{(new_pp or {}).get('label')}·{(new_pp or {}).get('type')}"
         pp_changed = old_key != new_key

@@ -521,6 +521,22 @@ function VerdictCard({ctx, awayTeam, homeTeam}: any) {
       </View>
     );
   }
+  // 2026-09-03 TIER GATE. Prior behavior rendered ANY primary_play including
+  // tier=COVERAGE — that's the tier defensive_gates writes when it kills a
+  // pick (juice trap, LR coin flip, MC dissent, etc). Users saw picks like
+  // "Rutgers ML" at -9000 because the label field wasn't rewritten on demote
+  // and no UI gate hid COVERAGE picks. Pipeline now rewrites label too, but
+  // this gate is belt+suspenders: any tier below LEAN → show "no play" msg
+  // instead of surfacing the pick as if it were actionable.
+  const tier = String(play.tier || '').toUpperCase();
+  if (tier === 'COVERAGE' || tier === 'PASS' || tier === 'SKIP') {
+    return (
+      <View style={styles.verdict}>
+        <Text style={styles.verdictNoPlay}>No play surfaced — pipeline killed pick ({tier.toLowerCase()}).</Text>
+        {play.sub ? <Text style={[styles.verdictWhy, {marginTop:6}]}>{scrubSourceNames(play.sub)}</Text> : null}
+      </View>
+    );
+  }
   const label = play.label || '';
   const sub = play.sub || '';
   // 2026-08-20: tier badge REMOVED from game analysis surface per user
@@ -827,6 +843,27 @@ function ScoreRange({ctx, awayTeam, homeTeam}: any) {
   addPredHA('Efficiency', ctx?.eff_pred_home_pts,     ctx?.eff_pred_away_pts);
   // NBA/NHL Elo — if ctx exposes projected points from elo, use those too.
   addPredHA('Elo',      ctx?.elo_pred_home_pts,       ctx?.elo_pred_away_pts);
+
+  // 2026-09-03: LR (supervised logistic regression) as its own lens. The
+  // LR predictor writes p_home_win into primary_play._lr_p_home_win when
+  // it runs (MLB/NFL/NCAAF). Convert probability to a spread proxy using
+  // a rough calibration (~5.5pt spread ≈ 60% p_home_win in NCAAF/NFL,
+  // ~1.5 runs ≈ 60% in MLB) and pair with the closing total so LR shows
+  // up next to Jerry/v4/MC as a distinct predictor row. Not a full
+  // score projection — LR only outputs a win probability — but exposes
+  // its verdict as a comparable lens instead of hiding inside pp.sub.
+  const lrP = (ctx?.primary_play as any)?._lr_p_home_win;
+  const lineTotal = ctx?.close_total;
+  if (lrP != null && lineTotal != null && Number.isFinite(parseFloat(String(lrP)))) {
+    const p = parseFloat(String(lrP));
+    const t = parseFloat(String(lineTotal));
+    // Sport-aware spread proxy from p_home_win.
+    // MLB: ~1.5 runs per 10% edge; NCAAF/NFL: ~5.5 pts per 10% edge; NBA: ~4.
+    const sport = String((ctx?.sport ?? '')).toUpperCase();
+    const perPt = sport === 'MLB' ? 15 : (sport === 'NBA' || sport === 'NCAAB' ? 40 : 55);
+    const margin = ((p - 0.5) * perPt) / 10; // home minus away
+    preds.push({name: 'LR', a: (t - margin) / 2, h: (t + margin) / 2});
+  }
 
   // 2026-09-01: reviewer safety — was rendering "No score projections
   // available" text inside the Predicted Score Section. Parent now
