@@ -9384,7 +9384,14 @@ setJerryHistory(prev => {
  useEffect(()=>{
   if(activeTab==='games') {
     fetchGames(gamesSport,gamesDay);
-    if(gamesSport==='MLB') { fetchMLBGameContext(); fetchHRWatch(); }
+    // 2026-09-03: fetchMLBGameContext is a misnomer — it populates
+    // nflGameContextMap / ncaafGameContextMap / ncaabGameContextMap TOO,
+    // not just MLB. Prior gate only fired on gamesSport==='MLB' which
+    // meant users who opened the app straight to NCAAF/NFL/NCAAB tabs
+    // never populated those maps → no badges on game cards. Fire on any
+    // sport tab activation so ctx-driven badges render on first paint.
+    if(['MLB','NFL','NCAAF','NCAAB','NBA','NHL'].includes(gamesSport)) fetchMLBGameContext();
+    if(gamesSport==='MLB') { fetchHRWatch(); }
     if(gamesSport==='UFC') { fetchUfcEvent(); }
   }
 },[activeTab,gamesSport,gamesDay,bartData.length]);

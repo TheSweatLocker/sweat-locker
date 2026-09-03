@@ -102,9 +102,22 @@ def compute_calibration(rows: list, window_label: str) -> list:
 
     today = _et_now().date().isoformat()
     out = []
+    # 2026-09-03 MIN-SAMPLE GATE. 30d/lifetime windows were writing rows
+    # with W1-L5 as headline stats (see 9/2 action.ml row that displayed
+    # "1-5 record" in the UI despite real 30d being 215-171). App picks
+    # the latest row per (source, surface, window) so a tiny-sample day
+    # pollutes the display. Require:
+    #   7d window       → n >= 5   (a few graded picks still valid signal)
+    #   30d window      → n >= 15  (below that = noise, don't publish)
+    #   lifetime window → n >= 25  (any headline stat)
+    MIN_N_BY_WINDOW = {'7d': 5, '30d': 15, 'lifetime': 25}
+    min_n = MIN_N_BY_WINDOW.get(window_label, 0)
     for (src, sport, surface), b in buckets.items():
         n = b['wins'] + b['losses']
         if n == 0:
+            continue
+        if n < min_n:
+            # skip publish — will be re-written on a future run once sample fills
             continue
         hit_pct = round(100 * b['wins'] / n, 2)
         out.append({

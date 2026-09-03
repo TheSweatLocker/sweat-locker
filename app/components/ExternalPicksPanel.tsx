@@ -62,8 +62,14 @@ type SourceCalibration = {
 // character + memorability. Style assignments are v1 based on source
 // reputation; will recompute from actual pick-pattern data after 30d of
 // track record accumulates. See project_the_x_naming_convention_824 memory.
+// 2026-09-03 RELABEL: `action` renamed 'The Book' → 'The Public'. Action's
+// data is % of public bets, NOT a sharp/handicapper pick. Labeling it as
+// a "picker" misled users into thinking 94% public on UTEP meant "The Book
+// picks UTEP" — actually it's the opposite fade signal. Historical 30d ML
+// calibration ~55% (bettable) but that's because their own text picks the
+// popular side and public heavy dogs often lose. Naming now reflects data.
 const SOURCE_LABEL: Record<string, string> = {
-  action:      'The Book',       // market-tracker, data-heavy
+  action:      'The Public',     // % of public bets — high % on one side often = fade signal
   dimers:      'The Grinder',    // algo-driven high-vol
   covers:      'The Volume',     // big daily output
   vsin:        'The Pulse',      // sharp-market analysis
