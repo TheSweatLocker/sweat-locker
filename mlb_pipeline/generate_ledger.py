@@ -44,11 +44,15 @@ H_READ  = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
 # Sport → game_context table
+# 2026-09-03: added NBA + NHL for Steam Room expansion. UFC uses jerry_reads
+# not a context table so it's handled separately in build_ufc_parlay below.
 CTX_TABLE = {
     'MLB':   'mlb_game_context',
     'NFL':   'nfl_game_context',
     'NCAAF': 'ncaaf_game_context',
     'NCAAB': 'ncaab_game_context',
+    'NBA':   'nba_game_context',
+    'NHL':   'nhl_game_context',
 }
 # Teaser step per sport (points/runs moved from original line)
 TEASER_STEP = {
@@ -56,6 +60,8 @@ TEASER_STEP = {
     'NFL':   6.0,   # standard NFL teaser
     'NCAAF': 6.0,
     'NCAAB': 4.0,
+    'NBA':   4.0,   # standard NBA teaser step
+    'NHL':   1.5,   # puckline shift
 }
 
 

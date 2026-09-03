@@ -8948,12 +8948,17 @@ setJerryHistory(prev => {
       };
 
       // ── PARALLEL FETCH ALL SOURCES (Bundle F was sequential-ish — perceived lag) ──
+      // 2026-09-03: added nbaCtx + nhlCtx per user Steam Room expansion ask.
+      // Sharp Card now surfaces PRIME/STRONG/LEAN sides across every sport
+      // that has a primary_play, not just MLB+NFL+NCAAF+NCAAB.
       const [
         {data: mlbCtx},
         {data: mlbProps},
         {data: nflCtx},
         {data: ncaafCtx},
         {data: ncaabCtx},
+        {data: nbaCtx},
+        {data: nhlCtx},
         {data: ufcReads},
         {data: jerryHist},
         {data: propsHist},
@@ -8981,6 +8986,17 @@ setJerryHistory(prev => {
           .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
           .eq('game_date', today),
         supabase.from('ncaab_game_context')
+          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
+          .eq('game_date', today),
+        // 2026-09-03: NBA + NHL added for Steam Room / Sharp Card multi-
+        // sport coverage. Both contexts may be empty during offseason —
+        // Promise.all tolerates that (returns []). NBA uses same col names
+        // as MLB/NFL/NCAAF; NHL uses close_puckline instead of close_spread
+        // (not fetched here since only primary_play + ML are needed).
+        supabase.from('nba_game_context')
+          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
+          .eq('game_date', today),
+        supabase.from('nhl_game_context')
           .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
           .eq('game_date', today),
         supabase.from('jerry_reads')
@@ -9075,7 +9091,8 @@ setJerryHistory(prev => {
         };
       }).filter((pick: any) => isPS(pick.tier) && pick.units > 0 && propTeamMatches(pick._raw));
       const otherPicks: any[] = [];
-      for (const [sport, rows] of [['NFL', nflCtx], ['NCAAF', ncaafCtx], ['NCAAB', ncaabCtx]] as [string, any[]][]) {
+      // 2026-09-03 STEAM ROOM EXPANSION: NBA + NHL added alongside NFL/NCAAF/NCAAB.
+      for (const [sport, rows] of [['NFL', nflCtx], ['NCAAF', ncaafCtx], ['NCAAB', ncaabCtx], ['NBA', nbaCtx], ['NHL', nhlCtx]] as [string, any[]][]) {
         (rows || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).forEach((g: any) => {
           const pp = g.primary_play || {};
           // 2026-08-22: same _close -> _odds fallback as MLB above.
@@ -15895,9 +15912,16 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         </Text>
                       </View>
                     ) : ledgerSuggestions.map((s: any, i: number) => {
-                      // 2026-08-18: expanded kind map for new combo types
+                      // 2026-08-18: expanded kind map for new combo types.
+                      // 2026-09-03: chalk_parlay is now leg-count aware — a
+                      // 2-leg parlay is a DUO, 3-leg is a TRIO, 4-leg a QUAD.
+                      // Prior label hardcoded TRIO regardless of leg count so
+                      // 2-leg parlays showed "CHALK TRIO" (wrong).
+                      const chalkNames: Record<number, string> = {2:'DUO',3:'TRIO',4:'QUAD',5:'QUINT'};
+                      const legCount = Array.isArray(s.legs) ? s.legs.length : 0;
+                      const chalkLabel = `🏆 CHALK ${chalkNames[legCount] || 'PARLAY'}`;
                       const KIND_META: Record<string, {label: string; color: string}> = {
-                        'chalk_parlay':          {label: '🏆 CHALK TRIO',          color: THEME.win},
+                        'chalk_parlay':          {label: chalkLabel,                color: THEME.win},
                         'teased_totals_combo':   {label: '📊 TEASED TOTALS COMBO', color: THEME.accent},
                         'teased_spreads_combo':  {label: '📐 TEASED SPREADS COMBO', color: THEME.hrb},
                         'teaser':                {label: '🎯 TEASER',              color: THEME.accent},

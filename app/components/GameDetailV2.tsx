@@ -25,7 +25,7 @@
  * render lightweight placeholders until their sport-specific data is wired.
  */
 import React, {useState, useMemo, useEffect} from 'react';
-import {View, Text, TouchableOpacity, ScrollView, StyleSheet, Platform} from 'react-native';
+import {View, Text, TouchableOpacity, ScrollView, StyleSheet, Platform, Alert} from 'react-native';
 import {createClient} from '@supabase/supabase-js';
 import Explainer from './Explainer';
 import { personaFor, scrubSourceNames } from '../lib/sourcePersona';
@@ -905,6 +905,27 @@ function ScoreRange({ctx, awayTeam, homeTeam}: any) {
             {abbrev3(awayTeam)} {f(jerry.a, 1)} — {f(jerry.h, 1)} {abbrev3(homeTeam)}
           </Text>
         </View>
+      ) : null}
+      {/* 2026-09-03: info tap for LR — new predictor lens users won't recognize.
+          Only surfaces when LR is actually present in the predictor list. */}
+      {preds.some(p => p.name === 'LR') ? (
+        <TouchableOpacity
+          onPress={() => Alert.alert(
+            'LR = Logistic Regression',
+            "A supervised model trained on thousands of resolved games. Learns which features actually predict wins (market lines, pitcher stats, recent form, sharp $ flow, etc.) instead of hand-tuned weights.\n\nThe LR runs AFTER the ensemble scorer and can: kill picks it sees as coin flips, replace picks when it strongly disagrees, or confirm the ensemble's call. It's why some picks show 'NO PLAY · coin flip' — the LR overrode a legacy pick it didn't believe.\n\nLive on: MLB (ML + total + prop), NFL (ML), NCAAF (ML + total). Retrained every Monday on fresh outcomes."
+          )}
+          style={{flexDirection:'row', alignItems:'center', gap:6, marginTop:8, alignSelf:'flex-start'}}
+          activeOpacity={0.7}
+        >
+          <View style={{
+            paddingHorizontal:7, paddingVertical:2, borderRadius:10,
+            borderWidth:1, borderColor: C.border,
+          }}>
+            <Text style={{color: C.textMuted, fontSize:11, fontWeight:'700', letterSpacing:0.4}}>
+              LR ⓘ  what's this?
+            </Text>
+          </View>
+        </TouchableOpacity>
       ) : null}
     </View>
   );
