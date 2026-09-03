@@ -1718,17 +1718,21 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
           Remotely killable via feature_flags — set enabled=false to
           hide without app update. Auto-expires ~Week 5-6 of season
           when N crosses threshold naturally. */}
+      {/* 2026-09-02 UX: was full warning banner that visually collided
+          with NFLJerryLockNote (grey). Reduced to inline pill next to
+          the records — same info, doesn't compete with the top banner. */}
       {usingPriorSeason && badgeEnabled && (
-        <View style={{
-          backgroundColor: C.warnDim, borderRadius: 8,
-          paddingVertical: 6, paddingHorizontal: 10,
-          borderLeftWidth: 3, borderLeftColor: C.warn,
-        }}>
-          <Text style={{color: C.warn, fontSize: 10, fontWeight: '800', letterSpacing: 0.06}}>
-            EARLY {seasonForQuery} SEASON · SHOWING {usingPriorSeason} RECORDS
-          </Text>
-          <Text style={{color: C.text, fontSize: 11, marginTop: 2, opacity: 0.85}}>
-            Current-season sample too thin (&lt;5 games). Prior season shown until enough games log.
+        <View style={{flexDirection:'row', alignItems:'center', gap: 6}}>
+          <View style={{
+            backgroundColor: C.warnDim, borderRadius: 4,
+            paddingVertical: 2, paddingHorizontal: 6,
+          }}>
+            <Text style={{color: C.warn, fontSize: 9, fontWeight: '700', letterSpacing: 0.04}}>
+              {usingPriorSeason} RECORDS
+            </Text>
+          </View>
+          <Text style={{color: C.textDim, fontSize: 10}}>
+            {seasonForQuery} sample too thin — prior season shown
           </Text>
         </View>
       )}
