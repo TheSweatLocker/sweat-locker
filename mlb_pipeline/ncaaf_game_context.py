@@ -142,6 +142,34 @@ def load_team_stats(season: int) -> dict:
     current = _fetch(season)
     prior = _fetch(season - 1)
 
+    # 2026-09-02 VOLUMETRIC-BLOCK FIX: volumetric aggregates (pass_yards,
+    # rush_yards, penalties, def_sacks, etc.) MUST come as a coherent
+    # block from the same season with `games` from the same season. The
+    # prior "fill NULLs" merge would take Stanford 2026 pass_yards=310
+    # (1 game played), fall through NULL games=None with prior's games=12,
+    # then compute pass_yds_pg = 310/12 = 25.8 — grossly wrong. Now:
+    # if current has volumetric data but NO games count, WIPE current's
+    # volumetric fields so the fallback fills the coherent prior-season
+    # block instead. Rates (sp_overall, off_epa_per_play) are per-play,
+    # not per-game, so they stay from current if populated.
+    VOLUMETRIC_FIELDS = {
+        'games', 'pass_yards', 'pass_tds', 'pass_completions', 'pass_attempts',
+        'pass_ints', 'rush_yards', 'rush_tds', 'rush_attempts', 'first_downs',
+        'third_down_conv', 'third_downs', 'fourth_down_conv', 'fourth_downs',
+        'penalties', 'penalty_yards', 'turnovers', 'fumbles_lost',
+        'possession_time_sec', 'def_sacks', 'def_ints', 'def_fumbles_rec',
+        'def_ppg', 'def_pass_ypg', 'def_rush_ypg', 'def_pass_epa_allowed',
+        'def_rush_epa_allowed', 'def_success_rate_allowed',
+        'def_explosiveness_allowed',
+    }
+    for team, row in current.items():
+        if row.get('games') is None:
+            # Volumetric fields without a games count are unusable — wipe
+            # them so the merge below fills the full prior-season block.
+            for f in VOLUMETRIC_FIELDS:
+                if f != 'games' and row.get(f) is not None:
+                    row[f] = None
+
     # Merge: for each team seen in either, fill NULL current fields from prior.
     merged = {}
     all_teams = set(current.keys()) | set(prior.keys())
