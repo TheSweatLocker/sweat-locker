@@ -545,16 +545,17 @@ def upsert_context(rows):
         _snap = write_primary_play_snapshot
     except Exception:
         _snap = None
+    from pgrst_strip_retry import post_with_strip_retry
+    _warned_once = False
     for row in rows:
         # Strip None values to preserve existing column values on re-runs
         clean = {k: v for k, v in row.items() if v is not None}
-        r = requests.post(
-            f"{SUPABASE_URL}/rest/v1/ncaab_game_context",
-            params={"on_conflict": "game_id"},
-            headers=WRITE_HEADERS,
-            json=clean,
-            timeout=15,
-        )
+        r, stripped = post_with_strip_retry(
+            f"{SUPABASE_URL}/rest/v1/ncaab_game_context?on_conflict=game_id",
+            WRITE_HEADERS, [clean], timeout=15)
+        if stripped and r.status_code in (200, 201, 204) and not _warned_once:
+            print(f"  ⚠ ncaab_game_context: stripped missing cols ({', '.join(stripped[:5])}) — schema lag, apply pending migrations")
+            _warned_once = True
         if r.status_code in (200, 201, 204):
             n += 1
             if _snap:

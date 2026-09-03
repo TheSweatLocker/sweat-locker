@@ -276,10 +276,14 @@ def upsert(rows: list[dict], dry_run: bool = False) -> int:
         _snap = write_primary_play_snapshot
     except Exception:
         _snap = None
+    from pgrst_strip_retry import post_with_strip_retry
     for i in range(0, len(normalized), 100):
         chunk = normalized[i:i+100]
-        pr = requests.post(f'{SB}/rest/v1/nba_game_context?on_conflict=game_id',
-                           headers=H_WRITE, json=chunk, timeout=30)
+        pr, stripped = post_with_strip_retry(
+            f'{SB}/rest/v1/nba_game_context?on_conflict=game_id',
+            H_WRITE, chunk)
+        if stripped and pr.status_code in (200, 201, 204):
+            print(f"  ⚠ nba_game_context: stripped missing cols ({', '.join(stripped[:5])}) — schema lag, apply pending migrations")
         if pr.status_code in (200, 201, 204):
             written += len(chunk)
             if _snap:

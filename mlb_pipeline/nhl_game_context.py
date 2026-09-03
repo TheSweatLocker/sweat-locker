@@ -389,12 +389,15 @@ def upsert_context(rows: list[dict], dry_run: bool = False) -> int:
     for row in rows: all_keys.update(row.keys())
     normalized = [{k: r.get(k) for k in all_keys} for r in rows]
 
+    from pgrst_strip_retry import post_with_strip_retry
     written = 0
     for i in range(0, len(normalized), 100):
         chunk = normalized[i:i+100]
-        pr = requests.post(
+        pr, stripped = post_with_strip_retry(
             f'{SB}/rest/v1/nhl_game_context?on_conflict=game_id',
-            headers=H_WRITE, json=chunk, timeout=30)
+            H_WRITE, chunk)
+        if stripped and pr.status_code in (200, 201, 204):
+            print(f"  ⚠ nhl_game_context: stripped missing cols ({', '.join(stripped[:5])}) — schema lag, apply pending migrations")
         if pr.status_code in (200, 201, 204): written += len(chunk)
         else: print(f'  ✗ upsert failed: {pr.status_code} {pr.text[:200]}')
     return written
