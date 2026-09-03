@@ -122,38 +122,34 @@ def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
         print(f'  ⚠ skipping self-vs-self after alias resolve: {home_raw!r} + {away_raw!r} both → {home!r}')
         return None
     # 2026-09-03 CANONICAL GAME_ID: strip common mascot suffixes so
-    # 'Bethune-Cookman Wildcats' and 'Bethune-Cookman' produce the same
-    # game_id. Prior scheme keyed by raw resolved names — different
-    # sources with slightly different canonicalizations created dup rows
-    # (Aggies vs A&T, Wildcats vs bare, Warriors suffix, etc.). Root
-    # cause of the 39-dupe cleanup on 9/2 and 41 more on 9/3.
-    def _canonical_short(name: str) -> str:
+    # 2026-09-03 ROOT-CAUSE REFACTOR: switched from hardcoded mascot-
+    # suffix strip → team_resolver.resolve_ncaaf_team. Prior _canonical_
+    # short() only knew a fixed list of mascot suffixes; missed:
+    #   - City-name variants (UMass vs Massachusetts)
+    #   - Hyphenation variants (Arkansas-Pine Bluff vs Arkansas Pine Bluff)
+    #   - Suffix variants outside the hardcoded list (Nicholls State vs
+    #     Nicholls State Colonels, Norfolk State vs Norfolk State Spartans)
+    # Every one of these classes was still generating dupe game_id rows
+    # despite the 9/2 dedupe pass. Resolver is authoritative — it knows
+    # all alt_names from ncaaf_team_aliases (1872 rows) plus deterministic
+    # normalization (hyphen→space, case-fold, mascot family match).
+    #
+    # If resolver misses a name, fall back to the source's raw form so
+    # the game still lands (resolver gap logging catches the miss for
+    # tomorrow's alias add). Never drop a game due to canonicalization.
+    def _canonical_gid(name: str) -> str:
         if not name: return ''
-        # Drop common mascot suffixes so 'X Wildcats' matches 'X'
-        SUFFIXES = ('Wildcats','Bulldogs','Aggies','Bears','Warriors','Rams',
-                    'Tigers','Panthers','Eagles','Lions','Cardinals','Cougars',
-                    'Falcons','Hawks','Vandals','Bison','Bears','Colonels',
-                    'Demons','Racers','Sycamores','Devils','Lakers','Broncos',
-                    'Blue Hens','Golden Eagles','Racing Cajuns','Ragin Cajuns',
-                    'Owls','Ducks','Beavers','Buffaloes','Cyclones','Hoosiers',
-                    'Longhorns','Sooners','Wolverines','Buckeyes','Nittany Lions',
-                    'Fighting Illini','Boilermakers','Golden Gophers','Badgers',
-                    'Cornhuskers','Jayhawks','Wildcats','Mountaineers','Hurricanes',
-                    'Yellow Jackets','Blue Devils','Demon Deacons','Seminoles',
-                    'Hokies','Cavaliers','Tar Heels','Wolfpack','Fighting Irish',
-                    'Trojans','Bruins','Ducks','Beavers','Utes','Buffaloes')
-        tokens = name.split()
-        # Try progressively longer tail matches — some mascots are 2 words
-        for tail_len in (3, 2, 1):
-            if len(tokens) > tail_len:
-                tail = ' '.join(tokens[-tail_len:])
-                if tail in SUFFIXES:
-                    return ' '.join(tokens[:-tail_len]).strip()
+        try:
+            from team_resolver import resolve_ncaaf_team
+            canon = resolve_ncaaf_team(name)
+            if canon: return canon.strip()
+        except Exception:
+            pass
         return name.strip()
-    home_c = _canonical_short(home)
-    away_c = _canonical_short(away)
-    # Use canonical short form in game_id so ingest is idempotent even
-    # when source spelling varies. Actual display names still stored as
+    home_c = _canonical_gid(home)
+    away_c = _canonical_gid(away)
+    # Use canonical form in game_id so ingest is idempotent even when
+    # source spelling varies. Actual display names still stored as
     # `home_team` / `away_team` (from resolver output).
     game_id = f'ncaaf_{dt.strftime("%Y%m%d")}_{away_c}_{home_c}'
 
