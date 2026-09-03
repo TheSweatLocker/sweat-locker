@@ -682,24 +682,25 @@ import json as _json
 import math as _math
 from pathlib import Path as _Path
 
-# 2026-09-03 MLB ML LR CUTOVER — load supervised model at import time.
-# 90d audit showed current ML ensemble PRIME at 12.5% n=16 (catastrophic).
-# LR predictor tests at 63.1% holdout accuracy, 69.6% PRIME n=112.
-# Falls back silently to legacy scorer if model file missing.
-_LR_MODEL_MLB_ML = None
-try:
-    _lr_path = _Path(__file__).parent / 'models' / 'mlb_ml_logreg.json'
-    if _lr_path.exists():
-        _LR_MODEL_MLB_ML = _json.loads(_lr_path.read_text())
-except Exception:
-    _LR_MODEL_MLB_ML = None
-
-
-def _lr_predict_ml(ctx: dict) -> dict | None:
-    """Returns {p_home_win, suggested_side, suggested_tier} or None."""
-    if _LR_MODEL_MLB_ML is None: return None
+# 2026-09-03 SUPERVISED LR MODELS — load once at import.
+# All fall back silently if model file missing (legacy scorer wins).
+def _load_lr_model(filename: str):
     try:
-        m = _LR_MODEL_MLB_ML
+        p = _Path(__file__).parent / 'models' / filename
+        return _json.loads(p.read_text()) if p.exists() else None
+    except Exception: return None
+
+_LR_MODEL_MLB_ML   = _load_lr_model('mlb_ml_logreg.json')
+_LR_MODEL_NFL_ML   = _load_lr_model('nfl_ml_logreg.json')
+_LR_MODEL_NCAAF_ML = _load_lr_model('ncaaf_ml_logreg.json')
+
+
+def _lr_predict_ml(ctx: dict, model=None) -> dict | None:
+    """Returns {p_home_win, suggested_side, suggested_tier} or None.
+    Defaults to MLB model — pass model=<sport-specific> for others."""
+    m = model if model is not None else _LR_MODEL_MLB_ML
+    if m is None: return None
+    try:
         features = m['features']
         z = m['intercept']
         for i, f in enumerate(features):
@@ -722,46 +723,50 @@ def _lr_predict_ml(ctx: dict) -> dict | None:
         return None
 
 
-def apply_mlb_ml_lr_override(pp: dict | None, ctx: dict) -> dict | None:
-    """OVERRIDE the ML primary_play using LR prediction when model loaded.
+def apply_ml_lr_override(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
+    """Generic ML LR override — pass sport to pick the right model.
+    See apply_mlb_ml_lr_override for full docstring."""
+    _model_map = {
+        'MLB':   _LR_MODEL_MLB_ML,
+        'NFL':   _LR_MODEL_NFL_ML,
+        'NCAAF': _LR_MODEL_NCAAF_ML,
+    }
+    model = _model_map.get(sport)
+    if model is None: return pp
+    return _apply_ml_lr_override_impl(pp, ctx, model, sport)
 
-    Rationale (from 90d audit): current ML ensemble PRIME hits 12.5%,
-    LR PRIME hits 69.6%. Replacing tier + side is a strict improvement.
-    Legacy pp preserved in pp._pre_lr for audit.
 
-    Applied when:
-      - Model loaded successfully
-      - Current pp is an ML pick (type='ml') OR pp is None/non-ML but LR
-        finds a HIGH-confidence ML edge on this game (opportunistic add).
-
-    Sport-scoped: only MLB. Games without enough features fall through.
-    """
-    if _LR_MODEL_MLB_ML is None: return pp
+def _apply_ml_lr_override_impl(pp, ctx, model, sport):
+    if model is None: return pp
     try:
-        pred = _lr_predict_ml(ctx)
+        pred = _lr_predict_ml(ctx, model=model)
         if pred is None: return pp
         old_pp = pp if isinstance(pp, dict) else {}
         was_ml = str(old_pp.get('type', '')).lower() == 'ml'
         # LR sees COIN (p in [0.45, 0.55]) — no edge either side.
-        # Current ML PRIME hits 12.5% on 90d, so keeping the legacy
-        # confident-but-wrong pick is worse than surfacing no ML pick.
-        # Demote to COVERAGE (still in DB for grading, hidden from card).
-        # If existing pp is total/rl, leave it — LR-COIN only kills ML.
+        # Legacy scorer's confident-but-wrong picks demoted to COVERAGE.
+        # Existing total/rl picks left alone — LR-COIN only kills ML.
         if pred['suggested_side'] == 'NONE':
             if was_ml:
                 old_pp['_lr_ml_shadow'] = pred
                 old_pp['_pre_lr_tier'] = old_pp.get('tier')
                 old_pp['tier'] = 'COVERAGE'
-                old_pp['audit_note'] = f'LR sees coin flip (p={pred["p_home_win"]:.2f}) — legacy PRIME/STRONG demoted'
+                old_pp['audit_note'] = f'{sport} LR sees coin flip (p={pred["p_home_win"]:.2f}) — legacy demoted'
                 return old_pp
             return pp
         # LR has confident pick. Build the new pp — preserve legacy for audit.
         if not was_ml and old_pp:
-            # Existing pp is TOTAL/RL — don't overwrite with LR ML (leave
-            # existing market intact; LR would be for a different market).
-            # But annotate ctx audit trail.
-            old_pp['_lr_ml_shadow'] = pred
-            return old_pp
+            # Existing pp is TOTAL/RL. Two paths:
+            # (a) LR is only STRONG-confidence — don't overwrite total/rl (those
+            #     markets have their own edges). Just annotate shadow.
+            # (b) LR is PRIME-confidence (p>=0.65 HOME or p<0.35 AWAY) — override.
+            #     Especially valuable for NCAAF where our RL scorer picks dog
+            #     spreads (Stanford +24.5 style) that LR would fade in favor
+            #     of the ML chalk that hits 91.4% at PRIME_HOME confidence.
+            if pred['suggested_tier'] != 'PRIME':
+                old_pp['_lr_ml_shadow'] = pred
+                return old_pp
+            # PRIME LR override — replaces RL/total pick with the ML edge
         home_team = ctx.get('home_team') or 'Home'
         away_team = ctx.get('away_team') or 'Away'
         team = home_team if pred['suggested_side'] == 'HOME' else away_team
@@ -777,7 +782,8 @@ def apply_mlb_ml_lr_override(pp: dict | None, ctx: dict) -> dict | None:
             'conviction': conviction,
             '_engine': 'lr_v1',
             '_lr_p_home_win': p,
-            '_lr_model_version': _LR_MODEL_MLB_ML.get('version', ''),
+            '_lr_sport': sport,
+            '_lr_model_version': model.get('version', ''),
             '_pre_lr': {
                 'tier': old_pp.get('tier'),
                 'side': old_pp.get('side'),
@@ -811,11 +817,15 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     pp = apply_juice_trap_gate(pp, ctx, sport=sport)
     if sport == 'NCAAF':
         pp = apply_ncaaf_large_spread_gate(pp, ctx)
-    # 2026-09-03 MLB ML LR OVERRIDE — supervised model replaces legacy
-    # ML pick when confident. Runs AFTER other gates so juice-trap/MC-
-    # dissent output still gets a chance; LR only fires as a final
-    # override for ML market. Sport-scoped to MLB.
-    if sport == 'MLB':
-        pp = apply_mlb_ml_lr_override(pp, ctx)
+    # 2026-09-03 LR ML OVERRIDE — supervised models replace legacy ML
+    # picks per sport. Runs AFTER other gates so juice-trap/MC-dissent
+    # output still gets a chance; LR fires as a final override for ML.
+    if sport in ('MLB', 'NFL', 'NCAAF'):
+        pp = apply_ml_lr_override(pp, ctx, sport=sport)
     pp = apply_publish_gate(pp, ctx)
     return pp
+
+
+# Backwards-compat alias — existing MLB callers still work
+def apply_mlb_ml_lr_override(pp, ctx):
+    return apply_ml_lr_override(pp, ctx, sport='MLB')
