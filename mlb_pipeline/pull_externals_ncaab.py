@@ -272,11 +272,53 @@ def _team_matches(name: str, target: str) -> bool:
 
 
 def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:
-    for g in slate:
-        if _team_matches(g['home_team'], home_hint) and \
-           _team_matches(g['away_team'], away_hint):
-            return g['game_id']
+    """Zero-fail NCAAB game-id lookup.
+
+    2026-09-03 REFACTOR: user directive after NCAAF Dimers mis-attribution
+    (Ball State/New Mexico State bug) — no more loose fallback matching
+    in college sports where hundreds of teams share suffixes. Same
+    architecture as pull_externals_ncaaf.find_game_id.
+
+    All-or-nothing:
+      1. Resolve both hints via team_resolver.resolve_or_log_ncaab
+      2. Both must resolve AND both must exact-match a slate game
+      3. Miss → return None + gap is logged for triage
+         (better zero external than wrong external — March Madness
+         mis-attributions were the poster child for this class of bug)
+    """
+    try:
+        from team_resolver import resolve_or_log_ncaab, resolve_ncaab_team
+        canon_home = resolve_or_log_ncaab(home_hint, source='external_scrape')
+        canon_away = resolve_or_log_ncaab(away_hint, source='external_scrape')
+        if not (canon_home and canon_away):
+            return None
+        # 2026-09-03: canonicalize slate too — odds pull may store variant
+        # names ('Duke Blue Devils') that don't literal-match resolver
+        # canonical ('Duke'). See NCAAF find_game_id for full rationale.
+        for g in slate:
+            slate_home = resolve_ncaab_team(g.get('home_team') or '') or g.get('home_team')
+            slate_away = resolve_ncaab_team(g.get('away_team') or '') or g.get('away_team')
+            if slate_home == canon_home and slate_away == canon_away:
+                return g['game_id']
+    except Exception:
+        return None
     return None
+
+
+def find_game_side(slate: list, team_hint: str) -> tuple[Optional[str], Optional[str]]:
+    """Zero-fail single-team lookup for one-side-only NCAAB scrapers."""
+    try:
+        from team_resolver import resolve_or_log_ncaab, resolve_ncaab_team
+        canon = resolve_or_log_ncaab(team_hint, source='external_scrape')
+        if not canon: return None, None
+        for g in slate:
+            slate_home = resolve_ncaab_team(g.get('home_team') or '') or g.get('home_team')
+            slate_away = resolve_ncaab_team(g.get('away_team') or '') or g.get('away_team')
+            if slate_home == canon: return g['game_id'], 'HOME'
+            if slate_away == canon: return g['game_id'], 'AWAY'
+    except Exception:
+        pass
+    return None, None
 
 
 def load_ncaab_alias_map() -> dict:
@@ -324,16 +366,11 @@ def fetch_dimers(slate: list, game_date: str, aliases: dict) -> tuple:
         away_name, away_wp, home_name, home_wp = m.groups()
         away_wp = float(away_wp); home_wp = float(home_wp)
         if not (95 <= away_wp + home_wp <= 105): continue
-        gid = None; pick_side = None; pick_wp = None
-        for g in slate:
-            if _team_matches(g.get('away_team'), aliases.get(away_name, away_name)) and \
-               _team_matches(g.get('home_team'), aliases.get(home_name, home_name)):
-                gid = g['game_id']
-                if home_wp >= away_wp: pick_side, pick_wp = 'HOME', home_wp
-                else: pick_side, pick_wp = 'AWAY', away_wp
-                break
+        # 2026-09-03 ZERO-FAIL: route through find_game_id
+        gid = find_game_id(slate, home_name, away_name)
         if not gid or gid in seen: continue
         seen.add(gid)
+        pick_side, pick_wp = ('HOME', home_wp) if home_wp >= away_wp else ('AWAY', away_wp)
         fade = 'boost' if pick_wp >= 60 else 'neutral'
         picks.append(ExternalPick(
             game_id=gid, sport='NCAAB', game_date=game_date, source='dimers',
@@ -374,11 +411,8 @@ def fetch_action(slate: list, game_date: str, aliases: dict) -> tuple:
         away_name = m.group(1).strip(); home_name = m.group(2).strip()
         away_pct = int(m.group(3)); home_pct = int(m.group(4))
         if not (90 <= away_pct + home_pct <= 110): continue
-        gid = None
-        for g in slate:
-            if _team_matches(g.get('away_team'), aliases.get(away_name, away_name)) and \
-               _team_matches(g.get('home_team'), aliases.get(home_name, home_name)):
-                gid = g['game_id']; break
+        # 2026-09-03 ZERO-FAIL match
+        gid = find_game_id(slate, home_name, away_name)
         if not gid or gid in seen: continue
         seen.add(gid)
         side, pct = ('HOME', home_pct) if home_pct > away_pct else ('AWAY', away_pct)
@@ -426,12 +460,8 @@ def fetch_pickswise(slate: list, game_date: str, aliases: dict) -> tuple:
     for m in ml_re.finditer(text):
         team_name = m.group(1).strip(); odds = int(m.group(2))
         stars = _stars_near(m.start())
-        side, gid = None, None
-        for g in slate:
-            if _team_matches(g.get('home_team'), team_name):
-                side, gid = 'HOME', g['game_id']; break
-            if _team_matches(g.get('away_team'), team_name):
-                side, gid = 'AWAY', g['game_id']; break
+        # 2026-09-03 ZERO-FAIL single-team lookup
+        gid, side = find_game_side(slate, team_name)
         if side is None or gid in seen_games: continue
         fade = 'fade' if stars and stars >= 5 else ('boost' if stars and stars >= 4 else 'neutral')
         picks.append(ExternalPick(
@@ -469,12 +499,8 @@ def fetch_pickswise(slate: list, game_date: str, aliases: dict) -> tuple:
     for m in rl_re.finditer(text):
         team_name = m.group(1).strip(); rl_line = float(m.group(2)); odds = int(m.group(3))
         stars = _stars_near(m.start())
-        side, gid = None, None
-        for g in slate:
-            if _team_matches(g.get('home_team'), team_name):
-                side, gid = 'HOME', g['game_id']; break
-            if _team_matches(g.get('away_team'), team_name):
-                side, gid = 'AWAY', g['game_id']; break
+        # 2026-09-03 ZERO-FAIL single-team lookup
+        gid, side = find_game_side(slate, team_name)
         if side is None or gid in seen_games: continue
         fade = 'fade' if stars and stars >= 5 else ('boost' if stars and stars >= 4 else 'neutral')
         picks.append(ExternalPick(

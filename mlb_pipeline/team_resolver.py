@@ -217,3 +217,121 @@ def resolve_or_log(raw_name: str, source: str) -> Optional[str]:
     if canon is None and raw_name:
         log_ncaaf_gap(raw_name, source)
     return canon
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# NCAAB resolver (2026-09-03) — same architecture as NCAAF, different
+# alias table. NCAAB has fewer aliases (365 vs NCAAF 1872) so more raw
+# names likely to miss — gap logging critical for March Madness edge
+# cases (low-seed schools, tournament expansion, etc).
+# ═══════════════════════════════════════════════════════════════════════
+
+_NCAAB_CACHE: dict | None = None
+
+
+def _build_ncaab_cache() -> dict:
+    """Fetch ncaab_team_aliases and build reverse-lookup dict.
+    Schema: canonical_name, kenpom_name, odds_api_name, bart_name,
+            alt_names, conference, espn_id."""
+    r = requests.get(
+        f'{SB}/rest/v1/ncaab_team_aliases'
+        f'?select=canonical_name,kenpom_name,odds_api_name,bart_name,alt_names&limit=5000',
+        headers=_H, timeout=15,
+    )
+    rows = r.json() if r.status_code == 200 else []
+    by_key: dict[str, str] = {}
+    canonicals: set[str] = set()
+
+    def _add(k: str, canon: str) -> None:
+        n = _norm(k)
+        if n and n not in by_key:
+            by_key[n] = canon
+
+    for row in rows:
+        canon = row.get('canonical_name')
+        if not canon: continue
+        canonicals.add(canon)
+        _add(canon, canon)
+        _add(row.get('kenpom_name') or '', canon)
+        _add(row.get('odds_api_name') or '', canon)
+        _add(row.get('bart_name') or '', canon)
+        alt = row.get('alt_names') or []
+        if isinstance(alt, list):
+            for a in alt: _add(a, canon)
+        elif isinstance(alt, str):
+            for a in alt.split(','): _add(a.strip(), canon)
+
+    return {'by_key': by_key, 'canonicals': canonicals}
+
+
+def _get_ncaab_cache() -> dict:
+    global _NCAAB_CACHE
+    if _NCAAB_CACHE is None:
+        _NCAAB_CACHE = _build_ncaab_cache()
+    return _NCAAB_CACHE
+
+
+def clear_ncaab_cache() -> None:
+    global _NCAAB_CACHE
+    _NCAAB_CACHE = None
+
+
+def resolve_ncaab_team(raw_name: str) -> Optional[str]:
+    """Return canonical NCAAB name or None. Never guesses.
+
+    Ladder (deterministic — no fuzzy Levenshtein):
+      1. Exact match on canonical / kenpom / odds_api / bart / alt name
+      2. Substring match on any indexed key ≥8 chars or multi-word
+         (blocks trivial 'st' -> 'north carolina state' false hits)
+      3. Return None → caller logs gap for triage
+    """
+    if not raw_name: return None
+    n = _norm(raw_name)
+    if not n: return None
+    cache = _get_ncaab_cache()
+    by_key = cache['by_key']
+    if n in by_key: return by_key[n]
+
+    # Longest-substring match with min-length guard (mirror NCAAF safety)
+    best_canon = None; best_len = 0
+    for k, canon in by_key.items():
+        if not k: continue
+        if k not in n and n not in k: continue
+        shorter = min(k, n, key=len)
+        if len(shorter) < 8 and ' ' not in shorter:
+            continue
+        if len(k) > best_len:
+            best_canon, best_len = canon, len(k)
+    return best_canon
+
+
+def log_ncaab_gap(raw_name: str, source: str) -> None:
+    """Upsert row into team_alias_gaps (sport='NCAAB')."""
+    if not raw_name or not source: return
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        'sport': 'NCAAB', 'source': source, 'raw_name': raw_name,
+        'last_seen': now, 'hit_count': 1,
+    }
+    try:
+        r = requests.post(
+            f'{SB}/rest/v1/team_alias_gaps',
+            headers={**_HW, 'Prefer': 'return=minimal'},
+            json=payload, timeout=10,
+        )
+        if r.status_code == 409:
+            requests.patch(
+                f'{SB}/rest/v1/team_alias_gaps'
+                f'?sport=eq.NCAAB&source=eq.{source}&raw_name=eq.{raw_name}',
+                headers={**_HW, 'Prefer': 'return=minimal'},
+                json={'last_seen': now}, timeout=10,
+            )
+    except Exception:
+        pass
+
+
+def resolve_or_log_ncaab(raw_name: str, source: str) -> Optional[str]:
+    canon = resolve_ncaab_team(raw_name)
+    if canon is None and raw_name:
+        log_ncaab_gap(raw_name, source)
+    return canon
