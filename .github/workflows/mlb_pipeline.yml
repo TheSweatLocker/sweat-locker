@@ -1508,6 +1508,18 @@ jobs:
           cd mlb_pipeline
           python play_of_day.py
 
+      # 2026-09-03: Cross-sport POTD override. play_of_day.py is MLB-only;
+      # this scans NFL/NCAAF/NBA/NCAAB/NHL for higher-conviction PRIME/STRONG
+      # (LR-gated). Overrides best_bet_{today} only if lead >=5 pts over MLB
+      # conviction. Outgoing MLB POTD backed up to best_bet_{today}_mlb.
+      - name: Cross-sport POTD override
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python play_of_day_multi_sport.py || echo "cross-sport POTD non-fatal"
+
       # 2026-08-28 Phase 4 kill #3: v7/v1_ml shadow inference deleted.
       # Auditors (audit_v7_shadow.py, audit_ml_v1_shadow.py) went dead
       # 2026-06-23 without cutover. Writers were dumping 15+ rows/day into
