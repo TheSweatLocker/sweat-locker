@@ -227,10 +227,68 @@ def log_ncaaf_gap(raw_name: str, source: str) -> None:
         pass  # never let gap logging break a scrape
 
 
+# 2026-09-03: cross-sport noise filter. Some NCAAF scrapers surface
+# unrelated names via regex misfires on page content (e.g. Pickswise
+# has an all-sports trending picks section). Filter these out at the
+# gap-log step so triage stays focused on real NCAAF misses.
+# Not exhaustive — deliberately narrow to well-known pro-sport team
+# names that CANNOT be a college football team.
+_OTHER_SPORT_TEAMS = {
+    # MLB
+    'los angeles dodgers','los angeles angels','san diego padres','san francisco giants',
+    'colorado rockies','arizona diamondbacks','houston astros','texas rangers',
+    'oakland athletics','athletics','seattle mariners','kansas city royals',
+    'chicago white sox','chicago cubs','minnesota twins','cleveland guardians',
+    'detroit tigers','st. louis cardinals','st louis cardinals','pittsburgh pirates',
+    'cincinnati reds','milwaukee brewers','philadelphia phillies','washington nationals',
+    'atlanta braves','miami marlins','new york mets','new york yankees',
+    'baltimore orioles','tampa bay rays','toronto blue jays','boston red sox',
+    # MLS / EPL / other soccer (top offenders in logs)
+    'chicago fire','toronto fc','seattle sounders','columbus crew','sporting kansas city',
+    'vancouver whitecaps fc','orlando city sc','houston dynamo','san jose earthquakes',
+    'atlanta united fc','inter miami cf','cf montreal','philadelphia union','dc united',
+    'los angeles fc','nashville sc','saint louis city sc','fc dallas','new york city fc',
+    'liverpool','nottingham forest','bournemouth','everton','tottenham hotspur',
+    'newcastle','coventry city','hull city','strasbourg','lens',
+    # CFL
+    'ottawa redblacks',
+    # La Liga / Serie A (surfaced in gaps 8/30 scrape)
+    'real madrid','fc barcelona','barcelona','atletico madrid','valencia',
+    'sevilla','real betis','villarreal','málaga','malaga','deportivo la coruña',
+    'deportivo la coruna','rayo vallecano','celta vigo','osasuna','getafe',
+    'napoli','como','juventus','inter milan','ac milan','roma','lazio',
+}
+
+
+def _is_probable_team_name(raw: str) -> bool:
+    """Heuristic filter — raw name looks like a plausible NCAAF team name.
+    Rejects: page titles, sentence fragments, article headlines. Real
+    NCAAF team names are 1-4 words, ≤35 chars, no scraper-junk keywords."""
+    if not raw: return False
+    if len(raw) > 35: return False   # kills 'college football picks predictions early bet liberty'
+    tokens = raw.split()
+    if len(tokens) > 5: return False  # kills 'memphis tigers picks parlay odds college football week 0'
+    NOISE_KEYWORDS = {'picks','prediction','predictions','parlay','odds','week',
+                      'saturday','sunday','friday','august','september','vs',
+                      'pick','preview','bet','early','best','today'}
+    lower_tokens = {t.lower() for t in tokens}
+    if lower_tokens & NOISE_KEYWORDS:
+        return False
+    return True
+
+
 def resolve_or_log(raw_name: str, source: str) -> Optional[str]:
     """Convenience: try to resolve, log gap if not found. Return canonical or None."""
     canon = resolve_ncaaf_team(raw_name)
     if canon is None and raw_name:
+        # Suppress gap logs for:
+        # 1. Known non-CFB pro-sport team names (MLS, MLB, EPL, La Liga...)
+        # 2. Scraper junk (page titles, article headlines, sentence fragments)
+        # Both are permissive-regex misfires from external scrapers hitting
+        # multi-sport aggregator pages. Real NCAAF misses still surface.
+        n = _norm(raw_name)
+        if n in _OTHER_SPORT_TEAMS: return None
+        if not _is_probable_team_name(raw_name): return None
         log_ncaaf_gap(raw_name, source)
     return canon
 
