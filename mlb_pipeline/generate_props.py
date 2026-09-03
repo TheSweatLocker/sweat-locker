@@ -3485,9 +3485,21 @@ def wipe_todays_props(skip_live_game_ids=None, max_stale_hours: int = 6):
     from datetime import datetime, timezone, timedelta
     gd = today_et()
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_stale_hours)).isoformat()
-    # Build filter: game_date=today AND last_attached_at IS NULL or older than cutoff
+    # Build filter: game_date=today AND last_attached_at IS NULL or older than cutoff.
+    # 2026-09-02 CRITICAL FIX: batter hits props (hits_over/hits_under)
+    # are line-agnostic at 0.5, so `_BOOK_REQUIRED` exempts them from the
+    # book-line-required SKIP gate. Consequence: attach_book_lines rarely
+    # stamps `last_attached_at` on them (Odds API batter_hits market has
+    # low player coverage — most batters don't return a match), so on the
+    # next cron this staleness wipe deletes ALL of them as "no timestamp
+    # → assumed stale". Result: 0 hits_over rows in DB most days despite
+    # the scorer producing them every run (verified by live invoke
+    # returning conviction 57/59/61 on the 2026-09-02 Astros lineup).
+    # Exempt them from the wipe — they're re-generated each cron anyway,
+    # and the upsert dedup handles the merge.
     base = (f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
             f"?game_date=eq.{gd}"
+            f"&prop_type=not.in.(hits_over,hits_under)"
             f"&or=(last_attached_at.is.null,last_attached_at.lt.{cutoff})")
     if skip_live_game_ids:
         ids_csv = ','.join(f'"{gid}"' for gid in skip_live_game_ids)
@@ -4755,6 +4767,22 @@ def run():
               f"(one card per (player, stat) — winning direction kept)")
 
     wipe_todays_props(skip_live_game_ids=live_game_ids or None)
+    # 2026-09-02 ODDS-GATE ON WRITE (item #6 audit): drop pitcher props
+    # from the upsert if they have no odds attached. This prevents orphan
+    # rows (found ~1000 hits_over rows in 90d sample with book_source
+    # NULL + book_over_odds NULL polluting ROI analysis and misleading
+    # COVERAGE tier stats). Batter hits are EXEMPT — they're line-agnostic
+    # at 0.5 and don't need explicit book odds to have signal value.
+    _ODDS_GATED = {k for k in PROP_MARKET_MAP if k not in ('hits_over', 'hits_under')}
+    def _has_odds(p):
+        return (p.get('book_line') is not None
+                or p.get('book_over_odds') is not None
+                or p.get('book_under_odds') is not None)
+    _pre_odds_gate = len(top)
+    top = [p for p in top if p.get('prop_type') not in _ODDS_GATED or _has_odds(p)]
+    if _pre_odds_gate != len(top):
+        print(f"  🛑 Odds-gate: dropped {_pre_odds_gate - len(top)} pitcher props with no odds attached")
+
     saved = upsert_props(top)
     print(f"\n✅ Stored {saved} top props (of {len(all_props)} passing threshold)")
     for p in top[:8]:
