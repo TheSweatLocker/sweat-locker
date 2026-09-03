@@ -2529,18 +2529,24 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
         {(spH != null || spA != null || offH != null || offA != null) && (
           <View style={{marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.border + '55'}}>
             <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '800',
-                          letterSpacing: 0.6, marginBottom: 4, textAlign: 'center'}}>ADVANCED METRICS</Text>
-            <StatRow label="POWER"      a={spA} b={spH} aAdv={spAdv.a} bAdv={spAdv.b}
+                          letterSpacing: 0.6, marginBottom: 2, textAlign: 'center'}}>ADVANCED METRICS</Text>
+            {/* 2026-09-02: plain-language explainer for casual bettors —
+                metrics themselves stay abbreviated for handicapper-density,
+                but a one-line legend explains direction of "better." */}
+            <Text style={{color: C.textDim, fontSize: 9, marginBottom: 6, textAlign: 'center', fontStyle: 'italic'}}>
+              Higher = better on offense · Lower = better on defense
+            </Text>
+            <StatRow label="POWER RATING" a={spA} b={spH} aAdv={spAdv.a} bAdv={spAdv.b}
                      fmt={(v: any) => v == null ? '—' : Number(v).toFixed(1)} />
-            <StatRow label="OFF EPA/PL" a={offA} b={offH} aAdv={offAdv.a} bAdv={offAdv.b}
-                     fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
-            <StatRow label="DEF EPA/PL" a={defA} b={defH} aAdv={defAdv.a} bAdv={defAdv.b}
-                     fmt={(v: any) => v == null ? '—' : Number(v).toFixed(3)} />
+            <StatRow label="OFFENSE / PLAY" a={offA} b={offH} aAdv={offAdv.a} bAdv={offAdv.b}
+                     fmt={(v: any) => v == null ? '—' : Number(v).toFixed(2)} />
+            <StatRow label="DEFENSE / PLAY" a={defA} b={defH} aAdv={defAdv.a} bAdv={defAdv.b}
+                     fmt={(v: any) => v == null ? '—' : Number(v).toFixed(2)} />
             <StatRow label="SUCCESS %"  a={succOffA} b={succOffH}
                      aAdv={succOffA != null && succOffH != null && succOffA > succOffH}
                      bAdv={succOffA != null && succOffH != null && succOffH > succOffA}
                      fmt={(v: any) => v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`} />
-            <StatRow label="EXPLOSIVE"  a={explA} b={explH}
+            <StatRow label="BIG PLAYS"  a={explA} b={explH}
                      aAdv={explA != null && explH != null && explA > explH}
                      bAdv={explA != null && explH != null && explH > explA}
                      fmt={(v: any) => v == null ? '—' : Number(v).toFixed(2)} />
