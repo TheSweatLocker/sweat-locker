@@ -1885,6 +1885,10 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
     confirmed:{w:number,l:number,unitsNet:number},
     lean:{w:number,l:number,unitsNet:number},
   }>({triple:{w:0,l:0,unitsNet:0}, confirmed:{w:0,l:0,unitsNet:0}, lean:{w:0,l:0,unitsNet:0}});
+  // 2026-09-03: dynamic beta notice for The Split (jerry_cache row so we
+  // can update message/hide without an App Store ship). Row key is
+  // 'section_note_split' — insert/update via SQL to change.
+  const [splitBetaNotice, setSplitBetaNotice] = useState<{enabled:boolean, message:string, tone?:string} | null>(null);
   const [sharpTabLoading, setSharpTabLoading] = useState(false);
   // 2026-08-17: The Ledger — auto-suggested chalk parlays + teasers.
   // Populated by generate_ledger.py from today's ensemble picks across
@@ -8822,6 +8826,26 @@ setJerryHistory(prev => {
         setSteamSourceRecords(normalized);
       } catch { setSteamSourceRecords([]); }
 
+      // 2026-09-03: dynamic beta notice for the Split section.
+      // jerry_cache row 'section_note_split' — server-controlled so we
+      // can change message or hide notice without an App Store ship.
+      try {
+        const {data: noteRows} = await supabase.from('jerry_cache')
+          .select('data')
+          .eq('cache_key', 'section_note_split')
+          .limit(1);
+        const noteData: any = noteRows && noteRows[0]?.data;
+        if (noteData && noteData.enabled && noteData.message) {
+          setSplitBetaNotice({
+            enabled: true,
+            message: String(noteData.message),
+            tone: String(noteData.tone || 'info'),
+          });
+        } else {
+          setSplitBetaNotice(null);
+        }
+      } catch { setSplitBetaNotice(null); }
+
       // 2026-08-22: Split record — sharp-signal historical performance by
       // tier (triple / confirmed / lean) from daily_surface_records.
       // Written by aggregate_daily_records.py::agg_split. Rolling 30d.
@@ -15115,6 +15139,18 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     see if triple / confirmed / lean actually cash. Matches
                     3-col glance idiom used across Ladder / Sharp / Ledger
                     (dividers, big number, small label + secondary line). */}
+                {/* 2026-09-03: Split beta notice — dynamic message from
+                    jerry_cache.section_note_split so we can update the
+                    text (or hide it entirely) without an App Store ship.
+                    Renders above the record card. Enabled flag lets us
+                    turn it off from DB when the section graduates from beta. */}
+                {splitBetaNotice?.enabled && splitBetaNotice?.message ? (
+                  <View style={{backgroundColor:THEME.hrb + '14', borderWidth:1, borderColor:THEME.hrb + '55', borderRadius:12, padding:12, marginBottom:14, flexDirection:'row', alignItems:'center', gap:8}}>
+                    <Text style={{fontSize:14}}>🧪</Text>
+                    <Text style={{color:THEME.text, fontSize:12, fontWeight:'600', flex:1, lineHeight:17}}>{splitBetaNotice.message}</Text>
+                  </View>
+                ) : null}
+
                 {/* 2026-08-31: SIGNAL-TIER GATE. LEAN (34%) + CONFIRMED
                     (42%) tiers running below breakeven for 30+ days —
                     only TRIPLE (all-3-source agreement) shows real
