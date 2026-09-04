@@ -13827,7 +13827,7 @@ setJerryHistory(prev => {
 
   return(
     <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:8,flexWrap:'wrap'}}>
-      <StatusChip variant="score" score={nScore} scoreLabel="⚾ PRIME NRFI" tier={'PRIME' as any} />
+      <StatusChip variant="score" score={nScore} scoreLabel="⚾ 1ST INNING NRFI" tier={'PRIME' as any} />
       {nrfiCtx.home_pitcher && <Text style={{color:THEME.textMuted,fontSize:10}}>{nrfiCtx.home_pitcher?.split(' ').pop()} vs {nrfiCtx.away_pitcher?.split(' ').pop()}</Text>}
     </View>
   );
