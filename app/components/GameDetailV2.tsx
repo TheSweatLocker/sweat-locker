@@ -333,7 +333,7 @@ export default function GameDetailV2({
       />
 
       <ScrollView style={{flex: 1}} contentContainerStyle={{paddingBottom: 24}}>
-        <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
+        <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} />
         <LosingMarketChips ctx={ctx} />
         <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} synthesis={jerrySynthesis} />
         <AlignmentStrip ctx={ctx} />
@@ -512,7 +512,7 @@ function StickyHeader({away, home, time, venue, onClose}: any) {
 }
 
 // ─── HERO VERDICT ───────────────────────────────────────────────────────
-function VerdictCard({ctx, awayTeam, homeTeam}: any) {
+function VerdictCard({ctx, awayTeam, homeTeam, sport}: any) {
   const play = ctx?.primary_play;
   if (!play || typeof play !== 'object') {
     return (
@@ -538,7 +538,14 @@ function VerdictCard({ctx, awayTeam, homeTeam}: any) {
   const isLowConviction = tier === 'COVERAGE' || tier === 'PASS' || tier === 'SKIP';
   const label = play.label || '';
   const sub = play.sub || '';
-  const marketLabel = String(play.type || '').toUpperCase();
+  // 2026-09-03: sport-aware market label — user flagged "RL" showing on
+  // football games (badge says RL but reads as MLB Run Line). Football
+  // sports say SPREAD, hockey says PUCK LINE, MLB stays RUN LINE.
+  const rawType = String(play.type || '').toLowerCase();
+  const marketLabel = rawType === 'rl' ? rlLabel(sport).toUpperCase()
+                    : rawType === 'ml' ? 'ML'
+                    : rawType === 'total' ? 'TOTAL'
+                    : rawType.toUpperCase();
   return (
     <View style={styles.verdict}>
       <View style={{flexDirection:'row', alignItems:'center', gap:6, flexWrap:'wrap'}}>
