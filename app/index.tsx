@@ -7508,6 +7508,29 @@ if(mkt.key === 'pitcher_props') {
     if (!cfg) { setPipelineMLBProps([]); return; }
     setPipelineMLBLoading(true);
     try {
+      // 2026-09-03 LAUNCH BLOCKER: MLB now reads from
+      // v_mlb_props_publishable (SQL view) which applies SKIP-BACK
+      // override + _coverage_kill_gate filter server-side. Kills the
+      // client-side .filter() logic that lived here (couldn't be
+      // changed without an App Store ship). See supabase migration
+      // 20260903b_mlb_props_publishable_view.sql. NFL still uses RPC —
+      // separate refactor since fewer client rules apply there.
+      if (sport.toUpperCase() === 'MLB') {
+        const todayET = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+        const {data: viewRows, error: viewErr} = await supabase
+          .from('v_mlb_props_publishable')
+          .select('*')
+          .eq('game_date', todayET)
+          .order('display_conviction', {ascending: false});
+        if (viewErr) {
+          console.log('[v_mlb_props_publishable] fetch error:', viewErr.message);
+          setPipelineMLBProps([]);
+        } else {
+          setPipelineMLBProps(viewRows || []);
+        }
+        setPipelineMLBLoading(false);
+        return;
+      }
       const { data, error } = await supabase
         .rpc(cfg.rpc)
         .order('conviction', { ascending: false });
