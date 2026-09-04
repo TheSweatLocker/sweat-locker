@@ -801,17 +801,45 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         # (if there was one) or downgrade to COVERAGE (if legacy was ML).
         if _ml_odds_too_juiced(ctx, pred['suggested_side']):
             if was_ml:
-                # 2026-09-03 REVISED: keep the pick label intact + demote
-                # tier to COVERAGE. UI now shows "LOW CONVICTION" chip on
-                # COVERAGE picks (see GameDetailV2 VerdictCard) so users
-                # see the pipeline's take + a clear "not recommended"
-                # signal, rather than "NO PLAY" text. Sharp/Sweat cards
-                # still filter COVERAGE out — this rewrite is game-detail
-                # only. Prior label overwrite made game detail feel empty.
+                # 2026-09-04 REROUTE: rather than keep the juiced ML label
+                # + LOW CONVICTION chip (2026-09-03 version), rewrite the
+                # pick label to the correlated spread on the same side.
+                # User directive: "make sure no heavy juice chalk being
+                # promoted" — even COVERAGE-tier "Utah ML at -10000" is
+                # awful UX; a COVERAGE-tier "Utah -34.5" is at least a
+                # sane market. If no spread available, fall back to
+                # total-based rerouting via close_total when possible,
+                # else keep ML at COVERAGE as prior behavior.
+                lr_side = str(pred.get('suggested_side', '')).upper()
+                team_name = (ctx.get('home_team') if lr_side == 'HOME'
+                             else ctx.get('away_team') if lr_side == 'AWAY' else None)
+                close_spr = ctx.get('close_spread')
+                new_label = None
+                new_type = None
+                if close_spr is not None and team_name:
+                    # NCAAF/NFL convention: negative close_spread = home favorite
+                    # (line is applied to home team). Team's own spread = sign-flipped
+                    # when they're the away team.
+                    try:
+                        spr = float(close_spr)
+                        team_spr = spr if lr_side == 'HOME' else -spr
+                        sign = '' if team_spr < 0 else '+'
+                        new_label = f'{team_name} {sign}{team_spr:g}'
+                        new_type = 'rl'
+                    except (TypeError, ValueError):
+                        pass
                 old_pp['_lr_ml_shadow'] = pred
                 old_pp['_pre_lr_tier'] = old_pp.get('tier')
+                old_pp['_pre_juice_reroute_label'] = old_pp.get('label')
                 old_pp['tier'] = 'COVERAGE'
-                old_pp['audit_note'] = f'{sport} LR ML too juicy (>-300) — coverage'
+                if new_label:
+                    old_pp['label'] = new_label
+                    old_pp['type'] = new_type
+                    old_pp['audit_note'] = (
+                        f'{sport} LR wanted {lr_side} but ML odds too juicy '
+                        f'(>-300) — rerouted to spread ({new_label})')
+                else:
+                    old_pp['audit_note'] = f'{sport} LR ML too juicy (>-300) — coverage'
                 return old_pp
             # Legacy was total/rl — leave it (better market at high juice)
             old_pp['_lr_ml_shadow'] = pred
