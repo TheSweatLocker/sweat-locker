@@ -8549,38 +8549,18 @@ const graded = gradedRaw.filter(p => {
         });
       }
 
-      // Auto-save A grades to Supabase prop_grades
-const aGrades = graded.filter(p => p.grade === 'A');
-if(aGrades.length > 0) {
-  try {
-    // Dedup — check existing props for today before inserting (ET date)
-    const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
-    const { data: existing } = await supabase
-      .from('prop_grades')
-      .select('player, market')
-      .eq('sport', sport)
-      .gte('created_at', today + 'T00:00:00Z');
-    const existingKeys = new Set((existing || []).map(e => `${e.player}_${e.market}`));
-    const newGrades = aGrades.filter(p => !existingKeys.has(`${p.player}_${p.marketLabel}`));
-    if(newGrades.length > 0) {
-      await supabase.from('prop_grades').insert(
-        newGrades.map(p => ({
-          player: p.player,
-          market: p.marketLabel,
-          grade: p.grade,
-          ev: p.bestEV,
-          line: p.bestLine?.line,
-          game: p.gameName,
-          sport: sport,
-          best_side: p.bestSide,
-          best_odds: p.bestLine?.odds,
-          book: p.bestLine?.book,
-          result: 'Pending',
-        }))
-      );
-    }
-  } catch(e) {}
-}
+      // 2026-09-03 KILLED: client-side write to prop_grades. This was
+      // computing A-grades ON DEVICE (from Odds API + local EV math)
+      // and persisting them to the shared DB — different devices could
+      // race and produce contradictory grade rows for the same prop.
+      // Fundamentally violates "backside dictates, app renders"
+      // (feedback_backside_dictates_app_renders memory).
+      //
+      // Server owns grading now via mlb_pipeline_props / prop_playbook_
+      // decisions writes. Client display continues below (view-only);
+      // the DB-write block was removed. If we want NBA/NFL/UFC prop
+      // grades persisted, build a server-side cron for those sports —
+      // do not write from the client.
         // Auto-save graded props to Jerry history
 const newEntries = graded.map(prop => ({
   id: `${prop.player}_${prop.market}_${Date.now()}`,
@@ -8984,6 +8964,9 @@ setJerryHistory(prev => {
       // 2026-09-03: added nbaCtx + nhlCtx per user Steam Room expansion ask.
       // Sharp Card now surfaces PRIME/STRONG/LEAN sides across every sport
       // that has a primary_play, not just MLB+NFL+NCAAF+NCAAB.
+      // 2026-09-03: dropped jerryHist + propsHist fetches — those loaded
+      // 5000 rows to power the client-side receipts tally, which is now
+      // server-only (daily_surface_records). Cuts payload by ~2MB.
       const [
         {data: mlbCtx},
         {data: mlbProps},
@@ -8993,8 +8976,6 @@ setJerryHistory(prev => {
         {data: nbaCtx},
         {data: nhlCtx},
         {data: ufcReads},
-        {data: jerryHist},
-        {data: propsHist},
       ] = await Promise.all([
         supabase.from('mlb_game_context')
           .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds,close_spread,close_total')
@@ -9036,21 +9017,6 @@ setJerryHistory(prev => {
           .select('game_id,call_side,conviction,input_snapshot')
           .eq('sport','UFC').eq('game_date', today).eq('call_market','fight')
           .gte('conviction', 55),
-        supabase.from('jerry_reads')
-          .select('result,conviction,call_market,call_side,sport,game_id,game_date')
-          .gte('game_date', thirty).gte('conviction', 60).not('result','is',null),
-        // 2026-08-29 BUG FIX (mirrors compute_surface_records.py fix):
-        // book_line is the PROP LINE (0.5 for hits, 4.5 for Ks), NOT
-        // American odds. Previously piped book_line into
-        // winPayoutFromAmerican() which fell back to 0.91 (flat -110)
-        // for every prop win — inflating unit totals vs true juiced
-        // payouts (e.g. hits O 0.5 at -280 pays 0.36u, not 0.91u).
-        // Yesterday: real +1.59u vs app-inflated +7.56u = 4.8x drift.
-        // Fix: SELECT book_over_odds/book_under_odds + direction, pick
-        // the right column at compute time.
-        supabase.from('mlb_pipeline_props')
-          .select('result,tier,conviction,prop_type,direction,book_over_odds,book_under_odds,game_date')
-          .gte('game_date', thirty).in('tier', ['PRIME','STRONG']).not('result','is',null),
       ]);
 
       // ── TODAY'S PICKS ──
@@ -9170,79 +9136,44 @@ setJerryHistory(prev => {
       // 2026-08-17: rolling calendar-month windowing.
       // 2026-08-20: RESET EPOCH per user — prior sides record assumed flat
       // -110 payout on every jerry pick, but real ML/RL/total prices vary
-      // wildly. Record was misleading. Fresh start from 2026-08-20 using
-      // snapshot-locked odds where available; sides still fall back to
-      // -110 (best we have until we snapshot side odds too — separate work).
-      const SHARP_RECORD_EPOCH = '2026-08-20';
+      // 2026-09-03 RECEIPTS RECORD — SERVER-ONLY.
+      // User directive: "minimize client side things on receipts as well,
+      // if we have things client side certain users records they say
+      // will reflect what's actually happening."
+      //
+      // ALL prior client-side re-derivation of yW/yL/yUnits + monthly
+      // buckets DELETED. Records now come from daily_surface_records
+      // (written server-side by aggregate_daily_records.agg_sharp_card
+      // — the SAME logic that grades every pick through juice cap,
+      // sport filter, and cutover-aware stake sizing).
+      //
+      // Removed:
+      //   - `SHARP_RECORD_EPOCH` magic date (client-side reset marker)
+      //   - `bump()` helper (client tally with wrong stake sizing)
+      //   - `jerryHist` / `propsHist` iteration loops
+      //   - `.forEach()` on graded picks with flat 0.91 payout on sides
+      //
+      // If server row doesn't exist yet (grader hasn't run overnight
+      // yet), we show 0-0 rather than fall through to legacy math.
+      // Every user sees the SAME record because it's the SAME DB row.
       const nowD = new Date();
-      const curMonthStartRaw = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().slice(0,10);
-      const curMonthStart = curMonthStartRaw > SHARP_RECORD_EPOCH ? curMonthStartRaw : SHARP_RECORD_EPOCH;
+      const curMonthStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().slice(0,10);
       const prevMonthStart = new Date(nowD.getFullYear(), nowD.getMonth()-1, 1).toISOString().slice(0,10);
       const prevMonthEnd = new Date(nowD.getFullYear(), nowD.getMonth(), 0).toISOString().slice(0,10);
-      // Prev-month display only shown if it's ≥ epoch (else hides via total=0 check in UI)
 
       let w=0, l=0, p=0, unitsNet=0;               // current month
       let wPrev=0, lPrev=0, pPrev=0, unitsNetPrev=0;  // previous month
       let yW=0, yL=0, yP=0, yUnits=0;               // yesterday only
-      // 2026-08-25: yesterday's game_date in ET (matches the game_date stamps).
-      // 2026-08-30 FIX: prior form used `.toISOString()` which forces UTC.
-      // After 8pm ET the device is already in the next UTC day, so
-      // yesterdayET-24h returned TODAY's date and the "YESTERDAY" band
-      // silently showed today's incomplete numbers. Compute explicitly
-      // in America/New_York so the label matches the game_date stamps.
+
       const _etYMD = (d: Date) => {
-        const p: Record<string,string> = {};
+        const parts: Record<string,string> = {};
         new Intl.DateTimeFormat('en-US', {
           timeZone: 'America/New_York',
           year: 'numeric', month: '2-digit', day: '2-digit',
-        }).formatToParts(d).forEach(x => { p[x.type] = x.value; });
-        return `${p.year}-${p.month}-${p.day}`;
+        }).formatToParts(d).forEach(x => { parts[x.type] = x.value; });
+        return `${parts.year}-${parts.month}-${parts.day}`;
       };
       const yesterdayET = _etYMD(new Date(nowD.getTime() - 24*60*60*1000));
-
-      const bump = (r: any, payout: number, curBucket: boolean, isYesterday: boolean) => {
-        // Skip COVERAGE stubs (conviction=0 = un-scored sweep stub, not a real pick)
-        if (r.conviction === 0 || r.tier === 'COVERAGE') return;
-        const stake = unitsForTier(r.tier);
-        if (r.result === 'Win') {
-          const gain = payout * stake;
-          if (curBucket) { w++; unitsNet += gain; }
-          else { wPrev++; unitsNetPrev += gain; }
-          if (isYesterday) { yW++; yUnits += gain; }
-        } else if (r.result === 'Loss') {
-          const loss = 1.0 * stake;
-          if (curBucket) { l++; unitsNet -= loss; }
-          else { lPrev++; unitsNetPrev -= loss; }
-          if (isYesterday) { yL++; yUnits -= loss; }
-        } else if (r.result === 'Push') {
-          if (curBucket) p++; else pPrev++;
-          if (isYesterday) yP++;
-        }
-      };
-
-      // 2026-08-20: epoch guard — ignore ALL picks pre-2026-08-20 (before
-      // the record reset). Prevents old flat-110-assumption tallies from
-      // polluting the fresh record.
-      (jerryHist || []).forEach((r: any) => {
-        const gd = r.game_date || '';
-        if (gd < SHARP_RECORD_EPOCH) return;
-        const isY = gd === yesterdayET;
-        if (gd >= curMonthStart) bump(r, 0.91, true, isY);
-        else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, 0.91, false, isY);
-      });
-      (propsHist || []).forEach((r: any) => {
-        const gd = r.game_date || '';
-        if (gd < SHARP_RECORD_EPOCH) return;
-        const isY = gd === yesterdayET;
-        // 2026-08-29: pick real American odds for the direction the
-        // prop was on (over or under). book_line is the point line,
-        // not odds — using it here previously inflated all prop-win
-        // payouts to 0.91 (fake -110 fallback).
-        const odds = r.direction === 'over' ? r.book_over_odds : r.book_under_odds;
-        const payout = winPayoutFromAmerican(odds);
-        if (gd >= curMonthStart) bump(r, payout, true, isY);
-        else if (gd >= prevMonthStart && gd <= prevMonthEnd) bump(r, payout, false, isY);
-      });
       // 2026-09-03 SINGLE-SOURCE-OF-TRUTH REFACTOR. Prior behavior:
       // client-side re-derived yW/yL/yUnits from raw jerry_reads + props
       // with DIFFERENT stake sizing (2u tier flat) than the aggregator
