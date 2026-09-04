@@ -38,8 +38,20 @@ const TEXT_PRIMARY = THEME.text;
 const TEXT_MUTED = THEME.textDim;
 const RED = THEME.loss;
 
-const SURFACE_THRESHOLD_PCT = 60;   // Only surface yesterday if hit >=60%
-const SURFACE_MIN_SAMPLE = 5;        // ... and at least 5 resolved picks
+// 2026-09-03 SERVER-OVERRIDABLE THRESHOLDS. Prior constants were
+// hardcoded — changing them required an App Store ship. Now: on mount
+// we try to load overrides from jerry_cache.cache_key='config_recap_strip'.
+// If DB row missing/unenabled → use defaults below. Change thresholds
+// via SQL:
+//   INSERT INTO jerry_cache (cache_key, sport, data, ...)
+//   VALUES ('config_recap_strip', 'ALL', jsonb_build_object(
+//     'threshold_pct', 55, 'min_sample', 3,
+//     'min_resolved', 20, 'min_days', 3
+//   ), ...)
+const DEFAULT_SURFACE_THRESHOLD_PCT = 60;   // yesterday shown if hit >= this
+const DEFAULT_SURFACE_MIN_SAMPLE = 5;
+const DEFAULT_MIN_RESOLVED = 30;
+const DEFAULT_MIN_DAYS = 5;
 
 type Props = {
   sport: Sport;
@@ -65,8 +77,31 @@ const SPORT_FALLBACK_ORDER: Sport[] = ['MLB', 'NBA', 'NCAAB', 'NFL'];
 export const RecapStrip: React.FC<Props> = ({ sport, onTap }) => {
   const [data, setData] = useState<StripData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [cfg, setCfg] = useState<{
+    thresholdPct: number, minSample: number, minResolved: number, minDays: number
+  }>({thresholdPct: DEFAULT_SURFACE_THRESHOLD_PCT, minSample: DEFAULT_SURFACE_MIN_SAMPLE,
+      minResolved: DEFAULT_MIN_RESOLVED, minDays: DEFAULT_MIN_DAYS});
 
   useEffect(() => {
+    // Load server config overrides (once). Silently falls back to defaults
+    // if row missing / DB read fails — no crash, no flicker.
+    (async () => {
+      try {
+        const {data: rows} = await supabase.from('jerry_cache')
+          .select('data')
+          .eq('cache_key', 'config_recap_strip')
+          .limit(1);
+        const d: any = rows && rows[0]?.data;
+        if (d) {
+          setCfg({
+            thresholdPct: Number(d.threshold_pct ?? DEFAULT_SURFACE_THRESHOLD_PCT),
+            minSample:    Number(d.min_sample    ?? DEFAULT_SURFACE_MIN_SAMPLE),
+            minResolved:  Number(d.min_resolved  ?? DEFAULT_MIN_RESOLVED),
+            minDays:      Number(d.min_days      ?? DEFAULT_MIN_DAYS),
+          });
+        }
+      } catch {}
+    })();
     fetchStripData();
   }, [sport]);
 
@@ -156,14 +191,11 @@ export const RecapStrip: React.FC<Props> = ({ sport, onTap }) => {
   // 16 picks over 2 days as "30D" is mathematically true but
   // presentationally a lie. Below these thresholds we'd rather show
   // NOTHING than mislead with a small-sample number.
-  const MIN_RESOLVED = 30;   // need at least 30 graded picks to show a rate
-  const MIN_DAYS = 5;        // and at least 5 different days of data
-
   if (!data) return null;
   const l30TotalCheck = data.last30Wins + data.last30Losses;
   if (l30TotalCheck === 0) return null;          // no resolved data
-  if (l30TotalCheck < MIN_RESOLVED) return null; // sample too small to claim a rate
-  if (data.last30Days < MIN_DAYS) return null;   // too few days to call it "30D"
+  if (l30TotalCheck < cfg.minResolved) return null; // sample too small to claim a rate
+  if (data.last30Days < cfg.minDays) return null;   // too few days to call it "30D"
 
   const l30Total = data.last30Wins + data.last30Losses;
   const l30Pct = l30Total > 0 ? Math.round((data.last30Wins / l30Total) * 100) : 0;
@@ -172,7 +204,7 @@ export const RecapStrip: React.FC<Props> = ({ sport, onTap }) => {
   // Conditional yesterday surfacing
   const yResolved = data.yesterdayWins + data.yesterdayLosses;
   const yPct = yResolved > 0 ? (data.yesterdayWins / yResolved) * 100 : 0;
-  const showYesterday = yResolved >= SURFACE_MIN_SAMPLE && yPct >= SURFACE_THRESHOLD_PCT;
+  const showYesterday = yResolved >= cfg.minSample && yPct >= cfg.thresholdPct;
 
   return (
     <TouchableOpacity activeOpacity={0.85} onPress={onTap} style={styles.strip}>
