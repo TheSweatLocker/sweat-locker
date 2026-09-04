@@ -89,6 +89,83 @@ def _probe_valid_cols() -> set:
     return set(r.json()[0].keys())
 
 
+ATS_L10_FEATURES = [
+    'home_ats_l10_wins',   # last 10 ATS covers by home team
+    'home_ats_l10_losses',
+    'away_ats_l10_wins',
+    'away_ats_l10_losses',
+    'home_ou_l10_overs',   # last 10 O/U OVERs in home team's games
+    'home_ou_l10_unders',
+    'away_ou_l10_overs',
+    'away_ou_l10_unders',
+    'home_ml_l10_wins',    # last 10 ML wins by home team
+    'home_ml_l10_losses',
+    'away_ml_l10_wins',
+    'away_ml_l10_losses',
+]
+
+
+def _compute_rolling_l10(rows: list) -> dict:
+    """For each game_id, compute home_ml_l10_wins/losses etc. from the
+    prior 10 games of home_team and away_team. Runs in-memory (no extra
+    DB queries) using the same rows we already fetched for training.
+
+    Rolling stats: L10 ML W/L, L10 ATS cover/loss, L10 O/U overs/unders.
+    ATS uses spread_result column ('home_covered'|'away_covered'|'push').
+    O/U uses total_result column ('over'|'under'|'push').
+    """
+    # Sort rows by date ascending, then iterate accumulating per-team history
+    sorted_rows = sorted(rows, key=lambda r: r.get('game_date') or '')
+    team_history: dict[str, list] = {}
+    # (game_result_row, team_name, was_home) tuples in game order
+    result = {}
+    for r in sorted_rows:
+        gid = r.get('game_id')
+        gd  = r.get('game_date') or ''
+        home = r.get('home_team')
+        away = r.get('away_team')
+        home_win = r.get('home_win')
+        spread_result = (r.get('spread_result') or '').lower()  # home_covered/away_covered/push
+        total_result  = (r.get('total_result') or '').lower()   # over/under/push
+        # Snapshot BEFORE this game's outcome — that's what would be
+        # "known" to a bettor at kickoff.
+        for team, is_home in ((home, True), (away, False)):
+            if not team: continue
+            hist = team_history.get(team, [])
+            last10 = hist[-10:]
+            # ML: was this team's PREVIOUS games (as home or away)
+            ml_w = sum(1 for h in last10 if h['ml_win'])
+            ml_l = sum(1 for h in last10 if h['ml_win'] is False)
+            # ATS: did this team cover in its previous games?
+            ats_w = sum(1 for h in last10 if h['ats_covered'])
+            ats_l = sum(1 for h in last10 if h['ats_covered'] is False)
+            # OU: were this team's previous games OVERs?
+            ou_o = sum(1 for h in last10 if h['over'])
+            ou_u = sum(1 for h in last10 if h['over'] is False)
+            result.setdefault(gid, {})
+            prefix = 'home' if is_home else 'away'
+            result[gid][f'{prefix}_ml_l10_wins']    = ml_w
+            result[gid][f'{prefix}_ml_l10_losses']  = ml_l
+            result[gid][f'{prefix}_ats_l10_wins']   = ats_w
+            result[gid][f'{prefix}_ats_l10_losses'] = ats_l
+            result[gid][f'{prefix}_ou_l10_overs']   = ou_o
+            result[gid][f'{prefix}_ou_l10_unders']  = ou_u
+        # After processing, append this game's outcome to each team's history
+        if home:
+            team_history.setdefault(home, []).append({
+                'ml_win': home_win,
+                'ats_covered': (spread_result == 'home_covered') if spread_result in ('home_covered','away_covered') else None,
+                'over': (total_result == 'over') if total_result in ('over','under') else None,
+            })
+        if away:
+            team_history.setdefault(away, []).append({
+                'ml_win': (not home_win) if home_win is not None else None,
+                'ats_covered': (spread_result == 'away_covered') if spread_result in ('home_covered','away_covered') else None,
+                'over': (total_result == 'over') if total_result in ('over','under') else None,
+            })
+    return result
+
+
 MONEY_FLOW_FEATURES = [
     'sharp_ml_money',     # oddscrowd_snapshot.ml.money — % of $ on picked side
     'sharp_ml_bets',      # oddscrowd_snapshot.ml.bets  — % of tickets on picked side
@@ -155,7 +232,13 @@ def _pull_training_data(days: int) -> list:
     valid_cols = _probe_valid_cols()
     features = [c for c in FEATURE_CANDIDATES if c in valid_cols]
     print(f'  {len(features)}/{len(FEATURE_CANDIDATES)} features exist in schema')
-    select_str = 'game_id,game_date,home_win,' + ','.join(features)
+    # 2026-09-03 ATS/L10 rolling features. Add home_team/away_team/
+    # spread_result/total_result to SELECT so _compute_rolling_l10 can
+    # derive per-team rolling stats from the same fetched rows (no
+    # separate DB backfill needed). Rolling stats are POINT-IN-TIME
+    # (prior-10 only) so no leakage.
+    extra_select = 'home_team,away_team,spread_result,total_result'
+    select_str = f'game_id,game_date,home_win,{extra_select},' + ','.join(features)
     rows = []
     for off in range(0, 5000, 500):
         r = requests.get(f'{SB}/rest/v1/mlb_game_results',
@@ -185,6 +268,20 @@ def _pull_training_data(days: int) -> list:
         if snap is not None:
             money_hits += 1
     features = features + MONEY_FLOW_FEATURES
+
+    # 2026-09-03 ATS/OU/L10 rolling features. Computed in-memory from
+    # the same result set (each row gets its team's PRIOR-10 stats,
+    # zero leakage). No backfill, no extra DB queries.
+    l10_by_gid = _compute_rolling_l10(rows)
+    l10_hits = 0
+    for r in rows:
+        gid = r.get('game_id')
+        l10 = l10_by_gid.get(gid) or {}
+        for k in ATS_L10_FEATURES:
+            r[k] = l10.get(k)
+        if l10: l10_hits += 1
+    features = features + ATS_L10_FEATURES
+    print(f'  ATS/L10 rolling: {l10_hits}/{len(rows)} games populated')
     print(f'  money-flow join: {money_hits}/{len(rows)} games matched oddscrowd_snapshot')
     return rows, features
 
