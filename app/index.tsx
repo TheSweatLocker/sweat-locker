@@ -23,13 +23,43 @@ import { abbrev as teamAbbrev } from './lib/teamAbbrev';
 import { THEME, TIER_COLOR, OUTCOME_COLOR } from './theme';
 import StatusChip from './components/StatusChip';
 const ODDS_API_KEY = process.env.EXPO_PUBLIC_ODDS_API_KEY;
-const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
+const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;  // DEPRECATED — see claudeFetch below
 const BDL_API_KEY = process.env.EXPO_PUBLIC_BDL_API_KEY;
 const KENPOM_KEY = process.env.EXPO_PUBLIC_KENPOM_KEY;
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabase = createClient(
-  process.env.EXPO_PUBLIC_SUPABASE_URL,
+  SUPABASE_URL,
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
 );
+
+/**
+ * 2026-09-03 CLAUDE PROXY WRAPPER (launch-blocker cost-audit fix #1).
+ *
+ * SECURITY: prior client-side calls to api.anthropic.com used
+ * ANTHROPIC_API_KEY bundled in the IPA via EXPO_PUBLIC_* — anyone who
+ * decompiles the app can extract the key and drain the account (bad
+ * actor could rack up thousands in unlimited Claude spend overnight).
+ *
+ * This wrapper hits our Supabase edge function `claude-proxy` instead.
+ * The real ANTHROPIC_API_KEY lives ONLY in edge function secrets,
+ * server-side, not extractable. Same request/response shape so
+ * existing app code that parses data.content[].text keeps working.
+ *
+ * Proxy defenses: model allowlist (Haiku 4.5 only), max_tokens cap,
+ * prompt size limit, 45s timeout, rate-limit hook stub (wired later).
+ */
+async function claudeFetch(body: any): Promise<Response> {
+  return fetch(`${SUPABASE_URL}/functions/v1/claude-proxy`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      // Anon key so edge function can verify request came from an app
+      // client (not a random public URL fetch). Not the API key.
+      'Authorization': `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+}
 const HRB = 'Hard Rock';
 
 /**
@@ -4731,20 +4761,12 @@ CRITICAL: Your entire response must be valid JSON starting with { and ending wit
         })
       : _fallbackParlayPrompt;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 2000,
-        tools: [{type: 'web_search_20250305', name: 'web_search'}],
-        messages: [{role: 'user', content: prompt}]
-      })
+    // 2026-09-03: via claudeFetch proxy — key no longer in binary
+    const response = await claudeFetch({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2000,
+      tools: [{type: 'web_search_20250305', name: 'web_search'}],
+      messages: [{role: 'user', content: prompt}]
     });
     const data = await response.json();
     const text = data?.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
@@ -4800,15 +4822,10 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         ? fillTemplate(_serverRecapTpl, { pick: bet.pick, sport: bet.sport, result, wins, losses })
         : _fallbackRecapPrompt;
 
-      const response = await fetch('https://api.anthropic.com/v1/messages',{
-        method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'x-api-key':ANTHROPIC_API_KEY,
-          'anthropic-version':'2023-06-01',
-          'anthropic-dangerous-direct-browser-access':'true'
-        },
-        body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1000,messages:[{role:'user',content:prompt}]})
+      // 2026-09-03: via claudeFetch proxy — key no longer in binary
+      const response = await claudeFetch({
+        model:'claude-haiku-4-5-20251001', max_tokens:1000,
+        messages:[{role:'user',content:prompt}]
       });
       const data = await response.json();
       const text = data?.content?.[0]?.text || '';
@@ -5647,19 +5664,12 @@ const fetchDailyBestBet = async () => {
           try {
             const ctx = supabaseCache.data.context || {};
             const gameStr = `${supabaseCache.data.game.away_team} @ ${supabaseCache.data.game.home_team}`;
-            const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01',
-                'anthropic-dangerous-direct-browser-access': 'true'
-              },
-              body: JSON.stringify({
-                model: 'claude-haiku-4-5-20251001',
-                max_tokens: 200,
-                ...(supabaseCache.data.sport === 'NBA' || supabaseCache.data.sport === 'NHL' ? {tools:[{type:'web_search_20250305',name:'web_search'}]} : {}),
-                messages: [{
+            // 2026-09-03: via claudeFetch proxy — key no longer in binary
+            const aiResp = await claudeFetch({
+              model: 'claude-haiku-4-5-20251001',
+              max_tokens: 200,
+              ...(supabaseCache.data.sport === 'NBA' || supabaseCache.data.sport === 'NHL' ? {tools:[{type:'web_search_20250305',name:'web_search'}]} : {}),
+              messages: [{
                   role: 'user',
                   content: `CRITICAL: TODAY'S DATE IS ${new Date().toLocaleDateString('en-US', {timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'})}. Use this date, not your internal date. You are Jerry, a sharp sports analyst for The Sweat Locker app. You HAVE all the data you need below — do NOT say you lack data, do NOT offer to verify, do NOT hedge. Write with full confidence using the specific numbers provided. Sport is ${supabaseCache.data.sport} — only reference metrics relevant to that sport.
 
@@ -5694,7 +5704,6 @@ Rules:
 - For NBA: if data is missing, use web search for tonight's news — do NOT say "no data available"
 - Sound like a sharp friend who already did the homework`
                 }]
-              })
             });
             const aiData = await aiResp.json();
             const narrative = aiData?.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
@@ -6892,25 +6901,13 @@ ${universalRules}
 
 ${dataQualityNote}`;
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-      const response = await fetch('https://api.anthropic.com/v1/messages',{
-        method:'POST',
-        signal: controller.signal,
-        headers:{
-          'Content-Type':'application/json',
-          'x-api-key':ANTHROPIC_API_KEY,
-          'anthropic-version':'2023-06-01',
-          'anthropic-dangerous-direct-browser-access':'true'
-        },
-        body:JSON.stringify({
-  model:'claude-haiku-4-5-20251001',
-  max_tokens:1000,
-  ...(sport === 'NBA' || sport === 'NFL' || sport === 'MLB' || sport === 'UFC' || sport === 'NHL' ? {tools:[{type:'web_search_20250305',name:'web_search'}]} : {}),
-  messages:[{role:'user',content:prompt}]
-})
+      // 2026-09-03: via claudeFetch proxy — key no longer in binary
+      const response = await claudeFetch({
+        model:'claude-haiku-4-5-20251001',
+        max_tokens:1000,
+        ...(sport === 'NBA' || sport === 'NFL' || sport === 'MLB' || sport === 'UFC' || sport === 'NHL' ? {tools:[{type:'web_search_20250305',name:'web_search'}]} : {}),
+        messages:[{role:'user',content:prompt}]
       });
-      clearTimeout(timeout);
       const data = await response.json();
       //console.log('Jerry response status:', response.status);
       //console.log('Jerry response data:', JSON.stringify(data));
@@ -7440,21 +7437,14 @@ if(mkt.key === 'pitcher_props') {
       // Generate Jerry narrative
       let narrative = '';
       try {
-        const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model: 'claude-haiku-4-5-20251001',
-            max_tokens: 120,
-            messages: [{
-              role: 'user',
-              content: `You are Jerry. This is today's single best prop — the one with the deepest analytical edge.\n\nPlayer: ${best.player}\nMarket: ${best.market} ${best.best_side} \nEV: ${best.ev?.toFixed(1)}%\nMatchup signals: ${best.signals.join(', ') || 'Strong EV edge'}\nGame: ${best.game}\n\nWrite 2 sentences MAX explaining WHY this prop has edge. Reference the specific matchup data. End with the specific play. Never say 'bet'. Sound like a sharp friend who found real value.`
-            }]
-          })
+        // 2026-09-03: via claudeFetch proxy — key no longer in binary
+        const aiResp = await claudeFetch({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 120,
+          messages: [{
+            role: 'user',
+            content: `You are Jerry. This is today's single best prop — the one with the deepest analytical edge.\n\nPlayer: ${best.player}\nMarket: ${best.market} ${best.best_side} \nEV: ${best.ev?.toFixed(1)}%\nMatchup signals: ${best.signals.join(', ') || 'Strong EV edge'}\nGame: ${best.game}\n\nWrite 2 sentences MAX explaining WHY this prop has edge. Reference the specific matchup data. End with the specific play. Never say 'bet'. Sound like a sharp friend who found real value.`
+          }]
         });
         const aiData = await aiResp.json();
         narrative = aiData?.content?.[0]?.text || 'Jerry sees real value here based on the matchup data.';
@@ -8246,14 +8236,8 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
             ? `Mild edge. Cautious and analytical.`
               : `No real edge. Advise passing.`;
           //console.log('AI Jerry calling for:', prop.player, grade);
-                              const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': ANTHROPIC_API_KEY,
-              'anthropic-version': '2023-06-01',
-            },
-            body: JSON.stringify({
+                              // 2026-09-03: via claudeFetch proxy — key no longer in binary
+                              const aiResp = await claudeFetch({
               model: 'claude-haiku-4-5-20251001',
               max_tokens: 120,
               messages: [{
@@ -8498,7 +8482,6 @@ Sport-specific guidance (use only when that sport's data is present):
 If no technical data available, lead with the EV and book consensus signal.`;
                 })()
               }]
-            })
           });
           const aiData = await aiResp.json();
           //console.log('AI Jerry response:', JSON.stringify(aiData));
