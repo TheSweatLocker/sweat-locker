@@ -5351,8 +5351,9 @@ const fetchJerryRecord = async () => {
       //   v_prop_track_record: per-tier W/L for 7d/30d/90d
       //   surface_records: per-sport rollups (redundant safety net)
       // Down from 20K rows scanned → 2-3 rows read. Same numbers.
-      const [{data: vRows}, {data: srRows}, {data: pendingRows}] = await Promise.all([
+      const [{data: vRows}, {data: byTypeRows}, {data: srRows}, {data: pendingRows}] = await Promise.all([
         supabase.from('v_prop_track_record').select('*'),
+        supabase.from('v_prop_track_record_by_type').select('*'),
         supabase.from('surface_records')
           .select('window_key,wins,losses,pushes')
           .eq('sport','MLB').eq('surface','prop'),
@@ -5368,6 +5369,17 @@ const fetchJerryRecord = async () => {
         if (tier && pipelineProps.byTier[tier]) {
           pipelineProps.byTier[tier].wins   = row.wins_30d || 0;
           pipelineProps.byTier[tier].losses = row.losses_30d || 0;
+        }
+      }
+
+      // 2026-09-03: byType breakdown wired from v_prop_track_record_by_type.
+      // View shape: (tier, prop_type, wins, losses, n, pct) — sum PRIME+STRONG
+      // per prop_type into byType (which is what the UI chip displays).
+      for (const row of (byTypeRows || []) as any[]) {
+        const pt = row.prop_type;
+        if (pt && pipelineProps.byType[pt]) {
+          pipelineProps.byType[pt].wins   += row.wins || 0;
+          pipelineProps.byType[pt].losses += row.losses || 0;
         }
       }
 
@@ -5400,10 +5412,11 @@ const fetchJerryRecord = async () => {
       // (sport=MLB, surface=dawg) instead of paginating 1500 daily_dawg
       // rows per user per open. Same tier-window numbers, ~99% fewer
       // rows. Pending count via head-only count (no row payload).
-      const [{data: srRows}, {count: pendingCount}] = await Promise.all([
+      const [{data: srRows}, {data: byTierRows}, {count: pendingCount}] = await Promise.all([
         supabase.from('surface_records')
           .select('window_key,wins,losses,pushes')
           .eq('sport','MLB').eq('surface','dawg'),
+        supabase.from('v_dawg_track_record_by_tier').select('*'),
         supabase.from('daily_dawg')
           .select('id', {count: 'exact', head: true})
           .is('result', null),
@@ -5420,8 +5433,15 @@ const fetchJerryRecord = async () => {
       dawg.last30.losses = d30.losses || 0;
       dawg.last7.wins    = d7.wins || 0;
       dawg.last7.losses  = d7.losses || 0;
-      // byTier: skip for now — surface_records doesn't split by tier for dawg.
-      // If we need it, a v_dawg_by_tier view is a small follow-up.
+      // 2026-09-03: byTier wired from v_dawg_track_record_by_tier view
+      // (server-computed 90d rollup — see migration 20260904b).
+      for (const row of (byTierRows || []) as any[]) {
+        const tier = row.tier;
+        if (tier && dawg.byTier[tier]) {
+          dawg.byTier[tier].wins   = row.wins || 0;
+          dawg.byTier[tier].losses = row.losses || 0;
+        }
+      }
     } catch (e) {}
     // Legacy shape for existing DOD render (dawg.wins/losses/pending) — preserves
     // the existing tier row + lifetime headline. New drill-down uses dawg.last30/last7.
