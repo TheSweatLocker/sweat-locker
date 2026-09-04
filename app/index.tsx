@@ -33,6 +33,41 @@ const supabase = createClient(
 );
 
 /**
+ * 2026-09-03 ODDS PROXY WRAPPER (launch-blocker cost-audit fix #2).
+ *
+ * SECURITY: 13 client sites used ODDS_API_KEY (EXPO_PUBLIC_*, bundled
+ * in IPA — extractable from any decompiled build). Anyone with the
+ * key can drain the Odds API plan. This wrapper hits the Supabase
+ * edge function `odds-proxy` which enforces:
+ *   1. Endpoint allowlist (no arbitrary URLs)
+ *   2. Server-side ODDS_API_KEY (never in binary)
+ *   3. Response cache (60-300s TTL depending on endpoint) — 1000 users
+ *      refreshing = 1 upstream credit spent, kills per-user cost burn
+ *
+ * Same request/response shape as axios.get to theoddsapi:
+ *   const r = await oddsFetch('/v4/sports/baseball_mlb/odds', {
+ *     regions: 'us,us2', markets: 'spreads,totals,h2h', ...
+ *   });
+ *   r.data → same array/object theoddsapi returned
+ * Matches axios shape so existing r.data reads work unchanged.
+ */
+async function oddsFetch(endpoint: string, params: Record<string, any> = {}):
+    Promise<{ data: any; status: number; ok: boolean }> {
+  const resp = await fetch(`${SUPABASE_URL}/functions/v1/odds-proxy`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
+    },
+    body: JSON.stringify({ endpoint, params }),
+  });
+  const text = await resp.text();
+  let data: any = null;
+  try { data = JSON.parse(text); } catch { data = text; }
+  return { data, status: resp.status, ok: resp.ok };
+}
+
+/**
  * 2026-09-03 CLAUDE PROXY WRAPPER (launch-blocker cost-audit fix #1).
  *
  * SECURITY: prior client-side calls to api.anthropic.com used
@@ -2218,14 +2253,11 @@ useEffect(() => {
       // sport_registry). UFC excluded because Odds API MMA endpoint uses a
       // different market schema this function doesn't handle.
       if(!SPORTS.includes(sport) || sport === 'UFC') return [];
-      const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
-  params: {
-    apiKey: ODDS_API_KEY,
+      const r = await oddsFetch('/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
     regions: 'us,us2',
     markets: 'spreads,totals,h2h',
     oddsFormat: 'american',
     bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars'
-  }
 });
       const evOpps=[];
       r.data.forEach(game=>{
@@ -2276,9 +2308,8 @@ setEvData(evOpps.slice(0,20));
   const fetchSharp = async (sport=sharpSport) => {
     setSharpLoading(true);
     try {
-      const r=await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds',{
-        params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:'spreads,h2h',oddsFormat:'american',bookmakers:'hardrockbet,draftkings,fanduel,betmgm,caesars'}
-      });
+      const r=await oddsFetch('/v4/sports/'+SPORT_KEYS[sport]+'/odds', {regions:'us,us2',markets:'spreads,h2h',oddsFormat:'american',bookmakers:'hardrockbet,draftkings,fanduel,betmgm,caesars'
+});
       const moves=r.data.map(game=>{
         const spreads=(game.bookmakers||[]).map(bm=>{
           const s=bm.markets&&bm.markets.find(m=>m.key==='spreads');
@@ -2300,9 +2331,8 @@ setEvData(evOpps.slice(0,20));
   const fetchOdds = async (sport=oddsSport) => {
     setOddsLoading(true);
     try {
-      const r=await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds',{
-        params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:'spreads,totals,h2h',oddsFormat:'american',bookmakers:'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,bet365'}
-      });
+      const r=await oddsFetch('/v4/sports/'+SPORT_KEYS[sport]+'/odds', {regions:'us,us2',markets:'spreads,totals,h2h',oddsFormat:'american',bookmakers:'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,bet365'
+});
       setOddsData(r.data);
     }catch(e){setOddsData([]);}
     setOddsLoading(false);setRefreshing(false);
@@ -2388,15 +2418,12 @@ setEvData(evOpps.slice(0,20));
       }
 
       // Fetch odds from Odds API and merge
-      const oddsResp = await axios.get('https://api.the-odds-api.com/v4/sports/baseball_mlb/odds', {
-        params: {
-          apiKey: ODDS_API_KEY,
+      const oddsResp = await oddsFetch('/v4/sports/baseball_mlb/odds', {
           regions: 'us,us2',
           markets: 'spreads,totals,h2h',
           oddsFormat: 'american',
           bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars,williamhill_us,bet365'
-        }
-      });
+});
 
       // Build team name normalizer for matching
       const normalizeMLB = (name: string) => name?.toLowerCase()
@@ -2459,13 +2486,10 @@ setEvData(evOpps.slice(0,20));
       // width. HRB is still the "primary" book for the tile grid because
       // it's contractual, but the panel now shows everyone.
       const oddsResults = await Promise.all(allSportKeys.map(sk =>
-        axios.get('https://api.the-odds-api.com/v4/sports/' + sk + '/odds', {
-          params: {
-            apiKey: ODDS_API_KEY,
-            regions: 'us,us2',
-            markets: 'spreads,totals,h2h',
-            oddsFormat: 'american',
-          }
+        oddsFetch('/v4/sports/' + sk + '/odds', {
+          regions: 'us,us2',
+          markets: 'spreads,totals,h2h',
+          oddsFormat: 'american',
         }).catch(() => ({data: []}))
       ));
       const rData = oddsResults.flatMap(r => r.data || []);
@@ -2539,15 +2563,13 @@ setEvData(evOpps.slice(0,20));
     if(!PROP_MARKETS[sport]){setPropsData([]);return;}
     setPropsLoading(true);
     try {
-      const gamesResp=await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds',{
-        params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:'h2h',oddsFormat:'american'}
-      });
+      const gamesResp=await oddsFetch('/v4/sports/'+SPORT_KEYS[sport]+'/odds', {regions:'us,us2',markets:'h2h',oddsFormat:'american'
+});
       const allProps=[];
       for(const game of gamesResp.data.slice(0,8)){
         try{
-          const pr=await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/events/'+game.id+'/odds',{
-            params:{apiKey:ODDS_API_KEY,regions:'us,us2',markets:PROP_MARKETS[sport].join(','),oddsFormat:'american',bookmakers:'hardrockbet,draftkings,fanduel,betmgm'}
-          });
+          const pr=await oddsFetch('/v4/sports/'+SPORT_KEYS[sport]+'/events/'+game.id+'/odds', {regions:'us,us2',markets:PROP_MARKETS[sport].join(','),oddsFormat:'american',bookmakers:'hardrockbet,draftkings,fanduel,betmgm'
+});
           if(pr.data&&pr.data.bookmakers&&pr.data.bookmakers.length){
             const playerMap={};
             pr.data.bookmakers.forEach(bm=>{
@@ -2915,9 +2937,8 @@ if(r.data && r.data.data) {
   const fetchScores = async (sport) => {
     if(scoresCache[sport] && scoresCache[`${sport}_time`] && (Date.now() - scoresCache[`${sport}_time`]) < 10*60*1000) return scoresCache[sport];
     try {
-      const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/scores', {
-        params: {apiKey: ODDS_API_KEY, daysFrom: 3, dateFormat: 'iso'}
-      });
+      const r = await oddsFetch('/v4/sports/'+SPORT_KEYS[sport]+'/scores', {daysFrom: 3, dateFormat: 'iso'
+});
       //console.log('Scores raw count:', r.data?.length);
       const completed = (r.data||[]).filter(g => g.completed);
       //console.log('Scores fetched:', sport, 'total:', r.data?.length, 'completed:', completed.length);
@@ -5526,15 +5547,12 @@ const fetchJerryRecord = async () => {
   const fetchModelEdgeGames = async (sport = 'NCAAB') => {
   setModelEdgeLoading(true);
   try {
-    const r = await axios.get('https://api.the-odds-api.com/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
-      params: {
-        apiKey: ODDS_API_KEY,
+    const r = await oddsFetch('/v4/sports/'+SPORT_KEYS[sport]+'/odds', {
         regions: 'us,us2',
         markets: 'spreads,totals,h2h',
         oddsFormat: 'american',
         bookmakers: 'hardrockbet,draftkings,fanduel,espnbet,betmgm,caesars'
-      }
-    });
+});
     const mapped = (r.data||[]).map(g => ({
       ...g,
       away_team: sport==='NCAAB' ? stripMascot(g.away_team) : g.away_team,
@@ -6945,15 +6963,12 @@ ${dataQualityNote}`;
   try {
     const sportKey = SPORT_KEYS[sport];
     if(!sportKey) return;
-    const r = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/events/${game.id}/odds`, {
-      params: {
-        apiKey: ODDS_API_KEY,
+    const r = await oddsFetch(`/v4/sports/${sportKey}/events/${game.id}/odds`, {
         regions: 'us,us2',
         markets: 'alternate_spreads,alternate_totals,h2h_1st_5_innings,totals_1st_5_innings,pitcher_props',
         oddsFormat: 'american',
         bookmakers: 'hardrockbet,draftkings,fanduel,betmgm'
-      }
-    });
+});
     const bookmakers = r.data?.bookmakers || [];
     const altSpreads = [];
     const altTotals = [];
@@ -7045,16 +7060,13 @@ if(mkt.key === 'pitcher_props') {
       const gameTime = new Date(game.commence_time);
       const fetchTime = new Date(gameTime.getTime() - 24*60*60*1000);
       const dateStr = fetchTime.toISOString().replace('.000Z', 'Z');
-      const r = await axios.get(`https://api.the-odds-api.com/v4/historical/sports/${sportKey}/odds/`, {
-        params: {
-          apiKey: ODDS_API_KEY,
+      const r = await oddsFetch(`/v4/historical/sports/${sportKey}/odds/`, {
           date: dateStr,
           regions: 'us,us2',
           markets: 'spreads,totals,h2h',
           dateFormat: 'iso',
-          oddsFormat: 'american',
-        }
-      });
+          oddsFormat: 'american'
+});
       const games = r.data?.data || [];
       const match = games.find(g =>
         fuzzyMatch(g.away_team, game.away_team) > 0.7 &&
@@ -7798,9 +7810,8 @@ setPropJerryLoading(true);
   sport==='UFC' ? 'fighter_total_rounds,fighter_ko_tko,fighter_decision,fighter_method_of_victory' :
   'player_points,player_rebounds,player_assists';
 
-      const resp = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/events`, {
-        params: {apiKey: ODDS_API_KEY, dateFormat: 'iso'}
-      });
+      const resp = await oddsFetch(`/v4/sports/${sportKey}/events`, {dateFormat: 'iso'
+});
       // Filter to today's games only (within next 16 hours to catch late west coast starts)
       const now = new Date();
       const cutoff = now.getTime() + 16 * 60 * 60 * 1000;
@@ -7835,14 +7846,11 @@ setPropJerryLoading(true);
 
       await Promise.all(scoredEvents.slice(0,15).map(async event => {
         try {
-          const propResp = await axios.get(`https://api.the-odds-api.com/v4/sports/${sportKey}/events/${event.id}/odds`, {
-            params: {
-              apiKey: ODDS_API_KEY,
+          const propResp = await oddsFetch(`/v4/sports/${sportKey}/events/${event.id}/odds`, {
               regions: 'us,us2',
               markets,
-              oddsFormat: 'american',
-            }
-          });
+              oddsFormat: 'american'
+});
           const bookmakers = propResp.data?.bookmakers || [];
           bookmakers.forEach(bm => {
             bm.markets?.forEach(mkt => {
