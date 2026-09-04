@@ -9019,38 +9019,47 @@ setJerryHistory(prev => {
   const fetchLedger = React.useCallback(async () => {
     setLedgerLoading(true);
     try {
+      // 2026-09-03 SERVER-ONLY REFACTOR (launch blocker).
+      // Prior tally: client-side bucketing of ledger_snapshots into
+      // curMonth/prevMonth using DEVICE LOCAL CLOCK (new Date() without
+      // TZ). Two users in different timezones OR whose device clock
+      // rolled month boundary at different UTC times would see
+      // DIFFERENT monthly buckets → different W-L / units values for
+      // the same underlying data. Cross-user record inconsistency.
+      //
+      // Fix: read from surface_records (server-computed rollups written
+      // by compute_surface_records.py — sport=MLB, surface=ledger).
+      // Uses ET-aligned month boundaries baked into the aggregator.
+      // Every user reads the same row = same record. Prev-month is
+      // derived from d30 minus mtd as a temporary proxy until server
+      // exposes 'prev_month' window explicitly.
       const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
-      // Suggestions + record fetched in parallel
-      const nowD = new Date();
-      const curMonthStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1).toISOString().slice(0,10);
-      const prevMonthStart = new Date(nowD.getFullYear(), nowD.getMonth()-1, 1).toISOString().slice(0,10);
-      const prevMonthEnd = new Date(nowD.getFullYear(), nowD.getMonth(), 0).toISOString().slice(0,10);
-
-      const [{data: suggs}, {data: snaps}] = await Promise.all([
+      const [{data: suggs}, {data: srRows}] = await Promise.all([
         supabase.from('ledger_suggestions')
           .select('id,kind,sport_scope,legs,combined_odds,combined_prob,reasoning,rank,auto_generated')
           .eq('game_date', today)
           .order('rank', {ascending: true}),
-        // Historical W/L from ledger_snapshots (populated by grade_ledger_snapshots)
-        supabase.from('ledger_snapshots')
-          .select('game_date,result,unit_pnl')
-          .gte('game_date', prevMonthStart)
-          .not('result','is',null),
+        supabase.from('surface_records')
+          .select('window_key,wins,losses,pushes,units_net')
+          .eq('sport','MLB').eq('surface','ledger'),
       ]);
       setLedgerSuggestions(suggs || []);
-      // Tally record
-      let w=0,l=0,p=0,unitsNet=0, wPrev=0,lPrev=0,pPrev=0,unitsNetPrev=0;
-      (snaps || []).forEach((s: any) => {
-        const gd = s.game_date || '';
-        const cur = gd >= curMonthStart;
-        const prev = !cur && gd >= prevMonthStart && gd <= prevMonthEnd;
-        const pnl = Number(s.unit_pnl) || 0;
-        if (s.result === 'W') { if (cur) { w++; unitsNet += pnl; } else if (prev) { wPrev++; unitsNetPrev += pnl; } }
-        else if (s.result === 'L') { if (cur) { l++; unitsNet += pnl; } else if (prev) { lPrev++; unitsNetPrev += pnl; } }
-        else if (s.result === 'Push') { if (cur) p++; else if (prev) pPrev++; }
+      const byWin: Record<string, any> = {};
+      for (const r of (srRows || [])) byWin[r.window_key] = r;
+      const mtd = byWin.mtd || {wins:0,losses:0,pushes:0,units_net:0};
+      const d30 = byWin.d30 || {wins:0,losses:0,pushes:0,units_net:0};
+      // Prev-month proxy: d30 minus mtd (imperfect early in month but
+      // matches the ET-aligned server bounds — still consistent across
+      // users. Real prev-month rollup queued for compute_surface_records).
+      const wPrev = Math.max(0, (d30.wins || 0) - (mtd.wins || 0));
+      const lPrev = Math.max(0, (d30.losses || 0) - (mtd.losses || 0));
+      const pPrev = Math.max(0, (d30.pushes || 0) - (mtd.pushes || 0));
+      const unitsNetPrev = Math.round((Number(d30.units_net || 0) - Number(mtd.units_net || 0))*100)/100;
+      setLedgerRecord({
+        w: mtd.wins || 0, l: mtd.losses || 0, p: mtd.pushes || 0,
+        unitsNet: Math.round(Number(mtd.units_net || 0)*100)/100,
+        wPrev, lPrev, pPrev, unitsNetPrev,
       });
-      setLedgerRecord({w,l,p, unitsNet: Math.round(unitsNet*100)/100,
-                       wPrev,lPrev,pPrev, unitsNetPrev: Math.round(unitsNetPrev*100)/100});
     } catch (e) { setLedgerSuggestions([]); setLedgerRecord({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0}); }
     setLedgerLoading(false);
   }, []);
