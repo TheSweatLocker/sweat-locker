@@ -193,6 +193,30 @@ def resolve_ncaaf_team(raw_name: str) -> Optional[str]:
                 if candidate in by_nick:
                     return by_nick[candidate]
 
+    # 2026-09-04 MASCOT-STRIP FALLBACK. Odds API returns names like
+    # "Eastern Illinois Panthers", "Bryant Bulldogs", "Fordham Rams".
+    # If nothing above matched, try stripping the trailing mascot
+    # token(s) and re-checking the base name against by_key/by_location.
+    # Prevents next-day dupes with "TEAM" vs "TEAM MASCOT" game_ids
+    # that used to accumulate (26 dupes on 9/4-9/13 slate; see
+    # ncaaf_dedup_2026_09_04.py). Root cause instead of daily cleanup.
+    if len(tokens) >= 2:
+        for tail_len in (3, 2, 1):
+            if len(tokens) > tail_len:
+                base = ' '.join(tokens[:-tail_len])
+                # Try exact match on base
+                if base in by_key: return by_key[base]
+                # Then location substring on base
+                for loc_n, canon in by_loc.items():
+                    if not loc_n: continue
+                    if loc_n == base:
+                        return canon
+                    if (loc_n in base or base in loc_n) and (
+                        len(min(loc_n, base, key=len)) >= 8 or
+                        ' ' in min(loc_n, base, key=len)
+                    ):
+                        return canon
+
     return None
 
 
