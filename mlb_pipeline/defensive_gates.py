@@ -964,7 +964,89 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # totals via the coin-flip path.
     if sport == 'NCAAF':
         pp = apply_ncaaf_total_lr_override(pp, ctx)
+    # 2026-09-03 BADGE-CONFLICT GATES (badge audit fixes #1 + #2):
+    # Silent contradictions between chips on the same game card.
+    # These gates catch pipeline-side contradictions BEFORE they render.
+    pp = apply_vault_fade_dissent_gate(pp, ctx)
+    pp = apply_trap_game_gate(pp, ctx, sport=sport)
     pp = apply_publish_gate(pp, ctx)
+    return pp
+
+
+def apply_vault_fade_dissent_gate(pp, ctx):
+    """Badge-audit fix #1 (2026-09-03): when a Vault matched-pattern is
+    FADE on the same side as primary_play, the LIST renders both
+    'PRIME · Team ML' AND '⚠️ FADE-HOME' side-by-side. Direct
+    contradiction. Fix: demote pp tier to COVERAGE (LOW CONVICTION chip
+    + still visible in game detail) when Vault says fade our own side.
+
+    Vault matched_patterns are attached by attach_vault_matches.py to
+    ctx.matched_patterns[]. Each item has direction (BACK|FADE) + side."""
+    try:
+        if not (pp and isinstance(pp, dict)): return pp
+        if pp.get('tier') not in ('PRIME', 'STRONG'): return pp
+        mp = ctx.get('matched_patterns') or []
+        if not isinstance(mp, list) or not mp: return pp
+        top = mp[0] if isinstance(mp[0], dict) else {}
+        direction = str(top.get('direction') or '').upper()
+        vault_side = str(top.get('side') or '').upper()
+        pp_side = str(pp.get('side') or '').upper()
+        # Only demote when Vault FADES the side pp is backing
+        if direction == 'FADE' and pp_side and vault_side and \
+                (pp_side == vault_side or pp_side in vault_side or vault_side in pp_side):
+            pp['_pre_vault_tier'] = pp.get('tier')
+            pp['tier'] = 'COVERAGE'
+            pp['_vault_dissent'] = {
+                'pattern_key': top.get('key') or top.get('pattern_key'),
+                'reason': f'Vault pattern FADES same side as pick ({vault_side}) — demoted',
+            }
+            pp['audit_note'] = 'Vault FADE dissent on same side — coverage'
+    except Exception:
+        pass
+    return pp
+
+
+def apply_trap_game_gate(pp, ctx, sport='NCAAF'):
+    """Badge-audit fix #2 (2026-09-03): NCAAF trap-game rule (top-10
+    favorite laying ≥17 vs unranked) fires as a fade-the-fav badge on
+    the LIST. But if pp.tier is PRIME/STRONG on the favorite, LIST
+    renders 'PRIME · Alabama -18.5' next to '⚠️ TRAP GAME' — direct
+    contradiction (one says back, one says fade). Fix: when trap gate
+    fires on our pp side, demote to COVERAGE."""
+    if sport != 'NCAAF': return pp
+    try:
+        if not (pp and isinstance(pp, dict)): return pp
+        if pp.get('tier') not in ('PRIME', 'STRONG'): return pp
+        home_rank = ctx.get('home_ap_rank')
+        away_rank = ctx.get('away_ap_rank')
+        spread = ctx.get('close_spread')
+        # Home is top-10 favorite (spread <= -17) with unranked away
+        try: spread = float(spread) if spread is not None else None
+        except (TypeError, ValueError): spread = None
+        try: hr = int(home_rank) if home_rank is not None else None
+        except (TypeError, ValueError): hr = None
+        try: ar = int(away_rank) if away_rank is not None else None
+        except (TypeError, ValueError): ar = None
+        home_is_trap = (hr is not None and hr <= 10 and (ar is None or ar > 25)
+                        and spread is not None and spread <= -17)
+        # Away is top-10 favorite laying 17+ (positive close_spread from home perspective)
+        away_is_trap = (ar is not None and ar <= 10 and (hr is None or hr > 25)
+                        and spread is not None and spread >= 17)
+        pp_side = str(pp.get('side') or '').upper()
+        pp_type = str(pp.get('type') or '').lower()
+        # Only demote when pp backs the trap-favorite side
+        if home_is_trap and pp_side == 'HOME' and pp_type in ('ml', 'rl'):
+            pp['_pre_trap_tier'] = pp.get('tier')
+            pp['tier'] = 'COVERAGE'
+            pp['_trap_dissent'] = f'NCAAF top-10 home fav laying {abs(spread):.1f} vs unranked — trap fade'
+            pp['audit_note'] = 'NCAAF TRAP GAME on home fav — coverage'
+        elif away_is_trap and pp_side == 'AWAY' and pp_type in ('ml', 'rl'):
+            pp['_pre_trap_tier'] = pp.get('tier')
+            pp['tier'] = 'COVERAGE'
+            pp['_trap_dissent'] = f'NCAAF top-10 away fav laying {spread:.1f} vs unranked — trap fade'
+            pp['audit_note'] = 'NCAAF TRAP GAME on away fav — coverage'
+    except Exception:
+        pass
     return pp
 
 

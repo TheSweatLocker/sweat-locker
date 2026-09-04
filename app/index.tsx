@@ -13616,13 +13616,17 @@ setJerryHistory(prev => {
     }
   }
 
-  // 💰 Sharp $ — fires when splits_summary shows 2+ sources confirmed
-  // on any surface. Universal signal, no sport gate.
+  // 💰 3-Source Triple — fires when splits_summary shows all 3 sharp
+  // sources agree on any market. Renamed 2026-09-03 from "SHARP $" to
+  // "3-SRC TRIPLE" per badge-audit fix #3. Prior label collided with
+  // DETAIL Money Flow "SHARP" chip which uses a per-market divergence
+  // gate (not source-count) — same word, different trigger, user read
+  // as "the app changed its mind" between LIST and DETAIL.
   const _ss: any = ctxAny?.splits_summary;
   const _tc = Array.isArray(_ss?.triple_confirmed) ? _ss.triple_confirmed : [];
   if (_tc.length > 0) {
     _sweatBadges.push(<StatusChip key="sh" variant="custom" color={THEME.hrb}
-                                   icon="💰" label="SHARP $" />);
+                                   icon="💰" label="3-SRC TRIPLE" />);
   }
 
   // 🐕 Home Div Dawg (NFL) — home team is a divisional underdog.

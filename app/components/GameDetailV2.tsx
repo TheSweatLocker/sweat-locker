@@ -333,7 +333,7 @@ export default function GameDetailV2({
       />
 
       <ScrollView style={{flex: 1}} contentContainerStyle={{paddingBottom: 24}}>
-        <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} />
+        <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} jerrySynthesis={jerrySynthesis} />
         <LosingMarketChips ctx={ctx} />
         <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} synthesis={jerrySynthesis} />
         <AlignmentStrip ctx={ctx} />
@@ -512,14 +512,36 @@ function StickyHeader({away, home, time, venue, onClose}: any) {
 }
 
 // ─── HERO VERDICT ───────────────────────────────────────────────────────
-function VerdictCard({ctx, awayTeam, homeTeam, sport}: any) {
-  const play = ctx?.primary_play;
+function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
+  let play = ctx?.primary_play;
+  // 2026-09-03 JERRY FALLBACK (badge audit fix #4).
+  // Prior behavior: if primary_play was null → showed "No primary play
+  // surfaced for this game." But the LIST card synthesizes a tier chip
+  // from jerry_reads when pp is missing (index.tsx:13567-13577). Result:
+  // user taps a STRONG chip on the LIST, lands on an EMPTY verdict.
+  // Reads as a bug. Fix: mirror the LIST behavior — build a minimal
+  // primary_play from jerrySynthesis when pp is missing, so DETAIL
+  // shows what LIST already promised.
   if (!play || typeof play !== 'object') {
-    return (
-      <View style={styles.verdict}>
-        <Text style={styles.verdictNoPlay}>No primary play surfaced for this game.</Text>
-      </View>
-    );
+    if (jerrySynthesis && jerrySynthesis.call_text) {
+      const conv = Number(jerrySynthesis.conviction) || 55;
+      const jerryTier = conv >= 80 ? 'PRIME' : conv >= 65 ? 'STRONG' : 'LEAN';
+      play = {
+        type: jerrySynthesis.call_market || 'ml',
+        tier: jerryTier,
+        side: jerrySynthesis.call_side || 'HOME',
+        label: jerrySynthesis.call_text,
+        sub: `Jerry read · ${conv}% confidence`,
+        conviction: conv,
+        _engine: 'jerry_synthesis',
+      };
+    } else {
+      return (
+        <View style={styles.verdict}>
+          <Text style={styles.verdictNoPlay}>No primary play surfaced for this game.</Text>
+        </View>
+      );
+    }
   }
   // 2026-09-03 REVISED PER USER: every game gets a take shown in game
   // detail — "not picking is wild, feels like there should be something
