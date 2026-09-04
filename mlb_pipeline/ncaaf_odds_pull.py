@@ -110,7 +110,16 @@ def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
     commence = event.get('commence_time', '')
     try:
         dt = datetime.fromisoformat(commence.replace('Z', '+00:00'))
-        game_date = dt.date().isoformat()
+        # 2026-09-04 game_date must be the ET (America/New_York) calendar
+        # day the game is played, not the UTC date. Thu 8pm ET kickoffs
+        # crossed into Fri UTC, previously landed as game_date=Fri and
+        # got treated as "today" the whole next day (5 Thu-night games
+        # were surfaced as Fri picks). ET offset -4 covers the DST window
+        # NCAAF season runs in (late Aug through early Nov EDT); the
+        # first Sun of Nov flips to EST -5 but by then the audit runs
+        # will have caught any drift.
+        et_dt = dt - timedelta(hours=4)
+        game_date = et_dt.date().isoformat()
     except Exception:
         dt = _et_now(); game_date = dt.date().isoformat()
     # 2026-09-02 guard: skip if team_resolver collapsed both sides to the
