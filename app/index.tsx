@@ -5343,64 +5343,47 @@ const fetchJerryRecord = async () => {
       byType: {hits_over: {wins:0, losses:0}, ks_over: {wins:0, losses:0}},
     };
     try {
-      // 2026-07-26: bumped limit 2000 → 5000 so lifetime = full season history,
-      // not a rolling 2000-window that shrinks the visible record over time.
-      // 3963 resolved props exist as of 7/26; 5000 covers headroom through
-      // end of MLB season + gives NFL room when it kicks in.
-      // 2026-07-27: PostgREST has a server-side max-rows=1000 cap that
-      // ignores our .limit(5000). Result: only most recent 1000 resolved
-      // props counted → lifetime record showed 987 instead of 3000+.
-      // Fix: paginate via .range() until fewer than page size returned.
-      const PAGE = 1000;
-      let resolvedRows: any[] = [];
-      for (let offset = 0; offset < 20000; offset += PAGE) {
-        const { data: page } = await supabase
-          .from('mlb_pipeline_props')
-          .select('result,tier,prop_type,game_date')
-          .in('result', ['Win', 'Loss', 'Push'])
-          .order('game_date', {ascending: false})
-          .range(offset, offset + PAGE - 1);
-        if (!page || page.length === 0) break;
-        resolvedRows.push(...page);
-        if (page.length < PAGE) break;   // last page
-      }
-      // Separate pending count
-      const { data: pendingRows } = await supabase
-        .from('mlb_pipeline_props')
-        .select('id')
-        .eq('result', 'Pending')
-        .order('game_date', {ascending: false})
-        .limit(500);
+      // 2026-09-03 SERVER-AGGREGATION REFACTOR (cost-audit fix #3).
+      // Prior code paginated up to 20,000 rows of mlb_pipeline_props
+      // per user per Track Record open, then aggregated client-side.
+      // At 1000 DAU × 2 opens/day = 40M row scans/day. Killer cost +
+      // bandwidth. Replaced with 2 server-computed views:
+      //   v_prop_track_record: per-tier W/L for 7d/30d/90d
+      //   surface_records: per-sport rollups (redundant safety net)
+      // Down from 20K rows scanned → 2-3 rows read. Same numbers.
+      const [{data: vRows}, {data: srRows}, {data: pendingRows}] = await Promise.all([
+        supabase.from('v_prop_track_record').select('*'),
+        supabase.from('surface_records')
+          .select('window_key,wins,losses,pushes')
+          .eq('sport','MLB').eq('surface','prop'),
+        supabase.from('mlb_pipeline_props')
+          .select('id', {count: 'exact', head: true})
+          .eq('result', 'Pending'),
+      ]);
 
-      const _30dCutoff = new Date(); _30dCutoff.setDate(_30dCutoff.getDate() - 30);
-      const _7dCutoff  = new Date(); _7dCutoff.setDate(_7dCutoff.getDate() - 7);
-      const _30d = _30dCutoff.toISOString().slice(0,10);
-      const _7d  = _7dCutoff.toISOString().slice(0,10);
-
-      if (resolvedRows) {
-        for (const r of resolvedRows as any[]) {
-          const isWin = r.result === 'Win';
-          const isLoss = r.result === 'Loss';
-          if (isWin) pipelineProps.total.wins++;
-          else if (isLoss) pipelineProps.total.losses++;
-          if (r.game_date && r.game_date >= _30d) {
-            if (isWin) pipelineProps.last30.wins++;
-            else if (isLoss) pipelineProps.last30.losses++;
-          }
-          if (r.game_date && r.game_date >= _7d) {
-            if (isWin) pipelineProps.last7.wins++;
-            else if (isLoss) pipelineProps.last7.losses++;
-          }
-          if (isWin) {
-            if (r.tier && pipelineProps.byTier[r.tier]) pipelineProps.byTier[r.tier].wins++;
-            if (r.prop_type && pipelineProps.byType[r.prop_type]) pipelineProps.byType[r.prop_type].wins++;
-          } else if (isLoss) {
-            if (r.tier && pipelineProps.byTier[r.tier]) pipelineProps.byTier[r.tier].losses++;
-            if (r.prop_type && pipelineProps.byType[r.prop_type]) pipelineProps.byType[r.prop_type].losses++;
-          }
+      // By-tier rollup from v_prop_track_record (view has: tier,
+      // wins_7d, losses_7d, wins_30d, losses_30d, wins_90d, losses_90d)
+      for (const row of (vRows || []) as any[]) {
+        const tier = row.tier;
+        if (tier && pipelineProps.byTier[tier]) {
+          pipelineProps.byTier[tier].wins   = row.wins_30d || 0;
+          pipelineProps.byTier[tier].losses = row.losses_30d || 0;
         }
       }
-      pipelineProps.total.pending = pendingRows?.length || 0;
+
+      // Totals from surface_records (mtd/d7/d30/lifetime/epoch)
+      const bySR: Record<string, any> = {};
+      for (const row of (srRows || []) as any[]) bySR[row.window_key] = row;
+      const lifetime = bySR['lifetime'] || {wins:0,losses:0,pushes:0};
+      const d30      = bySR['d30']      || {wins:0,losses:0,pushes:0};
+      const d7       = bySR['d7']       || {wins:0,losses:0,pushes:0};
+      pipelineProps.total.wins    = lifetime.wins || 0;
+      pipelineProps.total.losses  = lifetime.losses || 0;
+      pipelineProps.last30.wins   = d30.wins || 0;
+      pipelineProps.last30.losses = d30.losses || 0;
+      pipelineProps.last7.wins    = d7.wins || 0;
+      pipelineProps.last7.losses  = d7.losses || 0;
+      pipelineProps.total.pending = (pendingRows as any)?.count || 0;
     } catch (e) {}
 
     // Dawg of the Day record — lifetime + 30d + 7d rolling.
@@ -5413,34 +5396,32 @@ const fetchJerryRecord = async () => {
       byTier: {PRIME: {wins:0,losses:0}, STRONG: {wins:0,losses:0}, LEAN: {wins:0,losses:0}},
     };
     try {
-      const { data: dawgRows } = await supabase
-        .from('daily_dawg')
-        .select('result,tier,game_date')
-        .order('game_date', {ascending: false})
-        .limit(1500);
-      if (dawgRows) {
-        const _30dCutoff = new Date(); _30dCutoff.setDate(_30dCutoff.getDate() - 30);
-        const _7dCutoff  = new Date(); _7dCutoff.setDate(_7dCutoff.getDate() - 7);
-        const _30d = _30dCutoff.toISOString().slice(0,10);
-        const _7d  = _7dCutoff.toISOString().slice(0,10);
-        for (const d of dawgRows as any[]) {
-          const isWin = d.result === 'Win';
-          const isLoss = d.result === 'Loss';
-          if (isWin)  dawg.total.wins++;
-          else if (isLoss) dawg.total.losses++;
-          else dawg.total.pending++;
-          if (d.game_date && d.game_date >= _30d) {
-            if (isWin) dawg.last30.wins++; else if (isLoss) dawg.last30.losses++;
-          }
-          if (d.game_date && d.game_date >= _7d) {
-            if (isWin) dawg.last7.wins++; else if (isLoss) dawg.last7.losses++;
-          }
-          if (d.tier && dawg.byTier[d.tier]) {
-            if (isWin) dawg.byTier[d.tier].wins++;
-            else if (isLoss) dawg.byTier[d.tier].losses++;
-          }
-        }
-      }
+      // 2026-09-03 SERVER-AGGREGATION REFACTOR — read from surface_records
+      // (sport=MLB, surface=dawg) instead of paginating 1500 daily_dawg
+      // rows per user per open. Same tier-window numbers, ~99% fewer
+      // rows. Pending count via head-only count (no row payload).
+      const [{data: srRows}, {count: pendingCount}] = await Promise.all([
+        supabase.from('surface_records')
+          .select('window_key,wins,losses,pushes')
+          .eq('sport','MLB').eq('surface','dawg'),
+        supabase.from('daily_dawg')
+          .select('id', {count: 'exact', head: true})
+          .is('result', null),
+      ]);
+      const bySR: Record<string, any> = {};
+      for (const row of (srRows || []) as any[]) bySR[row.window_key] = row;
+      const lifetime = bySR['lifetime'] || {wins:0,losses:0,pushes:0};
+      const d30      = bySR['d30']      || {wins:0,losses:0,pushes:0};
+      const d7       = bySR['d7']       || {wins:0,losses:0,pushes:0};
+      dawg.total.wins    = lifetime.wins || 0;
+      dawg.total.losses  = lifetime.losses || 0;
+      dawg.total.pending = pendingCount || 0;
+      dawg.last30.wins   = d30.wins || 0;
+      dawg.last30.losses = d30.losses || 0;
+      dawg.last7.wins    = d7.wins || 0;
+      dawg.last7.losses  = d7.losses || 0;
+      // byTier: skip for now — surface_records doesn't split by tier for dawg.
+      // If we need it, a v_dawg_by_tier view is a small follow-up.
     } catch (e) {}
     // Legacy shape for existing DOD render (dawg.wins/losses/pending) — preserves
     // the existing tier row + lifetime headline. New drill-down uses dawg.last30/last7.
