@@ -1520,6 +1520,22 @@ jobs:
           cd mlb_pipeline
           python play_of_day_multi_sport.py || echo "cross-sport POTD non-fatal"
 
+      # 2026-09-03 SERVER-SIDE SHARP CARD (launch blocker):
+      # generate_sharp_card.py replaces client-side item composition
+      # in fetchSharpTab. Writes ONE jerry_cache.sharp_card_{today}
+      # row containing every filtered pick (MLB sides + props + NFL
+      # + NCAAF + NCAAB + NBA + NHL + UFC). Runs AFTER all primary_play
+      # writes are settled so cache reflects final tier decisions.
+      # Every user reads the same row = same Sharp Card. Threshold
+      # changes = single Python commit, no App Store ship.
+      - name: Generate Sharp Card (server-side item cache)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_sharp_card.py || echo "sharp card generation non-fatal"
+
       # 2026-08-28 Phase 4 kill #3: v7/v1_ml shadow inference deleted.
       # Auditors (audit_v7_shadow.py, audit_ml_v1_shadow.py) went dead
       # 2026-06-23 without cutover. Writers were dumping 15+ rows/day into

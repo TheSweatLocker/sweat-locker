@@ -8852,285 +8852,43 @@ setJerryHistory(prev => {
   const fetchSharpTab = React.useCallback(async () => {
     setSharpTabLoading(true);
     try {
-      // 2026-08-18: use ET, not UTC. Prior code used
-      // new Date().toISOString().slice(0,10) which is UTC and after ~8pm ET
-      // has already rolled to tomorrow — surfaced NYY/BAL 8/18 game on 8/17
-      // Sharp Card. en-CA locale returns YYYY-MM-DD in the requested TZ.
+      // 2026-09-03 SERVER-ONLY REFACTOR (launch blocker).
+      // User: "If we have to change for whatever reason it would require
+      // an app update not just backend. The idea was to minimize client
+      // side: hard notes, things like pick generation. In theory not
+      // every user will have the same sharp plays in sharp tab if done
+      // client side right?"
+      //
+      // CORRECT. Sharp Card item composition moved to
+      // mlb_pipeline/generate_sharp_card.py — writes ONE cached row to
+      // jerry_cache.cache_key='sharp_card_{today}' with all filtered
+      // items ready to render. Every user reads THE SAME row.
+      //
+      // Threshold changes (juice caps, unit sizing, prop odds gates,
+      // playbook flag) become a single Python commit — no App Store ship.
+      // Fetch payload shrunk from ~8 Supabase queries + 5000 rows of
+      // graded history → 2 queries (item cache + record cache).
       const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
-      const thirty = new Date(Date.now() - 30*86400000)
-        .toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
       // 2026-08-17: Prop playbook cutover flag. When PLAYBOOK_ENABLED=false
       // (default until 14d shadow validation clears), Sharp Card uses
       // legacy tier + refit_conviction. When true, we prefer playbook_tier
       // when it's PRIME/STRONG (playbook was validated to meet or beat
       // legacy hit-rate). Flip to true after audit_prop_playbook_shadow.py
       // shows 14 clean days. See project_prop_playbook_design_817 memory
-      // for cutover criteria.
-      const PROP_PLAYBOOK_ENABLED = false;
-      const isPS = (t?: string) => t === 'PRIME' || t === 'STRONG';
-      // Return the tier the Sharp Card should surface: playbook when
-      // enabled AND playbook tier is PRIME/STRONG, else legacy tier.
-      // Never downgrades — playbook can lift a LEAN legacy to STRONG
-      // but can't demote a PRIME legacy.
-      // 2026-08-24 ROOT-CAUSE FIX: playbook_side must be BACK to lift tier.
-      // 30d grading showed FADE loses at every tier (PRIME 48%, STRONG 47%,
-      // LEAN 45%) and gets WORSE with higher edge_pp (36% at 30+ edge). So
-      // when the playbook says FADE the listed direction, using its tier
-      // as a lift misleads the user — the FADE PRIME on OVER is not
-      // evidence that the UNDER is PRIME. Only accept BACK-side lifts.
-      // Same class of bug as the ladder direction gate fixed today (b09e2e1e).
-      const resolveTier = (legacy?: string, playbook?: string, playbookSide?: string): string | undefined => {
-        if (!PROP_PLAYBOOK_ENABLED) return legacy;
-        // FADE means playbook is backing the OPPOSITE direction — don't
-        // let it lift this row's tier. Absence of side defaults to BACK
-        // for backward compat (older rows before playbook_side column).
-        const side = (playbookSide || 'BACK').toUpperCase();
-        if (side === 'FADE') return legacy;
-        const rank = (t?: string) => t === 'PRIME' ? 3 : t === 'STRONG' ? 2 : t === 'LEAN' ? 1 : 0;
-        return rank(playbook) > rank(legacy) ? playbook : legacy;
-      };
-      // 2026-08-17: Sharp unit-sizing. PRIME + STRONG = 2u (real signal
-      // alignment), LEAN = 1u (still worth a shot). Ensemble tier is
-      // already 60d-backtested at +10.7% ROI, so we defer to its own
-      // classification instead of inventing new thresholds. LEAN picks
-      // now flow through so the Sharp isn't vacant on quiet days —
-      // "8 plays at 1u each" is a valid day per user 2026-08-17.
-      const unitsForTier = (t?: string): number =>
-        (t === 'PRIME' || t === 'STRONG') ? 2 : 1;
-
-      // 2026-08-18: dynamic sizing that respects juice traps + regime
-      // context. Flat 2u for every STRONG makes obvious traps read as
-      // sloppy. Adjustments:
-      //   - NO ODDS captured        → 0u (can't grade, don't ship)
-      //   - odds <= -250            → halve (juice trap, per feedback_batter_hits_juice_trap_803)
-      //   - odds >= +250            → halve (long-dog trap)
-      //   - ML pick, own-side ML <= -180 → halve (heavy-fav ML trap band widened
-      //     2026-08-18: was -200. Baseline analysis shows the -150 to -199 mod-fav
-      //     bucket is -7.2pp EV, so even -180 belongs in the halve band.)
-      //   - ML pick, own-side ML >= +150 → halve (mod-dog trap widened 2026-08-18:
-      //     was +200. Rockies+172 spot exposed the gap — home dog +150+ at Coors
-      //     etc. deserves 1u not 2u even when the ensemble likes the spot.)
-      //   - Batter hits O with juice <= -200 → halve (documented trap)
-      // Floor at 0. Never exceeds tier base.
-      const unitsForPick = (opts: {
-        tier?: string; type?: string; prop_type?: string;
-        odds?: number | null; sidePriceAmerican?: number | null;
-      }): number => {
-        const base = unitsForTier(opts.tier);
-        if (base === 0) return 0;
-        const o = opts.odds;
-        // Data gap: prop has no captured odds → skip until backfilled
-        if (o == null && (opts.type === 'prop' || (opts.type == null && opts.prop_type))) return 0;
-        // 2026-08-20 hard gate: props outside [-300, +150] are filtered
-        // OUT per user's feedback_prop_jerry_odds memory. Prior version
-        // only halved the stake for deep juice — Chandler Simpson at
-        // -425 juice + others leaked onto Sharp Card yesterday because
-        // half-sized non-zero units still passed the .units>0 filter.
-        // Zero it out so the caller's filter removes the pick entirely.
-        // Only applies to PROP type — ML picks have their own regime
-        // handling below (halving for -180+ / +150+).
-        const isPropCtx = opts.type === 'prop' || (opts.type == null && opts.prop_type);
-        if (isPropCtx && o != null && (o < -300 || o > 150)) return 0;
-        let stake = base;
-        // Juice traps (any pick type)
-        if (o != null && o <= -250) stake = stake / 2;
-        else if (o != null && o >= 250) stake = stake / 2;
-        // ML regime traps (wider band per 8/18 baseline: heavy fav -180+, mod dog +150+)
-        if (opts.type === 'ml' && opts.sidePriceAmerican != null) {
-          const ml = opts.sidePriceAmerican;
-          if (ml <= -180 || ml >= 150) stake = stake / 2;
-        }
-        // Batter hits O 0.5 with -200+ juice — documented trap
-        if (opts.prop_type && /^hits_over$/.test(opts.prop_type) && o != null && o <= -200) {
-          stake = stake / 2;
-        }
-        // Never negative, never exceed base
-        return Math.max(0, Math.min(base, Math.round(stake * 2) / 2));
-      };
-      // Include picks with any real ensemble tier (PRIME/STRONG/LEAN);
-      // exclude PASS or missing. Props keep their own tighter gate
-      // (PRIME/STRONG only) since prop refit discipline is separate.
-      const isAnyTier = (t?: string): boolean =>
-        t === 'PRIME' || t === 'STRONG' || t === 'LEAN';
-      // 2026-08-16: real-odds tracking. American odds -> decimal payout on 1u win.
-      const winPayoutFromAmerican = (odds: number | null | undefined): number => {
-        if (odds == null || !isFinite(odds)) return 0.91;  // -110 fallback
-        if (odds >= 100) return odds / 100;
-        if (odds <= -100) return 100 / Math.abs(odds);
-        return 0.91;
-      };
-
-      // ── PARALLEL FETCH ALL SOURCES (Bundle F was sequential-ish — perceived lag) ──
-      // 2026-09-03: added nbaCtx + nhlCtx per user Steam Room expansion ask.
-      // Sharp Card now surfaces PRIME/STRONG/LEAN sides across every sport
-      // that has a primary_play, not just MLB+NFL+NCAAF+NCAAB.
-      // 2026-09-03: dropped jerryHist + propsHist fetches — those loaded
-      // 5000 rows to power the client-side receipts tally, which is now
-      // server-only (daily_surface_records). Cuts payload by ~2MB.
-      const [
-        {data: mlbCtx},
-        {data: mlbProps},
-        {data: nflCtx},
-        {data: ncaafCtx},
-        {data: ncaabCtx},
-        {data: nbaCtx},
-        {data: nhlCtx},
-        {data: ufcReads},
-      ] = await Promise.all([
-        supabase.from('mlb_game_context')
-          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds,close_spread,close_total')
-          .eq('game_date', today),
-        // 2026-08-17: pull today's props for Sharp Card. Include ALL
-        // tiers now (LEAN + PRIME + STRONG) so playbook can lift LEAN
-        // legacy picks to STRONG when playbook validates them. Filter
-        // downstream via resolveTier() → isPS() below.
-        supabase.from('mlb_pipeline_props')
-          // 2026-08-25 BUG FIX: added book_over_odds + book_under_odds to
-          // SELECT. Prior SELECT only pulled book_line (which is the LINE
-          // value like 1.5, not odds) — propOdds was always undefined →
-          // unitsForPick returned 0 → EVERY prop got filtered out of the
-          // Sharp Card. User reported "not seeing props on Sharp sub tab."
-          // Same class as yesterday's server-side juice-gate bug.
-          .select('player_name,matchup,prop_type,prop_line,direction,tier,conviction,refit_conviction,book_line,book_over_odds,book_under_odds,game_id')
-          .eq('game_date', today).in('tier', ['PRIME','STRONG','LEAN']),
-        supabase.from('nfl_game_context')
-          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
-          .eq('game_date', today),
-        supabase.from('ncaaf_game_context')
-          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
-          .eq('game_date', today),
-        supabase.from('ncaab_game_context')
-          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
-          .eq('game_date', today),
-        // 2026-09-03: NBA + NHL added for Steam Room / Sharp Card multi-
-        // sport coverage. Both contexts may be empty during offseason —
-        // Promise.all tolerates that (returns []). NBA uses same col names
-        // as MLB/NFL/NCAAF; NHL uses close_puckline instead of close_spread
-        // (not fetched here since only primary_play + ML are needed).
-        supabase.from('nba_game_context')
-          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
-          .eq('game_date', today),
-        supabase.from('nhl_game_context')
-          .select('game_id,home_team,away_team,primary_play,home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
-          .eq('game_date', today),
-        supabase.from('jerry_reads')
-          .select('game_id,call_side,conviction,input_snapshot')
-          .eq('sport','UFC').eq('game_date', today).eq('call_market','fight')
-          .gte('conviction', 55),
-      ]);
-
-      // ── TODAY'S PICKS ──
-      // 2026-08-22: ML side odds now fall back to _odds (live) when _close
-      // is null. Prior code only read _close which snapshots at game start,
-      // so pre-game Sharp tab showed EVERY ML pick as -110 default instead
-      // of real prices. RL/Total still use -110 fallback until per-side
-      // spread/total prices get cached on ctx (currently only ML odds are
-      // on the ctx row; book_lines table has per-book RL/Total prices but
-      // that requires a joined query — deferred).
-      const mlbSidePicks = (mlbCtx || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).map((g: any) => {
-        const pp = g.primary_play || {};
-        const homeML = g.home_ml_close ?? g.home_ml_odds;
-        const awayML = g.away_ml_close ?? g.away_ml_odds;
-        const sideML = pp.side === 'HOME' ? homeML : pp.side === 'AWAY' ? awayML : null;
-        return {
-          sport: 'MLB', matchup: `${g.away_team} @ ${g.home_team}`,
-          tier: pp.tier, pick: pp.label || '—',
-          type: pp.type || 'ml', reason: pp.sub || '',
-          odds: pp.type === 'ml' ? sideML : -110,
-          line: pp.line ?? g.close_spread ?? g.close_total,
-          units: unitsForPick({tier: pp.tier, type: pp.type || 'ml', sidePriceAmerican: sideML}),
-        };
-      });
-      // 2026-08-17: Prop playbook shadow lookup. When PROP_PLAYBOOK_ENABLED
-      // is true (post 14d shadow validation), we prefer playbook_tier when
-      // it's higher than legacy tier. Playbook decisions are always
-      // fetched so we can compare in dev logs, but only surface when the
-      // flag is on. Match key: (player, prop_type, direction, prop_line).
-      const {data: mlbPlaybookDecisions} = await supabase
-        .from('prop_playbook_decisions')
-        .select('player_name,prop_type,direction,prop_line,playbook_tier,playbook_side')
-        .eq('sport', 'MLB')
-        .eq('game_date', today);
-      const playbookByKey: Record<string, any> = {};
-      (mlbPlaybookDecisions || []).forEach((d: any) => {
-        const k = `${d.player_name}|${d.prop_type}|${d.direction}|${d.prop_line}`;
-        playbookByKey[k] = d;
-      });
-      // 2026-08-19: defensive filter for player_team ↔ matchup mismatch.
-      // Jeff McNeil (Mets) was surfaced as PRIME in the OAK @ KC game because
-      // player_team was set to "Athletics" by fetch_projected_lineup — a
-      // roster-attribution bug in generate_props. Root cause fix pending;
-      // meanwhile this guard blocks the class from hitting the Sharp Card.
-      // If player_team is set and its short name doesn't appear in the
-      // matchup string, we drop the pick.
-      const propTeamMatches = (p: any) => {
-        const team = (p.player_team || '').trim().toLowerCase();
-        if (!team || team === 'unknown') return true; // unknown OK — cosmetic only
-        const m = (p.matchup || '').toLowerCase();
-        if (!m) return true;
-        const short = team.split(' ').pop() || '';
-        // 'Sox' collides Boston/CWS → require full-team match for that suffix
-        if (short === 'sox') return m.includes(team);
-        return m.includes(short) || m.includes(team);
-      };
-      const mlbPropPicks = (mlbProps || []).map((p: any) => {
-        const pbKey = `${p.player_name}|${p.prop_type}|${p.direction}|${p.prop_line}`;
-        const pb = playbookByKey[pbKey];
-        const effectiveTier = resolveTier(p.tier, pb?.playbook_tier, pb?.playbook_side);
-        const propOdds = p.direction === 'over' ? p.book_over_odds : p.book_under_odds;
-        return {
-          sport: 'MLB', matchup: p.matchup || '—', tier: effectiveTier,
-          pick: `${p.player_name} ${p.direction === 'over' ? 'Over' : 'Under'} ${p.prop_line} ${p.prop_type?.split('_')[0]?.toUpperCase()}`,
-          type: 'prop', reason: `conv=${p.refit_conviction ?? p.conviction}`,
-          odds: propOdds,
-          line: p.prop_line,
-          units: unitsForPick({tier: effectiveTier, type: 'prop', prop_type: p.prop_type, odds: propOdds}),
-          playbook_lifted: PROP_PLAYBOOK_ENABLED && pb?.playbook_tier && effectiveTier !== p.tier,
-          _raw: p, // keep raw for attribution filter
-        };
-      }).filter((pick: any) => isPS(pick.tier) && pick.units > 0 && propTeamMatches(pick._raw));
-      const otherPicks: any[] = [];
-      // 2026-09-03 STEAM ROOM EXPANSION: NBA + NHL added alongside NFL/NCAAF/NCAAB.
-      for (const [sport, rows] of [['NFL', nflCtx], ['NCAAF', ncaafCtx], ['NCAAB', ncaabCtx], ['NBA', nbaCtx], ['NHL', nhlCtx]] as [string, any[]][]) {
-        (rows || []).filter((g: any) => isAnyTier(g.primary_play?.tier)).forEach((g: any) => {
-          const pp = g.primary_play || {};
-          // 2026-08-22: same _close -> _odds fallback as MLB above.
-          const homeML = g.home_ml_close ?? g.home_ml_odds;
-          const awayML = g.away_ml_close ?? g.away_ml_odds;
-          const sideML = pp.side === 'HOME' ? homeML : pp.side === 'AWAY' ? awayML : null;
-          otherPicks.push({
-            sport, matchup: `${g.away_team} @ ${g.home_team}`,
-            tier: pp.tier, pick: pp.label || '—',
-            type: pp.type || 'ml', reason: pp.sub || '',
-            odds: pp.type === 'ml' ? sideML : null,
-            line: pp.line ?? null,
-            units: unitsForPick({tier: pp.tier, type: pp.type || 'ml', sidePriceAmerican: sideML}),
-          });
-        });
-      }
-      const ufcPicks = (ufcReads || []).map((r: any) => {
-        const inp = r.input_snapshot || {};
-        const side = r.call_side;
-        const picked = side === 'A' ? inp.fighter_a : inp.fighter_b;
-        const odds = inp.odds_picked_side_median;
-        // 2026-08-20: UFC juice-adjusted sizing. Backtest of 24 graded picks
-        // showed heavy-fav PRIMEs bleed units (dec ≤ 1.5 = -200+ American =
-        // 66.7% break-even but model calibration doesn't reliably clear it).
-        // Half-size PRIME/STRONG when odds are heavy fav territory. Sample
-        // is thin so this is a defensive move, not a calibrated rule.
-        // See project_ufc_model_broken_817 tracking memo.
-        const baseUnits = unitsForTier(inp.ev_tier);
-        const halveJuice = (odds !== undefined && odds !== null && odds <= -180) ? 0.5 : 1;
-        return {
-          sport: 'UFC', matchup: `${inp.fighter_a} vs ${inp.fighter_b}`,
-          tier: inp.ev_tier || '—',
-          pick: `${picked} ML${odds ? `  (${odds > 0 ? '+' : ''}${odds})` : ''}`,
-          type: 'ml',
-          reason: `Win prob ${inp.win_probability_pct}% @ ${odds}`,
-          units: baseUnits * halveJuice,
-        };
-      });
-      setSharpPicks([...mlbSidePicks, ...mlbPropPicks, ...otherPicks, ...ufcPicks]);
+      // ── SERVER-COMPOSED ITEMS ──
+      // Prior 270 lines of client composition (fetches, isPS/isAnyTier/
+      // resolveTier/unitsForTier/unitsForPick/propTeamMatches helpers,
+      // Promise.all across 8 tables, compose loops per sport) all lived
+      // here. They're now in mlb_pipeline/generate_sharp_card.py which
+      // writes to jerry_cache.sharp_card_{today}. We read one row.
+      const {data: cacheRows} = await supabase
+        .from('jerry_cache')
+        .select('data,fetched_at')
+        .eq('cache_key', `sharp_card_${today}`)
+        .limit(1);
+      const cacheRow = (cacheRows && cacheRows[0]) || null;
+      const items = (cacheRow?.data?.items || []) as any[];
+      setSharpPicks(items);
 
       // ── HISTORICAL RECORD (real odds per pick, unit-weighted) ──
       // 2026-08-17: rolling calendar-month windowing.
