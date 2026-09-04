@@ -508,6 +508,21 @@ jobs:
           cd mlb_pipeline
           python sweep_prop_coverage.py || echo "prop coverage sweep failed (non-fatal)"
 
+      # 2026-09-04 Pitcher-scratch sweeper (safety net). generate_props.run()
+      # has an inline scratch check but only runs when that cron fires; if
+      # a stale prop from an earlier cron survives (Nick Martinez 9/3 case:
+      # PRIME Ks-Over for a game he wasn't pitching), this standalone
+      # sweeper catches it. Cross-checks Stats API probablePitcher +
+      # game_context pitchers against every published pitcher-prop.
+      - name: Sweep pitcher scratches
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sweep_pitcher_scratches.py || echo "pitcher scratch sweep failed (non-fatal)"
+
       # 2026-08-19: Juice-trap gate — hits_over 0.5 STRONG/PRIME at ≤-200
       # juice get demoted to LEAN. Runs AFTER sweep (needs book_over_odds
       # populated) and BEFORE refit/jerry-synth (so downstream sees the
@@ -1159,6 +1174,21 @@ jobs:
         run: |
           cd mlb_pipeline
           python grade_daily_card.py || echo "grade_daily_card non-fatal"
+
+      # 2026-09-04 LR dissent audit — logs every game where LR disagreed
+      # with the ensemble (whether LR overrode OR was blocked by the
+      # consensus-dissent gate). Runs AFTER grading so home_win /
+      # total_result are populated. Feeds lr_dissent_calibration; over
+      # time answers "does LR win when it dissents?" which decides
+      # whether to loosen/tighten the gate. See migration 20260904c.
+      - name: LR dissent audit
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python mlb_lr_dissent_audit.py --backfill 3 || echo "lr dissent audit non-fatal"
 
       # CLV computation (NEW 2026-08-15). Runs AFTER grading so every pick
       # has a resolved close_total / close_spread / close_home_ml + our

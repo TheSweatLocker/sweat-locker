@@ -69,6 +69,18 @@ supabase/migrations/20260903c_mlb_props_publishable_view_fix.sql
 ```
 This fixed the boolean cast error on `v_mlb_props_publishable`.
 
+### 5b. Apply the LR dissent calibration migration
+
+```
+supabase/migrations/20260904c_lr_dissent_calibration.sql
+```
+Creates `lr_dissent_calibration` table + `v_lr_dissent_hitrate` view.
+Feeds the nightly `mlb_lr_dissent_audit.py` step already wired into
+`mlb_pipeline.yml`. After a week of games you can query
+`v_lr_dissent_hitrate` to see whether LR wins when it dissents vs the
+ensemble. Threshold: LR ≥60% at n≥30 on mode=blocked → loosen the
+consensus-dissent gate; ≤45% → gate is correctly protective.
+
 ---
 
 ## 🟡 IMPORTANT — do within 48h of shipping
