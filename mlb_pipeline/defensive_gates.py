@@ -856,18 +856,61 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
                 except (TypeError, ValueError):
                     pass
             # PRIME LR override — replaces RL/total pick with the ML edge
+        # 2026-09-03 CONSENSUS-DISSENT GATE (user directive after STL/LAD
+        # screenshot: LR picked Cardinals ML AWAY when 4/4 handicappers,
+        # 92% money, and 4/6 models were on Dodgers HOME + Jerry Read said
+        # "skip"). Single-model dissent against a 4+ source consensus is
+        # almost always LR noise — market has priced in edges LR's 107
+        # features don't see. Demote to COVERAGE (LOW CONVICTION chip
+        # + still visible in game detail) rather than surface as the pick.
+        try:
+            ss = ctx.get('splits_summary') or {}
+            ml_split = ss.get('ml') if isinstance(ss, dict) else None
+            if isinstance(ml_split, dict):
+                lr_side = pred['suggested_side']
+                opp_side = 'AWAY' if lr_side == 'HOME' else 'HOME'
+                opp_bucket = ml_split.get(opp_side) or {}
+                if isinstance(opp_bucket, dict):
+                    money_opp = opp_bucket.get('money_pct_avg') or 0
+                    sources_opp = opp_bucket.get('sources_agree') or 0
+                    # Broad consensus threshold: ≥3 sources AND ≥70% money on OPPOSITE side
+                    if sources_opp >= 3 and money_opp >= 70:
+                        # LR is a lone dissenter — demote to COVERAGE
+                        old_pp = pp if isinstance(pp, dict) else {}
+                        old_pp['_lr_ml_shadow'] = pred
+                        old_pp['_lr_consensus_dissent'] = {
+                            'reason': f'LR wanted {lr_side} but {sources_opp} sources agree ' \
+                                      f'on {opp_side} with {money_opp:.0f}% money — lone dissent demoted',
+                            'money_opp': money_opp, 'sources_opp': sources_opp,
+                        }
+                        old_pp['_pre_lr_tier'] = old_pp.get('tier')
+                        old_pp['tier'] = 'COVERAGE'
+                        old_pp['audit_note'] = (
+                            f'{sport} LR dissented vs consensus ' \
+                            f'({sources_opp} sources / {money_opp:.0f}% money on {opp_side}) — coverage'
+                        )
+                        return old_pp
+        except Exception:
+            pass  # never let consensus check break the pipeline
+
         home_team = ctx.get('home_team') or 'Home'
         away_team = ctx.get('away_team') or 'Away'
         team = home_team if pred['suggested_side'] == 'HOME' else away_team
         # Convert probability to conviction 0-100 scale
         p = pred['p_home_win']
         conviction = int(round((p if pred['suggested_side'] == 'HOME' else (1 - p)) * 100))
+        # 2026-09-03 USER-FRIENDLY sub-line. Prior text was
+        # "LR predictor: p_home_win=0.27 · 73% confidence" — technical
+        # jargon, raw probability inversion, lowercase snake_case. User
+        # feedback: "weird 0.75 and lower case letters below."
+        # New format uses the PICKED team name + plain-English conviction.
+        team_short = team.split()[-1] if team else 'the pick'
         new_pp = {
             'type': 'ml',
             'tier': pred['suggested_tier'],
             'side': pred['suggested_side'],
             'label': f'{team} ML',
-            'sub': f'LR predictor: p_home_win={p:.2f} · {conviction}% confidence',
+            'sub': f'Supervised model backs {team_short} · {conviction}% confidence',
             'conviction': conviction,
             '_engine': 'lr_v1',
             '_lr_p_home_win': p,
@@ -1014,7 +1057,7 @@ def apply_mlb_total_lr_override(pp, ctx):
             'tier': pred['suggested_tier'],
             'side': pred['suggested_side'],
             'label': label,
-            'sub': f'LR total predictor: p_over={p:.2f} · {conviction}% confidence',
+            'sub': f'Supervised total model backs {pred["suggested_side"].title()} · {conviction}% confidence',
             'conviction': conviction,
             'line': close_total,
             '_engine': 'lr_v1',
