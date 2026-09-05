@@ -1107,6 +1107,12 @@ function MoneyMarket({label, data}: any) {
   // on Royals RL where SO shows home 56% money vs 50% bets (6pp) and
   // the app called it "home sharp". Now requires real signal.
   const sharp = Math.abs(div) >= 20 || money >= 60;
+  // 2026-09-05: label EXTREME sharp differently. When money% + bets%
+  // diverge by 50pp+ (e.g. 90% money / 15% bets on the underdog),
+  // the SHARP label undersells — surface it as REVERSE-LINE or
+  // STEAM to make the user pay attention. Prior UI let a 90/15
+  // dog-money split read as "0% money on home" (user 9/5 complaint).
+  const extremeSharp = Math.abs(div) >= 50 || (money >= 80 && bets <= 30);
   return (
     <View style={[
       styles.moneyMarket,
@@ -1116,7 +1122,11 @@ function MoneyMarket({label, data}: any) {
         <Text style={styles.moneyMarketLabel}>{label}</Text>
         <View style={{flexDirection: 'row', alignItems: 'center', gap: 6}}>
           <Text style={styles.moneyMarketSide}>{data.pick || '—'}</Text>
-          {sharp ? (
+          {extremeSharp ? (
+            <View style={[styles.sharpBadge, {backgroundColor: C.sharp}]}>
+              <Text style={[styles.sharpBadgeText, {color: '#000'}]}>STEAM</Text>
+            </View>
+          ) : sharp ? (
             <View style={styles.sharpBadge}>
               <Text style={styles.sharpBadgeText}>SHARP</Text>
             </View>
@@ -1128,9 +1138,15 @@ function MoneyMarket({label, data}: any) {
         <MoneyBar label="Money" pct={money} color={C.sharp} />
         <MoneyBar label="Bets" pct={bets} color={C.warn} />
       </View>
-      {sharp && (
+      {extremeSharp && (
         <Text style={styles.moneyDivNote}>
-          <Text style={{color: C.sharp, fontWeight: '700'}}>+{div}pp sharp divergence</Text>
+          <Text style={{color: C.sharp, fontWeight: '800'}}>🚨 STEAM — {money}% money vs {bets}% bets on {data.pick}</Text>
+          {' · '}massive reverse-line signal, sharps hammering while public backs the other side
+        </Text>
+      )}
+      {sharp && !extremeSharp && (
+        <Text style={styles.moneyDivNote}>
+          <Text style={{color: C.sharp, fontWeight: '700'}}>+{Math.abs(div)}pp sharp divergence</Text>
           {' · '}money loading on {data.pick} while public sits out
         </Text>
       )}
