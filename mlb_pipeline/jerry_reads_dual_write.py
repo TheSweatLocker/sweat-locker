@@ -131,6 +131,26 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
     """
     if not _SB_WRITE or not SUPABASE_URL:
         return False
+    # 2026-09-05 short_read truncation guard. LLM sometimes emits a
+    # fragment like "UCLA's SP+ sits at 5.4 vs." (26 chars, cut on
+    # "vs." period). If short is under 100 chars, derive from the
+    # first 1-2 sentences of long_read instead so users don't see
+    # mid-sentence garbage. Preserves LLM when it wrote a real short.
+    _short_raw = parsed.get('short_read') or ''
+    _long_raw = parsed.get('long_read') or narrative or ''
+    if _short_raw and len(_short_raw) >= 100:
+        _short_final = _short_raw
+    elif _long_raw:
+        # Take first ~2 sentences from long_read (up to 350 chars).
+        # Sentence split guarded against "vs." / "St." / "e.g." abbrevs
+        # by requiring the period to be followed by space + capital OR
+        # end-of-string.
+        import re as _re
+        _sents = _re.split(r'(?<=[.!?])\s+(?=[A-Z])', _long_raw.strip())
+        _short_final = ' '.join(_sents[:2])[:400] or _long_raw[:400]
+    else:
+        _short_final = (narrative or '')[:500] or None
+
     payload = {
         'sport': sport,
         'game_id': game_id,
@@ -141,8 +161,7 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
             'source': f'generate_{sport.lower()}_game_reads',
             'matchup': (struct or {}).get('matchup'),
         },
-        'short_read': (parsed.get('short_read')
-                       or (narrative or '')[:500] or None),
+        'short_read': _short_final,
         'long_read': parsed.get('long_read') or narrative or None,
         'call_text': parsed.get('call_text'),
         'call_market': parsed.get('call_market'),

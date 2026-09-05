@@ -178,11 +178,13 @@ const sideColor = (side: 'H'|'A'|null) => side === 'H' ? C.home : side === 'A' ?
 
 const abbrev3 = (team: string) => {
   if (!team) return '?';
-  // Prefer standard sport-league abbreviation (LAD, MIA, LAA...)
-  const canonical = TEAM_ABBREV[team.trim()];
-  if (canonical) return canonical;
-  // Fallback for unknown/international teams — use last word first 3 chars
-  return team.split(' ').slice(-1)[0].slice(0, 3).toUpperCase();
+  // 2026-09-05 delegate to the shared abbrev() (teamAbbrev.ts) which
+  // consults BOTH the TEAM_ABBREV canonical map AND the ALIASES map
+  // (NCAAF/NCAAB college teams live in ALIASES). Prior local fallback
+  // (last-word first-3-chars) produced STA for "New Mexico State" and
+  // MER for "Mercyhurst" — obviously wrong. abbrev() falls back to the
+  // same last-word slice ONLY when no lookup hit.
+  return teamAbbrev(team) || team.split(' ').slice(-1)[0].slice(0, 3).toUpperCase();
 };
 
 // ─── Main component ─────────────────────────────────────────────────────

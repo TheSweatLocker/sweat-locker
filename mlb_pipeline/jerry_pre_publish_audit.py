@@ -757,8 +757,18 @@ def auto_repair(sport: str, game_date: str) -> dict:
     # (or OVER when below) — directional inconsistency. Prose reasoning
     # doesn't match the pick. Fix: flip verdict to align with simulator,
     # cap conviction at 50 (mark as coin-flip, defer to POTD threshold).
+    #
+    # 2026-09-05 ROOT FIX: prior version wrote "sitting this out" as the
+    # user-facing short_read even when primary_play had a valid non-total
+    # pick (LR-overridden ML/RL). Users then saw contradictory UI:
+    # primary_play card = "Cubs ML PRIME" + write-up = "sitting this out."
+    # New: pull primary_play too. If it exists as a non-total pick with
+    # tier PRIME/STRONG, REALIGN jerry_read to primary_play rather than
+    # force PASS. Only force PASS when primary_play is also a total or
+    # unset. Prevents the drift between the two systems.
     if sport == 'MLB':
         repairs['F_contradicts_sim_flip'] = 0
+        repairs['F_realigned_to_primary_play'] = 0
         # Pull game reads + ctx to check sim vs pick
         reads = requests.get(f'{SB}/rest/v1/jerry_reads',
             headers=H_READ,
@@ -770,10 +780,12 @@ def auto_repair(sport: str, game_date: str) -> dict:
         ctx_rows = requests.get(f'{SB}/rest/v1/mlb_game_context',
             headers=H_READ,
             params={'game_date': f'eq.{game_date}',
-                    'select': 'game_id,jerry_pred_total,projected_total'},
+                    'select': 'game_id,jerry_pred_total,projected_total,primary_play'},
             timeout=15).json()
         sim_by_gid = {c['game_id']: (c.get('jerry_pred_total') or c.get('projected_total'))
                        for c in (ctx_rows if isinstance(ctx_rows, list) else [])}
+        pp_by_gid = {c['game_id']: (c.get('primary_play') or {})
+                      for c in (ctx_rows if isinstance(ctx_rows, list) else [])}
         for r in (reads if isinstance(reads, list) else []):
             side = (r.get('call_side') or '').upper()
             line = r.get('call_line')
@@ -804,7 +816,42 @@ def auto_repair(sport: str, game_date: str) -> dict:
             # user terms, and stash the diagnostic in long_read for
             # internal audit only.
             gap = s - l
-            gap_direction = 'higher' if s > l else 'lower'
+            # 2026-09-05: check primary_play FIRST. If a valid non-total
+            # pick exists (LR override or ensemble PRIME/STRONG), realign
+            # jerry_read to that pick instead of writing "sitting this out."
+            pp = pp_by_gid.get(r.get('game_id')) or {}
+            pp_type = (pp.get('type') or '').lower()
+            pp_tier = pp.get('tier') or ''
+            pp_label = pp.get('label') or ''
+            pp_sub = pp.get('sub') or ''
+            if pp_type in ('ml', 'rl') and pp_tier in ('PRIME', 'STRONG') and pp_label:
+                # Realign — the primary_play is the real published pick
+                pp_side = pp.get('side') or ''
+                pp_conv = pp.get('conviction') or 60
+                # Use primary_play.sub as the short_read (clean, aligned)
+                new_short = pp_sub if pp_sub else f'Model backs {pp_label} — {pp_conv}% confidence'
+                new_long = (
+                    f'The published call is {pp_label} ({pp_tier}, {pp_conv}%). '
+                    f'{pp_sub}. '
+                    f'(Prior totals-market read was contradicted by simulator — '
+                    f"realigned to primary_play's active pick.)"
+                )
+                payload = {
+                    'call_market': pp_type,
+                    'call_side': pp_side,
+                    'call_text': pp_label,
+                    'call_line': None,
+                    'conviction': pp_conv,
+                    'short_read': new_short[:2000],
+                    'long_read': new_long[:2000],
+                }
+                pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
+                                    headers=H_WRITE, json=payload, timeout=10)
+                if pr.status_code in (200, 204):
+                    repairs['F_realigned_to_primary_play'] += 1
+                continue
+
+            # primary_play absent or also a total — fall through to old "PASS" path
             user_short = (
                 f"Our model has this total closer to {s:.1f} runs while the "
                 f"take had it going {side.lower()} {l}. When our own numbers "
