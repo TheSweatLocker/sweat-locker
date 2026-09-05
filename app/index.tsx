@@ -15379,67 +15379,155 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       );
                     })()}
 
-                    {/* 2026-08-22: Record card visual polish. 3-column glance
-                        (current / longest / record) with color-coded values
-                        matches the pattern set in the Split record card so all
-                        Steam Room sub-tabs share the same record surface style. */}
-                    <View style={[styles.card, {padding:14}]}>
-                      <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1, marginBottom:10}}>STEP RECORD</Text>
+                    {/* 2026-09-05 LADDER REDESIGN — bank-first, journey-framed.
+                        Prior version led with streak count (abstract). New version
+                        leads with the journey: $25 seed → $5,000 goal, current
+                        bank $, step X of 8, conditional next-step math ("if wins:
+                        $Y  ·  if loses: back to $25"). Same product, framed as
+                        the handicapper $10→$10K ladder narrative users know.
+                        Screen-recordable for social. */}
+                    <View style={[styles.card, {padding:16, borderWidth:1.5, borderColor:THEME.accent+'44'}]}>
                       {(() => {
-                        // 2026-08-31: reframed for the streak-compounding product
-                        // this actually is. Prior version put lifetime W-L visually
-                        // equal to current/best streak — but Ladder's currency is
-                        // "how many rungs before reset", not raw hit-rate.
-                        // Big numbers: current streak + best. Lifetime W-L moved
-                        // to a lighter sub-line (still transparent, not featured).
-                        // Added L10 as the recency signal — 4-8 lifetime is dragged
-                        // by early misses; L10 shows if the current phase is on the mend.
-                        const resolved = ladderRungs.filter(r => r.result);
-                        const wins = resolved.filter(r => r.result === 'Win').length;
-                        const losses = resolved.filter(r => r.result === 'Loss').length;
-                        const pushes = resolved.filter(r => r.result === 'Push').length;
-                        const wl = wins + losses;
-                        const hitPct = wl > 0 ? Math.round(1000 * wins / wl) / 10 : 0;
-                        // L10 window — most recent 10 resolved rungs
-                        const recent10 = resolved.slice(0, 10);
-                        const rW = recent10.filter(r => r.result === 'Win').length;
-                        const rL = recent10.filter(r => r.result === 'Loss').length;
-                        const rPct = (rW + rL) > 0 ? Math.round(1000 * rW / (rW + rL)) / 10 : 0;
+                        const SEED = 25;      // starting bank per ladder run
+                        const TARGET = 5000;  // goal ($25 → $5,000 = 200x)
+                        const TARGET_STEPS = 8;  // ~8 straight wins at -110 hits target
                         const cur = ladderState?.current_streak ?? 0;
                         const best = ladderState?.longest_streak ?? 0;
-                        const curColor = cur > 0 ? THEME.win : cur < 0 ? THEME.loss : THEME.textMuted;
+
+                        // Compute current bank by rolling through the most recent
+                        // `cur` resolved rungs and compounding actual odds.
+                        // If cur = 0 (reset or first step), bank = SEED.
+                        const resolved = (ladderRungs || []).filter((r: any) => r.result === 'Win');
+                        // ladderRungs is newest-first; take the last `cur` wins as the current run
+                        const currentRun = resolved.slice(0, cur);
+                        let bank = SEED;
+                        const stepPath: {step:number, odds:any, bankAfter:number}[] = [];
+                        // Walk oldest→newest to compute compounding
+                        for (let i = currentRun.length - 1; i >= 0; i--) {
+                          const rung = currentRun[i];
+                          const odds = rung.odds_american;
+                          const payoutRate = odds == null ? 0.909
+                            : (odds >= 100 ? odds / 100 : 100 / Math.abs(odds));
+                          bank = bank * (1 + payoutRate);
+                          stepPath.push({step: currentRun.length - i, odds, bankAfter: bank});
+                        }
+                        const currentBank = Math.round(bank * 100) / 100;
+                        const profit = currentBank - SEED;
+
+                        // Active rung → project next-step math
+                        const activeRung = ladderState?.active_rung_id
+                          ? (ladderRungs || []).find((r:any) => r.id === ladderState.active_rung_id) : null;
+                        const nextOdds = activeRung?.odds_american;
+                        const nextPayout = nextOdds == null ? 0.909
+                          : (nextOdds >= 100 ? nextOdds / 100 : 100 / Math.abs(nextOdds));
+                        const nextBankIfWin = Math.round(currentBank * (1 + nextPayout) * 100) / 100;
+
+                        const progressPct = Math.min(100, Math.max(0, (Math.log(currentBank / SEED) / Math.log(TARGET / SEED)) * 100));
+                        const stepNum = cur + (activeRung ? 1 : 0);
+                        const stepsRemaining = Math.max(0, TARGET_STEPS - cur);
+
                         return (
                           <View>
-                            <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
-                              <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
-                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>CURRENT</Text>
-                                <Text style={{color:curColor, fontSize:28, fontWeight:'800'}}>{cur}</Text>
-                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>step{Math.abs(cur) === 1 ? '' : 's'}</Text>
-                              </View>
-                              <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
-                              <View style={{flex:1, alignItems:'center', paddingVertical:4}}>
-                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>BEST</Text>
-                                <Text style={{color:THEME.accent, fontSize:28, fontWeight:'800'}}>{best}</Text>
-                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>step{best === 1 ? '' : 's'}</Text>
-                              </View>
-                              <View style={{width:1, backgroundColor:THEME.border + '55', marginVertical:4}}/>
-                              <View style={{flex:1.2, alignItems:'center', paddingVertical:4}}>
-                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:4}}>L10</Text>
-                                <Text style={{color:(rW + rL) > 0 ? (rPct >= 50 ? THEME.win : rPct >= 40 ? THEME.text : THEME.loss) : THEME.textDim,
-                                              fontSize:22, fontWeight:'800'}}>{rW}-{rL}</Text>
-                                <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>{(rW + rL) > 0 ? `${rPct.toFixed(0)}%` : '—'}</Text>
-                              </View>
+                            {/* Journey header */}
+                            <View style={{alignItems:'center', marginBottom:14}}>
+                              <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1.5}}>THE LADDER</Text>
+                              <Text style={{color:THEME.text, fontSize:22, fontWeight:'900', letterSpacing:-0.5, marginTop:4}}>
+                                ${SEED} <Text style={{color:THEME.textDim}}>→</Text> ${TARGET.toLocaleString()}
+                              </Text>
+                              <Text style={{color:THEME.textMuted, fontSize:10, marginTop:2, letterSpacing:0.5}}>
+                                200× target · roll all winnings each step
+                              </Text>
                             </View>
-                            {/* Lifetime record moved to muted sub-line — honest but de-featured */}
-                            {wl > 0 && (
-                              <View style={{marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44',
-                                            flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
-                                <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'600', letterSpacing:0.4}}>LIFETIME</Text>
-                                <Text style={{color:THEME.textDim, fontSize:11, fontVariant:['tabular-nums']}}>
-                                  {wins}-{losses}{pushes ? `-${pushes}` : ''} · {hitPct.toFixed(1)}%
+
+                            {/* Current bank hero */}
+                            <View style={{alignItems:'center', marginBottom:12}}>
+                              <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.8}}>CURRENT BANK</Text>
+                              <Text style={{color: profit > 0 ? THEME.win : profit < 0 ? THEME.loss : THEME.text,
+                                            fontSize:44, fontWeight:'900', letterSpacing:-1, marginTop:2,
+                                            fontVariant:['tabular-nums']}}>
+                                ${currentBank.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+                              </Text>
+                              {profit !== 0 && (
+                                <Text style={{color: profit > 0 ? THEME.win : THEME.loss, fontSize:12, fontWeight:'700', marginTop:2}}>
+                                  {profit > 0 ? '+' : ''}${profit.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})} from seed
+                                </Text>
+                              )}
+                            </View>
+
+                            {/* Progress bar */}
+                            <View style={{marginBottom:12}}>
+                              <View style={{flexDirection:'row', justifyContent:'space-between', marginBottom:6}}>
+                                <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'700', letterSpacing:0.6}}>
+                                  STEP {stepNum} OF ~{TARGET_STEPS}
+                                </Text>
+                                <Text style={{color:THEME.textDim, fontSize:10, fontVariant:['tabular-nums']}}>
+                                  {progressPct.toFixed(0)}% to goal
                                 </Text>
                               </View>
+                              <View style={{height:8, backgroundColor:THEME.border+'44', borderRadius:4, overflow:'hidden'}}>
+                                <View style={{width:`${progressPct}%`, height:'100%', backgroundColor:THEME.accent, borderRadius:4}}/>
+                              </View>
+                              {stepsRemaining > 0 && (
+                                <Text style={{color:THEME.textMuted, fontSize:10, marginTop:4, textAlign:'center'}}>
+                                  {stepsRemaining} more win{stepsRemaining === 1 ? '' : 's'} to hit ${TARGET.toLocaleString()}
+                                </Text>
+                              )}
+                            </View>
+
+                            {/* Next step conditional math */}
+                            {activeRung && (
+                              <View style={{backgroundColor:THEME.bg + 'aa', borderRadius:10, padding:12, borderWidth:0.5, borderColor:THEME.border+'55', marginBottom:10}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:8}}>
+                                  NEXT STEP · ${currentBank.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})} AT RISK
+                                </Text>
+                                <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
+                                  <View style={{flex:1, backgroundColor:THEME.win+'11', borderRadius:8, padding:10, alignItems:'center'}}>
+                                    <Text style={{fontSize:16, marginBottom:2}}>✓</Text>
+                                    <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.4}}>IF WINS</Text>
+                                    <Text style={{color:THEME.win, fontSize:18, fontWeight:'900', marginTop:2, fontVariant:['tabular-nums']}}>
+                                      ${nextBankIfWin.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+                                    </Text>
+                                    <Text style={{color:THEME.textDim, fontSize:9, marginTop:2}}>
+                                      Step {stepNum + 1} of ~{TARGET_STEPS}
+                                    </Text>
+                                  </View>
+                                  <View style={{flex:1, backgroundColor:THEME.loss+'11', borderRadius:8, padding:10, alignItems:'center'}}>
+                                    <Text style={{fontSize:16, marginBottom:2}}>✗</Text>
+                                    <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.4}}>IF LOSES</Text>
+                                    <Text style={{color:THEME.loss, fontSize:18, fontWeight:'900', marginTop:2, fontVariant:['tabular-nums']}}>
+                                      ${SEED}
+                                    </Text>
+                                    <Text style={{color:THEME.textDim, fontSize:9, marginTop:2}}>
+                                      Ladder resets
+                                    </Text>
+                                  </View>
+                                </View>
+                              </View>
                             )}
+
+                            {/* Compact stats sub-line */}
+                            <View style={{flexDirection:'row', justifyContent:'space-between', paddingTop:10, borderTopWidth:0.5, borderTopColor:THEME.border+'44'}}>
+                              <View style={{alignItems:'center', flex:1}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'700', letterSpacing:0.4}}>STREAK</Text>
+                                <Text style={{color: cur > 0 ? THEME.win : THEME.textDim, fontSize:14, fontWeight:'800', marginTop:2}}>
+                                  {cur}-0
+                                </Text>
+                              </View>
+                              <View style={{width:1, backgroundColor:THEME.border+'55'}}/>
+                              <View style={{alignItems:'center', flex:1}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'700', letterSpacing:0.4}}>BEST RUN</Text>
+                                <Text style={{color: THEME.accent, fontSize:14, fontWeight:'800', marginTop:2}}>
+                                  {best} step{best === 1 ? '' : 's'}
+                                </Text>
+                              </View>
+                              <View style={{width:1, backgroundColor:THEME.border+'55'}}/>
+                              <View style={{alignItems:'center', flex:1}}>
+                                <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'700', letterSpacing:0.4}}>ATTEMPTS</Text>
+                                <Text style={{color:THEME.text, fontSize:14, fontWeight:'800', marginTop:2}}>
+                                  {(ladderRungs || []).filter((r:any) => r.result).length}
+                                </Text>
+                              </View>
+                            </View>
                           </View>
                         );
                       })()}
