@@ -117,30 +117,88 @@ def _paged(url: str, chunk: int = 1000):
 #   {sport, date (dt.date), result ('win'/'loss'/'push'), stake_units, win_payout}
 
 def pick_sharp() -> list[dict]:
-    """jerry_reads — sides picks, cross-sport.
+    """Sharp Card SIDES component — sources from the SAME primary_play tier
+    filter that aggregate_daily_records.agg_sharp_card uses (frozen at grade
+    time via mlb_game_results.primary_play, tier IN PRIME/STRONG).
 
-    Matches the Sharp Card app-side query exactly: conviction>=60 (below
-    that is un-shipped lean territory). jerry_reads doesn't store `tier`
-    or a real book snapshot, so we use flat 1u @ -110 like the app does.
+    ROOT-CAUSE FIX 2026-09-05 (launch day): prior version read jerry_reads
+    conviction>=60 which is a BROADER set than what actually ships on Sharp
+    Card. That produced surface_records.sharp counts + units that did NOT
+    match daily_surface_records.sharp_card sides. Combined with .prop, the
+    app displayed 228-104 (+134u) while the true Sharp Card record was
+    254-146 (+75u) — 59u overstatement, ~5pp hit-rate overstatement.
+
+    Now sources from mlb_game_results.primary_play (frozen snapshot at grade
+    time) tier IN PRIME/STRONG. Same _grade_side + stake logic as
+    agg_sharp_card so sums reconcile exactly: surface_records.sharp +
+    surface_records.prop = sum(daily_surface_records.sharp_card).
+
+    Sizing mirrors SHARP_STAKE_CUTOVER (2026-08-31): pre-cutover 2u flat
+    for PRIME/STRONG (matches historical writes); post-cutover reads
+    recommended_stake from primary_play (1u default, 2u LOCK on high-hit
+    signals).
     """
-    url = (f'{SB}/rest/v1/jerry_reads'
-           f'?select=sport,game_date,result,conviction,call_odds_est'
-           f'&result=not.is.null&conviction=gte.60&order=game_date.desc')
+    from datetime import date as _date_cls
+    _CUTOVER = _date_cls.fromisoformat('2026-08-31')
     out = []
-    for r in _paged(url):
-        cls = _classify(r.get('result'))
-        if cls is None: continue
-        # Coverage stub gate — conviction=0 means un-scored sweep stub
-        if r.get('conviction') == 0: continue
+    url = (f'{SB}/rest/v1/mlb_game_results'
+           f'?select=game_id,game_date,home_team,away_team,home_score,away_score,'
+           f'home_win,run_line_result,total_result,spread_result,primary_play'
+           f'&primary_play.not.is.null'
+           f'&order=game_date.desc')
+    for row in _paged(url):
+        pp = row.get('primary_play') or {}
+        if not isinstance(pp, dict): continue
+        if pp.get('tier') not in ('PRIME', 'STRONG'): continue
         try:
-            d = dt.date.fromisoformat(r['game_date'])
+            d = _date_cls.fromisoformat(row['game_date'])
         except Exception:
             continue
         if d < SHARP_RECORD_EPOCH: continue
-        sp = (r.get('sport') or '').upper() or 'MLB'
-        out.append({'sport': sp, 'date': d, 'result': cls,
-                    'stake': 1.0, 'payout': 0.909})
+        verdict = _grade_side_lite(pp, row)
+        if verdict is None: continue
+        # Stake sizing — pre/post cutover
+        if d >= _CUTOVER:
+            try: stake = float(pp.get('recommended_stake') or 1.0)
+            except (TypeError, ValueError): stake = 1.0
+        else:
+            stake = 2.0
+        # Payout: ML uses close_home_ml/close_away_ml (best-effort), else -110.
+        # For consistency with agg_sharp_card which uses flat -110 for MLB sides,
+        # we do the same here so numbers reconcile row-for-row.
+        payout = 0.909   # -110 default
+        cls = {'W': 'win', 'L': 'loss', 'P': 'push'}.get(verdict)
+        if cls is None: continue
+        out.append({'sport': 'MLB', 'date': d, 'result': cls,
+                    'stake': stake, 'payout': payout})
     return out
+
+
+def _grade_side_lite(pp: dict, game: dict) -> str | None:
+    """Mirror of aggregate_daily_records._grade_side, inlined here so this
+    module doesn't hard-import the other. Keep in sync when the source changes.
+    Returns 'W'/'L'/'P'/None."""
+    hs = game.get('home_score'); as_ = game.get('away_score')
+    if hs is None or as_ is None: return None
+    home = (game.get('home_team') or '').lower()
+    away = (game.get('away_team') or '').lower()
+    m = (pp.get('type') or '').lower()
+    label = (pp.get('label') or '').lower()
+    picked_home = home in label; picked_away = away in label
+    if m == 'ml':
+        if picked_home: return 'W' if hs > as_ else 'L' if hs < as_ else 'P'
+        if picked_away: return 'W' if as_ > hs else 'L' if as_ < hs else 'P'
+    elif m == 'rl':
+        rl = (game.get('run_line_result') or '').lower()
+        if picked_home and '+1.5' in label: return 'W' if rl != 'home' else 'L'
+        if picked_home: return 'W' if rl == 'home' else 'L'
+        if picked_away and '+1.5' in label: return 'W' if rl != 'away' else 'L'
+        if picked_away: return 'W' if rl == 'away' else 'L'
+    elif m in ('total', 'over', 'under'):
+        tr = (game.get('total_result') or '').lower()
+        if 'over' in label: return 'W' if tr == 'over' else 'L' if tr == 'under' else 'P'
+        if 'under' in label: return 'W' if tr == 'under' else 'L' if tr == 'over' else 'P'
+    return None
 
 
 def pick_prop() -> list[dict]:
@@ -152,6 +210,8 @@ def pick_prop() -> list[dict]:
     book_over_odds / book_under_odds based on direction — which is where
     the actual American odds live in mlb_pipeline_props.
     """
+    from datetime import date as _date_cls
+    _CUTOVER = _date_cls.fromisoformat('2026-08-31')
     out = []
     for tbl, sport in [('mlb_pipeline_props', 'MLB'), ('nfl_pipeline_props', 'NFL')]:
         url = (f'{SB}/rest/v1/{tbl}'
@@ -167,25 +227,37 @@ def pick_prop() -> list[dict]:
                     d = dt.date.fromisoformat(r['game_date'])
                 except Exception:
                     continue
+                # Odds enforcement mirrors agg_sharp_card: props with odds
+                # outside [-300, +150] are excluded (feedback_prop_jerry_odds).
                 direction = (r.get('direction') or '').lower()
-                # Pick the American odds for the side we backed
                 if direction == 'over':
                     odds_val = r.get('book_over_odds')
                 elif direction == 'under':
                     odds_val = r.get('book_under_odds')
                 else:
                     odds_val = None
-                base = TIER_UNITS.get((r.get('tier') or '').upper(), 1.0)
-                if odds_val is None:
-                    stake, payout = base, 0.909   # fallback -110
-                else:
-                    try: o = int(odds_val)
+                if odds_val is not None:
+                    try:
+                        oi = int(odds_val)
+                        if oi < -300 or oi > 150: continue
                     except (TypeError, ValueError):
-                        stake, payout = base, 0.909
-                    else:
-                        # Halve on juice trap (<=-180) or long-dog (>=+250)
-                        stake = base * 0.5 if (o <= -180 or o >= 250) else base
+                        pass
+                # 2026-09-05 ROOT-CAUSE FIX: stake sizing must mirror
+                # aggregate_daily_records.agg_sharp_card exactly so
+                # surface_records.prop reconciles with daily_surface_records.
+                # Prior TIER_UNITS map (2u PRIME / 1.5u STRONG) + juice halving
+                # inflated units_won by ~65% vs the actual sharp_card record.
+                # Now: 1u flat post-cutover, 2u flat pre-cutover — same rule
+                # agg_sharp_card applies at write time.
+                stake = 1.0 if d >= _CUTOVER else 2.0
+                if odds_val is None:
+                    payout = 0.909
+                else:
+                    try:
+                        o = int(odds_val)
                         payout = _american_win_payout(o)
+                    except (TypeError, ValueError):
+                        payout = 0.909
                 out.append({'sport': sport, 'date': d, 'result': cls,
                             'stake': stake, 'payout': payout})
         except requests.HTTPError as e:

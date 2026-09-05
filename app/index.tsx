@@ -11340,7 +11340,7 @@ setJerryHistory(prev => {
             <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
               <Text style={{fontSize:64,marginBottom:24}}>🧾</Text>
               <Text style={{color:THEME.text,fontWeight:'900',fontSize:28,textAlign:'center',marginBottom:12}}>Every Pick Is Graded</Text>
-              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22,marginBottom:20,paddingHorizontal:10}}>Under the <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Receipts</Text> sub-tab (inside Trends), every pick's result is tracked the moment the game ends. No cherry-picking. Slice by tier, sport, or market.</Text>
+              <Text style={{color:THEME.textDim,fontSize:14,textAlign:'center',lineHeight:22,marginBottom:20,paddingHorizontal:10}}>Under the <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Receipts</Text> sub-tab (inside Jerry), every pick's result is tracked the moment the game ends. No cherry-picking. Slice by tier, sport, or market.</Text>
               <View style={{width:'100%',backgroundColor:THEME.surface,borderRadius:10,padding:14,borderLeftWidth:3,borderLeftColor:HRB_COLOR,marginBottom:12}}>
                 <Text style={{color:THEME.textMuted,fontSize:10,letterSpacing:0.5,marginBottom:4}}>WHY IT MATTERS</Text>
                 <Text style={{color:THEME.textDim,fontSize:12,lineHeight:17}}>Any picks app can talk about their wins. Sweat Locker publishes the full ledger — losses included.</Text>
