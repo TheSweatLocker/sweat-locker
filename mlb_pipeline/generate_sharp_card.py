@@ -65,10 +65,53 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 # CONFIG — must stay in sync with prior app-side logic
 # ═══════════════════════════════════════════════════════════════════════
 
-CONFIG_VERSION = '2026-09-03'
+CONFIG_VERSION = '2026-09-05'
 
 # Feature flag: prop playbook tier lift. Kept false until 14d shadow validates.
 PROP_PLAYBOOK_ENABLED = False
+
+# ─── 2026-09-05 SHARP CARD DISCIPLINE FLAGS ────────────────────────────
+# User directive 9/5: Sharp Card at 100+ items dilutes the "sharp" brand.
+# Handicapper industry standard is 3-15 picks/day. Trim to that with a
+# 3-flag combo. Each flag has a REVERT sha noted for rollback if the
+# trimmed card underperforms the volume-heavy card in W-L / units.
+#
+# REVERT: to restore pre-9/5 volume-heavy behavior, flip these 3 flags:
+#   FOOTBALL_INCLUDE_LEAN = True
+#   FOOTBALL_CHALK_SPREAD_MAX_MAGNITUDE = None  (or set very high)
+#   SHARP_CARD_ITEM_CAP = None  (uncap)
+# Or revert at git: pre-discipline SHA was `e2e2dced`.
+
+# (1) Drop LEAN-tier picks from football (NCAAF/NFL) sections. MLB
+# still includes LEAN props (historically profitable). Football LEAN is
+# noisier + more visible on Sat slate.
+FOOTBALL_INCLUDE_LEAN = False
+
+# (2) Fade the "chalky STRONG" trap — football STRONG picks where spread
+# magnitude > this AND ML worse than the juice cap. Common Alabama -32
+# / BYU -51 body-bag pattern where public loves the chalk but sharp
+# fades. Set to None to disable.
+FOOTBALL_CHALK_SPREAD_MAX_MAGNITUDE = 20   # points
+FOOTBALL_CHALK_ML_JUICE_MAX = -1500        # if picked ML <= this, cap it
+
+# (3) Total items cap. Uses PER-SPORT quotas so NCAAF picks don't get
+# fully evicted by MLB PRIME abundance on Sat slates. Overflow beyond
+# the quota drops by tier priority (LEAN first, then STRONG).
+# Historical volume was 100+; new cap ~50 balances "sharp discipline"
+# with "cross-sport coverage on Sat when 4 sports are live."
+SHARP_CARD_ITEM_CAP = 50
+SHARP_CARD_PER_SPORT_MAX = {
+    'MLB':   25,   # daily bread — sides + props
+    'NCAAF': 12,   # Sat slate is huge, top 12 STRONGs
+    'NFL':   10,   # Sun slate
+    'NCAAB': 10,
+    'NBA':    8,
+    'NHL':    8,
+    'UFC':    5,   # per-card
+}
+
+_SPORT_PRIORITY = {'MLB': 0, 'NCAAF': 1, 'NFL': 2, 'NCAAB': 3, 'NBA': 4, 'NHL': 5, 'UFC': 6}
+_TIER_PRIORITY = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
 
 
 def _today_et() -> str:
@@ -272,14 +315,33 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
 
 
 def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
+    is_football = sport in ('NCAAF', 'NFL')
+    tier_gate = _is_ps if (is_football and not FOOTBALL_INCLUDE_LEAN) else _is_any_tier
+    dropped_lean = dropped_chalk = 0
     picks = []
     for g in rows:
         pp = g.get('primary_play') or {}
-        if not isinstance(pp, dict) or not _is_any_tier(pp.get('tier')): continue
+        if not isinstance(pp, dict): continue
+        tier = pp.get('tier')
+        # (1) LEAN gate for football
+        if not tier_gate(tier):
+            if is_football and tier == 'LEAN': dropped_lean += 1
+            continue
         # Sport-aware column aliases: MLB uses home_ml_close, NCAAF/NFL use close_home_ml
         home_ml = g.get('home_ml_close') or g.get('home_ml_odds') or g.get('close_home_ml')
         away_ml = g.get('away_ml_close') or g.get('away_ml_odds') or g.get('close_away_ml')
         side = pp.get('side')
+        # (2) Chalky-STRONG fade — football only, big-spread + heavy ML juice
+        if is_football and tier == 'STRONG' and FOOTBALL_CHALK_SPREAD_MAX_MAGNITUDE is not None:
+            spread = g.get('close_spread')
+            picked_ml = home_ml if side == 'HOME' else away_ml if side == 'AWAY' else None
+            try:
+                if (spread is not None and abs(float(spread)) > FOOTBALL_CHALK_SPREAD_MAX_MAGNITUDE
+                    and picked_ml is not None and float(picked_ml) <= FOOTBALL_CHALK_ML_JUICE_MAX):
+                    dropped_chalk += 1
+                    continue
+            except (TypeError, ValueError):
+                pass
         side_ml = home_ml if side == 'HOME' else away_ml if side == 'AWAY' else None
         units = _units_for_pick(pp.get('tier'), pp.get('type') or 'ml',
                                  side_ml if pp.get('type') == 'ml' else None,
@@ -296,6 +358,8 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             'line': pp.get('line'),
             'units': units,
         })
+    if is_football and (dropped_lean or dropped_chalk):
+        print(f'  {sport} discipline drops: LEAN={dropped_lean}  chalky-STRONG={dropped_chalk}')
     return picks
 
 
@@ -386,6 +450,36 @@ def run(dry_run: bool = False):
     print(f'  composed: MLB sides={len(mlb_sides)} MLB props={len(mlb_props)} '
           f'NFL={len(nfl)} NCAAF={len(ncaaf)} NCAAB={len(ncaab)} '
           f'NBA={len(nba)} NHL={len(nhl)} UFC={len(ufc)}  TOTAL={len(all_items)}')
+
+    # (3) Cap total items with per-sport quota + tier priority.
+    # Step A: sort each sport bucket by (tier, -units).
+    # Step B: take top N per sport per SHARP_CARD_PER_SPORT_MAX.
+    # Step C: if still over SHARP_CARD_ITEM_CAP, trim from lowest-tier
+    #         of each sport proportionally.
+    if SHARP_CARD_ITEM_CAP is not None and len(all_items) > SHARP_CARD_ITEM_CAP:
+        pre = len(all_items)
+        from collections import defaultdict as _dd
+        by_sport: dict = _dd(list)
+        for it in all_items:
+            by_sport[it.get('sport') or '?'].append(it)
+        capped: list = []
+        for sport, items_s in by_sport.items():
+            max_for_sport = SHARP_CARD_PER_SPORT_MAX.get(sport, 15)
+            items_s.sort(key=lambda it: (
+                _TIER_PRIORITY.get(it.get('tier'), 9),
+                -float(it.get('units') or 0),
+            ))
+            capped.extend(items_s[:max_for_sport])
+        # If per-sport quotas still overshoot total, sort combined and cap
+        if len(capped) > SHARP_CARD_ITEM_CAP:
+            capped.sort(key=lambda it: (
+                _TIER_PRIORITY.get(it.get('tier'), 9),
+                _SPORT_PRIORITY.get(it.get('sport'), 9),
+                -float(it.get('units') or 0),
+            ))
+            capped = capped[:SHARP_CARD_ITEM_CAP]
+        all_items = capped
+        print(f'  cap applied: {pre} → {len(all_items)} (per-sport quotas + hard cap {SHARP_CARD_ITEM_CAP})')
 
     _publish(today, all_items, dry_run)
     return 0
