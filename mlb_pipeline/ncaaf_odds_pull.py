@@ -204,6 +204,36 @@ def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
     # Mirror close → open on first pull
     row.setdefault('open_spread', row.get('close_spread'))
     row.setdefault('open_total', row.get('close_total'))
+
+    # 2026-09-05 DATA-QUALITY GATE — reject rows where spread and ML sign
+    # contradict egregiously. Prior 9/5 slate had a phantom "Washington @
+    # Rice" row with Rice -22.5 spread + Rice -2500 ML (self-consistent
+    # but wrong — real game is Washington -22.5 at Rice). Bad data at
+    # source. Rather than surface the phantom to users, drop the row and
+    # log for triage. Ncaaf_dedup + resolver improvements catch some;
+    # this catches the last class of "row is fully broken at source".
+    try:
+        sp = row.get('close_spread')
+        hml = row.get('close_home_ml')
+        aml = row.get('close_away_ml')
+        if sp is not None and hml is not None and aml is not None:
+            sp_f = float(sp); hml_f = float(hml); aml_f = float(aml)
+            # Egregious mismatch: home fav by spread but away is HEAVY ML fav
+            #   (spread <= -7  AND home_ml >= +200 AND away_ml <= -300) OR
+            # Egregious mismatch: home dog by spread but home is HEAVY ML fav
+            #   (spread >=  7  AND home_ml <= -300 AND away_ml >= +200)
+            # Threshold intentionally wide so we only drop OBVIOUSLY inverted
+            # rows, not close spots.
+            fav_dog_flip_home = (sp_f <= -7 and hml_f >= 200 and aml_f <= -300)
+            dog_fav_flip_home = (sp_f >=  7 and hml_f <= -300 and aml_f >= 200)
+            if fav_dog_flip_home or dog_fav_flip_home:
+                print(f'  ⚠ dropping DQ-flagged NCAAF row: {away} @ {home} '
+                      f'sp={sp_f} home_ml={hml_f} away_ml={aml_f} '
+                      f'(spread and ML contradict)')
+                return None
+    except (TypeError, ValueError):
+        pass
+
     return row
 
 
