@@ -11951,7 +11951,14 @@ setJerryHistory(prev => {
             const inGames = (gamesData || []).find((g: any) =>
               g.away_team === away && g.home_team === home);
             if (inGames) return inGames;
-            const ctx: any = Object.values(nflGameContextMap || {}).find((c: any) =>
+            // 2026-09-05: check BOTH NFL + NCAAF context maps. Prior version
+            // only checked NFL → every NCAAF Sweat Card football pick fell
+            // through and rendered "game data loading" forever (NCAAF is
+            // active every Sat but its ctx map wasn't consulted).
+            const ctxSource = pickSport === 'NCAAF'
+              ? (ncaafGameContextMap || {})
+              : (nflGameContextMap || {});
+            const ctx: any = Object.values(ctxSource).find((c: any) =>
               c?.away_team === away && c?.home_team === home);
             if (ctx) return {
               id: ctx.game_id, away_team: away, home_team: home,
