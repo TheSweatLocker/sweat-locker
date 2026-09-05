@@ -182,31 +182,24 @@ def resolve_ncaaf_team(raw_name: str) -> Optional[str]:
     if best_canon:
         return best_canon
 
-    # Last-word == nickname (e.g. raw "Seminoles" alone).
-    by_nick = cache['by_nickname']
+    # 2026-09-05 REORDER — mascot-strip fallback BEFORE nickname-only fallback.
+    # Previously nickname-only ran first, causing "Citadel Bulldogs" (Odds
+    # API name for Citadel FCS) to match nickname 'bulldogs' and return
+    # Georgia (first team in by_nick with Bulldogs mascot). Phantom
+    # "Georgia @ Charlotte" row on 9/5 slate. Same class as
+    # "Western Michigan → Michigan" location-substring collision earlier.
+    #
+    # New order:
+    #   1. Mascot-strip (multi-token "TEAM MASCOT" — strip and try base)
+    #   2. Bare-nickname fallback (single-token OR mascot-only phrase)
     tokens = n.split()
-    if tokens:
-        # 2- or 3-word mascots (e.g. "Blue Devils", "Fighting Irish")
-        for tail_len in (3, 2, 1):
-            if len(tokens) >= tail_len:
-                candidate = ' '.join(tokens[-tail_len:])
-                if candidate in by_nick:
-                    return by_nick[candidate]
 
-    # 2026-09-04 MASCOT-STRIP FALLBACK. Odds API returns names like
-    # "Eastern Illinois Panthers", "Bryant Bulldogs", "Fordham Rams".
-    # If nothing above matched, try stripping the trailing mascot
-    # token(s) and re-checking the base name against by_key/by_location.
-    # Prevents next-day dupes with "TEAM" vs "TEAM MASCOT" game_ids
-    # that used to accumulate (26 dupes on 9/4-9/13 slate; see
-    # ncaaf_dedup_2026_09_04.py). Root cause instead of daily cleanup.
+    # PASS 1 — mascot-strip for multi-token names.
     if len(tokens) >= 2:
         for tail_len in (3, 2, 1):
             if len(tokens) > tail_len:
                 base = ' '.join(tokens[:-tail_len])
-                # Try exact match on base
                 if base in by_key: return by_key[base]
-                # Then location substring on base
                 for loc_n, canon in by_loc.items():
                     if not loc_n: continue
                     if loc_n == base:
@@ -216,6 +209,22 @@ def resolve_ncaaf_team(raw_name: str) -> Optional[str]:
                         ' ' in min(loc_n, base, key=len)
                     ):
                         return canon
+
+    # PASS 2 — nickname-only. Only fire on BARE nickname input (raw is a
+    # nickname alone, no leading team-name token). Prevents ambiguous
+    # nicknames (Bulldogs = 15+ teams, Tigers = 10+, Eagles = 8+) from
+    # eating multi-word names like "Citadel Bulldogs" and returning
+    # whichever team happened to hit by_nickname first.
+    by_nick = cache['by_nickname']
+    if tokens:
+        # Exact bare-nickname match (raw = single nickname phrase, no team name)
+        if n in by_nick:
+            return by_nick[n]
+        # Multi-word bare-nickname phrases like "Blue Devils" (whole raw = phrase)
+        if len(tokens) >= 2 and len(tokens) <= 3:
+            joined = ' '.join(tokens)
+            if joined in by_nick:
+                return by_nick[joined]
 
     return None
 
