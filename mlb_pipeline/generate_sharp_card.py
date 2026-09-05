@@ -175,13 +175,23 @@ def _fetch_all(today: str) -> dict:
                                     'book_over_odds,book_under_odds,game_id',
                                     'game_date': f'eq.{today}',
                                     'tier': 'in.(PRIME,STRONG,LEAN)'})
+    # 2026-09-05 FIX: NCAAF/NFL use `close_home_ml`/`close_away_ml`; MLB
+    # uses `home_ml_close`/`away_ml_close`. Prior version requested MLB
+    # column names for every sport → PostgREST 400 → silent empty list →
+    # zero NCAAF/NFL picks on Sharp Card despite PRIME/STRONG picks existing
+    # in game_context. Sport-aware select fixes it. `_compose_other_sport_sides`
+    # already reads either alias (`home_ml_close or home_ml_odds`).
     for sport, tbl in [('nfl','nfl_game_context'), ('ncaaf','ncaaf_game_context'),
                        ('ncaab','ncaab_game_context'), ('nba','nba_game_context'),
                        ('nhl','nhl_game_context')]:
+        if sport in ('nfl', 'ncaaf'):
+            cols = ('game_id,home_team,away_team,primary_play,'
+                    'close_home_ml,close_away_ml')
+        else:
+            cols = ('game_id,home_team,away_team,primary_play,'
+                    'home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
         out[f'{sport}_ctx'] = _get(f'{SB}/rest/v1/{tbl}',
-                                    params={'select': 'game_id,home_team,away_team,primary_play,'
-                                            'home_ml_close,away_ml_close,home_ml_odds,away_ml_odds',
-                                            'game_date': f'eq.{today}'})
+                                    params={'select': cols, 'game_date': f'eq.{today}'})
     out['ufc_reads'] = _get(f'{SB}/rest/v1/jerry_reads',
                              params={'select': 'game_id,call_side,conviction,input_snapshot',
                                      'sport': 'eq.UFC',
@@ -266,8 +276,9 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     for g in rows:
         pp = g.get('primary_play') or {}
         if not isinstance(pp, dict) or not _is_any_tier(pp.get('tier')): continue
-        home_ml = g.get('home_ml_close') or g.get('home_ml_odds')
-        away_ml = g.get('away_ml_close') or g.get('away_ml_odds')
+        # Sport-aware column aliases: MLB uses home_ml_close, NCAAF/NFL use close_home_ml
+        home_ml = g.get('home_ml_close') or g.get('home_ml_odds') or g.get('close_home_ml')
+        away_ml = g.get('away_ml_close') or g.get('away_ml_odds') or g.get('close_away_ml')
         side = pp.get('side')
         side_ml = home_ml if side == 'HOME' else away_ml if side == 'AWAY' else None
         units = _units_for_pick(pp.get('tier'), pp.get('type') or 'ml',
