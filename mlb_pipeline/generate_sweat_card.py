@@ -1100,6 +1100,11 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
     # ML pick lands on a game, no other ML on the same game can be added.
     # Game-side ML "wins" the game lock; subsequent ML candidates fall
     # through and let prop/total picks on that game still surface.
+    seen_total_games = set()  # 2026-09-05 same class — same-game opposite-
+    # side TOTAL picks. Today's Cubs @ Marlins had POTD Over 8.5 AND
+    # Over/Under Under 8.5 both in top_8. Guaranteed one loses. First
+    # total on a game wins the total-lock.
+    seen_rl_games = set()   # Same for RL (spread) picks.
     game_pick_count = {}  # 2026-05-24 — track per-game pick concentration
 
     # Max picks per single MLB game on the public card.
@@ -1240,6 +1245,19 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         gkey = _game_key(pick)
         if gkey is not None and _is_ml_pick(pick) and gkey in seen_ml_games:
             return False
+        # 2026-09-05 Same-game TOTAL conflict — once any total pick is
+        # added on a game (POTD Over 8.5 e.g.), block opposite-side
+        # totals on the same game (Under 8.5 e.g.). Applies to both
+        # 'total' and 'Over/Under' type labels. Same for RL.
+        _ptype_l = (pick.get('type') or '').lower()
+        _is_total = _ptype_l in ('total', 'over/under', 'potd') and (
+            'over' in (pick.get('label') or '').lower() or 'under' in (pick.get('label') or '').lower()
+        )
+        _is_rl = _ptype_l in ('rl', 'spread', 'runline') or ('rl' in _ptype_l)
+        if gkey is not None and _is_total and gkey in seen_total_games:
+            return False
+        if gkey is not None and _is_rl and gkey in seen_rl_games:
+            return False
         # Concentration cap — block 3rd+ pick on a single game.
         # POTD + DotD are by-design daily anchors so they bypass the BLOCK,
         # but their game still increments the counter so subsequent picks
@@ -1263,6 +1281,10 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             seen_play_signatures.add(sig)
         if gkey is not None and _is_ml_pick(pick):
             seen_ml_games.add(gkey)
+        if gkey is not None and _is_total:
+            seen_total_games.add(gkey)
+        if gkey is not None and _is_rl:
+            seen_rl_games.add(gkey)
         if gkey is not None:
             game_pick_count[gkey] = game_pick_count.get(gkey, 0) + 1
         pick["rank"] = len(picks) + 1
