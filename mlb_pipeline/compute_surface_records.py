@@ -450,9 +450,66 @@ def pick_ncaaf_sides() -> list[dict]:
     return out
 
 
+def pick_sharp_card() -> list[dict]:
+    """Sharp Card composite (sides + props combined) — reads directly from
+    daily_surface_records.sharp_card, the authoritative per-day rollup
+    written by aggregate_daily_records.agg_sharp_card (which now sources
+    from jerry_cache.sharp_card_YYYY-MM-DD, source of truth for what
+    actually shipped).
+
+    2026-09-05 NEW surface. App should read surface_records.sharp_card
+    for the Sharp Card record display — this row = single source of
+    truth that reconciles across Receipts + Steam Room + rollups.
+    Prior split (surface_records.sharp + .prop combined at read time)
+    always risked drift.
+    """
+    url = (f'{SB}/rest/v1/daily_surface_records'
+           f'?surface=eq.sharp_card'
+           f'&select=sport,record_date,wins,losses,pushes,units_bet,units_won,pick_count'
+           f'&order=record_date.desc')
+    out = []
+    for r in _paged(url):
+        try:
+            d = dt.date.fromisoformat(r['record_date'])
+        except Exception:
+            continue
+        if d < SHARP_RECORD_EPOCH: continue
+        sp = (r.get('sport') or 'MLB').upper()
+        # Emit one entry per (win, loss, push) so the aggregator's
+        # bucket-into-window logic (in _aggregate) sees individual picks.
+        # units are already computed at day-level — divide evenly across picks
+        # for accurate window rollup.
+        w = r.get('wins') or 0
+        l = r.get('losses') or 0
+        p_ = r.get('pushes') or 0
+        n = w + l + p_
+        if n == 0: continue
+        # Emit synthetic per-pick rows preserving day-level unit totals
+        # by attaching the units_won proportionally.
+        won = float(r.get('units_won') or 0)
+        # Aggregator math (see _aggregate below):
+        #   units += stake*payout  on 'win'
+        #   units -= stake         on 'loss'
+        # Losses are already -stake, so per-win payout must total (won + l)
+        # to leave the day at exactly `won` net units. Emit w win rows with
+        # payout=(won+l)/w and l loss rows with stake=1.
+        per_win_payout = (won + l) / w if w > 0 else 0
+        for _ in range(w):
+            out.append({'sport': sp, 'date': d, 'result': 'win',
+                        'stake': 1.0, 'payout': per_win_payout})
+        for _ in range(l):
+            out.append({'sport': sp, 'date': d, 'result': 'loss',
+                        'stake': 1.0, 'payout': 0.909})
+        for _ in range(p_):
+            out.append({'sport': sp, 'date': d, 'result': 'push',
+                        'stake': 1.0, 'payout': 0.909})
+    return out
+
+
 SURFACES = {
-    'sharp':  pick_sharp,
-    'prop':   pick_prop,
+    'sharp':       pick_sharp,      # legacy — MLB sides only from primary_play
+    'prop':        pick_prop,       # legacy — props from mlb_pipeline_props
+    'sharp_card':  pick_sharp_card, # 2026-09-05 authoritative combined (sides+props from cache)
     'ladder': pick_ladder,
     'ledger': pick_ledger,
     'potd':   pick_potd,

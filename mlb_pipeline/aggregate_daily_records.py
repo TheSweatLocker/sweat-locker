@@ -93,95 +93,119 @@ SHARP_STAKE_CUTOVER = '2026-08-31'
 
 
 def agg_sharp_card(date: str) -> dict | None:
-    """Sharp Card = PRIME/STRONG primary_play picks + PRIME/STRONG props
-    on that date. Stake sizing switched 2026-08-31 to the ensemble's
-    recommended_stake field (1u default, 2u LOCK on ≥75% hit-rate
-    signal buckets). Historical dates keep the legacy 2u policy so
-    stored records don't rewrite.
+    """Sharp Card = items that SHIPPED to users on jerry_cache.sharp_card_YYYY-MM-DD.
 
-    2026-08-23 CRITICAL FIX: read primary_play from mlb_game_results
-    (FROZEN at log_game_result time) instead of mlb_game_context
-    (LIVE, drifts every time recompute_primary_play runs). Yesterday's
-    audit showed 9 of 15 games had drifted primary_play between cron
-    time and next-morning aggregation — 3 phantom losses got attributed
-    to sharp_card that never actually shipped to users. Frozen version:
-    18-10 (64.3%). Live-drifted version: 18-13 (58.1%). Difference is
-    entirely from LEAN picks getting live-promoted to PRIME/STRONG after
-    the fact, then graded (and losing) against actual outcomes.
+    2026-09-05 ROOT-CAUSE FIX (launch-day credibility bug): prior version
+    scanned mlb_game_results.primary_play + mlb_pipeline_props BROADLY for
+    tier IN PRIME/STRONG. That over-counted by 27% (9/4: 75 graded picks
+    vs 59 items actually on the card). Sources of phantom picks:
+      • Scratched pitcher props still in DB at tier=PRIME/STRONG
+      • Props suppressed post-card-write by correlation dedup / stack alerts
+      • primary_play drift between card generation and grade time (partially
+        addressed by frozen mlb_game_results snapshot, but not for props)
 
-    mlb_game_results.primary_play is captured by log_game_result at
-    grade time — closest available to what shipped. A true cron-time
-    snapshot table would be better but doesn't exist yet.
+    The jerry_cache.sharp_card_{date} row written by generate_sharp_card.py
+    IS the source of truth for what the user saw. Grade only those items.
+
+    Item shape (see generate_sharp_card.py):
+      {tier, type ('ml'/'total'/'rl'/'prop'), sport, pick (label),
+       odds, units (stake), matchup, player_name?, prop_type?, direction?, line?}
     """
-    _use_new_stakes = date >= SHARP_STAKE_CUTOVER
-    res = requests.get(f'{SB}/rest/v1/mlb_game_results',
+    # 1. Load the cached items — source of truth
+    card = requests.get(f'{SB}/rest/v1/jerry_cache',
+        headers=H_READ,
+        params={'cache_key': f'eq.sharp_card_{date}', 'select': 'data'},
+        timeout=15).json()
+    if not (isinstance(card, list) and card):
+        return None
+    blob = card[0].get('data') or {}
+    items = blob.get('items') or []
+    if not items:
+        return None
+
+    # 2. Preload grading sources
+    game_res = requests.get(f'{SB}/rest/v1/mlb_game_results',
         headers=H_READ,
         params={'game_date': f'eq.{date}',
                 'select': 'game_id,home_team,away_team,home_score,away_score,'
                           'home_win,run_line_result,total_result,spread_result,'
                           'primary_play'},
         timeout=15).json()
-    w = l = p = 0; units_bet = 0.0; units_won = 0.0; detail = []
-    for g in (res if isinstance(res, list) else []):
-        pp = g.get('primary_play') or {}
-        if pp.get('tier') not in ('PRIME','STRONG'): continue
-        # `game` for _grade_side is just the current row (has all outcome cols)
-        game = g
-        verdict = _grade_side(pp, game)
+    games_by_matchup = {}
+    for g in (game_res if isinstance(game_res, list) else []):
+        key = f"{(g.get('away_team') or '').lower()} @ {(g.get('home_team') or '').lower()}"
+        games_by_matchup[key] = g
+
+    prop_res = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+        headers=H_READ,
+        params={'game_date': f'eq.{date}',
+                'select': 'player_name,prop_type,direction,tier,result,book_over_odds,book_under_odds'},
+        timeout=15).json()
+    props_by_key = {}
+    for p in (prop_res if isinstance(prop_res, list) else []):
+        pkey = (str(p.get('player_name') or '').lower(),
+                str(p.get('prop_type') or '').lower(),
+                str(p.get('direction') or '').lower())
+        props_by_key[pkey] = p
+
+    # 3. Grade each item on the card
+    w = l = p_ct = 0; units_bet = 0.0; units_won = 0.0; detail = []
+    for it in items:
+        if not isinstance(it, dict): continue
+        item_type = (it.get('type') or '').lower()
+        stake = float(it.get('units') or 1.0)
+        odds = it.get('odds')
+        verdict = None
+        pick_label = it.get('pick') or it.get('pick_label') or '?'
+
+        if item_type in ('ml', 'rl', 'total'):
+            matchup = (it.get('matchup') or '').lower()
+            g = games_by_matchup.get(matchup)
+            if not g: continue
+            # Fake a pp for _grade_side
+            fake_pp = {'type': item_type, 'label': pick_label}
+            verdict = _grade_side(fake_pp, g)
+        elif item_type == 'prop':
+            # Parse pick label OR use player_name / prop_type on item
+            player = it.get('player_name')
+            ptype = it.get('prop_type')
+            direction = it.get('direction')
+            if not (player and ptype and direction):
+                # Fallback — parse label like "Luis Castillo Under 15.5 OUTS"
+                lbl = pick_label
+                for ptype_upper, ptype_lc in [('KS','ks'), ('OUTS','outs'), ('ER','er'),
+                                               ('HA','ha'), ('BB','bb'), ('HITS','hits')]:
+                    if lbl.upper().endswith(f' {ptype_upper}'):
+                        parts = lbl.rsplit(' ', 3)
+                        if len(parts) >= 4:
+                            player = ' '.join(parts[:-3])
+                            direction = parts[-3].lower()
+                            ptype = f'{ptype_lc}_{direction}'
+                            break
+            if not (player and ptype and direction):
+                continue
+            pkey = (str(player).lower(), str(ptype).lower(), str(direction).lower())
+            pr = props_by_key.get(pkey)
+            if not pr: continue
+            res_c = (pr.get('result') or '').upper()
+            if res_c in ('WIN', 'W'): verdict = 'W'
+            elif res_c in ('LOSS', 'L'): verdict = 'L'
+            elif res_c in ('PUSH', 'P'): verdict = 'P'
+
         if verdict is None: continue
-        # 2026-08-31 stake sizing:
-        # NEW path — read recommended_stake from primary_play (1.0 or 2.0).
-        # LEGACY path — 2.0 flat for PRIME/STRONG (matches historical writes).
-        if _use_new_stakes:
-            try: stake = float(pp.get('recommended_stake') or 1.0)
-            except (TypeError, ValueError): stake = 1.0
-        else:
-            stake = 2.0
         units_bet += stake
-        # Approximate payout — MLB games use -110 for spread/total, ML uses close odds
-        odds = -110
-        if pp.get('type') == 'ml':
-            # Use close ML from ctx if available (best-effort)
-            odds = -110  # fallback; ideally read from mlb_game_results.home_ml_close
         payout = _american_payout(odds)
         if verdict == 'W': w += 1; units_won += stake * payout
         elif verdict == 'L': l += 1; units_won -= stake
-        elif verdict == 'P': p += 1
-        detail.append({'type':'game','pick':pp.get('label'),'verdict':verdict,'stake':stake})
-
-    # Props — PRIME/STRONG on that date
-    props = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
-        headers=H_READ,
-        params={'game_date': f'eq.{date}', 'tier': 'in.(PRIME,STRONG)',
-                'select': 'player_name,prop_type,direction,tier,result,book_over_odds,book_under_odds'},
-        timeout=15).json()
-    for pr in (props if isinstance(props, list) else []):
-        res_c = (pr.get('result') or '').upper()
-        if res_c not in ('W','WIN','L','LOSS','P','PUSH'): continue
-        odds = pr.get('book_over_odds') if pr.get('direction') == 'over' else pr.get('book_under_odds')
-        # Enforce [-300, +150] gate per feedback_prop_jerry_odds
-        if odds is not None:
-            try:
-                oi = int(odds)
-                if oi < -300 or oi > 150: continue
-            except (TypeError, ValueError):
-                pass
-        # 2026-08-31: same cutover — props go 1u default, no 2u LOCK yet
-        # (props don't have a recommended_stake field; leaving flat 1u on
-        # or after the cutover so we don't over-attribute wins/losses).
-        stake = 1.0 if _use_new_stakes else 2.0
-        units_bet += stake
-        v = res_c[:1]  # W / L / P
-        if v == 'W': w += 1; units_won += stake * _american_payout(odds)
-        elif v == 'L': l += 1; units_won -= stake
-        elif v == 'P': p += 1
-        detail.append({'type':'prop','pick':f'{pr.get("player_name")} {pr.get("direction")} {pr.get("prop_type")}','verdict':v,'stake':stake,'odds':odds})
+        elif verdict == 'P': p_ct += 1
+        detail.append({'type': item_type, 'pick': pick_label[:80],
+                       'verdict': verdict, 'stake': stake, 'odds': odds})
 
     if not detail: return None
     return {'surface':'sharp_card','sport':'MLB','record_date':date,
-            'wins':w,'losses':l,'pushes':p,'units_bet':round(units_bet,2),
-            'units_won':round(units_won,2),'pick_count':w+l+p,
-            'detail':{'legs':detail[:50]}}
+            'wins':w,'losses':l,'pushes':p_ct,'units_bet':round(units_bet,2),
+            'units_won':round(units_won,2),'pick_count':w+l+p_ct,
+            'detail':{'legs':detail[:50], 'source':'jerry_cache.sharp_card'}}
 
 
 def agg_ledger(date: str) -> list[dict]:
@@ -191,14 +215,34 @@ def agg_ledger(date: str) -> list[dict]:
     Snapshots is the graded persistent table (result + unit_pnl written
     by grade_ledger_snapshots.py). Suggestions is the pre-game combo
     proposals — never graded, so agg was always returning empty.
+
+    2026-09-05 ROOT-CAUSE FIX: multiple ledger_snapshots rows exist per
+    (date, kind) — one per cron cycle (morning, afternoon, imminent).
+    Prior version summed ALL snapshots per kind → 4 chalk_parlay
+    snapshots became 4-0 record (n=4). User only ever saw ONE
+    chalk_parlay on the app (rank=1 from ledger_suggestions). Real
+    record was 1-0 (n=1), not 4-0. Same pattern for teasers.
+
+    Fix: dedup by (kind) keeping only the LATEST snapshotted_at row per
+    kind — that mirrors what shipped to users on the ledger tab (which
+    reads the latest ledger_suggestions). One snapshot per kind per date.
     """
     rows = requests.get(f'{SB}/rest/v1/ledger_snapshots',
         headers=H_READ,
         params={'game_date': f'eq.{date}',
                 'result': 'not.is.null',
-                'select': 'kind,result,legs,combined_odds,unit_pnl'},
+                'select': 'kind,result,legs,combined_odds,unit_pnl,snapshotted_at'},
         timeout=15).json()
     if not isinstance(rows, list) or not rows: return []
+    # Dedup by kind — keep the LATEST snapshotted_at per kind
+    latest_by_kind: dict = {}
+    for r in rows:
+        k = (r.get('kind') or 'unknown').replace('_combo', '')
+        cur = latest_by_kind.get(k)
+        ts = r.get('snapshotted_at') or ''
+        if cur is None or (ts and ts > (cur.get('snapshotted_at') or '')):
+            latest_by_kind[k] = r
+    rows = list(latest_by_kind.values())
     # 2026-08-22: collapse by kind so we get ONE record per ledger surface
     # per date (chalk_parlay, teased_spreads, teased_totals, etc), even
     # when multiple snapshots exist for the same kind on one day.

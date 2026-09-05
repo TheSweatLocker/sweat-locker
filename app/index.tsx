@@ -9012,24 +9012,28 @@ setJerryHistory(prev => {
         }
       } catch {}
 
-      // 2026-08-27: Sharp Card record = SIDES + PROPS combined (matches
-      // historical fetchSharp behavior + what has been publicly posted).
-      // Split is exposed as sidesW/sidesL and propsW/propsL sub-fields so
-      // the UI can show "97-62 · sides 31-19 · props 66-43" — same total
-      // number people saw before, more transparency underneath.
+      // 2026-09-05 SOURCE OF TRUTH switch: read surface_records.sharp_card
+      // (single authoritative row per window, sourced from
+      // daily_surface_records.sharp_card which is sourced from
+      // jerry_cache.sharp_card_YYYY-MM-DD = what actually shipped).
+      // Prior sharp+prop sum was two independent tracking systems with
+      // drift; 9/5 audit found 26 phantom picks across 2 days ($59u
+      // overstatement). sharp_card surface reconciles at every window.
+      //
+      // Fallback: if sharp_card row missing (backfill lag), fall back to
+      // old sharp+prop split so display never breaks.
       try {
-        // window_key='epoch' = both surfaces since SHARP_RECORD_EPOCH (2026-08-20),
-        // so sides + props are summed on the same time floor (mtd would mix
-        // 8-day sides with 27-day props and inflate the combined tally).
         const {data: srRows} = await supabase.from('surface_records')
-          .select('*').eq('sport','MLB').in('surface',['sharp','prop']).eq('window_key','epoch');
+          .select('*').eq('sport','MLB').in('surface',['sharp','prop','sharp_card']).eq('window_key','epoch');
         if (srRows && srRows.length) {
+          const cardRow = srRows.find((r: any) => r.surface === 'sharp_card');
           const sharpRow = srRows.find((r: any) => r.surface === 'sharp') || {wins:0,losses:0,pushes:0,units_net:0};
           const propRow  = srRows.find((r: any) => r.surface === 'prop')  || {wins:0,losses:0,pushes:0,units_net:0};
-          const totW = (sharpRow.wins || 0) + (propRow.wins || 0);
-          const totL = (sharpRow.losses || 0) + (propRow.losses || 0);
-          const totP = (sharpRow.pushes || 0) + (propRow.pushes || 0);
-          const totU = Number(sharpRow.units_net || 0) + Number(propRow.units_net || 0);
+          // Prefer sharp_card authoritative row; fall back to sharp+prop sum
+          const totW = cardRow ? (cardRow.wins || 0)   : (sharpRow.wins || 0) + (propRow.wins || 0);
+          const totL = cardRow ? (cardRow.losses || 0) : (sharpRow.losses || 0) + (propRow.losses || 0);
+          const totP = cardRow ? (cardRow.pushes || 0) : (sharpRow.pushes || 0) + (propRow.pushes || 0);
+          const totU = cardRow ? Number(cardRow.units_net || 0) : Number(sharpRow.units_net || 0) + Number(propRow.units_net || 0);
           setSharpRecord({
             w: totW, l: totL, p: totP,
             unitsNet: Math.round(totU * 100) / 100,
@@ -14641,14 +14645,32 @@ setJerryHistory(prev => {
                 recordWindow === 'mtd' ? 'mtd' :
                 recordWindow === 'epoch' ? 'epoch' : 'lifetime';
               const surfaceData = (key: string, sport: string) => {
-                // 2026-09-03: compute_surface_records writes a sport='ALL'
-                // row per window that already sums every sport (see
-                // compute_surface_records.py:401 — when sport='ALL' the
-                // aggregator drops the per-sport filter). Direct read of
-                // that row = correct cross-sport total. Prior receipts
-                // path missed this and fell through to legacy jerry_reads
-                // counts → showed different numbers than the Sharp tab.
-                // Now both surfaces read the same server row.
+                // 2026-09-05 SOURCE OF TRUTH: for 'sharp' key, prefer
+                // surface_records.sharp_card (single authoritative row that
+                // reconciles Sharp Card display + record chip + Receipts).
+                // Falls back to legacy 'sharp' surface if sharp_card missing
+                // (backfill lag or older date range).
+                if (key === 'sharp') {
+                  const cardRec = surfaceRecords[`${sport}|sharp_card|${winKey}`];
+                  if (cardRec) {
+                    const w = cardRec.wins||0, l = cardRec.losses||0;
+                    return {
+                      units: Number(cardRec.units_net) || 0,
+                      wins: w, losses: l,
+                      hitPct: w+l > 0 ? (w/(w+l))*100 : 0,
+                      hasData: (w+l) > 0,
+                    };
+                  }
+                }
+                if (key === 'prop') {
+                  // sharp_card already includes props — when we prefer sharp_card
+                  // above for 'sharp', return empty for 'prop' so heroU doesn't
+                  // double-count. Fall back to legacy only if sharp_card missing.
+                  const cardRec = surfaceRecords[`${sport}|sharp_card|${winKey}`];
+                  if (cardRec) {
+                    return {units: 0, wins: 0, losses: 0, hitPct: 0, hasData: false};
+                  }
+                }
                 const rec = surfaceRecords[`${sport}|${key}|${winKey}`];
                 if (rec) {
                   const w = rec.wins||0, l = rec.losses||0;
