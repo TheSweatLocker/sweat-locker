@@ -91,9 +91,13 @@ def fetch_upcoming_games():
     """
     today = today_et()
     horizon = (datetime.now(timezone.utc) + timedelta(days=10) - timedelta(hours=4)).strftime('%Y-%m-%d')
+    # 2026-09-05: raised limit 50 → 200 to cover full Sat slate. Sat NCAAF has
+    # 80+ games; prior cap left 30-40 games with "Analysis pending" stub placeholders
+    # (Norfolk State @ Old Dominion class). Claude Haiku ~$0.001/call at ~600 tokens
+    # per read → +$0.05 per big Sat slate. Trivial cost, kills stub coverage gap.
     url = (f"{SUPABASE_URL}/rest/v1/ncaaf_game_context"
            f"?game_date=gte.{today}&game_date=lte.{horizon}"
-           f"&select=*&order=sweat_score.desc.nullslast&limit=50")
+           f"&select=*&order=sweat_score.desc.nullslast&limit=200")
     r = requests.get(url, headers=SB_READ, timeout=20)
     return r.json() if r.status_code == 200 else []
 
