@@ -601,8 +601,11 @@ def run():
     if not games:
         print("  No NFL games on the slate (offseason / no odds available).")
         return
-    # Filter to next 8 days only (regular season scope)
-    cutoff = datetime.now(timezone.utc) + timedelta(days=8)
+    # Filter to next 10 days only (regular season scope).
+    # 2026-09-06: bumped 8→10 to reach Week 1 MNF (game 9/15 8pm ET was
+    # 9+ days out on Sat morning runs — the fetch_nfl_contexts horizon
+    # already extends to 12 days, this cutoff matched them).
+    cutoff = datetime.now(timezone.utc) + timedelta(days=10)
     games = [g for g in games if g.get("commence_time") and g["commence_time"] <= cutoff.isoformat()]
     # Apply game_id filter for targeted regen
     if game_id_filter:
