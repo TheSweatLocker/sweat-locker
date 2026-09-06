@@ -12681,21 +12681,14 @@ setJerryHistory(prev => {
           </View>
         )}
 
-        {(activeTab==='picks'||(activeTab==='mybets'&&mybetsTab==='picks')) && !isPro && !isSubLoading && (
-          <PaywallPreview
-            icon="🎯"
-            title="My Bets is Pro"
-            body="Log every pick, track CLV vs Hard Rock closing lines, build parlays from our tiered plays, and see stake-adjusted P/L in units or dollars."
-            bullets={[
-              'Track record with CLV vs the closing line',
-              'Parlay Builder from Sharp Card legs',
-              'Stake-adjusted P/L · units or dollars',
-              'Filter by sport, tier, or window',
-            ]}
-            onUnlock={() => openPaywall('mybets_tab')}
-          />
-        )}
-        {(activeTab==='picks'||(activeTab==='mybets'&&mybetsTab==='picks')) && (isPro || isSubLoading) && (
+        {/* 2026-09-06: My Bets is FREE tier per user product decision.
+            The bet-tracking + ROI dashboard is a utility, not analytics —
+            free users get to log picks, track record, and see units/dollars.
+            The Pro value lives in the analytics tabs (Jerry, Steam Room)
+            and Game Detail Jerry reads. Keeping the tracker free also
+            drives retention: users who log bets return daily to grade
+            them. */}
+        {(activeTab==='picks'||(activeTab==='mybets'&&mybetsTab==='picks')) && (
           <View>
             <View style={{flexDirection:'row',marginBottom:14,gap:0,backgroundColor:THEME.surfaceAlt,borderRadius:12,overflow:'hidden'}}>
               <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='picks'?THEME.surfaceAlt:'transparent'}} onPress={()=>setMybetsTab('picks')}>
@@ -16958,6 +16951,8 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     : undefined
                 }
                 jerryLoading={gameNarrativeLoading}
+                isPro={isPro || isSubLoading}
+                onUpgrade={() => openPaywall('game_detail_jerry_read')}
                 onClose={()=>setGameDetailModal(false)}
                 onAddParlayLeg={(leg)=>{
                   const legData = {

@@ -149,6 +149,12 @@ type Props = {
   onClose: () => void;
   onAddParlayLeg?: (leg: any) => void;
   onLogPick?: (pick: any) => void;   // opens the manual log-pick modal pre-filled
+  // 2026-09-06 paywall: Jerry per-game read gated behind Pro. isPro drives
+  // whether the section renders full narrative (Pro) or a locked preview
+  // + upgrade CTA (free). onUpgrade opens the shared Paywall modal — bubble
+  // up rather than importing the modal here so state stays centralized.
+  isPro?: boolean;
+  onUpgrade?: () => void;
 };
 
 // ─── Small util helpers ─────────────────────────────────────────────────
@@ -191,6 +197,7 @@ const abbrev3 = (team: string) => {
 export default function GameDetailV2({
   game, ctx, gamesSport, externalPicks: externalPicksProp, gameProps: gamePropsProp,
   historicalOdds, jerryNarrative, jerrySynthesis, jerryLoading, onClose, onAddParlayLeg, onLogPick,
+  isPro, onUpgrade,
 }: Props) {
   const [fetchedExternals, setFetchedExternals] = useState<any[]>([]);
   const [fetchedProps, setFetchedProps] = useState<any[]>([]);
@@ -337,7 +344,7 @@ export default function GameDetailV2({
       <ScrollView style={{flex: 1}} contentContainerStyle={{paddingBottom: 24}}>
         <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} jerrySynthesis={jerrySynthesis} />
         <LosingMarketChips ctx={ctx} />
-        <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} synthesis={jerrySynthesis} />
+        <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} synthesis={jerrySynthesis} isPro={isPro} onUpgrade={onUpgrade} />
         <AlignmentStrip ctx={ctx} />
 
         <Section title="Market">
@@ -652,11 +659,13 @@ function LosingMarketChips({ctx}: any) {
 //
 // Placed high on the page (right after Verdict) because it's the product's
 // biggest differentiator — the AI voice explaining the model reads.
-function JerryReadSection({narrative, loading, synthesis}: {
+function JerryReadSection({narrative, loading, synthesis, isPro, onUpgrade}: {
   narrative?: string;
   loading?: boolean;
   synthesis?: {call_text?: string; conviction?: number; call_market?: string;
                call_side?: string; generated_at?: string};
+  isPro?: boolean;
+  onUpgrade?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   if (loading) {
@@ -677,6 +686,36 @@ function JerryReadSection({narrative, loading, synthesis}: {
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/(?<!\*)\*(?!\*)([^\n*]+?)\*(?!\*)/g, '$1')
     .trim();
+
+  // 2026-09-06 Pro gate. Free users see a teaser (first ~130 chars) with
+  // a locked overlay + upgrade CTA. The teaser is intentional value-tease
+  // — enough to prove the read exists and is thoughtful, not enough to
+  // capture the actual pick reasoning. Pro users see full read as before.
+  if (isPro === false) {
+    const TEASER_LEN = 130;
+    const teaser = clean.slice(0, TEASER_LEN).trimEnd() + '…';
+    return (
+      <View style={styles.jerrySection}>
+        <View style={styles.jerryHeader}>
+          <Text style={styles.jerryTitle}>🧠 JERRY'S READ</Text>
+        </View>
+        <Text style={[styles.jerryBody, {opacity: 0.55}]}>{teaser}</Text>
+        <View style={{marginTop: 12, backgroundColor: C.accent + '11', borderRadius: 10, padding: 14, borderWidth: 1, borderColor: C.accent + '44', alignItems: 'center'}}>
+          <Text style={{color: C.accent, fontSize: 10, fontWeight: '800', letterSpacing: 1.2, marginBottom: 4}}>🔒 PRO</Text>
+          <Text style={{color: C.text, fontSize: 13, fontWeight: '700', marginBottom: 4, textAlign: 'center'}}>Unlock the full analysis</Text>
+          <Text style={{color: C.textMuted, fontSize: 11, lineHeight: 16, textAlign: 'center', marginBottom: 12}}>
+            Per-game Jerry reads walk through the model call, the counter-argument, and the confluence signals — the full "why" behind every pick.
+          </Text>
+          <TouchableOpacity
+            onPress={onUpgrade}
+            activeOpacity={0.85}
+            style={{backgroundColor: C.accent, borderRadius: 8, paddingVertical: 10, paddingHorizontal: 20, alignSelf: 'stretch', alignItems: 'center'}}>
+            <Text style={{color: '#000', fontWeight: '800', fontSize: 13}}>Start 7-Day Free Trial</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   const SHORT_LEN = 320;
   const isLong = clean.length > SHORT_LEN;
