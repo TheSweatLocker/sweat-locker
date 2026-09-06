@@ -7536,6 +7536,7 @@ if(mkt.key === 'pitcher_props') {
           setPipelineMLBProps(viewRows || []);
         }
         setPipelineMLBLoading(false);
+        setPipelineMLBFetched(true);
         return;
       }
       const { data, error } = await supabase
