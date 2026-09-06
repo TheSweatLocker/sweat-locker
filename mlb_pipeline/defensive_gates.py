@@ -929,16 +929,17 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         conviction = int(round((p if pred['suggested_side'] == 'HOME' else (1 - p)) * 100))
         # 2026-09-03 USER-FRIENDLY sub-line. Prior text was
         # "LR predictor: p_home_win=0.27 · 73% confidence" — technical
-        # jargon, raw probability inversion, lowercase snake_case. User
-        # feedback: "weird 0.75 and lower case letters below."
-        # New format uses the PICKED team name + plain-English conviction.
+        # jargon, raw probability inversion, lowercase snake_case.
+        # 2026-09-06 second pass — user feedback: "Supervised model
+        # backs X" reads too clinical, doesn't tell them WHY. Swapped
+        # to "Model conviction on X · N%" — shorter, warmer, still honest.
         team_short = team.split()[-1] if team else 'the pick'
         new_pp = {
             'type': 'ml',
             'tier': pred['suggested_tier'],
             'side': pred['suggested_side'],
             'label': f'{team} ML',
-            'sub': f'Supervised model backs {team_short} · {conviction}% confidence',
+            'sub': f'Model conviction on {team_short} · {conviction}%',
             'conviction': conviction,
             '_engine': 'lr_v1',
             '_lr_p_home_win': p,

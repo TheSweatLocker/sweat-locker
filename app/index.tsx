@@ -1863,10 +1863,20 @@ const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   // Lifetime window includes ~1800 pre-calibration juice-trap prop picks
   // that dragged public display to -700u. Epoch shows the honest
   // post-recalibration record. Users can toggle to lifetime.
-  const [recordWindow, setRecordWindow] = useState('epoch');   // 'epoch' | 'mtd' | '30d' | '7d' | 'lifetime'
+  // 2026-09-06 default flipped 'epoch' → '7d'. FRESH tab dropped per user
+  // feedback ("seems pointless when we have 7D"). Value 'epoch' retained
+  // as a possible target so surface_records rows for epoch stay queryable
+  // via other tools, but the UI no longer exposes it.
+  const [recordWindow, setRecordWindow] = useState('7d');   // '7d' | '30d' | 'mtd' | 'lifetime'
   const [receiptsSport, setReceiptsSport] = useState('ALL');
   const [potdHistory, setPotdHistory] = useState<any[]>([]);
   const [potdHistoryLoading, setPotdHistoryLoading] = useState(false);
+  // 2026-09-06 POTD calendar month offset. 0 = current month, -1 = prior month, etc.
+  // Users use ‹ / › to page through history; capped by 120-day fetch window.
+  const [potdMonthOffset, setPotdMonthOffset] = useState(0);
+  // Tapped calendar day — populates the detail panel below the grid.
+  // null = show month summary; string = 'YYYY-MM-DD' of the picked day.
+  const [potdSelectedDay, setPotdSelectedDay] = useState<string | null>(null);
   const [surfaceRecords, setSurfaceRecords] = useState<Record<string, any>>({});
   const [surfaceRecordsLoading, setSurfaceRecordsLoading] = useState(false);
   const [dawgData, setDawgData] = useState<any>(null);
@@ -2500,7 +2510,7 @@ setEvData(evOpps.slice(0,20));
       const tomorrowEnd = new Date(tomorrowStart); tomorrowEnd.setHours(23,59,59,999);
       const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(yesterdayStart.getDate()-1);
       // 2026-08-13: weekly-scope sports (NFL, NCAAF) widen the day window
-      // to 7 days so the "This Week / Next Week" tabs actually show a week
+      // so the "This Week / Next Week" tabs actually show a week
       // of games instead of one calendar day. tab_scope from sport_registry.
       // 2026-08-23: sport-aware fallback. If sportMeta hasn't loaded yet
       // (transient during PostgREST schema reload after NOTIFY), force NFL/
@@ -2510,14 +2520,37 @@ setEvData(evOpps.slice(0,20));
       const _WEEKLY_SPORTS = new Set(['NFL', 'NCAAF', 'UFC']);
       const isWeekly = meta?.tab_scope === 'weekly'
                         || (!meta && _WEEKLY_SPORTS.has(gamesSport));
+      // 2026-09-06 window fix. Prior code used a rolling 7-day window
+      // (today → today+7). On Sat 9/6 that put DEN@KC MNF 9/15 (9 days
+      // out) in "Next Week" even though NFL fans mentally consider it
+      // Week 1 (== "This Week"). Same story for NCAAF — Sat 9/6 games
+      // and next Sat 9/13 games both landed in the same 7-day window,
+      // making the current NCAAF play-week ambiguous.
+      //
+      // New logic:
+      //   - NFL: 10-day forward window catches the following Monday's
+      //          MNF (Sun-to-following-Mon spans 9 days from a Sat viewer).
+      //          Next Week = day+11 → day+17 (following Tue → Mon).
+      //   - NCAAF: 7-day window is correct (Sat-to-Sat conference play).
+      //          Next Week = day+8 → day+14 (following Sun → Sat).
+      //   - UFC: 7-day window (weekly cards).
+      //
+      // Proper long-term fix: bucket by nfl_game_context.season_week /
+      // ncaaf_game_context.season_week (see queued
+      // [[project_game_detail_action_network_vision_901]] scope). For
+      // launch we ship the 10-day heuristic which handles the specific
+      // Mon-in-next-window case without needing DB round-trips at fetch.
+      const weekWindowDays = gamesSport === 'NFL' ? 10 : 7;
+      const nextWeekGap = gamesSport === 'NFL' ? 1 : 1;
+      const nextWeekLen = 7;
       const weekTodayEnd = new Date(todayStart);
-      weekTodayEnd.setDate(weekTodayEnd.getDate() + 7);
+      weekTodayEnd.setDate(weekTodayEnd.getDate() + weekWindowDays);
       weekTodayEnd.setHours(23,59,59,999);
       const weekTomorrowStart = new Date(weekTodayEnd);
-      weekTomorrowStart.setDate(weekTomorrowStart.getDate() + 1);
+      weekTomorrowStart.setDate(weekTomorrowStart.getDate() + nextWeekGap);
       weekTomorrowStart.setHours(0,0,0,0);
       const weekTomorrowEnd = new Date(weekTomorrowStart);
-      weekTomorrowEnd.setDate(weekTomorrowEnd.getDate() + 7);
+      weekTomorrowEnd.setDate(weekTomorrowEnd.getDate() + nextWeekLen);
       weekTomorrowEnd.setHours(23,59,59,999);
       const filtered = rData.filter((game: any) => {
         const t = new Date(game.commence_time);
@@ -5227,8 +5260,12 @@ const fetchDawgOfDay = async () => {
 const fetchPotdHistory = async () => {
   setPotdHistoryLoading(true);
   try {
+    // 2026-09-06 bumped 14 → 120 days so the calendar month picker in the
+    // Receipts tab can scroll back through prior months without a re-fetch.
+    // 120 days ≈ 4 months of history, enough for a typical launch-era
+    // audit; if we cap the App Store memory footprint later, revisit.
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 14);
+    cutoff.setDate(cutoff.getDate() - 120);
     const cutoffStr = cutoff.toISOString().slice(0, 10);
     const {data, error} = await supabase
       .from('daily_best_bet_history')
@@ -10209,10 +10246,12 @@ setJerryHistory(prev => {
             const nflCtxKey = `${stripMascot(selectedGame?.away_team||'')}@${stripMascot(selectedGame?.home_team||'')}`;
             const nflCtx = nflGameContextMap[nflCtxKey] || nflGameContextMap[selectedGame?.game_id] || null;
             const nflStatsSrc = nflCtx?.stats_source;
+            // 2026-09-06: dropped 'preseason' badge branch. NFL Week 1 is
+            // live; any lingering stats_source='preseason' rows now render
+            // as regular-season games. Early-season regressed + no-team-stats
+            // badges retained since they're honest data-quality flags.
             const nflBadge = nflStatsSrc === 'prior_season_regressed'
               ? { text: '⚠ Early season · using 2025 regressed', clr: THEME.push }
-              : nflStatsSrc === 'preseason'
-              ? { text: '🏈 Preseason · lines only, no picks', clr: THEME.textDim }
               : nflStatsSrc === 'none'
               ? { text: '⚠ No team stats · market/cohort only', clr: THEME.loss }
               : null;
@@ -13392,16 +13431,49 @@ setJerryHistory(prev => {
     return (tierWt(tierB) * 1000 + scoreB) - (tierWt(tierA) * 1000 + scoreA);
   }
   if(gamesSort === 'edge') {
-    // Best Edge = absolute model-vs-market spread delta. Games where our
-    // projection disagrees most with the market land at the top — where
-    // the largest ROI opportunities live regardless of tier.
+    // 2026-09-06: Best Edge now takes the MAX of two edge signals:
+    //   (1) client-side model-vs-market spread delta (legacy sweatScore path)
+    //   (2) LR conviction distance-from-fair-coin (from primary_play._lr_p_home_win)
+    //
+    // Prior code only used (1). For MLB/NFL/NCAAF where LR is the primary
+    // ML picker via apply_ml_lr_override, LR-driven high-conviction picks
+    // were invisible to Best Edge because LR overrides primary_play but
+    // does NOT touch projectedSpread. Result: an LR 68% pick with a
+    // fair-looking market spread ranked LOWER than a heavy chalk game
+    // with a 2pt projection gap — misleading "edge" ordering.
+    //
+    // New scoring: normalize both signals to 0-100 scale and take max.
+    //   - Spread delta: |proj - market|, capped at ~10 runs/points
+    //   - LR edge: |p_home_win - 0.5| × 200 (so 65% = 30, 80% = 60)
+    // Games with either strong signal float to the top.
     const edgeOf = (g: any) => {
+      // (1) Spread-delta signal (legacy path)
       const sc = sweatScores[g.id] || getSweatScoreForGame(g, gamesSport);
-      if(sc?.modelMismatch != null) return Math.abs(sc.modelMismatch);
-      const proj = sc?.projectedSpread;
-      const mkt = sc?.marketSpread;
-      if(proj != null && mkt != null) return Math.abs(proj - mkt);
-      return 0;
+      let spreadEdge = 0;
+      if (sc?.modelMismatch != null) spreadEdge = Math.abs(sc.modelMismatch);
+      else if (sc?.projectedSpread != null && sc?.marketSpread != null) {
+        spreadEdge = Math.min(100, Math.abs(sc.projectedSpread - sc.marketSpread) * 10);
+      }
+
+      // (2) LR conviction signal (from primary_play, sport-aware ctx lookup)
+      const sportMap: any =
+        gamesSport === 'NFL'   ? (nflGameContextMap || {}) :
+        gamesSport === 'NCAAF' ? (ncaafGameContextMap || {}) :
+        mlbGameContext;
+      const ctxAny: any = sportMap[g.id]
+        || Object.values(sportMap).find((c: any) =>
+             c && (c.home_team === g.home_team || c.away_team === g.away_team));
+      let pp: any = ctxAny?.primary_play;
+      if (typeof pp === 'string') { try { pp = JSON.parse(pp); } catch { pp = null; } }
+      let lrEdge = 0;
+      if (pp?._lr_p_home_win != null) {
+        lrEdge = Math.min(100, Math.abs(Number(pp._lr_p_home_win) - 0.5) * 200);
+      } else if (pp?.conviction != null) {
+        // Non-LR pipeline conviction as a weaker fallback signal
+        lrEdge = Math.min(100, Math.max(0, Number(pp.conviction) - 50) * 1.5);
+      }
+
+      return Math.max(spreadEdge, lrEdge);
     };
     return edgeOf(b) - edgeOf(a);
   }
@@ -14828,7 +14900,7 @@ setJerryHistory(prev => {
                         wrap horizontally in ScrollView, always visible. */}
                     <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',letterSpacing:1.4,marginBottom:8}}>{heroScope.toUpperCase()} · TOTAL P/L</Text>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:10}} contentContainerStyle={{gap:5}}>
-                      {[{id:'epoch',label:'FRESH'},{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'mtd',label:'MTD'},{id:'lifetime',label:'ALL'}].map(w=>(
+                      {[{id:'7d',label:'7D'},{id:'30d',label:'30D'},{id:'mtd',label:'MTD'},{id:'lifetime',label:'ALL'}].map(w=>(
                         <TouchableOpacity key={w.id} onPress={()=>setRecordWindow(w.id)} style={{paddingVertical:4,paddingHorizontal:10,borderRadius:5,backgroundColor:recordWindow===w.id?THEME.hrb+'26':THEME.surfaceAlt,borderWidth:1,borderColor:recordWindow===w.id?HRB_COLOR:THEME.border}}>
                           <Text style={{color:recordWindow===w.id?HRB_COLOR:THEME.textDim,fontSize:10,fontWeight:'700'}}>{w.label}</Text>
                         </TouchableOpacity>
@@ -14979,37 +15051,224 @@ setJerryHistory(prev => {
                     </>
                   )}
 
+                  {/* 2026-09-06: POTD receipt redesigned from a 14-chip row
+                      → month-view calendar grid. User requested: same W/L/P
+                      concept but as calendar so streaks + hot/cold months
+                      read at a glance. Cells: green W = win, red L = loss,
+                      grey P = push, faint · = no POTD that day, blank = day
+                      not in current month. Tap a cell → detail panel below
+                      the grid shows that day's POTD (team, lean, sport,
+                      sweat score). Month pager (‹ / ›) walks back through
+                      the 120-day fetch window; today's cell gets a subtle
+                      accent border so it always locates. */}
                   <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8,marginTop:18,marginHorizontal:2}}>
                     <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'800',letterSpacing:1.2}}>PLAY OF THE DAY</Text>
-                    <Text style={{color:THEME.textDim,fontSize:10}}>Last 14 days</Text>
+                    <Text style={{color:THEME.textDim,fontSize:10}}>Tap any day</Text>
                   </View>
-                  <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:12,borderWidth:1,borderColor:THEME.border,marginBottom:14}}>
-                    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:10}}>
-                      <Text style={{color:THEME.text,fontWeight:'800',fontSize:18,fontVariant:['tabular-nums'],letterSpacing:-0.4}}>{potdW}-{potdL}{potdP > 0 ? `-${potdP}` : ''}</Text>
-                      <Text style={{color:potdW>potdL?THEME.win:THEME.loss,fontSize:13,fontWeight:'700',fontVariant:['tabular-nums']}}>{potdPct}%</Text>
-                    </View>
-                    {potdRows.length === 0 ? (
-                      <Text style={{color:THEME.textDim,fontSize:11,fontStyle:'italic',textAlign:'center',paddingVertical:8}}>No POTDs graded yet for this sport in the last 14 days.</Text>
-                    ) : (
-                      <>
-                        <View style={{flexDirection:'row',gap:3,flexWrap:'wrap'}}>
-                          {potdRows.map((row:any, idx:number) => {
-                            const bg = row.result === 'Win' ? THEME.win + '33' : row.result === 'Loss' ? THEME.loss + '33' : row.result === 'Push' ? THEME.textMuted + '33' : THEME.surfaceAlt;
-                            const fg = row.result === 'Win' ? THEME.win : row.result === 'Loss' ? THEME.loss : row.result === 'Push' ? THEME.textMuted : THEME.textDim;
-                            const glyph = row.result === 'Win' ? 'W' : row.result === 'Loss' ? 'L' : row.result === 'Push' ? 'P' : '·';
+                  {(() => {
+                    // Compute the visible month + rows for its grid.
+                    const today = new Date();
+                    today.setHours(0,0,0,0);
+                    const viewMonth = new Date(today.getFullYear(), today.getMonth() + potdMonthOffset, 1);
+                    const monthYear = viewMonth.getFullYear();
+                    const monthIdx = viewMonth.getMonth();
+                    const monthLabel = viewMonth.toLocaleDateString('en-US', {month: 'long', year: 'numeric'});
+                    const firstDow = viewMonth.getDay(); // 0=Sun … 6=Sat
+                    const daysInMonth = new Date(monthYear, monthIdx + 1, 0).getDate();
+                    // Index POTDs by 'YYYY-MM-DD' key so lookups are O(1)
+                    // per cell instead of O(N) across every row.
+                    const byDate: Record<string, any[]> = {};
+                    potdRows.forEach((r:any) => {
+                      if (!r.bet_date) return;
+                      const k = String(r.bet_date).slice(0,10);
+                      (byDate[k] = byDate[k] || []).push(r);
+                    });
+                    // Month-level record: only count days that fall inside
+                    // the visible month (so navigating months reveals the
+                    // month's own W-L, not the lifetime figure above).
+                    let mW = 0, mL = 0, mP = 0;
+                    for (let d = 1; d <= daysInMonth; d++) {
+                      const key = `${monthYear}-${String(monthIdx+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+                      (byDate[key] || []).forEach((r:any) => {
+                        if (r.result === 'Win') mW++;
+                        else if (r.result === 'Loss') mL++;
+                        else if (r.result === 'Push') mP++;
+                      });
+                    }
+                    const mPct = (mW + mL) > 0 ? ((mW/(mW+mL))*100).toFixed(0) : '—';
+                    // Build the calendar cells. Prepend N blank leading cells
+                    // (for the day-of-week offset of day 1), then daysInMonth
+                    // real cells; ScrollView not needed since a month fits.
+                    const cells: any[] = [];
+                    for (let i = 0; i < firstDow; i++) cells.push({blank: true, key: `blank-${i}`});
+                    for (let d = 1; d <= daysInMonth; d++) {
+                      const key = `${monthYear}-${String(monthIdx+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+                      const dayRows = byDate[key] || [];
+                      // Bet_date sometimes carries multiple POTDs when the
+                      // history contains per-sport POTDs; pick the first
+                      // graded result as the day's mark and stash the full
+                      // list so the detail panel can show all of them.
+                      const primary = dayRows.find((r:any) => r.result === 'Win' || r.result === 'Loss' || r.result === 'Push') || dayRows[0];
+                      cells.push({
+                        blank: false,
+                        key,
+                        dayNum: d,
+                        dateKey: key,
+                        result: primary?.result || null,
+                        rows: dayRows,
+                        isToday: key === today.toISOString().slice(0,10),
+                        isFuture: new Date(key + 'T00:00:00') > today,
+                      });
+                    }
+                    // Pad trailing cells so the final row is a complete 7
+                    // (keeps the grid rectangular and prevents the last row
+                    // stretching short cells across the full width).
+                    while (cells.length % 7 !== 0) cells.push({blank: true, key: `trail-${cells.length}`});
+                    // Can-page bounds. Back = there's at least one POTD row
+                    // in a month earlier than the current view. Forward =
+                    // never past the current calendar month (no future POTDs
+                    // shipped yet).
+                    const oldestKey = potdRows.length ? String(potdRows[0].bet_date).slice(0,10) : null;
+                    const canBack = oldestKey
+                      ? new Date(oldestKey + 'T00:00:00') < viewMonth
+                      : false;
+                    const canForward = potdMonthOffset < 0;
+                    // Selected-day detail (tap a cell) — shows all POTDs for
+                    // that date. Falls back to a month blurb when nothing
+                    // selected. Sport filter applies (potdRows already
+                    // pre-filtered by the enclosing sport chip).
+                    const selectedRows = potdSelectedDay ? (byDate[potdSelectedDay] || []) : [];
+                    const CELL_SIZE = 40;
+                    return (
+                      <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:12,borderWidth:1,borderColor:THEME.border,marginBottom:14}}>
+                        {/* Month pager */}
+                        <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+                          <TouchableOpacity
+                            disabled={!canBack}
+                            onPress={()=>{ setPotdMonthOffset(o => o - 1); setPotdSelectedDay(null); }}
+                            style={{width:32,height:32,borderRadius:16,backgroundColor:canBack?THEME.surfaceAlt:'transparent',borderWidth:1,borderColor:canBack?THEME.border:'transparent',alignItems:'center',justifyContent:'center',opacity:canBack?1:0.3}}>
+                            <Text style={{color:canBack?THEME.text:THEME.textDim,fontSize:18,fontWeight:'700',lineHeight:20}}>‹</Text>
+                          </TouchableOpacity>
+                          <View style={{alignItems:'center'}}>
+                            <Text style={{color:THEME.text,fontWeight:'800',fontSize:14,letterSpacing:0.2}}>{monthLabel}</Text>
+                            <Text style={{color:THEME.textDim,fontSize:10,marginTop:2,fontVariant:['tabular-nums']}}>
+                              {mW}-{mL}{mP > 0 ? `-${mP}` : ''}  ·  {mPct === '—' ? 'no picks' : `${mPct}%`}
+                            </Text>
+                          </View>
+                          <TouchableOpacity
+                            disabled={!canForward}
+                            onPress={()=>{ setPotdMonthOffset(o => o + 1); setPotdSelectedDay(null); }}
+                            style={{width:32,height:32,borderRadius:16,backgroundColor:canForward?THEME.surfaceAlt:'transparent',borderWidth:1,borderColor:canForward?THEME.border:'transparent',alignItems:'center',justifyContent:'center',opacity:canForward?1:0.3}}>
+                            <Text style={{color:canForward?THEME.text:THEME.textDim,fontSize:18,fontWeight:'700',lineHeight:20}}>›</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* Day-of-week header */}
+                        <View style={{flexDirection:'row',marginBottom:6}}>
+                          {['S','M','T','W','T','F','S'].map((dow, i) => (
+                            <View key={i} style={{flex:1,alignItems:'center'}}>
+                              <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700'}}>{dow}</Text>
+                            </View>
+                          ))}
+                        </View>
+
+                        {/* Calendar grid */}
+                        <View style={{flexDirection:'row',flexWrap:'wrap'}}>
+                          {cells.map((c:any) => {
+                            if (c.blank) {
+                              return <View key={c.key} style={{width:`${100/7}%`,height:CELL_SIZE,padding:2}}/>;
+                            }
+                            const bg = c.result === 'Win' ? THEME.win + '33'
+                                     : c.result === 'Loss' ? THEME.loss + '33'
+                                     : c.result === 'Push' ? THEME.textMuted + '33'
+                                     : c.rows.length > 0 ? THEME.surfaceAlt
+                                     : 'transparent';
+                            const fg = c.result === 'Win' ? THEME.win
+                                     : c.result === 'Loss' ? THEME.loss
+                                     : c.result === 'Push' ? THEME.textMuted
+                                     : THEME.textDim;
+                            const glyph = c.result === 'Win' ? 'W'
+                                        : c.result === 'Loss' ? 'L'
+                                        : c.result === 'Push' ? 'P'
+                                        : c.isFuture ? ''
+                                        : c.rows.length > 0 ? '·'
+                                        : '';
+                            const isSelected = potdSelectedDay === c.dateKey;
+                            const borderColor = isSelected ? HRB_COLOR
+                                              : c.isToday ? THEME.accent + '88'
+                                              : 'transparent';
+                            const tappable = c.rows.length > 0;
                             return (
-                              <View key={idx} style={{flex:1,minWidth:22,maxWidth:34,paddingVertical:4,borderRadius:4,backgroundColor:bg,alignItems:'center'}}>
-                                <Text style={{color:fg,fontSize:10,fontWeight:'800',letterSpacing:0.4}}>{glyph}</Text>
-                              </View>
+                              <TouchableOpacity
+                                key={c.key}
+                                disabled={!tappable}
+                                onPress={() => setPotdSelectedDay(isSelected ? null : c.dateKey)}
+                                style={{width:`${100/7}%`,height:CELL_SIZE,padding:2}}>
+                                <View style={{flex:1,borderRadius:6,backgroundColor:bg,borderWidth:isSelected?2:c.isToday?1.5:0,borderColor,alignItems:'center',justifyContent:'center'}}>
+                                  <Text style={{color:c.isFuture?THEME.textDim+'55':THEME.textMuted,fontSize:9,marginBottom:1,fontVariant:['tabular-nums']}}>{c.dayNum}</Text>
+                                  {!!glyph && (
+                                    <Text style={{color:fg,fontSize:11,fontWeight:'800',letterSpacing:0.3,lineHeight:12}}>{glyph}</Text>
+                                  )}
+                                </View>
+                              </TouchableOpacity>
                             );
                           })}
                         </View>
-                        <Text style={{color:THEME.textDim,fontSize:10,textAlign:'center',marginTop:6}}>
-                          {potdRows[0]?.bet_date && new Date(potdRows[0].bet_date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})} → today
-                        </Text>
-                      </>
-                    )}
-                  </View>
+
+                        {/* Legend */}
+                        <View style={{flexDirection:'row',gap:12,justifyContent:'center',marginTop:10,flexWrap:'wrap'}}>
+                          {[
+                            {glyph:'W', color:THEME.win, label:'Win'},
+                            {glyph:'L', color:THEME.loss, label:'Loss'},
+                            {glyph:'P', color:THEME.textMuted, label:'Push'},
+                            {glyph:'·', color:THEME.textDim, label:'no play'},
+                          ].map((k) => (
+                            <View key={k.label} style={{flexDirection:'row',alignItems:'center',gap:4}}>
+                              <View style={{width:12,height:12,borderRadius:3,backgroundColor:k.color + '33',alignItems:'center',justifyContent:'center'}}>
+                                <Text style={{color:k.color,fontSize:8,fontWeight:'800',lineHeight:10}}>{k.glyph}</Text>
+                              </View>
+                              <Text style={{color:THEME.textDim,fontSize:10}}>{k.label}</Text>
+                            </View>
+                          ))}
+                        </View>
+
+                        {/* Selected day detail — game / lean / result. Falls
+                            back to a whole-history summary chip when nothing
+                            is picked so the panel never feels empty. */}
+                        {selectedRows.length > 0 ? (
+                          <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:THEME.border}}>
+                            <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'800',letterSpacing:1,marginBottom:6}}>
+                              {new Date(potdSelectedDay + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'}).toUpperCase()}
+                            </Text>
+                            {selectedRows.map((r:any, i:number) => {
+                              const rColor = r.result === 'Win' ? THEME.win
+                                           : r.result === 'Loss' ? THEME.loss
+                                           : r.result === 'Push' ? THEME.textMuted
+                                           : THEME.textDim;
+                              return (
+                                <View key={i} style={{flexDirection:'row',alignItems:'center',gap:8,paddingVertical:5}}>
+                                  <View style={{backgroundColor:rColor + '26',paddingHorizontal:6,paddingVertical:2,borderRadius:4,minWidth:32,alignItems:'center'}}>
+                                    <Text style={{color:rColor,fontSize:10,fontWeight:'800'}}>{r.result || '—'}</Text>
+                                  </View>
+                                  <View style={{flex:1}}>
+                                    <Text style={{color:THEME.text,fontSize:12,fontWeight:'600'}} numberOfLines={1}>{r.lean || '—'}</Text>
+                                    <Text style={{color:THEME.textDim,fontSize:10,marginTop:1}} numberOfLines={1}>{r.sport} · {r.game || '—'}</Text>
+                                  </View>
+                                  {r.sweat_score != null && (
+                                    <Text style={{color:THEME.textDim,fontSize:10,fontVariant:['tabular-nums']}}>{r.sweat_score}</Text>
+                                  )}
+                                </View>
+                              );
+                            })}
+                          </View>
+                        ) : (
+                          <Text style={{color:THEME.textDim,fontSize:10,textAlign:'center',marginTop:10,fontStyle:'italic'}}>
+                            All-time: {potdW}-{potdL}{potdP > 0 ? `-${potdP}` : ''} ({potdPct}%) · {potdRows.length} graded POTD{potdRows.length===1?'':'s'}
+                          </Text>
+                        )}
+                      </View>
+                    );
+                  })()}
 
                   <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:8,marginHorizontal:2}}>
                     <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'800',letterSpacing:1.2}}>BEAT-THE-MARKET</Text>
