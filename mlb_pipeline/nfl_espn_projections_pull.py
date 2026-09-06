@@ -146,15 +146,27 @@ def normalize(raw: dict, season: int, week: int) -> dict:
     #   statSplitTypeId=2: per-game average projection ← use this for weekly
     # Take statSplit=2 as the "weekly projected" — stable per-game baseline.
     # Sleeper covers week-specific variance; ESPN is the ensemble anchor.
-    proj_stats = None; fp_total = None
-    for s in p.get('stats') or []:
-        if s.get('statSourceId') != 1: continue
-        if s.get('seasonId') != season: continue
-        if s.get('statSplitTypeId') != 2: continue  # per-game avg
-        proj_stats = s.get('stats') or {}
-        fp_total = s.get('appliedTotal')
-        break
+    # 2026-09-06: ESPN API stopped returning statSplitTypeId=2 (per-game avg).
+    # Now only ships statSplit=0 (season total). Accept both — if we get
+    # season total, divide by 17 games to approximate per-game. Sleeper
+    # remains the week-specific source; ESPN is the ensemble anchor.
+    proj_stats = None; fp_total = None; is_season_total = False
+    # Prefer per-game split; fall back to season total
+    for target_split in (2, 0):
+        for s in p.get('stats') or []:
+            if s.get('statSourceId') != 1: continue
+            if s.get('seasonId') != season: continue
+            if s.get('statSplitTypeId') != target_split: continue
+            proj_stats = s.get('stats') or {}
+            fp_total = s.get('appliedTotal')
+            is_season_total = target_split == 0
+            break
+        if proj_stats is not None: break
     if proj_stats is None: return None
+    if is_season_total and fp_total is not None:
+        fp_total = fp_total / 17.0  # avg per game across a regular-season schedule
+        proj_stats = {k: (v / 17.0) if isinstance(v, (int, float)) else v
+                      for k, v in proj_stats.items()}
     row = {
         'source': 'espn_fantasy',
         'season': season, 'week': week, 'season_type': 'reg',
