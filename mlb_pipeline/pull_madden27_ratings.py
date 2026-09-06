@@ -115,22 +115,36 @@ def scrape_team_ratings() -> list[dict]:
 
 
 def scrape_top100() -> list[dict]:
-    """Return list of {rank, player_name, position, team_code, ovr}."""
+    """Return list of {rank, player_name, position, team_code, ovr}.
+
+    Wiki quirk (2026-09-06): the 'Rank' cell shows the tier-START rank
+    for that OVR band (all 99-OVR players share rank=1, all 98-OVR
+    share rank=7, etc.). Rows are ordered by OVR desc, ties broken by
+    name/team. Assign our own sequential 1..N rank by row order and
+    ignore the wiki's rank cell — gives us 100 unique ranks for the
+    top100_snapshot table without wasting the OVR ordering.
+    """
     soup = _fetch('https://madden27.wiki/ratings/top-100')
     rows = soup.select('table tbody tr')
     print(f'  top-100 rows found: {len(rows)}')
     out = []
-    for row in rows:
-        rank = _int(_cell_via_data_label(row, 'Rank'))
+    for i, row in enumerate(rows, start=1):
         player_cell = _cell_via_data_label(row, 'Player')
         if not player_cell: continue
-        p_span = player_cell.select_one('span')
-        player_name = p_span.get_text(strip=True) if p_span else player_cell.get_text(strip=True)
+        # Wiki cell has two spans: a short initials badge + the full
+        # name (span[class*="playerNameLink"]). Prefer the full-name
+        # span; fall back to the longest text token in the cell.
+        p_span = player_cell.select_one('[class*="playerNameLink"]')
+        if p_span:
+            player_name = p_span.get_text(strip=True)
+        else:
+            parts = [t.strip() for t in player_cell.get_text('\n').splitlines() if t.strip()]
+            player_name = max(parts, key=len) if parts else ''
         position = _text_via_data_label(row, 'Position')
         team_name = _text_via_data_label(row, 'Team')
         team_code = TEAM_NAME_TO_CODE.get(team_name or '')
         ovr = _int(_cell_via_data_label(row, 'OVR'))
-        out.append({'rank': rank, 'player_name': player_name,
+        out.append({'rank': i, 'player_name': player_name,
                     'position': position, 'team_name': team_name,
                     'team_code': team_code, 'ovr': ovr})
     return out
