@@ -2007,6 +2007,35 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
       return nv;
     });
   }, []);
+
+  // 2026-09-06 Ladder responsible-gambling threshold banners. Progressive
+  // awareness prompts fire when the current bank crosses 5u / 25u / 100u
+  // / 200u. Purely display UX — never blocks input, never bets on user
+  // behalf, never lectures. Frames every milestone as "consider" and
+  // preserves user agency. Dismissible per-milestone-per-run; the
+  // dismissal set clears whenever the streak resets so a new run can
+  // re-trigger the banners.
+  //
+  // Storage: JSON in AsyncStorage keyed by streak-cohort so an in-flight
+  // run doesn't lose its dismissal state on app reload, but a fresh run
+  // (streak reset) starts with a clean slate.
+  const [ladderDismissedMilestones, setLadderDismissedMilestones] = useState<Record<string, number[]>>({});
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem('sweatlocker_ladder_dismissed_milestones');
+        if (raw) setLadderDismissedMilestones(JSON.parse(raw));
+      } catch {}
+    })();
+  }, []);
+  const dismissLadderMilestone = React.useCallback((runKey: string, threshold: number) => {
+    setLadderDismissedMilestones(prev => {
+      const nextSet = Array.from(new Set([...(prev[runKey] || []), threshold]));
+      const nextMap = {...prev, [runKey]: nextSet};
+      AsyncStorage.setItem('sweatlocker_ladder_dismissed_milestones', JSON.stringify(nextMap)).catch(() => {});
+      return nextMap;
+    });
+  }, []);
    const [fanmatchData, setFanmatchData] = useState({});
   const [nbaTeamData, setNbaTeamData] = useState({});
   const [nbaInjuryData, setNbaInjuryData] = useState<Record<string, any[]>>({});
@@ -15844,6 +15873,61 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 </Text>
                               )}
                             </View>
+
+                            {/* 2026-09-06 Progressive responsible-gambling
+                                milestone banner. Renders the highest un-
+                                dismissed threshold the current bank has
+                                crossed. Copy stays supportive ("consider"
+                                / "reset here and you're still up big") —
+                                never patronizes or blocks. Dismissible
+                                per-milestone-per-run so a new streak can
+                                re-trigger.
+                                Threshold table (bank in $, converted from
+                                the currentBank we already computed):
+                                   5u   ($125)  · casual green light
+                                   25u  ($625)  · discipline reminder
+                                   100u ($2,500) · take-a-beat + 1-800
+                                   200u ($5,000) · goal hit, off-ramp */}
+                            {(() => {
+                              const currentUnits = currentBank / SEED;
+                              // Run key: use current_streak count + longest_streak so a
+                              // reset (streak=0) yields a fresh key and the banners re-arm.
+                              const runKey = `${ladderState?.longest_streak ?? 0}:${cur}`;
+                              const dismissed = ladderDismissedMilestones[runKey] || [];
+                              const MILESTONES: {u:number; tone:'soft'|'firm'; title:string; body:string; showHelp:boolean}[] = [
+                                {u: 200, tone: 'firm', title: '🎉 Goal hit — 200× the seed', body: "You've maxed the ladder. Reset here or take a break — this is a great place to stop.", showHelp: true},
+                                {u: 100, tone: 'firm', title: '100× your seed', body: "Take a beat. Most runs don't survive the next step. Reset here and you're still up big.", showHelp: true},
+                                {u: 25,  tone: 'soft', title: '25× your seed', body: 'This is where discipline matters. Consider locking in profits before pushing.', showHelp: false},
+                                {u: 5,   tone: 'soft', title: '5× your seed — nice run', body: 'Ride or reset? Either call is fine — the ladder is a marathon.', showHelp: false},
+                              ];
+                              // Highest crossed + not dismissed wins
+                              const hit = MILESTONES.find(m => currentUnits >= m.u && !dismissed.includes(m.u));
+                              if (!hit) return null;
+                              const bg = hit.tone === 'firm' ? THEME.warn + '18' : THEME.accent + '14';
+                              const border = hit.tone === 'firm' ? THEME.warn + '55' : THEME.accent + '55';
+                              const fg = hit.tone === 'firm' ? THEME.warn : THEME.accent;
+                              return (
+                                <View style={{backgroundColor: bg, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: border, marginBottom: 12, flexDirection: 'row', gap: 10}}>
+                                  <View style={{flex: 1}}>
+                                    <Text style={{color: fg, fontSize: 11, fontWeight: '800', letterSpacing: 0.3, marginBottom: 4}}>{hit.title}</Text>
+                                    <Text style={{color: THEME.text, fontSize: 12, lineHeight: 17}}>{hit.body}</Text>
+                                    {hit.showHelp && (
+                                      <TouchableOpacity onPress={() => Linking.openURL('tel:18004262537')} style={{marginTop: 8}}>
+                                        <Text style={{color: fg, fontSize: 11, fontWeight: '700'}}>
+                                          Need to talk? · 1-800-GAMBLER
+                                        </Text>
+                                      </TouchableOpacity>
+                                    )}
+                                  </View>
+                                  <TouchableOpacity
+                                    onPress={() => dismissLadderMilestone(runKey, hit.u)}
+                                    hitSlop={{top:8, right:8, bottom:8, left:8}}
+                                    style={{width: 22, height: 22, alignItems: 'center', justifyContent: 'center'}}>
+                                    <Text style={{color: THEME.textMuted, fontSize: 16, fontWeight: '700', lineHeight: 18}}>×</Text>
+                                  </TouchableOpacity>
+                                </View>
+                              );
+                            })()}
 
                             {/* Progress bar */}
                             <View style={{marginBottom:12}}>
