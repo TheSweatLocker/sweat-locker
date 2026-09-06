@@ -10100,19 +10100,16 @@ setJerryHistory(prev => {
         {matchupTab==='stats'&&(()=>{
           if(gamesSport==='NHL') return(
             // 2026-08-20: sharper NHL placeholder. Real stats plumbed from
-            // MoneyPuck (xGF/xGA, xGF%, corsi, PDO, PP/PK ranks) drops
-            // ahead of Oct 7 puck drop. Same visual polish MLB/UFC has once
-            // team_stats table is populated for NHL.
+            // MoneyPuck (xGF/xGA, xGF%, corsi, PDO, PP/PK ranks) once games
+            // are live. Same visual polish MLB/UFC has once team_stats
+            // table is populated for NHL.
             <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:THEME.border,alignItems:'center'}}>
               <Text style={{fontSize:32}}>🏒</Text>
               <Text style={{color:THEME.text,fontWeight:'800',fontSize:16,marginTop:12}}>NHL Team Stats</Text>
               <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>
-                Full stat card lands with the 2026-27 season opener (Oct 7).{'\n'}
-                We'll surface xGF%, corsi, PDO, PP/PK ranks, and last-10 form here — same treatment as MLB/UFC.
+                Stat card populates once games are live.{'\n'}
+                xGF%, corsi, PDO, PP/PK ranks, and last-10 form surface here — same treatment as MLB/UFC.
               </Text>
-              <View style={{marginTop:12,backgroundColor:THEME.hrb + '1A',borderRadius:10,paddingHorizontal:14,paddingVertical:8,borderWidth:1,borderColor:THEME.hrb + '4C'}}>
-                <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:11}}>🔜 SEASON OPENER · OCT 7</Text>
-              </View>
             </View>
           );
           // ─── NCAAF Team Stats (added 2026-07-25) ───────────────────
@@ -10192,7 +10189,7 @@ setJerryHistory(prev => {
               <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:20,borderWidth:1,borderColor:THEME.border,alignItems:'center'}}>
                 <Text style={{fontSize:32}}>🏈</Text>
                 <Text style={{color:THEME.text,fontWeight:'800',fontSize:16,marginTop:12}}>NFL Team Stats</Text>
-                <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Team efficiency data will surface once teams appear in our efficiency database. Preseason Aug 7 · Week 1 Sept 4.</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Team efficiency data surfaces here once the matchup lands in our efficiency database.</Text>
               </View>
             );
             const _n = (v: any, d = 1) => v == null ? 'N/A' : parseFloat(v).toFixed(d);
@@ -10937,7 +10934,7 @@ setJerryHistory(prev => {
                 <View style={{alignItems:'center',paddingVertical:30}}>
                   <Text style={{fontSize:32}}>📊</Text>
                   <Text style={{color:THEME.text,fontWeight:'800',fontSize:16,marginTop:12}}>Situational Data</Text>
-                  <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Advanced situational analytics coming soon for {gamesSport}.</Text>
+                  <Text style={{color:THEME.textDim,fontSize:13,marginTop:8,textAlign:'center',lineHeight:20}}>Situational analytics populate for {gamesSport} as graded games accumulate.</Text>
                   <View style={{marginTop:16,backgroundColor:THEME.hrb + '1A',borderRadius:12,padding:12,borderWidth:1,borderColor:THEME.hrb + '4C'}}>
                     <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:12,textAlign:'center'}}>🔜 COMING IN V1.1</Text>
                   </View>
@@ -11300,7 +11297,7 @@ setJerryHistory(prev => {
                 <Text style={{fontSize:44,marginBottom:12}}>📋</Text>
                 <Text style={{color:THEME.text,fontWeight:'900',fontSize:26,textAlign:'center',marginBottom:8}}>Your Daily Sweat Card</Text>
                 <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:12,paddingHorizontal:10}}>Every night: up to 4 curated picks led by <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Pick of the Day</Text> and <Text style={{color:HRB_COLOR,fontWeight:'700'}}>Dawg of the Day</Text>, plus supporting reads on the rest of the slate. Sides, totals, and player props — all tiered by conviction.</Text>
-                <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:15,marginBottom:14,paddingHorizontal:14,fontStyle:'italic'}}>Coverage: MLB now · NFL + NCAAF weekly · NBA + NCAAB + NHL from October · UFC every card.</Text>
+                <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:15,marginBottom:14,paddingHorizontal:14,fontStyle:'italic'}}>Coverage: MLB, NFL, NCAAF, NCAAB, NBA, NHL, and UFC. Each sport publishes on its own cadence during its season.</Text>
                 <View style={{width:'100%',backgroundColor:THEME.surface,borderRadius:10,padding:14,marginBottom:16,borderLeftWidth:3,borderLeftColor:HRB_COLOR}}>
                   <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:11,letterSpacing:0.5,marginBottom:8}}>PROP JERRY</Text>
                   <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>Player prop analysis with real book prices + projection-based edge. <Text style={{color:THEME.text,fontWeight:'700'}}>PRIME tier represents our highest-conviction props, backed by aligned model + market signals.</Text></Text>
@@ -14004,15 +14001,15 @@ setJerryHistory(prev => {
               {/* 2026-09-01: banner copy pulled from ui_notes.nfl_prop_banner
                   (DB-editable without app update). Falls back to hardcoded
                   string if DB row missing/disabled/fetch failed. */}
-              {uiNotes['nfl_prop_banner'] || 'NFL props — coming this season. Full playbook (player L4-L6 form, defensive matchup, model projection edges) rolls out during regular season as Week 1-3 sample accumulates.'}
+              {uiNotes['nfl_prop_banner'] || 'NFL props — playbook reads player L4-L6 form, defensive matchup, and model projection edges. Sample sharpens as each week grades.'}
             </>
           ) : propJerrySport === 'NHL' ? (
             <>
-              {uiNotes['nhl_prop_banner'] || 'NHL props — coming this season. Full playbook (player L10 form, opp goalie save%, line role, PP time) rolls out ahead of October puck drop.'}
+              {uiNotes['nhl_prop_banner'] || 'NHL props — playbook reads player L10 form, opponent goalie save%, line role, and PP time. Records populate as the season builds.'}
             </>
           ) : propJerrySport === 'NBA' ? (
             <>
-              {uiNotes['nba_prop_banner'] || 'NBA props — coming this season. Full playbook (player L10-L15 form, opp DefRtg by category, pace, matchup) rolls out ahead of tip-off week.'}
+              {uiNotes['nba_prop_banner'] || 'NBA props — playbook reads player L10-L15 form, opponent DefRtg by category, pace, and matchup. Records populate as the season builds.'}
             </>
           ) : propJerrySport === 'UFC' ? (
             <>
@@ -14020,7 +14017,7 @@ setJerryHistory(prev => {
             </>
           ) : (
             <>
-              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{propJerrySport} props — coming soon.</Text> Playbook build in progress. When live, it evaluates the same signal stack Prop Jerry uses across sports.
+              <Text style={{color:HRB_COLOR,fontWeight:'700'}}>{propJerrySport} props — not published.</Text> Book coverage on college player props is thin and lines move erratically, so we don't publish a card for this sport.
             </>
           )}
         </Text>
@@ -14689,20 +14686,19 @@ setJerryHistory(prev => {
               const pp: any = (jerryRecord as any).pipelineProps || {total: {wins:0,losses:0}, byTier: {}};
 
               const filterSport = receiptsSport;
-              // 2026-09-06 status update: NFL + NCAAF are LIVE now
-              // (NCAAF Week 1 started 8/29, NFL Week 1 opener 9/10).
-              // Prior "preseason" tags gated the Receipts filter chip as
-              // disabled → users couldn't view NCAAF/NFL track record.
-              // TODO post-launch: read status from sport_registry table
-              // instead of hardcoding here.
+              // 2026-09-06: all sports treated as coverage-live. Off-season
+              // sports simply show empty records ("—") until games land —
+              // no separate "coming soon" gating in the UI. Per user
+              // directive: mention every covered sport, let the data
+              // decide whether records populate.
               const activeSports = [
-                {id: 'MLB',   icon: '⚾', label: 'MLB',   status: 'live',      kickoff: null},
-                {id: 'NCAAF', icon: '🏈', label: 'NCAAF', status: 'live',      kickoff: null},
-                {id: 'NFL',   icon: '🏈', label: 'NFL',   status: 'live',      kickoff: null},
-                {id: 'UFC',   icon: '🥊', label: 'UFC',   status: 'live',      kickoff: null},
-                {id: 'NBA',   icon: '🏀', label: 'NBA',   status: 'offseason', kickoff: 'Oct'},
-                {id: 'NCAAB', icon: '🏀', label: 'NCAAB', status: 'offseason', kickoff: 'Nov 3'},
-                {id: 'NHL',   icon: '🏒', label: 'NHL',   status: 'offseason', kickoff: 'Oct'},
+                {id: 'MLB',   icon: '⚾', label: 'MLB',   status: 'live', kickoff: null},
+                {id: 'NCAAF', icon: '🏈', label: 'NCAAF', status: 'live', kickoff: null},
+                {id: 'NFL',   icon: '🏈', label: 'NFL',   status: 'live', kickoff: null},
+                {id: 'UFC',   icon: '🥊', label: 'UFC',   status: 'live', kickoff: null},
+                {id: 'NBA',   icon: '🏀', label: 'NBA',   status: 'live', kickoff: null},
+                {id: 'NCAAB', icon: '🏀', label: 'NCAAB', status: 'live', kickoff: null},
+                {id: 'NHL',   icon: '🏒', label: 'NHL',   status: 'live', kickoff: null},
               ];
 
               // 2026-08-27: primary path — surface_records table (server-computed,
@@ -14810,19 +14806,14 @@ setJerryHistory(prev => {
 
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}} contentContainerStyle={{gap:6,paddingRight:14}}>
                     {[{id:'ALL', icon:'🌐', label:'All', status:'live', kickoff:null}, ...activeSports].map((sp:any) => {
-                      const isDisabled = sp.status === 'offseason' || sp.status === 'preseason';
                       const isActive = receiptsSport === sp.id;
                       return (
                         <TouchableOpacity
                           key={sp.id}
                           onPress={() => setReceiptsSport(sp.id)}
-                          disabled={isDisabled && sp.id !== 'ALL'}
-                          style={{flexDirection:'row',alignItems:'center',gap:5,paddingVertical:7,paddingHorizontal:12,borderRadius:999,backgroundColor: isActive ? THEME.hrb + '26' : THEME.surface,borderWidth:1,borderColor: isActive ? HRB_COLOR : THEME.border,opacity: (isDisabled && sp.id !== 'ALL') ? 0.4 : 1}}>
+                          style={{flexDirection:'row',alignItems:'center',gap:5,paddingVertical:7,paddingHorizontal:12,borderRadius:999,backgroundColor: isActive ? THEME.hrb + '26' : THEME.surface,borderWidth:1,borderColor: isActive ? HRB_COLOR : THEME.border}}>
                           <Text style={{fontSize:13,lineHeight:14}}>{sp.icon}</Text>
                           <Text style={{color: isActive ? HRB_COLOR : THEME.textMuted, fontSize:12, fontWeight:'600'}}>{sp.label}</Text>
-                          {sp.kickoff && (
-                            <Text style={{color:THEME.textDim, fontSize:9, fontWeight:'500', marginLeft:2}}>{sp.kickoff}</Text>
-                          )}
                         </TouchableOpacity>
                       );
                     })}
@@ -14931,7 +14922,10 @@ setJerryHistory(prev => {
                           </View>
                           {filterSport === 'ALL' && (sfc.key === 'sharp' || sfc.key === 'prop') && (
                             <View style={{marginTop:8,paddingTop:8,borderTopWidth:1,borderTopColor:THEME.border,borderStyle:'dashed'}}>
-                              {activeSports.filter((sp:any) => sp.status !== 'offseason').map((sp:any) => {
+                              {activeSports.map((sp:any) => {
+                                // Props: college sports (NCAAF/NCAAB) not
+                                // published — book coverage is thin. Skip
+                                // in the per-sport prop breakdown.
                                 if (sfc.key === 'prop' && (sp.id === 'NCAAF' || sp.id === 'NCAAB')) return null;
                                 const spD = surfaceData(sfc.key, sp.id);
                                 const spHitColor = !spD.hasData ? THEME.textDim :
@@ -15836,7 +15830,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                           Was overstating cross-sport coverage + omitting juice-adjusted sizing. */}
                       <View style={{gap:4}}>
                         {[
-                          ['🎯', 'Ensemble-qualified sides + tiered props (MLB live; other sports as their playbooks ship)'],
+                          ['🎯', 'Ensemble-qualified sides + tiered props across every sport we cover'],
                           ['💵', 'PRIME/STRONG = 2u · LEAN = 1u · juice trap = half units'],
                           ['🚫', 'Auto-skip: hits O0.5 at ≤-200 juice unless model confidence clears the vig'],
                           ['📊', 'Play count varies with the slate — no artificial cap or minimum'],

@@ -147,15 +147,14 @@ export const RecapCard: React.FC<Props> = ({ sport, initialPeriod, onTap }) => {
     }
   };
 
-  // ── Off-season / not-yet-launched placeholder ──
+  // ── Off-season placeholder — sport is covered, just no graded games yet ──
   if (!isSportLive(sport)) {
     return (
       <View style={styles.card}>
         <Text style={styles.label}>{sport} RECEIPTS</Text>
-        <Text style={styles.offseasonHeading}>Season launching soon</Text>
+        <Text style={styles.offseasonHeading}>No graded {sport} picks yet</Text>
         <Text style={styles.offseasonSub}>
-          {sport} pipeline activates when the season starts. We'll have receipts
-          flowing live from day one.
+          Receipts populate here as soon as games start grading.
         </Text>
       </View>
     );

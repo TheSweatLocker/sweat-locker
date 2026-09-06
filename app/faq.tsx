@@ -12,13 +12,13 @@
  *
  * All content is static and edited here. No CMS.
  *
- * ⚠️ 2026-09-06 KNOWN DRIFT RISK: sport availability + timing answers
- * are hardcoded. When NBA/NHL/NCAAB go live (Oct/Nov 2026) OR when
- * cron cadences change, we ship a hotfix to keep these current.
- * Post-launch project (queued as faq_sport_registry_source_906):
- * source these two questions from sport_registry table so status +
- * cadence live text tracks the DB automatically. Not launch-blocking;
- * hotfix cadence is 1-2 min per update.
+ * ⚠️ 2026-09-06 KNOWN DRIFT RISK: pick-timing cadences per sport are
+ * hardcoded. If a cron cadence changes we ship a hotfix. Sport list +
+ * status intentionally does NOT track season live/not-live — copy just
+ * names every covered sport and lets an off-season card sit empty for
+ * that sport until games load. Post-launch project queued as
+ * faq_sport_registry_source_906 pulls cadence text from sport_registry
+ * so ops updates a DB row instead of a code change. Not launch-blocking.
  */
 import React, { useState } from 'react';
 import {
@@ -104,15 +104,15 @@ const SECTIONS: Section[] = [
     items: [
       {
         q: 'Which sports do you cover?',
-        a: 'LIVE right now: MLB (daily), NFL (weekly + Thu/Sun/Mon), NCAAF (Thu/Sat slates), UFC (fight nights). Coming soon: NBA + NHL (Oct 2026), NCAAB (Nov 2026). Every sport gets its own tuned pipeline — same architecture, different models per sport.',
+        a: 'MLB, NFL, NCAAF, NCAAB, NBA, NHL, and UFC. Each sport gets its own tuned pipeline — same architecture, different models per sport. When a season is in-progress you\'ll see picks; when it\'s off-season the card sits empty for that sport and picks up automatically the moment the season opens.',
       },
       {
         q: 'How many picks do I get per day?',
-        a: 'Depends on slate size + signal quality. Sharp Card typically publishes 15-25 picks/day when 3+ sports are live — MLB up to 25, NCAAF up to 12, NFL up to 10 (Sun-heavy). On thin slates we publish fewer; we don\'t force volume just to fill space. If we don\'t have signals worth trusting, we say so. Free tier always sees the Pick of the Day (POTD) at minimum.',
+        a: 'Depends on slate size + signal quality. Sharp Card typically publishes 15-25 picks/day when multiple sports are in-season — MLB up to 25, NCAAF up to 12, NFL up to 10 (Sun-heavy), plus NBA/NHL/NCAAB during their seasons. On thin slates we publish fewer; we don\'t force volume just to fill space. If we don\'t have signals worth trusting, we say so. Free tier always sees the Pick of the Day (POTD) at minimum.',
       },
       {
         q: 'What about props?',
-        a: 'MLB props (pitcher K/BB/ER/hits + batter hits) daily. NFL player props (pass yds, rush yds, receptions, TDs, INTs) started 9/2. NCAAF props coming soon. NBA + NHL props ship with those sports\' seasons. Every prop gets tier + book line + edge% + our Prop Jerry read explaining WHY we back it.',
+        a: 'MLB props (pitcher K/BB/ER/hits + batter hits) and NFL player props (pass yds, rush yds, receptions, TDs, INTs). NBA + NHL props ship during their seasons. College props (NCAAF, NCAAB) are not published — books rarely offer them and lines move erratically. Every prop gets tier + book line + edge% + a Prop Jerry read explaining WHY we back it.',
       },
     ],
   },

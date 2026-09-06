@@ -373,11 +373,11 @@ export default function TrackRecord() {
             <View style={[styles.overallCard, {alignItems: 'center'}]}>
               <Text style={{fontSize: 32, marginBottom: 6}}>{cur.emoji}</Text>
               <Text style={{color: TEXT_PRIMARY, fontSize: 15, fontWeight: '700', marginBottom: 6, textAlign: 'center'}}>
-                {cur.sport} tier tables coming soon
+                {cur.sport} tier tables build with sample
               </Text>
               <Text style={{color: TEXT_MUTED, fontSize: 12, lineHeight: 18, textAlign: 'center'}}>
-                Once we've graded 30+ picks at each tier, the {cur.sport} methodology surfaces
-                right here — same shape as MLB below.
+                Tier methodology surfaces here once we've graded 30+ picks at each tier for
+                {' '}{cur.sport} — same shape as MLB below.
               </Text>
             </View>
           );

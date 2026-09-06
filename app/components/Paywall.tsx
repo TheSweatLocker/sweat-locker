@@ -126,7 +126,7 @@ export const Paywall: React.FC<Props> = ({ visible, onDismiss, triggerFeature })
             <Feature icon="🎯" title="Full Sweat Card" desc="Locks, props, total edges, skip alerts" />
             <Feature icon="🧠" title="Jerry game reads" desc="Per-game narrative w/ mastery context" />
             <Feature icon="📊" title="Audit history" desc="Live W-L tracking by tier" />
-            <Feature icon="⚾" title="MLB-first depth" desc="NCAAB joins in November" />
+            <Feature icon="🌐" title="All sports covered" desc="MLB, NFL, NCAAF, NCAAB, NBA, NHL, UFC" />
           </View>
 
           {/* Plan selectors */}

@@ -258,7 +258,7 @@ export const CohortDashboard: React.FC<Props> = ({ sport: initialSport = 'MLB', 
         </View>
         {SportChips}
         <Text style={styles.offseasonText}>
-          {sport} is offseason — cohort tracking activates when the season starts.
+          Cohort tracking for {sport} populates as graded picks accumulate.
         </Text>
       </View>
     );
