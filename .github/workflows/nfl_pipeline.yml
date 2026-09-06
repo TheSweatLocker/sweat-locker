@@ -170,6 +170,22 @@ jobs:
           SEASON=$(date +%Y)
           python seed_nfl_madden_launch.py --season $SEASON || echo "Madden seed failed (non-fatal)"
 
+      # 2026-09-06: live Madden refresh from madden27.wiki. Overwrites
+      # the seed with real weekly OVR/OFF/DEF for 32 teams + top-100
+      # player OVR. Idempotent (on_conflict). Runs after seed so if
+      # scraper breaks (wiki layout change) we still have the launch
+      # snapshot as fallback.
+      - name: Live Madden refresh (madden27.wiki)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          pip install --quiet beautifulsoup4 || true
+          SEASON=$(date +%Y)
+          python pull_madden27_ratings.py --season $SEASON --week 0 || echo "Madden live pull failed (non-fatal — seed is fallback)"
+
       - name: Enrich NFL ctx with Madden ratings + Top 100
         continue-on-error: true
         env:
@@ -178,6 +194,21 @@ jobs:
         run: |
           cd mlb_pipeline
           python enrich_ctx_nfl_madden.py --days-ahead 14 || echo "Madden ctx enrich failed (non-fatal)"
+
+      # 2026-09-06: NFL ML logistic-regression predictor. Model trained
+      # 9/3 on 2022-2025 season data (nfl_ml_logreg.json, 11 features).
+      # Writes to primary_play._logreg_shadow — apply_ml_lr_override in
+      # defensive_gates.py already promotes shadow → live tier overrides
+      # (COIN → COVERAGE demote, high-conviction ML flip) on the next
+      # nfl_game_context.py run. Non-fatal; missing model triggers no-op.
+      - name: NFL ML LR predictor (shadow → live override)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_ml_logreg_predict.py || echo "NFL LR predict failed (non-fatal)"
 
       # 2026-08-22: LIVE ORPHAN WIRES — these scripts existed but had no
       # cron caller despite SQL migrations and app code (GameDetailV2.tsx)
