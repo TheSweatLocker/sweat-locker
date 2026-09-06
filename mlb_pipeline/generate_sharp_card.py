@@ -272,17 +272,39 @@ def _compose_mlb_sides(mlb_ctx: list) -> list[dict]:
         away_ml = g.get('away_ml_close') or g.get('away_ml_odds')
         side = pp.get('side')
         side_ml = home_ml if side == 'HOME' else away_ml if side == 'AWAY' else None
+        pp_type = (pp.get('type') or 'ml').lower()
+        # 2026-09-06 readability fix — earlier version stored pick='Under'
+        # with no line for TOTAL items (users saw a bare "Over"/"Under"
+        # on the sharp card). Root cause: pp.label sometimes lacks the
+        # line when apply_lr_total_override fires before close_total is
+        # populated, so label falls back to just the side.title(). Also
+        # line was picked from close_spread first, wrong for totals.
+        # Rebuild pick + line per market type so both fields always
+        # carry the full context.
+        raw_label = pp.get('label') or ''
+        pp_line = pp.get('line')
+        if pp_type == 'total':
+            line = pp_line if pp_line is not None else g.get('close_total')
+            side_str = (side or '').title() if side else raw_label.split()[0] if raw_label else '—'
+            pick = f'{side_str} {line}'.strip() if line is not None else (raw_label or side_str)
+        elif pp_type in ('rl', 'spread'):
+            line = pp_line if pp_line is not None else g.get('close_spread')
+            pick = raw_label or (f'{g.get("home_team") if side=="HOME" else g.get("away_team")} '
+                                 f'{"+" if (line or 0) > 0 else ""}{line}').strip()
+        else:  # ml
+            line = None
+            pick = raw_label or f'{g.get("home_team") if side=="HOME" else g.get("away_team")} ML'
         picks.append({
             'sport': 'MLB',
             'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
             'tier': pp.get('tier'),
-            'pick': pp.get('label') or '—',
-            'type': pp.get('type') or 'ml',
+            'pick': pick,
+            'type': pp_type,
             'reason': pp.get('sub') or '',
-            'odds': side_ml if pp.get('type') == 'ml' else -110,
-            'line': pp.get('line') or g.get('close_spread') or g.get('close_total'),
-            'units': _units_for_pick(pp.get('tier'), pp.get('type') or 'ml',
-                                     side_ml if pp.get('type') == 'ml' else -110,
+            'odds': side_ml if pp_type == 'ml' else -110,
+            'line': line,
+            'units': _units_for_pick(pp.get('tier'), pp_type,
+                                     side_ml if pp_type == 'ml' else -110,
                                      side_price_american=side_ml),
         })
     return [p for p in picks if p['units'] > 0]
