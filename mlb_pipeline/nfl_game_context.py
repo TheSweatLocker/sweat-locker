@@ -969,11 +969,26 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     # first Thursday of September. Preseason weeks 1-3 typically start
     # in mid-August. We compute both so Panel lookup works.
     def _nfl_week(kickoff_dt, season):
-        # Find first Thursday of September
+        # 2026-09-06 fix — hardcode Week 1 opener Thursday per season.
+        # Prior logic used "first Thursday of September" which was off by
+        # a week for 2026 (opener actually Sept 10, not Sept 3 first-Thu).
+        # NFL schedules the season opener based on TV/venue constraints,
+        # not calendar arithmetic — hardcoding matches published schedule.
+        # Add new seasons as they land; unknown seasons fall back to
+        # the old first-Thursday-of-September heuristic.
         from datetime import date as _date
-        sept1 = _date(season, 9, 1)
-        first_thu_offset = (3 - sept1.weekday()) % 7  # 3 = Thursday
-        wk1_start = _date(season, 9, 1 + first_thu_offset)
+        _WEEK1_OPENER = {
+            2022: _date(2022, 9, 8),
+            2023: _date(2023, 9, 7),
+            2024: _date(2024, 9, 5),
+            2025: _date(2025, 9, 4),
+            2026: _date(2026, 9, 10),   # SF @ LA (verified via ESPN scoreboard)
+        }
+        wk1_start = _WEEK1_OPENER.get(season)
+        if wk1_start is None:
+            sept1 = _date(season, 9, 1)
+            first_thu_offset = (3 - sept1.weekday()) % 7  # 3 = Thursday
+            wk1_start = _date(season, 9, 1 + first_thu_offset)
         days_since_wk1 = (kickoff_dt.date() - wk1_start).days
         if days_since_wk1 < 0:
             # Preseason — approximate weeks (Aug is preseason wk 1-3)
