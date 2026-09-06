@@ -15597,12 +15597,12 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           <PaywallPreview
             icon="💨"
             title="The Steam Room is Pro"
-            body="The disciplined sub-tabs: Sharp Card curated ~4 sides + 3-5 props, Ladder streak-chase, Ledger daily P/L, and Line Movement tracker across every book."
+            body="The disciplined sub-tabs: Sharp Card curated ~4 sides + 3-5 props, Ladder streak-chase, Ledger daily P/L, and The Split showing sharp vs public across every source."
             bullets={[
               'Sharp Card — curated 4 sides + 3-5 props · juice-adjusted',
               'The Ladder — 1 pick/day · compound the wins',
               'Ledger — daily P/L + teaser builder',
-              'Line Movement — real-time steam across every US book',
+              'The Split — sharp $ vs public bets across every source',
             ]}
             onUnlock={() => openPaywall('steam_tab')}
           />
