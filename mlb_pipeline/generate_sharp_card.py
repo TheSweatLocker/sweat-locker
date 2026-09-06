@@ -191,72 +191,14 @@ def _prop_team_matches(player_team: str | None, matchup: str | None) -> bool:
     return short in m or team in m
 
 
-# ─── 2026-09-06 PROP PUBLISHABILITY GATE (universal) ───────────────────
-# Root cause of 9/5 Sharp Card promotion bug: props that the pipeline
-# itself flagged as unpublishable (via _coverage_kill_gate,
-# _playbook_prop_gate=NO_VALIDATED_SIGNALS, or _lr_tier_raw disagreeing
-# with the stored tier) leaked onto the card as PRIME. Root cause was
-# tier-only filtering ignoring the signal-quality gates that
-# apply_refit_verdict_override.py and _demote_coverage_tier() set.
-#
-# This helper is the single source of truth for "is a prop publishable
-# to the user?" — used by every prop composer (MLB today, NFL/NCAAF as
-# they wire in). Any surface that shows props to users should call this,
-# not rely on `tier` alone (tier can drift after signal-quality gates
-# run).
-_UNPUBLISHABLE_PLAYBOOK_GATES = {'NO_VALIDATED_SIGNALS', 'ANTI_VALIDATED'}
-
-
-def _is_prop_publishable(prop: dict) -> tuple[bool, str]:
-    """Returns (publishable, reason). False means SKIP for user surface."""
-    sig = prop.get('signals') or {}
-    if isinstance(sig, str):
-        import json as _json
-        try: sig = _json.loads(sig)
-        except: sig = {}
-    if not isinstance(sig, dict): sig = {}
-
-    # Hard kill: refit override tagged this as unpublishable coverage stub
-    kill = sig.get('_coverage_kill_gate')
-    if kill and str(kill).lower() not in ('false', '0', 'no', ''):
-        return False, f'coverage_kill_gate={kill}'
-
-    # Hard kill: playbook gate says no validated signals
-    pg = sig.get('_playbook_prop_gate') or ''
-    if pg in _UNPUBLISHABLE_PLAYBOOK_GATES:
-        return False, f'playbook_gate={pg}'
-
-    # Tier-drift check: if LR says a lower tier than the stored `tier`,
-    # trust LR. This catches props whose tier didn't get demoted before
-    # sharp card composed them (race between generate_props → sharp_card
-    # and apply_refit_verdict_override).
-    lr_tier = (sig.get('_lr_tier_raw') or '').upper()
-    stored = (prop.get('tier') or '').upper()
-    rank = {'PRIME': 3, 'STRONG': 2, 'LEAN': 1, 'SKIP': 0}
-    if lr_tier in rank and stored in rank and rank[lr_tier] < rank[stored]:
-        return False, f'lr_tier_drift lr={lr_tier} stored={stored}'
-
-    return True, 'ok'
-
-
-def _effective_prop_tier(prop: dict) -> str | None:
-    """Return the MORE CONSERVATIVE of prop.tier and signals._lr_tier_raw.
-    Guards against tier drift by never marketing a prop above what LR
-    actually said. Used at composition time so 'PRIME' on Sharp Card
-    always means LR-verified PRIME.
-    """
-    stored = (prop.get('tier') or '').upper()
-    sig = prop.get('signals') or {}
-    if isinstance(sig, str):
-        import json as _json
-        try: sig = _json.loads(sig)
-        except: sig = {}
-    if not isinstance(sig, dict): return stored or None
-    lr = (sig.get('_lr_tier_raw') or '').upper()
-    rank = {'PRIME': 3, 'STRONG': 2, 'LEAN': 1, 'SKIP': 0}
-    if lr in rank and stored in rank:
-        return lr if rank[lr] < rank[stored] else stored
-    return stored or None
+# ─── 2026-09-06 PROP PUBLISHABILITY GATE ───────────────────────────────
+# Universal helpers extracted to prop_publishability.py so every composer
+# for every sport uses ONE source of truth. See that module for context
+# and feedback_signal_gate_over_tier_906 memory.
+from prop_publishability import (
+    is_publishable as _is_prop_publishable,
+    effective_tier as _effective_prop_tier,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════

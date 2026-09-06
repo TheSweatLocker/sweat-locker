@@ -38,6 +38,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests python-dotenv beautifulsoup4
 
+      # 2026-09-06 heartbeat wiring — grader was invisible to
+      # workflow_heartbeat telemetry (only GH Actions UI showed it ran).
+      # Same pattern as mlb_pipeline.yml so /workflow-status queries hit
+      # both. Non-fatal (continue-on-error) so a missing table doesn't
+      # block grading.
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          CRON_SLOT="${{ github.event.schedule }}"
+          case "$CRON_SLOT" in
+            '30 6 * * *')   SLOT='630' ;;
+            '30 8 * * *')   SLOT='830' ;;
+            '30 9 * * *')   SLOT='930' ;;
+            *)              SLOT='manual' ;;
+          esac
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"mlb_grade_overnight\",\"event\":\"start\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}" \
+               || echo "heartbeat start write failed (non-fatal)"
+
       # 1. Grade yesterday's MLB games (mlb_game_results scores +
       #    outcomes → jerry_reads.result + prop.result + ledger_snapshots)
       - name: Resolve MLB game results
@@ -187,3 +213,28 @@ jobs:
           if [ -n "$HC_URL" ]; then
             curl -fsS --retry 3 --max-time 10 -o /dev/null "${HC_URL}" || true
           fi
+
+      # 8. Heartbeat end (2026-09-06). Pairs with start heartbeat above.
+      # If start fires but end doesn't, we know grader died mid-run.
+      # if: always() so a failed grade step doesn't skip the heartbeat.
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          CRON_SLOT="${{ github.event.schedule }}"
+          case "$CRON_SLOT" in
+            '30 6 * * *')   SLOT='630' ;;
+            '30 8 * * *')   SLOT='830' ;;
+            '30 9 * * *')   SLOT='930' ;;
+            *)              SLOT='manual' ;;
+          esac
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"mlb_grade_overnight\",\"event\":\"end\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}" \
+               || echo "heartbeat end write failed (non-fatal)"

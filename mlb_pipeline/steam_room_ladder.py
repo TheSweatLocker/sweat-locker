@@ -50,6 +50,13 @@ if _env.exists():
         if '=' in line and not line.startswith('#'):
             k, v = line.split('=', 1); os.environ.setdefault(k.strip(), v.strip())
 
+# 2026-09-06 tier consolidation: shared publishability gate for every
+# composer (sharp card, ladder, prop card, future surfaces).
+from prop_publishability import (
+    is_publishable as _is_prop_publishable,
+    effective_tier as _effective_prop_tier,
+)
+
 SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
@@ -315,8 +322,25 @@ def check_prop_qualifier(prop: dict, sport: str = 'MLB') -> Optional[dict]:
 
     Same soft-scoring rule as games — need >= 3/5 to qualify.
     """
+    # 2026-09-06 tier consolidation: shared publishability gate first.
+    # Blocks props flagged by apply_refit_verdict_override (coverage kill,
+    # playbook NO_VALIDATED_SIGNALS, or LR tier drift) even if the legacy
+    # playbook_tier still says PRIME. Root cause of Messick U 1.5 ER
+    # 9/5 ladder loss: legacy PRIME/86 while tier engine had it at
+    # LEAN/50 with _playbook_prop_gate=NO_VALIDATED_SIGNALS.
+    ok, reason = _is_prop_publishable(prop)
+    if not ok:
+        return None
+
     playbook_tier = (prop.get('playbook_tier') or '').upper()
     legacy_tier = (prop.get('legacy_tier') or '').upper()
+    # Never trust playbook_tier above what the shared conservative
+    # tier says — playbook can be stale relative to LR/refit overrides.
+    lr_capped = (_effective_prop_tier(prop) or '').upper()
+    if playbook_tier in ('PRIME','STRONG') and lr_capped:
+        rank = {'PRIME': 3, 'STRONG': 2, 'LEAN': 1, 'SKIP': 0}
+        if rank.get(lr_capped, 0) < rank.get(playbook_tier, 0):
+            playbook_tier = lr_capped
     effective_tier = playbook_tier if playbook_tier in ('PRIME','STRONG') else legacy_tier
     if effective_tier not in ('PRIME','STRONG'):
         return None
@@ -442,7 +466,7 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
             # Join to mlb_pipeline_props to get book odds + refit_conviction
             legacy = requests.get(f'{SB}/rest/v1/mlb_pipeline_props', headers=H_READ,
                 params={'game_date': f'eq.{game_date}',
-                        'select': 'player_name,prop_type,direction,prop_line,book_over_odds,book_under_odds,refit_conviction,tier,matchup,game_id'},
+                        'select': 'player_name,prop_type,direction,prop_line,book_over_odds,book_under_odds,refit_conviction,tier,matchup,game_id,signals'},
                 timeout=15).json()
             legacy_map = {}
             if isinstance(legacy, list):

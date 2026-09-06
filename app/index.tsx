@@ -11393,11 +11393,47 @@ setJerryHistory(prev => {
                 onPress={async()=>{
                   // 2026-08-24: record versioned consent + timestamp so we can
                   // force re-consent if ToS materially changes (bump v1→v2).
+                  // 2026-09-06: consent ALSO writes to user_consent table
+                  // (backend) so we retain a legally defensible traceable log
+                  // across reinstalls / device switches. AsyncStorage stays
+                  // as a local cache; backend row is the authority.
+                  const acceptedAt = new Date().toISOString();
+                  const consentPayload = {
+                    accepted_at: acceptedAt,
+                    terms_url: 'https://sweatlocker.app/terms',
+                    privacy_url: 'https://sweatlocker.app/privacy',
+                  };
                   await AsyncStorage.setItem('sweatlocker_onboarded','true');
                   await AsyncStorage.setItem('sweatlocker_consent_v1',
-                    JSON.stringify({accepted_at: new Date().toISOString(),
-                                    terms_url: 'https://sweatlocker.app/terms',
-                                    privacy_url: 'https://sweatlocker.app/privacy'}));
+                    JSON.stringify(consentPayload));
+                  // Fire-and-forget backend write. Failures don't block onboarding
+                  // (network may be down); AsyncStorage keeps the local proof and
+                  // a background retry could pick this up later if we ever wire one.
+                  try {
+                    let deviceId = await AsyncStorage.getItem('sweatlocker_device_id');
+                    if (!deviceId) {
+                      // UUIDv4 without a native dep — good-enough anon fingerprint
+                      // for correlating consent across app opens on the same install.
+                      deviceId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+                        const r = Math.random()*16|0;
+                        return (c==='x' ? r : (r&0x3|0x8)).toString(16);
+                      });
+                      await AsyncStorage.setItem('sweatlocker_device_id', deviceId);
+                    }
+                    let appVer: string | undefined;
+                    try { appVer = require('../app.json').expo?.version; } catch {}
+                    await supabase.from('user_consent').insert({
+                      device_id: deviceId,
+                      accepted_at: acceptedAt,
+                      terms_version: 'v1',
+                      terms_url: consentPayload.terms_url,
+                      privacy_url: consentPayload.privacy_url,
+                      app_version: appVer,
+                      platform: Platform.OS,
+                    });
+                  } catch (e) {
+                    console.log('user_consent backend write failed (non-fatal):', (e as any)?.message);
+                  }
                   setOnboardingDone(true);
                 }}
               >
