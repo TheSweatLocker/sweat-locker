@@ -14689,11 +14689,17 @@ setJerryHistory(prev => {
               const pp: any = (jerryRecord as any).pipelineProps || {total: {wins:0,losses:0}, byTier: {}};
 
               const filterSport = receiptsSport;
+              // 2026-09-06 status update: NFL + NCAAF are LIVE now
+              // (NCAAF Week 1 started 8/29, NFL Week 1 opener 9/10).
+              // Prior "preseason" tags gated the Receipts filter chip as
+              // disabled → users couldn't view NCAAF/NFL track record.
+              // TODO post-launch: read status from sport_registry table
+              // instead of hardcoding here.
               const activeSports = [
                 {id: 'MLB',   icon: '⚾', label: 'MLB',   status: 'live',      kickoff: null},
+                {id: 'NCAAF', icon: '🏈', label: 'NCAAF', status: 'live',      kickoff: null},
+                {id: 'NFL',   icon: '🏈', label: 'NFL',   status: 'live',      kickoff: null},
                 {id: 'UFC',   icon: '🥊', label: 'UFC',   status: 'live',      kickoff: null},
-                {id: 'NFL',   icon: '🏈', label: 'NFL',   status: 'preseason', kickoff: 'Sept 5'},
-                {id: 'NCAAF', icon: '🏈', label: 'NCAAF', status: 'preseason', kickoff: 'Aug 30'},
                 {id: 'NBA',   icon: '🏀', label: 'NBA',   status: 'offseason', kickoff: 'Oct'},
                 {id: 'NCAAB', icon: '🏀', label: 'NCAAB', status: 'offseason', kickoff: 'Nov 3'},
                 {id: 'NHL',   icon: '🏒', label: 'NHL',   status: 'offseason', kickoff: 'Oct'},
