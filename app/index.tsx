@@ -1985,6 +1985,28 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [ladderState, setLadderState] = useState<any>(null);
   const [ladderRungs, setLadderRungs] = useState<any[]>([]);
   const [ladderLoading, setLadderLoading] = useState(false);
+  // 2026-09-06 Ladder display mode. Defaults to UNITS to soften the
+  // gambling-escalator feel of raw dollar amounts on a compounding streak
+  // product ("$25 → $5,000 · CURRENT BANK $2,400"). Users can toggle to $
+  // via the pill in the ladder header; choice persisted in AsyncStorage
+  // so it sticks across sessions.
+  const [ladderUnitsMode, setLadderUnitsMode] = useState<boolean>(true);
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem('sweatlocker_ladder_units_mode');
+        if (raw === 'false') setLadderUnitsMode(false);
+        // 'true' or missing → keep default (units mode on)
+      } catch {}
+    })();
+  }, []);
+  const toggleLadderUnitsMode = React.useCallback(() => {
+    setLadderUnitsMode(v => {
+      const nv = !v;
+      AsyncStorage.setItem('sweatlocker_ladder_units_mode', nv ? 'true' : 'false').catch(() => {});
+      return nv;
+    });
+  }, []);
    const [fanmatchData, setFanmatchData] = useState({});
   const [nbaTeamData, setNbaTeamData] = useState({});
   const [nbaInjuryData, setNbaInjuryData] = useState<Record<string, any[]>>({});
@@ -15729,6 +15751,26 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         const cur = ladderState?.current_streak ?? 0;
                         const best = ladderState?.longest_streak ?? 0;
 
+                        // 2026-09-06 unit-display helper. Ladder defaults to
+                        // units (softer surface for a compounding streak
+                        // product). Users can toggle to $. Unit convention:
+                        // 1u = SEED, so $25 → 1u · $50 → 2u · $5000 → 200u.
+                        const fmtAmt = (dollars: number, {signed = false, showDecimals = true} = {}) => {
+                          if (ladderUnitsMode) {
+                            const units = dollars / SEED;
+                            const sign = signed && units > 0 ? '+' : '';
+                            const rounded = Math.abs(units) < 10
+                              ? units.toFixed(2).replace(/\.?0+$/, '')
+                              : units.toFixed(1).replace(/\.0$/, '');
+                            return `${sign}${rounded}u`;
+                          }
+                          const sign = signed && dollars > 0 ? '+' : '';
+                          return `${sign}$${dollars.toLocaleString(undefined, {
+                            minimumFractionDigits: showDecimals ? 2 : 0,
+                            maximumFractionDigits: showDecimals ? 2 : 0,
+                          })}`;
+                        };
+
                         // Compute current bank by rolling through the most recent
                         // `cur` resolved rungs and compounding actual odds.
                         // If cur = 0 (reset or first step), bank = SEED.
@@ -15763,15 +15805,29 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
 
                         return (
                           <View>
-                            {/* Journey header */}
-                            <View style={{alignItems:'center', marginBottom:14}}>
+                            {/* Journey header + units/$ toggle */}
+                            <View style={{alignItems:'center', marginBottom:14, position:'relative'}}>
                               <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1.5}}>THE LADDER</Text>
                               <Text style={{color:THEME.text, fontSize:22, fontWeight:'900', letterSpacing:-0.5, marginTop:4}}>
-                                ${SEED} <Text style={{color:THEME.textDim}}>→</Text> ${TARGET.toLocaleString()}
+                                {fmtAmt(SEED, {showDecimals:false})} <Text style={{color:THEME.textDim}}>→</Text> {fmtAmt(TARGET, {showDecimals:false})}
                               </Text>
                               <Text style={{color:THEME.textMuted, fontSize:10, marginTop:2, letterSpacing:0.5}}>
                                 200× target · roll all winnings each step
                               </Text>
+                              {/* 2026-09-06 units/$ toggle. Top-right corner
+                                  of the ladder card. Units default per user
+                                  directive — softer surface than raw dollars
+                                  on a compounding streak product. */}
+                              <TouchableOpacity
+                                onPress={toggleLadderUnitsMode}
+                                style={{position:'absolute', right:0, top:0, flexDirection:'row', backgroundColor:THEME.surfaceAlt, borderRadius:999, padding:2, borderWidth:1, borderColor:THEME.border}}>
+                                <View style={{backgroundColor: ladderUnitsMode ? THEME.accent+'33' : 'transparent', borderRadius:999, paddingHorizontal:9, paddingVertical:3}}>
+                                  <Text style={{color: ladderUnitsMode ? THEME.accent : THEME.textDim, fontSize:10, fontWeight:'800', letterSpacing:0.4}}>u</Text>
+                                </View>
+                                <View style={{backgroundColor: !ladderUnitsMode ? THEME.accent+'33' : 'transparent', borderRadius:999, paddingHorizontal:9, paddingVertical:3}}>
+                                  <Text style={{color: !ladderUnitsMode ? THEME.accent : THEME.textDim, fontSize:10, fontWeight:'800', letterSpacing:0.4}}>$</Text>
+                                </View>
+                              </TouchableOpacity>
                             </View>
 
                             {/* Current bank hero */}
@@ -15780,11 +15836,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               <Text style={{color: profit > 0 ? THEME.win : profit < 0 ? THEME.loss : THEME.text,
                                             fontSize:44, fontWeight:'900', letterSpacing:-1, marginTop:2,
                                             fontVariant:['tabular-nums']}}>
-                                ${currentBank.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+                                {fmtAmt(currentBank)}
                               </Text>
                               {profit !== 0 && (
                                 <Text style={{color: profit > 0 ? THEME.win : THEME.loss, fontSize:12, fontWeight:'700', marginTop:2}}>
-                                  {profit > 0 ? '+' : ''}${profit.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})} from seed
+                                  {fmtAmt(profit, {signed:true})} from seed
                                 </Text>
                               )}
                             </View>
@@ -15804,7 +15860,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                               </View>
                               {stepsRemaining > 0 && (
                                 <Text style={{color:THEME.textMuted, fontSize:10, marginTop:4, textAlign:'center'}}>
-                                  {stepsRemaining} more win{stepsRemaining === 1 ? '' : 's'} to hit ${TARGET.toLocaleString()}
+                                  {stepsRemaining} more win{stepsRemaining === 1 ? '' : 's'} to hit {fmtAmt(TARGET, {showDecimals:false})}
                                 </Text>
                               )}
                             </View>
@@ -15813,14 +15869,14 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                             {activeRung && (
                               <View style={{backgroundColor:THEME.bg + 'aa', borderRadius:10, padding:12, borderWidth:0.5, borderColor:THEME.border+'55', marginBottom:10}}>
                                 <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:8}}>
-                                  NEXT STEP · ${currentBank.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})} AT RISK
+                                  NEXT STEP · {fmtAmt(currentBank)} AT RISK
                                 </Text>
                                 <View style={{flexDirection:'row', justifyContent:'space-between', gap:8}}>
                                   <View style={{flex:1, backgroundColor:THEME.win+'11', borderRadius:8, padding:10, alignItems:'center'}}>
                                     <Text style={{fontSize:16, marginBottom:2}}>✓</Text>
                                     <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.4}}>IF WINS</Text>
                                     <Text style={{color:THEME.win, fontSize:18, fontWeight:'900', marginTop:2, fontVariant:['tabular-nums']}}>
-                                      ${nextBankIfWin.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+                                      {fmtAmt(nextBankIfWin)}
                                     </Text>
                                     <Text style={{color:THEME.textDim, fontSize:9, marginTop:2}}>
                                       Step {stepNum + 1} of ~{TARGET_STEPS}
@@ -15830,7 +15886,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                     <Text style={{fontSize:16, marginBottom:2}}>✗</Text>
                                     <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.4}}>IF LOSES</Text>
                                     <Text style={{color:THEME.loss, fontSize:18, fontWeight:'900', marginTop:2, fontVariant:['tabular-nums']}}>
-                                      ${SEED}
+                                      {fmtAmt(SEED, {showDecimals:false})}
                                     </Text>
                                     <Text style={{color:THEME.textDim, fontSize:9, marginTop:2}}>
                                       Ladder resets
