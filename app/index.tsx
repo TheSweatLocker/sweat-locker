@@ -14252,18 +14252,18 @@ setJerryHistory(prev => {
                   </View>
                 </View>
 
-                {signalEntries.length > 0 && (() => {
-                  // 2026-08-13: humanize raw-key signals before render.
-                  // 2026-08-15: humanizeSignal now returns structured
-                  // {label, value, suffix, prose} — label is wrapped in
-                  // <Explainer> so users can tap "xERA" / "wRC+" / etc.
-                  // for a one-sentence definition.
-                  // 2026-08-19: section renamed MODEL SIGNALS → WHY WE BACK
-                  // THIS per user feedback. Same signals under a header users
-                  // actually read. Also filtered out internal audit keys
-                  // (juice_trap_spared/demoted, _display_label, _pre_recal_tier,
-                  // etc.) that were noise in the bullet list — they get
-                  // surfaced elsewhere or not at all.
+                {/* 2026-09-06: hide "WHY WE BACK THIS" bullet section
+                    whenever the structured Prop Jerry panel below has
+                    reasoning data (render_sections.reasoning.why_bullets).
+                    Prior double-render made every prop card show a
+                    bullet-list "why" AND the styled Prop Jerry card —
+                    user feedback: legacy panel doesn't look good next
+                    to the graphs. Post-launch: redesign Prop Jerry
+                    surface (queued in memory as prop_jerry_layout_v2).
+                    Keep the humanized fallback ONLY when prop_jerry is
+                    absent so cards never render fully-blank.
+                */}
+                {signalEntries.length > 0 && !(prop.prop_jerry?.input_snapshot?.render_sections?.reasoning?.why_bullets?.length) && (() => {
                   const INTERNAL_KEYS = new Set([
                     '_display_label','_book_line','_pre_recal_tier','_recal_multiplier',
                     '_edge_at_book','_projected_bb','_projected_bb_l7_raw','_projected_ks',
