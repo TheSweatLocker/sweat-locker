@@ -44,8 +44,16 @@ from __future__ import annotations
 import json
 
 
-_UNPUBLISHABLE_PLAYBOOK_GATES = {'NO_VALIDATED_SIGNALS', 'ANTI_VALIDATED'}
 _TIER_RANK = {'PRIME': 3, 'STRONG': 2, 'LEAN': 1, 'SKIP': 0}
+
+# _playbook_prop_gate values that were previously treated as blockers but
+# empirically don't predict losses. Kept as constants so we can document
+# why they're NOT gates rather than removing without a trace.
+# Yesterday-audit (9/5): 22 winning PRIMEs · 16 of them had this flag
+# set. If we'd blocked on it, we'd have thrown out 16 winners. LR model
+# consistently outperforms the playbook signal validator on props LR
+# stamped PRIME. Treat this flag as a diagnostic tag, not a kill.
+_DIAGNOSTIC_PLAYBOOK_GATES = {'NO_VALIDATED_SIGNALS', 'ANTI_VALIDATED'}
 
 
 def _coerce_signals(sig) -> dict:
@@ -59,25 +67,32 @@ def _coerce_signals(sig) -> dict:
 def is_publishable(prop: dict) -> tuple[bool, str]:
     """Returns (publishable, reason). False → SKIP for user surface.
 
-    Reason string categories: 'coverage_kill', 'playbook_gate',
-    'lr_tier_drift', 'ok'.
+    Only two real kill conditions:
+
+      1. `_coverage_kill_gate` — set by _demote_coverage_tier() in
+         apply_refit_verdict_override.py. This is the pipeline's own
+         "do not publish" flag, not a diagnostic.
+
+      2. LR tier drift — stored tier disagrees with `_lr_tier_raw`
+         AND LR is lower. Catches the 9/5 Sharp Card bug where props
+         got composed at tier=PRIME then later demoted to LEAN by
+         apply_refit_verdict_override (frozen sharp card kept the
+         stale PRIME tier). Also catches any composer reading tier
+         directly without going through this gate.
+
+    `_playbook_prop_gate=NO_VALIDATED_SIGNALS` is NOT a kill — empirical
+    9/5 audit showed 16 of 22 winning PRIMEs had it set. It's a signal-
+    registry diagnostic; LR overrides it when LR-tier is high. See the
+    _DIAGNOSTIC_PLAYBOOK_GATES constant docstring.
     """
     sig = _coerce_signals(prop.get('signals'))
 
-    # Hard kill: refit override tagged this as unpublishable coverage stub
+    # Hard kill 1: coverage kill gate
     kill = sig.get('_coverage_kill_gate')
     if kill and str(kill).lower() not in ('false', '0', 'no', ''):
         return False, f'coverage_kill={kill}'
 
-    # Hard kill: playbook gate says no validated signals
-    pg = sig.get('_playbook_prop_gate') or ''
-    if pg in _UNPUBLISHABLE_PLAYBOOK_GATES:
-        return False, f'playbook_gate={pg}'
-
-    # Tier-drift check: if LR says a lower tier than the stored `tier`,
-    # trust LR. Catches props whose tier didn't get demoted before a
-    # composer read them (race between generate_props → composer and
-    # apply_refit_verdict_override).
+    # Hard kill 2: LR tier drift (LR says lower than stored)
     lr_tier = (sig.get('_lr_tier_raw') or '').upper()
     stored = (prop.get('tier') or '').upper()
     if lr_tier in _TIER_RANK and stored in _TIER_RANK and _TIER_RANK[lr_tier] < _TIER_RANK[stored]:
