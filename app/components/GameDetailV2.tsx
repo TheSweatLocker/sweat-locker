@@ -1757,10 +1757,22 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
       if (cancelled) return;
       let ar = Array.isArray(awayR?.data) ? awayR.data : [];
       let hr = Array.isArray(homeR?.data) ? homeR.data : [];
-      // Sample-size gauge: overall spread record (proxy for total game count)
+      // Sample-size gauge: overall spread record (proxy for total game count).
+      // 2026-09-06: bug fix — prior code read `overall.games` which is a
+      // non-existent column in team_situational_records. `Number(undefined)`
+      // → NaN → `|| 0` → 0. Result: the current-season game count ALWAYS
+      // registered as 0, which flipped the prior-season fallback ON for
+      // every game unconditionally. Users saw "RECORDS" (last season)
+      // badges on Reds/Phillies mid-current-season even though the DB
+      // held real 2026 rows. Now: sum wins + losses + pushes from the
+      // actual columns.
       const _gamesFor = (rows: any[]) => {
         const overall = rows.find(r => r.market === 'spread' && r.filter === 'overall');
-        return overall ? (Number(overall.games) || 0) : 0;
+        if (!overall) return 0;
+        const w = Number(overall.wins) || 0;
+        const l = Number(overall.losses) || 0;
+        const p = Number(overall.pushes) || 0;
+        return w + l + p;
       };
       const awayGames = _gamesFor(ar);
       const homeGames = _gamesFor(hr);
@@ -1888,12 +1900,20 @@ function SitRow({leftLabel, leftRec, rightLabel, rightRec, market}: any) {
 }
 
 function RecordPill({rec, market}: any) {
-  if (!rec || rec.games === 0 || rec.games == null) {
+  // 2026-09-06 dashes-everywhere bug fix. Prior guard read `rec.games`
+  // — a column that does NOT exist in team_situational_records. The
+  // matview stores wins/losses/pushes only; games is derived at render
+  // time. Result: EVERY MLB row returned `rec.games == null` → every
+  // Situational cell rendered "—" even though the DB had real 5-5, 6-4
+  // records for every team + filter + market. Now: compute the total
+  // from the actual columns and hide when it's 0.
+  const w = Number(rec?.wins) || 0;
+  const l = Number(rec?.losses) || 0;
+  const p = Number(rec?.pushes) || 0;
+  const games = w + l + p;
+  if (!rec || games === 0) {
     return <View style={sitStyles.pillEmpty}><Text style={sitStyles.pillEmptyText}>—</Text></View>;
   }
-  const w = Number(rec.wins) || 0;
-  const l = Number(rec.losses) || 0;
-  const p = Number(rec.pushes) || 0;
   const total = w + l;  // pushes excluded from hit%
   const hitPct = total > 0 ? Math.round((w / total) * 100) : 0;
   // Color the pill by hit%: >=58 green (hot), <=42 red (cold), else neutral
