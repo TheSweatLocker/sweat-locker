@@ -454,6 +454,30 @@ def run(dry_run: bool = False):
     today = _today_et()
     print(f'== Generate Sharp Card · {today} ==')
 
+    # 2026-09-06 race guard. Sharp card was firing during partial pipeline
+    # runs before apply_refit_verdict_override had stamped LR tiers today,
+    # so the composed card saw stale tiers (props stuck at pre-LR values,
+    # PRIMEs still marked LEAN/COVERAGE). All prop composers on this card
+    # depend on `tier` and `signals._lr_tier_raw`, which that script sets.
+    # Solution: self-run the override BEFORE composing. It's idempotent
+    # (uses _coverage_kill_gate + _playbook_prop_gate tags to skip already-
+    # processed rows), so calling it twice/day is safe. Cost is minimal
+    # (~5-10s when everything's already tagged, ~30s on a fresh slate).
+    # Cross-sport safe: when NFL/NCAAF prop composition wires into this
+    # script, the same guarantee holds — tiers must be finalized before
+    # composition regardless of which pipeline invoked us.
+    print(f'  [guard] running apply_refit_verdict_override first (idempotent)')
+    try:
+        import subprocess as _sp
+        _p = _sp.run(['python', str(Path(__file__).parent / 'apply_refit_verdict_override.py')],
+                     capture_output=True, text=True, timeout=180)
+        # Log summary only, not full noisy stdout
+        _tail = '\n'.join((_p.stdout or '').splitlines()[-5:])
+        print(f'  [guard] refit override completed rc={_p.returncode}')
+        if _tail: print(f'  [guard] tail: {_tail}')
+    except Exception as _e:
+        print(f'  ⚠️  [guard] refit override call failed non-fatal: {_e}')
+
     sources = _fetch_all(today)
     print(f'  fetched: MLB ctx={len(sources["mlb_ctx"])} props={len(sources["mlb_props"])} '
           f'NFL={len(sources["nfl_ctx"])} NCAAF={len(sources["ncaaf_ctx"])} '
