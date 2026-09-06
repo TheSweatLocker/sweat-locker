@@ -11,6 +11,14 @@
  *   - Responsible Betting
  *
  * All content is static and edited here. No CMS.
+ *
+ * ⚠️ 2026-09-06 KNOWN DRIFT RISK: sport availability + timing answers
+ * are hardcoded. When NBA/NHL/NCAAB go live (Oct/Nov 2026) OR when
+ * cron cadences change, we ship a hotfix to keep these current.
+ * Post-launch project (queued as faq_sport_registry_source_906):
+ * source these two questions from sport_registry table so status +
+ * cadence live text tracks the DB automatically. Not launch-blocking;
+ * hotfix cadence is 1-2 min per update.
  */
 import React, { useState } from 'react';
 import {
@@ -58,7 +66,7 @@ const SECTIONS: Section[] = [
       },
       {
         q: 'When do picks come out?',
-        a: 'MLB: morning card drops ~7-9am ET after model runs, refresh again ~2pm ET after lineups + line moves are baked in. NFL/NCAAF: cards lock Thursday morning after injury reports land, with lighter refreshes every 6 hours through the weekend. If a starter scratches or weather changes, the pick can shift between windows.',
+        a: 'MLB: morning card drops ~7-9am ET, refresh again ~2pm ET after lineups + line moves. NFL: Thursday-morning lock after injury reports; lighter refreshes every 6 hours Thu-Sun; MNF gets a Monday-morning refresh. NCAAF: Thursday-morning lock for Thu games; Sat-morning lock for the main slate. NCAAB (Nov 3+): morning card ~10am ET, refresh ~4pm ET after opening-line moves; Tue-Sat cadence heaviest. NBA (Oct 21+): morning card ~10am ET, refresh ~4pm ET; daily. NHL (Oct 7+): morning card ~10am ET; daily. UFC: card locks Wednesday of fight week; refreshed Friday after weigh-ins. If a starter scratches or weather changes, the pick can shift between windows.',
       },
       {
         q: 'How do you grade?',
