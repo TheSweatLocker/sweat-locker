@@ -42,10 +42,11 @@ const PACKAGE_ANNUAL = '$rc_annual';
 // 2026-09-06 CRITICAL FIX: thesweatlocker.app doesn't resolve — App Store
 // reviewer would hit DNS failure and reject on 5.1.1. Real ToS/Privacy
 // content lives at thesweatlocker.com as anchor sections on the homepage.
-// Post-launch: consider standing up a subdomain (e.g., docs.thesweatlocker.com)
-// with dedicated /terms + /privacy paths.
-const TERMS_URL = 'https://thesweatlocker.com/#terms';
-const PRIVACY_URL = 'https://thesweatlocker.com/#privacy';
+// Anchors are UUID-suffixed by the site builder; keep them in sync
+// whenever the site is regenerated. Post-launch: consider a subdomain
+// (docs.thesweatlocker.com) with stable /terms + /privacy paths.
+const TERMS_URL = 'https://thesweatlocker.com/#4a867da5-8815-43cc-9c70-bf875edd04dc';
+const PRIVACY_URL = 'https://thesweatlocker.com/#882ed6c9-c6cc-4b65-8e38-24249b2ae893';
 
 type Props = {
   visible: boolean;

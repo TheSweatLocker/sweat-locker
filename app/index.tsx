@@ -11364,11 +11364,11 @@ setJerryHistory(prev => {
               <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16,paddingHorizontal:8}}>
                 By tapping below, you confirm you're of legal age and agree to our{' '}
                 <Text style={{color:THEME.accent,textDecorationLine:'underline'}}
-                      onPress={()=>Linking.openURL('https://thesweatlocker.com/#terms')}>
+                      onPress={()=>Linking.openURL('https://thesweatlocker.com/#4a867da5-8815-43cc-9c70-bf875edd04dc')}>
                   Terms of Service
                 </Text>{' '}and{' '}
                 <Text style={{color:THEME.accent,textDecorationLine:'underline'}}
-                      onPress={()=>Linking.openURL('https://thesweatlocker.com/#privacy')}>
+                      onPress={()=>Linking.openURL('https://thesweatlocker.com/#882ed6c9-c6cc-4b65-8e38-24249b2ae893')}>
                   Privacy Policy
                 </Text>.
               </Text>
@@ -11400,8 +11400,8 @@ setJerryHistory(prev => {
                   const acceptedAt = new Date().toISOString();
                   const consentPayload = {
                     accepted_at: acceptedAt,
-                    terms_url: 'https://thesweatlocker.com/#terms',
-                    privacy_url: 'https://thesweatlocker.com/#privacy',
+                    terms_url: 'https://thesweatlocker.com/#4a867da5-8815-43cc-9c70-bf875edd04dc',
+                    privacy_url: 'https://thesweatlocker.com/#882ed6c9-c6cc-4b65-8e38-24249b2ae893',
                   };
                   await AsyncStorage.setItem('sweatlocker_onboarded','true');
                   await AsyncStorage.setItem('sweatlocker_consent_v1',
