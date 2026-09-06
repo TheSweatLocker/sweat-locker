@@ -34,9 +34,12 @@ const TEXT_MUTED = THEME.textDim;
 const BORDER = THEME.border;
 
 // Match what's configured in RevenueCat dashboard + App Store Connect.
-// User decision (2026-05-22): $14.99/mo, $99/yr (45% off), 3-day free trial.
+// 2026-09-06 launch decision: $14.99/mo, $119.99/yr (33% off vs monthly),
+// 7-day free trial on both. Trial length owned by ASC introductoryPrice
+// config; if you change it in ASC, update the hasTrial copy below to match.
 const PACKAGE_MONTHLY = '$rc_monthly';   // RevenueCat standard identifier
 const PACKAGE_ANNUAL = '$rc_annual';
+const TRIAL_DAYS = 7;
 
 // Legal links — must be live URLs by App Store submission.
 // 2026-09-06 CRITICAL FIX: thesweatlocker.app doesn't resolve — App Store
@@ -64,10 +67,10 @@ export const Paywall: React.FC<Props> = ({ visible, onDismiss, triggerFeature })
   const annualPkg = currentOffering?.availablePackages.find(p => p.packageType === 'ANNUAL');
 
   const monthlyPrice = monthlyPkg?.product?.priceString || '$14.99';
-  const annualPrice = annualPkg?.product?.priceString || '$99.00';
-  const annualPerMonth = annualPkg?.product?.price ? `$${(annualPkg.product.price / 12).toFixed(2)}/mo` : '$8.25/mo';
+  const annualPrice = annualPkg?.product?.priceString || '$119.99';
+  const annualPerMonth = annualPkg?.product?.price ? `$${(annualPkg.product.price / 12).toFixed(2)}/mo` : '$10.00/mo';
 
-  // 3-day free trial is configured as an introductoryPrice in App Store Connect
+  // 7-day free trial is configured as an introductoryPrice in App Store Connect
   const hasTrial = monthlyPkg?.product?.introPrice || annualPkg?.product?.introPrice;
 
   const handlePurchase = async () => {
@@ -133,7 +136,7 @@ export const Paywall: React.FC<Props> = ({ visible, onDismiss, triggerFeature })
           <PlanCard
             selected={selected === 'annual'}
             onPress={() => setSelected('annual')}
-            badge="BEST VALUE • SAVE 45%"
+            badge="BEST VALUE • SAVE 33%"
             title="Annual"
             price={annualPrice}
             sub={`${annualPerMonth} • billed yearly`}
@@ -143,7 +146,7 @@ export const Paywall: React.FC<Props> = ({ visible, onDismiss, triggerFeature })
             onPress={() => setSelected('monthly')}
             title="Monthly"
             price={`${monthlyPrice}/mo`}
-            sub={hasTrial ? '3-day free trial' : 'Cancel anytime'}
+            sub={hasTrial ? `${TRIAL_DAYS}-day free trial` : 'Cancel anytime'}
           />
 
           {/* CTA */}
@@ -157,7 +160,7 @@ export const Paywall: React.FC<Props> = ({ visible, onDismiss, triggerFeature })
               <ActivityIndicator color="#000" />
             ) : (
               <Text style={styles.ctaText}>
-                {hasTrial ? 'Start 3-Day Free Trial' : 'Subscribe'}
+                {hasTrial ? `Start ${TRIAL_DAYS}-Day Free Trial` : 'Subscribe'}
               </Text>
             )}
           </TouchableOpacity>
@@ -165,7 +168,7 @@ export const Paywall: React.FC<Props> = ({ visible, onDismiss, triggerFeature })
           {/* Cancellation copy + legal */}
           <Text style={styles.cancelCopy}>
             {hasTrial
-              ? `Free for 3 days, then ${selected === 'annual' ? annualPrice + '/year' : monthlyPrice + '/month'}. Cancel anytime in Settings.`
+              ? `Free for ${TRIAL_DAYS} days, then ${selected === 'annual' ? annualPrice + '/year' : monthlyPrice + '/month'}. Cancel anytime in Settings.`
               : 'Cancel anytime in Settings.'}
           </Text>
 
