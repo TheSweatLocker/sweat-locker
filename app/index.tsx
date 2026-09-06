@@ -14717,8 +14717,8 @@ setJerryHistory(prev => {
                 // 2026-09-05 SOURCE OF TRUTH: for 'sharp' key, prefer
                 // surface_records.sharp_card (single authoritative row that
                 // reconciles Sharp Card display + record chip + Receipts).
-                // Falls back to legacy 'sharp' surface if sharp_card missing
-                // (backfill lag or older date range).
+                // Falls back to legacy 'sharp' surface, then sport-specific
+                // sides key (e.g., ncaaf_sides, nfl_sides).
                 if (key === 'sharp') {
                   const cardRec = surfaceRecords[`${sport}|sharp_card|${winKey}`];
                   if (cardRec) {
@@ -14730,16 +14730,29 @@ setJerryHistory(prev => {
                       hasData: (w+l) > 0,
                     };
                   }
-                }
-                if (key === 'prop') {
-                  // sharp_card already includes props — when we prefer sharp_card
-                  // above for 'sharp', return empty for 'prop' so heroU doesn't
-                  // double-count. Fall back to legacy only if sharp_card missing.
-                  const cardRec = surfaceRecords[`${sport}|sharp_card|${winKey}`];
-                  if (cardRec) {
-                    return {units: 0, wins: 0, losses: 0, hitPct: 0, hasData: false};
+                  // 2026-09-06 sport-specific fallback: NCAAF has 'ncaaf_sides'
+                  // surface (from compute_surface_records ncaaf primary_play
+                  // aggregator), NFL will have 'nfl_sides' once Week 1 grades.
+                  // Prior code returned no data → NCAAF/NFL sharp tile blank
+                  // even though we have 32-15-1 NCAAF record.
+                  const sidesKey = `${sport}_sides`.toLowerCase();
+                  const sidesRec = surfaceRecords[`${sport}|${sidesKey}|${winKey}`];
+                  if (sidesRec) {
+                    const w = sidesRec.wins||0, l = sidesRec.losses||0;
+                    return {
+                      units: Number(sidesRec.units_net) || 0,
+                      wins: w, losses: l,
+                      hitPct: w+l > 0 ? (w/(w+l))*100 : 0,
+                      hasData: (w+l) > 0,
+                    };
                   }
                 }
+                // 2026-09-06 prop card fix: user wants standalone prop record
+                // visible in Receipts. Prior code returned {hasData: false}
+                // whenever sharp_card existed (double-count guard), which
+                // hid the prop track record entirely. Now: return real prop
+                // record from surface_records['sport|prop|winKey'] directly.
+                // MLB prop today: 1179-840 lifetime, +113u net.
                 const rec = surfaceRecords[`${sport}|${key}|${winKey}`];
                 if (rec) {
                   const w = rec.wins||0, l = rec.losses||0;
@@ -17213,10 +17226,14 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                   now lives in the FAQ (Reading the Card + How Picks Work sections)
                   which is auto-current with the code. See the Help & FAQ card
                   right below. */}
-              {/* FAQ (2026-08-09) — navigates to app/faq.tsx */}
+              {/* FAQ (2026-08-09) — navigates to app/faq.tsx
+                  2026-09-06 fix: close Settings modal before pushing to /faq
+                  so the FAQ view isn't visually stacked BEHIND the modal.
+                  Prior behavior — modal stayed open, user had to X-out
+                  settings just to see the FAQ they'd tapped. */}
               <TouchableOpacity
                 style={[styles.card,{marginBottom:12,flexDirection:'row',alignItems:'center',justifyContent:'space-between'}]}
-                onPress={()=>router.push('/faq')}
+                onPress={()=>{ setSettingsModal(false); setTimeout(()=>router.push('/faq'), 200); }}
                 activeOpacity={0.7}
               >
                 <View>
