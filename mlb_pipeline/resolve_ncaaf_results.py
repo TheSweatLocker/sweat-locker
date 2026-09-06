@@ -134,6 +134,24 @@ def _fold_name(name: str) -> str:
     n = _u.normalize('NFKD', name)
     n = ''.join(c for c in n if not _u.combining(c))
     n = n.lower().replace("'", '').replace('-', ' ')
+    # 2026-09-06: canonical rewrite BEFORE mascot-strip so abbreviations
+    # and renamed teams map to the canonical form used by CFBD/ESPN. Fixes
+    # 4-of-9 Week 1 ungraded games (FIU, LIU Sharks, Youngstown St
+    # Penguins, Houston Baptist Huskies renamed to Houston Christian).
+    # Add here rather than in a separate lookup so the resolver stays
+    # DB-independent.
+    _NCAAF_ALIASES = {
+        'fiu': 'florida international',
+        'liu': 'long island university',
+        'liu sharks': 'long island university sharks',
+        'ulm': 'louisiana monroe',
+        'ul monroe': 'louisiana monroe',
+        'houston baptist': 'houston christian',
+        'houston baptist huskies': 'houston christian huskies',
+        'youngstown st': 'youngstown state',
+        'youngstown st penguins': 'youngstown state penguins',
+    }
+    n = _NCAAF_ALIASES.get(n, n)
     # Strip mascot suffix words — order matters (multi-word first).
     _MASCOTS = ['delta devils', 'red raiders', 'red wolves', 'blue devils',
                 'golden bears', 'crimson tide', 'green wave', 'yellow jackets',

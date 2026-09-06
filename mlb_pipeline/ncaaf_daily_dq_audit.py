@@ -133,6 +133,53 @@ def audit(days: int = 7, dry_run: bool = False) -> None:
             findings.append(('total_line_vs_proj_gap', f'{g["away_team"]} @ {g["home_team"]}',
                              {'game_id': g['game_id'], 'line': l, 'proj': p, 'gap': abs(l - p)}))
 
+    # (5) 2026-09-06 phantom-game detector. If our context has a game
+    # scheduled today/past but neither team appears in ESPN's post-state
+    # scoreboard for that date, the Odds API line is likely phantom
+    # (game moved, cancelled, or opponents mis-parsed). Two 9/5 phantoms
+    # slipped through Week 1 (Cheyney @ Kennesaw St — actually West
+    # Georgia; Oklahoma St @ Colorado St — never played each other).
+    # Only run for past dates so live games don't false-positive.
+    from datetime import date as _d
+    today_d = _d.fromisoformat(today.isoformat())
+    past_rows = [g for g in rows if g.get('game_date') and g['game_date'] < today.isoformat()]
+    if past_rows:
+        try:
+            from collections import defaultdict as _dd
+            by_date = _dd(list)
+            for g in past_rows: by_date[g['game_date']].append(g)
+            for gdate, games in by_date.items():
+                espn_yyyymmdd = gdate.replace('-','')
+                try:
+                    r = requests.get(
+                        f'https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?limit=200&dates={espn_yyyymmdd}',
+                        timeout=15)
+                    espn_names = set()
+                    for ev in r.json().get('events') or []:
+                        for c in (ev.get('competitions') or [{}])[0].get('competitors') or []:
+                            for k in ('displayName','shortDisplayName','name'):
+                                v = (c.get('team') or {}).get(k)
+                                if v: espn_names.add(v)
+                    if not espn_names: continue
+                    espn_norm = {_strip_mascot(n).lower() for n in espn_names} | {n.lower() for n in espn_names}
+                    for g in games:
+                        h = (g.get('home_team') or '').lower()
+                        a = (g.get('away_team') or '').lower()
+                        h_hit = any(h in en or en in h for en in espn_norm if en)
+                        a_hit = any(a in en or en in a for en in espn_norm if en)
+                        if not h_hit and not a_hit:
+                            findings.append(('phantom_game', f'{g["away_team"]} @ {g["home_team"]}',
+                                             {'game_id': g['game_id'], 'date': gdate,
+                                              'note': 'neither team in ESPN scoreboard'}))
+                        elif not h_hit or not a_hit:
+                            findings.append(('opponent_mismatch', f'{g["away_team"]} @ {g["home_team"]}',
+                                             {'game_id': g['game_id'], 'date': gdate,
+                                              'note': f'home_in_espn={h_hit} away_in_espn={a_hit}'}))
+                except Exception as _e:
+                    pass
+        except Exception as _e:
+            pass
+
     # Report
     by_type: defaultdict = defaultdict(list)
     for kind, label, meta in findings:
