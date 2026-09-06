@@ -46,10 +46,14 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 
 
 # Badge threshold — patterns below this don't fire the chip.
-# Kept generous (n=15) since we're pre-launch with thin history;
-# revisit once we have >=90d of graded games per pattern.
+# 2026-09-06: relaxed 65 → 60 for launch. 60% at -110 is ~+9% ROI —
+# still a real edge and enough to surface a Vault chip. Sparse-coverage
+# risk (some days no matches) is accepted per user directive; we'd
+# rather show nothing than surface below-break-even patterns.
+# n=15 unchanged — small-sample noise dominates below that regardless
+# of point-estimate hit rate.
 MIN_N = 15
-MIN_HIT_PCT = 65.0
+MIN_HIT_PCT = 60.0
 
 # 2026-09-01 GUARDRAILS:
 # - Skip a pattern if its stats are older than this — prevents rendering
@@ -58,7 +62,10 @@ STALE_HOURS = 36
 # - Wilson lower-bound floor. A pattern's TRUE hit rate could be as low
 #   as this given sample noise. Below 55% (still positive edge over 50%)
 #   we don't render the chip even if point estimate >= 65%.
-MIN_WILSON_LOWER = 0.55
+MIN_WILSON_LOWER = 0.52  # 2026-09-06: relaxed 0.55→0.52 alongside MIN_HIT_PCT drop.
+# 0.52 = break-even at -110 juice. Anything below actively loses on -110 stakes
+# so it's still a real floor; just doesn't require the extra +3pp cushion the
+# 0.55 floor did.
 # - Reject if EV is < break-even at -110 juice. Prevents shipping edges
 #   that look positive but don't cover book vig. -110 = 52.38% break-even.
 MIN_HIT_PCT_ABOVE_JUICE = 52.4

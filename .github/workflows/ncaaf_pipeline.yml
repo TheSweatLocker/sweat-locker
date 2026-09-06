@@ -613,3 +613,21 @@ jobs:
         run: |
           cd mlb_pipeline
           python compute_signal_patterns.py --sport NCAAF || echo "NCAAF signal patterns failed"
+
+      # 2026-09-06: Vault Match parity with MLB + NFL pipelines. Computes
+      # hit rates on PATTERN_CATALOG entries (17 NCAAF patterns) from
+      # graded ncaaf_game_context+results merge, then attaches surviving
+      # patterns (hit >= 60%, n >= 15, Wilson lower >= 52%) to today's
+      # game_context rows as matched_patterns[]. App renderer reads that
+      # field. Non-fatal — sparse coverage is expected early in the season
+      # per user directive (2026-09-06).
+      - name: NCAAF Vault Match compute + attach
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_sport_patterns.py --sport NCAAF || echo "NCAAF vault patterns failed (non-fatal)"
+          python attach_vault_matches.py --sport NCAAF || echo "NCAAF vault attach failed (non-fatal)"
