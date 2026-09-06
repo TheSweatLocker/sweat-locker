@@ -746,6 +746,35 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
     row['sweat_score'] = score
     row['sweat_tier'] = sweat_tier(score)
 
+    # 2026-09-06 cohort_tags — mirror nfl_game_context.compute_cohort_tags
+    # so NCAAF games get situational badges rendered on the app
+    # (compute_cohort_tags fields → chip renderer in GameDetailV2). Yesterday-
+    # audit (9/5) found 0/86 NCAAF games had cohort_tags populated even
+    # though splits + confluence were fine — bare tags is why users saw
+    # zero situational badges. NCAAF equivalents of NFL's tag set:
+    tags = []
+    _sp = row.get('close_spread'); _tot = row.get('close_total')
+    try: _sp = float(_sp) if _sp is not None else None
+    except (TypeError, ValueError): _sp = None
+    try: _tot = float(_tot) if _tot is not None else None
+    except (TypeError, ValueError): _tot = None
+    # Home dog getting big points (universal chalk-fade situation)
+    if _sp is not None and _sp >= 7.0:
+        tags.append('ncaaf_heavy_home_dog')
+    # Heavy home favorite (FBS-vs-FCS chalk pattern from Week 1 audit)
+    if _sp is not None and _sp <= -20.0:
+        tags.append('ncaaf_heavy_home_fav')
+    # Home favorite (any margin)
+    if _sp is not None and _sp < 0:
+        tags.append('ncaaf_home_fav')
+    # Big total game (over 60 is a shootout on the CFB scale)
+    if _tot is not None and _tot >= 60:
+        tags.append('ncaaf_shootout')
+    # Low total game
+    if _tot is not None and _tot <= 42:
+        tags.append('ncaaf_grinder')
+    row['cohort_tags'] = tags
+
     # 2026-08-16 CUTOVER: ensemble_scorer v2 authority (NCAAF).
     ensemble_pp = None
     try:
