@@ -191,6 +191,74 @@ def _prop_team_matches(player_team: str | None, matchup: str | None) -> bool:
     return short in m or team in m
 
 
+# ─── 2026-09-06 PROP PUBLISHABILITY GATE (universal) ───────────────────
+# Root cause of 9/5 Sharp Card promotion bug: props that the pipeline
+# itself flagged as unpublishable (via _coverage_kill_gate,
+# _playbook_prop_gate=NO_VALIDATED_SIGNALS, or _lr_tier_raw disagreeing
+# with the stored tier) leaked onto the card as PRIME. Root cause was
+# tier-only filtering ignoring the signal-quality gates that
+# apply_refit_verdict_override.py and _demote_coverage_tier() set.
+#
+# This helper is the single source of truth for "is a prop publishable
+# to the user?" — used by every prop composer (MLB today, NFL/NCAAF as
+# they wire in). Any surface that shows props to users should call this,
+# not rely on `tier` alone (tier can drift after signal-quality gates
+# run).
+_UNPUBLISHABLE_PLAYBOOK_GATES = {'NO_VALIDATED_SIGNALS', 'ANTI_VALIDATED'}
+
+
+def _is_prop_publishable(prop: dict) -> tuple[bool, str]:
+    """Returns (publishable, reason). False means SKIP for user surface."""
+    sig = prop.get('signals') or {}
+    if isinstance(sig, str):
+        import json as _json
+        try: sig = _json.loads(sig)
+        except: sig = {}
+    if not isinstance(sig, dict): sig = {}
+
+    # Hard kill: refit override tagged this as unpublishable coverage stub
+    kill = sig.get('_coverage_kill_gate')
+    if kill and str(kill).lower() not in ('false', '0', 'no', ''):
+        return False, f'coverage_kill_gate={kill}'
+
+    # Hard kill: playbook gate says no validated signals
+    pg = sig.get('_playbook_prop_gate') or ''
+    if pg in _UNPUBLISHABLE_PLAYBOOK_GATES:
+        return False, f'playbook_gate={pg}'
+
+    # Tier-drift check: if LR says a lower tier than the stored `tier`,
+    # trust LR. This catches props whose tier didn't get demoted before
+    # sharp card composed them (race between generate_props → sharp_card
+    # and apply_refit_verdict_override).
+    lr_tier = (sig.get('_lr_tier_raw') or '').upper()
+    stored = (prop.get('tier') or '').upper()
+    rank = {'PRIME': 3, 'STRONG': 2, 'LEAN': 1, 'SKIP': 0}
+    if lr_tier in rank and stored in rank and rank[lr_tier] < rank[stored]:
+        return False, f'lr_tier_drift lr={lr_tier} stored={stored}'
+
+    return True, 'ok'
+
+
+def _effective_prop_tier(prop: dict) -> str | None:
+    """Return the MORE CONSERVATIVE of prop.tier and signals._lr_tier_raw.
+    Guards against tier drift by never marketing a prop above what LR
+    actually said. Used at composition time so 'PRIME' on Sharp Card
+    always means LR-verified PRIME.
+    """
+    stored = (prop.get('tier') or '').upper()
+    sig = prop.get('signals') or {}
+    if isinstance(sig, str):
+        import json as _json
+        try: sig = _json.loads(sig)
+        except: sig = {}
+    if not isinstance(sig, dict): return stored or None
+    lr = (sig.get('_lr_tier_raw') or '').upper()
+    rank = {'PRIME': 3, 'STRONG': 2, 'LEAN': 1, 'SKIP': 0}
+    if lr in rank and stored in rank:
+        return lr if rank[lr] < rank[stored] else stored
+    return stored or None
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # FETCH LAYER
 # ═══════════════════════════════════════════════════════════════════════
@@ -215,7 +283,7 @@ def _fetch_all(today: str) -> dict:
     out['mlb_props'] = _get(f'{SB}/rest/v1/mlb_pipeline_props',
                             params={'select': 'player_name,player_team,matchup,prop_type,prop_line,'
                                     'direction,tier,conviction,refit_conviction,book_line,'
-                                    'book_over_odds,book_under_odds,game_id',
+                                    'book_over_odds,book_under_odds,game_id,signals',
                                     'game_date': f'eq.{today}',
                                     'tier': 'in.(PRIME,STRONG,LEAN)'})
     # 2026-09-05 FIX: NCAAF/NFL use `close_home_ml`/`close_away_ml`; MLB
@@ -284,10 +352,22 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
         k = f"{d.get('player_name')}|{d.get('prop_type')}|{d.get('direction')}|{d.get('prop_line')}"
         playbook_by_key[k] = d
     picks = []
+    # 2026-09-06 gate: track why props got dropped so we can spot silent
+    # regressions (e.g., pipeline flooding kill_gate flags on real signal).
+    dropped = {'coverage_kill': 0, 'playbook_gate': 0, 'lr_tier_drift': 0}
     for p in mlb_props:
+        # ── Hard gate: publishability (signal-quality flags trump tier) ──
+        publishable, reason = _is_prop_publishable(p)
+        if not publishable:
+            if 'coverage_kill' in reason: dropped['coverage_kill'] += 1
+            elif 'playbook_gate' in reason: dropped['playbook_gate'] += 1
+            elif 'lr_tier_drift' in reason: dropped['lr_tier_drift'] += 1
+            continue
         pb_key = f"{p.get('player_name')}|{p.get('prop_type')}|{p.get('direction')}|{p.get('prop_line')}"
         pb = playbook_by_key.get(pb_key)
-        effective_tier = _resolve_tier(p.get('tier'),
+        # Tier: conservative of stored + LR raw, then playbook resolve
+        base_tier = _effective_prop_tier(p) or p.get('tier')
+        effective_tier = _resolve_tier(base_tier,
                                         pb.get('playbook_tier') if pb else None,
                                         pb.get('playbook_side') if pb else None)
         if not _is_ps(effective_tier): continue
@@ -311,6 +391,9 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
             'playbook_lifted': PROP_PLAYBOOK_ENABLED and pb and pb.get('playbook_tier')
                                 and effective_tier != p.get('tier'),
         })
+    if any(dropped.values()):
+        print(f'  ⛔ Prop gate dropped: coverage_kill={dropped["coverage_kill"]} '
+              f'playbook_gate={dropped["playbook_gate"]} lr_tier_drift={dropped["lr_tier_drift"]}')
     return picks
 
 
