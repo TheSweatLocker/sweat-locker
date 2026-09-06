@@ -166,9 +166,34 @@ def scrape_top100() -> list[dict]:
     return out
 
 
+# 2026-09-06 confirmed Week 1 starter overrides. "Highest Madden OVR"
+# alone misses veteran signings + rookies beating higher-OVR incumbents.
+# Verified via ESPN/NFL.com/SI/Yahoo depth charts before Week 1 kickoff.
+# Post-launch: replace with an ESPN depth-chart pull that auto-updates
+# through the season. For now, this table gets us the Week 1 starters
+# correctly; injuries mid-season will require manual update or ESPN pull.
+STARTER_QB_OVERRIDE = {
+    'IND':  'Daniel Jones',       # named starter over Richardson
+    'NYJ':  'Geno Smith',         # traded from SEA
+    'SEA':  'Sam Darnold',        # signed from MIN
+    'MIA':  'Malik Willis',       # signed 3yr/$67.5M; Tua released
+    'LV':   'Kirk Cousins',       # starter, Mendoza QB2
+    'NO':   'Tyler Shough',       # rookie starter
+    'MIN':  'Kyler Murray',       # if traded from ARI (verify roster)
+    'PIT':  'Aaron Rodgers',      # if signed by PIT (verify roster)
+    'ARI':  'Jacoby Brissett',    # if Kyler traded away
+}
+
+
 def scrape_starter_qbs() -> list[dict]:
     """Fetch each of 32 team pages, extract all QBs, pick highest OVR
-    per team as the starter. Returns list of {team_code, player_name, ovr}."""
+    per team as the starter. Returns list of {team_code, player_name, ovr}.
+
+    2026-09-06: honors STARTER_QB_OVERRIDE for teams where the actual
+    starter isn't the highest-OVR QB (veteran signings, rookie starts).
+    Falls through to highest-OVR heuristic when no override applies OR
+    when the override name isn't found in the team's roster page.
+    """
     import time
     out = []
     for code, slug in TEAM_CODE_TO_SLUG.items():
@@ -210,8 +235,25 @@ def scrape_starter_qbs() -> list[dict]:
         if not qbs:
             print(f'  ⚠ {code} ({slug}): no QBs parsed')
             time.sleep(0.5); continue
-        # Highest OVR = starter
-        starter = max(qbs, key=lambda q: q['ovr'])
+        # Apply override if set + player found in roster
+        override_name = STARTER_QB_OVERRIDE.get(code)
+        starter = None
+        if override_name:
+            for q in qbs:
+                if q['name'].lower().strip() == override_name.lower().strip():
+                    starter = q
+                    break
+            if starter is None:
+                # Fuzzy: last-name match (Jones → Daniel Jones)
+                override_last = override_name.split()[-1].lower()
+                for q in qbs:
+                    if q['name'].lower().strip().endswith(override_last):
+                        starter = q; break
+            if starter is None:
+                print(f'  ⚠ {code}: override {override_name!r} not in roster, using highest OVR')
+        if starter is None:
+            # Fallback — highest OVR = starter
+            starter = max(qbs, key=lambda q: q['ovr'])
         out.append({'team_code': code, 'player_name': starter['name'], 'ovr': starter['ovr']})
         time.sleep(0.5)  # polite crawl
     return out

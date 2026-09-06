@@ -39,8 +39,13 @@ const PACKAGE_MONTHLY = '$rc_monthly';   // RevenueCat standard identifier
 const PACKAGE_ANNUAL = '$rc_annual';
 
 // Legal links — must be live URLs by App Store submission.
-const TERMS_URL = 'https://thesweatlocker.app/terms';
-const PRIVACY_URL = 'https://thesweatlocker.app/privacy';
+// 2026-09-06 CRITICAL FIX: thesweatlocker.app doesn't resolve — App Store
+// reviewer would hit DNS failure and reject on 5.1.1. Real ToS/Privacy
+// content lives at thesweatlocker.com as anchor sections on the homepage.
+// Post-launch: consider standing up a subdomain (e.g., docs.thesweatlocker.com)
+// with dedicated /terms + /privacy paths.
+const TERMS_URL = 'https://thesweatlocker.com/#terms';
+const PRIVACY_URL = 'https://thesweatlocker.com/#privacy';
 
 type Props = {
   visible: boolean;

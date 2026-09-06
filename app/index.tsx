@@ -11364,11 +11364,11 @@ setJerryHistory(prev => {
               <Text style={{color:THEME.textMuted,fontSize:11,textAlign:'center',lineHeight:16,paddingHorizontal:8}}>
                 By tapping below, you confirm you're of legal age and agree to our{' '}
                 <Text style={{color:THEME.accent,textDecorationLine:'underline'}}
-                      onPress={()=>Linking.openURL('https://sweatlocker.app/terms')}>
+                      onPress={()=>Linking.openURL('https://thesweatlocker.com/#terms')}>
                   Terms of Service
                 </Text>{' '}and{' '}
                 <Text style={{color:THEME.accent,textDecorationLine:'underline'}}
-                      onPress={()=>Linking.openURL('https://sweatlocker.app/privacy')}>
+                      onPress={()=>Linking.openURL('https://thesweatlocker.com/#privacy')}>
                   Privacy Policy
                 </Text>.
               </Text>
@@ -11400,8 +11400,8 @@ setJerryHistory(prev => {
                   const acceptedAt = new Date().toISOString();
                   const consentPayload = {
                     accepted_at: acceptedAt,
-                    terms_url: 'https://sweatlocker.app/terms',
-                    privacy_url: 'https://sweatlocker.app/privacy',
+                    terms_url: 'https://thesweatlocker.com/#terms',
+                    privacy_url: 'https://thesweatlocker.com/#privacy',
                   };
                   await AsyncStorage.setItem('sweatlocker_onboarded','true');
                   await AsyncStorage.setItem('sweatlocker_consent_v1',
