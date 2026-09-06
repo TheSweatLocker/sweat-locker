@@ -45,7 +45,14 @@ try {
   }
 }
 
-const ENTITLEMENT_ID = 'pro';
+// 2026-09-06 entitlement ID matches whatever's in the RC dashboard —
+// the string RC returns in customerInfo.entitlements.active[<id>] is
+// exact-match, case-sensitive, spaces included. This one was created
+// with the display name as the identifier ("The Sweat Locker Pro")
+// and RC locks identifiers after creation, so easier to align the code
+// than delete + recreate the entitlement. If you ever DO recreate,
+// prefer a lowercase-underscore convention like 'pro' or 'sweat_pro'.
+const ENTITLEMENT_ID = 'The Sweat Locker Pro';
 
 type SubscriptionContextValue = {
   isPro: boolean;
