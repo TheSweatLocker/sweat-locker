@@ -100,6 +100,15 @@ FOOTBALL_CHALK_ML_JUICE_MAX = -1500        # if picked ML <= this, cap it
 # Historical volume was 100+; new cap ~50 balances "sharp discipline"
 # with "cross-sport coverage on Sat when 4 sports are live."
 SHARP_CARD_ITEM_CAP = 50
+
+# (4) 2026-09-06 juice cap on SOLE game picks (all sports). ML picks
+# juicier than this get auto-swapped to the spread side of the same
+# game so users don't stake 2u to win 0.5u on -400 chalk. Ledger
+# (chalk parlays, teasers) intentionally keeps heavier chalks — the
+# compounding math on a 3-leg parlay of -300 legs still pays +170,
+# so a juiced fav is fine as a parlay leg, not as a sole play.
+SOLE_PICK_ML_JUICE_MAX = -300
+LEDGER_ML_JUICE_MAX    = -450  # ledger-only; documented for the composer that builds parlays
 SHARP_CARD_PER_SPORT_MAX = {
     'MLB':   25,   # daily bread — sides + props
     'NCAAF': 12,   # Sat slate is huge, top 12 STRONGs
@@ -294,6 +303,25 @@ def _compose_mlb_sides(mlb_ctx: list) -> list[dict]:
         else:  # ml
             line = None
             pick = raw_label or f'{g.get("home_team") if side=="HOME" else g.get("away_team")} ML'
+        # (5) 2026-09-06 juice cap on MLB sole ML picks too (parallel to
+        # _compose_other_sport_sides). Swap to spread if ML < -300 and
+        # close_spread present. MLB spread = run line ±1.5 so treat
+        # differently — swap to RL of the same team.
+        juice_swapped = False
+        if pp_type == 'ml' and side_ml is not None:
+            try:
+                if float(side_ml) < SOLE_PICK_ML_JUICE_MAX and g.get('close_spread') is not None:
+                    sp = float(g.get('close_spread'))
+                    rl_line = -sp if side == 'HOME' else sp
+                    team = g.get('home_team') if side == 'HOME' else g.get('away_team')
+                    sign = '+' if rl_line > 0 else ''
+                    pp_type = 'rl'
+                    pick = f'{team} {sign}{rl_line:g}'
+                    line = rl_line
+                    side_ml = -110  # RL odds default
+                    juice_swapped = True
+            except (TypeError, ValueError):
+                pass
         picks.append({
             'sport': 'MLB',
             'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
@@ -364,11 +392,18 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
 def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     is_football = sport in ('NCAAF', 'NFL')
     tier_gate = _is_ps if (is_football and not FOOTBALL_INCLUDE_LEAN) else _is_any_tier
-    dropped_lean = dropped_chalk = 0
+    dropped_lean = dropped_chalk = dropped_pass = 0
     picks = []
     for g in rows:
         pp = g.get('primary_play') or {}
         if not isinstance(pp, dict): continue
+        # 2026-09-06 sanitize: primary_play.type='pass' means Jerry chose
+        # NO ACTION. Don't publish these — they'd render as broken items
+        # on the sharp card. If we want a "no plays tonight" empty state
+        # that's handled at render, not composition.
+        if (pp.get('type') or '').lower() == 'pass':
+            dropped_pass += 1
+            continue
         tier = pp.get('tier')
         # (1) LEAN gate for football
         if not tier_gate(tier):
@@ -390,23 +425,61 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             except (TypeError, ValueError):
                 pass
         side_ml = home_ml if side == 'HOME' else away_ml if side == 'AWAY' else None
-        units = _units_for_pick(pp.get('tier'), pp.get('type') or 'ml',
-                                 side_ml if pp.get('type') == 'ml' else None,
+        pick_type = pp.get('type') or 'ml'
+        pick_label = pp.get('label') or '—'
+        pick_line  = pp.get('line')
+        pick_odds  = side_ml if pick_type == 'ml' else None
+
+        # (5) 2026-09-06 sole-pick juice cap. If the primary_play is an ML
+        # juicier than SOLE_PICK_ML_JUICE_MAX, auto-swap to the spread
+        # side of the same team so users don't stake 2u to win 0.5u.
+        # Ledger surface builds its own composer and keeps heavier chalks.
+        # Requires close_spread to be present; else we skip the pick
+        # rather than publish an over-juiced ML.
+        juice_swapped = False
+        if pick_type == 'ml' and side_ml is not None:
+            try:
+                if float(side_ml) < SOLE_PICK_ML_JUICE_MAX:
+                    close_spread = g.get('close_spread')
+                    if close_spread is not None:
+                        # Store convention: our `close_spread` is stored
+                        # away-perspective (positive = home favored by
+                        # that many). Compute the pick-side line.
+                        sp = float(close_spread)
+                        spread_line = -sp if side == 'HOME' else sp
+                        team = g.get('home_team') if side == 'HOME' else g.get('away_team')
+                        sign = '+' if spread_line > 0 else ''
+                        pick_type = 'spread'
+                        pick_label = f'{team} {sign}{spread_line:g}'
+                        pick_line = spread_line
+                        pick_odds = -110
+                        juice_swapped = True
+                    else:
+                        # No spread available — skip rather than publish over-juiced ML
+                        continue
+            except (TypeError, ValueError):
+                pass
+
+        units = _units_for_pick(pp.get('tier'), pick_type,
+                                 pick_odds,
                                  side_price_american=side_ml)
         if units <= 0: continue
         picks.append({
             'sport': sport,
             'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
             'tier': pp.get('tier'),
-            'pick': pp.get('label') or '—',
-            'type': pp.get('type') or 'ml',
-            'reason': pp.get('sub') or '',
-            'odds': side_ml if pp.get('type') == 'ml' else None,
-            'line': pp.get('line'),
+            'pick': pick_label,
+            'type': pick_type,
+            'reason': (pp.get('sub') or '') + (' [juice-cap swap: ML→spread]' if juice_swapped else ''),
+            'odds': pick_odds,
+            'line': pick_line,
             'units': units,
+            'juice_swapped': juice_swapped,
         })
-    if is_football and (dropped_lean or dropped_chalk):
-        print(f'  {sport} discipline drops: LEAN={dropped_lean}  chalky-STRONG={dropped_chalk}')
+    if is_football and (dropped_lean or dropped_chalk or dropped_pass):
+        print(f'  {sport} discipline drops: LEAN={dropped_lean}  chalky-STRONG={dropped_chalk}  no-play={dropped_pass}')
+    elif dropped_pass:
+        print(f'  {sport} no-play drops: {dropped_pass}')
     return picks
 
 
