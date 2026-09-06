@@ -34,17 +34,20 @@ UPDATE public.sport_registry SET
 WHERE sport = 'NCAAF';
 
 -- Also clear any lingering nfl_game_context rows still tagged
--- stats_source='preseason' but with commence_time in the regular season
+-- stats_source='preseason' but with game_date in the regular season
 -- (>= 2026-09-09 = TNF opener). Next NFL pipeline run will re-populate
 -- these rows with the correct stats_source ('current' or
 -- 'prior_season_regressed'). Nulling to 'current' as a safe default
 -- so the app doesn't render the (already-killed) preseason badge in
 -- the interim, and so downstream skip-rules that gate on preseason
 -- stop firing on regular-season games.
+--
+-- Column: game_date (DATE), NOT commence_time. The Odds API cache uses
+-- commence_time but nfl_game_context stores its own game_date + kickoff_utc.
 UPDATE public.nfl_game_context
    SET stats_source = 'current'
  WHERE stats_source = 'preseason'
-   AND commence_time >= '2026-09-09'::timestamptz;
+   AND game_date >= '2026-09-09'::date;
 
 -- Force PostgREST schema reload so the app picks up the new values on next
 -- fetch (no app resubmit needed).
