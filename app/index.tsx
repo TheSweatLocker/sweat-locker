@@ -17,6 +17,7 @@ import TierChip from './components/TierChip';
 import LineMovementTab from './components/LineMovementTab';
 import AdminNoticeBanner from './components/AdminNoticeBanner';
 import { useSubscription } from './contexts/SubscriptionContext';
+import { Paywall } from './components/Paywall';
 import { Sport } from './lib/sportPeriods';
 import { abbrev as teamAbbrev } from './lib/teamAbbrev';
 
@@ -1707,8 +1708,69 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
   );
 };
 
+  // 2026-09-06 Paywall preview card — inline "this tab is Pro" panel
+  // rendered in place of Pro tab content for free users. Shows what's
+  // behind the wall + tier bullets + a Start Trial CTA. Preserves value
+  // awareness ("here's what I'm missing") without forcing the modal on
+  // every tap. Tapping the CTA opens the full <Paywall> modal.
+  //
+  // Style intentionally matches the rest of the app card language
+  // (surface bg, accent border, hero icon) so it reads as an unlock
+  // hint, not an interstitial ad.
+  const PaywallPreview: React.FC<{
+    icon: string; title: string; body: string;
+    bullets?: string[]; onUnlock: () => void;
+  }> = ({icon, title, body, bullets, onUnlock}) => (
+    <View style={{padding: 4}}>
+      <View style={{alignItems:'center', paddingTop: 24, paddingBottom: 12}}>
+        <Text style={{fontSize:56}}>{icon}</Text>
+      </View>
+      <View style={{backgroundColor: THEME.surface, borderRadius: 16, padding: 20, borderWidth: 1.5, borderColor: THEME.accent + '55', marginBottom: 12}}>
+        <View style={{alignItems:'center', marginBottom: 12}}>
+          <View style={{backgroundColor: THEME.accent + '22', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, marginBottom: 10}}>
+            <Text style={{color: THEME.accent, fontSize: 10, fontWeight: '800', letterSpacing: 1.5}}>SWEAT LOCKER PRO</Text>
+          </View>
+          <Text style={{color: THEME.text, fontSize: 20, fontWeight: '800', textAlign: 'center', marginBottom: 8}}>{title}</Text>
+          <Text style={{color: THEME.textDim, fontSize: 13, lineHeight: 19, textAlign: 'center'}}>{body}</Text>
+        </View>
+        {bullets && bullets.length > 0 && (
+          <View style={{gap: 8, marginTop: 8, marginBottom: 12}}>
+            {bullets.map((b, i) => (
+              <View key={i} style={{flexDirection: 'row', alignItems: 'flex-start', gap: 8}}>
+                <Text style={{color: THEME.accent, fontSize: 14, marginTop: 1}}>✓</Text>
+                <Text style={{color: THEME.textMuted, fontSize: 12, lineHeight: 18, flex: 1}}>{b}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+        <TouchableOpacity
+          onPress={onUnlock}
+          activeOpacity={0.85}
+          style={{backgroundColor: THEME.accent, borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 8}}>
+          <Text style={{color: '#000', fontWeight: '800', fontSize: 15}}>Start 7-Day Free Trial</Text>
+        </TouchableOpacity>
+        <Text style={{color: THEME.textDim, fontSize: 10, textAlign: 'center', marginTop: 8, lineHeight: 14}}>
+          Then $14.99/mo or $119.99/yr · cancel anytime in Settings
+        </Text>
+      </View>
+    </View>
+  );
+
   export default function App() {
   const router = useRouter();
+  // 2026-09-06 RevenueCat wire-up. isPro drives all paywall gates on
+  // Pro-tier tabs (Jerry / My Bets / Steam Room). isSubLoading == true
+  // while the SDK checks entitlements on cold-start; during that ~200ms
+  // window we render as free so we don't leak Pro content behind a race.
+  // paywallOpen controls the shared <Paywall> modal (bottom of tree).
+  // paywallTrigger names the surface that opened it (analytics + copy).
+  const { isPro, isLoading: isSubLoading } = useSubscription();
+  const [paywallOpen, setPaywallOpen] = useState(false);
+  const [paywallTrigger, setPaywallTrigger] = useState<string | undefined>(undefined);
+  const openPaywall = React.useCallback((trigger?: string) => {
+    setPaywallTrigger(trigger);
+    setPaywallOpen(true);
+  }, []);
   const [activeTab, setActiveTab] = useState('home');
   const [mybetsTab, setMybetsTab] = useState('picks');
   const [onboardingDone, setOnboardingDone] = useState(true);
@@ -12619,7 +12681,21 @@ setJerryHistory(prev => {
           </View>
         )}
 
-        {(activeTab==='picks'||(activeTab==='mybets'&&mybetsTab==='picks'))&&(
+        {(activeTab==='picks'||(activeTab==='mybets'&&mybetsTab==='picks')) && !isPro && !isSubLoading && (
+          <PaywallPreview
+            icon="🎯"
+            title="My Bets is Pro"
+            body="Log every pick, track CLV vs Hard Rock closing lines, build parlays from our tiered plays, and see stake-adjusted P/L in units or dollars."
+            bullets={[
+              'Track record with CLV vs the closing line',
+              'Parlay Builder from Sharp Card legs',
+              'Stake-adjusted P/L · units or dollars',
+              'Filter by sport, tier, or window',
+            ]}
+            onUnlock={() => openPaywall('mybets_tab')}
+          />
+        )}
+        {(activeTab==='picks'||(activeTab==='mybets'&&mybetsTab==='picks')) && (isPro || isSubLoading) && (
           <View>
             <View style={{flexDirection:'row',marginBottom:14,gap:0,backgroundColor:THEME.surfaceAlt,borderRadius:12,overflow:'hidden'}}>
               <TouchableOpacity style={{flex:1,paddingVertical:10,alignItems:'center',backgroundColor:mybetsTab==='picks'?THEME.surfaceAlt:'transparent'}} onPress={()=>setMybetsTab('picks')}>
@@ -14044,7 +14120,21 @@ setJerryHistory(prev => {
           </View>
         )}
 
-        {(activeTab==='trends'||activeTab==='jerry')&&(
+        {(activeTab==='trends'||activeTab==='jerry') && !isPro && !isSubLoading && (
+          <PaywallPreview
+            icon="🧠"
+            title="Jerry is a Pro feature"
+            body="Prop Jerry with real book prices + edge %, Daily Degen high-conviction picks, Dawg of the Day full read, and per-play analysis explaining WHY we back it."
+            bullets={[
+              'Prop Jerry — pitcher K/BB/ER + NFL passing/rushing/receiving',
+              'Daily Degen — highest-conviction plays across sports',
+              'Dawg of the Day — plus-money dog with full analysis',
+              'Per-play WHY panels + cohort hit rates',
+            ]}
+            onUnlock={() => openPaywall('jerry_tab')}
+          />
+        )}
+        {(activeTab==='trends'||activeTab==='jerry') && (isPro || isSubLoading) && (
           <View>
             <Text style={styles.pageTitle}>🧠 Jerry 🎤</Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14}}>
@@ -15503,7 +15593,21 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           </View>
         )}
 
-        {activeTab==='steam'&&(
+        {activeTab==='steam' && !isPro && !isSubLoading && (
+          <PaywallPreview
+            icon="💨"
+            title="The Steam Room is Pro"
+            body="The disciplined sub-tabs: Sharp Card curated ~4 sides + 3-5 props, Ladder streak-chase, Ledger daily P/L, and Line Movement tracker across every book."
+            bullets={[
+              'Sharp Card — curated 4 sides + 3-5 props · juice-adjusted',
+              'The Ladder — 1 pick/day · compound the wins',
+              'Ledger — daily P/L + teaser builder',
+              'Line Movement — real-time steam across every US book',
+            ]}
+            onUnlock={() => openPaywall('steam_tab')}
+          />
+        )}
+        {activeTab==='steam' && (isPro || isSubLoading) && (
           <View>
             <Text style={styles.pageTitle}>💨 The Steam Room</Text>
             <Text style={{color:THEME.textDim,fontSize:12,marginBottom:4}}>
@@ -18094,6 +18198,16 @@ const isMinimum = parseFloat(suggestedUnits) <= 0.5;
           </KeyboardAvoidingView>
         </View>
       </Modal>
+
+      {/* 2026-09-06 Shared Paywall modal — opened by any Pro-gated
+          surface via openPaywall(triggerFeature). Rendered last so it
+          layers on top of everything else. Global for the whole App
+          scope so all tab renders can trigger it uniformly. */}
+      <Paywall
+        visible={paywallOpen}
+        onDismiss={() => setPaywallOpen(false)}
+        triggerFeature={paywallTrigger}
+      />
     </View>
   );
 }
