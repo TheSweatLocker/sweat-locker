@@ -7524,16 +7524,35 @@ if(mkt.key === 'pitcher_props') {
       // separate refactor since fewer client rules apply there.
       if (sport.toUpperCase() === 'MLB') {
         const todayET = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
-        const {data: viewRows, error: viewErr} = await supabase
-          .from('v_mlb_props_publishable')
-          .select('*')
-          .eq('game_date', todayET)
-          .order('display_conviction', {ascending: false});
-        if (viewErr) {
-          console.log('[v_mlb_props_publishable] fetch error:', viewErr.message);
+        // 2026-09-06 bug fix: parallel-fetch prop_jerry_reads and merge as
+        // p.prop_jerry so the structured Prop Jerry panel (coverage pill +
+        // recent_form bar chart + why_bullets from render_sections) renders.
+        // Prior code returned view rows only, leaving prop.prop_jerry
+        // undefined → app fell to the "WHY WE BACK THIS" fallback bullets
+        // and never showed the graphs users expected.
+        const [viewRes, jerryRes] = await Promise.all([
+          supabase.from('v_mlb_props_publishable')
+            .select('*')
+            .eq('game_date', todayET)
+            .order('display_conviction', {ascending: false}),
+          supabase.from('prop_jerry_reads')
+            .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction,input_snapshot')
+            .eq('sport', 'MLB')
+            .eq('game_date', todayET),
+        ]);
+        if (viewRes.error) {
+          console.log('[v_mlb_props_publishable] fetch error:', viewRes.error.message);
           setPipelineMLBProps([]);
         } else {
-          setPipelineMLBProps(viewRows || []);
+          const jerryMap: Record<string, any> = {};
+          for (const r of (jerryRes.data || [])) {
+            jerryMap[`${r.game_id}|${r.player_name}|${r.prop_type}|${r.direction}`] = r;
+          }
+          const merged = (viewRes.data || []).map((p: any) => ({
+            ...p,
+            prop_jerry: jerryMap[`${p.game_id}|${p.player_name}|${p.prop_type}|${p.direction}`] || null,
+          }));
+          setPipelineMLBProps(merged);
         }
         setPipelineMLBLoading(false);
         setPipelineMLBFetched(true);
