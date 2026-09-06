@@ -17258,63 +17258,6 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                 </View>
                 <Text style={{color:THEME.accent,fontSize:20,marginLeft:8}}>↗</Text>
               </TouchableOpacity>
-              {/* Old inline text kept commented for reference — safe to delete post-launch.
-                  Deleted 2026-09-06 to prevent drift with website source of truth. */}
-              {false&&showPrivacy&&(
-                <Text style={{color:THEME.textDim,fontSize:12,lineHeight:20,marginTop:12}}>
-                  Note: "Hard Rock Bet" and the guitar logo are trademarks of the Seminole Tribe of Florida/Hard Rock Digital. Referenced for informational purposes only.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>WHO WE ARE{'\n'}</Text>
-                  The Sweat Locker is a pipeline-driven sports analytics application owned and operated by The Sweat Locker LLC, a veteran-owned business. Every result logged. Every miss explained. Contact us at: support@thesweatlocker.com{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>DATA WE COLLECT{'\n'}</Text>
-                  Data you provide:{'\n'}
-                  - Bet logs, picks, and parlay history you manually enter{'\n'}
-                  - Sport preferences and unit size settings{'\n'}
-                  - Email address if you contact support{'\n\n'}
-                  Data collected automatically:{'\n'}
-                  - App usage and feature interaction (anonymous analytics only){'\n'}
-                  - Subscription status and purchase history (processed by Apple and RevenueCat){'\n'}
-                  - Device type and OS version for compatibility purposes{'\n\n'}
-                  We do not collect location data, financial information, social security numbers, or government IDs.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>HOW WE USE YOUR DATA{'\n'}</Text>
-                  - To display your personal bet history and performance tracking{'\n'}
-                  - To deliver personalized analytics based on your sport preferences{'\n'}
-                  - To manage your subscription status{'\n'}
-                  - To improve app performance and fix bugs{'\n\n'}
-                  We never sell your data. We never share your data with advertisers.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>THIRD PARTY SERVICES{'\n'}</Text>
-                  The Sweat Locker uses the following third party services that may process your data:{'\n\n'}
-                  Apple App Store — handles all payment processing. We never see or store your card information.{'\n'}
-                  RevenueCat — manages subscription status and trial periods. Privacy policy at revenuecat.com/privacy{'\n'}
-                  Supabase — secure cloud database for app analytics data. Privacy policy at supabase.com/privacy{'\n'}
-                  Anthropic (Claude AI) — powers Jerry AI game analysis. Prompts are not stored or used for training. Privacy policy at anthropic.com/privacy{'\n\n'}
-                  We also aggregate publicly available sports statistics, odds data, and weather data from various public APIs and data providers to power our analytics. These providers do not receive any of your personal data.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>EXTERNAL PICKS AND MARKET DATA{'\n'}</Text>
-                  The Sweat Locker aggregates publicly available handicapper picks and betting-market data from third-party aggregators to surface external opinions and market consensus alongside our own analytics. We do not endorse any external handicapper. All external picks are the opinions of third parties and do not constitute betting advice from us. We do not share any of your personal data with any of these external sources.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>YOUR DATA RIGHTS{'\n'}</Text>
-                  - You can delete all manually entered bet history anytime within the app{'\n'}
-                  - You can request complete deletion of your account data by emailing support@thesweatlocker.com{'\n'}
-                  - Your bet history is stored locally on your device and in your personal account only{'\n'}
-                  - We will respond to data deletion requests within 30 days{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>SUBSCRIPTIONS{'\n'}</Text>
-                  - Subscriptions are managed through Apple and RevenueCat{'\n'}
-                  - You can cancel anytime through your Apple ID settings → Subscriptions{'\n'}
-                  - Refunds are handled by Apple per their standard refund policy{'\n'}
-                  - A 7-day free trial is available for new subscribers only{'\n'}
-                  - Subscription pricing: $14.99/month or $119.99/year{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>AI-GENERATED CONTENT{'\n'}</Text>
-                  Jerry AI analysis is generated by Anthropic's Claude AI model and is intended for entertainment and informational purposes only. AI analysis does not constitute financial or betting advice. Past model performance does not guarantee future results.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>AGE REQUIREMENT{'\n'}</Text>
-                  The Sweat Locker is intended for users 18 years of age or older. We do not knowingly collect data from users under 18. If you believe a minor has created an account please contact us immediately.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>DISCLAIMER{'\n'}</Text>
-                  The Sweat Locker provides sports analytics for entertainment purposes only. We do not facilitate wagering of any kind. Nothing in this app constitutes betting advice. Please bet responsibly and in accordance with your local laws and regulations.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>CHANGES TO THIS POLICY{'\n'}</Text>
-                  We may update this Privacy Policy periodically. Continued use of the app after changes constitutes acceptance of the updated policy. Material changes will be communicated via in-app notification.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>CONTACT{'\n'}</Text>
-                  The Sweat Locker LLC{'\n'}
-                  support@thesweatlocker.com
-                </Text>
-                )}
-              </TouchableOpacity>
                 {/* Terms of Service — 2026-09-06 replaced inline duplicate
                     with website link. Kills drift risk vs website source. */}
               <TouchableOpacity
@@ -17327,59 +17270,6 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                   <Text style={{color:THEME.textDim,fontSize:12,marginTop:4,lineHeight:18}}>Entertainment and analytics only. Not gambling advice. Must be 18+.</Text>
                 </View>
                 <Text style={{color:THEME.accent,fontSize:20,marginLeft:8}}>↗</Text>
-              </TouchableOpacity>
-              {/* Old inline text kept commented for reference — safe to delete post-launch.
-                  Deleted 2026-09-06 to prevent drift with website source of truth. */}
-              {false&&showTerms&&(
-                <Text style={{color:THEME.textDim,fontSize:12,lineHeight:20,marginTop:12}}>
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>1. ACCEPTANCE OF TERMS{'\n'}</Text>
-                  By downloading, accessing, or using The Sweat Locker ("App"), you agree to these Terms of Service. If you do not agree, do not use the App.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>2. ELIGIBILITY{'\n'}</Text>
-                  You must be at least 18 years of age to use this App. If sports betting is legal in your jurisdiction, you must also meet the minimum legal betting age required there. Sports betting is not legal in all jurisdictions — you are solely responsible for knowing and complying with your local laws. We do not facilitate wagering of any kind.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>3. NATURE OF THE APP{'\n'}</Text>
-                  The Sweat Locker is a sports analytics and information tool for entertainment purposes only. Nothing in the App constitutes financial, legal, or gambling advice. Jerry AI analysis is generated by artificial intelligence and reflects model outputs, not professional advice of any kind.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>4. NO GUARANTEE OF RESULTS{'\n'}</Text>
-                  The Sweat Score, NRFI Model, Prop Jerry grades, EV calculations, and all analytical outputs are probabilistic in nature and based on historical data patterns. Model performance records displayed in the App reflect past results only. Past performance does not guarantee future results. You may lose money betting on sports regardless of information provided by this App.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>5. SUBSCRIPTIONS AND BILLING{'\n'}</Text>
-                  - Subscriptions are billed through Apple and managed via RevenueCat{'\n'}
-                  - Your subscription automatically renews unless cancelled at least 24 hours before the end of the current billing period{'\n'}
-                  - You can cancel anytime through your Apple ID settings → Subscriptions{'\n'}
-                  - The 7-day free trial is available to new subscribers only — one trial per Apple ID{'\n'}
-                  - Subscription pricing: $14.99/month or $119.99/year{'\n'}
-                  - Refunds are handled by Apple per their standard refund policy — we do not process refunds directly{'\n'}
-                  - Prices are in USD and subject to change with reasonable notice{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>6. DATA ACCURACY{'\n'}</Text>
-                  We aggregate data from various public sports statistics providers, odds APIs, weather services, third-party handicapper picks (aggregated from multiple industry sources — codes shown in-app), and betting-market percentages. We make no warranty that data is complete, accurate, or current at all times. Pipeline data is updated multiple times daily; betting-market percentage data refreshes at higher cadence during game hours. Third-party handicapper picks reflect the opinions of those third parties, not endorsements from us. Always verify odds, lines, and picks with your sportsbook and the original source before placing any wager.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>7. AI-GENERATED CONTENT{'\n'}</Text>
-                  Jerry AI is powered by Anthropic's Claude AI model. AI-generated analysis may contain errors, omissions, or outdated information. We are not responsible for decisions made based on AI-generated content. Jerry AI analysis is clearly labeled as AI-generated throughout the App.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>8. RESPONSIBLE GAMBLING{'\n'}</Text>
-                  We are committed to responsible gambling. If you or someone you know has a gambling problem:{'\n'}
-                  National Problem Gambling Helpline: 1-800-522-4700{'\n'}
-                  Online chat: ncpgambling.org{'\n'}
-                  Text: Text "HOPENY" to 467369{'\n'}
-                  Please gamble responsibly and within your means.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>9. PROHIBITED USES{'\n'}</Text>
-                  You agree not to:{'\n'}
-                  - Scrape, reproduce, or redistribute any data or content from the App{'\n'}
-                  - Reverse engineer any part of the App or pipeline{'\n'}
-                  - Use the App for any commercial purpose without written permission{'\n'}
-                  - Share subscription access with others{'\n'}
-                  - Attempt to circumvent the freemium gating system{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>10. THIRD PARTY SERVICES{'\n'}</Text>
-                  The App integrates with third party services including Apple, RevenueCat, Supabase, Anthropic, and various sports data providers. Your use of those services is subject to their respective terms and privacy policies. We are not responsible for third party service outages or data errors.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>11. LIMITATION OF LIABILITY{'\n'}</Text>
-                  To the fullest extent permitted by law, The Sweat Locker LLC and its developers, officers, and affiliates shall not be liable for any direct, indirect, incidental, or consequential damages arising from your use of the App, including but not limited to gambling losses, decisions made based on App analytics, or service interruptions.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>12. DISCLAIMER OF WARRANTIES{'\n'}</Text>
-                  The App is provided "as is" without warranties of any kind, express or implied. We do not warrant that the App will be error-free, uninterrupted, or that data will always be accurate or current.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>13. CHANGES TO TERMS{'\n'}</Text>
-                  We reserve the right to update these Terms at any time. Continued use of the App after changes constitutes acceptance of the updated Terms. Material changes will be communicated via in-app notification.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>14. GOVERNING LAW{'\n'}</Text>
-                  These Terms are governed by the laws of the State of Florida. Any disputes shall be resolved in the courts of Brevard County, Florida.{'\n\n'}
-                  <Text style={{color:THEME.text,fontWeight:'700'}}>15. CONTACT{'\n'}</Text>
-                  The Sweat Locker LLC{'\n'}
-                  support@thesweatlocker.com
-                </Text>
-                )}
               </TouchableOpacity>
               {/* Delete Data */}
               <View style={[styles.card,{marginBottom:12}]}>
