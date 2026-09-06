@@ -17219,14 +17219,23 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                   <Text style={{fontSize:18}}>📞</Text>
                 </TouchableOpacity>
               </View>
-              {/* Privacy Policy */}
-              <TouchableOpacity style={[styles.card,{marginBottom:12}]} onPress={()=>setShowPrivacy(!showPrivacy)} activeOpacity={0.7}>
-                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+              {/* Privacy Policy — 2026-09-06 replaced inline drift-prone
+                  duplicate with website link. Single source of truth on
+                  thesweatlocker.com; app just links out. */}
+              <TouchableOpacity
+                style={[styles.card,{marginBottom:12,flexDirection:'row',alignItems:'center',justifyContent:'space-between'}]}
+                onPress={()=>Linking.openURL('https://thesweatlocker.com/#882ed6c9-c6cc-4b65-8e38-24249b2ae893')}
+                activeOpacity={0.7}
+              >
+                <View style={{flex:1}}>
                   <Text style={{color:THEME.text,fontWeight:'700',fontSize:14}}>🔒 Privacy Policy</Text>
-                  <Text style={{color:THEME.textMuted,fontSize:12}}>{showPrivacy?'Hide ▲':'View ▼'}</Text>
+                  <Text style={{color:THEME.textDim,fontSize:12,marginTop:4,lineHeight:18}}>Your data stays yours. We never sell or share it with advertisers.</Text>
                 </View>
-                <Text style={{color:THEME.textDim,fontSize:12,marginTop:8,lineHeight:18}}>Your data stays yours. We never sell or share it with advertisers. Last updated May 2026.</Text>
-                {showPrivacy&&(
+                <Text style={{color:THEME.accent,fontSize:20,marginLeft:8}}>↗</Text>
+              </TouchableOpacity>
+              {/* Old inline text kept commented for reference — safe to delete post-launch.
+                  Deleted 2026-09-06 to prevent drift with website source of truth. */}
+              {false&&showPrivacy&&(
                 <Text style={{color:THEME.textDim,fontSize:12,lineHeight:20,marginTop:12}}>
                   Note: "Hard Rock Bet" and the guitar logo are trademarks of the Seminole Tribe of Florida/Hard Rock Digital. Referenced for informational purposes only.{'\n\n'}
                   <Text style={{color:THEME.text,fontWeight:'700'}}>WHO WE ARE{'\n'}</Text>
@@ -17281,14 +17290,22 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                 </Text>
                 )}
               </TouchableOpacity>
-                {/* Terms of Service */}
-              <TouchableOpacity style={[styles.card,{marginBottom:12}]} onPress={()=>setShowTerms(!showTerms)} activeOpacity={0.7}>
-                <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+                {/* Terms of Service — 2026-09-06 replaced inline duplicate
+                    with website link. Kills drift risk vs website source. */}
+              <TouchableOpacity
+                style={[styles.card,{marginBottom:12,flexDirection:'row',alignItems:'center',justifyContent:'space-between'}]}
+                onPress={()=>Linking.openURL('https://thesweatlocker.com/#4a867da5-8815-43cc-9c70-bf875edd04dc')}
+                activeOpacity={0.7}
+              >
+                <View style={{flex:1}}>
                   <Text style={{color:THEME.text,fontWeight:'700',fontSize:14}}>📋 Terms of Service</Text>
-                  <Text style={{color:THEME.textMuted,fontSize:12}}>{showTerms?'Hide ▲':'View ▼'}</Text>
+                  <Text style={{color:THEME.textDim,fontSize:12,marginTop:4,lineHeight:18}}>Entertainment and analytics only. Not gambling advice. Must be 18+.</Text>
                 </View>
-                <Text style={{color:THEME.textDim,fontSize:12,marginTop:8,lineHeight:18}}>Entertainment and analytics only. Not gambling advice. Must be 18+. Last updated May 2026.</Text>
-                {showTerms&&(
+                <Text style={{color:THEME.accent,fontSize:20,marginLeft:8}}>↗</Text>
+              </TouchableOpacity>
+              {/* Old inline text kept commented for reference — safe to delete post-launch.
+                  Deleted 2026-09-06 to prevent drift with website source of truth. */}
+              {false&&showTerms&&(
                 <Text style={{color:THEME.textDim,fontSize:12,lineHeight:20,marginTop:12}}>
                   <Text style={{color:THEME.text,fontWeight:'700'}}>1. ACCEPTANCE OF TERMS{'\n'}</Text>
                   By downloading, accessing, or using The Sweat Locker ("App"), you agree to these Terms of Service. If you do not agree, do not use the App.{'\n\n'}
@@ -17358,7 +17375,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
               </View>
               {/* App Version */}
               <View style={{alignItems:'center',paddingVertical:16}}>
-                <Text style={{color:THEME.textMuted,fontSize:11}}>The Sweat Locker v1.0.0 — Beta</Text>
+                <Text style={{color:THEME.textMuted,fontSize:11}}>The Sweat Locker v1.0.0</Text>
                 <Text style={{color:THEME.textMuted,fontSize:10,marginTop:4}}>More Data, Less Sweat</Text>
                 <Text style={{color:THEME.textMuted,fontSize:10,marginTop:4}}>⚠️ For entertainment only. Not gambling advice.</Text>
               </View>

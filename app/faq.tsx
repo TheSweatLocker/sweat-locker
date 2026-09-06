@@ -58,7 +58,7 @@ const SECTIONS: Section[] = [
       },
       {
         q: 'When do picks come out?',
-        a: 'Morning: initial card drops ~11am ET after model runs. Final: refreshed by ~4pm ET after lineups + line moves are baked in. If a pitcher scratches or weather changes, the pick can shift between those windows.',
+        a: 'MLB: morning card drops ~7-9am ET after model runs, refresh again ~2pm ET after lineups + line moves are baked in. NFL/NCAAF: cards lock Thursday morning after injury reports land, with lighter refreshes every 6 hours through the weekend. If a starter scratches or weather changes, the pick can shift between windows.',
       },
       {
         q: 'How do you grade?',
@@ -96,15 +96,15 @@ const SECTIONS: Section[] = [
     items: [
       {
         q: 'Which sports do you cover?',
-        a: 'MLB (year-round in season), UFC (fight nights), NBA (starting Oct 2026), NFL + NCAAF (starting Sept 2026), NHL + NCAAB (winter). Every sport gets its own tuned pipeline — same architecture, different models.',
+        a: 'LIVE right now: MLB (daily), NFL (weekly + Thu/Sun/Mon), NCAAF (Thu/Sat slates), UFC (fight nights). Coming soon: NBA + NHL (Oct 2026), NCAAB (Nov 2026). Every sport gets its own tuned pipeline — same architecture, different models per sport.',
       },
       {
         q: 'How many picks do I get per day?',
-        a: 'Depends on slate quality. Cards typically publish 4-8 picks per day. On thin slates we may publish fewer — we don\'t force volume just to fill space. If we don\'t have signals worth trusting, we say so.',
+        a: 'Depends on slate size + signal quality. Sharp Card typically publishes 15-25 picks/day when 3+ sports are live — MLB up to 25, NCAAF up to 12, NFL up to 10 (Sun-heavy). On thin slates we publish fewer; we don\'t force volume just to fill space. If we don\'t have signals worth trusting, we say so. Free tier always sees the Pick of the Day (POTD) at minimum.',
       },
       {
         q: 'What about props?',
-        a: 'MLB props (pitcher K/BB/ER/hits + batter hits) are covered daily. NBA + NFL props ship with those sports\' seasons. Every prop gets tier + book line + edge% + calibration data.',
+        a: 'MLB props (pitcher K/BB/ER/hits + batter hits) daily. NFL player props (pass yds, rush yds, receptions, TDs, INTs) started 9/2. NCAAF props coming soon. NBA + NHL props ship with those sports\' seasons. Every prop gets tier + book line + edge% + our Prop Jerry read explaining WHY we back it.',
       },
     ],
   },
