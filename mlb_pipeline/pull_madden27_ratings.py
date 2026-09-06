@@ -65,6 +65,22 @@ TEAM_NAME_TO_CODE = {
     'Tennessee Titans': 'TEN', 'Washington Commanders': 'WAS',
 }
 
+# 2026-09-06 QB pass — team-code → madden27.wiki team-page slug. Used by
+# scrape_starter_qbs() to hit each team's roster page and pull the
+# starter QB (highest-OVR QB per team). Enables home_qb_madden_ovr /
+# madden_qb_delta_home fields that top-100 alone can't cover (only ~8
+# QBs in top-100; other 24 starters are on their team pages).
+TEAM_CODE_TO_SLUG = {
+    'BUF':'buffalo-bills','MIA':'miami-dolphins','NE':'new-england-patriots','NYJ':'ny-jets',
+    'BAL':'baltimore-ravens','CIN':'cincinnati-bengals','CLE':'cleveland-browns','PIT':'pittsburgh-steelers',
+    'HOU':'houston-texans','IND':'indianapolis-colts','JAX':'jacksonville-jaguars','TEN':'tennessee-titans',
+    'DEN':'denver-broncos','KC':'kansas-city-chiefs','LV':'las-vegas-raiders','LAC':'los-angeles-chargers',
+    'DAL':'dallas-cowboys','NYG':'ny-giants','PHI':'philadelphia-eagles','WAS':'washington-commanders',
+    'CHI':'chicago-bears','DET':'detroit-lions','GB':'green-bay-packers','MIN':'minnesota-vikings',
+    'ATL':'atlanta-falcons','CAR':'carolina-panthers','NO':'new-orleans-saints','TB':'tampa-bay-buccaneers',
+    'ARI':'arizona-cardinals','LA':'los-angeles-rams','SF':'san-francisco-49ers','SEA':'seattle-seahawks',
+}
+
 
 def _fetch(url: str) -> BeautifulSoup:
     r = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=30)
@@ -148,6 +164,80 @@ def scrape_top100() -> list[dict]:
                     'position': position, 'team_name': team_name,
                     'team_code': team_code, 'ovr': ovr})
     return out
+
+
+def scrape_starter_qbs() -> list[dict]:
+    """Fetch each of 32 team pages, extract all QBs, pick highest OVR
+    per team as the starter. Returns list of {team_code, player_name, ovr}."""
+    import time
+    out = []
+    for code, slug in TEAM_CODE_TO_SLUG.items():
+        try:
+            soup = _fetch(f'https://madden27.wiki/ratings/teams/{slug}')
+        except Exception as e:
+            print(f'  ⚠ {code} fetch failed: {e}')
+            time.sleep(0.5); continue
+        # Roster rows use divs (not <table>) with data-label attrs
+        qbs = []
+        for row in soup.select('[data-label]'):
+            # skip non-row nodes
+            pass
+        # Simpler: find all "position" cells == "QB", then walk up to row
+        for pos_cell in soup.find_all(attrs={'data-label': 'Position'}):
+            pos_text = pos_cell.get_text(strip=True)
+            if 'QB' not in pos_text: continue
+            # walk to parent row-like container
+            row = pos_cell
+            for _ in range(6):
+                row = row.parent
+                if row is None: break
+                if row.find(attrs={'data-label': 'Player'}) or row.find(attrs={'data-label': 'Name'}):
+                    break
+            if row is None: continue
+            name_cell = row.find(attrs={'data-label': 'Player'}) or row.find(attrs={'data-label': 'Name'})
+            ovr_cell = row.find(attrs={'data-label': 'Overall'}) or row.find(attrs={'data-label': 'OVR'})
+            if not name_cell or not ovr_cell: continue
+            # Full name extraction (same wiki quirk as top-100)
+            p_span = name_cell.select_one('[class*="playerNameLink"]')
+            if p_span:
+                player_name = p_span.get_text(strip=True)
+            else:
+                parts = [t.strip() for t in name_cell.get_text('\n').splitlines() if t.strip()]
+                player_name = max(parts, key=len) if parts else ''
+            ovr = _int(ovr_cell)
+            if player_name and ovr is not None:
+                qbs.append({'name': player_name, 'ovr': ovr})
+        if not qbs:
+            print(f'  ⚠ {code} ({slug}): no QBs parsed')
+            time.sleep(0.5); continue
+        # Highest OVR = starter
+        starter = max(qbs, key=lambda q: q['ovr'])
+        out.append({'team_code': code, 'player_name': starter['name'], 'ovr': starter['ovr']})
+        time.sleep(0.5)  # polite crawl
+    return out
+
+
+def upsert_starter_qbs(qbs: list[dict], season: int, week: int, dry_run: bool) -> int:
+    """Upsert to nfl_madden_player_ratings so enrich_ctx_nfl_madden.load_qb_ratings
+    picks them up. Same schema as upsert_players. Merge duplicates via
+    (player_name, team, season, week_snapshot) unique key."""
+    if not qbs: return 0
+    fetched = datetime.now(timezone.utc).isoformat()
+    payload = [{
+        'player_name': q['player_name'], 'team': q['team_code'],
+        'season': season, 'week_snapshot': week,
+        'position': 'QB', 'ovr': q['ovr'],
+        'source': 'madden27.wiki:team_page', 'fetched_at': fetched,
+    } for q in qbs]
+    if dry_run:
+        print(f'  [DRY] would upsert {len(payload)} starter QB rows')
+        return len(payload)
+    r = requests.post(f'{SB}/rest/v1/nfl_madden_player_ratings?on_conflict=player_name,team,season,week_snapshot',
+                      headers=H_WRITE, json=payload, timeout=30)
+    if r.status_code not in (200, 201, 204):
+        print(f'  starter QB upsert failed {r.status_code}: {r.text[:200]}')
+        return 0
+    return len(payload)
 
 
 def upsert_team_ratings(teams: list[dict], season: int, week: int, dry_run: bool) -> int:
@@ -246,7 +336,14 @@ def main():
     n_teams = upsert_team_ratings(teams, args.season, args.week, args.dry_run)
     n_players = upsert_players(top100, args.season, args.week, args.dry_run)
     n_top100 = upsert_top100(top100, args.season, args.week, args.dry_run)
-    print(f'✓ wrote {n_teams} team ratings, {n_players} player ratings, {n_top100} top-100 rows')
+
+    # 2026-09-06 QB pass — 32 team-page fetches to backfill starter QB
+    # coverage for all 32 teams (top-100 alone covers ~8 QBs, leaving
+    # 24 team starters unmapped and blocking home_qb_madden_ovr).
+    print('  → starter QBs (32 team-page fetches, ~20s)')
+    qbs = scrape_starter_qbs()
+    n_qbs = upsert_starter_qbs(qbs, args.season, args.week, args.dry_run)
+    print(f'✓ wrote {n_teams} team ratings, {n_players} player ratings, {n_top100} top-100 rows, {n_qbs} starter QBs')
     return 0
 
 
