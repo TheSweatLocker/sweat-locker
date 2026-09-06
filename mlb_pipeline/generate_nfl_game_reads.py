@@ -155,7 +155,10 @@ def fetch_nfl_contexts():
     lookup during struct build."""
     from datetime import timedelta as _td
     today = today_et()
-    horizon = (datetime.now(timezone.utc) + _td(days=10) - _td(hours=4)).strftime('%Y-%m-%d')
+    # 2026-09-06: bumped 10→12 days. Week 1 MNF at 9/15 8pm ET fell just
+    # past the 10-day-minus-4h horizon on Sat morning runs. 12 days safely
+    # covers Thu opener → next-week's Thursday early lookahead.
+    horizon = (datetime.now(timezone.utc) + _td(days=12) - _td(hours=4)).strftime('%Y-%m-%d')
     url = (f"{SUPABASE_URL}/rest/v1/nfl_game_context"
            f"?game_date=gte.{today}&game_date=lte.{horizon}"
            f"&select=game_id,home_team,away_team,game_date,close_total,close_spread,"
