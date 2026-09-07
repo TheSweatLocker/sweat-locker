@@ -2123,28 +2123,36 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
     let cancelled = false;
     (async () => {
       setLoading(true);
+      // 2026-09-07: per-STAT prior-season fallback (was per-team). NCAAF
+      // early-season pulls populate advanced metrics (SP+, EPA, success%)
+      // via CFBD /stats/season/advanced but NOT volumetric (pass_yards,
+      // rush_yards, turnovers, penalty_yards) until enough games are
+      // played. Old logic only fell back when BOTH teams had ZERO rows —
+      // Florida State at Week 2 has 11 rows (advanced only) so fallback
+      // never triggered → pass_yds_pg / rush_yds_pg / total_yds_pg
+      // silently missing from the card. Now: pull both seasons, prefer
+      // current-season row per stat_key, borrow prior-season row for
+      // stats missing this season. Same season pool label shows in hint.
+      const prevSeason = seasonForQuery > 2020 ? seasonForQuery - 1 : null;
+      const seasonsToFetch = prevSeason ? [seasonForQuery, prevSeason] : [seasonForQuery];
       const [awayR, homeR] = await Promise.all([
         client.from('team_stats_rolling')
-          .select('*').eq('sport', sport).eq('team', awayTeam).eq('season', seasonForQuery),
+          .select('*').eq('sport', sport).eq('team', awayTeam).in('season', seasonsToFetch),
         client.from('team_stats_rolling')
-          .select('*').eq('sport', sport).eq('team', homeTeam).eq('season', seasonForQuery),
+          .select('*').eq('sport', sport).eq('team', homeTeam).in('season', seasonsToFetch),
       ]);
       if (cancelled) return;
-      let ar = Array.isArray(awayR?.data) ? awayR.data : [];
-      let hr = Array.isArray(homeR?.data) ? homeR.data : [];
-      // Fallback prior season for pre-season (Week 1 NCAAF pattern)
-      if (ar.length === 0 && hr.length === 0 && seasonForQuery > 2020) {
-        const prev = seasonForQuery - 1;
-        const [aP, hP] = await Promise.all([
-          client.from('team_stats_rolling')
-            .select('*').eq('sport', sport).eq('team', awayTeam).eq('season', prev),
-          client.from('team_stats_rolling')
-            .select('*').eq('sport', sport).eq('team', homeTeam).eq('season', prev),
-        ]);
-        if (cancelled) return;
-        ar = Array.isArray(aP?.data) ? aP.data : [];
-        hr = Array.isArray(hP?.data) ? hP.data : [];
-      }
+      const _mergePreferring = (rows: any[]): any[] => {
+        const byKey: Record<string, any> = {};
+        for (const r of (rows || [])) {
+          const k = r.stat_key;
+          const isCurrent = Number(r.season) === seasonForQuery;
+          if (!byKey[k] || isCurrent) byKey[k] = r;
+        }
+        return Object.values(byKey);
+      };
+      const ar = _mergePreferring(Array.isArray(awayR?.data) ? awayR.data : []);
+      const hr = _mergePreferring(Array.isArray(homeR?.data) ? homeR.data : []);
       setAwayStats(ar); setHomeStats(hr);
       setLoading(false);
     })();
