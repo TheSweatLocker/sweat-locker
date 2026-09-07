@@ -9,10 +9,18 @@ shows one team, analysis shows another.
 
 This scrub sweeps today's jerry_reads for any game whose primary_play
 disagrees with the stored jerry_reads.call_side/market/line and
-overwrites the CALL fields deterministically. The LLM prose
-(short_read / long_read) is left as-is — it may argue for a stale
-pick, but the badge + Sharp Card grading tie to primary_play so
-downstream displays are consistent.
+overwrites the CALL fields deterministically.
+
+2026-09-07 UPDATE — prose scrub on drift. Previously the LLM prose
+(short_read / long_read) was left as-is, on the theory that the badge
++ grading being consistent was enough. In practice users READ the
+prose and were seeing cards where the badge said one market and the
+prose argued for a totally different one (e.g., badge "Over 8.5" but
+long_read "Take the Mets ML"). User feedback: "MLB Jerry reads look
+like shit." Now when we detect drift, we also overwrite short_read
+and long_read with a coherent recompute-notice narrative that
+matches the new call, so the whole card reads consistently. The
+original take is preserved in audit_notes for internal auditability.
 
 Sport-universal via SPORT_CONFIG.
 
@@ -108,7 +116,8 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
     ids = ','.join(f'"{g}"' for g in ctx_by_gid.keys())
     r = requests.get(
         f'{SB}/rest/v1/jerry_reads?sport=eq.{sport}&game_id=in.({ids})'
-        '&select=id,game_id,call_market,call_side,call_line,call_text',
+        '&select=id,game_id,call_market,call_side,call_line,call_text,'
+        'short_read,long_read,audit_notes,conviction',
         headers=H_READ, timeout=30,
     )
     if r.status_code != 200:
@@ -135,21 +144,109 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         # Detect drift
         drift = (j_market != pp_type or j_side != pp_side or
                  (pp_line is not None and j_line != pp_line))
-        if not drift: continue
+
+        # 2026-09-07: also detect STALE PROSE independently of call-field
+        # drift. When an earlier scrub run patched call fields but left
+        # prose alone, the current call may already match primary_play
+        # while long_read still argues for the pre-flip market. Detects
+        # by looking for other-market cue phrases in long_read.
+        orig_short_pre = (j.get('short_read') or '')
+        orig_long_pre  = (j.get('long_read') or '')
+        _lower_long    = orig_long_pre.lower()
+        # Templated fallback signature: "The published call is X — Y tier"
+        _tmpl_fallback = 'published call is' in _lower_long
+        # Cross-market cue: ml call but prose says "Take X ML" / "Under X"
+        _has_ml_take    = ' ml' in _lower_long or 'moneyline' in _lower_long
+        _has_total_take = 'take under' in _lower_long or 'take over' in _lower_long \
+                          or 'take the under' in _lower_long or 'take the over' in _lower_long
+        _prose_cross_market = (
+            (pp_type == 'total' and _has_ml_take and not _has_total_take) or
+            (pp_type == 'ml'    and _has_total_take)
+        )
+        stale_prose = _tmpl_fallback or _prose_cross_market
+
+        if not drift and not stale_prose: continue
 
         new_text = _derive_call_text(pp, c['home_team'], c['away_team'])
-        payload = {
-            'call_market': pp_type,
-            'call_side':   pp_side,
-            'call_line':   pp_line,
-        }
-        if new_text:
-            payload['call_text'] = new_text
+        payload = {}
+        # Only touch call fields when they actually drifted
+        if drift:
+            payload['call_market'] = pp_type
+            payload['call_side']   = pp_side
+            payload['call_line']   = pp_line
+            if new_text:
+                payload['call_text'] = new_text
+
+        # 2026-09-07: also scrub stale LLM prose. If the pick flipped
+        # (drift True), any prior short/long the LLM wrote was arguing
+        # for the OLD pick — leaving it in place produced cards where
+        # the badge said one market and the prose argued for a
+        # different one. Replace with a clean recompute narrative so
+        # the whole card is internally consistent. Original take is
+        # preserved in audit_notes for auditability.
+        orig_short = (j.get('short_read') or '').strip()
+        orig_long  = (j.get('long_read') or '').strip()
+        _market_readable = {'ml': 'moneyline', 'rl': 'run line',
+                            'total': 'total'}.get(pp_type, pp_type)
+        _side_readable   = new_text or f'{pp_type.upper()} {pp_side}'
+        new_short = (
+            f'Model recomputed to {_side_readable}. Earlier read was '
+            f'written before the pick refreshed — going with the '
+            f'current {_market_readable} call.'
+        )
+        new_long  = (
+            f'The current call is {_side_readable}. Jerry\'s original '
+            f'read on this game was written before the model '
+            f'recomputed, so any prior take may argue for a different '
+            f'market — refer to the model signals + situational card '
+            f'below for the current pick rationale. If this game earns '
+            f'a curated spot, it will appear on the Sweat Card with '
+            f'the current call.'
+        )
+        # Only rewrite prose if it needs it. Already-scrubbed rows
+        # (idempotent short_read: "Model recomputed" / skip templates
+        # from earlier runs or from H_scenario_matrix) get left alone.
+        # Cross-market prose (call=total but long says "Take X ML")
+        # AND templated-fallback prose ("The published call is...") both
+        # get rewritten.
+        _skip_markers = ('Model recomputed', 'historical scenario matches',
+                         'no edge is defensible', 'sitting this one out',
+                         'take the discipline hit')
+        already_scrubbed = any(m.lower() in orig_short.lower() for m in _skip_markers)
+        should_rewrite_prose = (drift or stale_prose) and not already_scrubbed
+
+        # Even when already_scrubbed=True at short_read level, long_read
+        # may still be a pre-audit narrative (H scenario matrix wrote
+        # skip short but stale narrative survived on long). Detect
+        # cross-market prose on long_read specifically.
+        if already_scrubbed and _prose_cross_market:
+            # Overwrite ONLY long_read to align with short's skip framing
+            payload['long_read'] = (
+                f'The pick was recomputed after this read was written. '
+                f'Current call: {_side_readable}. The narrative above '
+                f'may reference a different market — trust the current '
+                f'call + short read for the actual pick rationale.'
+            )[:2000]
+        elif should_rewrite_prose:
+            payload['short_read'] = new_short[:2000]
+            payload['long_read']  = new_long[:2000]
+            # Preserve original take in audit_notes for future reference
+            _orig_note = (
+                f'[jerry_pick_scrub 2026-09-07 prose-flip: '
+                f'call is now {pp_type.upper()}/{pp_side} {_side_readable[:40]}. '
+                f'Original short_read: {orig_short[:500]}]'
+            )
+            payload['audit_notes'] = _orig_note[:1500]
+
+        if not payload:
+            continue  # nothing to change
 
         matchup = f'{c["away_team"][:14]:14s} @ {c["home_team"][:14]:14s}'
-        print(f'  DRIFT {matchup}  '
+        tag = 'DRIFT' if drift else 'STALE'
+        prose_tag = '  [prose scrubbed]' if 'long_read' in payload else ''
+        print(f'  {tag} {matchup}  '
               f'{j_market}/{j_side} {j.get("call_text","?")[:20]} -> '
-              f'{pp_type}/{pp_side} {new_text}')
+              f'{pp_type}/{pp_side} {new_text}{prose_tag}')
 
         if dry_run:
             fixed += 1
