@@ -210,11 +210,62 @@ def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str =
         contrib = float(s.get('contribution') or 0)
         prose = _clean_prose(s.get('prose') or s.get('signal_key', ''))
         (for_side if contrib >= 0 else against_side).append((abs(contrib), prose))
+
+    # 2026-09-07 v2 — prose-first fallback when no playbook sources.
+    # Prior version rendered raw key names ("L4", "Rec Yds", "Def_pass_def")
+    # even when signals like l5_confirm and l10_hot had rich prose values
+    # ("L5 avg 76.8 — 5-of-5 OVER 56.5"). The isinstance+len check DID try
+    # to prefer prose but numeric signals (l4: 4.25) and short keys fell
+    # into the key-name path, then sort collapsed everything to iteration
+    # order — result: prose signals often bumped out of top-5 by useless
+    # key-name bullets.
+    #
+    # New logic: two passes.
+    #   Pass 1 — collect only PROSE signals (string values with '—' or ':'
+    #            or length >> key). These are the humanized model-generated
+    #            insights we always want to prioritize.
+    #   Pass 2 — if we still have <5 bullets, humanize the raw key + value
+    #            into a "Key: value" chip. Better than raw uppercase key
+    #            name alone but only used to pad thin coverage.
     if not sources and prop_signals:
+        # 2026-09-07 skip internal-metadata + duplicate-of-header signals.
+        # These are useful for scoring/debugging but read as noise when
+        # padded into user-facing bullets:
+        #   label / opp_col — duplicates or raw column names
+        #   opp_pct with null value — chip renders "Opp Pct" alone
+        #   league_baseline — internal baseline, not signal
+        #   games_used — sample size, shown elsewhere
+        #   direction / _direction / _line — internal metadata
+        _SKIP_KEYS = {'label', 'opp_col', 'league_baseline', 'games_used',
+                      'direction', 'season_avg', 'implied_high', 'implied_low'}
+        prose_bullets = []
+        keyname_bullets = []
         for k, v in prop_signals.items():
             if k.startswith('_'): continue
-            prose = _clean_prose(str(v) if isinstance(v, str) and len(str(v)) > len(k) else f'{k.replace("_", " ")}')
-            for_side.append((0.5, prose))
+            if k in _SKIP_KEYS: continue
+            v_str = str(v) if v is not None else ''
+            # Skip when the value is null / empty / "None"
+            if not v_str or v_str.lower() == 'none': continue
+            # Prose signal: string value that's clearly humanized narrative
+            is_prose = isinstance(v, str) and (
+                '—' in v_str or
+                (':' in v_str and len(v_str) > len(k) + 3) or
+                len(v_str) > 25
+            )
+            if is_prose:
+                prose_bullets.append(_clean_prose(v_str))
+            else:
+                # Format as "Key: value" chip — cleaner than raw uppercase key
+                pretty_key = k.replace('_', ' ').title()
+                # Suffix percentage-looking values
+                fmt_val = f'{v_str}%' if k.endswith('_pct') and not v_str.endswith('%') else v_str
+                keyname_bullets.append(f'{pretty_key}: {fmt_val}')
+        # Prose wins first; pad with humanized key-name chips only if <5.
+        for p in prose_bullets:
+            for_side.append((1.0, p))
+        for p in keyname_bullets:
+            for_side.append((0.3, p))
+
     for_side.sort(key=lambda x: -x[0])
     against_side.sort(key=lambda x: -x[0])
     return {'positive': [p for _, p in for_side[:5]], 'negative': [p for _, p in against_side[:3]]}
