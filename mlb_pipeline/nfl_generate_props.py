@@ -667,6 +667,78 @@ def _emit_nfl_ctx_signals(prop_family: str, side: str, ctx: dict, player_team: s
         bonus -= 3 if is_over else 2
         sig['injury_load'] = f'{len(inj)} key players OUT — depressed offense'
 
+    # 6) DIV GAME (2026-09-07 — immediate-wins queue item).
+    # Divisional games historically hit UNDER 53% + spreads land within
+    # 3pts 62% of time. Div rivals know each other's tendencies → tighter
+    # games, fewer explosive plays → skill props lean UNDER, pass props
+    # get compressed. Nudge in the appropriate direction, not overweight.
+    if ctx.get('div_game'):
+        if is_pass_family and is_over:
+            bonus -= 2
+            sig['div_game'] = 'Divisional game — historically compressed passing (both teams know the personnel)'
+        elif is_rush_family and is_over:
+            bonus -= 1
+            sig['div_game'] = 'Divisional game — tighter script, less RB explosion'
+        elif not is_over:
+            bonus += 2
+            sig['div_game'] = 'Divisional game — historically hits UNDER 53%, supports the under'
+
+    # 7) BYE-WEEK ADVANTAGE (rest_days ≥ 13, opposite side of short_week).
+    # Bye-week teams cover ATS ~55% + score ~1.5pt more historically.
+    # Their skill players see more sample study time + preparation.
+    player_rest_days = home_rest if player_is_home else away_rest
+    if player_rest_days is not None and player_rest_days >= 13:
+        if is_over:
+            bonus += 4
+            sig['bye_week_rest'] = f'Player team on {int(player_rest_days)}d rest (bye) — historically covers +1.5pt, favors OVER'
+
+    # 8) CPOE GAP — completion% over expected. Home vs Away CPOE gap of
+    # 5+ points historically correlates with ~1.8pt spread edge to the
+    # higher-CPOE side. Only fires for pass_yds / pass_tds / pass_attempts
+    # / pass_completions / interceptions where QB quality is the driver.
+    if prop_family in ('pass_yds', 'pass_tds', 'pass_attempts',
+                       'pass_completions', 'interceptions', 'pass_interceptions'):
+        h_cpoe = _f(ctx.get('home_pass_cpoe'))
+        a_cpoe = _f(ctx.get('away_pass_cpoe'))
+        if h_cpoe is not None and a_cpoe is not None:
+            player_cpoe = h_cpoe if player_is_home else a_cpoe
+            opp_cpoe = a_cpoe if player_is_home else h_cpoe
+            gap = player_cpoe - opp_cpoe
+            if gap >= 5:
+                if is_over and prop_family != 'pass_interceptions':
+                    bonus += 4
+                    sig['cpoe_edge'] = f'Player QB CPOE {player_cpoe:+.1f} vs opp {opp_cpoe:+.1f} — {gap:+.1f}pt edge, favors pass OVER'
+                elif prop_family == 'pass_interceptions' and not is_over:
+                    bonus += 3
+                    sig['cpoe_edge'] = f'Player QB CPOE {player_cpoe:+.1f} — accurate QB, favors INT UNDER'
+            elif gap <= -5:
+                if not is_over and prop_family != 'pass_interceptions':
+                    bonus += 4
+                    sig['cpoe_edge'] = f'Player QB CPOE {player_cpoe:+.1f} vs opp {opp_cpoe:+.1f} — {gap:.1f}pt deficit, favors pass UNDER'
+                elif prop_family == 'pass_interceptions' and is_over:
+                    bonus += 3
+                    sig['cpoe_edge'] = f'Player QB CPOE {player_cpoe:+.1f} — inaccurate QB, favors INT OVER'
+
+    # 9) H2H TOTAL vs MARKET — the last 5 head-to-head games' average
+    # total, when materially different from current market total, is a
+    # sharp historical trend signal. Div-rivalry games where h2h avg is
+    # 5+ pts off close total are strong OVER/UNDER angles.
+    h2h_total = _f(ctx.get('h2h_last5_avg_total'))
+    h2h_games = _f(ctx.get('h2h_last5_games_played')) or 0
+    market_total = _f(ctx.get('close_total'))
+    if h2h_total is not None and market_total is not None and h2h_games >= 3:
+        h2h_delta = h2h_total - market_total
+        if h2h_delta >= 5:
+            # H2H trend runs OVER the current market
+            if is_over and is_pass_family:
+                bonus += 3
+                sig['h2h_trend'] = f'L5 H2H avg {h2h_total:.1f} vs market {market_total:.1f} — historical OVER trend'
+        elif h2h_delta <= -5:
+            # H2H trend runs UNDER
+            if not is_over and is_pass_family:
+                bonus += 3
+                sig['h2h_trend'] = f'L5 H2H avg {h2h_total:.1f} vs market {market_total:.1f} — historical UNDER trend'
+
     return sig, bonus
 
 
