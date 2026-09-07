@@ -35,6 +35,20 @@ RESULTS_TABLE = {
     # UFC uses fight_results — different shape; excluded from POTD anyway
 }
 
+# 2026-09-07 sport-specific column dispatch. MLB uses `run_line_result` for
+# the ±1.5 run line market; other sports use `spread_result` for their
+# point spreads (no ±1.5 concept). Prior grader hardcoded run_line_result
+# in the SELECT which returned 400 on NFL/NCAAF/NCAAB/NBA — results dict
+# came back empty → zero picks graded, silently. Caught 9/7 morning
+# audit: 189 NCAAF picks over 3 days, 0 graded.
+SPREAD_COL_BY_SPORT = {
+    'MLB':   'run_line_result',
+    'NFL':   'spread_result',
+    'NCAAF': 'spread_result',
+    'NCAAB': 'spread_result',
+    'NBA':   'spread_result',
+}
+
 
 def yesterday_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=28)).strftime('%Y-%m-%d')
@@ -56,11 +70,21 @@ def grade_total(side: str, line, hs: int, as_: int) -> str:
 
 
 def grade_rl(side: str, line, hs: int, as_: int, run_line_result: str | None) -> str:
-    # Prefer server-computed run_line_result when available
+    """Grade run-line (MLB ±1.5) or spread (NFL/NCAAF/etc).
+
+    Server-computed *_result values use varying labels across sports:
+      MLB run_line_result: 'home' / 'away' / 'push'
+      NFL/NCAAF/NCAAB/NBA spread_result: 'home_covered' / 'away_covered' / 'push'
+
+    Both flavors accepted here so the same function grades both markets.
+    """
     if run_line_result:
-        rl = run_line_result.lower()
-        if side == 'HOME' and rl == 'home': return 'Win'
-        if side == 'AWAY' and rl == 'away': return 'Win'
+        rl = str(run_line_result).lower()
+        if 'push' in rl: return 'Push'
+        home_won = ('home' in rl and 'covered' in rl) or rl == 'home'
+        away_won = ('away' in rl and 'covered' in rl) or rl == 'away'
+        if side == 'HOME' and home_won: return 'Win'
+        if side == 'AWAY' and away_won: return 'Win'
         return 'Loss'
     if line is None: return None
     # Standard: run line -1.5 means picked side must win by 2+
@@ -149,15 +173,27 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
         print(f'  [{sport}] no ungraded jerry_reads on {game_date}')
         return 0
 
-    # Pull results
+    # Pull results — sport-specific SELECT so NFL/NCAAF/etc queries don't
+    # 400 on the MLB-only `run_line_result` column. Grader normalizes the
+    # value into an rl-result field the grade_rl call downstream reads.
     gid_list = list({r['game_id'] for r in reads if r.get('game_id')})
     gid_in = ','.join(f'"{g}"' for g in gid_list)
+    spread_col = SPREAD_COL_BY_SPORT.get(sport, 'spread_result')
     rr = requests.get(f'{SB}/rest/v1/{results_table}',
                       headers=H_READ,
                       params={'game_id': f'in.({gid_in})',
-                              'select': 'game_id,home_score,away_score,run_line_result,total_result'},
+                              'select': f'game_id,home_score,away_score,{spread_col},total_result'},
                       timeout=15)
-    results_by_gid = {row['game_id']: row for row in (rr.json() if rr.status_code == 200 else [])}
+    raw_rows = rr.json() if rr.status_code == 200 else []
+    if rr.status_code != 200:
+        print(f'  [{sport}] results query failed ({rr.status_code}): {str(rr.text)[:150]}')
+    # Normalize: alias the sport's spread column into `run_line_result` key
+    # so downstream grade_rl works uniformly regardless of sport.
+    results_by_gid = {}
+    for row in raw_rows:
+        if isinstance(row, dict):
+            row['run_line_result'] = row.get(spread_col)
+            results_by_gid[row['game_id']] = row
 
     # Postponement inference: game_date more than 4 days old + no result row
     # or result row with null scores = postponed/cancelled. Void them so they
