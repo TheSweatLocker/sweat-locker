@@ -1764,7 +1764,7 @@ const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parl
   // window we render as free so we don't leak Pro content behind a race.
   // paywallOpen controls the shared <Paywall> modal (bottom of tree).
   // paywallTrigger names the surface that opened it (analytics + copy).
-  const { isPro, isLoading: isSubLoading } = useSubscription();
+  const { isPro, isLoading: isSubLoading, restore } = useSubscription();
   const [paywallOpen, setPaywallOpen] = useState(false);
   const [paywallTrigger, setPaywallTrigger] = useState<string | undefined>(undefined);
   const openPaywall = React.useCallback((trigger?: string) => {
@@ -17796,6 +17796,72 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                   now lives in the FAQ (Reading the Card + How Picks Work sections)
                   which is auto-current with the code. See the Help & FAQ card
                   right below. */}
+              {/* 2026-09-06 Subscription section — required production UX
+                  for any App Store subscription app. Three actions:
+                    1. Show current status (Pro / Free)
+                    2. Manage Subscription — deep-links to iOS subscription
+                       management page. Apple review requirement.
+                    3. Restore Purchases — for users reinstalling or on a
+                       new device. Apple review requirement.
+                    4. If free: "See Plans" button opens paywall directly. */}
+              <View style={[styles.card,{marginBottom:12}]}>
+                <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+                  <Text style={{color:THEME.text,fontWeight:'700',fontSize:14}}>💳 Subscription</Text>
+                  <View style={{backgroundColor: isPro ? THEME.accent + '22' : THEME.textDim + '22', paddingHorizontal:8, paddingVertical:3, borderRadius:6}}>
+                    <Text style={{color: isPro ? THEME.accent : THEME.textDim, fontSize:10, fontWeight:'800', letterSpacing:0.5}}>
+                      {isPro ? 'PRO' : 'FREE'}
+                    </Text>
+                  </View>
+                </View>
+                {isPro ? (
+                  <>
+                    <Text style={{color:THEME.textDim,fontSize:12,marginBottom:12,lineHeight:18}}>You're subscribed to Sweat Locker Pro. Manage or cancel your subscription in iOS Settings — Apple handles all billing.</Text>
+                    <TouchableOpacity
+                      onPress={()=>Linking.openURL('https://apps.apple.com/account/subscriptions')}
+                      style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:12,borderTopWidth:1,borderTopColor:THEME.border}}
+                      activeOpacity={0.7}
+                    >
+                      <View>
+                        <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>Manage Subscription</Text>
+                        <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>Cancel, change plan, or view renewal date</Text>
+                      </View>
+                      <Text style={{color:THEME.accent,fontSize:18}}>↗</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <Text style={{color:THEME.textDim,fontSize:12,marginBottom:12,lineHeight:18}}>Unlock Jerry AI reads, Sharp Card, The Steam Room, and per-game analysis. 7-day free trial.</Text>
+                    <TouchableOpacity
+                      onPress={()=>{ setSettingsModal(false); setTimeout(()=>openPaywall('settings_see_plans'), 200); }}
+                      style={{backgroundColor:THEME.accent,borderRadius:10,paddingVertical:12,alignItems:'center',marginBottom:8}}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={{color:'#000',fontWeight:'800',fontSize:13}}>See Plans · Start Free Trial</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+                <TouchableOpacity
+                  onPress={async () => {
+                    const result = await restore();
+                    if (result.success) {
+                      Alert.alert('Restored', 'Welcome back to Sweat Locker Pro. Your subscription is active.');
+                    } else if (result.error === 'purchases_unavailable') {
+                      Alert.alert('Unavailable', 'Restore is not available in this build.');
+                    } else {
+                      Alert.alert('Nothing to restore', 'No active subscription found on this Apple ID. If you subscribed on another device, sign into the same Apple ID and try again.');
+                    }
+                  }}
+                  style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingVertical:12,borderTopWidth:1,borderTopColor:THEME.border}}
+                  activeOpacity={0.7}
+                >
+                  <View>
+                    <Text style={{color:THEME.text,fontWeight:'700',fontSize:13}}>Restore Purchases</Text>
+                    <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>Re-check for an active subscription on this Apple ID</Text>
+                  </View>
+                  <Text style={{color:THEME.accent,fontSize:18}}>↻</Text>
+                </TouchableOpacity>
+              </View>
+
               {/* FAQ (2026-08-09) — navigates to app/faq.tsx
                   2026-09-06 fix: close Settings modal before pushing to /faq
                   so the FAQ view isn't visually stacked BEHIND the modal.
