@@ -3464,6 +3464,46 @@ def upload_game_context(context, commence_time=None):
         if stripped:
             print(f"  🔒 Pre-game odds locked (game started) — preserved: {', '.join(stripped)}")
 
+    # 2026-09-07 SANITY GUARDRAIL on projected_total / projected_spread.
+    # User audit 9/7 flagged ATL @ PHI with projected_total=1.5 (impossibly
+    # low; real MLB totals span 6.5-14). Root cause was either the ML
+    # total_model_v5.pkl throwing an outlier or a rule-based fallback
+    # subtracting adjustments into negative-plausibility territory. This
+    # guardrail catches BOTH failure modes at the boundary: if projected
+    # values land outside plausible ranges, null them out so Jerry falls
+    # back to jerry_pred_total / market total instead of citing garbage.
+    # Better to show no projection than a nonsense one — a null projection
+    # skips the "projected total 1.5" citation entirely, while a wrong
+    # number gets loudly quoted in reads and downstream tier decisions.
+    _pt = context.get('projected_total')
+    if _pt is not None:
+        try:
+            _pt_f = float(_pt)
+            if _pt_f < 2.5 or _pt_f > 20:
+                print(f"  ⚠ SANITY: projected_total={_pt_f} out of plausible range [2.5, 20] — nulling for {context.get('game_id','?')}")
+                context['projected_total'] = None
+        except (TypeError, ValueError):
+            context['projected_total'] = None
+    _ps = context.get('projected_spread')
+    if _ps is not None:
+        try:
+            _ps_f = float(_ps)
+            # MLB projected_spread is in RUNS. Real games rarely exceed ±5.
+            if abs(_ps_f) > 15:
+                print(f"  ⚠ SANITY: projected_spread={_ps_f} out of plausible range ±15 — nulling for {context.get('game_id','?')}")
+                context['projected_spread'] = None
+        except (TypeError, ValueError):
+            context['projected_spread'] = None
+    _mt = context.get('model_pred_total')
+    if _mt is not None:
+        try:
+            _mt_f = float(_mt)
+            if _mt_f < 2.5 or _mt_f > 20:
+                print(f"  ⚠ SANITY: model_pred_total={_mt_f} out of range — nulling for {context.get('game_id','?')}")
+                context['model_pred_total'] = None
+        except (TypeError, ValueError):
+            context['model_pred_total'] = None
+
     r = requests.post(
         f"{SUPABASE_URL}/rest/v1/mlb_game_context?on_conflict=game_id",
         headers=headers,

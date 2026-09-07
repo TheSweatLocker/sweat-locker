@@ -479,7 +479,57 @@ def auto_repair(sport: str, game_date: str) -> dict:
     """
     repairs = {'A_layer_d_jerry_reads': 0, 'A_layer_d_prop_jerry': 0,
                'B_trend_forced_pass': 0,
-               'Z_refit_reapplied': 0}
+               'Z_refit_reapplied': 0,
+               'AA_audit_leak_scrubbed': 0}
+
+    # --- AA. STALE AUDIT-TAG SELF-HEAL (2026-09-07) ---
+    # Root-cause fix for the "[Auto-*-repair …] Original take: …" text
+    # leaking into user-visible long_read on games where the audit
+    # condition trips ONCE, prepends the diagnostic to long_read, then
+    # later runs don't retrigger (sim moved, side flipped, etc.) so the
+    # stale leak sits forever. Every downstream `auto_repair` block only
+    # rewrites when its CURRENT trigger fires — nothing detects "this row
+    # already has an [Auto-*] prefix that needs scrubbing."
+    #
+    # This sweep fires FIRST every run. Finds any jerry_read whose
+    # long_read starts with an `[Auto-` audit tag, moves the tag into
+    # the dedicated `audit_notes` column, and restores the clean
+    # "Original take:" content as the user-visible long_read. Any row
+    # touched here is safe — the audit trail is preserved in
+    # audit_notes; the user just no longer sees the diagnostic prefix.
+    #
+    # Sport-agnostic sweep — applies to any sport's jerry_reads with the
+    # stale-leak pattern. Idempotent (once scrubbed, prefix is gone).
+    try:
+        import re as _re_scrub
+        leak_rows = requests.get(f'{SB}/rest/v1/jerry_reads',
+            headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'sport': f'eq.{sport}',
+                    'long_read': 'ilike.[Auto-%',
+                    'select': 'id,long_read,audit_notes,short_read'},
+            timeout=15).json() or []
+        for row in leak_rows:
+            long_r = row.get('long_read') or ''
+            # Extract original take (post-"Original take:") + audit tag prefix
+            orig_idx = long_r.find('Original take:')
+            audit_end = long_r.find(']')
+            if audit_end <= 0: continue
+            audit_tag = long_r[:audit_end + 1]
+            clean_long = long_r[orig_idx + len('Original take:'):].strip() if orig_idx >= 0 else (row.get('short_read') or '')
+            merged_audit_notes = (row.get('audit_notes') or '')
+            if audit_tag not in merged_audit_notes:
+                merged_audit_notes = (merged_audit_notes + '\n' + audit_tag).strip()
+            payload = {
+                'long_read': clean_long[:2000] if clean_long else (row.get('short_read') or '')[:2000],
+                'audit_notes': merged_audit_notes[:1500],
+            }
+            pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{row["id"]}',
+                                headers=H_WRITE, json=payload, timeout=10)
+            if pr.status_code in (200, 204):
+                repairs['AA_audit_leak_scrubbed'] += 1
+    except Exception as e:
+        print(f'  ⚠ AA audit-leak self-heal failed (non-fatal): {e}')
 
     # --- Z. Refit self-heal (2026-08-15) ---
     # Before any other repair or the coverage gate runs, ALWAYS re-apply
