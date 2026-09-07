@@ -277,11 +277,32 @@ def run(game_date: str | None = None, dry_run: bool = False) -> None:
     props = r.json() if r.status_code == 200 else []
     print(f"  {len(props)} props to consider")
 
-    updated = skipped = hits_capped = 0
+    updated = skipped = hits_capped = stale_zeros_cleared = 0
     for p in props:
         result = compute_refit(p["prop_type"], p["direction"],
                                 p.get("signals") or {}, weights)
         if result is None:
+            # 2026-09-07 STALE-ZERO CLEANUP. Root cause of watchdog critical
+            # block (8 bb_over props today flagged trap zone). Prior:
+            # compute_refit returning None meant "skip this row" — which
+            # left stale refit_conviction=0.0 values from BEFORE the
+            # FIRED-EMPTY GUARD (2026-08-23) sitting forever. Downstream
+            # trap-zone watchdog then flagged them as "PRIME on refit=0.0,
+            # apply_refit_verdict_override should have downgraded" —
+            # correctly, because refit=0 legit means "no signal support,
+            # tier is meaningless." Root fix: proactively NULL any
+            # existing refit_conviction when compute now returns None,
+            # so trap-zone check sees NULL (skip) not 0.0 (critical).
+            current_refit = p.get("refit_conviction")
+            if current_refit is not None and current_refit == 0:
+                pr = requests.patch(
+                    f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?id=eq.{p['id']}",
+                    headers=H_WRITE,
+                    json={"refit_conviction": None},
+                    timeout=10,
+                )
+                if pr.status_code in (200, 204):
+                    stale_zeros_cleared += 1
             skipped += 1
             continue
         conv, version = result
@@ -328,6 +349,8 @@ def run(game_date: str | None = None, dry_run: bool = False) -> None:
             print(f"  ⚠ patch id={p['id']}: {pr.status_code} {pr.text[:120]}")
 
     print(f"\n  ✅ {updated} refit_conviction rows written")
+    if stale_zeros_cleared:
+        print(f"  🧹 {stale_zeros_cleared} stale refit_conviction=0.0 rows cleared to NULL")
     print(f"  ⏭  {skipped} skipped (prop type not in refit registry)")
     if hits_capped:
         print(f"  🔽 {hits_capped} hits_over PRIME rows capped to STRONG (refit < 60)")
