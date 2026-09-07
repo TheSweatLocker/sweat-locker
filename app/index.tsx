@@ -13725,29 +13725,79 @@ setJerryHistory(prev => {
                         )
                       )}
                        {(()=>{
-                        //console.log('Badge check - bartData:', bartData.length, 'away:', stripMascot(game.away_team), 'match:', fuzzyMatchTeam(stripMascot(game.away_team), bartData, 'team')?.team);
+                        // 2026-09-07: sport-aware sub-chips under team names.
+                        // NCAAB gets KenPom OFF/DEF rank (existing). NFL gets
+                        // season ATS record. NCAAF gets AP rank + SP+ rating
+                        // when ranked, ATS record otherwise. Fixes "cards look
+                        // bare" for football before you tap in.
                         const awayKP = gamesSport==='NCAAB' ? fuzzyMatchTeam(stripMascot(game.away_team), bartData, 'team') : null;
                         const homeKP = gamesSport==='NCAAB' ? fuzzyMatchTeam(stripMascot(game.home_team), bartData, 'team') : null;
+                        // NFL / NCAAF ctx lookup for ATS + rank chips
+                        const _fCtxMap = gamesSport==='NFL' ? (nflGameContextMap || {})
+                          : gamesSport==='NCAAF' ? (ncaafGameContextMap || {}) : {};
+                        let _fCtx: any = null;
+                        if (gamesSport==='NFL' || gamesSport==='NCAAF') {
+                          _fCtx = _fCtxMap[game.id]
+                            || _fCtxMap[`${stripMascot(game.away_team||'')}@${stripMascot(game.home_team||'')}`]
+                            || Object.values(_fCtxMap).find((c: any) =>
+                                 c && (c.home_team === game.home_team || c.away_team === game.away_team));
+                        }
+                        const renderSubChip = (side: 'away'|'home') => {
+                          // NCAAB → OFF/DEF rank (existing)
+                          const kp = side === 'away' ? awayKP : homeKP;
+                          if (kp) {
+                            return (
+                              <View style={{flexDirection:'row',alignItems:'center',gap:4,marginTop:3, justifyContent: side==='home'?'flex-end':'flex-start'}}>
+                                <Text style={{fontSize:10,color:THEME.win,fontWeight:'700'}}>#{kp.adjOERank} OFF</Text>
+                                <Text style={{fontSize:10,color:THEME.sharp,fontWeight:'700'}}>#{kp.adjDERank} DEF</Text>
+                              </View>
+                            );
+                          }
+                          // NFL / NCAAF sub-chips from game_context
+                          if (_fCtx && (gamesSport === 'NFL' || gamesSport === 'NCAAF')) {
+                            const w = _fCtx[`${side}_season_ats_wins`];
+                            const l = _fCtx[`${side}_season_ats_losses`];
+                            const rank = gamesSport === 'NCAAF' ? _fCtx[`${side}_ap_rank`] : null;
+                            const spPlus = gamesSport === 'NCAAF' ? _fCtx[`${side}_sp_plus`] : null;
+                            const chips: any[] = [];
+                            if (rank && Number(rank) > 0 && Number(rank) <= 25) {
+                              chips.push(<Text key="r" style={{fontSize:10,color:THEME.accent,fontWeight:'800'}}>#{rank} AP</Text>);
+                            }
+                            if (spPlus != null && !isNaN(Number(spPlus))) {
+                              const sp = Number(spPlus);
+                              const spColor = sp >= 15 ? THEME.win : sp >= 0 ? THEME.sharp : THEME.loss;
+                              chips.push(<Text key="sp" style={{fontSize:10,color:spColor,fontWeight:'700'}}>SP+ {sp >= 0 ? '+' : ''}{sp.toFixed(1)}</Text>);
+                            }
+                            if (w != null && l != null && (Number(w)+Number(l)) > 0) {
+                              const ats = `${w}-${l} ATS`;
+                              const total = Number(w) + Number(l);
+                              const pct = total > 0 ? Number(w)/total : 0;
+                              const atsColor = pct >= 0.58 ? THEME.win : pct <= 0.42 ? THEME.loss : THEME.textMuted;
+                              chips.push(<Text key="ats" style={{fontSize:10,color:atsColor,fontWeight:'700'}}>{ats}</Text>);
+                            }
+                            if (chips.length > 0) {
+                              return (
+                                <View style={{flexDirection:'row',alignItems:'center',gap:6,marginTop:3, justifyContent: side==='home'?'flex-end':'flex-start', flexWrap:'wrap'}}>
+                                  {chips}
+                                </View>
+                              );
+                            }
+                          }
+                          // Fallback
+                          return <Text style={{fontSize:11,color:THEME.textDim,marginTop:2}}>{side === 'home' ? 'Home' : 'Away'}</Text>;
+                        };
                         return(
                           <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
                             <View style={{flex:1}}>
                               <Text style={{fontSize:15,fontWeight:'700',color:THEME.text}}>{stripMascot(game.away_team)}</Text>
-                              {awayKP&&<View style={{flexDirection:'row',alignItems:'center',gap:4,marginTop:3}}>
-                                <Text style={{fontSize:10,color:THEME.win,fontWeight:'700'}}>#{awayKP.adjOERank} OFF</Text>
-                                <Text style={{fontSize:10,color:THEME.sharp,fontWeight:'700'}}>#{awayKP.adjDERank} DEF</Text>
-                              </View>}
-                              {!awayKP&&<Text style={{fontSize:11,color:THEME.textDim,marginTop:2}}>Away</Text>}
+                              {renderSubChip('away')}
                             </View>
                             <View style={{paddingHorizontal:12,paddingVertical:6,backgroundColor:THEME.surfaceAlt,borderRadius:8,borderWidth:1,borderColor:THEME.border}}>
                               <Text style={{color:THEME.textMuted,fontWeight:'800',fontSize:12}}>@</Text>
                             </View>
                             <View style={{flex:1,alignItems:'flex-end'}}>
                               <Text style={{fontSize:15,fontWeight:'700',color:THEME.text}}>{stripMascot(game.home_team)}</Text>
-                              {homeKP&&<View style={{flexDirection:'row',alignItems:'center',gap:4,marginTop:3,justifyContent:'flex-end'}}>
-                                <Text style={{fontSize:10,color:THEME.win,fontWeight:'700'}}>#{homeKP.adjOERank} OFF</Text>
-                                <Text style={{fontSize:10,color:THEME.sharp,fontWeight:'700'}}>#{homeKP.adjDERank} DEF</Text>
-                              </View>}
-                              {!homeKP&&<Text style={{fontSize:11,color:THEME.textDim,marginTop:2}}>Home</Text>}
+                              {renderSubChip('home')}
                             </View>
                           </View>
                         );
