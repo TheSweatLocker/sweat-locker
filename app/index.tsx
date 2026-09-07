@@ -15191,16 +15191,12 @@ setJerryHistory(prev => {
                         </View>
                       )}
                     </View>
-                    {winKey === 'epoch' && (
-                      <Text style={{color:THEME.textDim,fontSize:10,marginTop:6,fontStyle:'italic'}}>
-                        Since Aug 20 · post-recalibration fresh start
-                      </Text>
-                    )}
-                    {winKey === 'lifetime' && (
-                      <Text style={{color:THEME.textDim,fontSize:10,marginTop:6,fontStyle:'italic'}}>
-                        Lifetime · includes pre-calibration prop shipping
-                      </Text>
-                    )}
+                    {/* 2026-09-07 dropped tout-adjacent "Since Aug 20 · post-
+                        recalibration fresh start" and "Lifetime · includes
+                        pre-calibration prop shipping" tags per user directive.
+                        The window pill (7D/30D/MTD/ALL) already communicates
+                        what's being shown — no need for internal-baseline
+                        flavor text below the record. */}
                     {(heroSidesLabel || heroPropsLabel) && (
                       <Text style={{color:THEME.textDim,fontSize:11,marginTop:6,fontVariant:['tabular-nums']}}>
                         {[heroSidesLabel, heroPropsLabel].filter(Boolean).join('  ·  ')}
@@ -16376,10 +16372,12 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 </View>
                               );
                             })()}
-                            {/* Prev-month + fresh-epoch footer, single line */}
-                            <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44', gap:8}}>
-                              <Text style={{color:THEME.textMuted, fontSize:9, fontStyle:'italic', flexShrink:1}} numberOfLines={1}>Fresh from Aug 20 · real snapshot odds</Text>
-                              {totalPrev > 0 ? (
+                            {/* 2026-09-07: dropped "Fresh from Aug 20 · real
+                                snapshot odds" footer per user directive — tout-
+                                adjacent and referenced a stale internal baseline.
+                                Kept the prev-month record which IS informative. */}
+                            {totalPrev > 0 && (
+                              <View style={{flexDirection:'row', justifyContent:'flex-end', alignItems:'center', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44', gap:8}}>
                                 <Text
                                   numberOfLines={1}
                                   adjustsFontSizeToFit
@@ -16387,8 +16385,8 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                   style={{color:THEME.textDim, fontSize:10, flexShrink:1, textAlign:'right'}}>
                                   {prevMonthName}: {r.wPrev}-{r.lPrev} · <Text style={{color:unitsColorPrev, fontWeight:'700'}}>{r.unitsNetPrev >= 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u</Text>
                                 </Text>
-                              ) : null}
-                            </View>
+                              </View>
+                            )}
                           </View>
                         );
                       })()}
