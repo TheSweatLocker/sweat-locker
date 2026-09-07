@@ -327,41 +327,76 @@ def build_struct(game, stats, contexts=None):
         # for the LLM. Passed as struct.pre_parsed_facts + surfaced at the
         # top of the model_context block so it's the FIRST thing Jerry sees.
         facts = {}
-        # ── Money line — verbatim, no rounding ──
+        # ── Money line — verbatim, no rounding. ML SIGN IS THE ONLY UNAMBIGUOUS
+        # DIRECTION SIGNAL: negative = favorite (giving vig), positive = dog.
+        # We derive fav/dog from ML, then attribute the spread number to the
+        # correct team. Do NOT trust close_spread's sign to identify who's
+        # favored — it varies by data source (some feeds store the away-team
+        # line, some store the home-team line). ML is universal.
         aml = ctx.get('close_away_ml'); hml = ctx.get('close_home_ml')
+        _fav_team = _dog_team = None
+        _fav_ml = _dog_ml = None
         if aml is not None and hml is not None:
-            _fav_team = away if int(aml) < 0 else home if int(hml) < 0 else None
-            _dog_team = home if _fav_team == away else (away if _fav_team == home else None)
-            facts["moneyline_verbatim"] = f"{away} {aml:+d} / {home} {hml:+d}"
+            aml_i, hml_i = int(aml), int(hml)
+            if aml_i < 0 and hml_i > 0:
+                _fav_team, _dog_team = away, home
+                _fav_ml, _dog_ml = aml_i, hml_i
+            elif hml_i < 0 and aml_i > 0:
+                _fav_team, _dog_team = home, away
+                _fav_ml, _dog_ml = hml_i, aml_i
+            # If both ML same sign or both zero (rare), leave fav/dog null
+            facts["moneyline_verbatim"] = f"{away} {aml_i:+d} / {home} {hml_i:+d}"
             if _fav_team:
-                facts["moneyline_favorite"] = f"{_fav_team} at {aml if _fav_team==away else hml:+d}"
-                facts["moneyline_dog"]      = f"{_dog_team} at {hml if _fav_team==away else aml:+d}"
-        # ── Spread — market ──
+                facts["moneyline_favorite"] = f"{_fav_team} at {_fav_ml:+d}"
+                facts["moneyline_dog"]      = f"{_dog_team} at {_dog_ml:+d}"
+        # ── Spread — attribute the spread MAGNITUDE to the ML-identified fav ──
         sp = ctx.get('close_spread')
-        if sp is not None:
-            # book convention: negative = home favored. Positive = away favored.
-            spf = float(sp)
-            fav = home if spf < 0 else away
-            dog = away if spf < 0 else home
-            facts["market_spread_verbatim"] = f"{fav} {-abs(spf):+.1f}, {dog} {+abs(spf):+.1f}"
-            facts["market_favors"] = f"{fav} by {abs(spf):.1f} points"
-        # ── Model projected spread — H+ / A- convention ──
-        ps = ctx.get('projected_spread')
-        if ps is not None:
-            psf = float(ps)
-            model_winner = home if psf > 0 else away
-            model_loser  = away if psf > 0 else home
-            facts["model_favors"] = f"{model_winner} by {abs(psf):.2f} points (model_pred: {ctx.get('model_pred_home_points')} {home} vs {ctx.get('model_pred_away_points')} {away})"
-            # Explicit edge summary vs market
-            if sp is not None:
-                model_margin_home = psf  # already H+/A-
-                mkt_margin_home = -float(sp)  # invert: book -3.5 home fav = home +3.5 margin
-                edge_pts_home = model_margin_home - mkt_margin_home
-                if abs(edge_pts_home) >= 0.5:
-                    edge_side = home if edge_pts_home > 0 else away
-                    facts["edge_side"] = f"{edge_side} — model favors them by {abs(edge_pts_home):.2f} more points than market"
-                else:
-                    facts["edge_side"] = f"none — model and market within {abs(edge_pts_home):.2f} pts"
+        if sp is not None and _fav_team is not None:
+            mag = abs(float(sp))
+            facts["market_spread_verbatim"] = f"{_fav_team} {-mag:+.1f} / {_dog_team} {+mag:+.1f}"
+            facts["market_favors"] = f"{_fav_team} by {mag:.1f} points"
+        elif sp is not None:
+            # No ML to disambiguate — report raw with WARNING
+            facts["market_spread_verbatim"] = f"spread {float(sp):+.1f} (raw — ML not available to identify favorite)"
+        # ── Model direction — model_pred_*_points is SOURCE OF TRUTH ──
+        # projected_spread comes from a different lens in the pipeline (v3-era
+        # signed number) and doesn't always match model_pred_home - model_pred_away.
+        # BAL @ IND example: projected_spread=2.38 but model_pred=26.6/25.1
+        # (margin 1.5). Don't feed Jerry the projected_spread number alone —
+        # the derived-from-scores string is unambiguous and Jerry can quote it.
+        hp = ctx.get('model_pred_home_points')
+        ap = ctx.get('model_pred_away_points')
+        if hp is not None and ap is not None:
+            hp_f, ap_f = float(hp), float(ap)
+            model_winner = home if hp_f > ap_f else away
+            model_loser  = away if hp_f > ap_f else home
+            margin = abs(hp_f - ap_f)
+            facts["model_favors"] = (
+                f"{model_winner} by {margin:.1f} points "
+                f"({home} {hp_f:.1f} vs {away} {ap_f:.1f})"
+            )
+            # Edge vs market — how much more/less does the model favor the fav?
+            if _fav_team:
+                # market margin for fav (positive)
+                mkt_margin = abs(float(sp)) if sp is not None else None
+                # model margin for fav (positive if model agrees, negative if model likes dog)
+                model_margin_for_fav = (hp_f - ap_f) if _fav_team == home else (ap_f - hp_f)
+                if mkt_margin is not None:
+                    edge_pts = model_margin_for_fav - mkt_margin
+                    if edge_pts >= 0.5:
+                        facts["edge_side"] = f"{_fav_team} — model favors them by {abs(edge_pts):.1f} MORE points than market"
+                    elif edge_pts <= -0.5:
+                        facts["edge_side"] = f"{_dog_team} — model has {_fav_team} winning by less than market ({abs(edge_pts):.1f} pt gap → take {_dog_team} with points)"
+                    else:
+                        facts["edge_side"] = f"none — model and market within {abs(edge_pts):.1f} pt"
+        elif ctx.get('projected_spread') is not None:
+            # No model_pred_*_points — fall back to projected_spread with EXPLICIT
+            # sign-convention warning so Jerry doesn't guess.
+            ps_f = float(ctx.get('projected_spread'))
+            facts["model_favors_ambiguous"] = (
+                f"projected_spread={ps_f:+.2f} — DO NOT interpret sign without model_pred_*_points confirmation. "
+                "If you cite this, quote the raw number and say 'thin model coverage'."
+            )
         # ── Total — resolve ONE canonical projection to cite; label others clearly ──
         # Panel and projected_total are DIFFERENT lenses. Jerry was double-citing
         # them as if they were one number (9/13 ARI @ LAC: "42.48 vs 46.5" AND
