@@ -694,6 +694,26 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                 parsed['conviction'] = min(prev_conv, 35)
         except ImportError:
             pass
+        # 2026-09-07: also attach template-rendered structured sections
+        # to the LLM read. Prior LLM path wrote input_snapshot with only
+        # source/signals/conviction — NO render_sections — so LLM-synthed
+        # props (PRIME/STRONG tiers) rendered without the chart, coverage
+        # pill, or why-bullet stack that template-path props got. User
+        # audit: Deebo Samuel (LLM-synth) had no graph while DeVonta Smith
+        # (template-path) had all 6 structured sections. This attaches the
+        # same structured render to LLM reads so every prop has uniform
+        # visual data density.
+        try:
+            from render_prop_template import render_prop_template
+            pb_key = (prop.get('player_name'), prop.get('prop_type'),
+                      prop.get('direction'), prop.get('prop_line'))
+            pb_row = playbook_by_key.get(pb_key)
+            ctx_row = ctx_by_game.get(prop.get('game_id'))
+            _rendered = render_prop_template(prop, pb_row, ctx=ctx_row)
+            if _rendered and _rendered.get('sections'):
+                parsed['_render_sections'] = _rendered['sections']
+        except (ImportError, Exception) as _e:
+            pass  # non-fatal — LLM read still writes without sections
         if upsert_read(sport, prop, parsed, prompt, game_date):
             verdict = parsed.get('call_verdict') or '?'; conv = parsed.get('conviction') or '?'
             print(f'  ✓ {prop["player_name"][:20]:<20} {prop["prop_type"]:<12} {prop["direction"]:<5} → {verdict} {conv}')
