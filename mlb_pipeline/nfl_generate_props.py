@@ -376,16 +376,35 @@ def fetch_event_props(event_id: str, sport_key: str) -> dict:
 
 def player_id_lookup(name: str, position: Optional[str] = None) -> Optional[dict]:
     """Fuzzy lookup player_id + team from nfl_player_stats latest season.
-    Returns {player_id, player_name, team, position} or None."""
-    # Odds API uses common name (Patrick Mahomes), nflverse uses same.
-    # Filter by position when we know it, order by season desc so we get most recent team.
-    q = f'{SB}/rest/v1/nfl_player_stats?player_name=ilike.{name}&order=season.desc,week.desc&limit=1&select=player_id,player_name,team,position'
-    if position:
-        q += f'&position=eq.{position}'
-    r = requests.get(q, headers=H_READ, timeout=15)
-    if r.status_code == 200 and r.json():
-        return r.json()[0]
-    return None
+    Returns {player_id, player_name, team, position} or None.
+
+    2026-09-07: user caught Davante Adams cited as team=NYJ on today's
+    props when he's actually on LAR (mid-2025 trade). Root cause: prior
+    query used `order season.desc,week.desc,limit 1` across ALL seasons
+    + ALL season_types with only ilike-name filter. If a player has any
+    non-current-team stint recorded higher in the ordering (some feeds
+    include preseason and legacy season_types), we'd return the stale
+    team assignment. Fix: prefer 2025 REG season for team assignment,
+    fall back gracefully to prior season only when no 2025 data exists.
+    Also filters WHERE team IS NOT NULL to skip pre-backfill rows that
+    have the player_id but not the team.
+    """
+    def _pull(season: int | None, season_type: str = 'REG'):
+        params = f'player_name=ilike.{name}&team=not.is.null&order=week.desc&limit=1&select=player_id,player_name,team,position,season,week'
+        if season is not None:
+            params += f'&season=eq.{season}&season_type=eq.{season_type}'
+        if position:
+            params += f'&position=eq.{position}'
+        r = requests.get(f'{SB}/rest/v1/nfl_player_stats?{params}', headers=H_READ, timeout=15)
+        return r.json()[0] if r.status_code == 200 and r.json() else None
+    # Try current + prior season REG in order — get freshest team assignment.
+    from datetime import datetime as _dt
+    curr = _dt.utcnow().year
+    for s in (curr, curr - 1, curr - 2):
+        row = _pull(s, 'REG')
+        if row: return row
+    # Last resort: any season with a team
+    return _pull(None)
 
 
 # ─────────────────────────────────────────────────────────────
