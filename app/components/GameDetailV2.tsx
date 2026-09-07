@@ -342,11 +342,10 @@ export default function GameDetailV2({
       />
 
       <ScrollView style={{flex: 1}} contentContainerStyle={{paddingBottom: 24}}>
-        <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} jerrySynthesis={jerrySynthesis} />
-        <LosingMarketChips ctx={ctx} />
-        <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} synthesis={jerrySynthesis} isPro={isPro} onUpgrade={onUpgrade} />
-        <AlignmentStrip ctx={ctx} />
-
+        {/* Free tier gets Market card only (odds are free everywhere, no
+            competitive advantage in hiding them). Verdict + Jerry read +
+            everything below the Market card is Pro. See the big gate
+            after the Market section below. */}
         <Section title="Market">
           <MarketRow
             closeSpread={closeSpread}
@@ -355,6 +354,64 @@ export default function GameDetailV2({
             awayML={awayML}
           />
         </Section>
+
+        {/* 2026-09-06 GAME DETAIL BULK GATE. Everything analytical is Pro:
+            Verdict, Jerry read, alignment strip, predicted score, money
+            flow, line movement, model consensus, external handicappers,
+            situational records, team stats, splits, cohorts, props, book
+            lines, numbers dump. One big "unlock the analysis" panel here
+            for free users; full render below for Pro. Trade-off: free
+            users see the game exists + market prices (parity with any
+            free odds app) but the analytical value that drives the
+            subscription is behind the wall. */}
+        {isPro === false && (
+          <View style={{paddingHorizontal: 14, marginTop: 8, marginBottom: 20}}>
+            <View style={{backgroundColor: C.accent + '14', borderRadius: 14, padding: 20, borderWidth: 1.5, borderColor: C.accent + '55'}}>
+              <View style={{alignItems:'center', marginBottom: 14}}>
+                <View style={{backgroundColor: C.accent + '22', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, marginBottom: 10}}>
+                  <Text style={{color: C.accent, fontSize: 10, fontWeight: '800', letterSpacing: 1.5}}>🔒 SWEAT LOCKER PRO</Text>
+                </View>
+                <Text style={{color: C.text, fontSize: 18, fontWeight: '800', textAlign: 'center', marginBottom: 6}}>Unlock the full analysis</Text>
+                <Text style={{color: C.textDim, fontSize: 12, lineHeight: 18, textAlign: 'center'}}>
+                  Every model, every signal, every counter-argument that goes into our pick — laid out for you to judge.
+                </Text>
+              </View>
+              <View style={{gap: 6, marginTop: 4, marginBottom: 14}}>
+                {[
+                  'The Verdict — our pick + conviction',
+                  "Jerry's Read — full model narrative",
+                  'Predicted Score & Model Consensus',
+                  'Money Flow — sharp $ vs public bets',
+                  'External Handicappers — 8+ sources',
+                  'Situational Records & Team Stats',
+                  'Line Movement + Public Splits',
+                  'Full Model Numbers Dump',
+                ].map((b, i) => (
+                  <View key={i} style={{flexDirection: 'row', alignItems: 'flex-start', gap: 8}}>
+                    <Text style={{color: C.accent, fontSize: 13, marginTop: 0}}>✓</Text>
+                    <Text style={{color: C.textMuted, fontSize: 12, lineHeight: 17, flex: 1}}>{b}</Text>
+                  </View>
+                ))}
+              </View>
+              <TouchableOpacity
+                onPress={onUpgrade}
+                activeOpacity={0.85}
+                style={{backgroundColor: C.accent, borderRadius: 10, paddingVertical: 13, alignItems: 'center'}}>
+                <Text style={{color: '#000', fontWeight: '800', fontSize: 14}}>Start 7-Day Free Trial</Text>
+              </TouchableOpacity>
+              <Text style={{color: C.textDim, fontSize: 10, textAlign: 'center', marginTop: 8}}>
+                Then $14.99/mo or $119.99/yr · cancel anytime
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Verdict + Jerry read + all analytics — Pro only */}
+        {isPro !== false && (<>
+        <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} jerrySynthesis={jerrySynthesis} />
+        <LosingMarketChips ctx={ctx} />
+        <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} synthesis={jerrySynthesis} isPro={isPro} onUpgrade={onUpgrade} />
+        <AlignmentStrip ctx={ctx} />
 
         {/* 2026-09-01: gate on any predicted-score field. Was rendering
             empty "No score projections available" under the Section title
@@ -492,6 +549,7 @@ export default function GameDetailV2({
             MORE DATA · LESS SWEAT · <Text style={{color: C.accent, fontWeight: '800'}}>THE SWEAT LOCKER</Text>
           </Text>
         </View>
+        </>)}
       </ScrollView>
     </View>
   );
