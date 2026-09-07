@@ -5282,6 +5282,12 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         // SELECT only pulled 15 fields → those cards silently returned null.
         // NOTE: ncaaf_game_context uses `close_home_ml`/`close_away_ml`
         // (not `home_ml_close` like MLB) — inconsistent naming across sports.
+        // 2026-09-07: added ap_rank, sp_plus, season_ats_*, l10 ATS venue
+        // fields — game-card sub-chips (shipped 8b1a48b6) look at these and
+        // silently render "Home/Away" placeholders when the SELECT doesn't
+        // fetch them. User: "NCAAF badges not rendering as well." Same
+        // root cause as the NFL badge bug (columns exist in DB, just not
+        // in the SELECT).
         .select('game_id,game_date,home_team,away_team,close_spread,close_total,'
           + 'close_home_ml,close_away_ml,open_spread,open_total,'
           + 'projected_spread,projected_total,model_pred_home_points,model_pred_away_points,'
@@ -5289,6 +5295,11 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           + 'signal_confluence_net,signal_confluence_breakdown,'
           + 'sweat_score,sweat_tier,primary_play,splits_summary,season,season_type,'
           + 'home_sp_overall,away_sp_overall,sp_gap,'
+          + 'home_sp_plus,away_sp_plus,home_ap_rank,away_ap_rank,'
+          + 'home_season_ats_wins,home_season_ats_losses,'
+          + 'away_season_ats_wins,away_season_ats_losses,'
+          + 'home_ats_l10_at_home,home_ats_l10_at_home_losses,'
+          + 'away_ats_l10_on_road,away_ats_l10_on_road_losses,'
           + 'home_off_epa_pp,away_off_epa_pp,home_def_epa_pp,away_def_epa_pp,'
           + 'home_returning_production,away_returning_production,'
           + 'home_ol_avg_wt,away_ol_avg_wt,ol_dl_weight_gap_home,ol_dl_weight_gap_away,'
