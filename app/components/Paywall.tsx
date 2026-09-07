@@ -74,33 +74,14 @@ export const Paywall: React.FC<Props> = ({ visible, onDismiss, triggerFeature })
   const hasTrial = monthlyPkg?.product?.introPrice || annualPkg?.product?.introPrice;
 
   const handlePurchase = async () => {
-    // 2026-09-06 DIAGNOSTIC — verbose logging on tap to catch silent
-    // no-op bugs where the CTA appears enabled but the tap either
-    // doesn't fire, hits the !pkg guard, or the purchase call rejects
-    // and the Alert doesn't surface (modal layering issue on iOS).
-    console.log('[Paywall] handlePurchase tap fired', {
-      busy,
-      isLoading,
-      selected,
-      hasCurrentOffering: !!currentOffering,
-      packageCount: currentOffering?.availablePackages?.length ?? 0,
-      packageIdentifiers: (currentOffering?.availablePackages || []).map((p: any) => ({
-        id: p.identifier, type: p.packageType, productId: p.product?.identifier,
-      })),
-      monthlyPkgFound: !!monthlyPkg,
-      annualPkgFound: !!annualPkg,
-    });
-    if (busy) { console.log('[Paywall] bail: busy'); return; }
+    if (busy) return;
     const pkg = selected === 'monthly' ? monthlyPkg : annualPkg;
     if (!pkg) {
-      console.log('[Paywall] bail: no pkg for selected=', selected);
-      Alert.alert('Unavailable', `${selected === 'monthly' ? 'Monthly' : 'Annual'} plan isn't loaded from RevenueCat. Check RC offering packages.`);
+      Alert.alert('Unavailable', 'Subscription not available right now. Please try again in a moment.');
       return;
     }
-    console.log('[Paywall] calling purchase() with pkg.identifier=', pkg.identifier);
     setBusy(true);
     const result = await purchase(pkg.identifier);
-    console.log('[Paywall] purchase() returned', result);
     setBusy(false);
     if (result.success) {
       onDismiss();
