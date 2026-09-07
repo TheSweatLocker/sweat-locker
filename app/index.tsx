@@ -7738,14 +7738,18 @@ if(mkt.key === 'pitcher_props') {
     if (!cfg) { setPipelineMLBProps([]); return; }
     setPipelineMLBLoading(true);
     try {
-      // 2026-09-03 LAUNCH BLOCKER: MLB now reads from
-      // v_mlb_props_publishable (SQL view) which applies SKIP-BACK
-      // override + _coverage_kill_gate filter server-side. Kills the
-      // client-side .filter() logic that lived here (couldn't be
-      // changed without an App Store ship). See supabase migration
-      // 20260903b_mlb_props_publishable_view.sql. NFL still uses RPC —
-      // separate refactor since fewer client rules apply there.
-      if (sport.toUpperCase() === 'MLB') {
+      // 2026-09-03: MLB reads from v_mlb_props_publishable (server-side
+      // SKIP-BACK + coverage-kill filter). 2026-09-07: NFL now also reads
+      // from v_nfl_props_publishable (server-side Jerry BACK@conv>=60 gate
+      // to compensate for early-season tier miscalibration). Same code
+      // path — just picks the sport's view + date-range strategy.
+      // User: "how does MLB do it? don't invent something new."
+      const _VIEW_BY_SPORT: Record<string, {view: string; dateStrategy: 'today' | 'upcoming_week'}> = {
+        MLB: {view: 'v_mlb_props_publishable', dateStrategy: 'today'},
+        NFL: {view: 'v_nfl_props_publishable', dateStrategy: 'upcoming_week'},
+      };
+      const _viewCfg = _VIEW_BY_SPORT[sport.toUpperCase()];
+      if (_viewCfg) {
         const todayET = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
         // 2026-09-06 bug fix: parallel-fetch prop_jerry_reads and merge as
         // p.prop_jerry so the structured Prop Jerry panel (coverage pill +
@@ -7753,18 +7757,25 @@ if(mkt.key === 'pitcher_props') {
         // Prior code returned view rows only, leaving prop.prop_jerry
         // undefined → app fell to the "WHY WE BACK THIS" fallback bullets
         // and never showed the graphs users expected.
-        const [viewRes, jerryRes] = await Promise.all([
-          supabase.from('v_mlb_props_publishable')
-            .select('*')
-            .eq('game_date', todayET)
-            .order('display_conviction', {ascending: false}),
-          supabase.from('prop_jerry_reads')
-            .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction,input_snapshot')
-            .eq('sport', 'MLB')
-            .eq('game_date', todayET),
-        ]);
+        // 2026-09-07: date-strategy per sport. MLB filters to today
+        // (daily slate). NFL uses a rolling 8-day window (today → +8d)
+        // to catch Week N props for a game still 2-5 days out — MLB's
+        // eq(today) would surface zero NFL props all week except gameday.
+        let viewQuery = supabase.from(_viewCfg.view).select('*').order('display_conviction', {ascending: false});
+        let jerryQuery = supabase.from('prop_jerry_reads')
+          .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction,input_snapshot')
+          .eq('sport', sport.toUpperCase());
+        if (_viewCfg.dateStrategy === 'today') {
+          viewQuery = viewQuery.eq('game_date', todayET);
+          jerryQuery = jerryQuery.eq('game_date', todayET);
+        } else {
+          const weekOut = new Date(Date.now() + 8*24*3600*1000).toISOString().slice(0,10);
+          viewQuery = viewQuery.gte('game_date', todayET).lte('game_date', weekOut);
+          jerryQuery = jerryQuery.gte('game_date', todayET).lte('game_date', weekOut);
+        }
+        const [viewRes, jerryRes] = await Promise.all([viewQuery, jerryQuery]);
         if (viewRes.error) {
-          console.log('[v_mlb_props_publishable] fetch error:', viewRes.error.message);
+          console.log(`[${_viewCfg.view}] fetch error:`, viewRes.error.message);
           setPipelineMLBProps([]);
         } else {
           const jerryMap: Record<string, any> = {};
