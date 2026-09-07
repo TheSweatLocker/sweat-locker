@@ -11906,7 +11906,43 @@ setJerryHistory(prev => {
   );
 })()}
 
-{sweatCard && !sweatCard.noCard && (
+{/* 2026-09-06 PAYWALL — Sweat Card teaser for free users. Shows the
+    count of curated plays behind a locked chip preview. Real card
+    (full pick labels + lines + convictions) renders in the conditional
+    below for Pro users only. */}
+{sweatCard && !sweatCard.noCard && isPro === false && (
+  <TouchableOpacity
+    onPress={() => openPaywall('home_sweat_card')}
+    activeOpacity={0.85}
+    style={{backgroundColor:THEME.surfaceHero,borderRadius:16,padding:16,borderWidth:1.5,borderColor:THEME.accent+'55',marginBottom:16}}>
+    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+      <Text style={{color:THEME.accent,fontWeight:'800',fontSize:13,letterSpacing:1}}>🔒 REST OF TODAY'S CARD</Text>
+      <View style={{backgroundColor:THEME.accent+'22',paddingHorizontal:8,paddingVertical:2,borderRadius:6}}>
+        <Text style={{color:THEME.accent,fontSize:10,fontWeight:'800'}}>PRO</Text>
+      </View>
+    </View>
+    <Text style={{color:THEME.textDim,fontSize:11,marginBottom:12}}>
+      {sweatCard.top_8?.length || 8} curated plays locked · same discipline gate as POTD
+    </Text>
+    <View style={{gap:6,marginBottom:12}}>
+      {Array.from({length: Math.min(4, sweatCard.top_8?.length || 4)}).map((_, i) => (
+        <View key={i} style={{flexDirection:'row',alignItems:'center',gap:8,backgroundColor:THEME.surface,borderRadius:8,padding:10,borderWidth:1,borderColor:THEME.border}}>
+          <Text style={{fontSize:14}}>🔒</Text>
+          <View style={{flex:1,height:8,backgroundColor:THEME.surfaceAlt,borderRadius:4}}/>
+          <View style={{width:40,height:8,backgroundColor:THEME.surfaceAlt,borderRadius:4}}/>
+        </View>
+      ))}
+    </View>
+    <View style={{backgroundColor:THEME.accent,borderRadius:10,paddingVertical:12,alignItems:'center'}}>
+      <Text style={{color:'#000',fontWeight:'800',fontSize:13}}>Start 7-Day Free Trial</Text>
+    </View>
+    <Text style={{color:THEME.textDim,fontSize:10,textAlign:'center',marginTop:6}}>
+      $14.99/mo or $119.99/yr · cancel anytime
+    </Text>
+  </TouchableOpacity>
+)}
+
+{sweatCard && !sweatCard.noCard && isPro !== false && (
   <View style={{backgroundColor:THEME.surfaceHero,borderRadius:16,padding:16,borderWidth:1.5,borderColor:THEME.accent,marginBottom:16,shadowColor:THEME.accent,shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:8}}>
     <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
       {/* 2026-08-16 POTD merge: renamed header from "TODAY'S SWEAT CARD" so
@@ -13696,6 +13732,26 @@ setJerryHistory(prev => {
   const jr = jerryReads[game.id];
   const cleanShort = scrubJerryText(jr.short_read);
   if (!cleanShort) return null;
+  // 2026-09-06 PAYWALL GATE — Jerry short_read on the LIST card leaks
+  // the actual pick reasoning (badge label + prose snippet) for free
+  // users. Replace with a locked hint that says "Jerry has a read on
+  // this game · Pro" — enough to hint value, not enough to reveal
+  // the call. Free user can still tap in to see the Game Detail bulk
+  // gate. Real Jerry chip + snippet rendered only for Pro subscribers.
+  if (isPro === false) {
+    return (
+      <TouchableOpacity
+        onPress={() => openPaywall('game_card_jerry_snippet')}
+        activeOpacity={0.75}
+        style={{marginBottom:10,padding:10,borderRadius:10,backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.accent+'44',flexDirection:'row',alignItems:'center',gap:8}}>
+        <Text style={{fontSize:16}}>🔒</Text>
+        <View style={{flex:1}}>
+          <Text style={{color:THEME.accent,fontWeight:'800',fontSize:11,letterSpacing:0.4,marginBottom:2}}>JERRY HAS A READ ON THIS GAME</Text>
+          <Text style={{color:THEME.textDim,fontSize:11}}>Tap to unlock full analysis · Pro</Text>
+        </View>
+      </TouchableOpacity>
+    );
+  }
   const gen = jr.generated_at ? new Date(jr.generated_at) : null;
   // If generated before 2pm ET, tag as AM read (12pm ET = 16:00 UTC in EDT)
   const isAmRead = gen ? (gen.getUTCHours() < 17) : false;
@@ -13810,7 +13866,29 @@ setJerryHistory(prev => {
   // COVERAGE / PASS / SKIP tier chips too, which surfaced "picks" the
   // engine explicitly killed (Rays MC-dissent case, etc).
   const _PUBLISHABLE = new Set(['PRIME','STRONG','LEAN']);
-  if (pp?.tier && pp?.label && _PUBLISHABLE.has(String(pp.tier).toUpperCase())) {
+  // 2026-09-06 PAYWALL GATE — tier chips carry the actual pick label
+  // ("Boston Red Sox ML", "Over 7.5"), so surfacing them for free
+  // users leaks the pick. Instead render a generic "🔒 Pro" chip when
+  // a publishable tier exists for the game. Preserves the "there's a
+  // signal here" hint without revealing the call. Alignment chip
+  // (ml verdict) also hidden — it correlates to the pick direction.
+  const hasPickSignal = (pp?.tier && pp?.label && _PUBLISHABLE.has(String(pp.tier).toUpperCase()))
+    || (jr?.call_text && jr?.conviction != null && String(jr.call_market || '').toLowerCase() !== 'pass');
+  if (isPro === false) {
+    if (hasPickSignal) {
+      chips.push(
+        <TouchableOpacity
+          key="pp"
+          onPress={() => openPaywall('game_card_tier_chip')}
+          activeOpacity={0.75}
+          style={{flexDirection:'row',alignItems:'center',gap:4,backgroundColor:THEME.accent+'22',borderColor:THEME.accent+'44',borderWidth:1,paddingHorizontal:8,paddingVertical:3,borderRadius:6}}>
+          <Text style={{fontSize:10}}>🔒</Text>
+          <Text style={{color:THEME.accent,fontWeight:'800',fontSize:10,letterSpacing:0.4}}>PRO PICK</Text>
+        </TouchableOpacity>
+      );
+    }
+    // Skip alignment chip — leaks direction
+  } else if (pp?.tier && pp?.label && _PUBLISHABLE.has(String(pp.tier).toUpperCase())) {
     chips.push(<StatusChip key="pp" variant="tier" tier={pp.tier} label={pp.label} />);
   } else if (jr?.call_text && jr?.conviction != null &&
              String(jr.call_market || '').toLowerCase() !== 'pass') {
@@ -13823,7 +13901,7 @@ setJerryHistory(prev => {
     chips.push(<StatusChip key="pp" variant="tier" tier={derivedTier as any}
                             label={jr.call_text} />);
   }
-  if (alML?.verdict && alML.verdict !== 'no_data') {
+  if (isPro !== false && alML?.verdict && alML.verdict !== 'no_data') {
     chips.push(<StatusChip key="al" variant="alignment" alignment={alML.verdict} />);
   }
 
