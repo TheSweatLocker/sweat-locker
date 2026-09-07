@@ -4222,6 +4222,46 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
     onAddParlayLeg?.({kind, label, odds, line, matchup: `${awayTeam} @ ${homeTeam}`, book: bookTitle});
   };
 
+  // 2026-09-07 BEST-PRICE HIGHLIGHTING (queue item #3). Scan every book's
+  // odds per market and find the max-value price. Flag winners with a
+  // gold ★ chip in the cell so users can shop lines at a glance without
+  // squinting at the full table. American-odds "best" = highest number
+  // for underdog prices (+ larger is better) OR closest-to-zero for
+  // favorite prices (-105 beats -110). Universal formula: convert to
+  // decimal, take max. Applied to away ML, home ML, home spread price,
+  // over total price. Line values (spread/total point) already visible
+  // per row — we shop by juice, not line.
+  const _toDec = (american: any): number | null => {
+    if (american == null) return null;
+    const n = Number(american);
+    if (!isFinite(n) || n === 0) return null;
+    return n > 0 ? 1 + n / 100 : 1 + 100 / Math.abs(n);
+  };
+  const bestPrices: Record<string, {book: string; price: number}> = {};
+  const markKey = (bookTitle: string, marketKey: string, price: any) => {
+    const dec = _toDec(price);
+    if (dec == null) return;
+    const cur = bestPrices[marketKey];
+    if (!cur || dec > _toDec(cur.price)!) {
+      bestPrices[marketKey] = {book: bookTitle, price};
+    }
+  };
+  for (const bm of sorted) {
+    const spreadMkt = bm.markets?.find((m: any) => m.key === 'spreads');
+    const totalMkt = bm.markets?.find((m: any) => m.key === 'totals');
+    const h2hMkt = bm.markets?.find((m: any) => m.key === 'h2h');
+    const homeSpread = spreadMkt?.outcomes?.find((o: any) => o.name === homeTeam);
+    const overTot = totalMkt?.outcomes?.find((o: any) => (o.name || '').toLowerCase() === 'over');
+    const awayML = h2hMkt?.outcomes?.find((o: any) => o.name === awayTeam);
+    const homeML = h2hMkt?.outcomes?.find((o: any) => o.name === homeTeam);
+    markKey(bm.title || bm.key, 'homeSpread', homeSpread?.price);
+    markKey(bm.title || bm.key, 'overTotal', overTot?.price);
+    markKey(bm.title || bm.key, 'awayML', awayML?.price);
+    markKey(bm.title || bm.key, 'homeML', homeML?.price);
+  }
+  const isBestFor = (bookTitle: string, marketKey: string): boolean =>
+    bestPrices[marketKey]?.book === bookTitle;
+
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{paddingRight: 12}}>
       <View style={{minWidth: 320}}>
@@ -4252,7 +4292,8 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
                 onPress={() => homeSpread && addLeg('spread', `${abbrev3(homeTeam)} ${homeSpread.point > 0 ? '+' : ''}${homeSpread.point}`, homeSpread.price, homeSpread.point, bm.title)}
                 activeOpacity={0.6}
               >
-                <Text style={[styles.bookTd, {textAlign: 'right'}]}>
+                <Text style={[styles.bookTd, {textAlign: 'right', color: isBestFor(bm.title || bm.key, 'homeSpread') ? C.accent : undefined, fontWeight: isBestFor(bm.title || bm.key, 'homeSpread') ? '800' : undefined}]}>
+                  {isBestFor(bm.title || bm.key, 'homeSpread') ? '★ ' : ''}
                   {homeSpread ? `${homeSpread.point > 0 ? '+' : ''}${homeSpread.point}` : '—'}
                   {homeSpread?.price ? ` (${fmtOdds(homeSpread.price)})` : ''}
                 </Text>
@@ -4262,7 +4303,8 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
                 onPress={() => overTot && addLeg('total', `O ${overTot.point}`, overTot.price, overTot.point, bm.title)}
                 activeOpacity={0.6}
               >
-                <Text style={[styles.bookTd, {textAlign: 'right'}]}>
+                <Text style={[styles.bookTd, {textAlign: 'right', color: isBestFor(bm.title || bm.key, 'overTotal') ? C.accent : undefined, fontWeight: isBestFor(bm.title || bm.key, 'overTotal') ? '800' : undefined}]}>
+                  {isBestFor(bm.title || bm.key, 'overTotal') ? '★ ' : ''}
                   {overTot ? `O${overTot.point}` : '—'}
                 </Text>
               </TouchableOpacity>
@@ -4271,14 +4313,18 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
                 onPress={() => awayML && addLeg('ml', `${abbrev3(awayTeam)} ML`, awayML.price, null, bm.title)}
                 activeOpacity={0.6}
               >
-                <Text style={[styles.bookTd, {textAlign: 'right'}]}>{fmtOdds(awayML?.price)}</Text>
+                <Text style={[styles.bookTd, {textAlign: 'right', color: isBestFor(bm.title || bm.key, 'awayML') ? C.accent : undefined, fontWeight: isBestFor(bm.title || bm.key, 'awayML') ? '800' : undefined}]}>
+                  {isBestFor(bm.title || bm.key, 'awayML') ? '★ ' : ''}{fmtOdds(awayML?.price)}
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={{flex: 1}}
                 onPress={() => homeML && addLeg('ml', `${abbrev3(homeTeam)} ML`, homeML.price, null, bm.title)}
                 activeOpacity={0.6}
               >
-                <Text style={[styles.bookTd, {textAlign: 'right'}]}>{fmtOdds(homeML?.price)}</Text>
+                <Text style={[styles.bookTd, {textAlign: 'right', color: isBestFor(bm.title || bm.key, 'homeML') ? C.accent : undefined, fontWeight: isBestFor(bm.title || bm.key, 'homeML') ? '800' : undefined}]}>
+                  {isBestFor(bm.title || bm.key, 'homeML') ? '★ ' : ''}{fmtOdds(homeML?.price)}
+                </Text>
               </TouchableOpacity>
             </View>
           );

@@ -200,6 +200,77 @@ def build_struct(ctx):
         },
     }
     struct['casual_summary'] = _build_casual_summary(ctx)
+
+    # 2026-09-07 ANTI-HALLUCINATION PRE-PARSE — mirror of NFL v3 / MLB
+    # patterns (d0feecf4 + 0add7e7c). Kills sign-convention guessing +
+    # dual-total citation + odds paraphrasing that hit NFL Jerry pre-fix.
+    # Same three-layer pattern: (a) English-string facts here, (b) render
+    # hoists to CONFIRMED FACTS top of prompt + redacts raw fields,
+    # (c) migration 20260907g appends anti-hallucination rules to NCAAF
+    # game_read_rules template.
+    facts = {}
+    hml = ctx.get('close_home_ml'); aml = ctx.get('close_away_ml')
+    _fav_team = _dog_team = None
+    if hml is not None and aml is not None:
+        try:
+            hml_i, aml_i = int(hml), int(aml)
+            if aml_i < 0 and hml_i > 0:
+                _fav_team, _dog_team = away, home
+                facts["moneyline_verbatim"] = f"{away} {aml_i:+d} / {home} {hml_i:+d}"
+                facts["moneyline_favorite"] = f"{away} at {aml_i:+d}"
+                facts["moneyline_dog"] = f"{home} at {hml_i:+d}"
+            elif hml_i < 0 and aml_i > 0:
+                _fav_team, _dog_team = home, away
+                facts["moneyline_verbatim"] = f"{away} {aml_i:+d} / {home} {hml_i:+d}"
+                facts["moneyline_favorite"] = f"{home} at {hml_i:+d}"
+                facts["moneyline_dog"] = f"{away} at {aml_i:+d}"
+        except (TypeError, ValueError): pass
+    sp = ctx.get('close_spread')
+    if sp is not None and _fav_team:
+        try:
+            mag = abs(float(sp))
+            facts["market_spread_verbatim"] = f"{_fav_team} {-mag:+.1f} / {_dog_team} {+mag:+.1f}"
+            facts["market_favors"] = f"{_fav_team} by {mag:.1f} points"
+        except (TypeError, ValueError): pass
+    # Model direction — prefer model_pred_home/away_points, fall back to projected_spread
+    hp = _f(ctx.get('model_pred_home_points')); ap = _f(ctx.get('model_pred_away_points'))
+    if hp is not None and ap is not None:
+        _mw = home if hp > ap else away
+        _margin = abs(hp - ap)
+        facts["model_favors"] = f"{_mw} by {_margin:.1f} points ({home} {hp:.1f} vs {away} {ap:.1f})"
+        if _fav_team and sp is not None:
+            try:
+                mkt_mag = abs(float(sp))
+                model_margin_fav = (hp - ap) if _fav_team == home else (ap - hp)
+                edge = model_margin_fav - mkt_mag
+                if edge >= 0.5:
+                    facts["edge_side"] = f"{_fav_team} — model favors them by {abs(edge):.1f} MORE points than market"
+                elif edge <= -0.5:
+                    facts["edge_side"] = f"{_dog_team} — model has {_fav_team} winning by less than market ({abs(edge):.1f} pt gap → take {_dog_team} with points)"
+                else:
+                    facts["edge_side"] = f"none — model and market within {abs(edge):.1f} pt"
+            except (TypeError, ValueError): pass
+    elif ctx.get('projected_spread') is not None:
+        try:
+            ps_f = float(ctx.get('projected_spread'))
+            facts["model_favors_ambiguous"] = (
+                f"projected_spread={ps_f:+.2f} — DO NOT interpret sign without model_pred_*_points confirmation. "
+                "If you cite this, quote the raw number and say 'thin model coverage'."
+            )
+        except (TypeError, ValueError): pass
+    # Total canonical
+    pt = _f(ctx.get('projected_total')); ct = _f(ctx.get('close_total'))
+    if pt is not None:
+        facts["total_canonical"] = f"{pt:.2f} (projected)"
+        if ct is not None:
+            _delta = pt - ct
+            facts["total_market_delta"] = (
+                f"Model {pt:.2f} vs market {ct:.1f} — "
+                f"{'OVER lean' if _delta > 0 else 'UNDER lean' if _delta < 0 else 'flat'} of {abs(_delta):.2f} pts"
+            )
+    if facts:
+        struct["pre_parsed_facts"] = facts
+
     return struct
 
 
@@ -207,9 +278,30 @@ def render_prompt(templates, struct):
     ss = struct['sweat'].get('score')
     tier = struct['sweat'].get('tier') or '—'
     confidence_tier = f'{tier} — sweat {ss}/100 (SP+ + EPA rich lens)'
+    # 2026-09-07: hoist pre_parsed_facts to CONFIRMED FACTS top-of-context
+    # + redact ambiguous raw fields from JSON. Same pattern as NFL v3 (d0feecf4)
+    # and MLB (0add7e7c). Kills sign-convention re-derivation + odds paraphrasing.
+    _struct_for_json = dict(struct)
+    _pf = _struct_for_json.pop('pre_parsed_facts', None)
+    facts_block = ""
+    if _pf:
+        if 'market' in _struct_for_json and isinstance(_struct_for_json['market'], dict):
+            _mkt = dict(_struct_for_json['market'])
+            for _k in ('spread', 'home_ml', 'away_ml'):
+                _mkt.pop(_k, None)
+            _struct_for_json['market'] = _mkt
+        _lines = ["CONFIRMED FACTS (source of truth — quote these VERBATIM in prose, do not re-derive from other fields):"]
+        for _k in ['moneyline_verbatim', 'moneyline_favorite', 'moneyline_dog',
+                   'market_spread_verbatim', 'market_favors',
+                   'model_favors', 'model_favors_ambiguous', 'edge_side',
+                   'total_canonical', 'total_market_delta']:
+            if _pf.get(_k):
+                _lines.append(f"  - {_k}: {_pf[_k]}")
+        facts_block = "\n".join(_lines) + "\n\n"
     context_block = (
-        'NCAAF GAME CONTEXT (authoritative — analyze this, do not search for scores):\n'
-        + json.dumps(struct, indent=2, default=str)
+        facts_block
+        + 'NCAAF GAME CONTEXT (analytical — do not search for scores; when raw fields conflict with CONFIRMED FACTS above, the facts win):\n'
+        + json.dumps(_struct_for_json, indent=2, default=str)
     )
     m = struct['market']
     away, home = struct['matchup'].split(' @ ')
