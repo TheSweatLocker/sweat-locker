@@ -118,8 +118,7 @@ export const Paywall: React.FC<Props> = ({ visible, onDismiss, triggerFeature })
           <Text style={styles.brand}>THE SWEAT LOCKER</Text>
           <Text style={styles.headline}>Unlock Sweat Locker Pro</Text>
           <Text style={styles.subhead}>
-            More data, less sweat. Audited cohort hit rates, mastery layer, and the picks
-            that took our public card 20-4 over 5/20–5/21.
+            More data, less sweat. Model consensus, sharp money flow, and Jerry's per-game read explaining every call — with every pick tracked in the open.
           </Text>
 
           {/* Feature list */}
