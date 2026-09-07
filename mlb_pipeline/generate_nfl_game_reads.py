@@ -496,9 +496,41 @@ def render_prompt(templates, struct):
         )
     else:
         confidence_tier = "MARKET — model data not yet available for this game."
+    # 2026-09-07 v3: hoist pre_parsed_facts OUT of the JSON dump and into a
+    # plain-English "CONFIRMED FACTS" block at the TOP of the sport_context.
+    # V2 still had a spread-attribution bug (BAL @ IND regen wrote
+    # "Colts -3.5" when BAL was the ML favorite -175 → BAL -3.5). Root:
+    # Jerry saw both `pre_parsed_facts` AND raw `market.spread` in the same
+    # JSON dump and sometimes re-derived from the raw signed number instead
+    # of consuming the pre-parsed English string. Fix: put the pre-parsed
+    # facts BEFORE the JSON, in prose form, with strict "quote verbatim"
+    # framing. Also strip market.spread + home_ml + away_ml from the JSON
+    # dump so the only path to those numbers is via pre_parsed_facts.
+    _struct_for_json = dict(struct)
+    _pf = _struct_for_json.pop('pre_parsed_facts', None)
+    if _pf:
+        # Redact ambiguous raw fields — force Jerry through the parsed strings.
+        if 'market' in _struct_for_json and isinstance(_struct_for_json['market'], dict):
+            _mkt = dict(_struct_for_json['market'])
+            for _k in ('spread', 'home_ml', 'away_ml'):
+                _mkt.pop(_k, None)
+            _struct_for_json['market'] = _mkt
+    facts_block = ""
+    if _pf:
+        _lines = ["CONFIRMED FACTS (source of truth — quote these VERBATIM in prose, do not re-derive from other fields):"]
+        for _k in ['moneyline_verbatim', 'moneyline_favorite', 'moneyline_dog',
+                   'market_spread_verbatim', 'market_favors',
+                   'model_favors', 'model_favors_ambiguous',
+                   'edge_side',
+                   'total_canonical', 'total_secondary_lens', 'total_market_delta',
+                   'tier_note']:
+            if _pf.get(_k):
+                _lines.append(f"  - {_k}: {_pf[_k]}")
+        facts_block = "\n".join(_lines) + "\n\n"
     context_block = (
-        "NFL GAME CONTEXT (authoritative — analyze this, do not search for scores):\n"
-        + json.dumps(struct, indent=2, default=str)
+        facts_block
+        + "NFL GAME CONTEXT (analytical — do not search for scores; when raw fields conflict with CONFIRMED FACTS above, the facts win):\n"
+        + json.dumps(_struct_for_json, indent=2, default=str)
     )
     m = struct["market"]
     away, home = struct["matchup"].split(" @ ")
