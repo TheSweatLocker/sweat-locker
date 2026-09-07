@@ -777,15 +777,21 @@ def auto_repair(sport: str, game_date: str) -> dict:
                     'call_market': 'eq.total',
                     'select': 'id,game_id,call_side,call_line,conviction,short_read'},
             timeout=15).json()
+        # 2026-09-07: expanded SELECT so the realigner block below can cite
+        # market + lens numbers when it composes the replacement prose.
         ctx_rows = requests.get(f'{SB}/rest/v1/mlb_game_context',
             headers=H_READ,
             params={'game_date': f'eq.{game_date}',
-                    'select': 'game_id,jerry_pred_total,projected_total,primary_play'},
+                    'select': 'game_id,home_team,away_team,jerry_pred_total,projected_total,'
+                              'close_spread,close_total,home_ml_close,away_ml_close,'
+                              'panel_implied_total,signal_confluence_net,primary_play'},
             timeout=15).json()
         sim_by_gid = {c['game_id']: (c.get('jerry_pred_total') or c.get('projected_total'))
                        for c in (ctx_rows if isinstance(ctx_rows, list) else [])}
         pp_by_gid = {c['game_id']: (c.get('primary_play') or {})
                       for c in (ctx_rows if isinstance(ctx_rows, list) else [])}
+        ctx_by_gid = {c['game_id']: c
+                       for c in (ctx_rows if isinstance(ctx_rows, list) else [])}
         for r in (reads if isinstance(reads, list) else []):
             side = (r.get('call_side') or '').upper()
             line = r.get('call_line')
@@ -825,17 +831,52 @@ def auto_repair(sport: str, game_date: str) -> dict:
             pp_label = pp.get('label') or ''
             pp_sub = pp.get('sub') or ''
             if pp_type in ('ml', 'rl') and pp_tier in ('PRIME', 'STRONG') and pp_label:
-                # Realign — the primary_play is the real published pick
+                # Realign — the primary_play is the real published pick.
+                # 2026-09-07: prior realigner wrote a 195-char stub with an
+                # internal audit parenthetical ("Prior totals-market read was
+                # contradicted by simulator — realigned to primary_play's
+                # active pick.") that leaked into user-visible prose. User
+                # spot-checked Cardinals 9/7 read as "pretty short" — that
+                # was this stub. Fix: expand into a full analytical write-up
+                # using pp_sub + game/model numbers, drop the internal note.
                 pp_side = pp.get('side') or ''
                 pp_conv = pp.get('conviction') or 60
-                # Use primary_play.sub as the short_read (clean, aligned)
+                # Pull ctx numbers for a fleshed-out read
+                _ctx = ctx_by_gid.get(r.get('game_id')) or {}
+                _mkt_bits = []
+                if _ctx.get('close_spread') is not None:
+                    _mkt_bits.append(f"spread {_ctx['close_spread']:+g}")
+                if _ctx.get('close_total') is not None:
+                    _mkt_bits.append(f"total {_ctx['close_total']:.1f}")
+                _hml = _ctx.get('home_ml_close') or _ctx.get('close_home_ml')
+                _aml = _ctx.get('away_ml_close') or _ctx.get('close_away_ml')
+                if _hml is not None and _aml is not None:
+                    _mkt_bits.append(f"ML {_aml:+d}/{_hml:+d}")
+                _mkt_str = ' · '.join(_mkt_bits) if _mkt_bits else ''
+                _lens_bits = []
+                if _ctx.get('projected_total') is not None:
+                    _lens_bits.append(f"projected total {float(_ctx['projected_total']):.1f}")
+                if _ctx.get('panel_implied_total') is not None:
+                    _lens_bits.append(f"panel total {float(_ctx['panel_implied_total']):.1f}")
+                if _ctx.get('signal_confluence_net') is not None:
+                    _lens_bits.append(f"confluence net {_ctx['signal_confluence_net']:+d}")
+                _lens_str = ' · '.join(_lens_bits)
                 new_short = pp_sub if pp_sub else f'Model backs {pp_label} — {pp_conv}% confidence'
-                new_long = (
-                    f'The published call is {pp_label} ({pp_tier}, {pp_conv}%). '
-                    f'{pp_sub}. '
-                    f'(Prior totals-market read was contradicted by simulator — '
-                    f"realigned to primary_play's active pick.)"
-                )
+                new_long_lines = [
+                    f'The published call is {pp_label} — {pp_tier} tier at {pp_conv}% conviction. '
+                    f'{pp_sub}',
+                ]
+                if _mkt_str:
+                    new_long_lines.append(f'Market: {_mkt_str}.')
+                if _lens_str:
+                    new_long_lines.append(
+                        f'Model lens: {_lens_str}. The primary play weighs these signals against the market to lock in the surfaced side.'
+                    )
+                if pp_side in ('HOME', 'AWAY'):
+                    _who = _ctx.get('home_team') if pp_side == 'HOME' else _ctx.get('away_team')
+                    if _who:
+                        new_long_lines.append(f'Direction: {_who}. That is where the model has the edge — size to tier.')
+                new_long = '\n\n'.join(new_long_lines)
                 payload = {
                     'call_market': pp_type,
                     'call_side': pp_side,

@@ -650,8 +650,13 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
           </View>
         )}
       </View>
-      <Text style={styles.verdictPlay}>{label}</Text>
-      {sub ? <Text style={styles.verdictWhy}>{scrubSourceNames(sub)}</Text> : null}
+      {/* 2026-09-07: dim the pick label on LOW-conviction picks so the
+          disclaimer wins the visual hierarchy. Prior render kept the
+          headline at full bright weight — reader eye went to big label,
+          skipped italic disclaimer. Now the label reads as informational
+          context, not a headline. */}
+      <Text style={[styles.verdictPlay, isLowConviction && {color: C.textDim, fontWeight: '600'}]}>{label}</Text>
+      {sub ? <Text style={[styles.verdictWhy, isLowConviction && {color: C.textMuted}]}>{scrubSourceNames(sub)}</Text> : null}
       {isLowConviction && (
         <Text style={[styles.verdictWhy, {color: C.textMuted, marginTop:6, fontSize:11, fontStyle:'italic'}]}>
           Not a recommended play — thin signal support or unplayable price. Shown here for context; Sharp Card + Sweat Card only surface actionable picks.
@@ -1026,7 +1031,17 @@ function ScoreRange({ctx, awayTeam, homeTeam}: any) {
       </View>
       <Text style={styles.scoreSub}>
         Total range {f(totMin, 1)}–{f(totMax, 1)}
-        {line != null ? ` · Line ${f(line, 1)} → ${preds.length}/${preds.length} models agree ` : ''}
+        {line != null ? ` · Line ${f(line, 1)} → ` : ''}
+        {/* 2026-09-07: was "N/N models agree" which read like "all models
+            counted agree" when the denominator was actually just the count
+            of NON-NULL lenses. Say "N of N lenses" so the reader
+            understands the denominator excludes empty lenses (V4 dashed,
+            etc.). If it's split, show the split. */}
+        {line != null && overCount + underCount > 0 && (
+          overCount === preds.length ? `all ${preds.length} lens${preds.length === 1 ? '' : 'es'} lean ` :
+          underCount === preds.length ? `all ${preds.length} lens${preds.length === 1 ? '' : 'es'} lean ` :
+          `${Math.max(overCount, underCount)} of ${overCount + underCount} lenses lean `
+        )}
         {line != null && <Text style={{color: totalDir === 'OVER' ? C.accent : C.sharp, fontWeight: '700'}}>{totalDir}</Text>}
       </Text>
       {jerry ? (
@@ -1284,8 +1299,17 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
       {items.map((it, i) => {
         const openN = typeof it.open === 'number' ? it.open : parseFloat(it.open);
         const currN = typeof it.current === 'number' ? it.current : parseFloat(it.current);
-        const delta = isFinite(openN) && isFinite(currN) ? currN - openN : null;
-        const deltaColor = delta == null ? C.textDim : delta === 0 ? C.textDim : delta > 0 ? C.accent : C.fade;
+        // 2026-09-07: distinguish "no opening line captured" from "opening
+        // matched current" (flat). Prior code rendered 'flat' whenever open
+        // was falsy — misleading on NFL preseason games where we didn't
+        // pull an opening odds snapshot at all. User audit reproducer:
+        // BAL @ IND spread rendered "—→-3.5 flat" when there was no open.
+        const openMissing = it.open == null || !isFinite(openN);
+        const delta = !openMissing && isFinite(currN) ? currN - openN : null;
+        const deltaColor = openMissing ? C.textDim
+                          : delta == null ? C.textDim
+                          : delta === 0 ? C.textDim
+                          : delta > 0 ? C.accent : C.fade;
         return (
           <View key={i} style={styles.lineMoveItem}>
             <Text style={styles.lineMoveLabel}>{it.label}</Text>
@@ -1295,7 +1319,7 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
               <Text style={{color: C.text, fontWeight: '700'}}>{it.fmt(it.current)}</Text>
             </Text>
             <Text style={[styles.lineMoveDelta, {color: deltaColor}]}>
-              {delta == null ? '—' : delta === 0 ? 'flat' : delta > 0 ? `↑ +${delta.toFixed(1)}` : `↓ ${delta.toFixed(1)}`}
+              {openMissing ? 'no open' : delta == null ? '—' : delta === 0 ? 'flat' : delta > 0 ? `↑ +${delta.toFixed(1)}` : `↓ ${delta.toFixed(1)}`}
             </Text>
           </View>
         );

@@ -314,6 +314,91 @@ def build_struct(game, stats, contexts=None):
         if pp:
             struct["primary_play"] = pp
 
+        # 2026-09-07 ANTI-HALLUCINATION PRE-PARSE.
+        # Before this block, Jerry got raw fields (`projected_spread: 2.38`,
+        # `close_home_ml: 145`, `close_away_ml: -175`) and had to infer sign
+        # conventions on his own. Result on 9/7 BAL @ IND:
+        #   - "The model's pulling Baltimore ahead by 2.38 points" (WRONG —
+        #     projected_spread is H+/A- so IND was actually favored by 2.38)
+        #   - "money line odds (-180 Ravens, +150 Colts)" (WRONG — actual
+        #     -175/+145; Jerry rounded/hallucinated)
+        # Fix: pre-parse every directional value into an unambiguous English
+        # string that Jerry MUST quote verbatim. No sign-convention math left
+        # for the LLM. Passed as struct.pre_parsed_facts + surfaced at the
+        # top of the model_context block so it's the FIRST thing Jerry sees.
+        facts = {}
+        # ── Money line — verbatim, no rounding ──
+        aml = ctx.get('close_away_ml'); hml = ctx.get('close_home_ml')
+        if aml is not None and hml is not None:
+            _fav_team = away if int(aml) < 0 else home if int(hml) < 0 else None
+            _dog_team = home if _fav_team == away else (away if _fav_team == home else None)
+            facts["moneyline_verbatim"] = f"{away} {aml:+d} / {home} {hml:+d}"
+            if _fav_team:
+                facts["moneyline_favorite"] = f"{_fav_team} at {aml if _fav_team==away else hml:+d}"
+                facts["moneyline_dog"]      = f"{_dog_team} at {hml if _fav_team==away else aml:+d}"
+        # ── Spread — market ──
+        sp = ctx.get('close_spread')
+        if sp is not None:
+            # book convention: negative = home favored. Positive = away favored.
+            spf = float(sp)
+            fav = home if spf < 0 else away
+            dog = away if spf < 0 else home
+            facts["market_spread_verbatim"] = f"{fav} {-abs(spf):+.1f}, {dog} {+abs(spf):+.1f}"
+            facts["market_favors"] = f"{fav} by {abs(spf):.1f} points"
+        # ── Model projected spread — H+ / A- convention ──
+        ps = ctx.get('projected_spread')
+        if ps is not None:
+            psf = float(ps)
+            model_winner = home if psf > 0 else away
+            model_loser  = away if psf > 0 else home
+            facts["model_favors"] = f"{model_winner} by {abs(psf):.2f} points (model_pred: {ctx.get('model_pred_home_points')} {home} vs {ctx.get('model_pred_away_points')} {away})"
+            # Explicit edge summary vs market
+            if sp is not None:
+                model_margin_home = psf  # already H+/A-
+                mkt_margin_home = -float(sp)  # invert: book -3.5 home fav = home +3.5 margin
+                edge_pts_home = model_margin_home - mkt_margin_home
+                if abs(edge_pts_home) >= 0.5:
+                    edge_side = home if edge_pts_home > 0 else away
+                    facts["edge_side"] = f"{edge_side} — model favors them by {abs(edge_pts_home):.2f} more points than market"
+                else:
+                    facts["edge_side"] = f"none — model and market within {abs(edge_pts_home):.2f} pts"
+        # ── Total — resolve ONE canonical projection to cite; label others clearly ──
+        # Panel and projected_total are DIFFERENT lenses. Jerry was double-citing
+        # them as if they were one number (9/13 ARI @ LAC: "42.48 vs 46.5" AND
+        # "39.95 combined score" in same read). Give him one canonical.
+        pt = ctx.get('projected_total'); panel = ctx.get('panel_pred_total')
+        if pt is not None or panel is not None:
+            # Canonical: prefer projected_total (EPA-matchup, the primary lens).
+            canonical = pt if pt is not None else panel
+            canonical_source = "EPA-matchup model" if pt is not None else "Panel model"
+            facts["total_canonical"] = f"{float(canonical):.2f} (per {canonical_source})"
+            if pt is not None and panel is not None and abs(float(pt) - float(panel)) > 0.5:
+                facts["total_secondary_lens"] = (
+                    f"Panel model separately projects {float(panel):.2f}. "
+                    f"If citing both, label them: EPA-matchup {float(pt):.2f} · Panel {float(panel):.2f}. "
+                    "DO NOT quote them as the same projection."
+                )
+            # Market delta
+            if ctx.get('close_total') is not None:
+                delta = float(canonical) - float(ctx['close_total'])
+                facts["total_market_delta"] = (
+                    f"Model {float(canonical):.2f} vs market {float(ctx['close_total']):.1f} — "
+                    f"{'OVER lean' if delta > 0 else 'UNDER lean'} of {abs(delta):.2f} pts"
+                )
+        # ── Sweat score vs pick tier disambiguation ──
+        sw_score = ctx.get('sweat_score'); sw_tier = ctx.get('sweat_tier')
+        pp_tier = (pp or {}).get('tier') if pp else None
+        if sw_score is not None and pp_tier:
+            if sw_tier != pp_tier:
+                facts["tier_note"] = (
+                    f"GAME sweat score is {sw_score} ({sw_tier}) but PICK tier is {pp_tier}. "
+                    "These are different — sweat = game-level signal density, "
+                    "pick tier = per-market conviction after juice caps. "
+                    "Do NOT conflate. If citing sweat, add 'the specific pick is [pp_tier] tier'."
+                )
+        if facts:
+            struct["pre_parsed_facts"] = facts
+
     struct["casual_summary"] = _build_casual_summary(struct)
     return struct
 
