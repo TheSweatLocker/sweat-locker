@@ -7747,17 +7747,29 @@ if(mkt.key === 'pitcher_props') {
         // or migration not applied). Sort by refit-first, conviction-second.
         try {
           const etStr = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+          // 2026-09-07 date-range fix: prior code filtered jerry_reads by
+          // eq('game_date', TODAY). For weekly sports (NFL/NCAAF), props
+          // are for FUTURE dates (Week 1 games 9/10-9/15 when today is
+          // 9/7). Result: jerryMap always empty → prop.prop_jerry=null →
+          // legacy bullets render instead of structured render_sections
+          // card. Fix: extract the actual game_dates from allProps and
+          // fetch jerry_reads for THOSE dates. Falls back to today if
+          // props haven't loaded yet.
+          const propDates = Array.from(new Set(
+            (allProps || []).map((p: any) => p.game_date).filter(Boolean)
+          )) as string[];
+          const jerryDateFilter = propDates.length > 0 ? propDates : [etStr];
           // 2026-08-20: parallelize refit + Jerry-synth fetches. Prior sequential
           // pattern added ~400-700ms visible lag opening the tab (user's #10 gripe).
           const [refitRes, jerryRes] = await Promise.all([
             supabase.from(cfg.table)
               .select('player_name,prop_type,direction,game_id,refit_conviction')
-              .eq('game_date', etStr)
+              .in('game_date', jerryDateFilter)
               .not('refit_conviction', 'is', null),
             supabase.from('prop_jerry_reads')
               .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction,input_snapshot')
               .eq('sport', cfg.propJerryFilter)
-              .eq('game_date', etStr),
+              .in('game_date', jerryDateFilter),
           ]);
           const refitRows = refitRes.data;
           const jerryRows = jerryRes.data;
