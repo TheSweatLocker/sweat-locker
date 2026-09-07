@@ -102,17 +102,21 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
         setIsLoading(false);
         return;
       }
-      // 2026-09-06 async-safe wrapper. RC v9's setLogLevel/configure return
-      // Promises. A raw try/catch around a non-awaited Promise doesn't catch
-      // the rejection — it fires as an unhandled promise rejection later.
-      // In Expo Go where the native binding is missing, every RC call
-      // rejects. Wrap each call in await + .catch() so failures degrade
-      // silently to free-tier stub mode instead of spamming red screens.
+      // 2026-09-06 v3 — RC v5 SDK: setLogLevel + configure return void
+      // (synchronous), NOT Promises. Chaining .catch() on void throws
+      // "Cannot read property 'catch' of undefined" → init bails →
+      // offerings never fetch → Paywall button disabled → silent fail.
+      //
+      // Correct pattern: call setLogLevel + configure synchronously wrapped
+      // in their own try/catch (they may still throw in Expo Go), then
+      // await the async methods (getCustomerInfo / getOfferings) which
+      // DO return Promises. Outer try/catch catches everything and
+      // suppresses the Expo Go case.
       try {
-        if (__DEV__) await Purchases.setLogLevel(LOG_LEVEL.DEBUG).catch(() => {});
-        await Purchases.configure({ apiKey: iosKey }).catch(() => {
-          throw new Error('native binding unavailable — likely running in Expo Go');
-        });
+        if (__DEV__) {
+          try { Purchases.setLogLevel(LOG_LEVEL.DEBUG); } catch {}
+        }
+        Purchases.configure({ apiKey: iosKey });
 
         Purchases.addCustomerInfoUpdateListener((info: any) => {
           setCustomerInfo(info);
@@ -126,8 +130,10 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
         const off = await Purchases.getOfferings();
         setOfferings(off);
       } catch (e: any) {
-        // Silent in Expo Go (expected). Loud in dev-client (real bug).
-        if (__DEV__ && !String(e?.message || '').includes('Expo Go')) {
+        // Silent in Expo Go (expected — native binding missing).
+        // Loud in dev-client (real bug we want visibility into).
+        if (__DEV__ && !String(e?.message || '').toLowerCase().includes('expo go')
+                    && !String(e?.message || '').toLowerCase().includes('native module')) {
           console.warn('[Subscription] init failed:', e?.message);
         }
       } finally {
