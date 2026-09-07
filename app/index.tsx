@@ -7717,10 +7717,33 @@ if(mkt.key === 'pitcher_props') {
           for (const r of (jerryRes.data || [])) {
             jerryMap[`${r.game_id}|${r.player_name}|${r.prop_type}|${r.direction}`] = r;
           }
-          const merged = (viewRes.data || []).map((p: any) => ({
-            ...p,
-            prop_jerry: jerryMap[`${p.game_id}|${p.player_name}|${p.prop_type}|${p.direction}`] || null,
-          }));
+          // 2026-09-07: opposite-direction fallback — see comment on the
+          // NFL/NCAAF path below. Chart + coverage are direction-agnostic.
+          const _resolveJerry = (p: any) => {
+            const k = `${p.game_id}|${p.player_name}|${p.prop_type}|${p.direction}`;
+            if (jerryMap[k]) return {jerry: jerryMap[k], fb: false};
+            const oppDir = String(p.direction).toLowerCase() === 'over' ? 'under' : 'over';
+            const opp = jerryMap[`${p.game_id}|${p.player_name}|${p.prop_type}|${oppDir}`];
+            if (!opp?.input_snapshot?.render_sections) return {jerry: null, fb: false};
+            const rs = opp.input_snapshot.render_sections;
+            return {
+              jerry: {
+                ...opp,
+                short_read: null,
+                call_verdict: null,
+                conviction: null,
+                input_snapshot: {
+                  ...opp.input_snapshot,
+                  render_sections: {coverage: rs.coverage || null, recent_form: rs.recent_form || null},
+                },
+              },
+              fb: true,
+            };
+          };
+          const merged = (viewRes.data || []).map((p: any) => {
+            const {jerry, fb} = _resolveJerry(p);
+            return {...p, prop_jerry: jerry, jerry_direction_fallback: fb};
+          });
           setPipelineMLBProps(merged);
         }
         setPipelineMLBLoading(false);
@@ -7781,16 +7804,48 @@ if(mkt.key === 'pitcher_props') {
           for (const r of (jerryRows || [])) {
             jerryMap[`${r.game_id}|${r.player_name}|${r.prop_type}|${r.direction}`] = r;
           }
+          // 2026-09-07: direction-fallback for chart-only sections. Jerry
+          // synthesizes reads for the direction he calls, but the surfaced
+          // prop may be the opposite direction (e.g. Jerry called UNDER but
+          // the composer surfaced OVER after refit). Chart + coverage +
+          // recent_form are direction-agnostic (they show the player's
+          // rolling stats vs. the line — same picture either way). Prose
+          // bullets are direction-specific so we scrub them in the fallback.
           const merged = allProps.map((p: any) => {
             const k = `${p.game_id}|${p.player_name}|${p.prop_type}|${p.direction}`;
             const refit = refitMap[k];
-            const jerry = jerryMap[k] || null;
+            let jerry = jerryMap[k] || null;
+            let jerryFallback = false;
+            if (!jerry) {
+              const oppDir = String(p.direction).toLowerCase() === 'over' ? 'under' : 'over';
+              const oppKey = `${p.game_id}|${p.player_name}|${p.prop_type}|${oppDir}`;
+              const opp = jerryMap[oppKey] || null;
+              if (opp?.input_snapshot?.render_sections) {
+                jerryFallback = true;
+                const rs = opp.input_snapshot.render_sections;
+                jerry = {
+                  ...opp,
+                  short_read: null,
+                  call_verdict: null,
+                  conviction: null,
+                  input_snapshot: {
+                    ...opp.input_snapshot,
+                    render_sections: {
+                      // keep only direction-agnostic sections
+                      coverage: rs.coverage || null,
+                      recent_form: rs.recent_form || null,
+                    },
+                  },
+                };
+              }
+            }
             const isSkipBack = p?.tier === 'SKIP' && (jerry?.call_verdict || '').toUpperCase() === 'BACK';
             return {...p,
                     refit_conviction: refit ?? null,
                     display_conviction: refit ?? p.conviction,
                     prop_jerry: jerry,
-                    is_skip_back: isSkipBack};   // flag for UI to badge as override
+                    jerry_direction_fallback: jerryFallback,
+                    is_skip_back: isSkipBack};
           });
           // Jerry-aware filter: keep if not SKIP OR Jerry says BACK.
           // 2026-08-23 coverage-stub filter: drop rows marked UNPUBLISHABLE
@@ -13765,12 +13820,21 @@ setJerryHistory(prev => {
                               </View>
                             );
                           }
-                          // NFL / NCAAF sub-chips from game_context
+                          // NFL / NCAAF sub-chips from game_context.
+                          // Priority: AP rank (NCAAF) > SP+ (NCAAF) > season ATS >
+                          // L10 ATS at venue (great Week-1 fallback) > Madden OVR
+                          // (NFL) > Top100 count (NFL). At most 2 chips per side to
+                          // keep the card compact.
                           if (_fCtx && (gamesSport === 'NFL' || gamesSport === 'NCAAF')) {
                             const w = _fCtx[`${side}_season_ats_wins`];
                             const l = _fCtx[`${side}_season_ats_losses`];
                             const rank = gamesSport === 'NCAAF' ? _fCtx[`${side}_ap_rank`] : null;
                             const spPlus = gamesSport === 'NCAAF' ? _fCtx[`${side}_sp_plus`] : null;
+                            const venueKey = side === 'away' ? 'on_road' : 'at_home';
+                            const l10W = _fCtx[`${side}_ats_l10_${venueKey}`];
+                            const l10L = _fCtx[`${side}_ats_l10_${venueKey}_losses`];
+                            const maddenOvr = gamesSport === 'NFL' ? _fCtx[`${side}_madden_ovr`] : null;
+                            const top100 = gamesSport === 'NFL' ? _fCtx[`${side}_top100_count`] : null;
                             const chips: any[] = [];
                             if (rank && Number(rank) > 0 && Number(rank) <= 25) {
                               chips.push(<Text key="r" style={{fontSize:10,color:THEME.accent,fontWeight:'800'}}>#{rank} AP</Text>);
@@ -13780,12 +13844,28 @@ setJerryHistory(prev => {
                               const spColor = sp >= 15 ? THEME.win : sp >= 0 ? THEME.sharp : THEME.loss;
                               chips.push(<Text key="sp" style={{fontSize:10,color:spColor,fontWeight:'700'}}>SP+ {sp >= 0 ? '+' : ''}{sp.toFixed(1)}</Text>);
                             }
-                            if (w != null && l != null && (Number(w)+Number(l)) > 0) {
-                              const ats = `${w}-${l} ATS`;
-                              const total = Number(w) + Number(l);
-                              const pct = total > 0 ? Number(w)/total : 0;
+                            // Season ATS (empty first weeks — falls through to L10)
+                            const seasonTot = (w != null && l != null) ? Number(w) + Number(l) : 0;
+                            if (seasonTot > 0 && chips.length < 2) {
+                              const pct = Number(w) / seasonTot;
                               const atsColor = pct >= 0.58 ? THEME.win : pct <= 0.42 ? THEME.loss : THEME.textMuted;
-                              chips.push(<Text key="ats" style={{fontSize:10,color:atsColor,fontWeight:'700'}}>{ats}</Text>);
+                              chips.push(<Text key="ats" style={{fontSize:10,color:atsColor,fontWeight:'700'}}>{w}-{l} ATS</Text>);
+                            } else if (l10W != null && l10L != null && (Number(l10W) + Number(l10L)) > 0 && chips.length < 2) {
+                              const tot = Number(l10W) + Number(l10L);
+                              const pct = Number(l10W) / tot;
+                              const c = pct >= 0.6 ? THEME.win : pct <= 0.4 ? THEME.loss : THEME.textMuted;
+                              const label = side === 'away' ? 'ATS road' : 'ATS home';
+                              chips.push(<Text key="l10" style={{fontSize:10,color:c,fontWeight:'700'}}>{l10W}-{l10L} {label}</Text>);
+                            }
+                            // NFL-only tertiary: Madden OVR or Top100 count
+                            if (gamesSport === 'NFL' && chips.length < 2) {
+                              if (maddenOvr != null && !isNaN(Number(maddenOvr))) {
+                                const ovr = Number(maddenOvr);
+                                const c = ovr >= 88 ? THEME.win : ovr >= 82 ? THEME.sharp : THEME.textMuted;
+                                chips.push(<Text key="ovr" style={{fontSize:10,color:c,fontWeight:'700'}}>{ovr.toFixed(0)} OVR</Text>);
+                              } else if (top100 != null && Number(top100) > 0) {
+                                chips.push(<Text key="t100" style={{fontSize:10,color:THEME.accent,fontWeight:'700'}}>{top100} Top100</Text>);
+                              }
                             }
                             if (chips.length > 0) {
                               return (
