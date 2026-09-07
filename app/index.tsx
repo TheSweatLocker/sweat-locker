@@ -13879,12 +13879,17 @@ setJerryHistory(prev => {
                               const label = side === 'away' ? 'ATS road' : 'ATS home';
                               chips.push(<Text key="l10" style={{fontSize:10,color:c,fontWeight:'700'}}>{l10W}-{l10L} {label}</Text>);
                             }
-                            // NFL-only tertiary: Madden OVR or Top100 count
+                            // NFL-only tertiary: roster-talent chip. Just the
+                            // number — no label. Side-by-side comparison
+                            // (e.g. 85 vs 78) does the work; "OVR" suffix
+                            // gave away the Madden source. Color-coded so
+                            // the meaning still reads: gold = elite tier,
+                            // cyan = above avg, muted = mid/below.
                             if (gamesSport === 'NFL' && chips.length < 2) {
                               if (maddenOvr != null && !isNaN(Number(maddenOvr))) {
                                 const ovr = Number(maddenOvr);
                                 const c = ovr >= 88 ? THEME.win : ovr >= 82 ? THEME.sharp : THEME.textMuted;
-                                chips.push(<Text key="ovr" style={{fontSize:10,color:c,fontWeight:'700'}}>{ovr.toFixed(0)} OVR</Text>);
+                                chips.push(<Text key="ovr" style={{fontSize:11,color:c,fontWeight:'800',letterSpacing:0.3}}>{ovr.toFixed(0)}</Text>);
                               } else if (top100 != null && Number(top100) > 0) {
                                 chips.push(<Text key="t100" style={{fontSize:10,color:THEME.accent,fontWeight:'700'}}>{top100} Top100</Text>);
                               }
