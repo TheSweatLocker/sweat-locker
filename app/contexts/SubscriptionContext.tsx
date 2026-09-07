@@ -102,9 +102,17 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
         setIsLoading(false);
         return;
       }
+      // 2026-09-06 async-safe wrapper. RC v9's setLogLevel/configure return
+      // Promises. A raw try/catch around a non-awaited Promise doesn't catch
+      // the rejection — it fires as an unhandled promise rejection later.
+      // In Expo Go where the native binding is missing, every RC call
+      // rejects. Wrap each call in await + .catch() so failures degrade
+      // silently to free-tier stub mode instead of spamming red screens.
       try {
-        if (__DEV__) Purchases.setLogLevel(LOG_LEVEL.DEBUG);
-        Purchases.configure({ apiKey: iosKey });
+        if (__DEV__) await Purchases.setLogLevel(LOG_LEVEL.DEBUG).catch(() => {});
+        await Purchases.configure({ apiKey: iosKey }).catch(() => {
+          throw new Error('native binding unavailable — likely running in Expo Go');
+        });
 
         Purchases.addCustomerInfoUpdateListener((info: any) => {
           setCustomerInfo(info);
@@ -118,7 +126,10 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
         const off = await Purchases.getOfferings();
         setOfferings(off);
       } catch (e: any) {
-        console.warn('[Subscription] init failed:', e?.message);
+        // Silent in Expo Go (expected). Loud in dev-client (real bug).
+        if (__DEV__ && !String(e?.message || '').includes('Expo Go')) {
+          console.warn('[Subscription] init failed:', e?.message);
+        }
       } finally {
         setIsLoading(false);
       }
