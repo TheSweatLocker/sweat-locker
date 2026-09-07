@@ -5233,22 +5233,27 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         // correct column names + add team_stats_summary blobs (needed by
         // NFLTeamMatchupCard) + L10-at-venue ATS + Madden OVR + Top100
         // count (needed by game-card sub-chips shipped 8b1a48b6).
+        // 2026-09-07 v2 — verified against live schema. Only lists columns
+        // that actually exist on nfl_game_context. Previous versions carried
+        // MLB names (panel_implied_margin, jerry_pred_*, model_pred_spread)
+        // that don't exist on NFL — any one wrong name 400s the whole query
+        // and nflGameContextMap stays empty.
         .select('game_id,game_date,home_team,away_team,close_spread,close_total,'
           + 'close_home_ml,close_away_ml,open_spread,open_total,'
-          + 'projected_spread,projected_total,model_pred_spread,model_pred_total,'
+          + 'projected_spread,projected_total,'
           + 'model_pred_home_points,model_pred_away_points,'
-          + 'panel_implied_margin,panel_implied_total,jerry_pred_spread,jerry_pred_total,'
+          + 'panel_pred_home_pts,panel_pred_away_pts,panel_pred_total,'
+          + 'v3_spread,v3_total,v4_spread,v4_total,v4_confidence,mc_probabilities,'
           + 'signal_confluence_net,signal_confluence_breakdown,cohort_tags,'
-          + 'sweat_score,sweat_tier,primary_play,supplementary_play,'
+          + 'sweat_score,sweat_tier,primary_play,'
           + 'stats_source,season,season_type,week,splits_summary,'
           + 'home_team_stats_summary,away_team_stats_summary,'
           + 'home_ats_l10_at_home,home_ats_l10_at_home_losses,'
           + 'away_ats_l10_on_road,away_ats_l10_on_road_losses,'
           + 'home_madden_ovr,away_madden_ovr,home_qb_madden_ovr,away_qb_madden_ovr,'
           + 'home_top100_count,away_top100_count,'
-          + 'temp,wind,dome,weather_source,roof,'
-          + 'home_rest,away_rest,div_game,'
-          + 'oddscrowd_snapshot,align_status,commence_time')
+          + 'temp,wind,roof,'
+          + 'home_rest,away_rest,div_game,kickoff_utc')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(nflCtxResult?.data && nflCtxResult.data.length > 0) {
