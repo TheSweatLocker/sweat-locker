@@ -14661,6 +14661,37 @@ setJerryHistory(prev => {
             // Old client-side fallback retained for backward compat with any
             // pre-fix prop rows still in the DB; can be removed once 7+ days have
             // passed since the server-side generate_props.py started writing it.
+            // 2026-09-07: NFL prop labels. Prior fallback chain was MLB-only
+            // so NFL cards (nfl_pipeline_props ships _display_label=None)
+            // fell through to raw `rush_yds_under` etc. User: "reads tacky."
+            // Handles NFL prop family + direction → "Over/Under N Rush Yards"
+            // form so it matches MLB's phrasing.
+            const _NFL_PROP_NOUN: Record<string, string> = {
+              pass_yds: 'Pass Yards',
+              rush_yds: 'Rush Yards',
+              reception_yds: 'Receiving Yards',
+              receptions: 'Receptions',
+              pass_tds: 'Passing TDs',
+              rush_tds: 'Rushing TDs',
+              anytime_td: 'Anytime TD',
+              pass_attempts: 'Pass Attempts',
+              pass_completions: 'Completions',
+              pass_interceptions: 'Interceptions',
+              rush_attempts: 'Rush Attempts',
+              longest_reception: 'Longest Reception',
+              longest_rush: 'Longest Rush',
+              sacks: 'Sacks',
+              tackles: 'Tackles',
+            };
+            const _nflBase = String(prop.prop_type || '').endsWith('_over')
+              ? String(prop.prop_type).slice(0, -5)
+              : String(prop.prop_type || '').endsWith('_under')
+              ? String(prop.prop_type).slice(0, -6)
+              : null;
+            const _nflNoun = _nflBase ? _NFL_PROP_NOUN[_nflBase] : null;
+            const _dir = String(prop.prop_type || '').endsWith('_over') ? 'Over'
+                       : String(prop.prop_type || '').endsWith('_under') ? 'Under'
+                       : null;
             const propLabel =
               signals._display_label || (
                 prop.prop_type === 'ks_over'   ? (projKs != null ? `${prop.player_name} Over ${prop.prop_line} Ks  ·  proj ${projKs}` : `Over ${prop.prop_line} Strikeouts`) :
@@ -14675,7 +14706,9 @@ setJerryHistory(prev => {
                 prop.prop_type === 'er_under'  ? `Under ${prop.prop_line} Earned Runs` :
                 prop.prop_type === 'hits_over' ? 'Over 0.5 Hits' :
                 prop.prop_type === 'hits_under'? 'Under 0.5 Hits (0-fer)' :
-                prop.prop_type
+                (_nflNoun && _dir) ? `${_dir} ${prop.prop_line} ${_nflNoun}` :
+                // Last-resort: strip underscores so it never dumps raw code
+                String(prop.prop_type || '').replace(/_/g, ' ').replace(/\b\w/g, s => s.toUpperCase())
               );
             // Filter underscore-prefixed keys (metadata, not display bullets)
             const signalEntries = Object.entries(signals).filter(([k]) => !k.startsWith('_'));

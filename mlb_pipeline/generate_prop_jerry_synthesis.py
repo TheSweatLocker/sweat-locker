@@ -366,13 +366,19 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     # 2026-08-17: refit self-heal before Jerry runs — catches sequencing
     # gaps where apply_prop_refit was skipped in the pipeline.
     _refit_self_heal_if_stale(sport, game_date, table)
-    # Fetch today's props for this sport
+    # Fetch today's props for this sport.
+    # 2026-09-07 limit bumped 300 → 2000: NFL 9/13 slate had 326 props for
+    # one date, prior 300 cap silently truncated 26 props (all STRONG tier)
+    # → no Jerry read → no chart on those cards. User audit: "Bowers,
+    # Dulcich, Okonkwo, Hurts INT, Daniels INT all missing graphs." 2000 is
+    # safe headroom for any single-date slate across all sports (biggest
+    # observed = MLB ~250 on a 15-game night).
     r = requests.get(f'{SUPABASE_URL}/rest/v1/{table}',
                      headers=H_READ,
                      params={'game_date': f'eq.{game_date}',
                              'select': 'game_id,player_name,prop_type,direction,prop_line,'
                                        'signals,conviction,refit_conviction,book_over_odds,book_under_odds,tier',
-                             'limit': 300},
+                             'limit': 2000},
                      timeout=30)
     props = r.json() if r.status_code == 200 else []
     # Kill switch (2026-08-01 Path B): JERRY_BUCKET_ROI_ENABLED=false disables
