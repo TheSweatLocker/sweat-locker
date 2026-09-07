@@ -892,12 +892,27 @@ def auto_repair(sport: str, game_date: str) -> dict:
                     repairs['F_realigned_to_primary_play'] += 1
                 continue
 
-            # primary_play absent or also a total — fall through to old "PASS" path
+            # primary_play absent or also a total — fall through to old "PASS" path.
+            # 2026-09-07: was dumping raw [Auto-sim-repair] audit text into
+            # user-visible long_read. Moved audit trail to audit_notes column
+            # (dedicated) and composed a real explanatory long_read so users
+            # see clean prose, not internal diagnostics.
             user_short = (
                 f"Our model has this total closer to {s:.1f} runs while the "
                 f"take had it going {side.lower()} {l}. When our own numbers "
                 f"disagree with the read that much, no edge is defensible "
                 f"on either side — sitting this one out."
+            )
+            user_long = (
+                f"The published pick was {side} {l}, but our sim projects a "
+                f"total near {s:.1f} — a gap of {abs(gap):.1f} runs in the "
+                f"opposite direction. That's a big enough disagreement between "
+                f"the take and our own base numbers that we can't defend "
+                f"either side confidently.\n\n"
+                f"When the read and the sim contradict at this magnitude, the "
+                f"honest move is to sit this one out. We'd rather skip a game "
+                f"and preserve the process than force a pick against our own "
+                f"model. Look for cleaner alignment tomorrow."
             )
             audit_note = (
                 f'[Auto-sim-repair CONTRADICTS_SIM: pick {side} {l} vs '
@@ -907,7 +922,8 @@ def auto_repair(sport: str, game_date: str) -> dict:
             )
             payload = {'call_market': 'pass', 'conviction': 40,
                        'short_read': user_short[:2000],
-                       'long_read': audit_note[:2000]}
+                       'long_read': user_long[:2000],
+                       'audit_notes': audit_note[:1500]}
             pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
                                 headers=H_WRITE, json=payload, timeout=10)
             if pr.status_code in (200, 204):
@@ -1003,11 +1019,27 @@ def auto_repair(sport: str, game_date: str) -> dict:
                     else:  # total
                         side_readable = side.lower()
                         opp_readable = 'under' if side == 'OVER' else 'over'
+                    # 2026-09-07: audit_note routed to audit_notes column;
+                    # user-visible long_read is a real explanatory paragraph
+                    # instead of raw [Auto-scenario-repair ...] diagnostics.
                     user_short = (
                         f"Our historical scenario matches lean {opp_readable} "
                         f"here — the take was on {side_readable} but the "
                         f"pattern data disagrees strongly. Skipping rather "
                         f"than force a pick against our own base."
+                    )
+                    _mkt_readable = 'moneyline' if market == 'ml' else 'total'
+                    user_long = (
+                        f"The published {_mkt_readable} pick was {side_readable.upper()}, "
+                        f"but scanning historical matches — games with similar "
+                        f"line + total + team profiles — the base rate leans "
+                        f"{opp_readable.upper()} by a {abs(summary['net_score'])}-vote margin "
+                        f"({summary['home_or_over_votes']} matches lean HOME/OVER vs "
+                        f"{summary['away_or_under_votes']} lean AWAY/UNDER).\n\n"
+                        f"When the pick fights our own historical pattern this "
+                        f"hard, the process says pass — take the discipline hit "
+                        f"rather than the potential loss on a spot where we "
+                        f"disagree with our own base rate."
                     )
                     audit_note = (
                         f'[Auto-scenario-repair SCENARIO_MATRIX_OVERRIDE: '
@@ -1019,7 +1051,8 @@ def auto_repair(sport: str, game_date: str) -> dict:
                     )
                     payload = {'call_market': 'pass', 'conviction': 40,
                                'short_read': user_short[:2000],
-                               'long_read': audit_note[:2000]}
+                               'long_read': user_long[:2000],
+                               'audit_notes': audit_note[:1500]}
                     pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
                                         headers=H_WRITE, json=payload, timeout=10)
                     if pr.status_code in (200, 204):

@@ -1021,6 +1021,99 @@ def build_struct(g, props, potd):
         },
     }
     struct["casual_summary"] = _build_casual_summary(struct)
+
+    # 2026-09-07 ANTI-HALLUCINATION PRE-PARSE (mirror of NFL v3 pattern).
+    # User complaint: MLB game write-ups short + thin — "supervised model
+    # backs Under · 60%" as the ENTIRE primary_play prose with no
+    # supporting data (no ERA cite, no lineup, no matchup detail). Same
+    # class of bug NFL had before the pre_parsed_facts hoist: LLM sees
+    # a bunch of raw signed numbers, has to derive its own sign
+    # conventions, ends up citing thin single-lens output.
+    #
+    # Fix: pre-parse every directional fact into unambiguous English
+    # facts. Render prompt promotes these to a "CONFIRMED FACTS" block
+    # BEFORE the JSON dump + redacts the ambiguous raw fields — so Jerry
+    # cites the parsed facts verbatim instead of re-deriving.
+    facts = {}
+    # ML — derive fav/dog from ML sign (unambiguous universal signal)
+    hml = g.get('home_ml_close') or g.get('home_ml_open') or g.get('home_ml_odds')
+    aml = g.get('away_ml_close') or g.get('away_ml_open') or g.get('away_ml_odds')
+    _fav_team = _dog_team = None
+    if hml is not None and aml is not None:
+        try:
+            hml_i, aml_i = int(hml), int(aml)
+            if aml_i < 0 and hml_i > 0:
+                _fav_team, _dog_team = away, home
+                facts["moneyline_verbatim"] = f"{away} {aml_i:+d} / {home} {hml_i:+d}"
+                facts["moneyline_favorite"] = f"{away} at {aml_i:+d}"
+                facts["moneyline_dog"] = f"{home} at {hml_i:+d}"
+            elif hml_i < 0 and aml_i > 0:
+                _fav_team, _dog_team = home, away
+                facts["moneyline_verbatim"] = f"{away} {aml_i:+d} / {home} {hml_i:+d}"
+                facts["moneyline_favorite"] = f"{home} at {hml_i:+d}"
+                facts["moneyline_dog"] = f"{away} at {aml_i:+d}"
+        except (TypeError, ValueError): pass
+    # Total — canonical projection (Jerry pred > v4 > v3 by cite priority)
+    _jt = g.get('jerry_pred_total'); _vt4 = g.get('model_pred_total'); _vt3 = g.get('projected_total')
+    _canonical_t = None; _canonical_src = None
+    if _jt is not None:
+        _canonical_t, _canonical_src = _jt, "Jerry pred"
+    elif _vt4 is not None:
+        _canonical_t, _canonical_src = _vt4, "V4 model"
+    elif _vt3 is not None:
+        _canonical_t, _canonical_src = _vt3, "V3 model"
+    if _canonical_t is not None:
+        try:
+            _ct = float(_canonical_t)
+            facts["total_canonical"] = f"{_ct:.2f} (per {_canonical_src})"
+            if close_t is not None:
+                _delta = _ct - float(close_t)
+                facts["total_market_delta"] = (
+                    f"Model {_ct:.2f} vs market {float(close_t):.1f} — "
+                    f"{'OVER lean' if _delta > 0 else 'UNDER lean' if _delta < 0 else 'flat'} "
+                    f"of {abs(_delta):.2f} runs"
+                )
+        except (TypeError, ValueError): pass
+    # Model spread direction — use jerry_pred_spread or projected_spread
+    _model_spr = _f(g.get('jerry_pred_spread')) or _f(g.get('projected_spread')) or model_spr
+    if _model_spr is not None:
+        try:
+            _ms = float(_model_spr)
+            # MLB projected_spread convention: positive = home favored (H+/A- like NFL)
+            _mw = home if _ms > 0 else away
+            _ml_team = away if _ms > 0 else home
+            facts["model_favors"] = f"{_mw} by {abs(_ms):.2f} runs"
+            # Edge vs market
+            if g.get('close_spread') is not None and _fav_team:
+                _mkt_mag = abs(float(g.get('close_spread')))
+                _model_margin_fav = _ms if _fav_team == home else -_ms
+                _edge = _model_margin_fav - _mkt_mag
+                if _edge >= 0.3:
+                    facts["edge_side"] = f"{_fav_team} — model favors them by {abs(_edge):.2f} more runs than market"
+                elif _edge <= -0.3:
+                    facts["edge_side"] = f"{_dog_team} — model likes them with the runline points ({abs(_edge):.2f} run gap)"
+                else:
+                    facts["edge_side"] = f"none — model and market within {abs(_edge):.2f} runs"
+        except (TypeError, ValueError): pass
+    # Pick tier — if primary_play tier disagrees with LR-supervised conviction, flag
+    pp = g.get('primary_play') or {}
+    if isinstance(pp, dict):
+        pp_tier = pp.get('tier'); pp_conv = pp.get('conviction')
+        pp_sub = pp.get('sub','')
+        # Flag when primary_play.sub is just the LR-supervised verdict
+        # ("Supervised total model backs Under · 100% confidence") — force
+        # Jerry to cite actual context signals instead of parroting the sub.
+        if pp_sub and 'supervised' in pp_sub.lower() and 'model backs' in pp_sub.lower():
+            facts["primary_play_sub_is_thin"] = (
+                f"primary_play.sub is a supervised-model summary ('{pp_sub}'). "
+                "This alone is NOT enough context for the read — pull specific "
+                "signals from struct.pitchers, struct.situational, struct.confluence.breakdown "
+                "and cite THOSE (pitcher xERA, opp wRC+, park, weather, umpire, "
+                "recent form). Do not just paraphrase the supervised-model output."
+            )
+    if facts:
+        struct["pre_parsed_facts"] = facts
+
     return struct
 
 
@@ -1167,12 +1260,35 @@ def render_prompt(templates, g, struct):
     sweat = None  # the sweat-score model isn't in mlb_game_context; let the app keep that, leave blank here
     confidence_tier = "HIGH — MLB model active (pitcher xERA, wOBA, K rate gap, platoon, bullpen, park, weather, umpire)"
 
-    # The pipeline already has the full struct — feed it as the "context block"
-    # rather than re-deriving it. Jerry summarizes a fixed JSON struct (less
-    # hallucination) instead of free-associating off scattered fields.
+    # 2026-09-07: hoist pre_parsed_facts to CONFIRMED FACTS block at TOP
+    # of context, redact ambiguous raw fields from the JSON dump. Same
+    # pattern as NFL v3 (d0feecf4). Kills the "supervised model backs
+    # Under 100%" thin-prose bug by forcing Jerry to cite parsed English
+    # facts + pull specific context signals instead of paraphrasing
+    # primary_play.sub.
+    _struct_for_json = dict(struct)
+    _pf = _struct_for_json.pop('pre_parsed_facts', None)
+    facts_block = ""
+    if _pf:
+        # Redact raw ML + spread from the JSON so the only path to those
+        # numbers is via pre_parsed_facts.
+        if 'market' in _struct_for_json and isinstance(_struct_for_json['market'], dict):
+            _mkt = dict(_struct_for_json['market'])
+            for _k in ('home_ml', 'away_ml', 'close_spread', 'model_spread'):
+                _mkt.pop(_k, None)
+            _struct_for_json['market'] = _mkt
+        _lines = ["CONFIRMED FACTS (source of truth — quote these VERBATIM in prose, do not re-derive from other fields):"]
+        for _k in ['moneyline_verbatim', 'moneyline_favorite', 'moneyline_dog',
+                   'model_favors', 'edge_side',
+                   'total_canonical', 'total_market_delta',
+                   'primary_play_sub_is_thin']:
+            if _pf.get(_k):
+                _lines.append(f"  - {_k}: {_pf[_k]}")
+        facts_block = "\n".join(_lines) + "\n\n"
     context_block = (
-        "MLB PIPELINE CONTEXT (authoritative — analyze this, do not search for scores):\n"
-        + json.dumps(struct, indent=2, default=str)
+        facts_block
+        + "MLB PIPELINE CONTEXT (analytical — do not search for scores; when raw fields conflict with CONFIRMED FACTS above, the facts win):\n"
+        + json.dumps(_struct_for_json, indent=2, default=str)
     )
 
     wrapper = templates["wrapper"]

@@ -9194,8 +9194,42 @@ setJerryHistory(prev => {
           .order('qualified_at', {ascending: false})
           .limit(30),
       ]);
+      // 2026-09-07: LADDER STALE-CHECK. Ladder rungs are frozen at
+      // qualification time (usually 5-6am ET). By game time the underlying
+      // prop's tier can be demoted (calibration passes, refit overrides, LR
+      // drift). User audit on Rodriguez 9/7: qualified STRONG @ 5:10, tier
+      // demoted to SKIP by mid-morning, but rung stayed pointing at the
+      // pick. Fix: for every PENDING rung, re-fetch the current tier from
+      // mlb_pipeline_props and stamp `_is_stale: true` if the tier is no
+      // longer PRIME/STRONG. Render can dim + warn based on this flag.
+      // Only affects MLB props (the only market that has this data path);
+      // sides/game picks + non-MLB rungs pass through unaltered.
+      const enriched = await Promise.all((rungs || []).map(async (rg: any) => {
+        if (rg.result || rg.sport !== 'MLB' || rg.market !== 'prop') return rg;
+        // parse "Grayson Rodriguez Over 4.5 KS" → player + direction + line + prop family
+        const m = /^(.+?)\s+(Over|Under)\s+([\d.]+)\s+(\w+)/i.exec(String(rg.pick_side || ''));
+        if (!m) return rg;
+        const player = m[1].trim();
+        const dir = m[2].toLowerCase();
+        const line = parseFloat(m[3]);
+        const family = m[4].toLowerCase();
+        // map display noun → prop_type family (KS→ks, OUTS→outs, ER→er, BB→bb, HA→ha, HITS→hits)
+        const _FAM = {ks:'ks',outs:'outs',er:'er',bb:'bb',ha:'ha',hits:'hits'} as Record<string,string>;
+        const base = _FAM[family] || family;
+        try {
+          const {data: p} = await supabase.from('mlb_pipeline_props')
+            .select('tier')
+            .eq('player_name', player).eq('prop_line', line)
+            .eq('prop_type', `${base}_${dir}`)
+            .eq('game_date', rg.game_date)
+            .limit(1);
+          const currentTier = (p && p[0]?.tier || '').toUpperCase();
+          const _is_stale = currentTier && !['PRIME','STRONG'].includes(currentTier);
+          return {...rg, _current_tier: currentTier, _is_stale};
+        } catch { return rg; }
+      }));
       setLadderState(state || null);
-      setLadderRungs(rungs || []);
+      setLadderRungs(enriched);
     } catch (e) { setLadderState(null); setLadderRungs([]); }
     setLadderLoading(false);
   }, []);
@@ -16194,6 +16228,22 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                             <>
                               <Text style={{color:THEME.text, fontWeight:'800', fontSize:15, marginTop:4}}>{activeRung.pick_side}</Text>
                               <Text style={{color:THEME.textDim, fontSize:12, marginTop:2}}>{activeRung.matchup}</Text>
+                              {/* 2026-09-07 STALE-CHECK BANNER. If the underlying
+                                  prop's tier has been demoted since qualification
+                                  (e.g. Rodriguez STRONG@5am → SKIP by mid-morning
+                                  after refit pass), fetchLadder stamps _is_stale=true.
+                                  Show a warning so users know the qualifying signal
+                                  is no longer current. Not auto-dropped because
+                                  ladder qualification is a snapshot contract —
+                                  transparency > silent modification. */}
+                              {activeRung._is_stale && (
+                                <View style={{marginTop:8, padding:8, backgroundColor:THEME.warn+'1a', borderRadius:6, borderLeftWidth:3, borderLeftColor:THEME.warn}}>
+                                  <Text style={{color:THEME.warn, fontSize:11, fontWeight:'800', letterSpacing:0.3, marginBottom:2}}>⚠️ TIER DEMOTED SINCE QUALIFICATION</Text>
+                                  <Text style={{color:THEME.textDim, fontSize:10, lineHeight:14}}>
+                                    Was {activeRung.tier} at 5am · now {activeRung._current_tier || 'skip'} after mid-day recalibration. LR overlay may still endorse this direction — check the prop card before wagering.
+                                  </Text>
+                                </View>
+                              )}
                               <View style={{flexDirection:'row', gap:12, marginTop:8, flexWrap:'wrap'}}>
                                 <Text style={{color:THEME.textDim, fontSize:11}}>{activeRung.tier} · edge {activeRung.edge_pp}pp</Text>
                                 {/* 2026-08-19: hide cohort chip when both fields are null.
