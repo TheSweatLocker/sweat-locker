@@ -12865,9 +12865,15 @@ setJerryHistory(prev => {
                 (e.g., NHL "market model only"); off-season sports use it for
                 return-date messaging. Zero hardcodes — operator edits the
                 sport_registry row. */}
+            {/* 2026-09-07 gold accent styling: prior grey-on-dark note bands
+                blended into the background — user feedback "letters be in gold,
+                we already have that available." All in-app note surfaces now
+                use accent gold text with subtle warm-tint background + left
+                accent stripe, so ops notes actually get seen. Consistent
+                visual language: gold = something meaningful is happening. */}
             {sportMeta[gamesSport]?.state_message && (
-              <View style={{backgroundColor: sportMeta[gamesSport].state === 'in_season' ? 'rgba(122,146,168,0.1)' : 'rgba(212,163,60,0.1)', borderRadius:10, padding:10, marginBottom:12, borderLeftWidth:3, borderLeftColor: sportMeta[gamesSport].state === 'in_season' ? THEME.textDim : (THEME.gold || '#f5b342')}}>
-                <Text style={{color:THEME.text,fontSize:11.5,lineHeight:16,fontWeight:'600'}}>
+              <View style={{backgroundColor: THEME.accent + '14', borderRadius:10, padding:10, marginBottom:12, borderLeftWidth:3, borderLeftColor: THEME.accent}}>
+                <Text style={{color:THEME.accent,fontSize:11.5,lineHeight:16,fontWeight:'700',letterSpacing:0.2}}>
                   {sportMeta[gamesSport].state === 'preseason' ? '🏁' : sportMeta[gamesSport].state === 'off_season' ? '⏸' : sportMeta[gamesSport].state === 'returning' ? '⏳' : 'ℹ️'}  {sportMeta[gamesSport].state_message}
                 </Text>
               </View>
@@ -12879,9 +12885,9 @@ setJerryHistory(prev => {
                 : sportMeta[gamesSport]?.tomorrow_note;
               if (!note) return null;
               return (
-                <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:10,padding:10,marginBottom:12,borderLeftWidth:3,borderLeftColor:THEME.textDim}}>
-                  <Text style={{color:THEME.textDim,fontSize:11,lineHeight:16}}>
-                    {note}
+                <View style={{backgroundColor: THEME.accent + '14', borderRadius:10, padding:10, marginBottom:12, borderLeftWidth:3, borderLeftColor: THEME.accent}}>
+                  <Text style={{color: THEME.accent, fontSize:11.5, lineHeight:16, fontWeight:'700', letterSpacing:0.2}}>
+                    ℹ️  {note}
                   </Text>
                 </View>
               );
@@ -13533,7 +13539,12 @@ setJerryHistory(prev => {
                     rollout. Moved to sport_registry.state_message for consistency
                     once the proprietary model ships (already renders at top via
                     the state_message banner when sportMeta.NHL.state !== 'in_season'). */}
-                 <Text style={styles.sectionLabel}>{gamesData.length} GAMES — {gamesDay.toUpperCase()}</Text>
+                 {/* 2026-09-07: weekly-scope sports (NFL/NCAAF/UFC) show
+                     "THIS WEEK / NEXT WEEK" instead of "TODAY / TOMORROW"
+                     so the header matches the tab chip semantics and users
+                     don't get confused by a Sat game showing under "TODAY"
+                     on a Wednesday. */}
+                 <Text style={styles.sectionLabel}>{gamesData.length} GAMES — {(['NFL','NCAAF','UFC'].includes(gamesSport) ? (gamesDay === 'today' ? 'THIS WEEK' : 'NEXT WEEK') : gamesDay.toUpperCase())}</Text>
                 {gamesData.filter((game) => {
   // Hide completed games
   if(game.gameState === 'Final') return false;
@@ -13678,7 +13689,16 @@ setJerryHistory(prev => {
                   return(
                     <TouchableOpacity key={i} style={styles.gameCard} onPress={()=>openGameDetail(game)} activeOpacity={0.8}>
                       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-                        <Text style={{fontSize:11,color:THEME.textDim,fontWeight:'600'}}>{gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})} ET</Text>
+                        {/* 2026-09-07: weekly-scope sports (NFL/NCAAF/UFC) span
+                            multiple days so time alone is ambiguous. Prefix the
+                            day when the sport is weekly. Daily sports (MLB/NBA/
+                            NHL/NCAAB) keep the clean time-only render since
+                            every game is today or tomorrow already implied by
+                            the tab chip. */}
+                        <Text style={{fontSize:11,color:THEME.textDim,fontWeight:'600'}}>
+                          {(['NFL','NCAAF','UFC'].includes(gamesSport) ? gameTime.toLocaleDateString('en-US',{weekday:'short',timeZone:'America/New_York'}) + ' · ' : '')}
+                          {gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})} ET
+                        </Text>
                         {isLive?(<View style={{flexDirection:'row',alignItems:'center',gap:4,backgroundColor:THEME.loss + '26',paddingHorizontal:8,paddingVertical:3,borderRadius:20}}><View style={{width:6,height:6,borderRadius:3,backgroundColor:THEME.loss}}/><Text style={{color:THEME.loss,fontSize:11,fontWeight:'700'}}>LIVE</Text></View>):
                         (<View style={[styles.pill,{backgroundColor:THEME.sharp + '26'}]}><Text style={{color:THEME.sharp,fontSize:11,fontWeight:'700'}}>{gamesSport}</Text></View>)}
                       </View>
@@ -14220,6 +14240,7 @@ setJerryHistory(prev => {
               'Daily Degen — highest-conviction plays across sports',
               'Dawg of the Day — plus-money dog with full analysis',
               'Per-play WHY panels + cohort hit rates',
+              'Receipts on every sport — every pick graded nightly',
             ]}
             onUnlock={() => openPaywall('jerry_tab')}
           />
@@ -15703,6 +15724,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
               'The Ladder — 1 pick/day · compound the wins',
               'Ledger — daily P/L + teaser builder',
               'The Split — sharp $ vs public bets across every source',
+              'Receipts on every sport — every pick graded nightly',
             ]}
             onUnlock={() => openPaywall('steam_tab')}
           />

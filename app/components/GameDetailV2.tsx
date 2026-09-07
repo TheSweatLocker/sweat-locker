@@ -386,6 +386,7 @@ export default function GameDetailV2({
                   'Situational Records & Team Stats',
                   'Line Movement + Public Splits',
                   'Full Model Numbers Dump',
+                  'Receipts on every sport — every pick graded nightly',
                 ].map((b, i) => (
                   <View key={i} style={{flexDirection: 'row', alignItems: 'flex-start', gap: 8}}>
                     <Text style={{color: C.accent, fontSize: 13, marginTop: 0}}>✓</Text>
