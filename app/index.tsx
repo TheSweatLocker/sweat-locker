@@ -2028,6 +2028,24 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [settingsModal, setSettingsModal] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
+  // 2026-09-07: preferredBook — user's default sportsbook for the "Log a
+  // Pick" default + prop card odds display. Persisted to AsyncStorage.
+  // Options: Hard Rock (existing default), DraftKings, FanDuel, BetMGM,
+  // Caesars, ESPN Bet, Bet365. Silent-loads on mount from
+  // sweatlocker_preferred_book key; falls back to Hard Rock if unset.
+  const [preferredBook, setPreferredBook] = useState<string>('Hard Rock');
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem('sweatlocker_preferred_book');
+        if (raw && BOOKS.includes(raw)) setPreferredBook(raw);
+      } catch {}
+    })();
+  }, []);
+  const savePreferredBook = React.useCallback(async (book: string) => {
+    setPreferredBook(book);
+    try { await AsyncStorage.setItem('sweatlocker_preferred_book', book); } catch {}
+  }, []);
   const [selectedPropPlayer, setSelectedPropPlayer] = useState(null);
   const [propHistoryData, setPropHistoryData] = useState([]);
   const [propHistoryLoading, setPropHistoryLoading] = useState(false);
@@ -2145,6 +2163,9 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [isPlayoffMode, setIsPlayoffMode] = useState(false);
     const [scoresCache, setScoresCache] = useState({});
   const [scoresLoading, setScoresLoading] = useState(false);
+  // Initial form book set to 'Hard Rock' here; user's saved preferredBook
+  // takes over after mount (see useEffect above). Only affects the very
+  // first render before AsyncStorage loads.
   const [form, setForm] = useState({matchup:'',pick:'',sport:'NBA',type:'Spread',odds:'',units:'',book:'Hard Rock',result:'Pending',oddsSign:'-'});
 const [ageGateVisible, setAgeGateVisible] = useState(false);
   const [onboardingVisible, setOnboardingVisible] = useState(false);
@@ -11406,7 +11427,7 @@ setJerryHistory(prev => {
   const saveBet=()=>{
     if(!form.matchup||!form.pick){Alert.alert('Missing Info','Please enter a matchup and pick.');return;}
     setBets(prev=>[{...form,id:Date.now(),date:new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'})},...prev]);
-    setForm({matchup:'',pick:'',sport:'NBA',type:'Spread',odds:'',units:'',book:'Hard Rock',result:'Pending'});
+    setForm({matchup:'',pick:'',sport:'NBA',type:'Spread',odds:'',units:'',book:preferredBook,result:'Pending'});
     setModalVisible(false);
   };
   const deleteBet=(id)=>Alert.alert('Delete Pick','Are you sure?',[
@@ -11518,7 +11539,7 @@ setJerryHistory(prev => {
         type: legForm.type || 'Prop',
         odds: americanOdds,
         units: legForm.units || '1',
-        book: 'Hard Rock',
+        book: preferredBook,
         result: 'Pending',
         date: new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'}),
       },...prev]);
@@ -11553,7 +11574,7 @@ setJerryHistory(prev => {
   fetchGameNarrative(game, scoreData);
 };
   const logPickFromGame=(game,pick)=>{
-    setForm({matchup:game.away_team+' vs '+game.home_team,pick,sport:gamesSport,type:'Spread',odds:'',units:'',book:'Hard Rock',result:'Pending'});
+    setForm({matchup:game.away_team+' vs '+game.home_team,pick,sport:gamesSport,type:'Spread',odds:'',units:'',book:preferredBook,result:'Pending'});
     setGameDetailModal(false);setModalVisible(true);
   };
 
@@ -11960,6 +11981,94 @@ setJerryHistory(prev => {
                </View>
              );
            })}
+
+           {/* 2026-09-07 HOT-STREAK BANNER (queue item 4b). Dynamic 1-liner
+               that surfaces the hottest metric across sports+surfaces when a
+               real streak fires. Silent-hides when nothing meets threshold —
+               no filler content. Reads surfaceRecords (already fetched by
+               fetchSurfaceRecords) so no extra roundtrip. Rank: Sharp Card
+               MTD +5u+ at 60%+ hit → Ladder win streak 3+ → per-sport 7d
+               hot (65%+ n>=10). First one that fires wins the banner. */}
+           {(() => {
+             if (!surfaceRecords || !Object.keys(surfaceRecords).length) return null;
+             // Prefer Sharp Card MTD hot (most reliable signal)
+             for (const sp of ['MLB','NFL','NCAAF','NCAAB','NBA','NHL']) {
+               const cardMtd = surfaceRecords[`${sp}|sharp_card|mtd`];
+               if (!cardMtd) continue;
+               const w = cardMtd.wins || 0, l = cardMtd.losses || 0;
+               const un = Number(cardMtd.units_net) || 0;
+               if (w + l < 10) continue;
+               const pct = w / (w + l);
+               if (pct >= 0.60 && un >= 5) {
+                 return (
+                   <TouchableOpacity onPress={() => { setActiveTab('steam'); setSteamSubTab('sharp'); }}
+                     style={{backgroundColor: THEME.accent + '18', borderRadius: 10, padding: 10, marginBottom: 10, borderLeftWidth: 3, borderLeftColor: THEME.accent, flexDirection: 'row', alignItems: 'center', gap: 8}}>
+                     <Text style={{fontSize: 16}}>🔥</Text>
+                     <Text style={{color: THEME.text, fontSize: 12, fontWeight: '700', flex: 1}}>
+                       Sharp Card is hot — <Text style={{color: THEME.accent}}>{w}-{l} · {Math.round(pct * 100)}% · {un > 0 ? '+' : ''}{un.toFixed(1)}u</Text> this month
+                     </Text>
+                     <Text style={{color: THEME.accent, fontSize: 14, fontWeight: '800'}}>›</Text>
+                   </TouchableOpacity>
+                 );
+               }
+             }
+             // Ladder run
+             const ladMtd = surfaceRecords['MLB|ladder|mtd'];
+             if (ladMtd) {
+               const w = ladMtd.wins || 0, l = ladMtd.losses || 0;
+               if (w >= 3 && w >= l * 2 && (w + l) >= 4) {
+                 return (
+                   <TouchableOpacity onPress={() => { setActiveTab('steam'); setSteamSubTab('ladder'); }}
+                     style={{backgroundColor: THEME.accent + '18', borderRadius: 10, padding: 10, marginBottom: 10, borderLeftWidth: 3, borderLeftColor: THEME.accent, flexDirection: 'row', alignItems: 'center', gap: 8}}>
+                     <Text style={{fontSize: 16}}>🪜</Text>
+                     <Text style={{color: THEME.text, fontSize: 12, fontWeight: '700', flex: 1}}>
+                       Ladder is running — <Text style={{color: THEME.accent}}>{w}-{l} this month</Text>
+                     </Text>
+                     <Text style={{color: THEME.accent, fontSize: 14, fontWeight: '800'}}>›</Text>
+                   </TouchableOpacity>
+                 );
+               }
+             }
+             return null;
+           })()}
+
+           {/* 2026-09-07 ADAPTIVE RECORD CHIPS (queue item 4a). Replaces the
+               single-sport-hardcoded feel of the RecapStrip with a compact
+               chip row showing top 2-3 in-season sports by hit-rate. Sits
+               above the RecapStrip. Silent-hides if <2 sports have data.
+               Data source: surfaceRecords (same fetch as chip below). */}
+           {(() => {
+             if (!surfaceRecords || !Object.keys(surfaceRecords).length) return null;
+             const rows: {sport: string; w: number; l: number; pct: number; un: number}[] = [];
+             for (const sp of ['MLB','NFL','NCAAF','NCAAB','NBA','NHL']) {
+               const rec = surfaceRecords[`${sp}|sharp_card|d30`] || surfaceRecords[`${sp}|sharp_card|mtd`];
+               if (!rec) continue;
+               const w = rec.wins || 0, l = rec.losses || 0;
+               if (w + l < 5) continue;
+               rows.push({sport: sp, w, l, pct: w / (w + l), un: Number(rec.units_net) || 0});
+             }
+             if (rows.length < 2) return null;
+             rows.sort((a, b) => (b.pct - a.pct) || (b.un - a.un));
+             const top = rows.slice(0, 3);
+             return (
+               <View style={{flexDirection: 'row', gap: 6, marginBottom: 10}}>
+                 {top.map(r => {
+                   const c = r.pct >= 0.60 ? THEME.win : r.pct >= 0.52 ? THEME.accent : THEME.textDim;
+                   return (
+                     <View key={r.sport} style={{flex: 1, backgroundColor: THEME.surface, borderRadius: 8, padding: 8, borderWidth: 1, borderColor: THEME.border, alignItems: 'center'}}>
+                       <Text style={{color: THEME.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 0.6}}>{r.sport}</Text>
+                       <Text style={{color: c, fontSize: 14, fontWeight: '900', marginTop: 2, fontVariant: ['tabular-nums']}}>
+                         {Math.round(r.pct * 100)}%
+                       </Text>
+                       <Text style={{color: THEME.textDim, fontSize: 10, marginTop: 1, fontVariant: ['tabular-nums']}}>
+                         {r.w}-{r.l}
+                       </Text>
+                     </View>
+                   );
+                 })}
+               </View>
+             );
+           })()}
 
            {/* RECEIPTS STRIP — compact, conditional surfacing.
                Default: 30D rolling hit rate (stable, smooths variance).
@@ -18164,6 +18273,34 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                   numbers or third-party sportsbook names. Jerry reads + tiers + conviction
                   chips stay visible.
                 </Text>
+              </View>
+              {/* 2026-09-07 PREFERRED BOOK — item #1 from post-launch queue.
+                  DK+FD are ~70% of US bettors, BetMGM 10%, Caesars 7%; Hard
+                  Rock is <5%. Prior UX defaulted every "Log a Pick" flow to
+                  Hard Rock which was invisible-friction for 90% of the user
+                  base. This selector persists the user's choice to
+                  AsyncStorage and swaps the default in the log-a-pick form
+                  + parlay legs. See project_sportsbook_default_ux_907. */}
+              <View style={[styles.card,{marginBottom:12}]}>
+                <Text style={{color:THEME.text,fontWeight:'700',fontSize:14,marginBottom:8}}>📊 Your Default Sportsbook</Text>
+                <Text style={{color:THEME.textDim,fontSize:11,marginBottom:10,lineHeight:16}}>
+                  Sets the default when logging picks. Odds we show throughout the app come from Hard Rock's public feed by default; per-book compare view coming post-launch.
+                </Text>
+                <View style={{flexDirection:'row',flexWrap:'wrap',gap:6}}>
+                  {BOOKS.map(book => (
+                    <TouchableOpacity key={book} onPress={() => savePreferredBook(book)}
+                      style={{
+                        paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8,
+                        backgroundColor: preferredBook === book ? THEME.accent + '22' : THEME.surfaceAlt,
+                        borderWidth: 1,
+                        borderColor: preferredBook === book ? THEME.accent : THEME.border,
+                      }}>
+                      <Text style={{color: preferredBook === book ? THEME.accent : THEME.text, fontSize: 12, fontWeight: preferredBook === book ? '800' : '600'}}>
+                        {book}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               </View>
               {/* 2026-08-09: "How It Works" card removed. Was 7 sub-blocks with
                   stale tier thresholds (Sweat 68+ was old PRIME cut, actual is 80+),
