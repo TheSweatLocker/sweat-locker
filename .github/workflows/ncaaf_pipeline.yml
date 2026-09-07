@@ -251,8 +251,10 @@ jobs:
       # Splits v2 aggregator — normalizes OC/FR/CZ/SO into
       # public_splits_v2, writes game_context.splits_summary JSONB.
       # Must run AFTER all source scrapers.
+      # 2026-09-07: removed mode gate — Sunday cron is `resolver_only` and
+      # was skipping splits refresh, leaving Sun game_day slate on stale
+      # Sat splits. Aggregator is lightweight + silent no-op on no sources.
       - name: Splits v2 aggregator (NCAAF)
-        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

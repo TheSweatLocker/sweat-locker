@@ -234,8 +234,9 @@ jobs:
           cd mlb_pipeline
           python pull_scoresandodds.py --sport NCAAB || echo "SO NCAAB failed (non-fatal, likely offseason)"
 
+      # 2026-09-07: no mode gate — parity with NCAAF fix. Aggregator is
+      # a lightweight no-op if no source rows landed since last run.
       - name: Splits v2 aggregator (NCAAB)
-        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
