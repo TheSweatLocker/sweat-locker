@@ -5114,14 +5114,20 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
 
     // Jerry synthesis reads (2026-07-31, Tier 2). Fetch alongside context so
     // both land in the same render pass. Keyed by game_id (unique across
-    // sports). No sport filter — one query covers MLB + any other sport
-    // whose synthesizer has run today. Game card render dispatches by
-    // game.id lookup, so multi-sport support is free.
+    // sports).
+    // 2026-09-07: extended window from same-day to today + 7d. MLB games
+    // are same-day but NFL Week 1 games are 9/10-9/15 while today=9/7 —
+    // .eq('game_date', today) returned zero NFL/NCAAF reads and the entire
+    // "Jerry says he has no context" symptom flowed from that (game detail
+    // reads jerryReads[game.id] into jerrySynthesis, empty map → no Jerry).
     try {
+      const todayET = etStr;
+      const weekOut = new Date(Date.now() + 7*24*3600*1000).toISOString().split('T')[0];
       const jRes = await supabase
         .from('jerry_reads')
-        .select('sport,game_id,call_text,conviction,short_read,long_read,call_market,call_side,generated_at')
-        .eq('game_date', etStr);
+        .select('sport,game_id,call_text,conviction,short_read,long_read,call_market,call_side,generated_at,game_date')
+        .gte('game_date', todayET)
+        .lte('game_date', weekOut);
       if (jRes?.data && jRes.data.length > 0) {
         const jMap: any = {};
         jRes.data.forEach((r: any) => { if (r.game_id) jMap[r.game_id] = r; });
@@ -5219,16 +5225,27 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     try {
       const nflCtxResult = await supabase
         .from('nfl_game_context')
-        // 2026-08-25: expanded SELECT so NFLSlot's rich cards can render.
-        // Extras: weather/rest/roof for SportWeatherCard + Situational card,
-        // model_pred_* fields for cross-sport ScoreRange, oddscrowd_snapshot
-        // + align_status for parent MoneyFlow section.
+        // 2026-09-07 CRITICAL FIX: prior SELECT queried home_ml_close /
+        // away_ml_close (MLB naming) — nfl_game_context uses close_home_ml /
+        // close_away_ml. Wrong names 400'd the entire query silently →
+        // nflGameContextMap stayed empty → every NFL game detail rendered
+        // bare (no lines, no predicted score, no team stats). Fix: use
+        // correct column names + add team_stats_summary blobs (needed by
+        // NFLTeamMatchupCard) + L10-at-venue ATS + Madden OVR + Top100
+        // count (needed by game-card sub-chips shipped 8b1a48b6).
         .select('game_id,game_date,home_team,away_team,close_spread,close_total,'
-          + 'home_ml_close,away_ml_close,open_spread,open_total,'
+          + 'close_home_ml,close_away_ml,open_spread,open_total,'
           + 'projected_spread,projected_total,model_pred_spread,model_pred_total,'
+          + 'model_pred_home_points,model_pred_away_points,'
           + 'panel_implied_margin,panel_implied_total,jerry_pred_spread,jerry_pred_total,'
-          + 'signal_confluence_net,cohort_tags,sweat_score,sweat_tier,primary_play,'
+          + 'signal_confluence_net,signal_confluence_breakdown,cohort_tags,'
+          + 'sweat_score,sweat_tier,primary_play,supplementary_play,'
           + 'stats_source,season,season_type,week,splits_summary,'
+          + 'home_team_stats_summary,away_team_stats_summary,'
+          + 'home_ats_l10_at_home,home_ats_l10_at_home_losses,'
+          + 'away_ats_l10_on_road,away_ats_l10_on_road_losses,'
+          + 'home_madden_ovr,away_madden_ovr,home_qb_madden_ovr,away_qb_madden_ovr,'
+          + 'home_top100_count,away_top100_count,'
           + 'temp,wind,dome,weather_source,roof,'
           + 'home_rest,away_rest,div_game,'
           + 'oddscrowd_snapshot,align_status,commence_time')
@@ -17204,12 +17221,16 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   // 2026-08-13: run scrubJerryText — long_read can carry the
                   // same "[Auto-… ]" audit prefixes as short_read, and Game
                   // Detail is where they show up most prominently.
-                  (gamesSport === 'MLB' && jerryReads[selectedGame.id]?.long_read)
+                  // 2026-09-07: dropped MLB-only gate. Jerry synthesis
+                  // ships for NFL / NCAAF / UFC too; hard-coding MLB
+                  // meant NFL game detail said "no Jerry context" even
+                  // when jerry_reads had rows for the game.
+                  jerryReads[selectedGame.id]?.long_read
                     ? scrubJerryText(jerryReads[selectedGame.id].long_read)
                     : gameNarrative
                 }
                 jerrySynthesis={
-                  gamesSport === 'MLB' && jerryReads[selectedGame.id]
+                  jerryReads[selectedGame.id]
                     ? {
                         call_text: jerryReads[selectedGame.id].call_text,
                         conviction: jerryReads[selectedGame.id].conviction,
