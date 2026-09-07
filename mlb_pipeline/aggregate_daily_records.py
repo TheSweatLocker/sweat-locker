@@ -92,20 +92,89 @@ def _grade_side(pp: dict, game: dict) -> str | None:
 SHARP_STAKE_CUTOVER = '2026-08-31'
 
 
-def agg_sharp_card(date: str) -> dict | None:
+def _load_game_results_by_sport(date: str, sport: str) -> dict:
+    """Load game_results rows for one sport → matchup-keyed dict for
+    downstream Sharp Card grading. Normalizes spread column so grading
+    is sport-agnostic downstream."""
+    _RESULTS_TABLE = {
+        'MLB': 'mlb_game_results', 'NFL': 'nfl_game_results',
+        'NCAAF': 'ncaaf_game_results', 'NCAAB': 'ncaab_game_results',
+        'NBA': 'nba_game_results',
+    }
+    _SPREAD_COL = {
+        'MLB': 'run_line_result,total_result,spread_result',
+        'NFL': 'spread_result,total_result',
+        'NCAAF': 'spread_result,total_result',
+        'NCAAB': 'spread_result,total_result',
+        'NBA': 'spread_result,total_result',
+    }
+    table = _RESULTS_TABLE.get(sport)
+    if not table: return {}
+    cols = _SPREAD_COL.get(sport, 'spread_result,total_result')
+    r = requests.get(f'{SB}/rest/v1/{table}',
+        headers=H_READ,
+        params={'game_date': f'eq.{date}',
+                'select': f'game_id,home_team,away_team,home_score,away_score,'
+                          f'home_win,{cols}'},
+        timeout=15)
+    if r.status_code != 200:
+        print(f'  [agg_sharp_card] {sport} results fetch failed: {r.status_code} {str(r.text)[:120]}')
+        return {}
+    by_matchup = {}
+    for g in (r.json() if isinstance(r.json(), list) else []):
+        # Normalize: alias spread_result → run_line_result so _grade_side
+        # works uniformly for both baseball and other sports.
+        if sport != 'MLB' and g.get('spread_result') is not None:
+            sp = str(g.get('spread_result','')).lower()
+            if 'home' in sp and 'covered' in sp:  g['run_line_result'] = 'home'
+            elif 'away' in sp and 'covered' in sp: g['run_line_result'] = 'away'
+            elif 'push' in sp: g['run_line_result'] = 'push'
+        key = f"{(g.get('away_team') or '').lower()} @ {(g.get('home_team') or '').lower()}"
+        by_matchup[key] = g
+    return by_matchup
+
+
+def _load_props_by_sport(date: str, sport: str) -> dict:
+    """Load prop rows for one sport → composite-key dict for Sharp Card
+    prop grading."""
+    _PROPS_TABLE = {
+        'MLB': 'mlb_pipeline_props', 'NFL': 'nfl_pipeline_props',
+    }
+    table = _PROPS_TABLE.get(sport)
+    if not table: return {}
+    r = requests.get(f'{SB}/rest/v1/{table}',
+        headers=H_READ,
+        params={'game_date': f'eq.{date}',
+                'select': 'player_name,prop_type,direction,tier,result,book_over_odds,book_under_odds'},
+        timeout=15)
+    if r.status_code != 200:
+        print(f'  [agg_sharp_card] {sport} props fetch failed: {r.status_code}')
+        return {}
+    by_key = {}
+    for p in (r.json() if isinstance(r.json(), list) else []):
+        pkey = (str(p.get('player_name') or '').lower(),
+                str(p.get('prop_type') or '').lower(),
+                str(p.get('direction') or '').lower())
+        by_key[pkey] = p
+    return by_key
+
+
+def agg_sharp_card(date: str) -> list[dict] | None:
     """Sharp Card = items that SHIPPED to users on jerry_cache.sharp_card_YYYY-MM-DD.
 
     2026-09-05 ROOT-CAUSE FIX (launch-day credibility bug): prior version
     scanned mlb_game_results.primary_play + mlb_pipeline_props BROADLY for
     tier IN PRIME/STRONG. That over-counted by 27% (9/4: 75 graded picks
-    vs 59 items actually on the card). Sources of phantom picks:
-      • Scratched pitcher props still in DB at tier=PRIME/STRONG
-      • Props suppressed post-card-write by correlation dedup / stack alerts
-      • primary_play drift between card generation and grade time (partially
-        addressed by frozen mlb_game_results snapshot, but not for props)
+    vs 59 items actually on the card).
 
     The jerry_cache.sharp_card_{date} row written by generate_sharp_card.py
     IS the source of truth for what the user saw. Grade only those items.
+
+    2026-09-07 MULTI-SPORT extension: prior version was MLB-only. Once
+    NFL Week 1 hit the card (9/10+), NFL items would silently fail to
+    grade — Sharp Card record would erode as NFL wins vanished.
+    Now dispatches by item.sport, loads results/props per sport, and
+    returns MULTIPLE daily_surface_records rows (per-sport + combined ALL).
 
     Item shape (see generate_sharp_card.py):
       {tier, type ('ml'/'total'/'rl'/'prop'), sport, pick (label),
@@ -123,35 +192,37 @@ def agg_sharp_card(date: str) -> dict | None:
     if not items:
         return None
 
-    # 2. Preload grading sources
-    game_res = requests.get(f'{SB}/rest/v1/mlb_game_results',
-        headers=H_READ,
-        params={'game_date': f'eq.{date}',
-                'select': 'game_id,home_team,away_team,home_score,away_score,'
-                          'home_win,run_line_result,total_result,spread_result,'
-                          'primary_play'},
-        timeout=15).json()
-    games_by_matchup = {}
-    for g in (game_res if isinstance(game_res, list) else []):
-        key = f"{(g.get('away_team') or '').lower()} @ {(g.get('home_team') or '').lower()}"
-        games_by_matchup[key] = g
+    # 2. Group items by sport so we only load results tables we need
+    sports_in_card = set()
+    for it in items:
+        if isinstance(it, dict):
+            sport = (it.get('sport') or 'MLB').upper()
+            sports_in_card.add(sport)
 
-    prop_res = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
-        headers=H_READ,
-        params={'game_date': f'eq.{date}',
-                'select': 'player_name,prop_type,direction,tier,result,book_over_odds,book_under_odds'},
-        timeout=15).json()
-    props_by_key = {}
-    for p in (prop_res if isinstance(prop_res, list) else []):
-        pkey = (str(p.get('player_name') or '').lower(),
-                str(p.get('prop_type') or '').lower(),
-                str(p.get('direction') or '').lower())
-        props_by_key[pkey] = p
+    # 3. Preload per-sport grading sources
+    games_by_sport = {}
+    props_by_sport = {}
+    for sport in sports_in_card:
+        games_by_sport[sport] = _load_game_results_by_sport(date, sport)
+        props_by_sport[sport] = _load_props_by_sport(date, sport)
 
-    # 3. Grade each item on the card
-    w = l = p_ct = 0; units_bet = 0.0; units_won = 0.0; detail = []
+    # Legacy dict names for the original grading loop (default to MLB
+    # dicts so the loop below reads them cleanly for backward compat).
+    games_by_matchup = games_by_sport.get('MLB', {})
+    props_by_key = props_by_sport.get('MLB', {})
+
+    # 4. Grade each item on the card — dispatch by item.sport so NFL/
+    # NCAAF items look up in the correct results tables (multi-sport fix).
+    # Accumulate per-sport tallies so we can emit one daily_surface_records
+    # row per sport plus a combined ALL row for the app hero display.
+    per_sport = {}   # sport → {w, l, p_ct, units_bet, units_won, detail}
+    def _bucket(s):
+        return per_sport.setdefault(s, {'w':0,'l':0,'p_ct':0,'units_bet':0.0,
+                                         'units_won':0.0,'detail':[]})
+
     for it in items:
         if not isinstance(it, dict): continue
+        item_sport = (it.get('sport') or 'MLB').upper()
         item_type = (it.get('type') or '').lower()
         stake = float(it.get('units') or 1.0)
         odds = it.get('odds')
@@ -160,13 +231,12 @@ def agg_sharp_card(date: str) -> dict | None:
 
         if item_type in ('ml', 'rl', 'total'):
             matchup = (it.get('matchup') or '').lower()
-            g = games_by_matchup.get(matchup)
+            games_dict = games_by_sport.get(item_sport, {})
+            g = games_dict.get(matchup)
             if not g: continue
-            # Fake a pp for _grade_side
             fake_pp = {'type': item_type, 'label': pick_label}
             verdict = _grade_side(fake_pp, g)
         elif item_type == 'prop':
-            # Parse pick label OR use player_name / prop_type on item
             player = it.get('player_name')
             ptype = it.get('prop_type')
             direction = it.get('direction')
@@ -185,7 +255,8 @@ def agg_sharp_card(date: str) -> dict | None:
             if not (player and ptype and direction):
                 continue
             pkey = (str(player).lower(), str(ptype).lower(), str(direction).lower())
-            pr = props_by_key.get(pkey)
+            props_dict = props_by_sport.get(item_sport, {})
+            pr = props_dict.get(pkey)
             if not pr: continue
             res_c = (pr.get('result') or '').upper()
             if res_c in ('WIN', 'W'): verdict = 'W'
@@ -193,19 +264,51 @@ def agg_sharp_card(date: str) -> dict | None:
             elif res_c in ('PUSH', 'P'): verdict = 'P'
 
         if verdict is None: continue
-        units_bet += stake
+        b = _bucket(item_sport)
+        b['units_bet'] += stake
         payout = _american_payout(odds)
-        if verdict == 'W': w += 1; units_won += stake * payout
-        elif verdict == 'L': l += 1; units_won -= stake
-        elif verdict == 'P': p_ct += 1
-        detail.append({'type': item_type, 'pick': pick_label[:80],
-                       'verdict': verdict, 'stake': stake, 'odds': odds})
+        if verdict == 'W': b['w'] += 1; b['units_won'] += stake * payout
+        elif verdict == 'L': b['l'] += 1; b['units_won'] -= stake
+        elif verdict == 'P': b['p_ct'] += 1
+        b['detail'].append({'type': item_type, 'pick': pick_label[:80],
+                            'verdict': verdict, 'stake': stake, 'odds': odds,
+                            'sport': item_sport})
 
-    if not detail: return None
-    return {'surface':'sharp_card','sport':'MLB','record_date':date,
-            'wins':w,'losses':l,'pushes':p_ct,'units_bet':round(units_bet,2),
-            'units_won':round(units_won,2),'pick_count':w+l+p_ct,
-            'detail':{'legs':detail[:50], 'source':'jerry_cache.sharp_card'}}
+    if not per_sport: return None
+
+    # 5. Emit one row per sport with data, plus a combined ALL row so the
+    # app can show a single unified Sharp Card record OR filter per sport.
+    rows = []
+    all_w = all_l = all_p = 0
+    all_bet = all_won = 0.0
+    all_detail = []
+    for sport, b in per_sport.items():
+        if b['w'] + b['l'] + b['p_ct'] == 0: continue
+        rows.append({
+            'surface':'sharp_card','sport':sport,'record_date':date,
+            'wins':b['w'],'losses':b['l'],'pushes':b['p_ct'],
+            'units_bet':round(b['units_bet'],2),
+            'units_won':round(b['units_won'],2),
+            'pick_count':b['w']+b['l']+b['p_ct'],
+            'detail':{'legs':b['detail'][:50], 'source':'jerry_cache.sharp_card'},
+        })
+        all_w += b['w']; all_l += b['l']; all_p += b['p_ct']
+        all_bet += b['units_bet']; all_won += b['units_won']
+        all_detail.extend(b['detail'])
+
+    # Combined ALL row (only if multi-sport). App reads MLB row today but
+    # can flip to ALL for the true combined figure once NFL/NCAAF ship.
+    if len(per_sport) > 1:
+        rows.append({
+            'surface':'sharp_card','sport':'ALL','record_date':date,
+            'wins':all_w,'losses':all_l,'pushes':all_p,
+            'units_bet':round(all_bet,2),
+            'units_won':round(all_won,2),
+            'pick_count':all_w+all_l+all_p,
+            'detail':{'legs':all_detail[:50], 'source':'jerry_cache.sharp_card',
+                       'sports_included': sorted(per_sport.keys())},
+        })
+    return rows
 
 
 def agg_ledger(date: str) -> list[dict]:
