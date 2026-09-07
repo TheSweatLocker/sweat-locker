@@ -1161,7 +1161,15 @@ const rlLabel = (sport?: string) => RL_LABEL_BY_SPORT[sport || ''] || 'Spread';
 // during rollout; can deprecate once every ctx has splits_summary populated).
 function _sideFromAgg(agg: any): {money: number; bets: number; div: number; sources: number} | null {
   if (!agg || typeof agg !== 'object') return null;
-  const money = typeof agg.money_pct_avg === 'number' ? agg.money_pct_avg : null;
+  // 2026-09-07 ROOT-CAUSE FIX: different sources normalize to different metric
+  // names in splits_v2_pipeline. OC → money_pct_avg. FR + CZ → handle_pct_avg.
+  // Semantically identical (sharp money handle share). Prior code only read
+  // money_pct_avg → for any game with cz/fr-only coverage (all NCAAF today,
+  // most NHL), money rendered as 0% and MoneyFlow chips were nonsense.
+  // Prefer money_pct_avg when present, fall back to handle_pct_avg.
+  const money = typeof agg.money_pct_avg === 'number' ? agg.money_pct_avg
+              : typeof agg.handle_pct_avg === 'number' ? agg.handle_pct_avg
+              : null;
   const bets  = typeof agg.bets_pct_avg  === 'number' ? agg.bets_pct_avg  : null;
   if (money == null && bets == null) return null;
   let div = typeof agg.divergence_avg === 'number' ? agg.divergence_avg : null;
@@ -4557,7 +4565,9 @@ function SplitsSummaryPanel({summary, sport}: any) {
               {marketLabel[mkt] || String(mkt).toUpperCase()}
             </Text>
             {sides.map(([side, agg]: any, i) => {
-              const money = agg?.money_pct_avg;
+              // 2026-09-07: same fallback as MoneyFlow — cz/fr sources emit
+              // handle_pct_avg, oc emits money_pct_avg. Prefer money, fall back.
+              const money = agg?.money_pct_avg ?? agg?.handle_pct_avg;
               const bets = agg?.bets_pct_avg;
               const nSrc = agg?.sources_agree ?? 0;
               // 2026-09-01: adaptive confirmation chip. Was TRIPLE-only which
