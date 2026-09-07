@@ -108,24 +108,39 @@ def _f(v):
 
 
 def transform(row):
+    # 2026-09-07: nflverse renamed columns in the new stats_player_week
+    # format (2025+). Old format used `recent_team` and `interceptions`;
+    # new format uses `team` and `passing_interceptions`. Read both and
+    # prefer whichever is populated. Also affects sacks (`sacks` →
+    # `sacks_suffered`) and a handful of other pass/rush/rec fields —
+    # audited against 2025 CSV live. Blast radius: every 2025 QB row
+    # had INT=None and team=None, killing pass_interceptions charts +
+    # cross-team joins. Backfill Hurts/Mahomes/Allen/Jackson/Daniels +
+    # 2000+ other players requires a re-run of `python nfl_player_stats.py
+    # --season 2025 --force` after this ships.
+    def _pick(*keys):
+        for k in keys:
+            v = row.get(k)
+            if v not in (None, ""): return v
+        return None
     return {
         "player_id": row.get("player_id"),
         "player_name": row.get("player_display_name") or row.get("player_name"),
         "position": row.get("position") or None,
         "position_group": row.get("position_group") or None,
-        "team": row.get("recent_team"),
+        "team": _pick("team", "recent_team"),
         "season": _i(row.get("season")),
         "week": _i(row.get("week")),
         "season_type": (row.get("season_type") or "REG").upper(),
         "opponent_team": row.get("opponent_team") or None,
-        # Passing
-        "completions": _i(row.get("completions")),
-        "attempts": _i(row.get("attempts")),
+        # Passing (new format prefixes many stats with `passing_`)
+        "completions": _i(_pick("completions", "passing_completions")),
+        "attempts": _i(_pick("attempts", "passing_attempts")),
         "passing_yards": _i(row.get("passing_yards")),
         "passing_tds": _i(row.get("passing_tds")),
-        "interceptions": _i(row.get("interceptions")),
-        "sacks": _i(row.get("sacks")),
-        "sack_yards": _i(row.get("sack_yards")),
+        "interceptions": _i(_pick("passing_interceptions", "interceptions")),
+        "sacks": _i(_pick("sacks", "sacks_suffered", "passing_sacks")),
+        "sack_yards": _i(_pick("sack_yards_lost", "sack_yards")),
         "passing_air_yards": _i(row.get("passing_air_yards")),
         "passing_yards_after_catch": _i(row.get("passing_yards_after_catch")),
         "passing_first_downs": _i(row.get("passing_first_downs")),
