@@ -17247,7 +17247,18 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 }
                 jerryLoading={gameNarrativeLoading}
                 isPro={isPro || isSubLoading}
-                onUpgrade={() => openPaywall('game_detail_jerry_read')}
+                onUpgrade={() => {
+                  // 2026-09-07: iOS RN can't reliably stack two Modals — a
+                  // second Modal opened while another is visible either does
+                  // nothing (silent fail) or freezes the UI on the next
+                  // interaction. User: "click green Start Trial in game
+                  // detail → nothing happens; back out, try again → app
+                  // shuts down on Metro." Fix: close the game detail modal
+                  // first, then open paywall on the next tick (same pattern
+                  // used by the settings→paywall handoff at line 18052).
+                  setGameDetailModal(false);
+                  setTimeout(() => openPaywall('game_detail_jerry_read'), 200);
+                }}
                 onClose={()=>setGameDetailModal(false)}
                 onAddParlayLeg={(leg)=>{
                   const legData = {
