@@ -154,57 +154,78 @@ const scrubJerryText = (raw: string | null | undefined): string => {
 // a formatted string so callers can wrap the label with <Explainer>.
 // Backward-compat: callers can still `${r.prose || `${r.label}: ${r.value}${r.suffix}`}`.
 type SignalChip = {label: string; value?: string; suffix?: string; prose?: string};
+// Module-scope so the scalar-fallback branch in humanizeSignal can reference
+// it (was function-local, causing ReferenceError when the branch fired first).
+const _SIGNAL_KEY_LABELS: Record<string, {label: string; suffix?: string}> = {
+  // MLB
+  'l3_k':       {label: 'L3 K rate', suffix: '%'},
+  'l3_era':     {label: 'L3 ERA'},
+  'l3_bb':      {label: 'L3 BB rate', suffix: '%'},
+  'xera':       {label: 'xERA'},
+  'era':        {label: 'ERA'},
+  'park':       {label: 'Park factor'},
+  'opp_wrc':    {label: 'Opp offense wRC+'},
+  'wrc':        {label: 'wRC+'},
+  'opp_k_rate': {label: 'Opp K rate', suffix: '%'},
+  'k_rate':     {label: 'K rate', suffix: '%'},
+  'bb_rate':    {label: 'BB rate', suffix: '%'},
+  'whiff_rate': {label: 'Whiff rate', suffix: '%'},
+  'gb_rate':    {label: 'GB rate', suffix: '%'},
+  'fb_rate':    {label: 'FB rate', suffix: '%'},
+  'ops':        {label: 'OPS'},
+  'opp_ops':    {label: 'Opp OPS'},
+  'proj':       {label: 'Projection'},
+  'edge':       {label: 'Edge', suffix: '%'},
+  // NFL — scalar-value signals from nfl_generate_props.
+  'l4':                 {label: 'L4 avg'},
+  'l5':                 {label: 'L5 avg'},
+  'l10':                {label: 'L10 avg'},
+  'season_avg':         {label: 'Season avg'},
+  'league_baseline':    {label: 'League avg'},
+  'opp_pct':            {label: 'Opp defense rank', suffix: '%'},
+  'edge_pct':           {label: 'Model edge', suffix: '%'},
+  'games_used':         {label: 'Games sampled'},
+  '_l4_target_share':   {label: 'Target share', suffix: '%'},
+  '_l4_air_yards_share':{label: 'Air yards share', suffix: '%'},
+  '_l4_wopr':           {label: 'WOPR'},
+  '_l4_targets':        {label: 'L4 targets/game'},
+};
 const humanizeSignal = (key: string, val: any): SignalChip | null => {
   const s = String(val ?? '').trim();
   if (!s) return null;
+  // 2026-09-07: metadata keys never render as user bullets. These are
+  // scoring/debugging fields on the props signals blob. User saw
+  // "· 2.5", "· Receptions", "· def_pass_def", "· 14.4" as raw bullets
+  // on Deebo Samuel card — all four came from this metadata leaking
+  // into the humanizer.
+  const METADATA_KEYS = new Set([
+    'label', 'opp_col', 'league_baseline', 'games_used', '_direction',
+    'season_avg', 'implied_high', 'implied_low', '_line', '_book_line',
+    '_stat_avg_l5', '_stat_avg_l10', '_stat_avg_season', '_stat_games_played',
+    '_stat_last10', '_pre_recal_tier', '_recal_multiplier', '_edge_at_book',
+  ]);
+  if (METADATA_KEYS.has(key)) return null;
   // Prose signals (already user-ready) — pass through as `prose`, no tap.
   if (s.includes('—') || s.includes(':') || s.length > 60 || /[A-Z]{2,}/.test(s.split(' ').slice(0, 2).join(' '))) {
     return {label: '', prose: s};
+  }
+  // 2026-09-07: scalar-value fallback. NFL signals ship as {key: number}
+  // (l4: 2.5, edge_pct: 14.4) — the "key value" regex below expected
+  // MLB-style self-describing strings ("L3 K 24.5%"). When val is a
+  // scalar (no space), fall back to key-based lookup so numbers get
+  // labels ("L4 avg 2.5" not just "2.5"). Unknown scalars → drop rather
+  // than render a naked number.
+  if (/^-?[\d.]+%?$/.test(s)) {
+    const meta = _SIGNAL_KEY_LABELS[key.toLowerCase()];
+    if (!meta) return null;
+    const suffix = meta.suffix && !s.endsWith('%') ? meta.suffix : '';
+    return {label: meta.label, value: s, suffix};
   }
   const m = s.match(/^([\w_]+)\s+([\d.\-+%]+)$/);
   if (!m) return {label: '', prose: s};
   const rawKey = m[1].toLowerCase();
   const value = m[2];
-  const KEY_LABELS: Record<string, {label: string; suffix?: string}> = {
-    // MLB
-    'l3_k':       {label: 'L3 K rate', suffix: '%'},
-    'l3_era':     {label: 'L3 ERA'},
-    'l3_bb':      {label: 'L3 BB rate', suffix: '%'},
-    'xera':       {label: 'xERA'},
-    'era':        {label: 'ERA'},
-    'park':       {label: 'Park factor'},
-    'opp_wrc':    {label: 'Opp offense wRC+'},
-    'wrc':        {label: 'wRC+'},
-    'opp_k_rate': {label: 'Opp K rate', suffix: '%'},
-    'k_rate':     {label: 'K rate', suffix: '%'},
-    'bb_rate':    {label: 'BB rate', suffix: '%'},
-    'whiff_rate': {label: 'Whiff rate', suffix: '%'},
-    'gb_rate':    {label: 'GB rate', suffix: '%'},
-    'fb_rate':    {label: 'FB rate', suffix: '%'},
-    'ops':        {label: 'OPS'},
-    'opp_ops':    {label: 'Opp OPS'},
-    'proj':       {label: 'Projection'},
-    'edge':       {label: 'Edge', suffix: '%'},
-    // NFL — 2026-09-07 added so nfl_generate_props signal keys render
-    // with proper labels instead of lowercase raw keys ("l4" → "L4 avg",
-    // "opp_pct" → "Opp defense rank"). All prose-style NFL signals
-    // (l5_confirm/l10_hot/weather_wind/game_script_run/etc) already
-    // contain '—' so they pass through the prose branch above and don't
-    // hit this table.
-    'l4':                 {label: 'L4 avg'},
-    'l5':                 {label: 'L5 avg'},
-    'l10':                {label: 'L10 avg'},
-    'season_avg':         {label: 'Season avg'},
-    'league_baseline':    {label: 'League avg'},
-    'opp_pct':            {label: 'Opp defense rank', suffix: '%'},
-    'edge_pct':           {label: 'Model edge', suffix: '%'},
-    'games_used':         {label: 'Games sampled'},
-    '_l4_target_share':   {label: 'Target share', suffix: '%'},
-    '_l4_air_yards_share':{label: 'Air yards share', suffix: '%'},
-    '_l4_wopr':           {label: 'WOPR'},
-    '_l4_targets':        {label: 'L4 targets/game'},
-  };
-  const meta = KEY_LABELS[rawKey] || KEY_LABELS[key.toLowerCase()];
+  const meta = _SIGNAL_KEY_LABELS[rawKey] || _SIGNAL_KEY_LABELS[key.toLowerCase()];
   if (!meta) return {label: '', prose: s};
   const suffix = meta.suffix && !value.endsWith('%') ? meta.suffix : '';
   return {label: meta.label, value, suffix};
