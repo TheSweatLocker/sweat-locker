@@ -420,6 +420,25 @@ jobs:
           cd mlb_pipeline
           python prop_ensemble_scorer.py --sport NFL --refresh-existing || echo "NFL prop playbook failed (non-fatal)"
 
+      # 2026-09-07: Prop Jerry synthesis for NFL — writes prop_jerry_reads
+      # rows with input_snapshot.render_sections so the app renders the
+      # coverage pill + recent_form bar chart + why bullets identical to
+      # MLB. Prior: this step was only invoked in mlb_pipeline.yml which
+      # meant NFL props only got synthesized on MLB's cadence — result:
+      # 1 NFL prop_jerry_reads row for 281 NFL props. Wiring the NFL
+      # invocation here ensures every NFL slate day generates Jerry reads.
+      # --force refreshes render_sections when we ship template updates.
+      - name: NFL prop Jerry synthesis (structured template render)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_prop_jerry_synthesis.py --sport NFL --force --tier-gate NONE || echo "NFL prop Jerry synthesis failed (non-fatal)"
+
       - name: External source aggregation pull
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true

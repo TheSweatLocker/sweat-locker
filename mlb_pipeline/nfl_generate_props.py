@@ -547,6 +547,13 @@ def compute_nfl_l10_signals(recent_rows: list, line: float, side: str) -> tuple[
     sig['_stat_last10'] = recent_rows
     sig['_stat_avg_l5'] = round(sum(l5)/len(l5), 2) if l5 else None
     sig['_stat_avg_l10'] = round(sum(l10)/len(l10), 2) if l10 else None
+    # 2026-09-07 season baseline — required by render_prop_template's
+    # header stats block. Prior omission left the "Season avg" chip
+    # blank on every NFL prop card even when we had 17+ games of data.
+    # Full season = all rows we have (typically 17 regular-season games).
+    if values:
+        sig['_stat_avg_season'] = round(sum(values)/len(values), 2)
+        sig['_stat_games_played'] = len(values)
     sig['_line'] = line
     sig['_direction'] = side.lower() if side else None
     return sig, bonus

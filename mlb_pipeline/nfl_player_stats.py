@@ -52,21 +52,41 @@ def detect_current_season():
 
 
 def fetch_player_stats(season):
-    """Pull weekly player-stats CSV for one season."""
-    url = f"{NFLVERSE_BASE}/player_stats/player_stats_{season}.csv.gz"
-    print(f"  Fetching {url.split('/')[-1]}...")
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            raw = gzip.decompress(r.read())
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            print(f"  ⚠️  No data for {season} (404)")
-            return []
-        raise
-    text = raw.decode("utf-8")
-    reader = csv.DictReader(io.StringIO(text))
-    return list(reader)
+    """Pull weekly player-stats CSV for one season.
+
+    2026-09-07: nflverse restructured their releases. New URL pattern
+    for 2025+ uses `stats_player/stats_player_week_YYYY.csv` (uncompressed).
+    Legacy URL `player_stats/player_stats_YYYY.csv.gz` still works for
+    2024 and earlier. Try new first, fall back to old for backward-compat
+    with old seasons.
+    """
+    # Try new format first (2025+)
+    new_url = f"{NFLVERSE_BASE}/stats_player/stats_player_week_{season}.csv"
+    old_url = f"{NFLVERSE_BASE}/player_stats/player_stats_{season}.csv.gz"
+
+    for url, is_gz in ((new_url, False), (old_url, True)):
+        print(f"  Trying {url.split('/')[-1]}...")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                raw = r.read()
+                if is_gz:
+                    raw = gzip.decompress(raw)
+            text = raw.decode("utf-8")
+            reader = csv.DictReader(io.StringIO(text))
+            rows = list(reader)
+            print(f"  ✅ Got {len(rows):,} rows for {season}")
+            return rows
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue  # Try next URL
+            raise
+        except Exception as e:
+            print(f"  ⚠️  Error fetching {season} from {url.split('/')[-1]}: {e}")
+            continue
+
+    print(f"  ⚠️  No data for {season} (both URLs 404)")
+    return []
 
 
 def _i(v):

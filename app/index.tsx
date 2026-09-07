@@ -166,6 +166,7 @@ const humanizeSignal = (key: string, val: any): SignalChip | null => {
   const rawKey = m[1].toLowerCase();
   const value = m[2];
   const KEY_LABELS: Record<string, {label: string; suffix?: string}> = {
+    // MLB
     'l3_k':       {label: 'L3 K rate', suffix: '%'},
     'l3_era':     {label: 'L3 ERA'},
     'l3_bb':      {label: 'L3 BB rate', suffix: '%'},
@@ -184,6 +185,24 @@ const humanizeSignal = (key: string, val: any): SignalChip | null => {
     'opp_ops':    {label: 'Opp OPS'},
     'proj':       {label: 'Projection'},
     'edge':       {label: 'Edge', suffix: '%'},
+    // NFL — 2026-09-07 added so nfl_generate_props signal keys render
+    // with proper labels instead of lowercase raw keys ("l4" → "L4 avg",
+    // "opp_pct" → "Opp defense rank"). All prose-style NFL signals
+    // (l5_confirm/l10_hot/weather_wind/game_script_run/etc) already
+    // contain '—' so they pass through the prose branch above and don't
+    // hit this table.
+    'l4':                 {label: 'L4 avg'},
+    'l5':                 {label: 'L5 avg'},
+    'l10':                {label: 'L10 avg'},
+    'season_avg':         {label: 'Season avg'},
+    'league_baseline':    {label: 'League avg'},
+    'opp_pct':            {label: 'Opp defense rank', suffix: '%'},
+    'edge_pct':           {label: 'Model edge', suffix: '%'},
+    'games_used':         {label: 'Games sampled'},
+    '_l4_target_share':   {label: 'Target share', suffix: '%'},
+    '_l4_air_yards_share':{label: 'Air yards share', suffix: '%'},
+    '_l4_wopr':           {label: 'WOPR'},
+    '_l4_targets':        {label: 'L4 targets/game'},
   };
   const meta = KEY_LABELS[rawKey] || KEY_LABELS[key.toLowerCase()];
   if (!meta) return {label: '', prose: s};
@@ -14366,7 +14385,17 @@ setJerryHistory(prev => {
           pass_interceptions: {label: 'INTs', emoji: '🎯'},
           rush_attempts: {label: 'RUSH ATT',  emoji: '💪'},
         };
-        const catFor = (pt: string): string => (pt || '').split('_')[0];
+        // 2026-09-07: strip _over/_under suffix to get the prop family.
+        // Prior split('_')[0] collapsed NFL 2-word families ('pass_yds_over'
+        // → 'pass') which didn't match PROP_TYPE_LABELS keys ('pass_yds').
+        // Result: NFL chips showed lowercase raw 'pass'/'rush'/'reception'
+        // instead of proper "PASS YDS" / "RUSH YDS" labels.
+        const catFor = (pt: string): string => {
+          if (!pt) return '';
+          if (pt.endsWith('_over')) return pt.slice(0, -5);
+          if (pt.endsWith('_under')) return pt.slice(0, -6);
+          return pt;
+        };
         const catCounts: Record<string, number> = {};
         pipelineMLBProps.forEach(p => {
           const c = catFor(p.prop_type);

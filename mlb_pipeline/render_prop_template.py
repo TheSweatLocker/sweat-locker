@@ -54,11 +54,29 @@ _STAT_META = {
     # NHL
     'sog':      {'label': 'Shots on Goal', 'role': 'skill', 'relevant_ctx': ['opp_goalie_sv', 'line_projection', 'toi']},
     'saves':    {'label': 'Saves', 'role': 'goalie', 'relevant_ctx': ['opp_shots_per60', 'team_defense']},
-    # NFL
+    # NFL — long-name keys retained for backward compat; short-name keys
+    # (pass_yds/rush_yds/etc) added 2026-09-07 to match what
+    # nfl_generate_props.py actually writes (prop_type='pass_yds_over'
+    # → _stat_family() strips '_over' → 'pass_yds'). Prior _STAT_META
+    # only had long-name keys → NFL props fell into unknown-role
+    # fallback → coverage checklist empty → sections.coverage = null
+    # → app never rendered the coverage pill for NFL. Adding short-name
+    # variants makes NFL props hit the real metadata path.
     'passing_yards':    {'label': 'Passing Yards', 'role': 'qb', 'relevant_ctx': ['opp_pass_def', 'pace', 'weather', 'game_script']},
+    'pass_yds':         {'label': 'Passing Yards', 'role': 'qb', 'relevant_ctx': ['opp_pass_def', 'pace', 'weather', 'game_script']},
+    'pass_tds':         {'label': 'Passing TDs', 'role': 'qb', 'relevant_ctx': ['opp_pass_def', 'game_script', 'implied_high']},
+    'pass_attempts':    {'label': 'Pass Attempts', 'role': 'qb', 'relevant_ctx': ['game_script_pass', 'weather']},
+    'pass_completions': {'label': 'Completions', 'role': 'qb', 'relevant_ctx': ['opp_pass_def', 'weather']},
+    'pass_interceptions': {'label': 'Interceptions', 'role': 'qb', 'relevant_ctx': ['opp_pass_def']},
+    'interceptions':    {'label': 'Interceptions', 'role': 'qb', 'relevant_ctx': ['opp_pass_def']},
     'rushing_yards':    {'label': 'Rushing Yards', 'role': 'rb', 'relevant_ctx': ['opp_run_def', 'game_script', 'weather']},
+    'rush_yds':         {'label': 'Rushing Yards', 'role': 'rb', 'relevant_ctx': ['opp_run_def', 'game_script', 'weather']},
+    'rush_tds':         {'label': 'Rushing TDs', 'role': 'rb', 'relevant_ctx': ['opp_run_def', 'game_script', 'implied_high']},
+    'rush_attempts':    {'label': 'Rush Attempts', 'role': 'rb', 'relevant_ctx': ['game_script_run', 'weather']},
     'receiving_yards':  {'label': 'Receiving Yards', 'role': 'wr', 'relevant_ctx': ['opp_pass_def', 'target_share', 'game_script']},
+    'reception_yds':    {'label': 'Receiving Yards', 'role': 'wr', 'relevant_ctx': ['opp_pass_def', 'target_share', 'game_script']},
     'receptions':       {'label': 'Receptions', 'role': 'wr', 'relevant_ctx': ['target_share', 'game_script']},
+    'anytime_td':       {'label': 'Anytime TD', 'role': 'skill', 'relevant_ctx': ['opp_pass_def', 'implied_high', 'game_script']},
 }
 
 

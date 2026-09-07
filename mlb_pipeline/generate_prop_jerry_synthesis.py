@@ -499,16 +499,29 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     # A neutral umpire never fires a signal but the ctx has ump data — old
     # check falsely flagged it missing. Now every ks_over card sees its own
     # game_context row and coverage reflects data availability.
+    #
+    # 2026-09-07 NFL wired: previously gated MLB-only, so NFL props got
+    # ctx=None → coverage checklist fell into signals-dict fallback →
+    # sparse coverage pill. NFL now fetches nfl_game_context which has
+    # rich weather / defense / game-script fields the template can score.
+    _CTX_TABLE_BY_SPORT = {
+        'mlb': 'mlb_game_context',
+        'nfl': 'nfl_game_context',
+        'ncaaf': 'ncaaf_game_context',
+    }
     ctx_by_game: dict = {}
-    if props_for_template and sport.lower() == 'mlb':
+    _sport_key = sport.lower()
+    _ctx_table = _CTX_TABLE_BY_SPORT.get(_sport_key)
+    if props_for_template and _ctx_table:
         try:
-            ctx_r = requests.get(f'{SUPABASE_URL}/rest/v1/mlb_game_context',
+            ctx_r = requests.get(f'{SUPABASE_URL}/rest/v1/{_ctx_table}',
                 headers=H_READ,
                 params={'game_date': f'eq.{game_date}', 'select': '*'},
                 timeout=15)
             if ctx_r.status_code == 200:
                 for row in ctx_r.json() or []:
                     ctx_by_game[row.get('game_id')] = row
+                print(f'  [{sport}] fetched ctx for {len(ctx_by_game)} games from {_ctx_table}')
         except Exception as _e:
             print(f'  [{sport}] ctx fetch failed (coverage will use signals-dict fallback): {_e}')
 
