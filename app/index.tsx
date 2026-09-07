@@ -15489,7 +15489,19 @@ setJerryHistory(prev => {
                             <Text style={{color:THEME.textMuted,fontSize:11,fontVariant:['tabular-nums']}}>
                               {d.hasData ? `${d.wins}-${d.losses}` : (sfc.key === 'ladder' || sfc.key === 'ledger' ? 'v1.1' : 'no data')}
                             </Text>
-                            {d.hasData && (
+                            {/* 2026-09-07: Ladder is a COMPOUNDING product —
+                                one play/day, winnings roll onto the next
+                                rung. The units math (wins*0.91 - losses)
+                                that works for flat surfaces (sharp/prop/
+                                ledger) doesn't describe what a Ladder
+                                bettor actually has. Until they hit all 8
+                                steps and cash out they're technically at
+                                risk of losing the whole seed. User: "we
+                                put record there but not the unit because
+                                technically you're just down until we make
+                                the 8 steps." Hide the unit chip on Ladder
+                                — record + hit-rate carry the honest story. */}
+                            {d.hasData && sfc.key !== 'ladder' && (
                               <Text style={{color:d.units>=0?THEME.win:THEME.loss,fontSize:11,fontWeight:'600',fontVariant:['tabular-nums']}}>
                                 {d.units>=0?'+':''}{d.units.toFixed(1)}u
                               </Text>

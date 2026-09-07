@@ -1151,30 +1151,35 @@ const rlLabel = (sport?: string) => RL_LABEL_BY_SPORT[sport || ''] || 'Spread';
 // that splits_v2_pipeline aggregates (OC + FR + CZ + SO where present).
 // Falls back to oddscrowd_snapshot if splits_summary absent (backwards compat
 // during rollout; can deprecate once every ctx has splits_summary populated).
-function _sideFromAgg(agg: any): {money: number; bets: number; div: number} | null {
+function _sideFromAgg(agg: any): {money: number; bets: number; div: number; sources: number} | null {
   if (!agg || typeof agg !== 'object') return null;
   const money = typeof agg.money_pct_avg === 'number' ? agg.money_pct_avg : null;
   const bets  = typeof agg.bets_pct_avg  === 'number' ? agg.bets_pct_avg  : null;
   if (money == null && bets == null) return null;
   let div = typeof agg.divergence_avg === 'number' ? agg.divergence_avg : null;
   if (div == null && money != null && bets != null) div = Math.round(money - bets);
-  return {money: money ?? 0, bets: bets ?? 0, div: div ?? 0};
+  // 2026-09-07: propagate `sources_agree` down so MoneyMarket can
+  // downgrade the SHARP/STEAM label when only one source is reporting.
+  // User audit found FSU game showed "SHARP · OVER 99% money" from a
+  // single-source (cleatz only) reading — no cross-validation, but the
+  // UI presented it with the same confidence as multi-source truth.
+  const sources = typeof agg.sources_agree === 'number' ? agg.sources_agree : 0;
+  return {money: money ?? 0, bets: bets ?? 0, div: div ?? 0, sources};
 }
 function _marketFromSummary(mktObj: any): any | null {
   if (!mktObj || typeof mktObj !== 'object') return null;
   const sides = ['HOME', 'AWAY', 'OVER', 'UNDER'];
-  let best: {side: string; money: number; bets: number; div: number; agree: number} | null = null;
+  let best: {side: string; money: number; bets: number; div: number; sources: number} | null = null;
   for (const s of sides) {
     if (!(s in mktObj)) continue;
     const agg = _sideFromAgg(mktObj[s]);
     if (!agg) continue;
-    const agree = typeof mktObj[s]?.sources_agree === 'number' ? mktObj[s].sources_agree : 0;
     if (!best || agg.money > best.money) {
-      best = {side: s, ...agg, agree};
+      best = {side: s, ...agg};
     }
   }
   if (!best) return null;
-  return {pick: best.side, money: best.money, bets: best.bets, div: best.div, agree: best.agree};
+  return {pick: best.side, money: best.money, bets: best.bets, div: best.div, sources: best.sources};
 }
 function oddsFromSummary(summary: any): {ml: any; rl: any; total: any} | null {
   if (!summary || typeof summary !== 'object') return null;
@@ -1214,18 +1219,20 @@ function MoneyMarket({label, data}: any) {
   const div = data.div ?? 0;
   const money = Math.max(0, Math.min(100, data.money ?? 0));
   const bets = Math.max(0, Math.min(100, data.bets ?? 0));
-  // 2026-09-02: sharp threshold aligned with pipeline
-  // (line_movement_config.py: divergence_threshold=20 OR money>=60).
-  // Prior `div >= 10` labeled 10pp gaps as SHARP — user spotted this
-  // on Royals RL where SO shows home 56% money vs 50% bets (6pp) and
-  // the app called it "home sharp". Now requires real signal.
-  const sharp = Math.abs(div) >= 20 || money >= 60;
-  // 2026-09-05: label EXTREME sharp differently. When money% + bets%
-  // diverge by 50pp+ (e.g. 90% money / 15% bets on the underdog),
-  // the SHARP label undersells — surface it as REVERSE-LINE or
-  // STEAM to make the user pay attention. Prior UI let a 90/15
-  // dog-money split read as "0% money on home" (user 9/5 complaint).
-  const extremeSharp = Math.abs(div) >= 50 || (money >= 80 && bets <= 30);
+  const sources = typeof data.sources === 'number' ? data.sources : 0;
+  // 2026-09-02: sharp threshold aligned with pipeline (divergence_threshold=20
+  // OR money>=60). 2026-09-07 ROOT-CAUSE FIX: also require sources_agree >= 2
+  // before applying any sharp label. User audit on FSU@SMU showed the app
+  // labeling "OVER SHARP · 99% money" from a single-source (cleatz only)
+  // reading — extreme cleatz-only numbers rendered with the same confidence
+  // as cross-validated multi-source truth. Fix: single-source data still
+  // renders bars + percentages, but the SHARP/STEAM chip is gated on
+  // sources_agree >= 2 so users only see confident signaling when we have
+  // cross-source confirmation. Blast radius: every NCAAF total (thin
+  // source coverage) + any market where OC/FR haven't reported yet.
+  const multiSource = sources >= 2;
+  const sharp = multiSource && (Math.abs(div) >= 20 || money >= 60);
+  const extremeSharp = multiSource && (Math.abs(div) >= 50 || (money >= 80 && bets <= 30));
   return (
     <View style={[
       styles.moneyMarket,
@@ -1242,6 +1249,10 @@ function MoneyMarket({label, data}: any) {
           ) : sharp ? (
             <View style={styles.sharpBadge}>
               <Text style={styles.sharpBadgeText}>SHARP</Text>
+            </View>
+          ) : sources === 1 ? (
+            <View style={[styles.sharpBadge, {backgroundColor: 'transparent', borderWidth: 1, borderColor: C.textMuted}]}>
+              <Text style={[styles.sharpBadgeText, {color: C.textMuted}]}>1 SRC</Text>
             </View>
           ) : null}
           <Text style={styles.moneyMarketDiv}>{div >= 0 ? `+${div}` : div}pp</Text>
