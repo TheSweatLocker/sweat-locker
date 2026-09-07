@@ -2346,19 +2346,39 @@ useEffect(() => {
   const winRate = wins+losses>0 ? ((wins/(wins+losses))*100).toFixed(1) : '0.0';
   const resultColor = (r) => r==='Win'?THEME.win:r==='Loss'?THEME.loss:r==='Push'?THEME.push:THEME.textMuted;
 
+  // 2026-09-07: renamed intent — "get preferred book line" instead of
+  // hard-coded Hard Rock lookup. Uses the user's Settings-selected
+  // preferredBook (Batch 2 · cd19902d) with Hard Rock as the fallback if
+  // the preferred book isn't available for this game. Kept the getHRBLine
+  // name so all 5 existing call sites keep working; the render sites that
+  // hard-code the "🎸 HARD ROCK BET" chip now read bookLabel off the
+  // returned object so users see the correct book name.
   const getHRBLine = (game) => {
     if(!game||!game.bookmakers) return null;
-    //console.log('getHRBLine keys:', game.bookmakers.map(bm=>bm.key));
-    const hrbBm = game.bookmakers.find(bm => bm.key==='hardrockbet' || bm.key==='hardrock' || (BOOKMAKER_MAP[bm.key]||bm.key)===HRB);
-   //console.log('hrbBm found:', hrbBm?.key);
-    if(!hrbBm) return null;
-    const spread = hrbBm.markets && hrbBm.markets.find(m => m.key==='spreads');
-    const total = hrbBm.markets && hrbBm.markets.find(m => m.key==='totals');
-    const ml = hrbBm.markets && hrbBm.markets.find(m => m.key==='h2h');
+    // Try preferredBook first (via BOOKMAKER_MAP → book display name match)
+    const preferred = preferredBook || HRB;
+    let bm = game.bookmakers.find(bm => (BOOKMAKER_MAP[bm.key]||bm.key)===preferred);
+    let bookLabel = preferred;
+    // Fallback to Hard Rock if user's preferred isn't in this game's feed
+    if(!bm && preferred !== HRB) {
+      bm = game.bookmakers.find(bm => bm.key==='hardrockbet' || bm.key==='hardrock' || (BOOKMAKER_MAP[bm.key]||bm.key)===HRB);
+      bookLabel = HRB;
+    }
+    // Last resort — any bookmaker (odds are odds, at least render something)
+    if(!bm && game.bookmakers.length > 0) {
+      bm = game.bookmakers[0];
+      bookLabel = BOOKMAKER_MAP[bm.key] || bm.key;
+    }
+    if(!bm) return null;
+    const spread = bm.markets && bm.markets.find(m => m.key==='spreads');
+    const total = bm.markets && bm.markets.find(m => m.key==='totals');
+    const ml = bm.markets && bm.markets.find(m => m.key==='h2h');
     return {
       spread: spread&&spread.outcomes ? spread.outcomes : null,
       total: total&&total.outcomes ? total.outcomes : null,
       ml: ml&&ml.outcomes ? ml.outcomes : null,
+      bookLabel,  // new: which book actually surfaced
+      isHRB: bookLabel === HRB,
     };
   };
 
@@ -14556,7 +14576,11 @@ setJerryHistory(prev => {
                           so screen recordings don't trip TikTok/IG gambling filters */}
                       {presenterMode ? null : (hrbLine?(
                         <View style={{backgroundColor:THEME.hrb + '12',borderRadius:10,padding:10,marginBottom:8,borderWidth:1,borderColor:THEME.hrb + '40'}}>
-                          <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',marginBottom:6}}>🎸 HARD ROCK BET</Text>
+                          {/* 2026-09-07: label reflects user's Settings-selected
+                              preferredBook (Batch 2). Hard Rock keeps its 🎸
+                              branding to stay recognizable; other books get
+                              a neutral 📊 marker + their name. */}
+                          <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',marginBottom:6}}>{hrbLine.isHRB ? '🎸 HARD ROCK BET' : `📊 ${(hrbLine.bookLabel || 'BOOK').toUpperCase()}`}</Text>
                           <View style={{flexDirection:'row',gap:6}}>
                             {hrbSpread&&gamesSport!=='UFC'&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbSpread.name.split(' ').pop()} {hrbSpread.point>0?'+':''}{hrbSpread.point}</Text><Text style={{color:THEME.textDim,fontSize:10}}>{hrbSpread.price>0?'+':''}{hrbSpread.price}</Text></View>}
                             {hrbTotal&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>O/U {hrbTotal.point}</Text><Text style={{color:THEME.textDim,fontSize:10}}>{hrbTotal.price>0?'+':''}{hrbTotal.price}</Text></View>}
