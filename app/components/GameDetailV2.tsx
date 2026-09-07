@@ -513,7 +513,15 @@ export default function GameDetailV2({
           </Expander>
         )}
 
-        <Section title="Your Book · Hard Rock Bet" hint="tap to add parlay or log pick">
+        {/* 2026-09-07: title changed from "Your Book · Hard Rock Bet" to
+            "Sportsbook Odds" + hint noting Hard Rock is the default display
+            (odds pulled from public feeds, no affiliate relationship). Prior
+            title implied endorsement / affiliation which is not accurate —
+            we display Hard Rock's public odds as informational market data
+            same as any odds-comparison site. Post-launch (v1.0.1): user
+            book-selector setting so DK/FD/BetMGM bettors see their own
+            book's line by default. See project_sportsbook_default_ux_907. */}
+        <Section title="Sportsbook Odds" hint="Hard Rock lines shown · tap to add parlay or log pick · we're not affiliated with any sportsbook">
           <YourBookTiles
             closeSpread={closeSpread}
             closeTotal={closeTotal}

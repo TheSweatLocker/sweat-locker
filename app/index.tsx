@@ -17151,10 +17151,15 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           was repeated on every screen (visual clutter). Full text still lives
           in Terms of Service, Privacy Policy, and onboarding modals — legal
           coverage preserved. This compact strip keeps the "not gambling
-          advice" reminder + 1-800-GAMBLER tap-through without eating space. */}
+          advice" reminder + 1-800-GAMBLER tap-through without eating space.
+          2026-09-07: added "Not affiliated with any sportsbook" to make our
+          independence explicit — needed for App Store submission + FTC
+          endorsement optics. We DISPLAY odds from Hard Rock (and others)
+          as informational market data; there is no affiliate relationship,
+          no revenue share, no partnership. */}
       <View style={{backgroundColor:'#0a1018',paddingHorizontal:16,paddingVertical:6,borderTopWidth:1,borderTopColor:THEME.border}}>
               <Text style={{color:THEME.textMuted,fontSize:9,textAlign:'center',lineHeight:12}}>
-                ⚠️ Data analysis for entertainment only · Not gambling advice
+                ⚠️ Data analysis for entertainment only · Not gambling advice · Not affiliated with any sportsbook
                 {'  •  '}
                 <Text style={{color:THEME.hrb, fontWeight:'700'}} onPress={()=>Linking.openURL('tel:18004262537')}>1-800-GAMBLER</Text>
               </Text>
@@ -18245,6 +18250,20 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                 </View>
                 <Text style={{color:THEME.accent,fontSize:20,marginLeft:8}}>↗</Text>
               </TouchableOpacity>
+              {/* Sportsbook Disclosure — 2026-09-07 added for App Store
+                  submission. We display odds from Hard Rock (and others via
+                  BOOKMAKER_MAP) as informational market data. No affiliate
+                  agreement, no partnership, no revenue share, no deep-link
+                  monetization. Book selector to change default is queued
+                  for v1.0.1 per project_sportsbook_default_ux_907.md. */}
+              <View style={[styles.card,{marginBottom:12}]}>
+                <Text style={{color:THEME.text,fontWeight:'700',fontSize:14,marginBottom:8}}>🏈 Sportsbook Disclosure</Text>
+                <Text style={{color:THEME.textDim,fontSize:12,lineHeight:18}}>
+                  The Sweat Locker is <Text style={{fontWeight:'700',color:THEME.text}}>not affiliated with any sportsbook.</Text> We have no partnership, revenue share, affiliate agreement, or paid promotional relationship with Hard Rock Bet, DraftKings, FanDuel, BetMGM, Caesars, ESPN Bet, Bet365, or any other operator.
+                  {'\n\n'}
+                  Odds shown throughout the app are informational market data pulled from public feeds. Hard Rock lines are the default display; verify current odds at your own sportsbook before placing any wager.
+                </Text>
+              </View>
               {/* Delete Data */}
               <View style={[styles.card,{marginBottom:12}]}>
                 <Text style={{color:THEME.text,fontWeight:'700',fontSize:14,marginBottom:8}}>🗑️ Delete My Data</Text>
