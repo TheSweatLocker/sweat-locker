@@ -150,10 +150,13 @@ def build_payload(row: dict) -> dict | None:
         'close_spread': _f(row.get('spread_line')),
         'open_total': _f(row.get('total_line')),
         'close_total': _f(row.get('total_line')),
-        'open_home_ml': _f(row.get('home_moneyline')),
-        'close_home_ml': _f(row.get('home_moneyline')),
-        'open_away_ml': _f(row.get('away_moneyline')),
-        'close_away_ml': _f(row.get('away_moneyline')),
+        # Moneyline columns are typed INTEGER in nfl_game_results schema
+        # but nflverse ships them as float strings ("120.0"). Coerce with
+        # _i() to satisfy the type check.
+        'open_home_ml': _i(row.get('home_moneyline')),
+        'close_home_ml': _i(row.get('home_moneyline')),
+        'open_away_ml': _i(row.get('away_moneyline')),
+        'close_away_ml': _i(row.get('away_moneyline')),
     }
     # Merge outcome computations (skip if game not played yet)
     payload.update(compute_outcome(row))
