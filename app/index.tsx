@@ -15504,30 +15504,32 @@ setJerryHistory(prev => {
                 // 2026-09-05 SOURCE OF TRUTH: for 'sharp' key, prefer
                 // surface_records.sharp_card (single authoritative row that
                 // reconciles Sharp Card display + record chip + Receipts).
-                // Falls back to legacy 'sharp' surface, then sport-specific
-                // sides key (e.g., ncaaf_sides, nfl_sides).
+                // 2026-09-09 PRIORITY REVERSED for sports with a
+                // <sport>_sides surface (NCAAF/NFL): the sides record is
+                // the full engine performance (all graded picks), while
+                // sharp_card is a tiny curated slice (~3-4 picks/week).
+                // Showing sharp_card 3-1 misrepresents the actual engine
+                // record. Sides record is authoritative when it exists.
                 if (key === 'sharp') {
-                  const cardRec = surfaceRecords[`${sport}|sharp_card|${winKey}`];
-                  if (cardRec) {
-                    const w = cardRec.wins||0, l = cardRec.losses||0;
+                  const sidesKey = `${sport}_sides`.toLowerCase();
+                  const sidesRec = surfaceRecords[`${sport}|${sidesKey}|${winKey}`];
+                  if (sidesRec) {
+                    // Sides surface wins — full engine record
+                    const w = sidesRec.wins||0, l = sidesRec.losses||0;
                     return {
-                      units: Number(cardRec.units_net) || 0,
+                      units: Number(sidesRec.units_net) || 0,
                       wins: w, losses: l,
                       hitPct: w+l > 0 ? (w/(w+l))*100 : 0,
                       hasData: (w+l) > 0,
                     };
                   }
-                  // 2026-09-06 sport-specific fallback: NCAAF has 'ncaaf_sides'
-                  // surface (from compute_surface_records ncaaf primary_play
-                  // aggregator), NFL will have 'nfl_sides' once Week 1 grades.
-                  // Prior code returned no data → NCAAF/NFL sharp tile blank
-                  // even though we have 32-15-1 NCAAF record.
-                  const sidesKey = `${sport}_sides`.toLowerCase();
-                  const sidesRec = surfaceRecords[`${sport}|${sidesKey}|${winKey}`];
-                  if (sidesRec) {
-                    const w = sidesRec.wins||0, l = sidesRec.losses||0;
+                  // Fallback: sharp_card (MLB uses this — the ONLY authoritative
+                  // MLB sides record since MLB doesn't have a 'mlb_sides' surface).
+                  const cardRec = surfaceRecords[`${sport}|sharp_card|${winKey}`];
+                  if (cardRec) {
+                    const w = cardRec.wins||0, l = cardRec.losses||0;
                     return {
-                      units: Number(sidesRec.units_net) || 0,
+                      units: Number(cardRec.units_net) || 0,
                       wins: w, losses: l,
                       hitPct: w+l > 0 ? (w/(w+l))*100 : 0,
                       hasData: (w+l) > 0,
