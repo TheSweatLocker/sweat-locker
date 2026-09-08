@@ -433,6 +433,31 @@ def _write_no_play(game_date: str, dry_run: bool, reads: list) -> None:
     else:
         print(f"  ⚠ upsert {r.status_code}: {r.text[:200]}")
 
+    # 2026-09-09 DUAL-WRITE FIX. Root fix for POTD source-of-truth
+    # disagreement: jerry_cache said noPlay while daily_best_bet_history
+    # still had a Marlins entry from earlier pipelineGenerated write.
+    # Users saw "no play tonight" on home page but "today's POTD: Marlins"
+    # on Receipts. Same drift class as grade_potd.py earlier tonight.
+    # Now: when Jerry marks noPlay, also mark history to No Play so all
+    # surfaces agree. Non-fatal — jerry_cache is authoritative anyway.
+    try:
+        hr = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/daily_best_bet_history",
+            headers=H_WRITE,
+            params={"bet_date": f"eq.{game_date}"},
+            json={"lean": "No Play (discipline pass)",
+                  "result": "No Play"},
+            timeout=15,
+        )
+        if hr.status_code in (200, 204):
+            print(f"  ✅ history mirrored to No Play")
+        elif hr.status_code == 404:
+            pass  # no history row for today — nothing to mirror
+        else:
+            print(f"  ⚠ history mirror failed {hr.status_code}: {hr.text[:120]}")
+    except Exception as e:
+        print(f"  ⚠ history mirror exception {e}")
+
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
