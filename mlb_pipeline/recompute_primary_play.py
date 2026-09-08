@@ -223,6 +223,32 @@ def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
         engine_changed = old_engine != new_engine and new_pp is not None
         if engine_changed and not pp_changed:
             pp_changed = True  # trigger patch below to stamp the fresh engine
+        # 2026-09-09: also patch when LR shadow drifted — even if the label is
+        # unchanged, stale LR probability from the AM run (features sparse)
+        # gives wrong LR-support values downstream (POTD gate, Sharp Card
+        # LR check). If LR now suggests a materially different probability,
+        # write the fresh shadow. Threshold 0.05 = 5pp swing = meaningful.
+        # See project_lr_shadow_stale_909.
+        def _lr_p(pp_dict):
+            """Return whichever LR probability is authoritative for this pp.
+            Prefers dict-format shadow; falls back to legacy raw fields."""
+            if not isinstance(pp_dict, dict): return None
+            ml = pp_dict.get('_lr_ml_shadow') or {}
+            if isinstance(ml, dict) and ml.get('p_home_win') is not None:
+                return ml['p_home_win']
+            tot = pp_dict.get('_lr_total_shadow') or {}
+            if isinstance(tot, dict) and tot.get('p_over') is not None:
+                return tot['p_over']
+            # Legacy raw fields (pre-9/9 pipeline runs before shadow was
+            # standardized). Total takes precedence for total-market picks.
+            if pp_dict.get('_lr_p_over') is not None:
+                return pp_dict['_lr_p_over']
+            return pp_dict.get('_lr_p_home_win')
+        old_lr = _lr_p(old_pp); new_lr = _lr_p(new_pp)
+        lr_drift = (old_lr is not None and new_lr is not None
+                    and abs(float(old_lr) - float(new_lr)) >= 0.05)
+        if lr_drift and not pp_changed:
+            pp_changed = True  # write fresh LR shadow
         if force and new_pp is not None:
             pp_changed = True  # user asked to force-write even if unchanged
 

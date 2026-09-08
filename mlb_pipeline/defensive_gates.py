@@ -949,7 +949,14 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
             'sub': f'Model conviction on {team_short} · {conviction}%',
             'conviction': conviction,
             '_engine': 'lr_v1',
-            '_lr_p_home_win': p,
+            # 2026-09-09: standardized shadow field. Was `_lr_p_home_win` raw
+            # (only on PRIME-override path); every other path in this file
+            # writes `_lr_ml_shadow` dict. Downstream (POTD gate, Sharp Card
+            # LR check, watchdogs) could not reliably find the value. Now
+            # always dict format regardless of code path. Raw kept for back-
+            # compat with any pre-9/9 audit tooling.
+            '_lr_ml_shadow': pred,
+            '_lr_p_home_win': p,  # deprecated raw — remove after 30d verify
             '_lr_sport': sport,
             '_lr_model_version': model.get('version', ''),
             '_pre_lr': {
@@ -961,6 +968,14 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
             } if old_pp else None,
             'audit_note': f'LR override · p={p:.2f} · was {(old_pp.get("tier") or "none")}/{(old_pp.get("type") or "none")}',
         }
+        # 2026-09-09: preserve _lr_total_shadow from old_pp — same class of
+        # bug as the total-override path (see apply_mlb_total_lr_override).
+        # ML PRIME override builds fresh new_pp; without this the total
+        # shadow is lost.
+        if isinstance(old_pp, dict) and old_pp.get('_lr_total_shadow') is not None:
+            new_pp['_lr_total_shadow'] = old_pp['_lr_total_shadow']
+        if isinstance(old_pp, dict) and old_pp.get('_lr_p_over') is not None:
+            new_pp['_lr_p_over'] = old_pp['_lr_p_over']  # legacy raw
         return new_pp
     except Exception:
         return pp  # never break the pipeline
@@ -1223,7 +1238,12 @@ def apply_mlb_total_lr_override(pp, ctx):
             'conviction': conviction,
             'line': close_total,
             '_engine': 'lr_v1',
-            '_lr_p_over': p,
+            # 2026-09-09: standardized shadow field (parity w/ ML LR override).
+            # Was `_lr_p_over` raw only. Downstream reads `_lr_total_shadow`
+            # dict elsewhere — the PRIME override path was writing a different
+            # field so POTD gate / Sharp Card LR check silently missed it.
+            '_lr_total_shadow': pred,
+            '_lr_p_over': p,  # deprecated raw — remove after 30d verify
             '_lr_model_version': _LR_MODEL_MLB_TOTAL.get('version', ''),
             '_pre_lr': {
                 'tier': old_pp.get('tier'), 'side': old_pp.get('side'),
@@ -1232,6 +1252,15 @@ def apply_mlb_total_lr_override(pp, ctx):
             } if old_pp else None,
             'audit_note': f'LR TOTAL override · p_over={p:.2f} · was {(old_pp.get("tier") or "none")}/{(old_pp.get("type") or "none")}',
         }
+        # 2026-09-09: preserve _lr_ml_shadow if ML override left it on old_pp.
+        # ML LR override runs FIRST in apply_all_defensive_gates; if it wrote
+        # `_lr_ml_shadow` (non-PRIME path), then TOTAL LR override built a
+        # fresh new_pp here and DROPPED that field. Downstream code that
+        # reads ML LR (POTD ML picks) then finds nothing. Copy it forward.
+        if isinstance(old_pp, dict) and old_pp.get('_lr_ml_shadow') is not None:
+            new_pp['_lr_ml_shadow'] = old_pp['_lr_ml_shadow']
+        if isinstance(old_pp, dict) and old_pp.get('_lr_p_home_win') is not None:
+            new_pp['_lr_p_home_win'] = old_pp['_lr_p_home_win']  # legacy raw
         return new_pp
     except Exception:
         return pp
