@@ -343,6 +343,30 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                     signals, edge = build_signals(display, prop_type, entry['line'], ctx)
                     if edge is not None and abs(edge) >= 0.10: edge_ct += 1
 
+                # 2026-09-07 ROOT-CAUSE FIX: refuse to write pitcher-prop
+                # rows when player_team can't be resolved from ctx. The
+                # odds API can mis-attach pitcher prop events to the
+                # wrong game_id (e.g. today: David Peterson (NYM) props
+                # arrived on the Cubs-vs-Brewers event). When that
+                # happens, _resolve_team returns 'UNKNOWN' because the
+                # pitcher isn't in the ctx's away_pitcher/home_pitcher
+                # roster. Prior behavior wrote the row anyway with
+                # player_team='UNKNOWN' + wrong matchup, and the row
+                # leaked into The Sharp (STRONG-tier orphans on games
+                # the pitcher wasn't even playing in). Skip is safer
+                # than orphan: if the pitcher legitimately isn't in
+                # this game, the row shouldn't exist. Batter stubs are
+                # exempt (team=None is expected — enriched later via
+                # lineup attach step, [[project_signal_gate_over_tier_906]]).
+                if not is_batter and (team is None or team == 'UNKNOWN'):
+                    skipped += 1
+                    if skipped <= 5:
+                        print(f'  ⏭  skip {display} {full_type}: team unresolved '
+                              f'(pitcher not in {ctx.get("away_team","?")}@'
+                              f'{ctx.get("home_team","?")} roster — likely '
+                              f'odds API mis-attributed event)')
+                    continue
+
                 # PATH A: row already exists → PATCH book fields if missing OR
                 # if the stored book_line doesn't match the scorer's prop_line
                 # (the mis-matched-line bug — was locking in wrong-line odds

@@ -189,9 +189,23 @@ def _units_for_pick(tier: str | None, type_: str | None, odds: Any,
 
 
 def _prop_team_matches(player_team: str | None, matchup: str | None) -> bool:
-    """Mirror app propTeamMatches(). Player_team must appear in matchup."""
+    """Mirror app propTeamMatches(). Player_team must appear in matchup.
+
+    2026-09-07 ROOT-CAUSE FIX: previously returned True when
+    player_team was missing/UNKNOWN, on the theory that we shouldn't
+    false-negative when team resolution was flaky. In practice this
+    let orphan pitcher props through the composer — David Peterson
+    (NYM) props stuck on the Cubs-vs-Brewers event because odds API
+    mis-attached them; player_team='UNKNOWN' passed this gate → prop
+    landed on The Sharp for a game the pitcher wasn't in. Flipped
+    to REJECT unresolved-team props. Batter props are exempt because
+    they arrive with team=None by design (enriched later via lineup
+    attach step). Only PITCHER props are gated here — batter props
+    reach this function only after their team was set upstream.
+    """
     team = (player_team or '').strip().lower()
-    if not team or team == 'unknown': return True
+    if not team or team == 'unknown':
+        return False
     m = (matchup or '').lower()
     if not m: return True
     short = team.split(' ')[-1] if team else ''

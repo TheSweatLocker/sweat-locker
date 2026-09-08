@@ -9322,7 +9322,20 @@ setJerryHistory(prev => {
         .eq('cache_key', `sharp_card_${today}`)
         .limit(1);
       const cacheRow = (cacheRows && cacheRows[0]) || null;
-      const items = (cacheRow?.data?.items || []) as any[];
+      const rawItems = (cacheRow?.data?.items || []) as any[];
+      // 2026-09-07 CLIENT-SIDE DEFENSE: filter out any prop whose
+      // player_team is UNKNOWN/missing. Server composer should not
+      // include these, but the odds API has been known to mis-attach
+      // pitcher prop events to the wrong game_id (David Peterson NYM
+      // props landed on Cubs-vs-Brewers 9/7). If the server-side gate
+      // ever regresses, users would see prop cards for players who
+      // aren't in the game they're attached to. Cheap client filter
+      // keeps this class of leak invisible.
+      const items = rawItems.filter((it: any) => {
+        if (it?.market !== 'prop') return true;
+        const team = (it?.player_team || '').toUpperCase();
+        return team && team !== 'UNKNOWN';
+      });
       setSharpPicks(items);
 
       // ── HISTORICAL RECORD (real odds per pick, unit-weighted) ──
