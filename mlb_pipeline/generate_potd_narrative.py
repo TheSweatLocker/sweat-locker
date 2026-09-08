@@ -126,12 +126,35 @@ def build_mlb_prompt(potd):
     home_frame = _xera_frame(h_p, h_x, home, away)
     away_frame = _xera_frame(a_p, a_x, away, home)
 
+    # 2026-09-08 MARKET-AWARE PROMPT. The pick type drives which data is
+    # relevant. Prior version dumped projected_total + spread_delta + both
+    # pitcher xERAs regardless of pick — Claude then reached for whatever
+    # number felt most quantitative and often wrote total-analysis for
+    # ML picks (e.g. "The Phillies are undervalued because model projects
+    # 9.3-run total but market prices 1.72 lower..." — total edge tells
+    # you NOTHING about which team wins).
+    #
+    # New structure: extract market from leanDisplay, surface ONLY the
+    # signals relevant to that market, add explicit rules about what
+    # NOT to cite. Removes the temptation for Claude to grab off-market
+    # numbers.
+    lean_lower = lean.lower()
+    if ' ml' in lean_lower or 'moneyline' in lean_lower:
+        market = 'ml'
+    elif lean_lower.startswith('over') or lean_lower.startswith('under'):
+        market = 'total'
+    elif '+' in lean or '-' in lean.replace('- ', '').replace('--', ''):
+        market = 'spread'  # e.g. "Astros +1.5"
+    else:
+        market = 'ml'  # default
+
     parts = [
         "You are Jerry, a sharp sports analyst for The Sweat Locker app.",
         "Write 2-3 sentences (no more) explaining today's MLB Play of the Day. You have all the data you need below — do NOT hedge, do NOT say you lack information.",
         "",
         f"Game: {away} @ {home}",
         f"Play: {lean}",
+        f"Market type: {market.upper()}",
         f"Sweat Score: {score.get('total', 'N/A')}/100",
     ]
     if score.get("isNRFI"):
@@ -143,18 +166,69 @@ def build_mlb_prompt(potd):
     if home_frame: parts.append(f"- {home_frame}")
     if away_frame: parts.append(f"- {away_frame}")
     parts.append(f"DO NOT confuse this. {h_p or 'The home pitcher'} CANNOT give his own {home} teammates 'scoring chances' — only the {away} offense bats against him.")
-    if ctx.get("projected_total") is not None:
-        parts.append(f"Model projected total: {ctx['projected_total']}")
-    if ctx.get("spread_delta") is not None:
-        parts.append(f"Spread delta vs market: {ctx['spread_delta']} runs")
-    if ctx.get("venue"):
-        parts.append(f"Venue: {ctx['venue']}{(' · Temp ' + str(ctx.get('temperature')) + '°F') if ctx.get('temperature') is not None else ''}")
-    if ctx.get("nrfi_score") is not None:
+    parts.append("")
+
+    # ─── MARKET-SPECIFIC SIGNAL BLOCK ───────────────────────────────
+    if market == 'ml':
+        # ML picks: WHO WINS. Spread delta tells us margin edge. Total
+        # is IRRELEVANT (a high total means both sides score; doesn't
+        # advantage either side of the ML). Pitcher + BULLPEN + offense
+        # all contribute to which team wins.
+        parts.append("RELEVANT SIGNALS FOR THIS MONEYLINE PICK:")
+        if ctx.get("spread_delta") is not None:
+            parts.append(f"- Spread delta vs market: {ctx['spread_delta']} runs (positive = home side edge; negative = away side edge)")
+        if ctx.get("close_spread") is not None:
+            parts.append(f"- Market close spread: {ctx['close_spread']} (negative = home favorite)")
+        # 2026-09-08 signal expansion for ML picks. Prior version only
+        # sent pitcher xERA + spread delta; Claude reasoned from that
+        # thin set and often produced narratives contradicting the pick
+        # (9/8 Phillies ML case where pitcher matchup favored Astros,
+        # but Phillies bullpen was the actual pick basis).
+        home_bp  = ctx.get("home_bullpen_era")
+        away_bp  = ctx.get("away_bullpen_era")
+        home_wrc = ctx.get("home_wrc_plus")
+        away_wrc = ctx.get("away_wrc_plus")
+        lr_p_home = ctx.get("lr_p_home_win") or ctx.get("_lr_p_home_win")
+        if home_bp is not None or away_bp is not None:
+            parts.append(f"- Bullpen ERAs: {home} {home_bp}, {away} {away_bp} (lower is better; a bullpen edge often decides tight ML picks)")
+        if home_wrc is not None or away_wrc is not None:
+            parts.append(f"- Team offense wRC+: {home} {home_wrc}, {away} {away_wrc} (100 = league average; +10 pts is a big edge)")
+        if lr_p_home is not None:
+            fav_side = home if lr_p_home > 0.5 else away
+            parts.append(f"- LR model probability: p_home_win={lr_p_home:.2f} → favors {fav_side}")
+        if ctx.get("venue"):
+            parts.append(f"- Venue: {ctx['venue']}{(' · Temp ' + str(ctx.get('temperature')) + '°F') if ctx.get('temperature') is not None else ''}")
+        parts.append("- DO NOT cite projected_total or over/under numbers — TOTAL IS IRRELEVANT for ML picks (a 12-run total helps neither side).")
+        parts.append("- HONESTY RULE: if the signals above genuinely conflict with the pick side, cite the STRONGEST supporting factor first (e.g., 'bullpen edge offsets weaker starting pitching'). Do NOT invent reasoning that contradicts the pick.")
+    elif market == 'total':
+        # Total picks: how many total runs. Both pitchers' xERAs matter
+        # equally. Spread delta is IRRELEVANT.
+        parts.append("RELEVANT SIGNALS FOR THIS TOTAL PICK:")
+        if ctx.get("projected_total") is not None:
+            parts.append(f"- Model projected total: {ctx['projected_total']}")
+        if ctx.get("close_total") is not None:
+            parts.append(f"- Market close total: {ctx['close_total']}")
+        if ctx.get("venue"):
+            parts.append(f"- Venue: {ctx['venue']}{(' · Temp ' + str(ctx.get('temperature')) + '°F') if ctx.get('temperature') is not None else ''}")
+        parts.append("- DO NOT cite spread_delta or ML edge — SPREAD IS IRRELEVANT for total picks.")
+        parts.append("- Focus on: both pitchers' xERAs combined, park run factor, weather (wind out = OVER, in = UNDER).")
+    else:  # spread / RL
+        parts.append("RELEVANT SIGNALS FOR THIS RUN-LINE / SPREAD PICK:")
+        if ctx.get("spread_delta") is not None:
+            parts.append(f"- Spread delta vs market: {ctx['spread_delta']} runs")
+        if ctx.get("close_spread") is not None:
+            parts.append(f"- Market close spread: {ctx['close_spread']}")
+        if ctx.get("venue"):
+            parts.append(f"- Venue: {ctx['venue']}{(' · Temp ' + str(ctx.get('temperature')) + '°F') if ctx.get('temperature') is not None else ''}")
+        parts.append("- Focus on: margin projection, ability to cover the number, pitcher matchup skewing margin.")
+
+    if ctx.get("nrfi_score") is not None and score.get("isNRFI"):
         parts.append(f"NRFI score: {ctx['nrfi_score']}")
     parts.append("")
     parts.append("Rules:")
     parts.append("- Lead with the play in **bold** ('**Play of the Day: <Away> @ <Home> <Lean>**')")
     parts.append("- 2-3 sentences explaining the edge using SPECIFIC numbers from above")
+    parts.append("- ONLY cite signals from the RELEVANT SIGNALS block above — do NOT reach for numbers outside it")
     parts.append("- When citing a pitcher's xERA, frame the impact as 'the [opposing offense] scores/gets suppressed' — never 'the pitcher's own team gets scoring chances'")
     parts.append("- End with a one-line conviction stamp like '**That's the play.**' or '**Model sits there.**'")
     parts.append("- NEVER say 'I don't have data', 'let me verify', or hedge")
@@ -276,18 +350,36 @@ def main():
             try:
                 qh = urllib.parse.quote(game["home_team"], safe="")
                 qa = urllib.parse.quote(game["away_team"], safe="")
+                # 2026-09-08: expanded hydration to include bullpen ERAs,
+                # team wRC+, and LR win probability so market-aware prompt
+                # (build_mlb_prompt) has real signals for ML picks.
+                # Prior hydration only pulled pitcher + total/spread stats
+                # → Claude couldn't reason honestly about ML picks that
+                # were bullpen-driven or LR-driven.
                 mgc_r = urllib.request.Request(
                     f"{SB}/rest/v1/mlb_game_context"
                     f"?game_date=eq.{date_str}"
                     f"&home_team=eq.{qh}&away_team=eq.{qa}"
                     f"&select=home_pitcher,away_pitcher,home_sp_xera,"
                     f"away_sp_xera,venue,temperature,projected_total,"
-                    f"spread_delta,close_spread,close_total",
+                    f"spread_delta,close_spread,close_total,"
+                    f"home_bullpen_era,away_bullpen_era,"
+                    f"home_wrc_plus,away_wrc_plus,primary_play",
                     headers=H_READ,
                 )
                 mgc_rows = json.loads(urllib.request.urlopen(mgc_r, timeout=10).read())
                 if mgc_rows:
                     hydrated = mgc_rows[0]
+                    # 2026-09-08: extract LR probability from primary_play
+                    # (nested JSON) and surface at ctx top-level so the
+                    # prompt builder can access it without JSON parsing.
+                    pp = hydrated.pop("primary_play", None) or {}
+                    if isinstance(pp, str):
+                        try: pp = json.loads(pp)
+                        except (json.JSONDecodeError, TypeError): pp = {}
+                    for k in ("_lr_p_home_win", "_lr_p_over"):
+                        if pp.get(k) is not None and ctx.get(k[1:]) is None:
+                            ctx[k[1:]] = pp[k]  # drop leading underscore for readability
                     # Fill only NULL/missing keys — never overwrite
                     filled = []
                     for k, v in hydrated.items():
