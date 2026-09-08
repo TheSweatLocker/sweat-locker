@@ -264,7 +264,21 @@ def run(game_date: str | None = None, threshold: int = 70,
         "leanDisplay": f"{call} (Jerry {conv}/100)",
         "score": {"total": conv, "source": "jerry_conviction"},
         "confidence": _conviction_tier(conv),
-        "narrative": winner.get("short_read") or winner.get("long_read") or "",
+        # 2026-09-08 defense-in-depth: if jerry_pick_scrub left a stale
+        # "Model recomputed to X" template in short_read pointing to a
+        # different pick than what the POTD is actually calling, that
+        # text would render as the POTD write-up and confuse users.
+        # Root case: 9/8 POTD showed "Model recomputed to Houston +1.5"
+        # for a Phillies ML pick. jerry_pick_scrub bug was the primary
+        # fix but this belt-and-suspenders check catches any future
+        # scrub-template contamination before it hits the narrative.
+        # Fall back to leanDisplay in that case; generate_potd_narrative
+        # will replace with a real Claude write-up when it next runs.
+        "narrative": (
+            (winner.get("short_read") or "")
+            if "model recomputed to" not in (winner.get("short_read") or "").lower()
+            else (winner.get("long_read") or "")
+        ) or "",
         "context": {
             "venue": ctx.get("venue"),
             "temperature": ctx.get("temperature"),

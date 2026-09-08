@@ -153,6 +153,7 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         orig_short_pre = (j.get('short_read') or '')
         orig_long_pre  = (j.get('long_read') or '')
         _lower_long    = orig_long_pre.lower()
+        _lower_short   = orig_short_pre.lower()
         # Templated fallback signature: "The published call is X — Y tier"
         _tmpl_fallback = 'published call is' in _lower_long
         # Cross-market cue: ml call but prose says "Take X ML" / "Under X"
@@ -163,7 +164,21 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             (pp_type == 'total' and _has_ml_take and not _has_total_take) or
             (pp_type == 'ml'    and _has_total_take)
         )
-        stale_prose = _tmpl_fallback or _prose_cross_market
+        # 2026-09-08 STALE-SCRUB-TEMPLATE detection. When a prior scrub
+        # left "Model recomputed to X" but the current call has since
+        # flipped to Y, that short_read is stale (points at old pick).
+        # Only detectable by parsing the template and comparing to the
+        # current derived call text. Root cause of 9/8 POTD bug where
+        # narrative said "Houston +1.5" but pick was actually Phillies ML.
+        _stale_recompute_template = False
+        if 'model recomputed to' in _lower_short:
+            _new_text_for_check = _derive_call_text(pp, c['home_team'], c['away_team']) or ''
+            _claimed = _lower_short.split('model recomputed to', 1)[-1].split('.', 1)[0].strip()
+            _current = _new_text_for_check.lower()
+            if _claimed and _current and _claimed not in _current and _current not in _claimed:
+                _stale_recompute_template = True
+
+        stale_prose = _tmpl_fallback or _prose_cross_market or _stale_recompute_template
 
         if not drift and not stale_prose: continue
 
@@ -203,17 +218,39 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             f'a curated spot, it will appear on the Sweat Card with '
             f'the current call.'
         )
-        # Only rewrite prose if it needs it. Already-scrubbed rows
-        # (idempotent short_read: "Model recomputed" / skip templates
-        # from earlier runs or from H_scenario_matrix) get left alone.
-        # Cross-market prose (call=total but long says "Take X ML")
-        # AND templated-fallback prose ("The published call is...") both
-        # get rewritten.
-        _skip_markers = ('Model recomputed', 'historical scenario matches',
-                         'no edge is defensible', 'sitting this one out',
-                         'take the discipline hit')
-        already_scrubbed = any(m.lower() in orig_short.lower() for m in _skip_markers)
-        should_rewrite_prose = (drift or stale_prose) and not already_scrubbed
+        # Only rewrite prose if it needs it. H_scenario_matrix outputs
+        # ("historical scenario matches", "no edge is defensible", etc.)
+        # NEVER get rewritten — those are legitimate skip narratives from
+        # a different upstream, we don't own their content.
+        # 2026-09-08 BUG FIX: prior version also treated 'Model recomputed'
+        # as an already-scrubbed marker → when the pipeline flipped picks
+        # AGAIN after a scrub, the second scrub skipped and left the
+        # stale "Model recomputed to X" text pointing to the OLD pick.
+        # Root cause of a 9/8 POTD bug: card said Phillies ML but
+        # narrative said "recomputed to Houston +1.5" (previous pick).
+        # 'Model recomputed' now CHECKS whether the referenced pick still
+        # matches the current call — if not, treat as stale and re-scrub.
+        _H_SKIP_MARKERS = ('historical scenario matches',
+                           'no edge is defensible',
+                           'sitting this one out',
+                           'take the discipline hit')
+        h_skip_narrative = any(m.lower() in orig_short.lower() for m in _H_SKIP_MARKERS)
+        # For 'Model recomputed' — only treat as already-scrubbed if the
+        # referenced side matches the current call. If not, it's stale.
+        is_model_recomputed = 'model recomputed' in orig_short.lower()
+        model_recomputed_stale = False
+        if is_model_recomputed and _side_readable:
+            # Extract what pick the template claims
+            # Format: "Model recomputed to {side_readable}. ..."
+            claimed = orig_short.lower().split('model recomputed to', 1)[-1]
+            claimed = claimed.split('.', 1)[0].strip()
+            current = _side_readable.lower()
+            # If the claimed pick doesn't overlap with current pick text,
+            # the scrub is stale — need to re-scrub with fresh call.
+            if claimed and current and claimed not in current and current not in claimed:
+                model_recomputed_stale = True
+        already_scrubbed = h_skip_narrative or (is_model_recomputed and not model_recomputed_stale)
+        should_rewrite_prose = (drift or stale_prose or model_recomputed_stale) and not already_scrubbed
 
         # Even when already_scrubbed=True at short_read level, long_read
         # may still be a pre-audit narrative (H scenario matrix wrote
