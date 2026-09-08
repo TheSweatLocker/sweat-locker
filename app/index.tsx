@@ -7825,11 +7825,30 @@ if(mkt.key === 'pitcher_props') {
           }
           // 2026-09-07: opposite-direction fallback — see comment on the
           // NFL/NCAAF path below. Chart + coverage are direction-agnostic.
+          // 2026-09-07 (late): also flip prop_type suffix when it carries
+          // direction. Our prop_type naming embeds direction ('ha_over',
+          // 'ha_under', 'er_over', 'bb_under' etc.) alongside the separate
+          // `direction` column. Prior fallback flipped only `direction` →
+          // lookup key still had 'ha_over' so opposite-direction jerry row
+          // ('ha_under') was never found → 7 pitcher props today (Burns,
+          // Cameron, Melton, Ryan, Cantillo, Boyd) rendered with NO graph
+          // and NO structured Jerry read at all. Now we flip both.
+          const _flipPropType = (pt: string): string => {
+            if (typeof pt !== 'string') return pt;
+            if (pt.endsWith('_over'))  return pt.slice(0, -5) + '_under';
+            if (pt.endsWith('_under')) return pt.slice(0, -6) + '_over';
+            return pt;
+          };
           const _resolveJerry = (p: any) => {
             const k = `${p.game_id}|${p.player_name}|${p.prop_type}|${p.direction}`;
             if (jerryMap[k]) return {jerry: jerryMap[k], fb: false};
             const oppDir = String(p.direction).toLowerCase() === 'over' ? 'under' : 'over';
-            const opp = jerryMap[`${p.game_id}|${p.player_name}|${p.prop_type}|${oppDir}`];
+            const oppType = _flipPropType(p.prop_type);
+            // Try both flipped-type AND same-type opposite direction (belt-
+            // and-suspenders — legacy prop_types without directional suffix
+            // still fall through to same-type opposite direction).
+            const opp = jerryMap[`${p.game_id}|${p.player_name}|${oppType}|${oppDir}`]
+                     || jerryMap[`${p.game_id}|${p.player_name}|${p.prop_type}|${oppDir}`];
             if (!opp?.input_snapshot?.render_sections) return {jerry: null, fb: false};
             const rs = opp.input_snapshot.render_sections;
             return {
@@ -7924,8 +7943,21 @@ if(mkt.key === 'pitcher_props') {
             let jerryFallback = false;
             if (!jerry) {
               const oppDir = String(p.direction).toLowerCase() === 'over' ? 'under' : 'over';
-              const oppKey = `${p.game_id}|${p.player_name}|${p.prop_type}|${oppDir}`;
-              const opp = jerryMap[oppKey] || null;
+              // 2026-09-07 (late): prop_type embeds direction (ha_over vs
+              // ha_under, er_over vs er_under). Flip the suffix too so the
+              // opposite-direction lookup actually finds a row. Prior code
+              // only flipped `direction` — 7 pitcher props today rendered
+              // with no graph because `ha_over` never matched `ha_under`.
+              const flipType = (pt: string) => {
+                if (typeof pt !== 'string') return pt;
+                if (pt.endsWith('_over'))  return pt.slice(0, -5) + '_under';
+                if (pt.endsWith('_under')) return pt.slice(0, -6) + '_over';
+                return pt;
+              };
+              const oppType = flipType(p.prop_type);
+              const oppKey = `${p.game_id}|${p.player_name}|${oppType}|${oppDir}`;
+              const oppKeyLegacy = `${p.game_id}|${p.player_name}|${p.prop_type}|${oppDir}`;
+              const opp = jerryMap[oppKey] || jerryMap[oppKeyLegacy] || null;
               if (opp?.input_snapshot?.render_sections) {
                 jerryFallback = true;
                 const rs = opp.input_snapshot.render_sections;
