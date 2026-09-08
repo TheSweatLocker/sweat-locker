@@ -41,7 +41,9 @@ type Props = {
   supabase: any;                 // pass in from parent (avoids duplicate client)
   currentSport?: string;         // optional filter — hides sport-scoped notices for other sports
   currentRoute?: string;         // optional filter — hides route-scoped notices for other routes
-  pollIntervalMs?: number;       // default 60000 (60s)
+  pollIntervalMs?: number;       // default 300000 (5min) — was 60s pre-9/8;
+                                 // cut per project_supabase_health_audit_909
+                                 // (1440 → 288 requests/user/day per mount).
 };
 
 const SEVERITY_STYLE: Record<Severity, { bg: string; fg: string }> = {
@@ -54,7 +56,7 @@ export default function AdminNoticeBanner({
   supabase,
   currentSport,
   currentRoute,
-  pollIntervalMs = 60_000,
+  pollIntervalMs = 300_000,
 }: Props) {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [dismissedIds, setDismissedIds] = useState<Set<number>>(new Set());
