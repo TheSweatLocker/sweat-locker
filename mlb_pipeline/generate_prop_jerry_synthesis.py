@@ -594,8 +594,54 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                 continue
         prompt = render_prompt(template, prop, sport, bucket_roi=_bucket_roi)
         raw = call_claude(prompt)
-        if not raw: continue
-        parsed = parse_synthesis(raw, prop.get('prop_type'))
+        # 2026-09-09 LLM-FAIL FALLBACK. Root fix for the user-reported bug
+        # "Alcantara + Misiorowski HA props missing graphs". Previously, if
+        # Claude returned nothing (timeout / rate limit / API error) OR the
+        # parser couldn't extract a short_read (malformed output), the prop
+        # was DROPPED with continue. No prop_jerry_reads row → no
+        # input_snapshot.render_sections → no graph on the card. User saw a
+        # card with the pick + WHY bullets (from raw signals) but no
+        # coverage pill / recent-form chart / playbook block.
+        #
+        # Fix: on LLM failure, fall through to render_prop_template.py so
+        # the row still lands with structured sections. Deterministic
+        # template produces the same coverage + recent_form + reasoning
+        # structure — just no LLM prose narrative. User gets the graph.
+        _llm_fallback_used = False
+        if (not raw) or (not parse_synthesis(raw, prop.get('prop_type')).get('short_read')):
+            try:
+                from render_prop_template import render_prop_template
+                # Fetch matching playbook + ctx same way the template loop does
+                pb_key = (prop.get('player_name'), prop.get('prop_type'),
+                          prop.get('direction'), prop.get('prop_line'))
+                pb_row = playbook_by_key.get(pb_key)
+                ctx_row = ctx_by_game.get(prop.get('game_id'))
+                rendered = render_prop_template(prop, pb_row, ctx=ctx_row)
+                if rendered and rendered.get('short_read'):
+                    parsed = {
+                        'short_read': rendered.get('short_read'),
+                        'call_verdict': rendered.get('verdict'),
+                        'conviction': rendered.get('conviction'),
+                        'source': 'template_fallback',
+                        '_render_sections': rendered.get('sections'),
+                    }
+                    _llm_fallback_used = True
+                    # Persist directly here — the LLM loop's normal upsert
+                    # follows post-hallucination-check paths that assume
+                    # LLM-shaped data. Cleaner to write + continue.
+                    if upsert_read(sport, prop, parsed, '', game_date):
+                        done += 1
+                        print(f'  ↩ LLM→template fallback wrote {prop["player_name"][:20]} '
+                              f'{prop.get("prop_type","?")}')
+                    continue
+                else:
+                    print(f'  ⚠ both LLM AND template failed for {prop["player_name"][:20]} '
+                          f'{prop.get("prop_type","?")} — skip'); continue
+            except Exception as _e:
+                print(f'  ⚠ LLM fallback exception for {prop["player_name"][:20]}: {_e} — skip')
+                continue
+        else:
+            parsed = parse_synthesis(raw, prop.get('prop_type'))
         if not parsed.get('short_read'):
             print(f'  ⚠ parse missing take for {prop["player_name"]}'); continue
         # Post-LLM brand-name sanitizer (2026-08-03) — belt-and-suspenders
