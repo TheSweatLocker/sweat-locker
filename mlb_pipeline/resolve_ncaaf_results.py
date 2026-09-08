@@ -204,7 +204,14 @@ def fetch_existing(game_ids: list) -> dict:
                 dates.add(f'{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}')
     wanted = set(game_ids)
     out = {}
+    # 2026-09-08 GAP FIX: also fetch from ncaaf_game_context — that
+    # table has broader coverage than ncaaf_game_results (which was
+    # patch-only, hence sparse). ctx entries let the resolver INSERT
+    # missing results rows so grade_jerry_reads has scores to work with.
+    # See project_ncaaf_grading_gap_908 memory. Ctx rows are marked
+    # `_source: 'ctx'` so caller knows to INSERT vs PATCH.
     for d in dates:
+        # First pull existing results rows (PATCH targets)
         r = requests.get(
             f'{SB}/rest/v1/ncaaf_game_results',
             headers=H_READ,
@@ -217,12 +224,76 @@ def fetch_existing(game_ids: list) -> dict:
         if r.status_code == 200:
             for row in r.json() or []:
                 gid = row.get('game_id')
+                row['_source'] = 'results'
                 if gid in wanted:
                     out[gid] = row
-                # Fuzzy key so mascot-suffixed rows also route through
                 fuzzy_key = (d, _fold_name(row.get('away_team') or ''),
                              _fold_name(row.get('home_team') or ''))
                 out[fuzzy_key] = row
+        # Then pull ctx rows for the same date (INSERT targets when
+        # results doesn't have an entry yet). ctx has spread/total for
+        # us to preserve when we insert results row.
+        r = requests.get(
+            f'{SB}/rest/v1/ncaaf_game_context',
+            headers=H_READ,
+            params={'game_date': f'eq.{d}',
+                    'select': 'game_id,home_team,away_team,close_spread,close_total',
+                    'limit': 1000},
+            timeout=30,
+        )
+        if r.status_code == 200:
+            for row in r.json() or []:
+                gid = row.get('game_id')
+                # Only fill in from ctx if results didn't already have it
+                if gid in wanted and gid not in out:
+                    ctx_row = {**row, '_source': 'ctx',
+                               'home_score': None, 'away_score': None}
+                    out[gid] = ctx_row
+                fuzzy_key = (d, _fold_name(row.get('away_team') or ''),
+                             _fold_name(row.get('home_team') or ''))
+                if fuzzy_key not in out:
+                    out[fuzzy_key] = {**row, '_source': 'ctx',
+                                      'home_score': None, 'away_score': None}
+        # 2026-09-08 GAP FIX Phase 2: jerry_reads has the FULL slate of
+        # game_ids we scored (70+ for Sat 9/6) while ctx has only 3.
+        # Pull jerry_reads game_ids as third-tier coverage — same
+        # game_id string matches against our constructed CFBD keys.
+        # Rows sourced from jerry_reads have neither teams (in this
+        # projection) nor spread/total, so INSERT payload has fewer
+        # fields but still enough for grade_jerry_reads to resolve.
+        r = requests.get(
+            f'{SB}/rest/v1/jerry_reads',
+            headers=H_READ,
+            params={'sport': 'eq.NCAAF',
+                    'game_date': f'eq.{d}',
+                    'select': 'game_id',
+                    'limit': 1000},
+            timeout=30,
+        )
+        if r.status_code == 200:
+            for row in r.json() or []:
+                gid = row.get('game_id')
+                if not gid: continue
+                # Parse teams from game_id: ncaaf_YYYYMMDD_Away_Home
+                parts = gid.split('_', 3)
+                away = parts[2] if len(parts) >= 3 else None
+                home = parts[3] if len(parts) >= 4 else None
+                if not (away and home): continue
+                jr_row = {
+                    'game_id': gid, 'game_date': d,
+                    'home_team': home, 'away_team': away,
+                    'home_score': None, 'away_score': None,
+                    'close_spread': None, 'close_total': None,
+                    '_source': 'jerry_reads',
+                }
+                # Add both exact-string match AND fuzzy tuple match
+                # (fuzzy_key catches CFBD names that differ from our
+                # canonical, e.g. 'Miami' vs 'Miami (FL)').
+                if gid in wanted and gid not in out:
+                    out[gid] = jr_row
+                fuzzy_key = (d, _fold_name(away), _fold_name(home))
+                if fuzzy_key not in out:
+                    out[fuzzy_key] = jr_row
     # Handle any cfbd_{id} keys (legacy rows) via a separate small query
     if has_cfbd:
         cfbd_ids = [g for g in game_ids if g.startswith('cfbd_')]
@@ -238,29 +309,81 @@ def fetch_existing(game_ids: list) -> dict:
             )
             if r.status_code == 200:
                 for row in r.json() or []:
+                    row['_source'] = 'results'
                     out[row['game_id']] = row
     return out
 
 
 def apply_patches(patches: list, dry_run: bool = False) -> int:
+    """Apply score-refresh payloads.
+
+    Each `patches` entry is (game_id, payload, existing_row). If
+    existing_row was sourced from ncaaf_game_context ('_source': 'ctx'),
+    we UPSERT (insert-or-update) via PostgREST's on_conflict param —
+    that INSERTs a fresh ncaaf_game_results row so grade_jerry_reads
+    can grade the game. If sourced from 'results', PATCH as before.
+
+    2026-09-08 GAP FIX: was patch-only, so 84% of NCAAF Sat jerry_reads
+    stayed ungraded because their game_ids had no matching results row
+    for the resolver to patch. Now the resolver becomes authoritative
+    source for ncaaf_game_results rows too.
+    """
     if not patches: return 0
     if dry_run:
-        for gid, payload in patches[:10]:
-            print(f'  [DRY] {gid}: {payload}')
+        for entry in patches[:10]:
+            gid, payload, ex = entry
+            src = ex.get('_source', 'results') if ex else 'unknown'
+            op = 'UPSERT' if src in ('ctx', 'jerry_reads') else 'PATCH'
+            print(f'  [DRY] {op} {gid}: {payload}')
         if len(patches) > 10:
             print(f'  [DRY] ... {len(patches)-10} more')
         return len(patches)
-    updated = 0
-    for gid, payload in patches:
-        r = requests.patch(
-            f'{SB}/rest/v1/ncaaf_game_results?game_id=eq.{gid}',
-            headers=H_WRITE, json=payload, timeout=15,
-        )
-        if r.status_code in (200, 201, 204):
-            updated += 1
+    updated = inserted = 0
+    for entry in patches:
+        gid, payload, ex = entry
+        src = ex.get('_source', 'results') if ex else 'results'
+        if src in ('ctx', 'jerry_reads'):
+            # Full INSERT via UPSERT — merge with ctx metadata (teams,
+            # spread, total) that the results row needs for grading.
+            # `season` is NOT NULL on ncaaf_game_results — derive from
+            # game_id date if possible. Same for game_date.
+            game_date_str = (gid[6:14][:4] + '-' + gid[6:14][4:6] + '-' + gid[6:14][6:8]
+                             if gid.startswith('ncaaf_') and len(gid) >= 14 and gid[6:14].isdigit()
+                             else ex.get('game_date'))
+            season = int(game_date_str[:4]) if game_date_str else None
+            merged = {
+                'game_id': gid,
+                'season': season,
+                'game_date': game_date_str,
+                'season_type': 'regular',
+                'home_team': ex.get('home_team'),
+                'away_team': ex.get('away_team'),
+                'close_spread': ex.get('close_spread'),
+                'close_total': ex.get('close_total'),
+                **payload,
+            }
+            merged = {k: v for k, v in merged.items() if v is not None or k in ('home_score','away_score')}
+            r = requests.post(
+                f'{SB}/rest/v1/ncaaf_game_results?on_conflict=game_id',
+                headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+                json=merged, timeout=15,
+            )
+            if r.status_code in (200, 201, 204):
+                inserted += 1
+            else:
+                print(f'  ⚠ upsert {gid} failed {r.status_code}: {r.text[:120]}')
         else:
-            print(f'  ⚠ patch {gid} failed {r.status_code}: {r.text[:120]}')
-    return updated
+            r = requests.patch(
+                f'{SB}/rest/v1/ncaaf_game_results?game_id=eq.{gid}',
+                headers=H_WRITE, json=payload, timeout=15,
+            )
+            if r.status_code in (200, 201, 204):
+                updated += 1
+            else:
+                print(f'  ⚠ patch {gid} failed {r.status_code}: {r.text[:120]}')
+    if inserted:
+        print(f'  ✓ inserted {inserted} new ncaaf_game_results rows (gap-fill)')
+    return updated + inserted
 
 
 def kick_external_resolver() -> None:
@@ -369,7 +492,7 @@ def run(season: Optional[int] = None, dry_run: bool = False,
         seen_ids.add(cid)
         payload = compute_outcome_patch(cfbd_g, ex)
         if payload:
-            patches.append((ex['game_id'], payload))
+            patches.append((ex['game_id'], payload, ex))
 
     # Fuzzy pass for any CFBD games not yet matched
     fuzzy_hits = 0
@@ -389,7 +512,7 @@ def run(season: Optional[int] = None, dry_run: bool = False,
         fuzzy_hits += 1
         payload = compute_outcome_patch(g, ex)
         if payload:
-            patches.append((ex['game_id'], payload))
+            patches.append((ex['game_id'], payload, ex))
     if fuzzy_hits:
         print(f'  fuzzy-matched {fuzzy_hits} additional games via mascot-fold')
 
