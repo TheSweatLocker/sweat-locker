@@ -204,6 +204,31 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
         try: data = json.loads(data)
         except (json.JSONDecodeError, TypeError): data = {}
     if data.get('result'):
+        # 2026-09-09 dual-write reconciliation for already-graded rows:
+        # older grades wrote only to jerry_cache. Backfill daily_best_bet_history
+        # if it's stale (still 'Pending'). Non-fatal.
+        _existing = data.get('result')
+        if _existing in ('Win', 'Loss', 'Push', 'Void'):
+            try:
+                hc = requests.get(f'{SB}/rest/v1/daily_best_bet_history',
+                                  headers=H_R,
+                                  params={'bet_date': f'eq.{date_str}',
+                                          'select': 'result', 'limit': '1'},
+                                  timeout=10)
+                if hc.status_code == 200 and hc.json():
+                    hist_res = (hc.json()[0] or {}).get('result')
+                    if hist_res in (None, 'Pending', ''):
+                        _resolved_at = data.get('graded_at') or dt.datetime.now(dt.timezone.utc).isoformat()
+                        requests.patch(f'{SB}/rest/v1/daily_best_bet_history',
+                                       headers=H_W,
+                                       params={'bet_date': f'eq.{date_str}'},
+                                       json={'result': _existing,
+                                             'resolved_at': _resolved_at},
+                                       timeout=15)
+                        print(f'  {date_str}: already graded ({_existing}) → history backfilled')
+                        return 'already'
+            except Exception:
+                pass
         print(f'  {date_str}: already graded ({data.get("result")})'); return 'already'
     pick = _extract_pick_from_potd(data, date_str)
     if not pick['game_id'] or not pick['call_market']:
@@ -242,17 +267,41 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
     if dry_run:
         print(f'    [DRY] would patch: {result_payload}')
         return 'dry'
-    # Patch data JSONB
+    # Patch data JSONB in jerry_cache
     updated_data = {**data, **result_payload}
     r = requests.patch(f'{SB}/rest/v1/jerry_cache',
                        headers=H_W,
                        params={'game_id': f'eq.best_bet_{date_str}'},
                        json={'data': updated_data},
                        timeout=15)
-    if r.status_code in (200, 204):
-        return 'graded'
-    print(f'  {date_str}: PATCH failed {r.status_code}: {r.text[:200]}')
-    return 'patch-failed'
+    if r.status_code not in (200, 204):
+        print(f'  {date_str}: jerry_cache PATCH failed {r.status_code}: {r.text[:200]}')
+        return 'patch-failed'
+
+    # 2026-09-09 DUAL-WRITE FIX. Root cause of "Sept 7 not graded on
+    # Receipts calendar" bug — the calendar reads daily_best_bet_history
+    # (via app/index.tsx:5498) not jerry_cache. Grader wrote to
+    # jerry_cache.data.result but daily_best_bet_history.result stayed
+    # 'Pending' forever → calendar showed ungraded cell for a day that
+    # jerry_cache knew was a Win.
+    # Fix: mirror the grade into daily_best_bet_history so the calendar
+    # source of truth stays in sync. Non-fatal — jerry_cache patch above
+    # is authoritative; the history patch is calendar convenience.
+    try:
+        result_val = result_payload.get('result')  # 'Win' | 'Loss' | 'Push' | 'Void'
+        if result_val:
+            hr = requests.patch(f'{SB}/rest/v1/daily_best_bet_history',
+                                headers=H_W,
+                                params={'bet_date': f'eq.{date_str}'},
+                                json={'result': result_val,
+                                      'resolved_at': result_payload.get('graded_at')},
+                                timeout=15)
+            if hr.status_code not in (200, 204):
+                print(f'  {date_str}: history mirror failed {hr.status_code}: {hr.text[:120]}')
+    except Exception as _e:
+        print(f'  {date_str}: history mirror exception {_e}')
+
+    return 'graded'
 
 
 def main():
