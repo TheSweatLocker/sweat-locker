@@ -286,11 +286,48 @@ def _fetch_all(today: str) -> dict:
 # COMPOSITION LAYER
 # ═══════════════════════════════════════════════════════════════════════
 
+def _lr_shadow_conflict(pp: dict) -> str | None:
+    """Return a conflict reason if LR shadow STRONG-disagrees with pp side,
+    else None. Rule: when the pipeline picked market X side S but the LR
+    shadow on THAT MARKET has suggested_tier in {PRIME, STRONG} pointing
+    to the opposite side, drop the pick — LR-shadow-vs-pipeline
+    disagreement burned us on MIN@DET 9/7 (see project_lr_shadow_promotion_907).
+
+    2026-09-08: added as a Sharp Card composer gate so users don't see
+    conviction picks where our own LR overlay contradicts the pipeline.
+    """
+    pp_type = (pp.get('type') or '').lower()
+    pp_side = (pp.get('side') or '').upper()
+    if pp_type == 'ml':
+        shadow = pp.get('_lr_ml_shadow') or {}
+        shadow_tier = (shadow.get('suggested_tier') or '').upper()
+        shadow_side = (shadow.get('suggested_side') or '').upper()
+        if shadow_tier in ('PRIME', 'STRONG') and shadow_side and shadow_side != pp_side:
+            return f'lr_ml_shadow_conflict:{shadow_tier}:{shadow_side}'
+    elif pp_type == 'total':
+        shadow = pp.get('_lr_total_shadow') or {}
+        shadow_tier = (shadow.get('suggested_tier') or '').upper()
+        shadow_side = (shadow.get('suggested_side') or '').upper()
+        if shadow_tier in ('PRIME', 'STRONG') and shadow_side and shadow_side not in ('', 'NONE') and shadow_side != pp_side:
+            return f'lr_total_shadow_conflict:{shadow_tier}:{shadow_side}'
+    return None
+
+
 def _compose_mlb_sides(mlb_ctx: list) -> list[dict]:
     picks = []
+    lr_conflict_drops = 0
     for g in mlb_ctx:
         pp = g.get('primary_play') or {}
         if not isinstance(pp, dict) or not _is_any_tier(pp.get('tier')): continue
+        # 2026-09-08 LR SHADOW GATE. If LR shadow on the same market says
+        # the OPPOSITE side with STRONG/PRIME conviction, drop the pick.
+        # Rationale: MIN@DET 9/7 — pipeline picked Twins ML COVERAGE,
+        # LR shadow said PRIME AWAY on the opposite → pipeline lost.
+        # Small precision hit (fewer picks), meaningful accuracy gain.
+        conflict = _lr_shadow_conflict(pp)
+        if conflict:
+            lr_conflict_drops += 1
+            continue
         home_ml = g.get('home_ml_close') or g.get('home_ml_odds')
         away_ml = g.get('away_ml_close') or g.get('away_ml_odds')
         side = pp.get('side')
@@ -349,6 +386,8 @@ def _compose_mlb_sides(mlb_ctx: list) -> list[dict]:
                                      side_ml if pp_type == 'ml' else -110,
                                      side_price_american=side_ml),
         })
+    if lr_conflict_drops:
+        print(f'  ⛔ MLB sides dropped by LR shadow gate: {lr_conflict_drops}')
     return [p for p in picks if p['units'] > 0]
 
 
@@ -407,6 +446,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     is_football = sport in ('NCAAF', 'NFL')
     tier_gate = _is_ps if (is_football and not FOOTBALL_INCLUDE_LEAN) else _is_any_tier
     dropped_lean = dropped_chalk = dropped_pass = 0
+    dropped_lr_conflict = 0
     picks = []
     for g in rows:
         pp = g.get('primary_play') or {}
@@ -417,6 +457,13 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # that's handled at render, not composition.
         if (pp.get('type') or '').lower() == 'pass':
             dropped_pass += 1
+            continue
+        # 2026-09-08 LR SHADOW GATE (parallel to _compose_mlb_sides).
+        # For NCAAF this catches ~100% of shadow-endorsed conflicts since
+        # NCAAF total LR runs in shadow-only mode by design. For NFL,
+        # catches whatever shadow coverage exists (~41% today).
+        if _lr_shadow_conflict(pp):
+            dropped_lr_conflict += 1
             continue
         tier = pp.get('tier')
         # (1) LEAN gate for football
@@ -494,6 +541,8 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         print(f'  {sport} discipline drops: LEAN={dropped_lean}  chalky-STRONG={dropped_chalk}  no-play={dropped_pass}')
     elif dropped_pass:
         print(f'  {sport} no-play drops: {dropped_pass}')
+    if dropped_lr_conflict:
+        print(f'  {sport} LR-shadow-conflict drops: {dropped_lr_conflict}')
     return picks
 
 
