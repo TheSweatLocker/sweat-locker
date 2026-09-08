@@ -211,12 +211,19 @@ def check_prop_jerry_reads_coverage(date: str) -> Check:
 
 
 def check_dawg_of_day(date: str) -> Check:
-    row = _get_first('daily_dawg', {'game_date': f'eq.{date}'}, select='team,game_id,odds')
+    # 2026-09-09: daily_dawg has no `odds` column — real cols are team,
+    # matchup, tier, conviction, spread_delta, close_spread, narrative,
+    # signals, result. Earlier version selected 'odds' and got null → false
+    # negative flagged real Dawg entries as missing. Fixed to real cols.
+    row = _get_first('daily_dawg', {'game_date': f'eq.{date}'},
+                     select='team,matchup,tier,conviction')
     if not row:
         return Check('dawg_of_day', 'WARNING', False,
-                     f'No daily_dawg for {date} — home page Dawg tile blank')
+                     f'No daily_dawg for {date} — home page Dawg tile blank',
+                     {'fix': 'python generate_dawg_of_day.py'})
     return Check('dawg_of_day', 'WARNING', True,
-                 f'Dawg: {row.get("team","?")} @ {row.get("odds","?")}')
+                 f'Dawg: {row.get("team","?")} · {row.get("tier","?")} '
+                 f'conv {row.get("conviction","?")}')
 
 
 def check_daily_degen(date: str) -> Check:
