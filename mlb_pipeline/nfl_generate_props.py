@@ -45,7 +45,29 @@ from collections import defaultdict
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 import requests
+from requests.adapters import HTTPAdapter
+try:
+    from urllib3.util.retry import Retry
+except ImportError:
+    from requests.packages.urllib3.util.retry import Retry
 from dotenv import load_dotenv
+
+
+# 2026-09-08: retry-enabled session for external API calls (The Odds API
+# specifically has flaky Windows-side ConnectionResetError intermittently;
+# GitHub Actions Linux runners more stable but adding retry defense
+# in both directions is cheap insurance). Use `_retry_session.get(...)`
+# instead of `requests.get(...)` for anything hitting external HTTP.
+# Supabase (localhost-adjacent for our EU region) doesn't need retry.
+_retry_session = requests.Session()
+_retry = Retry(
+    total=5, connect=3, read=3, backoff_factor=1.0,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset(['GET', 'HEAD']),
+    respect_retry_after_header=True,
+)
+_retry_session.mount('https://', HTTPAdapter(max_retries=_retry))
+_retry_session.mount('http://', HTTPAdapter(max_retries=_retry))
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 SB = os.environ.get('SUPABASE_URL')
@@ -342,7 +364,10 @@ def conviction_from_edge_pct(edge_pct: float) -> int:
 # ─────────────────────────────────────────────────────────────
 def fetch_events(sport_key: str = 'americanfootball_nfl') -> list:
     if not ODDS_KEY: return []
-    r = requests.get(
+    # 2026-09-08 use retry-enabled session (see _retry_session at top).
+    # ConnectionResetError from the-odds-api.com fires ~1% on Windows
+    # despite the endpoint being stable — was killing whole regen runs.
+    r = _retry_session.get(
         f'{ODDS_API_BASE}/{sport_key}/events'
         f'?apiKey={ODDS_KEY}',
         timeout=15,
@@ -359,7 +384,7 @@ def fetch_event_props(event_id: str, sport_key: str) -> dict:
     """Player-prop markets require the per-event endpoint (Odds API v4).
     Uses paid quota — 1 call per event × per market batch."""
     markets = ','.join(PROP_CONFIG.keys())
-    r = requests.get(
+    r = _retry_session.get(
         f'{ODDS_API_BASE}/{sport_key}/events/{event_id}/odds'
         f'?apiKey={ODDS_KEY}&regions=us&markets={markets}&oddsFormat=american',
         timeout=15,
