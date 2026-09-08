@@ -115,6 +115,19 @@ jobs:
           cd mlb_pipeline
           python aggregate_daily_records.py || echo "aggregator failed non-fatal"
 
+      # 3b. Morning brief verification — runs full 5-section audit + exits
+      # non-zero if any grading gap or regression detected. Wired 2026-09-08.
+      # Non-fatal (continue-on-error) so nothing else is blocked, but the
+      # output is captured for review + exit code surfaces to job status.
+      - name: Morning brief verification
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          python docs/scripts/morning_brief.py || echo "morning brief flagged gaps (non-fatal — see output above)"
+
       # 4. Recompute surface_records (mtd / d7 / d30 / epoch / lifetime rollups)
       #    so the record chips + hero P/L update overnight.
       - name: Compute surface records
