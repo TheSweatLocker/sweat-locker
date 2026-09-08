@@ -172,10 +172,15 @@ def run(game_date: str | None = None, threshold: int = 70,
     # That's not honest stats-backed analysis; that's a display artifact
     # dressing up a coin flip.
     #
-    # Fetches _lr_p_home_win / _lr_p_over from primary_play for each eligible
-    # pick's game. If the LR probability supporting the pick side is < 0.60,
-    # skip. Non-LR-scored picks (no _lr_* fields) pass through unchanged
-    # (backwards compat — sports without LR wired stay eligible on conviction alone).
+    # Fetches LR shadow probability from primary_play._lr_ml_shadow.p_home_win
+    # (or ._lr_total_shadow.p_over) for each eligible pick's game. If the LR
+    # probability supporting the pick side is < 0.60, skip. Non-LR-scored
+    # picks (no _lr_*_shadow fields) pass through unchanged (backwards compat
+    # — sports without LR wired stay eligible on conviction alone).
+    #
+    # 2026-09-09: Fixed field paths — was checking pp["_lr_p_home_win"]
+    # which never existed; real path is pp["_lr_ml_shadow"]["p_home_win"].
+    # Gate was silently no-op across entire slate before this fix.
     lr_gated = []
     lr_skipped = []
     for r in eligible:
@@ -199,12 +204,14 @@ def run(game_date: str | None = None, threshold: int = 70,
         pp = pp or {}
         call_mkt = (r.get("call_market") or "").lower()
         call_side = (r.get("call_side") or "").upper()
+        ml_shadow = pp.get("_lr_ml_shadow") or {}
+        tot_shadow = pp.get("_lr_total_shadow") or {}
         p_support = None
-        if call_mkt == "ml" and pp.get("_lr_p_home_win") is not None:
-            p_home = float(pp["_lr_p_home_win"])
+        if call_mkt == "ml" and ml_shadow.get("p_home_win") is not None:
+            p_home = float(ml_shadow["p_home_win"])
             p_support = p_home if call_side == "HOME" else (1 - p_home)
-        elif call_mkt == "total" and pp.get("_lr_p_over") is not None:
-            p_over = float(pp["_lr_p_over"])
+        elif call_mkt == "total" and tot_shadow.get("p_over") is not None:
+            p_over = float(tot_shadow["p_over"])
             p_support = p_over if call_side == "OVER" else (1 - p_over)
         if p_support is not None and p_support < 0.60:
             ct = (r.get('call_text') or '?')[:30]
