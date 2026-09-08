@@ -549,6 +549,32 @@ def pick_ncaab_sides() -> list[dict]:
     return _pick_generic_sides('NCAAB', 'ncaab_game_context', 'ncaab_game_results')
 
 
+def pick_ufc_sides() -> list[dict]:
+    """UFC winner-pick surface — ufc_picks has recommended_side + winner_actual
+    inline (no separate results table). PRIME/STRONG/LEAN tiers only, matching
+    the mlb_sides pattern. Payout flat -110 like other sides."""
+    url = (f'{SB}/rest/v1/ufc_picks'
+           f'?select=event_date,tier_winner,recommended_side,winner_actual'
+           f'&winner_actual=not.is.null')
+    try:
+        rows = list(_paged(url))
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        t = (r.get('tier_winner') or '').upper()
+        if t not in ('PRIME', 'STRONG', 'LEAN'): continue
+        rs = r.get('recommended_side')
+        wa = r.get('winner_actual')
+        if not rs or not wa: continue
+        try: d = dt.date.fromisoformat(r['event_date'])
+        except Exception: continue
+        cls = 'win' if rs.lower() == wa.lower() else 'loss'
+        out.append({'sport': 'UFC', 'date': d, 'result': cls,
+                    'stake': 1.0, 'payout': 0.909})
+    return out
+
+
 def pick_sharp_card() -> list[dict]:
     """Sharp Card composite (sides + props combined) — reads directly from
     daily_surface_records.sharp_card, the authoritative per-day rollup
@@ -706,6 +732,7 @@ SURFACES = {
     'nba_sides':   pick_nba_sides,
     'nhl_sides':   pick_nhl_sides,
     'ncaab_sides': pick_ncaab_sides,
+    'ufc_sides':   pick_ufc_sides,
 }
 
 
