@@ -294,14 +294,9 @@ jobs:
           cd mlb_pipeline
           python splits_v2_pipeline.py --sport NBA || echo "NBA splits aggregator failed (non-fatal)"
 
-      - name: Refresh NBA signal_registry from graded games
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python refresh_prop_signal_calibration.py --sport NBA --days 30 || echo "NBA signal calibration failed (non-fatal, likely offseason)"
+      # 2026-09-08: removed duplicate refresh_prop_signal_calibration call
+      # — same script + args was already run at line ~156 ("graded props"
+      # step). Per project_pipeline_overhaul_909 dedup pass.
 
       # 2026-09-02: Split — per-source calibration for NBA. Silent no-op
       # until season starts (Oct). Wire pre-season so day-1 records populate.

@@ -6,7 +6,7 @@ on:
     - cron: '0 15 * * 2'   # Tue 11am ET  — new week schedule + opening lines
     - cron: '0 22 * * 3'   # Wed 6pm ET   — mid-week refresh + externals pull (Phase 2)
     - cron: '0 18 * * 5'   # Fri 2pm ET   — Fri night games lock + Sat prep
-    - cron: '0 12 * * 6'   # Sat 8am ET   — final Sat card + line movement
+    - cron: '15 12 * * 6'  # Sat 8:15am EDT (12:15 UTC) — staggered from 12:00 pile-up (2026-09-08)
     - cron: '0 13 * * 0'   # Sun 9am ET   — Sat resolver + Sun cohort refresh
   workflow_dispatch:
     inputs:

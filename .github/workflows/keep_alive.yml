@@ -11,11 +11,16 @@ name: Keep Alive (prevent GH scheduled-workflow skip)
 # repos from the schedule queue if there's no scheduled workflow
 # activity — this heartbeat guarantees activity.
 #
-# Cost: ~0.5s/run × 48 runs/day = 24s/day of Actions minutes. Trivial.
+# Cost: ~0.5s/run × 24 runs/day = 12s/day of Actions minutes. Trivial.
+#
+# 2026-09-08: reduced 30m → hourly. Now that all 7 sport pipelines have
+# real heartbeat cron activity (see project_pipeline_overhaul_909), the
+# GH schedule queue has plenty of scheduled-workflow activity to stay
+# warm without a 48/day heartbeat. Hourly is enough belt-and-suspenders.
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 jobs:

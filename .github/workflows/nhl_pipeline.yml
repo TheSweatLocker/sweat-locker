@@ -5,7 +5,7 @@ on:
     # 2026-08-28 Phase 4 kill #9: dropped from 2x/day to 1x/day pre-season.
     # All steps are silent no-ops until Oct 7 season opener. Restore
     # 20 UTC (post-market) cron once preseason starts ~late Sept.
-    - cron: '0 12 * * *'  # 8:00am EDT (12:00 UTC) — daily preseason placeholder
+    - cron: '5 12 * * *'  # 8:05am EDT (12:05 UTC) — staggered from 12:00 pile-up (2026-09-08)
   workflow_dispatch:
     inputs:
       date:

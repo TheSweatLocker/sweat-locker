@@ -597,10 +597,10 @@ jobs:
             # disabled=True so user reviews + enables. Non-fatal — mining
             # errors on one sport don't stop the others.
             python discover_patterns.py --all --days 90 || echo "discover_patterns failed (non-fatal)"
-            # 2026-08-26: rebuild external handicapper track records nightly
-            # (was manual — a 10-day stale ghost was root cause of Rockies
-            # UNDER 9.0 PRIME 97 fade-flip drift on 8/26).
-            python compute_external_source_records.py || echo "external records aggregator failed (non-fatal)"
+            # 2026-09-08: removed redundant compute_external_source_records
+            # call from inside Sunday block — the standalone step at line
+            # ~619 runs it EVERY day, so this was a Sunday-only 2x invocation.
+            # Per project_pipeline_overhaul_909 dedup pass.
           else
             echo "not Sunday (DOW=$DOW) — skipping weekly signal refit + pattern discovery"
           fi
