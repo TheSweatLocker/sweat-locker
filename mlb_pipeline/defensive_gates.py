@@ -699,6 +699,13 @@ _LR_MODEL_NFL_ML      = _load_lr_model('nfl_ml_logreg.json')
 _LR_MODEL_NCAAF_ML    = _load_lr_model('ncaaf_ml_logreg.json')
 _LR_MODEL_MLB_TOTAL   = _load_lr_model('mlb_total_logreg.json')
 _LR_MODEL_NCAAF_TOTAL = _load_lr_model('ncaaf_total_logreg.json')
+# 2026-09-08: NFL total LR model. Trained on 6 seasons (2020-2025 =
+# 1,693 games via nflverse backfill). Test lift +0.4pp — same weak
+# territory as NCAAF total (52.4%), so wired SHADOW-ONLY. Legit
+# signal for flagging pipeline disagreement even though too weak to
+# promote its own picks. See apply_nfl_total_lr_override below +
+# project_lr_totals_investigation_908.
+_LR_MODEL_NFL_TOTAL   = _load_lr_model('nfl_total_logreg.json')
 
 
 def _lr_predict_ml(ctx: dict, model=None) -> dict | None:
@@ -993,6 +1000,13 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # totals via the coin-flip path.
     if sport == 'NCAAF':
         pp = apply_ncaaf_total_lr_override(pp, ctx)
+    # 2026-09-08 NFL TOTAL LR OVERRIDE — weak lift baseline model trained
+    # on 6 seasons (2020-2025 nflverse). Shadow-only for now; downstream
+    # Sharp Card LR-shadow-conflict gate uses `_lr_total_shadow` to drop
+    # picks where LR disagrees w/ pipeline. See apply_nfl_total_lr_override
+    # + project_lr_totals_investigation_908.
+    if sport == 'NFL':
+        pp = apply_nfl_total_lr_override(pp, ctx)
     # 2026-09-03 BADGE-CONFLICT GATES (badge audit fixes #1 + #2):
     # Silent contradictions between chips on the same game card.
     # These gates catch pipeline-side contradictions BEFORE they render.
@@ -1102,6 +1116,43 @@ def apply_ncaaf_total_lr_override(pp, ctx):
             old_pp['_lr_total_shadow'] = pred
             return old_pp
         # LR has a lean — but NCAAF total model too weak to promote; shadow only
+        old_pp['_lr_total_shadow'] = pred
+        return old_pp
+    except Exception:
+        return pp
+
+
+def apply_nfl_total_lr_override(pp, ctx):
+    """NFL total LR override — SHADOW-ONLY mode.
+
+    Trained 2026-09-08 on nflverse 2020-2025 backfill (1,693 games).
+    Test acc ~50% vs 49% baseline — model too weak to promote picks,
+    same territory as NCAAF total. Wired as shadow-only so the signal
+    still flows to Sharp Card LR-shadow-conflict gate (see
+    _lr_shadow_conflict in generate_sharp_card.py).
+
+    Legit protective use: when pipeline picks NFL total X and LR shadow
+    says STRONG Y (opposite), Sharp Card drops the pick. Doesn't
+    generate its own picks from this weak model.
+    """
+    if _LR_MODEL_NFL_TOTAL is None: return pp
+    try:
+        pred = _lr_predict_total(ctx, model=_LR_MODEL_NFL_TOTAL)
+        if pred is None: return pp
+        old_pp = pp if isinstance(pp, dict) else {}
+        was_total = str(old_pp.get('type','')).lower() == 'total'
+        if pred['suggested_side'] == 'NONE':
+            if was_total:
+                # Coin-flip zone + pipeline picked total → demote to
+                # coverage. Same rule as NCAAF.
+                old_pp['_lr_total_shadow'] = pred
+                old_pp['_pre_lr_tier']  = old_pp.get('tier')
+                old_pp['tier']  = 'COVERAGE'
+                old_pp['audit_note'] = f'NFL total LR coin flip (p_over={pred["p_over"]:.2f}) — legacy demoted'
+                return old_pp
+            old_pp['_lr_total_shadow'] = pred
+            return old_pp
+        # LR has a lean — shadow-only until model gets stronger
         old_pp['_lr_total_shadow'] = pred
         return old_pp
     except Exception:
