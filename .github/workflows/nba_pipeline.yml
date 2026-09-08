@@ -33,6 +33,21 @@ jobs:
           cd mlb_pipeline
           python nba_resolve_results.py || echo "nba resolver failed (non-fatal, likely offseason)"
 
+      # 2026-09-08 wired: grade NBA jerry_reads right after resolver so
+      # NBA doesn't wait on the MLB nightly step. Parallels NHL wiring —
+      # NBA in grade_jerry_reads.RESULTS_TABLE already; this ensures the
+      # grader actually fires per-sport-cadence. Required for Oct 24
+      # season start. See project_cross_sport_grading_audit_908.
+      - name: Grade NBA jerry_reads
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python grade_jerry_reads.py --sport NBA || echo "NBA grader non-fatal (offseason ok)"
+
       # 2026-08-25: refresh home/road tendencies materialized view after
       # results resolver. Powers the Trends & Tendencies card in the NBA
       # slot redesign. Uses refresh_home_road_tendencies(sport) RPC from

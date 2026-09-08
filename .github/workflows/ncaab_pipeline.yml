@@ -471,6 +471,20 @@ jobs:
           cd mlb_pipeline
           python resolve_ncaab_results.py --days-back 2 || echo "resolver failed"
 
+      # 2026-09-08 wired: grade NCAAB jerry_reads after resolver so
+      # NCAAB doesn't wait on the MLB nightly for grading. Parallels
+      # NBA/NHL wiring. NCAAB in RESULTS_TABLE already. Season starts
+      # Nov 3. See project_cross_sport_grading_audit_908.
+      - name: Grade NCAAB jerry_reads
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python grade_jerry_reads.py --sport NCAAB || echo "NCAAB grader non-fatal (offseason ok)"
+
       # ────── RESOLVE EXTERNAL PICKS ──────
       - name: Resolve NCAAB external picks (post-game)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'

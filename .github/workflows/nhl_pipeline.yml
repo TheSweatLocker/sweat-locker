@@ -38,6 +38,21 @@ jobs:
           cd mlb_pipeline
           python nhl_resolve_results.py || echo "nhl resolver failed (non-fatal, likely offseason)"
 
+      # 2026-09-08 wired: grade NHL jerry_reads immediately after resolver.
+      # Prior gap: NHL not in grade_jerry_reads RESULTS_TABLE map, so
+      # jerry_reads for NHL games never got a result. Season starts Oct 8;
+      # this wiring is required for launch. See project_cross_sport_grading_audit_908
+      # + project_nhl_resolver_build_908.
+      - name: Grade NHL jerry_reads
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python grade_jerry_reads.py --sport NHL || echo "NHL grader non-fatal (offseason ok)"
+
       # ─── Today's game context (schedule + odds + rest) ───────────
       - name: Build NHL game context
         continue-on-error: true

@@ -32,6 +32,11 @@ RESULTS_TABLE = {
     'NFL':   'nfl_game_results',
     'NCAAF': 'ncaaf_game_results',
     'NCAAB': 'ncaab_game_results',
+    # 2026-09-08 added: NHL wired for Oct 8 season start. Resolver is
+    # `nhl_resolve_results.py` (different naming from other sports) —
+    # writes to nhl_game_results with cols home_score/away_score/
+    # spread_result/total_result. Column dispatch below.
+    'NHL':   'nhl_game_results',
     # UFC uses fight_results — different shape; excluded from POTD anyway
 }
 
@@ -47,6 +52,11 @@ SPREAD_COL_BY_SPORT = {
     'NCAAF': 'spread_result',
     'NCAAB': 'spread_result',
     'NBA':   'spread_result',
+    # 2026-09-08 NHL: uses spread_result column on nhl_game_results.
+    # Puckline is typically ±1.5 like a run line but NHL naming
+    # convention is 'spread_result' not 'puckline_result'. Grader's
+    # grade_rl() handles both value flavors (home/home_covered).
+    'NHL':   'spread_result',
 }
 
 
