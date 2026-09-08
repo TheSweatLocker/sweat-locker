@@ -1546,6 +1546,29 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
     else:
         top_market = 'total'  # arbitrary default when all pass
 
+    # 2026-09-09 MARKET-SELECTION STABILITY GATE.
+    # Bug fixed: when two markets score similar conviction (e.g. ML=82 and
+    # Total=82), any feature-value drift between crons flipped the winner.
+    # Users saw picks oscillate across the same day (HOU@PHI: Over 8.5
+    # in AM cron → PHL -1.5 at 2pm → Over 8.5 again post-close-line lock).
+    # This is the root of the badge/detail-drift class of bugs.
+    #
+    # Fix: if a prior primary_play exists on ctx AND the new top-market
+    # only edges it out by less than STABILITY_MARGIN conviction points,
+    # KEEP the prior market. Requires the prior market to still be a
+    # valid pick (not passed by any gate this run). Anything ≥ margin
+    # points better wins normally — real signal shifts still get through.
+    STABILITY_MARGIN = 5
+    prior_pp = ctx.get('primary_play')
+    if isinstance(prior_pp, dict):
+        prior_market = str(prior_pp.get('type', '')).lower()
+        if prior_market in ('ml', 'rl', 'total') and prior_market != top_market:
+            prior_dec = {'ml': ml_dec, 'rl': rl_dec, 'total': total_dec}[prior_market]
+            new_dec = {'ml': ml_dec, 'rl': rl_dec, 'total': total_dec}[top_market]
+            if (prior_dec is not None and prior_dec.pick is not None
+                    and (new_dec.conviction or 0) - (prior_dec.conviction or 0) < STABILITY_MARGIN):
+                top_market = prior_market
+
     return PerGameDecision(
         game_id=ctx.get('game_id', ''),
         sport=sport,
