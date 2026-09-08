@@ -388,6 +388,68 @@ def check_ncaaf_sides_over_sharp_card(date: str) -> Optional[dict]:
     return None
 
 
+def check_prop_direction_flip_drift(date: str) -> Optional[dict]:
+    """When tier calibration flips a prop's direction (fade the over →
+    back the under per feedback_fade_not_suppress_803), it patches
+    prop_jerry_reads BUT NOT mlb_pipeline_props. Sharp Card composer
+    reads raw props → shows OVER while Jerry synth says UNDER.
+
+    Alcantara ha_over PRIME 74 (raw) → ha_under STRONG (jerry): today's
+    live example. User sees Sharp Card 'bet Over' + Jerry read 'fade Over'.
+
+    Flags divergence for v1.0.1 composer refactor. Not auto-fixable
+    tonight — composer change is prop-scoring adjacent, needs careful
+    test.
+    """
+    # Get raw props with tier PRIME/STRONG (likely to be on Sharp Card)
+    raw = requests.get(
+        f'{SB}/rest/v1/mlb_pipeline_props',
+        headers=H_R,
+        params={'game_date': f'eq.{date}',
+                'tier': 'in.(PRIME,STRONG)',
+                'select': 'player_name,prop_type,direction',
+                'limit': '200'},
+        timeout=15,
+    )
+    if raw.status_code != 200: return None
+    raw_props = raw.json() or []
+    if not raw_props: return None
+
+    # For each, check if prop_jerry_reads has a FLIPPED direction
+    flips = []
+    for p in raw_props:
+        player = p.get('player_name')
+        raw_dir = (p.get('direction') or '').lower()
+        raw_pt = (p.get('prop_type') or '').lower()
+        if not player or not raw_dir: continue
+        # Fetch jerry_reads for same player+family
+        family = raw_pt.rsplit('_', 1)[0] if '_' in raw_pt else raw_pt
+        opp_dir = 'under' if raw_dir == 'over' else 'over'
+        opp_pt = f'{family}_{opp_dir}'
+        pr = requests.get(
+            f'{SB}/rest/v1/prop_jerry_reads',
+            headers=H_R,
+            params={'sport': 'eq.MLB', 'game_date': f'eq.{date}',
+                    'player_name': f'eq.{player}',
+                    'prop_type': f'eq.{opp_pt}',
+                    'select': 'prop_type,direction', 'limit': '1'},
+            timeout=10,
+        )
+        if pr.status_code == 200 and pr.json():
+            flips.append(f'{player} · raw={raw_pt} → synth={opp_pt}')
+
+    if not flips: return None
+    return {
+        'check_name': 'prop_direction_flip_drift',
+        'severity': 'WARNING',
+        'message': f'{len(flips)} prop(s) with raw direction ≠ jerry synth '
+                   f'direction (tier calibration flipped, composer '
+                   f'shows raw). Sharp Card + Jerry read contradict.',
+        'detail': {'examples': flips[:10],
+                   'fix_hint': 'v1.0.1 composer refactor OR patch mlb_pipeline_props on calibration flip'},
+    }
+
+
 CHECKS = {
     'potd_grade_mirror':           check_potd_grade_mirror,
     'sharp_card_props_synthesis':  check_sharp_card_props_have_synthesis,
@@ -395,6 +457,7 @@ CHECKS = {
     'lean_prop_rollup':            check_lean_prop_rollup,
     'lr_shadow_coverage':          check_lr_shadow_coverage,
     'ncaaf_sides_over_sharp_card': check_ncaaf_sides_over_sharp_card,
+    'prop_direction_flip_drift':   check_prop_direction_flip_drift,
 }
 
 
