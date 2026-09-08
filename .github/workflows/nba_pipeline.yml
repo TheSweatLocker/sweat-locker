@@ -23,6 +23,31 @@ jobs:
       - name: Install deps
         run: pip install requests python-dotenv
 
+      # 2026-09-08 heartbeat START (parity w/ mlb_pipeline). See
+      # project_pipeline_overhaul_909.
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"nba_pipeline\",\"event\":\"start\",\"sport\":\"NBA\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
+               || echo "heartbeat start write failed (non-fatal)"
+
+      - name: External monitor — ping start
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_NBA_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "${HC_URL}/start" || true
+          fi
+
       # ─── Yesterday's results ───────────────────────────────────
       - name: Resolve yesterday's NBA results
         continue-on-error: true
@@ -307,6 +332,32 @@ jobs:
         run: |
           cd mlb_pipeline
           python compute_signal_patterns.py --sport NBA || echo "NBA signal patterns failed (non-fatal)"
+
+      # 2026-09-08 heartbeat END.
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"nba_pipeline\",\"event\":\"end\",\"sport\":\"NBA\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
+               || echo "heartbeat end write failed (non-fatal)"
+
+      - name: External monitor — ping end
+        if: always()
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_NBA_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "$HC_URL" || true
+          fi
 
       # Model / card generation: Elo model runs inside nba_game_context.py
       # (enrich_elo). Card generation deferred until preseason validates.

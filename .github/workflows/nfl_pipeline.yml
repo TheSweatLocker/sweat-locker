@@ -46,6 +46,33 @@ jobs:
         with:
           python-version: '3.11'
 
+      # 2026-09-08 heartbeat START (parity w/ mlb_pipeline). Silent-failure
+      # coverage for the "workflow triggered but died" / "workflow never
+      # triggered" class per project_pipeline_overhaul_909. Optional
+      # HC_NFL_URL secret adds healthchecks.io ping.
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"nfl_pipeline\",\"event\":\"start\",\"sport\":\"NFL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
+               || echo "heartbeat start write failed (non-fatal)"
+
+      - name: External monitor — ping start
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_NFL_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "${HC_URL}/start" || true
+          fi
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -713,3 +740,29 @@ jobs:
         run: |
           cd mlb_pipeline
           python sharp_fade_audit.py --backfill-results || echo "NFL audit backfill failed"
+
+      # 2026-09-08 heartbeat END. Absent end row = workflow died mid-run.
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"nfl_pipeline\",\"event\":\"end\",\"sport\":\"NFL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
+               || echo "heartbeat end write failed (non-fatal)"
+
+      - name: External monitor — ping end
+        if: always()
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_NFL_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "$HC_URL" || true
+          fi

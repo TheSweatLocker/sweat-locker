@@ -1689,7 +1689,10 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python collapse_sharp_fade_violations.py || echo "sharp-fade collapse failed (non-fatal)"
+          # 2026-09-08: pinned to --sport MLB. Script defaults to `ALL` and was
+          # iterating every registered sport from the MLB cron — the sport's
+          # own pipeline (nfl/ncaaf/ncaab/nhl/nba/ufc) runs its own copy.
+          python collapse_sharp_fade_violations.py --sport MLB || echo "sharp-fade collapse failed (non-fatal)"
 
       # 2026-08-18: reconcile Jerry call_side to primary_play.side when the
       # ensemble is the authority. Fixes the UI mismatch where the tier

@@ -28,6 +28,30 @@ jobs:
         run: |
           pip install requests python-dotenv
 
+      # 2026-09-08 heartbeat START (parity w/ mlb_pipeline).
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"nhl_pipeline\",\"event\":\"start\",\"sport\":\"NHL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
+               || echo "heartbeat start write failed (non-fatal)"
+
+      - name: External monitor — ping start
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_NHL_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "${HC_URL}/start" || true
+          fi
+
       # ─── Yesterday's results (resolve completed games) ───────────
       - name: Resolve yesterday's NHL results
         continue-on-error: true
@@ -228,3 +252,29 @@ jobs:
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
             -d '{}' || echo "team_stats_rolling refresh failed"
+
+      # 2026-09-08 heartbeat END.
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"nhl_pipeline\",\"event\":\"end\",\"sport\":\"NHL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
+               || echo "heartbeat end write failed (non-fatal)"
+
+      - name: External monitor — ping end
+        if: always()
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_NHL_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "$HC_URL" || true
+          fi

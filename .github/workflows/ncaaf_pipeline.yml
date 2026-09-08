@@ -32,6 +32,38 @@ jobs:
         with:
           python-version: '3.11'
 
+      # 2026-09-08 heartbeat START (parity w/ mlb_pipeline). Detects
+      # "workflow triggered but died early" vs "workflow never triggered"
+      # (silent-failure class — 6/7 sport pipelines had no alerting per
+      # project_pipeline_overhaul_909). Fires within 30s of workflow
+      # start, before any real work. Writes to workflow_heartbeat table.
+      # continue-on-error so a heartbeat outage doesn't kill the pipeline.
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          CRON_SLOT="${{ github.event.schedule }}"
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"ncaaf_pipeline\",\"event\":\"start\",\"sport\":\"NCAAF\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$CRON_SLOT\"}" \
+               || echo "heartbeat start write failed (non-fatal)"
+
+      # Optional external cron monitor (healthchecks.io). If HC_NCAAF_URL
+      # secret is set, pings it on start. Missed cron alerts within minutes.
+      - name: External monitor — ping start
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_NCAAF_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "${HC_URL}/start" || true
+          fi
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -633,3 +665,32 @@ jobs:
           cd mlb_pipeline
           python compute_sport_patterns.py --sport NCAAF || echo "NCAAF vault patterns failed (non-fatal)"
           python attach_vault_matches.py --sport NCAAF || echo "NCAAF vault attach failed (non-fatal)"
+
+      # 2026-09-08 heartbeat END. Success = start row AND end row for same
+      # run_id. Absent end row = workflow died mid-run. Absent start row
+      # = cron never triggered. Migration workflow_heartbeat_end.sql adds
+      # the 'end' event enum value. See project_pipeline_overhaul_909.
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"ncaaf_pipeline\",\"event\":\"end\",\"sport\":\"NCAAF\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
+               || echo "heartbeat end write failed (non-fatal)"
+
+      - name: External monitor — ping end
+        if: always()
+        continue-on-error: true
+        env:
+          HC_URL: ${{ secrets.HC_NCAAF_URL }}
+        run: |
+          if [ -n "$HC_URL" ]; then
+            curl -fsS --retry 3 --max-time 10 -o /dev/null "$HC_URL" || true
+          fi
