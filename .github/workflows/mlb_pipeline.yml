@@ -1930,6 +1930,22 @@ jobs:
           cd mlb_pipeline
           python jerry_anchor_potd.py --threshold 70 || echo "jerry POTD anchor failed (non-fatal)"
 
+      # 2026-09-09 POTD RECONCILER — end-of-selection sync that reads
+      # jerry_cache.best_bet_{today} (authority) and force-writes
+      # daily_best_bet_history to match. Handles noPlay, noGames, and
+      # real-pick states. Result column preserved (grader owns that).
+      # Runs immediately after jerry_anchor_potd so every cron ends with
+      # both POTD surfaces guaranteed in sync.
+      # continue-on-error so a reconcile miss can't block downstream.
+      - name: Reconcile POTD surfaces
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python reconcile_potd_surfaces.py || echo "POTD reconcile non-fatal"
+
       # Auto-generate tonight's content card after the 2pm ET pipeline run
       # (skip on 8am run since lineups/lines aren't locked yet — content
       # would just be replaced anyway)
