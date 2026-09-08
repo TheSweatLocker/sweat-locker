@@ -506,6 +506,64 @@ def pick_sharp_card() -> list[dict]:
     return out
 
 
+def _pick_prop_tier(tier_filter: str) -> list[dict]:
+    """2026-09-09: tier-specific prop picker for LEAN/COVERAGE surfaces.
+
+    Mirrors pick_prop() but with tier=in.({tier_filter}) instead of
+    hard-coded PRIME/STRONG. Root fix for "Receipts LEAN props 0-0" bug —
+    surface_records had no rollup for non-PRIME prop tiers even though
+    result column populates for all tiers.
+    """
+    from datetime import date as _date_cls
+    _CUTOVER = _date_cls.fromisoformat('2026-08-31')
+    out = []
+    for tbl, sport in [('mlb_pipeline_props', 'MLB')]:
+        url = (f'{SB}/rest/v1/{tbl}'
+               f'?select=game_date,result,tier,conviction,direction,book_over_odds,book_under_odds'
+               f'&result=not.is.null&tier=in.({tier_filter})'
+               f'&order=game_date.desc')
+        try:
+            for r in _paged(url):
+                cls = _classify(r.get('result'))
+                if cls is None: continue
+                try:
+                    d = dt.date.fromisoformat(r['game_date'])
+                except Exception:
+                    continue
+                direction = (r.get('direction') or '').lower()
+                odds_val = r.get('book_over_odds') if direction == 'over' else r.get('book_under_odds')
+                if odds_val is not None:
+                    try:
+                        oi = int(odds_val)
+                        if oi < -300 or oi > 150: continue
+                    except (TypeError, ValueError):
+                        pass
+                stake = 1.0  # LEAN/COVERAGE flat 1u
+                if odds_val is None:
+                    payout = 0.909  # flat -110 fallback
+                else:
+                    try:
+                        oi = int(odds_val)
+                        payout = (oi / 100.0) if oi > 0 else (100.0 / abs(oi))
+                    except (TypeError, ValueError):
+                        payout = 0.909
+                out.append({'sport': sport, 'date': d, 'result': cls,
+                            'stake': stake, 'payout': payout})
+        except Exception:
+            continue
+    return out
+
+
+def pick_prop_lean() -> list[dict]:
+    """LEAN-tier prop rollup — separate surface from PRIME."""
+    return _pick_prop_tier('LEAN')
+
+
+def pick_prop_coverage() -> list[dict]:
+    """COVERAGE-tier prop rollup — separate surface from PRIME/LEAN."""
+    return _pick_prop_tier('COVERAGE')
+
+
 SURFACES = {
     'sharp':       pick_sharp,      # legacy — MLB sides only from primary_play
     'prop':        pick_prop,       # legacy — props from mlb_pipeline_props
@@ -515,6 +573,10 @@ SURFACES = {
     'potd':   pick_potd,
     'dawg':   pick_dawg,   # 2026-09-02: added per audit finding
     'ncaaf_sides': pick_ncaaf_sides,
+    # 2026-09-09: per-tier prop rollups so Receipts can show LEAN/COVERAGE
+    # track records separately from PRIME (which is under 'prop').
+    'prop_lean':     pick_prop_lean,
+    'prop_coverage': pick_prop_coverage,
 }
 
 

@@ -656,6 +656,68 @@ def agg_ncaaf_card(date: str) -> dict | None:
             'detail': {'legs': detail[:50]}}
 
 
+def agg_prop_by_tier(date: str) -> list:
+    """2026-09-09: dedicated per-tier prop track records.
+
+    Root fix for the "Receipts shows LEAN props 0-0" bug. The existing
+    'prop' surface record only counted PRIMES that made the Sharp Card.
+    LEAN props are graded (mlb_pipeline_props.result populates) but no
+    aggregator was rolling them into daily_surface_records → Receipts
+    LEAN row stayed 0-0 forever despite 250+ graded LEAN props/week.
+
+    Emits one record per (tier, sport) pair. Tiers: PRIME, STRONG, LEAN,
+    COVERAGE. Only tiers with ≥1 graded pick emit a record. Uses flat
+    -110 payout as a proxy since prop odds vary widely per player.
+
+    Sports supported today: MLB. NFL/NCAAF props exist but need result
+    grading on the raw props tables first.
+    """
+    out = []
+    for sport, table in [('MLB', 'mlb_pipeline_props')]:
+        r = requests.get(f'{SB}/rest/v1/{table}',
+            headers=H_READ,
+            params={'game_date': f'eq.{date}',
+                    'result': 'in.(Win,Loss,Push,win,loss,push)',
+                    'select': 'tier,result,refit_conviction,tier',
+                    'limit': '2000'},
+            timeout=15)
+        rows = r.json() if r.status_code == 200 else []
+        if not (isinstance(rows, list) and rows):
+            continue
+        by_tier: dict = {}
+        for row in rows:
+            t = (row.get('tier') or '').upper()
+            if t not in ('PRIME', 'STRONG', 'LEAN', 'COVERAGE'):
+                continue
+            res = (row.get('result') or '').upper()[:1]
+            if res not in ('W', 'L', 'P'):
+                continue
+            b = by_tier.setdefault(t, {'w':0,'l':0,'p':0})
+            if res == 'W': b['w'] += 1
+            elif res == 'L': b['l'] += 1
+            else: b['p'] += 1
+        for tier, d in by_tier.items():
+            n = d['w'] + d['l']
+            if n == 0:
+                continue
+            # Stake mapping: PRIME/STRONG = 2u (Sharp Card sizing), LEAN/COVERAGE = 1u
+            stake = 2.0 if tier in ('PRIME', 'STRONG') else 1.0
+            units_bet = stake * (d['w'] + d['l'] + d['p'])
+            payout = _american_payout(-110)  # flat -110 proxy
+            units_won = round(stake * (d['w'] * payout - d['l']), 2)
+            out.append({
+                'surface': f'prop_{tier.lower()}',
+                'sport': sport,
+                'record_date': date,
+                'wins': d['w'], 'losses': d['l'], 'pushes': d['p'],
+                'units_bet': round(units_bet, 2),
+                'units_won': units_won,
+                'pick_count': d['w'] + d['l'] + d['p'],
+                'detail': {'tier': tier, 'stake_per': stake, 'payout_assumed': '-110'},
+            })
+    return out
+
+
 AGGREGATORS = [
     ('sharp_card', agg_sharp_card),
     ('ledger', agg_ledger),        # returns LIST
@@ -665,6 +727,7 @@ AGGREGATORS = [
     ('daily_degen', agg_daily_degen),
     ('split', agg_split),          # returns LIST — 2026-08-22
     ('ncaaf_card', agg_ncaaf_card), # 2026-08-30 — NCAAF picks graded
+    ('prop_by_tier', agg_prop_by_tier), # 2026-09-09 — per-tier prop records
 ]
 
 
