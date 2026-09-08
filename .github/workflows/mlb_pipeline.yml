@@ -2084,6 +2084,27 @@ jobs:
           python recompute_primary_play.py --force || echo "final recompute non-fatal"
           python jerry_pick_scrub.py --sport MLB || echo "jerry scrub non-fatal"
 
+      # 2026-09-09 CONSISTENCY WATCHDOG — cross-table sanity check that
+      # runs AFTER the final recompute+scrub barrier and BEFORE the Sweat
+      # Card publishes. Fails the step (exit 2) if any CRITICAL check
+      # trips — data engineers see the alert immediately AND the workflow
+      # tab shows red. Alerts persist to watchdog_alerts for dashboard.
+      #
+      # This is the systemic answer to the "chasing tail" pattern user
+      # called out on 2026-09-08 evening. Each user-reported bug this
+      # week was "two sources of truth disagree" (POTD calendar vs cache,
+      # LEAN 0-0 vs 258 graded, NCAAF 3-1 vs 34-15, badge vs detail).
+      # Watchdog surfaces the class BEFORE users see it.
+      # continue-on-error so a watchdog outage doesn't block Sweat Card.
+      - name: Consistency watchdog
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python consistency_watchdog.py || echo "consistency check tripped (see watchdog_alerts)"
+
       # Build Tonight's Sweat Card — server-generated structured card for
       # the app's MLB tab. Reads everything upstream wrote (POTD, Dawg,
       # props, NRFI, tier rates) and emits one JSON row the app reads via
