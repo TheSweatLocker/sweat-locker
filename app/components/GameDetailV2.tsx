@@ -214,6 +214,9 @@ export default function GameDetailV2({
   // Sport passed via `gamesSport` prop — falls through to 'ALL' when a
   // sport-specific row is absent, per uiConfig.ts lookup order.
   const _sport = (gamesSport || 'ALL').toUpperCase();
+  const showMarket         = useSectionEnabled(_sport, 'game_detail', 'market',                true);
+  const showPredictedScore = useSectionEnabled(_sport, 'game_detail', 'predicted_score',       true);
+  const showStatProjections = useSectionEnabled(_sport, 'game_detail', 'stat_projections',     true);
   const showMoneyFlow      = useSectionEnabled(_sport, 'game_detail', 'money_flow',            true);
   const showLineMovement   = useSectionEnabled(_sport, 'game_detail', 'line_movement',         true);
   const showModelConsensus = useSectionEnabled(_sport, 'game_detail', 'model_consensus',       true);
@@ -221,6 +224,7 @@ export default function GameDetailV2({
   const showRecentSchedule = useSectionEnabled(_sport, 'game_detail', 'recent_schedule',       true);
   const showSituationalRec = useSectionEnabled(_sport, 'game_detail', 'situational_records',   true);
   const showTeamStats      = useSectionEnabled(_sport, 'game_detail', 'team_stats',            true);
+  const showSportsbookOdds = useSectionEnabled(_sport, 'game_detail', 'sportsbook_odds',       true);
 
   // Auto-fetch externals + props per-game when parent doesn't supply.
   useEffect(() => {
@@ -365,6 +369,7 @@ export default function GameDetailV2({
             competitive advantage in hiding them). Verdict + Jerry read +
             everything below the Market card is Pro. See the big gate
             after the Market section below. */}
+        {showMarket && (
         <Section title="Market">
           <MarketRow
             closeSpread={closeSpread}
@@ -373,6 +378,7 @@ export default function GameDetailV2({
             awayML={awayML}
           />
         </Section>
+        )}
 
         {/* 2026-09-06 GAME DETAIL BULK GATE. Everything analytical is Pro:
             Verdict, Jerry read, alignment strip, predicted score, money
@@ -436,13 +442,13 @@ export default function GameDetailV2({
         {/* 2026-09-01: gate on any predicted-score field. Was rendering
             empty "No score projections available" under the Section title
             on FCS games + sparse UFC / NHL cards. */}
-        {hasAnyPredictedScore(ctx) && (
+        {showPredictedScore && hasAnyPredictedScore(ctx) && (
           <Section title="Predicted Score" hint="range across models">
             <ScoreRange ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} />
           </Section>
         )}
 
-        {gamesSport === 'MLB' && (
+        {showStatProjections && gamesSport === 'MLB' && (
           <Section title="Stat Projections" hint="model-implied · check against your prop lines">
             <StatProjectionsMLB ctx={ctx} />
           </Section>
@@ -550,6 +556,7 @@ export default function GameDetailV2({
             same as any odds-comparison site. Post-launch (v1.0.1): user
             book-selector setting so DK/FD/BetMGM bettors see their own
             book's line by default. See project_sportsbook_default_ux_907. */}
+        {showSportsbookOdds && (
         <Section title="Sportsbook Odds" hint="Hard Rock lines shown · tap to add parlay or log pick · we're not affiliated with any sportsbook">
           <YourBookTiles
             closeSpread={closeSpread}
@@ -564,6 +571,7 @@ export default function GameDetailV2({
             onLogPick={onLogPick}
           />
         </Section>
+        )}
 
         {/* 2026-09-01: gate expander — was rendering "0 books" header
             on late-add NCAAF games where odds fetch missed. */}
