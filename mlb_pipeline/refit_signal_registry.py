@@ -292,6 +292,25 @@ def upsert_registry(rows: list[dict], dry_run: bool = False) -> int:
 def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
+    # 2026-09-09: category is NOT NULL on signal_registry. Existing rows
+    # PATCH fine (already have category) but new INSERTs (external:*,
+    # sharp_scenario_*, new refit-discovered signals) failed 23502 all
+    # session. Infer category from signal_key prefix so INSERTS succeed.
+    def _infer_category(key: str) -> str:
+        k = str(key).lower()
+        if k.startswith('external:'):        return 'external_pick'
+        if k.startswith('sharp_'):           return 'split'
+        if k.startswith('prop:') or 'prop_' in k[:6]: return 'prop'
+        if k.startswith('mc_') or k.startswith('v4_') or k.startswith('v3_'): return 'model'
+        if 'pitcher' in k or 'sp_' in k:     return 'pitcher'
+        if 'bullpen' in k or 'bp_' in k:     return 'bullpen'
+        if 'wrc' in k or 'ops' in k or 'platoon' in k or 'offense' in k: return 'offense'
+        if 'confluence' in k or 'cohort' in k: return 'cohort'
+        if 'refit' in k:                     return 'refit'
+        if 'ats' in k or 'ml_' in k or 'rl_' in k: return 'team_form'
+        if 'nrfi' in k or 'yrfi' in k:       return 'situational'
+        return 'other'
+
     out = []
     dropped = 0
     for signal_key, ct in firings.items():
@@ -304,6 +323,7 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
         weight = _recommended_weight_for(n, hr_frac, tier)
         out.append({
             'signal_name': signal_key,
+            'category': _infer_category(signal_key),
             'sport': sport,
             'hit_rate': round(hr_frac * 100, 2),
             'sample_n': n,
