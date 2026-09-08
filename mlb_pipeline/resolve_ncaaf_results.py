@@ -386,6 +386,128 @@ def apply_patches(patches: list, dry_run: bool = False) -> int:
     return updated + inserted
 
 
+def _sweep_ungraded_jerry_reads(cfbd_games: list, dry_run: bool = False) -> int:
+    """Reverse pass: for every ungraded NCAAF jerry_read, parse teams
+    from its game_id and try to find a CFBD game with matching
+    date + fuzzy-folded team pair. UPSERT a ncaaf_game_results row
+    so grade_jerry_reads can pick up the score on its next run.
+
+    This is the permanent fix for the alias-coverage gap. Instead of
+    trying to alias-map all 454 CFBD games to our team names, we
+    iterate the smaller set (games we actually need to grade) and
+    directly compare fuzzy-folded names — which matches even when
+    team_resolver doesn't know either name variant.
+
+    Idempotent: skips jerry_reads whose game_ids already have a
+    ncaaf_game_results row.
+    """
+    from collections import defaultdict
+    # Pull ungraded NCAAF jerry_reads (up to last 30 days)
+    r = requests.get(f'{SB}/rest/v1/jerry_reads',
+                     headers=H_READ,
+                     params={'sport': 'eq.NCAAF',
+                             'result': 'is.null',
+                             'select': 'game_id,game_date',
+                             'order': 'game_date.desc',
+                             'limit': 1500},
+                     timeout=30)
+    if r.status_code != 200:
+        print(f'  ⚠ jerry_reads fetch failed {r.status_code}')
+        return 0
+    jr_rows = r.json() or []
+    if not jr_rows:
+        return 0
+    jr_by_date = defaultdict(set)
+    for row in jr_rows:
+        d = row.get('game_date'); gid = row.get('game_id')
+        if d and gid: jr_by_date[d].add(gid)
+    if not jr_by_date:
+        return 0
+
+    # Index CFBD games by date + (fold(away), fold(home))
+    cfbd_by_date = defaultdict(dict)  # date -> {(a_fold, h_fold): game}
+    for g in cfbd_games:
+        kickoff = (g.get('start_date') or g.get('startDate')
+                   or g.get('kickoff_utc') or '')
+        d = kickoff[:10] if kickoff else ''
+        if not d: continue
+        home_pts = _i(g.get('home_points') or g.get('homePoints'))
+        away_pts = _i(g.get('away_points') or g.get('awayPoints'))
+        if home_pts is None or away_pts is None: continue
+        home_raw = g.get('home_team') or g.get('homeTeam') or ''
+        away_raw = g.get('away_team') or g.get('awayTeam') or ''
+        cfbd_by_date[d][(_fold_name(away_raw), _fold_name(home_raw))] = g
+
+    upserts = 0
+    unresolved_samples = []
+    dates_processed = 0
+    total_ungraded = sum(len(v) for v in jr_by_date.values())
+    for d, gids in jr_by_date.items():
+        if d not in cfbd_by_date: continue
+        dates_processed += 1
+        cfbd_lookup = cfbd_by_date[d]
+        # Batch-check existing ncaaf_game_results for these game_ids to
+        # skip ones already covered by the earlier PATCH/UPSERT passes.
+        existing_ids = set()
+        gids_list = list(gids)
+        for i in range(0, len(gids_list), 100):
+            chunk = gids_list[i:i+100]
+            ids_param = ','.join(f'"{g}"' for g in chunk)
+            er = requests.get(f'{SB}/rest/v1/ncaaf_game_results',
+                              headers=H_READ,
+                              params={'game_id': f'in.({ids_param})',
+                                      'select': 'game_id,home_score'},
+                              timeout=30)
+            if er.status_code == 200:
+                for row in er.json() or []:
+                    # Only skip if scores already populated
+                    if row.get('home_score') is not None:
+                        existing_ids.add(row.get('game_id'))
+        for gid in gids:
+            if gid in existing_ids: continue
+            parts = gid.split('_', 3)
+            if len(parts) < 4: continue
+            away_raw = parts[2]; home_raw = parts[3]
+            key = (_fold_name(away_raw), _fold_name(home_raw))
+            cfbd_g = cfbd_lookup.get(key)
+            if not cfbd_g:
+                if len(unresolved_samples) < 6:
+                    unresolved_samples.append(f'{away_raw} @ {home_raw} ({d})')
+                continue
+            home_pts = _i(cfbd_g.get('home_points') or cfbd_g.get('homePoints'))
+            away_pts = _i(cfbd_g.get('away_points') or cfbd_g.get('awayPoints'))
+            season = int(d[:4])
+            payload = {
+                'game_id': gid, 'season': season, 'season_type': 'regular',
+                'game_date': d,
+                'home_team': home_raw, 'away_team': away_raw,
+                'home_score': home_pts, 'away_score': away_pts,
+                'total_points': home_pts + away_pts,
+                'home_win': home_pts > away_pts,
+                'overtime': bool(cfbd_g.get('overtime')),
+            }
+            if dry_run:
+                print(f'  [DRY] UPSERT (reverse) {gid}: {away_pts}-{home_pts}')
+                upserts += 1
+                continue
+            r = requests.post(
+                f'{SB}/rest/v1/ncaaf_game_results?on_conflict=game_id',
+                headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+                json=payload, timeout=15,
+            )
+            if r.status_code in (200, 201, 204):
+                upserts += 1
+            else:
+                print(f'  ⚠ reverse-upsert {gid} failed {r.status_code}: {r.text[:150]}')
+    if unresolved_samples:
+        print(f'  ⚠ still-unresolved (no CFBD fuzzy match): {len(unresolved_samples)}+ samples')
+        for s in unresolved_samples:
+            print(f'      · {s}')
+    print(f'  reverse-sweep: {upserts} upserts from {total_ungraded} ungraded jerry_reads '
+          f'across {dates_processed} dates')
+    return upserts
+
+
 def kick_external_resolver() -> None:
     """Fire the sport-agnostic external picks resolver for NCAAF."""
     print(f'\n=== Kicking off resolve_externals --sport NCAAF ===')
@@ -519,6 +641,25 @@ def run(season: Optional[int] = None, dry_run: bool = False,
     updated = apply_patches(patches, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
     print(f'{prefix}applied {updated} score-refresh patches (of {len(patches)} candidates)')
+
+    # 2026-09-08 PERMANENT GAP FIX (Phase 3): reverse-iterate from
+    # jerry_reads. The CFBD-forward passes above catch games where
+    # team_resolver knows the CFBD alias for our team name. But
+    # jerry_reads has 70+ NCAAF game_ids per Saturday, and CFBD has
+    # 454. When the intersection via aliases is only ~97 games, the
+    # other 350 CFBD games silently drop scores that our jerry_reads
+    # rows need for grading.
+    #
+    # This pass flips the direction: for every ungraded jerry_reads
+    # game_id, parse teams from the ID, fuzzy-match against CFBD's
+    # date+team_pair. This catches everything the alias table doesn't
+    # know, since we're comparing fold(our_team) vs fold(cfbd_team)
+    # directly. Any leftover unmatched jerry_read gets logged — that's
+    # a real signal to add an alias.
+    reverse_upserts = _sweep_ungraded_jerry_reads(cfbd_games, dry_run=dry_run)
+    if reverse_upserts:
+        print(f'{prefix}reverse-sweep from jerry_reads: '
+              f'{reverse_upserts} game_results rows inserted')
 
     if not skip_external and not dry_run:
         kick_external_resolver()
