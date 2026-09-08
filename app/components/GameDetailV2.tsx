@@ -30,6 +30,11 @@ import {createClient} from '@supabase/supabase-js';
 import Explainer from './Explainer';
 import { personaFor, scrubSourceNames } from '../lib/sourcePersona';
 import { abbrev as teamAbbrev } from '../lib/teamAbbrev';
+// 2026-09-08 server-controlled render manifest: lets us hide/rename UI
+// sections via `config_ui_sections` SQL edits instead of binary rebuilds.
+// See project_ui_toggle_infrastructure_908 memory + migration 20260908a.
+// Every new <Section> going forward should wrap in useSectionEnabled(...).
+import { useSectionEnabled } from '../lib/uiConfig';
 
 // Standard sport-league abbreviations — Dodgers → LAD (not DOD)
 const TEAM_ABBREV: Record<string, string> = {
@@ -2630,8 +2635,13 @@ function NCAAFFCSNotice({homeTeam, awayTeam, season}: any) {
 // thin (pre-season / EPA not yet computed). Falls back to prior season
 // stats when current season has no rows yet.
 function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
+  // 2026-09-08: server-controlled visibility (see NFLTeamMatchupCard note).
+  // NCAAF slot is separately togglable from NFL — different sport row in
+  // config_ui_sections. Both default true.
+  const isEnabled = useSectionEnabled('NCAAF', 'game_detail', 'team_matchup', true);
   const [stats, setStats] = React.useState<{home?: any; away?: any}>({});
   const [seasonUsed, setSeasonUsed] = React.useState<number | null>(null);
+  if (!isEnabled) return null;
   React.useEffect(() => {
     const client = sb();
     if (!client || !homeTeam || !awayTeam) return;
@@ -3392,8 +3402,15 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
 // row hasn't been rebuilt post-migration yet). Ranks (1-based, lower =
 // better) render as small gray chips next to each number.
 function NFLTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
+  // 2026-09-08: server-controlled visibility via config_ui_sections.
+  // Team Matchup is redundant with Team Stats on NFL Game Detail per user
+  // feedback 9/8. Flipping enabled=false on the DB row hides this section
+  // without an app rebuild. Default = true (backwards-compatible on first
+  // v1.0.1 deploy; DB update is the way to actually hide it).
+  const isEnabled = useSectionEnabled('NFL', 'game_detail', 'team_matchup', true);
   const [fallback, setFallback] = useState<{home?: any; away?: any} | null>(null);
   const hasSummary = ctx?.home_team_stats_summary || ctx?.away_team_stats_summary;
+  if (!isEnabled) return null;
   React.useEffect(() => {
     if (hasSummary) return;
     const client = sb();
