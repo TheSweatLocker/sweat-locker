@@ -450,6 +450,105 @@ def pick_ncaaf_sides() -> list[dict]:
     return out
 
 
+def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
+                         result_key_map: dict = None) -> list[dict]:
+    """2026-09-09 UNIFORM sides picker for all sports.
+
+    Root fix for Receipts inconsistency — MLB had no {sport}_sides
+    surface, NCAAF had ncaaf_sides, others had nothing. Result:
+    Receipts couldn't consistently show "engine record for sport X"
+    because the surface didn't exist for most sports.
+
+    This helper grades every primary_play from the sport's game_context
+    against its results table. Follows the ncaaf_sides pattern.
+
+    Args:
+        sport:       'MLB' | 'NFL' | 'NBA' | 'NHL' | 'NCAAB' | 'UFC'
+        ctx_table:   e.g. 'mlb_game_context'
+        res_table:   e.g. 'mlb_game_results'
+        result_key_map: optional overrides for columns in res_table
+                        (some sports use win/loss vs home_win)
+
+    Filters: tier in PRIME/STRONG/LEAN. Skips COVERAGE/PASS/SKIP.
+    Payout: flat -110 unless res table has close ML odds (future work).
+    """
+    keys = {
+        'home_win': 'home_win',
+        'spread_result': 'spread_result',
+        'total_result': 'total_result',
+        **(result_key_map or {}),
+    }
+    ctx_url = (f'{SB}/rest/v1/{ctx_table}'
+               f'?select=game_id,game_date,primary_play&primary_play=not.is.null')
+    res_url = (f'{SB}/rest/v1/{res_table}'
+               f'?select=game_id,{keys["home_win"]},{keys["spread_result"]},{keys["total_result"]}')
+    try:
+        ctx_rows = list(_paged(ctx_url))
+    except Exception:
+        return []
+    try:
+        res_map = {r['game_id']: r for r in _paged(res_url) if r.get('game_id')}
+    except Exception:
+        return []
+    out = []
+    for c in ctx_rows:
+        pp = c.get('primary_play') or {}
+        if not isinstance(pp, dict): continue
+        tier = (pp.get('tier') or '').upper()
+        if tier not in ('PRIME', 'STRONG', 'LEAN'):
+            continue
+        res = res_map.get(c.get('game_id'))
+        if not res: continue
+        ptype = (pp.get('type') or '').lower()
+        side  = (pp.get('side') or '').upper()
+        cls = None
+        if ptype == 'ml':
+            hw = res.get(keys['home_win'])
+            if hw is None: continue
+            cls = 'win' if ((side == 'HOME' and hw) or (side == 'AWAY' and not hw)) else 'loss'
+        elif ptype in ('rl', 'spread'):
+            sr = (res.get(keys['spread_result']) or '').lower()
+            if sr == 'push': cls = 'push'
+            elif sr == 'home_covered': cls = 'win' if side == 'HOME' else 'loss'
+            elif sr == 'away_covered': cls = 'win' if side == 'AWAY' else 'loss'
+            else: continue
+        elif ptype == 'total':
+            tr = (res.get(keys['total_result']) or '').lower()
+            if tr == 'push': cls = 'push'
+            elif tr == 'over':  cls = 'win' if side == 'OVER' else 'loss'
+            elif tr == 'under': cls = 'win' if side == 'UNDER' else 'loss'
+            else: continue
+        else:
+            continue
+        try: d = dt.date.fromisoformat(c['game_date'])
+        except Exception: continue
+        out.append({'sport': sport, 'date': d, 'result': cls,
+                    'stake': 1.0, 'payout': 0.909})
+    return out
+
+
+def pick_mlb_sides() -> list[dict]:
+    """MLB full engine sides record — every graded primary_play, all tiers.
+    Complements 'sharp' (PRIME/STRONG only) and 'sharp_card' (curated slice)."""
+    return _pick_generic_sides('MLB', 'mlb_game_context', 'mlb_game_results')
+
+
+def pick_nfl_sides() -> list[dict]:
+    return _pick_generic_sides('NFL', 'nfl_game_context', 'nfl_game_results')
+
+
+def pick_nba_sides() -> list[dict]:
+    return _pick_generic_sides('NBA', 'nba_game_context', 'nba_game_results')
+
+
+def pick_nhl_sides() -> list[dict]:
+    return _pick_generic_sides('NHL', 'nhl_game_context', 'nhl_game_results')
+
+
+def pick_ncaab_sides() -> list[dict]:
+    return _pick_generic_sides('NCAAB', 'ncaab_game_context', 'ncaab_game_results')
+
+
 def pick_sharp_card() -> list[dict]:
     """Sharp Card composite (sides + props combined) — reads directly from
     daily_surface_records.sharp_card, the authoritative per-day rollup
@@ -577,6 +676,15 @@ SURFACES = {
     # track records separately from PRIME (which is under 'prop').
     'prop_lean':     pick_prop_lean,
     'prop_coverage': pick_prop_coverage,
+    # 2026-09-09 UNIFORM: <sport>_sides surface for every sport.
+    # Fixes Receipts inconsistency (MLB had no mlb_sides, others had nothing).
+    # Every sport now gets identical structure — Receipts renders same shape.
+    # Pickers no-op gracefully when results/context tables don't exist.
+    'mlb_sides':   pick_mlb_sides,
+    'nfl_sides':   pick_nfl_sides,
+    'nba_sides':   pick_nba_sides,
+    'nhl_sides':   pick_nhl_sides,
+    'ncaab_sides': pick_ncaab_sides,
 }
 
 
