@@ -191,32 +191,29 @@ def check_sharp_card_props_have_synthesis(date: str) -> Optional[dict]:
     }
 
 
-def check_badge_matches_detail(date: str) -> Optional[dict]:
-    """For every game_context today with primary_play, jerry_reads.call_*
-    must match primary_play (type/side/label). Divergence = badge on
-    games tab shows one pick, game detail shows another.
-    """
+def _check_badge_drift_for_sport(date: str, sport: str, ctx_table: str) -> list:
+    """Return list of drift dicts for one sport. Empty list = clean."""
     r = requests.get(
-        f'{SB}/rest/v1/mlb_game_context',
+        f'{SB}/rest/v1/{ctx_table}',
         headers=H_R,
         params={'game_date': f'eq.{date}', 'primary_play': 'not.is.null',
                 'select': 'game_id,home_team,away_team,primary_play',
-                'limit': '30'},
+                'limit': '80'},
         timeout=15,
     )
-    if r.status_code != 200: return None
+    if r.status_code != 200: return []
     ctx_rows = r.json() or []
-    if not ctx_rows: return None
+    if not ctx_rows: return []
     game_ids = [c['game_id'] for c in ctx_rows if c.get('game_id')]
-    if not game_ids: return None
+    if not game_ids: return []
 
     jr = requests.get(
         f'{SB}/rest/v1/jerry_reads',
         headers=H_R,
-        params={'sport': 'eq.MLB', 'game_date': f'eq.{date}',
+        params={'sport': f'eq.{sport}', 'game_date': f'eq.{date}',
                 'game_id': f'in.({",".join(game_ids)})',
                 'select': 'game_id,call_market,call_side,call_text',
-                'limit': '30'},
+                'limit': '80'},
         timeout=15,
     )
     jr_by_game = {row['game_id']: row for row in (jr.json() if jr.status_code == 200 else []) or []}
@@ -230,26 +227,58 @@ def check_badge_matches_detail(date: str) -> Optional[dict]:
             except Exception: pp = {}
         pp = pp or {}
         jr_row = jr_by_game.get(gid)
-        if not jr_row: continue  # not-yet-synthesized isn't a mismatch
+        if not jr_row: continue
         pp_type = (pp.get('type') or '').lower()
         pp_side = (pp.get('side') or '').upper()
         jr_type = (jr_row.get('call_market') or '').lower()
         jr_side = (jr_row.get('call_side') or '').upper()
         if pp_type and jr_type and pp_type != jr_type:
             mismatches.append({
+                'sport': sport,
                 'game': f'{c.get("away_team","?")[:12]} @ {c.get("home_team","?")[:12]}',
                 'primary_play': f'{pp_type}/{pp_side}',
                 'jerry_reads':  f'{jr_type}/{jr_side}',
             })
+    return mismatches
 
-    if not mismatches: return None
+
+def check_badge_matches_detail(date: str) -> Optional[dict]:
+    """For every game_context today with primary_play, jerry_reads.call_*
+    must match primary_play (type/side/label). Divergence = badge on
+    games tab shows one pick, game detail shows another.
+
+    2026-09-09: extended to check ALL sports with primary_play tables
+    (MLB, NFL, NCAAF, NBA, NHL, NCAAB). Was MLB-only before → other
+    sports' drift went undetected.
+    """
+    all_mismatches = []
+    SPORT_CTX = [
+        ('MLB',   'mlb_game_context'),
+        ('NFL',   'nfl_game_context'),
+        ('NCAAF', 'ncaaf_game_context'),
+        ('NBA',   'nba_game_context'),
+        ('NHL',   'nhl_game_context'),
+        ('NCAAB', 'ncaab_game_context'),
+    ]
+    for sport, tbl in SPORT_CTX:
+        try:
+            all_mismatches.extend(_check_badge_drift_for_sport(date, sport, tbl))
+        except Exception:
+            continue
+
+    if not all_mismatches: return None
+    by_sport = {}
+    for m in all_mismatches:
+        by_sport.setdefault(m['sport'], 0)
+        by_sport[m['sport']] += 1
+    sport_summary = ', '.join(f'{s}={n}' for s, n in sorted(by_sport.items()))
     return {
         'check_name': 'badge_detail_drift',
         'severity': 'CRITICAL',
-        'message': f'{len(mismatches)} game(s) with primary_play vs jerry_reads '
-                   f'market mismatch. Badges + game detail will contradict.',
-        'detail': {'mismatches': mismatches[:10],
-                   'fix_hint': 'python jerry_pick_scrub.py --sport MLB'},
+        'message': f'{len(all_mismatches)} game(s) with primary_play vs jerry_reads '
+                   f'market mismatch ({sport_summary}). Badges + game detail contradict.',
+        'detail': {'mismatches': all_mismatches[:15],
+                   'fix_hint': 'python jerry_pick_scrub.py --sport <SPORT> for each'},
     }
 
 
