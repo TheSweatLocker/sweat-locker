@@ -661,6 +661,22 @@ jobs:
           cd mlb_pipeline
           python apply_prop_refit.py || echo "prop refit failed (non-fatal)"
 
+      # 2026-09-09: MLB PROP LR shadow write. Script exists since 9/03 but
+      # was never wired into the cron — orphan. Result: every prop row had
+      # ZERO LR fields, downstream prop-LR gates silently no-op. Runs AFTER
+      # generate_props + apply_prop_refit so LR sees the final scored props
+      # + refit conviction. Writes to mlb_pipeline_props.signals._logreg_shadow.
+      # See project_lr_shadow_stale_909 + project_pipeline_overhaul_909.
+      # continue-on-error so an LR outage never blocks prop publishing.
+      - name: MLB prop LR shadow (mlb_prop_logreg_predict)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python mlb_prop_logreg_predict.py || echo "prop LR shadow failed (non-fatal)"
+
       # Backfill L5/L10 player-vs-line lookback on today's props
       # (2026-08-17). Populates player_l5_hit_count / player_l10_hit_count
       # via MLB Stats API. Powers the player_l10_vs_line_extreme playbook
