@@ -2110,6 +2110,21 @@ jobs:
           cd mlb_pipeline
           python consistency_watchdog.py || echo "consistency check tripped (see watchdog_alerts)"
 
+      # 2026-09-09 PIPELINE SMOKE TEST — read-only sanity that every
+      # user-visible surface has data. Runs AFTER consistency_watchdog
+      # so we get both cross-table drift AND presence checks in the run
+      # log. Prints an actionable green/red board for each surface.
+      # continue-on-error so a warning doesn't block Sweat Card publish.
+      # See mlb_pipeline/pipeline_smoke_test.py for the check list.
+      - name: Pipeline smoke test
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pipeline_smoke_test.py || echo "smoke test surfaced issues (see log above)"
+
       # Build Tonight's Sweat Card — server-generated structured card for
       # the app's MLB tab. Reads everything upstream wrote (POTD, Dawg,
       # props, NRFI, tier rates) and emits one JSON row the app reads via

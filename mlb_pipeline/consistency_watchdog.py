@@ -61,13 +61,19 @@ def _days_ago(n: int) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 def check_potd_grade_mirror(date: str) -> Optional[dict]:
-    """jerry_cache.data.result must equal daily_best_bet_history.result.
+    """jerry_cache POTD state must match daily_best_bet_history for
+    both graded and noPlay days.
 
     Both are read by different app surfaces (RPC vs calendar). If they
-    disagree, one surface shows Win while another shows Pending — user
-    loses trust instantly.
+    disagree, one shows Win while another shows Pending — or one shows
+    noPlay while another still shows an old pick. User loses trust.
+
+    2026-09-09 EXPANDED: was only checking Win/Loss/Push grade mirror.
+    Live audit today caught jerry_cache.noPlay while daily_best_bet_history
+    still had a stale pipelineGenerated Marlins pick. Now checks noPlay
+    state mirror too.
     """
-    since = _days_ago(14)  # window big enough to catch backfill drift
+    since = _days_ago(14)
     r = requests.get(
         f'{SB}/rest/v1/jerry_cache',
         headers=H_R,
@@ -77,48 +83,65 @@ def check_potd_grade_mirror(date: str) -> Optional[dict]:
         timeout=15,
     )
     if r.status_code != 200: return None
-    jc_by_date = {}
+    jc_state_by_date: dict = {}  # date → 'Win' | 'Loss' | 'Push' | 'Void' | 'NoPlay' | 'Live'
     for row in r.json() or []:
         ck = row.get('cache_key') or ''
-        if '_mlb' in ck or '_nfl' in ck: continue  # sport-suffixed dupes
+        if '_mlb' in ck or '_nfl' in ck: continue
         d = ck.replace('best_bet_', '')
         if d < since: continue
         data = row.get('data') or {}
         if isinstance(data, str):
             try: data = json.loads(data)
             except Exception: data = {}
-        jc_result = data.get('result')
-        if jc_result in ('Win', 'Loss', 'Push', 'Void'):
-            jc_by_date[d] = jc_result
+        if data.get('noPlay'):
+            jc_state_by_date[d] = 'NoPlay'
+        else:
+            res = data.get('result')
+            if res in ('Win', 'Loss', 'Push', 'Void'):
+                jc_state_by_date[d] = res
+            elif data.get('game'):
+                jc_state_by_date[d] = 'Live'  # pick exists, not yet graded
 
-    if not jc_by_date: return None
+    if not jc_state_by_date: return None
 
     r2 = requests.get(
         f'{SB}/rest/v1/daily_best_bet_history',
         headers=H_R,
         params={'bet_date': f'gte.{since}',
-                'select': 'bet_date,result', 'limit': '30'},
+                'select': 'bet_date,result,lean', 'limit': '30'},
         timeout=15,
     )
-    hist_by_date = {}
+    hist_by_date: dict = {}
     for row in (r2.json() if r2.status_code == 200 else []) or []:
-        hist_by_date[row['bet_date']] = (row.get('result') or '')
+        hist_by_date[row['bet_date']] = {
+            'result': (row.get('result') or ''),
+            'lean': (row.get('lean') or ''),
+        }
 
     mismatches = []
-    for d, jc_res in jc_by_date.items():
-        hist_res = hist_by_date.get(d, 'MISSING')
-        if hist_res != jc_res:
-            mismatches.append({'date': d, 'jerry_cache': jc_res,
-                               'daily_best_bet_history': hist_res})
+    for d, jc_state in jc_state_by_date.items():
+        hist = hist_by_date.get(d, {'result': 'MISSING', 'lean': ''})
+        hist_res = hist['result']
+        hist_lean = hist['lean']
+        # NoPlay in cache but real pick in history = drift
+        if jc_state == 'NoPlay':
+            if 'no play' not in hist_lean.lower() and hist_res not in ('No Play', 'MISSING'):
+                mismatches.append({'date': d, 'jerry_cache': 'NoPlay',
+                                   'daily_best_bet_history': f'{hist_res} · {hist_lean[:40]}'})
+        elif jc_state in ('Win', 'Loss', 'Push', 'Void'):
+            if hist_res != jc_state:
+                mismatches.append({'date': d, 'jerry_cache': jc_state,
+                                   'daily_best_bet_history': hist_res})
 
     if not mismatches: return None
     return {
         'check_name': 'potd_grade_mirror',
         'severity': 'WARNING',
-        'message': f'{len(mismatches)} POTD date(s) with grade mismatch '
+        'message': f'{len(mismatches)} POTD date(s) with state mismatch '
                    f'between jerry_cache and daily_best_bet_history. '
-                   f'Calendar will display stale/wrong.',
-        'detail': {'mismatches': mismatches[:10]},
+                   f'Home / Receipts / calendar will display conflicting values.',
+        'detail': {'mismatches': mismatches[:10],
+                   'fix': 'python jerry_anchor_potd.py  (writes both surfaces now)'},
     }
 
 
