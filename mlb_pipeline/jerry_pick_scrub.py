@@ -17,10 +17,28 @@ overwrites the CALL fields deterministically.
 prose and were seeing cards where the badge said one market and the
 prose argued for a totally different one (e.g., badge "Over 8.5" but
 long_read "Take the Mets ML"). User feedback: "MLB Jerry reads look
-like shit." Now when we detect drift, we also overwrite short_read
-and long_read with a coherent recompute-notice narrative that
-matches the new call, so the whole card reads consistently. The
-original take is preserved in audit_notes for internal auditability.
+like shit." Added template-prose overwrite.
+
+2026-09-08 UPDATE — SCRUB PROSE DISABLED. The template overwrite
+became the DEFAULT text 12 of 15 MLB games showed "Model recomputed
+to X" as their primary read every day. That's worse than the
+original cross-market problem — users NEVER saw real Jerry analysis.
+Root cause: pipeline flips primary_play frequently late in the day
+(LR override, refit, etc), each flip triggers a scrub, scrub keeps
+stomping fresh prose with the template.
+
+New behavior: scrub ONLY updates call_market/call_side/call_line/
+call_text. Prose is LEFT UNTOUCHED. If prose is stale relative to
+new call, that's a data-freshness issue to fix by re-running
+generate_jerry_synthesis (which writes real prose for the current
+pick). Template writes always lose against real prose in the "worse
+than nothing" comparison.
+
+The original cross-market prose leak is addressed by:
+  - jerry_pre_publish_audit H_scenario_matrix path (writes real
+    skip narratives via user_short/user_long)
+  - generate_jerry_synthesis --force re-run after major recomputes
+  - eventually: a real Claude-regenerate path in this scrub
 
 Sport-universal via SPORT_CONFIG.
 
@@ -252,28 +270,39 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         already_scrubbed = h_skip_narrative or (is_model_recomputed and not model_recomputed_stale)
         should_rewrite_prose = (drift or stale_prose or model_recomputed_stale) and not already_scrubbed
 
-        # Even when already_scrubbed=True at short_read level, long_read
-        # may still be a pre-audit narrative (H scenario matrix wrote
-        # skip short but stale narrative survived on long). Detect
-        # cross-market prose on long_read specifically.
-        if already_scrubbed and _prose_cross_market:
-            # Overwrite ONLY long_read to align with short's skip framing
-            payload['long_read'] = (
-                f'The pick was recomputed after this read was written. '
-                f'Current call: {_side_readable}. The narrative above '
-                f'may reference a different market — trust the current '
-                f'call + short read for the actual pick rationale.'
-            )[:2000]
-        elif should_rewrite_prose:
-            payload['short_read'] = new_short[:2000]
-            payload['long_read']  = new_long[:2000]
-            # Preserve original take in audit_notes for future reference
+        # 2026-09-08 KILL SWITCH: prose scrub disabled. Was overwriting
+        # real Jerry synthesis prose with the "Model recomputed to X"
+        # template every time pipeline picks flipped, and pipeline
+        # flips several times per day per game. Users saw the template
+        # as their PRIMARY read (12/15 MLB games today). Terrible UX.
+        #
+        # New behavior: patch call fields ONLY. Prose stays whatever
+        # generate_jerry_synthesis last wrote — if that's stale relative
+        # to the new pick, next generate_jerry_synthesis run heals it.
+        # In the meantime users see REAL Jerry analysis (possibly
+        # arguing a slightly-different market variant), not a template.
+        #
+        # Cross-market cleanup (badge=total but prose=Take X ML) still
+        # handled by jerry_pre_publish_audit's H_scenario_matrix path
+        # which writes coherent skip narratives via user_short/user_long,
+        # not this scrub. Belt-and-suspenders long-read cleanup only
+        # fires now when prose is DEMONSTRABLY cross-market (both a
+        # "take X ml" cue AND an ml-picked game, or the reverse) — no
+        # template writes, just a null-out that the render treats as
+        # "analysis pending".
+        _hard_cross_market = _prose_cross_market and (drift or stale_prose)
+        if _hard_cross_market:
+            # Null out the cross-market prose. UI falls back to
+            # "analysis pending" — better than misleading text.
+            payload['long_read'] = None
             _orig_note = (
-                f'[jerry_pick_scrub 2026-09-07 prose-flip: '
+                f'[jerry_pick_scrub 2026-09-08 null-out cross-market: '
                 f'call is now {pp_type.upper()}/{pp_side} {_side_readable[:40]}. '
-                f'Original short_read: {orig_short[:500]}]'
+                f'Original short: {orig_short[:300]} · Original long start: {orig_long_pre[:200]}]'
             )
             payload['audit_notes'] = _orig_note[:1500]
+        # Note: `should_rewrite_prose` no longer triggers any prose write.
+        # Kept in code above for future reference / potential Claude-regen path.
 
         if not payload:
             continue  # nothing to change

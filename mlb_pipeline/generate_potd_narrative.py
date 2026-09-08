@@ -199,7 +199,12 @@ def build_mlb_prompt(potd):
         if ctx.get("venue"):
             parts.append(f"- Venue: {ctx['venue']}{(' · Temp ' + str(ctx.get('temperature')) + '°F') if ctx.get('temperature') is not None else ''}")
         parts.append("- DO NOT cite projected_total or over/under numbers — TOTAL IS IRRELEVANT for ML picks (a 12-run total helps neither side).")
-        parts.append("- HONESTY RULE: if the signals above genuinely conflict with the pick side, cite the STRONGEST supporting factor first (e.g., 'bullpen edge offsets weaker starting pitching'). Do NOT invent reasoning that contradicts the pick.")
+        parts.append("")
+        parts.append("HONESTY RULES (do not violate):")
+        parts.append("- ONLY cite specific numbers that appear in the RELEVANT SIGNALS block above. NEVER invent numbers or edges (no 'model has line at -3.22' unless the exact -3.22 was given to you).")
+        parts.append("- If the pitcher matchup or spread delta argues AGAINST the pick side, acknowledge that upfront and cite the ACTUAL edge supporting the pick (usually bullpen or LR model). Example: 'Wesneski is the better starter, but the Phillies bullpen 0.55 ERA edge (3.96 vs 4.51) closes the gap in late innings — LR model still leans HOME at 57%.'")
+        parts.append("- If NO signal supports the pick (all data argues the other way), say EXACTLY that: 'This is a contrarian model call — every visible signal favors {other side}, but our LR model gives {pick} a slight edge at {p}%'. Do not fake supporting analysis.")
+        parts.append("- 'The market is overvaluing the home team' means spread_delta > 0 (i.e., our projected spread has home favored by LESS than the market). Verify signs before writing this.")
     elif market == 'total':
         # Total picks: how many total runs. Both pitchers' xERAs matter
         # equally. Spread delta is IRRELEVANT.

@@ -21,6 +21,7 @@ Usage:
     python jerry_anchor_potd.py [--date YYYY-MM-DD] [--threshold 70] [--dry-run]
 """
 import argparse
+import json
 import os
 import re
 import sys
@@ -161,6 +162,63 @@ def run(game_date: str | None = None, threshold: int = 70,
 
     if not eligible:
         print(f"  ⚠ no eligible reads after juice gate — Jerry passing")
+        _write_no_play(gd, dry_run, reads)
+        return
+
+    # 2026-09-08 LR CONFIDENCE GATE (Option A per project_data_infrastructure_priorities_908).
+    # Filter out picks whose underlying LR probability is < 0.60 — the pipeline
+    # was surfacing coin-flip picks (LR 0.55-0.59) as POTD because sweat_score
+    # inflated them. Users see "Jerry 86/100" but the model was actually 57%.
+    # That's not honest stats-backed analysis; that's a display artifact
+    # dressing up a coin flip.
+    #
+    # Fetches _lr_p_home_win / _lr_p_over from primary_play for each eligible
+    # pick's game. If the LR probability supporting the pick side is < 0.60,
+    # skip. Non-LR-scored picks (no _lr_* fields) pass through unchanged
+    # (backwards compat — sports without LR wired stay eligible on conviction alone).
+    lr_gated = []
+    lr_skipped = []
+    for r in eligible:
+        sport = (r.get("sport") or "MLB").upper()
+        ctx_table = _context_table(sport)
+        if not ctx_table:
+            lr_gated.append(r); continue
+        pp_resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/{ctx_table}",
+            headers=H_READ,
+            params={"game_id": f"eq.{r.get('game_id')}",
+                    "game_date": f"eq.{gd}",
+                    "select": "primary_play"},
+            timeout=10,
+        )
+        pp_data = pp_resp.json() if pp_resp.status_code == 200 else []
+        pp = pp_data[0].get("primary_play") if pp_data else None
+        if isinstance(pp, str):
+            try: pp = json.loads(pp)
+            except (json.JSONDecodeError, TypeError): pp = {}
+        pp = pp or {}
+        call_mkt = (r.get("call_market") or "").lower()
+        call_side = (r.get("call_side") or "").upper()
+        p_support = None
+        if call_mkt == "ml" and pp.get("_lr_p_home_win") is not None:
+            p_home = float(pp["_lr_p_home_win"])
+            p_support = p_home if call_side == "HOME" else (1 - p_home)
+        elif call_mkt == "total" and pp.get("_lr_p_over") is not None:
+            p_over = float(pp["_lr_p_over"])
+            p_support = p_over if call_side == "OVER" else (1 - p_over)
+        if p_support is not None and p_support < 0.60:
+            ct = (r.get('call_text') or '?')[:30]
+            lr_skipped.append(f"{ct} p={p_support:.2f}")
+            continue
+        lr_gated.append(r)
+    if lr_skipped:
+        print(f"  🚫 POTD LR-confidence gate: skipped {len(lr_skipped)} picks with LR support < 0.60")
+        for s in lr_skipped[:5]:
+            print(f"      · {s}")
+    eligible = lr_gated
+
+    if not eligible:
+        print(f"  ⚠ no eligible reads after LR gate — Jerry passing (stats-backed accuracy over false conviction)")
         _write_no_play(gd, dry_run, reads)
         return
 
