@@ -1718,6 +1718,11 @@ jobs:
       # so we reconcile the final Jerry take, not an intermediate one.
       # continue-on-error: reconciler failure never blocks the pipeline;
       # worst case the UI shows the pre-existing mismatch.
+      #
+      # NOTE (2026-09-09 audit): overlap with jerry_pick_scrub was
+      # flagged but keeping both — reconcile has an ensemble_v2-only
+      # gate that scrub doesn't. Removing risks breaking legacy engine
+      # fallback edge cases. Consolidation deferred to post-launch.
       - name: Reconcile Jerry call_side to primary_play
         continue-on-error: true
         env:
