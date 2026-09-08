@@ -77,9 +77,50 @@ def _conviction_tier(conv: int) -> str:
 
 
 def run(game_date: str | None = None, threshold: int = 70,
-        dry_run: bool = False) -> None:
+        dry_run: bool = False, force: bool = False) -> None:
     gd = game_date or today_et()
     print(f"=== jerry_anchor_potd · {gd} (threshold={threshold}) ===")
+
+    # 2026-09-09 POTD PUBLISH LOCK. Root fix for the user-reported
+    # "POTD flipped 3 times today (Marlins → noPlay → Tigers)" bug.
+    # Multiple crons in a day = multiple anchor writes = last-writer-wins
+    # → user bets on morning POTD, sees different pick at 2pm.
+    #
+    # Once jerry_anchor_potd has published a Jerry-anchored decision for
+    # a day (anchor='jerry_synthesis_v1'), subsequent crons SKIP the
+    # re-anchor. First cron of the day wins. Same pattern as Sharp Card
+    # publish lock (c6912775).
+    #
+    # Override with --force flag OR POTD_ALLOW_REPUBLISH=1 env var.
+    # Bypass conditions: dry_run always runs; force respects user intent.
+    _allow_republish = force or os.environ.get('POTD_ALLOW_REPUBLISH') == '1'
+    if not dry_run and not _allow_republish:
+        try:
+            _existing = requests.get(
+                f"{SUPABASE_URL}/rest/v1/jerry_cache",
+                headers=H_READ,
+                params={"cache_key": f"eq.best_bet_{gd}",
+                        "select": "data,fetched_at"},
+                timeout=10,
+            )
+            if _existing.status_code == 200 and _existing.json():
+                _row = _existing.json()[0]
+                _data = _row.get('data') or {}
+                if isinstance(_data, str):
+                    try:
+                        import json as _j
+                        _data = _j.loads(_data)
+                    except Exception:
+                        _data = {}
+                _anchor = (_data or {}).get('anchor')
+                if _anchor == 'jerry_synthesis_v1':
+                    print(f"  🔒 best_bet_{gd} already Jerry-anchored "
+                          f"({(_row.get('fetched_at') or '?')[:19]}) — skipping "
+                          f"republish. Use --force or POTD_ALLOW_REPUBLISH=1 "
+                          f"to override.")
+                    return
+        except Exception as _e:
+            print(f"  ⚠ publish-lock check failed: {_e} — proceeding")
 
     # Pull Jerry reads across all eligible sports (POTD_SPORTS below).
     # UFC intentionally excluded per user 2026-07-31 — UFC stays a
@@ -464,5 +505,9 @@ if __name__ == "__main__":
     p.add_argument("--date")
     p.add_argument("--threshold", type=int, default=70)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--force", action="store_true",
+                   help="Bypass publish lock — overwrites today's POTD "
+                        "even if already Jerry-anchored. Admin-only.")
     args = p.parse_args()
-    run(game_date=args.date, threshold=args.threshold, dry_run=args.dry_run)
+    run(game_date=args.date, threshold=args.threshold,
+        dry_run=args.dry_run, force=args.force)

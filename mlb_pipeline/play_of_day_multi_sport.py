@@ -168,7 +168,32 @@ def _get_current_potd(today: str) -> dict | None:
 
 def _publish_potd_override(today: str, winner: dict, mlb_row: dict | None, dry_run: bool):
     """Write the cross-sport winner to jerry_cache.best_bet_{today}.
-    Preserves the outgoing MLB POTD to best_bet_{today}_mlb for audit."""
+    Preserves the outgoing MLB POTD to best_bet_{today}_mlb for audit.
+
+    2026-09-09 LOCK: skip if jerry_anchor_potd already published a
+    Jerry-anchored decision for today (anchor='jerry_synthesis_v1').
+    Jerry is the FINAL authority on POTD — cross-sport candidates
+    should only overwrite if Jerry hasn't ruled yet.
+    Same publish-lock pattern as sharp_card (c6912775) and
+    jerry_anchor_potd (this session).
+    Override with POTD_ALLOW_REPUBLISH=1 env var.
+    """
+    if not dry_run and os.environ.get('POTD_ALLOW_REPUBLISH') != '1':
+        try:
+            _existing = mlb_row  # already fetched by caller
+            if _existing:
+                _data = _existing.get('data') or {}
+                if isinstance(_data, str):
+                    try: _data = json.loads(_data)
+                    except Exception: _data = {}
+                if (_data or {}).get('anchor') == 'jerry_synthesis_v1':
+                    print(f'  🔒 best_bet_{today} already Jerry-anchored — '
+                          f'cross-sport override skipped (Jerry rules). '
+                          f'Set POTD_ALLOW_REPUBLISH=1 to bypass.')
+                    return
+        except Exception as _e:
+            print(f'  ⚠ lock check failed: {_e} — proceeding')
+
     ctx = winner['ctx_row']
     if winner['side'] == 'HOME':
         ml = ctx.get('close_home_ml') or ctx.get('home_ml_close')

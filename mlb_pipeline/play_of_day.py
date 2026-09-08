@@ -3250,6 +3250,20 @@ def run():
                 print(f"🔒 manualOverride=true — POTD hand-locked. Sweat scores will still refresh; POTD selection skipped.")
                 skip_potd_selection = True
                 potd_lock_reason = 'manualOverride'
+            elif existing_pick.get('anchor') == 'jerry_synthesis_v1':
+                # 2026-09-09 JERRY-ANCHOR LOCK. If jerry_anchor_potd (which
+                # runs AFTER play_of_day in the workflow) already applied
+                # its Jerry-based decision to today's cache, subsequent
+                # play_of_day runs must NOT overwrite the Jerry anchor.
+                # Otherwise play_of_day clears the anchor field on write,
+                # multi_sport re-runs, jerry_anchor re-runs, and the cache
+                # flips between crons — the bug user reported today
+                # (Marlins → noPlay → Tigers within same day).
+                # POTD_ALLOW_REPUBLISH=1 env or manualOverride bypass.
+                print(f"🔒 Jerry-anchored POTD for {today} — locked. "
+                      f"Sweat scores will refresh; POTD selection skipped.")
+                skip_potd_selection = True
+                potd_lock_reason = 'jerry_anchor_lock'
             elif et_hour < 11:
                 print(f"⏰ Pre-11am ET ({et_hour}h) — regenerating with fresh data")
                 existing_pick = None  # clear so we overwrite
