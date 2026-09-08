@@ -3719,8 +3719,10 @@ function NBASlot({ctx, game}: any) {
 
 // Team snapshot — net rating + pace + off/def rating side by side.
 function NBATeamSnapshotCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NBA', 'game_detail', 'team_snapshot', true);
   const h = {net: ctx?.home_net_rating, pace: ctx?.home_pace, off: ctx?.home_off_rating, def: ctx?.home_def_rating, elo: ctx?.elo_home};
   const a = {net: ctx?.away_net_rating, pace: ctx?.away_pace, off: ctx?.away_off_rating, def: ctx?.away_def_rating, elo: ctx?.elo_away};
+  if (!isEnabled) return null;
   if (h.net == null && a.net == null && h.elo == null && a.elo == null) return null;
   const fmt = (v: any, digits = 1) => v == null ? '—' : Number(v).toFixed(digits);
   return (
@@ -3747,6 +3749,8 @@ function NBATeamSnapshotCard({ctx, homeTeam, awayTeam}: any) {
 
 // Rest days + back-to-back (huge NBA signal).
 function NBARestB2BCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NBA', 'game_detail', 'rest_b2b', true);
+  if (!isEnabled) return null;
   const hRest = ctx?.home_rest_days;
   const aRest = ctx?.away_rest_days;
   const hB2B = ctx?.home_is_b2b;
@@ -3779,6 +3783,7 @@ function NBARestB2BCard({ctx, homeTeam, awayTeam}: any) {
 
 // Injuries + line-move impact when quantified by backend.
 function NBAInjuriesCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NBA', 'game_detail', 'injuries', true);
   const [injuries, setInjuries] = useState<{home: any[]; away: any[]}>({home: [], away: []});
   React.useEffect(() => {
     const client = sb();
@@ -3804,6 +3809,7 @@ function NBAInjuriesCard({ctx, homeTeam, awayTeam}: any) {
   }, [homeTeam, awayTeam, ctx?.home_abbrev, ctx?.away_abbrev]);
   const impact = ctx?.home_injury_impact;
   const startersOut = ctx?.home_starters_out;
+  if (!isEnabled) return null;
   if (injuries.home.length + injuries.away.length === 0 && !impact && !startersOut) return null;
   const renderSide = (label: string, rows: any[]) => rows.length === 0 ? null : (
     <View>
@@ -3833,6 +3839,7 @@ function NBAInjuriesCard({ctx, homeTeam, awayTeam}: any) {
 
 // Four Factors — eFG / TOV / ORB / FT for both teams from nba_team_stats.
 function NBAFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NBA', 'game_detail', 'four_factors', true);
   const [stats, setStats] = useState<{home?: any; away?: any}>({});
   React.useEffect(() => {
     const client = sb();
@@ -3861,6 +3868,7 @@ function NBAFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
     {label: 'ORB%',  away: pct(stats.away?.orb_pct),  home: pct(stats.home?.orb_pct)},
     {label: 'FT Rate', away: num(stats.away?.ft_rate), home: num(stats.home?.ft_rate)},
   ];
+  if (!isEnabled) return null;
   return (
     <Section title="Four Factors" hint="eFG · TOV · ORB · FT">
       <View style={{flexDirection: 'row', paddingBottom: 4, borderBottomWidth: 0.5, borderBottomColor: C.border}}>
@@ -3898,6 +3906,8 @@ function NCAABSlot({ctx, game}: any) {
 }
 
 function NCAABEfficiencyCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NCAAB', 'game_detail', 'efficiency_panel', true);
+  if (!isEnabled) return null;
   const h = {em: ctx?.home_adj_em, oe: ctx?.home_adj_oe, de: ctx?.home_adj_de};
   const a = {em: ctx?.away_adj_em, oe: ctx?.away_adj_oe, de: ctx?.away_adj_de};
   if (h.em == null && a.em == null) return null;
@@ -3931,6 +3941,8 @@ function NCAABEfficiencyCard({ctx, homeTeam, awayTeam}: any) {
 }
 
 function NCAABPaceCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NCAAB', 'game_detail', 'pace_tempo', true);
+  if (!isEnabled) return null;
   const hTempo = ctx?.home_tempo;
   const aTempo = ctx?.away_tempo;
   const paceAvg = ctx?.pace_avg;
@@ -3972,6 +3984,8 @@ function NCAABPaceCard({ctx, homeTeam, awayTeam}: any) {
 }
 
 function NCAABFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NCAAB', 'game_detail', 'four_factors_ordered', true);
+  if (!isEnabled) return null;
   const h = {efg: ctx?.home_efg_o, to: ctx?.home_to_o, or: ctx?.home_or_o, ftr: ctx?.home_ftr_o};
   const a = {efg: ctx?.away_efg_o, to: ctx?.away_to_o, or: ctx?.away_or_o, ftr: ctx?.away_ftr_o};
   if (h.efg == null && a.efg == null) return null;
@@ -4002,6 +4016,8 @@ function NCAABFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
 }
 
 function NCAABFormRestCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NCAAB', 'game_detail', 'form_rest', true);
+  if (!isEnabled) return null;
   const h = {rec: ctx?.home_record, l10: ctx?.home_l10, rest: ctx?.home_days_rest};
   const a = {rec: ctx?.away_record, l10: ctx?.away_l10, rest: ctx?.away_days_rest};
   if (!h.rec && !a.rec && h.rest == null && a.rest == null) return null;
