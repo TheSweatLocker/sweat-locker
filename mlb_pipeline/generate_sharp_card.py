@@ -432,6 +432,12 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
             'reason': f"conv={p.get('refit_conviction') or p.get('conviction')}",
             'odds': prop_odds,
             'line': p.get('prop_line'),
+            # 2026-09-08: propagate player_team into composed item so
+            # downstream (smoke test, render) can verify team assignment.
+            # Prior composer stripped this field → every item had
+            # player_team=null which made auditing orphan pitchers
+            # impossible from the cache alone.
+            'player_team': p.get('player_team'),
             'units': units,
             'playbook_lifted': PROP_PLAYBOOK_ENABLED and pb and pb.get('playbook_tier')
                                 and effective_tier != p.get('tier'),
