@@ -157,8 +157,12 @@ def build_payload(row: dict) -> dict | None:
     }
     # Merge outcome computations (skip if game not played yet)
     payload.update(compute_outcome(row))
-    # Strip None values so we don't nuke defaults on upsert
-    return {k: v for k, v in payload.items() if v is not None}
+    # 2026-09-08: DO NOT strip None values. PostgREST batch upsert
+    # requires uniform key sets across all rows in a POST array
+    # (PGRST102: "All object keys must match"). Keeping None values
+    # in is fine — column is nullable, None writes as null (correct
+    # for future games with no scores yet).
+    return payload
 
 
 def upsert_batch(payloads: list[dict], dry_run: bool) -> int:
