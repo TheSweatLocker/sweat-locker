@@ -208,6 +208,20 @@ export default function GameDetailV2({
   const [fetchedProps, setFetchedProps] = useState<any[]>([]);
   const [sourceRecords, setSourceRecords] = useState<Record<string, any>>({});
 
+  // 2026-09-08 server-controlled section toggles for the shared universal
+  // sections. sport='ALL' at the DB level so a single row hides across
+  // every sport; can override per-sport later by adding a specific row.
+  // Sport passed via `gamesSport` prop — falls through to 'ALL' when a
+  // sport-specific row is absent, per uiConfig.ts lookup order.
+  const _sport = (gamesSport || 'ALL').toUpperCase();
+  const showMoneyFlow      = useSectionEnabled(_sport, 'game_detail', 'money_flow',            true);
+  const showLineMovement   = useSectionEnabled(_sport, 'game_detail', 'line_movement',         true);
+  const showModelConsensus = useSectionEnabled(_sport, 'game_detail', 'model_consensus',       true);
+  const showExternalHandicappers = useSectionEnabled(_sport, 'game_detail', 'external_handicappers', true);
+  const showRecentSchedule = useSectionEnabled(_sport, 'game_detail', 'recent_schedule',       true);
+  const showSituationalRec = useSectionEnabled(_sport, 'game_detail', 'situational_records',   true);
+  const showTeamStats      = useSectionEnabled(_sport, 'game_detail', 'team_stats',            true);
+
   // Auto-fetch externals + props per-game when parent doesn't supply.
   useEffect(() => {
     let cancelled = false;
@@ -434,17 +448,21 @@ export default function GameDetailV2({
           </Section>
         )}
 
-        <Section title="Money Flow" hint="bets vs money · sharps vs public">
-          <MoneyFlow ctx={ctx} sport={gamesSport} />
-        </Section>
+        {showMoneyFlow && (
+          <Section title="Money Flow" hint="bets vs money · sharps vs public">
+            <MoneyFlow ctx={ctx} sport={gamesSport} />
+          </Section>
+        )}
 
-        <Section title="Line Movement" hint="opening → current">
-          <LineMovementStrip ctx={ctx} historicalOdds={historicalOdds} />
-        </Section>
+        {showLineMovement && (
+          <Section title="Line Movement" hint="opening → current">
+            <LineMovementStrip ctx={ctx} historicalOdds={historicalOdds} />
+          </Section>
+        )}
 
         {/* 2026-09-01: gate on any lens producing a value. Was showing
             empty "Model Consensus" header on thin UFC/NHL/FCS cards. */}
-        {hasAnyLensValue(ctx, gamesSport) && (
+        {showModelConsensus && hasAnyLensValue(ctx, gamesSport) && (
           <Section title="Model Consensus" hint="margin (H+ / A−)">
             <LensGrid ctx={ctx} gamesSport={gamesSport} />
           </Section>
@@ -453,7 +471,7 @@ export default function GameDetailV2({
         {/* 2026-09-01: gate on non-OC pick presence. Was rendering
             empty "No handicapper picks pulled yet" on most NHL/UFC/
             some NCAAF cards. */}
-        {(externalPicks || []).some((p: any) => p.source !== 'oddscrowd') && (
+        {showExternalHandicappers && (externalPicks || []).some((p: any) => p.source !== 'oddscrowd') && (
           <Section title="External Handicappers">
             <HandicappersRow picks={externalPicks} homeTeam={homeTeam} awayTeam={awayTeam} sport={gamesSport} records={sourceRecords} />
           </Section>
@@ -468,26 +486,32 @@ export default function GameDetailV2({
             + no H2H (pre-season / matview not refreshed). See
             project_rolling_rollup_architecture_901 for the wider
             rollup-tables architecture. */}
-        <Section title="Recent Schedule" hint="last 5 · ATS · O/U">
-          <RecentScheduleCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} />
-        </Section>
+        {showRecentSchedule && (
+          <Section title="Recent Schedule" hint="last 5 · ATS · O/U">
+            <RecentScheduleCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} />
+          </Section>
+        )}
 
         {/* 2026-09-01: Situational Records — reads team_situational_records
             matview. Sub-tabs Spread/Total/ML × 4 filter rows (Overall,
             L10, Home/Away, Fav/Dog). Hit-% color coding (>=58 green,
             <=42 red). See project_rolling_rollup_architecture_901. */}
-        <Section title="Situational Records" hint="records × market · hit-% color">
-          <SituationalCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
-        </Section>
+        {showSituationalRec && (
+          <Section title="Situational Records" hint="records × market · hit-% color">
+            <SituationalCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
+          </Section>
+        )}
 
         {/* 2026-09-01: Team Stats — reads team_stats_rolling matview.
             Offense/Defense sub-tabs, each stat row shows raw value +
             rank chip (quintile-colored). NCAAF-only content today; MLB/
             NFL/NBA/NCAAB/NHL follow-up ships. See
             project_rolling_rollup_architecture_901. */}
-        <Section title="Team Stats" hint="raw value + rank · ranks are FBS-only">
-          <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
-        </Section>
+        {showTeamStats && (
+          <Section title="Team Stats" hint="raw value + rank · ranks are FBS-only">
+            <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
+          </Section>
+        )}
 
         {/* 2026-08-23: Public Splits panel — renders ctx.splits_summary
             (populated by splits_v2_pipeline aggregator). Shows sources_present
