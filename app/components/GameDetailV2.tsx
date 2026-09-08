@@ -2874,8 +2874,14 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
 
 // ─── NCAAF ROSTERS (rich card matching Team Matchup density) ────────────
 function NCAAFRostersRichCard({ctx, homeTeam, awayTeam}: any) {
+  // Same section_key as NCAAFRostersCard — either variant hides together.
+  // Update: consider distinct section_keys ('rosters_rich' vs 'rosters')
+  // if you want to toggle them independently. For now, treated as one
+  // logical section with two render variants.
+  const isEnabled = useSectionEnabled('NCAAF', 'game_detail', 'rosters_continuity', true);
   const rpH = ctx?.home_returning_production;
   const rpA = ctx?.away_returning_production;
+  if (!isEnabled) return null;
   const olH = ctx?.home_ol_avg_wt; const olA = ctx?.away_ol_avg_wt;
   const clsH = ctx?.home_avg_class_year; const clsA = ctx?.away_avg_class_year;
   const olGapH = ctx?.ol_dl_weight_gap_home; const olGapA = ctx?.ol_dl_weight_gap_away;
@@ -2991,8 +2997,10 @@ function SportWeatherCard({ctx}: any) {
 
 // ─── NCAAF EFFICIENCY (renamed from SP+ — no provider name in user copy) ─
 function NCAAFEfficiencyCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NCAAF', 'game_detail', 'efficiency_ratings', true);
   const spHome = ctx?.home_sp_overall;
   const spAway = ctx?.away_sp_overall;
+  if (!isEnabled) return null;
   const spGap = ctx?.sp_gap;
   const projSpread = ctx?.projected_spread;
   if (spHome == null || spAway == null) return null;
@@ -3026,8 +3034,10 @@ function NCAAFEfficiencyCard({ctx, homeTeam, awayTeam}: any) {
 
 // ─── NCAAF ROSTERS & CONTINUITY (returning + physicality consolidated) ──
 function NCAAFRostersCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NCAAF', 'game_detail', 'rosters_continuity', true);
   const rpHome = ctx?.home_returning_production;
   const rpAway = ctx?.away_returning_production;
+  if (!isEnabled) return null;
   const olGapH = ctx?.ol_dl_weight_gap_home;
   const olGapA = ctx?.ol_dl_weight_gap_away;
   const classEdge = ctx?.class_year_edge_home;
@@ -3333,8 +3343,10 @@ function NFLJerryLockNote() {
 // projections (nfl_player_projections, 802 rows live per 2026-08-25) so
 // each starter shows projected fantasy pts + season Y/A when available.
 function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NFL', 'game_detail', 'qb_matchup', true);
   const [starters, setStarters] = useState<{home?: any; away?: any}>({});
   const [projections, setProjections] = useState<{home?: any; away?: any}>({});
+  if (!isEnabled) return null;
   React.useEffect(() => {
     const client = sb();
     if (!client || !homeTeam || !awayTeam) return;
@@ -3534,6 +3546,7 @@ function RankedStatRow({label, a, b, aRank, bRank, higherIsBetter = false, fmt}:
 
 // ─── NFL INJURIES (existing, extracted into its own component) ──────────
 function NFLInjuriesCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NFL', 'game_detail', 'injuries', true);
   const [injuries, setInjuries] = useState<{home: any[]; away: any[]}>({home: [], away: []});
   React.useEffect(() => {
     const client = sb();
@@ -3553,6 +3566,7 @@ function NFLInjuriesCard({ctx, homeTeam, awayTeam}: any) {
       }
     })();
   }, [homeTeam, awayTeam]);
+  if (!isEnabled) return null;
   if (injuries.home.length + injuries.away.length === 0) return null;
   return (
     <Section title="Injuries" hint="Out / Doubtful / Questionable">
@@ -3588,9 +3602,11 @@ function NFLInjuriesCard({ctx, homeTeam, awayTeam}: any) {
 // Weather chips REMOVED here; the shared SportWeatherCard renders them
 // as a proper section higher up.
 function NFLSituationalCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NFL', 'game_detail', 'situational', true);
   const tags = ctx?.cohort_tags || [];
   const rest = {home: ctx?.home_rest, away: ctx?.away_rest};
   const roof = ctx?.roof;
+  if (!isEnabled) return null;
   const div = ctx?.div_game;
   const restGap = (rest.home != null && rest.away != null && Math.abs(rest.home - rest.away) >= 3);
   const hasAny = div || roof || restGap || (tags && tags.length);
