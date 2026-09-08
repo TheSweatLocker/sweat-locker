@@ -583,7 +583,40 @@ def _compose_ufc(ufc_reads: list) -> list[dict]:
 # WRITE LAYER
 # ═══════════════════════════════════════════════════════════════════════
 
-def _publish(today: str, items: list[dict], dry_run: bool):
+def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False):
+    # 2026-09-09 PUBLISH LOCK.
+    # Sharp Card was being overwritten on every cron cycle (~9 hours of
+    # rewrites/day). Users bet based on 8am board, then 2pm cron shipped
+    # different picks — trust destroyed. Once the card is published for
+    # a given day, later crons skip the write. Odds/line updates still
+    # flow via primary_play + jerry_reads elsewhere; the SHARP CARD
+    # ITEMS themselves are what stay frozen for the user.
+    #
+    # Bypass with --force (manual admin correction) OR set env
+    # SHARP_CARD_ALLOW_REPUBLISH=1 (rare emergency).
+    allow_republish = force or os.environ.get('SHARP_CARD_ALLOW_REPUBLISH') == '1'
+    if not dry_run and not allow_republish:
+        try:
+            r_existing = requests.get(
+                f'{SB}/rest/v1/jerry_cache',
+                headers=H_READ,
+                params={'cache_key': f'eq.sharp_card_{today}',
+                        'select': 'fetched_at,data'},
+                timeout=10,
+            )
+            if r_existing.status_code == 200 and r_existing.json():
+                row = r_existing.json()[0]
+                existing_count = ((row.get('data') or {}).get('count') or 0)
+                # Only lock if existing card has real items (not an empty stub)
+                if existing_count > 0:
+                    print(f'  🔒 sharp_card_{today} already published '
+                          f'({existing_count} items @ {row["fetched_at"][:19]}) — '
+                          f'skipping republish. Use --force or SHARP_CARD_ALLOW_REPUBLISH=1 '
+                          f'to override.')
+                    return
+        except Exception as _e:
+            print(f'  ⚠ publish-lock check failed: {_e} — proceeding with write')
+
     payload = {
         'items': items,
         'count': len(items),
@@ -614,7 +647,7 @@ def _publish(today: str, items: list[dict], dry_run: bool):
         print(f'  ✗ publish failed {r.status_code}: {r.text[:200]}')
 
 
-def run(dry_run: bool = False):
+def run(dry_run: bool = False, force: bool = False):
     today = _today_et()
     print(f'== Generate Sharp Card · {today} ==')
 
@@ -694,11 +727,17 @@ def run(dry_run: bool = False):
         all_items = capped
         print(f'  cap applied: {pre} → {len(all_items)} (per-sport quotas + hard cap {SHARP_CARD_ITEM_CAP})')
 
-    _publish(today, all_items, dry_run)
+    _publish(today, all_items, dry_run, force=force)
     return 0
 
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--dry-run', action='store_true')
-    sys.exit(run(dry_run=ap.parse_args().dry_run))
+    ap.add_argument('--force', action='store_true',
+                    help='Bypass the publish lock — overwrites today\'s '
+                         'card even if already published. Reserved for '
+                         'manual admin correction of a bad card. Normal '
+                         'crons should NOT use this flag.')
+    args = ap.parse_args()
+    sys.exit(run(dry_run=args.dry_run, force=args.force))
