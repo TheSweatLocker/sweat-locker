@@ -341,6 +341,27 @@ def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
             except Exception:
                 pass  # snapshot is best-effort, don't break recompute if it fails
 
+    # 2026-09-09: auto-scrub jerry_reads after primary_play recompute.
+    # Root fix for user-reported badge/detail drift: when recompute changed
+    # primary_play (say Over 8.5 → PHL -1.5) without a following scrub,
+    # jerry_reads.call_* stayed pointing at the OLD pick. Games tab badges
+    # read jerry_reads, game detail top block reads primary_play → user
+    # saw "PHL -1.5" on the badge while game detail argued Over 8.5.
+    # Now the two are guaranteed to stay in sync after any recompute run.
+    # Only fires when actual changes were written (patched > 0, not dry-run).
+    if not dry_run and patched > 0:
+        try:
+            import subprocess
+            print(f'\n  → auto-syncing jerry_reads via jerry_pick_scrub (drift fix)')
+            r = subprocess.run(['python', 'jerry_pick_scrub.py', '--sport', 'MLB'],
+                               capture_output=True, text=True, timeout=120)
+            for line in (r.stdout or '').splitlines()[-5:]:
+                print(f'    {line}')
+            if r.returncode != 0:
+                print(f'    ⚠ scrub exit {r.returncode}')
+        except Exception as e:
+            print(f'    ⚠ auto-scrub failed: {e} (jerry_reads may be out of sync)')
+
     print(f'\n{"[DRY] " if dry_run else "✓ "}patched={patched}/{len(ctxs)}  '
           f'primary_play changed={changed_pp}  nrfi_ensemble changed={changed_ens}')
     total = engine_counts['ensemble_v2'] + engine_counts['legacy_fallback']
