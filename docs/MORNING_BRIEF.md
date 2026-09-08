@@ -80,15 +80,55 @@ Grep-check the log for repeat offenders that we've fixed:
 
 ## One-shot command to run every morning
 
-Save as `docs/scripts/morning_brief.py` (TODO), invoked as:
+Save as `docs/scripts/morning_brief.py` (TODO — spec below), invoked as:
 
 ```
 python docs/scripts/morning_brief.py --date yesterday
 ```
 
-Output should print all Section 1 + 2 + 3 numbers, flag any Section 5 regressions, and exit non-zero if any grading gap ≥ 20%. This turns the "audit every morning" ask into a `python morning_brief.py` habit.
+**Exit codes:**
+- 0 → all green (all sports ≥80% graded, no regressions)
+- 1 → grading gap warning (some sport <80% graded but no data loss)
+- 2 → hard failure (missing overnight jobs, POTD ungraded, sharp card record stale)
 
-**Until that script ships (queued for 9/8), pull each section manually via the Python queries in the audit template at `mlb_pipeline/_audit_morning_brief_template.py`.**
+**Auto-fire triggers:**
+- End of overnight workflow (`.github/workflows/mlb_grade_overnight.yml`) — script runs, exits non-zero triggers email
+- Cron 8am ET daily as backstop
+- Any user tap on Steam Room "refresh" button (client-side calls `morning_health_check` RPC)
+
+## Spec for `morning_brief.py`
+
+```python
+"""Single-command morning verification. Returns nonzero on grading gap
+or missing overnight jobs. Print output structured for reading + programmatic
+consumption (--json flag emits JSON for slack/email piping).
+
+Sections in order:
+1. Grading completeness (per sport, per table) — MUST be ≥80%
+2. Pick results (Jerry picks by tier, LR-endorsed subset)
+3. Steam Room P/L (from daily_surface_records)
+4. Today's pipeline health (writes for today's slate)
+5. Known regression grep (Peterson orphans, MoneyFlow field, etc.)
+
+Usage:
+    python docs/scripts/morning_brief.py                    # yesterday, human
+    python docs/scripts/morning_brief.py --date 2026-09-07
+    python docs/scripts/morning_brief.py --json             # for automation
+    python docs/scripts/morning_brief.py --fix              # attempt auto-repair
+"""
+```
+
+**Sports to include (as of 9/8):** MLB, NCAAF, NFL, and — when in-season — NBA, NHL, NCAAB, UFC. Script should read sport list from `sport_registry` (single source of truth per [[project_faq_sport_registry_source_906]]).
+
+## The priority stack driving this brief
+
+Per [[project_data_infrastructure_priorities_908]]:
+
+1. **LR for all sports** — currently only MLB fires reliably. Cross-sport LR is the highest-EV lever.
+2. **Grading for all sports** — MLB done, NCAAF broken (odds-pull date bug), NFL/NBA/NHL/NCAAB/UFC need audits.
+3. **Daily routine automation** — this brief becoming a one-command green-check.
+
+Until all three are solid, nothing else ships. See the memory for concrete sequencing.
 
 ---
 
