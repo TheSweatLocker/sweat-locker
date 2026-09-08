@@ -153,8 +153,15 @@ def _fold_name(name: str) -> str:
     }
     n = _NCAAF_ALIASES.get(n, n)
     # Strip mascot suffix words — order matters (multi-word first).
-    _MASCOTS = ['delta devils', 'red raiders', 'red wolves', 'blue devils',
-                'golden bears', 'crimson tide', 'green wave', 'yellow jackets',
+    # 2026-09-08 GAP EXPANSION: added remaining CFBD/odds-source mascot
+    # suffixes discovered during 9/6 backfill audit. Each unresolved
+    # game's mascot suffix now maps here. Multi-word entries MUST be
+    # listed before their single-word tails so the loop matches longest
+    # first (e.g. "ragin cajuns" before "cajuns").
+    _MASCOTS = ['ragin cajuns', 'delta devils', 'red raiders', 'red wolves',
+                'blue devils', 'blue raiders', 'golden bears', 'golden eagles',
+                'golden hurricane', 'golden flashes', 'golden lions',
+                'crimson tide', 'green wave', 'yellow jackets',
                 'mountaineers', 'commodores', 'volunteers', 'razorbacks',
                 'gamecocks', 'longhorns', 'bulldogs', 'wildcats', 'cardinals',
                 'panthers', 'tigers', 'bearcats', 'buckeyes', 'wolverines',
@@ -163,7 +170,23 @@ def _fold_name(name: str) -> str:
                 'trojans', 'bruins', 'aztecs', 'rebels', 'runnin rebels',
                 'lobos', 'aggies', 'mustangs', 'horned frogs', 'red hawks',
                 'chippewas', 'eagles', 'hornets', 'bison', 'rams', 'lions',
-                'seahawks', 'hurricanes', 'gators', 'seminoles', 'canes']
+                'seahawks', 'hurricanes', 'gators', 'seminoles', 'canes',
+                # 2026-09-08 expansions from 9/6 backfill audit
+                'trailblazers', 'lakers', 'keydets', 'cajuns', 'colonels',
+                'penguins', 'sharks', 'flames', 'roadrunners', 'phoenix',
+                'coyotes', 'thundering herd', 'chanticleers', 'monarchs',
+                'privateers', 'salukis', 'redbirds', 'redhawks', 'jaguars',
+                'zips', 'minutemen', 'islanders', 'racers', 'sycamores',
+                'leathernecks', 'antelopes', 'grizzlies', 'thunderbirds',
+                'vandals', 'broncos', 'wolfpack', 'orange', 'catamounts',
+                'mocs', 'moccasins', 'toreros', 'flyers', 'blazers',
+                'boilermakers', 'hoosiers', 'terrapins', 'terps', 'irish',
+                'blue hens', 'aggies', 'billikens', 'greyhounds',
+                'thoroughbreds', 'braves', 'warriors', 'knights', 'raiders',
+                'spartans', 'saints', 'pirates', 'bulls', 'bears',
+                'redwolves', 'redwolves', 'catamounts', 'pioneers',
+                'stallions', 'raptors', 'ospreys', 'condors', 'kangaroos',
+                'sooners', 'cowboys', 'cyclones', 'jayhawks', 'hurricanes']
     for suf in _MASCOTS:
         if n.endswith(' ' + suf):
             n = n[:-(len(suf)+1)].strip()
