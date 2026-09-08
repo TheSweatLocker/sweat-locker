@@ -658,6 +658,24 @@ def pick_prop_lean() -> list[dict]:
     return _pick_prop_tier('LEAN')
 
 
+def pick_prop_strong() -> list[dict]:
+    """STRONG-tier prop rollup — between PRIME and LEAN.
+
+    Legacy 'prop' surface bundles PRIME+STRONG. Splitting STRONG out
+    so Receipts can show tier-by-tier without recomputing.
+    """
+    return _pick_prop_tier('STRONG')
+
+
+def pick_prop_prime() -> list[dict]:
+    """PRIME-tier-only prop rollup — the sharpest bucket.
+
+    Complements legacy 'prop' surface (PRIME+STRONG combined) with a
+    pure PRIME cut. Lets Receipts show 'PRIME props' as its own line.
+    """
+    return _pick_prop_tier('PRIME')
+
+
 def pick_prop_coverage() -> list[dict]:
     """COVERAGE-tier prop rollup — separate surface from PRIME/LEAN."""
     return _pick_prop_tier('COVERAGE')
@@ -672,8 +690,11 @@ SURFACES = {
     'potd':   pick_potd,
     'dawg':   pick_dawg,   # 2026-09-02: added per audit finding
     'ncaaf_sides': pick_ncaaf_sides,
-    # 2026-09-09: per-tier prop rollups so Receipts can show LEAN/COVERAGE
-    # track records separately from PRIME (which is under 'prop').
+    # 2026-09-09: per-tier prop rollups so Receipts can show each tier
+    # separately. Legacy 'prop' surface bundles PRIME+STRONG; new surfaces
+    # split them out so users see tier-by-tier records.
+    'prop_prime':    pick_prop_prime,
+    'prop_strong':   pick_prop_strong,
     'prop_lean':     pick_prop_lean,
     'prop_coverage': pick_prop_coverage,
     # 2026-09-09 UNIFORM: <sport>_sides surface for every sport.
