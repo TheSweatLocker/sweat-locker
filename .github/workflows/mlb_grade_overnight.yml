@@ -117,16 +117,18 @@ jobs:
 
       # 3b. Morning brief verification — runs full 5-section audit + exits
       # non-zero if any grading gap or regression detected. Wired 2026-09-08.
-      # Non-fatal (continue-on-error) so nothing else is blocked, but the
-      # output is captured for review + exit code surfaces to job status.
-      - name: Morning brief verification
+      # 2026-09-08 upgrade: --fix flag added so overnight auto-heals gaps
+      # by re-running graders + aggregators. Idempotent; safe unattended.
+      # continue-on-error kept so the workflow itself never breaks on this
+      # step. Auto-repair runs first, THEN morning brief re-verifies clean.
+      - name: Morning brief verification + auto-repair
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           PYTHONIOENCODING: utf-8
         run: |
-          python docs/scripts/morning_brief.py || echo "morning brief flagged gaps (non-fatal — see output above)"
+          python docs/scripts/morning_brief.py --fix || echo "morning brief flagged gaps AFTER auto-repair (see output)"
 
       # 4. Recompute surface_records (mtd / d7 / d30 / epoch / lifetime rollups)
       #    so the record chips + hero P/L update overnight.

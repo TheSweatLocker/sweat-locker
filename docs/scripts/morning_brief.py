@@ -349,6 +349,64 @@ def compute_exit_code(s1: dict, s5: dict) -> int:
     return 0
 
 
+def auto_repair(s1: dict, target_date: str, sports: list) -> list:
+    """Attempt to auto-heal gaps detected in Section 1.
+
+    2026-09-08 shipped as --fix mode. Only runs IDEMPOTENT graders +
+    aggregators — never mutates or deletes data. Order matters:
+      1. Per-sport grade_jerry_reads (for sports with gaps)
+      2. grade_potd.py (if POTD ungraded)
+      3. aggregate_daily_records.py (if daily_surface_records missing)
+
+    Each fix attempt logs what was tried + the fresh exit status.
+    Returns a list of {action, status, msg} dicts for downstream display.
+    """
+    import subprocess
+    from pathlib import Path
+    mlb_dir = Path(__file__).resolve().parent.parent.parent / 'mlb_pipeline'
+    actions = []
+
+    def _run(name: str, cmd: list) -> dict:
+        try:
+            r = subprocess.run(cmd, cwd=str(mlb_dir), capture_output=True,
+                                text=True, timeout=180)
+            tail = (r.stdout.strip().splitlines() or ['(no output)'])[-1]
+            status = 'ok' if r.returncode == 0 else f'exit {r.returncode}'
+            return {'action': name, 'status': status, 'msg': tail[:140]}
+        except subprocess.TimeoutExpired:
+            return {'action': name, 'status': 'timeout', 'msg': '180s cap hit'}
+        except Exception as e:
+            return {'action': name, 'status': 'error', 'msg': str(e)[:140]}
+
+    # 1. Sport-specific graders where coverage < 80%
+    for sport in sports:
+        s = s1.get(sport, {})
+        if s.get('total', 0) == 0: continue
+        pct = s.get('pct', 100)
+        if pct < 80:
+            actions.append(_run(
+                f'grade_jerry_reads --sport {sport}',
+                ['python', 'grade_jerry_reads.py', '--sport', sport, '--date', target_date],
+            ))
+
+    # 2. POTD grader if ungraded
+    potd_status = s1.get('_potd', {}).get('status')
+    if potd_status == 'ungraded':
+        actions.append(_run(
+            'grade_potd --backfill 3',
+            ['python', 'grade_potd.py', '--backfill', '3'],
+        ))
+
+    # 3. Daily surface records if missing
+    if s1.get('_daily_surface_records', {}).get('status') == 'fail':
+        actions.append(_run(
+            'aggregate_daily_records',
+            ['python', 'aggregate_daily_records.py', '--date', target_date],
+        ))
+
+    return actions
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--date', help='YYYY-MM-DD (default: yesterday ET)')
@@ -377,10 +435,28 @@ def main():
         print(render_human(target, today, sports, s1, s2, s3, s4, s5))
 
     if args.fix:
-        # TODO: shell out to grade_jerry_reads / grade_potd / aggregate_daily_records
-        # for each sport with <80% coverage. Kept as TODO to avoid destructive
-        # ops on first ship — user opts in explicitly via --fix.
-        print('  --fix not yet implemented; run graders manually per Section 1 failures')
+        # Auto-repair: run idempotent graders + aggregators for detected gaps.
+        # Never mutates or deletes data. Safe to call unattended.
+        actions = auto_repair(s1, target, sports)
+        if actions:
+            print('\n┌─ AUTO-REPAIR')
+            for a in actions:
+                mark = '✓' if a['status'] == 'ok' else '✗'
+                print(f'│   {mark} {a["action"]}: {a["status"]} — {a["msg"]}')
+            print('└─ re-running audit to see if gaps closed...\n')
+            # Re-run sections 1 + 5 to reflect any repairs
+            s1 = section_1_grading(target, sports)
+            s5 = section_5_regressions(target, today)
+            if args.json:
+                print(json.dumps({
+                    'target_date': target, 'today': today, 'sports': sports,
+                    'grading_post_fix': s1, 'regressions_post_fix': s5,
+                    'fix_actions': actions,
+                }, indent=2, default=str))
+            else:
+                print(render_human(target, today, sports, s1, s2, s3, s4, s5))
+        else:
+            print('\n(--fix: no repair actions matched — nothing to auto-heal)')
 
     exit_code = compute_exit_code(s1, s5)
     if exit_code:
