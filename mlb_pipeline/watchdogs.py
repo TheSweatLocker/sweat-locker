@@ -91,8 +91,13 @@ def check_ladder_empty() -> Optional[dict]:
 
 
 def check_ensemble_engine_share() -> Optional[dict]:
-    """Alert if <70% of today's picks came from ensemble_v2 (rest fell back
-    to legacy). Was 47% on 8/18 — the bug that spawned the recompute fix."""
+    """Alert if today's picks fell back to legacy_compute_primary_play.
+    Was 47% on 8/18 — the bug that spawned the recompute fix.
+
+    2026-09-09: was mislabeling `lr_v1` (LR OVERRIDE — newer than
+    ensemble_v2) as legacy fallback. Real check should catch ONLY the
+    legacy fallback path. Modern engines (ensemble_v2, lr_v1) are all
+    healthy. Legacy fallback is the leak we care about."""
     today = _et_today()
     r = requests.get(f'{SB}/rest/v1/mlb_game_context',
         params={'game_date': f'eq.{today}', 'select': 'primary_play'},
@@ -100,17 +105,26 @@ def check_ensemble_engine_share() -> Optional[dict]:
     ctx = r.json() if r.status_code == 200 else []
     if not isinstance(ctx, list) or not ctx:
         return None  # off day, not a problem
-    ens = sum(1 for g in ctx if (g.get('primary_play') or {}).get('_engine') == 'ensemble_v2')
+    MODERN = {'ensemble_v2', 'lr_v1', 'lr_v2'}  # add future overrides here
+    modern = sum(1 for g in ctx if (g.get('primary_play') or {}).get('_engine') in MODERN)
+    legacy = sum(1 for g in ctx
+                 if (g.get('primary_play') or {}).get('_engine') == 'legacy_compute_primary_play')
+    missing = sum(1 for g in ctx if not (g.get('primary_play') or {}).get('_engine'))
     total = len(ctx)
-    pct = 100.0 * ens / total if total else 0
-    if pct >= 70:
+    modern_pct = 100.0 * modern / total if total else 0
+    # Only alert if MORE than 20% fell to legacy or missing entirely
+    unhealthy = legacy + missing
+    if unhealthy == 0 or (100.0 * unhealthy / total) < 20:
         return None
     return {
         'check_name': 'ensemble_engine_share',
-        'severity': 'CRITICAL' if pct < 50 else 'WARNING',
-        'message': f'Only {pct:.0f}% of today\'s picks ran ensemble_v2 (expected ≥90%). '
-                   f'{total - ens}/{total} fell back to legacy.',
-        'detail': {'today': today, 'ensemble_count': ens, 'total': total, 'pct': round(pct, 1)},
+        'severity': 'CRITICAL' if modern_pct < 50 else 'WARNING',
+        'message': (f'{unhealthy}/{total} today\'s picks on legacy/missing engine '
+                    f'(expected ≥80% modern). Modern={modern} '
+                    f'(ensemble_v2/lr_v1), legacy={legacy}, missing={missing}.'),
+        'detail': {'today': today, 'modern_count': modern, 'legacy_count': legacy,
+                   'missing_count': missing, 'total': total,
+                   'modern_pct': round(modern_pct, 1)},
     }
 
 
@@ -142,13 +156,22 @@ def check_primary_play_stale() -> Optional[dict]:
     # fired. Prior version flagged 7/15 stale tonight, all with _mc_dissent
     # or _oc_flipped flags in DB — false alarms because the gates ran on the
     # persist side but not the live-score side.
+    #
+    # 2026-09-09: same false-alarm class for LR override. If persisted
+    # _engine == 'lr_v1', the DB row is the OVERRIDE output; live-score
+    # produces raw ensemble_v2 and doesn't match. Skip stale check on
+    # lr_v1/lr_v2 games — they represent LR intentionally overriding, not
+    # a stale ensemble result. project_pipeline_overhaul_909 followup.
     try:
         from defensive_gates import apply_all_defensive_gates
     except Exception:
         apply_all_defensive_gates = None
+    LR_OVERRIDE_ENGINES = {'lr_v1', 'lr_v2'}
     stale = []
     for g in ctx:
         persisted = g.get('primary_play') or {}
+        if persisted.get('_engine') in LR_OVERRIDE_ENGINES:
+            continue  # LR override is authoritative — not stale ensemble_v2
         try:
             live = score_game('MLB', g)
         except Exception:
