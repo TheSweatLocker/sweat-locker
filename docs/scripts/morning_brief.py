@@ -273,6 +273,31 @@ def section_5_regressions(target_date: str, today: str) -> dict:
             'msg': f'{mismatch} NCAAF jerry_reads have game_date != game_id embedded date — generator regressed to today_et()',
         })
 
+    # 3. 2026-09-08 signal coverage: flag if a sport's props have >50%
+    # rows with empty `_lr_tier_raw` — that's the NFL prop signal gap
+    # (project_nfl_prop_signal_gap_908) we're watching for regression
+    # or resolution. Only checks sports w/ >=10 props for the target date
+    # to avoid noise on offday counts.
+    for sport, table in [('MLB', 'mlb_pipeline_props'),
+                          ('NFL', 'nfl_pipeline_props')]:
+        rows = _rows(table, {'game_date': f'eq.{target_date}',
+                              'select': 'signals', 'limit': '200'})
+        if len(rows) < 10: continue
+        empty_lr = 0
+        for r in rows:
+            sig = r.get('signals') or {}
+            if isinstance(sig, str):
+                try: sig = json.loads(sig)
+                except (json.JSONDecodeError, TypeError): sig = {}
+            if not sig.get('_lr_tier_raw'): empty_lr += 1
+        pct_empty = round(100 * empty_lr / len(rows))
+        if pct_empty > 50:
+            regressions.append({
+                'name': f'{sport.lower()}_lr_signal_gap',
+                'severity': 'medium',
+                'msg': f'{sport}: {empty_lr}/{len(rows)} ({pct_empty}%) props have empty _lr_tier_raw — signal pipeline may be regressing',
+            })
+
     return {'count': len(regressions), 'items': regressions}
 
 
@@ -342,10 +367,11 @@ def compute_exit_code(s1: dict, s5: dict) -> int:
     if s1.get('_potd', {}).get('status') not in ('graded', 'no-row'): return 2
     if s1.get('_daily_surface_records', {}).get('status') == 'fail': return 2
     if any(i.get('severity') == 'high' for i in s5.get('items', [])): return 2
-    # Soft warn if any sport <80% graded
+    # Soft warn: any sport <80% graded OR medium-severity regression
     for sport, s in s1.items():
         if sport.startswith('_'): continue
         if s.get('total', 0) > 0 and s.get('pct', 100) < 80: return 1
+    if any(i.get('severity') == 'medium' for i in s5.get('items', [])): return 1
     return 0
 
 
