@@ -1385,7 +1385,13 @@ FETCHERS = {
     'oddscrowd': fetch_oddscrowd,
     'scoresandodds': fetch_scoresandodds,
     'sbr': fetch_sbr,
-    'betfirm': fetch_betfirm,
+    # 2026-09-08 DISABLED: betfirm site added 403 anti-scraping between
+    # 8/31 and 9/8. Last successful pull 2026-08-31; every attempt since
+    # returned 403. Not worth playwright/rotating-UA workaround for
+    # ~51 picks/week volume (10% of scoresandodds). Re-enable by
+    # restoring the entry + confirming site allows scraping again.
+    # See watchdog: sharp_source_dropped alert 9/8.
+    # 'betfirm': fetch_betfirm,
     'tonyspicks': fetch_tonyspicks,
 }
 
