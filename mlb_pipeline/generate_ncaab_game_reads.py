@@ -331,10 +331,17 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
             skipped += 1
 
         # 2026-08-25 Phase 2 dual-write. Structured pick to jerry_reads.
+        # 2026-09-08 GAME_DATE FIX: same fix as generate_ncaaf_game_reads —
+        # use ctx.game_date (game's actual scheduled date) not today_et()
+        # (run date). Prevents jerry_reads rows from stamping the day the
+        # generator ran instead of the day the game plays. Grader looks up
+        # by actual game date; if we stamp today, grader misses everything
+        # generated ahead of the game day. See project_ncaaf_grading_gap_908.
         parsed = parse_synthesis(narrative)
         if parsed.get('short_read'):
+            gd = ctx.get('game_date') or today_et()
             upsert_jerry_read(
-                sport='NCAAB', game_id=ctx['game_id'], game_date=today_et(),
+                sport='NCAAB', game_id=ctx['game_id'], game_date=gd,
                 struct=struct, parsed=parsed, narrative=narrative,
                 prompt_version='ncaab_game_read_v2_2026-08-25',
             )

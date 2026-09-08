@@ -432,10 +432,20 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
 
         # 2026-08-25 Phase 2 dual-write. Structured pick to jerry_reads so
         # sweat card / fallback resolver can rank NCAAF alongside MLB + NFL.
+        # 2026-09-08 GAME_DATE FIX: use ctx.game_date (game's actual date)
+        # not today_et() (run date). Prior code stamped every jerry_read
+        # with the day the synth RAN, not the day the GAME PLAYED. For
+        # any weekday run (Tue/Wed/Fri) that generated reads for the
+        # upcoming Sat slate, jerry_reads rows landed with game_date =
+        # weekday. The grader looks up game_date = actual game day →
+        # never finds those rows → 55/70 Sat games permanently ungraded
+        # (see project_ncaaf_grading_gap_908). Fix: use the game's own
+        # scheduled date so grader can find it.
         parsed = parse_synthesis(narrative)
         if parsed.get('short_read'):
+            gd = ctx.get('game_date') or today_et()
             upsert_jerry_read(
-                sport='NCAAF', game_id=gid, game_date=today_et(),
+                sport='NCAAF', game_id=gid, game_date=gd,
                 struct=struct, parsed=parsed, narrative=narrative,
                 prompt_version='ncaaf_game_read_v2_2026-08-25',
             )
