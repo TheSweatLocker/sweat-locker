@@ -1022,6 +1022,39 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # + project_lr_totals_investigation_908.
     if sport == 'NFL':
         pp = apply_nfl_total_lr_override(pp, ctx)
+
+    # 2026-09-09: BACKFILL LR SHADOWS unconditionally. Root fix for the
+    # "3/15 games missing LR shadow" bug — LR was only writing shadow
+    # when it overrode a market. Games where LR *would* fire but wasn't
+    # triggered (because the ensemble already picked the market LR
+    # wanted, or because LR was on a different market than the pick)
+    # ended up with no shadow at all → downstream gates (POTD LR check,
+    # Sharp Card LR-conflict, watchdogs) silently no-op'd.
+    #
+    # Fix: after all override paths run, compute both ML and TOTAL LR
+    # predictions and stamp them onto pp if not already present. This
+    # is idempotent (checks `is None`) and only fills gaps, never
+    # overwrites live override output.
+    if isinstance(pp, dict):
+        try:
+            if sport in ('MLB', 'NFL', 'NCAAF') and pp.get('_lr_ml_shadow') is None:
+                _map = {'MLB': _LR_MODEL_MLB_ML, 'NFL': _LR_MODEL_NFL_ML,
+                        'NCAAF': _LR_MODEL_NCAAF_ML}
+                _model = _map.get(sport)
+                if _model is not None:
+                    _pred = _lr_predict_ml(ctx, model=_model)
+                    if _pred is not None:
+                        pp['_lr_ml_shadow'] = _pred
+        except Exception:
+            pass
+        try:
+            if sport == 'MLB' and pp.get('_lr_total_shadow') is None and _LR_MODEL_MLB_TOTAL is not None:
+                _pred = _lr_predict_total(ctx, model=_LR_MODEL_MLB_TOTAL)
+                if _pred is not None:
+                    pp['_lr_total_shadow'] = _pred
+        except Exception:
+            pass
+
     # 2026-09-03 BADGE-CONFLICT GATES (badge audit fixes #1 + #2):
     # Silent contradictions between chips on the same game card.
     # These gates catch pipeline-side contradictions BEFORE they render.
