@@ -76,6 +76,129 @@ def _conviction_tier(conv: int) -> str:
     return "lean"
 
 
+# 2026-09-09 POTD SOURCE EXPANSION — user directive from surface walkthrough.
+# Prior behavior: only considered jerry_reads (LLM narrative conviction,
+# capped 40-68 many days). Missed PRIMARY_PLAY (real resolved pick from
+# ensemble + LR override, conv 76+) AND all props entirely — POTD couldn't
+# select a prop even if it was the top-conviction play on the slate.
+# New: pool candidates from THREE sources per day, apply same threshold +
+# LR + juice gates on the merged set.
+PROP_TABLE_BY_SPORT = {
+    'MLB': 'mlb_pipeline_props',
+    'NFL': 'nfl_pipeline_props',
+}
+
+
+def _load_primary_play_candidates(gd: str, sports: list) -> list:
+    """Return primary_play from each sport's game_context as pseudo-jerry_reads.
+
+    Emits candidates with fields matching jerry_reads schema (sport, game_id,
+    call_market, call_side, call_line, conviction, short_read, call_text)
+    so the downstream threshold + gate pipeline can process them uniformly.
+    Only surfaces PRIME + STRONG plays; LEAN not POTD-worthy.
+    """
+    out = []
+    for sport in sports:
+        ctx_table = CONTEXT_TABLE_BY_SPORT.get(sport)
+        if not ctx_table: continue
+        try:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/{ctx_table}",
+                headers=H_READ,
+                params={"game_date": f"eq.{gd}",
+                        "primary_play": "not.is.null",
+                        "select": "game_id,primary_play,home_team,away_team"},
+                timeout=15,
+            )
+            rows = r.json() if r.status_code == 200 else []
+        except Exception as e:
+            print(f"  ⚠ {sport} primary_play load failed: {e}")
+            continue
+        for row in rows:
+            pp = row.get('primary_play') or {}
+            if isinstance(pp, str):
+                try: pp = json.loads(pp)
+                except Exception: pp = {}
+            if not isinstance(pp, dict): continue
+            tier = str(pp.get('tier') or '').upper()
+            if tier not in ('PRIME', 'STRONG'): continue
+            conv = int(pp.get('conviction') or 0)
+            side = str(pp.get('side') or '').upper()
+            market = str(pp.get('type') or pp.get('market') or '').lower()
+            label = pp.get('label') or ''
+            out.append({
+                'sport': sport,
+                'game_id': row['game_id'],
+                'call_market': market,
+                'call_side': side,
+                'call_line': pp.get('line'),
+                'conviction': conv,
+                'call_text': label,
+                'short_read': pp.get('sub') or pp.get('audit_note') or '',
+                'long_read': '',
+                'generated_at': None,
+                '_source': 'primary_play',
+            })
+    return out
+
+
+def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
+    """Return top PRIME props (MLB + NFL) as POTD candidates.
+
+    Props are typically higher-variance than sides/totals, so require a
+    higher conviction floor (default 80) to be POTD-eligible. Same LR gate
+    later — props without _lr_ml_shadow pass through, but the refit_conviction
+    field acts as a proxy quality check.
+    """
+    out = []
+    for sport, tbl in PROP_TABLE_BY_SPORT.items():
+        try:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/{tbl}",
+                headers=H_READ,
+                params={"game_date": f"eq.{gd}",
+                        "tier": "eq.PRIME",
+                        "select": "game_id,player_name,prop_type,direction,prop_line,"
+                                  "book_over_odds,book_under_odds,conviction,refit_conviction,matchup",
+                        "order": "conviction.desc",
+                        "limit": "10"},
+                timeout=15,
+            )
+            rows = r.json() if r.status_code == 200 else []
+        except Exception as e:
+            print(f"  ⚠ {sport} prop candidates load failed: {e}")
+            continue
+        for row in rows:
+            conv = int(row.get('conviction') or 0)
+            refit = row.get('refit_conviction')
+            # Prefer refit when present — it's the calibrated probability
+            effective_conv = int(refit) if refit is not None else conv
+            if effective_conv < min_conv: continue
+            direction = str(row.get('direction') or '').upper()
+            odds = row.get('book_over_odds') if direction == 'OVER' else row.get('book_under_odds')
+            call_text = f"{row.get('player_name','?')} {direction.title()} {row.get('prop_line','?')} {row.get('prop_type','')}"
+            out.append({
+                'sport': sport,
+                'game_id': row['game_id'],
+                'call_market': 'prop',
+                'call_side': direction,
+                'call_line': row.get('prop_line'),
+                'conviction': effective_conv,
+                'call_text': call_text,
+                'short_read': f"{row.get('prop_type','')} {direction.lower()} · conv {effective_conv}",
+                'long_read': '',
+                'generated_at': None,
+                '_prop_meta': {
+                    'player_name': row.get('player_name'),
+                    'prop_type': row.get('prop_type'),
+                    'odds': odds,
+                    'matchup': row.get('matchup'),
+                },
+                '_source': 'top_prop',
+            })
+    return out
+
+
 def run(game_date: str | None = None, threshold: int = 70,
         dry_run: bool = False, force: bool = False) -> None:
     gd = game_date or today_et()
@@ -139,6 +262,18 @@ def run(game_date: str | None = None, threshold: int = 70,
     )
     reads = r.json() if r.status_code == 200 else []
     print(f"  {len(reads)} jerry_reads on the slate")
+
+    # 2026-09-09: expand candidate pool with primary_play (real resolved
+    # pick post ensemble+LR override) + top PRIME props. Prior version
+    # limited POTD to jerry_reads narrative conviction which capped at
+    # 40-68 many days, missing PRIME plays that had 76+ conviction
+    # elsewhere in the pipeline.
+    primary_candidates = _load_primary_play_candidates(gd, POTD_SPORTS)
+    prop_candidates = _load_top_prop_candidates(gd, min_conv=80)
+    print(f"  + {len(primary_candidates)} primary_play candidates (PRIME/STRONG across sports)")
+    print(f"  + {len(prop_candidates)} top PRIME prop candidates (conv >= 80)")
+    reads = list(reads) + primary_candidates + prop_candidates
+
     if not reads:
         print("  ⚠ no reads — POTD unchanged (falls back to whatever play_of_day picked)")
         return
@@ -149,6 +284,10 @@ def run(game_date: str | None = None, threshold: int = 70,
     eligible = [r for r in reads
                 if (r.get("conviction") or 0) >= threshold
                 and (r.get("call_market") or "").lower() not in ("pass", "lean")]
+    # Sort by conviction desc so downstream juice/LR gates still see the
+    # best candidate first (jerry_reads was already sorted; merged list
+    # needs re-sort).
+    eligible.sort(key=lambda r: -int(r.get("conviction") or 0))
     if not eligible:
         print(f"  ⚠ no Jerry read at conviction >= {threshold} — Jerry passing on POTD today")
         _write_no_play(gd, dry_run, reads)
@@ -359,8 +498,9 @@ def run(game_date: str | None = None, threshold: int = 70,
             call = f"{team} RL{line_str}"
 
     payload_data = {
-        "sport": "MLB",
+        "sport": winner_sport,  # 2026-09-09: was hardcoded 'MLB'
         "matchup": matchup_str,
+        "_source": winner.get('_source', 'jerry_reads'),  # 2026-09-09 source tracking
         "game": {
             "away_team": ctx["away_team"],
             "home_team": ctx["home_team"],
