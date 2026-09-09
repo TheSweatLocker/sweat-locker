@@ -4034,10 +4034,16 @@ def upsert_props(props):
     all_keys = set()
     for p in props:
         all_keys.update(p.keys())
+    # 2026-09-08 NOT-NULL-safe defaults. `signals` has NOT NULL constraint
+    # on mlb_pipeline_props (23502 errors in Postgres log). Any prop dict
+    # built without a signals key gets None → fails constraint. Default to
+    # {} so the write succeeds; downstream reads treat empty dict same as
+    # no-signals. Same guard for any other columns known NOT NULL.
+    _NOT_NULL_DEFAULTS = {'signals': {}}
     for p in props:
         for k in all_keys:
             if k not in p:
-                p[k] = None
+                p[k] = _NOT_NULL_DEFAULTS.get(k, None)
     # 2026-08-25: cross-run dedup. In-Python dedup above only handles
     # WITHIN a batch — same pipeline invocation. Cross-invocation
     # duplicates (16:17 run + 19:32 run + 20:29 run today all inserted

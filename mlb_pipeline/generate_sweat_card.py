@@ -212,10 +212,11 @@ def fetch_yesterday_recap():
     yesterday = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     recap = {"date": yesterday}
 
-    # Dawg result (daily_dawg keeps result_status after resolve)
+    # Dawg result — daily_dawg has `result` column (not result_status).
+    # 2026-09-08 col-name fix (was 42703-ing every card build).
     dawg_rows = sb_get("daily_dawg", {
         "game_date": f"eq.{yesterday}",
-        "select": "team,matchup,result_status,tier",
+        "select": "team,matchup,result,tier",
     })
     if dawg_rows:
         recap["dawg"] = dawg_rows[0]
