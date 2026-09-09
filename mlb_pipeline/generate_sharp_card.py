@@ -251,40 +251,16 @@ def _fetch_all(today: str) -> dict:
                                     'book_over_odds,book_under_odds,game_id,signals',
                                     'game_date': f'eq.{today}',
                                     'tier': 'in.(PRIME,STRONG,LEAN)'})
-    # 2026-09-09 DEEP LOCK. Overlay prop_pick_snapshots values (source of
-    # truth once locked) on top of live mlb_pipeline_props. Snapshots are
-    # first-write-wins (Prefer: resolution=ignore-duplicates in
-    # snapshot_pick_lock.py) so once written at ~11am ET they are frozen.
-    # Reading them here means intra-day tier drift and odds refreshes can't
-    # change what the user is looking at. Falls through gracefully if
-    # snapshot missing (composer uses live values).
-    _snaps = _get(f'{SB}/rest/v1/prop_pick_snapshots',
-                  params={'select': 'player_name,prop_type,direction,prop_line,'
-                          'legacy_tier,legacy_conviction,refit_conviction,'
-                          'book_line,book_over_odds,book_under_odds',
-                          'game_date': f'eq.{today}',
-                          'snapshot_source': 'eq.card_lock',
-                          'sport': 'eq.MLB'})
-    if _snaps:
-        _snap_by_key = {(s.get('player_name'), s.get('prop_type'),
-                         s.get('direction'), s.get('prop_line')): s for s in _snaps}
-        overlaid = 0
-        for p in out['mlb_props']:
-            k = (p.get('player_name'), p.get('prop_type'),
-                 p.get('direction'), p.get('prop_line'))
-            s = _snap_by_key.get(k)
-            if not s: continue
-            # Snapshot wins on tier + conviction + odds (frozen values)
-            if s.get('legacy_tier'):        p['tier'] = s['legacy_tier']
-            if s.get('legacy_conviction') is not None: p['conviction'] = s['legacy_conviction']
-            if s.get('refit_conviction') is not None:  p['refit_conviction'] = s['refit_conviction']
-            if s.get('book_line') is not None:         p['book_line'] = s['book_line']
-            if s.get('book_over_odds') is not None:    p['book_over_odds'] = s['book_over_odds']
-            if s.get('book_under_odds') is not None:   p['book_under_odds'] = s['book_under_odds']
-            overlaid += 1
-        if overlaid:
-            print(f'  🔒 snapshot overlay: {overlaid}/{len(out["mlb_props"])} props '
-                  f'locked from prop_pick_snapshots')
+    # 2026-09-09 DEEP LOCK — via shared helper. Overlay prop_pick_snapshots
+    # (source of truth once locked) onto live mlb_pipeline_props. See
+    # prop_snapshot_overlay module docstring for full context. Every
+    # composer that reads props uses this same helper so drift can't
+    # differ between surfaces.
+    try:
+        from prop_snapshot_overlay import overlay_from_snapshots
+        out['mlb_props'] = overlay_from_snapshots(out['mlb_props'], today, sport='MLB')
+    except Exception:
+        pass  # helper missing / snapshot fetch failed — fall through to live
     # 2026-09-05 FIX: NCAAF/NFL use `close_home_ml`/`close_away_ml`; MLB
     # uses `home_ml_close`/`away_ml_close`. Prior version requested MLB
     # column names for every sport → PostgREST 400 → silent empty list →

@@ -468,6 +468,13 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
                 params={'game_date': f'eq.{game_date}',
                         'select': 'player_name,prop_type,direction,prop_line,book_over_odds,book_under_odds,refit_conviction,tier,matchup,game_id,signals'},
                 timeout=15).json()
+            # 2026-09-09 snapshot lock overlay (shared helper).
+            try:
+                from prop_snapshot_overlay import overlay_from_snapshots
+                if isinstance(legacy, list):
+                    legacy = overlay_from_snapshots(legacy, game_date, sport='MLB')
+            except Exception:
+                pass
             legacy_map = {}
             if isinstance(legacy, list):
                 for p in legacy:

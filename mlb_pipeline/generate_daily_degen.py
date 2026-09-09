@@ -211,7 +211,15 @@ def fetch_pipeline_props():
         headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
         timeout=20
     )
-    return r.json() if r.status_code == 200 else []
+    props = r.json() if r.status_code == 200 else []
+    # 2026-09-09 tier + odds lock via shared helper (see prop_snapshot_overlay
+    # module for context). Snapshot overrides live drift on tier/conviction/odds.
+    try:
+        from prop_snapshot_overlay import overlay_from_snapshots
+        props = overlay_from_snapshots(props, gd, sport='MLB')
+    except Exception:
+        pass
+    return props
 
 
 def extract_leg_candidates(games, props):
