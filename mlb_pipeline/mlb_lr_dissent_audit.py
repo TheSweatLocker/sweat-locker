@@ -235,8 +235,14 @@ def audit_date_range(start: date, end: date, dry_run: bool = False) -> tuple[int
             inserted += 1
             continue
 
-        r = requests.post(f'{SB}/rest/v1/lr_dissent_calibration',
-                          headers=H_WRITE, json=row, timeout=15)
+        # 2026-09-08 add on_conflict param. Prior bug: POST without
+        # on_conflict → PostgREST treated as pure INSERT → every re-run
+        # tripped UNIQUE(game_id, market) constraint. Log showed 10K+
+        # 23505 duplicate-key errors from this loop alone.
+        r = requests.post(
+            f'{SB}/rest/v1/lr_dissent_calibration?on_conflict=game_id,market',
+            headers=H_WRITE, json=row, timeout=15,
+        )
         if r.status_code < 300:
             inserted += 1
         else:
