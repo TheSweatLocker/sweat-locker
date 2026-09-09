@@ -145,14 +145,19 @@ def fetch_chalk_candidates(game_date: str, sports: list[str]) -> list[dict]:
     for sport in sports:
         table = CTX_TABLE.get(sport)
         if not table: continue
+        # 2026-09-08 sport-specific ML col SELECT to avoid 42703 on
+        # NHL/NBA/NCAAB (which don't have close_* or home_ml_odds cols)
+        # and NFL/NCAAF (which don't have home_ml_close).
+        if sport in ('NFL', 'NCAAF'):
+            ml_cols = 'close_home_ml,close_away_ml'
+        else:
+            ml_cols = 'home_ml_close,away_ml_close'
         try:
             r = requests.get(
                 f'{SB}/rest/v1/{table}',
                 headers=H_READ,
                 params={'game_date': f'eq.{game_date}',
-                        'select': 'game_id,home_team,away_team,'
-                                  'home_ml_close,away_ml_close,'
-                                  'home_ml_odds,away_ml_odds,primary_play'},
+                        'select': f'game_id,home_team,away_team,{ml_cols},primary_play'},
                 timeout=15)
             rows = r.json() if r.status_code == 200 else []
         except Exception:
@@ -301,13 +306,18 @@ def fetch_picks(game_date: str, sports: list[str]) -> list[dict]:
     for sport in sports:
         table = CTX_TABLE.get(sport)
         if not table: continue
+        # 2026-09-08 sport-specific ML col dispatch (same fix as above)
+        if sport in ('NFL', 'NCAAF'):
+            ml_cols = 'close_home_ml,close_away_ml'
+        else:
+            ml_cols = 'home_ml_close,away_ml_close'
         try:
             r = requests.get(
                 f'{SB}/rest/v1/{table}',
                 headers=H_READ,
                 params={'game_date': f'eq.{game_date}',
-                        'select': 'game_id,home_team,away_team,close_spread,close_total,'
-                                  'home_ml_close,away_ml_close,primary_play'},
+                        'select': f'game_id,home_team,away_team,close_spread,close_total,'
+                                  f'{ml_cols},primary_play'},
                 timeout=15)
             rows = r.json() if r.status_code == 200 else []
         except Exception:

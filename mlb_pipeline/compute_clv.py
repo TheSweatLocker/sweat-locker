@@ -119,14 +119,19 @@ def fetch_picks(sport: str, game_date: str) -> list:
     """
     ctx_tbl = SPORT_TABLE[sport][0]
     # Pull today's rows with pick info + closing lines
+    # 2026-09-08 removed `supplementary_play` from SELECT — column
+    # doesn't exist on any *_game_context table (verified).
+    # 2026-09-08 cross-sport ML col naming (real schema mismatch):
+    #   MLB/NHL/NBA/NCAAB → home_ml_close / away_ml_close
+    #   NFL/NCAAF        → close_home_ml / close_away_ml
     fields = ['game_id', 'home_team', 'away_team',
-              'primary_play', 'supplementary_play',
+              'primary_play',
               'close_total', 'close_spread',
               'close_locked_at']
-    if sport == 'MLB':
-        fields += ['home_ml_close', 'away_ml_close']
-    else:
+    if sport in ('NFL', 'NCAAF'):
         fields += ['close_home_ml', 'close_away_ml']
+    else:
+        fields += ['home_ml_close', 'away_ml_close']
     r = requests.get(
         f'{SB}/rest/v1/{ctx_tbl}'
         f'?select={",".join(fields)}&game_date=eq.{game_date}',
@@ -138,11 +143,13 @@ def fetch_picks(sport: str, game_date: str) -> list:
 
 
 def _extract_close_ml(ctx: dict, sport: str, side: str) -> int | None:
-    """Read close_home_ml / close_away_ml — handles MLB naming variant."""
-    if sport == 'MLB':
-        col = 'home_ml_close' if side == 'HOME' else 'away_ml_close'
-    else:
+    """Read closing ML — sport-specific column naming.
+    NFL/NCAAF use close_home_ml/close_away_ml; MLB/NHL/NBA/NCAAB use
+    home_ml_close/away_ml_close (yes really, unified via history)."""
+    if sport in ('NFL', 'NCAAF'):
         col = 'close_home_ml' if side == 'HOME' else 'close_away_ml'
+    else:
+        col = 'home_ml_close' if side == 'HOME' else 'away_ml_close'
     val = ctx.get(col)
     try: return int(val) if val is not None else None
     except (TypeError, ValueError): return None
@@ -158,8 +165,9 @@ def build_clv_rows(sport: str, ctx: dict) -> list:
     away_close_ml = _extract_close_ml(ctx, sport, 'AWAY')
 
     rows = []
-    for play_field, tier_hint in (('primary_play', 'PRIME'),
-                                    ('supplementary_play', 'STRONG')):
+    # 2026-09-08 removed supplementary_play iteration — column doesn't
+    # exist on any context table. Primary_play carries the pick.
+    for play_field, tier_hint in (('primary_play', 'PRIME'),):
         play = ctx.get(play_field)
         if not play or not isinstance(play, dict):
             continue

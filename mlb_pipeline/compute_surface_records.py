@@ -213,10 +213,15 @@ def pick_prop() -> list[dict]:
     from datetime import date as _date_cls
     _CUTOVER = _date_cls.fromisoformat('2026-08-31')
     out = []
+    # 2026-09-08 add game_date lower bound to prevent 57014 statement
+    # timeout as tables grow. Lifetime picks lifetime data anyway; a
+    # 2-year cutover is more than enough for tier calibration.
+    _LIFETIME_LOWER = '2024-01-01'
     for tbl, sport in [('mlb_pipeline_props', 'MLB'), ('nfl_pipeline_props', 'NFL')]:
         url = (f'{SB}/rest/v1/{tbl}'
                f'?select=game_date,result,tier,conviction,direction,book_over_odds,book_under_odds'
                f'&result=not.is.null&tier=in.(PRIME,STRONG)'
+               f'&game_date=gte.{_LIFETIME_LOWER}'
                f'&order=game_date.desc')
         try:
             for r in _paged(url):
@@ -642,10 +647,13 @@ def _pick_prop_tier(tier_filter: str) -> list[dict]:
     from datetime import date as _date_cls
     _CUTOVER = _date_cls.fromisoformat('2026-08-31')
     out = []
+    # 2026-09-08 lifetime lower bound to prevent 57014 statement timeout.
+    _LIFETIME_LOWER = '2024-01-01'
     for tbl, sport in [('mlb_pipeline_props', 'MLB')]:
         url = (f'{SB}/rest/v1/{tbl}'
                f'?select=game_date,result,tier,conviction,direction,book_over_odds,book_under_odds'
                f'&result=not.is.null&tier=in.({tier_filter})'
+               f'&game_date=gte.{_LIFETIME_LOWER}'
                f'&order=game_date.desc')
         try:
             for r in _paged(url):

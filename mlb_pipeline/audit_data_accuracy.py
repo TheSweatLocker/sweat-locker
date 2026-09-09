@@ -398,8 +398,13 @@ def check_E16_potd_odds_drift():
 
 def check_E17_props_l10_gate():
     # Post L10-gate: no PRIME/STRONG hits_over should have L10<10
-    rows = get('mlb_pipeline_props?prop_type=eq.hits_over&direction=eq.over'
-               '&tier=in.(PRIME,STRONG)&select=id,player_name,game_date,tier,player_l10_hit_count&limit=500')
+    # 2026-09-08 add game_date lower bound (14d) so this cross-check
+    # scans current slate, not all-time (prior state: 57014 timeout).
+    from datetime import date, timedelta
+    _cutoff = (date.today() - timedelta(days=14)).isoformat()
+    rows = get(f'mlb_pipeline_props?prop_type=eq.hits_over&direction=eq.over'
+               f'&tier=in.(PRIME,STRONG)&game_date=gte.{_cutoff}'
+               f'&select=id,player_name,game_date,tier,player_l10_hit_count&limit=500')
     bad = [r for r in rows if r.get('player_l10_hit_count') is None or int(r.get('player_l10_hit_count', 0)) < 10]
     if bad:
         emit('E17', 'CROSSTAB', 'HIGH', 'FAIL',

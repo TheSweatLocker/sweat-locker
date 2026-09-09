@@ -249,8 +249,10 @@ def upsert_tier_calibration():
     if not payload:
         return
     try:
+        # 2026-09-08 add on_conflict param — unique idx is (sport, tier,
+        # window_label) per migration 20260504_multisport_tier_calibration.
         req = urllib.request.Request(
-            f'{SUPABASE_URL}/rest/v1/mlb_tier_calibration',
+            f'{SUPABASE_URL}/rest/v1/mlb_tier_calibration?on_conflict=sport,tier,window_label',
             data=json.dumps(payload).encode('utf-8'),
             headers={**HEADERS, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
             method='POST',

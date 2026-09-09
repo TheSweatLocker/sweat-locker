@@ -199,8 +199,9 @@ def update_umpire_tendencies():
         else:
             # Umpire might not be in table yet — insert
             if patch_resp.status_code == 404 or 'No rows' in patch_resp.text:
+                # 2026-09-08 add on_conflict param — was missing → 42P10
                 requests.post(
-                    f"{SUPABASE_URL}/rest/v1/mlb_umpires",
+                    f"{SUPABASE_URL}/rest/v1/mlb_umpires?on_conflict=ump_name",
                     headers={**headers, "Prefer": "resolution=merge-duplicates,return=minimal"},
                     json={
                         "ump_name": ump_name,

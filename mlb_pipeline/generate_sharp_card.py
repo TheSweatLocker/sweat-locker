@@ -260,12 +260,15 @@ def _fetch_all(today: str) -> dict:
     for sport, tbl in [('nfl','nfl_game_context'), ('ncaaf','ncaaf_game_context'),
                        ('ncaab','ncaab_game_context'), ('nba','nba_game_context'),
                        ('nhl','nhl_game_context')]:
+        # 2026-09-08 SCHEMA DISPATCH: NFL/NCAAF use close_home_ml;
+        # NHL/NBA/NCAAB use home_ml_close (same as MLB). Prior state:
+        # SELECTing home_ml_odds on NHL/NBA/NCAAB 42703-ed every call.
         if sport in ('nfl', 'ncaaf'):
             cols = ('game_id,home_team,away_team,primary_play,'
                     'close_home_ml,close_away_ml')
         else:
             cols = ('game_id,home_team,away_team,primary_play,'
-                    'home_ml_close,away_ml_close,home_ml_odds,away_ml_odds')
+                    'home_ml_close,away_ml_close')
         out[f'{sport}_ctx'] = _get(f'{SB}/rest/v1/{tbl}',
                                     params={'select': cols, 'game_date': f'eq.{today}'})
     out['ufc_reads'] = _get(f'{SB}/rest/v1/jerry_reads',

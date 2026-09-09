@@ -127,9 +127,11 @@ def rescore_mc_ml_high_conf() -> dict | None:
     ctx_rows = r.json() if r.status_code == 200 else []
 
     # Pull results in same range for join
+    # 2026-09-08 col-name fix: mlb_game_results doesn't have winning_team.
+    # Derive from home_win (bool). Was 42703-ing thousands of times.
     r2 = requests.get(
         f'{SB}/rest/v1/mlb_game_results'
-        f'?game_date=gte.{cutoff}&select=game_id,home_score,away_score,winning_team',
+        f'?game_date=gte.{cutoff}&select=game_id,home_score,away_score,home_win',
         headers=H_READ, timeout=20)
     results = {row['game_id']: row for row in (r2.json() if r2.status_code == 200 else [])}
 
@@ -142,12 +144,11 @@ def rescore_mc_ml_high_conf() -> dict | None:
         if 'mc' not in sub and 'monte' not in sub:
             continue
         res = results.get(row['game_id'])
-        if not res or res.get('winning_team') is None:
+        if not res or res.get('home_win') is None:
             continue
         label = (pp.get('label') or '').lower()
         picked_home = 'home' in label or (label and 'away' not in label and pp.get('side') == 'HOME')
-        winning = (res.get('winning_team') or '').lower()
-        home_won = winning and 'home' in winning  # loose match
+        home_won = bool(res.get('home_win'))
         if picked_home == home_won: w += 1
         else: l += 1
     n = w + l

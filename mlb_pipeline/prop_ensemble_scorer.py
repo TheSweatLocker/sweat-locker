@@ -184,15 +184,19 @@ def _load_signal_registry() -> dict:
     if _REGISTRY_CACHE:
         return _REGISTRY_CACHE
     try:
+        # 2026-09-08 col-name fix. signal_registry uses `signal_name`
+        # (not signal_key) and `hit_rate` (not hit_rate_pct). Prior state
+        # 42703 errored on every lookup — thousands of Postgres error
+        # rows per day. hit_rate is stored on 0-100 scale (verified).
         r = requests.get(f'{SB}/rest/v1/signal_registry',
                          headers=H_READ,
-                         params={'select': 'signal_key,sport,hit_rate_pct,sample_n,tier'},
+                         params={'select': 'signal_name,sport,hit_rate,sample_n,tier'},
                          timeout=10)
         rows = r.json() if r.status_code == 200 else []
     except Exception:
         rows = []
     for row in rows:
-        _REGISTRY_CACHE[(row['signal_key'], row.get('sport') or 'MLB')] = row
+        _REGISTRY_CACHE[(row['signal_name'], row.get('sport') or 'MLB')] = row
     return _REGISTRY_CACHE
 
 
@@ -203,8 +207,8 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
     key = source_row.get('signal_key')
     sport = source_row.get('sport') or 'MLB'
     r = reg.get((key, sport))
-    if r and r.get('hit_rate_pct') is not None:
-        hr = float(r['hit_rate_pct']) / 100.0
+    if r and r.get('hit_rate') is not None:
+        hr = float(r['hit_rate']) / 100.0
         n = int(r.get('sample_n') or 0)
         tier = r.get('tier')
         return hr, n, tier
