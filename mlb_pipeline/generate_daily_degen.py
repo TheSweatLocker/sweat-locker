@@ -47,7 +47,7 @@ HEADERS = {
     'Prefer': 'resolution=merge-duplicates,return=minimal',
 }
 
-TARGET_LEGS = 3  # dropped from 4 → 3 on 2026-07-27.
+TARGET_LEGS = 3  # (kept for backward compat with legacy chalky path).
 # Rationale: 92-parlay backfill graded 7-81 (8.0%) at 4 legs. Legs
 # ran 190-148 = 56.2%. At -110 avg juice, 4-leg break-even = 7.52%
 # — we cleared it but barely. 3-leg break-even = 14.4%, and at
@@ -55,6 +55,23 @@ TARGET_LEGS = 3  # dropped from 4 → 3 on 2026-07-27.
 # lowest-conviction 4th leg entirely, which should nudge realized
 # legs% slightly upward. Re-audit after 30 3-leg parlays.
 MIN_LEGS = 2
+
+# 2026-09-09 DEGEN REBUILD per surface walkthrough:
+# "Rebuild Daily Degen as ONLY SGPs / longshot parlays — that's the actual
+# 'degen' content." Prior version drifted into chalky 3-leg territory
+# (was overlapping with Ledger's chalk prop parlay). New shape:
+#   • 4-10 leg longshot parlays
+#   • Combined payout ≥ +500 (longshot content, not chalk)
+#   • Per-leg odds range [-125, +300] (allow +money dogs; ban -200+ juice
+#     — those belong in Ledger chalk parlay, not Degen)
+#   • NO LR gate (LR is a probability floor for tight-edge value plays;
+#     Degen is variance chasing where LR would strip the exact +money
+#     legs that make Degen distinctive)
+DEGEN_MIN_LEGS = 4
+DEGEN_MAX_LEGS = 10
+DEGEN_MIN_COMBINED_PAYOUT = 500     # +500 floor
+DEGEN_LEG_ODDS_MIN = -125            # ban -200+ juice; -125 is the ceiling on juice
+DEGEN_LEG_ODDS_MAX = 300             # allow up to +300 dogs
 
 # Audit-based prioritization (added 2026-05-04). Each candidate's static
 # conviction gets multiplied by (live_30d_hit_rate / BASELINE_RATE). Cohorts
@@ -294,12 +311,16 @@ def extract_leg_candidates(games, props):
         real_odds = (p.get('book_over_odds') if direction == 'over'
                      else p.get('book_under_odds') if direction == 'under'
                      else None)
-        # Odds-range gate: skip legs priced outside [-300, +150]
+        # 2026-09-09 REBUILT ODDS GATE per surface walkthrough:
+        # Was [-300, +150] (juice-heavy chalky floor). New Degen owns the
+        # longshot lane — cap juice at -125 (ban -200+ juice which belongs
+        # in Ledger chalk parlay) and allow +money up to +300 for real
+        # +money chase content.
         if real_odds is not None:
             try:
                 oi = int(real_odds)
-                if oi < -300 or oi > 150:
-                    continue  # juice too heavy / payout too thin
+                if oi < DEGEN_LEG_ODDS_MIN or oi > DEGEN_LEG_ODDS_MAX:
+                    continue  # outside Degen +money longshot range
             except (TypeError, ValueError):
                 real_odds = None
         # Refit-trap check: skip if refit_conviction < 30 despite high raw
@@ -633,8 +654,13 @@ def extract_leg_candidates(games, props):
     return candidates
 
 
-def select_diverse_legs(candidates, tier_rates=None):
-    """Select 3-5 diverse legs — max 1 per game, type-aware caps.
+def select_diverse_legs(candidates, tier_rates=None, target_legs: int = None):
+    """Select diverse legs — max 1 per game, type-aware caps.
+
+    2026-09-09 REBUILD: caller-controlled leg count via `target_legs`.
+    Default remains TARGET_LEGS (3) for backward compat; Degen calls with
+    DEGEN_MAX_LEGS (10) to feed the longshot builder. Type caps relaxed
+    proportionally for larger builds (4 PROPs allowed when target ≥ 6).
 
     Audit-weighted (2026-05-04, rewritten 2026-05-19):
       - Each candidate's static conviction × (rate / BASELINE) folds in
@@ -643,13 +669,11 @@ def select_diverse_legs(candidates, tier_rates=None):
         instead of a flat 0.60 default. outs_under STRONG (~92%) and
         hits_over PRIME (~77%) now boost properly; lower-tier props demote.
       - Cohorts below SUPPRESS_RATE drop out entirely.
-
-    Cap policy (relaxed 2026-05-19):
-      - Max 3 PROPs total (was 2) — props are now the highest-audit pool
-        and shouldn't be artificially capped.
-      - Max 2 of any single PROP sub_type (no four hits_overs).
-      - Max 2 non-PROP per type (NRFI / ML / TOTAL each).
     """
+    target_legs = target_legs if target_legs is not None else TARGET_LEGS
+    prop_cap = 4 if target_legs >= 6 else 3
+    subtype_cap = 3 if target_legs >= 6 else 2
+    nontype_cap = 3 if target_legs >= 6 else 2
     from collections import defaultdict
     tier_rates = tier_rates or {}
 
@@ -687,21 +711,22 @@ def select_diverse_legs(candidates, tier_rates=None):
     sub_type_counts = defaultdict(int)
 
     for c in enriched:
-        if len(selected) >= TARGET_LEGS:
+        if len(selected) >= target_legs:
             break
         # No same-game correlation
         if c['game_id'] in games_used:
             continue
         ctype = c['type']
         if ctype == 'PROP':
-            if type_counts['PROP'] >= 3:
+            if type_counts['PROP'] >= prop_cap:
                 continue
-            # Don't pile up 3 hits_overs from different games — still some
-            # cross-game correlation (slate-wide offense factors).
-            if sub_type_counts[c.get('sub_type')] >= 2:
+            # Don't pile up multiple same sub_type props from different
+            # games — still some cross-game correlation (slate-wide
+            # offense factors).
+            if sub_type_counts[c.get('sub_type')] >= subtype_cap:
                 continue
         else:
-            if type_counts.get(ctype, 0) >= 2:
+            if type_counts.get(ctype, 0) >= nontype_cap:
                 continue
         selected.append(c)
         games_used.add(c['game_id'])
@@ -877,13 +902,48 @@ def run():
     except ImportError:
         pass
 
-    legs = select_diverse_legs(candidates, tier_rates=tier_rates)
+    # 2026-09-09 REBUILD: request more legs than the legacy TARGET_LEGS=3
+    # path so we can build a 4-10 leg longshot parlay clearing the +500
+    # combined payout floor.
+    legs = select_diverse_legs(candidates, tier_rates=tier_rates,
+                                target_legs=DEGEN_MAX_LEGS)
 
-    if len(legs) < MIN_LEGS:
-        print(f"  ⚠️ Only {len(legs)} legs found — not enough for a Degen Parlay today")
+    if len(legs) < DEGEN_MIN_LEGS:
+        print(f"  ⚠️ Only {len(legs)} legs found — need at least {DEGEN_MIN_LEGS} for rebuilt Degen longshot parlay")
         return
 
-    print(f"\n✅ Selected {len(legs)} legs:")
+    # Trim legs greedily until combined payout clears the +500 floor. Adds
+    # legs one at a time in conviction-desc order (already sorted) and stops
+    # when we hit either DEGEN_MAX_LEGS or the payout floor.
+    def _to_dec(american: int | float) -> float:
+        try: american = int(american)
+        except (TypeError, ValueError): return 1.0
+        if american > 0: return 1.0 + american/100
+        if american < 0: return 1.0 + 100/abs(american)
+        return 1.0
+    def _to_amer(decimal: float) -> int:
+        if decimal <= 1: return 0
+        if decimal >= 2.0: return int(round((decimal - 1) * 100))
+        return int(round(-100 / (decimal - 1)))
+    def _combined_odds(legs_subset):
+        dec = 1.0
+        for l in legs_subset:
+            odds = l.get('odds') or l.get('_odds') or -150
+            dec *= _to_dec(odds)
+        return _to_amer(dec)
+
+    # Start with min legs, add until we clear payout floor OR hit max
+    trimmed = legs[:DEGEN_MIN_LEGS]
+    combined = _combined_odds(trimmed)
+    while combined < DEGEN_MIN_COMBINED_PAYOUT and len(trimmed) < min(DEGEN_MAX_LEGS, len(legs)):
+        trimmed = legs[:len(trimmed) + 1]
+        combined = _combined_odds(trimmed)
+    if combined < DEGEN_MIN_COMBINED_PAYOUT:
+        print(f"  ⚠️ Best {len(trimmed)}-leg build only combines to {combined:+d} — "
+              f"below Degen floor +{DEGEN_MIN_COMBINED_PAYOUT}. Skipping today.")
+        return
+    legs = trimmed
+    print(f"\n✅ Selected {len(legs)} legs (combined {combined:+d}):")
     for l in legs:
         rate = l.get('_audit_rate')
         adj = l.get('_adjusted_conviction')
