@@ -422,6 +422,25 @@ jobs:
           cd mlb_pipeline
           python nfl_generate_props.py || echo "props failed (non-fatal)"
 
+      # 2026-09-08 NFL prop signal discipline. Post-generation cleanup:
+      #   1. Drop cross-team leaks (player_team ≠ home/away)
+      #   2. Dedupe alt-line conflicts (winner-take-all per player+family)
+      #   3. Cap tier at LEAN (no per-signal calibration for NFL yet — every
+      #      edge-detected prop currently defaults to STRONG; LEAN is honest
+      #      until signal_sources sport=NFL class=prop gets real hit_rate
+      #      data from graded outcomes)
+      # Runs BEFORE downstream composers (Sharp Card, Prop Jerry synth) so
+      # they see the disciplined set. See project_nfl_prop_signal_gap_908.
+      - name: NFL prop signal discipline (dedupe + cap)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_prop_signal_discipline.py --days 8 || echo "prop discipline non-fatal"
+
       # 2026-08-17: NFL prop playbook shadow-mode pipeline.
       # Same pattern as MLB: backfill L10 lookback → run prop_ensemble_scorer.
       # NFL doesn't have apply_prop_refit yet (refit weights are MLB-only),

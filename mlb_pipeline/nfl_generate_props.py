@@ -812,6 +812,14 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     home_raw = event.get('home_team'); away_raw = event.get('away_team')
     home_canon = aliases.get(home_raw); away_canon = aliases.get(away_raw)
     if not home_canon or not away_canon: return None
+    # 2026-09-08 CROSS-TEAM LEAK GUARD. player_id_lookup can return a
+    # roster row where team != either team in this event (stale roster
+    # data + name collisions). Prior state: A.J. Brown (PHI) props
+    # appearing on NE @ SEA game because Odds API had a Brown entry and
+    # lookup returned his PHI record. Downstream composers had no way to
+    # know the prop was cross-team. Guard here at the source.
+    if player_team not in (home_canon, away_canon):
+        return None
     opp_team = away_canon if player_team == home_canon else home_canon
 
     l4, season_avg, gp = player_rolling(player_id, cfg['col'], season)
