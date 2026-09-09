@@ -115,7 +115,15 @@ def _game_id_lookup(sport: str, game_date: str) -> dict:
     Used when source-specific tables (fadereport_signals, cleatz_signals)
     don't populate game_id for non-MLB sports (scraper gap 2026-08-23).
     2026-08-23: extended to horizon so preview-mode picks (source scraper
-    runs Aug 23 with snapshot_date=today for games on Aug 29) correlate."""
+    runs Aug 23 with snapshot_date=today for games on Aug 29) correlate.
+
+    2026-09-09 NFL ALIASES ENRICHMENT: cleatz uses "MIA Dolphins" / fadereport
+    uses "Dolphins" / nfl_game_context uses "MIA". Prior version returned only
+    canonical-abbrev pairs so no source lookups matched → splits_summary NULL
+    for every NFL game (money-flow badge never rendered). For NFL, look up
+    all variants from nfl_team_aliases (canonical + full_name + mascot + city
+    + alt_names + "canonical mascot" combo) and add every away/home cross
+    pair to the return dict so any format hits the same game_id."""
     tbl = SPORT_CTX_TABLE.get(sport.upper())
     if not tbl: return {}
     from datetime import datetime as _dt, timedelta as _td
@@ -130,8 +138,45 @@ def _game_id_lookup(sport: str, game_date: str) -> dict:
                              "select": "game_id,home_team,away_team", "limit": 200},
                      timeout=15)
     if r.status_code != 200: return {}
-    return {(row.get("away_team"), row.get("home_team")): row.get("game_id")
+    base = {(row.get("away_team"), row.get("home_team")): row.get("game_id")
             for row in (r.json() or []) if isinstance(row, dict) and row.get("game_id")}
+
+    if sport.upper() != "NFL":
+        return base
+
+    # NFL — build variant map from nfl_team_aliases + explode base pairs
+    try:
+        r2 = requests.get(f"{SB}/rest/v1/nfl_team_aliases",
+                          headers=H_READ,
+                          params={"select": "canonical_name,full_name,city,mascot,odds_api_name,espn_name,alt_names"},
+                          timeout=15)
+        aliases = r2.json() if r2.status_code == 200 else []
+    except Exception:
+        return base
+    variants: dict[str, set] = {}
+    for a in aliases:
+        if not isinstance(a, dict): continue
+        canon = a.get("canonical_name")
+        if not canon: continue
+        forms = {canon}
+        for k in ("full_name", "mascot", "city", "odds_api_name", "espn_name"):
+            v = a.get(k)
+            if v: forms.add(v)
+        for alt in (a.get("alt_names") or []):
+            if alt: forms.add(alt)
+        # cleatz "MIA Dolphins" format
+        if a.get("mascot"):
+            forms.add(f"{canon} {a['mascot']}")
+        variants[canon] = forms
+
+    enriched = dict(base)
+    for (away, home), gid in base.items():
+        aw_forms = variants.get(away, {away})
+        hm_forms = variants.get(home, {home})
+        for a in aw_forms:
+            for h in hm_forms:
+                enriched[(a, h)] = gid
+    return enriched
 
 
 def normalize_from_fadereport_signals(sport: str, game_date: str) -> list[dict]:

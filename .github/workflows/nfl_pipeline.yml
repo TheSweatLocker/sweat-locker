@@ -180,6 +180,25 @@ jobs:
           cd mlb_pipeline
           python nfl_game_context.py || echo "game_context failed"
 
+      # 2026-09-09: NFL splits_v2 aggregator was missing from this workflow —
+      # every other sport (MLB/NBA/NHL/NCAAF/NCAAB) calls it but NFL never did.
+      # Result: nfl_game_context.splits_summary was NULL for every game, so
+      # the money-flow / sharp-money badge never rendered for NFL. Underlying
+      # data (cleatz_signals + fadereport_signals) was fresh — the mlb workflow
+      # scrapers run all-sport, they just weren't being aggregated for NFL.
+      # This step normalizes source rows into public_splits_v2 + writes the
+      # aggregated splits_summary onto nfl_game_context. Non-fatal so a scraper
+      # blip can't kill the pipeline.
+      - name: NFL splits v2 aggregator (money-flow → game_context.splits_summary)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python splits_v2_pipeline.py --sport NFL || echo "NFL splits v2 aggregator failed (non-fatal)"
+
       # 2026-08-24: Madden NFL 27 talent prior seed + enrich.
       # Seed is idempotent (upsert on team,season,week_snapshot) — safe
       # to run every cron. Weekly refresh scraper (madden27.wiki) will
