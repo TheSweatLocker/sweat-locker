@@ -2758,6 +2758,42 @@ setEvData(evOpps.slice(0,20));
         away_team: sport==='NCAAB' ? stripMascot(g.away_team) : g.away_team,
         home_team: sport==='NCAAB' ? stripMascot(g.home_team) : g.home_team,
       }));
+
+      // 2026-09-09 BACKEND FALLBACK. When Odds API returns 0 games for a
+      // weekly sport in-season, fall back to our own <sport>_game_context.
+      // Backend has upcoming week populated even when Odds API is late or
+      // rate-limited. Prior state: 6-day-stale odds_cache row served 91
+      // NCAAF + 1 NFL game; when it expired, Odds API returned empty and
+      // user saw "no games" despite 17 NFL + 89 NCAAF games in ctx tables.
+      if (mappedGames.length === 0 && isWeekly && (sport === 'NFL' || sport === 'NCAAF')) {
+        try {
+          const ctxTable = sport === 'NFL' ? 'nfl_game_context' : 'ncaaf_game_context';
+          const startISO = (day === 'tomorrow' ? weekTomorrowStart : todayStart).toISOString().split('T')[0];
+          const endISO   = (day === 'tomorrow' ? weekTomorrowEnd   : weekTodayEnd).toISOString().split('T')[0];
+          const fb = await supabase.from(ctxTable)
+            .select('game_id,game_date,home_team,away_team,close_spread,close_total,close_home_ml,close_away_ml,kickoff_utc')
+            .gte('game_date', startISO)
+            .lte('game_date', endISO)
+            .order('game_date', {ascending: true})
+            .limit(200);
+          if (fb?.data && fb.data.length > 0) {
+            mappedGames = fb.data.map((g: any) => ({
+              id: g.game_id,
+              sport_key: sport === 'NFL' ? 'americanfootball_nfl' : 'americanfootball_ncaaf',
+              commence_time: g.kickoff_utc || (g.game_date + 'T20:00:00Z'),
+              home_team: g.home_team,
+              away_team: g.away_team,
+              // Minimal bookmakers shim so downstream renderers don't crash;
+              // Games tab will show teams + kickoff even without book lines.
+              bookmakers: [],
+              _backend_fallback: true,
+            }));
+            console.log(`[fetchGames] ${sport} Odds API returned 0 → backend fallback: ${mappedGames.length} games from ${ctxTable}`);
+          }
+        } catch (fbErr) {
+          console.warn(`[fetchGames] ${sport} backend fallback failed:`, fbErr);
+        }
+      }
     }
 
     setGamesData(mappedGames);
