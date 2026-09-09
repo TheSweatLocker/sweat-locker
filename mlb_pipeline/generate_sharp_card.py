@@ -326,6 +326,93 @@ def _lr_shadow_conflict(pp: dict) -> str | None:
     return None
 
 
+def _ensure_mlb_market_floor(mlb_ctx: list, mlb_props: list,
+                              sides_picks: list, props_picks: list) -> list[dict]:
+    """Mutating backfill: guarantee ≥1 side + ≥1 total + ≥1 prop each day.
+
+    2026-09-09 user directive: on days where primary_plays cluster in one
+    market (e.g., all 15 games have ML primary → 0 totals), Sharp Card
+    should still surface the strongest available total + prop even if
+    convictions dipped below the normal 65 floor. Relaxed floor of 55
+    (LEAN tier) — anything weaker isn't worth publishing.
+
+    Mutates sides_picks + props_picks in place; returns list of added items
+    for logging.
+    """
+    added = []
+    have_side  = any(p.get('type') in ('ml','rl') for p in sides_picks)
+    have_total = any(p.get('type') == 'total'    for p in sides_picks)
+    have_prop  = bool(props_picks)
+
+    # Backfill TOTAL: scan ctx for biggest sim vs market disagreement
+    if not have_total:
+        best = None
+        best_edge = 0.0
+        for g in mlb_ctx:
+            mt = g.get('model_pred_total')
+            ct = g.get('close_total')
+            if mt is None or ct is None: continue
+            edge = float(mt) - float(ct)
+            if abs(edge) < 0.5: continue  # need meaningful edge
+            if abs(edge) > best_edge:
+                best_edge = abs(edge); best = (g, edge)
+        if best:
+            g, edge = best
+            side = 'Over' if edge > 0 else 'Under'
+            line = g.get('close_total')
+            conv = min(72, 55 + int(abs(edge) * 4))  # 0.5→57, 2.0→63, 4.0→71
+            tier = 'STRONG' if conv >= 70 else 'LEAN'
+            item = {
+                'sport': 'MLB',
+                'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
+                'tier': tier,
+                'pick': f'{side} {line}',
+                'type': 'total',
+                'reason': f'Market floor · sim {g.get("model_pred_total"):.1f} vs close {line} · Δ{edge:+.1f}',
+                'odds': -110,
+                'line': line,
+                'units': _units_for_pick(tier, 'total', -110, side_price_american=-110),
+                '_floor_backfill': True,
+            }
+            if item['units'] > 0:
+                sides_picks.append(item); added.append(item)
+
+    # Backfill PROP: highest-conviction PRIME/STRONG prop even if publishability
+    # gate would normally reject
+    if not have_prop:
+        best_prop = None
+        best_conv = 0
+        for p in mlb_props:
+            tier = str(p.get('tier') or '').upper()
+            if tier not in ('PRIME', 'STRONG'): continue
+            conv = int(p.get('refit_conviction') or p.get('conviction') or 0)
+            if conv < 55: continue
+            if conv > best_conv:
+                best_conv = conv; best_prop = p
+        if best_prop:
+            direction = str(best_prop.get('direction') or '').upper()
+            odds = (best_prop.get('book_over_odds') if direction == 'OVER'
+                    else best_prop.get('book_under_odds')) or -110
+            item = {
+                'sport': 'MLB',
+                'matchup': best_prop.get('matchup') or '',
+                'tier': best_prop.get('tier'),
+                'pick': f"{best_prop.get('player_name')} {direction.title()} {best_prop.get('prop_line')} {best_prop.get('prop_type')}",
+                'type': 'prop',
+                'reason': f"Market floor · top prop conv {best_conv}",
+                'odds': odds,
+                'line': best_prop.get('prop_line'),
+                'units': _units_for_pick(best_prop.get('tier'), 'prop', odds, side_price_american=odds),
+                '_floor_backfill': True,
+                'player_team': best_prop.get('player_team'),
+                'playbook_lifted': False,
+            }
+            if item['units'] > 0:
+                props_picks.append(item); added.append(item)
+
+    return added
+
+
 def _compose_mlb_sides(mlb_ctx: list) -> list[dict]:
     picks = []
     lr_conflict_drops = 0
@@ -707,6 +794,15 @@ def run(dry_run: bool = False, force: bool = False):
 
     mlb_sides = _compose_mlb_sides(sources['mlb_ctx'])
     mlb_props = _compose_mlb_props(sources['mlb_props'], sources['playbook'])
+    # 2026-09-09 MARKET FLOOR (user directive from surface walkthrough):
+    # Sharp Card should always render at least 1 side + 1 total + 1 prop
+    # for MLB even on days where convictions cluster in one market. If the
+    # normal composers left any market empty, backfill with the strongest
+    # candidate for that market from ctx/props (relaxed conv floor to 55).
+    _floor_added = _ensure_mlb_market_floor(sources['mlb_ctx'], sources['mlb_props'],
+                                             mlb_sides, mlb_props)
+    if _floor_added:
+        print(f'  ✚ market floor added: {len(_floor_added)} backfill picks')
     nfl       = _compose_other_sport_sides(sources['nfl_ctx'], 'NFL')
     ncaaf     = _compose_other_sport_sides(sources['ncaaf_ctx'], 'NCAAF')
     ncaab     = _compose_other_sport_sides(sources['ncaab_ctx'], 'NCAAB')
