@@ -49,6 +49,17 @@ on:
       - '.github/workflows/mlb_pipeline.yml'
   workflow_dispatch:
 
+# 2026-09-08: serialize concurrent runs. Prior state: 4 crons + push
+# trigger on mlb_pipeline/** + manual dispatches produced 23 concurrent
+# runs in a 4-hour window, racing on Supabase upserts and occasionally
+# tripping resolve_potd with transient collisions. Queue mode (no cancel)
+# means late-arriving triggers wait rather than being killed — no risk of
+# canceling a run at its final auto-commit step. Downside: queue can
+# grow 2-3 hrs deep on high-trigger days. Acceptable tradeoff vs races.
+concurrency:
+  group: mlb-pipeline
+  cancel-in-progress: false
+
 jobs:
   run-mlb-pipeline:
     runs-on: ubuntu-latest
