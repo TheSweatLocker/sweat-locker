@@ -119,8 +119,80 @@ SHARP_CARD_PER_SPORT_MAX = {
     'UFC':    5,   # per-card
 }
 
+# 2026-09-09 COLD-STREAK AUTO-TIGHTENING (user directive from surface walkthrough).
+# When Sharp Card is running cold, publish a smaller + higher-conviction deck.
+# Read 7-day rolling hit rate from daily_surface_records.sharp_card; if
+# < COLD_HIT_RATE_THRESHOLD over N>=COLD_MIN_SAMPLE plays, enter cold-mode:
+#   • Cap total items at COLD_ITEM_CAP (from SHARP_CARD_ITEM_CAP=50 → 15)
+#   • Tag the card with cold_state='cold' so app renders warning banner
+# Auto-normalizes when 7d rolling ≥ WARM_HIT_RATE_THRESHOLD.
+COLD_LOOKBACK_DAYS = 7
+COLD_MIN_SAMPLE = 15         # need at least 15 plays to trust the sample
+COLD_HIT_RATE_THRESHOLD = 0.50   # < 50% = cold
+WARM_HIT_RATE_THRESHOLD = 0.55   # ≥ 55% = normal
+COLD_ITEM_CAP = 15            # tighter deck when cold
+COLD_TIER_FILTER = {'PRIME', 'STRONG'}   # cold-mode: drop LEAN
+
 _SPORT_PRIORITY = {'MLB': 0, 'NCAAF': 1, 'NFL': 2, 'NCAAB': 3, 'NBA': 4, 'NHL': 5, 'UFC': 6}
 _TIER_PRIORITY = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
+
+
+def _compute_sharp_cold_state() -> dict:
+    """Return {state, hit_rate, sample, window_start, window_end, message}.
+
+    Reads last 7 days of daily_surface_records for surface='sharp_card',
+    combines W+L across all sports (pushes excluded from rate denom).
+    Returns state='cold' | 'warming' | 'normal' + rationale.
+
+    Non-fatal: if the read fails or sample too small, returns state='normal'
+    so the card publishes at full volume — better to over-publish than
+    silently kill the card on a data hiccup.
+    """
+    from datetime import date as _date, timedelta as _td
+    end = _date.today()
+    start = end - _td(days=COLD_LOOKBACK_DAYS)
+    try:
+        r = requests.get(f'{SB}/rest/v1/daily_surface_records', headers=H_READ,
+            params={'surface': 'eq.sharp_card',
+                    'record_date': f'gte.{start.isoformat()}',
+                    'select': 'record_date,sport,wins,losses,pushes,pick_count'},
+            timeout=15)
+        if r.status_code != 200:
+            return {'state': 'normal', 'reason': f'lookup failed ({r.status_code})',
+                    'hit_rate': None, 'sample': 0}
+        rows = r.json() or []
+    except Exception as e:
+        return {'state': 'normal', 'reason': f'exception {e!r}',
+                'hit_rate': None, 'sample': 0}
+    total_w = sum(int(r.get('wins') or 0) for r in rows)
+    total_l = sum(int(r.get('losses') or 0) for r in rows)
+    total_p = sum(int(r.get('pushes') or 0) for r in rows)
+    decisions = total_w + total_l  # pushes exclude from rate
+    if decisions < COLD_MIN_SAMPLE:
+        return {'state': 'normal', 'reason': f'insufficient sample n={decisions}',
+                'hit_rate': None, 'sample': decisions}
+    hit_rate = total_w / decisions
+    if hit_rate < COLD_HIT_RATE_THRESHOLD:
+        state = 'cold'
+    elif hit_rate < WARM_HIT_RATE_THRESHOLD:
+        state = 'warming'
+    else:
+        state = 'normal'
+    return {
+        'state': state,
+        'hit_rate': round(hit_rate, 3),
+        'sample': decisions,
+        'wins': total_w, 'losses': total_l, 'pushes': total_p,
+        'window_start': start.isoformat(),
+        'window_end': end.isoformat(),
+        'message': (
+            f'🥶 Cold streak — tightening filters ({total_w}-{total_l} last 7 days)'
+            if state == 'cold' else
+            f'⚠ Warming up — cautious volume ({total_w}-{total_l} last 7 days)'
+            if state == 'warming' else
+            f'📈 Normal deck ({total_w}-{total_l} last 7 days)'
+        ),
+    }
 
 
 def _today_et() -> str:
@@ -693,7 +765,8 @@ def _compose_ufc(ufc_reads: list) -> list[dict]:
 # WRITE LAYER
 # ═══════════════════════════════════════════════════════════════════════
 
-def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False):
+def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
+             cold_state: dict | None = None):
     # 2026-09-09 PUBLISH LOCK.
     # Sharp Card was being overwritten on every cron cycle (~9 hours of
     # rewrites/day). Users bet based on 8am board, then 2pm cron shipped
@@ -732,6 +805,9 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False):
         'count': len(items),
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'config_version': CONFIG_VERSION,
+        # 2026-09-09: cold-streak banner state — app renders warning banner
+        # when state != 'normal' so users see the auto-tightening.
+        'cold_state': cold_state or {'state': 'normal'},
     }
     if dry_run:
         print(f'  [DRY] would write {len(items)} items to jerry_cache.sharp_card_{today}')
@@ -760,6 +836,15 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False):
 def run(dry_run: bool = False, force: bool = False):
     today = _today_et()
     print(f'== Generate Sharp Card · {today} ==')
+
+    # 2026-09-09 COLD-STREAK GATE — evaluate before compose. Cold-mode
+    # tightens item cap + drops LEAN tier so the card publishes a smaller,
+    # higher-conviction deck during losing runs. Auto-normalizes when
+    # rolling 7-day hit rate climbs back.
+    cold_state = _compute_sharp_cold_state()
+    print(f'  cold-state check: state={cold_state["state"]} '
+          f'hit_rate={cold_state.get("hit_rate")} '
+          f'sample={cold_state["sample"]} · {cold_state.get("message","")}')
 
     # 2026-09-06 race guard. Sharp card was firing during partial pipeline
     # runs before apply_refit_verdict_override had stamped LR tiers today,
@@ -816,12 +901,23 @@ def run(dry_run: bool = False, force: bool = False):
           f'NFL={len(nfl)} NCAAF={len(ncaaf)} NCAAB={len(ncaab)} '
           f'NBA={len(nba)} NHL={len(nhl)} UFC={len(ufc)}  TOTAL={len(all_items)}')
 
+    # 2026-09-09 COLD-STREAK APPLIED HERE: drop LEAN when cold, and use
+    # tighter cap. Runs BEFORE the normal cap so the cap logic sees the
+    # already-filtered pool.
+    if cold_state['state'] == 'cold':
+        pre_cold = len(all_items)
+        all_items = [it for it in all_items if str(it.get('tier','')).upper() in COLD_TIER_FILTER]
+        print(f'  🥶 COLD-MODE filter: {pre_cold} → {len(all_items)} (dropped LEAN tier)')
+
+    # Effective cap based on cold state
+    _effective_cap = COLD_ITEM_CAP if cold_state['state'] == 'cold' else SHARP_CARD_ITEM_CAP
+
     # (3) Cap total items with per-sport quota + tier priority.
     # Step A: sort each sport bucket by (tier, -units).
     # Step B: take top N per sport per SHARP_CARD_PER_SPORT_MAX.
-    # Step C: if still over SHARP_CARD_ITEM_CAP, trim from lowest-tier
+    # Step C: if still over _effective_cap, trim from lowest-tier
     #         of each sport proportionally.
-    if SHARP_CARD_ITEM_CAP is not None and len(all_items) > SHARP_CARD_ITEM_CAP:
+    if _effective_cap is not None and len(all_items) > _effective_cap:
         pre = len(all_items)
         from collections import defaultdict as _dd
         by_sport: dict = _dd(list)
@@ -836,17 +932,17 @@ def run(dry_run: bool = False, force: bool = False):
             ))
             capped.extend(items_s[:max_for_sport])
         # If per-sport quotas still overshoot total, sort combined and cap
-        if len(capped) > SHARP_CARD_ITEM_CAP:
+        if len(capped) > _effective_cap:
             capped.sort(key=lambda it: (
                 _TIER_PRIORITY.get(it.get('tier'), 9),
                 _SPORT_PRIORITY.get(it.get('sport'), 9),
                 -float(it.get('units') or 0),
             ))
-            capped = capped[:SHARP_CARD_ITEM_CAP]
+            capped = capped[:_effective_cap]
         all_items = capped
-        print(f'  cap applied: {pre} → {len(all_items)} (per-sport quotas + hard cap {SHARP_CARD_ITEM_CAP})')
+        print(f'  cap applied: {pre} → {len(all_items)} (per-sport quotas + hard cap {_effective_cap})')
 
-    _publish(today, all_items, dry_run, force=force)
+    _publish(today, all_items, dry_run, force=force, cold_state=cold_state)
     return 0
 
 
